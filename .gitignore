@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.pyo
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.simu_loop_work/
+runtime_simulator/
+runtime_trainee/
+
+*.log

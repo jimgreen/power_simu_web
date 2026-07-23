@@ -16,24 +16,31 @@
             <p><span id="connectionDot"></span><span id="connectionText">连接中</span></p>
           </div>
         </div>
-        <label class="model-switcher">显示模型
-          <select id="modelSelector">
-            <option value="">默认模型</option>
-          </select>
-          <span id="activeModelName">默认模型</span>
-        </label>
-        <div class="operator-strip">
-          <strong id="simTime">00:00:00</strong>
-          <span id="simState">stopped</span>
-          <button id="sendCommands" class="primary">发送指令</button>
+
+        <div class="model-toolbar">
+          <label class="model-switcher">显示模型
+            <select id="modelSelector">
+              <option value="">默认模型</option>
+            </select>
+            <span id="activeModelName">默认模型</span>
+          </label>
+        </div>
+
+        <div class="clock-strip">
+          <div class="clock-readout">
+            <span id="simState">stopped</span>
+            <strong id="simTime">00:00:00</strong>
+            <small id="simSpeed">x1</small>
+          </div>
+          <button id="sendCommands" class="primary" type="button">发送指令</button>
         </div>
       </header>
 
       <nav class="page-nav" aria-label="学员台主题导航">
         <button data-nav-page="overview" class="is-active">主页</button>
-        <button data-nav-page="measurements">量测监视</button>
+        <button data-nav-page="measurements">实时量测</button>
         <button data-nav-page="controls">设备投退</button>
-        <button data-nav-page="commands">指令下发</button>
+        <button data-nav-page="commands">控制指令</button>
         <button data-nav-page="history">指令记录</button>
       </nav>
 
@@ -43,7 +50,7 @@
             <section class="panel">
               <div class="panel-head">
                 <h2>运行总览</h2>
-                <span id="topologyState">在线</span>
+                <span id="overviewRefresh">--</span>
               </div>
               <dl class="metric-grid">
                 <div><dt>量测</dt><dd id="measureCount">0</dd></div>
@@ -55,72 +62,125 @@
 
             <section class="panel overview-wide">
               <div class="panel-head">
-                <h2>微电网拓扑</h2>
-                <span id="overviewOnline">在线</span>
+                <h2>交直流混联系统</h2>
+                <span id="topologyState">在线</span>
               </div>
-              <svg class="one-line" viewBox="0 0 900 250" aria-label="极地微电网拓扑">
-                <path class="bus ac" d="M70 90H430"></path>
+              <svg class="one-line" viewBox="0 0 900 260" role="img" aria-label="交直流微电网单线图">
+                <path class="bus ac" d="M70 90H440"></path>
                 <path class="bus dc" d="M520 90H830"></path>
-                <path class="converter" d="M430 90C470 45 485 45 520 90"></path>
-                <g class="device diesel" transform="translate(100 90)"><circle r="22"></circle><text y="52">柴发</text></g>
-                <g class="device load" transform="translate(235 90)"><circle r="22"></circle><text y="52">负荷</text></g>
-                <g class="device bus-node" transform="translate(365 90)"><circle r="22"></circle><text y="52">AC</text></g>
-                <g class="device conv" transform="translate(575 90)"><rect x="-24" y="-24" width="48" height="48"></rect><text y="56">变流器</text></g>
-                <g class="device ess" transform="translate(705 90)"><rect x="-24" y="-24" width="48" height="48"></rect><text y="56">储能</text></g>
-                <g class="device renewable" transform="translate(805 90)"><rect x="-24" y="-24" width="48" height="48"></rect><text y="56">风光</text></g>
-                <path class="feeder" d="M100 112V185H235V112"></path>
-                <path class="feeder" d="M705 114V185H805V114"></path>
+                <path class="link" d="M440 90 C470 70,490 70,520 90"></path>
+                <g class="node online" transform="translate(95 90)"><circle r="18"></circle><text y="46">柴发</text></g>
+                <g class="node online" transform="translate(225 90)"><circle r="18"></circle><text y="46">负荷</text></g>
+                <g class="node online" transform="translate(355 90)"><circle r="18"></circle><text y="46">AC母线</text></g>
+                <g class="node online" transform="translate(580 90)"><rect x="-20" y="-20" width="40" height="40"></rect><text y="50">DCAC</text></g>
+                <g class="node online" transform="translate(700 90)"><rect x="-20" y="-20" width="40" height="40"></rect><text y="50">储能</text></g>
+                <g class="node warn" transform="translate(800 90)"><rect x="-20" y="-20" width="40" height="40"></rect><text y="50">风光</text></g>
+                <path class="drop" d="M225 108V190H355"></path>
+                <path class="drop" d="M700 110V190H800"></path>
+                <text class="caption" x="70" y="40">AC侧</text>
+                <text class="caption" x="520" y="40">DC侧</text>
               </svg>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>待发指令</h2>
+                <span id="pendingSummary">0 项</span>
+              </div>
+              <div id="pendingPreview" class="log-list"></div>
             </section>
           </div>
         </section>
 
         <section class="page-section" data-page="measurements">
-          <div class="topic-layout">
-            <section class="panel visual-panel">
+          <div class="measurement-page-layout">
+            <aside class="panel measurement-tree-panel">
               <div class="panel-head">
-                <h2>SCADA趋势</h2>
-                <span id="trendCount">0 点</span>
+                <h2>设备树</h2>
+                <span id="measurementTreeSummary">0 类 · 0 台</span>
               </div>
-              <canvas id="trendChart" width="780" height="260"></canvas>
-            </section>
-            <section class="panel">
-              <div class="panel-head">
-                <h2>量测表</h2>
-                <span id="measurementValidCount">0 可用</span>
-              </div>
-              <div id="measurementTable" class="table-wrap"></div>
-            </section>
+              <div id="measurementDeviceTree" class="device-tree" aria-label="量测设备树"></div>
+            </aside>
+
+            <div class="measurement-workspace">
+              <section class="panel measurement-table-panel">
+                <div class="panel-head">
+                  <h2>量测值</h2>
+                  <span id="measurementValidCount">0 可用</span>
+                </div>
+                <div id="measurementTable" class="measurement-compare-wrap"></div>
+              </section>
+
+              <section class="panel measurement-trace-panel">
+                <div class="panel-head">
+                  <h2>测点跟踪曲线</h2>
+                  <label class="compact-field">窗口
+                    <select id="measurementTraceWindow">
+                      <option value="15">15分钟</option>
+                      <option value="60" selected>1小时</option>
+                      <option value="120">2小时</option>
+                      <option value="360">6小时</option>
+                      <option value="1440">24小时</option>
+                    </select>
+                  </label>
+                </div>
+                <canvas id="measurementTraceChart" width="1500" height="360"></canvas>
+                <div class="measurement-trace-legend">
+                  <span><i class="trace-scada"></i>量测值</span>
+                  <strong id="measurementTraceSummary">未选择测点</strong>
+                </div>
+              </section>
+            </div>
           </div>
         </section>
 
         <section class="page-section" data-page="controls">
-          <section class="panel">
-            <div class="panel-head">
-              <h2>设备投退</h2>
-              <span id="runPendingCount">0</span>
-            </div>
-            <div id="deviceControls" class="device-list control-list"></div>
-          </section>
+          <div class="runtime-page-layout">
+            <aside class="panel runtime-tree-panel">
+              <div class="panel-head">
+                <h2>设备树</h2>
+                <span id="runTreeSummary">0 类 · 0 台</span>
+              </div>
+              <div id="runDeviceTree" class="device-tree" aria-label="投退设备树"></div>
+            </aside>
+
+            <section class="panel runtime-table-panel">
+              <div class="panel-head">
+                <h2>设备投退</h2>
+                <span id="runPendingCount">0 待发</span>
+              </div>
+              <div id="runControlTable" class="runtime-device-wrap"></div>
+            </section>
+          </div>
         </section>
 
         <section class="page-section" data-page="commands">
-          <section class="panel">
-            <div class="panel-head">
-              <h2>指令下发</h2>
-              <span id="setpointPendingCount">0</span>
-            </div>
-            <div id="setpointControls" class="device-list setpoint-list"></div>
-          </section>
+          <div class="runtime-page-layout">
+            <aside class="panel runtime-tree-panel">
+              <div class="panel-head">
+                <h2>设备树</h2>
+                <span id="setpointTreeSummary">0 类 · 0 台</span>
+              </div>
+              <div id="setpointDeviceTree" class="device-tree" aria-label="控制指令设备树"></div>
+            </aside>
+
+            <section class="panel runtime-table-panel">
+              <div class="panel-head">
+                <h2>控制指令</h2>
+                <span id="setpointPendingCount">0 待发</span>
+              </div>
+              <div id="setpointControlTable" class="runtime-device-wrap"></div>
+            </section>
+          </div>
         </section>
 
         <section class="page-section" data-page="history">
-          <section class="panel narrow-page">
+          <section class="panel history-panel">
             <div class="panel-head">
               <h2>指令记录</h2>
               <span id="historyCount">0</span>
             </div>
-            <div id="commandHistory" class="log-list history-list"></div>
+            <div id="commandHistory" class="runtime-log-wrap"></div>
           </section>
         </section>
       </main>

@@ -1,8 +1,22 @@
 const apiBase = (window.POLAR_SIM_API_URL || localStorage.getItem("polarSimApiUrl") || location.origin).replace(/\/$/, "");
+const teacherApiBase = (
+  window.POLAR_TEACHER_API_URL ||
+  localStorage.getItem("polarTeacherApiUrl") ||
+  "http://127.0.0.1:8710"
+).replace(/\/$/, "");
 const state = {
   snapshot: null,
   models: [],
   activeModelId: localStorage.getItem("polarTraineeModelId") || "",
+  receiveMode: false,
+  frozen: false,
+  receiveEpoch: 0,
+  lastReceiveAt: "",
+  snapshotSource: "",
+  lastTeacherSnapshotLogKey: "",
+  runtimeLogs: [],
+  runtimeLogSeq: 0,
+  seenCommandHistoryKeys: new Set(),
   measurementFilter: { dev_type: "all", dev_name: "" },
   runFilter: { dev_type: "all", dev_name: "" },
   setpointFilter: { dev_type: "all", dev_name: "" },
@@ -10,8 +24,21 @@ const state = {
   selectedMeasurementKey: "",
   measurementTraceHistory: [],
   measurementTraceWindowMinutes: 60,
+  renewableControl: {
+    enabled: false,
+    intervalSeconds: 2,
+    socMin: 0.3,
+    socMax: 0.9,
+    sending: false,
+    lastClockKey: "",
+    lastAutoAtMs: 0,
+    lastPlan: null,
+    lastSentAt: "",
+    lastStatus: "请先启动接收模式，再启动实时控制。",
+  },
 };
 const pending = { run_status: new Map(), set_values: new Map() };
+const CONTROL_COMMAND_VALID_MINUTES = 5;
 
 const $ = (id) => document.getElementById(id);
 
@@ -47,6 +74,12 @@ function modelScopedPath(path) {
   return `${path}${separator}model_id=${encodeURIComponent(state.activeModelId)}`;
 }
 
+function teacherScopedPath(path) {
+  if (!state.activeModelId) return path;
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}model_id=${encodeURIComponent(state.activeModelId)}`;
+}
+
 async function api(path, options = {}) {
   const { modelScoped = true, ...fetchOptions } = options;
   const targetPath = modelScoped ? modelScopedPath(path) : path;
@@ -58,10 +91,115 @@ async function api(path, options = {}) {
   return response.json();
 }
 
+async function teacherApi(path, options = {}) {
+  const targetPath = teacherScopedPath(path);
+  const response = await fetch(`${teacherApiBase}${targetPath}`, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]
   ));
+}
+
+function apiErrorText(error) {
+  try {
+    return JSON.parse(error.message)?.error || error.message;
+  } catch (_parseError) {
+    return error.message || "操作失败";
+  }
+}
+
+function runtimeLogTime() {
+  return new Date().toLocaleTimeString();
+}
+
+function addRuntimeLog(type, target, result, detail = "", level = "info", renderNow = true) {
+  state.runtimeLogSeq += 1;
+  state.runtimeLogs.unshift({
+    seq: state.runtimeLogSeq,
+    wall_time: runtimeLogTime(),
+    type,
+    target,
+    result,
+    detail,
+    level,
+  });
+  state.runtimeLogs = state.runtimeLogs.slice(0, 300);
+  if (renderNow) renderHistory();
+}
+
+function runtimeLogDetailText(detail) {
+  if (Array.isArray(detail)) return detail.filter(Boolean).join("；");
+  if (detail && typeof detail === "object") {
+    return Object.entries(detail)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join("；");
+  }
+  return String(detail || "");
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 32768;
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, offset + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+function setImportStatus(text, kind = "") {
+  const target = $("importStatus");
+  if (!target) return;
+  target.textContent = text || "";
+  target.classList.toggle("is-error", kind === "error");
+  target.classList.toggle("is-ok", kind === "ok");
+}
+
+async function importDefinitionArchive(file) {
+  if (!file) return;
+  const button = $("importDefinitionsButton");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "导入中";
+  }
+  setImportStatus(file.name);
+  addRuntimeLog("模型交互", "学员台 /api/models/import-definitions", "开始导入", file.name);
+  try {
+    const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
+    const result = await api("/api/models/import-definitions", {
+      method: "POST",
+      body: JSON.stringify({ filename: file.name, data_base64: dataBase64 }),
+    });
+    state.frozen = false;
+    setImportStatus(`已导入 ${result.imported?.curve_points || 0} 点曲线`, "ok");
+    addRuntimeLog(
+      "模型交互",
+      "学员台 /api/models/import-definitions",
+      "导入成功",
+      `曲线 ${result.imported?.curve_points || 0} 点；负荷 ${result.imported?.load_count || 0} 类`,
+      "ok",
+    );
+    await loadModels();
+    await refresh();
+  } catch (error) {
+    setImportStatus(apiErrorText(error), "error");
+    addRuntimeLog("模型交互", "学员台 /api/models/import-definitions", "导入失败", apiErrorText(error), "error");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "导入定义包";
+    }
+    const input = $("definitionArchiveInput");
+    if (input) input.value = "";
+  }
 }
 
 function renderModelSelector() {
@@ -81,6 +219,7 @@ function setActiveModel(modelId, shouldRefresh = true) {
   const nextId = modelId || state.models[0]?.id || "";
   state.activeModelId = nextId;
   localStorage.setItem("polarTraineeModelId", nextId);
+  state.frozen = false;
   pending.run_status.clear();
   pending.set_values.clear();
   state.measurementTraceHistory = [];
@@ -88,6 +227,7 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.measurementFilter = { dev_type: "all", dev_name: "" };
   state.runFilter = { dev_type: "all", dev_name: "" };
   state.setpointFilter = { dev_type: "all", dev_name: "" };
+  if (shouldRefresh) stopRenewableControl("模型已切换，策略已停止。", true);
   renderModelSelector();
   updatePendingCount();
   if (shouldRefresh) refresh();
@@ -107,15 +247,62 @@ async function loadModels() {
 }
 
 async function refresh() {
+  if (state.receiveMode) {
+    await refreshFromTeacher(state.receiveEpoch);
+    return;
+  }
+  if (state.frozen) {
+    renderReceiveMode();
+    return;
+  }
   try {
     const snapshot = await api("/api/snapshot");
     $("connectionDot").className = "ok";
     $("connectionText").textContent = "在线";
+    state.snapshotSource = "local";
     renderSnapshot(snapshot);
   } catch (_error) {
     $("connectionDot").className = "off";
     $("connectionText").textContent = "离线";
     $("topologyState").textContent = "离线";
+  }
+}
+
+async function refreshFromTeacher(epoch = state.receiveEpoch) {
+  try {
+    const snapshot = await teacherApi("/api/snapshot");
+    if (!state.receiveMode || epoch !== state.receiveEpoch) return;
+    state.lastReceiveAt = new Date().toLocaleTimeString();
+    state.snapshotSource = "teacher";
+    const logKey = renewableClockKey(snapshot);
+    if (logKey !== state.lastTeacherSnapshotLogKey) {
+      const valuesNow = currentWeatherLoad(snapshot);
+      const scada = snapshot.measurements?.scada || [];
+      addRuntimeLog(
+        "实时交互",
+        "模拟台 /api/snapshot",
+        "接收成功",
+        [
+          `仿真时刻 ${snapshot.clock?.time || "--"}`,
+          `量测 ${scada.length} 点`,
+          `风速 ${formatNumber(valuesNow.windSpeed)} m/s`,
+          `光照 ${formatNumber(valuesNow.solarIrradiance)} W/m2`,
+          `负荷 ${formatNumber(valuesNow.loadKw)} kW`,
+        ],
+        "ok",
+        false,
+      );
+      state.lastTeacherSnapshotLogKey = logKey;
+    }
+    renderSnapshot(snapshot);
+    renderReceiveMode();
+  } catch (_error) {
+    if (!state.receiveMode || epoch !== state.receiveEpoch) return;
+    $("connectionDot").className = "off";
+    $("connectionText").textContent = "教员离线";
+    $("topologyState").textContent = "教员离线";
+    addRuntimeLog("实时交互", "模拟台 /api/snapshot", "接收失败", apiErrorText(_error), "error");
+    renderReceiveMode("接收失败");
   }
 }
 
@@ -132,12 +319,535 @@ function renderSnapshot(snapshot) {
   $("validCount").textContent = `${validCount} 可用`;
   $("overviewRefresh").textContent = snapshot.clock?.time || "--";
   $("topologyState").textContent = snapshot.result?.solver_info || "在线";
+  renderTeacherWeather(snapshot);
+  renderReceiveMode();
   appendMeasurementTrace(snapshot);
   renderMeasurements(snapshot);
   renderRunControls(snapshot.devices || []);
   renderSetpointControls(snapshot.devices || []);
-  renderHistory(snapshot.commands?.history || []);
+  renderRenewableControl(snapshot);
+  syncCommandHistoryLogs(snapshot.commands?.history || []);
+  renderHistory();
   updatePendingCount();
+  maybeRunRenewableControl(snapshot);
+}
+
+function renderReceiveMode(extraText = "") {
+  const button = $("traineeRunToggle");
+  const stateText = $("receiveStateText");
+  const sourceText = $("teacherSourceText");
+  const connectionDot = $("connectionDot");
+  const connectionText = $("connectionText");
+  if (button) {
+    button.textContent = state.receiveMode ? "停止接收" : "启动接收";
+    button.classList.toggle("is-running", state.receiveMode);
+  }
+  if (connectionDot && connectionText) {
+    connectionDot.className = extraText ? "off" : state.receiveMode ? "ok" : state.frozen ? "" : "ok";
+    connectionText.textContent = extraText || (state.receiveMode ? "接收中" : state.frozen ? "已冻结" : "在线");
+  }
+  if (stateText) {
+    const label = state.receiveMode ? "运行接收" : state.frozen ? "已冻结" : "本地待命";
+    stateText.textContent = extraText || label;
+  }
+  if (sourceText) {
+    sourceText.textContent = state.receiveMode
+      ? `${teacherApiBase} · ${state.lastReceiveAt || "--"}`
+      : state.frozen
+        ? `冻结于 ${state.lastReceiveAt || "--"}`
+        : teacherApiBase;
+  }
+}
+
+function curveMinute(snapshot) {
+  const curves = snapshot.curves || {};
+  const clock = snapshot.clock || {};
+  if (String(curves.mode || "").toLowerCase() === "year") {
+    return Number(clock.absolute_minute ?? clock.minute ?? 0) || 0;
+  }
+  return Number(clock.minute ?? 0) || 0;
+}
+
+function interpolateCurve(points, minute, key, defaultValue = 0) {
+  const pairs = (points || [])
+    .map((point) => ({ minute: Number(point.minute), value: Number(point[key]) }))
+    .filter((point) => Number.isFinite(point.minute) && Number.isFinite(point.value))
+    .sort((left, right) => left.minute - right.minute);
+  if (!pairs.length) return defaultValue;
+  if (pairs.length === 1) return pairs[0].value;
+  const target = Number(minute) || 0;
+  let left = pairs[0];
+  let right = pairs[pairs.length - 1];
+  for (let idx = 0; idx < pairs.length - 1; idx += 1) {
+    if (pairs[idx].minute <= target && target <= pairs[idx + 1].minute) {
+      left = pairs[idx];
+      right = pairs[idx + 1];
+      break;
+    }
+  }
+  if (target <= pairs[0].minute) return pairs[0].value;
+  if (target >= pairs[pairs.length - 1].minute) return pairs[pairs.length - 1].value;
+  const span = Math.max(1e-9, right.minute - left.minute);
+  return left.value + ((target - left.minute) / span) * (right.value - left.value);
+}
+
+function renderTeacherWeather(snapshot) {
+  const valuesNow = currentWeatherLoad(snapshot);
+  const values = {
+    teacherWind: `${formatNumber(valuesNow.windSpeed)} m/s`,
+    teacherSolar: `${formatNumber(valuesNow.solarIrradiance)} W/m2`,
+    teacherTemp: `${formatNumber(valuesNow.airTemp)} ℃`,
+    teacherLoad: `${formatNumber(valuesNow.loadKw)} kW`,
+    teacherWeatherTime: snapshot.clock?.time || "--",
+  };
+  Object.entries(values).forEach(([id, text]) => {
+    const node = $(id);
+    if (node) node.textContent = text;
+  });
+}
+
+function toNumber(value, defaultValue = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : defaultValue;
+}
+
+function clamp(value, minValue, maxValue) {
+  return Math.min(maxValue, Math.max(minValue, value));
+}
+
+function commandNumber(value) {
+  const number = Math.abs(value) < 0.0005 ? 0 : value;
+  return Number(number.toFixed(3));
+}
+
+function currentWeatherLoad(snapshot = state.snapshot || {}) {
+  const curves = snapshot.curves || {};
+  const minute = curveMinute(snapshot);
+  const weather = curves.weather || [];
+  const loads = curves.loads || {};
+  let loadTotal = Object.values(loads).reduce((total, points) => (
+    total + interpolateCurve(points, minute, "p_kw", 0)
+  ), 0);
+  if (!Number.isFinite(loadTotal) || loadTotal <= 0) {
+    loadTotal = estimateLoadFromDevices(snapshot.devices || []);
+  }
+  return {
+    minute,
+    windSpeed: interpolateCurve(weather, minute, "wind_speed_mps", 0),
+    solarIrradiance: interpolateCurve(weather, minute, "solar_irradiance_w_m2", 0),
+    airTemp: interpolateCurve(weather, minute, "air_temp_c", 25),
+    loadKw: loadTotal,
+  };
+}
+
+function estimateLoadFromDevices(devices) {
+  return (devices || []).reduce((total, dev) => {
+    if (!["ACLoad", "DCLoad"].includes(deviceType(dev)) || !isDeviceOnline(dev)) return total;
+    const raw = dev.raw || {};
+    const values = dev.set_values || {};
+    return total + toNumber(values.p_set ?? raw.pv0 ?? raw.p_set ?? 0, 0);
+  }, 0);
+}
+
+function deviceMap(snapshot = state.snapshot || {}) {
+  return new Map((snapshot.devices || []).map((dev) => [deviceKey(dev), dev]));
+}
+
+function isDeviceOnline(dev) {
+  if (!dev) return false;
+  return Number(dev.run_stat ?? 1) === 1 && Number(dev.status ?? 1) !== 0;
+}
+
+function parameterRows(snapshot, blockName) {
+  const params = snapshot.device_parameters || {};
+  const rows = params[blockName] || params[blockName.toLowerCase()] || params[blockName.toUpperCase()] || [];
+  return Array.isArray(rows) ? rows : [];
+}
+
+function parameterName(row) {
+  return String(row?.name || row?.dev_name || "");
+}
+
+function availableWithBounds(value, row) {
+  const pMin = toNumber(row?.p_min, 0);
+  const pMax = toNumber(row?.p_max, value);
+  return clamp(Math.max(0, value), Math.max(0, pMin), Math.max(0, pMax || value));
+}
+
+function windAvailablePower(row, weather) {
+  const speed = Math.max(0, weather.windSpeed);
+  const ratedPower = Math.max(0, toNumber(row.rated_power ?? row.p_max, 10));
+  const ratedSpeed = Math.max(toNumber(row.rated_wind_speed, 15), toNumber(row.cut_in_speed, 5) + 1e-9);
+  const cutIn = Math.max(0, toNumber(row.cut_in_speed, 5));
+  const cutOut = Math.max(cutIn + 1e-9, toNumber(row.cut_out_speed, 50));
+  if (speed < cutIn || speed >= cutOut || ratedPower <= 0) return 0;
+  if (speed >= ratedSpeed) return availableWithBounds(ratedPower, row);
+  return availableWithBounds(ratedPower * ((speed - cutIn) / (ratedSpeed - cutIn)) ** 3, row);
+}
+
+function pvAvailablePower(row, weather) {
+  const ratedPower = Math.max(0, toNumber(row.rated_power ?? row.p_max, 0));
+  const refIrradiance = Math.max(1e-9, toNumber(row.reference_irradiance, 1000));
+  const refTemp = toNumber(row.reference_temperature, 25);
+  const tempCoef = toNumber(row.temp_coefficient, 0);
+  const irradianceScale = Math.max(0, weather.solarIrradiance) / refIrradiance;
+  const tempScale = Math.max(0, 1 + tempCoef * (weather.airTemp - refTemp));
+  return availableWithBounds(ratedPower * irradianceScale * tempScale, row);
+}
+
+function renewableDeviceRows(snapshot, weather) {
+  const map = deviceMap(snapshot);
+  const rows = [];
+  parameterRows(snapshot, "wind_generator").forEach((param, idx) => {
+    const name = parameterName(param) || `wt${String(idx + 1).padStart(2, "0")}_rect`;
+    const dev = map.get(`DCACConverter|${name}`);
+    rows.push({
+      category: "风电",
+      dev_type: "DCACConverter",
+      dev_name: name,
+      online: isDeviceOnline(dev),
+      availableKw: isDeviceOnline(dev) ? windAvailablePower(param, weather) : 0,
+      set_type: "p_set",
+    });
+  });
+  parameterRows(snapshot, "pv_generator").forEach((param, idx) => {
+    const name = parameterName(param) || `pv${String(idx + 1).padStart(2, "0")}_dcdc`;
+    const dev = map.get(`DCDCConverter|${name}`);
+    rows.push({
+      category: "光伏",
+      dev_type: "DCDCConverter",
+      dev_name: name,
+      online: isDeviceOnline(dev),
+      availableKw: isDeviceOnline(dev) ? pvAvailablePower(param, weather) : 0,
+      set_type: "p_set",
+    });
+  });
+  if (rows.length) return rows;
+  (snapshot.devices || []).forEach((dev) => {
+    const name = deviceName(dev);
+    const type = deviceType(dev);
+    if (type === "DCACConverter" && /^wt/i.test(name)) {
+      rows.push({ category: "风电", dev_type: type, dev_name: name, online: isDeviceOnline(dev), availableKw: toNumber(dev.raw?.p_ac_set ?? dev.set_values?.p_set, 0), set_type: "p_set" });
+    }
+    if (type === "DCDCConverter" && /^pv/i.test(name)) {
+      rows.push({ category: "光伏", dev_type: type, dev_name: name, online: isDeviceOnline(dev), availableKw: toNumber(dev.raw?.p_set ?? dev.set_values?.p_set, 0), set_type: "p_set" });
+    }
+  });
+  return rows;
+}
+
+function storageDeviceRows(snapshot) {
+  const map = deviceMap(snapshot);
+  const essByName = new Map((snapshot.devices || [])
+    .filter((dev) => deviceType(dev) === "ESS")
+    .map((dev) => [deviceName(dev), dev]));
+  const stepHours = Math.max(1 / 60, toNumber(snapshot.clock?.step_minutes, 1) / 60);
+  const configuredMin = clamp(toNumber(state.renewableControl.socMin, 0.3), 0, 1);
+  const configuredMax = clamp(toNumber(state.renewableControl.socMax, 0.9), configuredMin, 1);
+  const params = parameterRows(snapshot, "estorage");
+  const rows = params.length ? params : Array.from(essByName.values()).map((dev) => ({ name: deviceName(dev) }));
+  return rows.map((param, idx) => {
+    const name = parameterName(param) || deviceName(Array.from(essByName.values())[idx]) || `ess${String(idx + 1).padStart(2, "0")}`;
+    const dcdcName = `${name}_dcdc`;
+    const dcdc = map.get(`DCDCConverter|${dcdcName}`);
+    const ess = essByName.get(name);
+    const soc = clamp(toNumber(ess?.soc_curr ?? param.soc_cur ?? param.soc_curr, 0.5), 0, 1);
+    const capacityKwh = Math.max(1e-9, toNumber(param.emva ?? param.capacity_kwh, 50));
+    const socMin = clamp(Math.max(toNumber(param.soc_min, 0), configuredMin), 0, 1);
+    const socMax = clamp(Math.min(toNumber(param.soc_max, 1), configuredMax), socMin, 1);
+    const chargeMax = Math.max(0, toNumber(param.charge_p_max, 20));
+    const dischargeMax = Math.max(0, toNumber(param.dis_charge_p_max ?? param.discharge_p_max, 20));
+    const chargePower = Math.max(0, Math.min(chargeMax, ((socMax - soc) * capacityKwh) / stepHours));
+    const dischargePower = Math.max(0, Math.min(dischargeMax, ((soc - socMin) * capacityKwh) / stepHours));
+    return {
+      category: "储能",
+      dev_type: "DCDCConverter",
+      dev_name: dcdcName,
+      source_name: name,
+      online: isDeviceOnline(dcdc) && isDeviceOnline(ess || dcdc),
+      soc,
+      socMin,
+      socMax,
+      chargePower,
+      dischargePower,
+      set_type: "p_set",
+    };
+  });
+}
+
+function allocateByCapacity(items, total, capacityKey) {
+  const target = Math.max(0, total);
+  const totalCapacity = items.reduce((sum, item) => sum + Math.max(0, toNumber(item[capacityKey], 0)), 0);
+  if (target <= 0 || totalCapacity <= 0) return items.map(() => 0);
+  return items.map((item) => Math.min(toNumber(item[capacityKey], 0), target * toNumber(item[capacityKey], 0) / totalCapacity));
+}
+
+function renewableClockKey(snapshot) {
+  const clock = snapshot.clock || {};
+  return `${clock.absolute_minute ?? clock.minute ?? ""}|${clock.time || ""}`;
+}
+
+function calculateRenewableControlPlan(snapshot = state.snapshot || {}) {
+  const weather = currentWeatherLoad(snapshot);
+  const renewableRows = renewableDeviceRows(snapshot, weather);
+  const storageRows = storageDeviceRows(snapshot);
+  const availableRenewable = renewableRows.reduce((sum, row) => sum + row.availableKw, 0);
+  const windAvailable = renewableRows.filter((row) => row.category === "风电").reduce((sum, row) => sum + row.availableKw, 0);
+  const pvAvailable = renewableRows.filter((row) => row.category === "光伏").reduce((sum, row) => sum + row.availableKw, 0);
+  const totalChargePower = storageRows.filter((row) => row.online).reduce((sum, row) => sum + row.chargePower, 0);
+  const totalDischargePower = storageRows.filter((row) => row.online).reduce((sum, row) => sum + row.dischargePower, 0);
+  const loadKw = Math.max(0, weather.loadKw);
+  let renewableTarget = 0;
+  let storageTarget = 0;
+  let dieselResidual = 0;
+  let curtailKw = 0;
+
+  if (availableRenewable >= loadKw) {
+    renewableTarget = Math.min(availableRenewable, loadKw + totalChargePower);
+    storageTarget = -Math.min(totalChargePower, Math.max(0, renewableTarget - loadKw));
+    curtailKw = Math.max(0, availableRenewable - renewableTarget);
+  } else {
+    renewableTarget = availableRenewable;
+    storageTarget = Math.min(totalDischargePower, loadKw - availableRenewable);
+    dieselResidual = Math.max(0, loadKw - renewableTarget - storageTarget);
+  }
+
+  const renewableAllocations = allocateByCapacity(renewableRows, renewableTarget, "availableKw");
+  const storageAllocations = storageTarget < 0
+    ? allocateByCapacity(storageRows.filter((row) => row.online), -storageTarget, "chargePower").map((value) => -value)
+    : allocateByCapacity(storageRows.filter((row) => row.online), storageTarget, "dischargePower");
+  const onlineStorage = storageRows.filter((row) => row.online);
+  const storageByName = new Map(onlineStorage.map((row, idx) => [row.dev_name, storageAllocations[idx] || 0]));
+
+  const commandRows = [
+    ...renewableRows.map((row, idx) => ({ ...row, commandKw: renewableAllocations[idx] || 0 })),
+    ...storageRows.map((row) => ({ ...row, availableKw: row.online ? Math.max(row.chargePower, row.dischargePower) : 0, commandKw: storageByName.get(row.dev_name) || 0 })),
+  ];
+  const commands = commandRows
+    .filter((row) => row.online)
+    .map((row) => ({
+      dev_type: row.dev_type,
+      dev_name: row.dev_name,
+      set_type: row.set_type,
+      set_value: commandNumber(row.commandKw),
+    }));
+  return {
+    clockKey: renewableClockKey(snapshot),
+    time: snapshot.clock?.time || "--",
+    weather,
+    commandRows,
+    commands,
+    metrics: {
+      availableRenewable,
+      windAvailable,
+      pvAvailable,
+      storageChargeAvailable: totalChargePower,
+      storageDischargeAvailable: totalDischargePower,
+      renewableTarget,
+      storageTarget,
+      dieselResidual,
+      curtailKw,
+      loadKw,
+    },
+  };
+}
+
+function renewableDecisionDetail(plan) {
+  const metrics = plan?.metrics || {};
+  return [
+    `时刻 ${plan?.time || "--"}`,
+    `负荷 ${formatNumber(metrics.loadKw)} kW`,
+    `风电可用 ${formatNumber(metrics.windAvailable)} kW`,
+    `光伏可用 ${formatNumber(metrics.pvAvailable)} kW`,
+    `储能可充 ${formatNumber(metrics.storageChargeAvailable)} kW`,
+    `储能可放 ${formatNumber(metrics.storageDischargeAvailable)} kW`,
+    `计划消纳 ${formatNumber(metrics.renewableTarget)} kW`,
+    `储能指令 ${formatNumber(metrics.storageTarget)} kW`,
+    `柴油缺额 ${formatNumber(metrics.dieselResidual)} kW`,
+    `弃风弃光 ${formatNumber(metrics.curtailKw)} kW`,
+  ];
+}
+
+function renderRenewableControl(snapshot = state.snapshot || {}) {
+  const control = state.renewableControl;
+  const plan = snapshot ? calculateRenewableControlPlan(snapshot) : control.lastPlan;
+  control.lastPlan = plan;
+  const button = $("renewableAutoToggle");
+  if (!button) return;
+  const sendOnce = $("renewableSendOnce");
+  const stateNode = $("renewableControlState");
+  const summary = $("renewableCommandSummary");
+  const hasTeacherSnapshot = state.receiveMode && state.snapshotSource === "teacher";
+  button.textContent = control.enabled ? "停止实时控制" : "启动实时控制";
+  button.classList.toggle("is-running", control.enabled);
+  button.disabled = control.sending;
+  if (sendOnce) sendOnce.disabled = control.sending || !hasTeacherSnapshot;
+  if (stateNode) stateNode.textContent = control.enabled ? "实时运行" : !state.receiveMode ? "未接收" : hasTeacherSnapshot ? "待命" : "等待数据";
+  const metrics = plan?.metrics || {};
+  const metricText = {
+    renewableAvailableKw: `${formatNumber(metrics.availableRenewable)} kW`,
+    renewableUsedKw: `${formatNumber(metrics.renewableTarget)} kW`,
+    renewableStorageKw: `${formatNumber(metrics.storageTarget)} kW`,
+    renewableDieselKw: `${formatNumber(metrics.dieselResidual)} kW`,
+    renewableCurtailKw: `${formatNumber(metrics.curtailKw)} kW`,
+    renewableLastSent: control.lastSentAt || "--",
+  };
+  Object.entries(metricText).forEach(([id, text]) => {
+    const node = $(id);
+    if (node) node.textContent = text;
+  });
+  const status = $("renewableControlStatus");
+  if (status) {
+    status.textContent = control.sending ? "正在向模拟台下发功率指令..." : control.lastStatus;
+    status.classList.toggle("is-ok", control.enabled || Boolean(control.lastSentAt));
+    status.classList.toggle("is-error", !state.receiveMode && control.enabled);
+  }
+  if (summary) summary.textContent = `${plan?.commands?.length || 0} 条 · ${plan?.time || "--"}`;
+  const table = $("renewableCommandTable");
+  if (!table) return;
+  const rows = plan?.commandRows || [];
+  if (!rows.length) {
+    table.innerHTML = '<div class="empty-state">暂无可控新能源或储能设备</div>';
+    return;
+  }
+  table.innerHTML = `
+    <table class="runtime-device-table renewable-command-table">
+      <thead><tr><th>类别</th><th>设备名称</th><th>状态</th><th>可用/能力</th><th>计划指令</th><th>SOC</th></tr></thead>
+      <tbody>
+        ${rows.map((row) => `
+          <tr class="${row.online ? "" : "is-muted"}">
+            <td>${escapeHtml(row.category)}</td>
+            <td>${escapeHtml(row.dev_name)}</td>
+            <td><span class="status-pill ${row.online ? "is-ok" : "is-off"}">${row.online ? "可控" : "停用"}</span></td>
+            <td class="numeric-cell">${formatNumber(row.availableKw)} kW</td>
+            <td class="numeric-cell">${formatNumber(row.commandKw)} kW</td>
+            <td>${row.soc === undefined ? "--" : formatNumber(row.soc)}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>`;
+}
+
+function stopRenewableControl(message = "实时控制已停止。", logEvent = false) {
+  const wasEnabled = state.renewableControl.enabled;
+  state.renewableControl.enabled = false;
+  state.renewableControl.sending = false;
+  state.renewableControl.lastClockKey = "";
+  state.renewableControl.lastAutoAtMs = 0;
+  state.renewableControl.lastStatus = message;
+  if (logEvent && wasEnabled) addRuntimeLog("策略控制", "新能源优先", "停止", message, "warn");
+  renderRenewableControl(state.snapshot || {});
+}
+
+async function sendRenewableControlPlan(plan, trigger = "manual") {
+  if (!state.receiveMode) {
+    state.renewableControl.lastStatus = "请先启动接收模式，策略指令需要下发到模拟台。";
+    addRuntimeLog("策略决策", "新能源优先", "等待接收", state.renewableControl.lastStatus, "warn");
+    renderRenewableControl(state.snapshot || {});
+    return;
+  }
+  if (state.snapshotSource !== "teacher") {
+    state.renewableControl.lastStatus = "等待教员台实时数据，收到第一帧后再下发策略指令。";
+    addRuntimeLog("策略决策", "新能源优先", "等待数据", state.renewableControl.lastStatus, "warn");
+    renderRenewableControl(state.snapshot || {});
+    return;
+  }
+  if (!plan?.commands?.length) {
+    state.renewableControl.lastStatus = "当前没有可下发的新能源或储能控制指令。";
+    addRuntimeLog("策略决策", "新能源优先", "无可下发指令", state.renewableControl.lastStatus, "warn");
+    renderRenewableControl(state.snapshot || {});
+    return;
+  }
+  state.renewableControl.sending = true;
+  addRuntimeLog("策略决策", "新能源优先", "计算完成", renewableDecisionDetail(plan), "info");
+  addRuntimeLog(
+    "实时控制",
+    "模拟台 /api/student/commands",
+    "下发请求",
+    `触发 ${trigger}；设值 ${plan.commands.length} 条；目标柴油缺额 ${formatNumber(plan.metrics.dieselResidual)} kW`,
+    "info",
+  );
+  renderRenewableControl(state.snapshot || {});
+  try {
+    const payload = {
+      source: "trainee-renewable-priority",
+      valid_for_minutes: CONTROL_COMMAND_VALID_MINUTES,
+      set_values: plan.commands,
+      strategy: {
+        name: "renewable_priority",
+        trigger,
+        time: plan.time,
+        load_kw: commandNumber(plan.metrics.loadKw),
+        renewable_available_kw: commandNumber(plan.metrics.availableRenewable),
+        renewable_used_kw: commandNumber(plan.metrics.renewableTarget),
+        storage_kw: commandNumber(plan.metrics.storageTarget),
+        diesel_residual_kw: commandNumber(plan.metrics.dieselResidual),
+        curtail_kw: commandNumber(plan.metrics.curtailKw),
+      },
+    };
+    const result = await teacherApi("/api/student/commands", { method: "POST", body: JSON.stringify(payload) });
+    state.renewableControl.lastSentAt = new Date().toLocaleTimeString();
+    state.renewableControl.lastClockKey = plan.clockKey;
+    state.renewableControl.lastStatus = `已下发 ${result.set_values || plan.commands.length} 条指令，计划柴油缺额 ${formatNumber(plan.metrics.dieselResidual)} kW。`;
+    addRuntimeLog(
+      "模拟台响应",
+      "模拟台 /api/student/commands",
+      "下发成功",
+      `模拟台接受设值 ${result.set_values || 0} 条；策略时刻 ${plan.time}；柴油缺额 ${formatNumber(plan.metrics.dieselResidual)} kW`,
+      "ok",
+    );
+  } catch (error) {
+    state.renewableControl.lastStatus = apiErrorText(error);
+    addRuntimeLog("模拟台响应", "模拟台 /api/student/commands", "下发失败", apiErrorText(error), "error");
+  } finally {
+    state.renewableControl.sending = false;
+    renderRenewableControl(state.snapshot || {});
+  }
+}
+
+function maybeRunRenewableControl(snapshot = state.snapshot || {}) {
+  const control = state.renewableControl;
+  if (!control.enabled || control.sending || !state.receiveMode) return;
+  if (state.snapshotSource !== "teacher") return;
+  const now = Date.now();
+  if (now - control.lastAutoAtMs < Math.max(1, control.intervalSeconds) * 1000) return;
+  const plan = calculateRenewableControlPlan(snapshot);
+  if (plan.clockKey && plan.clockKey === control.lastClockKey) return;
+  control.lastAutoAtMs = now;
+  sendRenewableControlPlan(plan, "auto");
+}
+
+function toggleRenewableAuto() {
+  if (state.renewableControl.enabled) {
+    stopRenewableControl("实时控制已停止。", true);
+    return;
+  }
+  if (!state.receiveMode) {
+    state.renewableControl.lastStatus = "请先点击顶部“启动接收”，再启动新能源优先实时控制。";
+    addRuntimeLog("策略控制", "新能源优先", "启动失败", state.renewableControl.lastStatus, "warn");
+    renderRenewableControl(state.snapshot || {});
+    return;
+  }
+  state.renewableControl.enabled = true;
+  state.renewableControl.lastClockKey = "";
+  state.renewableControl.lastAutoAtMs = 0;
+  state.renewableControl.lastStatus = state.snapshotSource === "teacher"
+    ? "实时控制已启动，正在按教员台实时数据计算。"
+    : "实时控制已启动，等待第一帧教员台数据。";
+  addRuntimeLog("策略控制", "新能源优先", "启动", state.renewableControl.lastStatus, "ok");
+  renderRenewableControl(state.snapshot || {});
+  maybeRunRenewableControl(state.snapshot || {});
+}
+
+function updateRenewableSettings() {
+  const minValue = clamp(toNumber($("renewableSocMin")?.value, 0.3), 0, 1);
+  const maxValue = clamp(toNumber($("renewableSocMax")?.value, 0.9), minValue, 1);
+  state.renewableControl.intervalSeconds = Math.max(1, toNumber($("renewableControlPeriod")?.value, 2));
+  state.renewableControl.socMin = minValue;
+  state.renewableControl.socMax = maxValue;
+  if ($("renewableSocMin")) $("renewableSocMin").value = minValue.toFixed(2);
+  if ($("renewableSocMax")) $("renewableSocMax").value = maxValue.toFixed(2);
+  renderRenewableControl(state.snapshot || {});
 }
 
 function renderClock(clock) {
@@ -539,26 +1249,61 @@ function renderSetpointControls(devices) {
     </table>`;
 }
 
-function renderHistory(history) {
-  $("historyCount").textContent = history.length;
+function commandHistoryKey(item) {
+  const accepted = item.accepted || {};
+  return [
+    item.time || "",
+    item.source || "",
+    accepted.run_status || 0,
+    accepted.set_values || 0,
+    JSON.stringify(item.payload || {}).slice(0, 240),
+  ].join("|");
+}
+
+function syncCommandHistoryLogs(history = []) {
+  history.slice(-30).forEach((item) => {
+    const key = commandHistoryKey(item);
+    if (state.seenCommandHistoryKeys.has(key)) return;
+    state.seenCommandHistoryKeys.add(key);
+    addRuntimeLog(
+      "模拟台响应",
+      "模拟台命令历史",
+      "记录同步",
+      [
+        `来源 ${item.source || "student"}`,
+        `接受投退 ${item.accepted?.run_status || 0} 条`,
+        `接受设值 ${item.accepted?.set_values || 0} 条`,
+        `模拟台记录 ${item.time || "--"}`,
+      ],
+      "ok",
+      false,
+    );
+  });
+}
+
+function renderHistory() {
+  const logs = state.runtimeLogs || [];
+  $("historyCount").textContent = `${logs.length} 条`;
+  if (!logs.length) {
+    $("commandHistory").innerHTML = '<div class="empty-state">暂无运行日志</div>';
+    return;
+  }
   $("commandHistory").innerHTML = `
     <table class="runtime-log-table">
-      <thead><tr><th>时刻</th><th>来源</th><th>投退</th><th>设值</th><th>内容</th></tr></thead>
+      <thead><tr><th>序号</th><th>本机时刻</th><th>类型</th><th>对象</th><th>结果</th><th>详情</th></tr></thead>
       <tbody>
-        ${history.slice(-60).reverse().map((item) => `
-          <tr>
-            <td>${escapeHtml(item.time || "")}</td>
-            <td>${escapeHtml(item.source || "student")}</td>
-            <td>${escapeHtml(item.accepted?.run_status || 0)}</td>
-            <td>${escapeHtml(item.accepted?.set_values || 0)}</td>
-            <td>${escapeHtml(JSON.stringify(item.payload || {}))}</td>
+        ${logs.map((item) => `
+          <tr class="runtime-log-row is-${escapeHtml(item.level || "info")}">
+            <td>${escapeHtml(item.seq)}</td>
+            <td>${escapeHtml(item.wall_time || "")}</td>
+            <td>${escapeHtml(item.type || "")}</td>
+            <td>${escapeHtml(item.target || "")}</td>
+            <td>${escapeHtml(item.result || "")}</td>
+            <td class="runtime-log-detail">${escapeHtml(runtimeLogDetailText(item.detail))}</td>
           </tr>
         `).join("")}
       </tbody>
     </table>`;
-  if (!history.length) {
-    $("commandHistory").innerHTML = '<div class="empty-state">暂无指令记录</div>';
-  }
 }
 
 function renderPendingPreview() {
@@ -662,18 +1407,69 @@ document.addEventListener("input", (event) => {
 $("sendCommands").addEventListener("click", async () => {
   const body = {
     source: "trainee-ui",
+    valid_for_minutes: CONTROL_COMMAND_VALID_MINUTES,
     run_status: Array.from(pending.run_status.values()),
     set_values: Array.from(pending.set_values.values()),
   };
   if (!body.run_status.length && !body.set_values.length) return;
   $("sendCommands").disabled = true;
-  await api("/api/student/commands", { method: "POST", body: JSON.stringify(body) });
-  pending.run_status.clear();
-  pending.set_values.clear();
-  updatePendingCount();
-  await refresh();
+  const targetApi = state.receiveMode ? teacherApi : api;
+  const targetName = state.receiveMode ? "模拟台 /api/student/commands" : "学员台 /api/student/commands";
+  addRuntimeLog("人工控制", targetName, "下发请求", `投退 ${body.run_status.length} 条；设值 ${body.set_values.length} 条`);
+  try {
+    const result = await targetApi("/api/student/commands", { method: "POST", body: JSON.stringify(body) });
+    addRuntimeLog(
+      "模拟台响应",
+      targetName,
+      "下发成功",
+      `接受投退 ${result.run_status || 0} 条；接受设值 ${result.set_values || 0} 条`,
+      "ok",
+    );
+    pending.run_status.clear();
+    pending.set_values.clear();
+    updatePendingCount();
+    await refresh();
+  } catch (error) {
+    addRuntimeLog("模拟台响应", targetName, "下发失败", apiErrorText(error), "error");
+    updatePendingCount();
+  }
 });
 
+function toggleReceiveMode() {
+  if (state.receiveMode) {
+    state.receiveMode = false;
+    state.frozen = true;
+    state.receiveEpoch += 1;
+    addRuntimeLog("接收模式", "模拟台实时数据", "停止接收", `冻结于 ${state.lastReceiveAt || "--"}`, "warn");
+    stopRenewableControl("接收已停止，新能源优先策略已暂停。", true);
+    renderReceiveMode();
+    return;
+  }
+  state.receiveMode = true;
+  state.frozen = false;
+  state.receiveEpoch += 1;
+  state.measurementTraceHistory = [];
+  state.lastReceiveAt = "";
+  state.snapshotSource = "";
+  state.lastTeacherSnapshotLogKey = "";
+  addRuntimeLog("接收模式", "模拟台实时数据", "启动接收", `教员台 ${teacherApiBase}`, "ok");
+  renderReceiveMode();
+  renderRenewableControl(state.snapshot || {});
+  refresh();
+}
+
+$("importDefinitionsButton").addEventListener("click", () => $("definitionArchiveInput").click());
+$("definitionArchiveInput").addEventListener("change", (event) => importDefinitionArchive(event.target.files?.[0]));
+$("traineeRunToggle").addEventListener("click", toggleReceiveMode);
+$("renewableAutoToggle").addEventListener("click", toggleRenewableAuto);
+$("renewableSendOnce").addEventListener("click", () => sendRenewableControlPlan(calculateRenewableControlPlan(state.snapshot || {}), "manual"));
+$("renewableControlPeriod").addEventListener("change", updateRenewableSettings);
+$("renewableSocMin").addEventListener("change", updateRenewableSettings);
+$("renewableSocMax").addEventListener("change", updateRenewableSettings);
+$("clearRuntimeLogs").addEventListener("click", () => {
+  state.runtimeLogs = [];
+  renderHistory();
+});
 $("modelSelector").addEventListener("change", (event) => setActiveModel(event.target.value));
 $("measurementTraceWindow").addEventListener("change", (event) => {
   state.measurementTraceWindowMinutes = Number(event.target.value) || 60;
@@ -682,5 +1478,7 @@ $("measurementTraceWindow").addEventListener("change", (event) => {
 window.addEventListener("resize", () => drawMeasurementTraceChart());
 
 initPageNavigation();
+renderReceiveMode();
+renderHistory();
 loadModels().finally(refresh);
 setInterval(refresh, 2000);

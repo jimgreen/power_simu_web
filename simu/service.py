@@ -9,6 +9,7 @@ that both the simulator console and trainee console can poll.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import threading
 import time
@@ -17,9 +18,28 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from hybrid_power_system_analysis.efile_read import EBlock, EBook
-from hybrid_power_system_analysis.simu import simu_loop
-from update_meas_from_lf import MEAS_HEADER, format_number, parse_measurement_rows
+try:
+    from hybrid_power_system_analysis.efile_read import EBlock, EBook
+except ImportError:  # The migrated web repo can run outside the original package tree.
+    import sys
+
+    ROOT_DIR = Path(__file__).resolve().parents[1]
+    LEGACY_PACKAGE_DIR = (
+        ROOT_DIR.parent
+        / "elec_power_flow"
+        / "hybrid_power_system_analysis"
+        / "src"
+        / "hybrid_power_system_analysis"
+    )
+    for package_dir in (ROOT_DIR / "src" / "hybrid_power_system_analysis", LEGACY_PACKAGE_DIR):
+        if (package_dir / "efile_read.py").exists() and str(package_dir) not in sys.path:
+            sys.path.insert(0, str(package_dir))
+    from efile_read import EBlock, EBook
+
+try:
+    import simu_loop  # type: ignore
+except ImportError:  # pragma: no cover - legacy package compatibility.
+    from hybrid_power_system_analysis.simu import simu_loop
 
 
 WEATHER_HEADER = (
@@ -31,6 +51,8 @@ WEATHER_HEADER = (
     "humidity_pct",
     "load_kw",
 )
+
+MEAS_HEADER = ("idx", "name", "dev_type", "dev_name", "meas_type", "weight", "valid", "value")
 
 DEFAULT_WEATHER = {
     "wind_speed_mps": 12.0,
@@ -51,6 +73,7 @@ STAT_HEADERS = {
 INPUT_FILES = ("model.e", "meas.e", "stat.e", "weather.e", "device.e", "yt_ctrl.e")
 CLONE_FILES = INPUT_FILES + ("real.e", "scada.e", "curves.json", "local_settings.json", "commands.json")
 CLOCK_SPEED_LEVELS = (1.0, 5.0, 15.0, 30.0, 60.0)
+DEFAULT_CONTROL_VALID_MINUTES = 5.0
 
 
 @dataclass
@@ -106,6 +129,20 @@ def _to_float(value: Any, default: Optional[float] = None) -> Optional[float]:
         return default
 
 
+def _json_scalar(value: Any) -> Any:
+    if value in (None, ""):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return value
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return value
+    if number.is_integer():
+        return int(number)
+    return number
+
+
 def _nearest_clock_speed(value: Any) -> float:
     speed = _to_float(value, CLOCK_SPEED_LEVELS[0])
     if speed is None:
@@ -134,6 +171,50 @@ def _number_text(value: Any) -> str:
     if number is None:
         return "" if value is None else str(value)
     return format_number(number)
+
+
+def format_number(value: float) -> str:
+    number = float(value)
+    if not math.isfinite(number):
+        return str(number)
+    if abs(number) < 5e-13:
+        number = 0.0
+    text = f"{number:.10g}"
+    return "0" if text == "-0" else text
+
+
+def parse_measurement_rows(meas_file: Path) -> Tuple[List[str], List[List[str]], List[str]]:
+    before: List[str] = []
+    rows: List[List[str]] = []
+    after: List[str] = []
+    in_measurement = False
+    seen_measurement = False
+    with meas_file.open("rt", encoding="utf-8") as fp:
+        for raw_line in fp:
+            line = raw_line.strip()
+            if line == "<Measurement>":
+                in_measurement = True
+                seen_measurement = True
+                continue
+            if line == "</Measurement>":
+                in_measurement = False
+                continue
+            if not in_measurement:
+                if not seen_measurement:
+                    before.append(raw_line.rstrip("\n"))
+                elif line:
+                    after.append(raw_line.rstrip("\n"))
+                continue
+            if not line or line.startswith("@"):
+                continue
+            if line.startswith("#"):
+                parts = line[1:].split()
+                if len(parts) != len(MEAS_HEADER):
+                    raise RuntimeError(f"Invalid measurement row in {meas_file}: {line}")
+                rows.append(parts)
+    if not seen_measurement:
+        raise RuntimeError(f"{meas_file} does not contain a <Measurement> block")
+    return before, rows, after
 
 
 def _read_json(path: Path, default: Any) -> Any:
@@ -223,6 +304,72 @@ def _active_window(item: Mapping[str, Any], minute: int) -> bool:
     if start > clear:
         return minute >= start or minute < clear
     return True
+
+
+def _is_trainee_command_source(source: Any) -> bool:
+    text = str(source or "").strip().casefold()
+    if not text:
+        return False
+    if "学员" in text:
+        return True
+    return text in {"student", "trainee"} or text.startswith("student-") or text.startswith("trainee-")
+
+
+def _first_number(source: Mapping[str, Any], keys: Sequence[str]) -> Optional[float]:
+    for key in keys:
+        if key not in source:
+            continue
+        value = _to_float(source.get(key), None)
+        if value is not None:
+            return value
+    return None
+
+
+def _command_valid_minutes(payload: Mapping[str, Any], item: Optional[Mapping[str, Any]] = None) -> float:
+    minute_keys = (
+        "valid_for_minutes",
+        "valid_minutes",
+        "validity_minutes",
+        "duration_minutes",
+        "ttl_minutes",
+    )
+    second_keys = ("valid_for_seconds", "valid_seconds", "ttl_seconds", "duration_seconds")
+    minute_value = _first_number(item or {}, minute_keys)
+    if minute_value is None:
+        minute_value = _first_number(payload, minute_keys)
+    if minute_value is not None:
+        return max(1e-6, minute_value)
+    second_value = _first_number(item or {}, second_keys)
+    if second_value is None:
+        second_value = _first_number(payload, second_keys)
+    if second_value is not None:
+        return max(1e-6, second_value / 60.0)
+    return DEFAULT_CONTROL_VALID_MINUTES
+
+
+def _command_expires_at(payload: Mapping[str, Any], item: Optional[Mapping[str, Any]], issued_absolute_minute: float) -> float:
+    absolute_keys = (
+        "expires_at_absolute_minute",
+        "expire_absolute_minute",
+        "valid_until_absolute_minute",
+        "end_absolute_minute",
+    )
+    day_minute_keys = ("expires_at_minute", "expire_minute", "valid_until_minute", "end_minute")
+    absolute = _first_number(item or {}, absolute_keys)
+    if absolute is None:
+        absolute = _first_number(payload, absolute_keys)
+    if absolute is not None and absolute > issued_absolute_minute:
+        return absolute
+    day_minute = _first_number(item or {}, day_minute_keys)
+    if day_minute is None:
+        day_minute = _first_number(payload, day_minute_keys)
+    if day_minute is not None:
+        current_day = issued_absolute_minute % 1440.0
+        delta = (day_minute - current_day) % 1440.0
+        if delta <= 1e-9:
+            delta = 1440.0
+        return issued_absolute_minute + delta
+    return issued_absolute_minute + _command_valid_minutes(payload, item)
 
 
 def _normalize_points(points: Any, value_aliases: Sequence[str]) -> List[Dict[str, Any]]:
@@ -337,6 +484,9 @@ class PolarMicrogridSimulator:
         self.clock = ClockState()
         self.lock = threading.RLock()
         self.command_history: List[Dict[str, Any]] = []
+        self.runtime_logs: List[Dict[str, Any]] = []
+        self._runtime_log_seq = 0
+        self._last_command_response_index = 0
         self.latest_result: Dict[str, Any] = {}
         self.latest_measurements: Dict[str, Any] = {"real": [], "scada": []}
         self._fault_restore: Dict[Tuple[str, str, str], str] = {}
@@ -364,6 +514,7 @@ class PolarMicrogridSimulator:
             {"device_faults": [], "measurement_faults": [], "modes": []},
         )
         self.command_history = self._read_command_history()
+        self._last_command_response_index = len(self.command_history)
         self._ensure_stat_file()
 
     def _copy_runtime_inputs(self) -> None:
@@ -428,6 +579,130 @@ class PolarMicrogridSimulator:
         if changed or not self.files["stat"].exists():
             simu_loop.write_ebook_aligned(book, self.files["stat"])
 
+    def _base_stat_book_for_controls(self) -> EBook:
+        source_stat = self.sim_dir / "stat.e"
+        book = _load_book(source_stat if source_stat.exists() else self.files["stat"])
+        for name, headers in STAT_HEADERS.items():
+            _ensure_block(book, name, headers)
+
+        runtime_book = _load_book(self.files["stat"])
+        runtime_storage = runtime_book.data.get("StorageSoc") or runtime_book.data.get("StorageStatus")
+        if runtime_storage is not None:
+            storage_block = _ensure_block(book, "StorageSoc", STAT_HEADERS["StorageSoc"])
+            storage_block.data = [
+                {header: row.get(header, "") for header in storage_block.header_list}
+                for row in runtime_storage.data
+            ]
+        return book
+
+    def _normalize_run_command_items(self, items: Sequence[Any]) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            dev_type = str(item.get("dev_type", item.get("type", "")))
+            dev_name = str(item.get("dev_name", item.get("name", "")))
+            if not dev_type or not dev_name:
+                continue
+            run_stat = item.get("run_stat", item.get("running", item.get("value", "")))
+            if isinstance(run_stat, bool):
+                run_stat = 1 if run_stat else 0
+            row = {"dev_type": dev_type, "dev_name": dev_name, "run_stat": _number_text(run_stat)}
+            if "status" in item:
+                row["status"] = _number_text(item.get("status"))
+            normalized.append(row)
+        return normalized
+
+    def _normalize_set_command_items(self, items: Sequence[Any]) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
+        for item in self._expand_set_values(items):
+            dev_type = str(item.get("dev_type", item.get("type", "")))
+            dev_name = str(item.get("dev_name", item.get("name", "")))
+            set_type = str(item.get("set_type", ""))
+            if not dev_type or not dev_name or not set_type:
+                continue
+            normalized.append(
+                {
+                    "dev_type": dev_type,
+                    "dev_name": dev_name,
+                    "set_type": set_type,
+                    "set_value": _number_text(item.get("set_value", "")),
+                }
+            )
+        return normalized
+
+    def _active_control_command_entries(self, absolute_minute: int | float) -> List[Mapping[str, Any]]:
+        current = float(absolute_minute)
+        active: List[Mapping[str, Any]] = []
+        for item in self.command_history:
+            if not isinstance(item, Mapping) or not item.get("eligible_source"):
+                continue
+            accepted = item.get("accepted", {})
+            if not isinstance(accepted, Mapping):
+                continue
+            if int(_to_float(accepted.get("run_status"), 0) or 0) + int(_to_float(accepted.get("set_values"), 0) or 0) <= 0:
+                continue
+            issued = _to_float(item.get("issued_absolute_minute"), None)
+            expires = _to_float(item.get("expires_at_absolute_minute"), None)
+            if issued is None or expires is None:
+                continue
+            if issued <= current < expires:
+                active.append(item)
+        return active
+
+    def _materialize_active_control_commands(self, absolute_minute: int | float) -> Dict[str, int]:
+        book = self._base_stat_book_for_controls()
+        run_block = _ensure_block(book, "RunStat", STAT_HEADERS["RunStat"])
+        cb_block = _ensure_block(book, "CbOpenStat", STAT_HEADERS["CbOpenStat"])
+        set_block = _ensure_block(book, "SetValue", STAT_HEADERS["SetValue"])
+        active_entries = self._active_control_command_entries(absolute_minute)
+        applied_run = 0
+        applied_set = 0
+
+        for command in active_entries:
+            normalized = command.get("normalized", {})
+            run_items = normalized.get("run_status", []) if isinstance(normalized, Mapping) else []
+            set_items = normalized.get("set_values", []) if isinstance(normalized, Mapping) else []
+            if isinstance(run_items, Sequence) and not isinstance(run_items, (str, bytes)):
+                for item in run_items:
+                    if not isinstance(item, Mapping):
+                        continue
+                    dev_type = str(item.get("dev_type", ""))
+                    dev_name = str(item.get("dev_name", ""))
+                    if not dev_type or not dev_name:
+                        continue
+                    row = _find_dev_row(run_block, dev_type, dev_name)
+                    if row is None:
+                        row = {"dev_type": dev_type, "dev_name": dev_name, "run_stat": ""}
+                        run_block.data.append(row)
+                    if item.get("run_stat", "") != "":
+                        row["run_stat"] = _number_text(item.get("run_stat"))
+                        applied_run += 1
+                    if "status" in item:
+                        cb_row = _find_dev_row(cb_block, dev_type, dev_name)
+                        if cb_row is None:
+                            cb_row = {"dev_type": dev_type, "dev_name": dev_name, "status": ""}
+                            cb_block.data.append(cb_row)
+                        cb_row["status"] = _number_text(item.get("status"))
+            if isinstance(set_items, Sequence) and not isinstance(set_items, (str, bytes)):
+                for item in set_items:
+                    if not isinstance(item, Mapping):
+                        continue
+                    dev_type = str(item.get("dev_type", ""))
+                    dev_name = str(item.get("dev_name", ""))
+                    set_type = str(item.get("set_type", ""))
+                    if not dev_type or not dev_name or not set_type:
+                        continue
+                    row = _find_set_row(set_block, dev_type, dev_name, set_type)
+                    if row is None:
+                        row = {"dev_type": dev_type, "dev_name": dev_name, "set_type": set_type, "set_value": ""}
+                        set_block.data.append(row)
+                    row["set_value"] = _number_text(item.get("set_value", ""))
+                    applied_set += 1
+
+        simu_loop.write_ebook_aligned(book, self.files["stat"])
+        return {"active_commands": len(active_entries), "run_status": applied_run, "set_values": applied_set}
+
     def _make_config(self, period_seconds: Optional[float] = None) -> simu_loop.SimulationConfig:
         return simu_loop.SimulationConfig(
             model_file=self.files["model"],
@@ -446,66 +721,515 @@ class PolarMicrogridSimulator:
             step_mode=True,
         )
 
-    def apply_student_commands(self, payload: Mapping[str, Any], source: str = "student") -> Dict[str, int]:
-        with self.lock:
-            book = _load_book(self.files["stat"])
-            run_block = _ensure_block(book, "RunStat", STAT_HEADERS["RunStat"])
-            cb_block = _ensure_block(book, "CbOpenStat", STAT_HEADERS["CbOpenStat"])
-            set_block = _ensure_block(book, "SetValue", STAT_HEADERS["SetValue"])
+    def _append_runtime_log(
+        self,
+        log_type: str,
+        target: str,
+        result: str,
+        detail: Any = "",
+        *,
+        level: str = "info",
+        sim_time: Optional[str] = None,
+    ) -> None:
+        self._runtime_log_seq += 1
+        self.runtime_logs.append(
+            {
+                "seq": self._runtime_log_seq,
+                "wall_time": _now_text(),
+                "sim_time": sim_time or minute_to_time(self.clock.minute),
+                "type": log_type,
+                "target": target,
+                "result": result,
+                "detail": detail,
+                "level": level,
+            }
+        )
+        self.runtime_logs = self.runtime_logs[-500:]
 
+    def _command_accept_detail(
+        self,
+        payload: Mapping[str, Any],
+        source: str,
+        accepted: Mapping[str, int],
+        run_items: Sequence[Any],
+        set_items: Sequence[Mapping[str, Any]],
+        *,
+        eligible_source: bool,
+        issued_absolute_minute: float,
+        expires_at_absolute_minute: float,
+    ) -> List[str]:
+        valid_for = max(0.0, expires_at_absolute_minute - issued_absolute_minute)
+        lines = [
+            f"来源 {source}",
+            (
+                f"来源校验 {'学员台有效来源' if eligible_source else '非学员台来源，忽略为无效控制'}，"
+                f"有效期 {format_number(valid_for)} min，截止累计分钟 {format_number(expires_at_absolute_minute)}"
+            ),
+            f"接受投退 {accepted.get('run_status', 0)} 条，设值 {accepted.get('set_values', 0)} 条，忽略 {accepted.get('ignored', 0)} 条",
+        ]
+        run_preview = []
+        for item in run_items:
+            if not isinstance(item, Mapping):
+                continue
+            dev_type = str(item.get("dev_type", item.get("type", "")))
+            dev_name = str(item.get("dev_name", item.get("name", "")))
+            run_stat = item.get("run_stat", item.get("running", item.get("value", "")))
+            if isinstance(run_stat, bool):
+                run_stat = 1 if run_stat else 0
+            if dev_type and dev_name:
+                run_preview.append(f"{dev_type}.{dev_name}={_number_text(run_stat)}")
+        if run_preview:
+            lines.append("投退明细 " + "，".join(run_preview[:6]) + (" ..." if len(run_preview) > 6 else ""))
+        set_preview = [
+            f"{item.get('dev_type', item.get('type', ''))}.{item.get('dev_name', item.get('name', ''))}.{item.get('set_type', '')}={_number_text(item.get('set_value', ''))}"
+            for item in set_items[:8]
+        ]
+        set_preview = [text for text in set_preview if not text.startswith(".")]
+        if set_preview:
+            lines.append("设值明细 " + "，".join(set_preview) + (" ..." if len(set_items) > 8 else ""))
+        strategy = payload.get("strategy")
+        if isinstance(strategy, Mapping):
+            strategy_lines = []
+            for key, label in (
+                ("name", "策略"),
+                ("trigger", "触发"),
+                ("load_kw", "负荷"),
+                ("renewable_available_kw", "新能源可用"),
+                ("renewable_used_kw", "计划消纳"),
+                ("storage_kw", "储能"),
+                ("diesel_residual_kw", "柴油缺额"),
+                ("curtail_kw", "弃电"),
+            ):
+                if key in strategy:
+                    strategy_lines.append(f"{label} {_number_text(strategy.get(key))}")
+            if strategy_lines:
+                lines.append("策略信息 " + "，".join(strategy_lines))
+        if eligible_source and (accepted.get("run_status", 0) or accepted.get("set_values", 0)):
+            lines.append("已登记为有效控制指令，并已按当前有效期物化到 stat.e，等待下一轮潮流计算响应")
+        else:
+            lines.append("未写入有效控制边界，模拟台不会响应执行该控制指令")
+        return lines
+
+    def _command_response_detail(self, item: Mapping[str, Any], result: Mapping[str, Any]) -> List[str]:
+        accepted = item.get("accepted", {})
+        eligible_source = bool(item.get("eligible_source"))
+        expires = _to_float(item.get("expires_at_absolute_minute"), None)
+        valid_text = "无有效期" if expires is None else f"有效截止累计分钟 {format_number(expires)}"
+        detail = [
+            f"来源 {item.get('source', 'student')}，模拟台记录 {item.get('time', '--')}",
+            (
+                f"{'已响应' if eligible_source else '未响应'}投退 "
+                f"{accepted.get('run_status', 0) if isinstance(accepted, Mapping) else 0} 条，设值 "
+                f"{accepted.get('set_values', 0) if isinstance(accepted, Mapping) else 0} 条，{valid_text}"
+            ),
+            f"求解器 {result.get('solver_info', 'not-run')}，量测更新 {result.get('updated', 0)} 条，缺失 {result.get('missing', 0)} 条，叠加修正 {result.get('overlay_updates', 0)} 条",
+        ]
+        payload = item.get("payload", {})
+        strategy = payload.get("strategy") if isinstance(payload, Mapping) else None
+        if isinstance(strategy, Mapping):
+            detail.append(
+                "策略响应 "
+                + "，".join(
+                    [
+                        f"负荷 {_number_text(strategy.get('load_kw', ''))} kW",
+                        f"新能源可用 {_number_text(strategy.get('renewable_available_kw', ''))} kW",
+                        f"计划消纳 {_number_text(strategy.get('renewable_used_kw', ''))} kW",
+                        f"储能 {_number_text(strategy.get('storage_kw', ''))} kW",
+                        f"柴油缺额 {_number_text(strategy.get('diesel_residual_kw', ''))} kW",
+                    ]
+                )
+            )
+        detail.append("本轮 real.e 与 scada.e 已刷新")
+        return detail
+
+    def _collect_command_response_lines(self, result: Mapping[str, Any]) -> List[str]:
+        if self._last_command_response_index >= len(self.command_history):
+            active = self._active_control_command_entries(self.clock.absolute_minute)
+            return [
+                f"控制响应 本轮无新增学员台控制指令；当前有效控制指令 {len(active)} 条，按有效期物化后的 stat.e / yt_ctrl.e 输入边界开展潮流计算"
+            ]
+        pending_items = self.command_history[self._last_command_response_index :]
+        effective_count = sum(1 for item in pending_items if item.get("eligible_source"))
+        lines = [f"控制响应 本轮新增控制记录 {len(pending_items)} 条，其中学员台有效来源 {effective_count} 条"]
+        for item in pending_items:
+            lines.extend(f"控制响应 {line}" for line in self._command_response_detail(item, result))
+        self._last_command_response_index = len(self.command_history)
+        return lines
+
+    def _curve_point_index(self, target_minute: float, period_minutes: float) -> int:
+        points = self.curves.get("weather", [])
+        if isinstance(points, Sequence) and not isinstance(points, (str, bytes)) and points:
+            target = target_minute % period_minutes
+            best_index = 0
+            best_distance = period_minutes
+            for idx, point in enumerate(points):
+                if not isinstance(point, Mapping):
+                    continue
+                point_minute = float(_to_float(point.get("minute", idx), float(idx)) or 0.0) % period_minutes
+                distance = abs(point_minute - target)
+                distance = min(distance, period_minutes - distance)
+                if distance < best_distance:
+                    best_index = idx
+                    best_distance = distance
+            return best_index + 1
+        step = max(1.0, _to_float(self.curves.get("time_step_minutes"), 1.0) or 1.0)
+        return int((target_minute % period_minutes) // step) + 1
+
+    def _append_environment_load_log(
+        self,
+        minute: int,
+        target_minute: float,
+        period_minutes: float,
+        row: Mapping[str, Any],
+        load_details: Sequence[Tuple[str, float]],
+        *,
+        load_seen: bool,
+    ) -> None:
+        curve_mode = str(self.curves.get("mode", "day") or "day")
+        load_total = row.get("load_kw", 0)
+        load_parts = [f"{name}={_number_text(value)} kW" for name, value in load_details[:8]]
+        if len(load_details) > 8:
+            load_parts.append("...")
+        detail = [
+            f"曲线模式 {curve_mode}，目标分钟 {format_number(float(target_minute % period_minutes))}，点号 {self._curve_point_index(target_minute, period_minutes)}",
+            (
+                f"环境 风速 {row.get('wind_speed_mps', '')} m/s，光照 {row.get('solar_irradiance_w_m2', '')} W/m2，"
+                f"气温 {row.get('air_temp_c', '')} ℃，气压 {row.get('air_pressure_hpa', '')} hPa，湿度 {row.get('humidity_pct', '')} %"
+            ),
+            f"负荷合计 {load_total} kW" + (f"；{ '，'.join(load_parts) }" if load_parts else "；未配置分项负荷，使用默认/总负荷"),
+            "已写入 weather.e，并作为本轮负荷、新能源限值计算输入",
+        ]
+        self._append_runtime_log(
+            "环境/负荷",
+            "weather.e / curves.json",
+            "逐点读取",
+            detail,
+            level="ok" if load_seen else "warn",
+            sim_time=minute_to_time(minute),
+        )
+
+    def _short_list(self, items: Sequence[str], limit: int = 24) -> str:
+        if not items:
+            return "无"
+        visible = list(items[:limit])
+        if len(items) > limit:
+            visible.append(f"... 共 {len(items)} 项")
+        return "，".join(visible)
+
+    def _weather_boundary_values(self) -> Dict[str, Any]:
+        values: Dict[str, Any] = {}
+        try:
+            book = _load_book(self.files["weather"])
+        except Exception:
+            return values
+        block = book.data.get("Weather")
+        if block is None or not block.data:
+            return values
+        row = block.data[0]
+        return {header: row.get(header, "") for header in block.header_list}
+
+    def _input_boundary_lines(
+        self,
+        minute: int,
+        absolute_minute: int,
+        clock_advance: int,
+        period_seconds: float,
+    ) -> List[str]:
+        weather = self._weather_boundary_values()
+        stat_book = _load_book(self.files["stat"])
+        run_rows = list(getattr(stat_book.data.get("RunStat"), "data", []))
+        cb_rows = list(getattr(stat_book.data.get("CbOpenStat"), "data", []))
+        set_rows = list(getattr(stat_book.data.get("SetValue"), "data", []))
+        soc_block = stat_book.data.get("StorageSoc") or stat_book.data.get("StorageStatus")
+        soc_rows = list(getattr(soc_block, "data", []))
+
+        run_off = [
+            f"{row.get('dev_type', '')}.{_dev_name(row)}={_number_text(row.get('run_stat', ''))}"
+            for row in run_rows
+            if int(_to_float(row.get("run_stat"), 1) or 0) == 0
+        ]
+        cb_zero = [
+            f"{row.get('dev_type', '')}.{_dev_name(row)}={_number_text(row.get('status', ''))}"
+            for row in cb_rows
+            if int(_to_float(row.get("status"), 1) or 0) == 0
+        ]
+        set_values = [
+            f"{row.get('dev_type', '')}.{_dev_name(row)}.{row.get('set_type', '')}={_number_text(row.get('set_value', ''))}"
+            for row in set_rows
+        ]
+        soc_values = [
+            f"{row.get('dev_type', 'ESS')}.{row.get('name', row.get('dev_name', ''))}={_number_text(row.get('soc_curr', row.get('soc', '')))}"
+            for row in soc_rows
+        ]
+        run_on = len(run_rows) - len(run_off)
+        cb_one = len(cb_rows) - len(cb_zero)
+        weather_text = "，".join(
+            f"{key}={weather.get(key, '')}"
+            for key in WEATHER_HEADER
+            if key in weather
+        ) or "未读取到 Weather 块"
+        return [
+            (
+                "输入文件 "
+                f"model={self.files['model'].name}，meas={self.files['meas'].name}，stat={self.files['stat'].name}，"
+                f"weather={self.files['weather'].name}，device={self.files['device'].name}，yt_ctrl={self.files['yt_ctrl'].name}"
+            ),
+            (
+                f"仿真边界 时刻 {minute_to_time(minute)}，日内分钟 {minute}，累计分钟 {absolute_minute}，"
+                f"本步推进 {clock_advance} min，等效计算周期 {format_number(period_seconds)} s"
+            ),
+            f"天气/负荷边界 {weather_text}",
+            f"RunStat 投入 {run_on}/{len(run_rows)}，退出 {len(run_off)}：{self._short_list(run_off)}",
+            f"CbOpenStat status=1 {cb_one}/{len(cb_rows)}，status=0 {len(cb_zero)}：{self._short_list(cb_zero)}",
+            f"SetValue {len(set_rows)} 条：{self._short_list(set_values, 36)}",
+            f"StorageSoc {len(soc_rows)} 条：{self._short_list(soc_values, 36)}",
+        ]
+
+    def _device_flow_lines(self, real_measurements: Sequence[Mapping[str, Any]]) -> List[str]:
+        grouped: Dict[Tuple[str, str], List[str]] = {}
+        for item in real_measurements:
+            dev_type = str(item.get("dev_type", ""))
+            dev_name = str(item.get("dev_name", ""))
+            meas_type = str(item.get("meas_type", ""))
+            if not dev_type or not dev_name or not meas_type:
+                continue
+            value = _number_text(item.get("value", ""))
+            valid_flag = "" if int(_to_float(item.get("valid"), 1) or 0) == 1 else "(无效)"
+            grouped.setdefault((dev_type, dev_name), []).append(f"{meas_type}={value}{valid_flag}")
+        return [
+            f"{dev_type}.{dev_name}: {', '.join(values)}"
+            for (dev_type, dev_name), values in grouped.items()
+        ]
+
+    def _device_category_names(self) -> Dict[str, set[str]]:
+        categories = {
+            "wind": set(),
+            "pv": set(),
+            "diesel": set(),
+            "load": set(),
+            "storage": set(),
+        }
+        try:
+            book = _load_book(self.files["device"])
+        except Exception:
+            return categories
+        for category, block_names in {
+            "wind": ("wind_generator",),
+            "pv": ("pv_generator",),
+            "diesel": ("diesel_generator",),
+            "load": ("load_curve_96", "load_temperature"),
+            "storage": ("estorage",),
+        }.items():
+            for block_name in block_names:
+                block = book.data.get(block_name)
+                if block is None:
+                    continue
+                for row in block.data:
+                    name = str(row.get("name", "")).strip()
+                    if not name:
+                        continue
+                    categories[category].add(name)
+                    if category == "storage":
+                        categories[category].add(f"{name}_dcdc")
+        return categories
+
+    def _measurement_power_category(
+        self,
+        dev_type: str,
+        dev_name: str,
+        category_names: Mapping[str, set[str]],
+    ) -> str:
+        lower_name = dev_name.casefold()
+        storage_names = category_names["storage"]
+        wind_names = category_names["wind"]
+        pv_names = category_names["pv"]
+        diesel_names = category_names["diesel"]
+        load_names = category_names["load"]
+        if dev_name in storage_names or (not storage_names and (dev_type in ("ESS", "Storage") or lower_name.startswith("ess"))):
+            return "storage"
+        if dev_name in wind_names or (not wind_names and lower_name.startswith(("wt", "wind"))):
+            return "wind"
+        if dev_name in pv_names or (not pv_names and lower_name.startswith(("pv", "solar"))):
+            return "pv"
+        if dev_name in diesel_names or (not diesel_names and ("diesel" in lower_name or "柴" in dev_name)):
+            return "diesel"
+        if dev_name in load_names or (not load_names and (dev_type.endswith("Load") or "load" in lower_name or "负荷" in dev_name)):
+            return "load"
+        return ""
+
+    def _canonical_power_device_name(self, category: str, dev_name: str) -> str:
+        if category == "storage" and dev_name.endswith("_dcdc"):
+            return dev_name.removesuffix("_dcdc")
+        return dev_name
+
+    def _preferred_power_value(self, category: str, values: Mapping[str, float]) -> Optional[float]:
+        preferences = {
+            "wind": ("P_AC", "P_DC", "P_GEN", "P", "P_FROM", "P_TO"),
+            "pv": ("P_TO", "P_FROM", "P_GEN", "P", "P_DC", "P_AC"),
+            "diesel": ("P_GEN", "P", "P_AC", "P_TO", "P_FROM"),
+            "load": ("P_LOAD", "P", "P_AC", "P_TO", "P_FROM"),
+            "storage": ("P", "P_FROM", "P_TO"),
+        }
+        for meas_type in preferences.get(category, ("P",)):
+            if meas_type in values:
+                return values[meas_type]
+        return None
+
+    def _power_flow_summary_lines(self, real_measurements: Sequence[Mapping[str, Any]]) -> List[str]:
+        category_names = self._device_category_names()
+        power_by_device: Dict[Tuple[str, str], Dict[str, float]] = {}
+        soc_by_storage: Dict[str, float] = {}
+
+        for item in real_measurements:
+            if int(_to_float(item.get("valid"), 1) or 0) != 1:
+                continue
+            dev_type = str(item.get("dev_type", ""))
+            dev_name = str(item.get("dev_name", ""))
+            meas_type = str(item.get("meas_type", "")).upper()
+            value = _to_float(item.get("value"), None)
+            if not dev_type or not dev_name or meas_type == "" or value is None:
+                continue
+            category = self._measurement_power_category(dev_type, dev_name, category_names)
+            if category == "storage" and meas_type == "SOC":
+                soc_by_storage[self._canonical_power_device_name(category, dev_name)] = value
+                continue
+            if not meas_type.startswith("P"):
+                continue
+            if not category:
+                continue
+            device_key = (category, self._canonical_power_device_name(category, dev_name))
+            power_by_device.setdefault(device_key, {})[meas_type] = value
+
+        totals = {"wind": 0.0, "pv": 0.0, "diesel": 0.0, "load": 0.0}
+        counts = {"wind": 0, "pv": 0, "diesel": 0, "load": 0, "storage": 0}
+        storage_generation = 0.0
+        storage_charge = 0.0
+        for (category, _dev_name), values in power_by_device.items():
+            power = self._preferred_power_value(category, values)
+            if power is None:
+                continue
+            counts[category] += 1
+            if category == "storage":
+                if power >= 0.0:
+                    storage_generation += power
+                else:
+                    storage_charge += -power
+            else:
+                totals[category] += abs(power)
+
+        soc_values = list(soc_by_storage.values())
+        soc_average = sum(soc_values) / len(soc_values) if soc_values else None
+        soc_total = sum(soc_values)
+        soc_text = (
+            f"储能SOC 平均 {format_number(soc_average * 100.0)}%，储能总SOC {format_number(soc_total)}，台数 {len(soc_values)}"
+            if soc_average is not None
+            else "储能SOC 平均 --，储能总SOC --，台数 0"
+        )
+        return [
+            (
+                f"分类统计 风力发电总功率 {format_number(totals['wind'])} kW（{counts['wind']} 台），"
+                f"光伏发电总功率 {format_number(totals['pv'])} kW（{counts['pv']} 台）"
+            ),
+            (
+                f"分类统计 柴油发电总功率 {format_number(totals['diesel'])} kW（{counts['diesel']} 台），"
+                f"负荷用电总功率 {format_number(totals['load'])} kW（{counts['load']} 个）"
+            ),
+            (
+                f"分类统计 储能发电总功率 {format_number(storage_generation)} kW，"
+                f"储能充电总功率 {format_number(storage_charge)} kW（{counts['storage']} 台），{soc_text}"
+            ),
+        ]
+
+    def _compact_command_response_lines(self, lines: Sequence[str]) -> List[str]:
+        if not lines:
+            return []
+        first_line = str(lines[0])
+        if len(lines) > 1:
+            first_line = f"{first_line}；其余控制响应明细 {len(lines) - 1} 条已省略"
+        return [first_line]
+
+    def _append_power_flow_log(
+        self,
+        result: Mapping[str, Any],
+        measurements: Mapping[str, Sequence[Mapping[str, Any]]],
+        minute: int,
+        absolute_minute: int,
+        clock_advance: int,
+        period_seconds: float,
+        command_response_lines: Sequence[str],
+    ) -> None:
+        real_measurements = measurements.get("real", [])
+        detail = [
+            *self._compact_command_response_lines(command_response_lines),
+            (
+                f"计算摘要 时刻 {minute_to_time(minute)}，累计分钟 {absolute_minute}，推进 {clock_advance} min，"
+                f"求解器 {result.get('solver_info', 'not-run')}，"
+                f"真值量测 {len(real_measurements)} 条，更新 {result.get('updated', 0)} 条，"
+                f"缺失 {result.get('missing', 0)} 条，叠加修正 {result.get('overlay_updates', 0)} 条"
+            ),
+            *self._power_flow_summary_lines(real_measurements),
+        ]
+        self._append_runtime_log(
+            "潮流计算/控制响应",
+            "model.e / stat.e / weather.e / real.e",
+            "完成" if int(_to_float(result.get("missing"), 0) or 0) == 0 else "有缺失",
+            detail,
+            level="ok" if int(_to_float(result.get("missing"), 0) or 0) == 0 else "warn",
+            sim_time=minute_to_time(minute),
+        )
+
+    def apply_student_commands(self, payload: Mapping[str, Any], source: str = "") -> Dict[str, int]:
+        with self.lock:
             run_items = payload.get("run_status", payload.get("runStatus", [])) or []
             set_items = payload.get("set_values", payload.get("setValues", payload.get("setpoints", []))) or []
-            accepted_run = 0
-            accepted_set = 0
-
-            for item in run_items:
-                if not isinstance(item, Mapping):
-                    continue
-                dev_type = str(item.get("dev_type", item.get("type", "")))
-                dev_name = str(item.get("dev_name", item.get("name", "")))
-                if not dev_type or not dev_name:
-                    continue
-                run_stat = item.get("run_stat", item.get("running", item.get("value", "")))
-                if isinstance(run_stat, bool):
-                    run_stat = 1 if run_stat else 0
-                row = _find_dev_row(run_block, dev_type, dev_name)
-                if row is None:
-                    row = {"dev_type": dev_type, "dev_name": dev_name, "run_stat": ""}
-                    run_block.data.append(row)
-                row["run_stat"] = _number_text(run_stat)
-                accepted_run += 1
-                if "status" in item:
-                    cb_row = _find_dev_row(cb_block, dev_type, dev_name)
-                    if cb_row is None:
-                        cb_row = {"dev_type": dev_type, "dev_name": dev_name, "status": ""}
-                        cb_block.data.append(cb_row)
-                    cb_row["status"] = _number_text(item.get("status"))
-
-            for item in self._expand_set_values(set_items):
-                dev_type = str(item.get("dev_type", item.get("type", "")))
-                dev_name = str(item.get("dev_name", item.get("name", "")))
-                set_type = str(item.get("set_type", ""))
-                if not dev_type or not dev_name or not set_type:
-                    continue
-                row = _find_set_row(set_block, dev_type, dev_name, set_type)
-                if row is None:
-                    row = {"dev_type": dev_type, "dev_name": dev_name, "set_type": set_type, "set_value": ""}
-                    set_block.data.append(row)
-                row["set_value"] = _number_text(item.get("set_value", ""))
-                accepted_set += 1
-
-            simu_loop.write_ebook_aligned(book, self.files["stat"])
-            accepted = {"run_status": accepted_run, "set_values": accepted_set}
-            self.command_history.append(
-                {
-                    "time": _now_text(),
-                    "source": source,
-                    "accepted": accepted,
-                    "payload": json.loads(json.dumps(payload, ensure_ascii=False, default=str)),
-                }
-            )
-            self.command_history = self.command_history[-200:]
+            run_sequence = list(run_items) if isinstance(run_items, Sequence) and not isinstance(run_items, (str, bytes)) else []
+            set_sequence = list(set_items) if isinstance(set_items, Sequence) and not isinstance(set_items, (str, bytes)) else []
+            normalized_run_items = self._normalize_run_command_items(run_sequence)
+            normalized_set_items = self._normalize_set_command_items(set_sequence)
+            eligible_source = _is_trainee_command_source(source)
+            issued_absolute_minute = float(self.clock.absolute_minute)
+            expires_at_absolute_minute = _command_expires_at(payload, None, issued_absolute_minute)
+            accepted_run = len(normalized_run_items) if eligible_source else 0
+            accepted_set = len(normalized_set_items) if eligible_source else 0
+            ignored = 0 if eligible_source else len(normalized_run_items) + len(normalized_set_items)
+            accepted = {"run_status": accepted_run, "set_values": accepted_set, "ignored": ignored}
+            command_entry = {
+                "time": _now_text(),
+                "source": source,
+                "eligible_source": eligible_source,
+                "issued_absolute_minute": issued_absolute_minute,
+                "expires_at_absolute_minute": expires_at_absolute_minute,
+                "valid_for_minutes": max(0.0, expires_at_absolute_minute - issued_absolute_minute),
+                "accepted": accepted,
+                "normalized": {
+                    "run_status": normalized_run_items if eligible_source else [],
+                    "set_values": normalized_set_items if eligible_source else [],
+                },
+                "payload": json.loads(json.dumps(payload, ensure_ascii=False, default=str)),
+            }
+            self.command_history.append(command_entry)
+            drop_count = max(0, len(self.command_history) - 200)
+            if drop_count:
+                self.command_history = self.command_history[drop_count:]
+                self._last_command_response_index = max(0, self._last_command_response_index - drop_count)
+            self._materialize_active_control_commands(self.clock.absolute_minute)
             self._write_command_history()
+            self._append_runtime_log(
+                "控制指令",
+                "学员台 /api/student/commands",
+                "接受成功" if accepted_run or accepted_set else "无有效指令",
+                self._command_accept_detail(
+                    payload,
+                    source,
+                    accepted,
+                    run_sequence,
+                    normalized_set_items,
+                    eligible_source=eligible_source,
+                    issued_absolute_minute=issued_absolute_minute,
+                    expires_at_absolute_minute=expires_at_absolute_minute,
+                ),
+                level="ok" if accepted_run or accepted_set else "warn",
+            )
             return accepted
 
     def _expand_set_values(self, items: Iterable[Any]) -> List[Dict[str, Any]]:
@@ -513,6 +1237,14 @@ class PolarMicrogridSimulator:
         for item in items:
             if not isinstance(item, Mapping):
                 continue
+            item_dev_type = str(item.get("dev_type", item.get("type", "")))
+            item_dev_name = str(item.get("dev_name", item.get("name", "")))
+            if item_dev_type == "ESS" and item_dev_name:
+                item = {
+                    **dict(item),
+                    "dev_type": "DCDCConverter",
+                    "dev_name": f"{item_dev_name}_dcdc",
+                }
             if "set_type" in item:
                 expanded.append(dict(item))
                 continue
@@ -624,14 +1356,26 @@ class PolarMicrogridSimulator:
             kernel_result = self.kernel(config)
             self._apply_measurement_faults(minute)
             self.latest_measurements = self.measurements()
+            result_dict = self._kernel_result_dict(kernel_result)
+            self.latest_result = result_dict
+            command_response_lines = self._collect_command_response_lines(result_dict)
+            self._append_power_flow_log(
+                result_dict,
+                self.latest_measurements,
+                minute,
+                absolute_minute,
+                clock_advance,
+                period_seconds,
+                command_response_lines,
+            )
             self.clock.absolute_minute += clock_advance
             self.clock.minute = self.clock.absolute_minute % 1440
             self.clock.updated_at = time.time()
-            self.latest_result = self._kernel_result_dict(kernel_result)
             return self.snapshot()
 
     def _prepare_runtime_inputs(self, minute: int, absolute_minute: int) -> None:
         self._write_current_weather(minute, absolute_minute)
+        self._materialize_active_control_commands(absolute_minute)
         self._apply_device_faults(minute)
         self._apply_modes_to_model()
 
@@ -647,14 +1391,24 @@ class PolarMicrogridSimulator:
         load_total = 0.0
         load_seen = False
         loads = self.curves.get("loads", {})
+        load_details: List[Tuple[str, float]] = []
         if isinstance(loads, Mapping):
-            for points in loads.values():
+            for load_name, points in loads.items():
                 value = _interpolate(points, target_minute, "p_kw", float("nan"), period_minutes=period_minutes)
                 if value == value:
                     load_total += value
                     load_seen = True
+                    load_details.append((str(load_name), value))
         row["load_kw"] = _number_text(load_total if load_seen else self.weather_defaults.get("load_kw", 0.0))
         self._write_weather_row(row)
+        self._append_environment_load_log(
+            minute,
+            float(target_minute),
+            period_minutes,
+            row,
+            load_details,
+            load_seen=load_seen,
+        )
 
     def _write_weather_row(self, row: Mapping[str, Any]) -> None:
         clean = {header: row.get(header, "") for header in WEATHER_HEADER}
@@ -872,6 +1626,7 @@ class PolarMicrogridSimulator:
                     }
                 )
         for name, soc in soc_values.items():
+            dcdc_set_values = set_values.get(("DCDCConverter", f"{name}_dcdc"), {})
             devices.append(
                 {
                     "dev_type": "ESS",
@@ -879,13 +1634,26 @@ class PolarMicrogridSimulator:
                     "run_stat": int(_to_float(run_stats.get(("ESS", name), 1), 1) or 0),
                     "status": 1,
                     "mode": "PH",
-                    "set_types": ["p_set"],
-                    "set_values": {},
+                    "set_types": ["p_set", "v_set"],
+                    "set_values": dcdc_set_values,
                     "soc_curr": soc,
                     "raw": {"soc_curr": soc},
                 }
             )
         return devices
+
+    def device_parameters(self) -> Dict[str, List[Dict[str, Any]]]:
+        try:
+            book = _load_book(self.files["device"])
+        except Exception:
+            return {}
+        return {
+            name: [
+                {key: _json_scalar(value) for key, value in row.items()}
+                for row in getattr(block, "data", [])
+            ]
+            for name, block in book.data.items()
+        }
 
     def _stat_maps(self) -> Tuple[Dict[Tuple[str, str], Any], Dict[Tuple[str, str], Any], Dict[Tuple[str, str], dict], Dict[str, float]]:
         stat_book = _load_book(self.files["stat"])
@@ -925,7 +1693,9 @@ class PolarMicrogridSimulator:
             "curves": self.curves,
             "settings": self.local_settings,
             "commands": {"history": self.command_history[-50:]},
+            "runtime_logs": self.runtime_logs[-300:],
             "devices": self.devices(),
+            "device_parameters": self.device_parameters(),
             "measurements": measurements,
             "result": self.latest_result,
             "summary": self._summary(measurements),
@@ -1215,7 +1985,7 @@ class MultiModelSimulator:
     def devices(self, model_id: Optional[str] = None) -> List[Dict[str, Any]]:
         return self.service_for(model_id).devices()
 
-    def apply_student_commands(self, payload: Mapping[str, Any], source: str = "student", model_id: Optional[str] = None) -> Dict[str, int]:
+    def apply_student_commands(self, payload: Mapping[str, Any], source: str = "", model_id: Optional[str] = None) -> Dict[str, int]:
         return self.service_for(model_id).apply_student_commands(payload, source=source)
 
     def control_clock(self, payload: Mapping[str, Any], model_id: Optional[str] = None) -> Dict[str, Any]:

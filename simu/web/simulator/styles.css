@@ -94,8 +94,9 @@ h1 {
   letter-spacing: 0;
 }
 .model-toolbar {
-  min-width: 430px;
-  max-width: 560px;
+  min-width: 520px;
+  max-width: 700px;
+  flex: 1 1 620px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -129,7 +130,8 @@ h1 {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.model-clone-button {
+.model-clone-button,
+.model-export-button {
   height: 32px;
   padding: 0 10px;
   white-space: nowrap;
@@ -1075,6 +1077,58 @@ canvas {
 .measurement-compare-table td {
   vertical-align: middle;
 }
+.runtime-log-table {
+  table-layout: fixed;
+}
+.runtime-log-table th,
+.runtime-log-table td {
+  vertical-align: top;
+}
+.runtime-log-table th:nth-child(1),
+.runtime-log-table td:nth-child(1) {
+  width: 54px;
+}
+.runtime-log-table th:nth-child(2),
+.runtime-log-table td:nth-child(2) {
+  width: 132px;
+}
+.runtime-log-table th:nth-child(3),
+.runtime-log-table td:nth-child(3) {
+  width: 86px;
+}
+.runtime-log-table th:nth-child(4),
+.runtime-log-table td:nth-child(4) {
+  width: 132px;
+}
+.runtime-log-table th:nth-child(5),
+.runtime-log-table td:nth-child(5) {
+  width: 166px;
+}
+.runtime-log-table th:nth-child(6),
+.runtime-log-table td:nth-child(6) {
+  width: 84px;
+}
+.runtime-log-table td:nth-child(5),
+.runtime-log-table .runtime-log-detail {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 18px;
+}
+.runtime-log-table .runtime-log-detail {
+  color: #34464e;
+}
+.runtime-log-row.is-ok td:nth-child(6) {
+  color: var(--green);
+  font-weight: 700;
+}
+.runtime-log-row.is-warn td:nth-child(6) {
+  color: var(--amber);
+  font-weight: 700;
+}
+.runtime-log-row.is-error td:nth-child(6) {
+  color: var(--red);
+  font-weight: 700;
+}
 .measurement-compare-table tbody tr {
   cursor: pointer;
 }
@@ -1086,9 +1140,6 @@ canvas {
   box-shadow: inset 3px 0 0 var(--teal);
   color: var(--teal-dark);
   font-weight: 700;
-}
-.runtime-log-table td:nth-child(5) {
-  min-width: 220px;
 }
 .page-section[data-page="logs"] > .panel {
   flex: 1;

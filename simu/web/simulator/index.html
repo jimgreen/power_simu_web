@@ -22,6 +22,7 @@
             </select>
             <span id="activeModelName">默认模型</span>
           </label>
+          <button id="exportDefinitionsButton" class="model-export-button" type="button">导出定义包</button>
           <button id="cloneModelButton" class="model-clone-button" type="button">复制新模型</button>
         </div>
         <div class="clock-strip">
@@ -482,7 +483,7 @@
               <h2>运行日志</h2>
               <span id="runtimeLogSummary">最近 0 条</span>
             </div>
-            <div class="sr-only">记录时刻 仿真时刻 运行状态 求解器 量测 命令 告警</div>
+            <div class="sr-only">序号 本机时刻 仿真时刻 类型 对象 结果 详情</div>
             <div id="runtimeLogTable" class="runtime-log-wrap" data-log-role="runtime-table"></div>
           </section>
         </section>

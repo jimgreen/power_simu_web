@@ -5,9 +5,13 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.playwright-cli/
 
 .simu_loop_work/
+models_simulator/
+models_trainee/
 runtime_simulator/
 runtime_trainee/
+models/*/runtime/
 
 *.log

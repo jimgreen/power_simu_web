@@ -24,6 +24,9 @@
             </select>
             <span id="activeModelName">默认模型</span>
           </label>
+          <input id="definitionArchiveInput" type="file" accept=".zip,application/zip" hidden />
+          <button id="importDefinitionsButton" class="definition-import-button" type="button">导入定义包</button>
+          <button id="traineeRunToggle" class="receive-toggle-button" type="button">启动接收</button>
         </div>
 
         <div class="clock-strip">
@@ -41,7 +44,8 @@
         <button data-nav-page="measurements">实时量测</button>
         <button data-nav-page="controls">设备投退</button>
         <button data-nav-page="commands">控制指令</button>
-        <button data-nav-page="history">指令记录</button>
+        <button data-nav-page="renewable">新能源控制</button>
+        <button data-nav-page="history">运行日志</button>
       </nav>
 
       <main class="page-main">
@@ -88,6 +92,24 @@
                 <span id="pendingSummary">0 项</span>
               </div>
               <div id="pendingPreview" class="log-list"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>教员数据</h2>
+                <span id="receiveStateText">本地待命</span>
+              </div>
+              <dl class="teacher-data-grid">
+                <div><dt>风速</dt><dd id="teacherWind">--</dd></div>
+                <div><dt>光照</dt><dd id="teacherSolar">--</dd></div>
+                <div><dt>气温</dt><dd id="teacherTemp">--</dd></div>
+                <div><dt>负荷</dt><dd id="teacherLoad">--</dd></div>
+              </dl>
+              <div class="teacher-source">
+                <span id="teacherWeatherTime">--</span>
+                <strong id="teacherSourceText">--</strong>
+              </div>
+              <p id="importStatus" class="import-status"></p>
             </section>
           </div>
         </section>
@@ -174,11 +196,61 @@
           </div>
         </section>
 
+        <section class="page-section" data-page="renewable">
+          <div class="renewable-page-layout">
+            <section class="panel renewable-control-panel">
+              <div class="panel-head">
+                <h2>新能源优先</h2>
+                <span id="renewableControlState">待命</span>
+              </div>
+              <div class="renewable-actions">
+                <button id="renewableAutoToggle" class="renewable-auto-button" type="button">启动实时控制</button>
+                <button id="renewableSendOnce" type="button">单次计算下发</button>
+              </div>
+              <div class="renewable-settings">
+                <label>周期
+                  <select id="renewableControlPeriod">
+                    <option value="2" selected>2秒</option>
+                    <option value="5">5秒</option>
+                    <option value="10">10秒</option>
+                  </select>
+                </label>
+                <label>SOC下限
+                  <input id="renewableSocMin" type="number" min="0" max="1" step="0.01" value="0.30" />
+                </label>
+                <label>SOC上限
+                  <input id="renewableSocMax" type="number" min="0" max="1" step="0.01" value="0.90" />
+                </label>
+              </div>
+              <dl class="renewable-metric-grid">
+                <div><dt>可用新能源</dt><dd id="renewableAvailableKw">--</dd></div>
+                <div><dt>计划消纳</dt><dd id="renewableUsedKw">--</dd></div>
+                <div><dt>储能功率</dt><dd id="renewableStorageKw">--</dd></div>
+                <div><dt>柴油缺额</dt><dd id="renewableDieselKw">--</dd></div>
+                <div><dt>弃风弃光</dt><dd id="renewableCurtailKw">--</dd></div>
+                <div><dt>最近下发</dt><dd id="renewableLastSent">--</dd></div>
+              </dl>
+              <p id="renewableControlStatus" class="renewable-status">请先启动接收模式，再启动实时控制。</p>
+            </section>
+
+            <section class="panel renewable-plan-panel">
+              <div class="panel-head">
+                <h2>功率指令预览</h2>
+                <span id="renewableCommandSummary">0 条</span>
+              </div>
+              <div id="renewableCommandTable" class="runtime-device-wrap"></div>
+            </section>
+          </div>
+        </section>
+
         <section class="page-section" data-page="history">
           <section class="panel history-panel">
             <div class="panel-head">
-              <h2>指令记录</h2>
+              <h2>运行日志</h2>
               <span id="historyCount">0</span>
+            </div>
+            <div class="runtime-log-toolbar">
+              <button id="clearRuntimeLogs" type="button">清空日志</button>
             </div>
             <div id="commandHistory" class="runtime-log-wrap"></div>
           </section>

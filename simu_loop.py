@@ -21,13 +21,22 @@ def _find_project_root() -> Path:
     for path in Path(__file__).resolve().parents:
         if (path / "pyproject.toml").exists():
             return path
-    return Path(__file__).resolve().parents[1]
+        if (path / "simu").exists() and (path / "model.e").exists():
+            return path
+    return Path(__file__).resolve().parent
 
 
 ROOT_DIR = _find_project_root()
 SIMU_DIR = Path(__file__).resolve().parent
 PACKAGE_DIR = ROOT_DIR / "src" / "hybrid_power_system_analysis"
-for path in (PACKAGE_DIR, PACKAGE_DIR / "lfcore", PACKAGE_DIR / "model", ROOT_DIR / "scripts"):
+SCRIPTS_DIR = ROOT_DIR / "scripts"
+if not PACKAGE_DIR.exists():
+    legacy_root = ROOT_DIR.parent / "elec_power_flow" / "hybrid_power_system_analysis"
+    legacy_package = legacy_root / "src" / "hybrid_power_system_analysis"
+    if legacy_package.exists():
+        PACKAGE_DIR = legacy_package
+        SCRIPTS_DIR = legacy_root / "scripts"
+for path in (PACKAGE_DIR, PACKAGE_DIR / "lfcore", PACKAGE_DIR / "model", SCRIPTS_DIR):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
@@ -721,10 +730,16 @@ def _storage_define_for(dev_define: EBook, storage_name: str, pos: int) -> Optio
     return None
 
 
-def apply_storage_constraints(model_book: EBook, dev_stat_file: Path, dev_define: EBook) -> int:
+def apply_storage_constraints(
+    model_book: EBook,
+    dev_stat_file: Path,
+    dev_define: EBook,
+    period_seconds: float = DEFAULT_PERIOD_SECONDS,
+) -> int:
     rows = _target_rows(model_book, "DCDCConverter", prefix="ess")
     status_by_name, status_rows = _storage_soc_by_name(dev_stat_file)
     changed = 0
+    period_hours = max(0.0, float(period_seconds)) / 3600.0
     for pos, row in enumerate(rows):
         storage_name = str(row.get("name", "")).removesuffix("_dcdc")
         status = status_by_name.get(storage_name)
@@ -736,11 +751,20 @@ def apply_storage_constraints(model_book: EBook, dev_stat_file: Path, dev_define
             changed += _set_row_value(row, "p_set", "0")
             continue
         command = _safe_float(row.get("p_set", 0.0), 0.0) or 0.0
-        soc = _safe_float((status or {}).get("soc_curr", (define or {}).get("soc_cur", 0.5)), 0.5) or 0.5
+        soc = _safe_float((status or {}).get("soc_curr", (define or {}).get("soc_cur", 0.5)), 0.5)
+        if soc is None:
+            soc = 0.5
         soc_min = _safe_float((define or {}).get("soc_min", 0.0), 0.0) or 0.0
         soc_max = _safe_float((define or {}).get("soc_max", 1.0), 1.0) or 1.0
+        capacity = _safe_float((define or {}).get("emva", DEFAULT_STORAGE_CAPACITY_KWH), DEFAULT_STORAGE_CAPACITY_KWH)
+        capacity = max(float(capacity if capacity is not None else DEFAULT_STORAGE_CAPACITY_KWH), 1e-9)
         charge_max = _safe_float((define or {}).get("charge_p_max", abs(command)), abs(command)) or 0.0
         discharge_max = _safe_float((define or {}).get("dis_charge_p_max", abs(command)), abs(command)) or 0.0
+        if period_hours > 0.0:
+            discharge_soc_margin = max(0.0, float(soc) - soc_min)
+            charge_soc_margin = max(0.0, soc_max - float(soc))
+            discharge_max = min(discharge_max, discharge_soc_margin * capacity / period_hours)
+            charge_max = min(charge_max, charge_soc_margin * capacity / period_hours)
         if command > 0.0:
             target = 0.0 if soc <= soc_min else min(command, discharge_max)
         elif command < 0.0:
@@ -756,6 +780,7 @@ def apply_device_capability_limits(
     weather_file: Path,
     dev_stat_file: Path,
     dev_define_file: Optional[Path],
+    period_seconds: float = DEFAULT_PERIOD_SECONDS,
 ) -> int:
     dev_define = _read_optional_book(dev_define_file)
     if not dev_define.data:
@@ -766,7 +791,7 @@ def apply_device_capability_limits(
     changed += apply_wind_limits(model_book, dev_define, weather)
     changed += apply_pv_limits(model_book, dev_define, weather)
     changed += apply_diesel_limits(model_book, dev_define)
-    changed += apply_storage_constraints(model_book, dev_stat_file, dev_define)
+    changed += apply_storage_constraints(model_book, dev_stat_file, dev_define, period_seconds)
     return changed
 
 
@@ -893,6 +918,7 @@ def apply_realtime_inputs(
     yt_ctrl_file: Path,
     dev_define_file_or_work_dir: Path,
     work_dir: Optional[Path] = None,
+    period_seconds: float = DEFAULT_PERIOD_SECONDS,
 ) -> Tuple[Path, int, EBook]:
     if work_dir is None:
         dev_define_file = None
@@ -904,7 +930,7 @@ def apply_realtime_inputs(
     changed += apply_dev_stat_file(model_book, dev_stat_file)
     changed += apply_weather_file(model_book, weather_file, dev_define_file)
     changed += apply_yt_ctrl_file(model_book, yt_ctrl_file)
-    changed += apply_device_capability_limits(model_book, weather_file, dev_stat_file, dev_define_file)
+    changed += apply_device_capability_limits(model_book, weather_file, dev_stat_file, dev_define_file, period_seconds)
     work_dir.mkdir(parents=True, exist_ok=True)
     merged_model = work_dir / "merged_model.e"
     write_ebook_aligned(model_book, merged_model)
@@ -1008,8 +1034,41 @@ def _link_snapshot_terminal_objects(snapshot: Snapshot) -> None:
             dev.dc_node_obj = snapshot.dc_nodes_by_idx.get(getattr(dev, "dc_node", None))
 
 
-def _measurement_value(snapshot, row: Sequence[str]) -> Optional[float]:
+def _storage_soc_values(dev_stat_file: Optional[Path]) -> Dict[str, float]:
+    if dev_stat_file is None:
+        return {}
+    path = Path(dev_stat_file)
+    if not path.exists():
+        return {}
+    try:
+        book = EBook(path)
+    except Exception:
+        return {}
+    values: Dict[str, float] = {}
+    for row in _storage_soc_rows(book):
+        name = str(row.get("name", row.get("dev_name", "")))
+        if not name:
+            continue
+        soc = _safe_float(row.get("soc_curr", row.get("soc", "")), None)
+        if soc is not None:
+            values[name] = soc
+    return values
+
+
+def _measurement_value(snapshot, row: Sequence[str], storage_soc: Optional[Dict[str, float]] = None) -> Optional[float]:
     dev_type, dev_name, meas_type = row[2], row[3], row[4].upper()
+    if dev_type in ("ESS", "Storage"):
+        if meas_type == "SOC":
+            return None if storage_soc is None else storage_soc.get(dev_name)
+        dcdc_name = f"{dev_name}_dcdc"
+        if meas_type == "P":
+            return snapshot.value("DCDCConverter", dcdc_name, "P_FROM")
+        if meas_type == "Q":
+            return 0.0
+        if meas_type == "V":
+            return snapshot.value("DCDCConverter", dcdc_name, "V_FROM")
+        if meas_type == "I":
+            return snapshot.value("DCDCConverter", dcdc_name, "I_FROM")
     if dev_type == "ACBreak":
         dev = snapshot.ac_devices.get("ACBreak", {}).get(dev_name)
         return None if dev is None else snapshot._ac_zero_value(dev, meas_type)
@@ -1022,12 +1081,17 @@ def _measurement_value(snapshot, row: Sequence[str]) -> Optional[float]:
     return value
 
 
-def build_real_rows(meas_file: Path, snapshot) -> Tuple[List[str], List[List[str]], List[str], int, int]:
+def build_real_rows(
+    meas_file: Path,
+    snapshot,
+    dev_stat_file: Optional[Path] = None,
+) -> Tuple[List[str], List[List[str]], List[str], int, int]:
     before, rows, after = parse_measurement_rows(meas_file)
+    storage_soc = _storage_soc_values(dev_stat_file)
     updated = 0
     missing = 0
     for row in rows:
-        value = _measurement_value(snapshot, row)
+        value = _measurement_value(snapshot, row, storage_soc)
         if value is None:
             missing += 1
             continue
@@ -1099,11 +1163,12 @@ def run_once(
         config.yt_ctrl_file,
         config.dev_define_file,
         work_dir,
+        config.period_seconds,
     )
     snapshot, solver_info = solver(model_file)
     soc_updates = update_storage_soc(config.dev_stat_file, model_book, config.period_seconds, config.dev_define_file)
 
-    before, real_rows, after, updated, missing = build_real_rows(config.meas_file, snapshot)
+    before, real_rows, after, updated, missing = build_real_rows(config.meas_file, snapshot, config.dev_stat_file)
     write_measurement_snapshot(config.real_file, before, real_rows, after)
     scada_rows = add_noise_to_rows(real_rows, config.noise_std, rng)
     write_measurement_snapshot(config.scada_file, before, scada_rows, after)

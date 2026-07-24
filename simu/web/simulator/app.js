@@ -34,6 +34,7 @@ const state = {
   modeFilter: { dev_type: "all", dev_name: "" },
   collapsedDeviceTreeGroups: {},
   runtimeLogs: [],
+  runtimeLogSeq: 0,
   lastRuntimeLogKey: "",
 };
 
@@ -338,6 +339,65 @@ async function api(path, options = {}) {
   return response.json();
 }
 
+function apiUrl(path, modelScoped = true) {
+  const targetPath = modelScoped ? modelScopedPath(path) : path;
+  return `${apiBase}${targetPath}`;
+}
+
+function filenameFromDisposition(disposition, fallback) {
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition || "");
+  if (encoded?.[1]) {
+    try {
+      return decodeURIComponent(encoded[1]);
+    } catch (_error) {
+      return fallback;
+    }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(disposition || "");
+  return plain?.[1] || fallback;
+}
+
+function blobFromBase64(dataBase64, contentType) {
+  const binary = atob(dataBase64 || "");
+  const chunkSize = 65536;
+  const chunks = [];
+  for (let offset = 0; offset < binary.length; offset += chunkSize) {
+    const slice = binary.slice(offset, offset + chunkSize);
+    const bytes = new Uint8Array(slice.length);
+    for (let idx = 0; idx < slice.length; idx += 1) {
+      bytes[idx] = slice.charCodeAt(idx);
+    }
+    chunks.push(bytes);
+  }
+  return new Blob(chunks, { type: contentType || "application/zip" });
+}
+
+async function exportDefinitionsArchive() {
+  const button = $("exportDefinitionsButton");
+  if (!button) return;
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "导出中";
+  try {
+    const payload = await api("/api/export-definitions?format=json");
+    const blob = blobFromBase64(payload.data_base64, payload.content_type);
+    const filename = filenameFromDisposition("", payload.filename || "model_definitions.zip");
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+  } catch (error) {
+    alert(apiErrorText(error));
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
+}
+
 function renderModelSelector() {
   const selector = $("modelSelector");
   if (!selector) return;
@@ -366,6 +426,7 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.measurementFaults = [];
   state.modes = [];
   state.runtimeLogs = [];
+  state.runtimeLogSeq = 0;
   state.lastRuntimeLogKey = "";
   state.runtimeTraceHistory = [];
   state.lastRuntimeTraceKey = "";
@@ -405,6 +466,20 @@ function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]
   ));
+}
+
+function runtimeLogTime() {
+  return new Date().toLocaleTimeString();
+}
+
+function runtimeLogDetailText(detail) {
+  if (Array.isArray(detail)) return detail.filter(Boolean).join("\n");
+  if (detail && typeof detail === "object") {
+    return Object.entries(detail)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join("；");
+  }
+  return String(detail || "");
 }
 
 function clamp(value, min, max) {
@@ -1409,6 +1484,15 @@ function renderCommands(history) {
 }
 
 function appendRuntimeLog(snapshot) {
+  const backendLogs = snapshot.runtime_logs;
+  if (Array.isArray(backendLogs)) {
+    state.runtimeLogs = backendLogs
+      .map((item, index) => normalizeRuntimeLog(item, index + 1))
+      .sort((left, right) => Number(right.seq || 0) - Number(left.seq || 0))
+      .slice(0, 300);
+    state.runtimeLogSeq = state.runtimeLogs.reduce((maxSeq, item) => Math.max(maxSeq, Number(item.seq) || 0), state.runtimeLogSeq);
+    return;
+  }
   const clock = snapshot.clock || {};
   const result = snapshot.result || {};
   const summary = snapshot.summary || {};
@@ -1426,20 +1510,43 @@ function appendRuntimeLog(snapshot) {
   ].join("|");
   if (signature === state.lastRuntimeLogKey) return;
   state.lastRuntimeLogKey = signature;
-  state.runtimeLogs.unshift({
-    record_time: new Date().toLocaleTimeString(),
+  state.runtimeLogSeq += 1;
+  state.runtimeLogs.unshift(normalizeRuntimeLog({
+    seq: state.runtimeLogSeq,
+    wall_time: runtimeLogTime(),
     sim_time: clock.time || "--",
-    state: clock.state || "--",
-    speed: clock.speed ?? "--",
-    solver_info: result.solver_info || "待运行",
-    updated: result.updated ?? 0,
-    missing: result.missing ?? 0,
-    overlay_updates: result.overlay_updates ?? 0,
-    scada_count: summary.scada_count ?? 0,
-    command_count: summary.command_count ?? 0,
-    alarm_count: summary.alarm_count ?? 0,
-  });
-  state.runtimeLogs = state.runtimeLogs.slice(0, 200);
+    type: "仿真状态",
+    target: "潮流计算 / SCADA",
+    result: clock.state || "--",
+    level: result.missing ? "warn" : "info",
+    detail: [
+      `速度 x${clock.speed ?? "--"}`,
+      `求解器 ${result.solver_info || "待运行"}`,
+      `量测 ${summary.scada_count ?? 0} 条，命令 ${summary.command_count ?? 0} 条，告警 ${summary.alarm_count ?? 0} 条`,
+      `更新 ${result.updated ?? 0} 条，缺失 ${result.missing ?? 0} 条，叠加修正 ${result.overlay_updates ?? 0} 条`,
+    ],
+  }));
+  state.runtimeLogs = state.runtimeLogs.slice(0, 300);
+}
+
+function normalizeRuntimeLog(item, fallbackSeq = 0) {
+  const detail = item.detail ?? [
+    item.solver_info ? `求解器 ${item.solver_info}` : "",
+    item.scada_count !== undefined ? `量测 ${item.scada_count}` : "",
+    item.command_count !== undefined ? `命令 ${item.command_count}` : "",
+    item.alarm_count !== undefined ? `告警 ${item.alarm_count}` : "",
+    item.updated !== undefined || item.missing !== undefined ? `更新/缺失 ${item.updated ?? 0}/${item.missing ?? 0}` : "",
+  ].filter(Boolean);
+  return {
+    seq: item.seq ?? fallbackSeq,
+    wall_time: item.wall_time || item.record_time || "",
+    sim_time: item.sim_time || item.time || "--",
+    type: item.type || (item.state ? "仿真状态" : ""),
+    target: item.target || (item.solver_info ? "潮流计算 / SCADA" : ""),
+    result: item.result || item.state || "",
+    detail,
+    level: item.level || (item.missing ? "warn" : "info"),
+  };
 }
 
 function renderRuntimeLogs() {
@@ -1454,29 +1561,25 @@ function renderRuntimeLogs() {
     <table class="runtime-log-table">
       <thead>
         <tr>
-          <th>记录时刻</th>
+          <th>序号</th>
+          <th>本机时刻</th>
           <th>仿真时刻</th>
-          <th>运行状态</th>
-          <th>速度</th>
-          <th>求解器</th>
-          <th>量测</th>
-          <th>命令</th>
-          <th>告警</th>
-          <th>更新/缺失</th>
+          <th>类型</th>
+          <th>对象</th>
+          <th>结果</th>
+          <th>详情</th>
         </tr>
       </thead>
       <tbody>
         ${state.runtimeLogs.map((item) => `
-          <tr>
-            <td>${escapeHtml(item.record_time)}</td>
+          <tr class="runtime-log-row is-${escapeHtml(item.level || "info")}">
+            <td class="numeric-cell">${escapeHtml(item.seq)}</td>
+            <td>${escapeHtml(item.wall_time)}</td>
             <td class="mono-cell">${escapeHtml(item.sim_time)}</td>
-            <td><span class="status-dot ${item.state === "running" ? "on" : ""}"></span>${escapeHtml(item.state)}</td>
-            <td>x${escapeHtml(item.speed)}</td>
-            <td>${escapeHtml(item.solver_info)}</td>
-            <td>${escapeHtml(item.scada_count)}</td>
-            <td>${escapeHtml(item.command_count)}</td>
-            <td>${escapeHtml(item.alarm_count)}</td>
-            <td>${escapeHtml(item.updated)} / ${escapeHtml(item.missing)}</td>
+            <td>${escapeHtml(item.type)}</td>
+            <td>${escapeHtml(item.target)}</td>
+            <td>${escapeHtml(item.result)}</td>
+            <td class="runtime-log-detail">${escapeHtml(runtimeLogDetailText(item.detail))}</td>
           </tr>
         `).join("")}
       </tbody>
@@ -3241,6 +3344,7 @@ async function pushSettings() {
 document.querySelectorAll("[data-clock]").forEach((button) => {
   button.addEventListener("click", () => controlClock(button.dataset.clock));
 });
+$("exportDefinitionsButton").addEventListener("click", exportDefinitionsArchive);
 $("cloneModelButton").addEventListener("click", openCloneModelDialog);
 $("closeCloneModelDialog").addEventListener("click", closeCloneModelDialog);
 $("cancelCloneModel").addEventListener("click", closeCloneModelDialog);

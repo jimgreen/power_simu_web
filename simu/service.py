@@ -123,7 +123,8 @@ def minute_to_time(minute: int | float) -> str:
 def _align_minute_to_step(minute: int | float, step_minutes: int | float) -> int:
     step = max(1, int(step_minutes))
     value = max(0, int(minute))
-    return value - value % step
+    remainder = value % step
+    return value if remainder == 0 else value + step - remainder
 
 
 def _effective_clock_step(step_minutes: int | float, speed: int | float) -> int:

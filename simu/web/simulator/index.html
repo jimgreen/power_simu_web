@@ -33,30 +33,12 @@
           <button id="importDefinitionsButton" class="model-import-button" type="button">导入定义</button>
           <button id="cloneModelButton" class="model-clone-button" type="button">复制新模型</button>
         </div>
-        <div class="clock-strip">
-          <div class="clock-readout">
-            <span id="simState">stopped</span>
+        <div class="clock-strip top-clock-strip" aria-label="当前时钟">
+          <div class="clock-readout top-clock-readout">
+            <span id="simState" hidden>stopped</span>
             <strong id="simTime">00:00:00</strong>
-            <small id="simSpeed">x1</small>
+            <small id="simSpeed" hidden>x1</small>
           </div>
-          <button class="icon-button" type="button" data-clock="start" title="启动" aria-pressed="false">
-            <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
-          </button>
-          <button class="icon-button" type="button" data-clock="pause" title="暂停" aria-pressed="false">
-            <svg viewBox="0 0 24 24"><path d="M7 5h4v14H7zM13 5h4v14h-4z" /></svg>
-          </button>
-          <button class="icon-button" type="button" data-clock="stop" title="停止" aria-pressed="true">
-            <svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z" /></svg>
-          </button>
-          <button class="icon-button" type="button" data-clock="step" title="单步">
-            <svg viewBox="0 0 24 24"><path d="M5 5v14l9-7-9-7zm11 0h3v14h-3z" /></svg>
-          </button>
-          <button class="icon-button" type="button" data-clock="slower" title="减速">
-            <svg viewBox="0 0 24 24"><path d="M11 7 6 12l5 5V7zm7 0-5 5 5 5V7z" /></svg>
-          </button>
-          <button class="icon-button" type="button" data-clock="faster" title="加速">
-            <svg viewBox="0 0 24 24"><path d="m6 7 5 5-5 5V7zm7 0 5 5-5 5V7z" /></svg>
-          </button>
         </div>
       </header>
 
@@ -76,6 +58,32 @@
         <section class="page-section is-active" data-page="overview">
           <div class="overview-dashboard">
             <section class="panel overview-status-panel">
+              <div class="overview-clock-controls" aria-label="时钟控制">
+                <div class="overview-clock-control-label">
+                  <span>时钟控制</span>
+                  <strong id="overviewClockSpeed">x1</strong>
+                </div>
+                <div class="overview-clock-button-group">
+                  <button class="icon-button" type="button" data-clock="start" title="启动" aria-pressed="false">
+                    <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+                  </button>
+                  <button class="icon-button" type="button" data-clock="pause" title="暂停" aria-pressed="false">
+                    <svg viewBox="0 0 24 24"><path d="M7 5h4v14H7zM13 5h4v14h-4z" /></svg>
+                  </button>
+                  <button class="icon-button" type="button" data-clock="stop" title="停止" aria-pressed="true">
+                    <svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z" /></svg>
+                  </button>
+                  <button class="icon-button" type="button" data-clock="step" title="单步">
+                    <svg viewBox="0 0 24 24"><path d="M5 5v14l9-7-9-7zm11 0h3v14h-3z" /></svg>
+                  </button>
+                  <button class="icon-button" type="button" data-clock="slower" title="减速">
+                    <svg viewBox="0 0 24 24"><path d="M11 7 6 12l5 5V7zm7 0-5 5 5 5V7z" /></svg>
+                  </button>
+                  <button class="icon-button" type="button" data-clock="faster" title="加速">
+                    <svg viewBox="0 0 24 24"><path d="m6 7 5 5-5 5V7zm7 0 5 5-5 5V7z" /></svg>
+                  </button>
+                </div>
+              </div>
               <div class="overview-status-primary">
                 <span class="overview-state-dot" id="overviewStateDot"></span>
                 <div><small>当前状态</small><strong id="overviewState">已停止</strong></div>
@@ -88,47 +96,10 @@
                 <div><dt>控制指令</dt><dd id="metricCommands">0</dd></div>
                 <div><dt>告警</dt><dd id="metricAlarms">0</dd></div>
               </dl>
-              <div class="overview-status-tail">
-                <small>求解状态</small>
-                <strong id="overviewSolverInfo">待运行</strong>
-                <span id="overviewRefresh">--</span>
-                <span id="metricRefresh" hidden>--</span>
-              </div>
             </section>
 
             <div class="overview-main-grid">
-              <section class="panel overview-process-panel">
-                <div class="panel-head">
-                  <h2>仿真流程</h2>
-                  <span id="overviewProcessSummary">等待启动</span>
-                </div>
-                <div class="simulation-flow" id="overviewSimulationFlow">
-                  <article data-flow-step="input">
-                    <div class="flow-stage-head"><i>1</i><span>数据输入</span></div>
-                    <strong>环境与负荷</strong>
-                    <small id="overviewFlowInput">等待读取边界</small>
-                  </article>
-                  <article data-flow-step="control">
-                    <div class="flow-stage-head"><i>2</i><span>指令处理</span></div>
-                    <strong>控制响应</strong>
-                    <small id="overviewFlowControl">暂无有效指令</small>
-                  </article>
-                  <article data-flow-step="constraint">
-                    <div class="flow-stage-head"><i>3</i><span>能力校核</span></div>
-                    <strong>运行约束</strong>
-                    <small id="overviewFlowConstraint">风光与SOC边界</small>
-                  </article>
-                  <article data-flow-step="powerflow">
-                    <div class="flow-stage-head"><i>4</i><span>网络求解</span></div>
-                    <strong>交直流潮流</strong>
-                    <small id="overviewFlowSolver">等待计算</small>
-                  </article>
-                  <article data-flow-step="output">
-                    <div class="flow-stage-head"><i>5</i><span>结果发布</span></div>
-                    <strong>真值与SCADA</strong>
-                    <small id="overviewFlowOutput">等待生成量测</small>
-                  </article>
-                </div>
+              <section class="panel overview-energy-panel">
                 <div class="overview-energy-board" aria-label="交直流微电网能量流向">
                   <div class="energy-board-head">
                     <h3>电气能量流</h3>
@@ -140,12 +111,12 @@
                   <div class="energy-flow-map" data-flow-layout="single-line">
                     <section class="energy-source-stack" aria-label="新能源">
                       <div class="energy-column-title">新能源</div>
-                      <article class="energy-device wind energy-source-node">
+                      <article class="energy-device wind energy-source-node" id="overviewFlowWindNode" data-flow-active="false">
                         <span>风力发电</span>
                         <strong id="overviewFlowWindPower">--</strong>
                         <small id="overviewFlowWindMeta">风速 --</small>
                       </article>
-                      <article class="energy-device solar energy-source-node">
+                      <article class="energy-device solar energy-source-node" id="overviewFlowSolarNode" data-flow-active="false">
                         <span>光伏发电</span>
                         <strong id="overviewFlowSolarPower">--</strong>
                         <small id="overviewFlowSolarMeta">辐照 --</small>
@@ -155,9 +126,14 @@
                     <div class="energy-bus-rail left" id="overviewEnergyLeftBus" aria-label="新能源汇集母线">
                       <span>新能源汇集母线</span>
                     </div>
-                    <div class="energy-main-trunk" id="overviewEnergyMainTrunk" aria-hidden="true">
+                    <div class="energy-main-trunk" id="overviewEnergyMainTrunk" data-flow-active="false" aria-hidden="true">
+                      <i class="energy-flow-stream energy-flow-main-stream" aria-hidden="true"></i>
                       <span>交直流汇流母线</span>
                     </div>
+                    <article class="energy-green-share" aria-label="实时绿电占比">
+                      <span>实时绿电占比</span>
+                      <strong id="overviewFlowGreenShare">--</strong>
+                    </article>
 
                     <section
                       class="energy-storage-branch-wrap"
@@ -179,12 +155,12 @@
 
                     <section class="energy-terminal-stack" aria-label="负荷和柴发">
                       <div class="energy-column-title">负荷与柴发</div>
-                      <article class="energy-device load energy-load-node">
+                      <article class="energy-device load energy-load-node" id="overviewFlowLoadNode" data-flow-active="false">
                         <span>负荷用电</span>
                         <strong id="overviewFlowLoadPower">--</strong>
                         <small id="overviewFlowLoadMeta">需求 --</small>
                       </article>
-                      <article class="energy-device diesel energy-diesel-node">
+                      <article class="energy-device diesel energy-diesel-node" id="overviewFlowDieselNode" data-flow-active="false">
                         <span>柴油发电</span>
                         <strong id="overviewFlowDieselPower">--</strong>
                         <small>常规电源</small>

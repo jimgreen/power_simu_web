@@ -166,6 +166,9 @@ h1 {
   gap: 8px;
   min-width: 0;
 }
+.top-clock-strip {
+  flex: 0 0 auto;
+}
 .clock-readout {
   height: 42px;
   min-width: 230px;
@@ -204,6 +207,22 @@ h1 {
 .clock-readout small {
   color: var(--muted);
   text-align: right;
+}
+.top-clock-readout {
+  min-width: 150px;
+  grid-template-columns: 1fr;
+  justify-items: center;
+  padding: 0 18px;
+}
+.top-clock-readout.is-year-mode {
+  min-width: 180px;
+  grid-template-columns: 1fr;
+}
+.top-clock-readout strong {
+  font-size: 23px;
+}
+.top-clock-readout.is-year-mode strong {
+  font-size: 18px;
 }
 .icon-button {
   width: 36px;
@@ -323,7 +342,7 @@ h1 {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(320px, 1fr) minmax(104px, 0.42fr);
+  grid-template-rows: auto minmax(390px, 1fr) minmax(96px, 0.28fr);
   gap: 12px;
   overflow: hidden;
 }
@@ -333,10 +352,49 @@ h1 {
 .overview-status-panel {
   min-height: 68px;
   display: grid;
-  grid-template-columns: 150px minmax(620px, 1fr) minmax(190px, 260px);
+  grid-template-columns: auto 150px minmax(620px, 1fr);
   align-items: stretch;
   padding: 0;
   overflow: hidden;
+}
+.overview-clock-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-right: 1px solid var(--line);
+  background: #f8fcfc;
+}
+.overview-clock-control-label {
+  min-width: 70px;
+  display: grid;
+  gap: 2px;
+}
+.overview-clock-control-label span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 15px;
+}
+.overview-clock-control-label strong {
+  color: var(--teal-dark);
+  font-family: Consolas, monospace;
+  font-size: 18px;
+  line-height: 22px;
+}
+.overview-clock-button-group {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.overview-clock-controls .icon-button {
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
+}
+.overview-clock-controls .icon-button svg {
+  width: 21px;
+  height: 21px;
 }
 .overview-status-primary,
 .overview-status-tail {
@@ -411,18 +469,18 @@ h1 {
   overflow: hidden;
   color: var(--teal-dark);
   font-family: Consolas, monospace;
-  font-size: 12px;
+  font-size: 17px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .overview-status-tail span { color: var(--muted); font-size: 11px; }
 .overview-main-grid {
-  min-height: 320px;
+  min-height: 390px;
   display: grid;
-  grid-template-columns: minmax(640px, 1fr) 300px;
+  grid-template-columns: minmax(760px, 1fr) 300px;
   gap: 12px;
 }
-.overview-process-panel,
+.overview-energy-panel,
 .overview-boundary-panel,
 .overview-health-panel,
 .overview-events-panel {
@@ -430,94 +488,13 @@ h1 {
   flex-direction: column;
   overflow: hidden;
 }
-.simulation-flow {
-  flex: 0 0 auto;
-  margin: 2px 0 10px;
-  display: grid;
-  grid-template-columns: repeat(5, minmax(112px, 1fr));
-  gap: 8px;
-}
-.simulation-flow article {
-  position: relative;
-  min-width: 0;
-  min-height: 58px;
-  padding: 6px 9px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 2px;
-  border: 1px solid #d7e1e5;
-  border-radius: 6px;
-  background: #f8fafb;
-}
-.simulation-flow article:not(:last-child)::after {
-  content: "";
-  position: absolute;
-  z-index: 2;
-  top: 50%;
-  right: -9px;
-  width: 9px;
-  height: 2px;
-  background: #9db0b7;
-}
-.flow-stage-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.flow-stage-head i {
-  width: 20px;
-  height: 20px;
-  display: grid;
-  place-items: center;
-  border: 1px solid #bccbd0;
-  border-radius: 50%;
-  background: #fff;
-  color: var(--muted);
-  font-style: normal;
-  font-size: 11px;
-  font-weight: 700;
-}
-.flow-stage-head span {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.simulation-flow article.is-complete {
-  border-color: rgba(0, 140, 140, 0.34);
-  background: #f1f8f8;
-}
-.simulation-flow article.is-complete i {
-  border-color: var(--teal);
-  background: var(--teal);
-  color: #fff;
-}
-.simulation-flow article.is-active {
-  border-color: rgba(184, 117, 0, 0.48);
-  background: #fffaf0;
-}
-.simulation-flow article.is-active i {
-  border-color: var(--amber);
-  color: var(--amber);
-}
-.simulation-flow article > strong { font-size: 12px; }
-.simulation-flow article > small {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .overview-energy-board {
   flex: 1;
-  min-height: 246px;
+  min-height: 390px;
   display: grid;
-  grid-template-rows: auto minmax(230px, 1fr);
-  gap: 8px;
-  padding: 10px 16px 16px;
+  grid-template-rows: auto minmax(340px, 1fr);
+  gap: 12px;
+  padding: 14px 18px 18px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #f7fafb;
@@ -530,7 +507,7 @@ h1 {
 }
 .energy-board-head h3 {
   margin: 0;
-  font-size: 13px;
+  font-size: 16px;
 }
 .energy-board-meta {
   min-width: 0;
@@ -551,17 +528,36 @@ h1 {
   font-family: Consolas, monospace;
 }
 .energy-flow-map {
+  --load-flow-color: #4978c4;
+  --green-flow-color: #2f9e62;
+  --diesel-flow-color: #c84f4f;
   position: relative;
-  width: min(100%, 1060px);
-  min-height: 238px;
+  width: min(100%, 1360px);
+  min-height: 340px;
   height: 100%;
   justify-self: center;
   display: grid;
-  grid-template-columns: minmax(155px, 220px) 18px minmax(240px, 1fr) 18px minmax(160px, 220px);
+  grid-template-columns: minmax(190px, 270px) 22px minmax(320px, 1fr) 22px minmax(195px, 270px);
   grid-template-rows: minmax(0, 1fr);
-  column-gap: 12px;
+  column-gap: 16px;
   align-items: center;
   overflow: hidden;
+}
+@keyframes energyFlowForward {
+  from { background-position: 0 0; }
+  to { background-position: 28px 0; }
+}
+@keyframes energyFlowReverse {
+  from { background-position: 28px 0; }
+  to { background-position: 0 0; }
+}
+@keyframes energyFlowUp {
+  from { background-position: 0 28px; }
+  to { background-position: 0 0; }
+}
+@keyframes energyFlowDown {
+  from { background-position: 0 0; }
+  to { background-position: 0 28px; }
 }
 .energy-source-stack,
 .energy-terminal-stack {
@@ -572,23 +568,29 @@ h1 {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 10px;
+  gap: 14px;
 }
 .energy-column-title {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
 }
 .energy-device,
 .energy-balance {
+  --flow-color: #4978c4;
+  --flow-thickness: 2px;
+  --flow-head-size: 9px;
+  --flow-head-half: 6px;
+  --flow-opacity: 0.36;
+  --flow-duration: 1.35s;
   position: relative;
   min-width: 0;
-  min-height: 0;
-  padding: 6px 10px;
+  min-height: 74px;
+  padding: 10px 13px;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 3px;
+  gap: 6px;
   overflow: visible;
   border: 1px solid #ced9dd;
   border-left: 3px solid #86989f;
@@ -605,45 +607,71 @@ h1 {
 .energy-load-node::after,
 .energy-diesel-node::after {
   top: 50%;
-  width: 34px;
-  height: 2px;
-  background: #4978c4;
+  width: 42px;
+  height: var(--flow-thickness);
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background-color: var(--flow-color);
+  background-image: repeating-linear-gradient(
+    90deg,
+    transparent 0 7px,
+    rgba(255, 255, 255, 0.68) 7px 11px,
+    transparent 11px 18px
+  );
+  background-size: 28px 100%;
+  opacity: var(--flow-opacity);
+  animation: energyFlowForward var(--flow-duration) linear infinite;
 }
 .energy-source-node::after {
-  right: -36px;
+  right: -44px;
 }
 .energy-source-node::before {
-  top: calc(50% - 5px);
-  right: -41px;
+  top: 50%;
+  right: -49px;
   width: 0;
   height: 0;
-  border-top: 6px solid transparent;
-  border-bottom: 6px solid transparent;
-  border-left: 9px solid #4978c4;
+  transform: translateY(-50%);
+  border-top: var(--flow-head-half) solid transparent;
+  border-bottom: var(--flow-head-half) solid transparent;
+  border-left: var(--flow-head-size) solid var(--flow-color);
+  opacity: var(--flow-opacity);
 }
 .energy-load-node::after {
-  left: -36px;
+  left: -44px;
 }
 .energy-load-node::before {
-  top: calc(50% - 5px);
-  left: -8px;
+  top: 50%;
+  left: -9px;
   width: 0;
   height: 0;
-  border-top: 6px solid transparent;
-  border-bottom: 6px solid transparent;
-  border-left: 9px solid #4978c4;
+  transform: translateY(-50%);
+  border-top: var(--flow-head-half) solid transparent;
+  border-bottom: var(--flow-head-half) solid transparent;
+  border-left: var(--flow-head-size) solid var(--flow-color);
+  opacity: var(--flow-opacity);
 }
 .energy-diesel-node::after {
-  left: -36px;
+  left: -44px;
+  animation-name: energyFlowReverse;
 }
 .energy-diesel-node::before {
-  top: calc(50% - 5px);
-  left: -38px;
+  top: 50%;
+  left: -46px;
   width: 0;
   height: 0;
-  border-top: 6px solid transparent;
-  border-bottom: 6px solid transparent;
-  border-right: 9px solid #4978c4;
+  transform: translateY(-50%);
+  border-top: var(--flow-head-half) solid transparent;
+  border-bottom: var(--flow-head-half) solid transparent;
+  border-right: var(--flow-head-size) solid var(--flow-color);
+  opacity: var(--flow-opacity);
+}
+.energy-device[data-flow-active="false"]::after {
+  animation: none;
+  background-image: none;
+}
+.energy-device[data-flow-active="false"]::before,
+.energy-device[data-flow-active="false"]::after {
+  opacity: 0.24;
 }
 .energy-device.storage::after,
 .energy-device.storage::before {
@@ -657,14 +685,14 @@ h1 {
 }
 .energy-device span,
 .energy-balance span,
-.energy-bus-rail span { color: var(--muted); font-size: 10px; }
+.energy-bus-rail span { color: var(--muted); font-size: 12px; }
 .energy-device strong,
-.energy-balance strong { font-family: Consolas, monospace; font-size: 17px; line-height: 1.1; }
+.energy-balance strong { font-family: Consolas, monospace; font-size: 22px; line-height: 1.1; }
 .energy-device small,
 .energy-balance small {
   overflow: hidden;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -680,8 +708,8 @@ h1 {
 .energy-bus-rail {
   position: relative;
   z-index: 2;
-  width: 8px;
-  height: 164px;
+  width: 10px;
+  height: 230px;
   justify-self: center;
   border-radius: 999px;
   background: #4978c4;
@@ -697,26 +725,62 @@ h1 {
   display: none;
 }
 .energy-main-trunk {
+  --flow-color: #2f9e62;
+  --flow-thickness: 4px;
+  --flow-head-size: 13px;
+  --flow-head-half: 9px;
+  --flow-opacity: 0.5;
+  --flow-duration: 1.2s;
   position: absolute;
   z-index: 0;
-  left: clamp(185px, 28%, 250px);
-  right: clamp(185px, 28%, 250px);
+  left: clamp(230px, 28%, 312px);
+  right: clamp(230px, 28%, 312px);
   top: 50%;
   width: auto;
   height: 4px;
   border-radius: 999px;
-  background: #4978c4;
+  background: rgba(73, 120, 196, 0.34);
 }
 .energy-main-trunk::after {
   content: "";
   position: absolute;
   right: -1px;
-  top: -7px;
+  top: 50%;
   width: 0;
   height: 0;
-  border-top: 9px solid transparent;
-  border-bottom: 9px solid transparent;
-  border-left: 13px solid #4978c4;
+  transform: translateY(-50%);
+  border-top: var(--flow-head-half) solid transparent;
+  border-bottom: var(--flow-head-half) solid transparent;
+  border-left: var(--flow-head-size) solid var(--flow-color);
+  opacity: var(--flow-opacity);
+}
+.energy-flow-stream {
+  position: absolute;
+  pointer-events: none;
+}
+.energy-main-trunk .energy-flow-stream {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: var(--flow-thickness);
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background-color: var(--flow-color);
+  background-image: repeating-linear-gradient(
+    90deg,
+    transparent 0 8px,
+    rgba(255, 255, 255, 0.68) 8px 12px,
+    transparent 12px 20px
+  );
+  background-size: 28px 100%;
+  opacity: var(--flow-opacity);
+  animation: energyFlowForward var(--flow-duration) linear infinite;
+}
+.energy-main-trunk[data-flow-active="false"]::after,
+.energy-main-trunk[data-flow-active="false"] .energy-flow-stream {
+  opacity: 0.22;
+  animation: none;
+  background-image: none;
 }
 .energy-main-trunk span {
   position: absolute;
@@ -727,7 +791,39 @@ h1 {
   font-size: 10px;
   white-space: nowrap;
 }
+.energy-green-share {
+  position: absolute;
+  z-index: 3;
+  left: 50%;
+  top: 54px;
+  min-width: 178px;
+  padding: 9px 14px;
+  transform: translateX(-50%);
+  display: grid;
+  gap: 3px;
+  border: 1px solid #c9dde0;
+  border-left: 3px solid var(--green);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 8px 20px rgba(31, 46, 53, 0.08);
+}
+.energy-green-share span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.energy-green-share strong {
+  color: var(--green);
+  font-family: Consolas, monospace;
+  font-size: 23px;
+  line-height: 1.1;
+}
 .energy-storage-branch-wrap {
+  --flow-color: #2f9e62;
+  --flow-thickness: 3px;
+  --flow-head-size: 9px;
+  --flow-head-half: 6px;
+  --flow-opacity: 0.48;
+  --flow-duration: 1.25s;
   position: relative;
   z-index: 2;
   grid-column: 3;
@@ -745,11 +841,19 @@ h1 {
   position: absolute;
   left: 50%;
   top: calc(50% + 2px);
-  bottom: 70px;
-  width: 3px;
+  bottom: 110px;
+  width: var(--flow-thickness);
   transform: translateX(-50%);
   border-radius: 999px;
-  background: #4978c4;
+  background-color: var(--flow-color);
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent 0 8px,
+    rgba(255, 255, 255, 0.7) 8px 12px,
+    transparent 12px 20px
+  );
+  background-size: 100% 28px;
+  opacity: var(--flow-opacity);
 }
 .energy-storage-branch::before,
 .energy-storage-branch::after {
@@ -762,15 +866,23 @@ h1 {
 }
 .energy-storage-branch::before {
   top: -2px;
-  border-left: 6px solid transparent;
-  border-right: 6px solid transparent;
-  border-bottom: 9px solid #4978c4;
+  border-left: var(--flow-head-half) solid transparent;
+  border-right: var(--flow-head-half) solid transparent;
+  border-bottom: var(--flow-head-size) solid var(--flow-color);
+  opacity: var(--flow-opacity);
 }
 .energy-storage-branch::after {
   bottom: -2px;
-  border-left: 6px solid transparent;
-  border-right: 6px solid transparent;
-  border-top: 9px solid #4978c4;
+  border-left: var(--flow-head-half) solid transparent;
+  border-right: var(--flow-head-half) solid transparent;
+  border-top: var(--flow-head-size) solid var(--flow-color);
+  opacity: var(--flow-opacity);
+}
+.energy-storage-branch-wrap[data-storage-flow="discharge"] .energy-storage-branch {
+  animation: energyFlowUp var(--flow-duration) linear infinite;
+}
+.energy-storage-branch-wrap[data-storage-flow="charge"] .energy-storage-branch {
+  animation: energyFlowDown var(--flow-duration) linear infinite;
 }
 .energy-storage-branch-wrap[data-storage-flow="discharge"] .energy-storage-branch::before {
   display: block;
@@ -788,11 +900,30 @@ h1 {
 .energy-storage-branch-wrap[data-storage-flow="idle"] .energy-storage-branch::after {
   opacity: 0.42;
 }
+.energy-storage-branch-wrap[data-storage-flow="idle"] .energy-storage-branch {
+  opacity: 0.24;
+  animation: none;
+  background-image: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .energy-source-node::after,
+  .energy-load-node::after,
+  .energy-diesel-node::after,
+  .energy-main-trunk .energy-flow-stream,
+  .energy-storage-branch {
+    animation: none;
+  }
+}
 .energy-storage-branch-wrap .energy-device.storage {
-  width: min(240px, 72%);
-  min-height: 62px;
-  max-height: 64px;
+  width: min(300px, 76%);
+  min-height: 96px;
+  max-height: none;
   pointer-events: auto;
+}
+.energy-device.storage small {
+  overflow: visible;
+  line-height: 17px;
+  white-space: nowrap;
 }
 .energy-balance { border-left-color: var(--teal); }
 .boundary-list,
@@ -2102,9 +2233,13 @@ th {
 @media (max-width: 1250px) {
   .overview-grid { grid-template-columns: 280px 1fr; }
   .overview-grid > .panel:last-child { grid-column: 1 / -1; }
-  .overview-status-panel { grid-template-columns: 130px minmax(500px, 1fr) 180px; }
+  .overview-status-panel { grid-template-columns: auto 130px minmax(500px, 1fr); }
+  .overview-clock-controls { gap: 9px; padding-inline: 10px; }
+  .overview-clock-control-label { min-width: 62px; }
+  .overview-clock-controls .icon-button { flex-basis: 38px; width: 38px; height: 38px; }
+  .overview-clock-controls .icon-button svg { width: 20px; height: 20px; }
   .overview-status-metrics div { padding-inline: 9px; }
-  .overview-main-grid { grid-template-columns: minmax(560px, 1fr) 270px; }
+  .overview-main-grid { grid-template-columns: minmax(620px, 1fr) 270px; }
   .topic-layout { grid-template-columns: 280px minmax(0, 1fr); }
   .workspace { grid-template-columns: 260px 1fr; }
   .settings { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); }
@@ -2112,31 +2247,25 @@ th {
 
 @media (max-height: 780px) and (min-width: 821px) {
   .overview-dashboard {
-    grid-template-rows: auto minmax(320px, 1fr) minmax(78px, 0.24fr);
-  }
-  .simulation-flow {
-    margin-bottom: 8px;
-  }
-  .simulation-flow article {
-    min-height: 50px;
-    padding: 5px 8px;
+    grid-template-rows: auto minmax(342px, 1fr) minmax(76px, 0.2fr);
   }
   .overview-energy-board {
-    min-height: 208px;
-    grid-template-rows: auto minmax(188px, 1fr);
+    min-height: 318px;
+    grid-template-rows: auto minmax(286px, 1fr);
+    padding-block: 10px 14px;
   }
   .energy-flow-map {
-    min-height: 188px;
+    min-height: 286px;
   }
   .energy-bus-rail {
-    height: 138px;
+    height: 184px;
   }
   .energy-storage-branch {
-    bottom: 58px;
+    bottom: 98px;
   }
   .energy-storage-branch-wrap .energy-device.storage {
-    min-height: 54px;
-    max-height: 56px;
+    min-height: 88px;
+    max-height: none;
   }
 }
 
@@ -2173,15 +2302,27 @@ th {
     display: grid;
     grid-template-columns: 1fr;
   }
+  .overview-clock-controls {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .overview-clock-button-group {
+    flex-wrap: wrap;
+  }
   .overview-status-metrics { grid-template-columns: repeat(2, 1fr); }
   .overview-status-primary,
   .overview-status-tail { border-bottom: 1px solid var(--line); }
   .overview-status-tail { align-items: flex-start; text-align: left; }
-  .simulation-flow { grid-template-columns: 1fr; gap: 8px; }
-  .simulation-flow article { min-height: 68px; }
-  .simulation-flow article::after { display: none; }
-  .overview-energy-board { min-height: 0; }
+  .overview-energy-board { min-height: 320px; }
   .energy-flow-map { grid-template-columns: 1fr; }
+  .energy-green-share {
+    position: static;
+    width: 100%;
+    margin: 0 0 8px;
+    transform: none;
+  }
   .energy-flow-map::before,
   .energy-flow-map::after,
   .energy-device::before,
@@ -2226,6 +2367,11 @@ th {
     min-width: 0;
     width: 100%;
     grid-template-columns: 72px 1fr 42px;
+  }
+  .top-clock-readout {
+    width: auto;
+    min-width: 150px;
+    grid-template-columns: 1fr;
   }
   .workspace {
     grid-template-columns: 1fr;

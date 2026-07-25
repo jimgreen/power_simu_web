@@ -133,6 +133,8 @@ function renderClock(clock) {
   $("simState").textContent = clock.state || "stopped";
   $("simTime").textContent = formatSimulationClock(clock);
   $("simSpeed").textContent = `x${clock.speed ?? 1}`;
+  const overviewClockSpeed = $("overviewClockSpeed");
+  if (overviewClockSpeed) overviewClockSpeed.textContent = `x${clock.speed ?? 1}`;
   const readout = document.querySelector(".clock-readout");
   if (readout) {
     readout.dataset.clockState = clock.state || "stopped";
@@ -1172,8 +1174,12 @@ function renderCurveModeControls() {
 
 function renderClockTextOnly(clock) {
   const time = $("simTime");
+  const simSpeed = $("simSpeed");
+  const overviewClockSpeed = $("overviewClockSpeed");
   const readout = document.querySelector(".clock-readout");
   if (time) time.textContent = formatSimulationClock(clock);
+  if (simSpeed) simSpeed.textContent = `x${clock.speed ?? 1}`;
+  if (overviewClockSpeed) overviewClockSpeed.textContent = `x${clock.speed ?? 1}`;
   if (readout) readout.classList.toggle("is-year-mode", state.curveMode === "year");
 }
 
@@ -2067,11 +2073,83 @@ function overviewCurveBoundary(snapshot) {
 function formatOverviewNumber(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "--";
-  return Number(number.toFixed(2)).toString();
+  return number.toFixed(2);
 }
 
 function overviewPowerText(value) {
   return Number.isFinite(value) ? `${formatOverviewNumber(value)} kW` : "--";
+}
+
+function overviewPercentText(value) {
+  return Number.isFinite(value) ? `${formatOverviewNumber(value)}%` : "--";
+}
+
+function overviewFlowPowerValue(value) {
+  const number = Math.abs(Number(value));
+  return Number.isFinite(number) ? number : 0;
+}
+
+function overviewClamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function overviewLoadFlowColor(greenPowerShare) {
+  const percent = overviewClamp(Number(greenPowerShare), 0, 100);
+  if (!Number.isFinite(percent)) return "#4978c4";
+  const hue = 2 + percent * 1.18;
+  return `hsl(${hue.toFixed(1)}, 62%, 42%)`;
+}
+
+function overviewFlowStyle(powerValue, maxPower) {
+  const power = overviewFlowPowerValue(powerValue);
+  const base = Math.max(1, overviewFlowPowerValue(maxPower));
+  const active = power > 1e-6;
+  const ratio = active ? overviewClamp(Math.sqrt(power / base), 0, 1) : 0;
+  const thickness = active ? 2 + ratio * 6 : 2;
+  const headSize = active ? 8 + ratio * 9 : 8;
+  const headHalf = active ? 5 + ratio * 5 : 5;
+  const opacity = active ? 0.58 + ratio * 0.34 : 0.24;
+  const duration = active ? 1.4 - ratio * 0.42 : 1.4;
+  return {
+    active,
+    thickness: `${thickness.toFixed(2)}px`,
+    headSize: `${headSize.toFixed(2)}px`,
+    headHalf: `${headHalf.toFixed(2)}px`,
+    opacity: opacity.toFixed(2),
+    duration: `${duration.toFixed(2)}s`,
+  };
+}
+
+function setOverviewFlowVisual(id, powerValue, maxPower, color) {
+  const element = $(id);
+  if (!element) return;
+  const visual = overviewFlowStyle(powerValue, maxPower);
+  element.dataset.flowActive = visual.active ? "true" : "false";
+  element.style.setProperty("--flow-color", color);
+  element.style.setProperty("--flow-thickness", visual.thickness);
+  element.style.setProperty("--flow-head-size", visual.headSize);
+  element.style.setProperty("--flow-head-half", visual.headHalf);
+  element.style.setProperty("--flow-opacity", visual.opacity);
+  element.style.setProperty("--flow-duration", visual.duration);
+}
+
+function renderEnergyFlowVisuals(power, storagePower, greenPowerShare) {
+  const windPower = overviewFlowPowerValue(power.wind);
+  const solarPower = overviewFlowPowerValue(power.solar);
+  const dieselPower = overviewFlowPowerValue(power.diesel);
+  const loadPower = overviewFlowPowerValue(power.load);
+  const storageMagnitude = overviewFlowPowerValue(storagePower);
+  const renewablePower = windPower + solarPower + Math.max(0, Number(storagePower) || 0);
+  const maxPower = Math.max(1, windPower, solarPower, dieselPower, loadPower, storageMagnitude, renewablePower);
+  const greenColor = "#2f9e62";
+  const dieselColor = "#c84f4f";
+  const loadColor = overviewLoadFlowColor(greenPowerShare);
+  setOverviewFlowVisual("overviewFlowWindNode", windPower, maxPower, greenColor);
+  setOverviewFlowVisual("overviewFlowSolarNode", solarPower, maxPower, greenColor);
+  setOverviewFlowVisual("overviewFlowDieselNode", dieselPower, maxPower, dieselColor);
+  setOverviewFlowVisual("overviewFlowLoadNode", loadPower, maxPower, loadColor);
+  setOverviewFlowVisual("overviewStorageFlowLink", storageMagnitude, maxPower, greenColor);
+  setOverviewFlowVisual("overviewEnergyMainTrunk", renewablePower, maxPower, greenColor);
 }
 
 function setOverviewText(id, value) {
@@ -2119,28 +2197,6 @@ function renderOverviewDashboard(snapshot) {
   setOverviewText("overviewMeasurementTotal", totalMeasurements);
   setOverviewText("metricCommands", snapshot.summary?.command_count || 0);
   setOverviewText("metricAlarms", snapshot.summary?.alarm_count || 0);
-  setOverviewText("metricRefresh", new Date().toLocaleTimeString());
-  setOverviewText("overviewRefresh", `仿真时刻 ${formatSimulationClock(clock)}`);
-  setOverviewText("overviewSolverInfo", result.solver_info || "待运行");
-  const completedSteps = Number(clock.step_count || 0);
-  const processSuffix = clock.state === "running" ? " · 持续循环" : clock.state === "paused" ? " · 已暂停" : "";
-  setOverviewText("overviewProcessSummary", completedSteps > 0 ? `已完成 ${completedSteps} 步${processSuffix}` : clock.state === "running" ? "正在执行第 1 步" : "等待启动");
-  document.querySelectorAll("#overviewSimulationFlow [data-flow-step]").forEach((item, index) => {
-    const completed = Number(clock.step_count || 0) > 0;
-    item.classList.toggle("is-complete", completed);
-    item.classList.toggle("is-active", !completed && clock.state === "running" && index === 0);
-  });
-  setOverviewText(
-    "overviewFlowInput",
-    `风 ${formatOverviewNumber(boundary.point.wind_speed_mps)} m/s · 荷 ${formatOverviewNumber(boundary.loadTotal)} kW`,
-  );
-  setOverviewText("overviewFlowControl", `${snapshot.summary?.command_count || 0} 条有效指令`);
-  setOverviewText(
-    "overviewFlowConstraint",
-    Number.isFinite(power.soc) ? `储能SOC ${formatOverviewNumber(power.soc)}%` : "风光出力与储能SOC校核",
-  );
-  setOverviewText("overviewFlowSolver", result.solver_info || "等待网络求解");
-  setOverviewText("overviewFlowOutput", `${validMeasurements}/${totalMeasurements} 条有效量测`);
   setOverviewText("overviewBoundaryTime", formatSimulationClock(clock));
   setOverviewText("overviewWindSpeed", Number.isFinite(Number(boundary.point.wind_speed_mps)) ? `${formatOverviewNumber(boundary.point.wind_speed_mps)} m/s` : "--");
   setOverviewText("overviewIrradiance", Number.isFinite(Number(boundary.point.solar_irradiance_w_m2)) ? `${formatOverviewNumber(boundary.point.solar_irradiance_w_m2)} W/m²` : "--");
@@ -2168,6 +2224,11 @@ function renderOverviewDashboard(snapshot) {
   setOverviewText("overviewFlowLoadPower", overviewPowerText(power.load));
   setOverviewText("overviewFlowLoadMeta", Number.isFinite(boundary.loadTotal) ? `需求 ${overviewPowerText(boundary.loadTotal)}` : "需求 --");
   setOverviewText("overviewFlowBalance", overviewPowerText(power.balance));
+  const greenPowerShare = Number.isFinite(power.diesel) && Number.isFinite(power.load) && Math.abs(power.load) > 1e-9
+    ? (1.0 - power.diesel / power.load) * 100.0
+    : null;
+  setOverviewText("overviewFlowGreenShare", overviewPercentText(greenPowerShare));
+  renderEnergyFlowVisuals(power, storagePower, greenPowerShare);
   setOverviewText("overviewMeasurementQuality", totalMeasurements ? `有效率 ${formatOverviewNumber(validMeasurements / totalMeasurements * 100)}%` : "待计算");
   setOverviewText("overviewSolverDetail", result.solver_info || "--");
   setOverviewText("overviewUpdatedMeasurements", Number.isFinite(Number(result.updated)) ? `${result.updated} 条` : "--");
@@ -3942,10 +4003,11 @@ function faultWindowFields() {
       clearField: "clear_day",
       startLabel: "故障启始日",
       clearLabel: "结束日",
-      inputType: "number",
-      min: 1,
-      max: 365,
-      step: 1,
+      inputType: "text",
+      min: "",
+      max: "",
+      step: "",
+      placeholder: "1月1日",
       deviceStart: 1,
       deviceClear: 2,
       measurementStart: 1,
@@ -3961,6 +4023,7 @@ function faultWindowFields() {
     min: "00:00",
     max: "23:59",
     step: 60,
+    placeholder: "",
     deviceStart: 60,
     deviceClear: 120,
     measurementStart: 180,
@@ -3968,12 +4031,38 @@ function faultWindowFields() {
   };
 }
 
+function dayOfYearToMonthDay(day) {
+  const monthDays = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  let remain = clamp(Math.round(Number(day) || 1), 1, 365);
+  let month = 0;
+  while (month < monthDays.length - 1 && remain > monthDays[month]) {
+    remain -= monthDays[month];
+    month += 1;
+  }
+  return `${month + 1}月${remain}日`;
+}
+
+function monthDayToDayOfYear(value, fallback = 1) {
+  const monthDays = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const text = String(value ?? "").trim();
+  const numeric = Number(text);
+  if (Number.isFinite(numeric) && text !== "") {
+    return clamp(Math.round(numeric), 1, 365);
+  }
+  const match = text.match(/(\d{1,2})\D+(\d{1,2})/);
+  if (!match) return clamp(Math.round(Number(fallback) || 1), 1, 365);
+  const month = clamp(Math.round(Number(match[1]) || 1), 1, 12);
+  const day = clamp(Math.round(Number(match[2]) || 1), 1, monthDays[month - 1]);
+  const previousDays = monthDays.slice(0, month - 1).reduce((total, count) => total + count, 0);
+  return previousDays + day;
+}
+
 function faultWindowInputValue(fault, field, fallback) {
   if (field === "start_minute" || field === "clear_minute") {
     return minuteToTimeInput(fault?.[field], fallback);
   }
   const value = Number(fault?.[field]);
-  return clamp(Math.round(Number.isFinite(value) ? value : fallback), 1, 365);
+  return dayOfYearToMonthDay(Number.isFinite(value) ? value : fallback);
 }
 
 function faultSimulationModeLabel() {
@@ -4022,8 +4111,8 @@ function renderDeviceFaultTable() {
                   <option value="fault" ${fault ? "selected" : ""}>故障</option>
                 </select>
               </td>
-              <td><input data-device-index="${index}" data-device-field="${windowFields.startField}" type="${windowFields.inputType}" min="${windowFields.min}" max="${windowFields.max}" step="${windowFields.step}" value="${faultWindowInputValue(fault, windowFields.startField, windowFields.deviceStart)}" ${disabled} /></td>
-              <td><input data-device-index="${index}" data-device-field="${windowFields.clearField}" type="${windowFields.inputType}" min="${windowFields.min}" max="${windowFields.max}" step="${windowFields.step}" value="${faultWindowInputValue(fault, windowFields.clearField, windowFields.deviceClear)}" ${disabled} /></td>
+              <td><input data-device-index="${index}" data-device-field="${windowFields.startField}" type="${windowFields.inputType}" min="${windowFields.min}" max="${windowFields.max}" step="${windowFields.step}" placeholder="${windowFields.placeholder}" value="${faultWindowInputValue(fault, windowFields.startField, windowFields.deviceStart)}" ${disabled} /></td>
+              <td><input data-device-index="${index}" data-device-field="${windowFields.clearField}" type="${windowFields.inputType}" min="${windowFields.min}" max="${windowFields.max}" step="${windowFields.step}" placeholder="${windowFields.placeholder}" value="${faultWindowInputValue(fault, windowFields.clearField, windowFields.deviceClear)}" ${disabled} /></td>
             </tr>`;
         }).join("")}
       </tbody>
@@ -4078,8 +4167,8 @@ function renderMeasurementFaultTable() {
                   <option value="zero" ${faultType === "zero" ? "selected" : ""}>0值</option>
                 </select>
               </td>
-              <td><input data-meas-index="${index}" data-meas-field="${windowFields.startField}" type="${windowFields.inputType}" min="${windowFields.min}" max="${windowFields.max}" step="${windowFields.step}" value="${faultWindowInputValue(fault, windowFields.startField, windowFields.measurementStart)}" ${disabled} /></td>
-              <td><input data-meas-index="${index}" data-meas-field="${windowFields.clearField}" type="${windowFields.inputType}" min="${windowFields.min}" max="${windowFields.max}" step="${windowFields.step}" value="${faultWindowInputValue(fault, windowFields.clearField, windowFields.measurementClear)}" ${disabled} /></td>
+              <td><input data-meas-index="${index}" data-meas-field="${windowFields.startField}" type="${windowFields.inputType}" min="${windowFields.min}" max="${windowFields.max}" step="${windowFields.step}" placeholder="${windowFields.placeholder}" value="${faultWindowInputValue(fault, windowFields.startField, windowFields.measurementStart)}" ${disabled} /></td>
+              <td><input data-meas-index="${index}" data-meas-field="${windowFields.clearField}" type="${windowFields.inputType}" min="${windowFields.min}" max="${windowFields.max}" step="${windowFields.step}" placeholder="${windowFields.placeholder}" value="${faultWindowInputValue(fault, windowFields.clearField, windowFields.measurementClear)}" ${disabled} /></td>
               <td><input data-meas-index="${index}" data-meas-field="median" type="number" step="0.001" value="${fault?.median ?? meas.value ?? 0}" ${disabled} /></td>
               <td><input data-meas-index="${index}" data-meas-field="bias" type="number" step="0.001" value="${fault?.bias ?? 0}" ${disabled} /></td>
             </tr>`;
@@ -4100,7 +4189,7 @@ function updateDeviceFault(index, field, rawValue, shouldRender = true) {
   if (field === "start_minute" || field === "clear_minute") {
     fault[field] = timeInputToMinute(rawValue, fault[field]);
   } else if (field === "start_day" || field === "clear_day") {
-    fault[field] = clamp(Math.round(Number(rawValue) || fault[field] || 1), 1, 365);
+    fault[field] = monthDayToDayOfYear(rawValue, fault[field] || 1);
   }
   if (shouldRender) renderFaults(true);
 }
@@ -4119,7 +4208,7 @@ function updateMeasurementFault(index, field, rawValue, shouldRender = true) {
   } else if (field === "start_minute" || field === "clear_minute") {
     fault[field] = timeInputToMinute(rawValue, fault[field]);
   } else if (field === "start_day" || field === "clear_day") {
-    fault[field] = clamp(Math.round(Number(rawValue) || fault[field] || 1), 1, 365);
+    fault[field] = monthDayToDayOfYear(rawValue, fault[field] || 1);
   } else if (field === "median" || field === "bias") {
     fault[field] = Number(rawValue);
   }

@@ -998,7 +998,7 @@ class PolarMicrogridSimulator:
         if self._last_command_response_index >= len(self.command_history):
             active = self._active_control_command_entries(self.clock.absolute_minute)
             return [
-                f"控制响应 本轮无新增学员台控制指令；当前有效控制指令 {len(active)} 条，按有效期物化后的 stat.e / yt_ctrl.e 输入边界开展潮流计算"
+                f"控制响应 本轮无新增学员台控制指令；当前有效控制指令 {len(active)} 条"
             ]
         pending_items = self.command_history[self._last_command_response_index :]
         effective_count = sum(1 for item in pending_items if item.get("eligible_source"))
@@ -1101,7 +1101,9 @@ class PolarMicrogridSimulator:
         if model_book is None or not device_book.data:
             return ["新能源限值 未读取到潮流输入模型或 device.e"]
 
-        wind_parts: List[str] = []
+        wind_count = 0
+        wind_available_total = 0.0
+        wind_execute_total = 0.0
         wind_speed = weather.get("wind_speed_mps")
         if wind_speed is not None:
             for _table_name, row, define, _pos in simu_loop._renewable_target_rows(
@@ -1120,11 +1122,13 @@ class PolarMicrogridSimulator:
                     define,
                 )
                 column = "p_ac_set" if "p_ac_set" in row else "p_set"
-                wind_parts.append(
-                    f"{row.get('name', '')}:风速 {_number_text(wind_speed)} m/s，可用 {format_number(available)} kW，执行 {column}={_number_text(row.get(column, ''))} kW"
-                )
+                wind_count += 1
+                wind_available_total += float(available)
+                wind_execute_total += abs(_to_float(row.get(column), 0.0) or 0.0)
 
-        pv_parts: List[str] = []
+        pv_count = 0
+        pv_available_total = 0.0
+        pv_execute_total = 0.0
         irradiance = weather.get("solar_irradiance_w_m2")
         if irradiance is not None:
             air_temp = float(weather.get("air_temp_c", 25.0))
@@ -1143,13 +1147,15 @@ class PolarMicrogridSimulator:
                     simu_loop.pv_available_power(float(irradiance), air_temp, rated, temp_coef, ref_irrad, ref_temp),
                     define,
                 )
-                pv_parts.append(
-                    f"{row.get('name', '')}:辐照 {_number_text(irradiance)} W/m2，气温 {format_number(air_temp)} ℃，可用 {format_number(available)} kW，执行 p_set={_number_text(row.get('p_set', ''))} kW"
-                )
+                pv_count += 1
+                pv_available_total += float(available)
+                pv_execute_total += abs(_to_float(row.get("p_set"), 0.0) or 0.0)
 
         return [
-            f"新能源限值 风电 {self._short_list(wind_parts, 12)}",
-            f"新能源限值 光伏 {self._short_list(pv_parts, 12)}",
+            (
+                f"新能源限值 风电 {wind_count} 台，可用 {format_number(wind_available_total)} kW，执行 {format_number(wind_execute_total)} kW；"
+                f"光伏 {pv_count} 台，可用 {format_number(pv_available_total)} kW，执行 {format_number(pv_execute_total)} kW"
+            )
         ]
 
     def _input_boundary_lines(
@@ -1167,46 +1173,24 @@ class PolarMicrogridSimulator:
         soc_block = stat_book.data.get("StorageSoc") or stat_book.data.get("StorageStatus")
         soc_rows = list(getattr(soc_block, "data", []))
 
-        run_off = [
-            f"{row.get('dev_type', '')}.{_dev_name(row)}={_number_text(row.get('run_stat', ''))}"
-            for row in run_rows
-            if int(_to_float(row.get("run_stat"), 1) or 0) == 0
-        ]
-        cb_zero = [
-            f"{row.get('dev_type', '')}.{_dev_name(row)}={_number_text(row.get('status', ''))}"
-            for row in cb_rows
-            if int(_to_float(row.get("status"), 1) or 0) == 0
-        ]
-        set_values = [
-            f"{row.get('dev_type', '')}.{_dev_name(row)}.{row.get('set_type', '')}={_number_text(row.get('set_value', ''))}"
-            for row in set_rows
-        ]
-        soc_values = [
-            f"{row.get('dev_type', 'ESS')}.{row.get('name', row.get('dev_name', ''))}={_number_text(row.get('soc_curr', row.get('soc', '')))}"
-            for row in soc_rows
-        ]
+        run_off = [row for row in run_rows if int(_to_float(row.get("run_stat"), 1) or 0) == 0]
+        cb_zero = [row for row in cb_rows if int(_to_float(row.get("status"), 1) or 0) == 0]
         run_on = len(run_rows) - len(run_off)
         cb_one = len(cb_rows) - len(cb_zero)
-        weather_text = "，".join(
-            f"{key}={weather.get(key, '')}"
-            for key in WEATHER_HEADER
-            if key in weather
-        ) or "未读取到 Weather 块"
+        weather_text = (
+            f"风速 {_number_text(weather.get('wind_speed_mps', ''))} m/s，"
+            f"辐照 {_number_text(weather.get('solar_irradiance_w_m2', ''))} W/m2，"
+            f"气温 {_number_text(weather.get('air_temp_c', ''))} ℃，"
+            f"负荷 {_number_text(weather.get('load_kw', ''))} kW"
+            if weather
+            else "未读取到 Weather 块"
+        )
         return [
-            (
-                "输入文件 "
-                f"model={self.files['model'].name}，meas={self.files['meas'].name}，stat={self.files['stat'].name}，"
-                f"weather={self.files['weather'].name}，device={self.files['device'].name}，yt_ctrl={self.files['yt_ctrl'].name}"
-            ),
             (
                 f"仿真边界 时刻 {minute_to_time(minute)}，日内分钟 {minute}，累计分钟 {absolute_minute}，"
                 f"本步推进 {clock_advance} min，等效计算周期 {format_number(period_seconds)} s"
             ),
-            f"天气/负荷边界 {weather_text}",
-            f"RunStat 投入 {run_on}/{len(run_rows)}，退出 {len(run_off)}：{self._short_list(run_off)}",
-            f"CbOpenStat status=1 {cb_one}/{len(cb_rows)}，status=0 {len(cb_zero)}：{self._short_list(cb_zero)}",
-            f"SetValue {len(set_rows)} 条：{self._short_list(set_values, 36)}",
-            f"StorageSoc {len(soc_rows)} 条：{self._short_list(soc_values, 36)}",
+            f"输入边界 {weather_text}；投入设备 {run_on}/{len(run_rows)}，退出 {len(run_off)}，开关合位 {cb_one}/{len(cb_rows)}，分位 {len(cb_zero)}，设值 {len(set_rows)} 条，储能SOC {len(soc_rows)} 条",
             *self._renewable_limit_boundary_lines(),
         ]
 

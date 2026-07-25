@@ -30,6 +30,7 @@ class ClockStepAlignmentTest(unittest.TestCase):
         clock = service.control_clock({"action": "start"})
         self.assertEqual(clock["minute"] % clock["step_minutes"], 0)
 
+        service.control_clock({"action": "stop"})
         service.control_clock({"minute": 8 * 60 + 7, "step_minutes": 1})
         service.set_curves(
             {

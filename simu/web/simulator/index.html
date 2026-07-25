@@ -22,7 +22,13 @@
             </select>
             <span id="activeModelName">默认模型</span>
           </label>
-          <button id="exportDefinitionsButton" class="model-export-button" type="button">导出定义包</button>
+          <label class="simulation-mode-switcher">仿真模式
+            <select id="simulationModeSelector" title="选择年仿真或日仿真">
+              <option value="year">年仿真</option>
+              <option value="day">日仿真</option>
+            </select>
+          </label>
+          <button id="exportDefinitionsButton" class="model-export-button" type="button" title="请选择定义包导出目录">导出定义包</button>
           <button id="cloneModelButton" class="model-clone-button" type="button">复制新模型</button>
         </div>
         <div class="clock-strip">
@@ -218,9 +224,9 @@
                   <span><strong id="curvePointCount">8760点</strong> · <span id="curveStatus">未写入</span></span>
                 </div>
                 <div class="curve-toolbar">
-                  <div class="segmented-control curve-mode-control" role="group" aria-label="曲线模式">
-                    <button type="button" class="is-active" data-curve-mode="year" aria-pressed="true">年曲线</button>
-                    <button type="button" data-curve-mode="day" aria-pressed="false">日曲线</button>
+                  <div class="segmented-control curve-mode-control" role="group" aria-label="仿真类型">
+                    <button type="button" class="is-active" data-curve-mode="year" aria-pressed="true">年仿真</button>
+                    <button type="button" data-curve-mode="day" aria-pressed="false">日仿真</button>
                   </div>
                   <span id="activeCurveLabel">风速</span>
                   <button id="generateDenseCurves">生成典型曲线</button>
@@ -391,7 +397,10 @@
                         <option value="120">2小时</option>
                         <option value="180">3小时</option>
                         <option value="360">6小时</option>
-                        <option value="1440">24小时</option>
+                        <option value="1440">1日</option>
+                        <option value="10080">1周</option>
+                        <option value="43200">1月</option>
+                        <option value="525600">1年</option>
                       </select>
                     </label>
                     <span id="runtimeTraceSummary">0 点</span>
@@ -457,7 +466,10 @@
                         <option value="120">2小时</option>
                         <option value="180">3小时</option>
                         <option value="360">6小时</option>
-                        <option value="1440">24小时</option>
+                        <option value="1440">1日</option>
+                        <option value="10080">1周</option>
+                        <option value="43200">1月</option>
+                        <option value="525600">1年</option>
                       </select>
                     </label>
                     <span id="measurementTraceSummary">0 点</span>

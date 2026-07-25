@@ -41,6 +41,7 @@ const state = {
 };
 const pending = { run_status: new Map(), set_values: new Map() };
 const CONTROL_COMMAND_VALID_MINUTES = 5;
+const TRACE_HISTORY_LIMIT = 45000;
 
 const $ = (id) => document.getElementById(id);
 
@@ -1087,7 +1088,7 @@ function appendMeasurementTrace(snapshot) {
     };
   });
   state.measurementTraceHistory.push(point);
-  state.measurementTraceHistory = state.measurementTraceHistory.slice(-3000);
+  state.measurementTraceHistory = state.measurementTraceHistory.slice(-TRACE_HISTORY_LIMIT);
 }
 
 function measurementTraceWindowPoints() {
@@ -1103,6 +1104,20 @@ function measurementTraceWindowPoints() {
       return { minute: point.minute, time: point.time, value: item.value, label: item.label };
     })
     .filter(Boolean);
+}
+
+function measurementTraceTimeLabel(minute, windowMinutes, fallback = "") {
+  const absolute = Math.max(0, Math.round(Number(minute) || 0));
+  if (Number(windowMinutes) <= 1440) return fallback;
+  if (Number(windowMinutes) >= 525600) {
+    const year = Math.floor(absolute / 525600) + 1;
+    return `第${year}年`;
+  }
+  const day = Math.floor(absolute / 1440);
+  const dayMinute = absolute % 1440;
+  const hour = String(Math.floor(dayMinute / 60)).padStart(2, "0");
+  const minuteText = String(dayMinute % 60).padStart(2, "0");
+  return dayMinute === 0 ? `第${day + 1}天` : `第${day + 1}天 ${hour}:${minuteText}`;
 }
 
 function resizeCanvas(canvas) {
@@ -1167,9 +1182,10 @@ function drawMeasurementTraceChart() {
   ctx.font = `${12 * ratio}px Consolas, Microsoft YaHei, Arial`;
   ctx.fillText(formatNumber(maxValue), 8 * ratio, top + 4 * ratio);
   ctx.fillText(formatNumber(minValue), 8 * ratio, top + plotHeight);
-  ctx.fillText(points[0].time || "", left, height - 12 * ratio);
+  ctx.fillText(measurementTraceTimeLabel(points[0].minute, state.measurementTraceWindowMinutes, points[0].time || ""), left, height - 12 * ratio);
   ctx.textAlign = "right";
-  ctx.fillText(points[points.length - 1].time || "", width - right, height - 12 * ratio);
+  const lastPoint = points[points.length - 1];
+  ctx.fillText(measurementTraceTimeLabel(lastPoint.minute, state.measurementTraceWindowMinutes, lastPoint.time || ""), width - right, height - 12 * ratio);
   ctx.textAlign = "left";
   $("measurementTraceSummary").textContent = `${points[points.length - 1].label || "测点"} · ${points.length} 点`;
 }

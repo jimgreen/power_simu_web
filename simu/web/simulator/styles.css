@@ -94,7 +94,7 @@ h1 {
   letter-spacing: 0;
 }
 .model-toolbar {
-  min-width: 520px;
+  min-width: 480px;
   max-width: 700px;
   flex: 1 1 620px;
   display: flex;
@@ -102,7 +102,7 @@ h1 {
   gap: 8px;
 }
 .model-switcher {
-  min-width: 210px;
+  min-width: 180px;
   flex: 1 1 auto;
   display: flex;
   align-items: center;
@@ -114,7 +114,7 @@ h1 {
 }
 .model-switcher select {
   flex: 1 1 150px;
-  min-width: 130px;
+  min-width: 110px;
   height: 32px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -129,6 +129,27 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.simulation-mode-switcher {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.simulation-mode-switcher select {
+  width: 88px;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 8px;
+  background: #fff;
+  color: var(--ink);
+  font-weight: 700;
 }
 .model-clone-button,
 .model-export-button {
@@ -171,6 +192,14 @@ h1 {
 .clock-readout strong {
   font-family: Consolas, monospace;
   font-size: 22px;
+}
+.clock-readout.is-year-mode {
+  min-width: 270px;
+  grid-template-columns: 68px minmax(148px, 1fr) 36px;
+}
+.clock-readout.is-year-mode strong {
+  font-size: 18px;
+  white-space: nowrap;
 }
 .clock-readout small {
   color: var(--muted);
@@ -501,9 +530,30 @@ input[type="range"] { padding: 0; accent-color: var(--teal); }
   flex: 1;
   min-height: 0;
   max-height: none;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: scroll;
+  scrollbar-width: auto;
+  scrollbar-color: #8fa4ad #eef3f5;
+  scrollbar-gutter: stable;
   border: 1px solid var(--line);
   border-radius: 8px;
+}
+.curve-table-wrap::-webkit-scrollbar {
+  width: 14px;
+  height: 10px;
+}
+.curve-table-wrap::-webkit-scrollbar-track {
+  background: #eef3f5;
+  border-left: 1px solid var(--line);
+}
+.curve-table-wrap::-webkit-scrollbar-thumb {
+  min-height: 34px;
+  border: 3px solid #eef3f5;
+  border-radius: 7px;
+  background: #8fa4ad;
+}
+.curve-table-wrap::-webkit-scrollbar-thumb:hover {
+  background: #637f89;
 }
 .curve-table th,
 .curve-table td {

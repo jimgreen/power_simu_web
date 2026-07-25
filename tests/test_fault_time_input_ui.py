@@ -8,15 +8,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class FaultTimeInputUiTest(unittest.TestCase):
-    def test_fault_windows_use_time_inputs_and_minute_conversion(self):
+    def test_fault_windows_follow_year_or_day_simulation_mode(self):
         app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
 
         self.assertIn("function minuteToTimeInput", app_js)
         self.assertIn("function timeInputToMinute", app_js)
-        self.assertIn('data-device-field="start_minute" type="time"', app_js)
-        self.assertIn('data-device-field="clear_minute" type="time"', app_js)
-        self.assertIn('data-meas-field="start_minute" type="time"', app_js)
-        self.assertIn('data-meas-field="clear_minute" type="time"', app_js)
+        self.assertIn("function faultWindowFields", app_js)
+        self.assertIn('type="${windowFields.inputType}"', app_js)
+        self.assertIn('min="${windowFields.min}"', app_js)
+        self.assertIn('max="${windowFields.max}"', app_js)
+        self.assertIn("start_day", app_js)
+        self.assertIn("clear_day", app_js)
         self.assertIn("timeInputToMinute(rawValue, fault[field])", app_js)
 
 

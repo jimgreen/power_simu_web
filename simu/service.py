@@ -346,7 +346,26 @@ def _load_book(path: Path) -> EBook:
     return EBook(path) if path.exists() else EBook({})
 
 
-def _active_window(item: Mapping[str, Any], minute: int) -> bool:
+def _active_window(
+    item: Mapping[str, Any],
+    minute: int,
+    absolute_minute: Optional[int | float] = None,
+    curve_mode: str = "day",
+) -> bool:
+    if str(curve_mode or "day").lower() == "year":
+        absolute = float(minute if absolute_minute is None else absolute_minute)
+        current_day = int(absolute // 1440) % 365 + 1
+        start = min(365, max(1, int(_to_float(item.get("start_day", 1), 1) or 1)))
+        clear_value = item.get("clear_day", item.get("end_day"))
+        if clear_value in (None, ""):
+            return current_day >= start
+        clear = min(365, max(1, int(_to_float(clear_value, 365) or 365)))
+        if start < clear:
+            return start <= current_day <= clear
+        if start > clear:
+            return current_day >= start or current_day <= clear
+        return current_day == start
+
     start = int(_to_float(item.get("start_minute", item.get("start", 0)), 0) or 0) % 1440
     clear_value = item.get("clear_minute", item.get("end_minute", item.get("clear")))
     if clear_value in (None, ""):
@@ -1412,6 +1431,9 @@ class PolarMicrogridSimulator:
             mode = str(payload.get("mode", self.curves.get("mode", "day")) or "day").lower()
             if mode not in ("day", "year"):
                 mode = "day"
+            current_mode = str(self.curves.get("mode", "day") or "day").lower()
+            if mode != current_mode and self.clock.state != "stopped":
+                raise ValueError("仿真运行过程中不能切换仿真模式，请先停止仿真")
             default_step = 60 if mode == "year" else 1
             time_step_minutes = int(_to_float(payload.get("time_step_minutes"), default_step) or default_step)
             point_count = int(_to_float(payload.get("point_count"), 8760 if mode == "year" else 1440) or 0)
@@ -1516,7 +1538,7 @@ class PolarMicrogridSimulator:
             self._prepare_runtime_inputs(minute, absolute_minute)
             config = self._make_config(period_seconds=period_seconds)
             kernel_result = self.kernel(config)
-            self._apply_measurement_faults(minute)
+            self._apply_measurement_faults(minute, absolute_minute)
             self.latest_measurements = self.measurements()
             result_dict = self._kernel_result_dict(kernel_result)
             self.latest_result = result_dict
@@ -1539,7 +1561,7 @@ class PolarMicrogridSimulator:
     def _prepare_runtime_inputs(self, minute: int, absolute_minute: int) -> None:
         self._write_current_weather(minute, absolute_minute)
         self._materialize_active_control_commands(absolute_minute)
-        self._apply_device_faults(minute)
+        self._apply_device_faults(minute, absolute_minute)
         self._apply_modes_to_model()
 
     def _write_current_weather(self, minute: int, absolute_minute: int | float | None = None) -> None:
@@ -1578,14 +1600,15 @@ class PolarMicrogridSimulator:
         book = _make_book({"Weather": (WEATHER_HEADER, [clean])})
         simu_loop.write_ebook_aligned(book, self.files["weather"])
 
-    def _apply_device_faults(self, minute: int) -> None:
+    def _apply_device_faults(self, minute: int, absolute_minute: int) -> None:
         book = _load_book(self.files["stat"])
         run_block = _ensure_block(book, "RunStat", STAT_HEADERS["RunStat"])
         cb_block = _ensure_block(book, "CbOpenStat", STAT_HEADERS["CbOpenStat"])
         active_keys: set[Tuple[str, str, str]] = set()
 
+        curve_mode = str(self.curves.get("mode", "day") or "day").lower()
         for fault in self.local_settings.get("device_faults", []):
-            if not isinstance(fault, Mapping) or not _active_window(fault, minute):
+            if not isinstance(fault, Mapping) or not _active_window(fault, minute, absolute_minute, curve_mode):
                 continue
             dev_type = str(fault.get("dev_type", fault.get("type", "")))
             dev_name = str(fault.get("dev_name", fault.get("name", "")))
@@ -1657,9 +1680,10 @@ class PolarMicrogridSimulator:
         if changed:
             simu_loop.write_ebook_aligned(book, self.files["model"])
 
-    def _apply_measurement_faults(self, minute: int) -> None:
+    def _apply_measurement_faults(self, minute: int, absolute_minute: int) -> None:
         faults = [fault for fault in self.local_settings.get("measurement_faults", []) if isinstance(fault, Mapping)]
-        active_faults = [fault for fault in faults if _active_window(fault, minute)]
+        curve_mode = str(self.curves.get("mode", "day") or "day").lower()
+        active_faults = [fault for fault in faults if _active_window(fault, minute, absolute_minute, curve_mode)]
         if not active_faults or not self.files["scada"].exists():
             return
         before, rows, after = parse_measurement_rows(self.files["scada"])

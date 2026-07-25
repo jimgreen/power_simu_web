@@ -12,6 +12,7 @@ const state = {
   curveSeries: {},
   curveSeriesByMode: {},
   curveMode: localStorage.getItem("polarSimulatorCurveMode") || "year",
+  curvesLoadedModelId: "",
   activeCurveKey: "wind_speed_mps",
   selectedCurveKeys: ["wind_speed_mps"],
   curveEditKey: "",
@@ -64,6 +65,7 @@ const ENV_CURVE_KEYS = ["wind_speed_mps", "solar_irradiance_w_m2", "air_temp_c"]
 const LOAD_CURVE_META = { label: "负荷", color: "#c93a3a", min: 0, max: 500, digits: 2, unit: "kW" };
 const LOAD_CURVE_COLORS = ["#c93a3a", "#8a4fbf", "#23854a", "#d16300", "#4369b2", "#0a8b8b"];
 const CURVE_PLOT = { left: 58, right: 24, top: 46, bottom: 34 };
+const TRACE_HISTORY_LIMIT = 45000;
 
 function isDeviceTreeGroupCollapsed(scope, groupKey) {
   return Boolean(state.collapsedDeviceTreeGroups?.[scope]?.[groupKey]);
@@ -104,14 +106,33 @@ function deviceTreeChildren(isCollapsed, childrenHtml) {
         </div>`;
 }
 
+function simulationModeLocked(clock = state.snapshot?.clock) {
+  return Boolean(clock) && clock.state !== "stopped";
+}
+
+function formatSimulationClock(clock) {
+  const timeText = clock?.time || "00:00:00";
+  if (state.curveMode !== "year") return timeText;
+  const absoluteMinute = Math.max(0, Number(clock?.absolute_minute ?? clock?.minute ?? 0) || 0);
+  let dayOfYear = Math.floor(absoluteMinute / 1440) % 365;
+  const monthDays = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  let month = 0;
+  while (month < monthDays.length - 1 && dayOfYear >= monthDays[month]) {
+    dayOfYear -= monthDays[month];
+    month += 1;
+  }
+  return `${String(month + 1).padStart(2, "0")}-${String(dayOfYear + 1).padStart(2, "0")} ${timeText}`;
+}
+
 function renderClock(clock) {
   if (!clock) return;
   $("simState").textContent = clock.state || "stopped";
-  $("simTime").textContent = clock.time || "00:00:00";
+  $("simTime").textContent = formatSimulationClock(clock);
   $("simSpeed").textContent = `x${clock.speed ?? 1}`;
   const readout = document.querySelector(".clock-readout");
   if (readout) {
     readout.dataset.clockState = clock.state || "stopped";
+    readout.classList.toggle("is-year-mode", state.curveMode === "year");
   }
   document.querySelectorAll("[data-clock]").forEach((button) => {
     const action = button.dataset.clock;
@@ -124,6 +145,7 @@ function renderClock(clock) {
       button.setAttribute("aria-pressed", isActive ? "true" : "false");
     }
   });
+  renderCurveModeControls();
 }
 
 function setClockButtonsBusy(isBusy) {
@@ -382,25 +404,52 @@ function blobFromBase64(dataBase64, contentType) {
   return new Blob(chunks, { type: contentType || "application/zip" });
 }
 
+function downloadBlob(blob, filename) {
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+}
+
+function safeExportFilename(filename) {
+  const cleaned = String(filename || "model_definitions.zip").replace(/[\\/:*?"<>|]/g, "_");
+  return cleaned.toLowerCase().endsWith(".zip") ? cleaned : `${cleaned}.zip`;
+}
+
 async function exportDefinitionsArchive() {
   const button = $("exportDefinitionsButton");
   if (!button) return;
   const originalText = button.textContent;
   button.disabled = true;
-  button.textContent = "导出中";
   try {
+    let directoryHandle = null;
+    if (typeof window.showDirectoryPicker === "function") {
+      button.textContent = "选择目录";
+      directoryHandle = await window.showDirectoryPicker({
+        id: "polar-simulator-definition-export",
+        mode: "readwrite",
+        startIn: "downloads",
+      });
+    }
+    button.textContent = "导出中";
     const payload = await api("/api/export-definitions?format=json");
     const blob = blobFromBase64(payload.data_base64, payload.content_type);
-    const filename = filenameFromDisposition("", payload.filename || "model_definitions.zip");
-    const objectUrl = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = objectUrl;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+    const filename = safeExportFilename(filenameFromDisposition("", payload.filename || "model_definitions.zip"));
+    if (directoryHandle) {
+      const fileHandle = await directoryHandle.getFileHandle(filename, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      button.textContent = "已导出";
+    } else {
+      downloadBlob(blob, filename);
+    }
   } catch (error) {
+    if (error?.name === "AbortError") return;
     alert(apiErrorText(error));
   } finally {
     button.disabled = false;
@@ -458,7 +507,7 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.curveEditKey = "";
   state.curveSeries = {};
   state.curveSeriesByMode = {};
-  generateCurves(0, state.curveMode, false);
+  state.curvesLoadedModelId = "";
   renderModelSelector();
   if (shouldRefresh) refresh();
 }
@@ -696,15 +745,75 @@ function setCurveMode(mode, shouldRender = true) {
   }
   if (shouldRender) {
     renderCurveEditor(true);
+    renderFaults(true);
+  }
+}
+
+function loadCurvesFromSnapshot(curves, modelId = state.activeModelId) {
+  if (!curves || typeof curves !== "object") return;
+  const mode = CURVE_MODES[curves.mode] ? curves.mode : "day";
+  const config = curveModeConfig(mode);
+  const weather = Array.isArray(curves.weather) ? curves.weather : [];
+  const loads = curves.loads && typeof curves.loads === "object" ? curves.loads : {};
+  state.curveMode = mode;
+  localStorage.setItem("polarSimulatorCurveMode", mode);
+  state.curveSeries = {
+    wind_speed_mps: resampleSeries(weather.map((point) => Number(point.wind_speed_mps) || 0), config.pointCount, 0),
+    solar_irradiance_w_m2: resampleSeries(weather.map((point) => Number(point.solar_irradiance_w_m2) || 0), config.pointCount, 0),
+    air_temp_c: resampleSeries(weather.map((point) => Number(point.air_temp_c) || 0), config.pointCount, -18),
+  };
+  curveLoadDevices().forEach((dev) => {
+    const points = Array.isArray(loads[dev.dev_name]) ? loads[dev.dev_name] : [];
+    state.curveSeries[loadCurveKey(dev.dev_name)] = resampleSeries(
+      points.map((point) => Number(point.p_kw ?? point.value ?? point.load_kw) || 0),
+      config.pointCount,
+      120,
+    );
+  });
+  ensureCurveSeries();
+  state.curveSeriesByMode[mode] = state.curveSeries;
+  syncCurvePayload(false);
+  state.curvesLoadedModelId = modelId || "loaded";
+}
+
+async function switchSimulationMode(mode) {
+  if (simulationModeLocked()) return;
+  const selector = $("simulationModeSelector");
+  if (selector) selector.disabled = true;
+  try {
+    setCurveMode(mode, true);
+    await saveCurves();
+    await refresh();
+  } catch (error) {
+    alert(apiErrorText(error));
+  } finally {
+    renderCurveModeControls();
   }
 }
 
 function renderCurveModeControls() {
+  const modeLocked = simulationModeLocked();
   document.querySelectorAll("[data-curve-mode]").forEach((button) => {
     const active = button.dataset.curveMode === state.curveMode;
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-pressed", active ? "true" : "false");
+    button.disabled = modeLocked;
+    button.title = modeLocked ? "请先停止仿真，再切换仿真模式" : "";
   });
+  const selector = $("simulationModeSelector");
+  if (selector) {
+    selector.value = state.curveMode;
+    selector.disabled = modeLocked;
+    selector.title = modeLocked ? "请先停止仿真，再切换仿真模式" : "选择年仿真或日仿真";
+  }
+  if (state.snapshot?.clock) renderClockTextOnly(state.snapshot.clock);
+}
+
+function renderClockTextOnly(clock) {
+  const time = $("simTime");
+  const readout = document.querySelector(".clock-readout");
+  if (time) time.textContent = formatSimulationClock(clock);
+  if (readout) readout.classList.toggle("is-year-mode", state.curveMode === "year");
 }
 
 function updateCurveModeLabels() {
@@ -1546,6 +1655,9 @@ function renderSnapshot(snapshot) {
     state.lastMeasurementTraceKey = "";
   }
   state.traceRunId = runId;
+  if (state.curvesLoadedModelId !== state.activeModelId) {
+    loadCurvesFromSnapshot(snapshot.curves, state.activeModelId);
+  }
   $("metricScada").textContent = snapshot.summary.scada_count;
   $("metricCommands").textContent = snapshot.summary.command_count;
   $("metricAlarms").textContent = snapshot.summary.alarm_count;
@@ -2147,7 +2259,7 @@ function appendRuntimeTrace(snapshot) {
     point.devices[deviceKey(dev)] = runtimeDeviceTraceSignal(dev, snapshot.measurements || {});
   });
   state.runtimeTraceHistory.push(point);
-  state.runtimeTraceHistory = state.runtimeTraceHistory.slice(-3000);
+  state.runtimeTraceHistory = state.runtimeTraceHistory.slice(-TRACE_HISTORY_LIMIT);
 }
 
 function renderRuntimeDeviceTree() {
@@ -2363,6 +2475,9 @@ function traceAxisStepMinutes(windowMinutes) {
   if (minutes <= 180) return 30;
   if (minutes <= 360) return 60;
   if (minutes <= 1440) return 240;
+  if (minutes <= 10080) return 1440;
+  if (minutes <= 43200) return 5 * 1440;
+  if (minutes <= 525600) return 60 * 1440;
   return Math.max(60, Math.round(minutes / 6 / 60) * 60);
 }
 
@@ -2370,6 +2485,7 @@ function traceWindowAlignmentMinutes(windowMinutes) {
   const minutes = Math.max(1, Number(windowMinutes) || 60);
   if (minutes <= 15) return 15;
   if (minutes <= 1440) return minutes;
+  if (minutes >= 525600) return 525600;
   return 1440;
 }
 
@@ -2402,9 +2518,27 @@ function runtimeFormatClockMinute(minute) {
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:00`;
 }
 
+function formatYearTraceTickLabel(minute) {
+  const absoluteDay = Math.floor(Math.max(0, Number(minute) || 0) / 1440);
+  const year = Math.floor(absoluteDay / 365) + 1;
+  let dayOfYear = absoluteDay % 365;
+  const monthDays = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  let month = 0;
+  while (month < monthDays.length - 1 && dayOfYear >= monthDays[month]) {
+    dayOfYear -= monthDays[month];
+    month += 1;
+  }
+  return year === 1 ? `${String(month + 1).padStart(2, "0")}月` : `第${year}年${String(month + 1).padStart(2, "0")}月`;
+}
+
 function runtimeAxisTickLabel(minute, range, index, lastIndex) {
-  if (index === lastIndex) return runtimeFormatClockMinute(range.endMinute);
-  return runtimeFormatClockMinute(minute);
+  const targetMinute = index === lastIndex ? range.endMinute : minute;
+  if (range.windowMinutes <= 1440) return runtimeFormatClockMinute(targetMinute);
+  if (range.windowMinutes >= 525600) return formatYearTraceTickLabel(targetMinute);
+  const absolute = Math.max(0, Math.round(targetMinute));
+  const day = Math.floor(absolute / 1440);
+  const clock = runtimeFormatClockMinute(absolute).slice(0, 5);
+  return absolute % 1440 === 0 ? `第${day + 1}天` : `第${day + 1}天 ${clock}`;
 }
 
 function runtimeTraceAxisTicks(range, canvasWidth) {
@@ -2646,7 +2780,7 @@ function appendMeasurementTrace(snapshot) {
     };
   });
   state.measurementTraceHistory.push(point);
-  state.measurementTraceHistory = state.measurementTraceHistory.slice(-3000);
+  state.measurementTraceHistory = state.measurementTraceHistory.slice(-TRACE_HISTORY_LIMIT);
 }
 
 function ensureSelectedMeasurementKey(rows, allRows) {
@@ -3018,6 +3152,8 @@ function ensureDeviceFault(dev) {
       dev_name: dev.dev_name,
       start_minute: 60,
       clear_minute: 120,
+      start_day: 1,
+      clear_day: 2,
       run_stat: 0,
       status: 0,
     };
@@ -3038,6 +3174,8 @@ function ensureMeasurementFault(meas) {
       fault_type: "dead",
       start_minute: 180,
       clear_minute: 240,
+      start_day: 1,
+      clear_day: 2,
       median: meas.value ?? 0,
       bias: 0,
     };
@@ -3221,12 +3359,58 @@ function renderFaults(force = false) {
   renderMeasurementFaultTable();
 }
 
+function faultWindowFields() {
+  if (state.curveMode === "year") {
+    return {
+      startField: "start_day",
+      clearField: "clear_day",
+      startLabel: "故障启始日",
+      clearLabel: "结束日",
+      inputType: "number",
+      min: 1,
+      max: 365,
+      step: 1,
+      deviceStart: 1,
+      deviceClear: 2,
+      measurementStart: 1,
+      measurementClear: 2,
+    };
+  }
+  return {
+    startField: "start_minute",
+    clearField: "clear_minute",
+    startLabel: "故障启始时刻",
+    clearLabel: "结束时刻",
+    inputType: "time",
+    min: "00:00",
+    max: "23:59",
+    step: 60,
+    deviceStart: 60,
+    deviceClear: 120,
+    measurementStart: 180,
+    measurementClear: 240,
+  };
+}
+
+function faultWindowInputValue(fault, field, fallback) {
+  if (field === "start_minute" || field === "clear_minute") {
+    return minuteToTimeInput(fault?.[field], fallback);
+  }
+  const value = Number(fault?.[field]);
+  return clamp(Math.round(Number.isFinite(value) ? value : fallback), 1, 365);
+}
+
+function faultSimulationModeLabel() {
+  return state.curveMode === "year" ? "年仿真 · 按日整定" : "日仿真 · 按时分整定";
+}
+
 function renderDeviceFaultTable() {
   const container = $("deviceFaultTable");
   const devices = faultDevices();
   const rows = filteredFaultDevices();
+  const windowFields = faultWindowFields();
   if (!container) return;
-  $("deviceFaultSummary").textContent = `${state.deviceFaults.length} 个故障 · 显示 ${rows.length}/${devices.length} 台`;
+  $("deviceFaultSummary").textContent = `${faultSimulationModeLabel()} · ${state.deviceFaults.length} 个故障 · 显示 ${rows.length}/${devices.length} 台`;
   if (!devices.length) {
     container.innerHTML = '<div class="empty-state">暂无设备数据</div>';
     return;
@@ -3243,8 +3427,8 @@ function renderDeviceFaultTable() {
           <th>设备名称</th>
           <th>运行状态</th>
           <th>故障状态</th>
-          <th>故障启始时刻</th>
-          <th>结束时刻</th>
+          <th>${windowFields.startLabel}</th>
+          <th>${windowFields.clearLabel}</th>
         </tr>
       </thead>
       <tbody>
@@ -3262,8 +3446,8 @@ function renderDeviceFaultTable() {
                   <option value="fault" ${fault ? "selected" : ""}>故障</option>
                 </select>
               </td>
-              <td><input data-device-index="${index}" data-device-field="start_minute" type="time" step="60" value="${minuteToTimeInput(fault?.start_minute, 60)}" ${disabled} /></td>
-              <td><input data-device-index="${index}" data-device-field="clear_minute" type="time" step="60" value="${minuteToTimeInput(fault?.clear_minute, 120)}" ${disabled} /></td>
+              <td><input data-device-index="${index}" data-device-field="${windowFields.startField}" type="${windowFields.inputType}" min="${windowFields.min}" max="${windowFields.max}" step="${windowFields.step}" value="${faultWindowInputValue(fault, windowFields.startField, windowFields.deviceStart)}" ${disabled} /></td>
+              <td><input data-device-index="${index}" data-device-field="${windowFields.clearField}" type="${windowFields.inputType}" min="${windowFields.min}" max="${windowFields.max}" step="${windowFields.step}" value="${faultWindowInputValue(fault, windowFields.clearField, windowFields.deviceClear)}" ${disabled} /></td>
             </tr>`;
         }).join("")}
       </tbody>
@@ -3274,8 +3458,9 @@ function renderMeasurementFaultTable() {
   const container = $("measurementFaultTable");
   const measurements = faultMeasurements();
   const rows = filteredFaultMeasurements();
+  const windowFields = faultWindowFields();
   if (!container) return;
-  $("measurementFaultSummary").textContent = `${state.measurementFaults.length} 个故障 · 显示 ${rows.length}/${measurements.length} 点`;
+  $("measurementFaultSummary").textContent = `${faultSimulationModeLabel()} · ${state.measurementFaults.length} 个故障 · 显示 ${rows.length}/${measurements.length} 点`;
   if (!measurements.length) {
     container.innerHTML = '<div class="empty-state">暂无量测数据</div>';
     return;
@@ -3293,8 +3478,8 @@ function renderMeasurementFaultTable() {
           <th>量测类型</th>
           <th>当前值</th>
           <th>量测状态</th>
-          <th>故障启始时刻</th>
-          <th>结束时刻</th>
+          <th>${windowFields.startLabel}</th>
+          <th>${windowFields.clearLabel}</th>
           <th>中值</th>
           <th>误差</th>
         </tr>
@@ -3317,8 +3502,8 @@ function renderMeasurementFaultTable() {
                   <option value="zero" ${faultType === "zero" ? "selected" : ""}>0值</option>
                 </select>
               </td>
-              <td><input data-meas-index="${index}" data-meas-field="start_minute" type="time" step="60" value="${minuteToTimeInput(fault?.start_minute, 180)}" ${disabled} /></td>
-              <td><input data-meas-index="${index}" data-meas-field="clear_minute" type="time" step="60" value="${minuteToTimeInput(fault?.clear_minute, 240)}" ${disabled} /></td>
+              <td><input data-meas-index="${index}" data-meas-field="${windowFields.startField}" type="${windowFields.inputType}" min="${windowFields.min}" max="${windowFields.max}" step="${windowFields.step}" value="${faultWindowInputValue(fault, windowFields.startField, windowFields.measurementStart)}" ${disabled} /></td>
+              <td><input data-meas-index="${index}" data-meas-field="${windowFields.clearField}" type="${windowFields.inputType}" min="${windowFields.min}" max="${windowFields.max}" step="${windowFields.step}" value="${faultWindowInputValue(fault, windowFields.clearField, windowFields.measurementClear)}" ${disabled} /></td>
               <td><input data-meas-index="${index}" data-meas-field="median" type="number" step="0.001" value="${fault?.median ?? meas.value ?? 0}" ${disabled} /></td>
               <td><input data-meas-index="${index}" data-meas-field="bias" type="number" step="0.001" value="${fault?.bias ?? 0}" ${disabled} /></td>
             </tr>`;
@@ -3338,6 +3523,8 @@ function updateDeviceFault(index, field, rawValue, shouldRender = true) {
   const fault = ensureDeviceFault(dev);
   if (field === "start_minute" || field === "clear_minute") {
     fault[field] = timeInputToMinute(rawValue, fault[field]);
+  } else if (field === "start_day" || field === "clear_day") {
+    fault[field] = clamp(Math.round(Number(rawValue) || fault[field] || 1), 1, 365);
   }
   if (shouldRender) renderFaults(true);
 }
@@ -3355,6 +3542,8 @@ function updateMeasurementFault(index, field, rawValue, shouldRender = true) {
     fault.fault_type = rawValue;
   } else if (field === "start_minute" || field === "clear_minute") {
     fault[field] = timeInputToMinute(rawValue, fault[field]);
+  } else if (field === "start_day" || field === "clear_day") {
+    fault[field] = clamp(Math.round(Number(rawValue) || fault[field] || 1), 1, 365);
   } else if (field === "median" || field === "bias") {
     fault[field] = Number(rawValue);
   }
@@ -3591,8 +3780,9 @@ $("randomCurves").addEventListener("click", () => {
 });
 $("saveCurves").addEventListener("click", saveCurves);
 document.querySelectorAll("[data-curve-mode]").forEach((button) => {
-  button.addEventListener("click", () => setCurveMode(button.dataset.curveMode));
+  button.addEventListener("click", () => switchSimulationMode(button.dataset.curveMode));
 });
+$(`simulationModeSelector`).addEventListener("change", (event) => switchSimulationMode(event.target.value));
 const curveTreeElement = $("curveTree");
 if (curveTreeElement) {
   curveTreeElement.addEventListener("pointerdown", beginCurveTreePointerSelection);
@@ -3607,11 +3797,11 @@ $("runtimeLogTypeFilter").addEventListener("change", (event) => {
 });
 $("saveDeviceFaults").addEventListener("click", async () => {
   await pushSettings();
-  $("deviceFaultSummary").textContent = `已保存 ${state.deviceFaults.length} 个故障`;
+  $("deviceFaultSummary").textContent = `${faultSimulationModeLabel()} · 已保存 ${state.deviceFaults.length} 个故障`;
 });
 $("saveMeasurementFaults").addEventListener("click", async () => {
   await pushSettings();
-  $("measurementFaultSummary").textContent = `已保存 ${state.measurementFaults.length} 个故障`;
+  $("measurementFaultSummary").textContent = `${faultSimulationModeLabel()} · 已保存 ${state.measurementFaults.length} 个故障`;
 });
 document.querySelectorAll("[data-fault-tab]").forEach((button) => {
   button.addEventListener("click", () => setFaultTab(button.dataset.faultTab));

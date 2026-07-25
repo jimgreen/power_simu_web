@@ -58,7 +58,8 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertNotIn("ACNode.ac_bus:", text)
         self.assertIn("风力发电总功率 8 kW（1 台）", text)
         self.assertNotIn("风力发电总功率 16 kW", text)
-        self.assertLessEqual(len(detail), 6)
+        self.assertIn("新能源限值", text)
+        self.assertLessEqual(len(detail), 14)
 
 
 if __name__ == "__main__":

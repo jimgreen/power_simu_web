@@ -16,6 +16,12 @@ const state = {
   selectedCurveKeys: ["wind_speed_mps"],
   curveEditKey: "",
   isCurveDragging: false,
+  isCurveTreePointerDown: false,
+  isCurveTreeMultiSelecting: false,
+  curveTreeDragStartKeys: [],
+  curveTreeDragKeys: [],
+  curveTreeDragStartButton: null,
+  suppressNextCurveTreeClick: false,
   curveCursor: { visible: false, x: 0, y: 0, index: 0 },
   settingsLoaded: false,
   activeFaultTab: "devices",
@@ -724,6 +730,65 @@ function toggleCurveSelection(key, shouldRender = true) {
 function selectCurveFamily(family, shouldRender = true) {
   const familyKeys = curveFamilyKeys(family);
   setSelectedCurves(familyKeys, familyKeys[0], shouldRender);
+}
+
+function curveTreeButtonKeys(button) {
+  if (!button) return [];
+  if (button.dataset.curveFamily) return curveFamilyKeys(button.dataset.curveFamily);
+  return button.dataset.curveKey ? [button.dataset.curveKey] : [];
+}
+
+function selectCurveTreeButton(button, shouldRender = true) {
+  const keys = curveTreeButtonKeys(button);
+  if (!keys.length) return;
+  const activeKey = button.dataset.curveKey || keys[0];
+  setSelectedCurves(keys, activeKey, shouldRender);
+}
+
+function resetCurveTreePointerSelection() {
+  state.isCurveTreePointerDown = false;
+  state.isCurveTreeMultiSelecting = false;
+  state.curveTreeDragStartKeys = [];
+  state.curveTreeDragKeys = [];
+  state.curveTreeDragStartButton = null;
+}
+
+function beginCurveTreePointerSelection(event) {
+  if (event.button !== 0) return;
+  const button = event.target.closest("[data-curve-tree-type]");
+  if (!button || !$("curveTree")?.contains(button)) return;
+  state.isCurveTreePointerDown = true;
+  state.isCurveTreeMultiSelecting = false;
+  state.curveTreeDragStartButton = button;
+  state.curveTreeDragStartKeys = curveTreeButtonKeys(button);
+  state.curveTreeDragKeys = [...state.curveTreeDragStartKeys];
+}
+
+function extendCurveTreePointerSelection(event) {
+  if (!state.isCurveTreePointerDown || (event.buttons & 1) !== 1) return;
+  const button = event.target.closest("[data-curve-tree-type]");
+  if (!button || !$("curveTree")?.contains(button)) return;
+  if (!state.isCurveTreeMultiSelecting && button === state.curveTreeDragStartButton) return;
+  const keys = curveTreeButtonKeys(button);
+  if (!keys.length) return;
+  if (!state.isCurveTreeMultiSelecting) {
+    state.isCurveTreeMultiSelecting = true;
+    state.curveTreeDragKeys = [...state.curveTreeDragStartKeys];
+  }
+  const before = state.curveTreeDragKeys.length;
+  keys.forEach((key) => {
+    if (!state.curveTreeDragKeys.includes(key)) state.curveTreeDragKeys.push(key);
+  });
+  if (state.curveTreeDragKeys.length !== before || !selectedCurveKeys().every((key) => state.curveTreeDragKeys.includes(key))) {
+    setSelectedCurves(state.curveTreeDragKeys, keys[keys.length - 1], true);
+  }
+}
+
+function finishCurveTreePointerSelection() {
+  if (state.isCurveTreeMultiSelecting) {
+    state.suppressNextCurveTreeClick = true;
+  }
+  resetCurveTreePointerSelection();
 }
 
 function curveEditKey(selectedKeys = selectedCurveKeys()) {
@@ -3374,6 +3439,13 @@ $("saveCurves").addEventListener("click", saveCurves);
 document.querySelectorAll("[data-curve-mode]").forEach((button) => {
   button.addEventListener("click", () => setCurveMode(button.dataset.curveMode));
 });
+const curveTreeElement = $("curveTree");
+if (curveTreeElement) {
+  curveTreeElement.addEventListener("pointerdown", beginCurveTreePointerSelection);
+  curveTreeElement.addEventListener("pointerover", extendCurveTreePointerSelection);
+}
+window.addEventListener("pointerup", finishCurveTreePointerSelection);
+window.addEventListener("pointercancel", resetCurveTreePointerSelection);
 $("modelSelector").addEventListener("change", (event) => setActiveModel(event.target.value));
 $("saveDeviceFaults").addEventListener("click", async () => {
   await pushSettings();
@@ -3390,11 +3462,14 @@ $("pushModes").addEventListener("click", pushSettings);
 document.addEventListener("click", (event) => {
   const curveTreeButton = event.target.closest("[data-curve-tree-type]");
   if (curveTreeButton) {
-    if (curveTreeButton.dataset.curveFamily) {
-      selectCurveFamily(curveTreeButton.dataset.curveFamily);
-    } else {
-      toggleCurveSelection(curveTreeButton.dataset.curveKey);
+    if (state.suppressNextCurveTreeClick) {
+      state.suppressNextCurveTreeClick = false;
+      event.preventDefault();
+      return;
     }
+    selectCurveTreeButton(curveTreeButton);
+    event.preventDefault();
+    return;
   }
   const faultDeviceTreeButton = event.target.closest("[data-fault-device-tree-type]");
   if (faultDeviceTreeButton) {

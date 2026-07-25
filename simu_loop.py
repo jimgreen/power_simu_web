@@ -629,6 +629,54 @@ def _target_rows(model_book: EBook, table_name: str, prefix: Optional[str] = Non
     return _sorted_rows(rows)
 
 
+def _renewable_target_rows(
+    model_book: EBook,
+    dev_define: EBook,
+    define_table: str,
+    model_tables: Sequence[str],
+    prefixes: Sequence[str],
+) -> List[Tuple[str, dict, Optional[dict], int]]:
+    """Match renewable device definitions to model rows by name, then prefix."""
+    define_rows = _sorted_rows(_book_rows(dev_define, define_table))
+    define_by_name = {
+        str(row.get("name", "")): row
+        for row in define_rows
+        if str(row.get("name", ""))
+    }
+    define_pos_by_name = {
+        str(row.get("name", "")): pos
+        for pos, row in enumerate(define_rows)
+        if str(row.get("name", ""))
+    }
+    prefix_tuple = tuple(prefix.lower() for prefix in prefixes)
+    matched: List[Tuple[str, dict, Optional[dict], int]] = []
+    seen: set[Tuple[str, str]] = set()
+    fallback_candidates: List[Tuple[str, dict]] = []
+
+    for table_name in model_tables:
+        for row in _sorted_rows(_book_rows(model_book, table_name)):
+            name = str(row.get("name", ""))
+            key = (table_name, name)
+            if name in define_by_name:
+                matched.append((table_name, row, define_by_name[name], define_pos_by_name.get(name, len(matched))))
+                seen.add(key)
+                continue
+            if prefix_tuple and name.lower().startswith(prefix_tuple):
+                fallback_candidates.append((table_name, row))
+
+    if matched:
+        return matched
+
+    for pos, (table_name, row) in enumerate(fallback_candidates):
+        name = str(row.get("name", ""))
+        key = (table_name, name)
+        if key in seen:
+            continue
+        matched.append((table_name, row, _define_row_by_name_or_position(dev_define, define_table, name, pos), pos))
+        seen.add(key)
+    return matched
+
+
 def _available_with_bounds(raw_available: float, define: Optional[dict]) -> float:
     if define is None:
         return max(0.0, raw_available)
@@ -639,42 +687,63 @@ def _available_with_bounds(raw_available: float, define: Optional[dict]) -> floa
     return _clamp(raw_available, p_min, p_max)
 
 
-def _limit_positive_setpoint(row: dict, column: str, available: float) -> int:
+def _limit_positive_setpoint(row: dict, column: str, available: float, has_active_control: bool) -> int:
     if not _is_running_row(row):
         return _set_row_value(row, column, "0")
+    if not has_active_control:
+        return _set_row_value(row, column, _format_power(available))
     command = _safe_float(row.get(column, 0.0), 0.0) or 0.0
     return _set_row_value(row, column, _format_power(_clamp(command, 0.0, available)))
 
 
-def apply_wind_limits(model_book: EBook, dev_define: EBook, weather: Dict[str, float]) -> int:
+def apply_wind_limits(
+    model_book: EBook,
+    dev_define: EBook,
+    weather: Dict[str, float],
+    active_power_controls: Optional[set[Tuple[str, str]]] = None,
+) -> int:
     if "wind_speed_mps" not in weather:
         return 0
-    rows = _target_rows(model_book, "DCACConverter", prefix="wt")
-    if not rows:
-        rows = _target_rows(model_book, "ACGenerator", prefix="wt")
+    rows = _renewable_target_rows(
+        model_book,
+        dev_define,
+        "wind_generator",
+        ("DCACConverter", "ACGenerator"),
+        ("wt", "wind"),
+    )
     changed = 0
-    for pos, row in enumerate(rows):
-        define = _define_row_by_position(dev_define, "wind_generator", pos)
+    active_power_controls = active_power_controls or set()
+    for table_name, row, define, _pos in rows:
         rated = _safe_float((define or {}).get("rated_power", (define or {}).get("p_max", 10.0)), 10.0) or 10.0
         rated_speed = _safe_float((define or {}).get("rated_wind_speed", 15.0), 15.0) or 15.0
         cut_in = _safe_float((define or {}).get("cut_in_speed", 5.0), 5.0) or 5.0
         cut_out = _safe_float((define or {}).get("cut_out_speed", 30.0), 30.0) or 30.0
         available = _available_with_bounds(wind_available_power(weather["wind_speed_mps"], rated, rated_speed, cut_in, cut_out), define)
         column = "p_ac_set" if "p_ac_set" in row else "p_set"
-        changed += _limit_positive_setpoint(row, column, available)
+        target = (table_name, str(row.get("name", "")))
+        changed += _limit_positive_setpoint(row, column, available, target in active_power_controls)
     return changed
 
 
-def apply_pv_limits(model_book: EBook, dev_define: EBook, weather: Dict[str, float]) -> int:
+def apply_pv_limits(
+    model_book: EBook,
+    dev_define: EBook,
+    weather: Dict[str, float],
+    active_power_controls: Optional[set[Tuple[str, str]]] = None,
+) -> int:
     if "solar_irradiance_w_m2" not in weather:
         return 0
-    rows = _target_rows(model_book, "DCDCConverter", prefix="pv")
-    if not rows:
-        rows = _target_rows(model_book, "DCGenerator", prefix="pv")
+    rows = _renewable_target_rows(
+        model_book,
+        dev_define,
+        "pv_generator",
+        ("DCDCConverter", "DCGenerator"),
+        ("pv", "solar"),
+    )
     changed = 0
     air_temp = weather.get("air_temp_c", 25.0)
-    for pos, row in enumerate(rows):
-        define = _define_row_by_position(dev_define, "pv_generator", pos)
+    active_power_controls = active_power_controls or set()
+    for table_name, row, define, _pos in rows:
         rated = _safe_float((define or {}).get("rated_power", (define or {}).get("p_max", row.get("p_set", 0.0))), 0.0) or 0.0
         temp_coef = _safe_float((define or {}).get("temp_coefficient", 0.0), 0.0) or 0.0
         ref_irrad = _safe_float((define or {}).get("reference_irradiance", 1000.0), 1000.0) or 1000.0
@@ -683,7 +752,8 @@ def apply_pv_limits(model_book: EBook, dev_define: EBook, weather: Dict[str, flo
             pv_available_power(weather["solar_irradiance_w_m2"], air_temp, rated, temp_coef, ref_irrad, ref_temp),
             define,
         )
-        changed += _limit_positive_setpoint(row, "p_set", available)
+        target = (table_name, str(row.get("name", "")))
+        changed += _limit_positive_setpoint(row, "p_set", available, target in active_power_controls)
     return changed
 
 
@@ -781,6 +851,7 @@ def apply_device_capability_limits(
     dev_stat_file: Path,
     dev_define_file: Optional[Path],
     period_seconds: float = DEFAULT_PERIOD_SECONDS,
+    active_power_controls: Optional[set[Tuple[str, str]]] = None,
 ) -> int:
     dev_define = _read_optional_book(dev_define_file)
     if not dev_define.data:
@@ -788,8 +859,8 @@ def apply_device_capability_limits(
     weather = _weather_values(weather_file)
     changed = 0
     changed += apply_load_model(model_book, dev_define, weather)
-    changed += apply_wind_limits(model_book, dev_define, weather)
-    changed += apply_pv_limits(model_book, dev_define, weather)
+    changed += apply_wind_limits(model_book, dev_define, weather, active_power_controls)
+    changed += apply_pv_limits(model_book, dev_define, weather, active_power_controls)
     changed += apply_diesel_limits(model_book, dev_define)
     changed += apply_storage_constraints(model_book, dev_stat_file, dev_define, period_seconds)
     return changed
@@ -850,12 +921,41 @@ def apply_weather_file(model_book: EBook, weather_file: Path, dev_define_file: O
     return changed
 
 
+def _active_power_control_targets(yt_ctrl_file: Path) -> set[Tuple[str, str]]:
+    yt_ctrl_file = Path(yt_ctrl_file)
+    if not yt_ctrl_file.exists():
+        return set()
+    ctrl_book = EBook(yt_ctrl_file)
+    targets: set[Tuple[str, str]] = set()
+    block = ctrl_book.data.get("SetValue")
+    if block is not None:
+        for row in block.data:
+            if str(row.get("set_type", "")) not in ("p_set", "p_ac_set"):
+                continue
+            if row.get("set_value", "") == "":
+                continue
+            targets.add((str(row.get("dev_type", "")), _stat_dev_name(row)))
+    for table_name in ("GeneratorSetpoint", "ConverterSetpoint"):
+        block = ctrl_book.data.get(table_name)
+        if block is None:
+            continue
+        for row in block.data:
+            if row.get("p_set", row.get("p_ac_set", "")) == "":
+                continue
+            targets.add((str(row.get("dev_type", "")), _stat_dev_name(row)))
+    return targets
+
+
 def apply_yt_ctrl_file(model_book: EBook, yt_ctrl_file: Path) -> int:
     yt_ctrl_file = Path(yt_ctrl_file)
     if not yt_ctrl_file.exists():
         return 0
     ctrl_book = EBook(yt_ctrl_file)
     changed = 0
+    block = ctrl_book.data.get("SetValue")
+    if block is not None:
+        for row in block.data:
+            changed += _apply_set_value_row(model_book, row)
     for table_name in ("GeneratorSetpoint", "StorageSoc", "StorageStatus"):
         block = ctrl_book.data.get(table_name)
         if block is None:
@@ -926,11 +1026,19 @@ def apply_realtime_inputs(
     else:
         dev_define_file = Path(dev_define_file_or_work_dir)
     model_book = EBook(model_file)
+    active_power_controls = _active_power_control_targets(yt_ctrl_file)
     changed = 0
     changed += apply_dev_stat_file(model_book, dev_stat_file)
     changed += apply_weather_file(model_book, weather_file, dev_define_file)
     changed += apply_yt_ctrl_file(model_book, yt_ctrl_file)
-    changed += apply_device_capability_limits(model_book, weather_file, dev_stat_file, dev_define_file, period_seconds)
+    changed += apply_device_capability_limits(
+        model_book,
+        weather_file,
+        dev_stat_file,
+        dev_define_file,
+        period_seconds,
+        active_power_controls,
+    )
     work_dir.mkdir(parents=True, exist_ok=True)
     merged_model = work_dir / "merged_model.e"
     write_ebook_aligned(model_book, merged_model)

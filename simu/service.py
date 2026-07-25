@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import shutil
 import threading
 import time
@@ -74,6 +75,7 @@ INPUT_FILES = ("model.e", "meas.e", "stat.e", "weather.e", "device.e", "yt_ctrl.
 CLONE_FILES = INPUT_FILES + ("real.e", "scada.e", "curves.json", "local_settings.json", "commands.json")
 CLOCK_SPEED_LEVELS = (1.0, 5.0, 15.0, 30.0, 60.0)
 DEFAULT_CONTROL_VALID_MINUTES = 5.0
+LOG_DECIMAL_PATTERN = re.compile(r"(?<![\w:])[-+]?\d+\.\d+(?:e[-+]?\d+)?(?![\w:])", re.IGNORECASE)
 
 
 @dataclass
@@ -181,6 +183,42 @@ def format_number(value: float) -> str:
         number = 0.0
     text = f"{number:.10g}"
     return "0" if text == "-0" else text
+
+
+def _format_log_number(value: Any, *, scientific: bool = False) -> str:
+    number = _to_float(value, None)
+    if number is None or not math.isfinite(number):
+        return "" if value is None else str(value)
+    if scientific:
+        return re.sub(r"e([+-])0+(\d+)$", r"e\1\2", f"{number:.2e}")
+    if abs(number) < 0.005:
+        number = 0.0
+    text = f"{number:.2f}".rstrip("0").rstrip(".")
+    return "0" if text in ("", "-0") else text
+
+
+def _format_log_text_numbers(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        token = match.group(0)
+        return _format_log_number(token, scientific="e" in token.casefold())
+
+    return LOG_DECIMAL_PATTERN.sub(repl, text)
+
+
+def _format_log_detail(detail: Any) -> Any:
+    if isinstance(detail, str):
+        return _format_log_text_numbers(detail)
+    if isinstance(detail, bool) or detail is None:
+        return detail
+    if isinstance(detail, (int, float)):
+        return _format_log_number(detail)
+    if isinstance(detail, list):
+        return [_format_log_detail(item) for item in detail]
+    if isinstance(detail, tuple):
+        return [_format_log_detail(item) for item in detail]
+    if isinstance(detail, Mapping):
+        return {key: _format_log_detail(value) for key, value in detail.items()}
+    return detail
 
 
 def parse_measurement_rows(meas_file: Path) -> Tuple[List[str], List[List[str]], List[str]]:
@@ -740,7 +778,7 @@ class PolarMicrogridSimulator:
                 "type": log_type,
                 "target": target,
                 "result": result,
-                "detail": detail,
+                "detail": _format_log_detail(detail),
                 "level": level,
             }
         )
@@ -928,6 +966,78 @@ class PolarMicrogridSimulator:
         row = block.data[0]
         return {header: row.get(header, "") for header in block.header_list}
 
+    def _load_flow_input_model_book(self) -> Optional[EBook]:
+        merged_model = self.runtime_dir / ".simu_loop_work" / "merged_model.e"
+        for path in (merged_model, self.files["model"]):
+            if not path.exists():
+                continue
+            try:
+                return _load_book(path)
+            except Exception:
+                continue
+        return None
+
+    def _renewable_limit_boundary_lines(self) -> List[str]:
+        try:
+            weather = simu_loop._weather_values(self.files["weather"])
+            device_book = simu_loop._read_optional_book(self.files["device"])
+        except Exception:
+            return ["新能源限值 未能读取 weather.e / device.e"]
+        model_book = self._load_flow_input_model_book()
+        if model_book is None or not device_book.data:
+            return ["新能源限值 未读取到潮流输入模型或 device.e"]
+
+        wind_parts: List[str] = []
+        wind_speed = weather.get("wind_speed_mps")
+        if wind_speed is not None:
+            for _table_name, row, define, _pos in simu_loop._renewable_target_rows(
+                model_book,
+                device_book,
+                "wind_generator",
+                ("DCACConverter", "ACGenerator"),
+                ("wt", "wind"),
+            ):
+                rated = simu_loop._safe_float((define or {}).get("rated_power", (define or {}).get("p_max", 10.0)), 10.0) or 10.0
+                rated_speed = simu_loop._safe_float((define or {}).get("rated_wind_speed", 15.0), 15.0) or 15.0
+                cut_in = simu_loop._safe_float((define or {}).get("cut_in_speed", 5.0), 5.0) or 5.0
+                cut_out = simu_loop._safe_float((define or {}).get("cut_out_speed", 30.0), 30.0) or 30.0
+                available = simu_loop._available_with_bounds(
+                    simu_loop.wind_available_power(float(wind_speed), rated, rated_speed, cut_in, cut_out),
+                    define,
+                )
+                column = "p_ac_set" if "p_ac_set" in row else "p_set"
+                wind_parts.append(
+                    f"{row.get('name', '')}:风速 {_number_text(wind_speed)} m/s，可用 {format_number(available)} kW，执行 {column}={_number_text(row.get(column, ''))} kW"
+                )
+
+        pv_parts: List[str] = []
+        irradiance = weather.get("solar_irradiance_w_m2")
+        if irradiance is not None:
+            air_temp = float(weather.get("air_temp_c", 25.0))
+            for _table_name, row, define, _pos in simu_loop._renewable_target_rows(
+                model_book,
+                device_book,
+                "pv_generator",
+                ("DCDCConverter", "DCGenerator"),
+                ("pv", "solar"),
+            ):
+                rated = simu_loop._safe_float((define or {}).get("rated_power", (define or {}).get("p_max", row.get("p_set", 0.0))), 0.0) or 0.0
+                temp_coef = simu_loop._safe_float((define or {}).get("temp_coefficient", 0.0), 0.0) or 0.0
+                ref_irrad = simu_loop._safe_float((define or {}).get("reference_irradiance", 1000.0), 1000.0) or 1000.0
+                ref_temp = simu_loop._safe_float((define or {}).get("reference_temperature", 25.0), 25.0) or 25.0
+                available = simu_loop._available_with_bounds(
+                    simu_loop.pv_available_power(float(irradiance), air_temp, rated, temp_coef, ref_irrad, ref_temp),
+                    define,
+                )
+                pv_parts.append(
+                    f"{row.get('name', '')}:辐照 {_number_text(irradiance)} W/m2，气温 {format_number(air_temp)} ℃，可用 {format_number(available)} kW，执行 p_set={_number_text(row.get('p_set', ''))} kW"
+                )
+
+        return [
+            f"新能源限值 风电 {self._short_list(wind_parts, 12)}",
+            f"新能源限值 光伏 {self._short_list(pv_parts, 12)}",
+        ]
+
     def _input_boundary_lines(
         self,
         minute: int,
@@ -983,6 +1093,7 @@ class PolarMicrogridSimulator:
             f"CbOpenStat status=1 {cb_one}/{len(cb_rows)}，status=0 {len(cb_zero)}：{self._short_list(cb_zero)}",
             f"SetValue {len(set_rows)} 条：{self._short_list(set_values, 36)}",
             f"StorageSoc {len(soc_rows)} 条：{self._short_list(soc_values, 36)}",
+            *self._renewable_limit_boundary_lines(),
         ]
 
     def _device_flow_lines(self, real_measurements: Sequence[Mapping[str, Any]]) -> List[str]:
@@ -1161,6 +1272,7 @@ class PolarMicrogridSimulator:
         real_measurements = measurements.get("real", [])
         detail = [
             *self._compact_command_response_lines(command_response_lines),
+            *self._input_boundary_lines(minute, absolute_minute, clock_advance, period_seconds),
             (
                 f"计算摘要 时刻 {minute_to_time(minute)}，累计分钟 {absolute_minute}，推进 {clock_advance} min，"
                 f"求解器 {result.get('solver_info', 'not-run')}，"

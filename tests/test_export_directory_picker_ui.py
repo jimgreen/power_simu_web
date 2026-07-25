@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import re
 from pathlib import Path
 
 
@@ -17,6 +18,9 @@ class ExportDirectoryPickerUiTest(unittest.TestCase):
         self.assertIn("fileHandle.createWritable", app_js)
         self.assertIn("downloadBlob", app_js)
         self.assertIn("请选择定义包导出目录", index_html)
+        picker_id_match = re.search(r'id:\s*"([^"]+)"', app_js)
+        self.assertIsNotNone(picker_id_match)
+        self.assertLessEqual(len(picker_id_match.group(1)), 32)
 
 
 if __name__ == "__main__":

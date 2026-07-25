@@ -430,7 +430,7 @@ async function exportDefinitionsArchive() {
     if (typeof window.showDirectoryPicker === "function") {
       button.textContent = "选择目录";
       directoryHandle = await window.showDirectoryPicker({
-        id: "polar-simulator-definition-export",
+        id: "simu-definition-export",
         mode: "readwrite",
         startIn: "downloads",
       });

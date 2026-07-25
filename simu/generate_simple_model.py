@@ -341,6 +341,9 @@ def measurement_blocks() -> list[Block]:
     for gen in ("wt01_10kw", "diesel_300kw"):
         for meas_type in ("P_GEN", "Q_GEN", "V_GEN", "I_GEN"):
             add(f"{meas_type.lower()}_{gen}", "ACGenerator", gen, meas_type)
+    for gen in ("dc_bus_vctrl", "pv01_vsrc", "ess01_vsrc"):
+        for meas_type in ("P_GEN", "V_GEN", "I_GEN"):
+            add(f"{meas_type.lower()}_{gen}", "DCGenerator", gen, meas_type)
     for meas_type in ("P_LOAD", "Q_LOAD", "V_LOAD", "I_LOAD"):
         add(f"{meas_type.lower()}_load_ac_1", "ACLoad", "load_ac_1", meas_type)
     for conv in ("pv01_dcdc", "ess01_dcdc"):

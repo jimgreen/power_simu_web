@@ -37,7 +37,10 @@ class RenewableCapabilityLimitTest(unittest.TestCase):
             _efile_block(
                 "DCACConverter",
                 ("idx", "name", "p_ac_set", "q_ac_set", "v_ac_set", "run_stat"),
-                [{"idx": 1, "name": "wind_alpha", "p_ac_set": 0, "q_ac_set": 0, "v_ac_set": 0, "run_stat": 1}],
+                [
+                    {"idx": 1, "name": "wind_alpha", "p_ac_set": 0, "q_ac_set": 0, "v_ac_set": 0, "run_stat": 1},
+                    {"idx": 2, "name": "grid_inv_acp", "p_ac_set": -45, "q_ac_set": 0, "v_ac_set": 0, "run_stat": 1},
+                ],
             )
             + _efile_block(
                 "DCDCConverter",
@@ -53,6 +56,7 @@ class RenewableCapabilityLimitTest(unittest.TestCase):
                 [
                     {"dev_type": "DCACConverter", "dev_name": "wind_alpha", "set_type": "p_set", "set_value": 0.5},
                     {"dev_type": "DCDCConverter", "dev_name": "solar_alpha", "set_type": "p_set", "set_value": 10},
+                    {"dev_type": "DCACConverter", "dev_name": "grid_inv_acp", "set_type": "p_set", "set_value": -45},
                 ],
             ),
             encoding="utf-8",
@@ -97,6 +101,7 @@ class RenewableCapabilityLimitTest(unittest.TestCase):
             book = simu_loop.EBook(merged_model)
             seen["wind"] = float(book.data["DCACConverter"].data[0]["p_ac_set"])
             seen["pv"] = float(book.data["DCDCConverter"].data[0]["p_set"])
+            seen["grid"] = float(book.data["DCACConverter"].data[1]["p_ac_set"])
             return object(), "fake-solver"
 
         config = simu_loop.SimulationConfig(
@@ -114,6 +119,7 @@ class RenewableCapabilityLimitTest(unittest.TestCase):
 
         self.assertAlmostEqual(seen["wind"], 1.25)
         self.assertAlmostEqual(seen["pv"], 25.0)
+        self.assertAlmostEqual(seen["grid"], -25.725)
 
         yt_ctrl_file.write_text(
             _efile_block(
@@ -127,6 +133,7 @@ class RenewableCapabilityLimitTest(unittest.TestCase):
 
         self.assertAlmostEqual(seen["wind"], 1.25)
         self.assertAlmostEqual(seen["pv"], 25.0)
+        self.assertAlmostEqual(seen["grid"], -25.725)
 
         yt_ctrl_file.write_text(
             _efile_block(
@@ -143,6 +150,7 @@ class RenewableCapabilityLimitTest(unittest.TestCase):
 
         self.assertAlmostEqual(seen["wind"], 1.0)
         self.assertAlmostEqual(seen["pv"], 10.0)
+        self.assertAlmostEqual(seen["grid"], -10.78)
 
 
 if __name__ == "__main__":

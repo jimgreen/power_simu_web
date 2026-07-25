@@ -88,6 +88,19 @@ class SimpleSimulatorModelTest(unittest.TestCase):
         self.assertIn("p_set", dcdc_set_values)
         self.assertIn("v_set", dcdc_set_values)
 
+    def test_dc_generators_have_realtime_pvi_measurements(self):
+        model = self._book("model.e")
+        meas = self._book("meas.e")
+        measurement_rows = self._rows(meas, "Measurement")
+
+        for generator in self._rows(model, "DCGenerator"):
+            meas_types = {
+                str(row["meas_type"]).upper()
+                for row in measurement_rows
+                if row["dev_type"] == "DCGenerator" and row["dev_name"] == generator["name"]
+            }
+            self.assertEqual(meas_types, {"P_GEN", "V_GEN", "I_GEN"})
+
 
 if __name__ == "__main__":
     unittest.main()

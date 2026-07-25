@@ -65,6 +65,7 @@ DEFAULT_SCADA_FILE = SIMU_DIR / "scada.e"
 DEFAULT_LOG_DIR = ROOT_DIR / "log"
 DEFAULT_PERIOD_SECONDS = 60.0
 DEFAULT_STORAGE_CAPACITY_KWH = 50.0
+DEFAULT_DC_EXPORT_EFFICIENCY = 0.98
 
 
 @dataclass(frozen=True)
@@ -845,6 +846,62 @@ def apply_storage_constraints(
     return changed
 
 
+def apply_dc_export_limits(
+    model_book: EBook,
+    dev_define: EBook,
+    efficiency: float = DEFAULT_DC_EXPORT_EFFICIENCY,
+) -> int:
+    """Prevent a DC/AC grid inverter from exporting unavailable DC power."""
+    source_power = 0.0
+    wind_rows = _renewable_target_rows(
+        model_book,
+        dev_define,
+        "wind_generator",
+        ("DCACConverter", "ACGenerator"),
+        ("wt", "wind"),
+    )
+    for table_name, row, _define, _pos in wind_rows:
+        if table_name != "DCACConverter" or not _is_running_row(row):
+            continue
+        source_power += max(0.0, _safe_float(row.get("p_ac_set", 0.0), 0.0) or 0.0)
+
+    pv_rows = _renewable_target_rows(
+        model_book,
+        dev_define,
+        "pv_generator",
+        ("DCDCConverter", "DCGenerator"),
+        ("pv", "solar"),
+    )
+    for table_name, row, _define, _pos in pv_rows:
+        if table_name != "DCDCConverter" or not _is_running_row(row):
+            continue
+        source_power += max(0.0, _safe_float(row.get("p_set", 0.0), 0.0) or 0.0)
+
+    for row in _target_rows(model_book, "DCDCConverter", prefix="ess"):
+        if not _is_running_row(row):
+            continue
+        source_power += max(0.0, _safe_float(row.get("p_set", 0.0), 0.0) or 0.0)
+
+    export_rows = [
+        row
+        for row in _target_rows(model_book, "DCACConverter")
+        if "grid" in str(row.get("name", "")).lower()
+        and "inv" in str(row.get("name", "")).lower()
+        and _is_running_row(row)
+        and (_safe_float(row.get("p_ac_set", 0.0), 0.0) or 0.0) < 0.0
+    ]
+    requested_export = sum(-(_safe_float(row.get("p_ac_set", 0.0), 0.0) or 0.0) for row in export_rows)
+    if requested_export <= 0.0:
+        return 0
+    export_limit = max(0.0, source_power * _clamp(float(efficiency), 0.0, 1.0))
+    scale = min(1.0, export_limit / requested_export)
+    changed = 0
+    for row in export_rows:
+        command = _safe_float(row.get("p_ac_set", 0.0), 0.0) or 0.0
+        changed += _set_row_value(row, "p_ac_set", _format_power(command * scale))
+    return changed
+
+
 def apply_device_capability_limits(
     model_book: EBook,
     weather_file: Path,
@@ -863,6 +920,7 @@ def apply_device_capability_limits(
     changed += apply_pv_limits(model_book, dev_define, weather, active_power_controls)
     changed += apply_diesel_limits(model_book, dev_define)
     changed += apply_storage_constraints(model_book, dev_stat_file, dev_define, period_seconds)
+    changed += apply_dc_export_limits(model_book, dev_define)
     return changed
 
 

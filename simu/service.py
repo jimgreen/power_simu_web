@@ -120,6 +120,16 @@ def minute_to_time(minute: int | float) -> str:
     return f"{hour:02d}:{minute_part:02d}:{second:02d}"
 
 
+def _align_minute_to_step(minute: int | float, step_minutes: int | float) -> int:
+    step = max(1, int(step_minutes))
+    value = max(0, int(minute))
+    return value - value % step
+
+
+def _effective_clock_step(step_minutes: int | float, speed: int | float) -> int:
+    return max(1, int(round(float(step_minutes) * float(speed))))
+
+
 def _now_text() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -547,6 +557,7 @@ class PolarMicrogridSimulator:
         self._copy_runtime_inputs()
         self.weather_defaults = self._read_weather_defaults()
         self.curves = _read_json(self.curves_file, {"mode": "day", "time_step_minutes": 1, "weather": [], "loads": {}})
+        self.clock.step_minutes = max(1, int(_to_float(self.curves.get("time_step_minutes"), 1) or 1))
         self.local_settings = _read_json(
             self.settings_file,
             {"device_faults": [], "measurement_faults": [], "modes": []},
@@ -1236,6 +1247,9 @@ class PolarMicrogridSimulator:
             if soc_average is not None
             else "储能SOC 平均 --，储能总SOC --，台数 0"
         )
+        generation_total = totals["wind"] + totals["pv"] + totals["diesel"] + storage_generation
+        consumption_total = totals["load"] + storage_charge
+        power_difference = generation_total - consumption_total
         return [
             (
                 f"分类统计 风力发电总功率 {format_number(totals['wind'])} kW（{counts['wind']} 台），"
@@ -1248,6 +1262,11 @@ class PolarMicrogridSimulator:
             (
                 f"分类统计 储能发电总功率 {format_number(storage_generation)} kW，"
                 f"储能充电总功率 {format_number(storage_charge)} kW（{counts['storage']} 台），{soc_text}"
+            ),
+            (
+                f"功率平衡 电源发电总功率 {format_number(generation_total)} kW，"
+                f"用电及充电总功率 {format_number(consumption_total)} kW，"
+                f"功率差额 {format_number(power_difference)} kW（含网络与变流损耗）"
             ),
         ]
 
@@ -1404,6 +1423,13 @@ class PolarMicrogridSimulator:
                 "weather": weather_points,
                 "loads": loads,
             }
+            self.clock.step_minutes = max(1, time_step_minutes)
+            self.clock.absolute_minute = _align_minute_to_step(
+                self.clock.absolute_minute,
+                _effective_clock_step(self.clock.step_minutes, self.clock.speed),
+            )
+            self.clock.minute = self.clock.absolute_minute % 1440
+            self.clock.updated_at = time.time()
             _write_json(self.curves_file, self.curves)
             return {"weather_points": len(weather_points), "load_devices": len(loads), "mode": mode}
 
@@ -1451,8 +1477,11 @@ class PolarMicrogridSimulator:
                 self.clock.speed = _next_clock_speed(self.clock.speed)
             elif action in ("slower", "speed_down"):
                 self.clock.speed = _previous_clock_speed(self.clock.speed)
-            elif action == "step":
-                return self.step()["clock"]
+            effective_step = _effective_clock_step(self.clock.step_minutes, self.clock.speed)
+            self.clock.absolute_minute = _align_minute_to_step(self.clock.absolute_minute, effective_step)
+            self.clock.minute = self.clock.absolute_minute % 1440
+            if action == "step":
+                return self.step(advance_minutes=effective_step)["clock"]
             self.clock.updated_at = time.time()
             return self.clock.as_dict()
 
@@ -1460,6 +1489,8 @@ class PolarMicrogridSimulator:
         with self.lock:
             step_minutes = max(1, int(self.clock.step_minutes))
             clock_advance = step_minutes if advance_minutes is None else max(1, int(advance_minutes))
+            self.clock.absolute_minute = _align_minute_to_step(self.clock.absolute_minute, clock_advance)
+            self.clock.minute = self.clock.absolute_minute % 1440
             period_seconds = self.period_seconds * clock_advance / step_minutes
             minute = self.clock.minute
             absolute_minute = self.clock.absolute_minute

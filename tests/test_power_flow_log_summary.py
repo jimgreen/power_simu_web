@@ -54,12 +54,15 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertIn("储能发电总功率 0 kW", text)
         self.assertIn("储能充电总功率 5 kW", text)
         self.assertIn("储能SOC 平均 55%", text)
+        self.assertIn("功率平衡 电源发电总功率 58 kW", text)
+        self.assertIn("用电及充电总功率 95 kW", text)
+        self.assertIn("功率差额 -37 kW", text)
         self.assertNotIn("DCACConverter.wt01_rect:", text)
         self.assertNotIn("ACNode.ac_bus:", text)
         self.assertIn("风力发电总功率 8 kW（1 台）", text)
         self.assertNotIn("风力发电总功率 16 kW", text)
         self.assertIn("新能源限值", text)
-        self.assertLessEqual(len(detail), 14)
+        self.assertLessEqual(len(detail), 15)
 
 
 if __name__ == "__main__":

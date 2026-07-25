@@ -4641,5 +4641,5 @@ initRuntimeMonitor();
 initMeasurementMonitor();
 setFaultTab(state.activeFaultTab);
 renderFaults(true);
-setInterval(refresh, 2000);
+setInterval(refresh, 1000);
 loadModels().finally(refresh);

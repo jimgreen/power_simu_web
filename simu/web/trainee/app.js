@@ -2599,4 +2599,4 @@ initPageNavigation();
 renderReceiveMode();
 renderHistory();
 loadModels().finally(refresh);
-setInterval(refresh, 2000);
+setInterval(refresh, 1000);

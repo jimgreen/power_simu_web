@@ -11,6 +11,12 @@ class TopbarAlignmentUiTest(unittest.TestCase):
     def test_topbar_switchers_share_the_same_horizontal_center_line(self):
         css = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
 
+        topbar_rule = css.split(".topbar {", 1)[1].split("}", 1)[0]
+        toolbar_rule = css.split(".model-toolbar {", 1)[1].split("}", 1)[0]
+        clock_rule = css.split(".top-clock-strip {", 1)[1].split("}", 1)[0]
+        self.assertIn("justify-content: flex-start", topbar_rule)
+        self.assertIn("flex: 0 1 auto", toolbar_rule)
+        self.assertIn("margin-left: auto", clock_rule)
         self.assertIn(".simulation-mode-switcher {", css)
         simulation_rule = css.split(".simulation-mode-switcher {", 1)[1].split("}", 1)[0]
         self.assertIn("margin: 0", simulation_rule)

@@ -86,6 +86,7 @@ class ClockState:
     speed: float = 1.0
     step_minutes: int = 1
     run_id: int = 0
+    step_count: int = 0
     updated_at: float = field(default_factory=time.time)
 
     def as_dict(self) -> Dict[str, Any]:
@@ -96,6 +97,7 @@ class ClockState:
             "speed": self.speed,
             "step_minutes": self.step_minutes,
             "run_id": self.run_id,
+            "step_count": self.step_count,
             "time": minute_to_time(self.minute),
             "updated_at": self.updated_at,
         }
@@ -1292,11 +1294,22 @@ class PolarMicrogridSimulator:
         command_response_lines: Sequence[str],
     ) -> None:
         real_measurements = measurements.get("real", [])
-        detail = [
+        sim_time = minute_to_time(minute)
+        control_detail = [
             *self._compact_command_response_lines(command_response_lines),
             *self._input_boundary_lines(minute, absolute_minute, clock_advance, period_seconds),
+        ]
+        self._append_runtime_log(
+            "控制响应",
+            "stat.e / yt_ctrl.e / weather.e",
+            "完成",
+            control_detail,
+            level="ok",
+            sim_time=sim_time,
+        )
+        power_flow_detail = [
             (
-                f"计算摘要 时刻 {minute_to_time(minute)}，累计分钟 {absolute_minute}，推进 {clock_advance} min，"
+                f"计算摘要 时刻 {sim_time}，累计分钟 {absolute_minute}，推进 {clock_advance} min，"
                 f"求解器 {result.get('solver_info', 'not-run')}，"
                 f"真值量测 {len(real_measurements)} 条，更新 {result.get('updated', 0)} 条，"
                 f"缺失 {result.get('missing', 0)} 条，叠加修正 {result.get('overlay_updates', 0)} 条"
@@ -1304,12 +1317,12 @@ class PolarMicrogridSimulator:
             *self._power_flow_summary_lines(real_measurements),
         ]
         self._append_runtime_log(
-            "潮流计算/控制响应",
-            "model.e / stat.e / weather.e / real.e",
+            "潮流计算",
+            "model.e / real.e / scada.e",
             "完成" if int(_to_float(result.get("missing"), 0) or 0) == 0 else "有缺失",
-            detail,
+            power_flow_detail,
             level="ok" if int(_to_float(result.get("missing"), 0) or 0) == 0 else "warn",
-            sim_time=minute_to_time(minute),
+            sim_time=sim_time,
         )
 
     def apply_student_commands(self, payload: Mapping[str, Any], source: str = "") -> Dict[str, int]:
@@ -1478,6 +1491,7 @@ class PolarMicrogridSimulator:
                 self.clock.absolute_minute = 0
                 self.clock.minute = 0
                 self.clock.speed = CLOCK_SPEED_LEVELS[0]
+                self.clock.step_count = 0
             elif action in ("faster", "speed_up"):
                 self.clock.speed = _next_clock_speed(self.clock.speed)
             elif action in ("slower", "speed_down"):
@@ -1518,6 +1532,7 @@ class PolarMicrogridSimulator:
             )
             self.clock.absolute_minute += clock_advance
             self.clock.minute = self.clock.absolute_minute % 1440
+            self.clock.step_count += 1
             self.clock.updated_at = time.time()
             return self.snapshot()
 

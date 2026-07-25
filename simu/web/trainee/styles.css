@@ -745,7 +745,9 @@ canvas {
 .runtime-log-toolbar {
   margin: -4px 0 10px;
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 8px;
 }
 .runtime-log-table {
   table-layout: fixed;

@@ -370,13 +370,13 @@
             <div class="runtime-workspace">
               <section class="panel runtime-table-panel">
                 <div class="panel-head">
-                  <h2>设备状态</h2>
+                <h2>控制指令</h2>
                   <div class="panel-actions">
                     <span id="runtimeDeviceSummary">待同步</span>
                     <span id="solverInfo">待运行</span>
                   </div>
                 </div>
-                <div class="sr-only">设备 类型 投运 状态 模式 设值 实时值 量测值</div>
+                <div class="sr-only">指令类型 设备 设备类型 模式 指令项 控制指令 实时值 量测值</div>
                 <div id="deviceTable" class="runtime-device-wrap" data-runtime-role="device-table"></div>
               </section>
 
@@ -481,7 +481,14 @@
           <section class="panel">
             <div class="panel-head">
               <h2>运行日志</h2>
-              <span id="runtimeLogSummary">最近 0 条</span>
+              <div class="panel-actions">
+                <label class="compact-field">日志类型
+                  <select id="runtimeLogTypeFilter">
+                    <option value="all">全部类型</option>
+                  </select>
+                </label>
+                <span id="runtimeLogSummary">最近 0 条</span>
+              </div>
             </div>
             <div class="sr-only">序号 本机时刻 仿真时刻 类型 对象 结果 详情</div>
             <div id="runtimeLogTable" class="runtime-log-wrap" data-log-role="runtime-table"></div>

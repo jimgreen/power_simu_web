@@ -28,7 +28,9 @@ const state = {
   faultDeviceFilter: { dev_type: "all", dev_name: "" },
   faultMeasurementFilter: { dev_type: "all", dev_name: "", key: "" },
   modelDeviceFilter: { dev_type: "all", dev_name: "" },
+  activeModelParamTab: "",
   runtimeDeviceFilter: { dev_type: "all", dev_name: "" },
+  activeRuntimeCommandTab: "remote_control",
   runtimeTraceHistory: [],
   runtimeTraceWindowMinutes: 60,
   lastRuntimeTraceKey: "",
@@ -41,6 +43,7 @@ const state = {
   modeFilter: { dev_type: "all", dev_name: "" },
   collapsedDeviceTreeGroups: {},
   runtimeLogs: [],
+  runtimeLogTypeFilter: "all",
   runtimeLogSeq: 0,
   lastRuntimeLogKey: "",
 };
@@ -433,6 +436,7 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.measurementFaults = [];
   state.modes = [];
   state.runtimeLogs = [];
+  state.runtimeLogTypeFilter = "all";
   state.runtimeLogSeq = 0;
   state.lastRuntimeLogKey = "";
   state.runtimeTraceHistory = [];
@@ -445,7 +449,9 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.faultDeviceFilter = { dev_type: "all", dev_name: "" };
   state.faultMeasurementFilter = { dev_type: "all", dev_name: "", key: "" };
   state.modelDeviceFilter = { dev_type: "all", dev_name: "" };
+  state.activeModelParamTab = "";
   state.runtimeDeviceFilter = { dev_type: "all", dev_name: "" };
+  state.activeRuntimeCommandTab = "remote_control";
   state.measurementCompareFilter = { dev_type: "all", dev_name: "" };
   state.activeCurveKey = "wind_speed_mps";
   state.selectedCurveKeys = ["wind_speed_mps"];
@@ -492,6 +498,28 @@ function runtimeLogDetailText(detail) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function minuteToTimeInput(value, fallback = 0) {
+  const numeric = Number(value);
+  const fallbackNumeric = Number(fallback);
+  const minute = clamp(
+    Math.round(Number.isFinite(numeric) ? numeric : (Number.isFinite(fallbackNumeric) ? fallbackNumeric : 0)),
+    0,
+    1439,
+  );
+  const hourText = String(Math.floor(minute / 60)).padStart(2, "0");
+  const minuteText = String(minute % 60).padStart(2, "0");
+  return `${hourText}:${minuteText}`;
+}
+
+function timeInputToMinute(value, fallback = 0) {
+  const match = /^(\d{2}):(\d{2})$/.exec(String(value || ""));
+  if (!match) return clamp(Number(fallback) || 0, 0, 1439);
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour > 23 || minute > 59) return clamp(Number(fallback) || 0, 0, 1439);
+  return hour * 60 + minute;
 }
 
 function curveModeConfig(mode = state.curveMode) {
@@ -1627,8 +1655,12 @@ function normalizeRuntimeLog(item, fallbackSeq = 0) {
 function renderRuntimeLogs() {
   const container = $("runtimeLogTable");
   if (!container) return;
-  $("runtimeLogSummary").textContent = `最近 ${state.runtimeLogs.length} 条`;
-  if (!state.runtimeLogs.length) {
+  const logs = filteredRuntimeLogs();
+  syncRuntimeLogTypeFilter();
+  $("runtimeLogSummary").textContent = state.runtimeLogTypeFilter === "all"
+    ? `最近 ${state.runtimeLogs.length} 条`
+    : `${logs.length}/${state.runtimeLogs.length} 条`;
+  if (!logs.length) {
     container.innerHTML = '<div class="empty-state">暂无运行日志</div>';
     return;
   }
@@ -1646,7 +1678,7 @@ function renderRuntimeLogs() {
         </tr>
       </thead>
       <tbody>
-        ${state.runtimeLogs.map((item) => `
+        ${logs.map((item) => `
           <tr class="runtime-log-row is-${escapeHtml(item.level || "info")}">
             <td class="numeric-cell">${escapeHtml(item.seq)}</td>
             <td>${escapeHtml(item.wall_time)}</td>
@@ -1869,16 +1901,44 @@ function renderGridModelDeviceTree() {
   `;
 }
 
+function runtimeLogTypes() {
+  return Array.from(new Set(state.runtimeLogs.map((item) => String(item.type || "")).filter(Boolean)))
+    .sort((left, right) => left.localeCompare(right, "zh-CN"));
+}
+
+function syncRuntimeLogTypeFilter() {
+  const select = $("runtimeLogTypeFilter");
+  if (!select) return;
+  const types = runtimeLogTypes();
+  if (state.runtimeLogTypeFilter !== "all" && !types.includes(state.runtimeLogTypeFilter)) {
+    state.runtimeLogTypeFilter = "all";
+  }
+  select.innerHTML = ["<option value=\"all\">全部类型</option>", ...types.map((type) => (
+    `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`
+  ))].join("");
+  select.value = state.runtimeLogTypeFilter;
+}
+
+function filteredRuntimeLogs() {
+  if (state.runtimeLogTypeFilter === "all") return state.runtimeLogs;
+  return state.runtimeLogs.filter((item) => item.type === state.runtimeLogTypeFilter);
+}
+
 function renderGridModelParamTable() {
   const container = $("modelParamTable");
   if (!container) return;
   const devices = gridModelDevices();
   const rows = filteredGridModelDevices(devices).map(modelAttributeRecordForDevice);
   const groups = groupedModelAttributeRecords(rows);
-  const singleGroupColumnCount = groups.length === 1 ? modelAttributeColumns(groups[0][1]).length : 0;
+  const availableTabs = groups.map(([devType]) => devType);
+  if (!availableTabs.includes(state.activeModelParamTab)) {
+    state.activeModelParamTab = availableTabs[0] || "";
+  }
+  const activeGroup = groups.find(([devType]) => devType === state.activeModelParamTab) || groups[0];
+  const activeColumnCount = activeGroup ? modelAttributeColumns(activeGroup[1]).length : 0;
   $("modelParamSummary").textContent = groups.length > 1
-    ? `${gridModelFilterLabel()} · ${rows.length}/${devices.length} 台 · ${groups.length} 类表格`
-    : `${gridModelFilterLabel()} · ${rows.length}/${devices.length} 台 · ${singleGroupColumnCount} 列属性`;
+    ? `${gridModelFilterLabel()} · ${rows.length}/${devices.length} 台 · ${groups.length} 个分页`
+    : `${gridModelFilterLabel()} · ${rows.length}/${devices.length} 台 · ${activeColumnCount} 列属性`;
   if (!devices.length) {
     container.innerHTML = '<div class="empty-state">暂无电网模型数据</div>';
     return;
@@ -1887,22 +1947,26 @@ function renderGridModelParamTable() {
     container.innerHTML = '<div class="empty-state">当前筛选无模型参数</div>';
     return;
   }
-  if (groups.length <= 1) {
-    container.innerHTML = renderModelAttributeTable(rows);
-    return;
-  }
-  container.innerHTML = groups.map(([devType, groupRows]) => {
-    const columnCount = modelAttributeColumns(groupRows).length;
-    return `
-      <section class="model-param-group">
-        <div class="model-param-group-head">
-          <h3>${escapeHtml(devType)}</h3>
-          <span>${groupRows.length} 台 · ${columnCount} 列属性</span>
-        </div>
-        ${renderModelAttributeTable(groupRows)}
-      </section>
-    `;
-  }).join("");
+  const [activeType, activeRows] = activeGroup;
+  container.innerHTML = `
+    <div class="model-param-tabs" role="tablist" aria-label="设备类型参数表">
+      ${groups.map(([devType, groupRows]) => `
+        <button
+          type="button"
+          role="tab"
+          class="model-param-tab ${devType === activeType ? "is-active" : ""}"
+          data-model-param-tab="${escapeHtml(devType)}"
+          aria-selected="${devType === activeType ? "true" : "false"}"
+        >
+          <span>${escapeHtml(devType)}</span>
+          <strong>${groupRows.length}</strong>
+        </button>
+      `).join("")}
+    </div>
+    <section class="model-param-tab-page" role="tabpanel" data-model-param-page="${escapeHtml(activeType)}">
+      ${renderModelAttributeTable(activeRows)}
+    </section>
+  `;
 }
 
 function renderGridModelPage() {
@@ -1912,7 +1976,14 @@ function renderGridModelPage() {
 
 function setGridModelFilter(devType, devName = "") {
   state.modelDeviceFilter = { dev_type: devType || "all", dev_name: devName || "" };
+  if (devType && devType !== "all") state.activeModelParamTab = devType;
   renderGridModelPage();
+}
+
+function setModelParamTab(devType) {
+  if (!devType || state.activeModelParamTab === devType) return;
+  state.activeModelParamTab = devType;
+  renderGridModelParamTable();
 }
 
 function numberOrNull(value) {
@@ -2053,6 +2124,7 @@ function runtimeDeviceTraceSignal(dev, measurements = state.snapshot?.measuremen
 
 function appendRuntimeTrace(snapshot) {
   const clock = snapshot.clock || {};
+  if (Number(clock.step_count ?? 0) <= 0) return;
   const result = snapshot.result || {};
   const summary = snapshot.summary || {};
   const signature = [
@@ -2137,65 +2209,134 @@ function runtimeFilterLabel(filter = state.runtimeDeviceFilter || { dev_type: "a
   return filter.dev_type;
 }
 
-function formatSetValues(setValues) {
-  const entries = Object.entries(setValues || {});
-  if (!entries.length) return "--";
-  return entries.map(([key, value]) => `${key}=${value}`).join(" ");
-}
-
 function formatRuntimeSignal(value, unit) {
   const formatted = formatMeasurementValue(value);
   return formatted === "--" || !unit ? formatted : `${formatted} ${unit}`;
+}
+
+function runtimeRemoteControlRows(devices) {
+  return devices.flatMap((dev) => {
+    const rows = [{
+      category: "遥控指令",
+      device: dev,
+      command: "设备投退",
+      set_type: "run_stat",
+      command_text: Number(dev.run_stat ?? 0) !== 0 ? "投入" : "退出",
+      real_text: Number(dev.run_stat ?? 0) !== 0 ? "投入" : "退出",
+      scada_text: "--",
+    }];
+    if (/switch|breaker/i.test(String(dev.dev_type || ""))) {
+      rows.push({
+        category: "遥控指令",
+        device: dev,
+        command: "开关开合",
+        set_type: "status",
+        command_text: Number(dev.status ?? 0) !== 0 ? "闭合" : "断开",
+        real_text: Number(dev.status ?? 0) !== 0 ? "闭合" : "断开",
+        scada_text: "--",
+      });
+    }
+    return rows;
+  });
+}
+
+function runtimeRemoteAdjustmentRows(devices, measurements = state.snapshot?.measurements || {}) {
+  return devices.flatMap((dev) => Object.entries(dev.set_values || {})
+    .filter(([key, value]) => /^[pqv](?:_|$)/i.test(key) && numberOrNull(value) !== null)
+    .map(([key, value]) => {
+      const meta = runtimeMetaFromSetKey(key, Number(value));
+      const pair = runtimeMeasurementPair(dev, meta, measurements);
+      return {
+        category: "遥调指令",
+        device: dev,
+        command: `${meta.kind}设定值`,
+        set_type: key,
+        command_text: formatRuntimeSignal(meta.value, meta.unit),
+        real_text: formatRuntimeSignal(pair.real, meta.unit),
+        scada_text: formatRuntimeSignal(pair.scada, meta.unit),
+      };
+    }));
+}
+
+function renderRuntimeCommandRows(rows) {
+  return rows.map((row) => `
+    <tr>
+      <td>${escapeHtml(row.device.dev_name)}</td>
+      <td>${escapeHtml(row.device.dev_type)}</td>
+      <td>${escapeHtml(row.device.mode || "--")}</td>
+      <td>${escapeHtml(row.command)}<small class="command-set-type">${escapeHtml(row.set_type)}</small></td>
+      <td class="numeric-cell">${escapeHtml(row.command_text)}</td>
+      <td class="numeric-cell">${escapeHtml(row.real_text)}</td>
+      <td class="numeric-cell">${escapeHtml(row.scada_text)}</td>
+    </tr>
+  `).join("");
+}
+
+function renderRuntimeCommandTable(rows, emptyText) {
+  if (!rows.length) return `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
+  return `
+    <table class="runtime-device-table runtime-command-table">
+      <thead>
+        <tr>
+          <th>设备</th>
+          <th>设备类型</th>
+          <th>模式</th>
+          <th>指令项</th>
+          <th>控制指令</th>
+          <th>实时值</th>
+          <th>量测值</th>
+        </tr>
+      </thead>
+      <tbody>${renderRuntimeCommandRows(rows)}</tbody>
+    </table>
+  `;
 }
 
 function renderRuntimeDeviceTable() {
   const container = $("deviceTable");
   if (!container) return;
   const devices = runtimeDevices();
-  const rows = filteredRuntimeDevices(devices);
-  $("runtimeDeviceSummary").textContent = `${runtimeFilterLabel()} · ${rows.length}/${devices.length} 台`;
+  const selectedDevices = filteredRuntimeDevices(devices);
+  const remoteControlRows = runtimeRemoteControlRows(selectedDevices);
+  const remoteAdjustmentRows = runtimeRemoteAdjustmentRows(selectedDevices);
+  const commandCount = remoteControlRows.length + remoteAdjustmentRows.length;
+  $("runtimeDeviceSummary").textContent = `${runtimeFilterLabel()} · ${commandCount} 条指令`;
   if (!devices.length) {
     container.innerHTML = '<div class="empty-state">暂无设备数据</div>';
     return;
   }
-  if (!rows.length) {
+  if (!selectedDevices.length) {
     container.innerHTML = '<div class="empty-state">当前筛选无设备</div>';
     return;
   }
+  if (!commandCount) {
+    container.innerHTML = '<div class="empty-state">当前筛选无控制指令</div>';
+    return;
+  }
+  const activeTab = state.activeRuntimeCommandTab === "remote_adjustment" ? "remote_adjustment" : "remote_control";
   container.innerHTML = `
-    <table class="runtime-device-table">
-      <thead>
-        <tr>
-          <th>设备</th>
-          <th>类型</th>
-          <th>投运</th>
-          <th>状态</th>
-          <th>模式</th>
-          <th>设值</th>
-          <th>控制指令</th>
-          <th>实时值</th>
-          <th>量测值</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rows.map((dev) => {
-          const signal = runtimeDeviceTraceSignal(dev);
-          return `
-            <tr>
-              <td>${escapeHtml(dev.dev_name)}</td>
-              <td>${escapeHtml(dev.dev_type)}</td>
-              <td><span class="status-dot ${dev.run_stat ? "on" : ""}"></span>${dev.run_stat ? "投入" : "退出"}</td>
-              <td>${dev.status ? "闭合/可用" : "断开/故障"}</td>
-              <td>${escapeHtml(dev.mode || "--")}</td>
-              <td class="mono-cell">${escapeHtml(formatSetValues(dev.set_values))}</td>
-              <td class="numeric-cell">${escapeHtml(formatRuntimeSignal(signal.control, signal.unit))}</td>
-              <td class="numeric-cell">${escapeHtml(formatRuntimeSignal(signal.real, signal.unit))}</td>
-              <td class="numeric-cell">${escapeHtml(formatRuntimeSignal(signal.scada, signal.unit))}</td>
-            </tr>
-          `;
-        }).join("")}
-      </tbody>
-    </table>`;
+    <div class="runtime-command-tabs" role="tablist" aria-label="控制指令类型">
+      <button type="button" role="tab" class="runtime-command-tab ${activeTab === "remote_control" ? "is-active" : ""}" data-runtime-command-tab="remote_control" aria-selected="${activeTab === "remote_control"}">
+        <span>遥控指令</span><strong>${remoteControlRows.length}</strong>
+      </button>
+      <button type="button" role="tab" class="runtime-command-tab ${activeTab === "remote_adjustment" ? "is-active" : ""}" data-runtime-command-tab="remote_adjustment" aria-selected="${activeTab === "remote_adjustment"}">
+        <span>遥调指令</span><strong>${remoteAdjustmentRows.length}</strong>
+      </button>
+    </div>
+    <section class="runtime-command-tab-page ${activeTab === "remote_control" ? "is-active" : ""}" data-runtime-command-page="remote_control" role="tabpanel">
+      ${renderRuntimeCommandTable(remoteControlRows, "当前筛选无遥控指令")}
+    </section>
+    <section class="runtime-command-tab-page ${activeTab === "remote_adjustment" ? "is-active" : ""}" data-runtime-command-page="remote_adjustment" role="tabpanel">
+      ${renderRuntimeCommandTable(remoteAdjustmentRows, "当前筛选无遥调指令")}
+    </section>
+  `;
+}
+
+function setRuntimeCommandTab(tabName) {
+  if (!["remote_control", "remote_adjustment"].includes(tabName)) return;
+  if (state.activeRuntimeCommandTab === tabName) return;
+  state.activeRuntimeCommandTab = tabName;
+  renderRuntimeDeviceTable();
 }
 
 function runtimeTraceDevicesForChart() {
@@ -2472,6 +2613,7 @@ function measurementUnit(measType) {
 
 function appendMeasurementTrace(snapshot) {
   const clock = snapshot.clock || {};
+  if (Number(clock.step_count ?? 0) <= 0) return;
   const result = snapshot.result || {};
   const summary = snapshot.summary || {};
   const signature = [
@@ -3120,8 +3262,8 @@ function renderDeviceFaultTable() {
                   <option value="fault" ${fault ? "selected" : ""}>故障</option>
                 </select>
               </td>
-              <td><input data-device-index="${index}" data-device-field="start_minute" type="number" min="0" max="1439" value="${fault?.start_minute ?? 60}" ${disabled} /></td>
-              <td><input data-device-index="${index}" data-device-field="clear_minute" type="number" min="0" max="1439" value="${fault?.clear_minute ?? 120}" ${disabled} /></td>
+              <td><input data-device-index="${index}" data-device-field="start_minute" type="time" step="60" value="${minuteToTimeInput(fault?.start_minute, 60)}" ${disabled} /></td>
+              <td><input data-device-index="${index}" data-device-field="clear_minute" type="time" step="60" value="${minuteToTimeInput(fault?.clear_minute, 120)}" ${disabled} /></td>
             </tr>`;
         }).join("")}
       </tbody>
@@ -3175,8 +3317,8 @@ function renderMeasurementFaultTable() {
                   <option value="zero" ${faultType === "zero" ? "selected" : ""}>0值</option>
                 </select>
               </td>
-              <td><input data-meas-index="${index}" data-meas-field="start_minute" type="number" min="0" max="1439" value="${fault?.start_minute ?? 180}" ${disabled} /></td>
-              <td><input data-meas-index="${index}" data-meas-field="clear_minute" type="number" min="0" max="1439" value="${fault?.clear_minute ?? 240}" ${disabled} /></td>
+              <td><input data-meas-index="${index}" data-meas-field="start_minute" type="time" step="60" value="${minuteToTimeInput(fault?.start_minute, 180)}" ${disabled} /></td>
+              <td><input data-meas-index="${index}" data-meas-field="clear_minute" type="time" step="60" value="${minuteToTimeInput(fault?.clear_minute, 240)}" ${disabled} /></td>
               <td><input data-meas-index="${index}" data-meas-field="median" type="number" step="0.001" value="${fault?.median ?? meas.value ?? 0}" ${disabled} /></td>
               <td><input data-meas-index="${index}" data-meas-field="bias" type="number" step="0.001" value="${fault?.bias ?? 0}" ${disabled} /></td>
             </tr>`;
@@ -3195,7 +3337,7 @@ function updateDeviceFault(index, field, rawValue, shouldRender = true) {
   }
   const fault = ensureDeviceFault(dev);
   if (field === "start_minute" || field === "clear_minute") {
-    fault[field] = Number(rawValue);
+    fault[field] = timeInputToMinute(rawValue, fault[field]);
   }
   if (shouldRender) renderFaults(true);
 }
@@ -3211,7 +3353,9 @@ function updateMeasurementFault(index, field, rawValue, shouldRender = true) {
   const fault = ensureMeasurementFault(meas);
   if (field === "fault_type") {
     fault.fault_type = rawValue;
-  } else if (field === "start_minute" || field === "clear_minute" || field === "median" || field === "bias") {
+  } else if (field === "start_minute" || field === "clear_minute") {
+    fault[field] = timeInputToMinute(rawValue, fault[field]);
+  } else if (field === "median" || field === "bias") {
     fault[field] = Number(rawValue);
   }
   if (shouldRender) renderFaults(true);
@@ -3457,6 +3601,10 @@ if (curveTreeElement) {
 window.addEventListener("pointerup", finishCurveTreePointerSelection);
 window.addEventListener("pointercancel", resetCurveTreePointerSelection);
 $("modelSelector").addEventListener("change", (event) => setActiveModel(event.target.value));
+$("runtimeLogTypeFilter").addEventListener("change", (event) => {
+  state.runtimeLogTypeFilter = event.target.value || "all";
+  renderRuntimeLogs();
+});
 $("saveDeviceFaults").addEventListener("click", async () => {
   await pushSettings();
   $("deviceFaultSummary").textContent = `已保存 ${state.deviceFaults.length} 个故障`;
@@ -3470,6 +3618,16 @@ document.querySelectorAll("[data-fault-tab]").forEach((button) => {
 });
 $("pushModes").addEventListener("click", pushSettings);
 document.addEventListener("click", (event) => {
+  const runtimeCommandTab = event.target.closest("[data-runtime-command-tab]");
+  if (runtimeCommandTab) {
+    setRuntimeCommandTab(runtimeCommandTab.dataset.runtimeCommandTab || "");
+    return;
+  }
+  const modelParamTab = event.target.closest("[data-model-param-tab]");
+  if (modelParamTab) {
+    setModelParamTab(modelParamTab.dataset.modelParamTab || "");
+    return;
+  }
   const curveTreeButton = event.target.closest("[data-curve-tree-type]");
   if (curveTreeButton) {
     if (state.suppressNextCurveTreeClick) {

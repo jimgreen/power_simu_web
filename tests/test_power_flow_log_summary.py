@@ -44,7 +44,10 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
             command_response_lines=["控制响应 本轮无新增学员台控制指令"],
         )
 
+        self.assertEqual([item["type"] for item in service.runtime_logs[-2:]], ["控制响应", "潮流计算"])
+        control_detail = service.runtime_logs[-2]["detail"]
         detail = service.runtime_logs[-1]["detail"]
+        control_text = "\n".join(control_detail)
         text = "\n".join(detail)
 
         self.assertIn("风力发电总功率 8 kW", text)
@@ -57,12 +60,16 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertIn("功率平衡 电源发电总功率 58 kW", text)
         self.assertIn("用电及充电总功率 95 kW", text)
         self.assertIn("功率差额 -37 kW", text)
+        self.assertIn("控制响应 本轮无新增学员台控制指令", control_text)
+        self.assertIn("输入文件", control_text)
+        self.assertNotIn("计算摘要", control_text)
+        self.assertNotIn("控制响应", text)
+        self.assertEqual(len(detail), 5)
         self.assertNotIn("DCACConverter.wt01_rect:", text)
         self.assertNotIn("ACNode.ac_bus:", text)
         self.assertIn("风力发电总功率 8 kW（1 台）", text)
         self.assertNotIn("风力发电总功率 16 kW", text)
-        self.assertIn("新能源限值", text)
-        self.assertLessEqual(len(detail), 15)
+        self.assertIn("新能源限值", control_text)
 
 
 if __name__ == "__main__":

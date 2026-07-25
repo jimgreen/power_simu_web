@@ -15,6 +15,7 @@ const state = {
   snapshotSource: "",
   lastTeacherSnapshotLogKey: "",
   runtimeLogs: [],
+  runtimeLogTypeFilter: "all",
   runtimeLogSeq: 0,
   seenCommandHistoryKeys: new Set(),
   measurementFilter: { dev_type: "all", dev_name: "" },
@@ -1073,6 +1074,7 @@ function renderMeasurements(snapshot = state.snapshot || {}) {
 
 function appendMeasurementTrace(snapshot) {
   const clock = snapshot.clock || {};
+  if (Number(clock.step_count ?? 0) <= 0) return;
   const point = {
     minute: Number(clock.absolute_minute ?? clock.minute ?? state.measurementTraceHistory.length) || 0,
     time: clock.time || "--",
@@ -1290,8 +1292,11 @@ function syncCommandHistoryLogs(history = []) {
 }
 
 function renderHistory() {
-  const logs = state.runtimeLogs || [];
-  $("historyCount").textContent = `${logs.length} 条`;
+  syncTraineeRuntimeLogTypeFilter();
+  const logs = filteredTraineeRuntimeLogs();
+  $("historyCount").textContent = state.runtimeLogTypeFilter === "all"
+    ? `${state.runtimeLogs.length} 条`
+    : `${logs.length}/${state.runtimeLogs.length} 条`;
   if (!logs.length) {
     $("commandHistory").innerHTML = '<div class="empty-state">暂无运行日志</div>';
     return;
@@ -1312,6 +1317,29 @@ function renderHistory() {
         `).join("")}
       </tbody>
     </table>`;
+}
+
+function traineeRuntimeLogTypes() {
+  return Array.from(new Set(state.runtimeLogs.map((item) => String(item.type || "")).filter(Boolean)))
+    .sort((left, right) => left.localeCompare(right, "zh-CN"));
+}
+
+function syncTraineeRuntimeLogTypeFilter() {
+  const select = $("traineeRuntimeLogTypeFilter");
+  if (!select) return;
+  const types = traineeRuntimeLogTypes();
+  if (state.runtimeLogTypeFilter !== "all" && !types.includes(state.runtimeLogTypeFilter)) {
+    state.runtimeLogTypeFilter = "all";
+  }
+  select.innerHTML = ["<option value=\"all\">全部类型</option>", ...types.map((type) => (
+    `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`
+  ))].join("");
+  select.value = state.runtimeLogTypeFilter;
+}
+
+function filteredTraineeRuntimeLogs() {
+  if (state.runtimeLogTypeFilter === "all") return state.runtimeLogs;
+  return state.runtimeLogs.filter((item) => item.type === state.runtimeLogTypeFilter);
 }
 
 function renderPendingPreview() {
@@ -1476,6 +1504,10 @@ $("renewableSocMin").addEventListener("change", updateRenewableSettings);
 $("renewableSocMax").addEventListener("change", updateRenewableSettings);
 $("clearRuntimeLogs").addEventListener("click", () => {
   state.runtimeLogs = [];
+  renderHistory();
+});
+$("traineeRuntimeLogTypeFilter").addEventListener("change", (event) => {
+  state.runtimeLogTypeFilter = event.target.value || "all";
   renderHistory();
 });
 $("modelSelector").addEventListener("change", (event) => setActiveModel(event.target.value));

@@ -51,8 +51,9 @@ class ClockStepAlignmentTest(unittest.TestCase):
         clock = service.control_clock({"action": "step"})
         self.assertEqual(clock["time"], "01:30:00")
         self.assertEqual(clock["minute"] % 15, 0)
+        self.assertEqual(clock["step_count"], 1)
 
-        service.control_clock({"action": "stop"})
+        stopped = service.control_clock({"action": "stop"})
         first_run = service.control_clock({"action": "start"})
         repeated_start = service.control_clock({"action": "start"})
         service.control_clock({"action": "stop"})
@@ -60,6 +61,8 @@ class ClockStepAlignmentTest(unittest.TestCase):
         self.assertEqual(first_run["run_id"], 1)
         self.assertEqual(repeated_start["run_id"], 1)
         self.assertEqual(second_run["run_id"], 2)
+        self.assertEqual(stopped["step_count"], 0)
+        self.assertEqual(first_run["step_count"], 0)
 
 
 if __name__ == "__main__":

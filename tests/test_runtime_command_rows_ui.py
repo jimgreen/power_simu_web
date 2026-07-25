@@ -16,6 +16,11 @@ class RuntimeCommandRowsUiTest(unittest.TestCase):
         self.assertIn("遥控指令", app_js)
         self.assertIn("遥调指令", app_js)
         self.assertIn("指令项", app_js)
+        self.assertIn("指令刷新时刻", app_js)
+        self.assertIn("refresh_time", app_js)
+        self.assertIn("function runtimeCommandRefreshTime", app_js)
+        self.assertIn("issued_absolute_minute", app_js)
+        self.assertIn("expires_at_absolute_minute", app_js)
         self.assertIn("renderRuntimeCommandTable", app_js)
 
 

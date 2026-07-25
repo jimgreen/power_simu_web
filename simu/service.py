@@ -75,6 +75,7 @@ INPUT_FILES = ("model.e", "meas.e", "stat.e", "weather.e", "device.e", "yt_ctrl.
 CLONE_FILES = INPUT_FILES + ("real.e", "scada.e", "curves.json", "local_settings.json", "commands.json")
 CLOCK_SPEED_LEVELS = (1.0, 5.0, 15.0, 30.0, 60.0)
 DEFAULT_CONTROL_VALID_MINUTES = 5.0
+DEFAULT_COMPUTE_INTERVAL_SECONDS = 1.0
 LOG_DECIMAL_PATTERN = re.compile(r"(?<![\w:])[-+]?\d+\.\d+(?:e[-+]?\d+)?(?![\w:])", re.IGNORECASE)
 
 
@@ -165,6 +166,13 @@ def _nearest_clock_speed(value: Any) -> float:
     if speed is None:
         return CLOCK_SPEED_LEVELS[0]
     return min(CLOCK_SPEED_LEVELS, key=lambda level: (abs(level - speed), level))
+
+
+def _compute_interval_seconds(value: Any, default: float = DEFAULT_COMPUTE_INTERVAL_SECONDS) -> float:
+    interval = _to_float(value, default)
+    if interval is None or not math.isfinite(interval):
+        interval = default
+    return min(3600.0, max(0.1, float(interval)))
 
 
 def _next_clock_speed(value: Any) -> float:
@@ -541,6 +549,7 @@ class PolarMicrogridSimulator:
         period_seconds: float = 60.0,
         noise_std: Optional[float] = None,
         random_seed: Optional[int] = None,
+        compute_interval_seconds: float = DEFAULT_COMPUTE_INTERVAL_SECONDS,
         model_id: str = "default",
         model_name: str = "",
     ) -> None:
@@ -551,6 +560,7 @@ class PolarMicrogridSimulator:
         self.model_name = model_name or self.model_id
         self.kernel = kernel or simu_loop.run_once
         self.period_seconds = float(period_seconds)
+        self.compute_interval_seconds = _compute_interval_seconds(compute_interval_seconds)
         self.noise_std = noise_std
         self.random_seed = random_seed
         self.clock = ClockState()
@@ -584,8 +594,9 @@ class PolarMicrogridSimulator:
         self.clock.step_minutes = max(1, int(_to_float(self.curves.get("time_step_minutes"), 1) or 1))
         self.local_settings = _read_json(
             self.settings_file,
-            {"device_faults": [], "measurement_faults": [], "modes": []},
+            {"device_faults": [], "measurement_faults": [], "modes": [], "system_parameters": {}},
         )
+        self._apply_stored_system_parameters()
         self.command_history = self._read_command_history()
         self._last_command_response_index = len(self.command_history)
         self._ensure_stat_file()
@@ -607,6 +618,74 @@ class PolarMicrogridSimulator:
 
     def _write_command_history(self) -> None:
         _write_json(self.commands_file, self.command_history[-200:])
+
+    def _apply_stored_system_parameters(self) -> None:
+        params = self.local_settings.get("system_parameters", {})
+        if not isinstance(params, Mapping):
+            return
+        if "clock_speed" in params or "speed" in params:
+            self.clock.speed = _nearest_clock_speed(params.get("clock_speed", params.get("speed")))
+        if "compute_interval_seconds" in params or "calculation_period_seconds" in params:
+            self.compute_interval_seconds = _compute_interval_seconds(
+                params.get("compute_interval_seconds", params.get("calculation_period_seconds")),
+                self.compute_interval_seconds,
+            )
+
+    def system_parameters(self) -> Dict[str, Any]:
+        return {
+            "clock_speed": _nearest_clock_speed(self.clock.speed),
+            "compute_interval_seconds": self.compute_interval_seconds,
+            "clock_step_minutes": max(1, int(self.clock.step_minutes)),
+            "effective_step_minutes": _effective_clock_step(self.clock.step_minutes, self.clock.speed),
+        }
+
+    def set_system_parameters(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        with self.lock:
+            if "clock_speed" in payload or "speed" in payload or "simulation_speed" in payload:
+                self.clock.speed = _nearest_clock_speed(
+                    payload.get("clock_speed", payload.get("speed", payload.get("simulation_speed")))
+                )
+            if "compute_interval_seconds" in payload or "calculation_period_seconds" in payload:
+                self.compute_interval_seconds = _compute_interval_seconds(
+                    payload.get("compute_interval_seconds", payload.get("calculation_period_seconds")),
+                    self.compute_interval_seconds,
+                )
+
+            effective_step = _effective_clock_step(self.clock.step_minutes, self.clock.speed)
+            self.clock.absolute_minute = _align_minute_to_step(self.clock.absolute_minute, effective_step)
+            self.clock.minute = self.clock.absolute_minute % 1440
+            self.clock.updated_at = time.time()
+
+            stored_params = self.local_settings.get("system_parameters", {})
+            params = dict(stored_params) if isinstance(stored_params, Mapping) else {}
+            params.update(
+                {
+                    "clock_speed": self.clock.speed,
+                    "compute_interval_seconds": self.compute_interval_seconds,
+                }
+            )
+            self.local_settings["system_parameters"] = params
+            _write_json(self.settings_file, self.local_settings)
+            source_settings_file = self.sim_dir / "local_settings.json"
+            source_settings = _read_json(source_settings_file, {}) if source_settings_file.exists() else {}
+            if not isinstance(source_settings, Mapping):
+                source_settings = {}
+            source_settings = dict(source_settings)
+            source_settings["system_parameters"] = params
+            _write_json(source_settings_file, source_settings)
+            self._append_runtime_log(
+                "参数配置",
+                "系统参数",
+                "已更新",
+                [
+                    f"仿真步长/加速比 x{format_number(self.clock.speed)}",
+                    f"仿真周期 {format_number(self.compute_interval_seconds)} s",
+                    f"有效推进步长 {effective_step} min",
+                ],
+                level="ok",
+                sim_time=minute_to_time(self.clock.minute),
+            )
+            return {"system_parameters": self.system_parameters(), "clock": self.clock.as_dict()}
 
     def clone_files_to(self, target_dir: Path) -> None:
         with self.lock:
@@ -1494,6 +1573,7 @@ class PolarMicrogridSimulator:
     def control_clock(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
         with self.lock:
             action = str(payload.get("action", "")).lower()
+            previous_state = self.clock.state
             if "step_minutes" in payload:
                 self.clock.step_minutes = max(1, int(_to_float(payload.get("step_minutes"), 1) or 1))
             if "minute" in payload:
@@ -1503,7 +1583,7 @@ class PolarMicrogridSimulator:
             if "speed" in payload:
                 self.clock.speed = _nearest_clock_speed(payload.get("speed"))
             if action == "start":
-                if self.clock.state != "running" and self.clock.absolute_minute == 0:
+                if previous_state == "stopped":
                     self.clock.run_id += 1
                 self.clock.state = "running"
             elif action == "pause":
@@ -1512,7 +1592,6 @@ class PolarMicrogridSimulator:
                 self.clock.state = "stopped"
                 self.clock.absolute_minute = 0
                 self.clock.minute = 0
-                self.clock.speed = CLOCK_SPEED_LEVELS[0]
                 self.clock.step_count = 0
             elif action in ("faster", "speed_up"):
                 self.clock.speed = _next_clock_speed(self.clock.speed)
@@ -1879,6 +1958,7 @@ class PolarMicrogridSimulator:
             "files": {key: str(path) for key, path in self.files.items()},
             "curves": self.curves,
             "settings": self.local_settings,
+            "system_parameters": self.system_parameters(),
             "commands": {"history": self.command_history[-50:]},
             "runtime_logs": self.runtime_logs[-300:],
             "devices": self.devices(),
@@ -1917,6 +1997,7 @@ class MultiModelSimulator:
         kernel: Optional[Callable[[simu_loop.SimulationConfig], Optional[simu_loop.SimulationResult]]] = None,
         *,
         period_seconds: float = 60.0,
+        compute_interval_seconds: float = DEFAULT_COMPUTE_INTERVAL_SECONDS,
         noise_std: Optional[float] = None,
         random_seed: Optional[int] = None,
         models_root: str | Path | None = None,
@@ -1930,6 +2011,7 @@ class MultiModelSimulator:
         self.directory_backed = directory_backed
         self.kernel = kernel
         self.period_seconds = period_seconds
+        self.compute_interval_seconds = _compute_interval_seconds(compute_interval_seconds)
         self.noise_std = noise_std
         self.random_seed = random_seed
         self._services: Dict[str, PolarMicrogridSimulator] = {}
@@ -1943,6 +2025,7 @@ class MultiModelSimulator:
                 runtime_dir=self.runtime_dir / spec.model_id,
                 kernel=kernel,
                 period_seconds=period_seconds,
+                compute_interval_seconds=self.compute_interval_seconds,
                 noise_std=noise_std,
                 random_seed=random_seed,
                 model_id=spec.model_id,
@@ -1993,6 +2076,7 @@ class MultiModelSimulator:
         kernel: Optional[Callable[[simu_loop.SimulationConfig], Optional[simu_loop.SimulationResult]]] = None,
         *,
         period_seconds: float = 60.0,
+        compute_interval_seconds: float = DEFAULT_COMPUTE_INTERVAL_SECONDS,
         noise_std: Optional[float] = None,
         random_seed: Optional[int] = None,
         models_dir: str | Path | None = None,
@@ -2005,6 +2089,7 @@ class MultiModelSimulator:
             runtime_dir=runtime_dir,
             kernel=kernel,
             period_seconds=period_seconds,
+            compute_interval_seconds=compute_interval_seconds,
             noise_std=noise_std,
             random_seed=random_seed,
             models_root=models_root,
@@ -2055,6 +2140,7 @@ class MultiModelSimulator:
             runtime_dir=self.runtime_dir / spec.model_id,
             kernel=self.kernel,
             period_seconds=self.period_seconds,
+            compute_interval_seconds=self.compute_interval_seconds,
             noise_std=self.noise_std,
             random_seed=self.random_seed,
             model_id=spec.model_id,
@@ -2079,15 +2165,7 @@ class MultiModelSimulator:
     def clone_model(self, source_model_id: Optional[str], new_model_id: Any) -> Dict[str, Any]:
         with self.lock:
             source = self.service_for(source_model_id)
-            target_id = _safe_model_id(new_model_id)
-            target_keys = {_model_key(new_model_id), _model_key(target_id)}
-            existing_keys = {
-                key
-                for service in self._services.values()
-                for key in (_model_key(service.model_id), _model_key(service.model_name))
-            }
-            if existing_keys.intersection(target_keys):
-                raise ValueError(f"模型已存在: {target_id}")
+            target_id = self.validate_new_model_name(new_model_id)
             target_dir = (self.models_root / target_id).resolve()
             try:
                 target_dir.relative_to(self.models_root)
@@ -2102,6 +2180,7 @@ class MultiModelSimulator:
                 runtime_dir=self.runtime_dir / target_id,
                 kernel=self.kernel,
                 period_seconds=self.period_seconds,
+                compute_interval_seconds=self.compute_interval_seconds,
                 noise_std=self.noise_std,
                 random_seed=self.random_seed,
                 model_id=target_id,
@@ -2119,6 +2198,28 @@ class MultiModelSimulator:
             self._services[target_id] = service
             self._append_manifest_model(target_id, target_dir)
             return service.model_info()
+
+    def validate_new_model_name(self, new_model_id: Any) -> str:
+        target_id = _safe_model_id(new_model_id)
+        target_keys = {_model_key(new_model_id), _model_key(target_id)}
+        with self.lock:
+            if self.directory_backed:
+                self._sync_models_from_directory_locked()
+            existing_keys = {
+                key
+                for existing_service in self._services.values()
+                for key in (_model_key(existing_service.model_id), _model_key(existing_service.model_name))
+            }
+            if existing_keys.intersection(target_keys):
+                raise ValueError(f"模型已存在: {target_id}")
+            target_dir = (self.models_root / target_id).resolve()
+            try:
+                target_dir.relative_to(self.models_root)
+            except ValueError as exc:
+                raise ValueError(f"模型名称无效: {new_model_id}") from exc
+            if target_dir.exists():
+                raise ValueError(f"模型文件夹已存在: {target_id}")
+        return target_id
 
     def _append_manifest_model(self, model_id: str, sim_dir: Path) -> None:
         manifest = self.models_root.parent / "models.json"

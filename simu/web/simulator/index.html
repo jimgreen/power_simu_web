@@ -28,7 +28,9 @@
               <option value="day">日仿真</option>
             </select>
           </label>
-          <button id="exportDefinitionsButton" class="model-export-button" type="button" title="请选择定义包导出目录">导出定义包</button>
+          <button id="exportDefinitionsButton" class="model-export-button" type="button" title="请选择定义导出目录">导出定义</button>
+          <input id="importDefinitionsInput" type="file" accept=".zip,application/zip" hidden />
+          <button id="importDefinitionsButton" class="model-import-button" type="button">导入定义</button>
           <button id="cloneModelButton" class="model-clone-button" type="button">复制新模型</button>
         </div>
         <div class="clock-strip">
@@ -64,6 +66,7 @@
         <button data-nav-page="curves">曲线设置</button>
         <button data-nav-page="faults">故障设置</button>
         <button data-nav-page="modes">运行模式</button>
+        <button data-nav-page="parameters">参数配置</button>
         <button data-nav-page="runtime">控制指令</button>
         <button data-nav-page="measurements">实时量测</button>
         <button data-nav-page="logs">运行日志</button>
@@ -71,49 +74,157 @@
 
       <main class="page-main">
         <section class="page-section is-active" data-page="overview">
-          <div class="overview-grid">
-            <section class="panel">
-              <div class="panel-head">
-                <h2>运行总览</h2>
-                <span id="overviewRefresh">--</span>
+          <div class="overview-dashboard">
+            <section class="panel overview-status-panel">
+              <div class="overview-status-primary">
+                <span class="overview-state-dot" id="overviewStateDot"></span>
+                <div><small>当前状态</small><strong id="overviewState">已停止</strong></div>
               </div>
-              <dl class="metric-grid">
-                <div><dt>量测</dt><dd id="metricScada">0</dd></div>
-                <div><dt>命令</dt><dd id="metricCommands">0</dd></div>
+              <dl class="overview-status-metrics">
+                <div><dt>模型</dt><dd id="overviewModel">--</dd></div>
+                <div><dt>仿真类型</dt><dd id="overviewMode">--</dd></div>
+                <div><dt>仿真时步</dt><dd id="overviewStep">--</dd></div>
+                <div><dt>有效量测</dt><dd><span id="metricScada">0</span>/<span id="overviewMeasurementTotal">0</span></dd></div>
+                <div><dt>控制指令</dt><dd id="metricCommands">0</dd></div>
                 <div><dt>告警</dt><dd id="metricAlarms">0</dd></div>
-                <div><dt>刷新</dt><dd id="metricRefresh">--</dd></div>
               </dl>
+              <div class="overview-status-tail">
+                <small>求解状态</small>
+                <strong id="overviewSolverInfo">待运行</strong>
+                <span id="overviewRefresh">--</span>
+                <span id="metricRefresh" hidden>--</span>
+              </div>
             </section>
 
-            <section class="panel overview-wide">
-              <div class="panel-head">
-                <h2>交直流混联系统</h2>
-                <span id="overviewSolverInfo">待运行</span>
-              </div>
-              <svg class="one-line" viewBox="0 0 900 260" role="img" aria-label="交直流微电网单线图">
-                <path class="bus ac" d="M70 90H440"></path>
-                <path class="bus dc" d="M520 90H830"></path>
-                <path class="link" d="M440 90 C470 70,490 70,520 90"></path>
-                <g class="node online" transform="translate(95 90)"><circle r="18"></circle><text y="46">柴发</text></g>
-                <g class="node online" transform="translate(225 90)"><circle r="18"></circle><text y="46">负荷</text></g>
-                <g class="node online" transform="translate(355 90)"><circle r="18"></circle><text y="46">AC母线</text></g>
-                <g class="node online" transform="translate(580 90)"><rect x="-20" y="-20" width="40" height="40"></rect><text y="50">DCAC</text></g>
-                <g class="node online" transform="translate(700 90)"><rect x="-20" y="-20" width="40" height="40"></rect><text y="50">储能</text></g>
-                <g class="node warn" transform="translate(800 90)"><rect x="-20" y="-20" width="40" height="40"></rect><text y="50">风光</text></g>
-                <path class="drop" d="M225 108V190H355"></path>
-                <path class="drop" d="M700 110V190H800"></path>
-                <text class="caption" x="70" y="40">AC侧</text>
-                <text class="caption" x="520" y="40">DC侧</text>
-              </svg>
-            </section>
+            <div class="overview-main-grid">
+              <section class="panel overview-process-panel">
+                <div class="panel-head">
+                  <h2>仿真流程</h2>
+                  <span id="overviewProcessSummary">等待启动</span>
+                </div>
+                <div class="simulation-flow" id="overviewSimulationFlow">
+                  <article data-flow-step="input">
+                    <div class="flow-stage-head"><i>1</i><span>数据输入</span></div>
+                    <strong>环境与负荷</strong>
+                    <small id="overviewFlowInput">等待读取边界</small>
+                  </article>
+                  <article data-flow-step="control">
+                    <div class="flow-stage-head"><i>2</i><span>指令处理</span></div>
+                    <strong>控制响应</strong>
+                    <small id="overviewFlowControl">暂无有效指令</small>
+                  </article>
+                  <article data-flow-step="constraint">
+                    <div class="flow-stage-head"><i>3</i><span>能力校核</span></div>
+                    <strong>运行约束</strong>
+                    <small id="overviewFlowConstraint">风光与SOC边界</small>
+                  </article>
+                  <article data-flow-step="powerflow">
+                    <div class="flow-stage-head"><i>4</i><span>网络求解</span></div>
+                    <strong>交直流潮流</strong>
+                    <small id="overviewFlowSolver">等待计算</small>
+                  </article>
+                  <article data-flow-step="output">
+                    <div class="flow-stage-head"><i>5</i><span>结果发布</span></div>
+                    <strong>真值与SCADA</strong>
+                    <small id="overviewFlowOutput">等待生成量测</small>
+                  </article>
+                </div>
+                <div class="overview-energy-board" aria-label="交直流微电网能量流向">
+                  <div class="energy-board-head">
+                    <h3>电气能量流</h3>
+                    <div class="energy-board-meta">
+                      <span id="overviewFlowResultTime">尚无计算结果</span>
+                      <span>功率差额 <b id="overviewFlowBalance">--</b></span>
+                    </div>
+                  </div>
+                  <div class="energy-flow-map" data-flow-layout="single-line">
+                    <section class="energy-source-stack" aria-label="新能源">
+                      <div class="energy-column-title">新能源</div>
+                      <article class="energy-device wind energy-source-node">
+                        <span>风力发电</span>
+                        <strong id="overviewFlowWindPower">--</strong>
+                        <small id="overviewFlowWindMeta">风速 --</small>
+                      </article>
+                      <article class="energy-device solar energy-source-node">
+                        <span>光伏发电</span>
+                        <strong id="overviewFlowSolarPower">--</strong>
+                        <small id="overviewFlowSolarMeta">辐照 --</small>
+                      </article>
+                    </section>
 
-            <section class="panel">
-              <div class="panel-head">
-                <h2>学生命令</h2>
-                <span id="overviewCommandCount">0</span>
-              </div>
-              <div id="commandInbox" class="log-list"></div>
-            </section>
+                    <div class="energy-bus-rail left" id="overviewEnergyLeftBus" aria-label="新能源汇集母线">
+                      <span>新能源汇集母线</span>
+                    </div>
+                    <div class="energy-main-trunk" id="overviewEnergyMainTrunk" aria-hidden="true">
+                      <span>交直流汇流母线</span>
+                    </div>
+
+                    <section
+                      class="energy-storage-branch-wrap"
+                      id="overviewStorageFlowLink"
+                      data-storage-flow="idle"
+                      aria-label="储能支路"
+                    >
+                      <div class="energy-storage-branch" aria-hidden="true"></div>
+                      <article class="energy-device storage" id="overviewStorageFlowNode" data-storage-flow="idle">
+                        <span>储能功率</span>
+                        <strong id="overviewFlowStoragePower">--</strong>
+                        <small><b id="overviewFlowStorageDirection">待计算</b> · SOC <b id="overviewFlowSoc">--</b></small>
+                      </article>
+                    </section>
+
+                    <div class="energy-bus-rail right" id="overviewEnergyRightBus" aria-label="负荷与柴发母线">
+                      <span>负荷与柴发母线</span>
+                    </div>
+
+                    <section class="energy-terminal-stack" aria-label="负荷和柴发">
+                      <div class="energy-column-title">负荷与柴发</div>
+                      <article class="energy-device load energy-load-node">
+                        <span>负荷用电</span>
+                        <strong id="overviewFlowLoadPower">--</strong>
+                        <small id="overviewFlowLoadMeta">需求 --</small>
+                      </article>
+                      <article class="energy-device diesel energy-diesel-node">
+                        <span>柴油发电</span>
+                        <strong id="overviewFlowDieselPower">--</strong>
+                        <small>常规电源</small>
+                      </article>
+                    </section>
+                  </div>
+                </div>
+              </section>
+
+              <section class="panel overview-boundary-panel">
+                <div class="panel-head">
+                  <h2>输入边界</h2>
+                  <span id="overviewBoundaryTime">--</span>
+                </div>
+                <dl class="boundary-list">
+                  <div><dt>风速</dt><dd id="overviewWindSpeed">--</dd></div>
+                  <div><dt>太阳辐照</dt><dd id="overviewIrradiance">--</dd></div>
+                  <div><dt>气温</dt><dd id="overviewTemperature">--</dd></div>
+                  <div><dt>负荷需求</dt><dd id="overviewLoadBoundary">--</dd></div>
+                  <div><dt>投入设备</dt><dd id="overviewOnlineDevices">--</dd></div>
+                  <div><dt>有效控制</dt><dd id="overviewActiveCommands">--</dd></div>
+                </dl>
+              </section>
+            </div>
+
+            <div class="overview-bottom-grid">
+              <section class="panel overview-health-panel">
+                <div class="panel-head"><h2>计算质量</h2><span id="overviewMeasurementQuality">--</span></div>
+                <dl class="quality-list">
+                  <div><dt>求解器</dt><dd id="overviewSolverDetail">--</dd></div>
+                  <div><dt>真值更新</dt><dd id="overviewUpdatedMeasurements">--</dd></div>
+                  <div><dt>缺失量测</dt><dd id="overviewMissingMeasurements">--</dd></div>
+                  <div><dt>误差修正</dt><dd id="overviewOverlayUpdates">--</dd></div>
+                </dl>
+              </section>
+              <section class="panel overview-events-panel">
+                <div class="panel-head"><h2>最新运行事件</h2><span id="overviewCommandCount">0 条控制指令</span></div>
+                <div id="commandInbox" class="overview-event-list"></div>
+              </section>
+            </div>
           </div>
         </section>
 
@@ -353,6 +464,87 @@
           </div>
         </section>
 
+        <section class="page-section" data-page="parameters">
+          <div class="parameter-page-layout">
+            <section class="panel parameter-table-panel">
+              <div class="panel-head">
+                <h2>参数配置</h2>
+                <div class="panel-actions">
+                  <span id="systemParameterSummary">待同步</span>
+                  <button id="resetSystemParameters" type="button">恢复</button>
+                  <button id="saveSystemParameters" class="primary" type="button">保存</button>
+                </div>
+              </div>
+              <div class="sr-only">参数名称 当前值 设置值 单位</div>
+              <form id="systemParameterForm" class="system-parameter-form">
+                <table class="system-parameter-table">
+                  <thead>
+                    <tr>
+                      <th>参数名称</th>
+                      <th>当前值</th>
+                      <th>设置值</th>
+                      <th>单位</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>
+                        <strong>仿真步长</strong>
+                        <small>时钟加速比</small>
+                      </td>
+                      <td id="currentClockSpeed" class="numeric-cell">x1</td>
+                      <td>
+                        <select id="parameterClockSpeed" name="clock_speed">
+                          <option value="1">1:1</option>
+                          <option value="5">5:1</option>
+                          <option value="15">15:1</option>
+                          <option value="30">30:1</option>
+                          <option value="60">60:1</option>
+                        </select>
+                      </td>
+                      <td>倍</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <strong>仿真周期</strong>
+                        <small>后台计算触发</small>
+                      </td>
+                      <td id="currentComputeInterval" class="numeric-cell">1 s</td>
+                      <td>
+                        <input
+                          id="parameterComputeInterval"
+                          name="compute_interval_seconds"
+                          type="number"
+                          min="0.1"
+                          max="3600"
+                          step="0.1"
+                          value="1"
+                        />
+                      </td>
+                      <td>s</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </form>
+            </section>
+
+            <section class="panel parameter-state-panel">
+              <div class="panel-head">
+                <h2>当前状态</h2>
+                <span id="systemParameterState">--</span>
+              </div>
+              <dl class="parameter-state-list">
+                <div><dt>显示模型</dt><dd id="parameterModelName">--</dd></div>
+                <div><dt>仿真类型</dt><dd id="parameterSimulationMode">--</dd></div>
+                <div><dt>时钟状态</dt><dd id="parameterClockState">--</dd></div>
+                <div><dt>模拟时刻</dt><dd id="parameterClockTime">--</dd></div>
+                <div><dt>推进步长</dt><dd id="parameterEffectiveStep">--</dd></div>
+                <div><dt>计算周期</dt><dd id="parameterComputePeriod">--</dd></div>
+              </dl>
+            </section>
+          </div>
+        </section>
+
         <section class="page-section" data-page="runtime">
           <div class="runtime-page-layout">
             <aside class="panel runtime-tree-panel">
@@ -382,7 +574,7 @@
                     <span id="solverInfo">待运行</span>
                   </div>
                 </div>
-                <div class="sr-only">指令类型 设备 设备类型 模式 指令项 控制指令 实时值 量测值</div>
+                <div class="sr-only">指令类型 设备 设备类型 模式 指令项 控制指令 指令刷新时刻 实时值 量测值</div>
                 <div id="deviceTable" class="runtime-device-wrap" data-runtime-role="device-table"></div>
               </section>
 
@@ -508,6 +700,31 @@
         </section>
       </main>
 
+      <div id="startSimulationDialog" class="modal-backdrop" hidden>
+        <form id="startSimulationForm" class="modal-card start-simulation-modal" aria-modal="true" role="dialog" aria-labelledby="startSimulationTitle">
+          <div class="modal-head">
+            <h2 id="startSimulationTitle">启动仿真</h2>
+            <button id="closeStartSimulationDialog" class="icon-button" type="button" title="关闭">
+              <svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z" /></svg>
+            </button>
+          </div>
+          <div class="start-simulation-fields">
+            <label id="startSimulationDayField" class="modal-field">起始日
+              <input id="startSimulationDay" name="startSimulationDay" type="number" min="1" max="365" step="1" inputmode="numeric" value="1" />
+            </label>
+            <label class="modal-field">起始时刻
+              <input id="startSimulationTime" name="startSimulationTime" type="time" step="60" value="00:00" required />
+            </label>
+          </div>
+          <p id="startSimulationHint" class="modal-hint">仅从停止状态新启动时设置起点；后台会按当前仿真步长向上对齐。</p>
+          <p id="startSimulationMessage" class="modal-message" aria-live="polite"></p>
+          <div class="modal-actions">
+            <button id="cancelStartSimulation" type="button">取消</button>
+            <button id="confirmStartSimulation" class="primary" type="submit">启动</button>
+          </div>
+        </form>
+      </div>
+
       <div id="cloneModelDialog" class="modal-backdrop" hidden>
         <form id="cloneModelForm" class="modal-card" aria-modal="true" role="dialog" aria-labelledby="cloneModelTitle">
           <div class="modal-head">
@@ -524,6 +741,30 @@
           <div class="modal-actions">
             <button id="cancelCloneModel" type="button">取消</button>
             <button id="confirmCloneModel" class="primary" type="submit">复制</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="importModelDialog" class="modal-backdrop" hidden>
+        <form id="importModelForm" class="modal-card" aria-modal="true" role="dialog" aria-labelledby="importModelTitle">
+          <div class="modal-head">
+            <h2 id="importModelTitle">导入定义</h2>
+            <button id="closeImportModelDialog" class="icon-button" type="button" title="关闭">
+              <svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z" /></svg>
+            </button>
+          </div>
+          <dl class="import-file-summary">
+            <div><dt>定义包</dt><dd id="importModelFilename">--</dd></div>
+            <div><dt>模板模型</dt><dd id="importTemplateModelName">--</dd></div>
+          </dl>
+          <label class="modal-field">新模型名称
+            <input id="importModelName" name="importModelName" type="text" autocomplete="off" required />
+          </label>
+          <p class="modal-hint">定义包将导入为独立模型文件夹，不会覆盖当前模型。</p>
+          <p id="importModelMessage" class="modal-message" aria-live="polite"></p>
+          <div class="modal-actions">
+            <button id="cancelImportModel" type="button">取消</button>
+            <button id="confirmImportModel" class="primary" type="submit">导入</button>
           </div>
         </form>
       </div>

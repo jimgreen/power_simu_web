@@ -25,7 +25,7 @@
             <span id="activeModelName">默认模型</span>
           </label>
           <input id="definitionArchiveInput" type="file" accept=".zip,application/zip" hidden />
-          <button id="importDefinitionsButton" class="definition-import-button" type="button">导入定义包</button>
+          <button id="importDefinitionsButton" class="definition-import-button" type="button">导入定义</button>
           <button id="traineeRunToggle" class="receive-toggle-button" type="button">启动接收</button>
         </div>
 
@@ -41,8 +41,9 @@
 
       <nav class="page-nav" aria-label="学员台主题导航">
         <button data-nav-page="overview" class="is-active">主页</button>
+        <button data-nav-page="model">电网模型</button>
+        <button data-nav-page="curves">曲线显示</button>
         <button data-nav-page="measurements">实时量测</button>
-        <button data-nav-page="controls">设备投退</button>
         <button data-nav-page="commands">控制指令</button>
         <button data-nav-page="renewable">新能源控制</button>
         <button data-nav-page="history">运行日志</button>
@@ -114,6 +115,68 @@
           </div>
         </section>
 
+        <section class="page-section" data-page="model">
+          <div class="model-page-layout">
+            <aside class="panel model-tree-panel">
+              <div class="panel-head">
+                <h2>设备树</h2>
+                <span id="modelTreeSummary">0 类 · 0 台</span>
+              </div>
+              <div id="modelDeviceTree" class="device-tree" aria-label="电网模型设备树"></div>
+            </aside>
+
+            <section class="panel model-table-panel">
+              <div class="panel-head">
+                <h2>模型参数</h2>
+                <span id="modelParamSummary">全部设备 · 0 台</span>
+              </div>
+              <div id="modelParamTable" class="model-param-wrap"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="page-section" data-page="curves">
+          <div class="curve-page-layout">
+            <aside class="panel curve-tree-panel">
+              <div class="panel-head">
+                <h2>曲线树</h2>
+                <span id="curveDisplayTreeSummary">0 条</span>
+              </div>
+              <div id="curveDisplayTree" class="curve-tree" aria-label="曲线显示树"></div>
+            </aside>
+
+            <div class="curve-workspace">
+              <section class="panel curve-chart-panel">
+                <div class="panel-head">
+                  <h2>曲线显示</h2>
+                  <span><strong id="curveDisplayPointCount">0点</strong> · <span id="curveDisplayStatus">只读</span></span>
+                </div>
+                <div class="curve-toolbar">
+                  <div class="segmented-control curve-mode-control" role="group" aria-label="仿真类型">
+                    <button type="button" data-curve-display-mode="year" disabled>年仿真</button>
+                    <button type="button" data-curve-display-mode="day" disabled>日仿真</button>
+                  </div>
+                  <span id="curveDisplayActiveLabel">风速</span>
+                  <span class="readonly-badge">只读</span>
+                </div>
+                <canvas
+                  id="curveDisplayChart"
+                  data-curve-display-role="chart"
+                  aria-label="环境和负荷曲线只读显示"
+                ></canvas>
+              </section>
+
+              <section class="panel curve-table-panel">
+                <div class="panel-head">
+                  <h2 id="curveDisplayTableTitle">曲线数据表</h2>
+                  <span id="curveDisplayTableSummary">只读</span>
+                </div>
+                <div id="curveDisplayTable" class="curve-table-wrap" data-curve-display-role="table"></div>
+              </section>
+            </div>
+          </div>
+        </section>
+
         <section class="page-section" data-page="measurements">
           <div class="measurement-page-layout">
             <aside class="panel measurement-tree-panel">
@@ -159,42 +222,33 @@
           </div>
         </section>
 
-        <section class="page-section" data-page="controls">
-          <div class="runtime-page-layout">
-            <aside class="panel runtime-tree-panel">
-              <div class="panel-head">
-                <h2>设备树</h2>
-                <span id="runTreeSummary">0 类 · 0 台</span>
-              </div>
-              <div id="runDeviceTree" class="device-tree" aria-label="投退设备树"></div>
-            </aside>
-
-            <section class="panel runtime-table-panel">
-              <div class="panel-head">
-                <h2>设备投退</h2>
-                <span id="runPendingCount">0 待发</span>
-              </div>
-              <div id="runControlTable" class="runtime-device-wrap"></div>
-            </section>
-          </div>
-        </section>
-
         <section class="page-section" data-page="commands">
           <div class="runtime-page-layout">
             <aside class="panel runtime-tree-panel">
               <div class="panel-head">
                 <h2>设备树</h2>
-                <span id="setpointTreeSummary">0 类 · 0 台</span>
+                <span id="commandTreeSummary">0 类 · 0 台</span>
               </div>
-              <div id="setpointDeviceTree" class="device-tree" aria-label="控制指令设备树"></div>
+              <div id="commandDeviceTree" class="device-tree" aria-label="控制指令设备树"></div>
             </aside>
 
-            <section class="panel runtime-table-panel">
+            <section class="panel runtime-table-panel combined-command-panel">
               <div class="panel-head">
                 <h2>控制指令</h2>
-                <span id="setpointPendingCount">0 待发</span>
+                <span id="commandPendingCount">0 待发</span>
               </div>
-              <div id="setpointControlTable" class="runtime-device-wrap"></div>
+              <div class="command-tab-bar" role="tablist" aria-label="控制指令类型">
+                <button type="button" class="command-tab is-active" data-command-tab="remote-control" role="tab" aria-selected="true">遥控</button>
+                <button type="button" class="command-tab" data-command-tab="remote-adjustment" role="tab" aria-selected="false">遥调</button>
+              </div>
+              <section class="command-tab-page is-active" data-command-tab-page="remote-control" role="tabpanel">
+                <div class="command-table-head"><strong>遥控指令</strong><span id="runPendingCount">0 待发</span></div>
+                <div id="runControlTable" class="runtime-device-wrap"></div>
+              </section>
+              <section class="command-tab-page" data-command-tab-page="remote-adjustment" role="tabpanel">
+                <div class="command-table-head"><strong>遥调指令</strong><span id="setpointPendingCount">0 待发</span></div>
+                <div id="setpointControlTable" class="runtime-device-wrap"></div>
+              </section>
             </section>
           </div>
         </section>
@@ -265,6 +319,64 @@
         </section>
       </main>
     </div>
+
+    <dialog id="remoteControlDialog" class="remote-control-dialog" aria-labelledby="remoteControlTitle">
+      <form method="dialog" class="remote-control-form">
+        <div class="remote-control-head">
+          <div>
+            <h2 id="remoteControlTitle">遥控操作</h2>
+            <p id="remoteControlDevice">--</p>
+          </div>
+          <button id="remoteControlClose" class="dialog-close-button" type="button" aria-label="关闭遥控窗口">×</button>
+        </div>
+        <dl class="remote-control-summary">
+          <div><dt>设备类型</dt><dd id="remoteControlType">--</dd></div>
+          <div><dt>当前状态</dt><dd id="remoteControlCurrent">--</dd></div>
+        </dl>
+        <fieldset class="remote-control-options">
+          <legend>遥控目标状态</legend>
+          <label>
+            <input type="radio" name="remoteControlState" value="1" />
+            <span><strong>投入</strong><small>使设备进入运行状态</small></span>
+          </label>
+          <label>
+            <input type="radio" name="remoteControlState" value="0" />
+            <span><strong>退出</strong><small>使设备退出运行状态</small></span>
+          </label>
+        </fieldset>
+        <p id="remoteControlHint" class="remote-control-hint">确认后将立即向模拟台下发遥控指令。</p>
+        <div class="dialog-actions">
+          <button id="remoteControlCancel" type="button">取消</button>
+          <button id="remoteControlConfirm" class="primary" type="button">确认下发</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="remoteAdjustmentDialog" class="remote-control-dialog" aria-labelledby="remoteAdjustmentTitle">
+      <form method="dialog" class="remote-control-form">
+        <div class="remote-control-head">
+          <div>
+            <h2 id="remoteAdjustmentTitle">遥调操作</h2>
+            <p id="remoteAdjustmentName">--</p>
+          </div>
+          <button id="remoteAdjustmentClose" class="dialog-close-button" type="button" aria-label="关闭遥调窗口">×</button>
+        </div>
+        <dl class="remote-control-summary remote-adjustment-summary">
+          <div><dt>设备</dt><dd id="remoteAdjustmentDevice">--</dd></div>
+          <div><dt>量测值</dt><dd id="remoteAdjustmentMeasurement">--</dd></div>
+          <div><dt>当前控制值</dt><dd id="remoteAdjustmentCurrent">--</dd></div>
+          <div><dt>最近下发时刻</dt><dd id="remoteAdjustmentIssuedAt">--</dd></div>
+        </dl>
+        <label class="remote-adjustment-value-field">控制值
+          <input id="remoteAdjustmentValue" type="number" step="0.01" autocomplete="off" />
+        </label>
+        <p id="remoteAdjustmentHint" class="remote-control-hint">确认后将立即向模拟台下发一条遥调指令。</p>
+        <div class="dialog-actions">
+          <button id="remoteAdjustmentCancel" type="button">取消</button>
+          <button id="remoteAdjustmentConfirm" class="primary" type="button">确认下发</button>
+        </div>
+      </form>
+    </dialog>
     <script src="./app.js"></script>
   </body>
 </html>

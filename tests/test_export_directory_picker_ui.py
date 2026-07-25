@@ -17,7 +17,7 @@ class ExportDirectoryPickerUiTest(unittest.TestCase):
         self.assertIn("directoryHandle.getFileHandle", app_js)
         self.assertIn("fileHandle.createWritable", app_js)
         self.assertIn("downloadBlob", app_js)
-        self.assertIn("请选择定义包导出目录", index_html)
+        self.assertIn("请选择定义导出目录", index_html)
         picker_id_match = re.search(r'id:\s*"([^"]+)"', app_js)
         self.assertIsNotNone(picker_id_match)
         self.assertLessEqual(len(picker_id_match.group(1)), 32)

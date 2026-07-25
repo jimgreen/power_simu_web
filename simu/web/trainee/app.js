@@ -18,9 +18,19 @@ const state = {
   runtimeLogTypeFilter: "all",
   runtimeLogSeq: 0,
   seenCommandHistoryKeys: new Set(),
+  modelFilter: { dev_type: "all", dev_name: "" },
+  activeModelParamTab: "",
+  activeCurveDisplayKey: "wind_speed_mps",
+  selectedCurveDisplayKeys: ["wind_speed_mps"],
+  curveDisplayCursor: { visible: false, x: 0, y: 0, index: 0 },
+  lastCurveDisplayTableKey: "",
+  remoteControlDevice: null,
+  remoteControlSending: false,
+  remoteAdjustment: null,
+  remoteAdjustmentSending: false,
   measurementFilter: { dev_type: "all", dev_name: "" },
-  runFilter: { dev_type: "all", dev_name: "" },
-  setpointFilter: { dev_type: "all", dev_name: "" },
+  controlFilter: { dev_type: "all", dev_name: "" },
+  activeControlTab: "remote-control",
   collapsedDeviceTreeGroups: {},
   selectedMeasurementKey: "",
   measurementTraceHistory: [],
@@ -42,6 +52,19 @@ const state = {
 const pending = { run_status: new Map(), set_values: new Map() };
 const CONTROL_COMMAND_VALID_MINUTES = 5;
 const TRACE_HISTORY_LIMIT = 45000;
+const CURVE_DISPLAY_MODES = {
+  year: { key: "year", label: "年仿真", pointCount: 8760, stepMinutes: 60, tableTitle: "年曲线数据表", tableSummary: "1小时间隔 · 只读" },
+  day: { key: "day", label: "日仿真", pointCount: 1440, stepMinutes: 1, tableTitle: "日曲线数据表", tableSummary: "1分钟间隔 · 只读" },
+};
+const CURVE_DISPLAY_ENV_KEYS = ["wind_speed_mps", "solar_irradiance_w_m2", "air_temp_c"];
+const CURVE_DISPLAY_META = [
+  { key: "wind_speed_mps", label: "风速", color: "#008c8c", min: 0, max: 50, digits: 2, unit: "m/s" },
+  { key: "solar_irradiance_w_m2", label: "太阳辐照", color: "#b87500", min: 0, max: 1100, digits: 1, unit: "W/m2" },
+  { key: "air_temp_c", label: "气温", color: "#2b6b7f", min: -60, max: 20, digits: 2, unit: "℃" },
+];
+const CURVE_DISPLAY_LOAD_META = { label: "负荷", color: "#c93a3a", min: 0, max: 500, digits: 2, unit: "kW" };
+const CURVE_DISPLAY_LOAD_COLORS = ["#c93a3a", "#8a4fbf", "#23854a", "#d16300", "#4369b2", "#0a8b8b"];
+const CURVE_DISPLAY_PLOT = { left: 58, right: 24, top: 46, bottom: 34 };
 
 const $ = (id) => document.getElementById(id);
 
@@ -60,7 +83,11 @@ function showPage(page, updateHash = true) {
   if (updateHash && location.hash !== `#${target}`) {
     history.replaceState(null, "", `#${target}`);
   }
-  requestAnimationFrame(() => drawMeasurementTraceChart());
+  requestAnimationFrame(() => {
+    if (target === "model") renderTraineeModelPage();
+    if (target === "curves") renderCurveDisplay(state.snapshot || {}, true);
+    drawMeasurementTraceChart();
+  });
 }
 
 function initPageNavigation() {
@@ -181,7 +208,10 @@ async function importDefinitionArchive(file) {
       method: "POST",
       body: JSON.stringify({ filename: file.name, data_base64: dataBase64 }),
     });
+    state.receiveMode = false;
+    state.receiveEpoch += 1;
     state.frozen = false;
+    state.snapshot = null;
     setImportStatus(`已导入 ${result.imported?.curve_points || 0} 点曲线`, "ok");
     addRuntimeLog(
       "模型交互",
@@ -198,7 +228,7 @@ async function importDefinitionArchive(file) {
   } finally {
     if (button) {
       button.disabled = false;
-      button.textContent = "导入定义包";
+      button.textContent = "导入定义";
     }
     const input = $("definitionArchiveInput");
     if (input) input.value = "";
@@ -228,9 +258,15 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.measurementTraceHistory = [];
   state.traceRunId = null;
   state.selectedMeasurementKey = "";
+  state.modelFilter = { dev_type: "all", dev_name: "" };
+  state.activeModelParamTab = "";
+  state.activeCurveDisplayKey = "wind_speed_mps";
+  state.selectedCurveDisplayKeys = ["wind_speed_mps"];
+  state.curveDisplayCursor = { visible: false, x: 0, y: 0, index: 0 };
+  state.lastCurveDisplayTableKey = "";
   state.measurementFilter = { dev_type: "all", dev_name: "" };
-  state.runFilter = { dev_type: "all", dev_name: "" };
-  state.setpointFilter = { dev_type: "all", dev_name: "" };
+  state.controlFilter = { dev_type: "all", dev_name: "" };
+  state.activeControlTab = "remote-control";
   if (shouldRefresh) stopRenewableControl("模型已切换，策略已停止。", true);
   renderModelSelector();
   updatePendingCount();
@@ -323,18 +359,21 @@ function renderSnapshot(snapshot) {
     state.selectedMeasurementKey = "";
   }
   state.traceRunId = runId;
-  const scada = snapshot.measurements?.scada || [];
-  const validCount = scada.filter((m) => Number(m.valid) === 1).length;
-  $("measureCount").textContent = `${scada.length} 点`;
+  const displayMeasurements = measurementDisplayRows(snapshot);
+  const validCount = displayMeasurements.filter((m) => Number(m.valid) === 1).length;
+  $("measureCount").textContent = `${displayMeasurements.length} 点`;
   $("validCount").textContent = `${validCount} 可用`;
   $("overviewRefresh").textContent = snapshot.clock?.time || "--";
   $("topologyState").textContent = snapshot.result?.solver_info || "在线";
   renderTeacherWeather(snapshot);
   renderReceiveMode();
+  renderTraineeModelPage(snapshot);
+  if (document.querySelector('[data-page="curves"]')?.classList.contains("is-active")) {
+    renderCurveDisplay(snapshot);
+  }
   appendMeasurementTrace(snapshot);
   renderMeasurements(snapshot);
-  renderRunControls(snapshot.devices || []);
-  renderSetpointControls(snapshot.devices || []);
+  renderCombinedControlPage(snapshot.devices || []);
   renderRenewableControl(snapshot);
   syncCommandHistoryLogs(snapshot.commands?.history || []);
   renderHistory();
@@ -448,6 +487,575 @@ function currentWeatherLoad(snapshot = state.snapshot || {}) {
     airTemp: interpolateCurve(weather, minute, "air_temp_c", 25),
     loadKw: loadTotal,
   };
+}
+
+function curveDisplayMode(snapshot = state.snapshot || {}) {
+  const curves = snapshot.curves || {};
+  const rawMode = String(curves.mode || "").toLowerCase();
+  if (CURVE_DISPLAY_MODES[rawMode]) return rawMode;
+  const pointCount = Number(curves.point_count || curves.weather?.length || 0);
+  return pointCount > 2000 ? "year" : "day";
+}
+
+function curveDisplayConfig(snapshot = state.snapshot || {}) {
+  const mode = curveDisplayMode(snapshot);
+  const defaults = CURVE_DISPLAY_MODES[mode];
+  const curves = snapshot.curves || {};
+  const loads = curves.loads && typeof curves.loads === "object" ? curves.loads : {};
+  const maxLoadCount = Object.values(loads).reduce((maxCount, points) => (
+    Math.max(maxCount, Array.isArray(points) ? points.length : 0)
+  ), 0);
+  const pointCount = Math.max(
+    1,
+    Number(curves.point_count || 0) || Math.max(Array.isArray(curves.weather) ? curves.weather.length : 0, maxLoadCount, defaults.pointCount),
+  );
+  const stepMinutes = Math.max(1, Number(curves.time_step_minutes || defaults.stepMinutes) || defaults.stepMinutes);
+  return { ...defaults, pointCount, stepMinutes, durationMinutes: pointCount * stepMinutes };
+}
+
+function curveDisplayPointMinute(index, snapshot = state.snapshot || {}) {
+  return index * curveDisplayConfig(snapshot).stepMinutes;
+}
+
+function curveDisplayLoadKey(loadName) {
+  return `load:${loadName || "load"}`;
+}
+
+function curveDisplayLoadName(key) {
+  return String(key || "").replace(/^load:/, "") || "load";
+}
+
+function curveDisplayLoads(snapshot = state.snapshot || {}) {
+  const names = new Set(Object.keys(snapshot.curves?.loads || {}));
+  (snapshot.devices || []).forEach((dev) => {
+    if (["ACLoad", "DCLoad"].includes(deviceType(dev)) && deviceName(dev)) {
+      names.add(deviceName(dev));
+    }
+  });
+  return Array.from(names).sort((left, right) => left.localeCompare(right, "zh-Hans-CN"));
+}
+
+function curveDisplayLoadKeys(snapshot = state.snapshot || {}) {
+  return curveDisplayLoads(snapshot).map(curveDisplayLoadKey);
+}
+
+function curveDisplayAllKeys(snapshot = state.snapshot || {}) {
+  return [...CURVE_DISPLAY_ENV_KEYS, ...curveDisplayLoadKeys(snapshot)];
+}
+
+function curveDisplayRawPoints(key, snapshot = state.snapshot || {}) {
+  if (String(key).startsWith("load:")) {
+    const loadName = curveDisplayLoadName(key);
+    const points = snapshot.curves?.loads?.[loadName];
+    return Array.isArray(points) ? points : [];
+  }
+  return Array.isArray(snapshot.curves?.weather) ? snapshot.curves.weather : [];
+}
+
+function curveDisplayPointValue(point, key) {
+  if (!point) return null;
+  if (String(key).startsWith("load:")) {
+    return Number(point.p_kw ?? point.value ?? point.load_kw);
+  }
+  return Number(point[key]);
+}
+
+function curveDisplayMetaForKey(key, snapshot = state.snapshot || {}) {
+  const meta = CURVE_DISPLAY_META.find((item) => item.key === key);
+  if (meta) return meta;
+  const loadKeys = curveDisplayLoadKeys(snapshot);
+  const loadIndex = Math.max(0, loadKeys.indexOf(key));
+  const values = curveDisplayRawPoints(key, snapshot)
+    .map((point) => curveDisplayPointValue(point, key))
+    .filter((value) => Number.isFinite(value));
+  const dynamicMax = values.length ? Math.max(...values) * 1.12 : CURVE_DISPLAY_LOAD_META.max;
+  return {
+    ...CURVE_DISPLAY_LOAD_META,
+    key,
+    label: curveDisplayLoadName(key),
+    color: CURVE_DISPLAY_LOAD_COLORS[loadIndex % CURVE_DISPLAY_LOAD_COLORS.length],
+    max: Math.max(CURVE_DISPLAY_LOAD_META.max, dynamicMax, 1),
+  };
+}
+
+function curveDisplayRoundValue(key, value, snapshot = state.snapshot || {}) {
+  const meta = curveDisplayMetaForKey(key, snapshot);
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return Number(numeric.toFixed(meta.digits));
+}
+
+function interpolateCurveDisplay(points, minute, key, defaultValue = 0) {
+  const pairs = (points || [])
+    .map((point, index) => ({
+      minute: Number(point.minute ?? index),
+      value: curveDisplayPointValue(point, key),
+    }))
+    .filter((point) => Number.isFinite(point.minute) && Number.isFinite(point.value))
+    .sort((left, right) => left.minute - right.minute);
+  if (!pairs.length) return defaultValue;
+  if (pairs.length === 1) return pairs[0].value;
+  const target = Number(minute) || 0;
+  if (target <= pairs[0].minute) return pairs[0].value;
+  if (target >= pairs[pairs.length - 1].minute) return pairs[pairs.length - 1].value;
+  for (let idx = 0; idx < pairs.length - 1; idx += 1) {
+    const left = pairs[idx];
+    const right = pairs[idx + 1];
+    if (left.minute <= target && target <= right.minute) {
+      const span = Math.max(1e-9, right.minute - left.minute);
+      return left.value + ((target - left.minute) / span) * (right.value - left.value);
+    }
+  }
+  return defaultValue;
+}
+
+function curveDisplaySeries(key, snapshot = state.snapshot || {}) {
+  const config = curveDisplayConfig(snapshot);
+  const points = curveDisplayRawPoints(key, snapshot);
+  const meta = curveDisplayMetaForKey(key, snapshot);
+  if (points.length === config.pointCount) {
+    return points.map((point) => curveDisplayRoundValue(key, curveDisplayPointValue(point, key) ?? meta.min, snapshot));
+  }
+  return Array.from({ length: config.pointCount }, (_unused, index) => (
+    curveDisplayRoundValue(key, interpolateCurveDisplay(points, curveDisplayPointMinute(index, snapshot), key, meta.min), snapshot)
+  ));
+}
+
+function selectedCurveDisplayKeys(snapshot = state.snapshot || {}) {
+  const available = new Set(curveDisplayAllKeys(snapshot));
+  const selected = Array.from(new Set(state.selectedCurveDisplayKeys || []))
+    .filter((key) => available.has(key));
+  if (!selected.length && available.has(state.activeCurveDisplayKey)) selected.push(state.activeCurveDisplayKey);
+  if (!selected.length) selected.push("wind_speed_mps");
+  state.selectedCurveDisplayKeys = selected;
+  if (!selected.includes(state.activeCurveDisplayKey)) {
+    state.activeCurveDisplayKey = selected[selected.length - 1] || "wind_speed_mps";
+  }
+  return selected;
+}
+
+function curveDisplayFamilyKeys(family, snapshot = state.snapshot || {}) {
+  if (family === "environment") return [...CURVE_DISPLAY_ENV_KEYS];
+  if (family === "load") return curveDisplayLoadKeys(snapshot);
+  return [];
+}
+
+function setCurveDisplaySelection(keys, activeKey = keys?.[keys.length - 1], shouldRender = true) {
+  const available = new Set(curveDisplayAllKeys(state.snapshot || {}));
+  const selected = Array.from(new Set(keys || [])).filter((key) => available.has(key));
+  if (!selected.length) selected.push("wind_speed_mps");
+  state.selectedCurveDisplayKeys = selected;
+  state.activeCurveDisplayKey = selected.includes(activeKey) ? activeKey : selected[selected.length - 1] || "wind_speed_mps";
+  state.lastCurveDisplayTableKey = "";
+  if (shouldRender) renderCurveDisplay(state.snapshot || {}, true);
+}
+
+function selectCurveDisplayButton(button) {
+  if (!button) return;
+  const keys = button.dataset.curveDisplayFamily
+    ? curveDisplayFamilyKeys(button.dataset.curveDisplayFamily, state.snapshot || {})
+    : button.dataset.curveDisplayKey ? [button.dataset.curveDisplayKey] : [];
+  setCurveDisplaySelection(keys, button.dataset.curveDisplayKey || keys[0], true);
+}
+
+function curveDisplaySelectedLabel(snapshot = state.snapshot || {}) {
+  const selected = selectedCurveDisplayKeys(snapshot);
+  return selected.length <= 1 ? curveDisplayMetaForKey(selected[0], snapshot).label : `已选${selected.length}条`;
+}
+
+function renderCurveDisplayTree(snapshot = state.snapshot || {}) {
+  const container = $("curveDisplayTree");
+  if (!container) return;
+  const selected = selectedCurveDisplayKeys(snapshot);
+  const selectedSet = new Set(selected);
+  const loadKeys = curveDisplayLoadKeys(snapshot);
+  const envSelected = CURVE_DISPLAY_ENV_KEYS.every((key) => selectedSet.has(key))
+    && selected.every((key) => CURVE_DISPLAY_ENV_KEYS.includes(key));
+  const loadSelected = loadKeys.length && loadKeys.every((key) => selectedSet.has(key))
+    && selected.every((key) => loadKeys.includes(key));
+  const envPartial = CURVE_DISPLAY_ENV_KEYS.some((key) => selectedSet.has(key));
+  const loadPartial = loadKeys.some((key) => selectedSet.has(key));
+  $("curveDisplayTreeSummary").textContent = `${CURVE_DISPLAY_ENV_KEYS.length + loadKeys.length} 条`;
+  container.innerHTML = `
+    <div class="tree-group">
+      <button
+        type="button"
+        class="tree-node tree-type ${envSelected ? "is-active" : envPartial ? "is-parent-active" : ""}"
+        data-curve-display-tree-type="environment"
+        data-curve-display-family="environment"
+      >
+        <span>环境曲线</span>
+        <strong>${CURVE_DISPLAY_ENV_KEYS.length}</strong>
+      </button>
+      <div class="tree-children">
+        ${CURVE_DISPLAY_ENV_KEYS.map((key) => {
+          const meta = curveDisplayMetaForKey(key, snapshot);
+          const shortLabel = key === "wind_speed_mps" ? "风" : key === "solar_irradiance_w_m2" ? "光" : "温";
+          return `
+            <button
+              type="button"
+              class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""}"
+              data-curve-display-tree-type="environment"
+              data-curve-display-key="${escapeHtml(key)}"
+            >
+              <span>${shortLabel}</span>
+              <small>${escapeHtml(meta.unit)}</small>
+            </button>`;
+        }).join("")}
+      </div>
+    </div>
+    <div class="tree-group">
+      <button
+        type="button"
+        class="tree-node tree-type ${loadSelected ? "is-active" : loadPartial ? "is-parent-active" : ""}"
+        data-curve-display-tree-type="load"
+        data-curve-display-family="load"
+      >
+        <span>负荷曲线</span>
+        <strong>${loadKeys.length}</strong>
+      </button>
+      <div class="tree-children">
+        ${loadKeys.map((key) => `
+          <button
+            type="button"
+            class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""}"
+            data-curve-display-tree-type="load"
+            data-curve-display-key="${escapeHtml(key)}"
+          >
+            <span>${escapeHtml(curveDisplayLoadName(key))}</span>
+            <small>kW</small>
+          </button>
+        `).join("") || '<div class="empty-state compact">暂无负荷曲线</div>'}
+      </div>
+    </div>`;
+}
+
+function renderCurveDisplayModeControls(snapshot = state.snapshot || {}) {
+  const mode = curveDisplayMode(snapshot);
+  document.querySelectorAll("[data-curve-display-mode]").forEach((button) => {
+    const active = button.dataset.curveDisplayMode === mode;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+    button.disabled = true;
+  });
+}
+
+function formatCurveDisplayTableTime(minute, snapshot = state.snapshot || {}) {
+  if (curveDisplayMode(snapshot) === "year") {
+    const dayOfYear = Math.floor(minute / 1440);
+    const hour = Math.floor((minute % 1440) / 60);
+    const monthDays = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let month = 0;
+    let day = dayOfYear;
+    while (month < monthDays.length - 1 && day >= monthDays[month]) {
+      day -= monthDays[month];
+      month += 1;
+    }
+    return `${String(month + 1).padStart(2, "0")}-${String(day + 1).padStart(2, "0")} ${String(hour).padStart(2, "0")}:00`;
+  }
+  const total = Math.round(minute);
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function renderCurveDisplayLabels(snapshot = state.snapshot || {}) {
+  const config = curveDisplayConfig(snapshot);
+  const pointCount = $("curveDisplayPointCount");
+  const status = $("curveDisplayStatus");
+  const activeLabel = $("curveDisplayActiveLabel");
+  const tableTitle = $("curveDisplayTableTitle");
+  const tableSummary = $("curveDisplayTableSummary");
+  if (pointCount) pointCount.textContent = `${config.pointCount}点`;
+  if (status) status.textContent = `${config.label} · 只读`;
+  if (activeLabel) activeLabel.textContent = curveDisplaySelectedLabel(snapshot);
+  if (tableTitle) tableTitle.textContent = config.tableTitle;
+  if (tableSummary) tableSummary.textContent = config.tableSummary;
+}
+
+function resizeCurveDisplayCanvas() {
+  const canvas = $("curveDisplayChart");
+  if (!canvas) return false;
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(320, Math.round(rect.width || canvas.clientWidth || canvas.width));
+  const height = Math.max(240, Math.round(rect.height || canvas.clientHeight || canvas.height));
+  if (canvas.width === width && canvas.height === height) return false;
+  canvas.width = width;
+  canvas.height = height;
+  return true;
+}
+
+function curveDisplayPlot(canvas) {
+  if (canvas.width < 640) return { left: 34, right: 12, top: 58, bottom: 30 };
+  return CURVE_DISPLAY_PLOT;
+}
+
+function curveDisplayValueToY(value, meta, canvas) {
+  const plot = curveDisplayPlot(canvas);
+  const top = plot.top;
+  const bottom = canvas.height - plot.bottom;
+  const span = Math.max(1e-9, meta.max - meta.min);
+  const ratio = (clamp(value, meta.min, meta.max) - meta.min) / span;
+  return bottom - ratio * (bottom - top);
+}
+
+function drawCurveDisplayXAxis(ctx, canvas, plot, snapshot = state.snapshot || {}) {
+  const width = canvas.width;
+  const height = canvas.height;
+  const left = plot.left;
+  const right = width - plot.right;
+  const top = plot.top;
+  const bottom = height - plot.bottom;
+  if (curveDisplayMode(snapshot) === "year") {
+    const monthStarts = [["01月", 0], ["02月", 31], ["03月", 59], ["04月", 90], ["05月", 120], ["06月", 151], ["07月", 181], ["08月", 212], ["09月", 243], ["10月", 273], ["11月", 304], ["12月", 334]];
+    const monthStep = width < 560 ? 3 : width < 900 ? 2 : 1;
+    monthStarts.forEach(([label, day], index) => {
+      if (index % monthStep !== 0) return;
+      const x = left + (day / 365) * (right - left);
+      ctx.strokeStyle = index % 3 === 0 ? "#c9d6dc" : "#e7eef1";
+      ctx.beginPath();
+      ctx.moveTo(x, top);
+      ctx.lineTo(x, bottom);
+      ctx.stroke();
+      ctx.fillStyle = "#63717a";
+      ctx.fillText(label, x - 12, height - 12);
+    });
+    ctx.textAlign = "right";
+    ctx.fillText("年末", right, height - 12);
+    ctx.textAlign = "left";
+    return;
+  }
+  const hourStep = width < 480 ? 4 : width < 820 ? 3 : 2;
+  for (let hour = 0; hour <= 24; hour += hourStep) {
+    const x = left + (hour / 24) * (right - left);
+    ctx.strokeStyle = hour % 6 === 0 ? "#c9d6dc" : "#e7eef1";
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, bottom);
+    ctx.stroke();
+    ctx.fillStyle = "#63717a";
+    ctx.fillText(`${String(hour).padStart(2, "0")}:00`, x - 14, height - 12);
+  }
+}
+
+function curveDisplayPointIndexFromX(x, canvas, snapshot = state.snapshot || {}) {
+  const plot = curveDisplayPlot(canvas);
+  const left = plot.left;
+  const right = canvas.width - plot.right;
+  const pointCount = curveDisplayConfig(snapshot).pointCount;
+  return clamp(Math.round(((x - left) / Math.max(1, right - left)) * (pointCount - 1)), 0, pointCount - 1);
+}
+
+function curveDisplayXFromPointIndex(index, canvas, snapshot = state.snapshot || {}) {
+  const plot = curveDisplayPlot(canvas);
+  const left = plot.left;
+  const right = canvas.width - plot.right;
+  const pointCount = curveDisplayConfig(snapshot).pointCount;
+  return left + (clamp(index, 0, pointCount - 1) / Math.max(1, pointCount - 1)) * (right - left);
+}
+
+function drawCurveDisplayCursor(ctx, canvas, plot, metas, seriesByKey, snapshot = state.snapshot || {}) {
+  const cursor = state.curveDisplayCursor;
+  if (!cursor.visible || !metas.length) return;
+  const left = plot.left;
+  const right = canvas.width - plot.right;
+  const top = plot.top;
+  const bottom = canvas.height - plot.bottom;
+  const index = clamp(cursor.index, 0, curveDisplayConfig(snapshot).pointCount - 1);
+  const x = curveDisplayXFromPointIndex(index, canvas, snapshot);
+  const y = clamp(cursor.y, top, bottom);
+  const tooltipMetas = metas.slice(0, 6);
+  const timeLabel = formatCurveDisplayTableTime(curveDisplayPointMinute(index, snapshot), snapshot);
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(29, 57, 66, 0.58)";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([5, 4]);
+  ctx.beginPath();
+  ctx.moveTo(x, top);
+  ctx.lineTo(x, bottom);
+  ctx.moveTo(left, y);
+  ctx.lineTo(right, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  tooltipMetas.forEach((meta) => {
+    const values = seriesByKey.get(meta.key) || [];
+    if (!values.length) return;
+    const markerY = curveDisplayValueToY(values[index], meta, canvas);
+    ctx.fillStyle = "#ffffff";
+    ctx.strokeStyle = meta.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, markerY, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  });
+
+  ctx.font = "12px Microsoft YaHei, Arial";
+  const lines = [
+    `时刻: ${timeLabel}`,
+    `点号: ${index + 1}`,
+    ...tooltipMetas.map((meta) => `${meta.label}: ${formatNumber(seriesByKey.get(meta.key)?.[index])} ${meta.unit}`),
+    metas.length > tooltipMetas.length ? `另有 ${metas.length - tooltipMetas.length} 条曲线` : "",
+  ].filter(Boolean);
+  const tooltipWidth = Math.max(158, ...lines.map((line) => ctx.measureText(line).width + 24));
+  const tooltipHeight = 14 + lines.length * 18;
+  let tooltipX = x + 14;
+  let tooltipY = y + 14;
+  if (tooltipX + tooltipWidth > right - 6) tooltipX = x - tooltipWidth - 14;
+  if (tooltipY + tooltipHeight > bottom - 6) tooltipY = y - tooltipHeight - 14;
+  tooltipX = clamp(tooltipX, left + 6, right - tooltipWidth - 6);
+  tooltipY = clamp(tooltipY, top + 6, bottom - tooltipHeight - 6);
+  ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
+  ctx.strokeStyle = "rgba(171, 190, 198, 0.9)";
+  ctx.beginPath();
+  ctx.roundRect(tooltipX, tooltipY, tooltipWidth, tooltipHeight, 8);
+  ctx.fill();
+  ctx.stroke();
+  lines.forEach((line, lineIndex) => {
+    ctx.fillStyle = lineIndex < 2 ? "#1f3037" : "#314850";
+    ctx.fillText(line, tooltipX + 10, tooltipY + 18 + lineIndex * 18);
+  });
+  ctx.restore();
+}
+
+function drawCurveDisplay(snapshot = state.snapshot || {}) {
+  const canvas = $("curveDisplayChart");
+  if (!canvas) return;
+  resizeCurveDisplayCanvas();
+  const ctx = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  const plot = curveDisplayPlot(canvas);
+  const left = plot.left;
+  const right = width - plot.right;
+  const top = plot.top;
+  const bottom = height - plot.bottom;
+  const metas = selectedCurveDisplayKeys(snapshot).map((key) => curveDisplayMetaForKey(key, snapshot));
+  const seriesByKey = new Map(metas.map((meta) => [meta.key, curveDisplaySeries(meta.key, snapshot)]));
+  const legendColumns = width < 560 ? 2 : Math.max(1, metas.length);
+  const legendColumnWidth = (right - left) / legendColumns;
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#fcfeff";
+  ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = "#d8e1e5";
+  ctx.lineWidth = 1;
+  ctx.font = "12px Microsoft YaHei, Arial";
+  for (let i = 0; i <= 5; i += 1) {
+    const y = top + i * ((bottom - top) / 5);
+    ctx.beginPath();
+    ctx.moveTo(left, y);
+    ctx.lineTo(right, y);
+    ctx.stroke();
+  }
+  drawCurveDisplayXAxis(ctx, canvas, plot, snapshot);
+  metas.forEach((meta, metaIndex) => {
+    const values = seriesByKey.get(meta.key) || [];
+    const stride = Math.max(1, Math.floor(values.length / Math.max(1, (right - left) * 1.4)));
+    ctx.strokeStyle = meta.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < values.length; i += stride) {
+      const x = left + (i / Math.max(1, values.length - 1)) * (right - left);
+      const y = curveDisplayValueToY(values[i], meta, canvas);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    if (values.length) ctx.lineTo(right, curveDisplayValueToY(values[values.length - 1], meta, canvas));
+    ctx.stroke();
+    const legendX = left + (metaIndex % legendColumns) * legendColumnWidth;
+    const legendY = 20 + Math.floor(metaIndex / legendColumns) * 16;
+    ctx.fillStyle = meta.color;
+    ctx.fillRect(legendX, legendY, 18, 3);
+    ctx.fillStyle = "#63717a";
+    ctx.fillText(`${meta.label} (${meta.unit})`, legendX + 26, legendY + 4);
+  });
+  drawCurveDisplayCursor(ctx, canvas, plot, metas, seriesByKey, snapshot);
+}
+
+function renderCurveDisplayTable(snapshot = state.snapshot || {}, force = false) {
+  const container = $("curveDisplayTable");
+  if (!container) return;
+  const config = curveDisplayConfig(snapshot);
+  const metas = selectedCurveDisplayKeys(snapshot).map((key) => curveDisplayMetaForKey(key, snapshot));
+  const seriesByKey = new Map(metas.map((meta) => [meta.key, curveDisplaySeries(meta.key, snapshot)]));
+  const signature = JSON.stringify({
+    model: state.activeModelId,
+    mode: config.key,
+    points: config.pointCount,
+    selected: metas.map((meta) => meta.key),
+    source: `${snapshot.curves?.weather?.length || 0}|${Object.values(snapshot.curves?.loads || {}).map((points) => points?.length || 0).join(",")}`,
+  });
+  if (!force && signature === state.lastCurveDisplayTableKey) return;
+  state.lastCurveDisplayTableKey = signature;
+  container.innerHTML = `
+    <table class="curve-table curve-display-table">
+      <thead>
+        <tr>
+          <th>时刻</th>
+          ${metas.map((meta) => `<th>${escapeHtml(meta.label)}<small>${escapeHtml(meta.unit)}</small></th>`).join("")}
+        </tr>
+      </thead>
+      <tbody>
+        ${Array.from({ length: config.pointCount }, (_unused, index) => `
+          <tr>
+            <td>${formatCurveDisplayTableTime(curveDisplayPointMinute(index, snapshot), snapshot)}</td>
+            ${metas.map((meta) => `<td class="numeric-cell">${formatNumber(seriesByKey.get(meta.key)?.[index])}</td>`).join("")}
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>`;
+}
+
+function renderCurveDisplay(snapshot = state.snapshot || {}, forceTable = false) {
+  const container = $("curveDisplayTree");
+  if (!container) return;
+  if (!snapshot?.curves) {
+    container.innerHTML = '<div class="empty-state">暂无曲线数据</div>';
+    $("curveDisplayTable").innerHTML = '<div class="empty-state">暂无曲线数据</div>';
+    return;
+  }
+  renderCurveDisplayTree(snapshot);
+  renderCurveDisplayModeControls(snapshot);
+  renderCurveDisplayLabels(snapshot);
+  drawCurveDisplay(snapshot);
+  renderCurveDisplayTable(snapshot, forceTable);
+}
+
+function pointerPositionOnCurveDisplayCanvas(event) {
+  const canvas = $("curveDisplayChart");
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (event.clientX - rect.left) * (canvas.width / rect.width),
+    y: (event.clientY - rect.top) * (canvas.height / rect.height),
+  };
+}
+
+function setCurveDisplayCursorFromEvent(event, shouldDraw = true) {
+  const canvas = $("curveDisplayChart");
+  if (!canvas) return;
+  const pos = pointerPositionOnCurveDisplayCanvas(event);
+  const plot = curveDisplayPlot(canvas);
+  const left = plot.left;
+  const right = canvas.width - plot.right;
+  const top = plot.top;
+  const bottom = canvas.height - plot.bottom;
+  if (pos.x < left || pos.x > right || pos.y < top || pos.y > bottom) {
+    state.curveDisplayCursor = { visible: false, x: pos.x, y: pos.y, index: state.curveDisplayCursor.index || 0 };
+  } else {
+    state.curveDisplayCursor = {
+      visible: true,
+      x: clamp(pos.x, left, right),
+      y: clamp(pos.y, top, bottom),
+      index: curveDisplayPointIndexFromX(pos.x, canvas, state.snapshot || {}),
+    };
+  }
+  if (shouldDraw) drawCurveDisplay(state.snapshot || {});
+}
+
+function hideCurveDisplayCursor() {
+  if (!state.curveDisplayCursor.visible) return;
+  state.curveDisplayCursor.visible = false;
+  drawCurveDisplay(state.snapshot || {});
 }
 
 function estimateLoadFromDevices(devices) {
@@ -994,8 +1602,7 @@ function renderDeviceTree(containerId, summaryId, devices, filter, scope, dataPr
 function selectTreeFilter(filterName, devType, devName = "") {
   state[filterName] = { dev_type: devType || "all", dev_name: devName || "" };
   if (filterName === "measurementFilter") renderMeasurements(state.snapshot || {});
-  if (filterName === "runFilter") renderRunControls(state.snapshot?.devices || []);
-  if (filterName === "setpointFilter") renderSetpointControls(state.snapshot?.devices || []);
+  if (filterName === "controlFilter") renderCombinedControlPage(state.snapshot?.devices || []);
 }
 
 function filteredDevices(devices, filter) {
@@ -1006,8 +1613,174 @@ function filteredDevices(devices, filter) {
   });
 }
 
+function formatModelParamValue(value) {
+  if (value === null || value === undefined || value === "") return "--";
+  if (Array.isArray(value)) return value.join(", ");
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function compareModelRowsByIndex(left, right) {
+  const leftIndex = Number(left.idx ?? left.raw?.idx);
+  const rightIndex = Number(right.idx ?? right.raw?.idx);
+  const indexCompare = (Number.isFinite(leftIndex) ? leftIndex : Number.POSITIVE_INFINITY)
+    - (Number.isFinite(rightIndex) ? rightIndex : Number.POSITIVE_INFINITY);
+  if (indexCompare) return indexCompare;
+  return deviceName(left).localeCompare(deviceName(right), "zh-Hans-CN");
+}
+
+function modelAttributeRecordForDevice(dev) {
+  const record = {
+    dev_type: deviceType(dev),
+    dev_name: deviceName(dev),
+    idx: formatModelParamValue(deviceIndex(dev)),
+    name: formatModelParamValue(deviceName(dev)),
+  };
+  Object.entries(dev.raw || {}).forEach(([key, value]) => {
+    if (["idx", "name", "dev_name", "dev_type"].includes(key)) return;
+    record[key] = formatModelParamValue(value);
+  });
+  record.run_stat = formatModelParamValue(dev.run_stat ?? record.run_stat);
+  record.status = formatModelParamValue(dev.status ?? record.status);
+  record.mode = formatModelParamValue(dev.mode || dev.raw?.control_type || dev.raw?.ctrl_mode || record.mode);
+  if ((dev.set_types || []).length) record.set_types = formatModelParamValue(dev.set_types);
+  Object.entries(dev.set_values || {}).forEach(([key, value]) => {
+    record[key] = formatModelParamValue(value);
+  });
+  return record;
+}
+
+function modelAttributeColumns(records) {
+  const fixed = ["idx", "name"];
+  const preferred = [
+    "node", "from_node", "to_node", "ac_node", "dc_node", "control_type", "ctrl_mode", "mode",
+    "run_stat", "status", "p_set", "q_set", "v_set", "p_ac_set", "q_ac_set", "v_ac_set",
+    "p_dc_set", "v_dc_set", "pv0", "pv1", "pv2", "qv0", "qv1", "qv2", "pbase", "qbase",
+    "pmax", "pmin", "qmax", "qmin", "soc_curr", "alpha", "set_types",
+  ];
+  const seen = new Set([...fixed, "dev_type", "dev_name"]);
+  const keys = [];
+  const appendKey = (key) => {
+    if (!key || seen.has(key)) return;
+    if (!records.some((record) => record[key] !== undefined && record[key] !== "--")) return;
+    seen.add(key);
+    keys.push(key);
+  };
+  preferred.forEach(appendKey);
+  records.forEach((record) => Object.keys(record).forEach(appendKey));
+  return [...fixed, ...keys].map((key) => ({ key, label: key === "name" ? "名称" : key }));
+}
+
+function groupedModelAttributeRecords(records) {
+  const groups = new Map();
+  records.forEach((record) => {
+    const devType = record.dev_type || "未分类";
+    if (!groups.has(devType)) groups.set(devType, []);
+    groups.get(devType).push(record);
+  });
+  return Array.from(groups.entries())
+    .map(([devType, rows]) => [devType, rows.sort(compareModelRowsByIndex)])
+    .sort(([left], [right]) => left.localeCompare(right, "zh-Hans-CN"));
+}
+
+function renderModelAttributeTable(rows) {
+  const columns = modelAttributeColumns(rows);
+  return `<table class="model-param-table">
+    <thead><tr>${columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}</tr></thead>
+    <tbody>${rows.map((row) => `<tr>${columns.map((column) => (
+      `<td class="attr-value">${escapeHtml(row[column.key] ?? "--")}</td>`
+    )).join("")}</tr>`).join("")}</tbody>
+  </table>`;
+}
+
+function modelFilterLabel() {
+  if (state.modelFilter.dev_type === "all") return "全部设备";
+  return state.modelFilter.dev_name || state.modelFilter.dev_type;
+}
+
+function renderTraineeModelDeviceTree(snapshot = state.snapshot || {}) {
+  const container = $("modelDeviceTree");
+  if (!container) return;
+  const devices = snapshot.devices || [];
+  const groups = devicesByType(devices).map(([devType, items]) => [devType, [...items].sort(compareModelRowsByIndex)]);
+  $("modelTreeSummary").textContent = `${groups.length} 类 · ${devices.length} 台`;
+  container.innerHTML = `
+    <button type="button" class="tree-node tree-root ${state.modelFilter.dev_type === "all" ? "is-active" : ""}"
+      data-model-tree-type="all" data-model-tree-name="">
+      <span>全部设备</span><strong>${devices.length}</strong>
+    </button>
+    ${groups.map(([devType, items]) => {
+      const isCollapsed = isDeviceTreeGroupCollapsed("model", devType);
+      return `<div class="tree-group">
+        <button type="button"
+          class="tree-node tree-type ${isCollapsed ? "is-collapsed" : ""} ${state.modelFilter.dev_type === devType && !state.modelFilter.dev_name ? "is-active" : state.modelFilter.dev_type === devType ? "is-parent-active" : ""}"
+          data-model-tree-type="${escapeHtml(devType)}" data-model-tree-name=""
+          ${deviceTreeTypeAttrs("model", devType, isCollapsed)}>
+          ${deviceTreeTypeLabel(devType)}<strong>${items.length}</strong>
+        </button>
+        ${deviceTreeChildren(isCollapsed, items.map((dev) => `
+          <button type="button"
+            class="tree-node tree-child model-tree-child ${state.modelFilter.dev_type === devType && state.modelFilter.dev_name === deviceName(dev) ? "is-active" : ""}"
+            data-model-tree-type="${escapeHtml(devType)}" data-model-tree-name="${escapeHtml(deviceName(dev))}">
+            <span class="model-tree-idx">${escapeHtml(formatModelParamValue(deviceIndex(dev)))}</span>
+            <span class="model-tree-name">${escapeHtml(deviceName(dev))}</span>
+          </button>`).join(""))}
+      </div>`;
+    }).join("") || '<div class="empty-state">暂无设备</div>'}`;
+}
+
+function renderTraineeModelParamTable(snapshot = state.snapshot || {}) {
+  const container = $("modelParamTable");
+  if (!container) return;
+  const devices = snapshot.devices || [];
+  const filtered = filteredDevices(devices, state.modelFilter);
+  const groups = groupedModelAttributeRecords(filtered.map(modelAttributeRecordForDevice));
+  const availableTabs = groups.map(([devType]) => devType);
+  if (!availableTabs.includes(state.activeModelParamTab)) state.activeModelParamTab = availableTabs[0] || "";
+  const activeGroup = groups.find(([devType]) => devType === state.activeModelParamTab) || groups[0];
+  const activeColumns = activeGroup ? modelAttributeColumns(activeGroup[1]).length : 0;
+  $("modelParamSummary").textContent = groups.length > 1
+    ? `${modelFilterLabel()} · ${filtered.length}/${devices.length} 台 · ${groups.length} 个分页`
+    : `${modelFilterLabel()} · ${filtered.length}/${devices.length} 台 · ${activeColumns} 列属性`;
+  if (!devices.length) {
+    container.innerHTML = '<div class="empty-state">暂无电网模型数据</div>';
+    return;
+  }
+  if (!activeGroup) {
+    container.innerHTML = '<div class="empty-state">当前筛选无模型参数</div>';
+    return;
+  }
+  const [activeType, activeRows] = activeGroup;
+  container.innerHTML = `
+    <div class="model-param-tabs" role="tablist" aria-label="设备类型参数表">
+      ${groups.map(([devType, rows]) => `<button type="button" role="tab"
+        class="model-param-tab ${devType === activeType ? "is-active" : ""}"
+        data-model-param-tab="${escapeHtml(devType)}" aria-selected="${devType === activeType}">
+        <span>${escapeHtml(devType)}</span><strong>${rows.length}</strong>
+      </button>`).join("")}
+    </div>
+    <section class="model-param-tab-page" role="tabpanel">${renderModelAttributeTable(activeRows)}</section>`;
+}
+
+function renderTraineeModelPage(snapshot = state.snapshot || {}) {
+  renderTraineeModelDeviceTree(snapshot);
+  renderTraineeModelParamTable(snapshot);
+}
+
+function setTraineeModelFilter(devType, devName = "") {
+  state.modelFilter = { dev_type: devType || "all", dev_name: devName || "" };
+  if (devType && devType !== "all") state.activeModelParamTab = devType;
+  renderTraineeModelPage();
+}
+
 function measurementRows(snapshot = state.snapshot || {}) {
-  return snapshot.measurements?.scada || [];
+  return measurementDisplayRows(snapshot);
+}
+
+function measurementDisplayRows(snapshot = state.snapshot || {}) {
+  const scada = snapshot.measurements?.scada || [];
+  if (scada.length) return scada;
+  return snapshot.measurements?.definitions || [];
 }
 
 function measurementsDevices(snapshot = state.snapshot || {}) {
@@ -1190,27 +1963,43 @@ function drawMeasurementTraceChart() {
   $("measurementTraceSummary").textContent = `${points[points.length - 1].label || "测点"} · ${points.length} 点`;
 }
 
+function remoteControlIssuedAt(dev, snapshot = state.snapshot || {}) {
+  const history = [...(snapshot.commands?.history || [])].reverse();
+  for (const entry of history) {
+    const items = entry.normalized?.run_status || entry.payload?.run_status || [];
+    const match = items.find((item) => (
+      item.dev_type === deviceType(dev)
+      && item.dev_name === deviceName(dev)
+    ));
+    if (match) return entry.time || "--";
+  }
+  return "--";
+}
+
 function renderRunControls(devices) {
-  const visibleDevices = filteredDevices(devices, state.runFilter);
-  renderDeviceTree("runDeviceTree", "runTreeSummary", devices, state.runFilter, "run", "run");
+  const visibleDevices = filteredDevices(devices, state.controlFilter);
   $("runControlTable").innerHTML = `
     <table class="runtime-device-table">
-      <thead><tr><th>idx</th><th>设备名称</th><th>类型</th><th>当前状态</th><th>下发状态</th></tr></thead>
+      <thead><tr><th>idx</th><th>设备名称</th><th>类型</th><th>当前状态</th><th>下发状态</th><th>指令下发时刻</th></tr></thead>
       <tbody>
         ${visibleDevices.map((dev) => {
           const key = deviceKey(dev);
           const currentRun = Number(pending.run_status.has(key) ? pending.run_status.get(key).run_stat : dev.run_stat);
+          const issuedAt = remoteControlIssuedAt(dev);
           return `<tr class="${pending.run_status.has(key) ? "is-pending" : ""}">
             <td>${escapeHtml(deviceIndex(dev))}</td>
             <td>${escapeHtml(deviceName(dev))}</td>
             <td>${escapeHtml(deviceType(dev))}</td>
-            <td><span class="status-pill ${Number(dev.run_stat) ? "is-ok" : "is-off"}">${statusText(dev.run_stat)}</span></td>
+            <td class="run-status-command-cell" data-run-status-command="${escapeHtml(key)}" title="双击进行遥控操作">
+              <span class="status-pill ${Number(dev.run_stat) ? "is-ok" : "is-off"}">${statusText(dev.run_stat)}</span>
+            </td>
             <td>
               <label class="inline-toggle">
                 <input type="checkbox" data-run-key="${escapeHtml(key)}" ${currentRun ? "checked" : ""} />
                 <span>${currentRun ? "投入" : "退出"}</span>
               </label>
             </td>
+            <td class="mono-cell command-issued-at-cell">${escapeHtml(issuedAt)}</td>
           </tr>`;
         }).join("")}
       </tbody>
@@ -1238,41 +2027,100 @@ function currentSetValue(dev, setType) {
   return "";
 }
 
+function remoteAdjustmentTypeLabel(setType) {
+  return {
+    p_set: "P有功设定",
+    q_set: "Q无功设定",
+    v_set: "V电压设定",
+  }[setType] || setType;
+}
+
+function remoteAdjustmentName(dev, setType) {
+  return `${deviceName(dev)}.${remoteAdjustmentTypeLabel(setType)}`;
+}
+
+function remoteAdjustmentMeasurement(dev, setType, snapshot = state.snapshot || {}) {
+  const rows = snapshot.measurements?.scada?.length
+    ? snapshot.measurements.scada
+    : snapshot.measurements?.definitions || [];
+  const priorities = {
+    p_set: ["P_GEN", "P_LOAD", "P_AC", "P_FROM", "P_TO", "P_DC", "P"],
+    q_set: ["Q_GEN", "Q_LOAD", "Q_AC", "Q"],
+    v_set: ["V_GEN", "V_LOAD", "V_AC", "V_FROM", "V_TO", "V_DC", "V"],
+  }[setType] || [];
+  const candidates = (rows || []).filter((row) => row.dev_type === deviceType(dev) && row.dev_name === deviceName(dev));
+  for (const measType of priorities) {
+    const match = candidates.find((row) => String(row.meas_type || "").toUpperCase() === measType);
+    if (match) return match.value;
+  }
+  return null;
+}
+
+function remoteAdjustmentIssuedAt(dev, setType, snapshot = state.snapshot || {}) {
+  const history = [...(snapshot.commands?.history || [])].reverse();
+  for (const entry of history) {
+    const items = entry.normalized?.set_values || entry.payload?.set_values || [];
+    const match = items.find((item) => (
+      item.dev_type === deviceType(dev)
+      && item.dev_name === deviceName(dev)
+      && item.set_type === setType
+    ));
+    if (match) return entry.time || "--";
+  }
+  return "--";
+}
+
+function remoteAdjustmentRows(devices, snapshot = state.snapshot || {}) {
+  return (devices || []).flatMap((dev) => preferredSetTypes(dev).map((setType) => ({
+    key: `${deviceKey(dev)}|${setType}`,
+    dev,
+    setType,
+    name: remoteAdjustmentName(dev, setType),
+    measurement: remoteAdjustmentMeasurement(dev, setType, snapshot),
+    controlValue: currentSetValue(dev, setType),
+    issuedAt: remoteAdjustmentIssuedAt(dev, setType, snapshot),
+  })));
+}
+
+function formatRemoteAdjustmentValue(value) {
+  if (value === null || value === undefined || value === "") return "--";
+  return formatNumber(value);
+}
+
 function renderSetpointControls(devices) {
   const adjustable = (devices || []).filter((dev) => preferredSetTypes(dev).length);
-  const visibleDevices = filteredDevices(adjustable, state.setpointFilter);
-  renderDeviceTree("setpointDeviceTree", "setpointTreeSummary", adjustable, state.setpointFilter, "setpoint", "setpoint");
+  const visibleDevices = filteredDevices(adjustable, state.controlFilter);
+  const rows = remoteAdjustmentRows(visibleDevices);
   $("setpointControlTable").innerHTML = `
-    <table class="runtime-device-table setpoint-editor-table">
-      <thead><tr><th>idx</th><th>设备名称</th><th>类型</th><th>模式</th><th>P</th><th>Q</th><th>V</th></tr></thead>
+    <table class="runtime-device-table remote-adjustment-table">
+      <thead><tr><th>遥调名称</th><th>量测值</th><th>控制值</th><th>指令下发时刻</th></tr></thead>
       <tbody>
-        ${visibleDevices.map((dev) => {
-          const setTypes = preferredSetTypes(dev);
-          const key = deviceKey(dev);
-          return `<tr>
-            <td>${escapeHtml(deviceIndex(dev))}</td>
-            <td>${escapeHtml(deviceName(dev))}</td>
-            <td>${escapeHtml(deviceType(dev))}</td>
-            <td>${escapeHtml(dev.mode || "--")}</td>
-            ${["p_set", "q_set", "v_set"].map((setType) => {
-              const enabled = setTypes.includes(setType);
-              const pendingKey = `${key}|${setType}`;
-              return `<td>
-                <input
-                  type="number"
-                  step="0.01"
-                  data-set-key="${escapeHtml(key)}"
-                  data-set-type="${setType}"
-                  value="${escapeHtml(currentSetValue(dev, setType))}"
-                  ${enabled ? "" : "disabled"}
-                  class="${pending.set_values.has(pendingKey) ? "is-pending" : ""}"
-                />
-              </td>`;
-            }).join("")}
-          </tr>`;
-        }).join("")}
+        ${rows.map((row) => `<tr data-remote-adjustment-key="${escapeHtml(row.key)}" title="双击进行遥调操作">
+          <td><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(deviceType(row.dev))}</small></td>
+          <td class="numeric-cell">${formatRemoteAdjustmentValue(row.measurement)}</td>
+          <td class="numeric-cell">${formatRemoteAdjustmentValue(row.controlValue)}</td>
+          <td class="mono-cell">${escapeHtml(row.issuedAt)}</td>
+        </tr>`).join("")}
       </tbody>
     </table>`;
+}
+
+function renderControlTabs() {
+  document.querySelectorAll("[data-command-tab]").forEach((button) => {
+    const isActive = button.dataset.commandTab === state.activeControlTab;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-selected", isActive ? "true" : "false");
+  });
+  document.querySelectorAll("[data-command-tab-page]").forEach((page) => {
+    page.classList.toggle("is-active", page.dataset.commandTabPage === state.activeControlTab);
+  });
+}
+
+function renderCombinedControlPage(devices = state.snapshot?.devices || []) {
+  renderDeviceTree("commandDeviceTree", "commandTreeSummary", devices, state.controlFilter, "control", "control");
+  renderRunControls(devices);
+  renderSetpointControls(devices);
+  renderControlTabs();
 }
 
 function commandHistoryKey(item) {
@@ -1379,6 +2227,7 @@ function updatePendingCount() {
   $("pendingCount").textContent = total;
   $("runPendingCount").textContent = `${pending.run_status.size} 待发`;
   $("setpointPendingCount").textContent = `${pending.set_values.size} 待发`;
+  $("commandPendingCount").textContent = `${total} 待发`;
   $("commandState").textContent = total ? "待发送" : "待命";
   $("sendCommands").disabled = total === 0;
   renderPendingPreview();
@@ -1391,31 +2240,208 @@ function formatNumber(value) {
   return number.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
 }
 
+function findDeviceByKey(key) {
+  return (state.snapshot?.devices || []).find((dev) => deviceKey(dev) === key) || null;
+}
+
+function closeRemoteControlDialog() {
+  const dialog = $("remoteControlDialog");
+  if (dialog?.open) dialog.close();
+  state.remoteControlDevice = null;
+  state.remoteControlSending = false;
+}
+
+function openRemoteControlDialog(dev) {
+  const dialog = $("remoteControlDialog");
+  if (!dialog || !dev) return;
+  state.remoteControlDevice = dev;
+  state.remoteControlSending = false;
+  const currentRun = Number(dev.run_stat) ? 1 : 0;
+  $("remoteControlDevice").textContent = deviceName(dev);
+  $("remoteControlType").textContent = deviceType(dev);
+  $("remoteControlCurrent").innerHTML = `<span class="status-pill ${currentRun ? "is-ok" : "is-off"}">${statusText(currentRun)}</span>`;
+  $("remoteControlHint").textContent = "确认后将立即向模拟台下发遥控指令。";
+  $("remoteControlHint").className = "remote-control-hint";
+  document.querySelectorAll('input[name="remoteControlState"]').forEach((input) => {
+    input.checked = Number(input.value) === (currentRun ? 0 : 1);
+  });
+  $("remoteControlConfirm").disabled = false;
+  $("remoteControlConfirm").textContent = "确认下发";
+  dialog.showModal();
+}
+
+async function sendRemoteControlCommand() {
+  const dev = state.remoteControlDevice;
+  if (!dev || state.remoteControlSending) return;
+  const selected = document.querySelector('input[name="remoteControlState"]:checked');
+  if (!(selected instanceof HTMLInputElement)) return;
+  const command = {
+    dev_type: deviceType(dev),
+    dev_name: deviceName(dev),
+    run_stat: Number(selected.value) ? 1 : 0,
+  };
+  const body = {
+    source: "trainee-ui",
+    valid_for_minutes: CONTROL_COMMAND_VALID_MINUTES,
+    run_status: [command],
+    set_values: [],
+  };
+  const targetApi = state.receiveMode ? teacherApi : api;
+  const targetName = state.receiveMode ? "模拟台 /api/student/commands" : "学员台 /api/student/commands";
+  state.remoteControlSending = true;
+  $("remoteControlConfirm").disabled = true;
+  $("remoteControlConfirm").textContent = "下发中";
+  $("remoteControlHint").textContent = `${deviceName(dev)}：${statusText(command.run_stat)}`;
+  addRuntimeLog("人工遥控", targetName, "下发请求", `${deviceName(dev)} → ${statusText(command.run_stat)}`);
+  try {
+    const result = await targetApi("/api/student/commands", { method: "POST", body: JSON.stringify(body) });
+    addRuntimeLog(
+      "模拟台响应",
+      targetName,
+      "遥控成功",
+      `${deviceName(dev)} → ${statusText(command.run_stat)}；接受 ${result.run_status || 0} 条`,
+      "ok",
+    );
+    pending.run_status.delete(deviceKey(dev));
+    closeRemoteControlDialog();
+    updatePendingCount();
+    await refresh();
+  } catch (error) {
+    state.remoteControlSending = false;
+    $("remoteControlConfirm").disabled = false;
+    $("remoteControlConfirm").textContent = "重新下发";
+    $("remoteControlHint").textContent = apiErrorText(error);
+    $("remoteControlHint").className = "remote-control-hint is-error";
+    addRuntimeLog("模拟台响应", targetName, "遥控失败", apiErrorText(error), "error");
+  }
+}
+
+function findRemoteAdjustmentByKey(key) {
+  return remoteAdjustmentRows(state.snapshot?.devices || []).find((row) => row.key === key) || null;
+}
+
+function closeRemoteAdjustmentDialog() {
+  const dialog = $("remoteAdjustmentDialog");
+  if (dialog?.open) dialog.close();
+  state.remoteAdjustment = null;
+  state.remoteAdjustmentSending = false;
+}
+
+function openRemoteAdjustmentDialog(row) {
+  const dialog = $("remoteAdjustmentDialog");
+  if (!dialog || !row) return;
+  state.remoteAdjustment = row;
+  state.remoteAdjustmentSending = false;
+  $("remoteAdjustmentName").textContent = row.name;
+  $("remoteAdjustmentDevice").textContent = `${deviceType(row.dev)} / ${deviceName(row.dev)}`;
+  $("remoteAdjustmentMeasurement").textContent = formatRemoteAdjustmentValue(row.measurement);
+  $("remoteAdjustmentCurrent").textContent = formatRemoteAdjustmentValue(row.controlValue);
+  $("remoteAdjustmentIssuedAt").textContent = row.issuedAt;
+  $("remoteAdjustmentValue").value = row.controlValue === null || row.controlValue === undefined ? "" : row.controlValue;
+  $("remoteAdjustmentHint").textContent = "确认后将立即向模拟台下发一条遥调指令。";
+  $("remoteAdjustmentHint").className = "remote-control-hint";
+  $("remoteAdjustmentConfirm").disabled = false;
+  $("remoteAdjustmentConfirm").textContent = "确认下发";
+  dialog.showModal();
+  $("remoteAdjustmentValue").focus();
+  $("remoteAdjustmentValue").select();
+}
+
+async function sendRemoteAdjustmentCommand() {
+  const row = state.remoteAdjustment;
+  if (!row || state.remoteAdjustmentSending) return;
+  const setValue = Number($("remoteAdjustmentValue").value);
+  if (!Number.isFinite(setValue)) {
+    $("remoteAdjustmentHint").textContent = "请输入有效的控制值。";
+    $("remoteAdjustmentHint").className = "remote-control-hint is-error";
+    return;
+  }
+  const command = {
+    dev_type: deviceType(row.dev),
+    dev_name: deviceName(row.dev),
+    set_type: row.setType,
+    set_value: setValue,
+  };
+  const body = {
+    source: "trainee-ui",
+    valid_for_minutes: CONTROL_COMMAND_VALID_MINUTES,
+    run_status: [],
+    set_values: [command],
+  };
+  const targetApi = state.receiveMode ? teacherApi : api;
+  const targetName = state.receiveMode ? "模拟台 /api/student/commands" : "学员台 /api/student/commands";
+  state.remoteAdjustmentSending = true;
+  $("remoteAdjustmentConfirm").disabled = true;
+  $("remoteAdjustmentConfirm").textContent = "下发中";
+  $("remoteAdjustmentHint").textContent = `${row.name}：${formatNumber(setValue)}`;
+  addRuntimeLog("人工遥调", targetName, "下发请求", `${row.name} → ${formatNumber(setValue)}`);
+  try {
+    const result = await targetApi("/api/student/commands", { method: "POST", body: JSON.stringify(body) });
+    addRuntimeLog(
+      "模拟台响应",
+      targetName,
+      "遥调成功",
+      `${row.name} → ${formatNumber(setValue)}；接受 ${result.set_values || 0} 条`,
+      "ok",
+    );
+    pending.set_values.delete(row.key);
+    closeRemoteAdjustmentDialog();
+    updatePendingCount();
+    await refresh();
+  } catch (error) {
+    state.remoteAdjustmentSending = false;
+    $("remoteAdjustmentConfirm").disabled = false;
+    $("remoteAdjustmentConfirm").textContent = "重新下发";
+    $("remoteAdjustmentHint").textContent = apiErrorText(error);
+    $("remoteAdjustmentHint").className = "remote-control-hint is-error";
+    addRuntimeLog("模拟台响应", targetName, "遥调失败", apiErrorText(error), "error");
+  }
+}
+
 function handleTreeClick(event) {
   const target = event.target instanceof Element ? event.target : null;
   if (!target) return;
-  const button = target.closest("[data-measurement-tree-type], [data-run-tree-type], [data-setpoint-tree-type]");
+  const button = target.closest("[data-model-tree-type], [data-measurement-tree-type], [data-control-tree-type]");
   if (!button) return;
   event.preventDefault();
   const toggleScope = button.dataset.treeToggleScope;
   const toggleGroup = button.dataset.treeToggleGroup || "";
   const selection =
-    button.dataset.measurementTreeType !== undefined
+    button.dataset.modelTreeType !== undefined
+      ? ["modelFilter", button.dataset.modelTreeType, button.dataset.modelTreeName || ""]
+      : button.dataset.measurementTreeType !== undefined
       ? ["measurementFilter", button.dataset.measurementTreeType, button.dataset.measurementTreeName || ""]
-      : button.dataset.runTreeType !== undefined
-        ? ["runFilter", button.dataset.runTreeType, button.dataset.runTreeName || ""]
-        : button.dataset.setpointTreeType !== undefined
-          ? ["setpointFilter", button.dataset.setpointTreeType, button.dataset.setpointTreeName || ""]
+      : button.dataset.controlTreeType !== undefined
+        ? ["controlFilter", button.dataset.controlTreeType, button.dataset.controlTreeName || ""]
           : null;
   requestAnimationFrame(() => {
     if (toggleScope) toggleDeviceTreeGroup(toggleScope, toggleGroup);
-    if (selection) selectTreeFilter(selection[0], selection[1], selection[2]);
+    if (selection?.[0] === "modelFilter") setTraineeModelFilter(selection[1], selection[2]);
+    else if (selection) selectTreeFilter(selection[0], selection[1], selection[2]);
   });
 }
 
 document.addEventListener("click", (event) => {
   handleTreeClick(event);
   const target = event.target instanceof Element ? event.target : null;
+  const modelParamTab = target?.closest("[data-model-param-tab]");
+  if (modelParamTab) {
+    requestAnimationFrame(() => {
+      state.activeModelParamTab = modelParamTab.dataset.modelParamTab || "";
+      renderTraineeModelParamTable();
+    });
+  }
+  const curveDisplayButton = target?.closest("[data-curve-display-tree-type]");
+  if (curveDisplayButton) {
+    event.preventDefault();
+    requestAnimationFrame(() => selectCurveDisplayButton(curveDisplayButton));
+    return;
+  }
+  const commandTab = target?.closest("[data-command-tab]");
+  if (commandTab) {
+    state.activeControlTab = commandTab.dataset.commandTab || "remote-control";
+    renderControlTabs();
+  }
   const measurementRow = target?.closest("[data-measurement-select-key]");
   if (measurementRow) {
     const key = measurementRow.dataset.measurementSelectKey || "";
@@ -1424,6 +2450,22 @@ document.addEventListener("click", (event) => {
       renderMeasurements(state.snapshot || {});
     });
   }
+});
+
+document.addEventListener("dblclick", (event) => {
+  const target = event.target instanceof Element ? event.target : null;
+  const adjustmentRow = target?.closest("[data-remote-adjustment-key]");
+  if (adjustmentRow) {
+    event.preventDefault();
+    const adjustment = findRemoteAdjustmentByKey(adjustmentRow.dataset.remoteAdjustmentKey || "");
+    if (adjustment) openRemoteAdjustmentDialog(adjustment);
+    return;
+  }
+  const statusCell = target?.closest("[data-run-status-command]");
+  if (!statusCell) return;
+  event.preventDefault();
+  const dev = findDeviceByKey(statusCell.dataset.runStatusCommand || "");
+  if (dev) openRemoteControlDialog(dev);
 });
 
 document.addEventListener("change", (event) => {
@@ -1513,6 +2555,18 @@ function toggleReceiveMode() {
 $("importDefinitionsButton").addEventListener("click", () => $("definitionArchiveInput").click());
 $("definitionArchiveInput").addEventListener("change", (event) => importDefinitionArchive(event.target.files?.[0]));
 $("traineeRunToggle").addEventListener("click", toggleReceiveMode);
+$("remoteControlClose").addEventListener("click", closeRemoteControlDialog);
+$("remoteControlCancel").addEventListener("click", closeRemoteControlDialog);
+$("remoteControlConfirm").addEventListener("click", sendRemoteControlCommand);
+$("remoteControlDialog").addEventListener("click", (event) => {
+  if (event.target === $("remoteControlDialog")) closeRemoteControlDialog();
+});
+$("remoteAdjustmentClose").addEventListener("click", closeRemoteAdjustmentDialog);
+$("remoteAdjustmentCancel").addEventListener("click", closeRemoteAdjustmentDialog);
+$("remoteAdjustmentConfirm").addEventListener("click", sendRemoteAdjustmentCommand);
+$("remoteAdjustmentDialog").addEventListener("click", (event) => {
+  if (event.target === $("remoteAdjustmentDialog")) closeRemoteAdjustmentDialog();
+});
 $("renewableAutoToggle").addEventListener("click", toggleRenewableAuto);
 $("renewableSendOnce").addEventListener("click", () => sendRenewableControlPlan(calculateRenewableControlPlan(state.snapshot || {}), "manual"));
 $("renewableControlPeriod").addEventListener("change", updateRenewableSettings);
@@ -1531,7 +2585,15 @@ $("measurementTraceWindow").addEventListener("change", (event) => {
   state.measurementTraceWindowMinutes = Number(event.target.value) || 60;
   drawMeasurementTraceChart();
 });
-window.addEventListener("resize", () => drawMeasurementTraceChart());
+const curveDisplayChart = $("curveDisplayChart");
+if (curveDisplayChart) {
+  curveDisplayChart.addEventListener("pointermove", (event) => setCurveDisplayCursorFromEvent(event));
+  curveDisplayChart.addEventListener("pointerleave", hideCurveDisplayCursor);
+}
+window.addEventListener("resize", () => {
+  drawMeasurementTraceChart();
+  drawCurveDisplay(state.snapshot || {});
+});
 
 initPageNavigation();
 renderReceiveMode();

@@ -47,6 +47,9 @@ const state = {
   runtimeLogTypeFilter: "all",
   runtimeLogSeq: 0,
   lastRuntimeLogKey: "",
+  systemParameters: { clock_speed: 1, compute_interval_seconds: 1 },
+  systemParametersDirty: false,
+  systemParametersSaving: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -66,6 +69,7 @@ const LOAD_CURVE_META = { label: "负荷", color: "#c93a3a", min: 0, max: 500, d
 const LOAD_CURVE_COLORS = ["#c93a3a", "#8a4fbf", "#23854a", "#d16300", "#4369b2", "#0a8b8b"];
 const CURVE_PLOT = { left: 58, right: 24, top: 46, bottom: 34 };
 const TRACE_HISTORY_LIMIT = 45000;
+let pendingImportDefinitionFile = null;
 
 function isDeviceTreeGroupCollapsed(scope, groupKey) {
   return Boolean(state.collapsedDeviceTreeGroups?.[scope]?.[groupKey]);
@@ -148,6 +152,130 @@ function renderClock(clock) {
   renderCurveModeControls();
 }
 
+function parameterNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function parameterText(value, digits = 2) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "--";
+  return number.toFixed(digits).replace(/\.?0+$/, "");
+}
+
+function snapshotSystemParameters(snapshot = state.snapshot || {}) {
+  const params = snapshot.system_parameters || {};
+  const clock = snapshot.clock || {};
+  return {
+    clock_speed: parameterNumber(params.clock_speed ?? clock.speed, 1),
+    compute_interval_seconds: parameterNumber(params.compute_interval_seconds, 1),
+    clock_step_minutes: parameterNumber(params.clock_step_minutes ?? clock.step_minutes, 1),
+    effective_step_minutes: parameterNumber(
+      params.effective_step_minutes,
+      parameterNumber(params.clock_step_minutes ?? clock.step_minutes, 1) * parameterNumber(params.clock_speed ?? clock.speed, 1),
+    ),
+  };
+}
+
+function renderSystemParameters(snapshot = state.snapshot) {
+  const params = snapshotSystemParameters(snapshot || {});
+  state.systemParameters = params;
+  const currentSpeed = $("currentClockSpeed");
+  const currentInterval = $("currentComputeInterval");
+  if (currentSpeed) currentSpeed.textContent = `x${parameterText(params.clock_speed, 1)}`;
+  if (currentInterval) currentInterval.textContent = `${parameterText(params.compute_interval_seconds, 2)} s`;
+
+  const form = $("systemParameterForm");
+  const isEditing = Boolean(form?.contains(document.activeElement));
+  if (!state.systemParametersDirty && !isEditing) {
+    const speedInput = $("parameterClockSpeed");
+    const intervalInput = $("parameterComputeInterval");
+    if (speedInput) speedInput.value = String(params.clock_speed);
+    if (intervalInput) intervalInput.value = parameterText(params.compute_interval_seconds, 2);
+  }
+
+  const summary = $("systemParameterSummary");
+  if (summary) {
+    summary.textContent = state.systemParametersSaving
+      ? "保存中"
+      : state.systemParametersDirty
+        ? "有未保存修改"
+        : `x${parameterText(params.clock_speed, 1)} · ${parameterText(params.compute_interval_seconds, 2)} s`;
+  }
+
+  const modelName = snapshot?.model?.name || snapshot?.model?.id || state.activeModelId || "--";
+  const clock = snapshot?.clock || {};
+  const modeLabel = state.curveMode === "year" ? "年仿真" : "日仿真";
+  const stateText = clock.state || "--";
+  const stateMap = { running: "运行中", paused: "已暂停", stopped: "已停止" };
+  const values = {
+    systemParameterState: state.systemParametersDirty ? "待保存" : "已同步",
+    parameterModelName: modelName,
+    parameterSimulationMode: modeLabel,
+    parameterClockState: stateMap[stateText] || stateText,
+    parameterClockTime: snapshot?.clock ? formatSimulationClock(clock) : "--",
+    parameterEffectiveStep: `${parameterText(params.effective_step_minutes, 1)} min`,
+    parameterComputePeriod: `${parameterText(params.compute_interval_seconds, 2)} s`,
+  };
+  Object.entries(values).forEach(([id, text]) => {
+    const node = $(id);
+    if (node) node.textContent = text;
+  });
+}
+
+function markSystemParametersDirty() {
+  state.systemParametersDirty = true;
+  renderSystemParameters(state.snapshot);
+}
+
+function systemParameterPayload() {
+  return {
+    clock_speed: parameterNumber($("parameterClockSpeed")?.value, state.systemParameters.clock_speed || 1),
+    compute_interval_seconds: parameterNumber(
+      $("parameterComputeInterval")?.value,
+      state.systemParameters.compute_interval_seconds || 1,
+    ),
+  };
+}
+
+async function saveSystemParameters() {
+  const saveButton = $("saveSystemParameters");
+  const resetButton = $("resetSystemParameters");
+  state.systemParametersSaving = true;
+  if (saveButton) saveButton.disabled = true;
+  if (resetButton) resetButton.disabled = true;
+  renderSystemParameters(state.snapshot);
+  try {
+    const result = await api("/api/config", {
+      method: "POST",
+      body: JSON.stringify(systemParameterPayload()),
+    });
+    if (state.snapshot && result.clock) {
+      state.snapshot.clock = result.clock;
+      renderClock(result.clock);
+    }
+    if (result.system_parameters) {
+      state.systemParameters = result.system_parameters;
+    }
+    state.systemParametersDirty = false;
+    await refresh();
+  } catch (error) {
+    const summary = $("systemParameterSummary");
+    if (summary) summary.textContent = "保存失败";
+    throw error;
+  } finally {
+    state.systemParametersSaving = false;
+    if (saveButton) saveButton.disabled = false;
+    if (resetButton) resetButton.disabled = false;
+    renderSystemParameters(state.snapshot);
+  }
+}
+
+function resetSystemParameterForm() {
+  state.systemParametersDirty = false;
+  renderSystemParameters(state.snapshot);
+}
+
 function setClockButtonsBusy(isBusy) {
   document.querySelectorAll("[data-clock]").forEach((button) => {
     button.disabled = isBusy;
@@ -155,12 +283,13 @@ function setClockButtonsBusy(isBusy) {
   });
 }
 
-async function controlClock(action) {
+async function controlClock(action, payload = {}) {
   setClockButtonsBusy(true);
   try {
-    const clock = await api("/api/clock", { method: "POST", body: JSON.stringify({ action }) });
+    const clock = await api("/api/clock", { method: "POST", body: JSON.stringify({ ...payload, action }) });
     renderClock(clock);
     await refresh();
+    return clock;
   } catch (error) {
     $("simState").textContent = "error";
     $("solverInfo").textContent = "时钟控制失败";
@@ -168,6 +297,113 @@ async function controlClock(action) {
   } finally {
     setClockButtonsBusy(false);
   }
+}
+
+function startSimulationMode() {
+  return state.curveMode === "year" ? "year" : "day";
+}
+
+function startSimulationDefaultAbsoluteMinute() {
+  const clock = state.snapshot?.clock || {};
+  const minute = Number(clock.absolute_minute ?? clock.minute ?? 0);
+  return Number.isFinite(minute) ? Math.max(0, Math.floor(minute)) : 0;
+}
+
+function setStartSimulationMessage(text, kind = "") {
+  const message = $("startSimulationMessage");
+  if (!message) return;
+  message.textContent = text || "";
+  message.classList.toggle("is-error", kind === "error");
+  message.classList.toggle("is-ok", kind === "ok");
+}
+
+function setStartSimulationBusy(isBusy) {
+  const confirm = $("confirmStartSimulation");
+  const cancel = $("cancelStartSimulation");
+  const close = $("closeStartSimulationDialog");
+  const day = $("startSimulationDay");
+  const time = $("startSimulationTime");
+  if (confirm) {
+    confirm.disabled = isBusy;
+    confirm.textContent = isBusy ? "启动中" : "启动";
+  }
+  [cancel, close, day, time].forEach((element) => {
+    if (element) element.disabled = isBusy;
+  });
+}
+
+function updateStartSimulationFields() {
+  const isYearMode = startSimulationMode() === "year";
+  const dayField = $("startSimulationDayField");
+  const dayInput = $("startSimulationDay");
+  const hint = $("startSimulationHint");
+  if (dayField) dayField.hidden = !isYearMode;
+  if (dayInput) dayInput.disabled = !isYearMode;
+  if (hint) {
+    hint.textContent = isYearMode
+      ? "年仿真按起始日和时刻启动；后台会按当前仿真步长向上对齐。"
+      : "日仿真按起始时刻启动；后台会按当前仿真步长向上对齐。";
+  }
+}
+
+function openStartSimulationDialog() {
+  const dialog = $("startSimulationDialog");
+  const dayInput = $("startSimulationDay");
+  const timeInput = $("startSimulationTime");
+  if (!dialog || !timeInput) return;
+  const absoluteMinute = startSimulationDefaultAbsoluteMinute();
+  const day = Math.floor(absoluteMinute / 1440) % 365 + 1;
+  if (dayInput) dayInput.value = String(day);
+  timeInput.value = minuteToTimeInput(absoluteMinute % 1440, 0);
+  updateStartSimulationFields();
+  setStartSimulationBusy(false);
+  setStartSimulationMessage("");
+  dialog.hidden = false;
+  requestAnimationFrame(() => {
+    if (startSimulationMode() === "year" && dayInput) {
+      dayInput.focus();
+      dayInput.select();
+      return;
+    }
+    timeInput.focus();
+  });
+}
+
+function closeStartSimulationDialog() {
+  const dialog = $("startSimulationDialog");
+  if (dialog) dialog.hidden = true;
+  setStartSimulationMessage("");
+  setStartSimulationBusy(false);
+}
+
+function startSimulationMinuteFromDialog() {
+  const timeMinute = timeInputToMinute($("startSimulationTime")?.value, 0);
+  if (startSimulationMode() !== "year") return timeMinute;
+  const rawDay = Number($("startSimulationDay")?.value);
+  const day = clamp(Math.round(Number.isFinite(rawDay) ? rawDay : 1), 1, 365);
+  return (day - 1) * 1440 + timeMinute;
+}
+
+async function startSimulationFromDialog() {
+  const minute = startSimulationMinuteFromDialog();
+  setStartSimulationBusy(true);
+  setStartSimulationMessage("正在启动仿真...");
+  try {
+    await controlClock("start", { minute });
+    closeStartSimulationDialog();
+  } catch (error) {
+    setStartSimulationMessage(apiErrorText(error), "error");
+    setStartSimulationBusy(false);
+  }
+}
+
+function handleClockAction(action) {
+  const currentState = state.snapshot?.clock?.state || $("simState")?.textContent || "stopped";
+  if (action === "start" && currentState === "stopped") {
+    openStartSimulationDialog();
+    return;
+  }
+  controlClock(action);
 }
 
 function setCloneModelMessage(text, kind = "") {
@@ -314,6 +550,125 @@ async function cloneCurrentModel() {
   }
 }
 
+function setImportModelMessage(text, kind = "") {
+  const message = $("importModelMessage");
+  if (!message) return;
+  message.textContent = text || "";
+  message.classList.toggle("is-error", kind === "error");
+  message.classList.toggle("is-ok", kind === "ok");
+}
+
+function suggestedImportModelName(filename) {
+  return String(filename || "导入模型")
+    .replace(/\.zip$/i, "")
+    .replace(/_definitions_\d{8}_\d{6}$/i, "")
+    .replace(/_definitions$/i, "")
+    .trim() || "导入模型";
+}
+
+function validateImportModelName(showBlank = false) {
+  const input = $("importModelName");
+  const confirm = $("confirmImportModel");
+  const name = String(input?.value || "").trim();
+  if (!name) {
+    if (confirm) confirm.disabled = true;
+    setImportModelMessage(showBlank ? "请输入新模型名称。" : "", showBlank ? "error" : "");
+    return false;
+  }
+  if (isModelNameTaken(name)) {
+    if (confirm) confirm.disabled = true;
+    setImportModelMessage(`模型已存在：${name}，请输入新的模型名称。`, "error");
+    return false;
+  }
+  if (confirm) confirm.disabled = false;
+  setImportModelMessage("");
+  return true;
+}
+
+function openImportModelDialog(file) {
+  const dialog = $("importModelDialog");
+  const input = $("importModelName");
+  if (!dialog || !input || !file) return;
+  pendingImportDefinitionFile = file;
+  const active = state.models.find((model) => model.id === state.activeModelId) || state.models[0] || {};
+  $("importModelFilename").textContent = file.name;
+  $("importTemplateModelName").textContent = active.name || active.id || "当前模型";
+  input.value = suggestedImportModelName(file.name);
+  dialog.hidden = false;
+  validateImportModelName();
+  requestAnimationFrame(() => {
+    input.focus();
+    input.select();
+  });
+}
+
+function closeImportModelDialog() {
+  const dialog = $("importModelDialog");
+  if (dialog) dialog.hidden = true;
+  pendingImportDefinitionFile = null;
+  const fileInput = $("importDefinitionsInput");
+  if (fileInput) fileInput.value = "";
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 32768;
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function setImportModelBusy(isBusy) {
+  const confirm = $("confirmImportModel");
+  const input = $("importModelName");
+  const button = $("importDefinitionsButton");
+  if (confirm) {
+    confirm.disabled = isBusy;
+    confirm.textContent = isBusy ? "导入中" : "导入";
+  }
+  if (input) input.disabled = isBusy;
+  if (button) button.disabled = isBusy;
+}
+
+async function importDefinitionModel() {
+  const file = pendingImportDefinitionFile;
+  const input = $("importModelName");
+  const name = String(input?.value || "").trim();
+  if (!file || !validateImportModelName(true)) {
+    input?.focus();
+    return;
+  }
+  setImportModelBusy(true);
+  setImportModelMessage("正在创建模型文件夹并导入定义数据...");
+  try {
+    const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
+    const result = await api("/api/models/import-definitions", {
+      method: "POST",
+      body: JSON.stringify({
+        create_model: true,
+        name,
+        filename: file.name,
+        data_base64: dataBase64,
+      }),
+    });
+    state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
+    const newModelId = result.model?.id || result.active_model_id || name;
+    closeImportModelDialog();
+    setActiveModel(newModelId, true);
+  } catch (error) {
+    const message = apiErrorText(error);
+    if (message.includes("已存在")) await loadModels();
+    setImportModelMessage(
+      message.includes("已存在") ? `${message}，请输入新的模型名称。` : message,
+      "error",
+    );
+  } finally {
+    setImportModelBusy(false);
+  }
+}
+
 function pageFromHash() {
   const fallback = document.querySelector(".app-shell")?.dataset.defaultPage || "overview";
   return (location.hash || "").replace("#", "") || fallback;
@@ -337,6 +692,9 @@ function showPage(page, updateHash = true) {
   }
   if (target === "model") {
     requestAnimationFrame(() => renderGridModelPage());
+  }
+  if (target === "parameters") {
+    requestAnimationFrame(() => renderSystemParameters(state.snapshot));
   }
   if (target === "runtime") {
     requestAnimationFrame(() => drawRuntimeTraceChart());
@@ -488,6 +846,9 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.runtimeLogTypeFilter = "all";
   state.runtimeLogSeq = 0;
   state.lastRuntimeLogKey = "";
+  state.systemParameters = { clock_speed: 1, compute_interval_seconds: 1 };
+  state.systemParametersDirty = false;
+  state.systemParametersSaving = false;
   state.runtimeTraceHistory = [];
   state.lastRuntimeTraceKey = "";
   state.measurementTraceHistory = [];
@@ -1636,9 +1997,184 @@ async function refresh() {
     state.snapshot = snapshot;
     renderSnapshot(snapshot);
   } catch (error) {
+    console.error("模拟台快照刷新失败", error);
     $("simState").textContent = "offline";
     $("solverInfo").textContent = "连接失败";
   }
+}
+
+function latestRuntimeLog(snapshot, type) {
+  return [...(snapshot.runtime_logs || [])].reverse().find((item) => item?.type === type) || null;
+}
+
+function logDetailText(log) {
+  return Array.isArray(log?.detail) ? log.detail.join(" ") : String(log?.detail || "");
+}
+
+function matchedNumber(text, pattern) {
+  const match = pattern.exec(text || "");
+  return match ? Number(match[1]) : null;
+}
+
+function storageSocPercentFromText(text) {
+  const directSoc = matchedNumber(text, /储能SOC\s*平均\s*([-+\d.]+)%/);
+  if (Number.isFinite(directSoc)) return directSoc;
+  const values = [...String(text || "").matchAll(/ESS\.[^=，,\s]+=\s*([-+\d.]+)/g)]
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value));
+  if (!values.length) return null;
+  const average = values.reduce((total, value) => total + value, 0) / values.length;
+  return average <= 1 ? average * 100 : average;
+}
+
+function parsePowerFlowOverview(snapshot) {
+  const log = latestRuntimeLog(snapshot, "潮流计算");
+  const text = logDetailText(log);
+  const controlText = logDetailText(latestRuntimeLog(snapshot, "控制响应"));
+  const soc = storageSocPercentFromText(text);
+  return {
+    log,
+    wind: matchedNumber(text, /风力发电总功率\s*([-+\d.]+)/),
+    solar: matchedNumber(text, /光伏发电总功率\s*([-+\d.]+)/),
+    diesel: matchedNumber(text, /柴油发电总功率\s*([-+\d.]+)/),
+    load: matchedNumber(text, /负荷用电总功率\s*([-+\d.]+)/),
+    storageDischarge: matchedNumber(text, /储能发电总功率\s*([-+\d.]+)/),
+    storageCharge: matchedNumber(text, /储能充电总功率\s*([-+\d.]+)/),
+    soc: Number.isFinite(soc) ? soc : storageSocPercentFromText(controlText),
+    generation: matchedNumber(text, /电源发电总功率\s*([-+\d.]+)/),
+    consumption: matchedNumber(text, /用电及充电总功率\s*([-+\d.]+)/),
+    balance: matchedNumber(text, /功率差额\s*([-+\d.]+)/),
+  };
+}
+
+function overviewCurveBoundary(snapshot) {
+  const curves = snapshot.curves || {};
+  const weather = Array.isArray(curves.weather) ? curves.weather : [];
+  const step = Math.max(1, Number(curves.time_step_minutes) || 1);
+  const targetMinute = curves.mode === "year"
+    ? Number(snapshot.clock?.absolute_minute || 0)
+    : Number(snapshot.clock?.minute || 0);
+  const index = weather.length ? Math.round(targetMinute / step) % weather.length : 0;
+  const point = weather[index] || {};
+  const loadTotal = Object.values(curves.loads || {}).reduce((total, points) => {
+    if (!Array.isArray(points) || !points.length) return total;
+    const loadPoint = points[index % points.length] || {};
+    return total + (Number(loadPoint.p_kw ?? loadPoint.value ?? loadPoint.load_kw) || 0);
+  }, 0);
+  return { point, loadTotal, index };
+}
+
+function formatOverviewNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "--";
+  return Number(number.toFixed(2)).toString();
+}
+
+function overviewPowerText(value) {
+  return Number.isFinite(value) ? `${formatOverviewNumber(value)} kW` : "--";
+}
+
+function setOverviewText(id, value) {
+  const element = $(id);
+  if (element) element.textContent = value;
+}
+
+function renderOverviewEvents(snapshot) {
+  const container = $("commandInbox");
+  if (!container) return;
+  const logs = [...(snapshot.runtime_logs || [])].slice(-3).reverse();
+  if (logs.length) {
+    container.innerHTML = logs.map((item) => `
+      <div class="overview-event-item">
+        <time>${escapeHtml(item.sim_time || "--")}</time>
+        <strong>${escapeHtml(item.type || "运行")}</strong>
+        <span title="${escapeHtml(logDetailText(item))}">${escapeHtml(item.result || logDetailText(item) || "完成")}</span>
+      </div>
+    `).join("");
+    return;
+  }
+  container.innerHTML = '<div class="overview-event-item"><time>--</time><strong>系统</strong><span>等待启动仿真</span></div>';
+}
+
+function renderOverviewDashboard(snapshot) {
+  const clock = snapshot.clock || {};
+  const stateLabels = { running: "运行中", paused: "已暂停", stopped: "已停止" };
+  const boundary = overviewCurveBoundary(snapshot);
+  const power = parsePowerFlowOverview(snapshot);
+  const devices = snapshot.devices || [];
+  const onlineDevices = devices.filter((device) => Number(device.run_stat ?? 1) !== 0).length;
+  const totalMeasurements = Number(snapshot.summary?.scada_count || 0);
+  const validMeasurements = Number(snapshot.summary?.valid_scada_count || 0);
+  const result = snapshot.result || {};
+  const stateDot = $("overviewStateDot");
+  setOverviewText("overviewState", stateLabels[clock.state] || clock.state || "未知");
+  if (stateDot) {
+    stateDot.classList.toggle("is-running", clock.state === "running");
+    stateDot.classList.toggle("is-paused", clock.state === "paused");
+  }
+  setOverviewText("overviewModel", snapshot.model?.name || snapshot.model?.id || "--");
+  setOverviewText("overviewMode", snapshot.curves?.mode === "year" ? "年仿真" : "日仿真");
+  setOverviewText("overviewStep", `${formatOverviewNumber(clock.step_minutes || 1)} min`);
+  setOverviewText("metricScada", validMeasurements);
+  setOverviewText("overviewMeasurementTotal", totalMeasurements);
+  setOverviewText("metricCommands", snapshot.summary?.command_count || 0);
+  setOverviewText("metricAlarms", snapshot.summary?.alarm_count || 0);
+  setOverviewText("metricRefresh", new Date().toLocaleTimeString());
+  setOverviewText("overviewRefresh", `仿真时刻 ${formatSimulationClock(clock)}`);
+  setOverviewText("overviewSolverInfo", result.solver_info || "待运行");
+  const completedSteps = Number(clock.step_count || 0);
+  const processSuffix = clock.state === "running" ? " · 持续循环" : clock.state === "paused" ? " · 已暂停" : "";
+  setOverviewText("overviewProcessSummary", completedSteps > 0 ? `已完成 ${completedSteps} 步${processSuffix}` : clock.state === "running" ? "正在执行第 1 步" : "等待启动");
+  document.querySelectorAll("#overviewSimulationFlow [data-flow-step]").forEach((item, index) => {
+    const completed = Number(clock.step_count || 0) > 0;
+    item.classList.toggle("is-complete", completed);
+    item.classList.toggle("is-active", !completed && clock.state === "running" && index === 0);
+  });
+  setOverviewText(
+    "overviewFlowInput",
+    `风 ${formatOverviewNumber(boundary.point.wind_speed_mps)} m/s · 荷 ${formatOverviewNumber(boundary.loadTotal)} kW`,
+  );
+  setOverviewText("overviewFlowControl", `${snapshot.summary?.command_count || 0} 条有效指令`);
+  setOverviewText(
+    "overviewFlowConstraint",
+    Number.isFinite(power.soc) ? `储能SOC ${formatOverviewNumber(power.soc)}%` : "风光出力与储能SOC校核",
+  );
+  setOverviewText("overviewFlowSolver", result.solver_info || "等待网络求解");
+  setOverviewText("overviewFlowOutput", `${validMeasurements}/${totalMeasurements} 条有效量测`);
+  setOverviewText("overviewBoundaryTime", formatSimulationClock(clock));
+  setOverviewText("overviewWindSpeed", Number.isFinite(Number(boundary.point.wind_speed_mps)) ? `${formatOverviewNumber(boundary.point.wind_speed_mps)} m/s` : "--");
+  setOverviewText("overviewIrradiance", Number.isFinite(Number(boundary.point.solar_irradiance_w_m2)) ? `${formatOverviewNumber(boundary.point.solar_irradiance_w_m2)} W/m²` : "--");
+  setOverviewText("overviewTemperature", Number.isFinite(Number(boundary.point.air_temp_c)) ? `${formatOverviewNumber(boundary.point.air_temp_c)} ℃` : "--");
+  setOverviewText("overviewLoadBoundary", overviewPowerText(boundary.loadTotal));
+  setOverviewText("overviewOnlineDevices", `${onlineDevices}/${devices.length} 台`);
+  setOverviewText("overviewActiveCommands", `${snapshot.summary?.command_count || 0} 条`);
+  const storagePower = Number.isFinite(power.storageDischarge) && Number.isFinite(power.storageCharge)
+    ? power.storageDischarge - power.storageCharge
+    : null;
+  const storageFlow = storagePower === null ? "idle" : storagePower > 0 ? "discharge" : storagePower < 0 ? "charge" : "idle";
+  const storageNode = $("overviewStorageFlowNode");
+  if (storageNode) storageNode.dataset.storageFlow = storageFlow;
+  const storageLink = $("overviewStorageFlowLink");
+  if (storageLink) storageLink.dataset.storageFlow = storageFlow;
+  setOverviewText("overviewFlowResultTime", power.log ? `计算时刻 ${power.log.sim_time || clock.time}` : "尚无计算结果");
+  setOverviewText("overviewFlowWindPower", overviewPowerText(power.wind));
+  setOverviewText("overviewFlowWindMeta", Number.isFinite(Number(boundary.point.wind_speed_mps)) ? `风速 ${formatOverviewNumber(boundary.point.wind_speed_mps)} m/s` : "风速 --");
+  setOverviewText("overviewFlowSolarPower", overviewPowerText(power.solar));
+  setOverviewText("overviewFlowSolarMeta", Number.isFinite(Number(boundary.point.solar_irradiance_w_m2)) ? `辐照 ${formatOverviewNumber(boundary.point.solar_irradiance_w_m2)} W/m²` : "辐照 --");
+  setOverviewText("overviewFlowDieselPower", overviewPowerText(power.diesel));
+  setOverviewText("overviewFlowStoragePower", overviewPowerText(storagePower));
+  setOverviewText("overviewFlowStorageDirection", storagePower === null ? "待计算" : storagePower > 0 ? "放电" : storagePower < 0 ? "充电" : "静置");
+  setOverviewText("overviewFlowSoc", Number.isFinite(power.soc) ? `${formatOverviewNumber(power.soc)}%` : "--");
+  setOverviewText("overviewFlowLoadPower", overviewPowerText(power.load));
+  setOverviewText("overviewFlowLoadMeta", Number.isFinite(boundary.loadTotal) ? `需求 ${overviewPowerText(boundary.loadTotal)}` : "需求 --");
+  setOverviewText("overviewFlowBalance", overviewPowerText(power.balance));
+  setOverviewText("overviewMeasurementQuality", totalMeasurements ? `有效率 ${formatOverviewNumber(validMeasurements / totalMeasurements * 100)}%` : "待计算");
+  setOverviewText("overviewSolverDetail", result.solver_info || "--");
+  setOverviewText("overviewUpdatedMeasurements", Number.isFinite(Number(result.updated)) ? `${result.updated} 条` : "--");
+  setOverviewText("overviewMissingMeasurements", Number.isFinite(Number(result.missing)) ? `${result.missing} 条` : "--");
+  setOverviewText("overviewOverlayUpdates", Number.isFinite(Number(result.overlay_updates)) ? `${result.overlay_updates} 条` : "--");
+  setOverviewText("overviewCommandCount", `${snapshot.summary?.command_count || 0} 条控制指令`);
+  renderOverviewEvents(snapshot);
 }
 
 function renderSnapshot(snapshot) {
@@ -1647,6 +2183,7 @@ function renderSnapshot(snapshot) {
   }
   renderModelSelector();
   renderClock(snapshot.clock);
+  renderSystemParameters(snapshot);
   const runId = Number(snapshot.clock?.run_id ?? 0);
   if (state.traceRunId !== null && runId !== state.traceRunId) {
     state.runtimeTraceHistory = [];
@@ -1658,14 +2195,8 @@ function renderSnapshot(snapshot) {
   if (state.curvesLoadedModelId !== state.activeModelId) {
     loadCurvesFromSnapshot(snapshot.curves, state.activeModelId);
   }
-  $("metricScada").textContent = snapshot.summary.scada_count;
-  $("metricCommands").textContent = snapshot.summary.command_count;
-  $("metricAlarms").textContent = snapshot.summary.alarm_count;
-  $("metricRefresh").textContent = new Date().toLocaleTimeString();
   $("solverInfo").textContent = snapshot.result.solver_info || "待运行";
-  $("overviewSolverInfo").textContent = snapshot.result.solver_info || "待运行";
-  $("overviewRefresh").textContent = snapshot.clock.time;
-  $("overviewCommandCount").textContent = snapshot.summary.command_count;
+  renderOverviewDashboard(snapshot);
   appendRuntimeLog(snapshot);
   appendRuntimeTrace(snapshot);
   appendMeasurementTrace(snapshot);
@@ -1677,7 +2208,6 @@ function renderSnapshot(snapshot) {
     state.measurementFaults = [...(snapshot.settings?.measurement_faults || [])];
     state.settingsLoaded = true;
   }
-  renderCommands(snapshot.commands.history || []);
   renderRuntimeMonitor();
   renderCurveEditor();
   renderFaults();
@@ -1686,16 +2216,6 @@ function renderSnapshot(snapshot) {
     ...state.modes,
   ]);
   renderModes();
-}
-
-function renderCommands(history) {
-  const box = $("commandInbox");
-  box.innerHTML = history.slice(-8).reverse().map((item) => `
-    <div class="log-item">
-      <strong>${item.source || "student"} · ${item.time || ""}</strong>
-      <span>投退 ${item.accepted?.run_status || 0}，设值 ${item.accepted?.set_values || 0}</span>
-    </div>
-  `).join("") || '<div class="log-item"><span>暂无命令</span></div>';
 }
 
 function appendRuntimeLog(snapshot) {
@@ -2326,8 +2846,57 @@ function formatRuntimeSignal(value, unit) {
   return formatted === "--" || !unit ? formatted : `${formatted} ${unit}`;
 }
 
+function commandRefreshTimeFromMinute(minute) {
+  const numericMinute = numberOrNull(minute);
+  if (numericMinute === null) return "--";
+  return formatSimulationClock({
+    time: runtimeFormatClockMinute(numericMinute),
+    minute: numericMinute,
+    absolute_minute: numericMinute,
+  });
+}
+
+function activeCommandHistory(snapshot = state.snapshot || {}) {
+  const currentMinute = Number(snapshot.clock?.absolute_minute ?? snapshot.clock?.minute ?? 0) || 0;
+  return [...(snapshot.commands?.history || [])].filter((entry) => {
+    if (!entry?.eligible_source) return false;
+    const issued = numberOrNull(entry.issued_absolute_minute);
+    const expires = numberOrNull(entry.expires_at_absolute_minute);
+    if (issued === null || expires === null) return false;
+    const accepted = entry.accepted || {};
+    const acceptedCount = Number(accepted.run_status || 0) + Number(accepted.set_values || 0);
+    return acceptedCount > 0 && issued <= currentMinute && currentMinute < expires;
+  });
+}
+
+function runtimeCommandRefreshTime(dev, commandType, setType = "", snapshot = state.snapshot || {}) {
+  const history = activeCommandHistory(snapshot).reverse();
+  for (const entry of history) {
+    const normalized = entry.normalized || {};
+    if (commandType === "set_value") {
+      const items = normalized.set_values || entry.payload?.set_values || [];
+      const match = items.find((item) => (
+        item.dev_type === dev.dev_type
+        && item.dev_name === dev.dev_name
+        && item.set_type === setType
+      ));
+      if (match) return commandRefreshTimeFromMinute(entry.issued_absolute_minute);
+      continue;
+    }
+    const items = normalized.run_status || entry.payload?.run_status || [];
+    const match = items.find((item) => {
+      if (item.dev_type !== dev.dev_type || item.dev_name !== dev.dev_name) return false;
+      if (commandType === "status") return Object.prototype.hasOwnProperty.call(item, "status");
+      return item.run_stat !== undefined && item.run_stat !== "";
+    });
+    if (match) return commandRefreshTimeFromMinute(entry.issued_absolute_minute);
+  }
+  return "--";
+}
+
 function runtimeRemoteControlRows(devices) {
   return devices.flatMap((dev) => {
+    const runStatTime = runtimeCommandRefreshTime(dev, "run_stat");
     const rows = [{
       category: "遥控指令",
       device: dev,
@@ -2336,8 +2905,10 @@ function runtimeRemoteControlRows(devices) {
       command_text: Number(dev.run_stat ?? 0) !== 0 ? "投入" : "退出",
       real_text: Number(dev.run_stat ?? 0) !== 0 ? "投入" : "退出",
       scada_text: "--",
+      refresh_time: runStatTime,
     }];
     if (/switch|breaker/i.test(String(dev.dev_type || ""))) {
+      const statusTime = runtimeCommandRefreshTime(dev, "status");
       rows.push({
         category: "遥控指令",
         device: dev,
@@ -2346,6 +2917,7 @@ function runtimeRemoteControlRows(devices) {
         command_text: Number(dev.status ?? 0) !== 0 ? "闭合" : "断开",
         real_text: Number(dev.status ?? 0) !== 0 ? "闭合" : "断开",
         scada_text: "--",
+        refresh_time: statusTime,
       });
     }
     return rows;
@@ -2358,6 +2930,7 @@ function runtimeRemoteAdjustmentRows(devices, measurements = state.snapshot?.mea
     .map(([key, value]) => {
       const meta = runtimeMetaFromSetKey(key, Number(value));
       const pair = runtimeMeasurementPair(dev, meta, measurements);
+      const commandTime = runtimeCommandRefreshTime(dev, "set_value", key);
       return {
         category: "遥调指令",
         device: dev,
@@ -2366,6 +2939,7 @@ function runtimeRemoteAdjustmentRows(devices, measurements = state.snapshot?.mea
         command_text: formatRuntimeSignal(meta.value, meta.unit),
         real_text: formatRuntimeSignal(pair.real, meta.unit),
         scada_text: formatRuntimeSignal(pair.scada, meta.unit),
+        refresh_time: commandTime,
       };
     }));
 }
@@ -2378,6 +2952,7 @@ function renderRuntimeCommandRows(rows) {
       <td>${escapeHtml(row.device.mode || "--")}</td>
       <td>${escapeHtml(row.command)}<small class="command-set-type">${escapeHtml(row.set_type)}</small></td>
       <td class="numeric-cell">${escapeHtml(row.command_text)}</td>
+      <td class="mono-cell">${escapeHtml(row.refresh_time || "--")}</td>
       <td class="numeric-cell">${escapeHtml(row.real_text)}</td>
       <td class="numeric-cell">${escapeHtml(row.scada_text)}</td>
     </tr>
@@ -2395,6 +2970,7 @@ function renderRuntimeCommandTable(rows, emptyText) {
           <th>模式</th>
           <th>指令项</th>
           <th>控制指令</th>
+          <th>指令刷新时刻</th>
           <th>实时值</th>
           <th>量测值</th>
         </tr>
@@ -3750,9 +4326,33 @@ async function pushSettings() {
 }
 
 document.querySelectorAll("[data-clock]").forEach((button) => {
-  button.addEventListener("click", () => controlClock(button.dataset.clock));
+  button.addEventListener("click", () => handleClockAction(button.dataset.clock));
 });
 $("exportDefinitionsButton").addEventListener("click", exportDefinitionsArchive);
+$("importDefinitionsButton").addEventListener("click", () => $("importDefinitionsInput").click());
+$("importDefinitionsInput").addEventListener("change", (event) => {
+  const file = event.target.files?.[0];
+  if (file) openImportModelDialog(file);
+});
+$("closeStartSimulationDialog").addEventListener("click", closeStartSimulationDialog);
+$("cancelStartSimulation").addEventListener("click", closeStartSimulationDialog);
+$("startSimulationDialog").addEventListener("click", (event) => {
+  if (event.target.id === "startSimulationDialog") closeStartSimulationDialog();
+});
+$("startSimulationForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  startSimulationFromDialog();
+});
+$("closeImportModelDialog").addEventListener("click", closeImportModelDialog);
+$("cancelImportModel").addEventListener("click", closeImportModelDialog);
+$("importModelDialog").addEventListener("click", (event) => {
+  if (event.target.id === "importModelDialog") closeImportModelDialog();
+});
+$("importModelForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  importDefinitionModel();
+});
+$("importModelName").addEventListener("input", () => validateImportModelName());
 $("cloneModelButton").addEventListener("click", openCloneModelDialog);
 $("closeCloneModelDialog").addEventListener("click", closeCloneModelDialog);
 $("cancelCloneModel").addEventListener("click", closeCloneModelDialog);
@@ -3765,6 +4365,14 @@ $("cloneModelForm").addEventListener("submit", (event) => {
 });
 $("cloneModelName").addEventListener("input", () => validateCloneModelName());
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("startSimulationDialog").hidden) {
+    closeStartSimulationDialog();
+    return;
+  }
+  if (event.key === "Escape" && !$("importModelDialog").hidden) {
+    closeImportModelDialog();
+    return;
+  }
   if (event.key === "Escape" && !$("cloneModelDialog").hidden) {
     closeCloneModelDialog();
   }
@@ -3807,6 +4415,12 @@ document.querySelectorAll("[data-fault-tab]").forEach((button) => {
   button.addEventListener("click", () => setFaultTab(button.dataset.faultTab));
 });
 $("pushModes").addEventListener("click", pushSettings);
+$("saveSystemParameters").addEventListener("click", saveSystemParameters);
+$("resetSystemParameters").addEventListener("click", resetSystemParameterForm);
+["parameterClockSpeed", "parameterComputeInterval"].forEach((id) => {
+  const element = $(id);
+  if (element) element.addEventListener("input", markSystemParametersDirty);
+});
 document.addEventListener("click", (event) => {
   const runtimeCommandTab = event.target.closest("[data-runtime-command-tab]");
   if (runtimeCommandTab) {

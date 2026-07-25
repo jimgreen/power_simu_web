@@ -54,7 +54,7 @@ ROLE_MODEL_DIRS = {
     "simulator": ("models", "simulator"),
     "trainee": ("models", "trainee"),
 }
-CONTROL_DEFINITION_BLOCKS = {"RunStat", "CbOpenStat", "SetValue"}
+CONTROL_DEFINITION_BLOCKS = {"RunStat", "CbOpenStat", "SetValue", "StorageSoc"}
 
 
 def _clock_int_value(value: Any, default: int = 1) -> int:
@@ -111,7 +111,7 @@ def _book_from_text(text: str) -> EBook:
     return book
 
 
-def _merge_control_definition(stat_path: Path, control_text: str) -> None:
+def _merge_control_definition(stat_path: Path, control_text: str, meas_text: str = "") -> None:
     stat_book = EBook(stat_path) if stat_path.exists() else EBook({})
     control_book = _book_from_text(control_text)
     found = False
@@ -122,6 +122,22 @@ def _merge_control_definition(stat_path: Path, control_text: str) -> None:
             found = True
     if not found:
         raise ValueError("control.e must contain at least one control block")
+    if control_book.data.get("StorageSoc") is None:
+        stat_book.data.pop("StorageSoc", None)
+        if meas_text:
+            meas_book = _book_from_text(meas_text)
+            measurement_block = meas_book.data.get("Measurement")
+            storage_rows = []
+            for row in getattr(measurement_block, "data", []):
+                if str(row.get("dev_type", "")) != "ESS" or str(row.get("meas_type", "")).upper() != "SOC":
+                    continue
+                storage_rows.append((str(row.get("dev_name", "")), row.get("value", "0.5")))
+            if storage_rows:
+                storage_block = EBlock("StorageSoc")
+                storage_block.header_list = ["dev_type", "idx", "name", "soc_curr"]
+                for idx, (name, value) in enumerate(storage_rows, start=1):
+                    storage_block.AddRow(["ESS", str(idx), name, str(value)])
+                stat_book.data["StorageSoc"] = storage_block
     simu_loop.write_ebook_aligned(stat_book, stat_path)
 
 
@@ -325,12 +341,17 @@ def import_definition_archive(service: PolarMicrogridSimulator, data: bytes) -> 
         (root / "meas.e").write_text(meas_text, encoding="utf-8")
         (root / "control.e").write_text(control_text, encoding="utf-8")
         (root / "curves.e").write_text(curves_text, encoding="utf-8")
-        _merge_control_definition(root / "stat.e", control_text)
+        _merge_control_definition(root / "stat.e", control_text, meas_text)
         _write_json_file(root / "curves.json", curves_payload)
         written_files.extend(str(root / name) for name in ("model.e", "meas.e", "control.e", "curves.e", "stat.e", "curves.json"))
 
     service.curves = dict(curves_payload)
-    service.latest_measurements = {"real": [], "scada": [], "definitions": []}
+    service.latest_result = {}
+    service.latest_measurements = {
+        "real": [],
+        "scada": [],
+        "definitions": service._read_measurement_file(service.files["meas"]),
+    }
     return {
         "written": len(written_files),
         "files": written_files,
@@ -338,6 +359,30 @@ def import_definition_archive(service: PolarMicrogridSimulator, data: bytes) -> 
         "curve_points": curves_payload.get("point_count"),
         "load_count": len(curves_payload.get("loads", {})),
     }
+
+
+def import_definition_model(
+    manager: MultiModelSimulator,
+    source_model_id: Optional[str],
+    new_model_name: Any,
+    data: bytes,
+) -> Mapping[str, Any]:
+    manager.validate_new_model_name(new_model_name)
+    try:
+        with zipfile.ZipFile(BytesIO(data), mode="r") as archive:
+            curves_text = _read_zip_text(archive, "curves.e")
+            _read_zip_text(archive, "model.e")
+            _read_zip_text(archive, "meas.e")
+            _read_zip_text(archive, "control.e")
+        assert curves_text is not None
+        _curves_from_definition_text(curves_text)
+    except zipfile.BadZipFile as exc:
+        raise ValueError("Invalid definition archive") from exc
+
+    model_info = manager.clone_model(source_model_id, new_model_name)
+    imported_service = manager.service_for(str(model_info["id"]))
+    imported = import_definition_archive(imported_service, data)
+    return {**model_info, "imported": imported}
 
 
 def make_definition_archive(service: PolarMicrogridSimulator) -> tuple[str, bytes]:
@@ -472,7 +517,15 @@ def make_http_server(
             elif path == "/api/settings":
                 self._send_json(target.local_settings)
             elif path == "/api/config":
-                self._send_json({"role": role, "sim_url": sim_url, "poll_ms": 2000, **self._model_catalog()})
+                self._send_json(
+                    {
+                        "role": role,
+                        "sim_url": sim_url,
+                        "poll_ms": 2000,
+                        "system_parameters": target.system_parameters(),
+                        **self._model_catalog(),
+                    }
+                )
             elif path == "/api/export-definitions":
                 parsed = urlparse(self.path)
                 response_format = (parse_qs(parsed.query).get("format") or ["zip"])[0]
@@ -506,6 +559,22 @@ def make_http_server(
                     raise JsonApiError(400, "Definition archive data is required")
                 try:
                     archive_data = base64.b64decode(data_base64, validate=True)
+                    if payload.get("create_model"):
+                        if not hasattr(service, "clone_model"):
+                            raise ValueError("Current simulator does not support multiple model folders")
+                        model_name = str(payload.get("name", payload.get("model_name", ""))).strip()
+                        if not model_name:
+                            raise ValueError("New model name is required")
+                        model = import_definition_model(
+                            service,  # type: ignore[arg-type]
+                            self._request_model_id(payload),
+                            model_name,
+                            archive_data,
+                        )
+                        catalog = dict(self._model_catalog())
+                        catalog["active_model_id"] = model["id"]
+                        self._send_json({"model": model, "imported": model["imported"], **catalog})
+                        return
                     imported = import_definition_archive(self._target_service(payload), archive_data)
                 except (ValueError, OSError) as exc:
                     raise JsonApiError(400, str(exc)) from exc
@@ -517,6 +586,8 @@ def make_http_server(
                 self._send_json(target.apply_student_commands(payload, source=str(payload.get("source", ""))))
             elif path == "/api/clock":
                 self._send_json(target.control_clock(payload))
+            elif path == "/api/config":
+                self._send_json(target.set_system_parameters(payload))
             elif path == "/api/step":
                 self._send_json(target.step())
             elif path == "/api/curves":
@@ -639,7 +710,8 @@ def _advance_clock_if_due(service: PolarMicrogridSimulator, last_step: float) ->
     now = time.monotonic()
     if clock["state"] != "running":
         return now
-    if now - last_step < CLOCK_BASE_INTERVAL_SECONDS:
+    interval_seconds = max(0.1, float(getattr(service, "compute_interval_seconds", CLOCK_BASE_INTERVAL_SECONDS) or CLOCK_BASE_INTERVAL_SECONDS))
+    if now - last_step < interval_seconds:
         return last_step
     speed_minutes = _clock_int_value(clock.get("speed"), 1)
     step_minutes = _clock_int_value(clock.get("step_minutes"), 1)
@@ -710,6 +782,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--no-worker", action="store_true", help="Do not start automatic clock worker.")
     parser.add_argument("--noise-std", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--compute-interval-seconds", type=float, default=1.0)
     return parser.parse_args(argv)
 
 
@@ -724,6 +797,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         runtime_dir=runtime_dir,
         noise_std=args.noise_std,
         random_seed=args.seed,
+        compute_interval_seconds=args.compute_interval_seconds,
         models_dir=models_dir,
     )
     server = make_http_server(

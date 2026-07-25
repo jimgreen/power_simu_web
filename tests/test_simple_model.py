@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -20,7 +23,7 @@ class SimpleSimulatorModelTest(unittest.TestCase):
         block = book.data.get(block_name)
         return [] if block is None else list(block.data)
 
-    def test_service_imports_and_maps_ess_controls_to_dcdc(self):
+    def test_service_preserves_ess_controls_as_source_device_commands(self):
         from simu.service import PolarMicrogridSimulator
 
         simulator = object.__new__(PolarMicrogridSimulator)
@@ -39,8 +42,8 @@ class SimpleSimulatorModelTest(unittest.TestCase):
             expanded,
             [
                 {
-                    "dev_type": "DCDCConverter",
-                    "dev_name": "ess01_dcdc",
+                    "dev_type": "ESS",
+                    "dev_name": "ess01",
                     "set_type": "p_set",
                     "set_value": 12.5,
                 }
@@ -51,8 +54,8 @@ class SimpleSimulatorModelTest(unittest.TestCase):
         model = self._book("model.e")
         device = self._book("device.e")
 
-        self.assertEqual([row["name"] for row in self._rows(device, "wind_generator")], ["wt01_rect"])
-        self.assertEqual([row["name"] for row in self._rows(device, "pv_generator")], ["pv01_dcdc"])
+        self.assertEqual([row["name"] for row in self._rows(device, "wind_generator")], ["wt01_10kw"])
+        self.assertEqual([row["name"] for row in self._rows(device, "pv_generator")], ["pv01_vsrc"])
         self.assertEqual([row["name"] for row in self._rows(device, "estorage")], ["ess01"])
         self.assertEqual([row["name"] for row in self._rows(device, "diesel_generator")], ["diesel_300kw"])
         self.assertEqual([row["name"] for row in self._rows(device, "load_curve_96")], ["load_ac_1"])
@@ -77,16 +80,50 @@ class SimpleSimulatorModelTest(unittest.TestCase):
         }
         self.assertEqual(ess_meas_types, {"P", "Q", "V", "I", "SOC"})
 
+        weather_meas_types = {
+            str(row["meas_type"]).upper()
+            for row in self._rows(meas, "Measurement")
+            if row["dev_type"] == "Environment" and row["dev_name"] == "weather"
+        }
+        self.assertEqual(
+            weather_meas_types,
+            {"WIND_SPEED", "AIR_TEMP", "HUMIDITY", "AIR_PRESSURE", "SOLAR_IRRADIANCE"},
+        )
+
         soc_rows = self._rows(stat, "StorageSoc")
         self.assertEqual([(row["dev_type"], row["name"]) for row in soc_rows], [("ESS", "ess01")])
 
-        dcdc_set_values = {
+        ess_set_values = {
             row["set_type"]: row["set_value"]
             for row in self._rows(stat, "SetValue")
-            if row["dev_type"] == "DCDCConverter" and row["dev_name"] == "ess01_dcdc"
+            if row["dev_type"] == "ESS" and row["dev_name"] == "ess01"
         }
-        self.assertIn("p_set", dcdc_set_values)
-        self.assertIn("v_set", dcdc_set_values)
+        self.assertIn("p_set", ess_set_values)
+        self.assertIn("v_set", ess_set_values)
+
+    def test_service_exposes_storage_device_from_device_parameters_without_soc_block(self):
+        from simu.service import PolarMicrogridSimulator
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source_dir = Path(temporary) / "source"
+            runtime_dir = Path(temporary) / "runtime"
+            shutil.copytree(SIMPLE_SOURCE, source_dir)
+            stat_path = source_dir / "stat.e"
+            stat_text = stat_path.read_text(encoding="utf-8")
+            stat_path.write_text(
+                re.sub(r"\n<StorageSoc>.*?</StorageSoc>\s*", "\n", stat_text, flags=re.DOTALL),
+                encoding="utf-8",
+            )
+
+            service = PolarMicrogridSimulator(source_dir, runtime_dir, model_id="simple")
+            storage_devices = [
+                device
+                for device in service.devices()
+                if device["dev_type"] == "ESS" and device["dev_name"] == "ess01"
+            ]
+
+            self.assertEqual(len(storage_devices), 1)
+            self.assertIn("p_set", storage_devices[0]["set_types"])
 
     def test_dc_generators_have_realtime_pvi_measurements(self):
         model = self._book("model.e")

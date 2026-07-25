@@ -311,6 +311,19 @@ def _model_row(model_book: EBook, dev_type: str, name: str) -> Optional[dict]:
     return _rows_by_name(block).get(str(name))
 
 
+def _storage_source_name(storage_name: str) -> str:
+    return f"{storage_name}_vsrc"
+
+
+def _source_model_row(model_book: EBook, dev_type: str, name: str) -> Optional[dict]:
+    if dev_type in ("ESS", "Storage"):
+        return (
+            _model_row(model_book, "DCGenerator", _storage_source_name(name))
+            or _model_row(model_book, "DCGenerator", name)
+        )
+    return _model_row(model_book, dev_type, name)
+
+
 def _stat_dev_name(row: dict) -> str:
     return str(row.get("dev_name", row.get("name", "")))
 
@@ -346,12 +359,14 @@ def _set_value_target_column(dev_type: str, set_type: str) -> str:
         }.get(set_type, set_type)
     if dev_type == "ACLoad":
         return {"p_set": "pv0", "q_set": "qv0", "pv0": "pv0", "qv0": "qv0"}.get(set_type, set_type)
+    if dev_type in ("ESS", "Storage"):
+        return {"p_set": "p_set", "v_set": "v_set", "i_set": "i_set"}.get(set_type, set_type)
     return set_type
 
 
 def _apply_set_value_row(model_book: EBook, row: dict) -> int:
     dev_type = str(row.get("dev_type", ""))
-    target = _model_row(model_book, dev_type, _stat_dev_name(row))
+    target = _source_model_row(model_book, dev_type, _stat_dev_name(row))
     if target is None:
         return 0
     set_type = str(row.get("set_type", ""))
@@ -384,14 +399,14 @@ def apply_dev_stat_file(model_book: EBook, dev_stat_file: Path) -> int:
     block = stat_book.data.get("RunStat")
     if block is not None:
         for row in block.data:
-            target = _model_row(model_book, row.get("dev_type", ""), _stat_dev_name(row))
+            target = _source_model_row(model_book, str(row.get("dev_type", "")), _stat_dev_name(row))
             if target is not None and row.get("run_stat", "") != "":
                 changed += _set_row_value(target, "run_stat", row.get("run_stat", ""))
 
     block = stat_book.data.get("DeviceRunStatus")
     if block is not None:
         for row in block.data:
-            target = _model_row(model_book, row.get("dev_type", ""), _stat_dev_name(row))
+            target = _source_model_row(model_book, str(row.get("dev_type", "")), _stat_dev_name(row))
             if target is not None and row.get("run_stat", "") != "":
                 changed += _set_row_value(target, "run_stat", row.get("run_stat", ""))
 
@@ -444,11 +459,11 @@ def apply_dev_stat_file(model_book: EBook, dev_stat_file: Path) -> int:
     if block is not None:
         for row in block.data:
             storage_name = str(row.get("name", row.get("dev_name", "")))
-            target = _model_row(model_book, "DCDCConverter", f"{storage_name}_dcdc")
+            target = _model_row(model_book, "DCGenerator", _storage_source_name(storage_name))
             if target is not None:
                 run_stat = row.get("run_stat", "")
                 if run_stat == "":
-                    run_stat = run_stats.get(("ESS", storage_name), run_stats.get(("DCDCConverter", f"{storage_name}_dcdc"), ""))
+                    run_stat = run_stats.get(("ESS", storage_name), run_stats.get(("DCGenerator", _storage_source_name(storage_name)), ""))
                 if run_stat != "":
                     changed += _set_row_value(target, "run_stat", run_stat)
     return changed
@@ -709,7 +724,7 @@ def apply_wind_limits(
         model_book,
         dev_define,
         "wind_generator",
-        ("DCACConverter", "ACGenerator"),
+        ("ACGenerator",),
         ("wt", "wind"),
     )
     changed = 0
@@ -738,7 +753,7 @@ def apply_pv_limits(
         model_book,
         dev_define,
         "pv_generator",
-        ("DCDCConverter", "DCGenerator"),
+        ("DCGenerator",),
         ("pv", "solar"),
     )
     changed = 0
@@ -784,7 +799,10 @@ def _storage_soc_by_name(dev_stat_file: Path) -> Tuple[Dict[str, dict], List[dic
     for row in _sorted_rows(_storage_soc_rows(stat_book)):
         item = dict(row)
         storage_name = str(item.get("name", item.get("dev_name", "")))
-        value = run_stat.get(("ESS", storage_name), run_stat.get(("DCDCConverter", f"{storage_name}_dcdc")))
+        value = run_stat.get(
+            ("ESS", storage_name),
+            run_stat.get(("DCGenerator", _storage_source_name(storage_name))),
+        )
         if value is not None and item.get("run_stat", "") == "":
             item["run_stat"] = value
         rows.append(item)
@@ -807,12 +825,12 @@ def apply_storage_constraints(
     dev_define: EBook,
     period_seconds: float = DEFAULT_PERIOD_SECONDS,
 ) -> int:
-    rows = _target_rows(model_book, "DCDCConverter", prefix="ess")
+    rows = _target_rows(model_book, "DCGenerator", prefix="ess")
     status_by_name, status_rows = _storage_soc_by_name(dev_stat_file)
     changed = 0
     period_hours = max(0.0, float(period_seconds)) / 3600.0
     for pos, row in enumerate(rows):
-        storage_name = str(row.get("name", "")).removesuffix("_dcdc")
+        storage_name = str(row.get("name", "")).removesuffix("_vsrc")
         status = status_by_name.get(storage_name)
         if status is None and pos < len(status_rows):
             status = status_rows[pos]
@@ -857,27 +875,27 @@ def apply_dc_export_limits(
         model_book,
         dev_define,
         "wind_generator",
-        ("DCACConverter", "ACGenerator"),
+        ("ACGenerator",),
         ("wt", "wind"),
     )
     for table_name, row, _define, _pos in wind_rows:
-        if table_name != "DCACConverter" or not _is_running_row(row):
+        if table_name != "ACGenerator" or not _is_running_row(row):
             continue
-        source_power += max(0.0, _safe_float(row.get("p_ac_set", 0.0), 0.0) or 0.0)
+        source_power += max(0.0, _safe_float(row.get("p_set", 0.0), 0.0) or 0.0)
 
     pv_rows = _renewable_target_rows(
         model_book,
         dev_define,
         "pv_generator",
-        ("DCDCConverter", "DCGenerator"),
+        ("DCGenerator",),
         ("pv", "solar"),
     )
     for table_name, row, _define, _pos in pv_rows:
-        if table_name != "DCDCConverter" or not _is_running_row(row):
+        if table_name != "DCGenerator" or not _is_running_row(row):
             continue
         source_power += max(0.0, _safe_float(row.get("p_set", 0.0), 0.0) or 0.0)
 
-    for row in _target_rows(model_book, "DCDCConverter", prefix="ess"):
+    for row in _target_rows(model_book, "DCGenerator", prefix="ess"):
         if not _is_running_row(row):
             continue
         source_power += max(0.0, _safe_float(row.get("p_set", 0.0), 0.0) or 0.0)
@@ -939,18 +957,18 @@ def apply_weather_file(model_book: EBook, weather_file: Path, dev_define_file: O
 
     if "wind_speed_mps" in values:
         wind_kw = format_number(_wind_power_kw(values["wind_speed_mps"]))
-        block = model_book.data.get("DCACConverter")
+        block = model_book.data.get("ACGenerator")
         if block is not None:
             for row in block.data:
-                if str(row.get("name", "")).startswith("wt"):
-                    changed += _set_row_value(row, "p_ac_set", wind_kw)
+                if str(row.get("name", "")).lower().startswith(("wt", "wind")):
+                    changed += _set_row_value(row, "p_set", wind_kw)
 
     if "solar_irradiance_w_m2" in values:
         scale = max(0.0, min(1.0, values["solar_irradiance_w_m2"] / 1000.0))
-        block = model_book.data.get("DCDCConverter")
+        block = model_book.data.get("DCGenerator")
         if block is not None:
             for row in block.data:
-                if str(row.get("name", "")).startswith("pv"):
+                if str(row.get("name", "")).lower().startswith(("pv", "solar")):
                     try:
                         rated = float(row.get("p_set", 0.0))
                     except (TypeError, ValueError):
@@ -1021,7 +1039,7 @@ def apply_yt_ctrl_file(model_book: EBook, yt_ctrl_file: Path) -> int:
         for row in block.data:
             if table_name in ("StorageSoc", "StorageStatus"):
                 ess_name = str(row.get("name", ""))
-                target = _model_row(model_book, "DCDCConverter", f"{ess_name}_dcdc")
+                target = _model_row(model_book, "DCGenerator", _storage_source_name(ess_name))
                 if target is not None and row.get("p_set", "") != "":
                     changed += _set_row_value(target, "p_set", row["p_set"])
             else:
@@ -1043,13 +1061,13 @@ def update_storage_soc(
     block = _storage_soc_block(stat_book)
     if block is None:
         return 0
-    dcdc = model_book.data.get("DCDCConverter")
-    dcdc_by_name = _rows_by_name(dcdc) if dcdc is not None else {}
+    dc_generator = model_book.data.get("DCGenerator")
+    dc_generator_by_name = _rows_by_name(dc_generator) if dc_generator is not None else {}
     dev_define = _read_optional_book(dev_define_file)
     changed = 0
     for pos, row in enumerate(_sorted_rows(block.data)):
         ess_name = str(row.get("name", ""))
-        source = dcdc_by_name.get(f"{ess_name}_dcdc")
+        source = dc_generator_by_name.get(_storage_source_name(ess_name)) or dc_generator_by_name.get(ess_name)
         if source is None:
             continue
         try:
@@ -1226,15 +1244,15 @@ def _measurement_value(snapshot, row: Sequence[str], storage_soc: Optional[Dict[
     if dev_type in ("ESS", "Storage"):
         if meas_type == "SOC":
             return None if storage_soc is None else storage_soc.get(dev_name)
-        dcdc_name = f"{dev_name}_dcdc"
+        source_name = _storage_source_name(dev_name)
         if meas_type == "P":
-            return snapshot.value("DCDCConverter", dcdc_name, "P_FROM")
+            return snapshot.value("DCGenerator", source_name, "P_GEN")
         if meas_type == "Q":
             return 0.0
         if meas_type == "V":
-            return snapshot.value("DCDCConverter", dcdc_name, "V_FROM")
+            return snapshot.value("DCGenerator", source_name, "V_GEN")
         if meas_type == "I":
-            return snapshot.value("DCDCConverter", dcdc_name, "I_FROM")
+            return snapshot.value("DCGenerator", source_name, "I_GEN")
     if dev_type == "ACBreak":
         dev = snapshot.ac_devices.get("ACBreak", {}).get(dev_name)
         return None if dev is None else snapshot._ac_zero_value(dev, meas_type)

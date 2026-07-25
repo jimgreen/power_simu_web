@@ -55,6 +55,10 @@
 # ACLoad         load_ac_1     p_set     90
 # ACLoad         load_ac_1     q_set     30
 </SetValue>
+<StorageSoc>
+@ dev_type  idx  name   soc_curr
+# ESS       1    ess01  0.55
+</StorageSoc>
 <CbOpenStat>
 @ dev_type  dev_name  status
 </CbOpenStat>

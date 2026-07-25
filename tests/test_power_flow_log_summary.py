@@ -29,6 +29,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
                     {"dev_type": "DCACConverter", "dev_name": "wt01_rect", "meas_type": "P_AC", "value": 8.0},
                     {"dev_type": "ACGenerator", "dev_name": "wt01_10kw", "meas_type": "P_GEN", "value": 8.0},
                     {"dev_type": "DCDCConverter", "dev_name": "pv01_dcdc", "meas_type": "P_TO", "value": 20.0},
+                    {"dev_type": "DCGenerator", "dev_name": "pv01_vsrc", "meas_type": "P_GEN", "value": 20.0},
                     {"dev_type": "ACGenerator", "dev_name": "diesel_300kw", "meas_type": "P_GEN", "value": 30.0},
                     {"dev_type": "ACLoad", "dev_name": "load_ac_1", "meas_type": "P_LOAD", "value": 90.0},
                     {"dev_type": "ESS", "dev_name": "ess01", "meas_type": "P", "value": -5.0},

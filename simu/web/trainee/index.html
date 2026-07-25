@@ -18,14 +18,9 @@
         </div>
 
         <div class="model-toolbar">
-          <label class="model-switcher">显示模型
-            <select id="modelSelector">
-              <option value="">默认模型</option>
-            </select>
-            <span id="activeModelName">默认模型</span>
-          </label>
           <input id="definitionArchiveInput" type="file" accept=".zip,application/zip" hidden />
           <button id="importDefinitionsButton" class="definition-import-button" type="button">导入定义</button>
+          <span id="activeModelName" class="active-model-name">默认模型</span>
           <button id="traineeRunToggle" class="receive-toggle-button" type="button">启动接收</button>
         </div>
 
@@ -35,7 +30,6 @@
             <strong id="simTime">00:00:00</strong>
             <small id="simSpeed">x1</small>
           </div>
-          <button id="sendCommands" class="primary" type="button">发送指令</button>
         </div>
       </header>
 
@@ -51,67 +45,129 @@
 
       <main class="page-main">
         <section class="page-section is-active" data-page="overview">
-          <div class="overview-grid">
-            <section class="panel">
-              <div class="panel-head">
-                <h2>运行总览</h2>
-                <span id="overviewRefresh">--</span>
+          <div class="overview-dashboard trainee-overview-dashboard">
+            <section class="panel overview-status-panel">
+              <div class="overview-status-primary">
+                <span class="overview-state-dot" id="overviewReceiveDot"></span>
+                <div><small>接收状态</small><strong id="receiveStateText">本地待命</strong></div>
               </div>
-              <dl class="metric-grid">
+              <dl class="overview-status-metrics trainee-status-metrics">
+                <div><dt>数据源</dt><dd id="teacherSourceText">--</dd></div>
                 <div><dt>量测</dt><dd id="measureCount">0</dd></div>
                 <div><dt>可用</dt><dd id="validCount">0</dd></div>
                 <div><dt>待发</dt><dd id="pendingCount">0</dd></div>
-                <div><dt>状态</dt><dd id="commandState">待命</dd></div>
+                <div><dt>控制状态</dt><dd id="commandState">待命</dd></div>
               </dl>
             </section>
 
-            <section class="panel overview-wide">
-              <div class="panel-head">
-                <h2>交直流混联系统</h2>
-                <span id="topologyState">在线</span>
-              </div>
-              <svg class="one-line" viewBox="0 0 900 260" role="img" aria-label="交直流微电网单线图">
-                <path class="bus ac" d="M70 90H440"></path>
-                <path class="bus dc" d="M520 90H830"></path>
-                <path class="link" d="M440 90 C470 70,490 70,520 90"></path>
-                <g class="node online" transform="translate(95 90)"><circle r="18"></circle><text y="46">柴发</text></g>
-                <g class="node online" transform="translate(225 90)"><circle r="18"></circle><text y="46">负荷</text></g>
-                <g class="node online" transform="translate(355 90)"><circle r="18"></circle><text y="46">AC母线</text></g>
-                <g class="node online" transform="translate(580 90)"><rect x="-20" y="-20" width="40" height="40"></rect><text y="50">DCAC</text></g>
-                <g class="node online" transform="translate(700 90)"><rect x="-20" y="-20" width="40" height="40"></rect><text y="50">储能</text></g>
-                <g class="node warn" transform="translate(800 90)"><rect x="-20" y="-20" width="40" height="40"></rect><text y="50">风光</text></g>
-                <path class="drop" d="M225 108V190H355"></path>
-                <path class="drop" d="M700 110V190H800"></path>
-                <text class="caption" x="70" y="40">AC侧</text>
-                <text class="caption" x="520" y="40">DC侧</text>
-              </svg>
-            </section>
+            <div class="overview-main-grid">
+              <section class="panel overview-energy-panel">
+                <div class="overview-energy-board" aria-label="学员台接收的交直流微电网能量流向">
+                  <div class="energy-board-head">
+                    <h3>电气能量流</h3>
+                    <div class="energy-board-meta">
+                      <span id="overviewFlowResultTime">尚无接收结果</span>
+                      <span>功率差额 <b id="overviewFlowBalance">--</b></span>
+                    </div>
+                  </div>
+                  <div class="energy-flow-map" data-flow-layout="single-line">
+                    <section class="energy-source-stack" aria-label="新能源">
+                      <div class="energy-column-title">新能源</div>
+                      <article class="energy-device wind energy-source-node" id="overviewFlowWindNode" data-flow-active="false">
+                        <span>风力发电</span>
+                        <strong id="overviewFlowWindPower">--</strong>
+                        <small id="overviewFlowWindMeta">风速 --</small>
+                      </article>
+                      <article class="energy-device solar energy-source-node" id="overviewFlowSolarNode" data-flow-active="false">
+                        <span>光伏发电</span>
+                        <strong id="overviewFlowSolarPower">--</strong>
+                        <small id="overviewFlowSolarMeta">辐照 --</small>
+                      </article>
+                    </section>
 
-            <section class="panel">
-              <div class="panel-head">
-                <h2>待发指令</h2>
-                <span id="pendingSummary">0 项</span>
-              </div>
-              <div id="pendingPreview" class="log-list"></div>
-            </section>
+                    <div class="energy-bus-rail left" id="overviewEnergyLeftBus" aria-label="新能源汇集母线">
+                      <span>新能源汇集母线</span>
+                    </div>
+                    <div class="energy-main-trunk" id="overviewEnergyMainTrunk" data-flow-active="false" aria-hidden="true">
+                      <i class="energy-flow-stream energy-flow-main-stream" aria-hidden="true"></i>
+                      <span>交直流汇流母线</span>
+                    </div>
+                    <article class="energy-green-share" aria-label="实时绿电占比">
+                      <span>实时绿电占比</span>
+                      <strong id="overviewFlowGreenShare">--</strong>
+                    </article>
 
-            <section class="panel">
-              <div class="panel-head">
-                <h2>教员数据</h2>
-                <span id="receiveStateText">本地待命</span>
-              </div>
-              <dl class="teacher-data-grid">
-                <div><dt>风速</dt><dd id="teacherWind">--</dd></div>
-                <div><dt>光照</dt><dd id="teacherSolar">--</dd></div>
-                <div><dt>气温</dt><dd id="teacherTemp">--</dd></div>
-                <div><dt>负荷</dt><dd id="teacherLoad">--</dd></div>
-              </dl>
-              <div class="teacher-source">
-                <span id="teacherWeatherTime">--</span>
-                <strong id="teacherSourceText">--</strong>
-              </div>
-              <p id="importStatus" class="import-status"></p>
-            </section>
+                    <section
+                      class="energy-storage-branch-wrap"
+                      id="overviewStorageFlowLink"
+                      data-storage-flow="idle"
+                      aria-label="储能支路"
+                    >
+                      <div class="energy-storage-branch" aria-hidden="true"></div>
+                      <article class="energy-device storage" id="overviewStorageFlowNode" data-storage-flow="idle">
+                        <span>储能功率</span>
+                        <strong id="overviewFlowStoragePower">--</strong>
+                        <small><b id="overviewFlowStorageDirection">待接收</b> · SOC <b id="overviewFlowSoc">--</b></small>
+                      </article>
+                    </section>
+
+                    <div class="energy-bus-rail right" id="overviewEnergyRightBus" aria-label="负荷与柴发母线">
+                      <span>负荷与柴发母线</span>
+                    </div>
+
+                    <section class="energy-terminal-stack" aria-label="负荷和柴发">
+                      <div class="energy-column-title">负荷与柴发</div>
+                      <article class="energy-device load energy-load-node" id="overviewFlowLoadNode" data-flow-active="false">
+                        <span>负荷用电</span>
+                        <strong id="overviewFlowLoadPower">--</strong>
+                        <small id="overviewFlowLoadMeta">需求 --</small>
+                      </article>
+                      <article class="energy-device diesel energy-diesel-node" id="overviewFlowDieselNode" data-flow-active="false">
+                        <span>柴油发电</span>
+                        <strong id="overviewFlowDieselPower">--</strong>
+                        <small>常规电源</small>
+                      </article>
+                    </section>
+                  </div>
+                </div>
+              </section>
+
+              <section class="panel overview-boundary-panel">
+                <div class="panel-head">
+                  <h2>教员数据</h2>
+                  <span id="teacherWeatherTime">--</span>
+                </div>
+                <dl class="boundary-list">
+                  <div><dt>风速</dt><dd id="teacherWind">--</dd></div>
+                  <div><dt>太阳辐照</dt><dd id="teacherSolar">--</dd></div>
+                  <div><dt>气温</dt><dd id="teacherTemp">--</dd></div>
+                  <div><dt>负荷需求</dt><dd id="teacherLoad">--</dd></div>
+                  <div><dt>仿真类型</dt><dd id="overviewMode">--</dd></div>
+                  <div><dt>仿真时步</dt><dd id="overviewStep">--</dd></div>
+                </dl>
+                <p id="importStatus" class="import-status"></p>
+              </section>
+            </div>
+
+            <div class="overview-bottom-grid trainee-overview-bottom">
+              <section class="panel overview-health-panel">
+                <div class="panel-head"><h2>接收质量</h2><span id="overviewMeasurementQuality">--</span></div>
+                <dl class="quality-list">
+                  <div><dt>量测有效率</dt><dd id="overviewMeasurementRate">--</dd></div>
+                  <div><dt>策略状态</dt><dd id="overviewRenewableState">--</dd></div>
+                  <div><dt>最近下发</dt><dd id="overviewLastCommand">--</dd></div>
+                  <div><dt>待发指令</dt><dd id="pendingSummary">0 项</dd></div>
+                </dl>
+              </section>
+              <section class="panel overview-events-panel">
+                <div class="panel-head"><h2>最新交互事件</h2><span id="overviewEventCount">0 条</span></div>
+                <div id="traineeOverviewEvents" class="overview-event-list"></div>
+              </section>
+              <section class="panel overview-pending-panel">
+                <div class="panel-head"><h2>待发指令</h2><span id="overviewPendingHint">双击表格生成</span></div>
+                <div id="pendingPreview" class="log-list"></div>
+              </section>
+            </div>
           </div>
         </section>
 
@@ -214,7 +270,7 @@
                 </div>
                 <canvas id="measurementTraceChart" width="1500" height="360"></canvas>
                 <div class="measurement-trace-legend">
-                  <span><i class="trace-scada"></i>量测值</span>
+                  <button type="button" class="chart-legend-item" data-chart-toggle="measurementTrace" data-chart-series="value"><i class="trace-scada"></i>量测值</button>
                   <strong id="measurementTraceSummary">未选择测点</strong>
                 </div>
               </section>
@@ -248,6 +304,29 @@
               <section class="command-tab-page" data-command-tab-page="remote-adjustment" role="tabpanel">
                 <div class="command-table-head"><strong>遥调指令</strong><span id="setpointPendingCount">0 待发</span></div>
                 <div id="setpointControlTable" class="runtime-device-wrap"></div>
+              </section>
+              <section class="command-trace-panel">
+                <div class="panel-head compact-panel-head">
+                  <h2>指令跟踪曲线</h2>
+                  <label class="compact-field">窗口
+                    <select id="commandTraceWindow">
+                      <option value="15">15分钟</option>
+                      <option value="60" selected>1小时</option>
+                      <option value="120">2小时</option>
+                      <option value="360">6小时</option>
+                      <option value="1440">1日</option>
+                      <option value="10080">1周</option>
+                      <option value="43200">1月</option>
+                      <option value="525600">1年</option>
+                    </select>
+                  </label>
+                </div>
+                <canvas id="commandTraceChart" width="1500" height="320"></canvas>
+                <div class="measurement-trace-legend command-trace-legend">
+                  <button type="button" class="chart-legend-item" data-chart-toggle="commandTrace" data-chart-series="control"><i class="trace-control"></i>控制值</button>
+                  <button type="button" class="chart-legend-item" data-chart-toggle="commandTrace" data-chart-series="actual"><i class="trace-actual"></i>实时值</button>
+                  <strong id="commandTraceSummary">未选择指令</strong>
+                </div>
               </section>
             </section>
           </div>
@@ -315,6 +394,7 @@
               <button id="clearRuntimeLogs" type="button">清空日志</button>
             </div>
             <div id="commandHistory" class="runtime-log-wrap"></div>
+            <div id="traineeRuntimeLogPager" class="runtime-log-pager" aria-label="运行日志分页"></div>
           </section>
         </section>
       </main>
@@ -348,6 +428,42 @@
         <div class="dialog-actions">
           <button id="remoteControlCancel" type="button">取消</button>
           <button id="remoteControlConfirm" class="primary" type="button">确认下发</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="receiveLinkDialog" class="remote-control-dialog receive-link-dialog" aria-labelledby="receiveLinkTitle">
+      <form method="dialog" class="remote-control-form">
+        <div class="remote-control-head">
+          <div>
+            <h2 id="receiveLinkTitle">启动接收</h2>
+            <p>请输入模拟台生成的交互链接</p>
+          </div>
+          <button id="receiveLinkClose" class="dialog-close-button" type="button" aria-label="关闭接收链接窗口">×</button>
+        </div>
+        <label class="receive-link-field">交互链接
+          <input id="receiveLinkInput" type="url" autocomplete="off" placeholder="http://127.0.0.1:8710/api/trainee-link?model_id=..." />
+        </label>
+        <p id="receiveLinkMessage" class="remote-control-hint">一个链接可供多个学员台同时接入同一个模拟台模型。</p>
+        <div class="dialog-actions">
+          <button id="receiveLinkCancel" type="button">取消</button>
+          <button id="confirmReceiveLink" class="primary" type="button">启动接收</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="receiveWarningDialog" class="remote-control-dialog receive-warning-dialog" aria-labelledby="receiveWarningTitle">
+      <form method="dialog" class="remote-control-form">
+        <div class="remote-control-head">
+          <div>
+            <h2 id="receiveWarningTitle">接收异常</h2>
+            <p id="receiveWarningSummary">请检查模拟台链接与本地定义。</p>
+          </div>
+          <button id="receiveWarningClose" class="dialog-close-button" type="button" aria-label="关闭接收异常窗口">×</button>
+        </div>
+        <ul id="receiveWarningList" class="receive-warning-list"></ul>
+        <div class="dialog-actions">
+          <button id="receiveWarningConfirm" class="primary" type="button">知道了</button>
         </div>
       </form>
     </dialog>

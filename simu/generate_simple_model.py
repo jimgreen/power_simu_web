@@ -114,7 +114,7 @@ def model_blocks() -> list[Block]:
             "ACGenerator",
             ("idx", "name", "node", "control_type", "p_set", "q_set", "v_set", "alpha", "run_stat"),
             [
-                {"idx": 1, "name": "wt01_10kw", "node": 1, "control_type": "V", "p_set": 0, "q_set": 0, "v_set": 300, "alpha": 1.0, "run_stat": 1},
+                {"idx": 1, "name": "wt01_10kw", "node": 1, "control_type": "P", "p_set": 0, "q_set": 0, "v_set": 300, "alpha": 1.0, "run_stat": 1},
                 {"idx": 2, "name": "diesel_300kw", "node": 3, "control_type": "V", "p_set": 80, "q_set": 0, "v_set": 380, "alpha": 1.0, "run_stat": 1},
             ],
         ),
@@ -146,16 +146,16 @@ def model_blocks() -> list[Block]:
             ("idx", "name", "node", "control_type", "v_set", "p_set", "i_set", "run_stat"),
             [
                 {"idx": 1, "name": "dc_bus_vctrl", "node": 1, "control_type": "V", "v_set": 720, "p_set": 0, "i_set": 0, "run_stat": 1},
-                {"idx": 2, "name": "pv01_vsrc", "node": 3, "control_type": "V", "v_set": 300, "p_set": 0, "i_set": 0, "run_stat": 1},
-                {"idx": 3, "name": "ess01_vsrc", "node": 5, "control_type": "V", "v_set": 300, "p_set": 0, "i_set": 0, "run_stat": 1},
+                {"idx": 2, "name": "pv01_vsrc", "node": 3, "control_type": "P", "v_set": 300, "p_set": 0, "i_set": 0, "run_stat": 1},
+                {"idx": 3, "name": "ess01_vsrc", "node": 5, "control_type": "P", "v_set": 300, "p_set": 0, "i_set": 0, "run_stat": 1},
             ],
         ),
         (
             "DCDCConverter",
             ("idx", "name", "i_node", "j_node", "r1", "r2", "control_type", "p_set", "i_set", "v_set", "run_stat"),
             [
-                {"idx": 1, "name": "pv01_dcdc", "i_node": 3, "j_node": 4, "r1": 0.005, "r2": 0.005, "control_type": "P", "p_set": 25, "i_set": 0, "v_set": 0, "run_stat": 1},
-                {"idx": 2, "name": "ess01_dcdc", "i_node": 5, "j_node": 6, "r1": 0.005, "r2": 0.005, "control_type": "P", "p_set": 10, "i_set": 0, "v_set": 0, "run_stat": 1},
+                {"idx": 1, "name": "pv01_dcdc", "i_node": 3, "j_node": 4, "r1": 0.005, "r2": 0.005, "control_type": "V", "p_set": 0, "i_set": 0, "v_set": 300, "run_stat": 1},
+                {"idx": 2, "name": "ess01_dcdc", "i_node": 5, "j_node": 6, "r1": 0.005, "r2": 0.005, "control_type": "V", "p_set": 0, "i_set": 0, "v_set": 300, "run_stat": 1},
             ],
         ),
         (
@@ -182,10 +182,10 @@ def model_blocks() -> list[Block]:
                     "dc_node": 2,
                     "r1": 0.005,
                     "r2": 0.005,
-                    "control_type": "ACP",
-                    "p_ac_set": 8,
+                    "control_type": "ACV",
+                    "p_ac_set": 0,
                     "q_ac_set": 0,
-                    "v_ac_set": 0,
+                    "v_ac_set": 300,
                     "v_dc_set": 0,
                     "run_stat": 1,
                 },
@@ -231,7 +231,7 @@ def device_blocks() -> list[Block]:
             [
                 {
                     "id": 1,
-                    "name": "pv01_dcdc",
+                    "name": "pv01_vsrc",
                     "p_max": 50,
                     "p_min": 0,
                     "p_fur": 0.0,
@@ -248,7 +248,7 @@ def device_blocks() -> list[Block]:
             [
                 {
                     "id": 1,
-                    "name": "wt01_rect",
+                    "name": "wt01_10kw",
                     "p_max": 10,
                     "p_min": 0,
                     "p_fur": 0.0,
@@ -297,14 +297,13 @@ def stat_blocks() -> list[Block]:
         {"dev_type": "ACGenerator", "dev_name": "diesel_300kw", "set_type": "q_set", "set_value": 0},
         {"dev_type": "ACGenerator", "dev_name": "diesel_300kw", "set_type": "v_set", "set_value": 380},
         {"dev_type": "DCGenerator", "dev_name": "dc_bus_vctrl", "set_type": "v_set", "set_value": 720},
+        {"dev_type": "DCGenerator", "dev_name": "pv01_vsrc", "set_type": "p_set", "set_value": 25},
         {"dev_type": "DCGenerator", "dev_name": "pv01_vsrc", "set_type": "v_set", "set_value": 300},
-        {"dev_type": "DCGenerator", "dev_name": "ess01_vsrc", "set_type": "v_set", "set_value": 300},
-        {"dev_type": "DCDCConverter", "dev_name": "pv01_dcdc", "set_type": "p_set", "set_value": 25},
-        {"dev_type": "DCDCConverter", "dev_name": "pv01_dcdc", "set_type": "v_set", "set_value": 0},
-        {"dev_type": "DCDCConverter", "dev_name": "ess01_dcdc", "set_type": "p_set", "set_value": 10},
-        {"dev_type": "DCDCConverter", "dev_name": "ess01_dcdc", "set_type": "v_set", "set_value": 0},
-        {"dev_type": "DCACConverter", "dev_name": "wt01_rect", "set_type": "p_set", "set_value": 8},
-        {"dev_type": "DCACConverter", "dev_name": "wt01_rect", "set_type": "q_set", "set_value": 0},
+        {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 10},
+        {"dev_type": "ESS", "dev_name": "ess01", "set_type": "v_set", "set_value": 300},
+        {"dev_type": "DCDCConverter", "dev_name": "pv01_dcdc", "set_type": "v_set", "set_value": 300},
+        {"dev_type": "DCDCConverter", "dev_name": "ess01_dcdc", "set_type": "v_set", "set_value": 300},
+        {"dev_type": "DCACConverter", "dev_name": "wt01_rect", "set_type": "v_set", "set_value": 300},
         {"dev_type": "DCACConverter", "dev_name": "grid_inv_acp", "set_type": "p_set", "set_value": -45},
         {"dev_type": "DCACConverter", "dev_name": "grid_inv_acp", "set_type": "q_set", "set_value": 0},
         {"dev_type": "ACLoad", "dev_name": "load_ac_1", "set_type": "p_set", "set_value": 90},
@@ -361,6 +360,14 @@ def measurement_blocks() -> list[Block]:
             weight=10000.0 if meas_type == "SOC" else 25.0,
             value=0.55 if meas_type == "SOC" else 0.0,
         )
+    for name, meas_type, value in (
+        ("weather_wind_speed", "WIND_SPEED", 18.0),
+        ("weather_air_temp", "AIR_TEMP", -20.0),
+        ("weather_humidity", "HUMIDITY", 72.0),
+        ("weather_air_pressure", "AIR_PRESSURE", 960.0),
+        ("weather_solar_irradiance", "SOLAR_IRRADIANCE", 0.0),
+    ):
+        add(name, "Environment", "weather", meas_type, weight=1.0, value=value)
     return [("Measurement", ("idx", "name", "dev_type", "dev_name", "meas_type", "weight", "valid", "value"), rows)]
 
 
@@ -421,34 +428,35 @@ def write_model_dir(target_dir: Path) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     write_efile(target_dir / "model.e", model_blocks())
     write_efile(target_dir / "meas.e", measurement_blocks())
-    write_efile(target_dir / "real.e", measurement_blocks())
-    write_efile(target_dir / "scada.e", measurement_blocks())
     write_efile(target_dir / "stat.e", stat_blocks())
+    write_efile(target_dir / "control.e", stat_blocks())
     write_efile(target_dir / "weather.e", weather_blocks())
     write_efile(target_dir / "device.e", device_blocks())
-    write_efile(target_dir / "yt_ctrl.e", empty_control_blocks())
-    (target_dir / "commands.json").write_text("[]\n", encoding="utf-8")
-    (target_dir / "local_settings.json").write_text(
-        json.dumps({"device_faults": [], "measurement_faults": [], "modes": []}, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
     (target_dir / "curves.json").write_text(json.dumps(curves_payload(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def main() -> None:
     source_dir, runtime_dir = TARGET_DIRS
     write_model_dir(source_dir)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
     if runtime_dir.exists():
         for path in runtime_dir.iterdir():
             if path.name == ".simu_loop_work":
                 if path.resolve().is_relative_to(runtime_dir.resolve()):
                     shutil.rmtree(path)
                 continue
-            if path.is_file():
+            if path.is_file() and path.name in {
+                "model.e",
+                "meas.e",
+                "control.e",
+                "stat.e",
+                "weather.e",
+                "device.e",
+                "curves.e",
+            }:
                 path.unlink()
-    write_model_dir(runtime_dir)
     print(f"generated: {source_dir}")
-    print(f"generated: {runtime_dir}")
+    print(f"prepared runtime: {runtime_dir}")
 
 
 if __name__ == "__main__":

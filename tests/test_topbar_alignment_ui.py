@@ -47,6 +47,15 @@ class TopbarAlignmentUiTest(unittest.TestCase):
         self.assertIn(".overview-clock-control-label", css)
         self.assertIn("height: 42px", css)
 
+    def test_topbar_model_selector_has_no_extra_caption(self):
+        html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
+
+        topbar = html.split('<header class="topbar">', 1)[1].split("</header>", 1)[0]
+        self.assertNotIn("显示模型", topbar)
+        self.assertIn('class="model-switcher"', topbar)
+        self.assertIn('id="modelSelector"', topbar)
+        self.assertIn('id="activeModelName"', topbar)
+
 
 if __name__ == "__main__":
     unittest.main()

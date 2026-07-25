@@ -44,7 +44,7 @@ class ControlCommandValidityTest(unittest.TestCase):
 
         self.assertEqual(result["set_values"], 0)
         self.assertEqual(result["ignored"], 1)
-        self.assertEqual(self._set_value(service, "DCDCConverter", "ess01_dcdc", "p_set"), "10")
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "10")
 
     def test_ignores_control_commands_without_trainee_source(self):
         workspace, service = self._make_service()
@@ -61,7 +61,7 @@ class ControlCommandValidityTest(unittest.TestCase):
 
         self.assertEqual(result["set_values"], 0)
         self.assertEqual(result["ignored"], 1)
-        self.assertEqual(self._set_value(service, "DCDCConverter", "ess01_dcdc", "p_set"), "10")
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "10")
 
     def test_trainee_control_command_expires_without_refresh(self):
         workspace, service = self._make_service()
@@ -78,10 +78,66 @@ class ControlCommandValidityTest(unittest.TestCase):
         )
 
         self.assertEqual(result["set_values"], 1)
-        self.assertEqual(self._set_value(service, "DCDCConverter", "ess01_dcdc", "p_set"), "20")
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
         service.step()
         service.step()
-        self.assertEqual(self._set_value(service, "DCDCConverter", "ess01_dcdc", "p_set"), "10")
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "10")
+
+    def test_trainee_control_command_can_remain_active_until_absolute_expiry(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        result = service.apply_student_commands(
+            {
+                "expires_at_absolute_minute": 10,
+                "set_values": [
+                    {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 20}
+                ],
+            },
+            source="trainee-ui",
+        )
+
+        self.assertEqual(result["set_values"], 1)
+        for _ in range(6):
+            service.step()
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
+        for _ in range(5):
+            service.step()
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "10")
+
+    def test_wind_generator_setpoint_command_updates_ac_generator_boundary(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        result = service.apply_student_commands(
+            {
+                "valid_for_minutes": 5,
+                "set_values": [
+                    {"dev_type": "ACGenerator", "dev_name": "wt01_10kw", "set_type": "p_set", "set_value": 3.3}
+                ],
+            },
+            source="trainee-ui",
+        )
+
+        self.assertEqual(result["set_values"], 1)
+
+        import simu_loop
+
+        _merged_path, _changed, merged_book = simu_loop.apply_realtime_inputs(
+            service.files["model"],
+            service.files["weather"],
+            service.files["stat"],
+            service.files["yt_ctrl"],
+            service.files["device"],
+            service.runtime_dir / "work",
+            60.0,
+        )
+        wind_generator = next(
+            row
+            for row in merged_book.data["ACGenerator"].data
+            if row["name"] == "wt01_10kw"
+        )
+        self.assertAlmostEqual(float(wind_generator["p_set"]), 3.3)
 
 
 if __name__ == "__main__":

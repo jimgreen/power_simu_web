@@ -1,5 +1,5 @@
 const apiBase = (window.POLAR_SIM_API_URL || localStorage.getItem("polarSimApiUrl") || location.origin).replace(/\/$/, "");
-const teacherApiBase = (
+let teacherApiBase = (
   window.POLAR_TEACHER_API_URL ||
   localStorage.getItem("polarTeacherApiUrl") ||
   "http://127.0.0.1:8710"
@@ -14,15 +14,27 @@ const state = {
   lastReceiveAt: "",
   snapshotSource: "",
   lastTeacherSnapshotLogKey: "",
+  interactionLink: localStorage.getItem("polarTeacherInteractionLink") || "",
+  teacherModelName: localStorage.getItem("polarTeacherModelName") || "",
+  teacherCommandPath: localStorage.getItem("polarTeacherCommandPath") || "",
+  localDefinitionSnapshot: null,
+  localDefinitionModelId: "",
+  receiveReconnectAttempts: 0,
+  receiveRequestActive: false,
+  definitionMismatchLastKey: "",
   runtimeLogs: [],
   runtimeLogTypeFilter: "all",
+  runtimeLogPage: 1,
+  runtimeLogPageSize: 20,
   runtimeLogSeq: 0,
   seenCommandHistoryKeys: new Set(),
   modelFilter: { dev_type: "all", dev_name: "" },
   activeModelParamTab: "",
   activeCurveDisplayKey: "wind_speed_mps",
   selectedCurveDisplayKeys: ["wind_speed_mps"],
+  hiddenCurveDisplayKeys: [],
   curveDisplayCursor: { visible: false, x: 0, y: 0, index: 0 },
+  curveDisplayLegendHitBoxes: [],
   lastCurveDisplayTableKey: "",
   remoteControlDevice: null,
   remoteControlSending: false,
@@ -31,6 +43,15 @@ const state = {
   measurementFilter: { dev_type: "all", dev_name: "" },
   controlFilter: { dev_type: "all", dev_name: "" },
   activeControlTab: "remote-control",
+  selectedCommandTraceKey: "",
+  selectedCommandTraceLabel: "",
+  commandTraceHistory: [],
+  commandTraceWindowMinutes: 60,
+  chartSeriesHidden: {},
+  chartSeriesSelected: {},
+  chartCursors: {},
+  chartSeriesHitData: {},
+  chartPlotInfo: {},
   collapsedDeviceTreeGroups: {},
   selectedMeasurementKey: "",
   measurementTraceHistory: [],
@@ -50,7 +71,7 @@ const state = {
   },
 };
 const pending = { run_status: new Map(), set_values: new Map() };
-const CONTROL_COMMAND_VALID_MINUTES = 5;
+const RENEWABLE_COMMAND_VALID_MINUTES = 5;
 const TRACE_HISTORY_LIMIT = 45000;
 const CURVE_DISPLAY_MODES = {
   year: { key: "year", label: "年仿真", pointCount: 8760, stepMinutes: 60, tableTitle: "年曲线数据表", tableSummary: "1小时间隔 · 只读" },
@@ -65,8 +86,216 @@ const CURVE_DISPLAY_META = [
 const CURVE_DISPLAY_LOAD_META = { label: "负荷", color: "#c93a3a", min: 0, max: 500, digits: 2, unit: "kW" };
 const CURVE_DISPLAY_LOAD_COLORS = ["#c93a3a", "#8a4fbf", "#23854a", "#d16300", "#4369b2", "#0a8b8b"];
 const CURVE_DISPLAY_PLOT = { left: 58, right: 24, top: 46, bottom: 34 };
+const WEATHER_MEASUREMENT_LABELS = {
+  WIND_SPEED: { label: "风速", order: 0 },
+  SOLAR_IRRADIANCE: { label: "太阳辐照", order: 1 },
+  AIR_TEMP: { label: "气温", order: 2 },
+  HUMIDITY: { label: "湿度", order: 3 },
+  AIR_PRESSURE: { label: "气压", order: 4 },
+};
+const RECEIVE_MAX_RECONNECT_ATTEMPTS = 3;
+const RECEIVE_WARNING_LIMIT = 40;
 
 const $ = (id) => document.getElementById(id);
+
+function chartHiddenSet(chartKey) {
+  const hidden = state.chartSeriesHidden?.[chartKey] || [];
+  return new Set(hidden);
+}
+
+function isChartSeriesHidden(chartKey, seriesKey) {
+  return chartHiddenSet(chartKey).has(seriesKey);
+}
+
+function visibleChartSeries(chartKey, seriesDefs) {
+  return (seriesDefs || []).filter((series) => !isChartSeriesHidden(chartKey, series.key));
+}
+
+function selectedChartSeriesKey(chartKey, fallback = "") {
+  return state.chartSeriesSelected?.[chartKey] || fallback || "";
+}
+
+function setChartSeriesSelected(chartKey, seriesKey, drawFn) {
+  if (!chartKey || !seriesKey) return;
+  state.chartSeriesSelected = { ...(state.chartSeriesSelected || {}), [chartKey]: seriesKey };
+  syncChartLegendButtons(chartKey);
+  if (typeof drawFn === "function") drawFn();
+}
+
+function toggleChartSeriesVisibility(chartKey, seriesKey, drawFn) {
+  if (!chartKey || !seriesKey) return;
+  const hidden = chartHiddenSet(chartKey);
+  if (hidden.has(seriesKey)) hidden.delete(seriesKey);
+  else hidden.add(seriesKey);
+  state.chartSeriesHidden = { ...(state.chartSeriesHidden || {}), [chartKey]: Array.from(hidden) };
+  state.chartSeriesSelected = { ...(state.chartSeriesSelected || {}), [chartKey]: seriesKey };
+  syncChartLegendButtons(chartKey);
+  if (typeof drawFn === "function") drawFn();
+}
+
+function syncChartLegendButtons(chartKey) {
+  document.querySelectorAll(`[data-chart-toggle="${chartKey}"]`).forEach((button) => {
+    const seriesKey = button.dataset.chartSeries || "";
+    button.classList.toggle("is-hidden", isChartSeriesHidden(chartKey, seriesKey));
+    button.classList.toggle("is-selected", selectedChartSeriesKey(chartKey) === seriesKey);
+    button.setAttribute("aria-pressed", isChartSeriesHidden(chartKey, seriesKey) ? "false" : "true");
+  });
+}
+
+function canvasPointerPosition(canvas, event) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (event.clientX - rect.left) * (canvas.width / rect.width),
+    y: (event.clientY - rect.top) * (canvas.height / rect.height),
+  };
+}
+
+function setChartCursorFromEvent(chartKey, canvas, plot, event, drawFn) {
+  if (!canvas || !plot) return;
+  const pos = canvasPointerPosition(canvas, event);
+  const left = plot.left;
+  const right = canvas.width - plot.right;
+  const top = plot.top;
+  const bottom = canvas.height - plot.bottom;
+  const visible = pos.x >= left && pos.x <= right && pos.y >= top && pos.y <= bottom;
+  state.chartCursors = {
+    ...(state.chartCursors || {}),
+    [chartKey]: {
+      visible,
+      x: clamp(pos.x, left, right),
+      y: clamp(pos.y, top, bottom),
+    },
+  };
+  if (typeof drawFn === "function") drawFn();
+}
+
+function hideChartCursor(chartKey, drawFn) {
+  const cursor = state.chartCursors?.[chartKey];
+  if (!cursor?.visible) return;
+  state.chartCursors = {
+    ...(state.chartCursors || {}),
+    [chartKey]: { ...cursor, visible: false },
+  };
+  if (typeof drawFn === "function") drawFn();
+}
+
+function chartSeriesAtPointer(chartKey, canvas, event, threshold = 10) {
+  const seriesData = state.chartSeriesHitData?.[chartKey] || [];
+  if (!seriesData.length) return "";
+  const pos = canvasPointerPosition(canvas, event);
+  let best = { key: "", distance: Number.POSITIVE_INFINITY };
+  seriesData.forEach((series) => {
+    (series.points || []).forEach((point) => {
+      const distance = Math.hypot(point.x - pos.x, point.y - pos.y);
+      if (distance < best.distance) best = { key: series.key, distance };
+    });
+  });
+  return best.distance <= threshold ? best.key : "";
+}
+
+function selectChartSeriesAtPointer(chartKey, canvas, event, drawFn) {
+  const seriesKey = chartSeriesAtPointer(chartKey, canvas, event);
+  if (!seriesKey) return false;
+  setChartSeriesSelected(chartKey, seriesKey, drawFn);
+  return true;
+}
+
+function nearestChartPoint(points, x) {
+  let best = null;
+  let distance = Number.POSITIVE_INFINITY;
+  (points || []).forEach((point) => {
+    const nextDistance = Math.abs(point.x - x);
+    if (nextDistance < distance) {
+      best = point;
+      distance = nextDistance;
+    }
+  });
+  return best;
+}
+
+function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) {
+  const cursor = state.chartCursors?.[chartKey];
+  const visibleSeries = (seriesData || []).filter((series) => !isChartSeriesHidden(chartKey, series.key));
+  if (!cursor?.visible || !visibleSeries.length) return;
+  const ratio = options.ratio || 1;
+  const left = plot.left;
+  const right = canvas.width - plot.right;
+  const top = plot.top;
+  const bottom = canvas.height - plot.bottom;
+  const x = clamp(cursor.x, left, right);
+  const y = clamp(cursor.y, top, bottom);
+  const selectedKey = selectedChartSeriesKey(chartKey, visibleSeries[0]?.key || "");
+  const samples = visibleSeries
+    .map((series) => ({ series, point: nearestChartPoint(series.points, x) }))
+    .filter((item) => item.point);
+  if (!samples.length) return;
+  const mainPoint = samples.find((item) => item.series.key === selectedKey)?.point || samples[0].point;
+  const timeLabel = options.timeLabel ? options.timeLabel(mainPoint) : (mainPoint.time || "");
+  const valueFormatter = options.valueFormatter || formatNumber;
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(29, 57, 66, 0.58)";
+  ctx.lineWidth = 1 * ratio;
+  ctx.setLineDash([5 * ratio, 4 * ratio]);
+  ctx.beginPath();
+  ctx.moveTo(x, top);
+  ctx.lineTo(x, bottom);
+  ctx.moveTo(left, y);
+  ctx.lineTo(right, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  samples.forEach(({ series, point }) => {
+    ctx.fillStyle = "#ffffff";
+    ctx.strokeStyle = series.color;
+    ctx.lineWidth = 2 * ratio;
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, 4.5 * ratio, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  });
+
+  ctx.font = `${12 * ratio}px Microsoft YaHei, Arial`;
+  const lines = [
+    timeLabel ? `时刻: ${timeLabel}` : "",
+    ...samples.slice(0, 6).map(({ series, point }) => `${series.label}: ${valueFormatter(point.value)}${series.unit ? ` ${series.unit}` : ""}`),
+    samples.length > 6 ? `另有 ${samples.length - 6} 条曲线` : "",
+  ].filter(Boolean);
+  const tooltipWidth = Math.max(150 * ratio, ...lines.map((line) => ctx.measureText(line).width + 24 * ratio));
+  const tooltipHeight = 14 * ratio + lines.length * 18 * ratio;
+  let tooltipX = x + 14 * ratio;
+  let tooltipY = y + 14 * ratio;
+  if (tooltipX + tooltipWidth > right - 6 * ratio) tooltipX = x - tooltipWidth - 14 * ratio;
+  if (tooltipY + tooltipHeight > bottom - 6 * ratio) tooltipY = y - tooltipHeight - 14 * ratio;
+  tooltipX = clamp(tooltipX, left + 6 * ratio, right - tooltipWidth - 6 * ratio);
+  tooltipY = clamp(tooltipY, top + 6 * ratio, bottom - tooltipHeight - 6 * ratio);
+  ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
+  ctx.strokeStyle = "rgba(171, 190, 198, 0.9)";
+  ctx.beginPath();
+  ctx.roundRect(tooltipX, tooltipY, tooltipWidth, tooltipHeight, 8 * ratio);
+  ctx.fill();
+  ctx.stroke();
+  lines.forEach((line, lineIndex) => {
+    ctx.fillStyle = lineIndex === 0 ? "#1f3037" : "#314850";
+    ctx.fillText(line, tooltipX + 10 * ratio, tooltipY + 18 * ratio + lineIndex * 18 * ratio);
+  });
+  ctx.restore();
+}
+
+function initTraceChartInteractions(chartKey, canvasId, drawFn) {
+  const canvas = $(canvasId);
+  if (!canvas) return;
+  const handleMove = (event) => {
+    setChartCursorFromEvent(chartKey, canvas, state.chartPlotInfo?.[chartKey], event, drawFn);
+  };
+  canvas.addEventListener("pointermove", handleMove);
+  canvas.addEventListener("mousemove", handleMove);
+  canvas.addEventListener("pointerleave", () => hideChartCursor(chartKey, drawFn));
+  canvas.addEventListener("mouseleave", () => hideChartCursor(chartKey, drawFn));
+  canvas.addEventListener("click", (event) => {
+    if (selectChartSeriesAtPointer(chartKey, canvas, event, drawFn)) event.preventDefault();
+  });
+}
 
 function pageFromHash() {
   const fallback = document.querySelector(".app-shell")?.dataset.defaultPage || "overview";
@@ -131,6 +360,56 @@ async function teacherApi(path, options = {}) {
   return response.json();
 }
 
+function teacherCommandPath() {
+  if (state.teacherCommandPath) return state.teacherCommandPath;
+  return state.activeModelId
+    ? `/api/student/commands?model_id=${encodeURIComponent(state.activeModelId)}`
+    : "/api/student/commands";
+}
+
+function teacherCommandTargetName() {
+  return `模拟台 ${teacherCommandPath()}`;
+}
+
+async function teacherCommandApi(options = {}) {
+  const response = await fetch(connectionApiUrl({ teacherApiBase }, teacherCommandPath()), {
+    ...options,
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+
+function hasTeacherCommandConnection() {
+  return Boolean(state.interactionLink && state.teacherCommandPath && teacherApiBase);
+}
+
+async function postTeacherCommand(body) {
+  if (!hasTeacherCommandConnection()) {
+    throw new Error("请先点击顶部“启动接收”，输入模拟台交互链接后再下发指令。");
+  }
+  return await teacherCommandApi({ method: "POST", body: JSON.stringify(body) });
+}
+
+function commandCycleMinutes(snapshot = state.snapshot || {}) {
+  const curves = snapshot.curves || {};
+  const pointCount = Number(curves.point_count);
+  const stepMinutes = Number(curves.time_step_minutes || CURVE_DISPLAY_MODES[curveDisplayMode(snapshot)].stepMinutes);
+  const curvePeriod = pointCount * stepMinutes;
+  if (Number.isFinite(curvePeriod) && curvePeriod > 0) return curvePeriod;
+  return curveDisplayMode(snapshot) === "year" ? 365 * 24 * 60 : 24 * 60;
+}
+
+function manualCommandExpiresAtAbsoluteMinute(snapshot = state.snapshot || {}) {
+  const clock = snapshot.clock || {};
+  const current = Number(clock.absolute_minute ?? clock.minute ?? 0) || 0;
+  const cycleMinutes = commandCycleMinutes(snapshot);
+  const cycleEnd = (Math.floor(current / cycleMinutes) + 1) * cycleMinutes;
+  const stepMinutes = Number(clock.step_minutes || 1) || 1;
+  const speed = Number(clock.speed || 1) || 1;
+  return Math.max(cycleEnd, current + Math.max(1, stepMinutes * speed));
+}
+
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]
@@ -145,15 +424,522 @@ function apiErrorText(error) {
   }
 }
 
-function runtimeLogTime() {
-  return new Date().toLocaleTimeString();
+function setReceiveLinkMessage(text, kind = "") {
+  const message = $("receiveLinkMessage");
+  if (!message) return;
+  message.textContent = text || "";
+  message.classList.toggle("is-error", kind === "error");
+  message.classList.toggle("is-ok", kind === "ok");
 }
 
-function addRuntimeLog(type, target, result, detail = "", level = "info", renderNow = true) {
+function openReceiveLinkDialog() {
+  const dialog = $("receiveLinkDialog");
+  const input = $("receiveLinkInput");
+  if (!dialog || !input) return;
+  input.value = state.interactionLink || localStorage.getItem("polarTeacherInteractionLink") || "";
+  setReceiveLinkMessage("请输入模拟台针对当前模型生成的交互链接。");
+  $("confirmReceiveLink").disabled = false;
+  dialog.showModal();
+  input.focus();
+  input.select();
+}
+
+function closeReceiveLinkDialog() {
+  const dialog = $("receiveLinkDialog");
+  if (dialog?.open) dialog.close();
+}
+
+function openReceiveWarningDialog(title, messages, summary = "") {
+  const dialog = $("receiveWarningDialog");
+  const titleNode = $("receiveWarningTitle");
+  const summaryNode = $("receiveWarningSummary");
+  const listNode = $("receiveWarningList");
+  if (!dialog || !titleNode || !summaryNode || !listNode) return;
+  const safeMessages = (Array.isArray(messages) ? messages : [messages])
+    .filter((item) => String(item || "").trim())
+    .slice(0, RECEIVE_WARNING_LIMIT);
+  titleNode.textContent = title || "接收异常";
+  summaryNode.textContent = summary || (safeMessages.length ? `发现 ${safeMessages.length} 项异常。` : "请检查交互链接与本地定义。");
+  listNode.innerHTML = safeMessages.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  dialog.showModal();
+}
+
+function closeReceiveWarningDialog() {
+  const dialog = $("receiveWarningDialog");
+  if (dialog?.open) dialog.close();
+}
+
+function normalizeConnectionUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) throw new Error("请输入模拟台生成的交互链接。");
+  const url = new URL(raw, location.href);
+  if (!/^https?:$/.test(url.protocol)) throw new Error("交互链接必须是 http 或 https 地址。");
+  return url;
+}
+
+function legacyTeacherInteractionConnection(url) {
+  const path = url.pathname.replace(/\/+$/, "");
+  if (!["/api/trainee-link", "/api/client-link"].includes(path)) {
+    return null;
+  }
+  const modelId = url.searchParams.get("model_id") || url.searchParams.get("model") || "";
+  if (!modelId) return null;
+  const encodedModelId = encodeURIComponent(modelId);
+  return {
+    link: url.href,
+    teacherApiBase: url.origin,
+    modelId: String(modelId),
+    modelName: String(modelId),
+    snapshotPath: `/api/snapshot?model_id=${encodedModelId}`,
+    commandPath: `/api/student/commands?model_id=${encodedModelId}`,
+  };
+}
+
+async function resolveTeacherInteractionLink(rawLink) {
+  const url = normalizeConnectionUrl(rawLink);
+  const response = await fetch(url.href, { headers: { Accept: "application/json" } });
+  const text = await response.text();
+  if (!response.ok) {
+    const legacyConnection = legacyTeacherInteractionConnection(url);
+    if (legacyConnection && (response.status === 404 || /Unknown API route/i.test(text))) {
+      return legacyConnection;
+    }
+    throw new Error(text);
+  }
+  let payload = {};
+  try {
+    payload = JSON.parse(text);
+  } catch (_error) {
+    throw new Error("交互链接返回内容不是有效 JSON，请重新从模拟台复制链接。");
+  }
+  if (payload.type !== "polar-microgrid-trainee-link" || payload.role !== "simulator") {
+    throw new Error("交互链接无效，请使用模拟台生成的链接。");
+  }
+  const modelId = payload.model_id || url.searchParams.get("model_id") || "";
+  if (!modelId) throw new Error("交互链接缺少模型标识。");
+  return {
+    link: payload.link || url.href,
+    teacherApiBase: String(payload.teacher_api_base || url.origin).replace(/\/$/, ""),
+    modelId: String(modelId),
+    modelName: String(payload.model_name || modelId),
+    snapshotPath: String(payload.snapshot_path || `/api/snapshot?model_id=${encodeURIComponent(modelId)}`),
+    commandPath: String(payload.command_path || `/api/student/commands?model_id=${encodeURIComponent(modelId)}`),
+  };
+}
+
+function connectionApiUrl(connection, path) {
+  const target = String(path || "");
+  if (/^https?:\/\//i.test(target)) return target;
+  const normalized = target.startsWith("/") ? target : `/${target}`;
+  return `${connection.teacherApiBase}${normalized}`;
+}
+
+async function fetchTeacherSnapshot(connection) {
+  const response = await fetch(connectionApiUrl(connection, connection.snapshotPath), {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+
+function localDefinitionModelId() {
+  if (state.models.some((model) => model.id === state.activeModelId)) return state.activeModelId;
+  if (state.models.some((model) => model.id === state.localDefinitionModelId)) return state.localDefinitionModelId;
+  return state.models[0]?.id || state.activeModelId || "";
+}
+
+async function fetchLocalDefinitionSnapshot() {
+  const modelId = localDefinitionModelId();
+  const path = modelId ? `/api/snapshot?model_id=${encodeURIComponent(modelId)}` : "/api/snapshot";
+  const snapshot = await api(path, { modelScoped: false });
+  return { modelId, snapshot };
+}
+
+function applyTeacherConnection(connection) {
+  teacherApiBase = connection.teacherApiBase;
+  state.interactionLink = connection.link;
+  state.teacherModelName = connection.modelName;
+  state.teacherCommandPath = connection.commandPath;
+  state.activeModelId = connection.modelId;
+  localStorage.setItem("polarTeacherApiUrl", teacherApiBase);
+  localStorage.setItem("polarTeacherInteractionLink", state.interactionLink);
+  localStorage.setItem("polarTeacherModelName", state.teacherModelName);
+  localStorage.setItem("polarTeacherCommandPath", state.teacherCommandPath);
+  localStorage.setItem("polarTraineeModelId", state.activeModelId);
+  renderModelSelector();
+}
+
+function sortedUnique(values) {
+  return [...new Set((values || []).map((item) => String(item || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+}
+
+function previewList(values, limit = 8) {
+  const list = Array.from(values || []);
+  if (!list.length) return "无";
+  const visible = list.slice(0, limit).join("，");
+  return list.length > limit ? `${visible}，等 ${list.length} 项` : visible;
+}
+
+function pushSetDiff(messages, label, localValues, remoteValues) {
+  const localSet = new Set(localValues || []);
+  const remoteSet = new Set(remoteValues || []);
+  const missing = [...localSet].filter((item) => !remoteSet.has(item)).sort((a, b) => a.localeCompare(b));
+  const extra = [...remoteSet].filter((item) => !localSet.has(item)).sort((a, b) => a.localeCompare(b));
+  if (missing.length) messages.push(`${label}缺少：${previewList(missing)}`);
+  if (extra.length) messages.push(`${label}新增：${previewList(extra)}`);
+}
+
+function comparableScalar(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "number") return Number.isFinite(value) ? Number(value.toPrecision(12)) : String(value);
+  if (typeof value === "boolean") return value;
+  const text = String(value).trim();
+  if (!text) return "";
+  const number = Number(text);
+  return Number.isFinite(number) ? Number(number.toPrecision(12)) : text;
+}
+
+function stableComparable(value) {
+  if (Array.isArray(value)) return value.map(stableComparable);
+  if (value && typeof value === "object") {
+    return Object.keys(value).sort((a, b) => a.localeCompare(b)).reduce((result, key) => {
+      result[key] = stableComparable(value[key]);
+      return result;
+    }, {});
+  }
+  return comparableScalar(value);
+}
+
+function stableStringify(value) {
+  return JSON.stringify(stableComparable(value));
+}
+
+function textHash(text) {
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function definitionDevices(snapshot = {}) {
+  const map = new Map();
+  (snapshot.devices || []).forEach((dev) => {
+    const devType = String(dev.dev_type || dev.type || "").trim();
+    const devName = String(dev.dev_name || dev.name || "").trim();
+    if (!devType || !devName) return;
+    map.set(`${devType}.${devName}`, {
+      setTypes: sortedUnique(dev.set_types || []),
+    });
+  });
+  return map;
+}
+
+function definitionMeasurementKeys(snapshot = {}) {
+  const measurements = snapshot.measurements || {};
+  const rows = measurements.definitions?.length ? measurements.definitions : measurements.scada || [];
+  return sortedUnique(rows.map((row) => [
+    row.name || "",
+    row.dev_type || "",
+    row.dev_name || "",
+    String(row.meas_type || "").toUpperCase(),
+  ].join("|")));
+}
+
+function definitionParameterSummary(snapshot = {}) {
+  const params = snapshot.device_parameters || {};
+  const result = new Map();
+  Object.keys(params).sort((a, b) => a.localeCompare(b)).forEach((blockName) => {
+    const rows = Array.isArray(params[blockName]) ? params[blockName] : [];
+    result.set(blockName, textHash(stableStringify(rows)));
+  });
+  return result;
+}
+
+function definitionCurveSummary(snapshot = {}) {
+  const curves = snapshot.curves || {};
+  const loads = curves.loads && typeof curves.loads === "object" ? curves.loads : {};
+  const loadNames = sortedUnique(Object.keys(loads));
+  const loadCounts = loadNames.map((name) => `${name}:${Array.isArray(loads[name]) ? loads[name].length : 0}`);
+  return {
+    mode: String(curves.mode || "day"),
+    stepMinutes: String(curves.time_step_minutes ?? ""),
+    pointCount: String(curves.point_count ?? ""),
+    weatherCount: Array.isArray(curves.weather) ? curves.weather.length : 0,
+    weatherHash: textHash(stableStringify(curves.weather || [])),
+    loadNames,
+    loadCounts,
+    loadHash: textHash(stableStringify(loadNames.map((name) => [name, loads[name] || []]))),
+  };
+}
+
+function compareSnapshotDefinitions(localSnapshot, remoteSnapshot) {
+  const messages = [];
+  if (!localSnapshot) messages.push("本地模型定义不可用。");
+  if (!remoteSnapshot) messages.push("模拟台数据不可用。");
+  if (messages.length) return messages;
+
+  const localDevices = definitionDevices(localSnapshot);
+  const remoteDevices = definitionDevices(remoteSnapshot);
+  pushSetDiff(messages, "模型设备", [...localDevices.keys()], [...remoteDevices.keys()]);
+  [...localDevices.keys()].filter((key) => remoteDevices.has(key)).forEach((key) => {
+    const localSetTypes = localDevices.get(key).setTypes;
+    const remoteSetTypes = remoteDevices.get(key).setTypes;
+    const localText = localSetTypes.join(",");
+    const remoteText = remoteSetTypes.join(",");
+    if (localText !== remoteText) {
+      messages.push(`设备 ${key} 控制量定义不一致：本地 ${localText || "无"}；模拟台 ${remoteText || "无"}`);
+    }
+  });
+
+  pushSetDiff(messages, "量测定义", definitionMeasurementKeys(localSnapshot), definitionMeasurementKeys(remoteSnapshot));
+
+  const localParams = definitionParameterSummary(localSnapshot);
+  const remoteParams = definitionParameterSummary(remoteSnapshot);
+  pushSetDiff(messages, "设备参数表", [...localParams.keys()], [...remoteParams.keys()]);
+  [...localParams.keys()].filter((key) => remoteParams.has(key)).forEach((key) => {
+    if (localParams.get(key) !== remoteParams.get(key)) {
+      messages.push(`设备参数表 ${key} 内容不一致。`);
+    }
+  });
+
+  const localCurves = definitionCurveSummary(localSnapshot);
+  const remoteCurves = definitionCurveSummary(remoteSnapshot);
+  if (localCurves.mode !== remoteCurves.mode) messages.push(`仿真模式不一致：本地 ${localCurves.mode}；模拟台 ${remoteCurves.mode}`);
+  if (localCurves.stepMinutes !== remoteCurves.stepMinutes) messages.push(`曲线步长不一致：本地 ${localCurves.stepMinutes || "--"}；模拟台 ${remoteCurves.stepMinutes || "--"}`);
+  if (localCurves.pointCount !== remoteCurves.pointCount) messages.push(`曲线点数不一致：本地 ${localCurves.pointCount || "--"}；模拟台 ${remoteCurves.pointCount || "--"}`);
+  if (localCurves.weatherCount !== remoteCurves.weatherCount || localCurves.weatherHash !== remoteCurves.weatherHash) {
+    messages.push(`环境曲线定义不一致：本地 ${localCurves.weatherCount} 点；模拟台 ${remoteCurves.weatherCount} 点。`);
+  }
+  pushSetDiff(messages, "负荷曲线", localCurves.loadNames, remoteCurves.loadNames);
+  if (localCurves.loadCounts.join("|") !== remoteCurves.loadCounts.join("|") || localCurves.loadHash !== remoteCurves.loadHash) {
+    messages.push("负荷曲线数据不一致。");
+  }
+
+  return messages.slice(0, RECEIVE_WARNING_LIMIT);
+}
+
+function receiveMismatchKey(messages) {
+  return (messages || []).join("\n");
+}
+
+function resetReceiveIssueStreak() {
+  state.receiveReconnectAttempts = 0;
+}
+
+function stopReceiveAfterPersistentIssue(result, detail = [], simTime = "") {
+  const detailItems = Array.isArray(detail) ? detail.filter(Boolean) : [detail].filter(Boolean);
+  state.receiveMode = false;
+  state.frozen = true;
+  state.receiveEpoch += 1;
+  state.receiveRequestActive = false;
+  addRuntimeLog(
+    "实时交互",
+    "接收保护",
+    "停止接收",
+    [`连续 ${RECEIVE_MAX_RECONNECT_ATTEMPTS} 次接收异常`, ...detailItems],
+    "error",
+    true,
+    simTime,
+  );
+  stopRenewableControl("连续接收异常，新能源优先策略已暂停。", true);
+  renderReceiveMode(result || "接收异常");
+  openReceiveWarningDialog(
+    `${result || "接收异常"}，已停止接收`,
+    [`已连续 ${RECEIVE_MAX_RECONNECT_ATTEMPTS} 次发现接收异常。`, ...detailItems],
+    "请检查模拟台仿真状态、交互链接和定义文件一致性。",
+  );
+}
+
+function recordReceiveIssue(type, target, result, detail = "", simTime = "") {
+  state.receiveReconnectAttempts += 1;
+  const attempt = state.receiveReconnectAttempts;
+  const detailItems = Array.isArray(detail) ? detail.filter(Boolean) : [detail].filter(Boolean);
+  addRuntimeLog(
+    type,
+    target,
+    result,
+    [`连续告警 ${attempt}/${RECEIVE_MAX_RECONNECT_ATTEMPTS}`, ...detailItems],
+    "warn",
+    true,
+    simTime,
+  );
+  if (attempt >= RECEIVE_MAX_RECONNECT_ATTEMPTS) {
+    stopReceiveAfterPersistentIssue(result, detailItems, simTime);
+    return false;
+  }
+  renderReceiveMode(`告警 ${attempt}/${RECEIVE_MAX_RECONNECT_ATTEMPTS}`);
+  return true;
+}
+
+function handleReceiveDefinitionMismatch(messages, result = "定义不一致", simTime = "") {
+  const detail = messages?.length ? messages : ["模拟台传入数据与本地定义不一致。"];
+  const key = receiveMismatchKey(detail);
+  state.definitionMismatchLastKey = key;
+  return recordReceiveIssue("实时交互", "定义一致性校验", result, detail, simTime);
+}
+
+function validateTeacherSnapshotDefinitions(snapshot, result = "定义不一致") {
+  if (!state.localDefinitionSnapshot) return true;
+  const messages = compareSnapshotDefinitions(state.localDefinitionSnapshot, snapshot);
+  if (!messages.length) {
+    state.definitionMismatchLastKey = "";
+    return true;
+  }
+  handleReceiveDefinitionMismatch(messages, result, snapshot.clock?.time || "--");
+  return false;
+}
+
+function acceptTeacherSnapshot(snapshot, epoch = state.receiveEpoch) {
+  if (!state.receiveMode || epoch !== state.receiveEpoch) return false;
+  if (!validateTeacherSnapshotDefinitions(snapshot, "接收数据定义不一致")) return false;
+  state.snapshotSource = "teacher";
+  const clock = snapshot.clock || {};
+  if (String(clock.state || "").toLowerCase() === "stopped") {
+    renderSnapshot(snapshot);
+    recordReceiveIssue(
+      "实时交互",
+      "模拟台 /api/snapshot",
+      "模拟台未启动仿真",
+      [`仿真状态 ${clock.state || "stopped"}`, "请在模拟台启动仿真后继续接收"],
+      clock.time || "--",
+    );
+    return false;
+  }
+  resetReceiveIssueStreak();
+  state.lastReceiveAt = new Date().toLocaleTimeString();
+  const logKey = renewableClockKey(snapshot);
+  if (logKey !== state.lastTeacherSnapshotLogKey) {
+    const valuesNow = currentWeatherLoad(snapshot);
+    const scada = snapshot.measurements?.scada || [];
+    addRuntimeLog(
+      "实时交互",
+      "模拟台 /api/snapshot",
+      "接收成功",
+      [
+        `量测 ${scada.length} 点`,
+        `风速 ${formatNumber(valuesNow.windSpeed)} m/s`,
+        `光照 ${formatNumber(valuesNow.solarIrradiance)} W/m2`,
+        `负荷 ${formatNumber(valuesNow.loadKw)} kW`,
+      ],
+      "ok",
+      false,
+      snapshot.clock?.time || "--",
+    );
+    state.lastTeacherSnapshotLogKey = logKey;
+  }
+  renderSnapshot(snapshot);
+  renderReceiveMode();
+  return true;
+}
+
+async function attemptTeacherReconnect(epoch) {
+  if (!state.receiveMode || epoch !== state.receiveEpoch) return;
+  const attempt = state.receiveReconnectAttempts;
+  renderReceiveMode(`重连中 ${attempt}/${RECEIVE_MAX_RECONNECT_ATTEMPTS}`);
+  try {
+    const connection = await resolveTeacherInteractionLink(state.interactionLink);
+    const snapshot = await fetchTeacherSnapshot(connection);
+    if (!state.receiveMode || epoch !== state.receiveEpoch) return;
+    applyTeacherConnection(connection);
+    if (acceptTeacherSnapshot(snapshot, epoch)) {
+      addRuntimeLog("实时交互", "模拟台交互链接", "重连成功", `模型 ${connection.modelName}`, "ok");
+    }
+  } catch (error) {
+    if (!state.receiveMode || epoch !== state.receiveEpoch) return;
+    renderReceiveMode(`重连等待 ${attempt}/${RECEIVE_MAX_RECONNECT_ATTEMPTS}`);
+  }
+}
+
+async function startReceiveModeFromLink() {
+  const input = $("receiveLinkInput");
+  const confirmButton = $("confirmReceiveLink");
+  if (!input || !confirmButton) return;
+  confirmButton.disabled = true;
+  setReceiveLinkMessage("正在校验交互链接。");
+  try {
+    const connection = await resolveTeacherInteractionLink(input.value);
+    setReceiveLinkMessage("链接可用，正在接收第一帧数据。", "ok");
+    const [{ modelId: localModelId, snapshot: localSnapshot }, teacherSnapshot] = await Promise.all([
+      fetchLocalDefinitionSnapshot(),
+      fetchTeacherSnapshot(connection),
+    ]);
+    state.localDefinitionSnapshot = localSnapshot;
+    state.localDefinitionModelId = localModelId;
+    state.definitionMismatchLastKey = "";
+    applyTeacherConnection(connection);
+    state.receiveMode = true;
+    state.frozen = false;
+    state.receiveEpoch += 1;
+    resetReceiveIssueStreak();
+    state.measurementTraceHistory = [];
+    state.commandTraceHistory = [];
+    state.lastReceiveAt = "";
+    state.snapshotSource = "";
+    state.lastTeacherSnapshotLogKey = "";
+    closeReceiveLinkDialog();
+    addRuntimeLog(
+      "接收模式",
+      "模拟台交互链接",
+      "启动接收",
+      `模型 ${connection.modelName}；地址 ${connection.teacherApiBase}`,
+      "ok",
+    );
+    renderReceiveMode();
+    acceptTeacherSnapshot(teacherSnapshot, state.receiveEpoch);
+  } catch (error) {
+    addRuntimeLog("接收模式", "模拟台交互链接", "启动接收失败", apiErrorText(error), "warn");
+    setReceiveLinkMessage(apiErrorText(error), "error");
+  } finally {
+    confirmButton.disabled = false;
+  }
+}
+
+function runtimeLogTime() {
+  return runtimeLogWallTimeText(new Date());
+}
+
+function runtimeLogWallTimeText(value) {
+  if (!value) return "--";
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    return value.toLocaleTimeString("zh-CN", { hour12: false });
+  }
+  const text = String(value || "").trim();
+  if (!text) return "--";
+  const isoMatch = text.match(/(?:T|\s)(\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$/);
+  if (isoMatch) return isoMatch[1];
+  const plainTimeMatch = text.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (plainTimeMatch) {
+    return `${plainTimeMatch[1].padStart(2, "0")}:${plainTimeMatch[2]}:${plainTimeMatch[3] || "00"}`;
+  }
+  const parsed = new Date(text);
+  if (Number.isFinite(parsed.getTime())) {
+    return parsed.toLocaleTimeString("zh-CN", { hour12: false });
+  }
+  return text;
+}
+
+function runtimeLogSimTime(simTime = "") {
+  const explicit = String(simTime || "").trim();
+  if (explicit) return explicit;
+  return state.snapshot?.clock?.time || $("simTime")?.textContent?.trim() || "--";
+}
+
+function runtimeLogSimTimeFromCommandHistory(item = {}) {
+  const explicit = item.simu_time || item.sim_time || item.clock?.time || "";
+  if (explicit) return runtimeLogSimTime(explicit);
+  const minute = Number(item.issued_absolute_minute);
+  if (Number.isFinite(minute)) return formatTraceClockMinute(minute);
+  return runtimeLogSimTime();
+}
+
+function addRuntimeLog(type, target, result, detail = "", level = "info", renderNow = true, simuTime = "") {
   state.runtimeLogSeq += 1;
   state.runtimeLogs.unshift({
     seq: state.runtimeLogSeq,
     wall_time: runtimeLogTime(),
+    simu_time: runtimeLogSimTime(simuTime),
     type,
     target,
     result,
@@ -212,6 +998,10 @@ async function importDefinitionArchive(file) {
     state.receiveEpoch += 1;
     state.frozen = false;
     state.snapshot = null;
+    state.localDefinitionSnapshot = null;
+    state.localDefinitionModelId = "";
+    state.receiveReconnectAttempts = 0;
+    state.receiveRequestActive = false;
     setImportStatus(`已导入 ${result.imported?.curve_points || 0} 点曲线`, "ok");
     addRuntimeLog(
       "模型交互",
@@ -237,15 +1027,26 @@ async function importDefinitionArchive(file) {
 
 function renderModelSelector() {
   const selector = $("modelSelector");
-  if (!selector) return;
-  const models = state.models.length ? state.models : [{ id: state.activeModelId || "", name: "默认模型" }];
-  selector.innerHTML = models.map((model) => `
-    <option value="${escapeHtml(model.id)}">${escapeHtml(model.name || model.id)}</option>
-  `).join("");
-  selector.value = state.activeModelId || models[0]?.id || "";
-  selector.disabled = models.length <= 1;
-  const active = models.find((model) => model.id === selector.value) || models[0] || {};
-  $("activeModelName").textContent = active.name || active.id || "默认模型";
+  const localModels = state.models.length ? state.models : [{ id: state.activeModelId || "", name: "默认模型" }];
+  const hasActiveModel = localModels.some((model) => model.id === state.activeModelId);
+  const externalModel = state.activeModelId && !hasActiveModel
+    ? [{ id: state.activeModelId, name: state.teacherModelName || state.snapshot?.model?.name || state.activeModelId }]
+    : [];
+  const models = [...localModels, ...externalModel];
+  let activeModelId = state.activeModelId || models[0]?.id || "";
+  if (selector) {
+    selector.innerHTML = models.map((model) => `
+      <option value="${escapeHtml(model.id)}">${escapeHtml(model.name || model.id)}</option>
+    `).join("");
+    selector.value = activeModelId;
+    selector.disabled = state.receiveMode || models.length <= 1;
+    activeModelId = selector.value;
+  }
+  const active = models.find((model) => model.id === activeModelId) || models[0] || {};
+  const activeModelName = $("activeModelName");
+  if (activeModelName) {
+    activeModelName.textContent = active.name || active.id || "默认模型";
+  }
 }
 
 function setActiveModel(modelId, shouldRefresh = true) {
@@ -255,15 +1056,28 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.frozen = false;
   pending.run_status.clear();
   pending.set_values.clear();
+  state.localDefinitionSnapshot = null;
+  state.localDefinitionModelId = "";
+  state.receiveReconnectAttempts = 0;
   state.measurementTraceHistory = [];
+  state.commandTraceHistory = [];
   state.traceRunId = null;
   state.selectedMeasurementKey = "";
+  state.selectedCommandTraceKey = "";
+  state.selectedCommandTraceLabel = "";
   state.modelFilter = { dev_type: "all", dev_name: "" };
   state.activeModelParamTab = "";
   state.activeCurveDisplayKey = "wind_speed_mps";
   state.selectedCurveDisplayKeys = ["wind_speed_mps"];
+  state.hiddenCurveDisplayKeys = [];
   state.curveDisplayCursor = { visible: false, x: 0, y: 0, index: 0 };
+  state.curveDisplayLegendHitBoxes = [];
   state.lastCurveDisplayTableKey = "";
+  state.chartSeriesHidden = {};
+  state.chartSeriesSelected = {};
+  state.chartCursors = {};
+  state.chartSeriesHitData = {};
+  state.chartPlotInfo = {};
   state.measurementFilter = { dev_type: "all", dev_name: "" };
   state.controlFilter = { dev_type: "all", dev_name: "" };
   state.activeControlTab = "remote-control";
@@ -304,45 +1118,29 @@ async function refresh() {
   } catch (_error) {
     $("connectionDot").className = "off";
     $("connectionText").textContent = "离线";
-    $("topologyState").textContent = "离线";
   }
 }
 
 async function refreshFromTeacher(epoch = state.receiveEpoch) {
+  if (state.receiveRequestActive) return;
+  state.receiveRequestActive = true;
   try {
     const snapshot = await teacherApi("/api/snapshot");
     if (!state.receiveMode || epoch !== state.receiveEpoch) return;
-    state.lastReceiveAt = new Date().toLocaleTimeString();
-    state.snapshotSource = "teacher";
-    const logKey = renewableClockKey(snapshot);
-    if (logKey !== state.lastTeacherSnapshotLogKey) {
-      const valuesNow = currentWeatherLoad(snapshot);
-      const scada = snapshot.measurements?.scada || [];
-      addRuntimeLog(
-        "实时交互",
-        "模拟台 /api/snapshot",
-        "接收成功",
-        [
-          `仿真时刻 ${snapshot.clock?.time || "--"}`,
-          `量测 ${scada.length} 点`,
-          `风速 ${formatNumber(valuesNow.windSpeed)} m/s`,
-          `光照 ${formatNumber(valuesNow.solarIrradiance)} W/m2`,
-          `负荷 ${formatNumber(valuesNow.loadKw)} kW`,
-        ],
-        "ok",
-        false,
-      );
-      state.lastTeacherSnapshotLogKey = logKey;
-    }
-    renderSnapshot(snapshot);
-    renderReceiveMode();
+    acceptTeacherSnapshot(snapshot, epoch);
   } catch (_error) {
     if (!state.receiveMode || epoch !== state.receiveEpoch) return;
     $("connectionDot").className = "off";
-    $("connectionText").textContent = "教员离线";
-    $("topologyState").textContent = "教员离线";
-    addRuntimeLog("实时交互", "模拟台 /api/snapshot", "接收失败", apiErrorText(_error), "error");
-    renderReceiveMode("接收失败");
+    $("connectionText").textContent = "正在重连";
+    const shouldContinue = recordReceiveIssue(
+      "实时交互",
+      "模拟台 /api/snapshot",
+      "通讯失败",
+      [`数据接收失败：${apiErrorText(_error)}`, "将尝试自动重连模拟台交互链接"],
+    );
+    if (shouldContinue) await attemptTeacherReconnect(epoch);
+  } finally {
+    state.receiveRequestActive = false;
   }
 }
 
@@ -351,20 +1149,19 @@ function renderSnapshot(snapshot) {
   if (snapshot.model?.id && snapshot.model.id !== state.activeModelId) {
     state.activeModelId = snapshot.model.id;
   }
+  if (state.snapshotSource === "teacher" && snapshot.model?.name) {
+    state.teacherModelName = snapshot.model.name;
+    localStorage.setItem("polarTeacherModelName", state.teacherModelName);
+  }
   renderModelSelector();
   renderClock(snapshot.clock || {});
   const runId = Number(snapshot.clock?.run_id ?? 0);
   if (state.traceRunId !== null && runId !== state.traceRunId) {
     state.measurementTraceHistory = [];
+    state.commandTraceHistory = [];
     state.selectedMeasurementKey = "";
   }
   state.traceRunId = runId;
-  const displayMeasurements = measurementDisplayRows(snapshot);
-  const validCount = displayMeasurements.filter((m) => Number(m.valid) === 1).length;
-  $("measureCount").textContent = `${displayMeasurements.length} 点`;
-  $("validCount").textContent = `${validCount} 可用`;
-  $("overviewRefresh").textContent = snapshot.clock?.time || "--";
-  $("topologyState").textContent = snapshot.result?.solver_info || "在线";
   renderTeacherWeather(snapshot);
   renderReceiveMode();
   renderTraineeModelPage(snapshot);
@@ -372,12 +1169,14 @@ function renderSnapshot(snapshot) {
     renderCurveDisplay(snapshot);
   }
   appendMeasurementTrace(snapshot);
+  appendCommandTrace(snapshot);
   renderMeasurements(snapshot);
-  renderCombinedControlPage(snapshot.devices || []);
+  renderCombinedControlPage();
   renderRenewableControl(snapshot);
   syncCommandHistoryLogs(snapshot.commands?.history || []);
   renderHistory();
   updatePendingCount();
+  renderTraineeOverviewDashboard(snapshot);
   maybeRunRenewableControl(snapshot);
 }
 
@@ -400,8 +1199,9 @@ function renderReceiveMode(extraText = "") {
     stateText.textContent = extraText || label;
   }
   if (sourceText) {
+    const modelLabel = state.teacherModelName || state.activeModelId || "默认模型";
     sourceText.textContent = state.receiveMode
-      ? `${teacherApiBase} · ${state.lastReceiveAt || "--"}`
+      ? `${modelLabel} @ ${teacherApiBase} · ${state.lastReceiveAt || "--"}`
       : state.frozen
         ? `冻结于 ${state.lastReceiveAt || "--"}`
         : teacherApiBase;
@@ -487,6 +1287,225 @@ function currentWeatherLoad(snapshot = state.snapshot || {}) {
     airTemp: interpolateCurve(weather, minute, "air_temp_c", 25),
     loadKw: loadTotal,
   };
+}
+
+function latestRuntimeLog(snapshot, type) {
+  return [...(snapshot.runtime_logs || [])].reverse().find((item) => item?.type === type) || null;
+}
+
+function logDetailText(log) {
+  return Array.isArray(log?.detail) ? log.detail.join(" ") : String(log?.detail || "");
+}
+
+function matchedNumber(text, pattern) {
+  const match = pattern.exec(text || "");
+  return match ? Number(match[1]) : null;
+}
+
+function storageSocPercentFromText(text) {
+  const directSoc = matchedNumber(text, /储能SOC\s*平均\s*([-+\d.]+)%/);
+  if (Number.isFinite(directSoc)) return directSoc;
+  const values = [...String(text || "").matchAll(/ESS\.[^=，,\s]+=\s*([-+\d.]+)/g)]
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value));
+  if (!values.length) return null;
+  const average = values.reduce((total, value) => total + value, 0) / values.length;
+  return average <= 1 ? average * 100 : average;
+}
+
+function parsePowerFlowOverview(snapshot) {
+  const log = latestRuntimeLog(snapshot, "潮流计算");
+  const text = logDetailText(log);
+  const controlText = logDetailText(latestRuntimeLog(snapshot, "控制响应"));
+  const soc = storageSocPercentFromText(text);
+  return {
+    log,
+    wind: matchedNumber(text, /风力发电总功率\s*([-+\d.]+)/),
+    solar: matchedNumber(text, /光伏发电总功率\s*([-+\d.]+)/),
+    diesel: matchedNumber(text, /柴油发电总功率\s*([-+\d.]+)/),
+    load: matchedNumber(text, /负荷用电总功率\s*([-+\d.]+)/),
+    storageDischarge: matchedNumber(text, /储能发电总功率\s*([-+\d.]+)/),
+    storageCharge: matchedNumber(text, /储能充电总功率\s*([-+\d.]+)/),
+    soc: Number.isFinite(soc) ? soc : storageSocPercentFromText(controlText),
+    generation: matchedNumber(text, /电源发电总功率\s*([-+\d.]+)/),
+    consumption: matchedNumber(text, /用电及充电总功率\s*([-+\d.]+)/),
+    balance: matchedNumber(text, /功率差额\s*([-+\d.]+)/),
+  };
+}
+
+function formatOverviewNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "--";
+  return number.toFixed(2);
+}
+
+function overviewPowerText(value) {
+  return Number.isFinite(value) ? `${formatOverviewNumber(value)} kW` : "--";
+}
+
+function overviewPercentText(value) {
+  return Number.isFinite(value) ? `${formatOverviewNumber(value)}%` : "--";
+}
+
+function overviewFlowPowerValue(value) {
+  const number = Math.abs(Number(value));
+  return Number.isFinite(number) ? number : 0;
+}
+
+function overviewClamp(value, minValue, maxValue) {
+  return Math.min(maxValue, Math.max(minValue, value));
+}
+
+function overviewLoadFlowColor(greenPowerShare) {
+  const percent = overviewClamp(Number(greenPowerShare), 0, 100);
+  if (!Number.isFinite(percent)) return "#4978c4";
+  const hue = 2 + percent * 1.18;
+  return `hsl(${hue.toFixed(1)}, 62%, 42%)`;
+}
+
+function overviewFlowStyle(powerValue, maxPower) {
+  const power = overviewFlowPowerValue(powerValue);
+  const base = Math.max(1, overviewFlowPowerValue(maxPower));
+  const active = power > 1e-6;
+  const ratio = active ? overviewClamp(Math.sqrt(power / base), 0, 1) : 0;
+  const thickness = active ? 2 + ratio * 6 : 2;
+  const headSize = active ? 8 + ratio * 9 : 8;
+  const headHalf = active ? 5 + ratio * 5 : 5;
+  const opacity = active ? 0.58 + ratio * 0.34 : 0.24;
+  const duration = active ? 1.4 - ratio * 0.42 : 1.4;
+  return {
+    active,
+    thickness: `${thickness.toFixed(2)}px`,
+    headSize: `${headSize.toFixed(2)}px`,
+    headHalf: `${headHalf.toFixed(2)}px`,
+    opacity: opacity.toFixed(2),
+    duration: `${duration.toFixed(2)}s`,
+  };
+}
+
+function setOverviewFlowVisual(id, powerValue, maxPower, color) {
+  const element = $(id);
+  if (!element) return;
+  const visual = overviewFlowStyle(powerValue, maxPower);
+  element.dataset.flowActive = visual.active ? "true" : "false";
+  element.style.setProperty("--flow-color", color);
+  element.style.setProperty("--flow-thickness", visual.thickness);
+  element.style.setProperty("--flow-head-size", visual.headSize);
+  element.style.setProperty("--flow-head-half", visual.headHalf);
+  element.style.setProperty("--flow-opacity", visual.opacity);
+  element.style.setProperty("--flow-duration", visual.duration);
+}
+
+function renderEnergyFlowVisuals(power, storagePower, greenPowerShare) {
+  const windPower = overviewFlowPowerValue(power.wind);
+  const solarPower = overviewFlowPowerValue(power.solar);
+  const dieselPower = overviewFlowPowerValue(power.diesel);
+  const loadPower = overviewFlowPowerValue(power.load);
+  const storageMagnitude = overviewFlowPowerValue(storagePower);
+  const renewablePower = windPower + solarPower + Math.max(0, Number(storagePower) || 0);
+  const maxPower = Math.max(1, windPower, solarPower, dieselPower, loadPower, storageMagnitude, renewablePower);
+  const greenColor = "#2f9e62";
+  const dieselColor = "#c84f4f";
+  const loadColor = overviewLoadFlowColor(greenPowerShare);
+  setOverviewFlowVisual("overviewFlowWindNode", windPower, maxPower, greenColor);
+  setOverviewFlowVisual("overviewFlowSolarNode", solarPower, maxPower, greenColor);
+  setOverviewFlowVisual("overviewFlowDieselNode", dieselPower, maxPower, dieselColor);
+  setOverviewFlowVisual("overviewFlowLoadNode", loadPower, maxPower, loadColor);
+  setOverviewFlowVisual("overviewStorageFlowLink", storageMagnitude, maxPower, greenColor);
+  setOverviewFlowVisual("overviewEnergyMainTrunk", renewablePower, maxPower, greenColor);
+}
+
+function setOverviewText(id, value) {
+  const element = $(id);
+  if (element) element.textContent = value;
+}
+
+function overviewClockText(snapshot) {
+  const clock = snapshot.clock || {};
+  const timeText = clock.time || "--";
+  if (curveDisplayMode(snapshot) !== "year") return timeText;
+  const dayIndex = Math.floor((Number(clock.absolute_minute ?? clock.minute ?? 0) || 0) / 1440) + 1;
+  return `第${dayIndex}天 ${timeText}`;
+}
+
+function renderTraineeOverviewEvents() {
+  const container = $("traineeOverviewEvents");
+  if (!container) return;
+  const logs = state.runtimeLogs.slice(0, 4);
+  setOverviewText("overviewEventCount", `${logs.length} 条`);
+  if (logs.length) {
+    container.innerHTML = logs.map((item) => `
+      <div class="overview-event-item">
+        <time>${escapeHtml(item.wall_time || "--")}</time>
+        <strong>${escapeHtml(item.type || "运行")}</strong>
+        <span title="${escapeHtml(runtimeLogDetailText(item.detail))}">${escapeHtml(item.result || runtimeLogDetailText(item.detail) || "完成")}</span>
+      </div>
+    `).join("");
+    return;
+  }
+  container.innerHTML = '<div class="overview-event-item"><time>--</time><strong>系统</strong><span>等待接收教员台数据</span></div>';
+}
+
+function latestCommandIssuedAt(snapshot = state.snapshot || {}) {
+  const latest = [...(snapshot.commands?.history || [])].reverse()[0];
+  return latest?.time || state.renewableControl.lastSentAt || "--";
+}
+
+function renderTraineeOverviewDashboard(snapshot) {
+  const clock = snapshot.clock || {};
+  const measurements = measurementDisplayRows(snapshot);
+  const validCount = measurements.filter((item) => Number(item.valid) === 1).length;
+  const totalMeasurements = measurements.length;
+  const weather = currentWeatherLoad(snapshot);
+  const power = parsePowerFlowOverview(snapshot);
+  const receiveDot = $("overviewReceiveDot");
+  if (receiveDot) {
+    receiveDot.classList.toggle("is-running", state.receiveMode);
+    receiveDot.classList.toggle("is-paused", state.frozen && !state.receiveMode);
+  }
+  setOverviewText("overviewMode", curveDisplayMode(snapshot) === "year" ? "年仿真" : "日仿真");
+  setOverviewText("overviewStep", `${formatOverviewNumber(clock.step_minutes || 1)} min`);
+  setOverviewText("measureCount", `${totalMeasurements} 点`);
+  setOverviewText("validCount", `${validCount} 可用`);
+
+  setOverviewText("teacherWind", `${formatOverviewNumber(weather.windSpeed)} m/s`);
+  setOverviewText("teacherSolar", `${formatOverviewNumber(weather.solarIrradiance)} W/m²`);
+  setOverviewText("teacherTemp", `${formatOverviewNumber(weather.airTemp)} ℃`);
+  setOverviewText("teacherLoad", overviewPowerText(weather.loadKw));
+  setOverviewText("teacherWeatherTime", overviewClockText(snapshot));
+
+  const storagePower = Number.isFinite(power.storageDischarge) && Number.isFinite(power.storageCharge)
+    ? power.storageDischarge - power.storageCharge
+    : null;
+  const storageFlow = storagePower === null ? "idle" : storagePower > 0 ? "discharge" : storagePower < 0 ? "charge" : "idle";
+  const storageNode = $("overviewStorageFlowNode");
+  if (storageNode) storageNode.dataset.storageFlow = storageFlow;
+  const storageLink = $("overviewStorageFlowLink");
+  if (storageLink) storageLink.dataset.storageFlow = storageFlow;
+  setOverviewText("overviewFlowResultTime", power.log ? `接收时刻 ${power.log.simu_time || power.log.sim_time || clock.time || "--"}` : "尚无接收结果");
+  setOverviewText("overviewFlowWindPower", overviewPowerText(power.wind));
+  setOverviewText("overviewFlowWindMeta", `风速 ${formatOverviewNumber(weather.windSpeed)} m/s`);
+  setOverviewText("overviewFlowSolarPower", overviewPowerText(power.solar));
+  setOverviewText("overviewFlowSolarMeta", `辐照 ${formatOverviewNumber(weather.solarIrradiance)} W/m²`);
+  setOverviewText("overviewFlowDieselPower", overviewPowerText(power.diesel));
+  setOverviewText("overviewFlowStoragePower", overviewPowerText(storagePower));
+  setOverviewText("overviewFlowStorageDirection", storagePower === null ? "待接收" : storagePower > 0 ? "放电" : storagePower < 0 ? "充电" : "静置");
+  setOverviewText("overviewFlowSoc", Number.isFinite(power.soc) ? `${formatOverviewNumber(power.soc)}%` : "--");
+  setOverviewText("overviewFlowLoadPower", overviewPowerText(power.load));
+  setOverviewText("overviewFlowLoadMeta", `需求 ${overviewPowerText(weather.loadKw)}`);
+  setOverviewText("overviewFlowBalance", overviewPowerText(power.balance));
+  const greenPowerShare = Number.isFinite(power.diesel) && Number.isFinite(power.load) && Math.abs(power.load) > 1e-9
+    ? (1.0 - power.diesel / power.load) * 100.0
+    : null;
+  setOverviewText("overviewFlowGreenShare", overviewPercentText(greenPowerShare));
+  renderEnergyFlowVisuals(power, storagePower, greenPowerShare);
+
+  const validRate = totalMeasurements ? (validCount / totalMeasurements) * 100 : null;
+  setOverviewText("overviewMeasurementQuality", totalMeasurements ? `有效率 ${formatOverviewNumber(validRate)}%` : "待接收");
+  setOverviewText("overviewMeasurementRate", overviewPercentText(validRate));
+  setOverviewText("overviewRenewableState", state.renewableControl.enabled ? "实时控制中" : "人工控制");
+  setOverviewText("overviewLastCommand", latestCommandIssuedAt(snapshot));
+  renderTraineeOverviewEvents();
 }
 
 function curveDisplayMode(snapshot = state.snapshot || {}) {
@@ -634,6 +1653,35 @@ function selectedCurveDisplayKeys(snapshot = state.snapshot || {}) {
   return selected;
 }
 
+function curveDisplayHiddenSet() {
+  return new Set(state.hiddenCurveDisplayKeys || []);
+}
+
+function isCurveDisplaySeriesHidden(key) {
+  return curveDisplayHiddenSet().has(key);
+}
+
+function visibleCurveDisplayKeys(snapshot = state.snapshot || {}) {
+  return selectedCurveDisplayKeys(snapshot).filter((key) => !isCurveDisplaySeriesHidden(key));
+}
+
+function visibleCurveDisplayMetas(snapshot = state.snapshot || {}) {
+  return visibleCurveDisplayKeys(snapshot).map((key) => curveDisplayMetaForKey(key, snapshot));
+}
+
+function toggleCurveDisplaySeriesVisibility(key, shouldRender = true) {
+  if (!key) return;
+  const hidden = curveDisplayHiddenSet();
+  if (hidden.has(key)) hidden.delete(key);
+  else hidden.add(key);
+  state.hiddenCurveDisplayKeys = Array.from(hidden);
+  state.activeCurveDisplayKey = key;
+  if (shouldRender) {
+    renderCurveDisplayTree(state.snapshot || {});
+    drawCurveDisplay(state.snapshot || {});
+  }
+}
+
 function curveDisplayFamilyKeys(family, snapshot = state.snapshot || {}) {
   if (family === "environment") return [...CURVE_DISPLAY_ENV_KEYS];
   if (family === "load") return curveDisplayLoadKeys(snapshot);
@@ -646,6 +1694,11 @@ function setCurveDisplaySelection(keys, activeKey = keys?.[keys.length - 1], sho
   if (!selected.length) selected.push("wind_speed_mps");
   state.selectedCurveDisplayKeys = selected;
   state.activeCurveDisplayKey = selected.includes(activeKey) ? activeKey : selected[selected.length - 1] || "wind_speed_mps";
+  if (selected.length === 1) {
+    const hidden = curveDisplayHiddenSet();
+    hidden.delete(selected[0]);
+    state.hiddenCurveDisplayKeys = Array.from(hidden);
+  }
   state.lastCurveDisplayTableKey = "";
   if (shouldRender) renderCurveDisplay(state.snapshot || {}, true);
 }
@@ -694,7 +1747,7 @@ function renderCurveDisplayTree(snapshot = state.snapshot || {}) {
           return `
             <button
               type="button"
-              class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""}"
+              class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""} ${isCurveDisplaySeriesHidden(key) ? "is-hidden-series" : ""}"
               data-curve-display-tree-type="environment"
               data-curve-display-key="${escapeHtml(key)}"
             >
@@ -718,7 +1771,7 @@ function renderCurveDisplayTree(snapshot = state.snapshot || {}) {
         ${loadKeys.map((key) => `
           <button
             type="button"
-            class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""}"
+            class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""} ${isCurveDisplaySeriesHidden(key) ? "is-hidden-series" : ""}"
             data-curve-display-tree-type="load"
             data-curve-display-key="${escapeHtml(key)}"
           >
@@ -930,10 +1983,12 @@ function drawCurveDisplay(snapshot = state.snapshot || {}) {
   const right = width - plot.right;
   const top = plot.top;
   const bottom = height - plot.bottom;
-  const metas = selectedCurveDisplayKeys(snapshot).map((key) => curveDisplayMetaForKey(key, snapshot));
-  const seriesByKey = new Map(metas.map((meta) => [meta.key, curveDisplaySeries(meta.key, snapshot)]));
-  const legendColumns = width < 560 ? 2 : Math.max(1, metas.length);
+  const allMetas = selectedCurveDisplayKeys(snapshot).map((key) => curveDisplayMetaForKey(key, snapshot));
+  const metas = allMetas.filter((meta) => !isCurveDisplaySeriesHidden(meta.key));
+  const seriesByKey = new Map(allMetas.map((meta) => [meta.key, curveDisplaySeries(meta.key, snapshot)]));
+  const legendColumns = width < 560 ? 2 : Math.max(1, allMetas.length);
   const legendColumnWidth = (right - left) / legendColumns;
+  state.curveDisplayLegendHitBoxes = [];
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#fcfeff";
   ctx.fillRect(0, 0, width, height);
@@ -948,11 +2003,12 @@ function drawCurveDisplay(snapshot = state.snapshot || {}) {
     ctx.stroke();
   }
   drawCurveDisplayXAxis(ctx, canvas, plot, snapshot);
-  metas.forEach((meta, metaIndex) => {
+  const activeKey = isCurveDisplaySeriesHidden(state.activeCurveDisplayKey) ? "" : state.activeCurveDisplayKey;
+  metas.forEach((meta) => {
     const values = seriesByKey.get(meta.key) || [];
     const stride = Math.max(1, Math.floor(values.length / Math.max(1, (right - left) * 1.4)));
     ctx.strokeStyle = meta.color;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = activeKey === meta.key ? 3.4 : 2;
     ctx.beginPath();
     for (let i = 0; i < values.length; i += stride) {
       const x = left + (i / Math.max(1, values.length - 1)) * (right - left);
@@ -962,12 +2018,29 @@ function drawCurveDisplay(snapshot = state.snapshot || {}) {
     }
     if (values.length) ctx.lineTo(right, curveDisplayValueToY(values[values.length - 1], meta, canvas));
     ctx.stroke();
+  });
+  if (!metas.length && allMetas.length) {
+    ctx.fillStyle = "#63717a";
+    ctx.textAlign = "center";
+    ctx.fillText("所有曲线已隐藏", (left + right) / 2, (top + bottom) / 2);
+    ctx.textAlign = "left";
+  }
+  allMetas.forEach((meta, metaIndex) => {
     const legendX = left + (metaIndex % legendColumns) * legendColumnWidth;
     const legendY = 20 + Math.floor(metaIndex / legendColumns) * 16;
-    ctx.fillStyle = meta.color;
+    const hidden = isCurveDisplaySeriesHidden(meta.key);
+    const labelText = `${meta.label} (${meta.unit})${hidden ? " 隐藏" : ""}`;
+    state.curveDisplayLegendHitBoxes.push({
+      key: meta.key,
+      x: legendX - 6,
+      y: legendY - 9,
+      width: Math.min(legendColumnWidth - 8, ctx.measureText(labelText).width + 42),
+      height: 16,
+    });
+    ctx.fillStyle = hidden ? "#9aa9af" : meta.color;
     ctx.fillRect(legendX, legendY, 18, 3);
-    ctx.fillStyle = "#63717a";
-    ctx.fillText(`${meta.label} (${meta.unit})`, legendX + 26, legendY + 4);
+    ctx.fillStyle = hidden ? "#9aa9af" : activeKey === meta.key ? "#1f3037" : "#63717a";
+    ctx.fillText(labelText, legendX + 26, legendY + 4);
   });
   drawCurveDisplayCursor(ctx, canvas, plot, metas, seriesByKey, snapshot);
 }
@@ -1028,6 +2101,42 @@ function pointerPositionOnCurveDisplayCanvas(event) {
     x: (event.clientX - rect.left) * (canvas.width / rect.width),
     y: (event.clientY - rect.top) * (canvas.height / rect.height),
   };
+}
+
+function curveDisplayLegendKeyAtPointer(event) {
+  const canvas = $("curveDisplayChart");
+  if (!canvas) return "";
+  const pos = pointerPositionOnCurveDisplayCanvas(event);
+  const hit = (state.curveDisplayLegendHitBoxes || []).find((box) => (
+    pos.x >= box.x && pos.x <= box.x + box.width && pos.y >= box.y && pos.y <= box.y + box.height
+  ));
+  return hit?.key || "";
+}
+
+function curveDisplayKeyAtPointer(event) {
+  const canvas = $("curveDisplayChart");
+  if (!canvas) return "";
+  const pos = pointerPositionOnCurveDisplayCanvas(event);
+  const plot = curveDisplayPlot(canvas);
+  const left = plot.left;
+  const right = canvas.width - plot.right;
+  const top = plot.top;
+  const bottom = canvas.height - plot.bottom;
+  if (pos.x < left || pos.x > right || pos.y < top || pos.y > bottom) return "";
+  const index = curveDisplayPointIndexFromX(pos.x, canvas, state.snapshot || {});
+  const tolerance = canvas.width < 640 ? 18 : 14;
+  let bestKey = "";
+  let bestDistance = Infinity;
+  visibleCurveDisplayMetas(state.snapshot || {}).forEach((meta) => {
+    const values = curveDisplaySeries(meta.key, state.snapshot || {});
+    if (!values.length) return;
+    const distance = Math.abs(curveDisplayValueToY(values[index], meta, canvas) - pos.y);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestKey = meta.key;
+    }
+  });
+  return bestDistance <= tolerance ? bestKey : "";
 }
 
 function setCurveDisplayCursorFromEvent(event, shouldDraw = true) {
@@ -1117,11 +2226,11 @@ function renewableDeviceRows(snapshot, weather) {
   const map = deviceMap(snapshot);
   const rows = [];
   parameterRows(snapshot, "wind_generator").forEach((param, idx) => {
-    const name = parameterName(param) || `wt${String(idx + 1).padStart(2, "0")}_rect`;
-    const dev = map.get(`DCACConverter|${name}`);
+    const name = parameterName(param) || `wt${String(idx + 1).padStart(2, "0")}_10kw`;
+    const dev = map.get(`ACGenerator|${name}`);
     rows.push({
       category: "风电",
-      dev_type: "DCACConverter",
+      dev_type: "ACGenerator",
       dev_name: name,
       online: isDeviceOnline(dev),
       availableKw: isDeviceOnline(dev) ? windAvailablePower(param, weather) : 0,
@@ -1129,11 +2238,11 @@ function renewableDeviceRows(snapshot, weather) {
     });
   });
   parameterRows(snapshot, "pv_generator").forEach((param, idx) => {
-    const name = parameterName(param) || `pv${String(idx + 1).padStart(2, "0")}_dcdc`;
-    const dev = map.get(`DCDCConverter|${name}`);
+    const name = parameterName(param) || `pv${String(idx + 1).padStart(2, "0")}_vsrc`;
+    const dev = map.get(`DCGenerator|${name}`);
     rows.push({
       category: "光伏",
-      dev_type: "DCDCConverter",
+      dev_type: "DCGenerator",
       dev_name: name,
       online: isDeviceOnline(dev),
       availableKw: isDeviceOnline(dev) ? pvAvailablePower(param, weather) : 0,
@@ -1144,10 +2253,10 @@ function renewableDeviceRows(snapshot, weather) {
   (snapshot.devices || []).forEach((dev) => {
     const name = deviceName(dev);
     const type = deviceType(dev);
-    if (type === "DCACConverter" && /^wt/i.test(name)) {
-      rows.push({ category: "风电", dev_type: type, dev_name: name, online: isDeviceOnline(dev), availableKw: toNumber(dev.raw?.p_ac_set ?? dev.set_values?.p_set, 0), set_type: "p_set" });
+    if (type === "ACGenerator" && /^wt/i.test(name)) {
+      rows.push({ category: "风电", dev_type: type, dev_name: name, online: isDeviceOnline(dev), availableKw: toNumber(dev.raw?.p_set ?? dev.set_values?.p_set, 0), set_type: "p_set" });
     }
-    if (type === "DCDCConverter" && /^pv/i.test(name)) {
+    if (type === "DCGenerator" && /^pv/i.test(name)) {
       rows.push({ category: "光伏", dev_type: type, dev_name: name, online: isDeviceOnline(dev), availableKw: toNumber(dev.raw?.p_set ?? dev.set_values?.p_set, 0), set_type: "p_set" });
     }
   });
@@ -1166,8 +2275,6 @@ function storageDeviceRows(snapshot) {
   const rows = params.length ? params : Array.from(essByName.values()).map((dev) => ({ name: deviceName(dev) }));
   return rows.map((param, idx) => {
     const name = parameterName(param) || deviceName(Array.from(essByName.values())[idx]) || `ess${String(idx + 1).padStart(2, "0")}`;
-    const dcdcName = `${name}_dcdc`;
-    const dcdc = map.get(`DCDCConverter|${dcdcName}`);
     const ess = essByName.get(name);
     const soc = clamp(toNumber(ess?.soc_curr ?? param.soc_cur ?? param.soc_curr, 0.5), 0, 1);
     const capacityKwh = Math.max(1e-9, toNumber(param.emva ?? param.capacity_kwh, 50));
@@ -1179,10 +2286,10 @@ function storageDeviceRows(snapshot) {
     const dischargePower = Math.max(0, Math.min(dischargeMax, ((soc - socMin) * capacityKwh) / stepHours));
     return {
       category: "储能",
-      dev_type: "DCDCConverter",
-      dev_name: dcdcName,
+      dev_type: "ESS",
+      dev_name: name,
       source_name: name,
-      online: isDeviceOnline(dcdc) && isDeviceOnline(ess || dcdc),
+      online: isDeviceOnline(ess),
       soc,
       socMin,
       socMax,
@@ -1377,10 +2484,11 @@ async function sendRenewableControlPlan(plan, trigger = "manual") {
     return;
   }
   state.renewableControl.sending = true;
+  const targetName = teacherCommandTargetName();
   addRuntimeLog("策略决策", "新能源优先", "计算完成", renewableDecisionDetail(plan), "info");
   addRuntimeLog(
     "实时控制",
-    "模拟台 /api/student/commands",
+    targetName,
     "下发请求",
     `触发 ${trigger}；设值 ${plan.commands.length} 条；目标柴油缺额 ${formatNumber(plan.metrics.dieselResidual)} kW`,
     "info",
@@ -1389,7 +2497,7 @@ async function sendRenewableControlPlan(plan, trigger = "manual") {
   try {
     const payload = {
       source: "trainee-renewable-priority",
-      valid_for_minutes: CONTROL_COMMAND_VALID_MINUTES,
+      valid_for_minutes: RENEWABLE_COMMAND_VALID_MINUTES,
       set_values: plan.commands,
       strategy: {
         name: "renewable_priority",
@@ -1403,20 +2511,20 @@ async function sendRenewableControlPlan(plan, trigger = "manual") {
         curtail_kw: commandNumber(plan.metrics.curtailKw),
       },
     };
-    const result = await teacherApi("/api/student/commands", { method: "POST", body: JSON.stringify(payload) });
+    const result = await teacherCommandApi({ method: "POST", body: JSON.stringify(payload) });
     state.renewableControl.lastSentAt = new Date().toLocaleTimeString();
     state.renewableControl.lastClockKey = plan.clockKey;
     state.renewableControl.lastStatus = `已下发 ${result.set_values || plan.commands.length} 条指令，计划柴油缺额 ${formatNumber(plan.metrics.dieselResidual)} kW。`;
     addRuntimeLog(
       "模拟台响应",
-      "模拟台 /api/student/commands",
+      targetName,
       "下发成功",
       `模拟台接受设值 ${result.set_values || 0} 条；策略时刻 ${plan.time}；柴油缺额 ${formatNumber(plan.metrics.dieselResidual)} kW`,
       "ok",
     );
   } catch (error) {
     state.renewableControl.lastStatus = apiErrorText(error);
-    addRuntimeLog("模拟台响应", "模拟台 /api/student/commands", "下发失败", apiErrorText(error), "error");
+    addRuntimeLog("模拟台响应", targetName, "下发失败", apiErrorText(error), "error");
   } finally {
     state.renewableControl.sending = false;
     renderRenewableControl(state.snapshot || {});
@@ -1511,7 +2619,11 @@ function devicesByType(devices) {
     if (!groups.has(type)) groups.set(type, []);
     groups.get(type).push(dev);
   });
-  return Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0], "zh-Hans-CN"));
+  return Array.from(groups.entries()).sort((a, b) => {
+    if (a[0] === "Environment" && b[0] !== "Environment") return -1;
+    if (a[0] !== "Environment" && b[0] === "Environment") return 1;
+    return a[0].localeCompare(b[0], "zh-Hans-CN");
+  });
 }
 
 function isDeviceTreeGroupCollapsed(scope, groupKey) {
@@ -1536,10 +2648,11 @@ function deviceTreeTypeAttrs(scope, groupKey, isCollapsed) {
 }
 
 function deviceTreeTypeLabel(label) {
+  const text = label === "Environment" ? "气象环境" : label;
   return `
           <span class="tree-title">
             <i class="tree-toggle" aria-hidden="true"></i>
-            <span class="tree-title-text">${escapeHtml(label)}</span>
+            <span class="tree-title-text">${escapeHtml(text)}</span>
           </span>`;
 }
 
@@ -1577,6 +2690,7 @@ function renderDeviceTree(containerId, summaryId, devices, filter, scope, dataPr
         </button>
         ${deviceTreeChildren(isCollapsed, items.map((dev) => {
           const name = deviceName(dev);
+          const displayName = devType === "Environment" && name === "weather" ? "气象" : name;
           const isActive = filter.dev_type === devType && filter.dev_name === name;
           return `
             <button
@@ -1585,7 +2699,7 @@ function renderDeviceTree(containerId, summaryId, devices, filter, scope, dataPr
               data-${dataPrefix}-tree-type="${escapeHtml(devType)}"
               data-${dataPrefix}-tree-name="${escapeHtml(name)}"
             >
-              <span>${escapeHtml(name)}</span>
+              <span>${escapeHtml(displayName)}</span>
               <small>${escapeHtml(deviceTreeBadge(dev))}</small>
             </button>`;
         }).join(""))}
@@ -1602,7 +2716,7 @@ function renderDeviceTree(containerId, summaryId, devices, filter, scope, dataPr
 function selectTreeFilter(filterName, devType, devName = "") {
   state[filterName] = { dev_type: devType || "all", dev_name: devName || "" };
   if (filterName === "measurementFilter") renderMeasurements(state.snapshot || {});
-  if (filterName === "controlFilter") renderCombinedControlPage(state.snapshot?.devices || []);
+  if (filterName === "controlFilter") renderCombinedControlPage();
 }
 
 function filteredDevices(devices, filter) {
@@ -1610,6 +2724,34 @@ function filteredDevices(devices, filter) {
     if (filter.dev_type && filter.dev_type !== "all" && deviceType(dev) !== filter.dev_type) return false;
     if (filter.dev_name && deviceName(dev) !== filter.dev_name) return false;
     return true;
+  });
+}
+
+function definitionBlocks(kind, snapshot = state.snapshot || {}) {
+  return snapshot.definitions?.[kind] || {};
+}
+
+function definedModelDevices(snapshot = state.snapshot || {}) {
+  const blocks = definitionBlocks("model", snapshot);
+  return Object.entries(blocks).flatMap(([blockName, block]) => {
+    const headers = Array.isArray(block.headers) ? block.headers : [];
+    return (block.rows || []).map((row, index) => {
+      const raw = {};
+      headers.forEach((header) => {
+        raw[header] = row?.[header] ?? "";
+      });
+      const idx = raw.idx ?? row?.idx ?? index + 1;
+      const definedName = raw.name || raw.dev_name || "";
+      const name = definedName || (idx !== "" ? `${blockName}_${idx}` : `${blockName}_${index + 1}`);
+      return {
+        dev_type: blockName,
+        dev_name: String(name || `${blockName}_${index + 1}`),
+        idx,
+        raw,
+        __headers: headers,
+        __definition_index: index,
+      };
+    });
   });
 }
 
@@ -1630,35 +2772,25 @@ function compareModelRowsByIndex(left, right) {
 }
 
 function modelAttributeRecordForDevice(dev) {
+  const raw = dev.raw || {};
+  const headers = Array.isArray(dev.__headers) ? dev.__headers : Object.keys(raw);
   const record = {
     dev_type: deviceType(dev),
     dev_name: deviceName(dev),
-    idx: formatModelParamValue(deviceIndex(dev)),
-    name: formatModelParamValue(deviceName(dev)),
+    idx: formatModelParamValue(raw.idx ?? deviceIndex(dev)),
+    name: formatModelParamValue(raw.name || deviceName(dev)),
+    __headers: headers,
   };
-  Object.entries(dev.raw || {}).forEach(([key, value]) => {
+  headers.forEach((key) => {
     if (["idx", "name", "dev_name", "dev_type"].includes(key)) return;
-    record[key] = formatModelParamValue(value);
-  });
-  record.run_stat = formatModelParamValue(dev.run_stat ?? record.run_stat);
-  record.status = formatModelParamValue(dev.status ?? record.status);
-  record.mode = formatModelParamValue(dev.mode || dev.raw?.control_type || dev.raw?.ctrl_mode || record.mode);
-  if ((dev.set_types || []).length) record.set_types = formatModelParamValue(dev.set_types);
-  Object.entries(dev.set_values || {}).forEach(([key, value]) => {
-    record[key] = formatModelParamValue(value);
+    record[key] = formatModelParamValue(raw[key]);
   });
   return record;
 }
 
 function modelAttributeColumns(records) {
   const fixed = ["idx", "name"];
-  const preferred = [
-    "node", "from_node", "to_node", "ac_node", "dc_node", "control_type", "ctrl_mode", "mode",
-    "run_stat", "status", "p_set", "q_set", "v_set", "p_ac_set", "q_ac_set", "v_ac_set",
-    "p_dc_set", "v_dc_set", "pv0", "pv1", "pv2", "qv0", "qv1", "qv2", "pbase", "qbase",
-    "pmax", "pmin", "qmax", "qmin", "soc_curr", "alpha", "set_types",
-  ];
-  const seen = new Set([...fixed, "dev_type", "dev_name"]);
+  const seen = new Set([...fixed, "dev_type", "dev_name", "__headers"]);
   const keys = [];
   const appendKey = (key) => {
     if (!key || seen.has(key)) return;
@@ -1666,8 +2798,7 @@ function modelAttributeColumns(records) {
     seen.add(key);
     keys.push(key);
   };
-  preferred.forEach(appendKey);
-  records.forEach((record) => Object.keys(record).forEach(appendKey));
+  records.forEach((record) => (record.__headers || Object.keys(record)).forEach(appendKey));
   return [...fixed, ...keys].map((key) => ({ key, label: key === "name" ? "名称" : key }));
 }
 
@@ -1701,7 +2832,7 @@ function modelFilterLabel() {
 function renderTraineeModelDeviceTree(snapshot = state.snapshot || {}) {
   const container = $("modelDeviceTree");
   if (!container) return;
-  const devices = snapshot.devices || [];
+  const devices = definedModelDevices(snapshot);
   const groups = devicesByType(devices).map(([devType, items]) => [devType, [...items].sort(compareModelRowsByIndex)]);
   $("modelTreeSummary").textContent = `${groups.length} 类 · ${devices.length} 台`;
   container.innerHTML = `
@@ -1732,7 +2863,7 @@ function renderTraineeModelDeviceTree(snapshot = state.snapshot || {}) {
 function renderTraineeModelParamTable(snapshot = state.snapshot || {}) {
   const container = $("modelParamTable");
   if (!container) return;
-  const devices = snapshot.devices || [];
+  const devices = definedModelDevices(snapshot);
   const filtered = filteredDevices(devices, state.modelFilter);
   const groups = groupedModelAttributeRecords(filtered.map(modelAttributeRecordForDevice));
   const availableTabs = groups.map(([devType]) => devType);
@@ -1773,18 +2904,75 @@ function setTraineeModelFilter(devType, devName = "") {
   renderTraineeModelPage();
 }
 
+function isWeatherMeasurement(row) {
+  return row?.dev_type === "Environment" && row?.dev_name === "weather";
+}
+
+function weatherMeasurementLabel(row) {
+  const type = String(row?.meas_type || "").toUpperCase();
+  return WEATHER_MEASUREMENT_LABELS[type]?.label || row?.name || type || "气象";
+}
+
+function weatherMeasurementOrder(row) {
+  const type = String(row?.meas_type || "").toUpperCase();
+  return WEATHER_MEASUREMENT_LABELS[type]?.order ?? 99;
+}
+
+function measurementDisplayName(row) {
+  return isWeatherMeasurement(row) ? `气象.${weatherMeasurementLabel(row)}` : row.name;
+}
+
+function measurementDeviceDisplay(row) {
+  return isWeatherMeasurement(row) ? "气象" : row.dev_name || "";
+}
+
+function measurementTypeDisplay(row) {
+  return isWeatherMeasurement(row) ? weatherMeasurementLabel(row) : row.meas_type || "";
+}
+
+function compareMeasurementsForDisplay(left, right) {
+  const leftWeather = isWeatherMeasurement(left);
+  const rightWeather = isWeatherMeasurement(right);
+  if (leftWeather !== rightWeather) return leftWeather ? -1 : 1;
+  if (leftWeather && rightWeather) return weatherMeasurementOrder(left) - weatherMeasurementOrder(right);
+  const typeCompare = String(left.dev_type || "").localeCompare(String(right.dev_type || ""), "zh-Hans-CN");
+  if (typeCompare) return typeCompare;
+  const nameCompare = String(left.dev_name || "").localeCompare(String(right.dev_name || ""), "zh-Hans-CN");
+  if (nameCompare) return nameCompare;
+  return String(left.name || "").localeCompare(String(right.name || ""), "zh-Hans-CN");
+}
+
+function sortMeasurementsForDisplay(rows) {
+  return [...(rows || [])].sort(compareMeasurementsForDisplay);
+}
+
 function measurementRows(snapshot = state.snapshot || {}) {
   return measurementDisplayRows(snapshot);
 }
 
 function measurementDisplayRows(snapshot = state.snapshot || {}) {
-  const scada = snapshot.measurements?.scada || [];
-  if (scada.length) return scada;
-  return snapshot.measurements?.definitions || [];
+  const measurements = snapshot.measurements || {};
+  const definitions = snapshot.definitions?.measurement || snapshot.measurements?.definitions || measurements.definitions || [];
+  const primaryRows = definitions.length
+    ? definitions
+    : (measurements.scada?.length ? measurements.scada : measurements.real || []);
+  const scadaByKey = new Map((measurements.scada || []).map((row) => [measurementKey(row), row]));
+  const realByKey = new Map((measurements.real || []).map((row) => [measurementKey(row), row]));
+  return sortMeasurementsForDisplay(primaryRows.map((definition) => {
+    const key = measurementKey(definition);
+    const scada = scadaByKey.get(key);
+    const real = realByKey.get(key);
+    return {
+      ...definition,
+      value: scada?.value ?? real?.value ?? definition.value,
+      valid: scada?.valid ?? real?.valid ?? definition.valid,
+      weight: definition.weight,
+    };
+  }));
 }
 
 function measurementsDevices(snapshot = state.snapshot || {}) {
-  const devices = new Map((snapshot.devices || []).map((dev) => [deviceKey(dev), dev]));
+  const devices = new Map();
   measurementRows(snapshot).forEach((row) => {
     const key = `${row.dev_type || ""}|${row.dev_name || ""}`;
     if (!devices.has(key)) {
@@ -1834,9 +3022,9 @@ function renderMeasurements(snapshot = state.snapshot || {}) {
           const valueClass = Math.abs(Number(item.value || 0)) > 10000 ? "value-bad" : Math.abs(Number(item.value || 0)) > 1000 ? "value-warn" : "";
           return `<tr class="${key === state.selectedMeasurementKey ? "is-selected" : ""}" data-measurement-select-key="${escapeHtml(key)}">
             <td>${escapeHtml(item.idx ?? "")}</td>
-            <td>${escapeHtml(item.name || "")}</td>
-            <td>${escapeHtml(item.dev_name || "")}</td>
-            <td>${escapeHtml(item.meas_type || "")}</td>
+            <td>${escapeHtml(measurementDisplayName(item) || "")}</td>
+            <td>${escapeHtml(measurementDeviceDisplay(item))}</td>
+            <td>${escapeHtml(measurementTypeDisplay(item))}</td>
             <td class="numeric-cell ${valueClass}">${formatNumber(item.value)}</td>
             <td><span class="status-pill ${Number(item.valid) ? "is-ok" : "is-off"}">${Number(item.valid) ? "可用" : "停用"}</span></td>
           </tr>`;
@@ -1857,20 +3045,62 @@ function appendMeasurementTrace(snapshot) {
   measurementRows(snapshot).forEach((row) => {
     point.measurements[measurementKey(row)] = {
       value: Number(row.value),
-      label: `${row.dev_name || row.name || ""} ${row.meas_type || ""}`.trim(),
+      label: `${measurementDeviceDisplay(row) || row.name || ""} ${measurementTypeDisplay(row) || ""}`.trim(),
     };
   });
   state.measurementTraceHistory.push(point);
   state.measurementTraceHistory = state.measurementTraceHistory.slice(-TRACE_HISTORY_LIMIT);
 }
 
+function traceAxisStepMinutes(windowMinutes) {
+  const minutes = Math.max(1, Number(windowMinutes) || 60);
+  if (minutes <= 15) return 5;
+  if (minutes <= 60) return 15;
+  if (minutes <= 180) return 30;
+  if (minutes <= 360) return 60;
+  if (minutes <= 1440) return 240;
+  if (minutes <= 10080) return 1440;
+  if (minutes <= 43200) return 5 * 1440;
+  if (minutes <= 525600) return 60 * 1440;
+  return Math.max(60, Math.round(minutes / 6 / 60) * 60);
+}
+
+function traceWindowAlignmentMinutes(windowMinutes) {
+  const minutes = Math.max(1, Number(windowMinutes) || 60);
+  if (minutes <= 15) return 15;
+  if (minutes <= 1440) return minutes;
+  if (minutes >= 525600) return 525600;
+  return 1440;
+}
+
+function alignedTraceWindowRange(history, windowMinutes, fallbackMinute) {
+  const minutes = Math.max(1, Number(windowMinutes) || 60);
+  const alignmentMinutes = traceWindowAlignmentMinutes(minutes);
+  const latestMinute = history.length ? history[history.length - 1].minute : fallbackMinute;
+  const startMinute = Math.floor(latestMinute / alignmentMinutes) * alignmentMinutes;
+  return {
+    startMinute,
+    endMinute: startMinute + minutes,
+    latestMinute,
+    windowMinutes: minutes,
+    alignmentMinutes,
+    axisStepMinutes: traceAxisStepMinutes(minutes),
+  };
+}
+
+function measurementTraceWindowRange() {
+  const history = state.measurementTraceHistory || [];
+  const windowMinutes = Math.max(1, Number(state.measurementTraceWindowMinutes) || 60);
+  const fallbackMinute = Number(state.snapshot?.clock?.absolute_minute ?? state.snapshot?.clock?.minute ?? 0) || 0;
+  return alignedTraceWindowRange(history, windowMinutes, fallbackMinute);
+}
+
 function measurementTraceWindowPoints() {
   const history = state.measurementTraceHistory || [];
   if (!history.length || !state.selectedMeasurementKey) return [];
-  const latest = history[history.length - 1].minute;
-  const start = latest - Math.max(1, Number(state.measurementTraceWindowMinutes) || 60);
+  const range = measurementTraceWindowRange();
   return history
-    .filter((point) => point.minute >= start)
+    .filter((point) => point.minute >= range.startMinute && point.minute <= range.endMinute)
     .map((point) => {
       const item = point.measurements[state.selectedMeasurementKey];
       if (!item || !Number.isFinite(item.value)) return null;
@@ -1879,18 +3109,48 @@ function measurementTraceWindowPoints() {
     .filter(Boolean);
 }
 
-function measurementTraceTimeLabel(minute, windowMinutes, fallback = "") {
-  const absolute = Math.max(0, Math.round(Number(minute) || 0));
-  if (Number(windowMinutes) <= 1440) return fallback;
-  if (Number(windowMinutes) >= 525600) {
-    const year = Math.floor(absolute / 525600) + 1;
-    return `第${year}年`;
+function formatTraceClockMinute(minute) {
+  const total = ((Math.round(Number(minute) || 0) % 1440) + 1440) % 1440;
+  const hours = Math.floor(total / 60);
+  const minutes = total % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:00`;
+}
+
+function formatYearTraceTickLabel(minute) {
+  const absoluteDay = Math.floor(Math.max(0, Number(minute) || 0) / 1440);
+  const year = Math.floor(absoluteDay / 365) + 1;
+  let dayOfYear = absoluteDay % 365;
+  const monthDays = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  let month = 0;
+  while (month < monthDays.length - 1 && dayOfYear >= monthDays[month]) {
+    dayOfYear -= monthDays[month];
+    month += 1;
   }
+  return year === 1 ? `${String(month + 1).padStart(2, "0")}月` : `第${year}年${String(month + 1).padStart(2, "0")}月`;
+}
+
+function measurementTraceTimeLabel(minute, range, index, lastIndex) {
+  const targetMinute = index === lastIndex ? range.endMinute : minute;
+  if (range.windowMinutes <= 1440) return formatTraceClockMinute(targetMinute);
+  if (range.windowMinutes >= 525600) return formatYearTraceTickLabel(targetMinute);
+  const absolute = Math.max(0, Math.round(Number(targetMinute) || 0));
   const day = Math.floor(absolute / 1440);
-  const dayMinute = absolute % 1440;
-  const hour = String(Math.floor(dayMinute / 60)).padStart(2, "0");
-  const minuteText = String(dayMinute % 60).padStart(2, "0");
-  return dayMinute === 0 ? `第${day + 1}天` : `第${day + 1}天 ${hour}:${minuteText}`;
+  const clock = formatTraceClockMinute(absolute).slice(0, 5);
+  return absolute % 1440 === 0 ? `第${day + 1}天` : `第${day + 1}天 ${clock}`;
+}
+
+function measurementTraceAxisTicks(range, canvasWidth) {
+  const maxTicks = canvasWidth < 480 ? 4 : canvasWidth < 760 ? 5 : 8;
+  let step = range.axisStepMinutes || traceAxisStepMinutes(range.windowMinutes);
+  while (Math.floor(range.windowMinutes / step) + 1 > maxTicks) {
+    step *= 2;
+  }
+  const ticks = [];
+  for (let minute = range.startMinute; minute <= range.endMinute + 1e-9; minute += step) {
+    ticks.push(minute);
+  }
+  if (ticks[ticks.length - 1] !== range.endMinute) ticks.push(range.endMinute);
+  return ticks;
 }
 
 function resizeCanvas(canvas) {
@@ -1907,6 +3167,7 @@ function resizeCanvas(canvas) {
 function drawMeasurementTraceChart() {
   const canvas = $("measurementTraceChart");
   if (!canvas) return;
+  const chartKey = "measurementTrace";
   const ctx = canvas.getContext("2d");
   const { width, height, ratio } = resizeCanvas(canvas);
   ctx.clearRect(0, 0, width, height);
@@ -1918,6 +3179,8 @@ function drawMeasurementTraceChart() {
   const bottom = 38 * ratio;
   const plotWidth = width - left - right;
   const plotHeight = height - top - bottom;
+  const plot = { left, right, top, bottom };
+  state.chartPlotInfo = { ...(state.chartPlotInfo || {}), [chartKey]: plot };
   ctx.strokeStyle = "#d8e1e5";
   ctx.lineWidth = 1 * ratio;
   for (let i = 0; i <= 4; i += 1) {
@@ -1927,76 +3190,426 @@ function drawMeasurementTraceChart() {
     ctx.lineTo(width - right, y);
     ctx.stroke();
   }
+  const range = measurementTraceWindowRange();
+  const xTicks = measurementTraceAxisTicks(range, width / ratio);
+  xTicks.forEach((minute, tickIndex) => {
+    const x = left + ((minute - range.startMinute) / range.windowMinutes) * plotWidth;
+    ctx.strokeStyle = tickIndex === xTicks.length - 1 ? "#c9d6dc" : "#e7eef1";
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, top + plotHeight);
+    ctx.stroke();
+    ctx.fillStyle = "#63717a";
+    ctx.font = `${12 * ratio}px Consolas, Microsoft YaHei, Arial`;
+    ctx.textAlign = tickIndex === xTicks.length - 1 ? "right" : "left";
+    const textOffset = tickIndex === 0 ? 0 : tickIndex === xTicks.length - 1 ? 0 : 4 * ratio;
+    ctx.fillText(measurementTraceTimeLabel(minute, range, tickIndex, xTicks.length - 1), x + textOffset, height - 12 * ratio);
+  });
+  ctx.textAlign = "left";
   const points = measurementTraceWindowPoints();
-  if (!points.length) {
+  const seriesDefs = [
+    { key: "value", field: "value", label: "量测值", color: "#c93a3a" },
+  ];
+  const visibleSeries = visibleChartSeries(chartKey, seriesDefs);
+  const values = points.flatMap((point) => visibleSeries.map((series) => point[series.field]))
+    .filter((value) => value !== null && Number.isFinite(value));
+  if (!points.length || !visibleSeries.length || !values.length) {
+    state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: [] };
+    syncChartLegendButtons(chartKey);
     ctx.fillStyle = "#63717a";
     ctx.font = `${13 * ratio}px Microsoft YaHei, Arial`;
-    ctx.fillText("暂无测点跟踪数据", left, top + 30 * ratio);
+    ctx.textAlign = "center";
+    ctx.fillText(!visibleSeries.length ? "所有曲线已隐藏" : "暂无测点跟踪数据", width / 2, height / 2);
+    ctx.textAlign = "left";
     $("measurementTraceSummary").textContent = "未选择测点";
     return;
   }
-  const values = points.map((point) => point.value);
   const minValue = Math.min(...values);
   const maxValue = Math.max(...values);
   const span = Math.max(1e-6, maxValue - minValue);
-  const minMinute = points[0].minute;
-  const maxMinute = Math.max(points[points.length - 1].minute, minMinute + 1);
-  ctx.strokeStyle = "#c93a3a";
-  ctx.lineWidth = 2.4 * ratio;
-  ctx.beginPath();
-  points.forEach((point, idx) => {
-    const x = left + ((point.minute - minMinute) / (maxMinute - minMinute)) * plotWidth;
-    const y = top + plotHeight - ((point.value - minValue) / span) * plotHeight;
-    if (idx === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+  const selectedSeries = selectedChartSeriesKey(chartKey, visibleSeries[0]?.key || "");
+  const hitData = [];
+  visibleSeries.forEach((series) => {
+    const pixelPoints = [];
+    ctx.strokeStyle = series.color;
+    ctx.lineWidth = (series.key === selectedSeries ? 3.2 : 2.4) * ratio;
+    ctx.beginPath();
+    let started = false;
+    points.forEach((point) => {
+      const value = Number(point[series.field]);
+      if (!Number.isFinite(value)) return;
+      const x = left + ((point.minute - range.startMinute) / range.windowMinutes) * plotWidth;
+      const y = top + plotHeight - ((value - minValue) / span) * plotHeight;
+      pixelPoints.push({ x, y, minute: point.minute, time: point.time, value });
+      if (!started) {
+        ctx.moveTo(x, y);
+        started = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
+    });
+    if (started) ctx.stroke();
+    hitData.push({ ...series, unit: "", points: pixelPoints });
   });
-  ctx.stroke();
+  state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: hitData };
+  syncChartLegendButtons(chartKey);
+  drawChartCursor(ctx, chartKey, canvas, plot, hitData, {
+    ratio,
+    timeLabel: (point) => measurementTraceTimeLabel(point.minute, range, 0, 0),
+    valueFormatter: formatNumber,
+  });
   ctx.fillStyle = "#63717a";
   ctx.font = `${12 * ratio}px Consolas, Microsoft YaHei, Arial`;
   ctx.fillText(formatNumber(maxValue), 8 * ratio, top + 4 * ratio);
   ctx.fillText(formatNumber(minValue), 8 * ratio, top + plotHeight);
-  ctx.fillText(measurementTraceTimeLabel(points[0].minute, state.measurementTraceWindowMinutes, points[0].time || ""), left, height - 12 * ratio);
-  ctx.textAlign = "right";
-  const lastPoint = points[points.length - 1];
-  ctx.fillText(measurementTraceTimeLabel(lastPoint.minute, state.measurementTraceWindowMinutes, lastPoint.time || ""), width - right, height - 12 * ratio);
-  ctx.textAlign = "left";
   $("measurementTraceSummary").textContent = `${points[points.length - 1].label || "测点"} · ${points.length} 点`;
 }
 
-function remoteControlIssuedAt(dev, snapshot = state.snapshot || {}) {
+function commandTraceRunKey(dev, commandType = "run_stat") {
+  return `remote-control|${deviceKey(dev)}|${commandType}`;
+}
+
+function commandTraceAdjustmentKey(dev, setType) {
+  return `remote-adjustment|${deviceKey(dev)}|${setType}`;
+}
+
+function commandTraceNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function selectedCommandTraceLabel() {
+  const latest = [...(state.commandTraceHistory || [])].reverse()
+    .map((point) => point.commands?.[state.selectedCommandTraceKey])
+    .find(Boolean);
+  return latest?.label || state.selectedCommandTraceLabel || "请选择指令";
+}
+
+function commandTraceWindowRange() {
+  const history = state.commandTraceHistory || [];
+  const windowMinutes = Math.max(1, Number(state.commandTraceWindowMinutes) || 60);
+  const fallbackMinute = Number(state.snapshot?.clock?.absolute_minute ?? state.snapshot?.clock?.minute ?? 0) || 0;
+  return alignedTraceWindowRange(history, windowMinutes, fallbackMinute);
+}
+
+function commandTraceWindowPoints() {
+  const history = state.commandTraceHistory || [];
+  if (!history.length || !state.selectedCommandTraceKey) return [];
+  const range = commandTraceWindowRange();
+  return history
+    .filter((point) => point.minute >= range.startMinute && point.minute <= range.endMinute)
+    .map((point) => {
+      const item = point.commands?.[state.selectedCommandTraceKey];
+      if (!item) return null;
+      const control = commandTraceNumber(item.control);
+      const actual = commandTraceNumber(item.actual);
+      return {
+        minute: point.minute,
+        time: point.time,
+        control,
+        actual,
+        label: item.label,
+        unit: item.unit || "",
+      };
+    })
+    .filter(Boolean);
+}
+
+function appendCommandTrace(snapshot) {
+  const clock = snapshot.clock || {};
+  if (Number(clock.step_count ?? 0) <= 0) return;
+  const devices = controlDefinitionDevices(snapshot);
+  const point = {
+    minute: Number(clock.absolute_minute ?? clock.minute ?? state.commandTraceHistory.length) || 0,
+    time: clock.time || "--",
+    commands: {},
+  };
+  selectedControlRows("RunStat", devices, snapshot).forEach((row) => {
+    const dev = controlDeviceFromRow(row, snapshot);
+    const runKey = commandTraceRunKey(dev, "run_stat");
+    const pendingRun = pending.run_status.get(`${deviceKey(dev)}|run_stat`);
+    const control = pendingRun ? pendingRun.run_stat : dev.run_stat;
+    point.commands[runKey] = {
+      control: commandTraceNumber(control),
+      actual: commandTraceNumber(dev.run_stat),
+      label: `${deviceName(dev)}.遥控投退`,
+      unit: "",
+    };
+  });
+  selectedControlRows("CbOpenStat", devices, snapshot).forEach((row) => {
+    const dev = controlDeviceFromRow(row, snapshot);
+    const statusKey = commandTraceRunKey(dev, "status");
+    const pendingStatus = pending.run_status.get(`${deviceKey(dev)}|status`);
+    const control = pendingStatus ? pendingStatus.status : dev.status;
+    point.commands[statusKey] = {
+      control: commandTraceNumber(control),
+      actual: commandTraceNumber(dev.status),
+      label: `${deviceName(dev)}.遥控开合`,
+      unit: "",
+    };
+  });
+  remoteAdjustmentRows(devices, snapshot).forEach((row) => {
+    point.commands[row.traceKey] = {
+      control: commandTraceNumber(row.controlValue),
+      actual: commandTraceNumber(row.measurement),
+      label: row.name,
+      unit: "",
+    };
+  });
+  state.commandTraceHistory.push(point);
+  state.commandTraceHistory = state.commandTraceHistory.slice(-TRACE_HISTORY_LIMIT);
+}
+
+function drawCommandTraceChart() {
+  const canvas = $("commandTraceChart");
+  if (!canvas) return;
+  const chartKey = "commandTrace";
+  const ctx = canvas.getContext("2d");
+  const { width, height, ratio } = resizeCanvas(canvas);
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#fcfeff";
+  ctx.fillRect(0, 0, width, height);
+  const left = 62 * ratio;
+  const right = 24 * ratio;
+  const top = 30 * ratio;
+  const bottom = 36 * ratio;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const plot = { left, right, top, bottom };
+  state.chartPlotInfo = { ...(state.chartPlotInfo || {}), [chartKey]: plot };
+  ctx.strokeStyle = "#d8e1e5";
+  ctx.lineWidth = 1 * ratio;
+  for (let i = 0; i <= 4; i += 1) {
+    const y = top + (plotHeight * i) / 4;
+    ctx.beginPath();
+    ctx.moveTo(left, y);
+    ctx.lineTo(width - right, y);
+    ctx.stroke();
+  }
+  const range = commandTraceWindowRange();
+  const xTicks = measurementTraceAxisTicks(range, width / ratio);
+  xTicks.forEach((minute, tickIndex) => {
+    const x = left + ((minute - range.startMinute) / range.windowMinutes) * plotWidth;
+    ctx.strokeStyle = tickIndex === xTicks.length - 1 ? "#c9d6dc" : "#e7eef1";
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, top + plotHeight);
+    ctx.stroke();
+    ctx.fillStyle = "#63717a";
+    ctx.font = `${12 * ratio}px Consolas, Microsoft YaHei, Arial`;
+    ctx.textAlign = tickIndex === xTicks.length - 1 ? "right" : "left";
+    const textOffset = tickIndex === 0 ? 0 : tickIndex === xTicks.length - 1 ? 0 : 4 * ratio;
+    ctx.fillText(measurementTraceTimeLabel(minute, range, tickIndex, xTicks.length - 1), x + textOffset, height - 12 * ratio);
+  });
+  ctx.textAlign = "left";
+  const points = commandTraceWindowPoints();
+  const seriesDefs = [
+    { key: "control", field: "control", label: "控制值", color: "#c98820" },
+    { key: "actual", field: "actual", label: "实时值", color: "#008c8c" },
+  ];
+  const visibleSeries = visibleChartSeries(chartKey, seriesDefs);
+  const values = points.flatMap((point) => visibleSeries.map((series) => point[series.field]))
+    .filter((value) => value !== null && Number.isFinite(value));
+  $("commandTraceSummary").textContent = `${selectedCommandTraceLabel()} · ${points.length} 点`;
+  if (!state.selectedCommandTraceKey || !points.length || !visibleSeries.length || !values.length) {
+    state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: [] };
+    syncChartLegendButtons(chartKey);
+    ctx.fillStyle = "#63717a";
+    ctx.font = `${13 * ratio}px Microsoft YaHei, Arial`;
+    ctx.textAlign = "center";
+    ctx.fillText(
+      !visibleSeries.length ? "所有曲线已隐藏" : state.selectedCommandTraceKey ? "暂无指令跟踪数据" : "请选择控制指令",
+      width / 2,
+      height / 2,
+    );
+    ctx.textAlign = "left";
+    return;
+  }
+  let minValue = Math.min(...values);
+  let maxValue = Math.max(...values);
+  if (Math.abs(maxValue - minValue) < 1e-9) {
+    minValue -= 1;
+    maxValue += 1;
+  }
+  const padding = (maxValue - minValue) * 0.12;
+  minValue -= padding;
+  maxValue += padding;
+  const xForMinute = (minute) => left + ((minute - range.startMinute) / range.windowMinutes) * plotWidth;
+  const yForValue = (value) => top + plotHeight - ((value - minValue) / (maxValue - minValue)) * plotHeight;
+  const selectedSeries = selectedChartSeriesKey(chartKey, visibleSeries[0]?.key || "");
+  const hitData = [];
+  const unit = points.find((point) => point.unit)?.unit || "";
+  const drawSeries = (series, widthScale) => {
+    const pixelPoints = [];
+    ctx.strokeStyle = series.color;
+    ctx.lineWidth = (series.key === selectedSeries ? widthScale + 1 : widthScale) * ratio;
+    ctx.beginPath();
+    let started = false;
+    points.forEach((point) => {
+      const value = point[series.field];
+      if (value === null || !Number.isFinite(value)) return;
+      const x = xForMinute(point.minute);
+      const y = yForValue(value);
+      pixelPoints.push({ x, y, minute: point.minute, time: point.time, value });
+      if (!started) {
+        ctx.moveTo(x, y);
+        started = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
+    });
+    if (started) ctx.stroke();
+    hitData.push({ ...series, unit, points: pixelPoints });
+  };
+  visibleSeries.forEach((series) => drawSeries(series, series.key === "control" ? 2.4 : 2.2));
+  state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: hitData };
+  syncChartLegendButtons(chartKey);
+  drawChartCursor(ctx, chartKey, canvas, plot, hitData, {
+    ratio,
+    timeLabel: (point) => measurementTraceTimeLabel(point.minute, range, 0, 0),
+    valueFormatter: formatNumber,
+  });
+  ctx.fillStyle = "#63717a";
+  ctx.font = `${12 * ratio}px Consolas, Microsoft YaHei, Arial`;
+  ctx.fillText(formatNumber(maxValue), 8 * ratio, top + 4 * ratio);
+  ctx.fillText(formatNumber(minValue), 8 * ratio, top + plotHeight);
+}
+
+function definedControlRows(blockName, snapshot = state.snapshot || {}) {
+  const block = definitionBlocks("control", snapshot)?.[blockName];
+  const headers = Array.isArray(block?.headers) ? block.headers : [];
+  return (block?.rows || []).map((row, index) => {
+    const raw = {};
+    headers.forEach((header) => {
+      raw[header] = row?.[header] ?? "";
+    });
+    return {
+      ...raw,
+      dev_type: raw.dev_type ?? row?.dev_type ?? "",
+      dev_name: raw.dev_name ?? raw.name ?? row?.dev_name ?? row?.name ?? "",
+      idx: raw.idx ?? row?.idx ?? index + 1,
+      __headers: headers,
+      __control_block: blockName,
+      __definition_index: index,
+    };
+  }).filter((row) => row.dev_type && row.dev_name);
+}
+
+function snapshotDevice(devType, devName, snapshot = state.snapshot || {}) {
+  return (snapshot.devices || []).find((dev) => deviceType(dev) === devType && deviceName(dev) === devName) || null;
+}
+
+function controlDeviceFromRow(row, snapshot = state.snapshot || {}) {
+  const live = snapshotDevice(row.dev_type, row.dev_name, snapshot) || {};
+  return {
+    ...live,
+    dev_type: row.dev_type,
+    dev_name: row.dev_name,
+    idx: live.idx ?? live.raw?.idx ?? row.idx ?? "",
+    run_stat: live.run_stat ?? row.run_stat ?? 1,
+    status: live.status ?? row.status ?? 1,
+    mode: live.mode ?? live.raw?.control_type ?? live.raw?.ctrl_mode ?? "",
+    set_values: live.set_values || {},
+    raw: live.raw || {},
+  };
+}
+
+function controlDefinitionDevices(snapshot = state.snapshot || {}) {
+  const rows = [
+    ...definedControlRows("RunStat", snapshot),
+    ...definedControlRows("CbOpenStat", snapshot),
+    ...definedControlRows("SetValue", snapshot),
+  ];
+  const devices = new Map();
+  rows.forEach((row) => {
+    const key = `${row.dev_type}|${row.dev_name}`;
+    const device = devices.get(key) || controlDeviceFromRow(row, snapshot);
+    device.__control_rows = device.__control_rows || [];
+    device.__control_rows.push(row);
+    if (row.__control_block === "RunStat") device.run_stat = device.run_stat ?? row.run_stat;
+    if (row.__control_block === "CbOpenStat") device.status = device.status ?? row.status;
+    if (row.__control_block === "SetValue" && row.set_type) {
+      device.set_values = { ...(device.set_values || {}) };
+      if (device.set_values[row.set_type] === undefined) device.set_values[row.set_type] = row.set_value;
+    }
+    devices.set(key, device);
+  });
+  return Array.from(devices.values());
+}
+
+function selectedControlRows(blockName, devices, snapshot = state.snapshot || {}) {
+  const selectedKeys = new Set((devices || []).map((dev) => deviceKey(dev)));
+  return definedControlRows(blockName, snapshot).filter((row) => selectedKeys.has(`${row.dev_type}|${row.dev_name}`));
+}
+
+function remoteControlIssuedAt(dev, commandType = "run_stat", snapshot = state.snapshot || {}) {
   const history = [...(snapshot.commands?.history || [])].reverse();
   for (const entry of history) {
     const items = entry.normalized?.run_status || entry.payload?.run_status || [];
     const match = items.find((item) => (
       item.dev_type === deviceType(dev)
       && item.dev_name === deviceName(dev)
+      && (commandType === "status"
+        ? Object.prototype.hasOwnProperty.call(item, "status")
+        : item.run_stat !== undefined && item.run_stat !== "")
     ));
     if (match) return entry.time || "--";
   }
   return "--";
 }
 
+function remoteControlValueText(commandType, value) {
+  if (commandType === "status") return Number(value) ? "闭合" : "断开";
+  return statusText(value);
+}
+
+function remoteControlLabel(commandType) {
+  return commandType === "status" ? "开关开合" : "设备投退";
+}
+
 function renderRunControls(devices) {
   const visibleDevices = filteredDevices(devices, state.controlFilter);
+  const rows = [
+    ...selectedControlRows("RunStat", visibleDevices).map((row) => ({
+      definition: row,
+      dev: controlDeviceFromRow(row),
+      commandType: "run_stat",
+      valueKey: "run_stat",
+    })),
+    ...selectedControlRows("CbOpenStat", visibleDevices).map((row) => ({
+      definition: row,
+      dev: controlDeviceFromRow(row),
+      commandType: "status",
+      valueKey: "status",
+    })),
+  ];
   $("runControlTable").innerHTML = `
     <table class="runtime-device-table">
-      <thead><tr><th>idx</th><th>设备名称</th><th>类型</th><th>当前状态</th><th>下发状态</th><th>指令下发时刻</th></tr></thead>
+      <thead><tr><th>idx</th><th>遥控名称</th><th>设备名称</th><th>类型</th><th>当前状态</th><th>下发状态</th><th>指令下发时刻</th></tr></thead>
       <tbody>
-        ${visibleDevices.map((dev) => {
-          const key = deviceKey(dev);
-          const currentRun = Number(pending.run_status.has(key) ? pending.run_status.get(key).run_stat : dev.run_stat);
-          const issuedAt = remoteControlIssuedAt(dev);
-          return `<tr class="${pending.run_status.has(key) ? "is-pending" : ""}">
+        ${rows.map(({ dev, commandType, valueKey }) => {
+          const key = `${deviceKey(dev)}|${commandType}`;
+          const traceKey = commandTraceRunKey(dev, commandType);
+          const pendingCommand = pending.run_status.get(key);
+          const currentValue = Number(pendingCommand ? pendingCommand[valueKey] : dev[valueKey]);
+          const issuedAt = remoteControlIssuedAt(dev, commandType);
+          const classes = [
+            pending.run_status.has(key) ? "is-pending" : "",
+            traceKey === state.selectedCommandTraceKey ? "is-selected" : "",
+          ].filter(Boolean).join(" ");
+          return `<tr class="${classes}" data-command-trace-key="${escapeHtml(traceKey)}" data-command-trace-label="${escapeHtml(`${deviceName(dev)}.${remoteControlLabel(commandType)}`)}" data-run-status-command="${escapeHtml(key)}" title="单击选中曲线，双击进行遥控操作">
             <td>${escapeHtml(deviceIndex(dev))}</td>
+            <td>${escapeHtml(`${deviceName(dev)}.${remoteControlLabel(commandType)}`)}</td>
             <td>${escapeHtml(deviceName(dev))}</td>
             <td>${escapeHtml(deviceType(dev))}</td>
-            <td class="run-status-command-cell" data-run-status-command="${escapeHtml(key)}" title="双击进行遥控操作">
-              <span class="status-pill ${Number(dev.run_stat) ? "is-ok" : "is-off"}">${statusText(dev.run_stat)}</span>
+            <td class="run-status-command-cell" title="双击进行遥控操作">
+              <span class="status-pill ${Number(dev[valueKey]) ? "is-ok" : "is-off"}">${remoteControlValueText(commandType, dev[valueKey])}</span>
             </td>
             <td>
               <label class="inline-toggle">
-                <input type="checkbox" data-run-key="${escapeHtml(key)}" ${currentRun ? "checked" : ""} />
-                <span>${currentRun ? "投入" : "退出"}</span>
+                <input type="checkbox" data-run-key="${escapeHtml(key)}" data-command-type="${escapeHtml(commandType)}" ${currentValue ? "checked" : ""} />
+                <span>${remoteControlValueText(commandType, currentValue)}</span>
               </label>
             </td>
             <td class="mono-cell command-issued-at-cell">${escapeHtml(issuedAt)}</td>
@@ -2004,15 +3617,6 @@ function renderRunControls(devices) {
         }).join("")}
       </tbody>
     </table>`;
-}
-
-function preferredSetTypes(dev) {
-  const types = new Set(dev.set_types || []);
-  const selected = [];
-  if (types.has("p_set") || types.has("p_ac_set") || types.has("pv0")) selected.push("p_set");
-  if (types.has("q_set") || types.has("q_ac_set") || types.has("qv0")) selected.push("q_set");
-  if (types.has("v_set") || types.has("v_ac_set")) selected.push("v_set");
-  return selected.slice(0, 3);
 }
 
 function currentSetValue(dev, setType) {
@@ -2039,21 +3643,25 @@ function remoteAdjustmentName(dev, setType) {
   return `${deviceName(dev)}.${remoteAdjustmentTypeLabel(setType)}`;
 }
 
+function remoteAdjustmentMeasTypeMatchesSetType(measType, setType) {
+  const type = String(measType || "").toUpperCase();
+  const setKey = String(setType || "").toLowerCase();
+  if (!type || !setKey) return false;
+  if (setKey.startsWith("p") || setKey.includes("_p")) return type === "P" || type.startsWith("P_");
+  if (setKey.startsWith("q") || setKey.includes("_q")) return type === "Q" || type.startsWith("Q_");
+  if (setKey.startsWith("v") || setKey.includes("_v")) return type === "V" || type.startsWith("V_");
+  if (setKey.startsWith("i") || setKey.includes("_i")) return type === "I" || type.startsWith("I_");
+  if (setKey.includes("soc")) return type === "SOC";
+  return type === setKey.toUpperCase();
+}
+
 function remoteAdjustmentMeasurement(dev, setType, snapshot = state.snapshot || {}) {
-  const rows = snapshot.measurements?.scada?.length
-    ? snapshot.measurements.scada
-    : snapshot.measurements?.definitions || [];
-  const priorities = {
-    p_set: ["P_GEN", "P_LOAD", "P_AC", "P_FROM", "P_TO", "P_DC", "P"],
-    q_set: ["Q_GEN", "Q_LOAD", "Q_AC", "Q"],
-    v_set: ["V_GEN", "V_LOAD", "V_AC", "V_FROM", "V_TO", "V_DC", "V"],
-  }[setType] || [];
-  const candidates = (rows || []).filter((row) => row.dev_type === deviceType(dev) && row.dev_name === deviceName(dev));
-  for (const measType of priorities) {
-    const match = candidates.find((row) => String(row.meas_type || "").toUpperCase() === measType);
-    if (match) return match.value;
-  }
-  return null;
+  const match = measurementDisplayRows(snapshot).find((row) => (
+    row.dev_type === deviceType(dev)
+    && row.dev_name === deviceName(dev)
+    && remoteAdjustmentMeasTypeMatchesSetType(row.meas_type, setType)
+  ));
+  return match?.value ?? null;
 }
 
 function remoteAdjustmentIssuedAt(dev, setType, snapshot = state.snapshot || {}) {
@@ -2071,15 +3679,23 @@ function remoteAdjustmentIssuedAt(dev, setType, snapshot = state.snapshot || {})
 }
 
 function remoteAdjustmentRows(devices, snapshot = state.snapshot || {}) {
-  return (devices || []).flatMap((dev) => preferredSetTypes(dev).map((setType) => ({
-    key: `${deviceKey(dev)}|${setType}`,
-    dev,
-    setType,
-    name: remoteAdjustmentName(dev, setType),
-    measurement: remoteAdjustmentMeasurement(dev, setType, snapshot),
-    controlValue: currentSetValue(dev, setType),
-    issuedAt: remoteAdjustmentIssuedAt(dev, setType, snapshot),
-  })));
+  return selectedControlRows("SetValue", devices, snapshot).map((definitionRow) => {
+    const dev = controlDeviceFromRow(definitionRow, snapshot);
+    const setType = definitionRow.set_type || "";
+    return {
+      key: `${deviceKey(dev)}|${setType}`,
+      traceKey: commandTraceAdjustmentKey(dev, setType),
+      dev,
+      setType,
+      name: remoteAdjustmentName(dev, setType),
+      measurement: remoteAdjustmentMeasurement(dev, setType, snapshot),
+      controlValue: (() => {
+        const current = currentSetValue(dev, setType);
+        return current === "" || current === undefined || current === null ? definitionRow.set_value : current;
+      })(),
+      issuedAt: remoteAdjustmentIssuedAt(dev, setType, snapshot),
+    };
+  });
 }
 
 function formatRemoteAdjustmentValue(value) {
@@ -2088,14 +3704,13 @@ function formatRemoteAdjustmentValue(value) {
 }
 
 function renderSetpointControls(devices) {
-  const adjustable = (devices || []).filter((dev) => preferredSetTypes(dev).length);
-  const visibleDevices = filteredDevices(adjustable, state.controlFilter);
+  const visibleDevices = filteredDevices(devices || [], state.controlFilter);
   const rows = remoteAdjustmentRows(visibleDevices);
   $("setpointControlTable").innerHTML = `
     <table class="runtime-device-table remote-adjustment-table">
       <thead><tr><th>遥调名称</th><th>量测值</th><th>控制值</th><th>指令下发时刻</th></tr></thead>
       <tbody>
-        ${rows.map((row) => `<tr data-remote-adjustment-key="${escapeHtml(row.key)}" title="双击进行遥调操作">
+        ${rows.map((row) => `<tr class="${row.traceKey === state.selectedCommandTraceKey ? "is-selected" : ""}" data-command-trace-key="${escapeHtml(row.traceKey)}" data-command-trace-label="${escapeHtml(row.name)}" data-remote-adjustment-key="${escapeHtml(row.key)}" title="单击选中曲线，双击进行遥调操作">
           <td><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(deviceType(row.dev))}</small></td>
           <td class="numeric-cell">${formatRemoteAdjustmentValue(row.measurement)}</td>
           <td class="numeric-cell">${formatRemoteAdjustmentValue(row.controlValue)}</td>
@@ -2103,6 +3718,42 @@ function renderSetpointControls(devices) {
         </tr>`).join("")}
       </tbody>
     </table>`;
+}
+
+function commandTraceRowsForActiveTab(devices = controlDefinitionDevices()) {
+  if (state.activeControlTab === "remote-adjustment") {
+    return remoteAdjustmentRows(filteredDevices(devices || [], state.controlFilter)).map((row) => ({
+      key: row.traceKey,
+      label: row.name,
+    }));
+  }
+  const visibleDevices = filteredDevices(devices || [], state.controlFilter);
+  return [
+    ...selectedControlRows("RunStat", visibleDevices).map((row) => {
+      const dev = controlDeviceFromRow(row);
+      return { key: commandTraceRunKey(dev, "run_stat"), label: `${deviceName(dev)}.设备投退` };
+    }),
+    ...selectedControlRows("CbOpenStat", visibleDevices).map((row) => {
+      const dev = controlDeviceFromRow(row);
+      return { key: commandTraceRunKey(dev, "status"), label: `${deviceName(dev)}.开关开合` };
+    }),
+  ];
+}
+
+function ensureSelectedCommandTrace(devices = controlDefinitionDevices()) {
+  const rows = commandTraceRowsForActiveTab(devices);
+  if (!rows.length) {
+    state.selectedCommandTraceKey = "";
+    state.selectedCommandTraceLabel = "";
+    return;
+  }
+  if (!rows.some((row) => row.key === state.selectedCommandTraceKey)) {
+    state.selectedCommandTraceKey = rows[0].key;
+    state.selectedCommandTraceLabel = rows[0].label;
+  } else {
+    const selected = rows.find((row) => row.key === state.selectedCommandTraceKey);
+    state.selectedCommandTraceLabel = selected?.label || state.selectedCommandTraceLabel;
+  }
 }
 
 function renderControlTabs() {
@@ -2116,11 +3767,22 @@ function renderControlTabs() {
   });
 }
 
-function renderCombinedControlPage(devices = state.snapshot?.devices || []) {
+function renderCombinedControlPage(devices = controlDefinitionDevices()) {
   renderDeviceTree("commandDeviceTree", "commandTreeSummary", devices, state.controlFilter, "control", "control");
+  ensureSelectedCommandTrace(devices);
   renderRunControls(devices);
   renderSetpointControls(devices);
   renderControlTabs();
+  drawCommandTraceChart();
+}
+
+function selectCommandTraceRow(commandTraceRow) {
+  state.selectedCommandTraceKey = commandTraceRow.dataset.commandTraceKey || "";
+  state.selectedCommandTraceLabel = commandTraceRow.dataset.commandTraceLabel || "";
+  document.querySelectorAll("[data-command-trace-key]").forEach((row) => {
+    row.classList.toggle("is-selected", row.dataset.commandTraceKey === state.selectedCommandTraceKey);
+  });
+  drawCommandTraceChart();
 }
 
 function commandHistoryKey(item) {
@@ -2151,28 +3813,31 @@ function syncCommandHistoryLogs(history = []) {
       ],
       "ok",
       false,
+      runtimeLogSimTimeFromCommandHistory(item),
     );
   });
 }
 
 function renderHistory() {
   syncTraineeRuntimeLogTypeFilter();
-  const logs = filteredTraineeRuntimeLogs();
+  const allLogs = filteredTraineeRuntimeLogs();
+  const logs = pagedTraineeRuntimeLogs(allLogs);
+  renderTraineeRuntimeLogPager(allLogs);
   $("historyCount").textContent = state.runtimeLogTypeFilter === "all"
     ? `${state.runtimeLogs.length} 条`
-    : `${logs.length}/${state.runtimeLogs.length} 条`;
-  if (!logs.length) {
+    : `${allLogs.length}/${state.runtimeLogs.length} 条`;
+  if (!allLogs.length) {
     $("commandHistory").innerHTML = '<div class="empty-state">暂无运行日志</div>';
     return;
   }
   $("commandHistory").innerHTML = `
     <table class="runtime-log-table">
-      <thead><tr><th>序号</th><th>本机时刻</th><th>类型</th><th>对象</th><th>结果</th><th>详情</th></tr></thead>
+      <thead><tr><th>本机时刻</th><th>仿真时刻</th><th>类型</th><th>对象</th><th>结果</th><th>详情</th></tr></thead>
       <tbody>
         ${logs.map((item) => `
           <tr class="runtime-log-row is-${escapeHtml(item.level || "info")}">
-            <td>${escapeHtml(item.seq)}</td>
-            <td>${escapeHtml(item.wall_time || "")}</td>
+            <td>${escapeHtml(runtimeLogWallTimeText(item.wall_time))}</td>
+            <td class="mono-cell">${escapeHtml(item.simu_time || "--")}</td>
             <td>${escapeHtml(item.type || "")}</td>
             <td>${escapeHtml(item.target || "")}</td>
             <td>${escapeHtml(item.result || "")}</td>
@@ -2206,12 +3871,56 @@ function filteredTraineeRuntimeLogs() {
   return state.runtimeLogs.filter((item) => item.type === state.runtimeLogTypeFilter);
 }
 
+function traineeRuntimeLogPageCount(logs = filteredTraineeRuntimeLogs()) {
+  const pageSize = Math.max(1, Number(state.runtimeLogPageSize) || 20);
+  return Math.max(1, Math.ceil((logs || []).length / pageSize));
+}
+
+function pagedTraineeRuntimeLogs(logs = filteredTraineeRuntimeLogs()) {
+  const pageSize = Math.max(1, Number(state.runtimeLogPageSize) || 20);
+  const pageCount = traineeRuntimeLogPageCount(logs);
+  state.runtimeLogPage = Math.min(Math.max(1, Number(state.runtimeLogPage) || 1), pageCount);
+  const start = (state.runtimeLogPage - 1) * pageSize;
+  return logs.slice(start, start + pageSize);
+}
+
+function renderTraineeRuntimeLogPager(logs = filteredTraineeRuntimeLogs()) {
+  const pager = $("traineeRuntimeLogPager");
+  if (!pager) return;
+  if (!logs.length) {
+    pager.innerHTML = "";
+    return;
+  }
+  const pageCount = traineeRuntimeLogPageCount(logs);
+  const page = Math.min(Math.max(1, Number(state.runtimeLogPage) || 1), pageCount);
+  const start = (page - 1) * state.runtimeLogPageSize + 1;
+  const end = Math.min(logs.length, page * state.runtimeLogPageSize);
+  pager.innerHTML = `
+    <span>${start}-${end} / ${logs.length} 条</span>
+    <button type="button" data-trainee-runtime-log-page="prev" ${page <= 1 ? "disabled" : ""}>上一页</button>
+    <strong>第 ${page} / ${pageCount} 页</strong>
+    <button type="button" data-trainee-runtime-log-page="next" ${page >= pageCount ? "disabled" : ""}>下一页</button>
+  `;
+}
+
+function clearTraineeRuntimeLogs() {
+  state.runtimeLogs = [];
+  state.runtimeLogSeq = 0;
+  state.runtimeLogPage = 1;
+  state.runtimeLogTypeFilter = "all";
+  renderHistory();
+}
+
 function renderPendingPreview() {
   const runItems = Array.from(pending.run_status.values());
   const setItems = Array.from(pending.set_values.values());
   $("pendingSummary").textContent = `${runItems.length + setItems.length} 项`;
   const rows = [
-    ...runItems.map((item) => ({ type: "投退", name: item.dev_name, value: statusText(item.run_stat) })),
+    ...runItems.map((item) => ({
+      type: item.status !== undefined ? "开合" : "投退",
+      name: item.dev_name,
+      value: item.status !== undefined ? remoteControlValueText("status", item.status) : statusText(item.run_stat),
+    })),
     ...setItems.map((item) => ({ type: item.set_type, name: item.dev_name, value: item.set_value })),
   ];
   $("pendingPreview").innerHTML = rows.slice(0, 12).map((item) => `
@@ -2229,7 +3938,6 @@ function updatePendingCount() {
   $("setpointPendingCount").textContent = `${pending.set_values.size} 待发`;
   $("commandPendingCount").textContent = `${total} 待发`;
   $("commandState").textContent = total ? "待发送" : "待命";
-  $("sendCommands").disabled = total === 0;
   renderPendingPreview();
 }
 
@@ -2241,7 +3949,9 @@ function formatNumber(value) {
 }
 
 function findDeviceByKey(key) {
-  return (state.snapshot?.devices || []).find((dev) => deviceKey(dev) === key) || null;
+  const [devType = "", devName = ""] = String(key || "").split("|");
+  return controlDefinitionDevices().find((dev) => deviceKey(dev) === `${devType}|${devName}`)
+    || null;
 }
 
 function closeRemoteControlDialog() {
@@ -2251,19 +3961,27 @@ function closeRemoteControlDialog() {
   state.remoteControlSending = false;
 }
 
-function openRemoteControlDialog(dev) {
+function openRemoteControlDialog(dev, commandType = dev?.__command_type || "run_stat") {
   const dialog = $("remoteControlDialog");
   if (!dialog || !dev) return;
-  state.remoteControlDevice = dev;
+  state.remoteControlDevice = { ...dev, __command_type: commandType };
   state.remoteControlSending = false;
-  const currentRun = Number(dev.run_stat) ? 1 : 0;
+  const valueKey = commandType === "status" ? "status" : "run_stat";
+  const currentRun = Number(dev[valueKey]) ? 1 : 0;
   $("remoteControlDevice").textContent = deviceName(dev);
-  $("remoteControlType").textContent = deviceType(dev);
-  $("remoteControlCurrent").innerHTML = `<span class="status-pill ${currentRun ? "is-ok" : "is-off"}">${statusText(currentRun)}</span>`;
+  $("remoteControlType").textContent = `${deviceType(dev)} / ${remoteControlLabel(commandType)}`;
+  $("remoteControlCurrent").innerHTML = `<span class="status-pill ${currentRun ? "is-ok" : "is-off"}">${remoteControlValueText(commandType, currentRun)}</span>`;
   $("remoteControlHint").textContent = "确认后将立即向模拟台下发遥控指令。";
   $("remoteControlHint").className = "remote-control-hint";
   document.querySelectorAll('input[name="remoteControlState"]').forEach((input) => {
     input.checked = Number(input.value) === (currentRun ? 0 : 1);
+    const label = input.closest("label");
+    const strong = label?.querySelector("strong");
+    const small = label?.querySelector("small");
+    if (strong) strong.textContent = remoteControlValueText(commandType, Number(input.value));
+    if (small) small.textContent = commandType === "status"
+      ? (Number(input.value) ? "闭合开关或断路器" : "断开开关或断路器")
+      : (Number(input.value) ? "使设备进入运行状态" : "使设备退出运行状态");
   });
   $("remoteControlConfirm").disabled = false;
   $("remoteControlConfirm").textContent = "确认下发";
@@ -2275,34 +3993,35 @@ async function sendRemoteControlCommand() {
   if (!dev || state.remoteControlSending) return;
   const selected = document.querySelector('input[name="remoteControlState"]:checked');
   if (!(selected instanceof HTMLInputElement)) return;
+  const commandType = dev.__command_type === "status" ? "status" : "run_stat";
   const command = {
     dev_type: deviceType(dev),
     dev_name: deviceName(dev),
-    run_stat: Number(selected.value) ? 1 : 0,
   };
+  command[commandType] = Number(selected.value) ? 1 : 0;
   const body = {
     source: "trainee-ui",
-    valid_for_minutes: CONTROL_COMMAND_VALID_MINUTES,
+    expires_at_absolute_minute: manualCommandExpiresAtAbsoluteMinute(),
     run_status: [command],
     set_values: [],
   };
-  const targetApi = state.receiveMode ? teacherApi : api;
-  const targetName = state.receiveMode ? "模拟台 /api/student/commands" : "学员台 /api/student/commands";
+  const useInteractionLink = hasTeacherCommandConnection();
+  const targetName = useInteractionLink ? teacherCommandTargetName() : "模拟台交互链接";
   state.remoteControlSending = true;
   $("remoteControlConfirm").disabled = true;
   $("remoteControlConfirm").textContent = "下发中";
-  $("remoteControlHint").textContent = `${deviceName(dev)}：${statusText(command.run_stat)}`;
-  addRuntimeLog("人工遥控", targetName, "下发请求", `${deviceName(dev)} → ${statusText(command.run_stat)}`);
+  $("remoteControlHint").textContent = `${deviceName(dev)}：${remoteControlValueText(commandType, command[commandType])}`;
+  addRuntimeLog("人工遥控", targetName, "下发请求", `${deviceName(dev)} → ${remoteControlValueText(commandType, command[commandType])}`);
   try {
-    const result = await targetApi("/api/student/commands", { method: "POST", body: JSON.stringify(body) });
+    const result = await postTeacherCommand(body);
     addRuntimeLog(
       "模拟台响应",
       targetName,
       "遥控成功",
-      `${deviceName(dev)} → ${statusText(command.run_stat)}；接受 ${result.run_status || 0} 条`,
+      `${deviceName(dev)} → ${remoteControlValueText(commandType, command[commandType])}；接受 ${result.run_status || 0} 条`,
       "ok",
     );
-    pending.run_status.delete(deviceKey(dev));
+    pending.run_status.delete(`${deviceKey(dev)}|${commandType}`);
     closeRemoteControlDialog();
     updatePendingCount();
     await refresh();
@@ -2317,7 +4036,7 @@ async function sendRemoteControlCommand() {
 }
 
 function findRemoteAdjustmentByKey(key) {
-  return remoteAdjustmentRows(state.snapshot?.devices || []).find((row) => row.key === key) || null;
+  return remoteAdjustmentRows(controlDefinitionDevices()).find((row) => row.key === key) || null;
 }
 
 function closeRemoteAdjustmentDialog() {
@@ -2364,19 +4083,19 @@ async function sendRemoteAdjustmentCommand() {
   };
   const body = {
     source: "trainee-ui",
-    valid_for_minutes: CONTROL_COMMAND_VALID_MINUTES,
+    expires_at_absolute_minute: manualCommandExpiresAtAbsoluteMinute(),
     run_status: [],
     set_values: [command],
   };
-  const targetApi = state.receiveMode ? teacherApi : api;
-  const targetName = state.receiveMode ? "模拟台 /api/student/commands" : "学员台 /api/student/commands";
+  const useInteractionLink = hasTeacherCommandConnection();
+  const targetName = useInteractionLink ? teacherCommandTargetName() : "模拟台交互链接";
   state.remoteAdjustmentSending = true;
   $("remoteAdjustmentConfirm").disabled = true;
   $("remoteAdjustmentConfirm").textContent = "下发中";
   $("remoteAdjustmentHint").textContent = `${row.name}：${formatNumber(setValue)}`;
   addRuntimeLog("人工遥调", targetName, "下发请求", `${row.name} → ${formatNumber(setValue)}`);
   try {
-    const result = await targetApi("/api/student/commands", { method: "POST", body: JSON.stringify(body) });
+    const result = await postTeacherCommand(body);
     addRuntimeLog(
       "模拟台响应",
       targetName,
@@ -2424,6 +4143,22 @@ function handleTreeClick(event) {
 document.addEventListener("click", (event) => {
   handleTreeClick(event);
   const target = event.target instanceof Element ? event.target : null;
+  const chartToggle = target?.closest("[data-chart-toggle][data-chart-series]");
+  if (chartToggle) {
+    event.preventDefault();
+    const chartKey = chartToggle.dataset.chartToggle || "";
+    const seriesKey = chartToggle.dataset.chartSeries || "";
+    const drawFn = chartKey === "measurementTrace" ? drawMeasurementTraceChart
+      : chartKey === "commandTrace" ? drawCommandTraceChart
+        : null;
+    toggleChartSeriesVisibility(chartKey, seriesKey, drawFn);
+    return;
+  }
+  if (target?.closest("#clearRuntimeLogs")) {
+    event.preventDefault();
+    clearTraineeRuntimeLogs();
+    return;
+  }
   const modelParamTab = target?.closest("[data-model-param-tab]");
   if (modelParamTab) {
     requestAnimationFrame(() => {
@@ -2440,7 +4175,14 @@ document.addEventListener("click", (event) => {
   const commandTab = target?.closest("[data-command-tab]");
   if (commandTab) {
     state.activeControlTab = commandTab.dataset.commandTab || "remote-control";
-    renderControlTabs();
+    ensureSelectedCommandTrace(controlDefinitionDevices());
+    renderCombinedControlPage();
+    return;
+  }
+  const commandTraceRow = target?.closest("[data-command-trace-key]");
+  if (commandTraceRow) {
+    selectCommandTraceRow(commandTraceRow);
+    return;
   }
   const measurementRow = target?.closest("[data-measurement-select-key]");
   if (measurementRow) {
@@ -2464,8 +4206,13 @@ document.addEventListener("dblclick", (event) => {
   const statusCell = target?.closest("[data-run-status-command]");
   if (!statusCell) return;
   event.preventDefault();
+  const commandKey = statusCell.dataset.runStatusCommand || "";
   const dev = findDeviceByKey(statusCell.dataset.runStatusCommand || "");
-  if (dev) openRemoteControlDialog(dev);
+  const commandType = commandKey.split("|")[2] || "run_stat";
+  if (dev) {
+    dev.__command_type = commandType;
+    openRemoteControlDialog(dev);
+  }
 });
 
 document.addEventListener("change", (event) => {
@@ -2473,10 +4220,13 @@ document.addEventListener("change", (event) => {
   if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement)) return;
   const runKey = target.dataset.runKey;
   if (runKey) {
-    const [dev_type, dev_name] = runKey.split("|");
-    pending.run_status.set(runKey, { dev_type, dev_name, run_stat: target.checked ? 1 : 0 });
+    const [dev_type, dev_name, commandType = "run_stat"] = runKey.split("|");
+    const item = { dev_type, dev_name };
+    item[commandType === "status" ? "status" : "run_stat"] = target.checked ? 1 : 0;
+    pending.run_status.set(runKey, item);
     updatePendingCount();
-    renderRunControls(state.snapshot?.devices || []);
+    renderRunControls(controlDefinitionDevices());
+    drawCommandTraceChart();
   }
 });
 
@@ -2495,37 +4245,7 @@ document.addEventListener("input", (event) => {
     });
     target.classList.add("is-pending");
     updatePendingCount();
-  }
-});
-
-$("sendCommands").addEventListener("click", async () => {
-  const body = {
-    source: "trainee-ui",
-    valid_for_minutes: CONTROL_COMMAND_VALID_MINUTES,
-    run_status: Array.from(pending.run_status.values()),
-    set_values: Array.from(pending.set_values.values()),
-  };
-  if (!body.run_status.length && !body.set_values.length) return;
-  $("sendCommands").disabled = true;
-  const targetApi = state.receiveMode ? teacherApi : api;
-  const targetName = state.receiveMode ? "模拟台 /api/student/commands" : "学员台 /api/student/commands";
-  addRuntimeLog("人工控制", targetName, "下发请求", `投退 ${body.run_status.length} 条；设值 ${body.set_values.length} 条`);
-  try {
-    const result = await targetApi("/api/student/commands", { method: "POST", body: JSON.stringify(body) });
-    addRuntimeLog(
-      "模拟台响应",
-      targetName,
-      "下发成功",
-      `接受投退 ${result.run_status || 0} 条；接受设值 ${result.set_values || 0} 条`,
-      "ok",
-    );
-    pending.run_status.clear();
-    pending.set_values.clear();
-    updatePendingCount();
-    await refresh();
-  } catch (error) {
-    addRuntimeLog("模拟台响应", targetName, "下发失败", apiErrorText(error), "error");
-    updatePendingCount();
+    drawCommandTraceChart();
   }
 });
 
@@ -2534,27 +4254,30 @@ function toggleReceiveMode() {
     state.receiveMode = false;
     state.frozen = true;
     state.receiveEpoch += 1;
+    state.receiveReconnectAttempts = 0;
+    state.receiveRequestActive = false;
     addRuntimeLog("接收模式", "模拟台实时数据", "停止接收", `冻结于 ${state.lastReceiveAt || "--"}`, "warn");
     stopRenewableControl("接收已停止，新能源优先策略已暂停。", true);
     renderReceiveMode();
     return;
   }
-  state.receiveMode = true;
-  state.frozen = false;
-  state.receiveEpoch += 1;
-  state.measurementTraceHistory = [];
-  state.lastReceiveAt = "";
-  state.snapshotSource = "";
-  state.lastTeacherSnapshotLogKey = "";
-  addRuntimeLog("接收模式", "模拟台实时数据", "启动接收", `教员台 ${teacherApiBase}`, "ok");
-  renderReceiveMode();
-  renderRenewableControl(state.snapshot || {});
-  refresh();
+  openReceiveLinkDialog();
 }
 
 $("importDefinitionsButton").addEventListener("click", () => $("definitionArchiveInput").click());
 $("definitionArchiveInput").addEventListener("change", (event) => importDefinitionArchive(event.target.files?.[0]));
 $("traineeRunToggle").addEventListener("click", toggleReceiveMode);
+$("receiveLinkClose").addEventListener("click", closeReceiveLinkDialog);
+$("receiveLinkCancel").addEventListener("click", closeReceiveLinkDialog);
+$("confirmReceiveLink").addEventListener("click", startReceiveModeFromLink);
+$("receiveLinkDialog").addEventListener("click", (event) => {
+  if (event.target === $("receiveLinkDialog")) closeReceiveLinkDialog();
+});
+$("receiveWarningClose").addEventListener("click", closeReceiveWarningDialog);
+$("receiveWarningConfirm").addEventListener("click", closeReceiveWarningDialog);
+$("receiveWarningDialog").addEventListener("click", (event) => {
+  if (event.target === $("receiveWarningDialog")) closeReceiveWarningDialog();
+});
 $("remoteControlClose").addEventListener("click", closeRemoteControlDialog);
 $("remoteControlCancel").addEventListener("click", closeRemoteControlDialog);
 $("remoteControlConfirm").addEventListener("click", sendRemoteControlCommand);
@@ -2572,26 +4295,84 @@ $("renewableSendOnce").addEventListener("click", () => sendRenewableControlPlan(
 $("renewableControlPeriod").addEventListener("change", updateRenewableSettings);
 $("renewableSocMin").addEventListener("change", updateRenewableSettings);
 $("renewableSocMax").addEventListener("change", updateRenewableSettings);
-$("clearRuntimeLogs").addEventListener("click", () => {
-  state.runtimeLogs = [];
-  renderHistory();
-});
+$("clearRuntimeLogs").addEventListener("click", clearTraineeRuntimeLogs);
 $("traineeRuntimeLogTypeFilter").addEventListener("change", (event) => {
   state.runtimeLogTypeFilter = event.target.value || "all";
+  state.runtimeLogPage = 1;
   renderHistory();
 });
-$("modelSelector").addEventListener("change", (event) => setActiveModel(event.target.value));
+$("traineeRuntimeLogPager").addEventListener("click", (event) => {
+  const button = event.target instanceof Element ? event.target.closest("[data-trainee-runtime-log-page]") : null;
+  if (!button) return;
+  const direction = button.dataset.traineeRuntimeLogPage;
+  const pageCount = traineeRuntimeLogPageCount(filteredTraineeRuntimeLogs());
+  state.runtimeLogPage = direction === "prev"
+    ? Math.max(1, state.runtimeLogPage - 1)
+    : Math.min(pageCount, state.runtimeLogPage + 1);
+  renderHistory();
+});
+const modelSelector = $("modelSelector");
+if (modelSelector) {
+  modelSelector.addEventListener("change", (event) => setActiveModel(event.target.value));
+}
 $("measurementTraceWindow").addEventListener("change", (event) => {
   state.measurementTraceWindowMinutes = Number(event.target.value) || 60;
   drawMeasurementTraceChart();
 });
+const commandTraceWindow = $("commandTraceWindow");
+if (commandTraceWindow) {
+  commandTraceWindow.addEventListener("change", (event) => {
+    state.commandTraceWindowMinutes = Number(event.target.value) || 60;
+    drawCommandTraceChart();
+  });
+}
+initTraceChartInteractions("measurementTrace", "measurementTraceChart", drawMeasurementTraceChart);
+initTraceChartInteractions("commandTrace", "commandTraceChart", drawCommandTraceChart);
 const curveDisplayChart = $("curveDisplayChart");
 if (curveDisplayChart) {
+  let lastCurveDisplayPointerDownAt = 0;
+  let lastCurveDisplayHandledAt = 0;
+  const handleCurveDisplaySelection = (event) => {
+    if (event.button !== undefined && event.button !== 0) return false;
+    const legendKey = curveDisplayLegendKeyAtPointer(event);
+    if (legendKey) {
+      event.preventDefault();
+      toggleCurveDisplaySeriesVisibility(legendKey, true);
+      return true;
+    }
+    const hitKey = curveDisplayKeyAtPointer(event);
+    if (hitKey) {
+      event.preventDefault();
+      state.activeCurveDisplayKey = hitKey;
+      drawCurveDisplay(state.snapshot || {});
+      return true;
+    }
+    return false;
+  };
+  const handleCurveDisplayPointerDown = (event) => {
+    if (event.type === "pointerdown") {
+      lastCurveDisplayPointerDownAt = Date.now();
+    } else if (Date.now() - lastCurveDisplayPointerDownAt < 80) {
+      return;
+    }
+    if (handleCurveDisplaySelection(event)) {
+      lastCurveDisplayHandledAt = Date.now();
+    }
+  };
   curveDisplayChart.addEventListener("pointermove", (event) => setCurveDisplayCursorFromEvent(event));
+  curveDisplayChart.addEventListener("mousemove", (event) => setCurveDisplayCursorFromEvent(event));
   curveDisplayChart.addEventListener("pointerleave", hideCurveDisplayCursor);
+  curveDisplayChart.addEventListener("mouseleave", hideCurveDisplayCursor);
+  curveDisplayChart.addEventListener("pointerdown", handleCurveDisplayPointerDown);
+  curveDisplayChart.addEventListener("mousedown", handleCurveDisplayPointerDown);
+  curveDisplayChart.addEventListener("click", (event) => {
+    if (Date.now() - lastCurveDisplayHandledAt < 160) return;
+    handleCurveDisplaySelection(event);
+  });
 }
 window.addEventListener("resize", () => {
   drawMeasurementTraceChart();
+  drawCommandTraceChart();
   drawCurveDisplay(state.snapshot || {});
 });
 

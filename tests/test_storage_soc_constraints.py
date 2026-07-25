@@ -35,9 +35,9 @@ class StorageSocConstraintTest(unittest.TestCase):
 
         model_file.write_text(
             _efile_block(
-                "DCDCConverter",
-                ("idx", "name", "p_set", "run_stat"),
-                [{"idx": 1, "name": "ess01_dcdc", "p_set": 0, "run_stat": 1}],
+                "DCGenerator",
+                ("idx", "name", "node", "control_type", "p_set", "v_set", "i_set", "run_stat"),
+                [{"idx": 1, "name": "ess01_vsrc", "node": 1, "control_type": "P", "p_set": 0, "v_set": 300, "i_set": 0, "run_stat": 1}],
             ),
             encoding="utf-8",
         )
@@ -45,7 +45,7 @@ class StorageSocConstraintTest(unittest.TestCase):
             _efile_block(
                 "SetValue",
                 ("dev_type", "dev_name", "set_type", "set_value"),
-                [{"dev_type": "DCDCConverter", "dev_name": "ess01_dcdc", "set_type": "p_set", "set_value": p_set}],
+                [{"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": p_set}],
             )
             + _efile_block(
                 "StorageSoc",
@@ -79,7 +79,7 @@ class StorageSocConstraintTest(unittest.TestCase):
 
         def fake_solver(merged_model: Path):
             book = simu_loop.EBook(merged_model)
-            row = book.data["DCDCConverter"].data[0]
+            row = book.data["DCGenerator"].data[0]
             solver_seen["p_set"] = float(row["p_set"])
             return object(), "fake-solver"
 

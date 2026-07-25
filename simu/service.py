@@ -64,6 +64,16 @@ DEFAULT_WEATHER = {
     "load_kw": 100.0,
 }
 
+WEATHER_MEASUREMENTS = (
+    ("wind_speed_mps", "wind_speed", "WIND_SPEED"),
+    ("air_temp_c", "air_temp", "AIR_TEMP"),
+    ("humidity_pct", "humidity", "HUMIDITY"),
+    ("air_pressure_hpa", "air_pressure", "AIR_PRESSURE"),
+    ("solar_irradiance_w_m2", "solar_irradiance", "SOLAR_IRRADIANCE"),
+)
+
+WEATHER_MEASUREMENT_TYPE_SET = {item[2] for item in WEATHER_MEASUREMENTS}
+
 STAT_HEADERS = {
     "RunStat": ("dev_type", "dev_name", "run_stat"),
     "CbOpenStat": ("dev_type", "dev_name", "status"),
@@ -71,8 +81,9 @@ STAT_HEADERS = {
     "StorageSoc": ("dev_type", "idx", "name", "soc_curr"),
 }
 
-INPUT_FILES = ("model.e", "meas.e", "stat.e", "weather.e", "device.e", "yt_ctrl.e")
-CLONE_FILES = INPUT_FILES + ("real.e", "scada.e", "curves.json", "local_settings.json", "commands.json")
+SOURCE_DEFINITION_FILES = ("model.e", "meas.e", "stat.e", "control.e", "weather.e", "device.e", "curves.e")
+LEGACY_RUNTIME_DEFINITION_FILES = SOURCE_DEFINITION_FILES
+CONTROL_DEFINITION_BLOCKS = ("RunStat", "CbOpenStat", "SetValue", "StorageSoc")
 CLOCK_SPEED_LEVELS = (1.0, 5.0, 15.0, 30.0, 60.0)
 DEFAULT_CONTROL_VALID_MINUTES = 5.0
 DEFAULT_COMPUTE_INTERVAL_SECONDS = 1.0
@@ -537,6 +548,10 @@ def _measurement_row_to_dict(row: Sequence[str]) -> Dict[str, Any]:
     return item
 
 
+def _measurement_dict_to_row(item: Mapping[str, Any]) -> List[str]:
+    return [str(item.get(key, "")) for key in MEAS_HEADER]
+
+
 class PolarMicrogridSimulator:
     """Runtime service for simulator and trainee web consoles."""
 
@@ -570,45 +585,154 @@ class PolarMicrogridSimulator:
         self._runtime_log_seq = 0
         self._last_command_response_index = 0
         self.latest_result: Dict[str, Any] = {}
-        self.latest_measurements: Dict[str, Any] = {"real": [], "scada": []}
+        self.latest_measurements: Dict[str, Any] = {}
         self._fault_restore: Dict[Tuple[str, str, str], str] = {}
         self._last_scada_values: Dict[str, float] = {}
 
+        self.work_dir = self.runtime_dir / ".simu_loop_work"
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        self.source_files = {
+            "model": self.sim_dir / "model.e",
+            "meas": self.sim_dir / "meas.e",
+            "stat": self.sim_dir / "stat.e",
+            "control": self.sim_dir / "control.e",
+            "weather": self.sim_dir / "weather.e",
+            "device": self.sim_dir / "device.e",
+            "curves": self.sim_dir / "curves.json",
+            "curves_e": self.sim_dir / "curves.e",
+        }
+        self.work_files = {
+            "model": self.work_dir / "model.e",
+            "stat": self.work_dir / "stat.e",
+            "weather": self.work_dir / "weather.e",
+        }
         self.files = {
-            "model": self.runtime_dir / "model.e",
-            "meas": self.runtime_dir / "meas.e",
-            "stat": self.runtime_dir / "stat.e",
-            "weather": self.runtime_dir / "weather.e",
-            "device": self.runtime_dir / "device.e",
+            "model": self.source_files["model"],
+            "meas": self.source_files["meas"],
+            "stat": self.work_files["stat"],
+            "control": self.source_files["control"],
+            "weather": self.work_files["weather"],
+            "device": self.source_files["device"],
             "yt_ctrl": self.runtime_dir / "yt_ctrl.e",
             "real": self.runtime_dir / "real.e",
             "scada": self.runtime_dir / "scada.e",
         }
         self.curves_file = self.runtime_dir / "curves.json"
+        self.source_curves_file = self.source_files["curves"]
         self.settings_file = self.runtime_dir / "local_settings.json"
         self.commands_file = self.runtime_dir / "commands.json"
+        self.runtime_logs_file = self.runtime_dir / "runtime_logs.json"
 
         self._copy_runtime_inputs()
         self.weather_defaults = self._read_weather_defaults()
-        self.curves = _read_json(self.curves_file, {"mode": "day", "time_step_minutes": 1, "weather": [], "loads": {}})
+        self.ensure_weather_measurements_in_definition_files()
+        self.curves = self._read_curves()
         self.clock.step_minutes = max(1, int(_to_float(self.curves.get("time_step_minutes"), 1) or 1))
-        self.local_settings = _read_json(
-            self.settings_file,
-            {"device_faults": [], "measurement_faults": [], "modes": [], "system_parameters": {}},
-        )
+        self.local_settings = self._read_local_settings()
         self._apply_stored_system_parameters()
         self.command_history = self._read_command_history()
         self._last_command_response_index = len(self.command_history)
+        self.runtime_logs = self._read_runtime_logs()
+        self._runtime_log_seq = max((int(_to_float(item.get("seq"), 0) or 0) for item in self.runtime_logs), default=0)
         self._ensure_stat_file()
 
     def _copy_runtime_inputs(self) -> None:
-        for name in CLONE_FILES:
-            source = self.sim_dir / name
-            target = self.runtime_dir / name
-            if source.exists():
-                shutil.copy2(source, target)
-        if not self.files["weather"].exists():
+        self._cleanup_legacy_runtime_definition_files()
+        self._materialize_working_model()
+        self._materialize_working_stat()
+        self._materialize_working_weather()
+
+    def _cleanup_legacy_runtime_definition_files(self) -> None:
+        for file_name in LEGACY_RUNTIME_DEFINITION_FILES:
+            legacy_path = self.runtime_dir / file_name
+            if not legacy_path.exists() or legacy_path.is_dir():
+                continue
+            if file_name == "stat.e" and not self.work_files["stat"].exists():
+                shutil.copy2(legacy_path, self.work_files["stat"])
+            elif file_name == "weather.e" and not self.work_files["weather"].exists():
+                shutil.copy2(legacy_path, self.work_files["weather"])
+            legacy_path.unlink()
+
+    def _materialize_working_model(self) -> None:
+        source = self.source_files["model"]
+        target = self.work_files["model"]
+        if source.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+
+    def _materialize_working_stat(self) -> None:
+        source = self.source_files["stat"]
+        target = self.work_files["stat"]
+        if not target.exists() and source.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+
+    def _materialize_working_weather(self) -> None:
+        source = self.source_files["weather"]
+        target = self.work_files["weather"]
+        if not target.exists() and source.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+        if not target.exists():
             self._write_weather_row(DEFAULT_WEATHER | {"time": minute_to_time(0)})
+
+    def _read_curves(self) -> Dict[str, Any]:
+        default = {"mode": "day", "time_step_minutes": 1, "weather": [], "loads": {}}
+        source_curves = _read_json(self.source_curves_file, default) if self.source_curves_file.exists() else default
+        return _read_json(self.curves_file, source_curves)
+
+    def _read_local_settings(self) -> Dict[str, Any]:
+        default = {"device_faults": [], "measurement_faults": [], "modes": [], "system_parameters": {}}
+        if self.settings_file.exists():
+            settings = _read_json(self.settings_file, default)
+        else:
+            source_settings_file = self.sim_dir / "local_settings.json"
+            settings = _read_json(source_settings_file, default) if source_settings_file.exists() else default
+        return dict(settings) if isinstance(settings, Mapping) else dict(default)
+
+    def _read_runtime_logs(self) -> List[Dict[str, Any]]:
+        items = _read_json(self.runtime_logs_file, [])
+        if not isinstance(items, list):
+            return []
+        return [item for item in items[-500:] if isinstance(item, dict)]
+
+    def _write_runtime_logs(self) -> None:
+        _write_json(self.runtime_logs_file, self.runtime_logs[-500:])
+
+    def _ensure_weather_measurements_in_file(self, meas_file: Path) -> bool:
+        meas_file = Path(meas_file)
+        if not meas_file.exists():
+            before: List[str] = []
+            rows: List[List[str]] = []
+            after: List[str] = []
+        else:
+            try:
+                before, rows, after = parse_measurement_rows(meas_file)
+            except Exception:
+                return False
+        weather_rows_in_file = [
+            row for row in rows if self._is_weather_measurement_row(_measurement_row_to_dict(row))
+        ]
+        kept_rows = [row for row in rows if not self._is_weather_measurement_row(_measurement_row_to_dict(row))]
+        existing_types = {
+            str(_measurement_row_to_dict(row).get("meas_type", "")).upper()
+            for row in weather_rows_in_file
+        }
+        missing_types = WEATHER_MEASUREMENT_TYPE_SET - existing_types
+        if not missing_types and len(weather_rows_in_file) == len(WEATHER_MEASUREMENTS):
+            return False
+        max_idx = -1
+        for row in kept_rows:
+            max_idx = max(max_idx, int(_to_float(row[0], -1) or -1))
+        weather_rows = [
+            _measurement_dict_to_row(row)
+            for row in self._weather_measurement_rows(max_idx + 1)
+        ]
+        simu_loop.write_measurement_snapshot(meas_file, before, [*kept_rows, *weather_rows], after)
+        return True
+
+    def ensure_weather_measurements_in_definition_files(self) -> None:
+        self._ensure_weather_measurements_in_file(self.source_files["meas"])
 
     def _read_command_history(self) -> List[Dict[str, Any]]:
         items = _read_json(self.commands_file, [])
@@ -666,13 +790,6 @@ class PolarMicrogridSimulator:
             )
             self.local_settings["system_parameters"] = params
             _write_json(self.settings_file, self.local_settings)
-            source_settings_file = self.sim_dir / "local_settings.json"
-            source_settings = _read_json(source_settings_file, {}) if source_settings_file.exists() else {}
-            if not isinstance(source_settings, Mapping):
-                source_settings = {}
-            source_settings = dict(source_settings)
-            source_settings["system_parameters"] = params
-            _write_json(source_settings_file, source_settings)
             self._append_runtime_log(
                 "参数配置",
                 "系统参数",
@@ -683,7 +800,7 @@ class PolarMicrogridSimulator:
                     f"有效推进步长 {effective_step} min",
                 ],
                 level="ok",
-                sim_time=minute_to_time(self.clock.minute),
+                simu_time=minute_to_time(self.clock.minute),
             )
             return {"system_parameters": self.system_parameters(), "clock": self.clock.as_dict()}
 
@@ -693,16 +810,16 @@ class PolarMicrogridSimulator:
             _write_json(self.settings_file, self.local_settings)
             self._write_command_history()
             target_dir.mkdir(parents=True, exist_ok=False)
-            for name in CLONE_FILES:
-                source = self.runtime_dir / name
-                if not source.exists():
-                    source = self.sim_dir / name
+            for name in SOURCE_DEFINITION_FILES:
+                source = self.sim_dir / name
                 if source.exists():
                     shutil.copy2(source, target_dir / name)
+            if self.curves:
+                _write_json(target_dir / "curves.json", self.curves)
 
     def _read_weather_defaults(self) -> Dict[str, float]:
         values = dict(DEFAULT_WEATHER)
-        path = self.files["weather"]
+        path = self.source_files.get("weather", self.files["weather"])
         if not path.exists():
             return values
         try:
@@ -732,7 +849,7 @@ class PolarMicrogridSimulator:
             simu_loop.write_ebook_aligned(book, self.files["stat"])
 
     def _base_stat_book_for_controls(self) -> EBook:
-        source_stat = self.sim_dir / "stat.e"
+        source_stat = self.source_files["stat"]
         book = _load_book(source_stat if source_stat.exists() else self.files["stat"])
         for name, headers in STAT_HEADERS.items():
             _ensure_block(book, name, headers)
@@ -783,6 +900,23 @@ class PolarMicrogridSimulator:
             )
         return normalized
 
+    def _write_active_yt_ctrl_file(self, set_rows: Sequence[Mapping[str, Any]]) -> None:
+        unique_rows: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        for row in set_rows:
+            dev_type = str(row.get("dev_type", ""))
+            dev_name = str(row.get("dev_name", row.get("name", "")))
+            set_type = str(row.get("set_type", ""))
+            if not dev_type or not dev_name or not set_type:
+                continue
+            unique_rows[(dev_type, dev_name, set_type)] = {
+                "dev_type": dev_type,
+                "dev_name": dev_name,
+                "set_type": set_type,
+                "set_value": row.get("set_value", ""),
+            }
+        book = _make_book({"SetValue": (STAT_HEADERS["SetValue"], list(unique_rows.values()))})
+        simu_loop.write_ebook_aligned(book, self.files["yt_ctrl"])
+
     def _active_control_command_entries(self, absolute_minute: int | float) -> List[Mapping[str, Any]]:
         current = float(absolute_minute)
         active: List[Mapping[str, Any]] = []
@@ -810,6 +944,7 @@ class PolarMicrogridSimulator:
         active_entries = self._active_control_command_entries(absolute_minute)
         applied_run = 0
         applied_set = 0
+        active_set_rows: List[Dict[str, Any]] = []
 
         for command in active_entries:
             normalized = command.get("normalized", {})
@@ -851,13 +986,22 @@ class PolarMicrogridSimulator:
                         set_block.data.append(row)
                     row["set_value"] = _number_text(item.get("set_value", ""))
                     applied_set += 1
+                    active_set_rows.append(
+                        {
+                            "dev_type": dev_type,
+                            "dev_name": dev_name,
+                            "set_type": set_type,
+                            "set_value": row["set_value"],
+                        }
+                    )
 
         simu_loop.write_ebook_aligned(book, self.files["stat"])
+        self._write_active_yt_ctrl_file(active_set_rows)
         return {"active_commands": len(active_entries), "run_status": applied_run, "set_values": applied_set}
 
     def _make_config(self, period_seconds: Optional[float] = None) -> simu_loop.SimulationConfig:
         return simu_loop.SimulationConfig(
-            model_file=self.files["model"],
+            model_file=self.work_files["model"] if self.work_files["model"].exists() else self.files["model"],
             meas_file=self.files["meas"],
             weather_file=self.files["weather"],
             dev_stat_file=self.files["stat"],
@@ -881,14 +1025,14 @@ class PolarMicrogridSimulator:
         detail: Any = "",
         *,
         level: str = "info",
-        sim_time: Optional[str] = None,
+        simu_time: Optional[str] = None,
     ) -> None:
         self._runtime_log_seq += 1
         self.runtime_logs.append(
             {
                 "seq": self._runtime_log_seq,
                 "wall_time": _now_text(),
-                "sim_time": sim_time or minute_to_time(self.clock.minute),
+                "simu_time": simu_time or minute_to_time(self.clock.minute),
                 "type": log_type,
                 "target": target,
                 "result": result,
@@ -897,6 +1041,14 @@ class PolarMicrogridSimulator:
             }
         )
         self.runtime_logs = self.runtime_logs[-500:]
+        self._write_runtime_logs()
+
+    def clear_runtime_logs(self) -> Dict[str, int]:
+        count = len(self.runtime_logs)
+        self.runtime_logs = []
+        self._runtime_log_seq = 0
+        self._write_runtime_logs()
+        return {"cleared": count}
 
     def _command_accept_detail(
         self,
@@ -1057,7 +1209,7 @@ class PolarMicrogridSimulator:
             "逐点读取",
             detail,
             level="ok" if load_seen else "warn",
-            sim_time=minute_to_time(minute),
+            simu_time=minute_to_time(minute),
         )
 
     def _short_list(self, items: Sequence[str], limit: int = 24) -> str:
@@ -1081,8 +1233,8 @@ class PolarMicrogridSimulator:
         return {header: row.get(header, "") for header in block.header_list}
 
     def _load_flow_input_model_book(self) -> Optional[EBook]:
-        merged_model = self.runtime_dir / ".simu_loop_work" / "merged_model.e"
-        for path in (merged_model, self.files["model"]):
+        merged_model = self.work_dir / "merged_model.e"
+        for path in (merged_model, self.work_files["model"], self.files["model"]):
             if not path.exists():
                 continue
             try:
@@ -1110,7 +1262,7 @@ class PolarMicrogridSimulator:
                 model_book,
                 device_book,
                 "wind_generator",
-                ("DCACConverter", "ACGenerator"),
+                ("ACGenerator",),
                 ("wt", "wind"),
             ):
                 rated = simu_loop._safe_float((define or {}).get("rated_power", (define or {}).get("p_max", 10.0)), 10.0) or 10.0
@@ -1136,7 +1288,7 @@ class PolarMicrogridSimulator:
                 model_book,
                 device_book,
                 "pv_generator",
-                ("DCDCConverter", "DCGenerator"),
+                ("DCGenerator",),
                 ("pv", "solar"),
             ):
                 rated = simu_loop._safe_float((define or {}).get("rated_power", (define or {}).get("p_max", row.get("p_set", 0.0))), 0.0) or 0.0
@@ -1239,7 +1391,7 @@ class PolarMicrogridSimulator:
                         continue
                     categories[category].add(name)
                     if category == "storage":
-                        categories[category].add(f"{name}_dcdc")
+                        categories[category].add(f"{name}_vsrc")
         return categories
 
     def _measurement_power_category(
@@ -1254,21 +1406,33 @@ class PolarMicrogridSimulator:
         pv_names = category_names["pv"]
         diesel_names = category_names["diesel"]
         load_names = category_names["load"]
-        if dev_name in storage_names or (not storage_names and (dev_type in ("ESS", "Storage") or lower_name.startswith("ess"))):
+        if dev_type in ("ESS", "Storage"):
             return "storage"
-        if dev_name in wind_names or (not wind_names and lower_name.startswith(("wt", "wind"))):
+        if dev_type == "DCGenerator" and (
+            dev_name in storage_names or (not storage_names and lower_name.startswith("ess"))
+        ):
+            return "storage"
+        if dev_type == "ACGenerator" and (
+            dev_name in wind_names or (not wind_names and lower_name.startswith(("wt", "wind")))
+        ):
             return "wind"
-        if dev_name in pv_names or (not pv_names and lower_name.startswith(("pv", "solar"))):
+        if dev_type == "DCGenerator" and (
+            dev_name in pv_names or (not pv_names and lower_name.startswith(("pv", "solar")))
+        ):
             return "pv"
-        if dev_name in diesel_names or (not diesel_names and ("diesel" in lower_name or "柴" in dev_name)):
+        if dev_type == "ACGenerator" and (
+            dev_name in diesel_names or (not diesel_names and ("diesel" in lower_name or "柴" in dev_name))
+        ):
             return "diesel"
-        if dev_name in load_names or (not load_names and (dev_type.endswith("Load") or "load" in lower_name or "负荷" in dev_name)):
+        if dev_type.endswith("Load") and (
+            dev_name in load_names or (not load_names and ("load" in lower_name or "负荷" in dev_name))
+        ):
             return "load"
         return ""
 
     def _canonical_power_device_name(self, category: str, dev_name: str) -> str:
-        if category == "storage" and dev_name.endswith("_dcdc"):
-            return dev_name.removesuffix("_dcdc")
+        if category == "storage" and dev_name.endswith("_vsrc"):
+            return dev_name.removesuffix("_vsrc")
         return dev_name
 
     def _preferred_power_value(self, category: str, values: Mapping[str, float]) -> Optional[float]:
@@ -1277,7 +1441,7 @@ class PolarMicrogridSimulator:
             "pv": ("P_TO", "P_FROM", "P_GEN", "P", "P_DC", "P_AC"),
             "diesel": ("P_GEN", "P", "P_AC", "P_TO", "P_FROM"),
             "load": ("P_LOAD", "P", "P_AC", "P_TO", "P_FROM"),
-            "storage": ("P", "P_FROM", "P_TO"),
+            "storage": ("P", "P_GEN", "P_FROM", "P_TO"),
         }
         for meas_type in preferences.get(category, ("P",)):
             if meas_type in values:
@@ -1376,7 +1540,7 @@ class PolarMicrogridSimulator:
         command_response_lines: Sequence[str],
     ) -> None:
         real_measurements = measurements.get("real", [])
-        sim_time = minute_to_time(minute)
+        simu_time = minute_to_time(minute)
         control_detail = [
             *self._compact_command_response_lines(command_response_lines),
             *self._input_boundary_lines(minute, absolute_minute, clock_advance, period_seconds),
@@ -1387,11 +1551,11 @@ class PolarMicrogridSimulator:
             "完成",
             control_detail,
             level="ok",
-            sim_time=sim_time,
+            simu_time=simu_time,
         )
         power_flow_detail = [
             (
-                f"计算摘要 时刻 {sim_time}，累计分钟 {absolute_minute}，推进 {clock_advance} min，"
+                f"计算摘要 时刻 {simu_time}，累计分钟 {absolute_minute}，推进 {clock_advance} min，"
                 f"求解器 {result.get('solver_info', 'not-run')}，"
                 f"真值量测 {len(real_measurements)} 条，更新 {result.get('updated', 0)} 条，"
                 f"缺失 {result.get('missing', 0)} 条，叠加修正 {result.get('overlay_updates', 0)} 条"
@@ -1404,7 +1568,7 @@ class PolarMicrogridSimulator:
             "完成" if int(_to_float(result.get("missing"), 0) or 0) == 0 else "有缺失",
             power_flow_detail,
             level="ok" if int(_to_float(result.get("missing"), 0) or 0) == 0 else "warn",
-            sim_time=sim_time,
+            simu_time=simu_time,
         )
 
     def apply_student_commands(self, payload: Mapping[str, Any], source: str = "") -> Dict[str, int]:
@@ -1468,11 +1632,11 @@ class PolarMicrogridSimulator:
                 continue
             item_dev_type = str(item.get("dev_type", item.get("type", "")))
             item_dev_name = str(item.get("dev_name", item.get("name", "")))
-            if item_dev_type == "ESS" and item_dev_name:
+            if item_dev_type == "Storage" and item_dev_name:
                 item = {
                     **dict(item),
-                    "dev_type": "DCDCConverter",
-                    "dev_name": f"{item_dev_name}_dcdc",
+                    "dev_type": "ESS",
+                    "dev_name": item_dev_name,
                 }
             if "set_type" in item:
                 expanded.append(dict(item))
@@ -1622,6 +1786,7 @@ class PolarMicrogridSimulator:
             return self.snapshot()
 
     def _prepare_runtime_inputs(self, minute: int, absolute_minute: int) -> None:
+        self._materialize_working_model()
         self._write_current_weather(minute, absolute_minute)
         self._materialize_active_control_commands(absolute_minute)
         self._apply_device_faults(minute, absolute_minute)
@@ -1713,9 +1878,10 @@ class PolarMicrogridSimulator:
 
     def _apply_modes_to_model(self) -> None:
         modes = self.local_settings.get("modes", [])
-        if not modes or not self.files["model"].exists():
+        model_path = self.work_files["model"] if self.work_files["model"].exists() else self.files["model"]
+        if not modes or not model_path.exists():
             return
-        book = EBook(self.files["model"])
+        book = EBook(model_path)
         changed = False
         for mode in modes:
             if not isinstance(mode, Mapping):
@@ -1741,7 +1907,7 @@ class PolarMicrogridSimulator:
                     changed = True
                     break
         if changed:
-            simu_loop.write_ebook_aligned(book, self.files["model"])
+            simu_loop.write_ebook_aligned(book, model_path)
 
     def _apply_measurement_faults(self, minute: int, absolute_minute: int) -> None:
         faults = [fault for fault in self.local_settings.get("measurement_faults", []) if isinstance(fault, Mapping)]
@@ -1811,15 +1977,107 @@ class PolarMicrogridSimulator:
             "scada_file": str(getattr(result, "scada_file", self.files["scada"])),
         }
 
+    def _current_weather_values(self) -> Dict[str, Any]:
+        values: Dict[str, Any] = {**self.weather_defaults, "time": minute_to_time(self.clock.minute)}
+        try:
+            book = _load_book(self.files["weather"])
+        except Exception:
+            return values
+        block = book.data.get("Weather")
+        if block is None or not block.data:
+            return values
+        row: Mapping[str, Any] = block.data[0]
+        if "name" in block.header_list and "value" in block.header_list:
+            row = {str(item.get("name", "")): item.get("value", "") for item in block.data}
+        if row.get("time") not in (None, ""):
+            values["time"] = row.get("time")
+        for key in DEFAULT_WEATHER:
+            number = _to_float(row.get(key), None)
+            if number is not None:
+                values[key] = number
+        return values
+
+    def _is_weather_measurement_row(self, row: Mapping[str, Any]) -> bool:
+        return (
+            str(row.get("dev_type", "")) == "Environment"
+            and str(row.get("dev_name", "")) == "weather"
+            and str(row.get("meas_type", "")).upper() in WEATHER_MEASUREMENT_TYPE_SET
+        )
+
+    def _weather_measurement_rows(self, start_idx: int) -> List[Dict[str, Any]]:
+        weather = self._current_weather_values()
+        rows: List[Dict[str, Any]] = []
+        for offset, (weather_key, name_suffix, meas_type) in enumerate(WEATHER_MEASUREMENTS):
+            value = _to_float(weather.get(weather_key), _to_float(DEFAULT_WEATHER.get(weather_key), 0.0))
+            rows.append(
+                {
+                    "idx": start_idx + offset,
+                    "name": f"weather_{name_suffix}",
+                    "dev_type": "Environment",
+                    "dev_name": "weather",
+                    "meas_type": meas_type,
+                    "weight": 1.0,
+                    "valid": 1,
+                    "value": value if value is not None else 0.0,
+                }
+            )
+        return rows
+
+    def _with_weather_measurements(self, measurements: Mapping[str, Sequence[Mapping[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
+        weather = self._current_weather_values()
+        weather_values = {
+            meas_type: _to_float(weather.get(weather_key), _to_float(DEFAULT_WEATHER.get(weather_key), 0.0)) or 0.0
+            for weather_key, _name_suffix, meas_type in WEATHER_MEASUREMENTS
+        }
+        normalized: Dict[str, List[Dict[str, Any]]] = {
+            channel: [dict(row) for row in measurements.get(channel, [])]
+            for channel in ("definitions", "real", "scada")
+        }
+
+        max_idx = -1
+        for rows in normalized.values():
+            for row in rows:
+                idx = int(_to_float(row.get("idx"), -1) or -1)
+                max_idx = max(max_idx, idx)
+                if not self._is_weather_measurement_row(row):
+                    continue
+                meas_type = str(row.get("meas_type", "")).upper()
+                if meas_type in weather_values:
+                    row["value"] = weather_values[meas_type]
+                row.setdefault("valid", 1)
+                row.setdefault("weight", 1.0)
+
+        definition_weather_rows = [
+            row for row in normalized["definitions"] if self._is_weather_measurement_row(row)
+        ]
+        if not definition_weather_rows:
+            missing_start_idx = max_idx + 1
+            definition_weather_rows = self._weather_measurement_rows(missing_start_idx)
+            normalized["definitions"].extend(dict(row) for row in definition_weather_rows)
+
+        for channel in ("real", "scada"):
+            rows = normalized[channel]
+            present_types = {
+                str(row.get("meas_type", "")).upper()
+                for row in rows
+                if self._is_weather_measurement_row(row)
+            }
+            for definition_row in definition_weather_rows:
+                meas_type = str(definition_row.get("meas_type", "")).upper()
+                if meas_type not in present_types:
+                    rows.append(dict(definition_row))
+        return normalized
+
     def measurements(self) -> Dict[str, List[Dict[str, Any]]]:
         definitions = self._read_measurement_file(self.files["meas"])
         real = self._read_measurement_file(self.files["real"])
         scada = self._read_measurement_file(self.files["scada"])
-        for item in scada:
+        measurements = self._with_weather_measurements({"definitions": definitions, "real": real, "scada": scada})
+        for item in measurements["scada"]:
             self._last_scada_values[
                 f"{item['name']}|{item['dev_type']}|{item['dev_name']}|{item['meas_type']}"
             ] = item.get("value", 0.0) or 0.0
-        return {"definitions": definitions, "real": real, "scada": scada}
+        return measurements
 
     def _read_measurement_file(self, path: Path) -> List[Dict[str, Any]]:
         if not path.exists():
@@ -1875,8 +2133,26 @@ class PolarMicrogridSimulator:
                         "raw": {header: row.get(header, "") for header in block.header_list},
                     }
                 )
+        storage_raw: Dict[str, Dict[str, Any]] = {}
+        try:
+            device_book = _load_book(self.files["device"])
+        except Exception:
+            device_book = EBook({})
+        storage_block = device_book.data.get("estorage")
+        for row in getattr(storage_block, "data", []):
+            name = str(row.get("name", "")).strip()
+            if not name:
+                continue
+            storage_raw[name] = {header: row.get(header, "") for header in storage_block.header_list}
+            soc_values.setdefault(
+                name,
+                _to_float(row.get("soc_curr", row.get("soc_cur", row.get("soc", 0.0))), 0.0) or 0.0,
+            )
+        for (dev_type, dev_name), _run_stat in run_stats.items():
+            if dev_type in ("ESS", "Storage") and dev_name:
+                soc_values.setdefault(dev_name, 0.0)
         for name, soc in soc_values.items():
-            dcdc_set_values = set_values.get(("DCDCConverter", f"{name}_dcdc"), {})
+            storage_set_values = set_values.get(("ESS", name), set_values.get(("DCGenerator", f"{name}_vsrc"), {}))
             devices.append(
                 {
                     "dev_type": "ESS",
@@ -1885,9 +2161,9 @@ class PolarMicrogridSimulator:
                     "status": 1,
                     "mode": "PH",
                     "set_types": ["p_set", "v_set"],
-                    "set_values": dcdc_set_values,
+                    "set_values": storage_set_values,
                     "soc_curr": soc,
-                    "raw": {"soc_curr": soc},
+                    "raw": storage_raw.get(name, {}) | {"soc_curr": soc},
                 }
             )
         return devices
@@ -1903,6 +2179,49 @@ class PolarMicrogridSimulator:
                 for row in getattr(block, "data", [])
             ]
             for name, block in book.data.items()
+        }
+
+    def _definition_book_blocks(
+        self,
+        path: Path,
+        block_names: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        try:
+            book = _load_book(path)
+        except Exception:
+            return {}
+        selected = set(block_names or [])
+        blocks: Dict[str, Dict[str, Any]] = {}
+        for name, block in book.data.items():
+            if selected and name not in selected:
+                continue
+            headers = list(getattr(block, "header_list", []) or [])
+            rows = [
+                {header: _json_scalar(row.get(header, "")) for header in headers}
+                for row in getattr(block, "data", [])
+            ]
+            blocks[name] = {"headers": headers, "rows": rows}
+        return blocks
+
+    def _control_definition_path(self) -> Path:
+        for path in (self.source_files.get("control"), self.source_files.get("stat"), self.files["stat"]):
+            if path and Path(path).exists():
+                return Path(path)
+        return self.files["stat"]
+
+    def definitions(self, measurements: Optional[Mapping[str, Sequence[Mapping[str, Any]]]] = None) -> Dict[str, Any]:
+        measurement_rows = list((measurements or {}).get("definitions", []))
+        if not measurement_rows:
+            measurement_rows = self._with_weather_measurements(
+                {"definitions": self._read_measurement_file(self.files["meas"]), "real": [], "scada": []}
+            )["definitions"]
+        return {
+            "model": self._definition_book_blocks(self.files["model"]),
+            "measurement": measurement_rows,
+            "control": self._definition_book_blocks(
+                self._control_definition_path(),
+                CONTROL_DEFINITION_BLOCKS,
+            ),
         }
 
     def _stat_maps(self) -> Tuple[Dict[Tuple[str, str], Any], Dict[Tuple[str, str], Any], Dict[Tuple[str, str], dict], Dict[str, float]]:
@@ -1936,10 +2255,14 @@ class PolarMicrogridSimulator:
         measurements = dict(self.latest_measurements or self.measurements())
         if "definitions" not in measurements:
             measurements["definitions"] = self._read_measurement_file(self.files["meas"])
+        measurements = self._with_weather_measurements(measurements)
         return {
             "model": self.model_info(),
             "clock": self.clock.as_dict(),
             "files": {key: str(path) for key, path in self.files.items()},
+            "source_files": {key: str(path) for key, path in self.source_files.items()},
+            "work_files": {key: str(path) for key, path in self.work_files.items()},
+            "definitions": self.definitions(measurements),
             "curves": self.curves,
             "settings": self.local_settings,
             "system_parameters": self.system_parameters(),

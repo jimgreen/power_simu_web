@@ -27,7 +27,7 @@ class TraineeModelPageUiTests(unittest.TestCase):
     def test_model_parameter_table_starts_with_index_and_name(self):
         self.assertIn('const fixed = ["idx", "name"]', self.script)
         self.assertIn('key === "name" ? "名称" : key', self.script)
-        self.assertIn('new Set([...fixed, "dev_type", "dev_name"])', self.script)
+        self.assertIn('new Set([...fixed, "dev_type", "dev_name", "__headers"])', self.script)
 
 
 if __name__ == "__main__":

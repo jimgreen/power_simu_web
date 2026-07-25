@@ -16,7 +16,7 @@
           </div>
         </div>
         <div class="model-toolbar">
-          <label class="model-switcher">显示模型
+          <label class="model-switcher">
             <select id="modelSelector">
               <option value="">默认模型</option>
             </select>
@@ -32,6 +32,7 @@
           <input id="importDefinitionsInput" type="file" accept=".zip,application/zip" hidden />
           <button id="importDefinitionsButton" class="model-import-button" type="button">导入定义</button>
           <button id="cloneModelButton" class="model-clone-button" type="button">复制新模型</button>
+          <button id="traineeLinkButton" class="trainee-link-button" type="button">交互链接</button>
         </div>
         <div class="clock-strip top-clock-strip" aria-label="当前时钟">
           <div class="clock-readout top-clock-readout">
@@ -580,9 +581,9 @@
                   aria-label="控制指令、实时值与量测值跟踪曲线"
                 ></canvas>
                 <div class="runtime-trace-legend" aria-label="跟踪曲线图例">
-                  <span><i class="trace-control"></i>控制指令</span>
-                  <span><i class="trace-real"></i>实时值</span>
-                  <span><i class="trace-scada"></i>量测值</span>
+                  <button type="button" class="chart-legend-item" data-chart-toggle="runtimeTrace" data-chart-series="control"><i class="trace-control"></i>控制指令</button>
+                  <button type="button" class="chart-legend-item" data-chart-toggle="runtimeTrace" data-chart-series="real"><i class="trace-real"></i>实时值</button>
+                  <button type="button" class="chart-legend-item" data-chart-toggle="runtimeTrace" data-chart-series="scada"><i class="trace-scada"></i>量测值</button>
                 </div>
               </section>
             </div>
@@ -649,8 +650,8 @@
                   aria-label="选中测点量测值与真值跟踪曲线"
                 ></canvas>
                 <div class="measurement-trace-legend" aria-label="测点曲线图例">
-                  <span><i class="trace-real"></i>真值</span>
-                  <span><i class="trace-scada"></i>量测值</span>
+                  <button type="button" class="chart-legend-item" data-chart-toggle="measurementTrace" data-chart-series="real"><i class="trace-real"></i>真值</button>
+                  <button type="button" class="chart-legend-item" data-chart-toggle="measurementTrace" data-chart-series="scada"><i class="trace-scada"></i>量测值</button>
                 </div>
               </section>
             </div>
@@ -667,11 +668,13 @@
                     <option value="all">全部类型</option>
                   </select>
                 </label>
+                <button id="clearRuntimeLogs" type="button">清空日志</button>
                 <span id="runtimeLogSummary">最近 0 条</span>
               </div>
             </div>
-            <div class="sr-only">序号 本机时刻 仿真时刻 类型 对象 结果 详情</div>
+            <div class="sr-only">本机时刻 仿真时刻 类型 对象 结果 详情</div>
             <div id="runtimeLogTable" class="runtime-log-wrap" data-log-role="runtime-table"></div>
+            <div id="runtimeLogPager" class="runtime-log-pager" aria-label="运行日志分页"></div>
           </section>
         </section>
       </main>
@@ -741,6 +744,29 @@
           <div class="modal-actions">
             <button id="cancelImportModel" type="button">取消</button>
             <button id="confirmImportModel" class="primary" type="submit">导入</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="traineeLinkDialog" class="modal-backdrop" hidden>
+        <form id="traineeLinkForm" class="modal-card trainee-link-modal" aria-modal="true" role="dialog" aria-labelledby="traineeLinkTitle">
+          <div class="modal-head">
+            <h2 id="traineeLinkTitle">学员台交互链接</h2>
+            <button id="closeTraineeLinkDialog" class="icon-button" type="button" title="关闭">
+              <svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z" /></svg>
+            </button>
+          </div>
+          <dl class="import-file-summary">
+            <div><dt>模型</dt><dd id="traineeLinkModelName">--</dd></div>
+            <div><dt>复用方式</dt><dd>多学员台共享</dd></div>
+          </dl>
+          <label class="modal-field trainee-link-field">交互链接
+            <input id="traineeLinkValue" type="text" readonly autocomplete="off" />
+          </label>
+          <p id="traineeLinkMessage" class="modal-message">将此链接发给学员台，学员点击“启动接收”后输入该链接即可接入当前模型。</p>
+          <div class="modal-actions">
+            <button id="cancelTraineeLinkDialog" type="button">关闭</button>
+            <button id="copyTraineeLink" class="primary" type="button">复制链接</button>
           </div>
         </form>
       </div>

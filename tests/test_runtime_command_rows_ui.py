@@ -23,6 +23,19 @@ class RuntimeCommandRowsUiTest(unittest.TestCase):
         self.assertIn("expires_at_absolute_minute", app_js)
         self.assertIn("renderRuntimeCommandTable", app_js)
 
+    def test_runtime_command_rows_select_trace_on_click_or_double_click(self):
+        app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("selectedRuntimeCommandKey", app_js)
+        self.assertIn("function runtimeCommandTraceKey", app_js)
+        self.assertIn("function selectRuntimeCommandTrace", app_js)
+        self.assertIn("data-runtime-command-row-key", app_js)
+        self.assertIn("data-runtime-command-row-label", app_js)
+        self.assertIn('event.target.closest("[data-runtime-command-row-key]")', app_js)
+        self.assertIn('document.addEventListener("dblclick"', app_js)
+        self.assertIn("selectedRuntimeCommandTraceSeries", app_js)
+        self.assertIn("point.commands", app_js)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -60,9 +60,5 @@
 </SetValue>
 <StorageSoc>
 @ dev_type  idx  name   soc_curr
-# ESS       4    ess01  0.3599999999
-# ESS       5    ess02  0.3599999999
-# ESS       6    ess03  0.3599999999
-# ESS       7    ess04  0.3599999999
-# ESS       8    ess05  0.3599999999
+# ESS       1    ess01  0.55
 </StorageSoc>

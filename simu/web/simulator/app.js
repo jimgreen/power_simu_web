@@ -15,6 +15,7 @@ const state = {
   curvesLoadedModelId: "",
   activeCurveKey: "wind_speed_mps",
   selectedCurveKeys: ["wind_speed_mps"],
+  hiddenCurveKeys: [],
   curveEditKey: "",
   isCurveDragging: false,
   isCurveTreePointerDown: false,
@@ -24,6 +25,7 @@ const state = {
   curveTreeDragStartButton: null,
   suppressNextCurveTreeClick: false,
   curveCursor: { visible: false, x: 0, y: 0, index: 0 },
+  curveLegendHitBoxes: [],
   settingsLoaded: false,
   activeFaultTab: "devices",
   faultDeviceFilter: { dev_type: "all", dev_name: "" },
@@ -32,6 +34,13 @@ const state = {
   activeModelParamTab: "",
   runtimeDeviceFilter: { dev_type: "all", dev_name: "" },
   activeRuntimeCommandTab: "remote_control",
+  selectedRuntimeCommandKey: "",
+  selectedRuntimeCommandLabel: "",
+  chartSeriesHidden: {},
+  chartSeriesSelected: {},
+  chartCursors: {},
+  chartSeriesHitData: {},
+  chartPlotInfo: {},
   runtimeTraceHistory: [],
   runtimeTraceWindowMinutes: 60,
   lastRuntimeTraceKey: "",
@@ -45,6 +54,8 @@ const state = {
   collapsedDeviceTreeGroups: {},
   runtimeLogs: [],
   runtimeLogTypeFilter: "all",
+  runtimeLogPage: 1,
+  runtimeLogPageSize: 20,
   runtimeLogSeq: 0,
   lastRuntimeLogKey: "",
   systemParameters: { clock_speed: 1, compute_interval_seconds: 1 },
@@ -69,7 +80,215 @@ const LOAD_CURVE_META = { label: "负荷", color: "#c93a3a", min: 0, max: 500, d
 const LOAD_CURVE_COLORS = ["#c93a3a", "#8a4fbf", "#23854a", "#d16300", "#4369b2", "#0a8b8b"];
 const CURVE_PLOT = { left: 58, right: 24, top: 46, bottom: 34 };
 const TRACE_HISTORY_LIMIT = 45000;
+const WEATHER_MEASUREMENT_LABELS = {
+  WIND_SPEED: { label: "风速", unit: "m/s", order: 0 },
+  SOLAR_IRRADIANCE: { label: "太阳辐照", unit: "W/m2", order: 1 },
+  AIR_TEMP: { label: "气温", unit: "℃", order: 2 },
+  HUMIDITY: { label: "湿度", unit: "%", order: 3 },
+  AIR_PRESSURE: { label: "气压", unit: "hPa", order: 4 },
+};
 let pendingImportDefinitionFile = null;
+
+function chartHiddenSet(chartKey) {
+  const hidden = state.chartSeriesHidden?.[chartKey] || [];
+  return new Set(hidden);
+}
+
+function isChartSeriesHidden(chartKey, seriesKey) {
+  return chartHiddenSet(chartKey).has(seriesKey);
+}
+
+function visibleChartSeries(chartKey, seriesDefs) {
+  return (seriesDefs || []).filter((series) => !isChartSeriesHidden(chartKey, series.key));
+}
+
+function selectedChartSeriesKey(chartKey, fallback = "") {
+  const selected = state.chartSeriesSelected?.[chartKey];
+  if (selected) return selected;
+  return fallback || "";
+}
+
+function setChartSeriesSelected(chartKey, seriesKey, drawFn) {
+  if (!chartKey || !seriesKey) return;
+  state.chartSeriesSelected = { ...(state.chartSeriesSelected || {}), [chartKey]: seriesKey };
+  syncChartLegendButtons(chartKey);
+  if (typeof drawFn === "function") drawFn();
+}
+
+function toggleChartSeriesVisibility(chartKey, seriesKey, drawFn) {
+  if (!chartKey || !seriesKey) return;
+  const hidden = chartHiddenSet(chartKey);
+  if (hidden.has(seriesKey)) hidden.delete(seriesKey);
+  else hidden.add(seriesKey);
+  state.chartSeriesHidden = { ...(state.chartSeriesHidden || {}), [chartKey]: Array.from(hidden) };
+  state.chartSeriesSelected = { ...(state.chartSeriesSelected || {}), [chartKey]: seriesKey };
+  syncChartLegendButtons(chartKey);
+  if (typeof drawFn === "function") drawFn();
+}
+
+function syncChartLegendButtons(chartKey) {
+  document.querySelectorAll(`[data-chart-toggle="${chartKey}"]`).forEach((button) => {
+    const seriesKey = button.dataset.chartSeries || "";
+    button.classList.toggle("is-hidden", isChartSeriesHidden(chartKey, seriesKey));
+    button.classList.toggle("is-selected", selectedChartSeriesKey(chartKey) === seriesKey);
+    button.setAttribute("aria-pressed", isChartSeriesHidden(chartKey, seriesKey) ? "false" : "true");
+  });
+}
+
+function canvasPointerPosition(canvas, event) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (event.clientX - rect.left) * (canvas.width / rect.width),
+    y: (event.clientY - rect.top) * (canvas.height / rect.height),
+  };
+}
+
+function setChartCursorFromEvent(chartKey, canvas, plot, event, drawFn) {
+  if (!canvas || !plot) return;
+  const pos = canvasPointerPosition(canvas, event);
+  const left = plot.left;
+  const right = canvas.width - plot.right;
+  const top = plot.top;
+  const bottom = canvas.height - plot.bottom;
+  const visible = pos.x >= left && pos.x <= right && pos.y >= top && pos.y <= bottom;
+  state.chartCursors = {
+    ...(state.chartCursors || {}),
+    [chartKey]: {
+      visible,
+      x: clamp(pos.x, left, right),
+      y: clamp(pos.y, top, bottom),
+    },
+  };
+  if (typeof drawFn === "function") drawFn();
+}
+
+function hideChartCursor(chartKey, drawFn) {
+  const cursor = state.chartCursors?.[chartKey];
+  if (!cursor?.visible) return;
+  state.chartCursors = {
+    ...(state.chartCursors || {}),
+    [chartKey]: { ...cursor, visible: false },
+  };
+  if (typeof drawFn === "function") drawFn();
+}
+
+function chartSeriesAtPointer(chartKey, canvas, event, threshold = 10) {
+  const seriesData = state.chartSeriesHitData?.[chartKey] || [];
+  if (!seriesData.length) return "";
+  const pos = canvasPointerPosition(canvas, event);
+  let best = { key: "", distance: Number.POSITIVE_INFINITY };
+  seriesData.forEach((series) => {
+    (series.points || []).forEach((point) => {
+      const distance = Math.hypot(point.x - pos.x, point.y - pos.y);
+      if (distance < best.distance) best = { key: series.key, distance };
+    });
+  });
+  return best.distance <= threshold ? best.key : "";
+}
+
+function selectChartSeriesAtPointer(chartKey, canvas, event, drawFn) {
+  const seriesKey = chartSeriesAtPointer(chartKey, canvas, event);
+  if (!seriesKey) return false;
+  setChartSeriesSelected(chartKey, seriesKey, drawFn);
+  return true;
+}
+
+function nearestChartPoint(points, x) {
+  let best = null;
+  let distance = Number.POSITIVE_INFINITY;
+  (points || []).forEach((point) => {
+    const nextDistance = Math.abs(point.x - x);
+    if (nextDistance < distance) {
+      best = point;
+      distance = nextDistance;
+    }
+  });
+  return best;
+}
+
+function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) {
+  const cursor = state.chartCursors?.[chartKey];
+  const visibleSeries = (seriesData || []).filter((series) => !isChartSeriesHidden(chartKey, series.key));
+  if (!cursor?.visible || !visibleSeries.length) return;
+  const left = plot.left;
+  const right = canvas.width - plot.right;
+  const top = plot.top;
+  const bottom = canvas.height - plot.bottom;
+  const x = clamp(cursor.x, left, right);
+  const y = clamp(cursor.y, top, bottom);
+  const selectedKey = selectedChartSeriesKey(chartKey, visibleSeries[0]?.key || "");
+  const samples = visibleSeries
+    .map((series) => ({ series, point: nearestChartPoint(series.points, x) }))
+    .filter((item) => item.point);
+  if (!samples.length) return;
+  const mainPoint = samples.find((item) => item.series.key === selectedKey)?.point || samples[0].point;
+  const timeLabel = options.timeLabel ? options.timeLabel(mainPoint) : (mainPoint.time || "");
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(29, 57, 66, 0.58)";
+  ctx.lineWidth = options.ratio || 1;
+  ctx.setLineDash([5 * (options.ratio || 1), 4 * (options.ratio || 1)]);
+  ctx.beginPath();
+  ctx.moveTo(x, top);
+  ctx.lineTo(x, bottom);
+  ctx.moveTo(left, y);
+  ctx.lineTo(right, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  samples.forEach(({ series, point }) => {
+    ctx.fillStyle = "#ffffff";
+    ctx.strokeStyle = series.color;
+    ctx.lineWidth = 2 * (options.ratio || 1);
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, 4.5 * (options.ratio || 1), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  });
+
+  const ratio = options.ratio || 1;
+  ctx.font = `${12 * ratio}px Microsoft YaHei, Arial`;
+  const valueFormatter = options.valueFormatter || ((value) => formatMeasurementValue(value));
+  const lines = [
+    timeLabel ? `时刻: ${timeLabel}` : "",
+    ...samples.slice(0, 6).map(({ series, point }) => `${series.label}: ${valueFormatter(point.value)}${series.unit ? ` ${series.unit}` : ""}`),
+    samples.length > 6 ? `另有 ${samples.length - 6} 条曲线` : "",
+  ].filter(Boolean);
+  const tooltipWidth = Math.max(150 * ratio, ...lines.map((line) => ctx.measureText(line).width + 24 * ratio));
+  const tooltipHeight = 14 * ratio + lines.length * 18 * ratio;
+  let tooltipX = x + 14 * ratio;
+  let tooltipY = y + 14 * ratio;
+  if (tooltipX + tooltipWidth > right - 6 * ratio) tooltipX = x - tooltipWidth - 14 * ratio;
+  if (tooltipY + tooltipHeight > bottom - 6 * ratio) tooltipY = y - tooltipHeight - 14 * ratio;
+  tooltipX = clamp(tooltipX, left + 6 * ratio, right - tooltipWidth - 6 * ratio);
+  tooltipY = clamp(tooltipY, top + 6 * ratio, bottom - tooltipHeight - 6 * ratio);
+  ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
+  ctx.strokeStyle = "rgba(171, 190, 198, 0.9)";
+  ctx.beginPath();
+  ctx.roundRect(tooltipX, tooltipY, tooltipWidth, tooltipHeight, 8 * ratio);
+  ctx.fill();
+  ctx.stroke();
+  lines.forEach((line, lineIndex) => {
+    ctx.fillStyle = lineIndex === 0 ? "#1f3037" : "#314850";
+    ctx.fillText(line, tooltipX + 10 * ratio, tooltipY + 18 * ratio + lineIndex * 18 * ratio);
+  });
+  ctx.restore();
+}
+
+function initTraceChartInteractions(chartKey, canvasId, drawFn) {
+  const canvas = $(canvasId);
+  if (!canvas) return;
+  const handleMove = (event) => {
+    setChartCursorFromEvent(chartKey, canvas, state.chartPlotInfo?.[chartKey], event, drawFn);
+  };
+  canvas.addEventListener("pointermove", handleMove);
+  canvas.addEventListener("mousemove", handleMove);
+  canvas.addEventListener("pointerleave", () => hideChartCursor(chartKey, drawFn));
+  canvas.addEventListener("mouseleave", () => hideChartCursor(chartKey, drawFn));
+  canvas.addEventListener("click", (event) => {
+    if (selectChartSeriesAtPointer(chartKey, canvas, event, drawFn)) event.preventDefault();
+  });
+}
 
 function isDeviceTreeGroupCollapsed(scope, groupKey) {
   return Boolean(state.collapsedDeviceTreeGroups?.[scope]?.[groupKey]);
@@ -95,10 +314,11 @@ function deviceTreeTypeAttrs(scope, groupKey, isCollapsed) {
 }
 
 function deviceTreeTypeLabel(label) {
+  const text = label === "Environment" ? "气象环境" : label;
   return `
           <span class="tree-title">
             <i class="tree-toggle" aria-hidden="true"></i>
-            <span class="tree-title-text">${escapeHtml(label)}</span>
+            <span class="tree-title-text">${escapeHtml(text)}</span>
           </span>`;
 }
 
@@ -817,6 +1037,92 @@ async function exportDefinitionsArchive() {
   }
 }
 
+function setTraineeLinkMessage(text, kind = "") {
+  const message = $("traineeLinkMessage");
+  if (!message) return;
+  message.textContent = text || "";
+  message.classList.toggle("is-error", kind === "error");
+  message.classList.toggle("is-ok", kind === "ok");
+}
+
+function closeTraineeLinkDialog() {
+  const dialog = $("traineeLinkDialog");
+  if (dialog) dialog.hidden = true;
+}
+
+function activeModelInfo() {
+  const selector = $("modelSelector");
+  const selectedId = selector?.value || state.activeModelId || state.snapshot?.model?.id || state.models[0]?.id || "";
+  return state.models.find((model) => model.id === selectedId)
+    || (state.snapshot?.model?.id === selectedId ? state.snapshot.model : null)
+    || { id: selectedId, name: selectedId || "默认模型" };
+}
+
+function generatedTraineeLink(modelId) {
+  const id = String(modelId || state.activeModelId || "").trim();
+  return id
+    ? `${apiBase}/api/trainee-link?model_id=${encodeURIComponent(id)}`
+    : `${apiBase}/api/trainee-link`;
+}
+
+function setTraineeLinkCopyEnabled(enabled) {
+  const copyButton = $("copyTraineeLink");
+  if (copyButton) copyButton.disabled = !enabled;
+}
+
+async function openTraineeLinkDialog() {
+  const dialog = $("traineeLinkDialog");
+  const input = $("traineeLinkValue");
+  const modelName = $("traineeLinkModelName");
+  const button = $("traineeLinkButton");
+  if (!dialog || !input || !modelName) return;
+  const currentModel = activeModelInfo();
+  dialog.hidden = false;
+  input.value = generatedTraineeLink(currentModel.id);
+  modelName.textContent = currentModel.name || currentModel.id || "--";
+  setTraineeLinkCopyEnabled(Boolean(input.value));
+  setTraineeLinkMessage("交互链接已自动生成，正在与模拟台服务校验。", input.value ? "ok" : "");
+  input.focus();
+  input.select();
+  if (button) button.disabled = true;
+  try {
+    const payload = await api("/api/trainee-link");
+    input.value = payload.link || input.value;
+    modelName.textContent = payload.model_name || payload.model_id || "--";
+    setTraineeLinkCopyEnabled(Boolean(input.value));
+    setTraineeLinkMessage("将此链接发给学员台，学员点击“启动接收”后输入该链接即可接入当前模型。", "ok");
+    input.focus();
+    input.select();
+  } catch (error) {
+    setTraineeLinkCopyEnabled(Boolean(input.value));
+    setTraineeLinkMessage(`已按当前模型生成链接，但服务校验失败：${apiErrorText(error)}`, input.value ? "error" : "error");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function copyTraineeLink() {
+  const input = $("traineeLinkValue");
+  if (!input?.value) {
+    setTraineeLinkMessage("暂无可复制的交互链接。", "error");
+    return;
+  }
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(input.value);
+    } else {
+      input.focus();
+      input.select();
+      document.execCommand("copy");
+    }
+    setTraineeLinkMessage("交互链接已复制。", "ok");
+  } catch (_error) {
+    input.focus();
+    input.select();
+    setTraineeLinkMessage("复制失败，请手动复制输入框中的链接。", "error");
+  }
+}
+
 function renderModelSelector() {
   const selector = $("modelSelector");
   if (!selector) return;
@@ -895,7 +1201,27 @@ function escapeHtml(value) {
 }
 
 function runtimeLogTime() {
-  return new Date().toLocaleTimeString();
+  return runtimeLogWallTimeText(new Date());
+}
+
+function runtimeLogWallTimeText(value) {
+  if (!value) return "--";
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    return value.toLocaleTimeString("zh-CN", { hour12: false });
+  }
+  const text = String(value || "").trim();
+  if (!text) return "--";
+  const isoMatch = text.match(/(?:T|\s)(\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$/);
+  if (isoMatch) return isoMatch[1];
+  const plainTimeMatch = text.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (plainTimeMatch) {
+    return `${plainTimeMatch[1].padStart(2, "0")}:${plainTimeMatch[2]}:${plainTimeMatch[3] || "00"}`;
+  }
+  const parsed = new Date(text);
+  if (Number.isFinite(parsed.getTime())) {
+    return parsed.toLocaleTimeString("zh-CN", { hour12: false });
+  }
+  return text;
 }
 
 function runtimeLogDetailText(detail) {
@@ -1027,12 +1353,34 @@ function selectedCurveKeys() {
   return selected;
 }
 
+function curveHiddenSet() {
+  return new Set(state.hiddenCurveKeys || []);
+}
+
+function isCurveSeriesHidden(key) {
+  return curveHiddenSet().has(key);
+}
+
 function visibleCurveKeys() {
-  return selectedCurveKeys();
+  return selectedCurveKeys().filter((key) => !isCurveSeriesHidden(key));
 }
 
 function visibleCurveMetas() {
   return visibleCurveKeys().map(curveMetaForKey);
+}
+
+function toggleCurveSeriesVisibility(key, shouldRender = true) {
+  if (!key) return;
+  const hidden = curveHiddenSet();
+  if (hidden.has(key)) hidden.delete(key);
+  else hidden.add(key);
+  state.hiddenCurveKeys = Array.from(hidden);
+  state.curveEditKey = key;
+  if (shouldRender) {
+    renderCurveTree();
+    drawCurves();
+    renderHourlyTable(true);
+  }
 }
 
 function resampleSeries(values, nextLength, fallbackValue) {
@@ -1365,7 +1713,7 @@ function renderCurveTree() {
           return `
             <button
               type="button"
-              class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""} ${editKey === key ? "is-edit-target" : ""}"
+              class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""} ${editKey === key ? "is-edit-target" : ""} ${isCurveSeriesHidden(key) ? "is-hidden-series" : ""}"
               data-curve-tree-type="environment"
               data-curve-key="${escapeHtml(key)}"
               aria-pressed="${selectedSet.has(key) ? "true" : "false"}"
@@ -1394,7 +1742,7 @@ function renderCurveTree() {
           return `
             <button
               type="button"
-              class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""} ${editKey === key ? "is-edit-target" : ""}"
+              class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""} ${editKey === key ? "is-edit-target" : ""} ${isCurveSeriesHidden(key) ? "is-hidden-series" : ""}"
               data-curve-tree-type="load"
               data-curve-key="${escapeHtml(key)}"
               aria-pressed="${selectedSet.has(key) ? "true" : "false"}"
@@ -1606,10 +1954,12 @@ function drawCurves() {
   const right = width - plot.right;
   const top = plot.top;
   const bottom = height - plot.bottom;
-  const metas = visibleCurveMetas();
+  const allMetas = selectedCurveKeys().map(curveMetaForKey);
+  const metas = allMetas.filter((meta) => !isCurveSeriesHidden(meta.key));
   const editKey = curveEditKey(metas.map((meta) => meta.key));
-  const legendColumns = width < 560 ? 2 : metas.length;
+  const legendColumns = width < 560 ? 2 : Math.max(1, allMetas.length);
   const legendColumnWidth = (right - left) / legendColumns;
+  state.curveLegendHitBoxes = [];
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#fcfeff";
   ctx.fillRect(0, 0, width, height);
@@ -1625,7 +1975,7 @@ function drawCurves() {
     ctx.stroke();
   }
   drawCurveXAxis(ctx, canvas, plot);
-  metas.forEach((meta, metaIndex) => {
+  metas.forEach((meta) => {
     const values = state.curveSeries[meta.key] || [];
     const stride = Math.max(1, Math.floor(values.length / Math.max(1, (right - left) * 1.4)));
     ctx.strokeStyle = meta.color;
@@ -1641,14 +1991,35 @@ function drawCurves() {
     const lastY = valueToY(values[values.length - 1] || 0, meta, canvas);
     ctx.lineTo(lastX, lastY);
     ctx.stroke();
+  });
+  allMetas.forEach((meta, metaIndex) => {
     const legendX = left + (metaIndex % legendColumns) * legendColumnWidth;
     const legendY = 20 + Math.floor(metaIndex / legendColumns) * 16;
-    ctx.fillStyle = meta.color;
+    const hidden = isCurveSeriesHidden(meta.key);
+    const labelText = `${meta.label} (${meta.unit})${hidden ? " 隐藏" : ""}`;
+    state.curveLegendHitBoxes.push({
+      key: meta.key,
+      x: legendX - 6,
+      y: legendY - 9,
+      width: Math.min(legendColumnWidth - 8, ctx.measureText(labelText).width + 42),
+      height: 16,
+    });
+    ctx.fillStyle = hidden ? "#9aa9af" : meta.color;
     ctx.fillRect(legendX, legendY, 18, 3);
-    ctx.fillStyle = "#63717a";
-    ctx.fillText(`${meta.label} (${meta.unit})`, legendX + 26, legendY + 4);
+    ctx.fillStyle = hidden ? "#9aa9af" : editKey === meta.key ? "#1f3037" : "#63717a";
+    ctx.fillText(labelText, legendX + 26, legendY + 4);
   });
   drawCurveCursor(ctx, canvas, plot, metas);
+}
+
+function curveLegendKeyAtPointer(event) {
+  const canvas = $("curveEditorChart");
+  if (!canvas) return "";
+  const pos = pointerPositionOnCanvas(event);
+  const hit = (state.curveLegendHitBoxes || []).find((box) => (
+    pos.x >= box.x && pos.x <= box.x + box.width && pos.y >= box.y && pos.y <= box.y + box.height
+  ));
+  return hit?.key || "";
 }
 
 function pointerPositionOnCanvas(event) {
@@ -1923,7 +2294,13 @@ function initCurveEditor() {
   const canvas = $("curveEditorChart");
   const table = $("hourlyCurveTable");
   if (!canvas || !table) return;
-  canvas.addEventListener("pointerdown", (event) => {
+  let lastPointerDownAt = 0;
+  const handleCurvePointerDown = (event) => {
+    if (event.type === "pointerdown") {
+      lastPointerDownAt = Date.now();
+    } else if (Date.now() - lastPointerDownAt < 80) {
+      return;
+    }
     setCurveCursorFromEvent(event, false);
     if (event.button === 2) {
       event.preventDefault();
@@ -1931,21 +2308,36 @@ function initCurveEditor() {
       return;
     }
     if (event.button !== 0) return;
+    const legendKey = curveLegendKeyAtPointer(event);
+    if (legendKey) {
+      event.preventDefault();
+      toggleCurveSeriesVisibility(legendKey, true);
+      return;
+    }
     const hitKey = curveKeyAtPointer(event);
     if (!hitKey) return;
     event.preventDefault();
     setCurveEditKey(hitKey);
     state.isCurveDragging = true;
-    canvas.setPointerCapture(event.pointerId);
-  });
-  canvas.addEventListener("pointermove", (event) => {
+    if (event.pointerId !== undefined && canvas.setPointerCapture) {
+      canvas.setPointerCapture(event.pointerId);
+    }
+  };
+  const handleCurvePointerMove = (event) => {
     setCurveCursorFromEvent(event, !state.isCurveDragging);
     if (state.isCurveDragging) {
       event.preventDefault();
       applyCurveDrag(event);
     }
-  });
+  };
+  canvas.addEventListener("pointerdown", handleCurvePointerDown);
+  canvas.addEventListener("mousedown", handleCurvePointerDown);
+  canvas.addEventListener("pointermove", handleCurvePointerMove);
+  canvas.addEventListener("mousemove", handleCurvePointerMove);
   canvas.addEventListener("pointerleave", () => {
+    if (!state.isCurveDragging) hideCurveCursor();
+  });
+  canvas.addEventListener("mouseleave", () => {
     if (!state.isCurveDragging) hideCurveCursor();
   });
   canvas.addEventListener("contextmenu", (event) => {
@@ -1953,11 +2345,13 @@ function initCurveEditor() {
     cancelCurveEditSelection();
   });
   canvas.addEventListener("pointercancel", cancelCurveEditSelection);
-  window.addEventListener("pointerup", () => {
+  const handleCurvePointerUp = () => {
     const wasDragging = state.isCurveDragging;
     state.isCurveDragging = false;
     if (wasDragging) renderHourlyTable();
-  });
+  };
+  window.addEventListener("pointerup", handleCurvePointerUp);
+  window.addEventListener("mouseup", handleCurvePointerUp);
   $("activeCurve").addEventListener("change", (event) => setActiveCurve(event.target.value));
   window.addEventListener("resize", drawCurves);
   table.addEventListener("blur", (event) => {
@@ -1982,6 +2376,7 @@ function initRuntimeMonitor() {
       drawRuntimeTraceChart();
     });
   }
+  initTraceChartInteractions("runtimeTrace", "runtimeTraceChart", drawRuntimeTraceChart);
   window.addEventListener("resize", drawRuntimeTraceChart);
 }
 
@@ -1994,6 +2389,7 @@ function initMeasurementMonitor() {
       drawMeasurementTraceChart();
     });
   }
+  initTraceChartInteractions("measurementTrace", "measurementTraceChart", drawMeasurementTraceChart);
   window.addEventListener("resize", drawMeasurementTraceChart);
 }
 
@@ -2164,7 +2560,7 @@ function renderOverviewEvents(snapshot) {
   if (logs.length) {
     container.innerHTML = logs.map((item) => `
       <div class="overview-event-item">
-        <time>${escapeHtml(item.sim_time || "--")}</time>
+        <time>${escapeHtml(item.simu_time || item.sim_time || "--")}</time>
         <strong>${escapeHtml(item.type || "运行")}</strong>
         <span title="${escapeHtml(logDetailText(item))}">${escapeHtml(item.result || logDetailText(item) || "完成")}</span>
       </div>
@@ -2212,7 +2608,7 @@ function renderOverviewDashboard(snapshot) {
   if (storageNode) storageNode.dataset.storageFlow = storageFlow;
   const storageLink = $("overviewStorageFlowLink");
   if (storageLink) storageLink.dataset.storageFlow = storageFlow;
-  setOverviewText("overviewFlowResultTime", power.log ? `计算时刻 ${power.log.sim_time || clock.time}` : "尚无计算结果");
+  setOverviewText("overviewFlowResultTime", power.log ? `计算时刻 ${power.log.simu_time || power.log.sim_time || clock.time}` : "尚无计算结果");
   setOverviewText("overviewFlowWindPower", overviewPowerText(power.wind));
   setOverviewText("overviewFlowWindMeta", Number.isFinite(Number(boundary.point.wind_speed_mps)) ? `风速 ${formatOverviewNumber(boundary.point.wind_speed_mps)} m/s` : "风速 --");
   setOverviewText("overviewFlowSolarPower", overviewPowerText(power.solar));
@@ -2310,7 +2706,7 @@ function appendRuntimeLog(snapshot) {
   state.runtimeLogs.unshift(normalizeRuntimeLog({
     seq: state.runtimeLogSeq,
     wall_time: runtimeLogTime(),
-    sim_time: clock.time || "--",
+    simu_time: clock.time || "--",
     type: "仿真状态",
     target: "潮流计算 / SCADA",
     result: clock.state || "--",
@@ -2336,7 +2732,7 @@ function normalizeRuntimeLog(item, fallbackSeq = 0) {
   return {
     seq: item.seq ?? fallbackSeq,
     wall_time: item.wall_time || item.record_time || "",
-    sim_time: item.sim_time || item.time || "--",
+    simu_time: item.simu_time || item.sim_time || item.time || "--",
     type: item.type || (item.state ? "仿真状态" : ""),
     target: item.target || (item.solver_info ? "潮流计算 / SCADA" : ""),
     result: item.result || item.state || "",
@@ -2348,12 +2744,14 @@ function normalizeRuntimeLog(item, fallbackSeq = 0) {
 function renderRuntimeLogs() {
   const container = $("runtimeLogTable");
   if (!container) return;
-  const logs = filteredRuntimeLogs();
   syncRuntimeLogTypeFilter();
+  const allLogs = filteredRuntimeLogs();
+  const logs = pagedRuntimeLogs(allLogs);
+  renderRuntimeLogPager(allLogs);
   $("runtimeLogSummary").textContent = state.runtimeLogTypeFilter === "all"
     ? `最近 ${state.runtimeLogs.length} 条`
-    : `${logs.length}/${state.runtimeLogs.length} 条`;
-  if (!logs.length) {
+    : `${allLogs.length}/${state.runtimeLogs.length} 条`;
+  if (!allLogs.length) {
     container.innerHTML = '<div class="empty-state">暂无运行日志</div>';
     return;
   }
@@ -2361,7 +2759,6 @@ function renderRuntimeLogs() {
     <table class="runtime-log-table">
       <thead>
         <tr>
-          <th>序号</th>
           <th>本机时刻</th>
           <th>仿真时刻</th>
           <th>类型</th>
@@ -2373,9 +2770,8 @@ function renderRuntimeLogs() {
       <tbody>
         ${logs.map((item) => `
           <tr class="runtime-log-row is-${escapeHtml(item.level || "info")}">
-            <td class="numeric-cell">${escapeHtml(item.seq)}</td>
-            <td>${escapeHtml(item.wall_time)}</td>
-            <td class="mono-cell">${escapeHtml(item.sim_time)}</td>
+            <td class="mono-cell">${escapeHtml(runtimeLogWallTimeText(item.wall_time))}</td>
+            <td class="mono-cell">${escapeHtml(item.simu_time)}</td>
             <td>${escapeHtml(item.type)}</td>
             <td>${escapeHtml(item.target)}</td>
             <td>${escapeHtml(item.result)}</td>
@@ -2386,8 +2782,36 @@ function renderRuntimeLogs() {
     </table>`;
 }
 
+function definitionBlocks(kind, snapshot = state.snapshot || {}) {
+  return snapshot.definitions?.[kind] || {};
+}
+
+function definedModelDevices(snapshot = state.snapshot || {}) {
+  const blocks = definitionBlocks("model", snapshot);
+  return Object.entries(blocks).flatMap(([blockName, block]) => {
+    const headers = Array.isArray(block.headers) ? block.headers : [];
+    return (block.rows || []).map((row, index) => {
+      const raw = {};
+      headers.forEach((header) => {
+        raw[header] = row?.[header] ?? "";
+      });
+      const idx = raw.idx ?? row?.idx ?? index + 1;
+      const definedName = raw.name || raw.dev_name || "";
+      const name = definedName || (idx !== "" ? `${blockName}_${idx}` : `${blockName}_${index + 1}`);
+      return {
+        dev_type: blockName,
+        dev_name: String(name || `${blockName}_${index + 1}`),
+        idx,
+        raw,
+        __headers: headers,
+        __definition_index: index,
+      };
+    });
+  });
+}
+
 function gridModelDevices() {
-  return state.snapshot?.devices || [];
+  return definedModelDevices();
 }
 
 function gridModelFilterMatches(dev, filter = state.modelDeviceFilter || { dev_type: "all", dev_name: "" }) {
@@ -2425,22 +2849,18 @@ function compareModelRowsByIndex(left, right) {
 }
 
 function modelAttributeRecordForDevice(dev) {
+  const raw = dev.raw || {};
+  const headers = Array.isArray(dev.__headers) ? dev.__headers : Object.keys(raw);
   const record = {
     dev_type: dev.dev_type || "--",
     dev_name: dev.dev_name || "--",
-    idx: formatModelParamValue(dev.idx ?? dev.raw?.idx),
-    name: formatModelParamValue(dev.dev_name || dev.raw?.name),
+    idx: formatModelParamValue(raw.idx ?? dev.idx),
+    name: formatModelParamValue(raw.name || dev.dev_name),
+    __headers: headers,
   };
-  Object.entries(dev.raw || {}).forEach(([key, value]) => {
+  headers.forEach((key) => {
     if (["idx", "name", "dev_name", "dev_type"].includes(key)) return;
-    record[key] = formatModelParamValue(value);
-  });
-  record.run_stat = formatModelParamValue(dev.run_stat ?? record.run_stat);
-  record.status = formatModelParamValue(dev.status ?? record.status);
-  record.mode = formatModelParamValue(dev.mode || dev.raw?.control_type || dev.raw?.ctrl_mode || record.mode);
-  if ((dev.set_types || []).length) record.set_types = formatModelParamValue(dev.set_types);
-  Object.entries(dev.set_values || {}).forEach(([key, value]) => {
-    record[key] = formatModelParamValue(value);
+    record[key] = formatModelParamValue(raw[key]);
   });
   return record;
 }
@@ -2455,42 +2875,7 @@ function modelAttributeLabel(key) {
 
 function modelAttributeColumns(records) {
   const fixed = ["idx", "name"];
-  const preferred = [
-    "node",
-    "from_node",
-    "to_node",
-    "ac_node",
-    "dc_node",
-    "control_type",
-    "ctrl_mode",
-    "mode",
-    "run_stat",
-    "status",
-    "p_set",
-    "q_set",
-    "v_set",
-    "p_ac_set",
-    "q_ac_set",
-    "v_ac_set",
-    "p_dc_set",
-    "v_dc_set",
-    "pv0",
-    "pv1",
-    "pv2",
-    "qv0",
-    "qv1",
-    "qv2",
-    "pbase",
-    "qbase",
-    "pmax",
-    "pmin",
-    "qmax",
-    "qmin",
-    "soc_curr",
-    "alpha",
-    "set_types",
-  ];
-  const seen = new Set([...fixed, "dev_type", "dev_name"]);
+  const seen = new Set([...fixed, "dev_type", "dev_name", "__headers"]);
   const keys = [];
   const appendKey = (key) => {
     if (!key || seen.has(key)) return;
@@ -2498,9 +2883,8 @@ function modelAttributeColumns(records) {
     seen.add(key);
     keys.push(key);
   };
-  preferred.forEach(appendKey);
   records.forEach((record) => {
-    Object.keys(record).forEach(appendKey);
+    (record.__headers || Object.keys(record)).forEach(appendKey);
   });
   return [...fixed, ...keys].map((key) => ({ key, label: modelAttributeLabel(key) }));
 }
@@ -2617,6 +3001,53 @@ function filteredRuntimeLogs() {
   return state.runtimeLogs.filter((item) => item.type === state.runtimeLogTypeFilter);
 }
 
+function runtimeLogPageCount(logs = filteredRuntimeLogs()) {
+  const pageSize = Math.max(1, Number(state.runtimeLogPageSize) || 20);
+  return Math.max(1, Math.ceil((logs || []).length / pageSize));
+}
+
+function pagedRuntimeLogs(logs = filteredRuntimeLogs()) {
+  const pageSize = Math.max(1, Number(state.runtimeLogPageSize) || 20);
+  const pageCount = runtimeLogPageCount(logs);
+  state.runtimeLogPage = Math.min(Math.max(1, Number(state.runtimeLogPage) || 1), pageCount);
+  const start = (state.runtimeLogPage - 1) * pageSize;
+  return logs.slice(start, start + pageSize);
+}
+
+function renderRuntimeLogPager(logs = filteredRuntimeLogs()) {
+  const pager = $("runtimeLogPager");
+  if (!pager) return;
+  if (!logs.length) {
+    pager.innerHTML = "";
+    return;
+  }
+  const pageCount = runtimeLogPageCount(logs);
+  const page = Math.min(Math.max(1, Number(state.runtimeLogPage) || 1), pageCount);
+  const start = (page - 1) * state.runtimeLogPageSize + 1;
+  const end = Math.min(logs.length, page * state.runtimeLogPageSize);
+  pager.innerHTML = `
+    <span>${start}-${end} / ${logs.length} 条</span>
+    <button type="button" data-runtime-log-page="prev" ${page <= 1 ? "disabled" : ""}>上一页</button>
+    <strong>第 ${page} / ${pageCount} 页</strong>
+    <button type="button" data-runtime-log-page="next" ${page >= pageCount ? "disabled" : ""}>下一页</button>
+  `;
+}
+
+async function clearRuntimeLogs() {
+  const button = $("clearRuntimeLogs");
+  if (button) button.disabled = true;
+  try {
+    await api("/api/runtime-logs/clear", { method: "POST", body: "{}" });
+    state.runtimeLogs = [];
+    state.runtimeLogSeq = 0;
+    state.runtimeLogPage = 1;
+    state.runtimeLogTypeFilter = "all";
+    renderRuntimeLogs();
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 function renderGridModelParamTable() {
   const container = $("modelParamTable");
   if (!container) return;
@@ -2685,8 +3116,70 @@ function numberOrNull(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function definedControlRows(blockName, snapshot = state.snapshot || {}) {
+  const block = definitionBlocks("control", snapshot)?.[blockName];
+  const headers = Array.isArray(block?.headers) ? block.headers : [];
+  return (block?.rows || []).map((row, index) => {
+    const raw = {};
+    headers.forEach((header) => {
+      raw[header] = row?.[header] ?? "";
+    });
+    return {
+      ...raw,
+      dev_type: raw.dev_type ?? row?.dev_type ?? "",
+      dev_name: raw.dev_name ?? raw.name ?? row?.dev_name ?? row?.name ?? "",
+      idx: raw.idx ?? row?.idx ?? index + 1,
+      __headers: headers,
+      __control_block: blockName,
+      __definition_index: index,
+    };
+  }).filter((row) => row.dev_type && row.dev_name);
+}
+
+function runtimeSnapshotDevice(devType, devName, snapshot = state.snapshot || {}) {
+  return (snapshot.devices || []).find((dev) => dev.dev_type === devType && dev.dev_name === devName) || null;
+}
+
+function runtimeControlDeviceFromRow(row, snapshot = state.snapshot || {}) {
+  const live = runtimeSnapshotDevice(row.dev_type, row.dev_name, snapshot) || {};
+  return {
+    ...live,
+    dev_type: row.dev_type,
+    dev_name: row.dev_name,
+    idx: live.idx ?? live.raw?.idx ?? row.idx ?? "",
+    run_stat: live.run_stat ?? row.run_stat ?? 1,
+    status: live.status ?? row.status ?? 1,
+    mode: live.mode ?? live.raw?.control_type ?? live.raw?.ctrl_mode ?? "",
+    set_values: live.set_values || {},
+    raw: live.raw || {},
+  };
+}
+
+function controlDefinitionDevices(snapshot = state.snapshot || {}) {
+  const rows = [
+    ...definedControlRows("RunStat", snapshot),
+    ...definedControlRows("CbOpenStat", snapshot),
+    ...definedControlRows("SetValue", snapshot),
+  ];
+  const devices = new Map();
+  rows.forEach((row) => {
+    const key = `${row.dev_type}|${row.dev_name}`;
+    const existing = devices.get(key) || runtimeControlDeviceFromRow(row, snapshot);
+    existing.__control_rows = existing.__control_rows || [];
+    existing.__control_rows.push(row);
+    if (row.__control_block === "RunStat") existing.run_stat = existing.run_stat ?? row.run_stat;
+    if (row.__control_block === "CbOpenStat") existing.status = existing.status ?? row.status;
+    if (row.__control_block === "SetValue" && row.set_type) {
+      existing.set_values = { ...(existing.set_values || {}) };
+      if (existing.set_values[row.set_type] === undefined) existing.set_values[row.set_type] = row.set_value;
+    }
+    devices.set(key, existing);
+  });
+  return Array.from(devices.values());
+}
+
 function runtimeDevices() {
-  return state.snapshot?.devices || [];
+  return controlDefinitionDevices();
 }
 
 function runtimeFilterMatches(dev, filter = state.runtimeDeviceFilter || { dev_type: "all", dev_name: "" }) {
@@ -2742,56 +3235,24 @@ function runtimeMetaFromSetKey(key, value) {
   return { key, label: key, kind: "P", unit: "kW", value };
 }
 
-function runtimeMeasurementHints(meta) {
-  const key = String(meta.key || "").toLowerCase();
-  if (key.includes("p_ac")) return ["P_AC", "P_GEN", "P_LOAD", "P_FROM", "P_TO", "P_DC", "P"];
-  if (key.includes("p_dc")) return ["P_DC", "P_FROM", "P_TO", "P_GEN", "P_LOAD", "P"];
-  if (key.includes("q_ac")) return ["Q_AC", "Q_GEN", "Q_LOAD", "Q_FROM", "Q_TO", "Q"];
-  if (key.includes("v_ac")) return ["V_AC", "V_GEN", "V_LOAD", "V_FROM", "V_TO", "V"];
-  if (key.includes("v_dc")) return ["V_DC", "V_GEN", "V_FROM", "V_TO", "V"];
-  const hints = {
-    P: ["P_GEN", "P_LOAD", "P_AC", "P_DC", "P_FROM", "P_TO", "P"],
-    Q: ["Q_GEN", "Q_LOAD", "Q_AC", "Q_FROM", "Q_TO", "Q"],
-    V: ["V_GEN", "V_LOAD", "V_AC", "V_DC", "V_FROM", "V_TO", "V"],
-    I: ["I_GEN", "I_LOAD", "I_AC", "I_DC", "I_FROM", "I_TO", "I"],
-    SOC: ["SOC"],
-  };
-  return hints[meta.kind] || [];
-}
-
-function runtimeMeasurementBaseScore(row, dev) {
-  if (!row || !dev) return 0;
-  const rowType = String(row.dev_type || "");
-  const rowName = String(row.dev_name || "");
-  const devType = String(dev.dev_type || "");
-  const devName = String(dev.dev_name || "");
-  const rowLabel = `${row.name || ""} ${rowName}`;
-  if (rowType === devType && rowName === devName) return 100;
-  if (rowName === devName) return 84;
-  if (rowName.startsWith(`${devName}_`) || rowName.startsWith(devName)) return 64;
-  if (rowLabel.includes(devName)) return 48;
-  return 0;
-}
-
-function runtimeMeasurementScore(row, dev, hints) {
-  const base = runtimeMeasurementBaseScore(row, dev);
-  if (!base) return 0;
-  const measType = String(row.meas_type || "").toUpperCase();
-  const hintIndex = hints.indexOf(measType);
-  if (hintIndex >= 0) return base + 40 - hintIndex;
-  if (hints.includes("SOC")) return 0;
-  const prefix = measType.split("_")[0];
-  const prefixIndex = hints.findIndex((hint) => hint.split("_")[0] === prefix);
-  return base + (prefixIndex >= 0 ? 12 - prefixIndex : 0);
+function runtimeMeasTypeMatchesSetKey(measType, setKey) {
+  const type = String(measType || "").toUpperCase();
+  const key = String(setKey || "").toLowerCase();
+  if (!type || !key) return false;
+  if (key.startsWith("p") || key.includes("_p")) return type === "P" || type.startsWith("P_");
+  if (key.startsWith("q") || key.includes("_q")) return type === "Q" || type.startsWith("Q_");
+  if (key.startsWith("v") || key.includes("_v")) return type === "V" || type.startsWith("V_");
+  if (key.startsWith("i") || key.includes("_i")) return type === "I" || type.startsWith("I_");
+  if (key.includes("soc")) return type === "SOC";
+  return type === key.toUpperCase();
 }
 
 function runtimeMeasurementPair(dev, meta, measurements = state.snapshot?.measurements || {}) {
-  const hints = runtimeMeasurementHints(meta);
-  const rows = measurementCompareRows(measurements)
-    .map((row) => ({ row, score: runtimeMeasurementScore(row, dev, hints) }))
-    .filter((item) => item.score > 0)
-    .sort((left, right) => right.score - left.score);
-  const best = rows[0]?.row || {};
+  const best = measurementCompareRows(measurements).find((row) => (
+    row.dev_type === dev.dev_type
+    && row.dev_name === dev.dev_name
+    && runtimeMeasTypeMatchesSetKey(row.meas_type, meta.key || meta.kind)
+  )) || {};
   return {
     name: best.name || "",
     meas_type: best.meas_type || "",
@@ -2815,6 +3276,28 @@ function runtimeDeviceTraceSignal(dev, measurements = state.snapshot?.measuremen
   };
 }
 
+function runtimeCommandTraceKey(row) {
+  const dev = row.device || {};
+  return [
+    row.command_kind || "runtime_command",
+    dev.dev_type || "",
+    dev.dev_name || "",
+    row.set_type || "",
+  ].join("|");
+}
+
+function runtimeCommandTraceLabel(row) {
+  const dev = row.device || {};
+  return row.trace_label || `${dev.dev_name || "--"} · ${row.command || "--"} ${row.set_type || ""}`.trim();
+}
+
+function runtimeCommandRowsForDevices(devices, measurements = state.snapshot?.measurements || {}) {
+  return [
+    ...runtimeRemoteControlRows(devices),
+    ...runtimeRemoteAdjustmentRows(devices, measurements),
+  ];
+}
+
 function appendRuntimeTrace(snapshot) {
   const clock = snapshot.clock || {};
   if (Number(clock.step_count ?? 0) <= 0) return;
@@ -2835,9 +3318,20 @@ function appendRuntimeTrace(snapshot) {
     sim_time: clock.time || "--",
     record_time: Date.now(),
     devices: {},
+    commands: {},
   };
-  (snapshot.devices || []).forEach((dev) => {
+  controlDefinitionDevices(snapshot).forEach((dev) => {
     point.devices[deviceKey(dev)] = runtimeDeviceTraceSignal(dev, snapshot.measurements || {});
+  });
+  runtimeCommandRowsForDevices(controlDefinitionDevices(snapshot), snapshot.measurements || {}).forEach((row) => {
+    point.commands[runtimeCommandTraceKey(row)] = {
+      control: numberOrNull(row.control_value),
+      real: numberOrNull(row.real_value),
+      scada: numberOrNull(row.scada_value),
+      unit: row.unit || "",
+      signal_kind: row.signal_kind || "",
+      label: runtimeCommandTraceLabel(row),
+    };
   });
   state.runtimeTraceHistory.push(point);
   state.runtimeTraceHistory = state.runtimeTraceHistory.slice(-TRACE_HISTORY_LIMIT);
@@ -2955,45 +3449,76 @@ function runtimeCommandRefreshTime(dev, commandType, setType = "", snapshot = st
   return "--";
 }
 
+function selectedRuntimeDeviceKeys(devices) {
+  return new Set((devices || []).map((dev) => deviceKey(dev)));
+}
+
 function runtimeRemoteControlRows(devices) {
-  return devices.flatMap((dev) => {
-    const runStatTime = runtimeCommandRefreshTime(dev, "run_stat");
-    const rows = [{
-      category: "遥控指令",
-      device: dev,
-      command: "设备投退",
-      set_type: "run_stat",
-      command_text: Number(dev.run_stat ?? 0) !== 0 ? "投入" : "退出",
-      real_text: Number(dev.run_stat ?? 0) !== 0 ? "投入" : "退出",
-      scada_text: "--",
-      refresh_time: runStatTime,
-    }];
-    if (/switch|breaker/i.test(String(dev.dev_type || ""))) {
-      const statusTime = runtimeCommandRefreshTime(dev, "status");
-      rows.push({
+  const selectedKeys = selectedRuntimeDeviceKeys(devices);
+  const runRows = definedControlRows("RunStat").filter((row) => selectedKeys.has(`${row.dev_type}|${row.dev_name}`));
+  const cbRows = definedControlRows("CbOpenStat").filter((row) => selectedKeys.has(`${row.dev_type}|${row.dev_name}`));
+  return [
+    ...runRows.map((definitionRow) => {
+      const dev = runtimeControlDeviceFromRow(definitionRow);
+      const runStatTime = runtimeCommandRefreshTime(dev, "run_stat");
+      const value = Number(dev.run_stat ?? definitionRow.run_stat ?? 0);
+      return {
         category: "遥控指令",
+        command_kind: "remote_control",
+        device: dev,
+        command: "设备投退",
+        set_type: "run_stat",
+        command_text: value !== 0 ? "投入" : "退出",
+        real_text: value !== 0 ? "投入" : "退出",
+        scada_text: "--",
+        refresh_time: runStatTime,
+        control_value: value,
+        real_value: value,
+        scada_value: null,
+        signal_kind: "STAT",
+        unit: "",
+        trace_label: `${dev.dev_name}.设备投退`,
+      };
+    }),
+    ...cbRows.map((definitionRow) => {
+      const dev = runtimeControlDeviceFromRow(definitionRow);
+      const statusTime = runtimeCommandRefreshTime(dev, "status");
+      const value = Number(dev.status ?? definitionRow.status ?? 0);
+      return {
+        category: "遥控指令",
+        command_kind: "remote_control",
         device: dev,
         command: "开关开合",
         set_type: "status",
-        command_text: Number(dev.status ?? 0) !== 0 ? "闭合" : "断开",
-        real_text: Number(dev.status ?? 0) !== 0 ? "闭合" : "断开",
+        command_text: value !== 0 ? "闭合" : "断开",
+        real_text: value !== 0 ? "闭合" : "断开",
         scada_text: "--",
         refresh_time: statusTime,
-      });
-    }
-    return rows;
-  });
+        control_value: value,
+        real_value: value,
+        scada_value: null,
+        signal_kind: "STAT",
+        unit: "",
+        trace_label: `${dev.dev_name}.开关开合`,
+      };
+    }),
+  ];
 }
 
 function runtimeRemoteAdjustmentRows(devices, measurements = state.snapshot?.measurements || {}) {
-  return devices.flatMap((dev) => Object.entries(dev.set_values || {})
-    .filter(([key, value]) => /^[pqv](?:_|$)/i.test(key) && numberOrNull(value) !== null)
-    .map(([key, value]) => {
+  const selectedKeys = selectedRuntimeDeviceKeys(devices);
+  return definedControlRows("SetValue")
+    .filter((row) => selectedKeys.has(`${row.dev_type}|${row.dev_name}`))
+    .map((definitionRow) => {
+      const dev = runtimeControlDeviceFromRow(definitionRow);
+      const key = definitionRow.set_type || "";
+      const value = dev.set_values?.[key] ?? definitionRow.set_value;
       const meta = runtimeMetaFromSetKey(key, Number(value));
       const pair = runtimeMeasurementPair(dev, meta, measurements);
       const commandTime = runtimeCommandRefreshTime(dev, "set_value", key);
       return {
         category: "遥调指令",
+        command_kind: "remote_adjustment",
         device: dev,
         command: `${meta.kind}设定值`,
         set_type: key,
@@ -3001,13 +3526,27 @@ function runtimeRemoteAdjustmentRows(devices, measurements = state.snapshot?.mea
         real_text: formatRuntimeSignal(pair.real, meta.unit),
         scada_text: formatRuntimeSignal(pair.scada, meta.unit),
         refresh_time: commandTime,
+        control_value: meta.value,
+        real_value: pair.real,
+        scada_value: pair.scada,
+        signal_kind: meta.kind,
+        unit: meta.unit,
+        trace_label: `${dev.dev_name}.${key}`,
       };
-    }));
+    });
 }
 
 function renderRuntimeCommandRows(rows) {
-  return rows.map((row) => `
-    <tr>
+  return rows.map((row) => {
+    const traceKey = runtimeCommandTraceKey(row);
+    const traceLabel = runtimeCommandTraceLabel(row);
+    return `
+    <tr
+      class="${traceKey === state.selectedRuntimeCommandKey ? "is-selected" : ""}"
+      data-runtime-command-row-key="${escapeHtml(traceKey)}"
+      data-runtime-command-row-label="${escapeHtml(traceLabel)}"
+      title="单击或双击刷新控制跟踪曲线"
+    >
       <td>${escapeHtml(row.device.dev_name)}</td>
       <td>${escapeHtml(row.device.dev_type)}</td>
       <td>${escapeHtml(row.device.mode || "--")}</td>
@@ -3017,7 +3556,8 @@ function renderRuntimeCommandRows(rows) {
       <td class="numeric-cell">${escapeHtml(row.real_text)}</td>
       <td class="numeric-cell">${escapeHtml(row.scada_text)}</td>
     </tr>
-  `).join("");
+  `;
+  }).join("");
 }
 
 function renderRuntimeCommandTable(rows, emptyText) {
@@ -3049,6 +3589,11 @@ function renderRuntimeDeviceTable() {
   const remoteControlRows = runtimeRemoteControlRows(selectedDevices);
   const remoteAdjustmentRows = runtimeRemoteAdjustmentRows(selectedDevices);
   const commandCount = remoteControlRows.length + remoteAdjustmentRows.length;
+  const visibleCommandKeys = new Set([...remoteControlRows, ...remoteAdjustmentRows].map(runtimeCommandTraceKey));
+  if (state.selectedRuntimeCommandKey && !visibleCommandKeys.has(state.selectedRuntimeCommandKey)) {
+    state.selectedRuntimeCommandKey = "";
+    state.selectedRuntimeCommandLabel = "";
+  }
   $("runtimeDeviceSummary").textContent = `${runtimeFilterLabel()} · ${commandCount} 条指令`;
   if (!devices.length) {
     container.innerHTML = '<div class="empty-state">暂无设备数据</div>';
@@ -3085,7 +3630,51 @@ function setRuntimeCommandTab(tabName) {
   if (!["remote_control", "remote_adjustment"].includes(tabName)) return;
   if (state.activeRuntimeCommandTab === tabName) return;
   state.activeRuntimeCommandTab = tabName;
+  state.selectedRuntimeCommandKey = "";
+  state.selectedRuntimeCommandLabel = "";
   renderRuntimeDeviceTable();
+  drawRuntimeTraceChart();
+}
+
+function selectRuntimeCommandTrace(key, label = "") {
+  state.selectedRuntimeCommandKey = key || "";
+  state.selectedRuntimeCommandLabel = label || "";
+  document.querySelectorAll("[data-runtime-command-row-key]").forEach((row) => {
+    row.classList.toggle("is-selected", row.dataset.runtimeCommandRowKey === state.selectedRuntimeCommandKey);
+  });
+  drawRuntimeTraceChart();
+}
+
+function selectedRuntimeCommandTraceRows() {
+  const devices = filteredRuntimeDevices(runtimeDevices());
+  return runtimeCommandRowsForDevices(devices, state.snapshot?.measurements || {});
+}
+
+function selectedRuntimeCommandTraceSeries() {
+  const key = state.selectedRuntimeCommandKey;
+  if (!key) return null;
+  const rows = selectedRuntimeCommandTraceRows();
+  const row = rows.find((item) => runtimeCommandTraceKey(item) === key);
+  if (!row) return null;
+  const points = runtimeTraceWindowPoints()
+    .map((point) => {
+      const signal = point.commands?.[key];
+      if (!signal) return null;
+      return {
+        minute: point.minute,
+        sim_time: point.sim_time,
+        control: numberOrNull(signal.control),
+        real: numberOrNull(signal.real),
+        scada: numberOrNull(signal.scada),
+        unit: signal.unit || row.unit || "",
+        signal_kind: signal.signal_kind || row.signal_kind || "",
+      };
+    })
+    .filter(Boolean);
+  return {
+    label: state.selectedRuntimeCommandLabel || runtimeCommandTraceLabel(row),
+    points,
+  };
 }
 
 function runtimeTraceDevicesForChart() {
@@ -3228,6 +3817,7 @@ function drawRuntimeTraceChart() {
   const canvas = $("runtimeTraceChart");
   if (!canvas) return;
   resizeRuntimeTraceCanvas();
+  const chartKey = "runtimeTrace";
   const ctx = canvas.getContext("2d");
   const width = canvas.width;
   const height = canvas.height;
@@ -3238,10 +3828,19 @@ function drawRuntimeTraceChart() {
   const right = width - plot.right;
   const top = plot.top;
   const bottom = height - plot.bottom;
-  const chartDevices = runtimeTraceDevicesForChart();
+  state.chartPlotInfo = { ...(state.chartPlotInfo || {}), [chartKey]: plot };
+  const selectedCommandSeries = selectedRuntimeCommandTraceSeries();
+  const chartDevices = selectedCommandSeries ? [] : runtimeTraceDevicesForChart();
   const range = runtimeTraceWindowRange();
-  const points = runtimeTraceWindowPoints().map((point) => runtimeAggregateTracePoint(point, chartDevices));
-  const values = points.flatMap((point) => [point.control, point.real, point.scada])
+  const points = selectedCommandSeries?.points
+    || runtimeTraceWindowPoints().map((point) => runtimeAggregateTracePoint(point, chartDevices));
+  const seriesDefs = [
+    { key: "control", field: "control", label: "控制指令", color: "#b87500" },
+    { key: "real", field: "real", label: "实时值", color: "#008c8c" },
+    { key: "scada", field: "scada", label: "量测值", color: "#c93a3a" },
+  ];
+  const visibleSeries = visibleChartSeries(chartKey, seriesDefs);
+  const values = points.flatMap((point) => visibleSeries.map((series) => point[series.field]))
     .filter((value) => value !== null && Number.isFinite(value));
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#fcfeff";
@@ -3272,12 +3871,16 @@ function drawRuntimeTraceChart() {
     ctx.fillText(runtimeAxisTickLabel(minute, range, tickIndex, xTicks.length - 1), x + textOffset, height - 12);
   });
   const label = runtimeFilterLabel();
-  const chartLabel = chartDevices.length > 1 ? `${label} · ${chartDevices.length}台平均` : label;
+  const chartLabel = selectedCommandSeries
+    ? selectedCommandSeries.label
+    : chartDevices.length > 1 ? `${label} · ${chartDevices.length}台平均` : label;
   $("runtimeTraceSummary").textContent = `${chartLabel} · ${points.length} 点`;
-  if (!chartDevices.length || !points.length || !values.length) {
+  if ((!selectedCommandSeries && !chartDevices.length) || !points.length || !visibleSeries.length || !values.length) {
+    state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: [] };
+    syncChartLegendButtons(chartKey);
     ctx.fillStyle = "#63717a";
     ctx.textAlign = "center";
-    ctx.fillText("暂无跟踪数据", width / 2, height / 2);
+    ctx.fillText(!visibleSeries.length ? "所有曲线已隐藏" : "暂无跟踪数据", width / 2, height / 2);
     ctx.textAlign = "left";
     return;
   }
@@ -3292,16 +3895,20 @@ function drawRuntimeTraceChart() {
   maxValue += padding;
   const xForMinute = (minute) => left + ((minute - range.startMinute) / range.windowMinutes) * (right - left);
   const yForValue = (value) => bottom - ((value - minValue) / (maxValue - minValue)) * (bottom - top);
-  const drawSeries = (field, color, widthScale = 2) => {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = widthScale;
+  const hitData = [];
+  const selectedSeries = selectedChartSeriesKey(chartKey, visibleSeries[0]?.key || "");
+  const drawSeries = (series, widthScale = 2) => {
+    const pixelPoints = [];
+    ctx.strokeStyle = series.color;
+    ctx.lineWidth = series.key === selectedSeries ? widthScale + 1.2 : widthScale;
     ctx.beginPath();
     let started = false;
     points.forEach((point) => {
-      const value = numberOrNull(point[field]);
+      const value = numberOrNull(point[series.field]);
       if (value === null) return;
       const x = xForMinute(point.minute);
       const y = yForValue(value);
+      pixelPoints.push({ x, y, minute: point.minute, time: point.time, value });
       if (!started) {
         ctx.moveTo(x, y);
         started = true;
@@ -3310,15 +3917,20 @@ function drawRuntimeTraceChart() {
       }
     });
     if (started) ctx.stroke();
+    hitData.push({ ...series, unit, points: pixelPoints });
   };
-  drawSeries("control", "#b87500", 2.5);
-  drawSeries("real", "#008c8c", 2.5);
-  drawSeries("scada", "#c93a3a", 2);
+  const unit = points.find((point) => point.unit)?.unit || "";
+  visibleSeries.forEach((series) => drawSeries(series, series.key === "scada" ? 2 : 2.5));
+  state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: hitData };
+  syncChartLegendButtons(chartKey);
+  drawChartCursor(ctx, chartKey, canvas, plot, hitData, {
+    timeLabel: (point) => runtimeAxisTickLabel(point.minute, range, 0, 0),
+    valueFormatter: formatMeasurementValue,
+  });
   ctx.fillStyle = "#63717a";
   ctx.textAlign = "left";
   ctx.fillText(formatMeasurementValue(maxValue), 8, top + 4);
   ctx.fillText(formatMeasurementValue(minValue), 8, bottom);
-  const unit = points.find((point) => point.unit)?.unit || "";
   if (unit) ctx.fillText(unit, left, 18);
 }
 
@@ -3337,44 +3949,91 @@ function formatMeasurementValue(value) {
   return number.toFixed(5);
 }
 
+function isWeatherMeasurement(row) {
+  return row?.dev_type === "Environment" && row?.dev_name === "weather";
+}
+
+function weatherMeasurementLabel(row) {
+  const type = String(row?.meas_type || "").toUpperCase();
+  return WEATHER_MEASUREMENT_LABELS[type]?.label || row?.name || type || "气象";
+}
+
+function weatherMeasurementOrder(row) {
+  const type = String(row?.meas_type || "").toUpperCase();
+  return WEATHER_MEASUREMENT_LABELS[type]?.order ?? 99;
+}
+
+function measurementDisplayName(row) {
+  return isWeatherMeasurement(row) ? `气象.${weatherMeasurementLabel(row)}` : row.name;
+}
+
+function measurementDeviceDisplay(row) {
+  return isWeatherMeasurement(row) ? "气象.weather" : `${row.dev_type || "--"}.${row.dev_name || "--"}`;
+}
+
+function measurementTypeDisplay(row) {
+  return isWeatherMeasurement(row) ? weatherMeasurementLabel(row) : row.meas_type;
+}
+
+function compareMeasurementsForDisplay(left, right) {
+  const leftWeather = isWeatherMeasurement(left);
+  const rightWeather = isWeatherMeasurement(right);
+  if (leftWeather !== rightWeather) return leftWeather ? -1 : 1;
+  if (leftWeather && rightWeather) return weatherMeasurementOrder(left) - weatherMeasurementOrder(right);
+  const typeCompare = String(left.dev_type || "").localeCompare(String(right.dev_type || ""), "zh-Hans-CN");
+  if (typeCompare) return typeCompare;
+  const nameCompare = String(left.dev_name || "").localeCompare(String(right.dev_name || ""), "zh-Hans-CN");
+  if (nameCompare) return nameCompare;
+  return String(left.name || "").localeCompare(String(right.name || ""), "zh-Hans-CN");
+}
+
+function sortMeasurementsForDisplay(rows) {
+  return [...(rows || [])].sort(compareMeasurementsForDisplay);
+}
+
 function measurementCompareRows(measurements = state.snapshot?.measurements || {}) {
-  const rowsByKey = new Map();
-  const addRows = (rows, field) => {
+  const definitions = state.snapshot?.definitions?.measurement || measurements.definitions || [];
+  const primaryRows = definitions.length
+    ? definitions
+    : (measurements.scada?.length ? measurements.scada : measurements.real || []);
+  const realByKey = new Map();
+  const scadaByKey = new Map();
+  const addRows = (rows, target) => {
     (rows || []).forEach((row) => {
-      const key = measurementKey(row);
-      const entry = rowsByKey.get(key) || {};
-      entry[field] = row;
-      rowsByKey.set(key, entry);
+      target.set(measurementKey(row), row);
     });
   };
-  addRows(measurements.definitions, "definition");
-  addRows(measurements.real, "real");
-  addRows(measurements.scada, "scada");
-  return Array.from(rowsByKey.values()).map((entry) => {
-    const base = entry.scada || entry.real || entry.definition || {};
-    const realValue = entry.real?.value;
-    const scadaValue = entry.scada?.value;
+  addRows(measurements.real, realByKey);
+  addRows(measurements.scada, scadaByKey);
+  return sortMeasurementsForDisplay(primaryRows.map((definition) => {
+    const key = measurementKey(definition);
+    const real = realByKey.get(key);
+    const scada = scadaByKey.get(key);
+    const realValue = real?.value;
+    const scadaValue = scada?.value;
     const realNumber = Number(realValue);
     const scadaNumber = Number(scadaValue);
     const diff = Number.isFinite(realNumber) && Number.isFinite(scadaNumber)
       ? scadaNumber - realNumber
       : null;
     return {
-      name: base.name,
-      dev_type: base.dev_type,
-      dev_name: base.dev_name,
-      meas_type: base.meas_type,
-      weight: base.weight ?? entry.definition?.weight ?? "--",
-      valid: base.valid ?? entry.definition?.valid ?? 0,
+      idx: definition.idx,
+      name: definition.name,
+      dev_type: definition.dev_type,
+      dev_name: definition.dev_name,
+      meas_type: definition.meas_type,
+      weight: definition.weight ?? "--",
+      valid: scada?.valid ?? real?.valid ?? definition.valid ?? 0,
       real_value: realValue,
       scada_value: scadaValue,
       diff,
     };
-  });
+  }));
 }
 
 function measurementUnit(measType) {
   const type = String(measType || "").toUpperCase();
+  if (WEATHER_MEASUREMENT_LABELS[type]?.unit) return WEATHER_MEASUREMENT_LABELS[type].unit;
   if (type.startsWith("P")) return "kW";
   if (type.startsWith("Q")) return "kvar";
   if (type.startsWith("V")) return "V";
@@ -3406,10 +4065,10 @@ function appendMeasurementTrace(snapshot) {
   measurementCompareRows(snapshot.measurements || {}).forEach((row) => {
     const key = measurementKey(row);
     point.measurements[key] = {
-      name: row.name || "",
+      name: measurementDisplayName(row) || "",
       dev_type: row.dev_type || "",
       dev_name: row.dev_name || "",
-      meas_type: row.meas_type || "",
+      meas_type: measurementTypeDisplay(row) || "",
       unit: measurementUnit(row.meas_type),
       real: numberOrNull(row.real_value),
       scada: numberOrNull(row.scada_value),
@@ -3483,6 +4142,7 @@ function drawMeasurementTraceChart() {
   const canvas = $("measurementTraceChart");
   if (!canvas) return;
   resizeMeasurementTraceCanvas();
+  const chartKey = "measurementTrace";
   const ctx = canvas.getContext("2d");
   const width = canvas.width;
   const height = canvas.height;
@@ -3493,11 +4153,17 @@ function drawMeasurementTraceChart() {
   const right = width - plot.right;
   const top = plot.top;
   const bottom = height - plot.bottom;
+  state.chartPlotInfo = { ...(state.chartPlotInfo || {}), [chartKey]: plot };
   const range = measurementTraceWindowRange();
   const allRows = measurementCompareRows();
   const selectedRow = selectedMeasurementRow(allRows);
   const points = measurementTraceWindowPoints();
-  const values = points.flatMap((point) => [point.real, point.scada])
+  const seriesDefs = [
+    { key: "real", field: "real", label: "真值", color: "#008c8c" },
+    { key: "scada", field: "scada", label: "量测值", color: "#c93a3a" },
+  ];
+  const visibleSeries = visibleChartSeries(chartKey, seriesDefs);
+  const values = points.flatMap((point) => visibleSeries.map((series) => point[series.field]))
     .filter((value) => value !== null && Number.isFinite(value));
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#fcfeff";
@@ -3527,12 +4193,14 @@ function drawMeasurementTraceChart() {
     const textOffset = tickIndex === 0 ? 0 : tickIndex === xTicks.length - 1 ? 0 : 4;
     ctx.fillText(runtimeAxisTickLabel(minute, range, tickIndex, xTicks.length - 1), x + textOffset, height - 12);
   });
-  const label = selectedRow?.name || "请选择测点";
+  const label = selectedRow ? measurementDisplayName(selectedRow) : "请选择测点";
   $("measurementTraceSummary").textContent = `${label} · ${points.length} 点`;
-  if (!selectedRow || !points.length || !values.length) {
+  if (!selectedRow || !points.length || !visibleSeries.length || !values.length) {
+    state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: [] };
+    syncChartLegendButtons(chartKey);
     ctx.fillStyle = "#63717a";
     ctx.textAlign = "center";
-    ctx.fillText("暂无跟踪数据", width / 2, height / 2);
+    ctx.fillText(!visibleSeries.length ? "所有曲线已隐藏" : "暂无跟踪数据", width / 2, height / 2);
     ctx.textAlign = "left";
     return;
   }
@@ -3547,16 +4215,21 @@ function drawMeasurementTraceChart() {
   maxValue += padding;
   const xForMinute = (minute) => left + ((minute - range.startMinute) / range.windowMinutes) * (right - left);
   const yForValue = (value) => bottom - ((value - minValue) / (maxValue - minValue)) * (bottom - top);
-  const drawSeries = (field, color, widthScale = 2.5) => {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = widthScale;
+  const hitData = [];
+  const unit = points.find((point) => point.unit)?.unit || measurementUnit(selectedRow.meas_type);
+  const selectedSeries = selectedChartSeriesKey(chartKey, visibleSeries[0]?.key || "");
+  const drawSeries = (series, widthScale = 2.5) => {
+    const pixelPoints = [];
+    ctx.strokeStyle = series.color;
+    ctx.lineWidth = series.key === selectedSeries ? widthScale + 1.2 : widthScale;
     ctx.beginPath();
     let started = false;
     points.forEach((point) => {
-      const value = numberOrNull(point[field]);
+      const value = numberOrNull(point[series.field]);
       if (value === null) return;
       const x = xForMinute(point.minute);
       const y = yForValue(value);
+      pixelPoints.push({ x, y, minute: point.minute, time: point.time, value });
       if (!started) {
         ctx.moveTo(x, y);
         started = true;
@@ -3565,14 +4238,19 @@ function drawMeasurementTraceChart() {
       }
     });
     if (started) ctx.stroke();
+    hitData.push({ ...series, unit, points: pixelPoints });
   };
-  drawSeries("real", "#008c8c", 2.5);
-  drawSeries("scada", "#c93a3a", 2);
+  visibleSeries.forEach((series) => drawSeries(series, series.key === "scada" ? 2 : 2.5));
+  state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: hitData };
+  syncChartLegendButtons(chartKey);
+  drawChartCursor(ctx, chartKey, canvas, plot, hitData, {
+    timeLabel: (point) => runtimeAxisTickLabel(point.minute, range, 0, 0),
+    valueFormatter: formatMeasurementValue,
+  });
   ctx.fillStyle = "#63717a";
   ctx.textAlign = "left";
   ctx.fillText(formatMeasurementValue(maxValue), 8, top + 4);
   ctx.fillText(formatMeasurementValue(minValue), 8, bottom);
-  const unit = points.find((point) => point.unit)?.unit || measurementUnit(selectedRow.meas_type);
   if (unit) ctx.fillText(unit, left, 18);
 }
 
@@ -3586,6 +4264,8 @@ function measurementCompareDevices(rows = measurementCompareRows()) {
     devices.set(key, entry);
   });
   return Array.from(devices.values()).sort((left, right) => {
+    if (left.dev_type === "Environment" && right.dev_type !== "Environment") return -1;
+    if (left.dev_type !== "Environment" && right.dev_type === "Environment") return 1;
     const typeCompare = String(left.dev_type).localeCompare(String(right.dev_type));
     return typeCompare || String(left.dev_name).localeCompare(String(right.dev_name));
   });
@@ -3638,7 +4318,7 @@ function renderMeasurementCompareDeviceTree(rows = measurementCompareRows()) {
               data-measurement-tree-type="${escapeHtml(item.dev_type)}"
               data-measurement-tree-name="${escapeHtml(item.dev_name)}"
             >
-              <span>${escapeHtml(item.dev_name)}</span>
+              <span>${escapeHtml(item.dev_type === "Environment" && item.dev_name === "weather" ? "气象" : item.dev_name)}</span>
               <small>${escapeHtml(item.count)}点</small>
             </button>
           `).join(""))}
@@ -3697,9 +4377,9 @@ function renderMeasurementCompareTable() {
               tabindex="0"
               aria-selected="${key === selectedKey ? "true" : "false"}"
             >
-              <td>${escapeHtml(row.name || "--")}</td>
-              <td>${escapeHtml(row.dev_type || "--")}.${escapeHtml(row.dev_name || "--")}</td>
-              <td>${escapeHtml(row.meas_type || "--")}</td>
+              <td>${escapeHtml(measurementDisplayName(row) || "--")}</td>
+              <td>${escapeHtml(measurementDeviceDisplay(row))}</td>
+              <td>${escapeHtml(measurementTypeDisplay(row) || "--")}</td>
               <td class="numeric-cell">${formatMeasurementValue(row.real_value)}</td>
               <td class="numeric-cell">${formatMeasurementValue(row.scada_value)}</td>
               <td class="numeric-cell ${diffClass}">${row.diff === null ? "--" : formatMeasurementValue(row.diff)}</td>
@@ -3839,7 +4519,11 @@ function groupedByDeviceType(items) {
       devType,
       list.sort((left, right) => String(left.dev_name || left.name || "").localeCompare(String(right.dev_name || right.name || ""))),
     ])
-    .sort(([left], [right]) => String(left).localeCompare(String(right)));
+    .sort(([left], [right]) => {
+      if (left === "Environment" && right !== "Environment") return -1;
+      if (left !== "Environment" && right === "Environment") return 1;
+      return String(left).localeCompare(String(right));
+    });
 }
 
 function filteredFaultDevices() {
@@ -4423,6 +5107,13 @@ $("importDefinitionsInput").addEventListener("change", (event) => {
   const file = event.target.files?.[0];
   if (file) openImportModelDialog(file);
 });
+$("traineeLinkButton").addEventListener("click", openTraineeLinkDialog);
+$("copyTraineeLink").addEventListener("click", copyTraineeLink);
+$("closeTraineeLinkDialog").addEventListener("click", closeTraineeLinkDialog);
+$("cancelTraineeLinkDialog").addEventListener("click", closeTraineeLinkDialog);
+$("traineeLinkDialog").addEventListener("click", (event) => {
+  if (event.target.id === "traineeLinkDialog") closeTraineeLinkDialog();
+});
 $("closeStartSimulationDialog").addEventListener("click", closeStartSimulationDialog);
 $("cancelStartSimulation").addEventListener("click", closeStartSimulationDialog);
 $("startSimulationDialog").addEventListener("click", (event) => {
@@ -4464,6 +5155,10 @@ document.addEventListener("keydown", (event) => {
   }
   if (event.key === "Escape" && !$("cloneModelDialog").hidden) {
     closeCloneModelDialog();
+    return;
+  }
+  if (event.key === "Escape" && !$("traineeLinkDialog").hidden) {
+    closeTraineeLinkDialog();
   }
 });
 
@@ -4490,6 +5185,18 @@ window.addEventListener("pointercancel", resetCurveTreePointerSelection);
 $("modelSelector").addEventListener("change", (event) => setActiveModel(event.target.value));
 $("runtimeLogTypeFilter").addEventListener("change", (event) => {
   state.runtimeLogTypeFilter = event.target.value || "all";
+  state.runtimeLogPage = 1;
+  renderRuntimeLogs();
+});
+$("clearRuntimeLogs").addEventListener("click", clearRuntimeLogs);
+$("runtimeLogPager").addEventListener("click", (event) => {
+  const button = event.target instanceof Element ? event.target.closest("[data-runtime-log-page]") : null;
+  if (!button) return;
+  const direction = button.dataset.runtimeLogPage;
+  const pageCount = runtimeLogPageCount(filteredRuntimeLogs());
+  state.runtimeLogPage = direction === "prev"
+    ? Math.max(1, state.runtimeLogPage - 1)
+    : Math.min(pageCount, state.runtimeLogPage + 1);
   renderRuntimeLogs();
 });
 $("saveDeviceFaults").addEventListener("click", async () => {
@@ -4511,9 +5218,28 @@ $("resetSystemParameters").addEventListener("click", resetSystemParameterForm);
   if (element) element.addEventListener("input", markSystemParametersDirty);
 });
 document.addEventListener("click", (event) => {
+  const chartToggle = event.target.closest("[data-chart-toggle][data-chart-series]");
+  if (chartToggle) {
+    event.preventDefault();
+    const chartKey = chartToggle.dataset.chartToggle || "";
+    const seriesKey = chartToggle.dataset.chartSeries || "";
+    const drawFn = chartKey === "runtimeTrace" ? drawRuntimeTraceChart
+      : chartKey === "measurementTrace" ? drawMeasurementTraceChart
+        : null;
+    toggleChartSeriesVisibility(chartKey, seriesKey, drawFn);
+    return;
+  }
   const runtimeCommandTab = event.target.closest("[data-runtime-command-tab]");
   if (runtimeCommandTab) {
     setRuntimeCommandTab(runtimeCommandTab.dataset.runtimeCommandTab || "");
+    return;
+  }
+  const runtimeCommandRow = event.target.closest("[data-runtime-command-row-key]");
+  if (runtimeCommandRow) {
+    selectRuntimeCommandTrace(
+      runtimeCommandRow.dataset.runtimeCommandRowKey || "",
+      runtimeCommandRow.dataset.runtimeCommandRowLabel || "",
+    );
     return;
   }
   const modelParamTab = event.target.closest("[data-model-param-tab]");
@@ -4611,6 +5337,15 @@ document.addEventListener("click", (event) => {
     }
     setModeFilter(modeTreeButton.dataset.modeTreeType, modeTreeButton.dataset.modeTreeName || "");
   }
+});
+document.addEventListener("dblclick", (event) => {
+  const runtimeCommandRow = event.target.closest("[data-runtime-command-row-key]");
+  if (!runtimeCommandRow) return;
+  event.preventDefault();
+  selectRuntimeCommandTrace(
+    runtimeCommandRow.dataset.runtimeCommandRowKey || "",
+    runtimeCommandRow.dataset.runtimeCommandRowLabel || "",
+  );
 });
 document.addEventListener("change", (event) => {
   if (event.target.dataset.modeField !== undefined) {

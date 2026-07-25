@@ -79,10 +79,14 @@ def _default_runtime_dir(sim_dir: Path, role: str) -> Path:
 
 
 def _definition_file_path(service: PolarMicrogridSimulator, file_key: str, file_name: str) -> Path:
+    source_files = getattr(service, "source_files", {})
+    source_path = Path(source_files.get(file_key, service.sim_dir / file_name))
+    if source_path.exists():
+        return source_path
     runtime_path = Path(service.files.get(file_key, service.runtime_dir / file_name))
     if runtime_path.exists():
         return runtime_path
-    return service.sim_dir / file_name
+    return source_path
 
 
 def _book_from_text(text: str) -> EBook:
@@ -330,22 +334,37 @@ def import_definition_archive(service: PolarMicrogridSimulator, data: bytes) -> 
         meas_text = _read_zip_text(archive, "meas.e")
         control_text = _read_zip_text(archive, "control.e")
         curves_text = _read_zip_text(archive, "curves.e")
+        device_text = _read_zip_text(archive, "device.e", required=False)
 
     assert model_text is not None and meas_text is not None and control_text is not None and curves_text is not None
     curves_payload = _curves_from_definition_text(curves_text)
     written_files: list[str] = []
-    for root in (service.sim_dir, service.runtime_dir):
-        root = Path(root)
-        root.mkdir(parents=True, exist_ok=True)
-        (root / "model.e").write_text(model_text, encoding="utf-8")
-        (root / "meas.e").write_text(meas_text, encoding="utf-8")
-        (root / "control.e").write_text(control_text, encoding="utf-8")
-        (root / "curves.e").write_text(curves_text, encoding="utf-8")
-        _merge_control_definition(root / "stat.e", control_text, meas_text)
-        _write_json_file(root / "curves.json", curves_payload)
-        written_files.extend(str(root / name) for name in ("model.e", "meas.e", "control.e", "curves.e", "stat.e", "curves.json"))
+    root = Path(service.sim_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "model.e").write_text(model_text, encoding="utf-8")
+    (root / "meas.e").write_text(meas_text, encoding="utf-8")
+    (root / "control.e").write_text(control_text, encoding="utf-8")
+    (root / "curves.e").write_text(curves_text, encoding="utf-8")
+    if device_text is not None:
+        (root / "device.e").write_text(device_text, encoding="utf-8")
+    _merge_control_definition(root / "stat.e", control_text, meas_text)
+    _write_json_file(root / "curves.json", curves_payload)
+    names = ["model.e", "meas.e", "control.e", "curves.e", "stat.e", "curves.json"]
+    if device_text is not None:
+        names.insert(4, "device.e")
+    written_files.extend(str(root / name) for name in names)
 
+    service.ensure_weather_measurements_in_definition_files()
     service.curves = dict(curves_payload)
+    _write_json_file(service.curves_file, curves_payload)
+    service._cleanup_legacy_runtime_definition_files()
+    for path in getattr(service, "work_files", {}).values():
+        path = Path(path)
+        if path.exists() and path.is_file():
+            path.unlink()
+    service._materialize_working_model()
+    service._materialize_working_stat()
+    service._materialize_working_weather()
     service.latest_result = {}
     service.latest_measurements = {
         "real": [],
@@ -374,6 +393,7 @@ def import_definition_model(
             _read_zip_text(archive, "model.e")
             _read_zip_text(archive, "meas.e")
             _read_zip_text(archive, "control.e")
+            _read_zip_text(archive, "device.e", required=False)
         assert curves_text is not None
         _curves_from_definition_text(curves_text)
     except zipfile.BadZipFile as exc:
@@ -389,7 +409,8 @@ def make_definition_archive(service: PolarMicrogridSimulator) -> tuple[str, byte
     model_path = _definition_file_path(service, "model", "model.e")
     meas_path = _definition_file_path(service, "meas", "meas.e")
     stat_path = _definition_file_path(service, "stat", "stat.e")
-    missing = [str(path) for path in (model_path, meas_path, stat_path) if not path.exists()]
+    device_path = _definition_file_path(service, "device", "device.e")
+    missing = [str(path) for path in (model_path, meas_path, stat_path, device_path) if not path.exists()]
     if missing:
         raise JsonApiError(404, f"Definition file not found: {', '.join(missing)}")
 
@@ -403,6 +424,7 @@ def make_definition_archive(service: PolarMicrogridSimulator) -> tuple[str, byte
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(model_path, "model.e")
         archive.write(meas_path, "meas.e")
+        archive.write(device_path, "device.e")
         archive.writestr("control.e", control_text.encode("utf-8"))
         archive.writestr("curves.e", _curve_definition_text(service.curves).encode("utf-8"))
     return archive_name, buffer.getvalue()
@@ -499,6 +521,34 @@ def make_http_server(
                 "models_root": str(service.sim_dir),  # type: ignore[union-attr]
             }
 
+        def _request_base_url(self) -> str:
+            parsed_sim_url = urlparse(sim_url or "")
+            scheme = parsed_sim_url.scheme or "http"
+            host = self.headers.get("Host") or parsed_sim_url.netloc
+            if not host:
+                server_host, server_port = self.server.server_address[:2]
+                host = f"{server_host}:{server_port}"
+            return f"{scheme}://{host}".rstrip("/")
+
+        def _trainee_link_payload(self, target: PolarMicrogridSimulator) -> Mapping[str, Any]:
+            model = target.model_info()
+            model_id = str(model.get("id", target.model_id))
+            base_url = self._request_base_url()
+            encoded_model_id = quote(model_id, safe="")
+            link = f"{base_url}/api/trainee-link?model_id={encoded_model_id}"
+            return {
+                "type": "polar-microgrid-trainee-link",
+                "version": 1,
+                "role": "simulator",
+                "link": link,
+                "teacher_api_base": base_url,
+                "model_id": model_id,
+                "model_name": model.get("name", model_id),
+                "snapshot_path": f"/api/snapshot?model_id={encoded_model_id}",
+                "command_path": f"/api/student/commands?model_id={encoded_model_id}",
+                "shareable": True,
+            }
+
         def _handle_api_get(self) -> None:
             path = urlparse(self.path).path
             target = self._target_service()
@@ -516,6 +566,8 @@ def make_http_server(
                 self._send_json(target.curves)
             elif path == "/api/settings":
                 self._send_json(target.local_settings)
+            elif path in ("/api/trainee-link", "/api/client-link"):
+                self._send_json(self._trainee_link_payload(target))
             elif path == "/api/config":
                 self._send_json(
                     {
@@ -588,6 +640,8 @@ def make_http_server(
                 self._send_json(target.control_clock(payload))
             elif path == "/api/config":
                 self._send_json(target.set_system_parameters(payload))
+            elif path == "/api/runtime-logs/clear":
+                self._send_json(target.clear_runtime_logs())
             elif path == "/api/step":
                 self._send_json(target.step())
             elif path == "/api/curves":

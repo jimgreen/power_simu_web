@@ -153,12 +153,24 @@ h1 {
   font-weight: 700;
 }
 .model-clone-button,
-.model-export-button {
+.model-export-button,
+.model-import-button,
+.trainee-link-button {
   height: 32px;
   padding: 0 10px;
   white-space: nowrap;
   color: var(--teal-dark);
   border-color: rgba(0, 140, 140, 0.34);
+}
+.trainee-link-modal {
+  width: min(560px, calc(100vw - 40px));
+}
+.trainee-link-field {
+  grid-template-columns: 72px minmax(0, 1fr);
+}
+.trainee-link-field input {
+  font-family: Consolas, "Microsoft YaHei", monospace;
+  font-size: 12px;
 }
 .clock-strip {
   display: flex;
@@ -1823,6 +1835,16 @@ canvas {
 .runtime-command-table th:nth-child(5) { width: 104px; }
 .runtime-command-table th:nth-child(6) { width: 132px; }
 .runtime-command-table th:nth-child(n + 7) { width: 112px; }
+.runtime-command-table tbody tr {
+  cursor: pointer;
+}
+.runtime-command-table tbody tr.is-selected {
+  background: #eaf6f6;
+  box-shadow: inset 3px 0 0 var(--teal);
+}
+.runtime-command-table tbody tr.is-selected td:first-child {
+  color: var(--teal-dark);
+}
 .runtime-command-tabs {
   display: flex;
   align-items: center;
@@ -1892,16 +1914,40 @@ canvas {
   font-size: 12px;
   flex-wrap: wrap;
 }
-.runtime-trace-legend span {
+.runtime-trace-legend span,
+.runtime-trace-legend .chart-legend-item {
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
-.runtime-trace-legend i {
+.runtime-trace-legend i,
+.measurement-trace-legend i {
   width: 22px;
   height: 3px;
   border-radius: 999px;
   display: inline-block;
+}
+.chart-legend-item {
+  border: 0;
+  padding: 2px 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.chart-legend-item.is-selected {
+  color: var(--ink);
+  font-weight: 700;
+}
+.chart-legend-item.is-hidden {
+  opacity: 0.42;
+  text-decoration: line-through;
+}
+.chart-legend-item.is-hidden i {
+  background: #9aa9af !important;
 }
 .trace-control { background: var(--amber); }
 .trace-real { background: var(--teal); }
@@ -1969,16 +2015,11 @@ canvas {
   font-size: 12px;
   flex-wrap: wrap;
 }
-.measurement-trace-legend span {
+.measurement-trace-legend span,
+.measurement-trace-legend .chart-legend-item {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-.measurement-trace-legend i {
-  width: 22px;
-  height: 3px;
-  border-radius: 999px;
-  display: inline-block;
 }
 .runtime-log-table th,
 .runtime-log-table td,
@@ -1995,29 +2036,29 @@ canvas {
 }
 .runtime-log-table th:nth-child(1),
 .runtime-log-table td:nth-child(1) {
-  width: 54px;
+  width: 92px;
 }
 .runtime-log-table th:nth-child(2),
 .runtime-log-table td:nth-child(2) {
-  width: 132px;
+  width: 96px;
 }
 .runtime-log-table th:nth-child(3),
 .runtime-log-table td:nth-child(3) {
-  width: 86px;
+  width: 96px;
 }
 .runtime-log-table th:nth-child(4),
 .runtime-log-table td:nth-child(4) {
-  width: 132px;
+  width: 166px;
 }
 .runtime-log-table th:nth-child(5),
 .runtime-log-table td:nth-child(5) {
-  width: 166px;
+  width: 84px;
 }
 .runtime-log-table th:nth-child(6),
 .runtime-log-table td:nth-child(6) {
-  width: 84px;
+  width: auto;
 }
-.runtime-log-table td:nth-child(5),
+.runtime-log-table td:nth-child(6),
 .runtime-log-table .runtime-log-detail {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -2026,17 +2067,36 @@ canvas {
 .runtime-log-table .runtime-log-detail {
   color: #34464e;
 }
-.runtime-log-row.is-ok td:nth-child(6) {
+.runtime-log-row.is-ok td:nth-child(5) {
   color: var(--green);
   font-weight: 700;
 }
-.runtime-log-row.is-warn td:nth-child(6) {
+.runtime-log-row.is-warn td:nth-child(5) {
   color: var(--amber);
   font-weight: 700;
 }
-.runtime-log-row.is-error td:nth-child(6) {
+.runtime-log-row.is-error td:nth-child(5) {
   color: var(--red);
   font-weight: 700;
+}
+.runtime-log-pager {
+  flex: 0 0 auto;
+  min-height: 36px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.runtime-log-pager strong {
+  color: var(--ink);
+  font-weight: 700;
+}
+.runtime-log-pager button {
+  height: 28px;
+  padding: 0 10px;
 }
 .measurement-compare-table tbody tr {
   cursor: pointer;

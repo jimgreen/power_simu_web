@@ -52,6 +52,15 @@ class ClockStepAlignmentTest(unittest.TestCase):
         self.assertEqual(clock["time"], "01:30:00")
         self.assertEqual(clock["minute"] % 15, 0)
 
+        service.control_clock({"action": "stop"})
+        first_run = service.control_clock({"action": "start"})
+        repeated_start = service.control_clock({"action": "start"})
+        service.control_clock({"action": "stop"})
+        second_run = service.control_clock({"action": "start"})
+        self.assertEqual(first_run["run_id"], 1)
+        self.assertEqual(repeated_start["run_id"], 1)
+        self.assertEqual(second_run["run_id"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -24,6 +24,7 @@ const state = {
   selectedMeasurementKey: "",
   measurementTraceHistory: [],
   measurementTraceWindowMinutes: 60,
+  traceRunId: null,
   renewableControl: {
     enabled: false,
     intervalSeconds: 2,
@@ -223,6 +224,7 @@ function setActiveModel(modelId, shouldRefresh = true) {
   pending.run_status.clear();
   pending.set_values.clear();
   state.measurementTraceHistory = [];
+  state.traceRunId = null;
   state.selectedMeasurementKey = "";
   state.measurementFilter = { dev_type: "all", dev_name: "" };
   state.runFilter = { dev_type: "all", dev_name: "" };
@@ -313,6 +315,12 @@ function renderSnapshot(snapshot) {
   }
   renderModelSelector();
   renderClock(snapshot.clock || {});
+  const runId = Number(snapshot.clock?.run_id ?? 0);
+  if (state.traceRunId !== null && runId !== state.traceRunId) {
+    state.measurementTraceHistory = [];
+    state.selectedMeasurementKey = "";
+  }
+  state.traceRunId = runId;
   const scada = snapshot.measurements?.scada || [];
   const validCount = scada.filter((m) => Number(m.valid) === 1).length;
   $("measureCount").textContent = `${scada.length} 点`;

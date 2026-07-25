@@ -37,6 +37,7 @@ const state = {
   measurementTraceHistory: [],
   measurementTraceWindowMinutes: 60,
   lastMeasurementTraceKey: "",
+  traceRunId: null,
   modeFilter: { dev_type: "all", dev_name: "" },
   collapsedDeviceTreeGroups: {},
   runtimeLogs: [],
@@ -438,6 +439,7 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.lastRuntimeTraceKey = "";
   state.measurementTraceHistory = [];
   state.lastMeasurementTraceKey = "";
+  state.traceRunId = null;
   state.selectedMeasurementKey = "";
   state.modeFilter = { dev_type: "all", dev_name: "" };
   state.faultDeviceFilter = { dev_type: "all", dev_name: "" };
@@ -1508,6 +1510,14 @@ function renderSnapshot(snapshot) {
   }
   renderModelSelector();
   renderClock(snapshot.clock);
+  const runId = Number(snapshot.clock?.run_id ?? 0);
+  if (state.traceRunId !== null && runId !== state.traceRunId) {
+    state.runtimeTraceHistory = [];
+    state.lastRuntimeTraceKey = "";
+    state.measurementTraceHistory = [];
+    state.lastMeasurementTraceKey = "";
+  }
+  state.traceRunId = runId;
   $("metricScada").textContent = snapshot.summary.scada_count;
   $("metricCommands").textContent = snapshot.summary.command_count;
   $("metricAlarms").textContent = snapshot.summary.alarm_count;

@@ -85,6 +85,7 @@ class ClockState:
     absolute_minute: int = 0
     speed: float = 1.0
     step_minutes: int = 1
+    run_id: int = 0
     updated_at: float = field(default_factory=time.time)
 
     def as_dict(self) -> Dict[str, Any]:
@@ -94,6 +95,7 @@ class ClockState:
             "absolute_minute": self.absolute_minute,
             "speed": self.speed,
             "step_minutes": self.step_minutes,
+            "run_id": self.run_id,
             "time": minute_to_time(self.minute),
             "updated_at": self.updated_at,
         }
@@ -1466,6 +1468,8 @@ class PolarMicrogridSimulator:
             if "speed" in payload:
                 self.clock.speed = _nearest_clock_speed(payload.get("speed"))
             if action == "start":
+                if self.clock.state != "running" and self.clock.absolute_minute == 0:
+                    self.clock.run_id += 1
                 self.clock.state = "running"
             elif action == "pause":
                 self.clock.state = "paused"

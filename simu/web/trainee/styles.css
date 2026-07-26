@@ -997,8 +997,35 @@ body.is-overview-splitter-dragging {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.overview-pending-panel .log-list {
-  overflow: hidden;
+.active-command-preview-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.active-command-preview-table {
+  table-layout: fixed;
+}
+.active-command-preview-table th:nth-child(1),
+.active-command-preview-table td:nth-child(1) {
+  width: 28%;
+  font-weight: 700;
+}
+.active-command-preview-table th:nth-child(2),
+.active-command-preview-table td:nth-child(2) {
+  width: 34%;
+}
+.active-command-preview-table th:nth-child(3),
+.active-command-preview-table td:nth-child(3) {
+  width: 18%;
+  text-align: right;
+}
+.active-command-preview-table th:nth-child(4),
+.active-command-preview-table td:nth-child(4) {
+  width: 20%;
+  font-family: Consolas, "Microsoft YaHei", monospace;
+  text-align: right;
 }
 
 .measurement-page-layout,

@@ -4214,12 +4214,28 @@ function activeCommandPreviewRows(snapshot = state.snapshot || {}) {
 function renderActiveCommandPreview(snapshot = state.snapshot || {}) {
   const rows = activeCommandPreviewRows(snapshot);
   $("pendingSummary").textContent = `${rows.length} 项`;
-  $("pendingPreview").innerHTML = rows.slice(0, 12).map((item) => `
-    <div class="log-item">
-      <strong>${escapeHtml(item.name)}</strong>
-      <span>${escapeHtml(item.type)} · ${escapeHtml(item.value)} · ${escapeHtml(item.time)}</span>
-    </div>
-  `).join("") || '<div class="empty-state compact">暂无当前有效指令</div>';
+  $("pendingPreview").innerHTML = rows.length ? `
+    <table class="active-command-preview-table">
+      <thead>
+        <tr>
+          <th>设备</th>
+          <th>指令</th>
+          <th>值</th>
+          <th>仿真时刻</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.slice(0, 12).map((item) => `
+          <tr>
+            <td title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</td>
+            <td title="${escapeHtml(item.type)}">${escapeHtml(item.type)}</td>
+            <td title="${escapeHtml(item.value)}">${escapeHtml(item.value)}</td>
+            <td title="${escapeHtml(item.time)}">${escapeHtml(item.time)}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  ` : '<div class="empty-state compact">暂无当前有效指令</div>';
 }
 
 function updatePendingCount() {

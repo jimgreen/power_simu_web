@@ -919,9 +919,13 @@ class PolarMicrogridSimulator:
 
     def _active_control_command_entries(self, absolute_minute: int | float) -> List[Mapping[str, Any]]:
         current = float(absolute_minute)
+        current_run_id = int(_to_float(self.clock.run_id, 0) or 0)
         active: List[Mapping[str, Any]] = []
         for item in self.command_history:
             if not isinstance(item, Mapping) or not item.get("eligible_source"):
+                continue
+            entry_run_id = _to_float(item.get("run_id"), None)
+            if entry_run_id is None or int(entry_run_id) != current_run_id:
                 continue
             accepted = item.get("accepted", {})
             if not isinstance(accepted, Mapping):
@@ -1593,6 +1597,7 @@ class PolarMicrogridSimulator:
                 "received_wall_time": received_wall_time,
                 "received_simu_time": received_simu_time,
                 "received_absolute_minute": issued_absolute_minute,
+                "run_id": int(self.clock.run_id),
                 "source": source,
                 "eligible_source": eligible_source,
                 "issued_absolute_minute": issued_absolute_minute,
@@ -1753,6 +1758,8 @@ class PolarMicrogridSimulator:
             effective_step = _effective_clock_step(self.clock.step_minutes, self.clock.speed)
             self.clock.absolute_minute = _align_minute_to_step(self.clock.absolute_minute, effective_step)
             self.clock.minute = self.clock.absolute_minute % 1440
+            if action in ("start", "stop"):
+                self._materialize_active_control_commands(self.clock.absolute_minute)
             if action == "step":
                 return self.step(advance_minutes=effective_step)["clock"]
             self.clock.updated_at = time.time()

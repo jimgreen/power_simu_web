@@ -15,7 +15,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         cls.styles = (ROOT / "simu/web/trainee/styles.css").read_text(encoding="utf-8")
 
     def test_trainee_home_uses_simulator_style_energy_flow(self):
-        for text in ("电气能量流", "实时绿电占比", "教员数据", "最新交互事件", "待发指令"):
+        for text in ("电气能量流", "实时绿电占比", "教员数据", "最新交互事件", "当前有效指令"):
             self.assertIn(text, self.html)
         self.assertNotIn("接收质量", self.html)
         for element_id in (
@@ -52,6 +52,15 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertNotIn("overview-health-panel", self.html)
         self.assertNotIn("latestCommandIssuedAt", self.script)
         self.assertIn('id="pendingSummary"', overview)
+
+    def test_trainee_home_shows_current_active_remote_commands(self):
+        self.assertIn("function activeCommandPreviewRows", self.script)
+        self.assertIn("function renderActiveCommandPreview", self.script)
+        self.assertIn("activeCommandHistory(snapshot)", self.script)
+        self.assertIn("遥控 · ${remoteControlLabel(commandType)}", self.script)
+        self.assertIn("遥调 · ${remoteAdjustmentTypeLabel(item.set_type || \"\")}", self.script)
+        self.assertIn("暂无当前有效指令", self.script)
+        self.assertIn("renderActiveCommandPreview();", self.script)
 
     def test_trainee_home_renders_received_power_flow_and_status(self):
         for helper in (

@@ -3639,8 +3639,11 @@ function commandReceiveTimeInfo(entry = {}) {
 
 function activeCommandHistory(snapshot = state.snapshot || {}) {
   const currentMinute = Number(snapshot.clock?.absolute_minute ?? snapshot.clock?.minute ?? 0) || 0;
+  const currentRunId = Number(snapshot.clock?.run_id ?? 0) || 0;
   return [...(snapshot.commands?.history || [])].filter((entry) => {
     if (!entry?.eligible_source) return false;
+    const entryRunId = numberOrNull(entry.run_id);
+    if (entryRunId === null || entryRunId !== currentRunId) return false;
     const issued = numberOrNull(entry.issued_absolute_minute);
     const expires = numberOrNull(entry.expires_at_absolute_minute);
     if (issued === null || expires === null) return false;

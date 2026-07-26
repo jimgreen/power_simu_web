@@ -53,6 +53,14 @@ class TraineeRemoteAdjustmentUiTest(unittest.TestCase):
         self.assertNotIn("valid_for_minutes: CONTROL_COMMAND_VALID_MINUTES", remote_adjustment_block)
         self.assertIn("valid_for_minutes: RENEWABLE_COMMAND_VALID_MINUTES", renewable_block)
 
+    def test_displayed_command_times_ignore_expired_or_previous_run_commands(self):
+        self.assertIn("function activeCommandHistory", self.script)
+        self.assertIn("entry.run_id", self.script)
+        remote_control_time_block = self.script.split("function remoteControlIssuedTimeInfo", 1)[1].split("function remoteControlIssuedAt", 1)[0]
+        remote_adjustment_time_block = self.script.split("function remoteAdjustmentIssuedTimeInfo", 1)[1].split("function remoteAdjustmentIssuedAt", 1)[0]
+        self.assertIn("activeCommandHistory(snapshot).reverse()", remote_control_time_block)
+        self.assertIn("activeCommandHistory(snapshot).reverse()", remote_adjustment_time_block)
+
 
 if __name__ == "__main__":
     unittest.main()

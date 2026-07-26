@@ -30,6 +30,7 @@ class RuntimeCommandRowsUiTest(unittest.TestCase):
         self.assertIn("received_absolute_minute", app_js)
         self.assertIn("issued_absolute_minute", app_js)
         self.assertIn("expires_at_absolute_minute", app_js)
+        self.assertIn("entry.run_id", app_js)
         self.assertIn("renderRuntimeCommandTable", app_js)
 
     def test_runtime_command_tables_keep_each_command_on_one_line(self):

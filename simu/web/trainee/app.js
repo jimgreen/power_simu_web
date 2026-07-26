@@ -1067,6 +1067,22 @@ function commandSentTimeInfo(entry = {}, snapshot = state.snapshot || {}) {
   };
 }
 
+function activeCommandHistory(snapshot = state.snapshot || {}) {
+  const currentMinute = Number(snapshot.clock?.absolute_minute ?? snapshot.clock?.minute ?? 0) || 0;
+  const currentRunId = Number(snapshot.clock?.run_id ?? 0) || 0;
+  return [...(snapshot.commands?.history || [])].filter((entry) => {
+    if (!entry?.eligible_source) return false;
+    const entryRunId = Number(entry.run_id);
+    if (!Number.isFinite(entryRunId) || entryRunId !== currentRunId) return false;
+    const issued = Number(entry.issued_absolute_minute);
+    const expires = Number(entry.expires_at_absolute_minute);
+    if (!Number.isFinite(issued) || !Number.isFinite(expires)) return false;
+    const accepted = entry.accepted || {};
+    const acceptedCount = Number(accepted.run_status || 0) + Number(accepted.set_values || 0);
+    return acceptedCount > 0 && issued <= currentMinute && currentMinute < expires;
+  });
+}
+
 function addRuntimeLog(type, target, result, detail = "", level = "info", renderNow = true, simuTime = "") {
   state.runtimeLogSeq += 1;
   state.runtimeLogs.unshift({
@@ -3783,7 +3799,7 @@ function selectedControlRows(blockName, devices, snapshot = state.snapshot || {}
 }
 
 function remoteControlIssuedTimeInfo(dev, commandType = "run_stat", snapshot = state.snapshot || {}) {
-  const history = [...(snapshot.commands?.history || [])].reverse();
+  const history = activeCommandHistory(snapshot).reverse();
   for (const entry of history) {
     const items = entry.normalized?.run_status || entry.payload?.run_status || [];
     const match = items.find((item) => (
@@ -3909,7 +3925,7 @@ function remoteAdjustmentMeasurement(dev, setType, snapshot = state.snapshot || 
 }
 
 function remoteAdjustmentIssuedTimeInfo(dev, setType, snapshot = state.snapshot || {}) {
-  const history = [...(snapshot.commands?.history || [])].reverse();
+  const history = activeCommandHistory(snapshot).reverse();
   for (const entry of history) {
     const items = entry.normalized?.set_values || entry.payload?.set_values || [];
     const match = items.find((item) => (
@@ -4162,24 +4178,48 @@ function clearTraineeRuntimeLogs() {
   renderHistory();
 }
 
-function renderPendingPreview() {
-  const runItems = Array.from(pending.run_status.values());
-  const setItems = Array.from(pending.set_values.values());
-  $("pendingSummary").textContent = `${runItems.length + setItems.length} 项`;
-  const rows = [
-    ...runItems.map((item) => ({
-      type: item.status !== undefined ? "开合" : "投退",
-      name: item.dev_name,
-      value: item.status !== undefined ? remoteControlValueText("status", item.status) : statusText(item.run_stat),
-    })),
-    ...setItems.map((item) => ({ type: item.set_type, name: item.dev_name, value: item.set_value })),
-  ];
+function activeCommandPreviewRows(snapshot = state.snapshot || {}) {
+  const rows = [];
+  [...activeCommandHistory(snapshot)].reverse().forEach((entry) => {
+    const timeInfo = commandSentTimeInfo(entry, snapshot);
+    const normalized = entry.normalized || {};
+    const runItems = normalized.run_status || entry.payload?.run_status || [];
+    const setItems = normalized.set_values || entry.payload?.set_values || [];
+    runItems.forEach((item) => {
+      if (!item || typeof item !== "object") return;
+      const isStatus = Object.prototype.hasOwnProperty.call(item, "status");
+      const commandType = isStatus ? "status" : "run_stat";
+      const value = isStatus ? item.status : item.run_stat;
+      if (value === undefined || value === "") return;
+      rows.push({
+        type: `遥控 · ${remoteControlLabel(commandType)}`,
+        name: item.dev_name || item.name || "--",
+        value: remoteControlValueText(commandType, value),
+        time: timeInfo.simu_time || "--",
+      });
+    });
+    setItems.forEach((item) => {
+      if (!item || typeof item !== "object") return;
+      rows.push({
+        type: `遥调 · ${remoteAdjustmentTypeLabel(item.set_type || "")}`,
+        name: item.dev_name || item.name || "--",
+        value: formatNumber(item.set_value),
+        time: timeInfo.simu_time || "--",
+      });
+    });
+  });
+  return rows;
+}
+
+function renderActiveCommandPreview(snapshot = state.snapshot || {}) {
+  const rows = activeCommandPreviewRows(snapshot);
+  $("pendingSummary").textContent = `${rows.length} 项`;
   $("pendingPreview").innerHTML = rows.slice(0, 12).map((item) => `
     <div class="log-item">
       <strong>${escapeHtml(item.name)}</strong>
-      <span>${escapeHtml(item.type)} · ${escapeHtml(item.value)}</span>
+      <span>${escapeHtml(item.type)} · ${escapeHtml(item.value)} · ${escapeHtml(item.time)}</span>
     </div>
-  `).join("") || '<div class="empty-state compact">暂无待发指令</div>';
+  `).join("") || '<div class="empty-state compact">暂无当前有效指令</div>';
 }
 
 function updatePendingCount() {
@@ -4189,7 +4229,7 @@ function updatePendingCount() {
   $("setpointPendingCount").textContent = `${pending.set_values.size} 待发`;
   $("commandPendingCount").textContent = `${total} 待发`;
   $("commandState").textContent = total ? "待发送" : "待命";
-  renderPendingPreview();
+  renderActiveCommandPreview();
 }
 
 function formatNumber(value) {

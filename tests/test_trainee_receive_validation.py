@@ -9,12 +9,23 @@ def test_trainee_receive_start_validates_link_snapshot_and_local_definition():
 
     assert "fetchTeacherSnapshot(connection)" in script
     assert "fetchLocalDefinitionSnapshot" in script
-    assert "state.localDefinitionSnapshot = localSnapshot" in script
+    assert "selectLocalDefinitionSnapshotForTeacher(connection, teacherSnapshot)" in script
+    assert "state.localDefinitionSnapshot = definitionSnapshot" in script
     assert "state.receiveMode = true" in script
     assert "acceptTeacherSnapshot(teacherSnapshot, state.receiveEpoch)" in script
     start_block = script.split("async function startReceiveModeFromLink()", 1)[1].split("function runtimeLogTime", 1)[0]
     assert "openReceiveWarningDialog" not in start_block
     assert "addRuntimeLog(\"接收模式\", \"模拟台交互链接\", \"启动接收失败\"" in script
+
+
+def test_trainee_receive_uses_teacher_definition_baseline_when_local_model_is_missing():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+
+    assert "function hasLocalDefinitionModel" in script
+    assert "function selectLocalDefinitionSnapshotForTeacher" in script
+    assert "usingTeacherBaseline" in script
+    assert "本地无同名模型" in script
+    assert "state.localDefinitionSnapshot = definitionSnapshot" in script
 
 
 def test_trainee_receive_runtime_logs_each_issue_and_stops_after_consecutive_failures():

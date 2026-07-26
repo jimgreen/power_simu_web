@@ -542,17 +542,50 @@ async function fetchTeacherSnapshot(connection) {
   return response.json();
 }
 
-function localDefinitionModelId() {
-  if (state.models.some((model) => model.id === state.activeModelId)) return state.activeModelId;
+function hasLocalDefinitionModel(modelId) {
+  return state.models.some((model) => model.id === modelId);
+}
+
+function localDefinitionModelId(preferredModelId = "") {
+  if (preferredModelId && hasLocalDefinitionModel(preferredModelId)) return preferredModelId;
+  if (hasLocalDefinitionModel(state.activeModelId)) return state.activeModelId;
   if (state.models.some((model) => model.id === state.localDefinitionModelId)) return state.localDefinitionModelId;
   return state.models[0]?.id || state.activeModelId || "";
 }
 
-async function fetchLocalDefinitionSnapshot() {
-  const modelId = localDefinitionModelId();
+async function fetchLocalDefinitionSnapshot(preferredModelId = "") {
+  const modelId = localDefinitionModelId(preferredModelId);
   const path = modelId ? `/api/snapshot?model_id=${encodeURIComponent(modelId)}` : "/api/snapshot";
   const snapshot = await api(path, { modelScoped: false });
   return { modelId, snapshot };
+}
+
+async function selectLocalDefinitionSnapshotForTeacher(connection, teacherSnapshot) {
+  const teacherModelId = String(connection?.modelId || "");
+  if (hasLocalDefinitionModel(teacherModelId)) {
+    return { ...(await fetchLocalDefinitionSnapshot(teacherModelId)), usingTeacherBaseline: false };
+  }
+
+  try {
+    const local = await fetchLocalDefinitionSnapshot();
+    const messages = compareSnapshotDefinitions(local.snapshot, teacherSnapshot);
+    if (!messages.length) return { ...local, usingTeacherBaseline: false };
+    return {
+      modelId: teacherModelId || local.modelId,
+      snapshot: teacherSnapshot,
+      usingTeacherBaseline: true,
+      fallbackModelId: local.modelId,
+      mismatchMessages: messages,
+    };
+  } catch (error) {
+    return {
+      modelId: teacherModelId,
+      snapshot: teacherSnapshot,
+      usingTeacherBaseline: true,
+      fallbackModelId: "",
+      mismatchMessages: [apiErrorText(error)],
+    };
+  }
 }
 
 function applyTeacherConnection(connection) {
@@ -861,11 +894,15 @@ async function startReceiveModeFromLink() {
   try {
     const connection = await resolveTeacherInteractionLink(input.value);
     setReceiveLinkMessage("链接可用，正在接收第一帧数据。", "ok");
-    const [{ modelId: localModelId, snapshot: localSnapshot }, teacherSnapshot] = await Promise.all([
-      fetchLocalDefinitionSnapshot(),
-      fetchTeacherSnapshot(connection),
-    ]);
-    state.localDefinitionSnapshot = localSnapshot;
+    const teacherSnapshot = await fetchTeacherSnapshot(connection);
+    const {
+      modelId: localModelId,
+      snapshot: definitionSnapshot,
+      usingTeacherBaseline,
+      fallbackModelId,
+      mismatchMessages,
+    } = await selectLocalDefinitionSnapshotForTeacher(connection, teacherSnapshot);
+    state.localDefinitionSnapshot = definitionSnapshot;
     state.localDefinitionModelId = localModelId;
     state.definitionMismatchLastKey = "";
     applyTeacherConnection(connection);
@@ -886,6 +923,20 @@ async function startReceiveModeFromLink() {
       `模型 ${connection.modelName}；地址 ${connection.teacherApiBase}`,
       "ok",
     );
+    if (usingTeacherBaseline) {
+      addRuntimeLog(
+        "实时交互",
+        "定义一致性校验",
+        "使用远端定义基准",
+        [
+          `本地无同名模型 ${connection.modelName || connection.modelId}`,
+          fallbackModelId ? `原本地模型 ${fallbackModelId}` : "",
+          "已使用模拟台第一帧定义作为本次接收基准",
+          ...(mismatchMessages || []).slice(0, 3),
+        ],
+        "warn",
+      );
+    }
     renderReceiveMode();
     acceptTeacherSnapshot(teacherSnapshot, state.receiveEpoch);
   } catch (error) {

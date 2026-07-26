@@ -1,10 +1,10 @@
 <pv_generator>
 @ id  name       p_max  p_min  p_fur  rated_power  temp_coefficient  reference_irradiance  reference_temperature
-# 1   pv01_dcdc  50     0      0      50           -0.004            1000                  25
+# 1   pv01_vsrc  50     0      0      50           -0.004            1000                  25
 </pv_generator>
 <wind_generator>
 @ id  name       p_max  p_min  p_fur  rated_power  rated_wind_speed  cut_in_speed  cut_out_speed
-# 1   wt01_rect  10     0      0      10           15                5             50
+# 1   wt01_10kw  10     0      0      10           15                5             50
 </wind_generator>
 <diesel_generator>
 @ id  name          p_max  p_min

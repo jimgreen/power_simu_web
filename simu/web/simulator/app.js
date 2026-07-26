@@ -3635,19 +3635,36 @@ function commandReceiveTimeInfo(entry = {}) {
   };
 }
 
+function manualCommandHoldsAcrossClockLifecycle(entry = {}) {
+  const payload = entry.payload && typeof entry.payload === "object" ? entry.payload : entry;
+  if (entry.manual_hold || entry.hold_until_cancelled || payload.manual_hold || payload.hold_until_cancelled) return true;
+  if (payload.strategy && typeof payload.strategy === "object") return false;
+  const source = String(entry.source || payload.source || "").trim().toLowerCase();
+  if (source.includes("renewable") || source.includes("strategy")) return false;
+  return source === "trainee-ui"
+    || source === "student-ui"
+    || source.startsWith("trainee-ui-")
+    || source.startsWith("student-ui-")
+    || source.includes("人工");
+}
+
 function activeCommandHistory(snapshot = state.snapshot || {}) {
   const currentMinute = Number(snapshot.clock?.absolute_minute ?? snapshot.clock?.minute ?? 0) || 0;
   const currentRunId = Number(snapshot.clock?.run_id ?? 0) || 0;
   return [...(snapshot.commands?.history || [])].filter((entry) => {
     if (!entry?.eligible_source) return false;
-    const entryRunId = numberOrNull(entry.run_id);
-    if (entryRunId === null || entryRunId !== currentRunId) return false;
+    if (entry.cancelled) return false;
+    const manualHold = manualCommandHoldsAcrossClockLifecycle(entry);
+    if (!manualHold) {
+      const entryRunId = numberOrNull(entry.run_id);
+      if (entryRunId === null || entryRunId !== currentRunId) return false;
+    }
     const issued = numberOrNull(entry.issued_absolute_minute);
     const expires = numberOrNull(entry.expires_at_absolute_minute);
     if (issued === null || expires === null) return false;
     const accepted = entry.accepted || {};
     const acceptedCount = Number(accepted.run_status || 0) + Number(accepted.set_values || 0);
-    return acceptedCount > 0 && issued <= currentMinute && currentMinute < expires;
+    return acceptedCount > 0 && currentMinute < expires && (manualHold || issued <= currentMinute);
   });
 }
 

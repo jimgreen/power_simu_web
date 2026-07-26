@@ -66,12 +66,13 @@ button:disabled:hover {
   padding: 12px 22px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 16px;
   background: #fbfdfe;
   border-bottom: 1px solid var(--line);
 }
 .brand {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -111,8 +112,8 @@ h1 {
 .model-toolbar {
   min-width: 0;
   max-width: none;
-  flex: 0 0 clamp(320px, 24vw, 420px);
-  margin-left: auto;
+  flex: 0 1 auto;
+  margin-left: 0;
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -148,6 +149,7 @@ h1 {
 }
 .clock-strip {
   min-width: 0;
+  margin-left: auto;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -1488,31 +1490,61 @@ th {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+.command-cancel-button {
+  height: 28px;
+  padding: 0 10px;
+  color: var(--red);
+  border-color: rgba(201, 58, 58, 0.28);
+  white-space: nowrap;
+}
+.command-cancel-button:hover {
+  color: #a72d2d;
+  border-color: rgba(201, 58, 58, 0.58);
+  background: #fff4f4;
+}
+.remote-adjustment-table {
+  table-layout: fixed;
+}
+.remote-adjustment-name-col { width: 38%; }
+.remote-adjustment-value-col { width: 11%; }
+.remote-adjustment-time-col { width: 15%; }
+.remote-adjustment-action-col { width: 10%; }
+.remote-adjustment-table th,
+.remote-adjustment-table td {
+  vertical-align: middle;
+}
 .remote-adjustment-table tbody tr { cursor: pointer; }
 .remote-adjustment-table tbody tr:hover { background: #e8f6f6; }
 .remote-adjustment-table td:first-child {
+  color: var(--ink);
+  font-family: inherit;
+}
+.remote-adjustment-name-cell {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  color: var(--ink);
-  font-family: inherit;
+  width: 100%;
 }
-.remote-adjustment-table td:first-child strong {
+.remote-adjustment-name-cell strong {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.remote-adjustment-table td:first-child small {
+.remote-adjustment-name-cell small {
   flex: 0 0 auto;
   color: var(--muted);
   font-size: 11px;
   white-space: nowrap;
 }
+.remote-adjustment-table th:nth-child(2),
+.remote-adjustment-table th:nth-child(3),
 .remote-adjustment-table td:nth-child(2),
 .remote-adjustment-table td:nth-child(3) {
   font-family: Consolas, "Microsoft YaHei", monospace;
   font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 .remote-adjustment-table td:last-child {
   color: var(--muted);

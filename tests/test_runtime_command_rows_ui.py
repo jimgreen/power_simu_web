@@ -30,8 +30,18 @@ class RuntimeCommandRowsUiTest(unittest.TestCase):
         self.assertIn("received_absolute_minute", app_js)
         self.assertIn("issued_absolute_minute", app_js)
         self.assertIn("expires_at_absolute_minute", app_js)
-        self.assertIn("entry.run_id", app_js)
+        self.assertIn("function manualCommandHoldsAcrossClockLifecycle", app_js)
         self.assertIn("renderRuntimeCommandTable", app_js)
+
+    def test_manual_runtime_commands_are_not_filtered_out_by_run_id(self):
+        app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        active_block = app_js.split("function activeCommandHistory", 1)[1].split("function runtimeCommandRefreshInfo", 1)[0]
+
+        self.assertIn("if (entry.cancelled) return false;", active_block)
+        self.assertIn("const manualHold = manualCommandHoldsAcrossClockLifecycle(entry);", active_block)
+        self.assertIn("if (!manualHold) {", active_block)
+        self.assertIn("entryRunId !== currentRunId", active_block)
+        self.assertIn("currentMinute < expires && (manualHold || issued <= currentMinute)", active_block)
 
     def test_runtime_command_tables_keep_each_command_on_one_line(self):
         self.assertIn(".runtime-command-table th,\n.runtime-command-table td", self.styles)

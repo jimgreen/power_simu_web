@@ -184,6 +184,59 @@ class ExternalRealtimeInterfacesTest(unittest.TestCase):
             for item in collection:
                 self.assertFalse(self.REDUNDANT_FIELDS & set(item))
 
+    def test_external_control_endpoint_cancels_named_active_control_values(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        server = make_http_server(("127.0.0.1", 0), service, role="simulator")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            base = f"http://127.0.0.1:{port}"
+            update_request = Request(
+                f"{base}/api/external/controls?model_id=simple_model",
+                data=json.dumps(
+                    {
+                        "values": {"ACGenerator.diesel_300kw.p_set": 55.5},
+                        "valid_for_minutes": 10,
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(update_request, timeout=5) as response:
+                updated = json.loads(response.read().decode("utf-8"))
+            cancel_request = Request(
+                f"{base}/api/external/controls?model_id=simple_model",
+                data=json.dumps(
+                    {
+                        "cancel_commands": [
+                            {"name": "ACGenerator.diesel_300kw.p_set"}
+                        ],
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(cancel_request, timeout=5) as response:
+                cancelled = json.loads(response.read().decode("utf-8"))
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        self.assertEqual(updated["accepted"]["remote_adjustments"], 1)
+        self.assertEqual(cancelled["cancelled"]["remote_adjustments"], 1)
+        self.assertEqual(cancelled["cancelled"]["remote_controls"], 0)
+        self.assertEqual(cancelled["cancelled"]["missing"], 0)
+        by_name = {item["name"]: item for item in cancelled["control_values"]["items"]}
+        self.assertFalse(by_name["ACGenerator.diesel_300kw.p_set"]["active"])
+        for item in cancelled["cancelled_items"]:
+            self.assertIn("name", item)
+            self.assertIn("cancelled", item)
+            self.assertIn("updated_wall_time", item)
+            self.assertIn("updated_simu_time", item)
+            self.assertFalse(self.REDUNDANT_FIELDS & set(item))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -64,6 +64,14 @@ class TraineeCombinedControlPageUiTest(unittest.TestCase):
         self.assertIn("findDeviceByKey(statusCell.dataset.runStatusCommand || \"\")", self.script)
         self.assertIn("openRemoteControlDialog(dev)", self.script)
 
+    def test_active_remote_commands_can_be_cancelled_from_command_tables(self):
+        self.assertIn("function activeCommandCancelName", self.script)
+        self.assertIn("function sendCommandCancel", self.script)
+        self.assertIn("data-command-cancel-name", self.script)
+        self.assertIn("取消指令", self.script)
+        self.assertIn("cancel_commands: [{ name: commandName }]", self.script)
+        self.assertIn("await postTeacherCommand(body)", self.script)
+
 
 if __name__ == "__main__":
     unittest.main()

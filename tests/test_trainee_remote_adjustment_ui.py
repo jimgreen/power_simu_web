@@ -22,10 +22,27 @@ class TraineeRemoteAdjustmentUiTest(unittest.TestCase):
         self.assertIn("function remoteAdjustmentIssuedTimeInfo", self.script)
 
     def test_remote_adjustment_rows_keep_name_and_type_on_one_line(self):
-        self.assertIn(".remote-adjustment-table td:first-child {\n  display: flex;", self.styles)
+        self.assertIn("class=\"remote-adjustment-name-cell\"", self.script)
+        self.assertIn(".remote-adjustment-name-cell {\n  display: flex;", self.styles)
         self.assertIn("align-items: center;", self.styles)
         self.assertIn("white-space: nowrap;", self.styles)
-        self.assertNotIn(".remote-adjustment-table td:first-child {\n  display: grid;", self.styles)
+        first_cell_rule = self.styles.split(".remote-adjustment-table td:first-child {", 1)[1].split("}", 1)[0]
+        self.assertNotIn("display: flex", first_cell_rule)
+        self.assertNotIn("display: grid", first_cell_rule)
+
+    def test_remote_adjustment_table_uses_fixed_columns_for_same_row_alignment(self):
+        self.assertIn("<colgroup>", self.script)
+        self.assertIn('class="remote-adjustment-name-col"', self.script)
+        self.assertIn('class="remote-adjustment-value-col"', self.script)
+        self.assertIn('class="remote-adjustment-time-col"', self.script)
+        self.assertIn('class="remote-adjustment-action-col"', self.script)
+        self.assertIn(".remote-adjustment-table {\n  table-layout: fixed;", self.styles)
+        self.assertIn(".remote-adjustment-name-col { width: 38%; }", self.styles)
+        self.assertIn(".remote-adjustment-value-col { width: 11%; }", self.styles)
+        self.assertIn(".remote-adjustment-time-col { width: 15%; }", self.styles)
+        self.assertIn(".remote-adjustment-action-col { width: 10%; }", self.styles)
+        self.assertIn(".remote-adjustment-table th,\n.remote-adjustment-table td {\n  vertical-align: middle;", self.styles)
+        self.assertIn(".remote-adjustment-table th:nth-child(2),\n.remote-adjustment-table th:nth-child(3),", self.styles)
 
     def test_remote_adjustment_dialog_is_available(self):
         self.assertIn('id="remoteAdjustmentDialog"', self.html)
@@ -53,13 +70,22 @@ class TraineeRemoteAdjustmentUiTest(unittest.TestCase):
         self.assertNotIn("valid_for_minutes: CONTROL_COMMAND_VALID_MINUTES", remote_adjustment_block)
         self.assertIn("valid_for_minutes: RENEWABLE_COMMAND_VALID_MINUTES", renewable_block)
 
-    def test_displayed_command_times_ignore_expired_or_previous_run_commands(self):
+    def test_displayed_command_times_use_shared_active_command_filter(self):
         self.assertIn("function activeCommandHistory", self.script)
-        self.assertIn("entry.run_id", self.script)
+        self.assertIn("function manualCommandHoldsAcrossClockLifecycle", self.script)
         remote_control_time_block = self.script.split("function remoteControlIssuedTimeInfo", 1)[1].split("function remoteControlIssuedAt", 1)[0]
         remote_adjustment_time_block = self.script.split("function remoteAdjustmentIssuedTimeInfo", 1)[1].split("function remoteAdjustmentIssuedAt", 1)[0]
         self.assertIn("activeCommandHistory(snapshot).reverse()", remote_control_time_block)
         self.assertIn("activeCommandHistory(snapshot).reverse()", remote_adjustment_time_block)
+
+    def test_manual_commands_are_not_filtered_out_by_simulator_run_id(self):
+        active_block = self.script.split("function activeCommandHistory", 1)[1].split("function addRuntimeLog", 1)[0]
+
+        self.assertIn("if (entry.cancelled) return false;", active_block)
+        self.assertIn("const manualHold = manualCommandHoldsAcrossClockLifecycle(entry);", active_block)
+        self.assertIn("if (!manualHold) {", active_block)
+        self.assertIn("entryRunId !== currentRunId", active_block)
+        self.assertIn("currentMinute < expires && (manualHold || issued <= currentMinute)", active_block)
 
 
 if __name__ == "__main__":

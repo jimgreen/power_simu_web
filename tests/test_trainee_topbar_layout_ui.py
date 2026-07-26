@@ -22,11 +22,15 @@ class TraineeTopbarLayoutUiTest(unittest.TestCase):
         self.assertLess(toolbar.index('id="importDefinitionsButton"'), toolbar.index('id="activeModelName"'))
         self.assertLess(toolbar.index('id="activeModelName"'), toolbar.index('id="traineeRunToggle"'))
 
+        topbar_rule = css.split(".topbar {", 1)[1].split("}", 1)[0]
+        self.assertIn("justify-content: flex-start", topbar_rule)
         toolbar_rule = css.split(".model-toolbar {", 1)[1].split("}", 1)[0]
-        self.assertIn("margin-left: auto", toolbar_rule)
-        self.assertIn("flex: 0 0 clamp(320px, 24vw, 420px)", toolbar_rule)
+        self.assertIn("margin-left: 0", toolbar_rule)
+        self.assertIn("flex: 0 1 auto", toolbar_rule)
         self.assertIn("justify-content: flex-start", toolbar_rule)
         self.assertIn("gap: 12px", toolbar_rule)
+        clock_rule = css.split(".clock-strip {", 1)[1].split("}", 1)[0]
+        self.assertIn("margin-left: auto", clock_rule)
         self.assertIn(".active-model-name {", css)
         active_model_rule = css.split(".active-model-name {", 1)[1].split("}", 1)[0]
         self.assertIn("display: flex", active_model_rule)

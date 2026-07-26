@@ -406,6 +406,31 @@ def _is_trainee_command_source(source: Any) -> bool:
     return text in {"student", "trainee"} or text.startswith("student-") or text.startswith("trainee-")
 
 
+def _has_cancel_command_payload(payload: Mapping[str, Any]) -> bool:
+    for key in ("cancel_commands", "cancelCommands", "cancel_items", "cancelItems", "cancel_names", "cancelNames"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) > 0:
+            return True
+    action = str(payload.get("action", payload.get("operation", "")) or "").strip().casefold()
+    if action in {"cancel", "cancel_command", "cancel_commands", "取消", "取消指令"}:
+        return True
+    return bool(payload.get("cancel") is True and any(key in payload for key in ("name", "names", "commands", "items", "controls")))
+
+
+def _manual_command_holds_across_clock_lifecycle(entry_or_payload: Mapping[str, Any], source: Any = "") -> bool:
+    if bool(entry_or_payload.get("manual_hold", entry_or_payload.get("hold_until_cancelled", False))):
+        return True
+    payload = entry_or_payload.get("payload") if isinstance(entry_or_payload.get("payload"), Mapping) else entry_or_payload
+    if isinstance(payload, Mapping) and isinstance(payload.get("strategy"), Mapping):
+        return False
+    text = str(source or entry_or_payload.get("source", "") or "").strip().casefold()
+    if "renewable" in text or "strategy" in text:
+        return False
+    return text in {"trainee-ui", "student-ui"} or text.startswith("trainee-ui-") or text.startswith("student-ui-") or "人工" in text
+
+
 def _first_number(source: Mapping[str, Any], keys: Sequence[str]) -> Optional[float]:
     for key in keys:
         if key not in source:
@@ -738,7 +763,11 @@ class PolarMicrogridSimulator:
         items = _read_json(self.commands_file, [])
         if not isinstance(items, list):
             return []
-        return [item for item in items[-200:] if isinstance(item, dict)]
+        history = [item for item in items[-200:] if isinstance(item, dict)]
+        changed = self._repair_legacy_cancel_command_entries(history)
+        if changed:
+            _write_json(self.commands_file, history[-200:])
+        return history
 
     def _write_command_history(self) -> None:
         _write_json(self.commands_file, self.command_history[-200:])
@@ -917,26 +946,53 @@ class PolarMicrogridSimulator:
         book = _make_book({"SetValue": (STAT_HEADERS["SetValue"], list(unique_rows.values()))})
         simu_loop.write_ebook_aligned(book, self.files["yt_ctrl"])
 
-    def _active_control_command_entries(self, absolute_minute: int | float) -> List[Mapping[str, Any]]:
+    def _command_entry_is_active(
+        self,
+        item: Mapping[str, Any],
+        absolute_minute: int | float,
+        run_id: Optional[int] = None,
+    ) -> bool:
+        if not self._command_entry_has_accepted_controls(item):
+            return False
         current = float(absolute_minute)
+        manual_hold = _manual_command_holds_across_clock_lifecycle(item)
+        if not manual_hold:
+            entry_run_id = _to_float(item.get("run_id"), None)
+            expected_run_id = int(run_id if run_id is not None else (_to_float(self.clock.run_id, 0) or 0))
+            if entry_run_id is None or int(entry_run_id) != expected_run_id:
+                return False
+        issued = _to_float(item.get("issued_absolute_minute"), None)
+        expires = _to_float(item.get("expires_at_absolute_minute"), None)
+        if issued is None or expires is None:
+            return False
+        return current < expires and (manual_hold or issued <= current)
+
+    def _command_entry_has_accepted_controls(self, item: Mapping[str, Any]) -> bool:
+        if not isinstance(item, Mapping) or not item.get("eligible_source") or item.get("cancelled"):
+            return False
+        accepted = item.get("accepted", {})
+        if not isinstance(accepted, Mapping):
+            return False
+        accepted_count = int(_to_float(accepted.get("run_status"), 0) or 0) + int(_to_float(accepted.get("set_values"), 0) or 0)
+        return accepted_count > 0
+
+    def _command_entry_can_be_cancelled(
+        self,
+        item: Mapping[str, Any],
+        absolute_minute: int | float,
+        run_id: Optional[int] = None,
+    ) -> bool:
+        if not self._command_entry_has_accepted_controls(item):
+            return False
+        if _manual_command_holds_across_clock_lifecycle(item):
+            return True
+        return self._command_entry_is_active(item, absolute_minute, run_id)
+
+    def _active_control_command_entries(self, absolute_minute: int | float) -> List[Mapping[str, Any]]:
         current_run_id = int(_to_float(self.clock.run_id, 0) or 0)
         active: List[Mapping[str, Any]] = []
         for item in self.command_history:
-            if not isinstance(item, Mapping) or not item.get("eligible_source"):
-                continue
-            entry_run_id = _to_float(item.get("run_id"), None)
-            if entry_run_id is None or int(entry_run_id) != current_run_id:
-                continue
-            accepted = item.get("accepted", {})
-            if not isinstance(accepted, Mapping):
-                continue
-            if int(_to_float(accepted.get("run_status"), 0) or 0) + int(_to_float(accepted.get("set_values"), 0) or 0) <= 0:
-                continue
-            issued = _to_float(item.get("issued_absolute_minute"), None)
-            expires = _to_float(item.get("expires_at_absolute_minute"), None)
-            if issued is None or expires is None:
-                continue
-            if issued <= current < expires:
+            if self._command_entry_is_active(item, absolute_minute, current_run_id):
                 active.append(item)
         return active
 
@@ -1002,6 +1058,312 @@ class PolarMicrogridSimulator:
         simu_loop.write_ebook_aligned(book, self.files["stat"])
         self._write_active_yt_ctrl_file(active_set_rows)
         return {"active_commands": len(active_entries), "run_status": applied_run, "set_values": applied_set}
+
+    def _cancel_command_input_items(self, payload: Mapping[str, Any]) -> List[Any]:
+        collected: List[Any] = []
+        for key in ("cancel_commands", "cancelCommands", "cancel_items", "cancelItems"):
+            value = payload.get(key)
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                collected.extend(value)
+        for key in ("cancel_names", "cancelNames", "names"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                collected.extend(part.strip() for part in re.split(r"[,;\s]+", value) if part.strip())
+            elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                collected.extend(str(item).strip() for item in value if str(item).strip())
+        if not collected:
+            for key in ("commands", "items", "controls"):
+                value = payload.get(key)
+                if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                    collected.extend(value)
+        if payload.get("cancel") is True or str(payload.get("action", payload.get("operation", ""))).strip().casefold() in {
+            "cancel",
+            "cancel_command",
+            "cancel_commands",
+            "取消",
+            "取消指令",
+        }:
+            for key in ("commands", "items", "controls"):
+                value = payload.get(key)
+                if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                    collected.extend(value)
+            if payload.get("name"):
+                collected.append(str(payload.get("name")))
+        return collected
+
+    def _cancel_command_key_from_item(self, item: Any) -> Optional[Tuple[Tuple[str, str, str, str], str]]:
+        if isinstance(item, str):
+            raw_item: Mapping[str, Any] = {"name": item}
+        elif isinstance(item, Mapping):
+            raw_item = item
+        else:
+            return None
+        raw_name = str(raw_item.get("name", raw_item.get("command_name", raw_item.get("control_name", "")))).strip()
+        definition = self._control_name_index().get(raw_name, {})
+        dev_type = str(raw_item.get("dev_type", raw_item.get("type", definition.get("dev_type", "")))).strip()
+        dev_name = str(raw_item.get("dev_name", raw_item.get("device", definition.get("dev_name", "")))).strip()
+        command_kind = str(raw_item.get("command_kind", definition.get("command_kind", ""))).strip().lower()
+        control_type = str(raw_item.get("control_type", raw_item.get("meas_type", definition.get("control_type", "")))).strip()
+        set_type = str(raw_item.get("set_type", definition.get("set_type", ""))).strip()
+        if (not dev_type or not dev_name or not (set_type or control_type)) and raw_name:
+            parts = raw_name.split(".")
+            if len(parts) >= 3:
+                dev_type = dev_type or parts[0]
+                dev_name = dev_name or ".".join(parts[1:-1])
+                tail = parts[-1]
+                if tail in ("run_stat", "status"):
+                    control_type = control_type or tail
+                else:
+                    set_type = set_type or tail
+        if not dev_type or not dev_name:
+            return None
+        if set_type or command_kind in ("remote_adjustment", "yt", "遥调"):
+            if not set_type:
+                return None
+            name = raw_name or f"{dev_type}.{dev_name}.{set_type}"
+            return ("remote_adjustment", dev_type, dev_name, set_type), name
+        field_name = "status" if control_type == "status" else "run_stat"
+        name = raw_name or f"{dev_type}.{dev_name}.{field_name}"
+        return ("remote_control", dev_type, dev_name, field_name), name
+
+    def _cancel_command_targets(self, payload: Mapping[str, Any]) -> Dict[Tuple[str, str, str, str], str]:
+        targets: Dict[Tuple[str, str, str, str], str] = {}
+        for item in self._cancel_command_input_items(payload):
+            resolved = self._cancel_command_key_from_item(item)
+            if resolved is None:
+                continue
+            key, name = resolved
+            targets[key] = name
+        return targets
+
+    def _command_entry_control_keys(self, entry: Mapping[str, Any]) -> set[Tuple[str, str, str, str]]:
+        keys: set[Tuple[str, str, str, str]] = set()
+        normalized = entry.get("normalized", {})
+        if not isinstance(normalized, Mapping):
+            return keys
+        run_items = normalized.get("run_status", [])
+        if isinstance(run_items, Sequence) and not isinstance(run_items, (str, bytes)):
+            for item in run_items:
+                if not isinstance(item, Mapping):
+                    continue
+                dev_type = str(item.get("dev_type", ""))
+                dev_name = str(item.get("dev_name", ""))
+                if not dev_type or not dev_name:
+                    continue
+                if item.get("run_stat", "") != "":
+                    keys.add(("remote_control", dev_type, dev_name, "run_stat"))
+                if "status" in item:
+                    keys.add(("remote_control", dev_type, dev_name, "status"))
+        set_items = normalized.get("set_values", [])
+        if isinstance(set_items, Sequence) and not isinstance(set_items, (str, bytes)):
+            for item in set_items:
+                if not isinstance(item, Mapping):
+                    continue
+                dev_type = str(item.get("dev_type", ""))
+                dev_name = str(item.get("dev_name", ""))
+                set_type = str(item.get("set_type", ""))
+                if dev_type and dev_name and set_type:
+                    keys.add(("remote_adjustment", dev_type, dev_name, set_type))
+        return keys
+
+    def _cancel_payload_from_history_entry(self, entry: Mapping[str, Any]) -> Dict[str, Any]:
+        payload = entry.get("payload") if isinstance(entry.get("payload"), Mapping) else {}
+        cancel_payload = dict(payload)
+        for key in (
+            "cancel_commands",
+            "cancelCommands",
+            "cancel_items",
+            "cancelItems",
+            "cancel_names",
+            "cancelNames",
+            "names",
+            "name",
+            "action",
+            "operation",
+            "cancel",
+        ):
+            if key in entry and key not in cancel_payload:
+                cancel_payload[key] = entry.get(key)
+        if "source" not in cancel_payload and entry.get("source"):
+            cancel_payload["source"] = entry.get("source")
+        return cancel_payload
+
+    def _repair_legacy_cancel_command_entries(self, history: List[Dict[str, Any]]) -> bool:
+        changed = False
+        for index, entry in enumerate(history):
+            if not isinstance(entry, dict):
+                continue
+            cancel_payload = self._cancel_payload_from_history_entry(entry)
+            if not _has_cancel_command_payload(cancel_payload):
+                continue
+            source = str(entry.get("source") or cancel_payload.get("source") or "")
+            if not _is_trainee_command_source(source):
+                continue
+            targets = self._cancel_command_targets(cancel_payload)
+            if not targets:
+                continue
+            cancel_minute = _to_float(
+                entry.get("received_absolute_minute", entry.get("issued_absolute_minute", entry.get("expires_at_absolute_minute"))),
+                None,
+            )
+            if cancel_minute is None:
+                continue
+            run_id = _to_float(entry.get("run_id"), None)
+            cancelled_keys: set[Tuple[str, str, str, str]] = set()
+            for previous in reversed(history[:index]):
+                if not isinstance(previous, dict):
+                    continue
+                if not self._command_entry_can_be_cancelled(previous, cancel_minute, int(run_id) if run_id is not None else None):
+                    continue
+                matched = self._command_entry_control_keys(previous) & set(targets)
+                if not matched:
+                    continue
+                previous["expires_at_absolute_minute"] = cancel_minute
+                previous["cancelled"] = True
+                previous["cancelled_names"] = [targets[key] for key in sorted(matched)]
+                previous["cancelled_wall_time"] = entry.get("received_wall_time", entry.get("time", ""))
+                previous["cancelled_simu_time"] = entry.get("received_simu_time", minute_to_time(cancel_minute))
+                previous["cancelled_absolute_minute"] = cancel_minute
+                cancelled_keys.update(matched)
+                changed = True
+
+            accepted = entry.get("accepted")
+            if not isinstance(accepted, dict):
+                accepted = {}
+                entry["accepted"] = accepted
+                changed = True
+            cancelled_remote = sum(1 for key in cancelled_keys if key[0] == "remote_control")
+            cancelled_adjustment = sum(1 for key in cancelled_keys if key[0] == "remote_adjustment")
+            missing = max(0, len(targets) - len(cancelled_keys))
+            for key, value in {
+                "cancelled_run_status": cancelled_remote,
+                "cancelled_set_values": cancelled_adjustment,
+                "missing": missing,
+            }.items():
+                if accepted.get(key) != value:
+                    accepted[key] = value
+                    changed = True
+
+            normalized = entry.get("normalized")
+            if not isinstance(normalized, dict):
+                normalized = {"run_status": [], "set_values": []}
+                entry["normalized"] = normalized
+                changed = True
+            cancel_rows = [
+                {"name": targets[key], "cancelled": key in cancelled_keys}
+                for key in sorted(targets)
+            ]
+            if normalized.get("cancel_commands") != cancel_rows:
+                normalized["cancel_commands"] = cancel_rows
+                changed = True
+        return changed
+
+    def cancel_student_commands(self, payload: Mapping[str, Any], source: str = "") -> Dict[str, Any]:
+        with self.lock:
+            source = source or str(payload.get("source", ""))
+            eligible_source = _is_trainee_command_source(source)
+            targets = self._cancel_command_targets(payload)
+            current = float(self.clock.absolute_minute)
+            received_wall_time = _now_text()
+            received_simu_time = minute_to_time(self.clock.minute)
+            cancelled_keys: set[Tuple[str, str, str, str]] = set()
+            if eligible_source and targets:
+                for entry in self.command_history:
+                    if not isinstance(entry, dict):
+                        continue
+                    if not self._command_entry_can_be_cancelled(entry, current, int(self.clock.run_id)):
+                        continue
+                    matched = self._command_entry_control_keys(entry) & set(targets)
+                    if not matched:
+                        continue
+                    entry["expires_at_absolute_minute"] = current
+                    entry["cancelled"] = True
+                    entry["cancelled_names"] = [targets[key] for key in sorted(matched)]
+                    entry["cancelled_wall_time"] = received_wall_time
+                    entry["cancelled_simu_time"] = received_simu_time
+                    entry["cancelled_absolute_minute"] = current
+                    cancelled_keys.update(matched)
+
+            cancelled_remote = sum(1 for key in cancelled_keys if key[0] == "remote_control")
+            cancelled_adjustment = sum(1 for key in cancelled_keys if key[0] == "remote_adjustment")
+            ignored = 0 if eligible_source else len(targets)
+            missing = max(0, len(targets) - len(cancelled_keys)) if eligible_source else 0
+            result_counts = {
+                "remote_controls": cancelled_remote,
+                "remote_adjustments": cancelled_adjustment,
+                "missing": missing,
+                "ignored": ignored,
+            }
+            cancel_entry = {
+                "time": received_wall_time,
+                "received_wall_time": received_wall_time,
+                "received_simu_time": received_simu_time,
+                "received_absolute_minute": current,
+                "run_id": int(self.clock.run_id),
+                "source": source,
+                "eligible_source": eligible_source,
+                "issued_absolute_minute": current,
+                "expires_at_absolute_minute": current,
+                "valid_for_minutes": 0.0,
+                "accepted": {
+                    "run_status": 0,
+                    "set_values": 0,
+                    "cancelled_run_status": cancelled_remote,
+                    "cancelled_set_values": cancelled_adjustment,
+                    "ignored": ignored,
+                    "missing": missing,
+                },
+                "normalized": {
+                    "run_status": [],
+                    "set_values": [],
+                    "cancel_commands": [
+                        {"name": targets[key], "cancelled": key in cancelled_keys}
+                        for key in sorted(targets)
+                    ],
+                },
+                "payload": json.loads(json.dumps(payload, ensure_ascii=False, default=str)),
+            }
+            self.command_history.append(cancel_entry)
+            drop_count = max(0, len(self.command_history) - 200)
+            if drop_count:
+                self.command_history = self.command_history[drop_count:]
+                self._last_command_response_index = max(0, self._last_command_response_index - drop_count)
+            self._materialize_active_control_commands(self.clock.absolute_minute)
+            self._write_command_history()
+            time_payload = self._api_time_payload()
+            cancelled_items = [
+                {
+                    "name": targets[key],
+                    "cancelled": key in cancelled_keys,
+                    **self._external_update_time_fields(time_payload),
+                }
+                for key in sorted(targets)
+            ]
+            detail = [
+                f"来源 {source}",
+                f"取消遥控 {cancelled_remote} 条，取消遥调 {cancelled_adjustment} 条，缺失 {missing} 条，忽略 {ignored} 条",
+            ]
+            if targets:
+                detail.append(
+                    "取消对象 "
+                    + "，".join(
+                        f"{targets[key]}={'已取消' if key in cancelled_keys else '未匹配'}"
+                        for key in list(sorted(targets))[:8]
+                    )
+                    + (" ..." if len(targets) > 8 else "")
+                )
+            self._append_runtime_log(
+                "控制指令",
+                "学员台 /api/student/commands",
+                "取消成功" if cancelled_keys else "无可取消指令",
+                detail,
+                level="ok" if cancelled_keys else "warn",
+            )
+            return {
+                **result_counts,
+                "cancelled": result_counts,
+                "cancelled_items": cancelled_items,
+            }
 
     def _make_config(self, period_seconds: Optional[float] = None) -> simu_loop.SimulationConfig:
         return simu_loop.SimulationConfig(
@@ -1576,6 +1938,8 @@ class PolarMicrogridSimulator:
         )
 
     def apply_student_commands(self, payload: Mapping[str, Any], source: str = "") -> Dict[str, int]:
+        if _has_cancel_command_payload(payload):
+            return self.cancel_student_commands(payload, source=source)  # type: ignore[return-value]
         with self.lock:
             run_items = payload.get("run_status", payload.get("runStatus", [])) or []
             set_items = payload.get("set_values", payload.get("setValues", payload.get("setpoints", []))) or []
@@ -1592,6 +1956,7 @@ class PolarMicrogridSimulator:
             accepted_set = len(normalized_set_items) if eligible_source else 0
             ignored = 0 if eligible_source else len(normalized_run_items) + len(normalized_set_items)
             accepted = {"run_status": accepted_run, "set_values": accepted_set, "ignored": ignored}
+            manual_hold = _manual_command_holds_across_clock_lifecycle(payload, source)
             command_entry = {
                 "time": received_wall_time,
                 "received_wall_time": received_wall_time,
@@ -1600,6 +1965,7 @@ class PolarMicrogridSimulator:
                 "run_id": int(self.clock.run_id),
                 "source": source,
                 "eligible_source": eligible_source,
+                "manual_hold": manual_hold,
                 "issued_absolute_minute": issued_absolute_minute,
                 "expires_at_absolute_minute": expires_at_absolute_minute,
                 "valid_for_minutes": max(0.0, expires_at_absolute_minute - issued_absolute_minute),
@@ -2603,6 +2969,20 @@ class PolarMicrogridSimulator:
         return {"run_status": run_items, "set_values": set_items, "resolved_items": resolved_items}
 
     def apply_external_control_values(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        if _has_cancel_command_payload(payload):
+            source = str(payload.get("source") or "trainee-external-api")
+            if not _is_trainee_command_source(source):
+                source = f"trainee-{source}"
+            result = self.cancel_student_commands(payload | {"source": source}, source=source)
+            time_payload = self._api_time_payload()
+            return {
+                "model_id": self.model_id,
+                "model_name": self.model_name,
+                **time_payload,
+                "cancelled": result["cancelled"],
+                "cancelled_items": result["cancelled_items"],
+                "control_values": self.latest_control_values(),
+            }
         normalized = self._normalize_external_control_payload(payload)
         command_payload: Dict[str, Any] = {
             "run_status": normalized["run_status"],

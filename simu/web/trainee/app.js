@@ -44,6 +44,7 @@ const state = {
   remoteControlSending: false,
   remoteAdjustment: null,
   remoteAdjustmentSending: false,
+  commandCancelSending: new Set(),
   measurementFilter: { dev_type: "all", dev_name: "" },
   controlFilter: { dev_type: "all", dev_name: "" },
   activeControlTab: "remote-control",
@@ -1067,19 +1068,36 @@ function commandSentTimeInfo(entry = {}, snapshot = state.snapshot || {}) {
   };
 }
 
+function manualCommandHoldsAcrossClockLifecycle(entry = {}) {
+  const payload = entry.payload && typeof entry.payload === "object" ? entry.payload : entry;
+  if (entry.manual_hold || entry.hold_until_cancelled || payload.manual_hold || payload.hold_until_cancelled) return true;
+  if (payload.strategy && typeof payload.strategy === "object") return false;
+  const source = String(entry.source || payload.source || "").trim().toLowerCase();
+  if (source.includes("renewable") || source.includes("strategy")) return false;
+  return source === "trainee-ui"
+    || source === "student-ui"
+    || source.startsWith("trainee-ui-")
+    || source.startsWith("student-ui-")
+    || source.includes("人工");
+}
+
 function activeCommandHistory(snapshot = state.snapshot || {}) {
   const currentMinute = Number(snapshot.clock?.absolute_minute ?? snapshot.clock?.minute ?? 0) || 0;
   const currentRunId = Number(snapshot.clock?.run_id ?? 0) || 0;
   return [...(snapshot.commands?.history || [])].filter((entry) => {
     if (!entry?.eligible_source) return false;
-    const entryRunId = Number(entry.run_id);
-    if (!Number.isFinite(entryRunId) || entryRunId !== currentRunId) return false;
+    if (entry.cancelled) return false;
+    const manualHold = manualCommandHoldsAcrossClockLifecycle(entry);
+    if (!manualHold) {
+      const entryRunId = Number(entry.run_id);
+      if (!Number.isFinite(entryRunId) || entryRunId !== currentRunId) return false;
+    }
     const issued = Number(entry.issued_absolute_minute);
     const expires = Number(entry.expires_at_absolute_minute);
     if (!Number.isFinite(issued) || !Number.isFinite(expires)) return false;
     const accepted = entry.accepted || {};
     const acceptedCount = Number(accepted.run_status || 0) + Number(accepted.set_values || 0);
-    return acceptedCount > 0 && issued <= currentMinute && currentMinute < expires;
+    return acceptedCount > 0 && currentMinute < expires && (manualHold || issued <= currentMinute);
   });
 }
 
@@ -3825,6 +3843,51 @@ function remoteControlLabel(commandType) {
   return commandType === "status" ? "开关开合" : "设备投退";
 }
 
+function activeCommandCancelName(dev, commandType, setType = "", snapshot = state.snapshot || {}) {
+  if (!dev) return "";
+  const fieldName = commandType === "set_value" ? setType : (commandType === "status" ? "status" : "run_stat");
+  if (!fieldName) return "";
+  const issuedTime = commandType === "set_value"
+    ? remoteAdjustmentIssuedTimeInfo(dev, setType, snapshot)
+    : remoteControlIssuedTimeInfo(dev, fieldName, snapshot);
+  if (!issuedTime || issuedTime.wall_time === "--") return "";
+  return `${deviceType(dev)}.${deviceName(dev)}.${fieldName}`;
+}
+
+async function sendCommandCancel(commandName, label = "") {
+  const name = String(commandName || "").trim();
+  if (!name || state.commandCancelSending.has(name)) return;
+  const displayLabel = label || name;
+  if (!window.confirm(`确认取消当前有效指令：${displayLabel}？`)) return;
+  const body = withCommandSendTime({
+    source: "trainee-ui",
+    cancel_commands: [{ name: commandName }],
+  });
+  const useInteractionLink = hasTeacherCommandConnection();
+  const targetName = useInteractionLink ? teacherCommandTargetName() : "模拟台交互链接";
+  state.commandCancelSending.add(name);
+  addRuntimeLog("人工取消", targetName, "取消请求", displayLabel);
+  renderCombinedControlPage();
+  try {
+    const result = await postTeacherCommand(body);
+    const cancelled = result.cancelled || result;
+    const count = Number(cancelled.remote_controls || 0) + Number(cancelled.remote_adjustments || 0);
+    addRuntimeLog(
+      "模拟台响应",
+      targetName,
+      count ? "取消成功" : "无可取消指令",
+      `${displayLabel}；取消 ${count} 条，缺失 ${cancelled.missing || 0} 条`,
+      count ? "ok" : "warn",
+    );
+    await refresh();
+  } catch (error) {
+    addRuntimeLog("模拟台响应", targetName, "取消失败", apiErrorText(error), "error");
+  } finally {
+    state.commandCancelSending.delete(name);
+    renderCombinedControlPage();
+  }
+}
+
 function renderRunControls(devices) {
   const visibleDevices = filteredDevices(devices, state.controlFilter);
   const rows = [
@@ -3843,7 +3906,7 @@ function renderRunControls(devices) {
   ];
   $("runControlTable").innerHTML = `
     <table class="runtime-device-table">
-      <thead><tr><th>idx</th><th>遥控名称</th><th>设备名称</th><th>类型</th><th>当前状态</th><th>下发状态</th><th>下发本机时刻</th><th>下发仿真时刻</th></tr></thead>
+      <thead><tr><th>idx</th><th>遥控名称</th><th>设备名称</th><th>类型</th><th>当前状态</th><th>下发状态</th><th>下发本机时刻</th><th>下发仿真时刻</th><th>操作</th></tr></thead>
       <tbody>
         ${rows.map(({ dev, commandType, valueKey }) => {
           const key = `${deviceKey(dev)}|${commandType}`;
@@ -3851,6 +3914,9 @@ function renderRunControls(devices) {
           const pendingCommand = pending.run_status.get(key);
           const currentValue = Number(pendingCommand ? pendingCommand[valueKey] : dev[valueKey]);
           const issuedAt = remoteControlIssuedTimeInfo(dev, commandType);
+          const cancelName = activeCommandCancelName(dev, commandType);
+          const cancelLabel = `${deviceName(dev)}.${remoteControlLabel(commandType)}`;
+          const cancelSending = cancelName && state.commandCancelSending.has(cancelName);
           const classes = [
             pending.run_status.has(key) ? "is-pending" : "",
             traceKey === state.selectedCommandTraceKey ? "is-selected" : "",
@@ -3871,6 +3937,11 @@ function renderRunControls(devices) {
             </td>
             <td class="mono-cell command-issued-at-cell">${escapeHtml(issuedAt.wall_time)}</td>
             <td class="mono-cell command-issued-at-cell">${escapeHtml(issuedAt.simu_time)}</td>
+            <td>
+              <button type="button" class="command-cancel-button" data-command-cancel-name="${escapeHtml(cancelName)}" data-command-cancel-label="${escapeHtml(cancelLabel)}" ${cancelName && !cancelSending ? "" : "disabled"}>
+                ${cancelSending ? "取消中" : "取消指令"}
+              </button>
+            </td>
           </tr>`;
         }).join("")}
       </tbody>
@@ -3958,6 +4029,8 @@ function remoteAdjustmentRows(devices, snapshot = state.snapshot || {}) {
       })(),
       issuedAt: issuedTime.wall_time,
       issuedTime,
+      cancelName: activeCommandCancelName(dev, "set_value", setType, snapshot),
+      cancelSending: state.commandCancelSending.has(activeCommandCancelName(dev, "set_value", setType, snapshot)),
     };
   });
 }
@@ -3972,14 +4045,27 @@ function renderSetpointControls(devices) {
   const rows = remoteAdjustmentRows(visibleDevices);
   $("setpointControlTable").innerHTML = `
     <table class="runtime-device-table remote-adjustment-table">
-      <thead><tr><th>遥调名称</th><th>量测值</th><th>控制值</th><th>下发本机时刻</th><th>下发仿真时刻</th></tr></thead>
+      <colgroup>
+        <col class="remote-adjustment-name-col" />
+        <col class="remote-adjustment-value-col" />
+        <col class="remote-adjustment-value-col" />
+        <col class="remote-adjustment-time-col" />
+        <col class="remote-adjustment-time-col" />
+        <col class="remote-adjustment-action-col" />
+      </colgroup>
+      <thead><tr><th>遥调名称</th><th>量测值</th><th>控制值</th><th>下发本机时刻</th><th>下发仿真时刻</th><th>操作</th></tr></thead>
       <tbody>
         ${rows.map((row) => `<tr class="${row.traceKey === state.selectedCommandTraceKey ? "is-selected" : ""}" data-command-trace-key="${escapeHtml(row.traceKey)}" data-command-trace-label="${escapeHtml(row.name)}" data-remote-adjustment-key="${escapeHtml(row.key)}" title="单击选中曲线，双击进行遥调操作">
-          <td><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(deviceType(row.dev))}</small></td>
+          <td><span class="remote-adjustment-name-cell"><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(deviceType(row.dev))}</small></span></td>
           <td class="numeric-cell">${formatRemoteAdjustmentValue(row.measurement)}</td>
           <td class="numeric-cell">${formatRemoteAdjustmentValue(row.controlValue)}</td>
           <td class="mono-cell command-issued-at-cell">${escapeHtml(row.issuedTime?.wall_time || row.issuedAt || "--")}</td>
           <td class="mono-cell command-issued-at-cell">${escapeHtml(row.issuedTime?.simu_time || "--")}</td>
+          <td>
+            <button type="button" class="command-cancel-button" data-command-cancel-name="${escapeHtml(row.cancelName)}" data-command-cancel-label="${escapeHtml(row.name)}" ${row.cancelName && !row.cancelSending ? "" : "disabled"}>
+              ${row.cancelSending ? "取消中" : "取消指令"}
+            </button>
+          </td>
         </tr>`).join("")}
       </tbody>
     </table>`;
@@ -4494,6 +4580,15 @@ document.addEventListener("click", (event) => {
     state.activeControlTab = commandTab.dataset.commandTab || "remote-control";
     ensureSelectedCommandTrace(controlDefinitionDevices());
     renderCombinedControlPage();
+    return;
+  }
+  const commandCancelButton = target?.closest("[data-command-cancel-name]");
+  if (commandCancelButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    const commandName = commandCancelButton.dataset.commandCancelName || "";
+    const commandLabel = commandCancelButton.dataset.commandCancelLabel || commandName;
+    sendCommandCancel(commandName, commandLabel);
     return;
   }
   const commandTraceRow = target?.closest("[data-command-trace-key]");

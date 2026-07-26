@@ -133,6 +133,14 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("beginOverviewBottomSplitterDrag", self.script)
         self.assertIn("handleOverviewBottomSplitterKeydown", self.script)
 
+    def test_trainee_home_energy_flow_stays_centered_when_bottom_height_changes(self):
+        self.assertIn(".overview-energy-board", self.styles)
+        self.assertIn("grid-template-rows: auto minmax(0, 1fr);", self.styles)
+        self.assertIn("height: min(100%, 390px);", self.styles)
+        self.assertIn("align-self: center;", self.styles)
+        self.assertNotIn("grid-template-rows: auto minmax(340px, 1fr);", self.styles)
+        self.assertNotIn("min-height: 340px;", self.styles)
+
     def test_trainee_topbar_removes_send_command_button(self):
         self.assertNotIn("发送指令", self.html)
         self.assertNotIn('id="sendCommands"', self.html)

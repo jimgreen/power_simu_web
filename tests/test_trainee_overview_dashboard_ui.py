@@ -59,9 +59,12 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("activeCommandHistory(snapshot)", self.script)
         self.assertIn("遥控 · ${remoteControlLabel(commandType)}", self.script)
         self.assertIn("遥调 · ${remoteAdjustmentTypeLabel(item.set_type || \"\")}", self.script)
+        self.assertIn("actual_value", self.script)
+        self.assertIn("snapshotDevice(item.dev_type || \"\", item.dev_name || \"\", snapshot)", self.script)
+        self.assertIn("remoteAdjustmentMeasurement(liveDev, item.set_type || \"\", snapshot)", self.script)
         self.assertIn('class="active-command-preview-wrap"', self.html)
         self.assertIn('class="active-command-preview-table"', self.script)
-        for column in ("设备", "指令", "值", "仿真时刻"):
+        for column in ("设备", "指令", "指令值", "实时值", "仿真时刻"):
             self.assertIn(f"<th>{column}</th>", self.script)
         self.assertNotIn('<div class="log-item">\\n      <strong>${escapeHtml(item.name)}</strong>', self.script)
         self.assertIn("暂无当前有效指令", self.script)

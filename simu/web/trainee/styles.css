@@ -1009,21 +1009,26 @@ body.is-overview-splitter-dragging {
 }
 .active-command-preview-table th:nth-child(1),
 .active-command-preview-table td:nth-child(1) {
-  width: 28%;
+  width: 25%;
   font-weight: 700;
 }
 .active-command-preview-table th:nth-child(2),
 .active-command-preview-table td:nth-child(2) {
-  width: 34%;
+  width: 29%;
 }
 .active-command-preview-table th:nth-child(3),
 .active-command-preview-table td:nth-child(3) {
-  width: 18%;
+  width: 15%;
   text-align: right;
 }
 .active-command-preview-table th:nth-child(4),
 .active-command-preview-table td:nth-child(4) {
-  width: 20%;
+  width: 15%;
+  text-align: right;
+}
+.active-command-preview-table th:nth-child(5),
+.active-command-preview-table td:nth-child(5) {
+  width: 16%;
   font-family: Consolas, "Microsoft YaHei", monospace;
   text-align: right;
 }

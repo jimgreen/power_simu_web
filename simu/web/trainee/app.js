@@ -4191,19 +4191,28 @@ function activeCommandPreviewRows(snapshot = state.snapshot || {}) {
       const commandType = isStatus ? "status" : "run_stat";
       const value = isStatus ? item.status : item.run_stat;
       if (value === undefined || value === "") return;
+      const liveDev = snapshotDevice(item.dev_type || "", item.dev_name || "", snapshot) || {};
+      const actualValue = isStatus ? liveDev.status : liveDev.run_stat;
       rows.push({
         type: `遥控 · ${remoteControlLabel(commandType)}`,
         name: item.dev_name || item.name || "--",
         value: remoteControlValueText(commandType, value),
+        actual_value: actualValue === undefined || actualValue === ""
+          ? "--"
+          : remoteControlValueText(commandType, actualValue),
         time: timeInfo.simu_time || "--",
       });
     });
     setItems.forEach((item) => {
       if (!item || typeof item !== "object") return;
+      const liveDev = snapshotDevice(item.dev_type || "", item.dev_name || "", snapshot)
+        || { dev_type: item.dev_type || "", dev_name: item.dev_name || "" };
+      const actualValue = remoteAdjustmentMeasurement(liveDev, item.set_type || "", snapshot);
       rows.push({
         type: `遥调 · ${remoteAdjustmentTypeLabel(item.set_type || "")}`,
         name: item.dev_name || item.name || "--",
         value: formatNumber(item.set_value),
+        actual_value: formatRemoteAdjustmentValue(actualValue),
         time: timeInfo.simu_time || "--",
       });
     });
@@ -4220,7 +4229,8 @@ function renderActiveCommandPreview(snapshot = state.snapshot || {}) {
         <tr>
           <th>设备</th>
           <th>指令</th>
-          <th>值</th>
+          <th>指令值</th>
+          <th>实时值</th>
           <th>仿真时刻</th>
         </tr>
       </thead>
@@ -4230,6 +4240,7 @@ function renderActiveCommandPreview(snapshot = state.snapshot || {}) {
             <td title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</td>
             <td title="${escapeHtml(item.type)}">${escapeHtml(item.type)}</td>
             <td title="${escapeHtml(item.value)}">${escapeHtml(item.value)}</td>
+            <td title="${escapeHtml(item.actual_value)}">${escapeHtml(item.actual_value)}</td>
             <td title="${escapeHtml(item.time)}">${escapeHtml(item.time)}</td>
           </tr>
         `).join("")}

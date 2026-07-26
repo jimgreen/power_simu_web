@@ -15,6 +15,20 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ExternalRealtimeInterfacesTest(unittest.TestCase):
+    REDUNDANT_FIELDS = {
+        "point_type",
+        "category",
+        "dev_type",
+        "dev_name",
+        "meas_type",
+        "control_type",
+        "set_type",
+        "command_kind",
+        "weight",
+        "text",
+        "source",
+    }
+
     def _make_service(self):
         workspace = tempfile.TemporaryDirectory()
         service = PolarMicrogridSimulator(
@@ -36,9 +50,14 @@ class ExternalRealtimeInterfacesTest(unittest.TestCase):
         self.assertEqual(payload["time"], "00:00:00")
         self.assertIn("items", payload)
         self.assertIn("values", payload)
-        point_types = {item["point_type"] for item in payload["items"]}
-        self.assertIn("YC", point_types)
-        self.assertIn("YX", point_types)
+        for item in payload["items"]:
+            self.assertIn("name", item)
+            self.assertIn("value", item)
+            self.assertIn("updated_wall_time", item)
+            self.assertIn("updated_simu_time", item)
+            self.assertIn("updated_absolute_minute", item)
+            self.assertIn("valid", item)
+            self.assertFalse(self.REDUNDANT_FIELDS & set(item))
         self.assertTrue(any(item["name"] == "weather_wind_speed" for item in payload["items"]))
         self.assertTrue(any(item["name"] == "ACGenerator.diesel_300kw.run_stat" for item in payload["items"]))
 
@@ -61,6 +80,12 @@ class ExternalRealtimeInterfacesTest(unittest.TestCase):
         self.assertTrue(payload["signals"][0]["found"])
         self.assertFalse(payload["signals"][1]["found"])
         self.assertEqual(payload["missing"], {"telemetry": ["missing_yc"], "signals": ["missing_yx"]})
+        for item in payload["items"]:
+            self.assertIn("name", item)
+            self.assertIn("value", item)
+            self.assertIn("updated_wall_time", item)
+            self.assertIn("updated_simu_time", item)
+            self.assertFalse(self.REDUNDANT_FIELDS & set(item))
 
     def test_latest_control_values_include_remote_control_and_adjustment_update_times(self):
         workspace, service = self._make_service()
@@ -80,11 +105,17 @@ class ExternalRealtimeInterfacesTest(unittest.TestCase):
         by_name = {item["name"]: item for item in payload["items"]}
         self.assertIn("ACGenerator.diesel_300kw.run_stat", by_name)
         self.assertIn("ACGenerator.diesel_300kw.p_set", by_name)
-        self.assertEqual(by_name["ACGenerator.diesel_300kw.run_stat"]["category"], "遥控")
-        self.assertEqual(by_name["ACGenerator.diesel_300kw.p_set"]["category"], "遥调")
         self.assertEqual(by_name["ACGenerator.diesel_300kw.p_set"]["value"], 66.6)
         self.assertEqual(by_name["ACGenerator.diesel_300kw.p_set"]["updated_simu_time"], "00:00:00")
         self.assertTrue(by_name["ACGenerator.diesel_300kw.p_set"]["active"])
+        for item in payload["items"]:
+            self.assertIn("name", item)
+            self.assertIn("value", item)
+            self.assertIn("updated_wall_time", item)
+            self.assertIn("updated_simu_time", item)
+            self.assertIn("updated_absolute_minute", item)
+            self.assertIn("active", item)
+            self.assertFalse(self.REDUNDANT_FIELDS & set(item))
 
     def test_external_control_endpoint_accepts_json_values_and_returns_update_result(self):
         workspace, service = self._make_service()
@@ -138,6 +169,20 @@ class ExternalRealtimeInterfacesTest(unittest.TestCase):
         self.assertEqual(result["accepted"]["remote_adjustments"], 1)
         self.assertEqual(result["accepted"]["remote_controls"], 0)
         self.assertEqual(result["control_values"]["values"]["ACGenerator.diesel_300kw.p_set"], 55.5)
+        self.assertNotIn("result", result)
+        self.assertEqual(result["updated_items"][0]["name"], "ACGenerator.diesel_300kw.p_set")
+        self.assertEqual(result["updated_items"][0]["value"], 55.5)
+        self.assertIn("updated_wall_time", result["updated_items"][0])
+        self.assertIn("updated_simu_time", result["updated_items"][0])
+        for collection in (
+            telemetry["items"],
+            selected["items"],
+            before_controls["items"],
+            result["updated_items"],
+            result["control_values"]["items"],
+        ):
+            for item in collection:
+                self.assertFalse(self.REDUNDANT_FIELDS & set(item))
 
 
 if __name__ == "__main__":

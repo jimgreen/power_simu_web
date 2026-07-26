@@ -1743,7 +1743,6 @@ function renderTraineeOverviewDashboard(snapshot) {
   if (storageNode) storageNode.dataset.storageFlow = storageFlow;
   const storageLink = $("overviewStorageFlowLink");
   if (storageLink) storageLink.dataset.storageFlow = storageFlow;
-  setOverviewText("overviewFlowResultTime", power.log ? `接收时刻 ${power.log.simu_time || power.log.sim_time || clock.time || "--"}` : "尚无接收结果");
   setOverviewText("overviewFlowWindPower", overviewPowerText(power.wind));
   setOverviewText("overviewFlowWindMeta", `风速 ${formatOverviewNumber(weather.windSpeed)} m/s`);
   setOverviewText("overviewFlowSolarPower", overviewPowerText(power.solar));
@@ -1754,7 +1753,6 @@ function renderTraineeOverviewDashboard(snapshot) {
   setOverviewText("overviewFlowSoc", Number.isFinite(power.soc) ? `${formatOverviewNumber(power.soc)}%` : "--");
   setOverviewText("overviewFlowLoadPower", overviewPowerText(power.load));
   setOverviewText("overviewFlowLoadMeta", `需求 ${overviewPowerText(weather.loadKw)}`);
-  setOverviewText("overviewFlowBalance", overviewPowerText(power.balance));
   const greenPowerShare = Number.isFinite(power.diesel) && Number.isFinite(power.load) && Math.abs(power.load) > 1e-9
     ? (1.0 - power.diesel / power.load) * 100.0
     : null;

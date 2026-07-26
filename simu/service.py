@@ -2188,8 +2188,39 @@ class PolarMicrogridSimulator:
             "wall_time": _now_text(),
         }
 
-    def latest_telemetry_values(self) -> Dict[str, Any]:
-        """Return the latest remote measurements and status points for external clients."""
+    def _external_update_time_fields(self, time_payload: Mapping[str, Any]) -> Dict[str, Any]:
+        return {
+            "updated_wall_time": time_payload.get("wall_time", "--"),
+            "updated_simu_time": time_payload.get("simu_time", time_payload.get("time", "--")),
+            "updated_absolute_minute": time_payload.get("absolute_minute"),
+        }
+
+    def _compact_external_value_item(
+        self,
+        item: Mapping[str, Any],
+        time_payload: Mapping[str, Any],
+        *,
+        include_found: bool = False,
+        include_valid: bool = False,
+        include_active: bool = False,
+    ) -> Dict[str, Any]:
+        row: Dict[str, Any] = {
+            "name": str(item.get("name", "")),
+            "value": _json_scalar(item.get("value")),
+            "updated_wall_time": item.get("updated_wall_time", time_payload.get("wall_time", "--")),
+            "updated_simu_time": item.get("updated_simu_time", time_payload.get("simu_time", time_payload.get("time", "--"))),
+            "updated_absolute_minute": _json_scalar(item.get("updated_absolute_minute", time_payload.get("absolute_minute"))),
+        }
+        if include_found or "found" in item:
+            row["found"] = bool(item.get("found", True))
+        if include_valid or "valid" in item:
+            row["valid"] = int(_to_float(item.get("valid"), 0) or 0)
+        if include_active or "active" in item:
+            row["active"] = bool(item.get("active", False))
+            row["expires_at_absolute_minute"] = _json_scalar(item.get("expires_at_absolute_minute"))
+        return row
+
+    def _latest_telemetry_items(self) -> List[Dict[str, Any]]:
         measurements = dict(self.latest_measurements or self.measurements())
         measurements = self._with_weather_measurements(measurements)
         items: List[Dict[str, Any]] = []
@@ -2250,10 +2281,19 @@ class PolarMicrogridSimulator:
                     }
                 )
 
+        return items
+
+    def latest_telemetry_values(self) -> Dict[str, Any]:
+        """Return compact latest remote measurements and status points for external clients."""
+        time_payload = self._api_time_payload()
+        items = [
+            self._compact_external_value_item(item, time_payload, include_valid=True)
+            for item in self._latest_telemetry_items()
+        ]
         return {
             "model_id": self.model_id,
             "model_name": self.model_name,
-            **self._api_time_payload(),
+            **time_payload,
             "items": items,
             "values": {item["name"]: item.get("value") for item in items},
         }
@@ -2278,15 +2318,16 @@ class PolarMicrogridSimulator:
             payload,
             ("signals", "signal_names", "yx", "yx_names", "statuses", "status_names", "remote_signals"),
         )
-        all_values = self.latest_telemetry_values()
+        time_payload = self._api_time_payload()
+        all_items = self._latest_telemetry_items()
         yc_index = {
             str(item.get("name", "")): item
-            for item in all_values.get("items", [])
+            for item in all_items
             if isinstance(item, Mapping) and item.get("point_type") == "YC"
         }
         yx_index = {
             str(item.get("name", "")): item
-            for item in all_values.get("items", [])
+            for item in all_items
             if isinstance(item, Mapping) and item.get("point_type") == "YX"
         }
 
@@ -2295,9 +2336,24 @@ class PolarMicrogridSimulator:
             for name in names:
                 item = index.get(name)
                 if item is None:
-                    rows.append({"name": name, "found": False, "value": None, "valid": 0})
+                    rows.append(
+                        {
+                            "name": name,
+                            "value": None,
+                            **self._external_update_time_fields(time_payload),
+                            "found": False,
+                            "valid": 0,
+                        }
+                    )
                 else:
-                    rows.append(dict(item) | {"found": True})
+                    rows.append(
+                        self._compact_external_value_item(
+                            item | {"found": True},
+                            time_payload,
+                            include_found=True,
+                            include_valid=True,
+                        )
+                    )
             return rows
 
         telemetry = pick(yc_index, yc_names)
@@ -2305,7 +2361,7 @@ class PolarMicrogridSimulator:
         return {
             "model_id": self.model_id,
             "model_name": self.model_name,
-            **self._api_time_payload(),
+            **time_payload,
             "telemetry": telemetry,
             "signals": signals,
             "yc": telemetry,
@@ -2379,8 +2435,7 @@ class PolarMicrogridSimulator:
             for row in getattr(block, "data", [])
         ]
 
-    def latest_control_values(self) -> Dict[str, Any]:
-        """Return current remote-control and remote-adjustment values for external clients."""
+    def _latest_control_value_items(self) -> List[Dict[str, Any]]:
         run_stats, cb_status, set_values, _soc_values = self._stat_maps()
         items: List[Dict[str, Any]] = []
 
@@ -2462,10 +2517,19 @@ class PolarMicrogridSimulator:
                 }
             )
 
+        return items
+
+    def latest_control_values(self) -> Dict[str, Any]:
+        """Return compact current remote-control and remote-adjustment values for external clients."""
+        time_payload = self._api_time_payload()
+        items = [
+            self._compact_external_value_item(item, time_payload, include_active=True)
+            for item in self._latest_control_value_items()
+        ]
         return {
             "model_id": self.model_id,
             "model_name": self.model_name,
-            **self._api_time_payload(),
+            **time_payload,
             "items": items,
             "values": {item["name"]: item.get("value") for item in items},
         }
@@ -2484,10 +2548,9 @@ class PolarMicrogridSimulator:
         return collected
 
     def _control_name_index(self) -> Dict[str, Mapping[str, Any]]:
-        items = self.latest_control_values().get("items", [])
         return {
             str(item.get("name", "")): item
-            for item in items
+            for item in self._latest_control_value_items()
             if isinstance(item, Mapping) and item.get("name")
         }
 
@@ -2529,13 +2592,13 @@ class PolarMicrogridSimulator:
                 if not set_type:
                     continue
                 set_items.append({"dev_type": dev_type, "dev_name": dev_name, "set_type": set_type, "set_value": value})
-                resolved_items.append({"name": raw_name or f"{dev_type}.{dev_name}.{set_type}", "command_kind": "remote_adjustment", "value": value})
+                resolved_items.append({"name": raw_name or f"{dev_type}.{dev_name}.{set_type}", "value": _json_scalar(value)})
                 continue
             field_name = "status" if control_type == "status" else "run_stat"
             run_row: Dict[str, Any] = {"dev_type": dev_type, "dev_name": dev_name}
             run_row[field_name] = value
             run_items.append(run_row)
-            resolved_items.append({"name": raw_name or f"{dev_type}.{dev_name}.{field_name}", "command_kind": "remote_control", "value": value})
+            resolved_items.append({"name": raw_name or f"{dev_type}.{dev_name}.{field_name}", "value": _json_scalar(value)})
 
         return {"run_status": run_items, "set_values": set_items, "resolved_items": resolved_items}
 
@@ -2561,17 +2624,21 @@ class PolarMicrogridSimulator:
         if not _is_trainee_command_source(source):
             source = f"trainee-{source}"
         result = self.apply_student_commands(command_payload | {"source": source}, source=source)
+        time_payload = self._api_time_payload()
+        updated_items = [
+            item | self._external_update_time_fields(time_payload)
+            for item in normalized["resolved_items"]
+        ]
         return {
             "model_id": self.model_id,
             "model_name": self.model_name,
-            **self._api_time_payload(),
+            **time_payload,
             "accepted": {
                 "remote_controls": result.get("run_status", 0),
                 "remote_adjustments": result.get("set_values", 0),
                 "ignored": result.get("ignored", 0),
             },
-            "result": result,
-            "updated_items": normalized["resolved_items"],
+            "updated_items": updated_items,
             "control_values": self.latest_control_values(),
         }
 

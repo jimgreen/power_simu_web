@@ -15,8 +15,13 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         cls.styles = (ROOT / "simu/web/trainee/styles.css").read_text(encoding="utf-8")
 
     def test_trainee_home_uses_simulator_style_energy_flow(self):
-        for text in ("电气能量流", "实时绿电占比", "教员数据", "最新交互事件", "当前有效指令"):
+        for text in ("实时绿电占比", "教员数据", "最新交互事件", "当前有效指令"):
             self.assertIn(text, self.html)
+        self.assertNotIn("电气能量流", self.html)
+        self.assertNotIn("尚无接收结果", self.html)
+        self.assertNotIn("功率差额", self.html)
+        self.assertNotIn("energy-board-head", self.html)
+        self.assertNotIn("energy-board-meta", self.html)
         self.assertNotIn("接收质量", self.html)
         for element_id in (
             "overviewFlowWindPower",
@@ -24,13 +29,15 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
             "overviewFlowDieselPower",
             "overviewFlowStoragePower",
             "overviewFlowLoadPower",
-            "overviewFlowBalance",
             "overviewFlowSoc",
             "overviewFlowGreenShare",
             "overviewReceiveDot",
         ):
             self.assertIn(f'id="{element_id}"', self.html)
             self.assertIn(f'"{element_id}"', self.script)
+        for removed_id in ("overviewFlowBalance", "overviewFlowResultTime"):
+            self.assertNotIn(f'id="{removed_id}"', self.html)
+            self.assertNotIn(f'"{removed_id}"', self.script)
         self.assertIn('data-flow-layout="single-line"', self.html)
         self.assertNotIn('class="one-line"', self.html)
 
@@ -100,6 +107,9 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
             self.assertNotIn(f'"{element_id}"', self.script)
 
     def test_trainee_home_has_dynamic_flow_styles(self):
+        green_share_start = self.styles.index(".energy-green-share {")
+        green_share_block = self.styles[green_share_start : self.styles.index("\n}", green_share_start) + 2]
+
         for css_hook in (
             ".overview-dashboard",
             ".overview-status-panel",
@@ -116,6 +126,9 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("@keyframes energyFlowReverse", self.styles)
         self.assertIn("@keyframes energyFlowUp", self.styles)
         self.assertIn("--flow-thickness", self.styles)
+        self.assertIn("top: 50%;", green_share_block)
+        self.assertIn("transform: translate(-50%, calc(-100% - 8px));", green_share_block)
+        self.assertNotIn("top: 54px;", green_share_block)
 
     def test_trainee_home_bottom_tables_have_draggable_height_splitter(self):
         self.assertIn('id="overviewBottomSplitter"', self.html)
@@ -135,10 +148,15 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
 
     def test_trainee_home_energy_flow_stays_centered_when_bottom_height_changes(self):
         self.assertIn(".overview-energy-board", self.styles)
-        self.assertIn("grid-template-rows: auto minmax(0, 1fr);", self.styles)
+        self.assertIn("grid-template-rows: minmax(0, 1fr);", self.styles)
+        self.assertIn("padding: 0;", self.styles)
+        self.assertIn("border: 0;", self.styles)
+        self.assertIn("background: transparent;", self.styles)
         self.assertIn("height: min(100%, 390px);", self.styles)
         self.assertIn("align-self: center;", self.styles)
         self.assertNotIn("grid-template-rows: auto minmax(340px, 1fr);", self.styles)
+        self.assertNotIn(".energy-board-head", self.styles)
+        self.assertNotIn(".energy-board-meta", self.styles)
         self.assertNotIn("min-height: 340px;", self.styles)
 
     def test_trainee_topbar_removes_send_command_button(self):

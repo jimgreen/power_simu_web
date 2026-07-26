@@ -12,8 +12,13 @@ class OverviewDashboardUiTest(unittest.TestCase):
         html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
         app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
 
-        for text in ("输入边界", "电气能量流", "当前控制指令", "最新运行事件"):
+        for text in ("输入边界", "当前控制指令", "最新运行事件"):
             self.assertIn(text, html)
+        self.assertNotIn("电气能量流", html)
+        self.assertNotIn("尚无计算结果", html)
+        self.assertNotIn("功率差额", html)
+        self.assertNotIn("energy-board-head", html)
+        self.assertNotIn("energy-board-meta", html)
         self.assertNotIn("仿真流程", html)
         self.assertNotIn("功率平衡与仿真结果", html)
         self.assertNotIn("计算质量", html)
@@ -31,13 +36,14 @@ class OverviewDashboardUiTest(unittest.TestCase):
             "overviewFlowDieselPower",
             "overviewFlowStoragePower",
             "overviewFlowLoadPower",
-            "overviewFlowBalance",
             "overviewFlowSoc",
-            "overviewFlowResultTime",
             "overviewFlowGreenShare",
         ):
             self.assertIn(f'id="{element_id}"', html)
             self.assertIn(f'"{element_id}"', app_js)
+        for removed_id in ("overviewFlowBalance", "overviewFlowResultTime"):
+            self.assertNotIn(f'id="{removed_id}"', html)
+            self.assertNotIn(f'"{removed_id}"', app_js)
         for removed_id in (
             "overviewMeasurementQuality",
             "overviewSolverDetail",
@@ -123,13 +129,17 @@ class OverviewDashboardUiTest(unittest.TestCase):
     def test_overview_green_power_share_uses_diesel_over_load_formula(self):
         app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
         styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
+        green_share_start = styles.index(".energy-green-share {")
+        green_share_block = styles[green_share_start : styles.index("\n}", green_share_start) + 2]
 
         self.assertIn("overviewPercentText", app_js)
         self.assertIn("(1.0 - power.diesel / power.load) * 100.0", app_js)
         self.assertIn('setOverviewText("overviewFlowGreenShare"', app_js)
         self.assertIn("return number.toFixed(2);", app_js)
-        self.assertIn("top: 54px;", styles)
-        self.assertIn("border-left: 3px solid var(--green);", styles)
+        self.assertIn("top: 50%;", green_share_block)
+        self.assertIn("transform: translate(-50%, calc(-100% - 8px));", green_share_block)
+        self.assertNotIn("top: 54px;", green_share_block)
+        self.assertIn("border-left: 3px solid var(--green);", green_share_block)
 
     def test_overview_energy_flow_has_dynamic_power_arrows(self):
         html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
@@ -158,10 +168,43 @@ class OverviewDashboardUiTest(unittest.TestCase):
     def test_overview_energy_flow_is_horizontally_compact_and_vertically_open(self):
         styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
 
+        def css_block(selector: str, text: str = styles) -> str:
+            marker = f"{selector} {{"
+            start = text.index(marker)
+            end = text.index("\n}", start)
+            return text[start : end + 2]
+
+        energy_board_block = css_block(".overview-energy-board")
+        energy_flow_block = css_block(".energy-flow-map")
+        low_height_start = styles.index("@media (max-height: 780px)")
+        mobile_start = styles.index("@media (max-width: 820px)", low_height_start)
+        low_height_styles = styles[low_height_start:mobile_start]
+        low_height_board_block = css_block(".overview-energy-board", low_height_styles)
+        low_height_flow_block = css_block(".energy-flow-map", low_height_styles)
+
         self.assertIn("width: min(100%, 1360px);", styles)
-        self.assertIn("justify-self: center;", styles)
-        self.assertIn("min-height: 390px;", styles)
-        self.assertIn("min-height: 340px;", styles)
+        self.assertIn("justify-self: center;", energy_flow_block)
+        self.assertIn("align-self: center;", energy_flow_block)
+        self.assertIn("height: min(100%, 390px);", energy_flow_block)
+        self.assertIn("min-height: 0;", energy_board_block)
+        self.assertIn("min-height: 0;", energy_flow_block)
+        self.assertIn("grid-template-rows: minmax(0, 1fr);", energy_board_block)
+        self.assertIn("padding: 0;", energy_board_block)
+        self.assertIn("border: 0;", energy_board_block)
+        self.assertIn("background: transparent;", energy_board_block)
+        self.assertNotIn("background: #f7fafb;", energy_board_block)
+        self.assertNotIn("border: 1px solid var(--line);", energy_board_block)
+        self.assertNotIn("grid-template-rows: auto minmax(340px, 1fr);", energy_board_block)
+        self.assertNotIn("grid-template-rows: auto minmax(0, 1fr);", energy_board_block)
+        self.assertNotIn("min-height: 390px;", energy_board_block)
+        self.assertNotIn("min-height: 340px;", energy_flow_block)
+        self.assertIn("height: min(100%, 320px);", low_height_flow_block)
+        self.assertIn("min-height: 0;", low_height_board_block)
+        self.assertIn("min-height: 0;", low_height_flow_block)
+        self.assertIn("grid-template-rows: minmax(0, 1fr);", low_height_board_block)
+        self.assertNotIn("grid-template-rows: auto minmax(240px, 1fr);", low_height_board_block)
+        self.assertNotIn("min-height: 276px;", low_height_board_block)
+        self.assertNotIn("min-height: 240px;", low_height_flow_block)
         self.assertIn("height: 230px;", styles)
         self.assertIn("bottom: 110px;", styles)
         self.assertIn("min-height: 96px;", styles)

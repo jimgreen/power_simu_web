@@ -493,40 +493,11 @@ body.is-overview-splitter-dragging {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 12px;
-  padding: 14px 18px 18px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #f7fafb;
-}
-.energy-board-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.energy-board-head h3 {
-  margin: 0;
-  font-size: 16px;
-}
-.energy-board-meta {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 14px;
-}
-.energy-board-meta span {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.energy-board-meta b {
-  color: var(--ink);
-  font-family: Consolas, monospace;
+  grid-template-rows: minmax(0, 1fr);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 .energy-flow-map {
   --load-flow-color: #4978c4;
@@ -800,10 +771,10 @@ body.is-overview-splitter-dragging {
   position: absolute;
   z-index: 3;
   left: 50%;
-  top: 54px;
+  top: 50%;
   min-width: 178px;
   padding: 9px 14px;
-  transform: translateX(-50%);
+  transform: translate(-50%, calc(-100% - 8px));
   display: grid;
   gap: 3px;
   border: 1px solid #c9dde0;

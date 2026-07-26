@@ -187,15 +187,19 @@
               </section>
             </div>
 
+            <div
+              id="overviewBottomSplitter"
+              class="overview-bottom-splitter"
+              role="separator"
+              aria-orientation="horizontal"
+              aria-label="调整下方表格高度"
+              tabindex="0"
+            ></div>
+
             <div class="overview-bottom-grid">
-              <section class="panel overview-health-panel">
-                <div class="panel-head"><h2>计算质量</h2><span id="overviewMeasurementQuality">--</span></div>
-                <dl class="quality-list">
-                  <div><dt>求解器</dt><dd id="overviewSolverDetail">--</dd></div>
-                  <div><dt>真值更新</dt><dd id="overviewUpdatedMeasurements">--</dd></div>
-                  <div><dt>缺失量测</dt><dd id="overviewMissingMeasurements">--</dd></div>
-                  <div><dt>误差修正</dt><dd id="overviewOverlayUpdates">--</dd></div>
-                </dl>
+              <section class="panel overview-active-command-panel">
+                <div class="panel-head"><h2>当前控制指令</h2><span id="overviewActiveCommandSummary">0 条有效指令</span></div>
+                <div id="overviewActiveCommandTable" class="overview-command-table-wrap"></div>
               </section>
               <section class="panel overview-events-panel">
                 <div class="panel-head"><h2>最新运行事件</h2><span id="overviewCommandCount">0 条控制指令</span></div>
@@ -551,7 +555,7 @@
                     <span id="solverInfo">待运行</span>
                   </div>
                 </div>
-                <div class="sr-only">指令类型 设备 设备类型 模式 指令项 控制指令 指令刷新时刻 实时值 量测值</div>
+                <div class="sr-only">指令类型 设备 设备类型 模式 指令项 控制指令 接收本机时刻 接收仿真时刻 实时值 量测值</div>
                 <div id="deviceTable" class="runtime-device-wrap" data-runtime-role="device-table"></div>
               </section>
 

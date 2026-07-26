@@ -4,6 +4,10 @@ let teacherApiBase = (
   localStorage.getItem("polarTeacherApiUrl") ||
   "http://127.0.0.1:8710"
 ).replace(/\/$/, "");
+const OVERVIEW_BOTTOM_HEIGHT_KEY = "polarTraineeOverviewBottomHeight";
+const OVERVIEW_BOTTOM_DEFAULT_HEIGHT = 156;
+const OVERVIEW_BOTTOM_MIN_HEIGHT = 96;
+const OVERVIEW_BOTTOM_MAX_HEIGHT = 380;
 const state = {
   snapshot: null,
   models: [],
@@ -69,6 +73,8 @@ const state = {
     lastSentAt: "",
     lastStatus: "请先启动接收模式，再启动实时控制。",
   },
+  overviewBottomHeight: overviewInitialBottomHeight(),
+  overviewBottomSplitDrag: null,
 };
 const pending = { run_status: new Map(), set_values: new Map() };
 const RENEWABLE_COMMAND_VALID_MINUTES = 5;
@@ -97,6 +103,12 @@ const RECEIVE_MAX_RECONNECT_ATTEMPTS = 3;
 const RECEIVE_WARNING_LIMIT = 40;
 
 const $ = (id) => document.getElementById(id);
+
+function overviewInitialBottomHeight() {
+  const storedHeight = Number(localStorage.getItem(OVERVIEW_BOTTOM_HEIGHT_KEY));
+  if (!Number.isFinite(storedHeight) || storedHeight <= 0) return OVERVIEW_BOTTOM_DEFAULT_HEIGHT;
+  return Math.max(OVERVIEW_BOTTOM_MIN_HEIGHT, Math.min(OVERVIEW_BOTTOM_MAX_HEIGHT, storedHeight));
+}
 
 function chartHiddenSet(chartKey) {
   const hidden = state.chartSeriesHidden?.[chartKey] || [];
@@ -985,6 +997,76 @@ function runtimeLogSimTimeFromCommandHistory(item = {}) {
   return runtimeLogSimTime();
 }
 
+function simulationClockTextFromMinute(minute, snapshot = state.snapshot || {}) {
+  const numericMinute = Number(minute);
+  if (!Number.isFinite(numericMinute)) return "--";
+  const timeText = formatTraceClockMinute(numericMinute);
+  if (curveDisplayMode(snapshot) !== "year") return timeText;
+  let dayOfYear = Math.floor(Math.max(0, Math.round(numericMinute)) / 1440) % 365;
+  const monthDays = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  let month = 0;
+  while (month < monthDays.length - 1 && dayOfYear >= monthDays[month]) {
+    dayOfYear -= monthDays[month];
+    month += 1;
+  }
+  return `${String(month + 1).padStart(2, "0")}-${String(dayOfYear + 1).padStart(2, "0")} ${timeText}`;
+}
+
+function currentCommandSendTimeInfo(snapshot = state.snapshot || {}) {
+  const clock = snapshot.clock || {};
+  const minute = Number(clock.absolute_minute ?? clock.minute);
+  const absoluteMinute = Number.isFinite(minute) ? minute : null;
+  return {
+    sent_wall_time: runtimeLogTime(),
+    sent_simu_time: absoluteMinute === null ? runtimeLogSimTime(clock.time || "") : simulationClockTextFromMinute(absoluteMinute, snapshot),
+    sent_absolute_minute: absoluteMinute,
+  };
+}
+
+function withCommandSendTime(body, snapshot = state.snapshot || {}) {
+  const timeInfo = currentCommandSendTimeInfo(snapshot);
+  const payload = {
+    ...body,
+    sent_wall_time: timeInfo.sent_wall_time,
+    sent_simu_time: timeInfo.sent_simu_time,
+  };
+  if (timeInfo.sent_absolute_minute !== null) payload.sent_absolute_minute = timeInfo.sent_absolute_minute;
+  return payload;
+}
+
+function commandSentTimeInfo(entry = {}, snapshot = state.snapshot || {}) {
+  const payload = entry.payload || {};
+  const wallTime = runtimeLogWallTimeText(
+    payload.sent_wall_time
+    || payload.trainee_sent_wall_time
+    || entry.sent_wall_time
+    || entry.trainee_sent_wall_time
+    || entry.time
+    || "",
+  );
+  const explicitSimTime = String(
+    payload.sent_simu_time
+    || payload.trainee_sent_simu_time
+    || entry.sent_simu_time
+    || entry.trainee_sent_simu_time
+    || entry.simu_time
+    || entry.sim_time
+    || "",
+  ).trim();
+  if (explicitSimTime) return { wall_time: wallTime, simu_time: explicitSimTime };
+  const minute = Number(
+    payload.sent_absolute_minute
+    ?? payload.trainee_sent_absolute_minute
+    ?? entry.sent_absolute_minute
+    ?? entry.trainee_sent_absolute_minute
+    ?? entry.issued_absolute_minute,
+  );
+  return {
+    wall_time: wallTime,
+    simu_time: Number.isFinite(minute) ? simulationClockTextFromMinute(minute, snapshot) : "--",
+  };
+}
+
 function addRuntimeLog(type, target, result, detail = "", level = "info", renderNow = true, simuTime = "") {
   state.runtimeLogSeq += 1;
   state.runtimeLogs.unshift({
@@ -1471,6 +1553,123 @@ function setOverviewText(id, value) {
   if (element) element.textContent = value;
 }
 
+function overviewBottomHeightBounds() {
+  const dashboard = document.querySelector(".overview-dashboard");
+  const dashboardHeight = dashboard?.getBoundingClientRect().height || 0;
+  const dashboardStyle = dashboard ? getComputedStyle(dashboard) : null;
+  const mainGrid = document.querySelector(".overview-main-grid");
+  const statusHeight = document.querySelector(".overview-status-panel")?.getBoundingClientRect().height || 68;
+  const splitterHeight = $("overviewBottomSplitter")?.getBoundingClientRect().height || 10;
+  const mainMinHeight = Number.parseFloat(mainGrid ? getComputedStyle(mainGrid).minHeight : "") || 390;
+  const rowGap = Number.parseFloat(dashboardStyle?.rowGap || dashboardStyle?.gap || "") || 12;
+  const reservedHeight = statusHeight + mainMinHeight + splitterHeight + rowGap * 3;
+  const dynamicMax = dashboardHeight > 0 ? dashboardHeight - reservedHeight : OVERVIEW_BOTTOM_MAX_HEIGHT;
+  const maxHeight = Math.max(
+    OVERVIEW_BOTTOM_MIN_HEIGHT,
+    Math.min(OVERVIEW_BOTTOM_MAX_HEIGHT, dynamicMax),
+  );
+  return { min: OVERVIEW_BOTTOM_MIN_HEIGHT, max: maxHeight };
+}
+
+function applyOverviewBottomHeight(value, persist = false) {
+  const bounds = overviewBottomHeightBounds();
+  const numericValue = Number(value);
+  const nextHeight = Math.round(clamp(
+    Number.isFinite(numericValue) ? numericValue : OVERVIEW_BOTTOM_DEFAULT_HEIGHT,
+    bounds.min,
+    bounds.max,
+  ));
+  state.overviewBottomHeight = nextHeight;
+  const dashboard = document.querySelector(".overview-dashboard");
+  if (dashboard) dashboard.style.setProperty("--overview-bottom-height", `${nextHeight}px`);
+  const splitter = $("overviewBottomSplitter");
+  if (splitter) {
+    splitter.setAttribute("aria-valuemin", String(Math.round(bounds.min)));
+    splitter.setAttribute("aria-valuemax", String(Math.round(bounds.max)));
+    splitter.setAttribute("aria-valuenow", String(nextHeight));
+    splitter.setAttribute("aria-valuetext", `${nextHeight}px`);
+  }
+  if (persist) localStorage.setItem(OVERVIEW_BOTTOM_HEIGHT_KEY, String(nextHeight));
+}
+
+function beginOverviewBottomSplitterDrag(event) {
+  if (event.button !== undefined && event.button !== 0) return;
+  const splitter = $("overviewBottomSplitter");
+  const bottomGrid = document.querySelector(".overview-bottom-grid");
+  if (!splitter || !bottomGrid) return;
+  event.preventDefault();
+  const currentHeight = bottomGrid.getBoundingClientRect().height || state.overviewBottomHeight;
+  state.overviewBottomSplitDrag = {
+    pointerId: event.pointerId,
+    startY: event.clientY,
+    startHeight: currentHeight,
+  };
+  splitter.classList.add("is-dragging");
+  document.body.classList.add("is-overview-splitter-dragging");
+  if (splitter.setPointerCapture && event.pointerId !== undefined) {
+    try {
+      splitter.setPointerCapture(event.pointerId);
+    } catch (error) {
+      // Synthetic or cancelled pointer events do not always have capturable pointers.
+    }
+  }
+}
+
+function handleOverviewBottomSplitterDrag(event) {
+  const drag = state.overviewBottomSplitDrag;
+  if (!drag) return;
+  if (drag.pointerId !== undefined && event.pointerId !== undefined && drag.pointerId !== event.pointerId) return;
+  event.preventDefault();
+  applyOverviewBottomHeight(drag.startHeight - (event.clientY - drag.startY));
+}
+
+function finishOverviewBottomSplitterDrag(event) {
+  const drag = state.overviewBottomSplitDrag;
+  if (!drag) return;
+  if (drag.pointerId !== undefined && event?.pointerId !== undefined && drag.pointerId !== event.pointerId) return;
+  const splitter = $("overviewBottomSplitter");
+  if (splitter) {
+    splitter.classList.remove("is-dragging");
+    if (splitter.releasePointerCapture && drag.pointerId !== undefined) {
+      try {
+        splitter.releasePointerCapture(drag.pointerId);
+      } catch (error) {
+        // Pointer capture may already be gone if the pointer left the window.
+      }
+    }
+  }
+  document.body.classList.remove("is-overview-splitter-dragging");
+  state.overviewBottomSplitDrag = null;
+  applyOverviewBottomHeight(state.overviewBottomHeight, true);
+}
+
+function handleOverviewBottomSplitterKeydown(event) {
+  let nextHeight = null;
+  if (event.key === "ArrowUp") nextHeight = state.overviewBottomHeight + 16;
+  if (event.key === "ArrowDown") nextHeight = state.overviewBottomHeight - 16;
+  if (event.key === "PageUp") nextHeight = state.overviewBottomHeight + 48;
+  if (event.key === "PageDown") nextHeight = state.overviewBottomHeight - 48;
+  if (event.key === "Home") nextHeight = OVERVIEW_BOTTOM_MIN_HEIGHT;
+  if (event.key === "End") nextHeight = overviewBottomHeightBounds().max;
+  if (nextHeight === null) return;
+  event.preventDefault();
+  applyOverviewBottomHeight(nextHeight, true);
+}
+
+function initOverviewBottomSplitter() {
+  const splitter = $("overviewBottomSplitter");
+  if (!splitter) return;
+  applyOverviewBottomHeight(state.overviewBottomHeight);
+  if (splitter.dataset.splitterReady === "true") return;
+  splitter.dataset.splitterReady = "true";
+  splitter.addEventListener("pointerdown", beginOverviewBottomSplitterDrag);
+  splitter.addEventListener("keydown", handleOverviewBottomSplitterKeydown);
+  window.addEventListener("pointermove", handleOverviewBottomSplitterDrag);
+  window.addEventListener("pointerup", finishOverviewBottomSplitterDrag);
+  window.addEventListener("pointercancel", finishOverviewBottomSplitterDrag);
+  window.addEventListener("resize", () => applyOverviewBottomHeight(state.overviewBottomHeight, true));
+}
+
 function overviewClockText(snapshot) {
   const clock = snapshot.clock || {};
   const timeText = clock.time || "--";
@@ -1495,11 +1694,6 @@ function renderTraineeOverviewEvents() {
     return;
   }
   container.innerHTML = '<div class="overview-event-item"><time>--</time><strong>系统</strong><span>等待接收教员台数据</span></div>';
-}
-
-function latestCommandIssuedAt(snapshot = state.snapshot || {}) {
-  const latest = [...(snapshot.commands?.history || [])].reverse()[0];
-  return latest?.time || state.renewableControl.lastSentAt || "--";
 }
 
 function renderTraineeOverviewDashboard(snapshot) {
@@ -1550,12 +1744,6 @@ function renderTraineeOverviewDashboard(snapshot) {
     : null;
   setOverviewText("overviewFlowGreenShare", overviewPercentText(greenPowerShare));
   renderEnergyFlowVisuals(power, storagePower, greenPowerShare);
-
-  const validRate = totalMeasurements ? (validCount / totalMeasurements) * 100 : null;
-  setOverviewText("overviewMeasurementQuality", totalMeasurements ? `有效率 ${formatOverviewNumber(validRate)}%` : "待接收");
-  setOverviewText("overviewMeasurementRate", overviewPercentText(validRate));
-  setOverviewText("overviewRenewableState", state.renewableControl.enabled ? "实时控制中" : "人工控制");
-  setOverviewText("overviewLastCommand", latestCommandIssuedAt(snapshot));
   renderTraineeOverviewEvents();
 }
 
@@ -2546,7 +2734,7 @@ async function sendRenewableControlPlan(plan, trigger = "manual") {
   );
   renderRenewableControl(state.snapshot || {});
   try {
-    const payload = {
+    const payload = withCommandSendTime({
       source: "trainee-renewable-priority",
       valid_for_minutes: RENEWABLE_COMMAND_VALID_MINUTES,
       set_values: plan.commands,
@@ -2561,7 +2749,7 @@ async function sendRenewableControlPlan(plan, trigger = "manual") {
         diesel_residual_kw: commandNumber(plan.metrics.dieselResidual),
         curtail_kw: commandNumber(plan.metrics.curtailKw),
       },
-    };
+    });
     const result = await teacherCommandApi({ method: "POST", body: JSON.stringify(payload) });
     state.renewableControl.lastSentAt = new Date().toLocaleTimeString();
     state.renewableControl.lastClockKey = plan.clockKey;
@@ -3594,7 +3782,7 @@ function selectedControlRows(blockName, devices, snapshot = state.snapshot || {}
   return definedControlRows(blockName, snapshot).filter((row) => selectedKeys.has(`${row.dev_type}|${row.dev_name}`));
 }
 
-function remoteControlIssuedAt(dev, commandType = "run_stat", snapshot = state.snapshot || {}) {
+function remoteControlIssuedTimeInfo(dev, commandType = "run_stat", snapshot = state.snapshot || {}) {
   const history = [...(snapshot.commands?.history || [])].reverse();
   for (const entry of history) {
     const items = entry.normalized?.run_status || entry.payload?.run_status || [];
@@ -3605,9 +3793,13 @@ function remoteControlIssuedAt(dev, commandType = "run_stat", snapshot = state.s
         ? Object.prototype.hasOwnProperty.call(item, "status")
         : item.run_stat !== undefined && item.run_stat !== "")
     ));
-    if (match) return entry.time || "--";
+    if (match) return commandSentTimeInfo(entry, snapshot);
   }
-  return "--";
+  return { wall_time: "--", simu_time: "--" };
+}
+
+function remoteControlIssuedAt(dev, commandType = "run_stat", snapshot = state.snapshot || {}) {
+  return remoteControlIssuedTimeInfo(dev, commandType, snapshot).wall_time;
 }
 
 function remoteControlValueText(commandType, value) {
@@ -3637,14 +3829,14 @@ function renderRunControls(devices) {
   ];
   $("runControlTable").innerHTML = `
     <table class="runtime-device-table">
-      <thead><tr><th>idx</th><th>遥控名称</th><th>设备名称</th><th>类型</th><th>当前状态</th><th>下发状态</th><th>指令下发时刻</th></tr></thead>
+      <thead><tr><th>idx</th><th>遥控名称</th><th>设备名称</th><th>类型</th><th>当前状态</th><th>下发状态</th><th>下发本机时刻</th><th>下发仿真时刻</th></tr></thead>
       <tbody>
         ${rows.map(({ dev, commandType, valueKey }) => {
           const key = `${deviceKey(dev)}|${commandType}`;
           const traceKey = commandTraceRunKey(dev, commandType);
           const pendingCommand = pending.run_status.get(key);
           const currentValue = Number(pendingCommand ? pendingCommand[valueKey] : dev[valueKey]);
-          const issuedAt = remoteControlIssuedAt(dev, commandType);
+          const issuedAt = remoteControlIssuedTimeInfo(dev, commandType);
           const classes = [
             pending.run_status.has(key) ? "is-pending" : "",
             traceKey === state.selectedCommandTraceKey ? "is-selected" : "",
@@ -3663,7 +3855,8 @@ function renderRunControls(devices) {
                 <span>${remoteControlValueText(commandType, currentValue)}</span>
               </label>
             </td>
-            <td class="mono-cell command-issued-at-cell">${escapeHtml(issuedAt)}</td>
+            <td class="mono-cell command-issued-at-cell">${escapeHtml(issuedAt.wall_time)}</td>
+            <td class="mono-cell command-issued-at-cell">${escapeHtml(issuedAt.simu_time)}</td>
           </tr>`;
         }).join("")}
       </tbody>
@@ -3715,7 +3908,7 @@ function remoteAdjustmentMeasurement(dev, setType, snapshot = state.snapshot || 
   return match?.value ?? null;
 }
 
-function remoteAdjustmentIssuedAt(dev, setType, snapshot = state.snapshot || {}) {
+function remoteAdjustmentIssuedTimeInfo(dev, setType, snapshot = state.snapshot || {}) {
   const history = [...(snapshot.commands?.history || [])].reverse();
   for (const entry of history) {
     const items = entry.normalized?.set_values || entry.payload?.set_values || [];
@@ -3724,15 +3917,20 @@ function remoteAdjustmentIssuedAt(dev, setType, snapshot = state.snapshot || {})
       && item.dev_name === deviceName(dev)
       && item.set_type === setType
     ));
-    if (match) return entry.time || "--";
+    if (match) return commandSentTimeInfo(entry, snapshot);
   }
-  return "--";
+  return { wall_time: "--", simu_time: "--" };
+}
+
+function remoteAdjustmentIssuedAt(dev, setType, snapshot = state.snapshot || {}) {
+  return remoteAdjustmentIssuedTimeInfo(dev, setType, snapshot).wall_time;
 }
 
 function remoteAdjustmentRows(devices, snapshot = state.snapshot || {}) {
   return selectedControlRows("SetValue", devices, snapshot).map((definitionRow) => {
     const dev = controlDeviceFromRow(definitionRow, snapshot);
     const setType = definitionRow.set_type || "";
+    const issuedTime = remoteAdjustmentIssuedTimeInfo(dev, setType, snapshot);
     return {
       key: `${deviceKey(dev)}|${setType}`,
       traceKey: commandTraceAdjustmentKey(dev, setType),
@@ -3744,7 +3942,8 @@ function remoteAdjustmentRows(devices, snapshot = state.snapshot || {}) {
         const current = currentSetValue(dev, setType);
         return current === "" || current === undefined || current === null ? definitionRow.set_value : current;
       })(),
-      issuedAt: remoteAdjustmentIssuedAt(dev, setType, snapshot),
+      issuedAt: issuedTime.wall_time,
+      issuedTime,
     };
   });
 }
@@ -3759,13 +3958,14 @@ function renderSetpointControls(devices) {
   const rows = remoteAdjustmentRows(visibleDevices);
   $("setpointControlTable").innerHTML = `
     <table class="runtime-device-table remote-adjustment-table">
-      <thead><tr><th>遥调名称</th><th>量测值</th><th>控制值</th><th>指令下发时刻</th></tr></thead>
+      <thead><tr><th>遥调名称</th><th>量测值</th><th>控制值</th><th>下发本机时刻</th><th>下发仿真时刻</th></tr></thead>
       <tbody>
         ${rows.map((row) => `<tr class="${row.traceKey === state.selectedCommandTraceKey ? "is-selected" : ""}" data-command-trace-key="${escapeHtml(row.traceKey)}" data-command-trace-label="${escapeHtml(row.name)}" data-remote-adjustment-key="${escapeHtml(row.key)}" title="单击选中曲线，双击进行遥调操作">
           <td><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(deviceType(row.dev))}</small></td>
           <td class="numeric-cell">${formatRemoteAdjustmentValue(row.measurement)}</td>
           <td class="numeric-cell">${formatRemoteAdjustmentValue(row.controlValue)}</td>
-          <td class="mono-cell">${escapeHtml(row.issuedAt)}</td>
+          <td class="mono-cell command-issued-at-cell">${escapeHtml(row.issuedTime?.wall_time || row.issuedAt || "--")}</td>
+          <td class="mono-cell command-issued-at-cell">${escapeHtml(row.issuedTime?.simu_time || "--")}</td>
         </tr>`).join("")}
       </tbody>
     </table>`;
@@ -4050,12 +4250,12 @@ async function sendRemoteControlCommand() {
     dev_name: deviceName(dev),
   };
   command[commandType] = Number(selected.value) ? 1 : 0;
-  const body = {
+  const body = withCommandSendTime({
     source: "trainee-ui",
     expires_at_absolute_minute: manualCommandExpiresAtAbsoluteMinute(),
     run_status: [command],
     set_values: [],
-  };
+  });
   const useInteractionLink = hasTeacherCommandConnection();
   const targetName = useInteractionLink ? teacherCommandTargetName() : "模拟台交互链接";
   state.remoteControlSending = true;
@@ -4106,7 +4306,8 @@ function openRemoteAdjustmentDialog(row) {
   $("remoteAdjustmentDevice").textContent = `${deviceType(row.dev)} / ${deviceName(row.dev)}`;
   $("remoteAdjustmentMeasurement").textContent = formatRemoteAdjustmentValue(row.measurement);
   $("remoteAdjustmentCurrent").textContent = formatRemoteAdjustmentValue(row.controlValue);
-  $("remoteAdjustmentIssuedAt").textContent = row.issuedAt;
+  $("remoteAdjustmentIssuedAt").textContent = row.issuedTime?.wall_time || row.issuedAt || "--";
+  if ($("remoteAdjustmentIssuedSimAt")) $("remoteAdjustmentIssuedSimAt").textContent = row.issuedTime?.simu_time || "--";
   $("remoteAdjustmentValue").value = row.controlValue === null || row.controlValue === undefined ? "" : row.controlValue;
   $("remoteAdjustmentHint").textContent = "确认后将立即向模拟台下发一条遥调指令。";
   $("remoteAdjustmentHint").className = "remote-control-hint";
@@ -4132,12 +4333,12 @@ async function sendRemoteAdjustmentCommand() {
     set_type: row.setType,
     set_value: setValue,
   };
-  const body = {
+  const body = withCommandSendTime({
     source: "trainee-ui",
     expires_at_absolute_minute: manualCommandExpiresAtAbsoluteMinute(),
     run_status: [],
     set_values: [command],
-  };
+  });
   const useInteractionLink = hasTeacherCommandConnection();
   const targetName = useInteractionLink ? teacherCommandTargetName() : "模拟台交互链接";
   state.remoteAdjustmentSending = true;
@@ -4428,6 +4629,7 @@ window.addEventListener("resize", () => {
 });
 
 initPageNavigation();
+initOverviewBottomSplitter();
 renderReceiveMode();
 renderHistory();
 loadModels().finally(refresh);

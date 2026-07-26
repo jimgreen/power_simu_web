@@ -546,6 +546,10 @@ def make_http_server(
                 "model_name": model.get("name", model_id),
                 "snapshot_path": f"/api/snapshot?model_id={encoded_model_id}",
                 "command_path": f"/api/student/commands?model_id={encoded_model_id}",
+                "telemetry_path": f"/api/external/telemetry?model_id={encoded_model_id}",
+                "selected_telemetry_path": f"/api/external/telemetry/query?model_id={encoded_model_id}",
+                "control_values_path": f"/api/external/controls?model_id={encoded_model_id}",
+                "control_command_path": f"/api/external/controls?model_id={encoded_model_id}",
                 "shareable": True,
             }
 
@@ -560,6 +564,10 @@ def make_http_server(
                 self._send_json(target.snapshot())
             elif path == "/api/measurements":
                 self._send_json(target.measurements())
+            elif path == "/api/external/telemetry":
+                self._send_json(target.latest_telemetry_values())
+            elif path == "/api/external/controls":
+                self._send_json(target.latest_control_values())
             elif path == "/api/devices":
                 self._send_json({"devices": target.devices()})
             elif path == "/api/curves":
@@ -636,6 +644,10 @@ def make_http_server(
             target = self._target_service(payload)
             if path == "/api/student/commands":
                 self._send_json(target.apply_student_commands(payload, source=str(payload.get("source", ""))))
+            elif path == "/api/external/telemetry/query":
+                self._send_json(target.selected_telemetry_values(payload))
+            elif path == "/api/external/controls":
+                self._send_json(target.apply_external_control_values(payload))
             elif path == "/api/clock":
                 self._send_json(target.control_clock(payload))
             elif path == "/api/config":

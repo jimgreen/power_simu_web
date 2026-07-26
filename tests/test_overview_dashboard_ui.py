@@ -12,11 +12,19 @@ class OverviewDashboardUiTest(unittest.TestCase):
         html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
         app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
 
-        for text in ("输入边界", "电气能量流", "最新运行事件"):
+        for text in ("输入边界", "电气能量流", "当前控制指令", "最新运行事件"):
             self.assertIn(text, html)
         self.assertNotIn("仿真流程", html)
         self.assertNotIn("功率平衡与仿真结果", html)
+        self.assertNotIn("计算质量", html)
         self.assertNotIn("overview-result-panel", html)
+        self.assertIn('id="overviewActiveCommandTable"', html)
+        self.assertIn("renderOverviewActiveCommands", app_js)
+        self.assertIn("overviewActiveRuntimeCommandRows", app_js)
+        self.assertIn("activeRuntimeCommandKeySet", app_js)
+        self.assertIn("commandTimeInfoAvailable(row.receive_time)", app_js)
+        self.assertIn("接收本机时刻", app_js)
+        self.assertIn("接收仿真时刻", app_js)
         for element_id in (
             "overviewFlowWindPower",
             "overviewFlowSolarPower",
@@ -30,6 +38,14 @@ class OverviewDashboardUiTest(unittest.TestCase):
         ):
             self.assertIn(f'id="{element_id}"', html)
             self.assertIn(f'"{element_id}"', app_js)
+        for removed_id in (
+            "overviewMeasurementQuality",
+            "overviewSolverDetail",
+            "overviewUpdatedMeasurements",
+            "overviewMissingMeasurements",
+            "overviewOverlayUpdates",
+        ):
+            self.assertNotIn(f'id="{removed_id}"', html)
         for removed_id in (
             "overviewWindPower",
             "overviewSolarPower",
@@ -151,6 +167,26 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("min-height: 96px;", styles)
         self.assertIn(".energy-device.storage small", styles)
         self.assertNotIn(".simulation-flow", styles)
+
+    def test_overview_bottom_tables_have_draggable_height_splitter(self):
+        html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
+        app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="overviewBottomSplitter"', html)
+        self.assertIn('role="separator"', html)
+        self.assertIn('aria-orientation="horizontal"', html)
+        self.assertIn("调整下方表格高度", html)
+        self.assertIn("--overview-bottom-height", styles)
+        self.assertIn("grid-template-rows: auto minmax(390px, 1fr) 10px minmax(96px, var(--overview-bottom-height));", styles)
+        self.assertIn(".overview-bottom-splitter", styles)
+        self.assertIn("cursor: row-resize;", styles)
+        self.assertIn("is-overview-splitter-dragging", styles)
+        self.assertIn("polarOverviewBottomHeight", app_js)
+        self.assertIn("function initOverviewBottomSplitter", app_js)
+        self.assertIn("function applyOverviewBottomHeight", app_js)
+        self.assertIn("beginOverviewBottomSplitterDrag", app_js)
+        self.assertIn("handleOverviewBottomSplitterKeydown", app_js)
 
     def test_overview_soc_falls_back_to_control_response_storage_soc(self):
         app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")

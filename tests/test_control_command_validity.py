@@ -105,6 +105,29 @@ class ControlCommandValidityTest(unittest.TestCase):
             service.step()
         self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "10")
 
+    def test_command_history_records_receive_wall_and_simulation_times(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        service.apply_student_commands(
+            {
+                "sent_wall_time": "10:18:09",
+                "sent_simu_time": "00:00:00",
+                "expires_at_absolute_minute": 10,
+                "set_values": [
+                    {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 20}
+                ],
+            },
+            source="trainee-ui",
+        )
+
+        entry = service.command_history[-1]
+        self.assertIn("received_wall_time", entry)
+        self.assertEqual(entry["received_simu_time"], "00:00:00")
+        self.assertEqual(entry["received_absolute_minute"], 0.0)
+        self.assertEqual(entry["payload"]["sent_wall_time"], "10:18:09")
+        self.assertEqual(entry["payload"]["sent_simu_time"], "00:00:00")
+
     def test_wind_generator_setpoint_command_updates_ac_generator_boundary(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)

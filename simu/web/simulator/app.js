@@ -1,4 +1,8 @@
 const apiBase = (window.POLAR_SIM_API_URL || localStorage.getItem("polarSimApiUrl") || location.origin).replace(/\/$/, "");
+const OVERVIEW_BOTTOM_HEIGHT_KEY = "polarOverviewBottomHeight";
+const OVERVIEW_BOTTOM_DEFAULT_HEIGHT = 156;
+const OVERVIEW_BOTTOM_MIN_HEIGHT = 96;
+const OVERVIEW_BOTTOM_MAX_HEIGHT = 380;
 const state = {
   snapshot: null,
   models: [],
@@ -61,10 +65,19 @@ const state = {
   systemParameters: { clock_speed: 1, compute_interval_seconds: 1 },
   systemParametersDirty: false,
   systemParametersSaving: false,
+  overviewBottomHeight: overviewInitialBottomHeight(),
+  overviewBottomSplitDrag: null,
 };
 
 const $ = (id) => document.getElementById(id);
 const MODE_OPTIONS = ["PQ", "PV", "PH", "V"];
+
+function overviewInitialBottomHeight() {
+  const storedHeight = Number(localStorage.getItem(OVERVIEW_BOTTOM_HEIGHT_KEY));
+  if (!Number.isFinite(storedHeight) || storedHeight <= 0) return OVERVIEW_BOTTOM_DEFAULT_HEIGHT;
+  return Math.max(OVERVIEW_BOTTOM_MIN_HEIGHT, Math.min(OVERVIEW_BOTTOM_MAX_HEIGHT, storedHeight));
+}
+
 const CURVE_MODES = {
   year: { key: "year", label: "年曲线", pointCount: 8760, stepMinutes: 60, durationMinutes: 365 * 24 * 60, tableTitle: "年曲线数据表", tableSummary: "1小时间隔 · 可编辑" },
   day: { key: "day", label: "日曲线", pointCount: 1440, stepMinutes: 1, durationMinutes: 24 * 60, tableTitle: "日曲线数据表", tableSummary: "1分钟间隔 · 可编辑" },
@@ -2553,6 +2566,123 @@ function setOverviewText(id, value) {
   if (element) element.textContent = value;
 }
 
+function overviewBottomHeightBounds() {
+  const dashboard = document.querySelector(".overview-dashboard");
+  const dashboardHeight = dashboard?.getBoundingClientRect().height || 0;
+  const dashboardStyle = dashboard ? getComputedStyle(dashboard) : null;
+  const mainGrid = document.querySelector(".overview-main-grid");
+  const statusHeight = document.querySelector(".overview-status-panel")?.getBoundingClientRect().height || 68;
+  const splitterHeight = $("overviewBottomSplitter")?.getBoundingClientRect().height || 10;
+  const mainMinHeight = Number.parseFloat(mainGrid ? getComputedStyle(mainGrid).minHeight : "") || 390;
+  const rowGap = Number.parseFloat(dashboardStyle?.rowGap || dashboardStyle?.gap || "") || 12;
+  const reservedHeight = statusHeight + mainMinHeight + splitterHeight + rowGap * 3;
+  const dynamicMax = dashboardHeight > 0 ? dashboardHeight - reservedHeight : OVERVIEW_BOTTOM_MAX_HEIGHT;
+  const maxHeight = Math.max(
+    OVERVIEW_BOTTOM_MIN_HEIGHT,
+    Math.min(OVERVIEW_BOTTOM_MAX_HEIGHT, dynamicMax),
+  );
+  return { min: OVERVIEW_BOTTOM_MIN_HEIGHT, max: maxHeight };
+}
+
+function applyOverviewBottomHeight(value, persist = false) {
+  const bounds = overviewBottomHeightBounds();
+  const numericValue = Number(value);
+  const nextHeight = Math.round(clamp(
+    Number.isFinite(numericValue) ? numericValue : OVERVIEW_BOTTOM_DEFAULT_HEIGHT,
+    bounds.min,
+    bounds.max,
+  ));
+  state.overviewBottomHeight = nextHeight;
+  const dashboard = document.querySelector(".overview-dashboard");
+  if (dashboard) dashboard.style.setProperty("--overview-bottom-height", `${nextHeight}px`);
+  const splitter = $("overviewBottomSplitter");
+  if (splitter) {
+    splitter.setAttribute("aria-valuemin", String(Math.round(bounds.min)));
+    splitter.setAttribute("aria-valuemax", String(Math.round(bounds.max)));
+    splitter.setAttribute("aria-valuenow", String(nextHeight));
+    splitter.setAttribute("aria-valuetext", `${nextHeight}px`);
+  }
+  if (persist) localStorage.setItem(OVERVIEW_BOTTOM_HEIGHT_KEY, String(nextHeight));
+}
+
+function beginOverviewBottomSplitterDrag(event) {
+  if (event.button !== undefined && event.button !== 0) return;
+  const splitter = $("overviewBottomSplitter");
+  const bottomGrid = document.querySelector(".overview-bottom-grid");
+  if (!splitter || !bottomGrid) return;
+  event.preventDefault();
+  const currentHeight = bottomGrid.getBoundingClientRect().height || state.overviewBottomHeight;
+  state.overviewBottomSplitDrag = {
+    pointerId: event.pointerId,
+    startY: event.clientY,
+    startHeight: currentHeight,
+  };
+  splitter.classList.add("is-dragging");
+  document.body.classList.add("is-overview-splitter-dragging");
+  if (splitter.setPointerCapture && event.pointerId !== undefined) {
+    try {
+      splitter.setPointerCapture(event.pointerId);
+    } catch (error) {
+      // Synthetic or cancelled pointer events do not always have capturable pointers.
+    }
+  }
+}
+
+function handleOverviewBottomSplitterDrag(event) {
+  const drag = state.overviewBottomSplitDrag;
+  if (!drag) return;
+  if (drag.pointerId !== undefined && event.pointerId !== undefined && drag.pointerId !== event.pointerId) return;
+  event.preventDefault();
+  applyOverviewBottomHeight(drag.startHeight - (event.clientY - drag.startY));
+}
+
+function finishOverviewBottomSplitterDrag(event) {
+  const drag = state.overviewBottomSplitDrag;
+  if (!drag) return;
+  if (drag.pointerId !== undefined && event?.pointerId !== undefined && drag.pointerId !== event.pointerId) return;
+  const splitter = $("overviewBottomSplitter");
+  if (splitter) {
+    splitter.classList.remove("is-dragging");
+    if (splitter.releasePointerCapture && drag.pointerId !== undefined) {
+      try {
+        splitter.releasePointerCapture(drag.pointerId);
+      } catch (error) {
+        // Pointer capture may already be gone if the pointer left the window.
+      }
+    }
+  }
+  document.body.classList.remove("is-overview-splitter-dragging");
+  state.overviewBottomSplitDrag = null;
+  applyOverviewBottomHeight(state.overviewBottomHeight, true);
+}
+
+function handleOverviewBottomSplitterKeydown(event) {
+  let nextHeight = null;
+  if (event.key === "ArrowUp") nextHeight = state.overviewBottomHeight + 16;
+  if (event.key === "ArrowDown") nextHeight = state.overviewBottomHeight - 16;
+  if (event.key === "PageUp") nextHeight = state.overviewBottomHeight + 48;
+  if (event.key === "PageDown") nextHeight = state.overviewBottomHeight - 48;
+  if (event.key === "Home") nextHeight = OVERVIEW_BOTTOM_MIN_HEIGHT;
+  if (event.key === "End") nextHeight = overviewBottomHeightBounds().max;
+  if (nextHeight === null) return;
+  event.preventDefault();
+  applyOverviewBottomHeight(nextHeight, true);
+}
+
+function initOverviewBottomSplitter() {
+  const splitter = $("overviewBottomSplitter");
+  if (!splitter) return;
+  applyOverviewBottomHeight(state.overviewBottomHeight);
+  if (splitter.dataset.splitterReady === "true") return;
+  splitter.dataset.splitterReady = "true";
+  splitter.addEventListener("pointerdown", beginOverviewBottomSplitterDrag);
+  splitter.addEventListener("keydown", handleOverviewBottomSplitterKeydown);
+  window.addEventListener("pointermove", handleOverviewBottomSplitterDrag);
+  window.addEventListener("pointerup", finishOverviewBottomSplitterDrag);
+  window.addEventListener("pointercancel", finishOverviewBottomSplitterDrag);
+  window.addEventListener("resize", () => applyOverviewBottomHeight(state.overviewBottomHeight, true));
+}
+
 function renderOverviewEvents(snapshot) {
   const container = $("commandInbox");
   if (!container) return;
@@ -2570,6 +2700,86 @@ function renderOverviewEvents(snapshot) {
   container.innerHTML = '<div class="overview-event-item"><time>--</time><strong>系统</strong><span>等待启动仿真</span></div>';
 }
 
+function activeRuntimeCommandKeySet(snapshot = state.snapshot || {}) {
+  const keys = new Set();
+  activeCommandHistory(snapshot).forEach((entry) => {
+    const normalized = entry.normalized || {};
+    const payload = entry.payload || {};
+    const runItems = normalized.run_status || payload.run_status || payload.runStatus || [];
+    const setItems = normalized.set_values || payload.set_values || payload.setValues || payload.setpoints || [];
+    if (Array.isArray(runItems)) {
+      runItems.forEach((item) => {
+        if (!item?.dev_type || !item?.dev_name) return;
+        if (item.run_stat !== undefined && item.run_stat !== "") {
+          keys.add(["remote_control", item.dev_type, item.dev_name, "run_stat"].join("|"));
+        }
+        if (Object.prototype.hasOwnProperty.call(item, "status")) {
+          keys.add(["remote_control", item.dev_type, item.dev_name, "status"].join("|"));
+        }
+      });
+    }
+    if (Array.isArray(setItems)) {
+      setItems.forEach((item) => {
+        if (!item?.dev_type || !item?.dev_name || !item?.set_type) return;
+        keys.add(["remote_adjustment", item.dev_type, item.dev_name, item.set_type].join("|"));
+      });
+    }
+  });
+  return keys;
+}
+
+function overviewActiveRuntimeCommandRows(snapshot = state.snapshot || {}) {
+  const activeKeys = activeRuntimeCommandKeySet(snapshot);
+  if (!activeKeys.size) return [];
+  return runtimeCommandRowsForDevices(controlDefinitionDevices(snapshot), snapshot.measurements || {})
+    .filter((row) => {
+      return activeKeys.has(runtimeCommandTraceKey(row)) && commandTimeInfoAvailable(row.receive_time);
+    });
+}
+
+function renderOverviewActiveCommands(snapshot) {
+  const container = $("overviewActiveCommandTable");
+  const summary = $("overviewActiveCommandSummary");
+  if (!container) return [];
+  const rows = overviewActiveRuntimeCommandRows(snapshot);
+  if (summary) summary.textContent = `${rows.length} 条有效指令`;
+  if (!rows.length) {
+    container.innerHTML = '<div class="empty-state">当前无有效遥控/遥调指令</div>';
+    return rows;
+  }
+  container.innerHTML = `
+    <table class="overview-command-table">
+      <thead>
+        <tr>
+          <th>类型</th>
+          <th>设备</th>
+          <th>指令项</th>
+          <th>控制指令</th>
+          <th>接收本机时刻</th>
+          <th>接收仿真时刻</th>
+          <th>实时值</th>
+          <th>量测值</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map((row) => `
+          <tr title="${escapeHtml(runtimeCommandTraceLabel(row))}">
+            <td>${escapeHtml(row.category || "--")}</td>
+            <td>${escapeHtml(row.device?.dev_name || "--")}</td>
+            <td>${escapeHtml(row.command || "--")} <small class="command-set-type">${escapeHtml(row.set_type || "")}</small></td>
+            <td class="numeric-cell">${escapeHtml(row.command_text || "--")}</td>
+            <td class="mono-cell">${escapeHtml(row.receive_time?.wall_time || "--")}</td>
+            <td class="mono-cell">${escapeHtml(row.receive_time?.simu_time || "--")}</td>
+            <td class="numeric-cell">${escapeHtml(row.real_text || "--")}</td>
+            <td class="numeric-cell">${escapeHtml(row.scada_text || "--")}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+  return rows;
+}
+
 function renderOverviewDashboard(snapshot) {
   const clock = snapshot.clock || {};
   const stateLabels = { running: "运行中", paused: "已暂停", stopped: "已停止" };
@@ -2580,6 +2790,7 @@ function renderOverviewDashboard(snapshot) {
   const totalMeasurements = Number(snapshot.summary?.scada_count || 0);
   const validMeasurements = Number(snapshot.summary?.valid_scada_count || 0);
   const result = snapshot.result || {};
+  const activeOverviewCommands = renderOverviewActiveCommands(snapshot);
   const stateDot = $("overviewStateDot");
   setOverviewText("overviewState", stateLabels[clock.state] || clock.state || "未知");
   if (stateDot) {
@@ -2599,7 +2810,7 @@ function renderOverviewDashboard(snapshot) {
   setOverviewText("overviewTemperature", Number.isFinite(Number(boundary.point.air_temp_c)) ? `${formatOverviewNumber(boundary.point.air_temp_c)} ℃` : "--");
   setOverviewText("overviewLoadBoundary", overviewPowerText(boundary.loadTotal));
   setOverviewText("overviewOnlineDevices", `${onlineDevices}/${devices.length} 台`);
-  setOverviewText("overviewActiveCommands", `${snapshot.summary?.command_count || 0} 条`);
+  setOverviewText("overviewActiveCommands", `${activeOverviewCommands.length} 条`);
   const storagePower = Number.isFinite(power.storageDischarge) && Number.isFinite(power.storageCharge)
     ? power.storageDischarge - power.storageCharge
     : null;
@@ -2625,12 +2836,7 @@ function renderOverviewDashboard(snapshot) {
     : null;
   setOverviewText("overviewFlowGreenShare", overviewPercentText(greenPowerShare));
   renderEnergyFlowVisuals(power, storagePower, greenPowerShare);
-  setOverviewText("overviewMeasurementQuality", totalMeasurements ? `有效率 ${formatOverviewNumber(validMeasurements / totalMeasurements * 100)}%` : "待计算");
-  setOverviewText("overviewSolverDetail", result.solver_info || "--");
-  setOverviewText("overviewUpdatedMeasurements", Number.isFinite(Number(result.updated)) ? `${result.updated} 条` : "--");
-  setOverviewText("overviewMissingMeasurements", Number.isFinite(Number(result.missing)) ? `${result.missing} 条` : "--");
-  setOverviewText("overviewOverlayUpdates", Number.isFinite(Number(result.overlay_updates)) ? `${result.overlay_updates} 条` : "--");
-  setOverviewText("overviewCommandCount", `${snapshot.summary?.command_count || 0} 条控制指令`);
+  setOverviewText("overviewCommandCount", `${activeOverviewCommands.length} 条控制指令`);
   renderOverviewEvents(snapshot);
 }
 
@@ -3411,6 +3617,26 @@ function commandRefreshTimeFromMinute(minute) {
   });
 }
 
+function emptyCommandTimeInfo() {
+  return { wall_time: "--", simu_time: "--" };
+}
+
+function commandTimeInfoAvailable(info = {}) {
+  return [info.wall_time, info.simu_time].some((value) => {
+    const text = String(value || "").trim();
+    return text && text !== "--";
+  });
+}
+
+function commandReceiveTimeInfo(entry = {}) {
+  const wallTime = runtimeLogWallTimeText(entry.received_wall_time || entry.time || entry.wall_time || entry.record_time || "");
+  const minute = entry.received_absolute_minute ?? entry.issued_absolute_minute;
+  return {
+    wall_time: wallTime,
+    simu_time: commandRefreshTimeFromMinute(minute),
+  };
+}
+
 function activeCommandHistory(snapshot = state.snapshot || {}) {
   const currentMinute = Number(snapshot.clock?.absolute_minute ?? snapshot.clock?.minute ?? 0) || 0;
   return [...(snapshot.commands?.history || [])].filter((entry) => {
@@ -3424,7 +3650,7 @@ function activeCommandHistory(snapshot = state.snapshot || {}) {
   });
 }
 
-function runtimeCommandRefreshTime(dev, commandType, setType = "", snapshot = state.snapshot || {}) {
+function runtimeCommandRefreshInfo(dev, commandType, setType = "", snapshot = state.snapshot || {}) {
   const history = activeCommandHistory(snapshot).reverse();
   for (const entry of history) {
     const normalized = entry.normalized || {};
@@ -3435,7 +3661,7 @@ function runtimeCommandRefreshTime(dev, commandType, setType = "", snapshot = st
         && item.dev_name === dev.dev_name
         && item.set_type === setType
       ));
-      if (match) return commandRefreshTimeFromMinute(entry.issued_absolute_minute);
+      if (match) return commandReceiveTimeInfo(entry);
       continue;
     }
     const items = normalized.run_status || entry.payload?.run_status || [];
@@ -3444,9 +3670,13 @@ function runtimeCommandRefreshTime(dev, commandType, setType = "", snapshot = st
       if (commandType === "status") return Object.prototype.hasOwnProperty.call(item, "status");
       return item.run_stat !== undefined && item.run_stat !== "";
     });
-    if (match) return commandRefreshTimeFromMinute(entry.issued_absolute_minute);
+    if (match) return commandReceiveTimeInfo(entry);
   }
-  return "--";
+  return emptyCommandTimeInfo();
+}
+
+function runtimeCommandRefreshTime(dev, commandType, setType = "", snapshot = state.snapshot || {}) {
+  return runtimeCommandRefreshInfo(dev, commandType, setType, snapshot).simu_time;
 }
 
 function selectedRuntimeDeviceKeys(devices) {
@@ -3460,7 +3690,7 @@ function runtimeRemoteControlRows(devices) {
   return [
     ...runRows.map((definitionRow) => {
       const dev = runtimeControlDeviceFromRow(definitionRow);
-      const runStatTime = runtimeCommandRefreshTime(dev, "run_stat");
+      const runStatTime = runtimeCommandRefreshInfo(dev, "run_stat");
       const value = Number(dev.run_stat ?? definitionRow.run_stat ?? 0);
       return {
         category: "遥控指令",
@@ -3471,7 +3701,8 @@ function runtimeRemoteControlRows(devices) {
         command_text: value !== 0 ? "投入" : "退出",
         real_text: value !== 0 ? "投入" : "退出",
         scada_text: "--",
-        refresh_time: runStatTime,
+        refresh_time: runStatTime.simu_time,
+        receive_time: runStatTime,
         control_value: value,
         real_value: value,
         scada_value: null,
@@ -3482,7 +3713,7 @@ function runtimeRemoteControlRows(devices) {
     }),
     ...cbRows.map((definitionRow) => {
       const dev = runtimeControlDeviceFromRow(definitionRow);
-      const statusTime = runtimeCommandRefreshTime(dev, "status");
+      const statusTime = runtimeCommandRefreshInfo(dev, "status");
       const value = Number(dev.status ?? definitionRow.status ?? 0);
       return {
         category: "遥控指令",
@@ -3493,7 +3724,8 @@ function runtimeRemoteControlRows(devices) {
         command_text: value !== 0 ? "闭合" : "断开",
         real_text: value !== 0 ? "闭合" : "断开",
         scada_text: "--",
-        refresh_time: statusTime,
+        refresh_time: statusTime.simu_time,
+        receive_time: statusTime,
         control_value: value,
         real_value: value,
         scada_value: null,
@@ -3515,7 +3747,7 @@ function runtimeRemoteAdjustmentRows(devices, measurements = state.snapshot?.mea
       const value = dev.set_values?.[key] ?? definitionRow.set_value;
       const meta = runtimeMetaFromSetKey(key, Number(value));
       const pair = runtimeMeasurementPair(dev, meta, measurements);
-      const commandTime = runtimeCommandRefreshTime(dev, "set_value", key);
+      const commandTime = runtimeCommandRefreshInfo(dev, "set_value", key);
       return {
         category: "遥调指令",
         command_kind: "remote_adjustment",
@@ -3525,7 +3757,8 @@ function runtimeRemoteAdjustmentRows(devices, measurements = state.snapshot?.mea
         command_text: formatRuntimeSignal(meta.value, meta.unit),
         real_text: formatRuntimeSignal(pair.real, meta.unit),
         scada_text: formatRuntimeSignal(pair.scada, meta.unit),
-        refresh_time: commandTime,
+        refresh_time: commandTime.simu_time,
+        receive_time: commandTime,
         control_value: meta.value,
         real_value: pair.real,
         scada_value: pair.scada,
@@ -3550,9 +3783,10 @@ function renderRuntimeCommandRows(rows) {
       <td>${escapeHtml(row.device.dev_name)}</td>
       <td>${escapeHtml(row.device.dev_type)}</td>
       <td>${escapeHtml(row.device.mode || "--")}</td>
-      <td>${escapeHtml(row.command)}<small class="command-set-type">${escapeHtml(row.set_type)}</small></td>
+      <td>${escapeHtml(row.command)} <small class="command-set-type">${escapeHtml(row.set_type)}</small></td>
       <td class="numeric-cell">${escapeHtml(row.command_text)}</td>
-      <td class="mono-cell">${escapeHtml(row.refresh_time || "--")}</td>
+      <td class="mono-cell">${escapeHtml(row.receive_time?.wall_time || "--")}</td>
+      <td class="mono-cell">${escapeHtml(row.receive_time?.simu_time || row.refresh_time || "--")}</td>
       <td class="numeric-cell">${escapeHtml(row.real_text)}</td>
       <td class="numeric-cell">${escapeHtml(row.scada_text)}</td>
     </tr>
@@ -3571,7 +3805,8 @@ function renderRuntimeCommandTable(rows, emptyText) {
           <th>模式</th>
           <th>指令项</th>
           <th>控制指令</th>
-          <th>指令刷新时刻</th>
+          <th>接收本机时刻</th>
+          <th>接收仿真时刻</th>
           <th>实时值</th>
           <th>量测值</th>
         </tr>
@@ -5374,6 +5609,7 @@ generateCurves(0);
 initCurveEditor();
 initRuntimeMonitor();
 initMeasurementMonitor();
+initOverviewBottomSplitter();
 setFaultTab(state.activeFaultTab);
 renderFaults(true);
 setInterval(refresh, 1000);

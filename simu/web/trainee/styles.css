@@ -365,12 +365,13 @@ h2 {
 }
 
 .overview-dashboard {
+  --overview-bottom-height: 156px;
   flex: 1;
   width: 100%;
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(390px, 1fr) minmax(110px, 0.3fr);
+  grid-template-rows: auto minmax(390px, 1fr) 10px minmax(96px, var(--overview-bottom-height));
   gap: 12px;
   overflow: hidden;
 }
@@ -450,9 +451,38 @@ h2 {
   grid-template-columns: minmax(760px, 1fr) 300px;
   gap: 12px;
 }
+.overview-bottom-splitter {
+  position: relative;
+  min-height: 10px;
+  cursor: row-resize;
+  border-radius: 999px;
+  outline: none;
+  touch-action: none;
+}
+.overview-bottom-splitter::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 4px;
+  height: 3px;
+  border-radius: 999px;
+  background: #d3e0e4;
+  transition: background 0.15s ease, height 0.15s ease, top 0.15s ease;
+}
+.overview-bottom-splitter:hover::before,
+.overview-bottom-splitter:focus-visible::before,
+.overview-bottom-splitter.is-dragging::before {
+  top: 3px;
+  height: 4px;
+  background: var(--teal);
+}
+body.is-overview-splitter-dragging {
+  cursor: row-resize;
+  user-select: none;
+}
 .overview-energy-panel,
 .overview-boundary-panel,
-.overview-health-panel,
 .overview-events-panel,
 .overview-pending-panel {
   display: flex;
@@ -899,8 +929,7 @@ h2 {
   line-height: 17px;
   white-space: nowrap;
 }
-.boundary-list,
-.quality-list {
+.boundary-list {
   flex: 1;
   min-height: 0;
   margin: 0;
@@ -910,8 +939,7 @@ h2 {
 .boundary-list {
   grid-template-columns: 1fr 1fr;
 }
-.boundary-list div,
-.quality-list div {
+.boundary-list div {
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -922,13 +950,11 @@ h2 {
 .boundary-list div:nth-child(odd) {
   border-right: 1px solid var(--line);
 }
-.boundary-list dt,
-.quality-list dt {
+.boundary-list dt {
   color: var(--muted);
   font-size: 11px;
 }
-.boundary-list dd,
-.quality-list dd {
+.boundary-list dd {
   margin: 3px 0 0;
   overflow: hidden;
   font-size: 14px;
@@ -939,17 +965,8 @@ h2 {
 .overview-bottom-grid {
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(390px, 0.9fr) minmax(360px, 1fr) minmax(300px, 0.7fr);
+  grid-template-columns: minmax(520px, 1fr) minmax(360px, 0.82fr);
   gap: 12px;
-}
-.quality-list {
-  grid-template-columns: repeat(4, minmax(86px, 1fr));
-}
-.quality-list div {
-  border-right: 1px solid var(--line);
-}
-.quality-list div:last-child {
-  border-right: 0;
 }
 .overview-event-list {
   flex: 1;
@@ -1425,6 +1442,8 @@ th, td {
   border-bottom: 1px solid var(--line);
   text-align: left;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 th {
   position: sticky;
@@ -1468,14 +1487,23 @@ th {
 .remote-adjustment-table tbody tr { cursor: pointer; }
 .remote-adjustment-table tbody tr:hover { background: #e8f6f6; }
 .remote-adjustment-table td:first-child {
-  display: grid;
-  gap: 3px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
   color: var(--ink);
   font-family: inherit;
 }
+.remote-adjustment-table td:first-child strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .remote-adjustment-table td:first-child small {
+  flex: 0 0 auto;
   color: var(--muted);
   font-size: 11px;
+  white-space: nowrap;
 }
 .remote-adjustment-table td:nth-child(2),
 .remote-adjustment-table td:nth-child(3) {

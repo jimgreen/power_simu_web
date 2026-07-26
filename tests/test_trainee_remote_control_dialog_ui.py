@@ -28,9 +28,14 @@ class TraineeRemoteControlDialogUiTest(unittest.TestCase):
         self.assertIn('run_status: [command]', self.script)
 
     def test_remote_control_table_shows_latest_command_time(self):
+        self.assertIn("function remoteControlIssuedTimeInfo", self.script)
         self.assertIn("function remoteControlIssuedAt", self.script)
+        self.assertIn("function withCommandSendTime", self.script)
+        self.assertIn("sent_wall_time", self.script)
+        self.assertIn("sent_simu_time", self.script)
         self.assertIn("normalized?.run_status", self.script)
-        self.assertIn("指令下发时刻", self.script)
+        self.assertIn("下发本机时刻", self.script)
+        self.assertIn("下发仿真时刻", self.script)
         self.assertIn("command-issued-at-cell", self.script)
         self.assertIn(".command-issued-at-cell", self.styles)
 

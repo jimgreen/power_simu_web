@@ -1581,13 +1581,18 @@ class PolarMicrogridSimulator:
             normalized_set_items = self._normalize_set_command_items(set_sequence)
             eligible_source = _is_trainee_command_source(source)
             issued_absolute_minute = float(self.clock.absolute_minute)
+            received_wall_time = _now_text()
+            received_simu_time = minute_to_time(self.clock.minute)
             expires_at_absolute_minute = _command_expires_at(payload, None, issued_absolute_minute)
             accepted_run = len(normalized_run_items) if eligible_source else 0
             accepted_set = len(normalized_set_items) if eligible_source else 0
             ignored = 0 if eligible_source else len(normalized_run_items) + len(normalized_set_items)
             accepted = {"run_status": accepted_run, "set_values": accepted_set, "ignored": ignored}
             command_entry = {
-                "time": _now_text(),
+                "time": received_wall_time,
+                "received_wall_time": received_wall_time,
+                "received_simu_time": received_simu_time,
+                "received_absolute_minute": issued_absolute_minute,
                 "source": source,
                 "eligible_source": eligible_source,
                 "issued_absolute_minute": issued_absolute_minute,
@@ -2167,6 +2172,401 @@ class PolarMicrogridSimulator:
                 }
             )
         return devices
+
+    def _api_time_payload(self) -> Dict[str, Any]:
+        return {
+            "time": minute_to_time(self.clock.minute),
+            "simu_time": minute_to_time(self.clock.minute),
+            "absolute_minute": self.clock.absolute_minute,
+            "wall_time": _now_text(),
+        }
+
+    def latest_telemetry_values(self) -> Dict[str, Any]:
+        """Return the latest remote measurements and status points for external clients."""
+        measurements = dict(self.latest_measurements or self.measurements())
+        measurements = self._with_weather_measurements(measurements)
+        items: List[Dict[str, Any]] = []
+        for row in measurements.get("scada", []):
+            name = str(row.get("name", "")).strip() or ".".join(
+                str(row.get(key, "")).strip()
+                for key in ("dev_type", "dev_name", "meas_type")
+                if str(row.get(key, "")).strip()
+            )
+            if not name:
+                continue
+            items.append(
+                {
+                    "name": name,
+                    "point_type": "YC",
+                    "category": "遥测",
+                    "dev_type": str(row.get("dev_type", "")),
+                    "dev_name": str(row.get("dev_name", "")),
+                    "meas_type": str(row.get("meas_type", "")),
+                    "value": _json_scalar(row.get("value", 0.0)),
+                    "valid": int(_to_float(row.get("valid"), 0) or 0),
+                    "weight": _json_scalar(row.get("weight", "")),
+                }
+            )
+
+        for dev in self.devices():
+            dev_type = str(dev.get("dev_type", ""))
+            dev_name = str(dev.get("dev_name", ""))
+            if not dev_type or not dev_name:
+                continue
+            run_stat = int(_to_float(dev.get("run_stat"), 0) or 0)
+            items.append(
+                {
+                    "name": f"{dev_type}.{dev_name}.run_stat",
+                    "point_type": "YX",
+                    "category": "遥信",
+                    "dev_type": dev_type,
+                    "dev_name": dev_name,
+                    "meas_type": "run_stat",
+                    "value": run_stat,
+                    "valid": 1,
+                    "text": "投入" if run_stat else "退出",
+                }
+            )
+            if "Switch" in dev_type or "Break" in dev_type or dev.get("raw", {}).get("status", "") not in ("", None):
+                status = int(_to_float(dev.get("status"), 0) or 0)
+                items.append(
+                    {
+                        "name": f"{dev_type}.{dev_name}.status",
+                        "point_type": "YX",
+                        "category": "遥信",
+                        "dev_type": dev_type,
+                        "dev_name": dev_name,
+                        "meas_type": "status",
+                        "value": status,
+                        "valid": 1,
+                        "text": "闭合" if status else "断开",
+                    }
+                )
+
+        return {
+            "model_id": self.model_id,
+            "model_name": self.model_name,
+            **self._api_time_payload(),
+            "items": items,
+            "values": {item["name"]: item.get("value") for item in items},
+        }
+
+    def _name_list_from_payload(self, payload: Mapping[str, Any], keys: Sequence[str]) -> List[str]:
+        names: List[str] = []
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, str):
+                names.extend(part.strip() for part in re.split(r"[,;\s]+", value) if part.strip())
+            elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                names.extend(str(item).strip() for item in value if str(item).strip())
+        return names
+
+    def selected_telemetry_values(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        """Return selected telemetry and signal values by requested point names."""
+        yc_names = self._name_list_from_payload(
+            payload,
+            ("telemetry", "telemetries", "telemetry_names", "yc", "yc_names", "remote_measurements"),
+        )
+        yx_names = self._name_list_from_payload(
+            payload,
+            ("signals", "signal_names", "yx", "yx_names", "statuses", "status_names", "remote_signals"),
+        )
+        all_values = self.latest_telemetry_values()
+        yc_index = {
+            str(item.get("name", "")): item
+            for item in all_values.get("items", [])
+            if isinstance(item, Mapping) and item.get("point_type") == "YC"
+        }
+        yx_index = {
+            str(item.get("name", "")): item
+            for item in all_values.get("items", [])
+            if isinstance(item, Mapping) and item.get("point_type") == "YX"
+        }
+
+        def pick(index: Mapping[str, Mapping[str, Any]], names: Sequence[str]) -> List[Dict[str, Any]]:
+            rows: List[Dict[str, Any]] = []
+            for name in names:
+                item = index.get(name)
+                if item is None:
+                    rows.append({"name": name, "found": False, "value": None, "valid": 0})
+                else:
+                    rows.append(dict(item) | {"found": True})
+            return rows
+
+        telemetry = pick(yc_index, yc_names)
+        signals = pick(yx_index, yx_names)
+        return {
+            "model_id": self.model_id,
+            "model_name": self.model_name,
+            **self._api_time_payload(),
+            "telemetry": telemetry,
+            "signals": signals,
+            "yc": telemetry,
+            "yx": signals,
+            "items": [*telemetry, *signals],
+            "values": {item["name"]: item.get("value") for item in [*telemetry, *signals]},
+            "missing": {
+                "telemetry": [item["name"] for item in telemetry if not item.get("found")],
+                "signals": [item["name"] for item in signals if not item.get("found")],
+            },
+        }
+
+    def _command_entry_time_info(self, entry: Mapping[str, Any]) -> Dict[str, Any]:
+        absolute_minute = _to_float(entry.get("received_absolute_minute", entry.get("issued_absolute_minute")), None)
+        return {
+            "wall_time": entry.get("received_wall_time", entry.get("time", "")) or "--",
+            "simu_time": entry.get("received_simu_time") or (minute_to_time(absolute_minute) if absolute_minute is not None else "--"),
+            "absolute_minute": absolute_minute,
+            "expires_at_absolute_minute": _to_float(entry.get("expires_at_absolute_minute"), None),
+            "source": entry.get("source", ""),
+        }
+
+    def _latest_active_control_update(
+        self,
+        command_kind: str,
+        dev_type: str,
+        dev_name: str,
+        field_name: str,
+    ) -> Dict[str, Any]:
+        for entry in reversed(self._active_control_command_entries(self.clock.absolute_minute)):
+            normalized = entry.get("normalized", {})
+            if not isinstance(normalized, Mapping):
+                continue
+            if command_kind == "remote_adjustment":
+                items = normalized.get("set_values", [])
+                if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+                    continue
+                for item in items:
+                    if (
+                        isinstance(item, Mapping)
+                        and str(item.get("dev_type", "")) == dev_type
+                        and str(item.get("dev_name", "")) == dev_name
+                        and str(item.get("set_type", "")) == field_name
+                    ):
+                        return self._command_entry_time_info(entry) | {"active": True}
+                continue
+            items = normalized.get("run_status", [])
+            if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+                continue
+            for item in items:
+                if not isinstance(item, Mapping):
+                    continue
+                if str(item.get("dev_type", "")) != dev_type or str(item.get("dev_name", "")) != dev_name:
+                    continue
+                if field_name == "status" and "status" in item:
+                    return self._command_entry_time_info(entry) | {"active": True}
+                if field_name == "run_stat" and item.get("run_stat", "") != "":
+                    return self._command_entry_time_info(entry) | {"active": True}
+        return {"wall_time": "--", "simu_time": "--", "absolute_minute": None, "expires_at_absolute_minute": None, "source": "", "active": False}
+
+    def _control_definition_rows(self, block_name: str) -> List[Dict[str, Any]]:
+        try:
+            book = _load_book(self._control_definition_path())
+        except Exception:
+            return []
+        block = book.data.get(block_name)
+        if block is None:
+            return []
+        return [
+            {header: row.get(header, "") for header in block.header_list}
+            for row in getattr(block, "data", [])
+        ]
+
+    def latest_control_values(self) -> Dict[str, Any]:
+        """Return current remote-control and remote-adjustment values for external clients."""
+        run_stats, cb_status, set_values, _soc_values = self._stat_maps()
+        items: List[Dict[str, Any]] = []
+
+        for row in self._control_definition_rows("RunStat"):
+            dev_type = str(row.get("dev_type", ""))
+            dev_name = _dev_name(row)
+            if not dev_type or not dev_name:
+                continue
+            value = int(_to_float(run_stats.get((dev_type, dev_name), row.get("run_stat", 0)), 0) or 0)
+            update = self._latest_active_control_update("remote_control", dev_type, dev_name, "run_stat")
+            items.append(
+                {
+                    "name": f"{dev_type}.{dev_name}.run_stat",
+                    "command_kind": "remote_control",
+                    "category": "遥控",
+                    "dev_type": dev_type,
+                    "dev_name": dev_name,
+                    "control_type": "run_stat",
+                    "value": value,
+                    "text": "投入" if value else "退出",
+                    "updated_wall_time": update["wall_time"],
+                    "updated_simu_time": update["simu_time"],
+                    "updated_absolute_minute": update["absolute_minute"],
+                    "expires_at_absolute_minute": update["expires_at_absolute_minute"],
+                    "active": update["active"],
+                    "source": update["source"],
+                }
+            )
+
+        for row in self._control_definition_rows("CbOpenStat"):
+            dev_type = str(row.get("dev_type", ""))
+            dev_name = _dev_name(row)
+            if not dev_type or not dev_name:
+                continue
+            value = int(_to_float(cb_status.get((dev_type, dev_name), row.get("status", 0)), 0) or 0)
+            update = self._latest_active_control_update("remote_control", dev_type, dev_name, "status")
+            items.append(
+                {
+                    "name": f"{dev_type}.{dev_name}.status",
+                    "command_kind": "remote_control",
+                    "category": "遥控",
+                    "dev_type": dev_type,
+                    "dev_name": dev_name,
+                    "control_type": "status",
+                    "value": value,
+                    "text": "闭合" if value else "断开",
+                    "updated_wall_time": update["wall_time"],
+                    "updated_simu_time": update["simu_time"],
+                    "updated_absolute_minute": update["absolute_minute"],
+                    "expires_at_absolute_minute": update["expires_at_absolute_minute"],
+                    "active": update["active"],
+                    "source": update["source"],
+                }
+            )
+
+        for row in self._control_definition_rows("SetValue"):
+            dev_type = str(row.get("dev_type", ""))
+            dev_name = _dev_name(row)
+            set_type = str(row.get("set_type", ""))
+            if not dev_type or not dev_name or not set_type:
+                continue
+            value = set_values.get((dev_type, dev_name), {}).get(set_type, row.get("set_value", ""))
+            update = self._latest_active_control_update("remote_adjustment", dev_type, dev_name, set_type)
+            items.append(
+                {
+                    "name": f"{dev_type}.{dev_name}.{set_type}",
+                    "command_kind": "remote_adjustment",
+                    "category": "遥调",
+                    "dev_type": dev_type,
+                    "dev_name": dev_name,
+                    "set_type": set_type,
+                    "value": _json_scalar(value),
+                    "updated_wall_time": update["wall_time"],
+                    "updated_simu_time": update["simu_time"],
+                    "updated_absolute_minute": update["absolute_minute"],
+                    "expires_at_absolute_minute": update["expires_at_absolute_minute"],
+                    "active": update["active"],
+                    "source": update["source"],
+                }
+            )
+
+        return {
+            "model_id": self.model_id,
+            "model_name": self.model_name,
+            **self._api_time_payload(),
+            "items": items,
+            "values": {item["name"]: item.get("value") for item in items},
+        }
+
+    def _external_control_items(self, payload: Mapping[str, Any]) -> List[Mapping[str, Any]]:
+        collected: List[Mapping[str, Any]] = []
+        for key in ("commands", "items", "controls"):
+            value = payload.get(key)
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                collected.extend(item for item in value if isinstance(item, Mapping))
+        values = payload.get("values")
+        if isinstance(values, Mapping):
+            collected.extend({"name": name, "value": value} for name, value in values.items())
+        if not collected and any(key in payload for key in ("name", "dev_type", "dev_name", "set_type", "control_type")):
+            collected.append(payload)
+        return collected
+
+    def _control_name_index(self) -> Dict[str, Mapping[str, Any]]:
+        items = self.latest_control_values().get("items", [])
+        return {
+            str(item.get("name", "")): item
+            for item in items
+            if isinstance(item, Mapping) and item.get("name")
+        }
+
+    def _normalize_external_control_payload(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        run_items: List[Dict[str, Any]] = []
+        set_items: List[Dict[str, Any]] = []
+        if isinstance(payload.get("run_status"), Sequence) and not isinstance(payload.get("run_status"), (str, bytes)):
+            run_items.extend(item for item in payload.get("run_status", []) if isinstance(item, Mapping))
+        if isinstance(payload.get("remote_controls"), Sequence) and not isinstance(payload.get("remote_controls"), (str, bytes)):
+            run_items.extend(item for item in payload.get("remote_controls", []) if isinstance(item, Mapping))
+        for key in ("set_values", "setpoints", "remote_adjustments"):
+            if isinstance(payload.get(key), Sequence) and not isinstance(payload.get(key), (str, bytes)):
+                set_items.extend(item for item in payload.get(key, []) if isinstance(item, Mapping))
+
+        name_index = self._control_name_index()
+        resolved_items: List[Dict[str, Any]] = []
+        for item in self._external_control_items(payload):
+            raw_name = str(item.get("name", item.get("command_name", item.get("control_name", "")))).strip()
+            definition = name_index.get(raw_name, {})
+            dev_type = str(item.get("dev_type", item.get("type", definition.get("dev_type", ""))))
+            dev_name = str(item.get("dev_name", item.get("device", definition.get("dev_name", ""))))
+            value = item.get("value", item.get("set_value", item.get("run_stat", item.get("status", ""))))
+            command_kind = str(item.get("command_kind", definition.get("command_kind", ""))).lower()
+            control_type = str(item.get("control_type", item.get("meas_type", definition.get("control_type", ""))))
+            set_type = str(item.get("set_type", definition.get("set_type", "")))
+            if (not dev_type or not dev_name or not (set_type or control_type)) and raw_name:
+                parts = raw_name.split(".")
+                if len(parts) >= 3:
+                    dev_type = dev_type or parts[0]
+                    dev_name = dev_name or ".".join(parts[1:-1])
+                    tail = parts[-1]
+                    if tail in ("run_stat", "status"):
+                        control_type = control_type or tail
+                    else:
+                        set_type = set_type or tail
+            if not dev_type or not dev_name:
+                continue
+            if set_type or command_kind in ("remote_adjustment", "yt", "遥调"):
+                if not set_type:
+                    continue
+                set_items.append({"dev_type": dev_type, "dev_name": dev_name, "set_type": set_type, "set_value": value})
+                resolved_items.append({"name": raw_name or f"{dev_type}.{dev_name}.{set_type}", "command_kind": "remote_adjustment", "value": value})
+                continue
+            field_name = "status" if control_type == "status" else "run_stat"
+            run_row: Dict[str, Any] = {"dev_type": dev_type, "dev_name": dev_name}
+            run_row[field_name] = value
+            run_items.append(run_row)
+            resolved_items.append({"name": raw_name or f"{dev_type}.{dev_name}.{field_name}", "command_kind": "remote_control", "value": value})
+
+        return {"run_status": run_items, "set_values": set_items, "resolved_items": resolved_items}
+
+    def apply_external_control_values(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        normalized = self._normalize_external_control_payload(payload)
+        command_payload: Dict[str, Any] = {
+            "run_status": normalized["run_status"],
+            "set_values": normalized["set_values"],
+        }
+        for key in (
+            "valid_for_minutes",
+            "valid_minutes",
+            "valid_for_seconds",
+            "expires_at_absolute_minute",
+            "expires_at_minute",
+            "sent_wall_time",
+            "sent_simu_time",
+            "sent_absolute_minute",
+        ):
+            if key in payload:
+                command_payload[key] = payload[key]
+        source = str(payload.get("source") or "trainee-external-api")
+        if not _is_trainee_command_source(source):
+            source = f"trainee-{source}"
+        result = self.apply_student_commands(command_payload | {"source": source}, source=source)
+        return {
+            "model_id": self.model_id,
+            "model_name": self.model_name,
+            **self._api_time_payload(),
+            "accepted": {
+                "remote_controls": result.get("run_status", 0),
+                "remote_adjustments": result.get("set_values", 0),
+                "ignored": result.get("ignored", 0),
+            },
+            "result": result,
+            "updated_items": normalized["resolved_items"],
+            "control_values": self.latest_control_values(),
+        }
 
     def device_parameters(self) -> Dict[str, List[Dict[str, Any]]]:
         try:

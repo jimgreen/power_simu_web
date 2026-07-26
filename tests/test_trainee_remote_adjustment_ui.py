@@ -10,13 +10,22 @@ class TraineeRemoteAdjustmentUiTest(unittest.TestCase):
     def setUpClass(cls):
         cls.html = (ROOT / "simu/web/trainee/index.html").read_text(encoding="utf-8")
         cls.script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+        cls.styles = (ROOT / "simu/web/trainee/styles.css").read_text(encoding="utf-8")
 
     def test_each_remote_adjustment_is_rendered_as_one_row(self):
         self.assertIn("function remoteAdjustmentRows", self.script)
         self.assertIn("遥调名称", self.script)
         self.assertIn("量测值", self.script)
         self.assertIn("控制值", self.script)
-        self.assertIn("指令下发时刻", self.script)
+        self.assertIn("下发本机时刻", self.script)
+        self.assertIn("下发仿真时刻", self.script)
+        self.assertIn("function remoteAdjustmentIssuedTimeInfo", self.script)
+
+    def test_remote_adjustment_rows_keep_name_and_type_on_one_line(self):
+        self.assertIn(".remote-adjustment-table td:first-child {\n  display: flex;", self.styles)
+        self.assertIn("align-items: center;", self.styles)
+        self.assertIn("white-space: nowrap;", self.styles)
+        self.assertNotIn(".remote-adjustment-table td:first-child {\n  display: grid;", self.styles)
 
     def test_remote_adjustment_dialog_is_available(self):
         self.assertIn('id="remoteAdjustmentDialog"', self.html)
@@ -37,6 +46,9 @@ class TraineeRemoteAdjustmentUiTest(unittest.TestCase):
 
         self.assertIn("expires_at_absolute_minute: manualCommandExpiresAtAbsoluteMinute()", remote_control_block)
         self.assertIn("expires_at_absolute_minute: manualCommandExpiresAtAbsoluteMinute()", remote_adjustment_block)
+        self.assertIn("withCommandSendTime({", remote_control_block)
+        self.assertIn("withCommandSendTime({", remote_adjustment_block)
+        self.assertIn("withCommandSendTime({", renewable_block)
         self.assertNotIn("valid_for_minutes: CONTROL_COMMAND_VALID_MINUTES", remote_control_block)
         self.assertNotIn("valid_for_minutes: CONTROL_COMMAND_VALID_MINUTES", remote_adjustment_block)
         self.assertIn("valid_for_minutes: RENEWABLE_COMMAND_VALID_MINUTES", renewable_block)

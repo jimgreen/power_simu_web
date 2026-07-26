@@ -41,6 +41,10 @@ class TraineeInteractionLinkTest(unittest.TestCase):
         self.assertTrue(payload["shareable"])
         self.assertIn(f"http://127.0.0.1:{port}/api/trainee-link?model_id=simple_model", payload["link"])
         self.assertEqual(payload["teacher_api_base"], f"http://127.0.0.1:{port}")
+        self.assertEqual(payload["telemetry_path"], "/api/external/telemetry?model_id=simple_model")
+        self.assertEqual(payload["selected_telemetry_path"], "/api/external/telemetry/query?model_id=simple_model")
+        self.assertEqual(payload["control_values_path"], "/api/external/controls?model_id=simple_model")
+        self.assertEqual(payload["control_command_path"], "/api/external/controls?model_id=simple_model")
 
     def test_simulator_ui_can_generate_and_copy_trainee_link(self):
         html = (ROOT / "simu/web/simulator/index.html").read_text(encoding="utf-8")

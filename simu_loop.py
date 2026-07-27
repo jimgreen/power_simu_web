@@ -8,13 +8,14 @@ import io
 import logging
 import math
 import random
+import re
 import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 
 def _find_project_root() -> Path:
@@ -52,13 +53,19 @@ from update_meas_from_lf import (  # noqa: E402
 from ac_lf import ACPowerFlowCalc  # noqa: E402
 from ac_model import ACPowerNetwork  # noqa: E402
 from hybrid_lf import HybridPowerFlowCalc, _read_lf_network_from_file  # noqa: E402
+from hybrid_lf import (  # noqa: E402
+    _build_lf_network_from_hybrid_rows,
+    _build_lf_network_from_single_ac_file,
+    _build_lf_network_from_single_dc_file,
+    _detect_lf_rows_kind,
+)
 
 
 DEFAULT_MODEL_FILE = SIMU_DIR / "model.e"
 DEFAULT_MEAS_FILE = SIMU_DIR / "meas.e"
 DEFAULT_WEATHER_FILE = SIMU_DIR / "weather.e"
 DEFAULT_DEV_STAT_FILE = SIMU_DIR / "stat.e"
-DEFAULT_DEV_DEFINE_FILE = SIMU_DIR / "device.e"
+DEFAULT_DEV_DEFINE_FILE: Optional[Path] = None
 DEFAULT_YT_CTRL_FILE = SIMU_DIR / "yt_ctrl.e"
 DEFAULT_REAL_FILE = SIMU_DIR / "real.e"
 DEFAULT_SCADA_FILE = SIMU_DIR / "scada.e"
@@ -66,6 +73,7 @@ DEFAULT_LOG_DIR = ROOT_DIR / "log"
 DEFAULT_PERIOD_SECONDS = 60.0
 DEFAULT_STORAGE_CAPACITY_KWH = 50.0
 DEFAULT_DC_EXPORT_EFFICIENCY = 0.98
+SIGNAL_MEASUREMENT_TYPES = {"RUN_STAT", "STATUS"}
 
 
 @dataclass(frozen=True)
@@ -77,13 +85,24 @@ class SimulationConfig:
     real_file: Path
     scada_file: Path
     yt_ctrl_file: Path = DEFAULT_YT_CTRL_FILE
-    dev_define_file: Path = DEFAULT_DEV_DEFINE_FILE
+    dev_define_file: Optional[Path] = DEFAULT_DEV_DEFINE_FILE
+    mode_file: Optional[Path] = None
     period_seconds: float = DEFAULT_PERIOD_SECONDS
     noise_std: Optional[float] = None
     random_seed: Optional[int] = None
     loop_count: Optional[int] = None
     log_file: Optional[Path] = None
     step_mode: bool = False
+    write_output_files: bool = True
+    model_book: Optional[EBook] = None
+    meas_before: Optional[List[str]] = None
+    meas_rows: Optional[List[List[str]]] = None
+    meas_after: Optional[List[str]] = None
+    weather_book: Optional[EBook] = None
+    dev_stat_book: Optional[EBook] = None
+    yt_ctrl_book: Optional[EBook] = None
+    dev_define_book: Optional[EBook] = None
+    mode_book: Optional[EBook] = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +113,10 @@ class SimulationResult:
     missing: int
     overlay_updates: int
     solver_info: str
+    model_book: Optional[EBook] = None
+    measurement_definitions: Optional[List[List[str]]] = None
+    real_rows: Optional[List[List[str]]] = None
+    scada_rows: Optional[List[List[str]]] = None
 
 
 def default_config() -> SimulationConfig:
@@ -104,6 +127,7 @@ def default_config() -> SimulationConfig:
         dev_stat_file=DEFAULT_DEV_STAT_FILE,
         yt_ctrl_file=DEFAULT_YT_CTRL_FILE,
         dev_define_file=DEFAULT_DEV_DEFINE_FILE,
+        mode_file=None,
         real_file=DEFAULT_REAL_FILE,
         scada_file=DEFAULT_SCADA_FILE,
         log_file=_default_log_file(),
@@ -157,6 +181,75 @@ def write_ebook_aligned(book: EBook, file_path: Path) -> None:
             parts.append("# " + "  ".join(f"{str(row.get(name, '')):<{widths[idx]}}" for idx, name in enumerate(header)).rstrip() + "\n")
         parts.append(f"</{block.name}>\n")
     file_path.write_text("".join(parts), encoding="utf-8")
+
+
+_MODEL_BOOK_CACHE: Dict[Path, Tuple[Tuple[int, int], EBook]] = {}
+
+
+def _file_signature(path: Path) -> Tuple[int, int]:
+    stat = path.stat()
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def clear_model_book_cache(model_file: Optional[Path] = None) -> None:
+    """Clear cached source model definitions after an explicit definition update."""
+    if model_file is None:
+        _MODEL_BOOK_CACHE.clear()
+        return
+    _MODEL_BOOK_CACHE.pop(Path(model_file).resolve(), None)
+
+
+def _load_model_book_once(model_file: Path) -> EBook:
+    model_file = Path(model_file).resolve()
+    signature = _file_signature(model_file)
+    cached = _MODEL_BOOK_CACHE.get(model_file)
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    book = EBook(model_file)
+    _MODEL_BOOK_CACHE[model_file] = (signature, book)
+    return book
+
+
+def _clone_ebook(book: EBook) -> EBook:
+    clone = type(book).__new__(type(book))
+    clone.data = {}
+    if hasattr(book, "file_path"):
+        clone.file_path = book.file_path
+    for key, block in book.data.items():
+        cloned_block = type(block)(block.name)
+        cloned_block.header_list = list(block.header_list)
+        cloned_block.data = [dict(row) for row in block.data]
+        clone.data[key] = cloned_block
+    return clone
+
+
+def _ebook_to_efile_rows(book: EBook) -> Dict[str, Dict[str, Any]]:
+    rows: Dict[str, Dict[str, Any]] = {}
+    for key, block in book.data.items():
+        table_name = str(getattr(block, "name", key))
+        lv = 0
+        if " lv " in table_name:
+            table_key, lv_text = table_name.split(" lv ", 1)
+            table_name = table_key
+            try:
+                lv = int(lv_text.strip().split("=", 1)[1])
+            except (IndexError, ValueError):
+                lv = 0
+        header = list(block.header_list)
+        rows[table_name] = {
+            "table_name": table_name,
+            "header_list": header,
+            "rows": [[str(row.get(column, "")) for column in header] for row in block.data],
+            "lv": lv,
+        }
+    return rows
+
+
+def _ebook_to_dict_rows(book: EBook) -> Dict[str, List[Dict[str, str]]]:
+    return {
+        key: [{column: str(row.get(column, "")) for column in block.header_list} for row in block.data]
+        for key, block in book.data.items()
+    }
 
 
 def _row_key(row) -> Tuple[Optional[str], Optional[str]]:
@@ -213,6 +306,31 @@ def apply_overlay_file(model_book: EBook, overlay_file: Path) -> int:
     return changed
 
 
+def apply_overlay_book(model_book: EBook, overlay_book: Optional[EBook]) -> int:
+    if overlay_book is None:
+        return 0
+    changed = 0
+    for table_name, overlay_block in overlay_book.data.items():
+        model_block = model_book.data.get(table_name)
+        if model_block is None:
+            continue
+        writable_columns = set(model_block.header_list) - {"idx", "name"}
+        if not writable_columns:
+            continue
+        for overlay_row in overlay_block.data:
+            target_row = _find_target_row(model_block.data, overlay_row)
+            if target_row is None:
+                continue
+            for column in overlay_block.header_list:
+                if column not in writable_columns:
+                    continue
+                new_value = overlay_row[column]
+                if str(target_row.get(column, "")) != str(new_value):
+                    target_row[column] = new_value
+                    changed += 1
+    return changed
+
+
 def _rows_by_name(block) -> Dict[str, dict]:
     return {str(row.get("name", "")): row for row in block.data}
 
@@ -232,6 +350,48 @@ def _safe_float(value, default: Optional[float] = 0.0) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _numeric_from_text(value, default: Optional[float] = 0.0) -> Optional[float]:
+    if value in (None, ""):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    if not text:
+        return default
+    match = re.search(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", text)
+    if match is None:
+        return default
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return default
+
+
+def _ratio_from_text(value, default: Optional[float] = 0.0) -> Optional[float]:
+    number = _numeric_from_text(value, default)
+    if number is None:
+        return default
+    if isinstance(value, str) and "%" in value:
+        return number / 100.0
+    return number
+
+
+def _rated_power_from_name(value, default: Optional[float] = None) -> Optional[float]:
+    text = str(value or "")
+    match = re.search(r"([-+]?\d+(?:\.\d+)?)\s*(mw|kw|w)\b", text, re.IGNORECASE)
+    if match is None:
+        return default
+    number = float(match.group(1))
+    unit = match.group(2).casefold()
+    if unit == "mw":
+        return number * 1000.0
+    if unit == "w":
+        return number / 1000.0
+    return number
 
 
 def _safe_int(value, default: int = 0) -> int:
@@ -258,9 +418,161 @@ def _read_optional_book(file_path: Optional[Path]) -> EBook:
     return EBook(path) if path.exists() else EBook({})
 
 
+def _weather_values_from_book(book: Optional[EBook]) -> Dict[str, float]:
+    if book is None:
+        return {}
+    block = book.data.get("Weather")
+    if block is None or not block.data:
+        return {}
+    row = block.data[0]
+    if "name" in block.header_list and "value" in block.header_list:
+        raw = {str(item.get("name")): item.get("value") for item in block.data}
+    else:
+        raw = row
+    values: Dict[str, float] = {}
+    for key in (
+        "wind_speed_mps",
+        "solar_irradiance_w_m2",
+        "air_temp_c",
+        "air_pressure_hpa",
+        "humidity_pct",
+        "load_kw",
+    ):
+        try:
+            values[key] = float(raw[key])
+        except (KeyError, TypeError, ValueError):
+            pass
+    if "time" in raw:
+        time_minutes = _time_minutes(raw.get("time"))
+        if time_minutes is not None:
+            values["time_minutes"] = time_minutes
+    return values
+
+
 def _book_rows(book: EBook, table_name: str) -> List[dict]:
     block = book.data.get(table_name)
     return [] if block is None else list(block.data)
+
+
+def _book_rows_by_idx(book: EBook, table_name: str) -> Dict[str, dict]:
+    return {
+        str(row.get("idx", "")): row
+        for row in _book_rows(book, table_name)
+        if str(row.get("idx", "")) != ""
+    }
+
+
+def _embedded_device_define_book(model_book: EBook) -> EBook:
+    ac_generators = _book_rows_by_idx(model_book, "ACGenerator")
+    dc_generators = _book_rows_by_idx(model_book, "DCGenerator")
+    wind_rows: List[dict] = []
+    pv_rows: List[dict] = []
+    storage_rows: List[dict] = []
+    diesel_rows: List[dict] = []
+
+    for pos, row in enumerate(_sorted_rows(_book_rows(model_book, "ACWindGen")), start=1):
+        source = ac_generators.get(str(row.get("idx_acgenerator", "")), {})
+        source_name = str(source.get("name", row.get("name", f"wind_{pos}")))
+        rated = _numeric_from_text(row.get("rated_power"), None)
+        if rated is None:
+            rated = _rated_power_from_name(row.get("wind_turbine_model"), None)
+        if rated is None:
+            rated = _numeric_from_text(source.get("p_max"), None)
+        if rated is None or rated <= 0.0:
+            rated = _numeric_from_text(source.get("p_set"), 10.0) or 10.0
+        wind_rows.append(
+            {
+                "id": row.get("idx", pos),
+                "name": source_name,
+                "p_max": rated,
+                "p_min": 0,
+                "p_fur": 0,
+                "rated_power": rated,
+                "rated_wind_speed": _numeric_from_text(row.get("rated_wind_speed"), 15.0) or 15.0,
+                "cut_in_speed": _numeric_from_text(row.get("cut_in_wind_speed"), 5.0) or 5.0,
+                "cut_out_speed": _numeric_from_text(row.get("cut_out_wind_speed"), 30.0) or 30.0,
+            }
+        )
+
+    for pos, row in enumerate(_sorted_rows(_book_rows(model_book, "DCPVGen")), start=1):
+        source = dc_generators.get(str(row.get("idx_dcgenerator", "")), {})
+        source_name = str(source.get("name", row.get("name", f"pv_{pos}")))
+        rated = _numeric_from_text(row.get("rated_power"), None)
+        if rated is None:
+            efficiency = _ratio_from_text(row.get("module_efficiency"), 0.2) or 0.2
+            area = _numeric_from_text(row.get("array_area"), 0.0) or 0.0
+            rated = efficiency * area
+        if rated <= 0.0:
+            rated = _numeric_from_text(source.get("p_max"), None) or _numeric_from_text(source.get("p_set"), 0.0) or 0.0
+        pv_rows.append(
+            {
+                "id": row.get("idx", pos),
+                "name": source_name,
+                "p_max": rated,
+                "p_min": 0,
+                "p_fur": 0,
+                "rated_power": rated,
+                "temp_coefficient": _numeric_from_text(row.get("temp_coefficient"), 0.0) or 0.0,
+                "reference_irradiance": _numeric_from_text(row.get("reference_irradiance"), 1000.0) or 1000.0,
+                "reference_temperature": _numeric_from_text(row.get("reference_temperature"), 25.0) or 25.0,
+            }
+        )
+
+    for pos, row in enumerate(_sorted_rows(_book_rows(model_book, "DCStorageGen")), start=1):
+        source = dc_generators.get(str(row.get("idx_dcgenerator", "")), {})
+        source_name = str(source.get("name", row.get("name", f"storage_{pos}")))
+        storage_rows.append(
+            {
+                "id": row.get("idx", pos),
+                "name": source_name,
+                "emva": _numeric_from_text(row.get("energy_capacity"), DEFAULT_STORAGE_CAPACITY_KWH) or DEFAULT_STORAGE_CAPACITY_KWH,
+                "soc_max": _ratio_from_text(row.get("soc_upper_limit"), 1.0) or 1.0,
+                "soc_min": _ratio_from_text(row.get("soc_lower_limit"), 0.0) or 0.0,
+                "soc_cur": _ratio_from_text(row.get("state_of_charge"), 0.5) or 0.5,
+                "charge_p_max": _numeric_from_text(row.get("max_charge_power"), 0.0) or 0.0,
+                "dis_charge_p_max": _numeric_from_text(row.get("max_discharge_power"), 0.0) or 0.0,
+            }
+        )
+
+    wind_names = {row["name"] for row in wind_rows}
+    for pos, row in enumerate(_sorted_rows(_book_rows(model_book, "ACGenerator")), start=1):
+        name = str(row.get("name", ""))
+        dev_type = str(row.get("dev_type", "")).casefold()
+        if name in wind_names or "wind" in dev_type or "风" in name:
+            continue
+        if "diesel" not in name.casefold() and "柴" not in name and "source" not in dev_type:
+            continue
+        p_max = _numeric_from_text(row.get("p_max"), None) or _numeric_from_text(row.get("rated_power"), None)
+        if p_max is None or p_max <= 0.0:
+            p_max = max(_numeric_from_text(row.get("p_set"), 0.0) or 0.0, 300.0)
+        diesel_rows.append(
+            {
+                "id": row.get("idx", pos),
+                "name": name,
+                "p_max": p_max,
+                "p_min": _numeric_from_text(row.get("p_min"), 0.0) or 0.0,
+            }
+        )
+
+    return EBook(
+        {
+            "wind_generator": wind_rows,
+            "pv_generator": pv_rows,
+            "diesel_generator": diesel_rows,
+            "estorage": storage_rows,
+        }
+    )
+
+
+def _capability_define_book(model_book: EBook, dev_define_file: Optional[Path] = None) -> EBook:
+    dev_define = _read_optional_book(dev_define_file)
+    legacy_blocks = {"wind_generator", "pv_generator", "diesel_generator", "estorage", "load_curve_96", "load_temperature"}
+    if any(name in dev_define.data for name in legacy_blocks):
+        return dev_define
+    embedded = _embedded_device_define_book(model_book)
+    if any(getattr(block, "data", []) for block in embedded.data.values()):
+        return embedded
+    return dev_define
 
 
 def _storage_soc_block(book: EBook):
@@ -392,7 +704,10 @@ def apply_dev_stat_file(model_book: EBook, dev_stat_file: Path) -> int:
     dev_stat_file = Path(dev_stat_file)
     if not dev_stat_file.exists():
         return 0
-    stat_book = EBook(dev_stat_file)
+    return apply_dev_stat_book(model_book, EBook(dev_stat_file))
+
+
+def apply_dev_stat_book(model_book: EBook, stat_book: EBook) -> int:
     run_stats = _run_stat_by_name(stat_book)
     changed = 0
 
@@ -460,12 +775,53 @@ def apply_dev_stat_file(model_book: EBook, dev_stat_file: Path) -> int:
         for row in block.data:
             storage_name = str(row.get("name", row.get("dev_name", "")))
             target = _model_row(model_book, "DCGenerator", _storage_source_name(storage_name))
+            if target is None:
+                target = _model_row(model_book, "DCGenerator", storage_name)
             if target is not None:
                 run_stat = row.get("run_stat", "")
                 if run_stat == "":
-                    run_stat = run_stats.get(("ESS", storage_name), run_stats.get(("DCGenerator", _storage_source_name(storage_name)), ""))
+                    run_stat = run_stats.get(
+                        ("ESS", storage_name),
+                        run_stats.get(
+                            ("DCGenerator", storage_name),
+                            run_stats.get(("DCGenerator", _storage_source_name(storage_name)), ""),
+                        ),
+                    )
                 if run_stat != "":
                     changed += _set_row_value(target, "run_stat", run_stat)
+    return changed
+
+
+def apply_mode_file(model_book: EBook, mode_file: Optional[Path]) -> int:
+    if mode_file is None:
+        return 0
+    mode_file = Path(mode_file)
+    if not mode_file.exists():
+        return 0
+    return apply_mode_book(model_book, EBook(mode_file))
+
+
+def apply_mode_book(model_book: EBook, mode_book: Optional[EBook]) -> int:
+    if mode_book is None:
+        return 0
+    changed = 0
+    for block_name in ("ControlMode", "DeviceMode", "Mode"):
+        block = mode_book.data.get(block_name)
+        if block is None:
+            continue
+        for row in block.data:
+            dev_type = str(row.get("dev_type", row.get("type", "")))
+            dev_name = _stat_dev_name(row)
+            mode_value = str(row.get("mode", row.get("control_type", row.get("ctrl_mode", ""))))
+            if not dev_type or not dev_name or not mode_value:
+                continue
+            target = _source_model_row(model_book, dev_type, dev_name)
+            if target is None:
+                continue
+            for column in ("control_type", "mode", "ctrl_mode"):
+                if column in target:
+                    changed += _set_row_value(target, column, mode_value)
+                    break
     return changed
 
 
@@ -473,26 +829,7 @@ def _weather_values(weather_file: Path) -> Dict[str, float]:
     weather_file = Path(weather_file)
     if not weather_file.exists():
         return {}
-    book = EBook(weather_file)
-    block = book.data.get("Weather")
-    if block is None or not block.data:
-        return {}
-    row = block.data[0]
-    if "name" in block.header_list and "value" in block.header_list:
-        raw = {str(item.get("name")): item.get("value") for item in block.data}
-    else:
-        raw = row
-    values = {}
-    for key in ("wind_speed_mps", "solar_irradiance_w_m2", "air_temp_c", "load_kw"):
-        try:
-            values[key] = float(raw[key])
-        except (KeyError, TypeError, ValueError):
-            pass
-    if "time" in raw:
-        time_minutes = _time_minutes(raw.get("time"))
-        if time_minutes is not None:
-            values["time_minutes"] = time_minutes
-    return values
+    return _weather_values_from_book(EBook(weather_file))
 
 
 def _time_minutes(value) -> Optional[float]:
@@ -552,11 +889,20 @@ def pv_available_power(
 
 
 def _load_power(row: dict) -> Tuple[float, float, float, float]:
-    pbase = _safe_float(row.get("pbase", 1.0), 1.0) or 1.0
-    qbase = _safe_float(row.get("qbase", 1.0), 1.0) or 1.0
+    raw_pbase = _safe_float(row.get("pbase", 1.0), 1.0)
+    raw_qbase = _safe_float(row.get("qbase", 1.0), 1.0)
+    pbase = raw_pbase if raw_pbase is not None and raw_pbase > 0.0 else 1.0
+    qbase = raw_qbase if raw_qbase is not None and raw_qbase > 0.0 else 0.0
     p = pbase * (_safe_float(row.get("pv0", 0.0), 0.0) or 0.0)
     q = qbase * (_safe_float(row.get("qv0", 0.0), 0.0) or 0.0)
     return p, q, pbase, qbase
+
+
+def _load_write_base(row: dict, column: str) -> Tuple[float, int]:
+    base = _safe_float(row.get(column, 1.0), 1.0)
+    if base is None or base <= 0.0:
+        return 1.0, _set_row_value(row, column, "1")
+    return base, 0
 
 
 def _load_curve_column_names(point: int) -> Tuple[str, ...]:
@@ -624,6 +970,10 @@ def apply_load_model(model_book: EBook, dev_define: EBook, weather: Dict[str, fl
     scale = target_total / total_p
     changed = 0
     for row, p, q, pbase, qbase in weighted:
+        pbase, base_changed = _load_write_base(row, "pbase")
+        changed += base_changed
+        qbase, base_changed = _load_write_base(row, "qbase")
+        changed += base_changed
         changed += _set_row_value(row, "pv0", _format_power(p * scale / pbase))
         changed += _set_row_value(row, "qv0", _format_power(q * scale / qbase))
     return changed
@@ -794,6 +1144,10 @@ def apply_diesel_limits(model_book: EBook, dev_define: EBook) -> int:
 
 def _storage_soc_by_name(dev_stat_file: Path) -> Tuple[Dict[str, dict], List[dict]]:
     stat_book = _read_optional_book(dev_stat_file)
+    return _storage_soc_by_name_book(stat_book)
+
+
+def _storage_soc_by_name_book(stat_book: EBook) -> Tuple[Dict[str, dict], List[dict]]:
     run_stat = _run_stat_by_name(stat_book)
     rows = []
     for row in _sorted_rows(_storage_soc_rows(stat_book)):
@@ -801,7 +1155,10 @@ def _storage_soc_by_name(dev_stat_file: Path) -> Tuple[Dict[str, dict], List[dic
         storage_name = str(item.get("name", item.get("dev_name", "")))
         value = run_stat.get(
             ("ESS", storage_name),
-            run_stat.get(("DCGenerator", _storage_source_name(storage_name))),
+            run_stat.get(
+                ("DCGenerator", storage_name),
+                run_stat.get(("DCGenerator", _storage_source_name(storage_name))),
+            ),
         )
         if value is not None and item.get("run_stat", "") == "":
             item["run_stat"] = value
@@ -812,11 +1169,41 @@ def _storage_soc_by_name(dev_stat_file: Path) -> Tuple[Dict[str, dict], List[dic
 def _storage_define_for(dev_define: EBook, storage_name: str, pos: int) -> Optional[dict]:
     rows = _sorted_rows(_book_rows(dev_define, "estorage"))
     for row in rows:
-        if str(row.get("name", "")) == storage_name:
+        define_name = str(row.get("name", ""))
+        if define_name == storage_name or _storage_source_name(define_name) == storage_name:
             return row
     if 0 <= pos < len(rows):
         return rows[pos]
     return None
+
+
+def _storage_target_rows(model_book: EBook, dev_define: EBook) -> List[Tuple[dict, str, Optional[dict], int]]:
+    generator_rows = _sorted_rows(_book_rows(model_book, "DCGenerator"))
+    by_name = {str(row.get("name", "")): row for row in generator_rows}
+    matched: List[Tuple[dict, str, Optional[dict], int]] = []
+    seen: set[str] = set()
+    define_rows = _sorted_rows(_book_rows(dev_define, "estorage"))
+    for pos, define in enumerate(define_rows):
+        storage_name = str(define.get("name", ""))
+        row = by_name.get(storage_name) or by_name.get(_storage_source_name(storage_name))
+        if row is None:
+            continue
+        row_name = str(row.get("name", ""))
+        matched.append((row, storage_name, define, pos))
+        seen.add(row_name)
+    if matched:
+        return matched
+    for pos, row in enumerate(generator_rows):
+        row_name = str(row.get("name", ""))
+        if row_name in seen:
+            continue
+        lower_name = row_name.casefold()
+        dev_type = str(row.get("dev_type", "")).casefold()
+        if lower_name.startswith(("ess", "storage")) or "storage" in dev_type or "储能" in row_name:
+            storage_name = row_name.removesuffix("_vsrc")
+            matched.append((row, storage_name, _storage_define_for(dev_define, storage_name, pos), pos))
+            seen.add(row_name)
+    return matched
 
 
 def apply_storage_constraints(
@@ -825,16 +1212,23 @@ def apply_storage_constraints(
     dev_define: EBook,
     period_seconds: float = DEFAULT_PERIOD_SECONDS,
 ) -> int:
-    rows = _target_rows(model_book, "DCGenerator", prefix="ess")
     status_by_name, status_rows = _storage_soc_by_name(dev_stat_file)
+    return apply_storage_constraints_book(model_book, status_by_name, status_rows, dev_define, period_seconds)
+
+
+def apply_storage_constraints_book(
+    model_book: EBook,
+    status_by_name: Mapping[str, dict],
+    status_rows: Sequence[dict],
+    dev_define: EBook,
+    period_seconds: float = DEFAULT_PERIOD_SECONDS,
+) -> int:
     changed = 0
     period_hours = max(0.0, float(period_seconds)) / 3600.0
-    for pos, row in enumerate(rows):
-        storage_name = str(row.get("name", "")).removesuffix("_vsrc")
+    for row, storage_name, define, pos in _storage_target_rows(model_book, dev_define):
         status = status_by_name.get(storage_name)
         if status is None and pos < len(status_rows):
             status = status_rows[pos]
-        define = _storage_define_for(dev_define, storage_name, pos)
         run_stat = _safe_int((status or {}).get("run_stat", row.get("run_stat", 1)), 1)
         if run_stat != 1 or not _is_running_row(row):
             changed += _set_row_value(row, "p_set", "0")
@@ -895,7 +1289,7 @@ def apply_dc_export_limits(
             continue
         source_power += max(0.0, _safe_float(row.get("p_set", 0.0), 0.0) or 0.0)
 
-    for row in _target_rows(model_book, "DCGenerator", prefix="ess"):
+    for row, _storage_name, _define, _pos in _storage_target_rows(model_book, dev_define):
         if not _is_running_row(row):
             continue
         source_power += max(0.0, _safe_float(row.get("p_set", 0.0), 0.0) or 0.0)
@@ -928,25 +1322,54 @@ def apply_device_capability_limits(
     period_seconds: float = DEFAULT_PERIOD_SECONDS,
     active_power_controls: Optional[set[Tuple[str, str]]] = None,
 ) -> int:
-    dev_define = _read_optional_book(dev_define_file)
+    dev_define = _capability_define_book(model_book, dev_define_file)
     if not dev_define.data:
         return 0
     weather = _weather_values(weather_file)
+    stat_book = _read_optional_book(dev_stat_file)
+    return apply_device_capability_limits_book(
+        model_book,
+        weather,
+        stat_book,
+        dev_define,
+        period_seconds,
+        active_power_controls,
+    )
+
+
+def apply_device_capability_limits_book(
+    model_book: EBook,
+    weather: Mapping[str, float],
+    stat_book: EBook,
+    dev_define: EBook,
+    period_seconds: float = DEFAULT_PERIOD_SECONDS,
+    active_power_controls: Optional[set[Tuple[str, str]]] = None,
+) -> int:
+    if not dev_define.data:
+        return 0
+    weather_values = dict(weather)
+    status_by_name, status_rows = _storage_soc_by_name_book(stat_book)
     changed = 0
-    changed += apply_load_model(model_book, dev_define, weather)
-    changed += apply_wind_limits(model_book, dev_define, weather, active_power_controls)
-    changed += apply_pv_limits(model_book, dev_define, weather, active_power_controls)
+    changed += apply_load_model(model_book, dev_define, weather_values)
+    changed += apply_wind_limits(model_book, dev_define, weather_values, active_power_controls)
+    changed += apply_pv_limits(model_book, dev_define, weather_values, active_power_controls)
     changed += apply_diesel_limits(model_book, dev_define)
-    changed += apply_storage_constraints(model_book, dev_stat_file, dev_define, period_seconds)
+    changed += apply_storage_constraints_book(model_book, status_by_name, status_rows, dev_define, period_seconds)
     changed += apply_dc_export_limits(model_book, dev_define)
     return changed
 
 
 def apply_weather_file(model_book: EBook, weather_file: Path, dev_define_file: Optional[Path] = None) -> int:
     values = _weather_values(weather_file)
+    dev_define = _capability_define_book(model_book, dev_define_file)
+    return apply_weather_book(model_book, values, dev_define)
+
+
+def apply_weather_book(model_book: EBook, values: Mapping[str, float], dev_define: Optional[EBook] = None) -> int:
     if not values:
         return 0
-    dev_define = _read_optional_book(dev_define_file)
+    dev_define = dev_define or EBook({})
+    values = dict(values)
     if dev_define.data:
         changed = 0
         changed += apply_load_model(model_book, dev_define, values)
@@ -981,19 +1404,19 @@ def apply_weather_file(model_book: EBook, weather_file: Path, dev_define_file: O
             base_loads = []
             total = 0.0
             for row in block.data:
-                try:
-                    p = float(row.get("pbase", 1.0)) * float(row.get("pv0", 0.0))
-                    q = float(row.get("qbase", 1.0)) * float(row.get("qv0", 0.0))
-                except (TypeError, ValueError):
-                    p, q = 0.0, 0.0
+                p, q, _pbase, _qbase = _load_power(row)
                 base_loads.append((row, p, q))
                 total += p
             if total > 0.0:
                 for row, p, q in base_loads:
                     new_p = values["load_kw"] * p / total
                     new_q = values["load_kw"] * q / total
-                    changed += _set_row_value(row, "pv0", format_number(new_p))
-                    changed += _set_row_value(row, "qv0", format_number(new_q))
+                    pbase, base_changed = _load_write_base(row, "pbase")
+                    changed += base_changed
+                    qbase, base_changed = _load_write_base(row, "qbase")
+                    changed += base_changed
+                    changed += _set_row_value(row, "pv0", format_number(new_p / pbase))
+                    changed += _set_row_value(row, "qv0", format_number(new_q / qbase))
     return changed
 
 
@@ -1001,7 +1424,12 @@ def _active_power_control_targets(yt_ctrl_file: Path) -> set[Tuple[str, str]]:
     yt_ctrl_file = Path(yt_ctrl_file)
     if not yt_ctrl_file.exists():
         return set()
-    ctrl_book = EBook(yt_ctrl_file)
+    return _active_power_control_targets_book(EBook(yt_ctrl_file))
+
+
+def _active_power_control_targets_book(ctrl_book: Optional[EBook]) -> set[Tuple[str, str]]:
+    if ctrl_book is None:
+        return set()
     targets: set[Tuple[str, str]] = set()
     block = ctrl_book.data.get("SetValue")
     if block is not None:
@@ -1026,7 +1454,12 @@ def apply_yt_ctrl_file(model_book: EBook, yt_ctrl_file: Path) -> int:
     yt_ctrl_file = Path(yt_ctrl_file)
     if not yt_ctrl_file.exists():
         return 0
-    ctrl_book = EBook(yt_ctrl_file)
+    return apply_yt_ctrl_book(model_book, EBook(yt_ctrl_file))
+
+
+def apply_yt_ctrl_book(model_book: EBook, ctrl_book: Optional[EBook]) -> int:
+    if ctrl_book is None:
+        return 0
     changed = 0
     block = ctrl_book.data.get("SetValue")
     if block is not None:
@@ -1044,7 +1477,7 @@ def apply_yt_ctrl_file(model_book: EBook, yt_ctrl_file: Path) -> int:
                     changed += _set_row_value(target, "p_set", row["p_set"])
             else:
                 changed += _apply_setpoint_row(model_book, row)
-    changed += apply_overlay_file(model_book, yt_ctrl_file)
+    changed += apply_overlay_book(model_book, ctrl_book)
     return changed
 
 
@@ -1058,12 +1491,24 @@ def update_storage_soc(
     if not dev_stat_file.exists():
         return 0
     stat_book = EBook(dev_stat_file)
+    dev_define = _capability_define_book(model_book, dev_define_file)
+    changed = update_storage_soc_book(stat_book, model_book, period_seconds, dev_define)
+    if changed:
+        write_ebook_aligned(stat_book, dev_stat_file)
+    return changed
+
+
+def update_storage_soc_book(
+    stat_book: EBook,
+    model_book: EBook,
+    period_seconds: float,
+    dev_define: EBook,
+) -> int:
     block = _storage_soc_block(stat_book)
     if block is None:
         return 0
     dc_generator = model_book.data.get("DCGenerator")
     dc_generator_by_name = _rows_by_name(dc_generator) if dc_generator is not None else {}
-    dev_define = _read_optional_book(dev_define_file)
     changed = 0
     for pos, row in enumerate(_sorted_rows(block.data)):
         ess_name = str(row.get("name", ""))
@@ -1082,8 +1527,6 @@ def update_storage_soc(
         next_soc = soc - p_set * float(period_seconds) / 3600.0 / max(capacity, 1e-9)
         next_soc = _clamp(next_soc, soc_min, soc_max)
         changed += _set_row_value(row, "soc_curr", format_number(next_soc))
-    if changed:
-        write_ebook_aligned(stat_book, dev_stat_file)
     return changed
 
 
@@ -1092,19 +1535,24 @@ def apply_realtime_inputs(
     weather_file: Path,
     dev_stat_file: Path,
     yt_ctrl_file: Path,
-    dev_define_file_or_work_dir: Path,
+    dev_define_file_or_work_dir: Optional[Path],
     work_dir: Optional[Path] = None,
     period_seconds: float = DEFAULT_PERIOD_SECONDS,
-) -> Tuple[Path, int, EBook]:
+    mode_file: Optional[Path] = None,
+) -> Tuple[Optional[Path], int, EBook]:
     if work_dir is None:
         dev_define_file = None
-        work_dir = Path(dev_define_file_or_work_dir)
+        if dev_define_file_or_work_dir is None:
+            work_dir = Path(model_file).parent / ".simu_loop_work"
+        else:
+            work_dir = Path(dev_define_file_or_work_dir)
     else:
-        dev_define_file = Path(dev_define_file_or_work_dir)
-    model_book = EBook(model_file)
+        dev_define_file = Path(dev_define_file_or_work_dir) if dev_define_file_or_work_dir is not None else None
+    model_book = _clone_ebook(_load_model_book_once(model_file))
     active_power_controls = _active_power_control_targets(yt_ctrl_file)
     changed = 0
     changed += apply_dev_stat_file(model_book, dev_stat_file)
+    changed += apply_mode_file(model_book, mode_file)
     changed += apply_weather_file(model_book, weather_file, dev_define_file)
     changed += apply_yt_ctrl_file(model_book, yt_ctrl_file)
     changed += apply_device_capability_limits(
@@ -1115,10 +1563,39 @@ def apply_realtime_inputs(
         period_seconds,
         active_power_controls,
     )
-    work_dir.mkdir(parents=True, exist_ok=True)
-    merged_model = work_dir / "merged_model.e"
-    write_ebook_aligned(model_book, merged_model)
-    return merged_model, changed, model_book
+    return None, changed, model_book
+
+
+def apply_realtime_input_books(
+    source_model_book: EBook,
+    weather_book: Optional[EBook],
+    dev_stat_book: Optional[EBook],
+    yt_ctrl_book: Optional[EBook],
+    dev_define_book: Optional[EBook],
+    period_seconds: float = DEFAULT_PERIOD_SECONDS,
+    mode_book: Optional[EBook] = None,
+) -> Tuple[int, EBook, EBook, Dict[str, float]]:
+    """Apply one runtime boundary snapshot to a cloned model book in memory."""
+    model_book = _clone_ebook(source_model_book)
+    stat_book = dev_stat_book or EBook({})
+    ctrl_book = yt_ctrl_book or EBook({})
+    weather_values = _weather_values_from_book(weather_book)
+    dev_define = dev_define_book or _capability_define_book(model_book, None)
+    active_power_controls = _active_power_control_targets_book(ctrl_book)
+    changed = 0
+    changed += apply_dev_stat_book(model_book, stat_book)
+    changed += apply_mode_book(model_book, mode_book)
+    changed += apply_weather_book(model_book, weather_values, dev_define)
+    changed += apply_yt_ctrl_book(model_book, ctrl_book)
+    changed += apply_device_capability_limits_book(
+        model_book,
+        weather_values,
+        stat_book,
+        dev_define,
+        period_seconds,
+        active_power_controls,
+    )
+    return changed, model_book, dev_define, weather_values
 
 
 def solve_ac_snapshot(e_file: Path) -> Tuple[Snapshot, str]:
@@ -1131,6 +1608,26 @@ def solve_ac_snapshot(e_file: Path) -> Tuple[Snapshot, str]:
     if rc != 0 or not calc.converged:
         raise RuntimeError(f"AC load flow failed for {e_file}: rc={rc}, iter={calc.iterations}, normF={calc.normF:.3e}")
     return Snapshot(network, ac_grid=network), f"iter={calc.iterations}, normF={calc.normF:.3e}"
+
+
+def solve_ac_snapshot_from_book(model_book: EBook, source: Optional[Path] = None) -> Tuple[Snapshot, str]:
+    source_path = Path(source or getattr(model_book, "file_path", "memory_model.e"))
+    network = ACPowerNetwork()
+    network.source = str(source_path)
+    network.read_from_model(_ebook_to_efile_rows(model_book))
+    network.topo()
+    calc = ACPowerFlowCalc(network)
+    with contextlib.redirect_stdout(io.StringIO()):
+        rc = calc.run()
+    if rc != 0 or not calc.converged:
+        raise RuntimeError(
+            f"AC load flow failed for in-memory model {source_path}: "
+            f"rc={rc}, iter={calc.iterations}, normF={calc.normF:.3e}"
+        )
+    snapshot = Snapshot(network, ac_grid=network)
+    _add_zero_impedance_devices_from_book(snapshot, model_book)
+    _link_snapshot_terminal_objects(snapshot)
+    return snapshot, f"iter={calc.iterations}, normF={calc.normF:.3e}"
 
 
 def solve_hybrid_snapshot(e_file: Path) -> Tuple[Snapshot, str]:
@@ -1155,8 +1652,44 @@ def solve_hybrid_snapshot(e_file: Path) -> Tuple[Snapshot, str]:
     return snapshot, f"iter={calc.iterations}, normF={calc.normF:.3e}"
 
 
+def _read_lf_network_from_book(model_book: EBook, source: Path) -> object:
+    rows = _ebook_to_efile_rows(model_book)
+    file_kind = _detect_lf_rows_kind(rows)
+    if file_kind == "ac":
+        return _build_lf_network_from_single_ac_file(source, rows)
+    if file_kind == "dc":
+        return _build_lf_network_from_single_dc_file(source, rows)
+    return _build_lf_network_from_hybrid_rows(source, rows)
+
+
+def solve_hybrid_snapshot_from_book(model_book: EBook, source: Optional[Path] = None) -> Tuple[Snapshot, str]:
+    source_path = Path(source or getattr(model_book, "file_path", "memory_model.e"))
+    network = _read_lf_network_from_book(model_book, source_path)
+    calc = HybridPowerFlowCalc(network, verbose=False)
+    with contextlib.redirect_stdout(io.StringIO()):
+        rc = calc.run()
+    if rc != 0 or not calc.converged:
+        raise RuntimeError(
+            f"Hybrid load flow failed for in-memory model {source_path}: "
+            f"rc={rc}, iter={calc.iterations}, normF={calc.normF:.3e}"
+        )
+    snapshot = Snapshot(
+        network,
+        ac_grid=network.ac,
+        dc_grid=network.dc,
+        dcac_converters=network.dcac_converters,
+        acac_converters=network.acac_converters,
+    )
+    _add_zero_impedance_devices_from_book(snapshot, model_book)
+    _link_snapshot_terminal_objects(snapshot)
+    return snapshot, f"iter={calc.iterations}, normF={calc.normF:.3e}"
+
+
 def _add_zero_impedance_devices_from_file(snapshot: Snapshot, e_file: Path) -> None:
-    book = EBook(e_file)
+    _add_zero_impedance_devices_from_book(snapshot, EBook(e_file))
+
+
+def _add_zero_impedance_devices_from_book(snapshot: Snapshot, book: EBook) -> None:
     specs = (
         ("ACSwitch", snapshot.ac_devices, ("p", "q", "current")),
         ("ACBreak", snapshot.ac_devices, ("p", "q", "current")),
@@ -1228,6 +1761,12 @@ def _storage_soc_values(dev_stat_file: Optional[Path]) -> Dict[str, float]:
         book = EBook(path)
     except Exception:
         return {}
+    return _storage_soc_values_from_book(book)
+
+
+def _storage_soc_values_from_book(book: Optional[EBook]) -> Dict[str, float]:
+    if book is None:
+        return {}
     values: Dict[str, float] = {}
     for row in _storage_soc_rows(book):
         name = str(row.get("name", row.get("dev_name", "")))
@@ -1239,8 +1778,68 @@ def _storage_soc_values(dev_stat_file: Optional[Path]) -> Dict[str, float]:
     return values
 
 
-def _measurement_value(snapshot, row: Sequence[str], storage_soc: Optional[Dict[str, float]] = None) -> Optional[float]:
+def _signal_measurement_values(dev_stat_file: Optional[Path]) -> Dict[Tuple[str, str, str], float]:
+    if dev_stat_file is None:
+        return {}
+    path = Path(dev_stat_file)
+    if not path.exists():
+        return {}
+    try:
+        book = EBook(path)
+    except Exception:
+        return {}
+    return _signal_measurement_values_from_book(book)
+
+
+def _signal_measurement_values_from_book(book: Optional[EBook]) -> Dict[Tuple[str, str, str], float]:
+    if book is None:
+        return {}
+    values: Dict[Tuple[str, str, str], float] = {}
+    signal_blocks = (
+        ("RunStat", "run_stat", "RUN_STAT"),
+        ("DeviceRunStatus", "run_stat", "RUN_STAT"),
+        ("CbOpenStat", "status", "STATUS"),
+        ("SwitchBreakerStatus", "status", "STATUS"),
+    )
+    for block_name, value_column, meas_type in signal_blocks:
+        block = book.data.get(block_name)
+        if block is None:
+            continue
+        for item in block.data:
+            dev_type = str(item.get("dev_type", ""))
+            dev_name = _stat_dev_name(item)
+            if not dev_type or not dev_name:
+                continue
+            value = _safe_float(item.get(value_column, ""), None)
+            if value is not None:
+                values[(dev_type, dev_name, meas_type)] = value
+    return values
+
+
+def _weather_measurement_value(meas_type: str, weather: Optional[Dict[str, float]]) -> Optional[float]:
+    if weather is None:
+        return None
+    return {
+        "WIND_SPEED": weather.get("wind_speed_mps"),
+        "AIR_TEMP": weather.get("air_temp_c"),
+        "HUMIDITY": weather.get("humidity_pct"),
+        "AIR_PRESSURE": weather.get("air_pressure_hpa"),
+        "SOLAR_IRRADIANCE": weather.get("solar_irradiance_w_m2"),
+    }.get(meas_type)
+
+
+def _measurement_value(
+    snapshot,
+    row: Sequence[str],
+    storage_soc: Optional[Dict[str, float]] = None,
+    weather: Optional[Dict[str, float]] = None,
+    signal_values: Optional[Dict[Tuple[str, str, str], float]] = None,
+) -> Optional[float]:
     dev_type, dev_name, meas_type = row[2], row[3], row[4].upper()
+    if meas_type in SIGNAL_MEASUREMENT_TYPES:
+        return None if signal_values is None else signal_values.get((dev_type, dev_name, meas_type))
+    if dev_type == "Environment" and dev_name == "weather":
+        return _weather_measurement_value(meas_type, weather)
     if dev_type in ("ESS", "Storage"):
         if meas_type == "SOC":
             return None if storage_soc is None else storage_soc.get(dev_name)
@@ -1253,6 +1852,8 @@ def _measurement_value(snapshot, row: Sequence[str], storage_soc: Optional[Dict[
             return snapshot.value("DCGenerator", source_name, "V_GEN")
         if meas_type == "I":
             return snapshot.value("DCGenerator", source_name, "I_GEN")
+    if dev_type == "DCGenerator" and meas_type == "SOC":
+        return None if storage_soc is None else storage_soc.get(dev_name)
     if dev_type == "ACBreak":
         dev = snapshot.ac_devices.get("ACBreak", {}).get(dev_name)
         return None if dev is None else snapshot._ac_zero_value(dev, meas_type)
@@ -1269,19 +1870,53 @@ def build_real_rows(
     meas_file: Path,
     snapshot,
     dev_stat_file: Optional[Path] = None,
+    weather_file: Optional[Path] = None,
 ) -> Tuple[List[str], List[List[str]], List[str], int, int]:
     before, rows, after = parse_measurement_rows(meas_file)
     storage_soc = _storage_soc_values(dev_stat_file)
+    weather = _weather_values(weather_file) if weather_file is not None else None
+    signal_values = _signal_measurement_values(dev_stat_file)
+    return build_real_rows_from_data(rows, snapshot, storage_soc, weather, signal_values, before, after)
+
+
+def build_real_rows_from_data(
+    measurement_rows: Sequence[Sequence[str]],
+    snapshot,
+    storage_soc: Optional[Dict[str, float]] = None,
+    weather: Optional[Dict[str, float]] = None,
+    signal_values: Optional[Dict[Tuple[str, str, str], float]] = None,
+    before: Optional[Sequence[str]] = None,
+    after: Optional[Sequence[str]] = None,
+) -> Tuple[List[str], List[List[str]], List[str], int, int]:
+    rows = []
+    for source_row in measurement_rows:
+        row = [str(cell) for cell in source_row]
+        if len(row) < len(MEAS_HEADER):
+            row.extend("" for _ in range(len(MEAS_HEADER) - len(row)))
+        rows.append(row[: len(MEAS_HEADER)])
     updated = 0
     missing = 0
     for row in rows:
-        value = _measurement_value(snapshot, row, storage_soc)
+        value = _measurement_value(snapshot, row, storage_soc, weather, signal_values)
         if value is None:
             missing += 1
             continue
         row[7] = format_number(float(value))
         updated += 1
-    return before, rows, after, updated, missing
+    return list(before or []), rows, list(after or []), updated, missing
+
+
+def _measurement_rows_from_book(book: Optional[EBook]) -> Tuple[List[str], List[List[str]], List[str]]:
+    if book is None:
+        return [], [], []
+    block = book.data.get("Measurement")
+    if block is None:
+        return [], [], []
+    rows = [
+        [str(row.get(header, "")) for header in MEAS_HEADER]
+        for row in getattr(block, "data", [])
+    ]
+    return [], rows, []
 
 
 def _row_noise_sigma(row: Sequence[str], noise_std: Optional[float]) -> float:
@@ -1300,6 +1935,9 @@ def add_noise_to_rows(rows: Sequence[Sequence[str]], noise_std: Optional[float],
     noisy_rows: List[List[str]] = []
     for source_row in rows:
         row = list(source_row)
+        if len(row) > 4 and str(row[4]).upper() in SIGNAL_MEASUREMENT_TYPES:
+            noisy_rows.append(row)
+            continue
         sigma = _row_noise_sigma(row, noise_std)
         if sigma > 0.0:
             try:
@@ -1333,14 +1971,105 @@ def write_measurement_snapshot(path: Path, before: Sequence[str], rows: Sequence
     path.write_text(render_measurement_snapshot_aligned(before, rows, after), encoding="utf-8")
 
 
+def _config_uses_memory_runtime(config: SimulationConfig) -> bool:
+    return any(
+        value is not None
+        for value in (
+            config.model_book,
+            config.meas_rows,
+            config.weather_book,
+            config.dev_stat_book,
+            config.yt_ctrl_book,
+            config.dev_define_book,
+            config.mode_book,
+        )
+    )
+
+
+def _solve_snapshot_from_book(
+    solver: Callable[[object], Tuple[object, str]],
+    model_book: EBook,
+    source: Path,
+) -> Tuple[object, str]:
+    if solver is solve_hybrid_snapshot:
+        return solve_hybrid_snapshot_from_book(model_book, source)
+    if solver is solve_ac_snapshot:
+        return solve_ac_snapshot_from_book(model_book, source)
+    if solver is solve_hybrid_snapshot_from_book or solver is solve_ac_snapshot_from_book:
+        return solver(model_book, source)
+    return solver(_ebook_to_dict_rows(model_book))
+
+
 def run_once(
     config: SimulationConfig,
-    solver: Callable[[Path], Tuple[object, str]] = solve_hybrid_snapshot,
+    solver: Callable[[object], Tuple[object, str]] = solve_hybrid_snapshot,
     rng: Optional[random.Random] = None,
 ) -> SimulationResult:
     rng = rng or random.Random(config.random_seed)
+    if _config_uses_memory_runtime(config):
+        source_model_book = config.model_book if config.model_book is not None else _load_model_book_once(config.model_file)
+        meas_before = list(config.meas_before or [])
+        if config.meas_rows is None:
+            book_before, meas_rows, book_after = _measurement_rows_from_book(EBook(config.meas_file) if config.meas_file.exists() else None)
+            meas_before = meas_before or book_before
+            meas_after = list(config.meas_after or book_after)
+        else:
+            meas_rows = [list(row) for row in config.meas_rows]
+            meas_after = list(config.meas_after or [])
+        stat_book = config.dev_stat_book or _read_optional_book(config.dev_stat_file)
+        weather_book = config.weather_book or _read_optional_book(config.weather_file)
+        ctrl_book = config.yt_ctrl_book or _read_optional_book(config.yt_ctrl_file)
+        if config.mode_book is not None:
+            mode_book = config.mode_book
+        elif config.mode_file is not None and Path(config.mode_file).exists():
+            mode_book = EBook(config.mode_file)
+        else:
+            mode_book = None
+        dev_define_book = config.dev_define_book
+        if dev_define_book is None and config.dev_define_file is not None:
+            dev_define_book = _read_optional_book(config.dev_define_file)
+
+        overlay_updates, model_book, dev_define, weather_values = apply_realtime_input_books(
+            source_model_book,
+            weather_book,
+            stat_book,
+            ctrl_book,
+            dev_define_book,
+            config.period_seconds,
+            mode_book,
+        )
+        snapshot, solver_info = _solve_snapshot_from_book(solver, model_book, config.model_file)
+        soc_updates = update_storage_soc_book(stat_book, model_book, config.period_seconds, dev_define)
+        storage_soc = _storage_soc_values_from_book(stat_book)
+        signal_values = _signal_measurement_values_from_book(stat_book)
+        before, real_rows, after, updated, missing = build_real_rows_from_data(
+            meas_rows,
+            snapshot,
+            storage_soc,
+            weather_values,
+            signal_values,
+            meas_before,
+            meas_after,
+        )
+        scada_rows = add_noise_to_rows(real_rows, config.noise_std, rng)
+        if config.write_output_files:
+            write_measurement_snapshot(config.real_file, before, real_rows, after)
+            write_measurement_snapshot(config.scada_file, before, scada_rows, after)
+        return SimulationResult(
+            real_file=config.real_file,
+            scada_file=config.scada_file,
+            updated=updated,
+            missing=missing,
+            overlay_updates=overlay_updates + soc_updates,
+            solver_info=solver_info,
+            model_book=model_book,
+            measurement_definitions=[list(row) for row in meas_rows],
+            real_rows=real_rows,
+            scada_rows=scada_rows,
+        )
+
     work_dir = config.real_file.parent / ".simu_loop_work"
-    model_file, overlay_updates, model_book = apply_realtime_inputs(
+    _model_file, overlay_updates, model_book = apply_realtime_inputs(
         config.model_file,
         config.weather_file,
         config.dev_stat_file,
@@ -1348,14 +2077,21 @@ def run_once(
         config.dev_define_file,
         work_dir,
         config.period_seconds,
+        config.mode_file,
     )
-    snapshot, solver_info = solver(model_file)
+    snapshot, solver_info = _solve_snapshot_from_book(solver, model_book, config.model_file)
     soc_updates = update_storage_soc(config.dev_stat_file, model_book, config.period_seconds, config.dev_define_file)
 
-    before, real_rows, after, updated, missing = build_real_rows(config.meas_file, snapshot, config.dev_stat_file)
-    write_measurement_snapshot(config.real_file, before, real_rows, after)
+    before, real_rows, after, updated, missing = build_real_rows(
+        config.meas_file,
+        snapshot,
+        config.dev_stat_file,
+        config.weather_file,
+    )
     scada_rows = add_noise_to_rows(real_rows, config.noise_std, rng)
-    write_measurement_snapshot(config.scada_file, before, scada_rows, after)
+    if config.write_output_files:
+        write_measurement_snapshot(config.real_file, before, real_rows, after)
+        write_measurement_snapshot(config.scada_file, before, scada_rows, after)
     return SimulationResult(
         real_file=config.real_file,
         scada_file=config.scada_file,
@@ -1363,6 +2099,10 @@ def run_once(
         missing=missing,
         overlay_updates=overlay_updates + soc_updates,
         solver_info=solver_info,
+        model_book=model_book,
+        measurement_definitions=[list(row) for row in real_rows],
+        real_rows=real_rows,
+        scada_rows=scada_rows,
     )
 
 
@@ -1373,6 +2113,7 @@ def simulate_once(
     dev_stat_file: Optional[Path] = None,
     yt_ctrl_file: Optional[Path] = None,
     dev_define_file: Optional[Path] = None,
+    mode_file: Optional[Path] = None,
     real_file: Optional[Path] = None,
     scada_file: Optional[Path] = None,
     period_seconds: float = DEFAULT_PERIOD_SECONDS,
@@ -1387,7 +2128,8 @@ def simulate_once(
         weather_file=Path(weather_file or defaults.weather_file).resolve(),
         dev_stat_file=Path(dev_stat_file or defaults.dev_stat_file).resolve(),
         yt_ctrl_file=Path(yt_ctrl_file or defaults.yt_ctrl_file).resolve(),
-        dev_define_file=Path(dev_define_file or defaults.dev_define_file).resolve(),
+        dev_define_file=Path(dev_define_file).resolve() if dev_define_file is not None else defaults.dev_define_file,
+        mode_file=Path(mode_file).resolve() if mode_file is not None else defaults.mode_file,
         real_file=Path(real_file or defaults.real_file).resolve(),
         scada_file=Path(scada_file or defaults.scada_file).resolve(),
         period_seconds=period_seconds,
@@ -1475,8 +2217,8 @@ def parse_args(argv: Sequence[str]) -> SimulationConfig:
         "--device",
         "--dev-define",
         dest="dev_define",
-        default=str(defaults.dev_define_file),
-        help="Wind/PV/storage/diesel/load device parameter E file, default: simu/device.e.",
+        default=None,
+        help="Optional legacy device parameter E file. If omitted, device parameters are read from model.e blocks.",
     )
     parser.add_argument("--yt-ctrl", default=str(defaults.yt_ctrl_file), help="Remote control E file.")
     parser.add_argument("--real", default=str(defaults.real_file), help="Output real-value E file.")
@@ -1495,7 +2237,8 @@ def parse_args(argv: Sequence[str]) -> SimulationConfig:
         meas_file=Path(args.meas).resolve(),
         weather_file=Path(args.weather).resolve(),
         dev_stat_file=Path(args.dev_stat).resolve(),
-        dev_define_file=Path(args.dev_define).resolve(),
+        dev_define_file=Path(args.dev_define).resolve() if args.dev_define else None,
+        mode_file=None,
         yt_ctrl_file=Path(args.yt_ctrl).resolve(),
         real_file=Path(args.real).resolve(),
         scada_file=Path(args.scada).resolve(),

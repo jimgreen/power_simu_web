@@ -194,7 +194,10 @@
               <div id="curveDisplayTree" class="curve-tree" aria-label="曲线显示树"></div>
             </aside>
 
-            <div class="curve-workspace">
+            <div
+              class="curve-workspace vertical-split-workspace"
+              data-vertical-split="trainee-curves"
+            >
               <section class="panel curve-chart-panel">
                 <div class="panel-head">
                   <h2>曲线显示</h2>
@@ -214,6 +217,15 @@
                   aria-label="环境和负荷曲线只读显示"
                 ></canvas>
               </section>
+
+              <div
+                class="vertical-stack-splitter"
+                data-vertical-splitter="trainee-curves"
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="调整曲线和表格高度"
+                tabindex="0"
+              ></div>
 
               <section class="panel curve-table-panel">
                 <div class="panel-head">
@@ -236,7 +248,10 @@
               <div id="measurementDeviceTree" class="device-tree" aria-label="量测设备树"></div>
             </aside>
 
-            <div class="measurement-workspace">
+            <div
+              class="measurement-workspace vertical-split-workspace"
+              data-vertical-split="trainee-measurements"
+            >
               <section class="panel measurement-table-panel">
                 <div class="panel-head">
                   <h2>量测值</h2>
@@ -244,6 +259,15 @@
                 </div>
                 <div id="measurementTable" class="measurement-compare-wrap"></div>
               </section>
+
+              <div
+                class="vertical-stack-splitter"
+                data-vertical-splitter="trainee-measurements"
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="调整量测表格和曲线高度"
+                tabindex="0"
+              ></div>
 
               <section class="panel measurement-trace-panel">
                 <div class="panel-head">
@@ -286,41 +310,56 @@
                 <h2>控制指令</h2>
                 <span id="commandPendingCount">0 待发</span>
               </div>
-              <div class="command-tab-bar" role="tablist" aria-label="控制指令类型">
-                <button type="button" class="command-tab is-active" data-command-tab="remote-control" role="tab" aria-selected="true">遥控</button>
-                <button type="button" class="command-tab" data-command-tab="remote-adjustment" role="tab" aria-selected="false">遥调</button>
+              <div
+                class="command-split-workspace vertical-split-workspace"
+                data-vertical-split="trainee-commands"
+              >
+                <div class="command-table-stack">
+                  <div class="command-tab-bar" role="tablist" aria-label="控制指令类型">
+                    <button type="button" class="command-tab is-active" data-command-tab="remote-control" role="tab" aria-selected="true">遥控</button>
+                    <button type="button" class="command-tab" data-command-tab="remote-adjustment" role="tab" aria-selected="false">遥调</button>
+                  </div>
+                  <section class="command-tab-page is-active" data-command-tab-page="remote-control" role="tabpanel">
+                    <div class="command-table-head"><strong>遥控指令</strong><span id="runPendingCount">0 待发</span></div>
+                    <div id="runControlTable" class="runtime-device-wrap"></div>
+                  </section>
+                  <section class="command-tab-page" data-command-tab-page="remote-adjustment" role="tabpanel">
+                    <div class="command-table-head"><strong>遥调指令</strong><span id="setpointPendingCount">0 待发</span></div>
+                    <div id="setpointControlTable" class="runtime-device-wrap"></div>
+                  </section>
+                </div>
+                <div
+                  class="vertical-stack-splitter"
+                  data-vertical-splitter="trainee-commands"
+                  role="separator"
+                  aria-orientation="horizontal"
+                  aria-label="调整控制指令表格和曲线高度"
+                  tabindex="0"
+                ></div>
+                <section class="command-trace-panel">
+                  <div class="panel-head compact-panel-head">
+                    <h2>指令跟踪曲线</h2>
+                    <label class="compact-field">窗口
+                      <select id="commandTraceWindow">
+                        <option value="15">15分钟</option>
+                        <option value="60" selected>1小时</option>
+                        <option value="120">2小时</option>
+                        <option value="360">6小时</option>
+                        <option value="1440">1日</option>
+                        <option value="10080">1周</option>
+                        <option value="43200">1月</option>
+                        <option value="525600">1年</option>
+                      </select>
+                    </label>
+                  </div>
+                  <canvas id="commandTraceChart" width="1500" height="320"></canvas>
+                  <div class="measurement-trace-legend command-trace-legend">
+                    <button type="button" class="chart-legend-item" data-chart-toggle="commandTrace" data-chart-series="control"><i class="trace-control"></i>控制值</button>
+                    <button type="button" class="chart-legend-item" data-chart-toggle="commandTrace" data-chart-series="actual"><i class="trace-actual"></i>实时值</button>
+                    <strong id="commandTraceSummary">未选择指令</strong>
+                  </div>
+                </section>
               </div>
-              <section class="command-tab-page is-active" data-command-tab-page="remote-control" role="tabpanel">
-                <div class="command-table-head"><strong>遥控指令</strong><span id="runPendingCount">0 待发</span></div>
-                <div id="runControlTable" class="runtime-device-wrap"></div>
-              </section>
-              <section class="command-tab-page" data-command-tab-page="remote-adjustment" role="tabpanel">
-                <div class="command-table-head"><strong>遥调指令</strong><span id="setpointPendingCount">0 待发</span></div>
-                <div id="setpointControlTable" class="runtime-device-wrap"></div>
-              </section>
-              <section class="command-trace-panel">
-                <div class="panel-head compact-panel-head">
-                  <h2>指令跟踪曲线</h2>
-                  <label class="compact-field">窗口
-                    <select id="commandTraceWindow">
-                      <option value="15">15分钟</option>
-                      <option value="60" selected>1小时</option>
-                      <option value="120">2小时</option>
-                      <option value="360">6小时</option>
-                      <option value="1440">1日</option>
-                      <option value="10080">1周</option>
-                      <option value="43200">1月</option>
-                      <option value="525600">1年</option>
-                    </select>
-                  </label>
-                </div>
-                <canvas id="commandTraceChart" width="1500" height="320"></canvas>
-                <div class="measurement-trace-legend command-trace-legend">
-                  <button type="button" class="chart-legend-item" data-chart-toggle="commandTrace" data-chart-series="control"><i class="trace-control"></i>控制值</button>
-                  <button type="button" class="chart-legend-item" data-chart-toggle="commandTrace" data-chart-series="actual"><i class="trace-actual"></i>实时值</button>
-                  <strong id="commandTraceSummary">未选择指令</strong>
-                </div>
-              </section>
             </section>
           </div>
         </section>

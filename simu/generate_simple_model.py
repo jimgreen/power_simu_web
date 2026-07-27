@@ -205,6 +205,68 @@ def model_blocks() -> list[Block]:
                 },
             ],
         ),
+        (
+            "ACWindGen",
+            ("idx", "idx_acgenerator", "wind_turbine_model", "cut_in_wind_speed", "rated_wind_speed", "cut_out_wind_speed", "rated_power", "rotor_diameter", "hub_height"),
+            [
+                {
+                    "idx": 1,
+                    "idx_acgenerator": 1,
+                    "wind_turbine_model": "WT-10kW",
+                    "cut_in_wind_speed": 5.0,
+                    "rated_wind_speed": 15.0,
+                    "cut_out_wind_speed": 50.0,
+                    "rated_power": 10.0,
+                    "rotor_diameter": 6.0,
+                    "hub_height": 10.0,
+                }
+            ],
+        ),
+        (
+            "DCPVGen",
+            ("idx", "idx_dcgenerator", "pv_module_model", "module_efficiency", "array_area", "mppt_count"),
+            [
+                {
+                    "idx": 1,
+                    "idx_dcgenerator": 2,
+                    "pv_module_model": "Mono-550W",
+                    "module_efficiency": "20%",
+                    "array_area": "250_m2",
+                    "mppt_count": 1,
+                }
+            ],
+        ),
+        (
+            "DCStorageGen",
+            (
+                "idx",
+                "idx_dcgenerator",
+                "storage_technology",
+                "battery_rack_count",
+                "energy_capacity",
+                "charge_discharge_efficiency",
+                "max_charge_power",
+                "max_discharge_power",
+                "state_of_charge",
+                "soc_upper_limit",
+                "soc_lower_limit",
+            ),
+            [
+                {
+                    "idx": 1,
+                    "idx_dcgenerator": 3,
+                    "storage_technology": "lithium",
+                    "battery_rack_count": 1,
+                    "energy_capacity": 100.0,
+                    "charge_discharge_efficiency": 0.95,
+                    "max_charge_power": 40.0,
+                    "max_discharge_power": 40.0,
+                    "state_of_charge": "55%",
+                    "soc_upper_limit": "90%",
+                    "soc_lower_limit": "20%",
+                }
+            ],
+        ),
     ]
 
 
@@ -368,6 +430,27 @@ def measurement_blocks() -> list[Block]:
         ("weather_solar_irradiance", "SOLAR_IRRADIANCE", 0.0),
     ):
         add(name, "Environment", "weather", meas_type, weight=1.0, value=value)
+    for block_name, _header, stat_rows in stat_blocks():
+        if block_name == "RunStat":
+            for row in stat_rows:
+                add(
+                    f"{row['dev_type']}.{row['dev_name']}.run_stat",
+                    row["dev_type"],
+                    row["dev_name"],
+                    "RUN_STAT",
+                    weight=1.0,
+                    value=row.get("run_stat", 1),
+                )
+        elif block_name == "CbOpenStat":
+            for row in stat_rows:
+                add(
+                    f"{row['dev_type']}.{row['dev_name']}.status",
+                    row["dev_type"],
+                    row["dev_name"],
+                    "STATUS",
+                    weight=1.0,
+                    value=row.get("status", 1),
+                )
     return [("Measurement", ("idx", "name", "dev_type", "dev_name", "meas_type", "weight", "valid", "value"), rows)]
 
 
@@ -424,6 +507,65 @@ def curves_payload() -> dict[str, Any]:
     }
 
 
+def curve_definition_blocks(curves: Mapping[str, Any]) -> list[Block]:
+    weather_rows = [
+        {
+            "idx": idx,
+            "minute": point.get("minute", idx - 1),
+            "wind_speed_mps": point.get("wind_speed_mps", ""),
+            "air_temp_c": point.get("air_temp_c", ""),
+            "air_pressure_hpa": point.get("air_pressure_hpa", ""),
+            "solar_irradiance_w_m2": point.get("solar_irradiance_w_m2", ""),
+            "humidity_pct": point.get("humidity_pct", ""),
+        }
+        for idx, point in enumerate(curves.get("weather", []), start=1)
+        if isinstance(point, Mapping)
+    ]
+    load_rows: list[dict[str, Any]] = []
+    loads = curves.get("loads", {})
+    if isinstance(loads, Mapping):
+        for load_name, points in loads.items():
+            if not isinstance(points, list):
+                continue
+            for idx, point in enumerate(points, start=1):
+                if isinstance(point, Mapping):
+                    load_rows.append(
+                        {
+                            "idx": idx,
+                            "load_name": load_name,
+                            "minute": point.get("minute", idx - 1),
+                            "p_kw": point.get("p_kw", ""),
+                        }
+                    )
+    return [
+        (
+            "CurveInfo",
+            ("mode", "time_step_minutes", "point_count"),
+            [
+                {
+                    "mode": curves.get("mode", "day"),
+                    "time_step_minutes": curves.get("time_step_minutes", 1),
+                    "point_count": curves.get("point_count", len(weather_rows)),
+                }
+            ],
+        ),
+        (
+            "EnvironmentCurve",
+            (
+                "idx",
+                "minute",
+                "wind_speed_mps",
+                "air_temp_c",
+                "air_pressure_hpa",
+                "solar_irradiance_w_m2",
+                "humidity_pct",
+            ),
+            weather_rows,
+        ),
+        ("LoadCurve", ("idx", "load_name", "minute", "p_kw"), load_rows),
+    ]
+
+
 def write_model_dir(target_dir: Path) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     write_efile(target_dir / "model.e", model_blocks())
@@ -431,8 +573,12 @@ def write_model_dir(target_dir: Path) -> None:
     write_efile(target_dir / "stat.e", stat_blocks())
     write_efile(target_dir / "control.e", stat_blocks())
     write_efile(target_dir / "weather.e", weather_blocks())
-    write_efile(target_dir / "device.e", device_blocks())
-    (target_dir / "curves.json").write_text(json.dumps(curves_payload(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    legacy_device = target_dir / "device.e"
+    if legacy_device.exists() and legacy_device.is_file():
+        legacy_device.unlink()
+    curves = curves_payload()
+    (target_dir / "curves.json").write_text(json.dumps(curves, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_efile(target_dir / "curves.e", curve_definition_blocks(curves))
 
 
 def main() -> None:

@@ -20,6 +20,250 @@ def _efile_block(name: str, header: tuple[str, ...], rows: list[dict[str, object
 
 
 class RenewableCapabilityLimitTest(unittest.TestCase):
+    def test_weather_load_kw_with_zero_load_base_reaches_solver_model(self):
+        import simu_loop
+
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        root = Path(workspace.name)
+        model_file = root / "model.e"
+        stat_file = root / "stat.e"
+        weather_file = root / "weather.e"
+        yt_ctrl_file = root / "yt_ctrl.e"
+        meas_file = root / "meas.e"
+
+        model_file.write_text(
+            _efile_block(
+                "ACLoad",
+                ("idx", "name", "node", "pbase", "pv0", "pv1", "pv2", "qbase", "qv0", "qv1", "qv2", "run_stat"),
+                [
+                    {
+                        "idx": 1,
+                        "name": "load_alpha",
+                        "node": 1,
+                        "pbase": 0,
+                        "pv0": 1.0,
+                        "pv1": 0,
+                        "pv2": 0,
+                        "qbase": 0,
+                        "qv0": 1.0,
+                        "qv1": 0,
+                        "qv2": 0,
+                        "run_stat": 1,
+                    }
+                ],
+            )
+            + _efile_block(
+                "ACGenerator",
+                ("idx", "name", "dev_type", "node", "control_type", "p_set", "q_set", "v_set", "run_stat"),
+                [
+                    {
+                        "idx": 1,
+                        "name": "wind_alpha",
+                        "dev_type": "ac-wind-source",
+                        "node": 1,
+                        "control_type": "P",
+                        "p_set": 0,
+                        "q_set": 0,
+                        "v_set": 300,
+                        "run_stat": 1,
+                    }
+                ],
+            )
+            + _efile_block(
+                "ACWindGen",
+                (
+                    "idx",
+                    "idx_acgenerator",
+                    "wind_turbine_model",
+                    "cut_in_wind_speed",
+                    "rated_wind_speed",
+                    "cut_out_wind_speed",
+                    "rated_power",
+                ),
+                [
+                    {
+                        "idx": 1,
+                        "idx_acgenerator": 1,
+                        "wind_turbine_model": "WT-10kW",
+                        "cut_in_wind_speed": 5,
+                        "rated_wind_speed": 15,
+                        "cut_out_wind_speed": 50,
+                        "rated_power": 10,
+                    }
+                ],
+            ),
+            encoding="utf-8",
+        )
+        stat_file.write_text(_efile_block("SetValue", ("dev_type", "dev_name", "set_type", "set_value"), []), encoding="utf-8")
+        yt_ctrl_file.write_text(_efile_block("SetValue", ("dev_type", "dev_name", "set_type", "set_value"), []), encoding="utf-8")
+        weather_file.write_text(
+            _efile_block(
+                "Weather",
+                ("time", "wind_speed_mps", "solar_irradiance_w_m2", "air_temp_c", "load_kw"),
+                [{"time": "00:00:00", "wind_speed_mps": 10, "solar_irradiance_w_m2": 0, "air_temp_c": 25, "load_kw": 120}],
+            ),
+            encoding="utf-8",
+        )
+        meas_file.write_text(MEAS_TEXT, encoding="utf-8")
+
+        seen: dict[str, float] = {}
+
+        def fake_solver(merged_model: Path):
+            book = simu_loop.EBook(merged_model)
+            row = book.data["ACLoad"].data[0]
+            pbase = float(row["pbase"])
+            pv0 = float(row["pv0"])
+            seen["pbase"] = pbase
+            seen["pv0"] = pv0
+            seen["kernel_load_kw"] = pbase * pv0
+            seen["kernel_load_kvar"] = float(row["qbase"]) * float(row["qv0"])
+            return object(), "fake-solver"
+
+        config = simu_loop.SimulationConfig(
+            model_file=model_file,
+            meas_file=meas_file,
+            weather_file=weather_file,
+            dev_stat_file=stat_file,
+            yt_ctrl_file=yt_ctrl_file,
+            dev_define_file=None,
+            real_file=root / "real.e",
+            scada_file=root / "scada.e",
+            period_seconds=60.0,
+        )
+        simu_loop.run_once(config, solver=fake_solver)
+
+        self.assertAlmostEqual(seen["kernel_load_kw"], 120.0)
+        self.assertAlmostEqual(seen["kernel_load_kvar"], 0.0)
+        self.assertNotEqual(seen["pbase"], 0.0)
+
+    def test_limits_wind_and_pv_from_model_embedded_device_blocks_without_device_file(self):
+        import simu_loop
+
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        root = Path(workspace.name)
+        model_file = root / "model.e"
+        stat_file = root / "stat.e"
+        weather_file = root / "weather.e"
+        yt_ctrl_file = root / "yt_ctrl.e"
+        meas_file = root / "meas.e"
+
+        model_file.write_text(
+            _efile_block(
+                "ACGenerator",
+                ("idx", "name", "dev_type", "node", "control_type", "p_set", "q_set", "v_set", "run_stat"),
+                [
+                    {
+                        "idx": 1,
+                        "name": "wind_alpha",
+                        "dev_type": "ac-wind-source",
+                        "node": 1,
+                        "control_type": "P",
+                        "p_set": 0,
+                        "q_set": 0,
+                        "v_set": 300,
+                        "run_stat": 1,
+                    }
+                ],
+            )
+            + _efile_block(
+                "ACWindGen",
+                (
+                    "idx",
+                    "idx_acgenerator",
+                    "wind_turbine_model",
+                    "cut_in_wind_speed",
+                    "rated_wind_speed",
+                    "cut_out_wind_speed",
+                    "rated_power",
+                ),
+                [
+                    {
+                        "idx": 1,
+                        "idx_acgenerator": 1,
+                        "wind_turbine_model": "WT-10kW",
+                        "cut_in_wind_speed": 5,
+                        "rated_wind_speed": 15,
+                        "cut_out_wind_speed": 50,
+                        "rated_power": 10,
+                    }
+                ],
+            )
+            + _efile_block(
+                "DCGenerator",
+                ("idx", "name", "dev_type", "node", "control_type", "p_set", "v_set", "i_set", "run_stat"),
+                [
+                    {
+                        "idx": 1,
+                        "name": "solar_alpha",
+                        "dev_type": "dc-pv-source",
+                        "node": 1,
+                        "control_type": "P",
+                        "p_set": 0,
+                        "v_set": 300,
+                        "i_set": 0,
+                        "run_stat": 1,
+                    }
+                ],
+            )
+            + _efile_block(
+                "DCPVGen",
+                ("idx", "idx_dcgenerator", "pv_module_model", "module_efficiency", "array_area", "mppt_count"),
+                [{"idx": 1, "idx_dcgenerator": 1, "pv_module_model": "PV", "module_efficiency": "20%", "array_area": "250_m2", "mppt_count": 1}],
+            ),
+            encoding="utf-8",
+        )
+        stat_file.write_text(
+            _efile_block(
+                "SetValue",
+                ("dev_type", "dev_name", "set_type", "set_value"),
+                [],
+            ),
+            encoding="utf-8",
+        )
+        yt_ctrl_file.write_text(
+            _efile_block(
+                "SetValue",
+                ("dev_type", "dev_name", "set_type", "set_value"),
+                [],
+            ),
+            encoding="utf-8",
+        )
+        weather_file.write_text(
+            _efile_block(
+                "Weather",
+                ("time", "wind_speed_mps", "solar_irradiance_w_m2", "air_temp_c", "load_kw"),
+                [{"time": "00:00:00", "wind_speed_mps": 10, "solar_irradiance_w_m2": 500, "air_temp_c": 25, "load_kw": 0}],
+            ),
+            encoding="utf-8",
+        )
+        meas_file.write_text(MEAS_TEXT, encoding="utf-8")
+
+        seen: dict[str, float] = {}
+
+        def fake_solver(merged_model: Path):
+            book = simu_loop.EBook(merged_model)
+            seen["wind"] = float(book.data["ACGenerator"].data[0]["p_set"])
+            seen["pv"] = float(book.data["DCGenerator"].data[0]["p_set"])
+            return object(), "fake-solver"
+
+        config = simu_loop.SimulationConfig(
+            model_file=model_file,
+            meas_file=meas_file,
+            weather_file=weather_file,
+            dev_stat_file=stat_file,
+            yt_ctrl_file=yt_ctrl_file,
+            dev_define_file=None,
+            real_file=root / "real.e",
+            scada_file=root / "scada.e",
+            period_seconds=60.0,
+        )
+        simu_loop.run_once(config, solver=fake_solver)
+
+        self.assertAlmostEqual(seen["wind"], 1.25)
+        self.assertAlmostEqual(seen["pv"], 25.0)
+
     def test_wind_and_pv_limits_target_source_devices_not_converters(self):
         import simu_loop
 

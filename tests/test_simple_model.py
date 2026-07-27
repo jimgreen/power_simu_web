@@ -52,14 +52,7 @@ class SimpleSimulatorModelTest(unittest.TestCase):
 
     def test_simple_model_contains_one_core_device_of_each_kind(self):
         model = self._book("model.e")
-        device = self._book("device.e")
-
-        self.assertEqual([row["name"] for row in self._rows(device, "wind_generator")], ["wt01_10kw"])
-        self.assertEqual([row["name"] for row in self._rows(device, "pv_generator")], ["pv01_vsrc"])
-        self.assertEqual([row["name"] for row in self._rows(device, "estorage")], ["ess01"])
-        self.assertEqual([row["name"] for row in self._rows(device, "diesel_generator")], ["diesel_300kw"])
-        self.assertEqual([row["name"] for row in self._rows(device, "load_curve_96")], ["load_ac_1"])
-        self.assertEqual([row["name"] for row in self._rows(device, "load_temperature")], ["load_ac_1"])
+        self.assertFalse((SIMPLE_SOURCE / "device.e").exists())
 
         ac_generators = [row["name"] for row in self._rows(model, "ACGenerator")]
         self.assertEqual([name for name in ac_generators if name.startswith("wt")], ["wt01_10kw"])
@@ -68,6 +61,9 @@ class SimpleSimulatorModelTest(unittest.TestCase):
         self.assertEqual([row["name"] for row in self._rows(model, "DCDCConverter") if row["name"].startswith("pv")], ["pv01_dcdc"])
         self.assertEqual([row["name"] for row in self._rows(model, "DCDCConverter") if row["name"].startswith("ess")], ["ess01_dcdc"])
         self.assertEqual([row["name"] for row in self._rows(model, "DCACConverter") if row["name"].startswith("wt")], ["wt01_rect"])
+        self.assertEqual([str(row["idx_acgenerator"]) for row in self._rows(model, "ACWindGen")], ["1"])
+        self.assertEqual([str(row["idx_dcgenerator"]) for row in self._rows(model, "DCPVGen")], ["2"])
+        self.assertEqual([str(row["idx_dcgenerator"]) for row in self._rows(model, "DCStorageGen")], ["3"])
 
     def test_storage_has_pqvi_soc_measurements_and_control_points(self):
         meas = self._book("meas.e")
@@ -78,7 +74,7 @@ class SimpleSimulatorModelTest(unittest.TestCase):
             for row in self._rows(meas, "Measurement")
             if row["dev_type"] == "ESS" and row["dev_name"] == "ess01"
         }
-        self.assertEqual(ess_meas_types, {"P", "Q", "V", "I", "SOC"})
+        self.assertEqual(ess_meas_types, {"P", "Q", "V", "I", "SOC", "RUN_STAT"})
 
         weather_meas_types = {
             str(row["meas_type"]).upper()
@@ -119,11 +115,12 @@ class SimpleSimulatorModelTest(unittest.TestCase):
             storage_devices = [
                 device
                 for device in service.devices()
-                if device["dev_type"] == "ESS" and device["dev_name"] == "ess01"
+                if device["dev_type"] == "DCGenerator" and device["dev_name"] == "ess01_vsrc"
             ]
 
             self.assertEqual(len(storage_devices), 1)
             self.assertIn("p_set", storage_devices[0]["set_types"])
+            self.assertIn("soc_curr", storage_devices[0])
 
     def test_dc_generators_have_realtime_pvi_measurements(self):
         model = self._book("model.e")
@@ -136,7 +133,7 @@ class SimpleSimulatorModelTest(unittest.TestCase):
                 for row in measurement_rows
                 if row["dev_type"] == "DCGenerator" and row["dev_name"] == generator["name"]
             }
-            self.assertEqual(meas_types, {"P_GEN", "V_GEN", "I_GEN"})
+            self.assertEqual(meas_types, {"P_GEN", "V_GEN", "I_GEN", "RUN_STAT"})
 
 
 if __name__ == "__main__":

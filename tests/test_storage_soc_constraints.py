@@ -20,6 +20,104 @@ def _efile_block(name: str, header: tuple[str, ...], rows: list[dict[str, object
 
 
 class StorageSocConstraintTest(unittest.TestCase):
+    def test_limits_storage_from_model_embedded_device_block_without_device_file(self):
+        import simu_loop
+
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        root = Path(workspace.name)
+        model_file = root / "model.e"
+        stat_file = root / "stat.e"
+        meas_file = root / "meas.e"
+        real_file = root / "real.e"
+        scada_file = root / "scada.e"
+
+        model_file.write_text(
+            _efile_block(
+                "DCGenerator",
+                ("idx", "name", "dev_type", "node", "control_type", "p_set", "v_set", "i_set", "run_stat"),
+                [
+                    {
+                        "idx": 1,
+                        "name": "storage_alpha",
+                        "dev_type": "dc-storage",
+                        "node": 1,
+                        "control_type": "P",
+                        "p_set": 40,
+                        "v_set": 300,
+                        "i_set": 0,
+                        "run_stat": 1,
+                    }
+                ],
+            )
+            + _efile_block(
+                "DCStorageGen",
+                (
+                    "idx",
+                    "idx_dcgenerator",
+                    "storage_technology",
+                    "energy_capacity",
+                    "max_charge_power",
+                    "max_discharge_power",
+                    "state_of_charge",
+                    "soc_upper_limit",
+                    "soc_lower_limit",
+                ),
+                [
+                    {
+                        "idx": 1,
+                        "idx_dcgenerator": 1,
+                        "storage_technology": "lithium",
+                        "energy_capacity": 100,
+                        "max_charge_power": 40,
+                        "max_discharge_power": 40,
+                        "state_of_charge": "50%",
+                        "soc_upper_limit": "90%",
+                        "soc_lower_limit": "20%",
+                    }
+                ],
+            ),
+            encoding="utf-8",
+        )
+        stat_file.write_text(
+            _efile_block(
+                "SetValue",
+                ("dev_type", "dev_name", "set_type", "set_value"),
+                [{"dev_type": "DCGenerator", "dev_name": "storage_alpha", "set_type": "p_set", "set_value": 40}],
+            )
+            + _efile_block(
+                "StorageSoc",
+                ("dev_type", "idx", "name", "soc_curr"),
+                [{"dev_type": "DCGenerator", "idx": 1, "name": "storage_alpha", "soc_curr": 0.21}],
+            ),
+            encoding="utf-8",
+        )
+        meas_file.write_text(MEAS_TEXT, encoding="utf-8")
+
+        solver_seen: dict[str, float] = {}
+
+        def fake_solver(merged_model: Path):
+            book = simu_loop.EBook(merged_model)
+            solver_seen["p_set"] = float(book.data["DCGenerator"].data[0]["p_set"])
+            return object(), "fake-solver"
+
+        config = simu_loop.SimulationConfig(
+            model_file=model_file,
+            meas_file=meas_file,
+            weather_file=root / "weather.e",
+            dev_stat_file=stat_file,
+            yt_ctrl_file=root / "yt_ctrl.e",
+            dev_define_file=None,
+            real_file=real_file,
+            scada_file=scada_file,
+            period_seconds=3600.0,
+        )
+        simu_loop.run_once(config, solver=fake_solver)
+
+        stat_book = simu_loop.EBook(stat_file)
+        self.assertAlmostEqual(solver_seen["p_set"], 1.0)
+        self.assertAlmostEqual(float(stat_book.data["StorageSoc"].data[0]["soc_curr"]), 0.2)
+
     def _run_storage_case(self, soc: float, p_set: float, period_seconds: float) -> tuple[float, float]:
         import simu_loop
 

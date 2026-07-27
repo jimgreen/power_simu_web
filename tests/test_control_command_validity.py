@@ -20,23 +20,11 @@ class ControlCommandValidityTest(unittest.TestCase):
 
     @staticmethod
     def _set_value(service, dev_type: str, dev_name: str, set_type: str) -> str:
-        import simu_loop
-
-        book = simu_loop.EBook(service.files["stat"])
-        for row in book.data["SetValue"].data:
-            if row["dev_type"] == dev_type and row["dev_name"] == dev_name and row["set_type"] == set_type:
-                return str(row["set_value"])
-        return ""
+        return str(service.latest_control_values()["values"].get(f"{dev_type}.{dev_name}.{set_type}", ""))
 
     @staticmethod
     def _run_stat(service, dev_type: str, dev_name: str) -> str:
-        import simu_loop
-
-        book = simu_loop.EBook(service.files["stat"])
-        for row in book.data["RunStat"].data:
-            if row["dev_type"] == dev_type and row["dev_name"] == dev_name:
-                return str(row["run_stat"])
-        return ""
+        return str(service.latest_control_values()["values"].get(f"{dev_type}.{dev_name}.run_stat", ""))
 
     def test_ignores_control_commands_not_sent_by_trainee_station(self):
         workspace, service = self._make_service()
@@ -316,7 +304,7 @@ class ControlCommandValidityTest(unittest.TestCase):
             service.files["weather"],
             service.files["stat"],
             service.files["yt_ctrl"],
-            service.files["device"],
+            None,
             service.runtime_dir / "work",
             60.0,
         )

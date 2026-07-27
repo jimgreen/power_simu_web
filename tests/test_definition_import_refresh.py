@@ -42,7 +42,7 @@ class DefinitionImportRefreshTest(unittest.TestCase):
             self.assertEqual(snapshot["device_parameters"], package_service.snapshot()["device_parameters"])
             self.assertGreater(len(snapshot["measurements"]["definitions"]), 0)
 
-    def test_definition_package_includes_device_parameters(self):
+    def test_definition_package_embeds_device_parameters_in_model(self):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
             package_source = ROOT / "models/simulator/source/简单模型"
@@ -51,7 +51,11 @@ class DefinitionImportRefreshTest(unittest.TestCase):
             _filename, archive = make_definition_archive(package_service)
 
             with zipfile.ZipFile(BytesIO(archive), mode="r") as definition_archive:
-                self.assertIn("device.e", definition_archive.namelist())
+                self.assertNotIn("device.e", definition_archive.namelist())
+                model_text = definition_archive.read("model.e").decode("utf-8")
+                self.assertIn("ACWindGen", model_text)
+                self.assertIn("DCPVGen", model_text)
+                self.assertIn("DCStorageGen", model_text)
                 meas_text = definition_archive.read("meas.e").decode("utf-8")
                 self.assertIn("Environment", meas_text)
                 self.assertIn("weather", meas_text)

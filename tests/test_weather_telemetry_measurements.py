@@ -10,6 +10,74 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WeatherTelemetryMeasurementsTest(unittest.TestCase):
+    def test_run_once_writes_weather_measurement_values_to_real_snapshot(self):
+        import simu_loop
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model_file = root / "model.e"
+            stat_file = root / "stat.e"
+            weather_file = root / "weather.e"
+            meas_file = root / "meas.e"
+            real_file = root / "real.e"
+            scada_file = root / "scada.e"
+
+            model_file.write_text("<Model>\n@ name\n# test\n</Model>\n", encoding="utf-8")
+            stat_file.write_text("<RunStat>\n@ dev_type dev_name run_stat\n</RunStat>\n", encoding="utf-8")
+            weather_file.write_text(
+                "<Weather>\n"
+                "@ time wind_speed_mps air_temp_c air_pressure_hpa solar_irradiance_w_m2 humidity_pct load_kw\n"
+                "# 00:00:00 12.5 -18.5 955.2 321.0 76.5 90\n"
+                "</Weather>\n",
+                encoding="utf-8",
+            )
+            meas_file.write_text(
+                "<Measurement>\n"
+                "@ idx name dev_type dev_name meas_type weight valid value\n"
+                "# 1 weather_wind_speed Environment weather WIND_SPEED 10000 1 0\n"
+                "# 2 weather_air_temp Environment weather AIR_TEMP 10000 1 0\n"
+                "# 3 weather_air_pressure Environment weather AIR_PRESSURE 10000 1 0\n"
+                "# 4 weather_solar_irradiance Environment weather SOLAR_IRRADIANCE 10000 1 0\n"
+                "# 5 weather_humidity Environment weather HUMIDITY 10000 1 0\n"
+                "</Measurement>\n",
+                encoding="utf-8",
+            )
+
+            def fake_solver(_merged_model: Path):
+                class FakeSnapshot:
+                    ac_devices = {"ACBreak": {}}
+                    dc_devices = {"DCBreak": {}}
+
+                    def value(self, _dev_type, _dev_name, _meas_type):
+                        return None
+
+                return FakeSnapshot(), "fake-solver"
+
+            result = simu_loop.run_once(
+                simu_loop.SimulationConfig(
+                    model_file=model_file,
+                    meas_file=meas_file,
+                    weather_file=weather_file,
+                    dev_stat_file=stat_file,
+                    yt_ctrl_file=root / "yt_ctrl.e",
+                    dev_define_file=None,
+                    real_file=real_file,
+                    scada_file=scada_file,
+                    period_seconds=60.0,
+                    noise_std=0.0,
+                ),
+                solver=fake_solver,
+            )
+
+            self.assertEqual(result.missing, 0)
+            _before, rows, _after = parse_measurement_rows(real_file)
+            by_type = {row[4]: float(row[7]) for row in rows}
+            self.assertAlmostEqual(by_type["WIND_SPEED"], 12.5)
+            self.assertAlmostEqual(by_type["AIR_TEMP"], -18.5)
+            self.assertAlmostEqual(by_type["AIR_PRESSURE"], 955.2)
+            self.assertAlmostEqual(by_type["SOLAR_IRRADIANCE"], 321.0)
+            self.assertAlmostEqual(by_type["HUMIDITY"], 76.5)
+
     def test_weather_is_exposed_as_scada_telemetry(self):
         with tempfile.TemporaryDirectory() as temporary:
             service = PolarMicrogridSimulator(

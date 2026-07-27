@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import math
 import mimetypes
 import threading
 import time
@@ -13,7 +14,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urljoin, urlparse
 from urllib.request import Request, urlopen
@@ -37,9 +38,29 @@ except ImportError:  # The migrated web repo can run outside the original packag
     from efile_read import EBlock, EBook
 
 try:
-    from .service import MultiModelSimulator, PolarMicrogridSimulator
+    from .service import (
+        DEFAULT_WEATHER,
+        MEAS_HEADER,
+        SIGNAL_MEASUREMENTS,
+        STAT_HEADERS,
+        WEATHER_HEADER,
+        WEATHER_MEASUREMENTS,
+        MultiModelSimulator,
+        PolarMicrogridSimulator,
+        _to_float,
+    )
 except ImportError:  # pragma: no cover - legacy package compatibility.
-    from hybrid_power_system_analysis.polar_microgrid_sim.service import MultiModelSimulator, PolarMicrogridSimulator
+    from hybrid_power_system_analysis.polar_microgrid_sim.service import (
+        DEFAULT_WEATHER,
+        MEAS_HEADER,
+        SIGNAL_MEASUREMENTS,
+        STAT_HEADERS,
+        WEATHER_HEADER,
+        WEATHER_MEASUREMENTS,
+        MultiModelSimulator,
+        PolarMicrogridSimulator,
+        _to_float,
+    )
 
 try:
     import simu_loop  # type: ignore
@@ -124,6 +145,8 @@ def _merge_control_definition(stat_path: Path, control_text: str, meas_text: str
         if block is not None:
             stat_book.data[block_name] = block
             found = True
+        elif block_name != "StorageSoc":
+            stat_book.data.pop(block_name, None)
     if not found:
         raise ValueError("control.e must contain at least one control block")
     if control_book.data.get("StorageSoc") is None:
@@ -323,6 +346,365 @@ def _read_zip_text(archive: zipfile.ZipFile, entry_name: str, required: bool = T
     return data.decode("utf-8-sig")
 
 
+MODEL_DEVICE_BLOCKS = {
+    "ACNode",
+    "DCNode",
+    "ACRealBs",
+    "DCRealBs",
+    "ACBranch",
+    "DCBranch",
+    "ACZeroBranch",
+    "DCZeroBranch",
+    "ACSwitch",
+    "DCSwitch",
+    "ACBreak",
+    "DCBreak",
+    "ACLoad",
+    "DCLoad",
+    "ACGenerator",
+    "DCGenerator",
+    "DCDCConverter",
+    "DCACConverter",
+    "ACACConverter",
+}
+SET_VALUE_COLUMN_MAP = {
+    "ACGenerator": (("p_set", "p_set"), ("q_set", "q_set"), ("v_set", "v_set")),
+    "DCGenerator": (("p_set", "p_set"), ("v_set", "v_set"), ("i_set", "i_set")),
+    "DCDCConverter": (("p_set", "p_set"), ("i_set", "i_set"), ("v_set", "v_set")),
+    "DCACConverter": (
+        ("p_ac_set", "p_ac_set"),
+        ("q_ac_set", "q_ac_set"),
+        ("v_ac_set", "v_ac_set"),
+        ("v_dc_set", "v_dc_set"),
+    ),
+    "ACACConverter": (
+        ("p_set", "p_set"),
+        ("q_set", "q_set"),
+        ("v_set", "v_set"),
+        ("p_from_set", "p_from_set"),
+        ("q_from_set", "q_from_set"),
+        ("v_from_set", "v_from_set"),
+        ("p_to_set", "p_to_set"),
+        ("q_to_set", "q_to_set"),
+        ("v_to_set", "v_to_set"),
+    ),
+    "ACLoad": (("p_set", "pv0"), ("q_set", "qv0")),
+    "DCLoad": (("p_set", "p_set"), ("v_set", "v_set"), ("i_set", "i_set")),
+}
+MEASUREMENT_TYPE_MAP = {
+    "ACNode": ("V", "ANGLE"),
+    "DCNode": ("V",),
+    "ACGenerator": ("P_GEN", "Q_GEN", "V_GEN", "I_GEN"),
+    "DCGenerator": ("P_GEN", "V_GEN", "I_GEN"),
+    "ACLoad": ("P_LOAD", "Q_LOAD", "V_LOAD", "I_LOAD"),
+    "DCLoad": ("P_LOAD", "V_LOAD", "I_LOAD"),
+    "ACBranch": ("P_FROM", "Q_FROM", "P_TO", "Q_TO", "I"),
+    "ACTransformer": ("P_FROM", "Q_FROM", "P_TO", "Q_TO", "I"),
+    "ACZeroBranch": ("P_FROM", "Q_FROM", "P_TO", "Q_TO", "I"),
+    "ACSwitch": ("P_FROM", "Q_FROM", "P_TO", "Q_TO", "I"),
+    "ACBreak": ("P_FROM", "Q_FROM", "P_TO", "Q_TO", "I"),
+    "DCBranch": ("P_FROM", "P_TO", "I"),
+    "DCZeroBranch": ("P_FROM", "P_TO", "I"),
+    "DCSwitch": ("P_FROM", "P_TO", "I"),
+    "DCBreak": ("P_FROM", "P_TO", "I"),
+    "DCDCConverter": ("P_FROM", "V_FROM", "I_FROM", "P_TO", "V_TO", "I_TO"),
+    "DCACConverter": ("P_DC", "V_DC", "I_DC", "P_AC", "Q_AC", "V_AC", "I_AC"),
+    "ACACConverter": ("P_FROM", "Q_FROM", "V_FROM", "I_FROM", "P_TO", "Q_TO", "V_TO", "I_TO"),
+}
+
+
+def _rows(book: EBook, block_name: str) -> list[dict]:
+    block = book.data.get(block_name)
+    return [] if block is None else list(block.data)
+
+
+def _ebook_from_blocks(blocks: Mapping[str, tuple[Sequence[str], Sequence[Mapping[str, Any]]]]) -> EBook:
+    book = EBook({})
+    for block_name, (headers, rows) in blocks.items():
+        block = EBlock(block_name)
+        block.header_list = list(headers)
+        block.data = [{header: row.get(header, "") for header in headers} for row in rows]
+        book.data[block_name] = block
+    return book
+
+
+def _row_name(row: Mapping[str, Any]) -> str:
+    return str(row.get("name", row.get("dev_name", ""))).strip()
+
+
+def _numeric(value: Any, default: float = 0.0) -> float:
+    number = _to_float(value, None)
+    if number is None:
+        text = str(value or "")
+        if text.endswith("%"):
+            number = _to_float(text[:-1], None)
+            return default if number is None else float(number) / 100.0
+        return default
+    return float(number)
+
+
+def _first_present(row: Mapping[str, Any], columns: Sequence[str], default: Any = "") -> Any:
+    for column in columns:
+        if column in row and row.get(column, "") != "":
+            return row.get(column)
+    return default
+
+
+def _model_book_has_power_model(book: EBook) -> bool:
+    return any(name in MODEL_DEVICE_BLOCKS and getattr(block, "data", []) for name, block in book.data.items())
+
+
+def _storage_source_rows(model_book: EBook) -> list[dict]:
+    dc_generators = {str(row.get("idx", "")): row for row in _rows(model_book, "DCGenerator")}
+    storage_rows: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for pos, row in enumerate(_rows(model_book, "DCStorageGen"), start=1):
+        source = dc_generators.get(str(row.get("idx_dcgenerator", "")), {})
+        name = str(source.get("name", row.get("name", f"storage_{pos}")))
+        if not name:
+            continue
+        soc = _numeric(row.get("state_of_charge", row.get("soc_curr", row.get("soc_cur", 0.5))), 0.5)
+        if soc > 1.0:
+            soc /= 100.0
+        storage_rows.append(
+            {
+                "dev_type": "DCGenerator" if source else "ESS",
+                "idx": source.get("idx", row.get("idx", pos)),
+                "name": name,
+                "soc_curr": max(0.0, min(1.0, soc)),
+            }
+        )
+        seen.add((str(storage_rows[-1]["dev_type"]), name))
+    for pos, row in enumerate(_rows(model_book, "DCGenerator"), start=1):
+        name = _row_name(row)
+        if not name or ("storage" not in str(row.get("dev_type", "")).casefold() and "储能" not in name):
+            continue
+        key = ("DCGenerator", name)
+        if key in seen:
+            continue
+        storage_rows.append(
+            {
+                "dev_type": "DCGenerator",
+                "idx": row.get("idx", pos),
+                "name": name,
+                "soc_curr": row.get("soc_curr", row.get("soc", row.get("state_of_charge", 0.5))),
+            }
+        )
+        seen.add(key)
+    return storage_rows
+
+
+def _generated_control_blocks(model_book: EBook) -> Mapping[str, tuple[Sequence[str], Sequence[Mapping[str, Any]]]]:
+    run_rows: list[dict[str, Any]] = []
+    cb_rows: list[dict[str, Any]] = []
+    set_rows: list[dict[str, Any]] = []
+
+    for block_name, block in model_book.data.items():
+        headers = set(getattr(block, "header_list", []))
+        for row in getattr(block, "data", []):
+            name = _row_name(row)
+            if not name:
+                continue
+            if "run_stat" in headers:
+                run_rows.append(
+                    {
+                        "dev_type": block_name,
+                        "dev_name": name,
+                        "run_stat": row.get("run_stat", 1),
+                    }
+                )
+            if "status" in headers:
+                cb_rows.append(
+                    {
+                        "dev_type": block_name,
+                        "dev_name": name,
+                        "status": row.get("status", 1),
+                    }
+                )
+            for set_type, source_column in SET_VALUE_COLUMN_MAP.get(block_name, ()):
+                if source_column not in row:
+                    continue
+                set_rows.append(
+                    {
+                        "dev_type": block_name,
+                        "dev_name": name,
+                        "set_type": set_type,
+                        "set_value": row.get(source_column, 0),
+                    }
+                )
+
+    blocks: dict[str, tuple[Sequence[str], Sequence[Mapping[str, Any]]]] = {
+        "RunStat": (STAT_HEADERS["RunStat"], run_rows),
+        "SetValue": (STAT_HEADERS["SetValue"], set_rows),
+    }
+    if cb_rows:
+        blocks["CbOpenStat"] = (STAT_HEADERS["CbOpenStat"], cb_rows)
+    storage_rows = _storage_source_rows(model_book)
+    if storage_rows:
+        blocks["StorageSoc"] = (STAT_HEADERS["StorageSoc"], storage_rows)
+    return blocks
+
+
+def _generated_measurement_book(
+    model_book: EBook,
+    control_blocks: Mapping[str, tuple[Sequence[str], Sequence[Mapping[str, Any]]]],
+) -> EBook:
+    rows: list[dict[str, Any]] = []
+    name_counts: dict[str, int] = {}
+    storage_names = {
+        (str(row.get("dev_type", "")), str(row.get("name", "")))
+        for row in control_blocks.get("StorageSoc", ((), ()))[1]
+    }
+
+    def add(dev_type: str, dev_name: str, meas_type: str, *, weight: float = 10000.0, value: Any = 0.0) -> None:
+        if not dev_name:
+            return
+        base_name = f"{dev_type}.{dev_name}.{str(meas_type).lower() if meas_type in {'RUN_STAT', 'STATUS'} else meas_type}"
+        count = name_counts.get(base_name, 0)
+        name_counts[base_name] = count + 1
+        name = base_name if count == 0 else f"{base_name}.{count + 1}"
+        rows.append(
+            {
+                "idx": len(rows) + 1,
+                "name": name,
+                "dev_type": dev_type,
+                "dev_name": dev_name,
+                "meas_type": meas_type,
+                "weight": weight,
+                "valid": 1,
+                "value": value,
+            }
+        )
+
+    for block_name, meas_types in MEASUREMENT_TYPE_MAP.items():
+        for row in _rows(model_book, block_name):
+            name = _row_name(row)
+            if not name:
+                continue
+            for meas_type in meas_types:
+                add(block_name, name, meas_type)
+            if (block_name, name) in storage_names:
+                add(block_name, name, "SOC", value=row.get("soc_curr", row.get("soc", 0.5)))
+
+    for weather_key, _name_suffix, meas_type in WEATHER_MEASUREMENTS:
+        add("Environment", "weather", meas_type, weight=1.0, value=DEFAULT_WEATHER.get(weather_key, 0.0))
+
+    for block_name, value_column, meas_type, _name_suffix in SIGNAL_MEASUREMENTS:
+        for row in control_blocks.get(block_name, ((), ()))[1]:
+            add(
+                str(row.get("dev_type", "")),
+                str(row.get("dev_name", "")),
+                meas_type,
+                weight=1.0,
+                value=row.get(value_column, 1),
+            )
+
+    return _ebook_from_blocks({"Measurement": (MEAS_HEADER, rows)})
+
+
+def _generated_weather_book() -> EBook:
+    row = {**DEFAULT_WEATHER, "time": "00:00:00"}
+    return _ebook_from_blocks({"Weather": (WEATHER_HEADER, [row])})
+
+
+def _load_base_kw(row: Mapping[str, Any], block_name: str) -> float:
+    if block_name == "ACLoad":
+        pbase = _numeric(row.get("pbase"), 0.0)
+        pv0 = _numeric(row.get("pv0", row.get("p_set", row.get("p", 0.0))), 0.0)
+        if pbase not in (0.0, 1.0) and pv0:
+            return max(0.0, pbase * pv0)
+        return max(0.0, pv0 or pbase or _numeric(row.get("p_set"), 0.0))
+    return max(0.0, _numeric(_first_present(row, ("p_set", "p", "p0", "p_kw"), 0.0), 0.0))
+
+
+def _load_curve_sources(model_book: EBook) -> list[tuple[str, float]]:
+    sources: list[tuple[str, float]] = []
+    for block_name in ("ACLoad", "DCLoad"):
+        for row in _rows(model_book, block_name):
+            name = _row_name(row)
+            if name:
+                sources.append((name, _load_base_kw(row, block_name) or DEFAULT_WEATHER["load_kw"]))
+    return sources
+
+
+def _generated_curves_payload(model_book: EBook) -> dict[str, Any]:
+    point_count = 1440
+    load_sources = _load_curve_sources(model_book)
+    weather: list[dict[str, Any]] = []
+    loads: dict[str, list[dict[str, Any]]] = {name: [] for name, _base in load_sources}
+    for minute in range(point_count):
+        day_angle = 2.0 * math.pi * minute / point_count
+        solar_shape = max(0.0, math.sin(math.pi * (minute - 360) / 720.0))
+        wind_speed = max(0.0, min(50.0, 14.0 + 8.0 * math.sin(day_angle - 0.9) + 3.0 * math.sin(4.0 * day_angle)))
+        air_temp = -20.0 + 7.0 * math.sin(day_angle - math.pi / 2.0)
+        weather.append(
+            {
+                "minute": minute,
+                "wind_speed_mps": round(wind_speed, 3),
+                "air_temp_c": round(air_temp, 3),
+                "air_pressure_hpa": round(960.0 + 4.0 * math.sin(day_angle + 0.5), 3),
+                "solar_irradiance_w_m2": round(720.0 * solar_shape, 3),
+                "humidity_pct": round(72.0 + 8.0 * math.sin(day_angle + 1.2), 3),
+            }
+        )
+        load_shape = 0.88 + 0.12 * math.sin(day_angle - 1.1) + (0.16 if 1020 <= minute <= 1320 else 0.0)
+        for name, base_kw in load_sources:
+            loads.setdefault(name, []).append({"minute": minute, "p_kw": round(max(0.0, base_kw * load_shape), 3)})
+    return {
+        "mode": "day",
+        "time_step_minutes": 1,
+        "point_count": point_count,
+        "weather": weather,
+        "loads": loads,
+    }
+
+
+def create_model_from_efile(manager: MultiModelSimulator, new_model_name: Any, model_text: str) -> Mapping[str, Any]:
+    """Create one simulator source model folder from an uploaded model.e file."""
+    target_id = manager.validate_new_model_name(new_model_name)
+    if not str(model_text or "").strip():
+        raise ValueError("model.e 不能为空")
+    model_book = _book_from_text(model_text)
+    if not _model_book_has_power_model(model_book):
+        raise ValueError("model.e 中未找到可识别的电网模型设备块")
+
+    target_dir = (manager.models_root / target_id).resolve()
+    try:
+        target_dir.relative_to(manager.models_root.resolve())
+    except ValueError as exc:
+        raise ValueError(f"模型名称无效: {new_model_name}") from exc
+    if target_dir.exists():
+        raise ValueError(f"模型文件夹已存在: {target_id}")
+
+    control_blocks = _generated_control_blocks(model_book)
+    stat_book = _ebook_from_blocks(control_blocks)
+    control_book = _ebook_from_blocks(control_blocks)
+    meas_book = _generated_measurement_book(model_book, control_blocks)
+    weather_book = _generated_weather_book()
+    curves_payload = _generated_curves_payload(model_book)
+
+    target_dir.mkdir(parents=True, exist_ok=False)
+    simu_loop.write_ebook_aligned(model_book, target_dir / "model.e")
+    simu_loop.clear_model_book_cache(target_dir / "model.e")
+    simu_loop.write_ebook_aligned(meas_book, target_dir / "meas.e")
+    simu_loop.write_ebook_aligned(stat_book, target_dir / "stat.e")
+    simu_loop.write_ebook_aligned(control_book, target_dir / "control.e")
+    simu_loop.write_ebook_aligned(weather_book, target_dir / "weather.e")
+    _write_json_file(target_dir / "curves.json", curves_payload)
+    (target_dir / "curves.e").write_text(_curve_definition_text(curves_payload), encoding="utf-8")
+
+    manager._append_manifest_model(target_id, target_dir)
+    model_info = manager.service_for(target_id).model_info()
+    return {
+        **model_info,
+        "created": {
+            "files": ["model.e", "meas.e", "control.e", "stat.e", "weather.e", "curves.e", "curves.json"],
+            "measurement_count": len(meas_book.data["Measurement"].data),
+            "curve_points": curves_payload["point_count"],
+        },
+    }
+
+
 def import_definition_archive(service: PolarMicrogridSimulator, data: bytes) -> Mapping[str, Any]:
     try:
         archive = zipfile.ZipFile(BytesIO(data), mode="r")
@@ -334,7 +716,6 @@ def import_definition_archive(service: PolarMicrogridSimulator, data: bytes) -> 
         meas_text = _read_zip_text(archive, "meas.e")
         control_text = _read_zip_text(archive, "control.e")
         curves_text = _read_zip_text(archive, "curves.e")
-        device_text = _read_zip_text(archive, "device.e", required=False)
 
     assert model_text is not None and meas_text is not None and control_text is not None and curves_text is not None
     curves_payload = _curves_from_definition_text(curves_text)
@@ -342,35 +723,25 @@ def import_definition_archive(service: PolarMicrogridSimulator, data: bytes) -> 
     root = Path(service.sim_dir)
     root.mkdir(parents=True, exist_ok=True)
     (root / "model.e").write_text(model_text, encoding="utf-8")
+    simu_loop.clear_model_book_cache(root / "model.e")
     (root / "meas.e").write_text(meas_text, encoding="utf-8")
     (root / "control.e").write_text(control_text, encoding="utf-8")
     (root / "curves.e").write_text(curves_text, encoding="utf-8")
-    if device_text is not None:
-        (root / "device.e").write_text(device_text, encoding="utf-8")
+    legacy_device = root / "device.e"
+    if legacy_device.exists() and legacy_device.is_file():
+        legacy_device.unlink()
     _merge_control_definition(root / "stat.e", control_text, meas_text)
     _write_json_file(root / "curves.json", curves_payload)
     names = ["model.e", "meas.e", "control.e", "curves.e", "stat.e", "curves.json"]
-    if device_text is not None:
-        names.insert(4, "device.e")
     written_files.extend(str(root / name) for name in names)
 
+    service.reload_definition_state()
     service.ensure_weather_measurements_in_definition_files()
     service.curves = dict(curves_payload)
     _write_json_file(service.curves_file, curves_payload)
-    service._cleanup_legacy_runtime_definition_files()
-    for path in getattr(service, "work_files", {}).values():
-        path = Path(path)
-        if path.exists() and path.is_file():
-            path.unlink()
-    service._materialize_working_model()
-    service._materialize_working_stat()
-    service._materialize_working_weather()
+    service.reload_definition_state()
+    service._materialize_active_control_commands(service.clock.absolute_minute, persist=True)
     service.latest_result = {}
-    service.latest_measurements = {
-        "real": [],
-        "scada": [],
-        "definitions": service._read_measurement_file(service.files["meas"]),
-    }
     return {
         "written": len(written_files),
         "files": written_files,
@@ -393,7 +764,6 @@ def import_definition_model(
             _read_zip_text(archive, "model.e")
             _read_zip_text(archive, "meas.e")
             _read_zip_text(archive, "control.e")
-            _read_zip_text(archive, "device.e", required=False)
         assert curves_text is not None
         _curves_from_definition_text(curves_text)
     except zipfile.BadZipFile as exc:
@@ -409,8 +779,7 @@ def make_definition_archive(service: PolarMicrogridSimulator) -> tuple[str, byte
     model_path = _definition_file_path(service, "model", "model.e")
     meas_path = _definition_file_path(service, "meas", "meas.e")
     stat_path = _definition_file_path(service, "stat", "stat.e")
-    device_path = _definition_file_path(service, "device", "device.e")
-    missing = [str(path) for path in (model_path, meas_path, stat_path, device_path) if not path.exists()]
+    missing = [str(path) for path in (model_path, meas_path, stat_path) if not path.exists()]
     if missing:
         raise JsonApiError(404, f"Definition file not found: {', '.join(missing)}")
 
@@ -424,7 +793,6 @@ def make_definition_archive(service: PolarMicrogridSimulator) -> tuple[str, byte
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(model_path, "model.e")
         archive.write(meas_path, "meas.e")
-        archive.write(device_path, "device.e")
         archive.writestr("control.e", control_text.encode("utf-8"))
         archive.writestr("curves.e", _curve_definition_text(service.curves).encode("utf-8"))
     return archive_name, buffer.getvalue()
@@ -599,6 +967,25 @@ def make_http_server(
         def _handle_api_post(self) -> None:
             path = urlparse(self.path).path
             payload = self._read_json_body()
+            if path == "/api/models/create":
+                if not hasattr(service, "validate_new_model_name") or not hasattr(service, "models_root"):
+                    raise JsonApiError(400, "Current simulator does not support multiple model folders")
+                model_name = str(payload.get("name", payload.get("model_name", ""))).strip()
+                if not model_name:
+                    raise JsonApiError(400, "New model name is required")
+                data_base64 = str(payload.get("data_base64", ""))
+                if not data_base64:
+                    raise JsonApiError(400, "model.e data is required")
+                try:
+                    model_data = base64.b64decode(data_base64, validate=True)
+                    model_text = model_data.decode("utf-8-sig")
+                    model = create_model_from_efile(service, model_name, model_text)  # type: ignore[arg-type]
+                except (UnicodeDecodeError, ValueError, OSError) as exc:
+                    raise JsonApiError(400, str(exc)) from exc
+                catalog = dict(self._model_catalog())
+                catalog["active_model_id"] = model["id"]
+                self._send_json({"model": model, **catalog})
+                return
             if path == "/api/models/clone":
                 if not hasattr(service, "clone_model"):
                     raise JsonApiError(400, "Current simulator does not support multiple model folders")

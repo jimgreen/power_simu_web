@@ -8,6 +8,15 @@ const OVERVIEW_BOTTOM_HEIGHT_KEY = "polarTraineeOverviewBottomHeight";
 const OVERVIEW_BOTTOM_DEFAULT_HEIGHT = 156;
 const OVERVIEW_BOTTOM_MIN_HEIGHT = 96;
 const OVERVIEW_BOTTOM_MAX_HEIGHT = 380;
+const VERTICAL_SPLIT_STORAGE_KEY = "polarTraineeVerticalSplitRatios";
+const VERTICAL_SPLIT_DEFAULTS = {
+  "trainee-curves": 60,
+  "trainee-measurements": 52,
+  "trainee-commands": 56,
+};
+const VERTICAL_SPLIT_DEFAULT_RATIO = 55;
+const VERTICAL_SPLIT_MIN_TOP_PX = 120;
+const VERTICAL_SPLIT_MIN_BOTTOM_PX = 120;
 const state = {
   snapshot: null,
   models: [],
@@ -58,6 +67,7 @@ const state = {
   chartSeriesHitData: {},
   chartPlotInfo: {},
   collapsedDeviceTreeGroups: {},
+  activeMeasurementTab: "telemetry",
   selectedMeasurementKey: "",
   measurementTraceHistory: [],
   measurementTraceWindowMinutes: 60,
@@ -76,6 +86,8 @@ const state = {
   },
   overviewBottomHeight: overviewInitialBottomHeight(),
   overviewBottomSplitDrag: null,
+  verticalSplitRatios: initialVerticalSplitRatios(),
+  verticalSplitDrag: null,
 };
 const pending = { run_status: new Map(), set_values: new Map() };
 const RENEWABLE_COMMAND_VALID_MINUTES = 5;
@@ -99,6 +111,10 @@ const WEATHER_MEASUREMENT_LABELS = {
   AIR_TEMP: { label: "气温", order: 2 },
   HUMIDITY: { label: "湿度", order: 3 },
   AIR_PRESSURE: { label: "气压", order: 4 },
+};
+const SIGNAL_MEASUREMENT_LABELS = {
+  RUN_STAT: { label: "运行状态", order: 0 },
+  STATUS: { label: "开关状态", order: 1 },
 };
 const RECEIVE_MAX_RECONNECT_ATTEMPTS = 3;
 const RECEIVE_WARNING_LIMIT = 40;
@@ -160,6 +176,14 @@ function canvasPointerPosition(canvas, event) {
   return {
     x: (event.clientX - rect.left) * (canvas.width / rect.width),
     y: (event.clientY - rect.top) * (canvas.height / rect.height),
+  };
+}
+
+function canvasRenderedSize(canvas, fallbackWidth = 900, fallbackHeight = 260) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    width: Math.max(1, Math.floor(rect.width || canvas.clientWidth || fallbackWidth)),
+    height: Math.max(1, Math.floor(rect.height || canvas.clientHeight || fallbackHeight)),
   };
 }
 
@@ -1704,6 +1728,171 @@ function initOverviewBottomSplitter() {
   window.addEventListener("resize", () => applyOverviewBottomHeight(state.overviewBottomHeight, true));
 }
 
+function initialVerticalSplitRatios() {
+  const ratios = { ...VERTICAL_SPLIT_DEFAULTS };
+  try {
+    const stored = JSON.parse(localStorage.getItem(VERTICAL_SPLIT_STORAGE_KEY) || "{}");
+    Object.entries(stored || {}).forEach(([splitId, ratio]) => {
+      const numericRatio = Number(ratio);
+      if (Number.isFinite(numericRatio)) ratios[splitId] = numericRatio;
+    });
+  } catch (error) {
+    localStorage.removeItem(VERTICAL_SPLIT_STORAGE_KEY);
+  }
+  return ratios;
+}
+
+function verticalSplitDefaultRatio(splitId) {
+  return VERTICAL_SPLIT_DEFAULTS[splitId] || VERTICAL_SPLIT_DEFAULT_RATIO;
+}
+
+function verticalSplitContainer(splitId) {
+  return Array.from(document.querySelectorAll("[data-vertical-split]"))
+    .find((container) => container.dataset.verticalSplit === splitId) || null;
+}
+
+function verticalSplitBounds(container) {
+  if (!container) return { min: 20, max: 80 };
+  const rect = container.getBoundingClientRect();
+  const splitter = container.querySelector("[data-vertical-splitter]");
+  const splitterHeight = splitter?.getBoundingClientRect().height || 10;
+  const availableHeight = rect.height > 0 ? rect.height - splitterHeight : 0;
+  if (availableHeight <= 0) return { min: 20, max: 80 };
+  const minTop = Number(container.dataset.verticalSplitMinTop) || VERTICAL_SPLIT_MIN_TOP_PX;
+  const minBottom = Number(container.dataset.verticalSplitMinBottom) || VERTICAL_SPLIT_MIN_BOTTOM_PX;
+  const minRatio = clamp((minTop / availableHeight) * 100, 8, 88);
+  const maxRatio = clamp(100 - (minBottom / availableHeight) * 100, 12, 92);
+  if (minRatio <= maxRatio) return { min: minRatio, max: maxRatio };
+  const centerRatio = clamp(50, 8, 92);
+  return { min: centerRatio, max: centerRatio };
+}
+
+function applyVerticalSplit(splitId, ratio, persist = false, redraw = false) {
+  const container = verticalSplitContainer(splitId);
+  if (!container) return;
+  const bounds = verticalSplitBounds(container);
+  const numericRatio = Number(ratio);
+  const nextRatio = Math.round(clamp(
+    Number.isFinite(numericRatio) ? numericRatio : verticalSplitDefaultRatio(splitId),
+    bounds.min,
+    bounds.max,
+  ) * 10) / 10;
+  state.verticalSplitRatios[splitId] = nextRatio;
+  container.style.setProperty("--vertical-split-top", `${nextRatio}%`);
+  const splitter = container.querySelector(`[data-vertical-splitter="${splitId}"]`);
+  if (splitter) {
+    splitter.setAttribute("aria-valuemin", String(Math.round(bounds.min)));
+    splitter.setAttribute("aria-valuemax", String(Math.round(bounds.max)));
+    splitter.setAttribute("aria-valuenow", String(nextRatio));
+    splitter.setAttribute("aria-valuetext", `${nextRatio}%`);
+  }
+  if (persist) localStorage.setItem(VERTICAL_SPLIT_STORAGE_KEY, JSON.stringify(state.verticalSplitRatios));
+  if (redraw) redrawVerticalSplitContent(splitId);
+}
+
+function redrawVerticalSplitContent(splitId) {
+  requestAnimationFrame(() => {
+    if (splitId === "trainee-curves") drawCurveDisplay(state.snapshot || {});
+    if (splitId === "trainee-measurements") drawMeasurementTraceChart();
+    if (splitId === "trainee-commands") drawCommandTraceChart();
+  });
+}
+
+function beginVerticalSplitterDrag(event) {
+  if (event.button !== undefined && event.button !== 0) return;
+  const splitter = event.currentTarget;
+  const splitId = splitter?.dataset.verticalSplitter || "";
+  const container = verticalSplitContainer(splitId);
+  if (!splitter || !container) return;
+  event.preventDefault();
+  const containerRect = container.getBoundingClientRect();
+  const splitterRect = splitter.getBoundingClientRect();
+  state.verticalSplitDrag = {
+    splitId,
+    pointerId: event.pointerId,
+    startY: event.clientY,
+    startTopPx: splitterRect.top - containerRect.top,
+    availableHeight: Math.max(1, containerRect.height - splitterRect.height),
+  };
+  splitter.classList.add("is-dragging");
+  document.body.classList.add("is-vertical-splitter-dragging");
+  if (splitter.setPointerCapture && event.pointerId !== undefined) {
+    try {
+      splitter.setPointerCapture(event.pointerId);
+    } catch (error) {
+      // Pointer capture can fail for synthetic events during tests.
+    }
+  }
+}
+
+function handleVerticalSplitterDrag(event) {
+  const drag = state.verticalSplitDrag;
+  if (!drag) return;
+  if (drag.pointerId !== undefined && event.pointerId !== undefined && drag.pointerId !== event.pointerId) return;
+  event.preventDefault();
+  const nextTopPx = drag.startTopPx + (event.clientY - drag.startY);
+  applyVerticalSplit(drag.splitId, (nextTopPx / drag.availableHeight) * 100, false, true);
+}
+
+function finishVerticalSplitterDrag(event) {
+  const drag = state.verticalSplitDrag;
+  if (!drag) return;
+  if (drag.pointerId !== undefined && event?.pointerId !== undefined && drag.pointerId !== event.pointerId) return;
+  const splitter = document.querySelector(`[data-vertical-splitter="${drag.splitId}"]`);
+  if (splitter) {
+    splitter.classList.remove("is-dragging");
+    if (splitter.releasePointerCapture && drag.pointerId !== undefined) {
+      try {
+        splitter.releasePointerCapture(drag.pointerId);
+      } catch (error) {
+        // Pointer capture may already be released.
+      }
+    }
+  }
+  document.body.classList.remove("is-vertical-splitter-dragging");
+  state.verticalSplitDrag = null;
+  applyVerticalSplit(drag.splitId, state.verticalSplitRatios[drag.splitId], true, true);
+}
+
+function handleVerticalSplitterKeydown(event) {
+  const splitId = event.currentTarget?.dataset.verticalSplitter || "";
+  const currentRatio = state.verticalSplitRatios[splitId] || verticalSplitDefaultRatio(splitId);
+  const bounds = verticalSplitBounds(verticalSplitContainer(splitId));
+  let nextRatio = null;
+  if (event.key === "ArrowUp") nextRatio = currentRatio - 2;
+  if (event.key === "ArrowDown") nextRatio = currentRatio + 2;
+  if (event.key === "PageUp") nextRatio = currentRatio - 8;
+  if (event.key === "PageDown") nextRatio = currentRatio + 8;
+  if (event.key === "Home") nextRatio = bounds.min;
+  if (event.key === "End") nextRatio = bounds.max;
+  if (nextRatio === null) return;
+  event.preventDefault();
+  applyVerticalSplit(splitId, nextRatio, true, true);
+}
+
+function initVerticalSplitters() {
+  document.querySelectorAll("[data-vertical-splitter]").forEach((splitter) => {
+    const splitId = splitter.dataset.verticalSplitter || "";
+    if (!splitId) return;
+    applyVerticalSplit(splitId, state.verticalSplitRatios[splitId] || verticalSplitDefaultRatio(splitId));
+    if (splitter.dataset.verticalSplitterReady === "true") return;
+    splitter.dataset.verticalSplitterReady = "true";
+    splitter.addEventListener("pointerdown", beginVerticalSplitterDrag);
+    splitter.addEventListener("keydown", handleVerticalSplitterKeydown);
+  });
+  if (document.body.dataset.verticalSplitterResizeReady === "true") return;
+  document.body.dataset.verticalSplitterResizeReady = "true";
+  window.addEventListener("pointermove", handleVerticalSplitterDrag);
+  window.addEventListener("pointerup", finishVerticalSplitterDrag);
+  window.addEventListener("pointercancel", finishVerticalSplitterDrag);
+  window.addEventListener("resize", () => {
+    document.querySelectorAll("[data-vertical-split]").forEach((container) => {
+      const splitId = container.dataset.verticalSplit || "";
+      applyVerticalSplit(splitId, state.verticalSplitRatios[splitId], true, true);
+    });
+  });
+}
+
 function overviewClockText(snapshot) {
   const clock = snapshot.clock || {};
   const timeText = clock.time || "--";
@@ -2098,9 +2287,7 @@ function renderCurveDisplayLabels(snapshot = state.snapshot || {}) {
 function resizeCurveDisplayCanvas() {
   const canvas = $("curveDisplayChart");
   if (!canvas) return false;
-  const rect = canvas.getBoundingClientRect();
-  const width = Math.max(320, Math.round(rect.width || canvas.clientWidth || canvas.width));
-  const height = Math.max(240, Math.round(rect.height || canvas.clientHeight || canvas.height));
+  const { width, height } = canvasRenderedSize(canvas, 900, 260);
   if (canvas.width === width && canvas.height === height) return false;
   canvas.width = width;
   canvas.height = height;
@@ -3179,9 +3366,18 @@ function isWeatherMeasurement(row) {
   return row?.dev_type === "Environment" && row?.dev_name === "weather";
 }
 
+function isSignalMeasurement(row) {
+  return Object.prototype.hasOwnProperty.call(SIGNAL_MEASUREMENT_LABELS, String(row?.meas_type || "").toUpperCase());
+}
+
 function weatherMeasurementLabel(row) {
   const type = String(row?.meas_type || "").toUpperCase();
   return WEATHER_MEASUREMENT_LABELS[type]?.label || row?.name || type || "气象";
+}
+
+function signalMeasurementLabel(row) {
+  const type = String(row?.meas_type || "").toUpperCase();
+  return SIGNAL_MEASUREMENT_LABELS[type]?.label || row?.name || type || "遥信";
 }
 
 function weatherMeasurementOrder(row) {
@@ -3189,7 +3385,13 @@ function weatherMeasurementOrder(row) {
   return WEATHER_MEASUREMENT_LABELS[type]?.order ?? 99;
 }
 
+function signalMeasurementOrder(row) {
+  const type = String(row?.meas_type || "").toUpperCase();
+  return SIGNAL_MEASUREMENT_LABELS[type]?.order ?? 99;
+}
+
 function measurementDisplayName(row) {
+  if (isSignalMeasurement(row)) return `${row.dev_name || row.name || ""}.${signalMeasurementLabel(row)}`;
   return isWeatherMeasurement(row) ? `气象.${weatherMeasurementLabel(row)}` : row.name;
 }
 
@@ -3198,6 +3400,7 @@ function measurementDeviceDisplay(row) {
 }
 
 function measurementTypeDisplay(row) {
+  if (isSignalMeasurement(row)) return signalMeasurementLabel(row);
   return isWeatherMeasurement(row) ? weatherMeasurementLabel(row) : row.meas_type || "";
 }
 
@@ -3206,6 +3409,13 @@ function compareMeasurementsForDisplay(left, right) {
   const rightWeather = isWeatherMeasurement(right);
   if (leftWeather !== rightWeather) return leftWeather ? -1 : 1;
   if (leftWeather && rightWeather) return weatherMeasurementOrder(left) - weatherMeasurementOrder(right);
+  const leftSignal = isSignalMeasurement(left);
+  const rightSignal = isSignalMeasurement(right);
+  if (leftSignal !== rightSignal) return leftSignal ? -1 : 1;
+  if (leftSignal && rightSignal) {
+    const signalOrder = signalMeasurementOrder(left) - signalMeasurementOrder(right);
+    if (signalOrder) return signalOrder;
+  }
   const typeCompare = String(left.dev_type || "").localeCompare(String(right.dev_type || ""), "zh-Hans-CN");
   if (typeCompare) return typeCompare;
   const nameCompare = String(left.dev_name || "").localeCompare(String(right.dev_name || ""), "zh-Hans-CN");
@@ -3269,6 +3479,50 @@ function filteredMeasurements(rows, filter) {
   });
 }
 
+function measurementTelemetryRows(rows) {
+  return (rows || []).filter((row) => !isSignalMeasurement(row));
+}
+
+function measurementSignalRows(rows) {
+  return (rows || []).filter((row) => isSignalMeasurement(row));
+}
+
+function setMeasurementTab(tabName) {
+  state.activeMeasurementTab = tabName === "signal" ? "signal" : "telemetry";
+  renderMeasurements(state.snapshot || {});
+  drawMeasurementTraceChart();
+}
+
+function activeMeasurementRows(rows) {
+  return state.activeMeasurementTab === "signal"
+    ? measurementSignalRows(rows)
+    : measurementTelemetryRows(rows);
+}
+
+function renderMeasurementTabs(telemetryRows, signalRows) {
+  const activeTab = state.activeMeasurementTab === "signal" ? "signal" : "telemetry";
+  const tabs = [
+    { key: "telemetry", label: "遥测", count: telemetryRows.length },
+    { key: "signal", label: "遥信", count: signalRows.length },
+  ];
+  return `
+    <div class="measurement-type-tabs" role="tablist" aria-label="量测类型">
+      ${tabs.map((tab) => `
+        <button
+          type="button"
+          role="tab"
+          class="measurement-type-tab ${activeTab === tab.key ? "is-active" : ""}"
+          data-measurement-tab="${tab.key}"
+          aria-selected="${activeTab === tab.key ? "true" : "false"}"
+        >
+          <span>${tab.label}</span>
+          <strong>${tab.count}</strong>
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
 function ensureSelectedMeasurement(rows) {
   const keys = new Set(rows.map((row) => measurementKey(row)));
   if (!state.selectedMeasurementKey || !keys.has(state.selectedMeasurementKey)) {
@@ -3280,11 +3534,33 @@ function renderMeasurements(snapshot = state.snapshot || {}) {
   const devices = measurementsDevices(snapshot);
   renderDeviceTree("measurementDeviceTree", "measurementTreeSummary", devices, state.measurementFilter, "measurement", "measurement");
   const allRows = measurementRows(snapshot);
-  const rows = filteredMeasurements(allRows, state.measurementFilter);
+  const filteredRows = filteredMeasurements(allRows, state.measurementFilter);
+  const telemetryRows = measurementTelemetryRows(filteredRows);
+  const signalRows = measurementSignalRows(filteredRows);
+  const rows = activeMeasurementRows(filteredRows);
   ensureSelectedMeasurement(rows);
   const validCount = rows.filter((item) => Number(item.valid) === 1).length;
-  $("measurementValidCount").textContent = `${rows.length}/${allRows.length} 点 · 有效 ${validCount} 点`;
+  const activeLabel = state.activeMeasurementTab === "signal" ? "遥信" : "遥测";
+  $("measurementValidCount").textContent = `${activeLabel} ${rows.length}/${filteredRows.length} 点 · 有效 ${validCount} 点`;
+  const tabHtml = renderMeasurementTabs(telemetryRows, signalRows);
+  if (!allRows.length) {
+    $("measurementTable").innerHTML = `${tabHtml}<div class="measurement-type-tab-page is-active"><div class="empty-state">暂无量测数据</div></div>`;
+    drawMeasurementTraceChart();
+    return;
+  }
+  if (!filteredRows.length) {
+    $("measurementTable").innerHTML = `${tabHtml}<div class="measurement-type-tab-page is-active"><div class="empty-state">当前筛选无量测</div></div>`;
+    drawMeasurementTraceChart();
+    return;
+  }
+  if (!rows.length) {
+    $("measurementTable").innerHTML = `${tabHtml}<div class="measurement-type-tab-page is-active"><div class="empty-state">当前分类无量测</div></div>`;
+    drawMeasurementTraceChart();
+    return;
+  }
   $("measurementTable").innerHTML = `
+    ${tabHtml}
+    <div class="measurement-type-tab-page is-active">
     <table class="measurement-compare-table">
       <thead><tr><th>idx</th><th>量测名</th><th>设备</th><th>类型</th><th>量测值</th><th>状态</th></tr></thead>
       <tbody>
@@ -3301,7 +3577,8 @@ function renderMeasurements(snapshot = state.snapshot || {}) {
           </tr>`;
         }).join("")}
       </tbody>
-    </table>`;
+    </table>
+    </div>`;
   drawMeasurementTraceChart();
 }
 
@@ -3426,8 +3703,9 @@ function measurementTraceAxisTicks(range, canvasWidth) {
 
 function resizeCanvas(canvas) {
   const ratio = window.devicePixelRatio || 1;
-  const width = Math.max(620, Math.floor((canvas.clientWidth || 900) * ratio));
-  const height = Math.max(260, Math.floor((canvas.clientHeight || 320) * ratio));
+  const { width: renderedWidth, height: renderedHeight } = canvasRenderedSize(canvas, 900, 320);
+  const width = Math.floor(renderedWidth * ratio);
+  const height = Math.floor(renderedHeight * ratio);
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width;
     canvas.height = height;
@@ -4596,6 +4874,11 @@ document.addEventListener("click", (event) => {
     selectCommandTraceRow(commandTraceRow);
     return;
   }
+  const measurementTab = target?.closest("[data-measurement-tab]");
+  if (measurementTab) {
+    setMeasurementTab(measurementTab.dataset.measurementTab || "telemetry");
+    return;
+  }
   const measurementRow = target?.closest("[data-measurement-select-key]");
   if (measurementRow) {
     const key = measurementRow.dataset.measurementSelectKey || "";
@@ -4790,6 +5073,7 @@ window.addEventListener("resize", () => {
 
 initPageNavigation();
 initOverviewBottomSplitter();
+initVerticalSplitters();
 renderReceiveMode();
 renderHistory();
 loadModels().finally(refresh);

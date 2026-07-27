@@ -1,345 +1,372 @@
 <RunStat>
-@ dev_type       dev_name       run_stat
-# ACNode         wt01_src       1
-# ACNode         wt02_src       1
-# ACNode         wt03_src       1
-# ACNode         wt04_src       1
-# ACNode         wt05_src       1
-# ACNode         wt06_src       1
-# ACNode         wt07_src       1
-# ACNode         wt08_src       1
-# ACNode         wt09_src       1
-# ACNode         wt10_src       1
-# ACNode         wt01_rect      1
-# ACNode         wt02_rect      1
-# ACNode         wt03_rect      1
-# ACNode         wt04_rect      1
-# ACNode         wt05_rect      1
-# ACNode         wt06_rect      1
-# ACNode         wt07_rect      1
-# ACNode         wt08_rect      1
-# ACNode         wt09_rect      1
-# ACNode         wt10_rect      1
-# ACNode         ac_bus         1
-# ACNode         diesel_node    1
-# ACNode         ac_load_1      1
-# ACNode         ac_load_2      1
-# ACNode         grid_inv_ac    1
-# ACNode         diesel_sw      1
-# ACNode         load1_sw       1
-# ACNode         load2_sw       1
-# ACNode         grid_inv_sw    1
-# ACNode         h2_load        1
-# ACNode         h2_load_sw     1
-# ACBranch       wt01_cable     1
-# ACBranch       wt02_cable     1
-# ACBranch       wt03_cable     1
-# ACBranch       wt04_cable     1
-# ACBranch       wt05_cable     1
-# ACBranch       wt06_cable     1
-# ACBranch       wt07_cable     1
-# ACBranch       wt08_cable     1
-# ACBranch       wt09_cable     1
-# ACBranch       wt10_cable     1
-# ACBranch       diesel_line    1
-# ACBranch       load1_line     1
-# ACBranch       load2_line     1
-# ACBranch       inv_ac_line    1
-# ACBranch       h2_load_line   1
-# ACLoad         load_ac_1      1
-# ACLoad         load_ac_2      1
-# ACLoad         h2_load        1
-# ACGenerator    wt01_10kw      1
-# ACGenerator    wt02_10kw      1
-# ACGenerator    wt03_10kw      1
-# ACGenerator    wt04_10kw      1
-# ACGenerator    wt05_10kw      1
-# ACGenerator    wt06_10kw      1
-# ACGenerator    wt07_10kw      1
-# ACGenerator    wt08_10kw      1
-# ACGenerator    wt09_10kw      1
-# ACGenerator    wt10_10kw      1
-# ACGenerator    diesel_300kw   1
-# ACSwitch       sw_load1_ac    1
-# ACSwitch       sw_inv_ac      1
-# ACBreak        sw_diesel_ac   1
-# ACBreak        sw_load2_ac    1
-# ACBreak        sw_h2_load_ac  1
-# DCNode         dc_bus_720v    1
-# DCNode         wt01_dc_sw     1
-# DCNode         wt02_dc_sw     1
-# DCNode         wt03_dc_sw     1
-# DCNode         wt04_dc_sw     1
-# DCNode         wt05_dc_sw     1
-# DCNode         wt06_dc_sw     1
-# DCNode         wt07_dc_sw     1
-# DCNode         wt08_dc_sw     1
-# DCNode         wt09_dc_sw     1
-# DCNode         wt10_dc_sw     1
-# DCNode         pv01_300v      1
-# DCNode         pv02_300v      1
-# DCNode         pv03_300v      1
-# DCNode         pv01_dc_sw     1
-# DCNode         pv02_dc_sw     1
-# DCNode         pv03_dc_sw     1
-# DCNode         ess01_300v     1
-# DCNode         ess02_300v     1
-# DCNode         ess03_300v     1
-# DCNode         ess04_300v     1
-# DCNode         ess05_300v     1
-# DCNode         ess01_720v     1
-# DCNode         ess02_720v     1
-# DCNode         ess03_720v     1
-# DCNode         ess04_720v     1
-# DCNode         ess05_720v     1
-# DCNode         grid_inv_dc    1
-# DCNode         wt01_line_dc   1
-# DCNode         wt02_line_dc   1
-# DCNode         wt03_line_dc   1
-# DCNode         wt04_line_dc   1
-# DCNode         wt05_line_dc   1
-# DCNode         wt06_line_dc   1
-# DCNode         wt07_line_dc   1
-# DCNode         wt08_line_dc   1
-# DCNode         wt09_line_dc   1
-# DCNode         wt10_line_dc   1
-# DCNode         pv01_line_dc   1
-# DCNode         pv02_line_dc   1
-# DCNode         pv03_line_dc   1
-# DCNode         ess01_line_dc  1
-# DCNode         ess02_line_dc  1
-# DCNode         ess03_line_dc  1
-# DCNode         ess04_line_dc  1
-# DCNode         ess05_line_dc  1
-# DCNode         inv_line_dc    1
-# DCNode         fc01_src       1
-# DCNode         fc01_line_dc   1
-# DCBranch       wt01_dc_line   1
-# DCBranch       wt02_dc_line   1
-# DCBranch       wt03_dc_line   1
-# DCBranch       wt04_dc_line   1
-# DCBranch       wt05_dc_line   1
-# DCBranch       wt06_dc_line   1
-# DCBranch       wt07_dc_line   1
-# DCBranch       wt08_dc_line   1
-# DCBranch       wt09_dc_line   1
-# DCBranch       wt10_dc_line   1
-# DCBranch       pv01_dc_line   1
-# DCBranch       pv02_dc_line   1
-# DCBranch       pv03_dc_line   1
-# DCBranch       ess01_dc_line  1
-# DCBranch       ess02_dc_line  1
-# DCBranch       ess03_dc_line  1
-# DCBranch       ess04_dc_line  1
-# DCBranch       ess05_dc_line  1
-# DCBranch       inv_dc_line    1
-# DCBranch       fc01_dc_line   1
-# DCGenerator    dc_bus_vctrl   1
-# DCGenerator    pv01_vsrc      1
-# DCGenerator    pv02_vsrc      1
-# DCGenerator    pv03_vsrc      1
-# DCGenerator    ess01_vsrc     1
-# DCGenerator    ess02_vsrc     1
-# DCGenerator    ess03_vsrc     1
-# DCGenerator    ess04_vsrc     1
-# DCGenerator    ess05_vsrc     1
-# DCGenerator    fc01_30kw      1
-# DCSwitch       sw_wt02_dc     1
-# DCSwitch       sw_wt04_dc     1
-# DCSwitch       sw_wt06_dc     1
-# DCSwitch       sw_wt08_dc     1
-# DCSwitch       sw_wt10_dc     1
-# DCSwitch       sw_pv02_dc     1
-# DCSwitch       sw_ess01_dc    1
-# DCSwitch       sw_ess03_dc    1
-# DCSwitch       sw_ess05_dc    1
-# DCSwitch       sw_fc01_dc     1
-# DCBreak        sw_wt01_dc     1
-# DCBreak        sw_wt03_dc     1
-# DCBreak        sw_wt05_dc     1
-# DCBreak        sw_wt07_dc     1
-# DCBreak        sw_wt09_dc     1
-# DCBreak        sw_pv01_dc     1
-# DCBreak        sw_pv03_dc     1
-# DCBreak        sw_ess02_dc    1
-# DCBreak        sw_ess04_dc    1
-# DCBreak        sw_grid_dc     1
-# DCDCConverter  pv01_dcdc      1
-# DCDCConverter  pv02_dcdc      1
-# DCDCConverter  pv03_dcdc      1
-# DCDCConverter  ess01_dcdc     1
-# DCDCConverter  ess02_dcdc     1
-# DCDCConverter  ess03_dcdc     1
-# DCDCConverter  ess04_dcdc     1
-# DCDCConverter  ess05_dcdc     1
-# DCACConverter  wt01_rect      1
-# DCACConverter  wt02_rect      1
-# DCACConverter  wt03_rect      1
-# DCACConverter  wt04_rect      1
-# DCACConverter  wt05_rect      1
-# DCACConverter  wt06_rect      1
-# DCACConverter  wt07_rect      1
-# DCACConverter  wt08_rect      1
-# DCACConverter  wt09_rect      1
-# DCACConverter  wt10_rect      1
-# DCACConverter  grid_inv_acp   1
-# ESS            ess01          1
-# ESS            ess02          1
-# ESS            ess03          1
-# ESS            ess04          1
-# ESS            ess05          1
+@ dev_type       dev_name            run_stat
+# ACNode         交流风电-1              1
+# ACNode         交流风电-2              1
+# ACNode         交流风电-3              1
+# ACNode         交流风电-4              1
+# ACNode         交流风电-5              1
+# ACNode         交流风电-6              1
+# ACNode         交流风电-7              1
+# ACNode         交流风电-8              1
+# ACNode         交流风电-9              1
+# ACNode         交流风电-10             1
+# ACNode         柴油发电机-1             1
+# ACNode         柴油发电机-2             1
+# ACNode         柴油发电机-3             1
+# ACNode         柴油发电机-4             1
+# ACNode         风机变流器-1             1
+# ACNode         风机变流器-2             1
+# ACNode         风机变流器-3             1
+# ACNode         风机变流器-4             1
+# ACNode         风机变流器-5             1
+# ACNode         风机变流器-6             1
+# ACNode         风机变流器-7             1
+# ACNode         风机变流器-8             1
+# ACNode         风机变流器-9             1
+# ACNode         风机变流器-10            1
+# ACNode         ACDC变流器-1           1
+# ACNode         ACDC变流器-2           1
+# ACNode         交流线路（自适应）-30        1
+# ACNode         交流线路（自适应）-30        1
+# ACNode         交流母线（竖向）-1          1
+# ACNode         盒型开关-7              1
+# ACNode         盒型开关-9              1
+# ACNode         交流负荷-1              1
+# ACRealBs       交流母线（竖向）-1          1
+# ACBranch       交流线路（自适应）-20        1
+# ACBranch       交流线路（自适应）-21        1
+# ACBranch       交流线路（自适应）-22        1
+# ACBranch       交流线路（自适应）-23        1
+# ACBranch       交流线路（自适应）-24        1
+# ACBranch       交流线路（自适应）-25        1
+# ACBranch       交流线路（自适应）-26        1
+# ACBranch       交流线路（自适应）-27        1
+# ACBranch       交流线路（自适应）-28        1
+# ACBranch       交流线路（自适应）-29        1
+# ACBranch       交流线路（自适应）-30        1
+# ACLoad         交流负荷-1              1
+# ACLoad         交流电制氢-1_交流设备端交流电负荷  1
+# ACGenerator    交流风电-1              1
+# ACGenerator    交流风电-2              1
+# ACGenerator    交流风电-3              1
+# ACGenerator    交流风电-4              1
+# ACGenerator    交流风电-5              1
+# ACGenerator    交流风电-6              1
+# ACGenerator    交流风电-7              1
+# ACGenerator    交流风电-8              1
+# ACGenerator    交流风电-9              1
+# ACGenerator    交流风电-10             1
+# ACGenerator    柴油发电机-1             1
+# ACGenerator    柴油发电机-2             1
+# ACGenerator    柴油发电机-3             1
+# ACGenerator    柴油发电机-4             1
+# ACZeroBranch   交流零阻抗支路（自适应）-1      1
+# ACBreak        交流断路器-1             1
+# ACBreak        交流断路器-2             1
+# ACBreak        盒型开关-3              1
+# ACBreak        盒型开关-4              1
+# ACBreak        盒型开关-5              1
+# ACBreak        盒型开关-6              1
+# ACBreak        盒型开关-7              1
+# ACBreak        盒型开关-8              1
+# ACBreak        盒型开关-9              1
+# DCNode         风机变流器-1             1
+# DCNode         风机变流器-2             1
+# DCNode         风机变流器-3             1
+# DCNode         风机变流器-4             1
+# DCNode         风机变流器-5             1
+# DCNode         风机变流器-6             1
+# DCNode         风机变流器-7             1
+# DCNode         风机变流器-8             1
+# DCNode         风机变流器-9             1
+# DCNode         风机变流器-10            1
+# DCNode         ACDC变流器-1           1
+# DCNode         ACDC变流器-2           1
+# DCNode         直流母线（竖向）-1          1
+# DCNode         光伏变流器-1             1
+# DCNode         光伏变流器-2             1
+# DCNode         光伏变流器-3             1
+# DCNode         储能变流器-1             1
+# DCNode         储能变流器-2             1
+# DCNode         储能变流器-3             1
+# DCNode         储能变流器-4             1
+# DCNode         储能变流器-5             1
+# DCNode         储能变流器-6             1
+# DCNode         直流断路器-31            1
+# DCNode         直流断路器-32            1
+# DCNode         直流断路器-32            1
+# DCNode         直流光伏-1              1
+# DCNode         直流光伏-2              1
+# DCNode         直流光伏-3              1
+# DCNode         电化学储能-1             1
+# DCNode         电化学储能-2             1
+# DCNode         电化学储能-3             1
+# DCNode         电化学储能-4             1
+# DCNode         电化学储能-5             1
+# DCNode         电化学储能-6             1
+# DCNode         光伏变流器-1             1
+# DCNode         光伏变流器-2             1
+# DCNode         光伏变流器-3             1
+# DCRealBs       直流母线（竖向）-1          1
+# DCBranch       光伏直流线路-1            1
+# DCBranch       光伏直流线路-2            1
+# DCBranch       光伏直流线路-3            1
+# DCBranch       燃料电池直流线路-1          1
+# DCGenerator    直流光伏-1              1
+# DCGenerator    直流光伏-2              1
+# DCGenerator    直流光伏-3              1
+# DCGenerator    电化学储能-1             1
+# DCGenerator    电化学储能-2             1
+# DCGenerator    电化学储能-3             1
+# DCGenerator    电化学储能-4             1
+# DCGenerator    电化学储能-5             1
+# DCGenerator    电化学储能-6             1
+# DCGenerator    直流燃料电池-1_直流设备端直流电源  1
+# DCBreak        直流断路器-1             1
+# DCBreak        直流断路器-2             1
+# DCBreak        直流断路器-3             1
+# DCBreak        直流断路器-4             1
+# DCBreak        直流断路器-5             1
+# DCBreak        直流断路器-6             1
+# DCBreak        直流断路器-7             1
+# DCBreak        直流断路器-8             1
+# DCBreak        直流断路器-9             1
+# DCBreak        直流断路器-11            1
+# DCBreak        直流断路器-12            1
+# DCBreak        直流断路器-13            1
+# DCBreak        直流断路器-14            1
+# DCBreak        直流断路器-15            1
+# DCBreak        直流断路器-16            1
+# DCBreak        直流断路器-17            1
+# DCBreak        直流断路器-18            1
+# DCBreak        直流断路器-20            1
+# DCBreak        直流断路器-21            1
+# DCBreak        直流断路器-29            1
+# DCBreak        直流断路器-30            1
+# DCBreak        直流断路器-31            1
+# DCBreak        直流断路器-32            1
+# DCDCConverter  光伏变流器-1             1
+# DCDCConverter  光伏变流器-2             1
+# DCDCConverter  光伏变流器-3             1
+# DCDCConverter  储能变流器-1             1
+# DCDCConverter  储能变流器-2             1
+# DCDCConverter  储能变流器-3             1
+# DCDCConverter  储能变流器-4             1
+# DCDCConverter  储能变流器-5             1
+# DCDCConverter  储能变流器-6             1
+# DCACConverter  风机变流器-1             1
+# DCACConverter  风机变流器-2             1
+# DCACConverter  风机变流器-3             1
+# DCACConverter  风机变流器-4             1
+# DCACConverter  风机变流器-5             1
+# DCACConverter  风机变流器-6             1
+# DCACConverter  风机变流器-7             1
+# DCACConverter  风机变流器-8             1
+# DCACConverter  风机变流器-9             1
+# DCACConverter  风机变流器-10            1
+# DCACConverter  ACDC变流器-1           1
+# DCACConverter  ACDC变流器-2           1
+# HydroSource    交流电制氢-1_氢能设备端氢源     1
+# HydroLoad      直流燃料电池-1_氢能设备端氢荷    1
+# HydroStorage   集装格式储氢罐-1           1
+# AcE2Hydro      交流电制氢-1             1
+# Hydro2DcE      直流燃料电池-1            1
 </RunStat>
 <CbOpenStat>
-@ dev_type  dev_name       status
-# ACSwitch  sw_load1_ac    1
-# ACSwitch  sw_inv_ac      1
-# ACBreak   sw_diesel_ac   1
-# ACBreak   sw_load2_ac    1
-# ACBreak   sw_h2_load_ac  1
-# DCSwitch  sw_wt02_dc     1
-# DCSwitch  sw_wt04_dc     1
-# DCSwitch  sw_wt06_dc     1
-# DCSwitch  sw_wt08_dc     1
-# DCSwitch  sw_wt10_dc     1
-# DCSwitch  sw_pv02_dc     1
-# DCSwitch  sw_ess01_dc    1
-# DCSwitch  sw_ess03_dc    1
-# DCSwitch  sw_ess05_dc    1
-# DCSwitch  sw_fc01_dc     1
-# DCBreak   sw_wt01_dc     1
-# DCBreak   sw_wt03_dc     1
-# DCBreak   sw_wt05_dc     1
-# DCBreak   sw_wt07_dc     1
-# DCBreak   sw_wt09_dc     1
-# DCBreak   sw_pv01_dc     1
-# DCBreak   sw_pv03_dc     1
-# DCBreak   sw_ess02_dc    1
-# DCBreak   sw_ess04_dc    1
-# DCBreak   sw_grid_dc     1
+@ dev_type  dev_name  status
+# ACBreak   交流断路器-1   1
+# ACBreak   交流断路器-2   1
+# ACBreak   盒型开关-3    1
+# ACBreak   盒型开关-4    1
+# ACBreak   盒型开关-5    1
+# ACBreak   盒型开关-6    1
+# ACBreak   盒型开关-7    1
+# ACBreak   盒型开关-8    1
+# ACBreak   盒型开关-9    1
+# DCBreak   直流断路器-1   1
+# DCBreak   直流断路器-2   1
+# DCBreak   直流断路器-3   1
+# DCBreak   直流断路器-4   1
+# DCBreak   直流断路器-5   1
+# DCBreak   直流断路器-6   1
+# DCBreak   直流断路器-7   1
+# DCBreak   直流断路器-8   1
+# DCBreak   直流断路器-9   1
+# DCBreak   直流断路器-11  1
+# DCBreak   直流断路器-12  1
+# DCBreak   直流断路器-13  1
+# DCBreak   直流断路器-14  1
+# DCBreak   直流断路器-15  1
+# DCBreak   直流断路器-16  1
+# DCBreak   直流断路器-17  1
+# DCBreak   直流断路器-18  1
+# DCBreak   直流断路器-20  1
+# DCBreak   直流断路器-21  1
+# DCBreak   直流断路器-29  1
+# DCBreak   直流断路器-30  1
+# DCBreak   直流断路器-31  1
+# DCBreak   直流断路器-32  1
 </CbOpenStat>
 <SetValue>
-@ dev_type       dev_name      set_type  set_value
-# ACGenerator    wt01_10kw     p_set     0
-# ACGenerator    wt01_10kw     q_set     0
-# ACGenerator    wt01_10kw     v_set     300
-# ACGenerator    wt02_10kw     p_set     0
-# ACGenerator    wt02_10kw     q_set     0
-# ACGenerator    wt02_10kw     v_set     300
-# ACGenerator    wt03_10kw     p_set     0
-# ACGenerator    wt03_10kw     q_set     0
-# ACGenerator    wt03_10kw     v_set     300
-# ACGenerator    wt04_10kw     p_set     0
-# ACGenerator    wt04_10kw     q_set     0
-# ACGenerator    wt04_10kw     v_set     300
-# ACGenerator    wt05_10kw     p_set     0
-# ACGenerator    wt05_10kw     q_set     0
-# ACGenerator    wt05_10kw     v_set     300
-# ACGenerator    wt06_10kw     p_set     0
-# ACGenerator    wt06_10kw     q_set     0
-# ACGenerator    wt06_10kw     v_set     300
-# ACGenerator    wt07_10kw     p_set     0
-# ACGenerator    wt07_10kw     q_set     0
-# ACGenerator    wt07_10kw     v_set     300
-# ACGenerator    wt08_10kw     p_set     0
-# ACGenerator    wt08_10kw     q_set     0
-# ACGenerator    wt08_10kw     v_set     300
-# ACGenerator    wt09_10kw     p_set     0
-# ACGenerator    wt09_10kw     q_set     0
-# ACGenerator    wt09_10kw     v_set     300
-# ACGenerator    wt10_10kw     p_set     0
-# ACGenerator    wt10_10kw     q_set     0
-# ACGenerator    wt10_10kw     v_set     300
-# ACGenerator    diesel_300kw  p_set     0
-# ACGenerator    diesel_300kw  q_set     0
-# ACGenerator    diesel_300kw  v_set     380
-# DCGenerator    dc_bus_vctrl  p_set     0
-# DCGenerator    dc_bus_vctrl  q_set     0
-# DCGenerator    dc_bus_vctrl  v_set     720
-# DCGenerator    pv01_vsrc     p_set     0
-# DCGenerator    pv01_vsrc     q_set     0
-# DCGenerator    pv01_vsrc     v_set     300
-# DCGenerator    pv02_vsrc     p_set     0
-# DCGenerator    pv02_vsrc     q_set     0
-# DCGenerator    pv02_vsrc     v_set     300
-# DCGenerator    pv03_vsrc     p_set     0
-# DCGenerator    pv03_vsrc     q_set     0
-# DCGenerator    pv03_vsrc     v_set     300
-# DCGenerator    ess01_vsrc    p_set     0
-# DCGenerator    ess01_vsrc    q_set     0
-# DCGenerator    ess01_vsrc    v_set     300
-# DCGenerator    ess02_vsrc    p_set     0
-# DCGenerator    ess02_vsrc    q_set     0
-# DCGenerator    ess02_vsrc    v_set     300
-# DCGenerator    ess03_vsrc    p_set     0
-# DCGenerator    ess03_vsrc    q_set     0
-# DCGenerator    ess03_vsrc    v_set     300
-# DCGenerator    ess04_vsrc    p_set     0
-# DCGenerator    ess04_vsrc    q_set     0
-# DCGenerator    ess04_vsrc    v_set     300
-# DCGenerator    ess05_vsrc    p_set     0
-# DCGenerator    ess05_vsrc    q_set     0
-# DCGenerator    ess05_vsrc    v_set     300
-# DCGenerator    fc01_30kw     p_set     30
-# DCGenerator    fc01_30kw     q_set     0
-# DCGenerator    fc01_30kw     v_set     0
-# DCDCConverter  pv01_dcdc     p_set     50
-# DCDCConverter  pv01_dcdc     q_set     0
-# DCDCConverter  pv01_dcdc     v_set     0
-# DCDCConverter  pv02_dcdc     p_set     50
-# DCDCConverter  pv02_dcdc     q_set     0
-# DCDCConverter  pv02_dcdc     v_set     0
-# DCDCConverter  pv03_dcdc     p_set     30
-# DCDCConverter  pv03_dcdc     q_set     0
-# DCDCConverter  pv03_dcdc     v_set     0
-# DCDCConverter  ess01_dcdc    p_set     60
-# DCDCConverter  ess01_dcdc    q_set     0
-# DCDCConverter  ess01_dcdc    v_set     0
-# DCDCConverter  ess02_dcdc    p_set     60
-# DCDCConverter  ess02_dcdc    q_set     0
-# DCDCConverter  ess02_dcdc    v_set     0
-# DCDCConverter  ess03_dcdc    p_set     60
-# DCDCConverter  ess03_dcdc    q_set     0
-# DCDCConverter  ess03_dcdc    v_set     0
-# DCDCConverter  ess04_dcdc    p_set     60
-# DCDCConverter  ess04_dcdc    q_set     0
-# DCDCConverter  ess04_dcdc    v_set     0
-# DCDCConverter  ess05_dcdc    p_set     60
-# DCDCConverter  ess05_dcdc    q_set     0
-# DCDCConverter  ess05_dcdc    v_set     0
-# DCACConverter  wt01_rect     p_set     10
-# DCACConverter  wt01_rect     q_set     0
-# DCACConverter  wt02_rect     p_set     10
-# DCACConverter  wt02_rect     q_set     0
-# DCACConverter  wt03_rect     p_set     10
-# DCACConverter  wt03_rect     q_set     0
-# DCACConverter  wt04_rect     p_set     10
-# DCACConverter  wt04_rect     q_set     0
-# DCACConverter  wt05_rect     p_set     10
-# DCACConverter  wt05_rect     q_set     0
-# DCACConverter  wt06_rect     p_set     10
-# DCACConverter  wt06_rect     q_set     0
-# DCACConverter  wt07_rect     p_set     10
-# DCACConverter  wt07_rect     q_set     0
-# DCACConverter  wt08_rect     p_set     10
-# DCACConverter  wt08_rect     q_set     0
-# DCACConverter  wt09_rect     p_set     10
-# DCACConverter  wt09_rect     q_set     0
-# DCACConverter  wt10_rect     p_set     10
-# DCACConverter  wt10_rect     q_set     0
-# DCACConverter  grid_inv_acp  p_set     -350
-# DCACConverter  grid_inv_acp  q_set     0
-# ACLoad         load_ac_1     p_set     350
-# ACLoad         load_ac_1     q_set     120
-# ACLoad         load_ac_2     p_set     250
-# ACLoad         load_ac_2     q_set     80
-# ACLoad         h2_load       p_set     100
-# ACLoad         h2_load       q_set     0
+@ dev_type       dev_name            set_type  set_value
+# ACGenerator    交流风电-1              p_set     0
+# ACGenerator    交流风电-1              q_set     0
+# ACGenerator    交流风电-1              v_set     380
+# ACGenerator    交流风电-2              p_set     0
+# ACGenerator    交流风电-2              q_set     0
+# ACGenerator    交流风电-2              v_set     380
+# ACGenerator    交流风电-3              p_set     0
+# ACGenerator    交流风电-3              q_set     0
+# ACGenerator    交流风电-3              v_set     380
+# ACGenerator    交流风电-4              p_set     0
+# ACGenerator    交流风电-4              q_set     0
+# ACGenerator    交流风电-4              v_set     380
+# ACGenerator    交流风电-5              p_set     0
+# ACGenerator    交流风电-5              q_set     0
+# ACGenerator    交流风电-5              v_set     380
+# ACGenerator    交流风电-6              p_set     0
+# ACGenerator    交流风电-6              q_set     0
+# ACGenerator    交流风电-6              v_set     380
+# ACGenerator    交流风电-7              p_set     0
+# ACGenerator    交流风电-7              q_set     0
+# ACGenerator    交流风电-7              v_set     380
+# ACGenerator    交流风电-8              p_set     0
+# ACGenerator    交流风电-8              q_set     0
+# ACGenerator    交流风电-8              v_set     380
+# ACGenerator    交流风电-9              p_set     0
+# ACGenerator    交流风电-9              q_set     0
+# ACGenerator    交流风电-9              v_set     380
+# ACGenerator    交流风电-10             p_set     0
+# ACGenerator    交流风电-10             q_set     0
+# ACGenerator    交流风电-10             v_set     380
+# ACGenerator    柴油发电机-1             p_set     0
+# ACGenerator    柴油发电机-1             q_set     0
+# ACGenerator    柴油发电机-1             v_set     380
+# ACGenerator    柴油发电机-2             p_set     0
+# ACGenerator    柴油发电机-2             q_set     0
+# ACGenerator    柴油发电机-2             v_set     380
+# ACGenerator    柴油发电机-3             p_set     0
+# ACGenerator    柴油发电机-3             q_set     0
+# ACGenerator    柴油发电机-3             v_set     380
+# ACGenerator    柴油发电机-4             p_set     0
+# ACGenerator    柴油发电机-4             q_set     0
+# ACGenerator    柴油发电机-4             v_set     380
+# DCGenerator    直流光伏-1              p_set     0
+# DCGenerator    直流光伏-1              v_set     400
+# DCGenerator    直流光伏-1              i_set     0
+# DCGenerator    直流光伏-2              p_set     0
+# DCGenerator    直流光伏-2              v_set     400
+# DCGenerator    直流光伏-2              i_set     0
+# DCGenerator    直流光伏-3              p_set     0
+# DCGenerator    直流光伏-3              v_set     400
+# DCGenerator    直流光伏-3              i_set     0
+# DCGenerator    电化学储能-1             p_set     0.0
+# DCGenerator    电化学储能-1             v_set     500
+# DCGenerator    电化学储能-1             i_set     0.0
+# DCGenerator    电化学储能-2             p_set     0.0
+# DCGenerator    电化学储能-2             v_set     500
+# DCGenerator    电化学储能-2             i_set     0.0
+# DCGenerator    电化学储能-3             p_set     0.0
+# DCGenerator    电化学储能-3             v_set     500
+# DCGenerator    电化学储能-3             i_set     0.0
+# DCGenerator    电化学储能-4             p_set     0.0
+# DCGenerator    电化学储能-4             v_set     500
+# DCGenerator    电化学储能-4             i_set     0.0
+# DCGenerator    电化学储能-5             p_set     0.0
+# DCGenerator    电化学储能-5             v_set     500
+# DCGenerator    电化学储能-5             i_set     0.0
+# DCGenerator    电化学储能-6             p_set     0.0
+# DCGenerator    电化学储能-6             v_set     500
+# DCGenerator    电化学储能-6             i_set     0.0
+# DCGenerator    直流燃料电池-1_直流设备端直流电源  p_set     0
+# DCGenerator    直流燃料电池-1_直流设备端直流电源  v_set     750
+# DCGenerator    直流燃料电池-1_直流设备端直流电源  i_set     0
+# DCDCConverter  光伏变流器-1             p_set     0
+# DCDCConverter  光伏变流器-1             i_set     0
+# DCDCConverter  光伏变流器-1             v_set     400
+# DCDCConverter  光伏变流器-2             p_set     0
+# DCDCConverter  光伏变流器-2             i_set     0
+# DCDCConverter  光伏变流器-2             v_set     400
+# DCDCConverter  光伏变流器-3             p_set     0
+# DCDCConverter  光伏变流器-3             i_set     0
+# DCDCConverter  光伏变流器-3             v_set     400
+# DCDCConverter  储能变流器-1             p_set     0
+# DCDCConverter  储能变流器-1             i_set     0
+# DCDCConverter  储能变流器-1             v_set     750
+# DCDCConverter  储能变流器-2             p_set     0
+# DCDCConverter  储能变流器-2             i_set     0
+# DCDCConverter  储能变流器-2             v_set     500
+# DCDCConverter  储能变流器-3             p_set     0
+# DCDCConverter  储能变流器-3             i_set     0
+# DCDCConverter  储能变流器-3             v_set     500
+# DCDCConverter  储能变流器-4             p_set     0
+# DCDCConverter  储能变流器-4             i_set     0
+# DCDCConverter  储能变流器-4             v_set     500
+# DCDCConverter  储能变流器-5             p_set     0
+# DCDCConverter  储能变流器-5             i_set     0
+# DCDCConverter  储能变流器-5             v_set     500
+# DCDCConverter  储能变流器-6             p_set     0
+# DCDCConverter  储能变流器-6             i_set     0
+# DCDCConverter  储能变流器-6             v_set     500
+# DCACConverter  风机变流器-1             p_ac_set  0
+# DCACConverter  风机变流器-1             q_ac_set  0
+# DCACConverter  风机变流器-1             v_ac_set  380
+# DCACConverter  风机变流器-1             v_dc_set  750
+# DCACConverter  风机变流器-2             p_ac_set  0
+# DCACConverter  风机变流器-2             q_ac_set  0
+# DCACConverter  风机变流器-2             v_ac_set  380
+# DCACConverter  风机变流器-2             v_dc_set  750
+# DCACConverter  风机变流器-3             p_ac_set  0
+# DCACConverter  风机变流器-3             q_ac_set  0
+# DCACConverter  风机变流器-3             v_ac_set  380
+# DCACConverter  风机变流器-3             v_dc_set  750
+# DCACConverter  风机变流器-4             p_ac_set  0
+# DCACConverter  风机变流器-4             q_ac_set  0
+# DCACConverter  风机变流器-4             v_ac_set  380
+# DCACConverter  风机变流器-4             v_dc_set  750
+# DCACConverter  风机变流器-5             p_ac_set  0
+# DCACConverter  风机变流器-5             q_ac_set  0
+# DCACConverter  风机变流器-5             v_ac_set  380
+# DCACConverter  风机变流器-5             v_dc_set  750
+# DCACConverter  风机变流器-6             p_ac_set  0
+# DCACConverter  风机变流器-6             q_ac_set  0
+# DCACConverter  风机变流器-6             v_ac_set  380
+# DCACConverter  风机变流器-6             v_dc_set  750
+# DCACConverter  风机变流器-7             p_ac_set  0
+# DCACConverter  风机变流器-7             q_ac_set  0
+# DCACConverter  风机变流器-7             v_ac_set  380
+# DCACConverter  风机变流器-7             v_dc_set  750
+# DCACConverter  风机变流器-8             p_ac_set  0
+# DCACConverter  风机变流器-8             q_ac_set  0
+# DCACConverter  风机变流器-8             v_ac_set  380
+# DCACConverter  风机变流器-8             v_dc_set  750
+# DCACConverter  风机变流器-9             p_ac_set  0
+# DCACConverter  风机变流器-9             q_ac_set  0
+# DCACConverter  风机变流器-9             v_ac_set  380
+# DCACConverter  风机变流器-9             v_dc_set  750
+# DCACConverter  风机变流器-10            p_ac_set  0
+# DCACConverter  风机变流器-10            q_ac_set  0
+# DCACConverter  风机变流器-10            v_ac_set  380
+# DCACConverter  风机变流器-10            v_dc_set  750
+# DCACConverter  ACDC变流器-1           p_ac_set  0
+# DCACConverter  ACDC变流器-1           q_ac_set  0
+# DCACConverter  ACDC变流器-1           v_ac_set  380
+# DCACConverter  ACDC变流器-1           v_dc_set  750
+# DCACConverter  ACDC变流器-2           p_ac_set  0
+# DCACConverter  ACDC变流器-2           q_ac_set  0
+# DCACConverter  ACDC变流器-2           v_ac_set  380
+# DCACConverter  ACDC变流器-2           v_dc_set  750
+# ACLoad         交流负荷-1              p_set     1.0
+# ACLoad         交流负荷-1              q_set     1.0
+# ACLoad         交流电制氢-1_交流设备端交流电负荷  p_set     1.0
+# ACLoad         交流电制氢-1_交流设备端交流电负荷  q_set     1.0
 </SetValue>
 <StorageSoc>
-@ dev_type  idx  name   soc_curr
-# ESS       4    ess01  0.3599999999
-# ESS       5    ess02  0.3599999999
-# ESS       6    ess03  0.3599999999
-# ESS       7    ess04  0.3599999999
-# ESS       8    ess05  0.3599999999
+@ dev_type     idx  name     soc_curr
+# DCGenerator  4    电化学储能-1  0.5
+# DCGenerator  5    电化学储能-2  0.5
+# DCGenerator  6    电化学储能-3  0.5
+# DCGenerator  7    电化学储能-4  0.5
+# DCGenerator  8    电化学储能-5  0.5
+# DCGenerator  9    电化学储能-6  0.5
 </StorageSoc>

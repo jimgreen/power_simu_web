@@ -16,6 +16,7 @@
           </div>
         </div>
         <div class="model-toolbar">
+          <button id="newModelButton" class="model-new-button" type="button">新建模型</button>
           <label class="model-switcher">
             <select id="modelSelector">
               <option value="">默认模型</option>
@@ -29,6 +30,7 @@
             </select>
           </label>
           <button id="exportDefinitionsButton" class="model-export-button" type="button" title="请选择定义导出目录">导出定义</button>
+          <input id="newModelFileInput" type="file" accept=".e" hidden />
           <input id="importDefinitionsInput" type="file" accept=".zip,application/zip" hidden />
           <button id="importDefinitionsButton" class="model-import-button" type="button">导入定义</button>
           <button id="cloneModelButton" class="model-clone-button" type="button">复制新模型</button>
@@ -302,7 +304,10 @@
               </div>
             </aside>
 
-            <div class="curve-workspace">
+            <div
+              class="curve-workspace vertical-split-workspace"
+              data-vertical-split="simulator-curves"
+            >
               <section class="panel visual-panel curve-chart-panel">
                 <div class="panel-head">
                   <h2>天气与负荷曲线</h2>
@@ -325,6 +330,15 @@
                   height="420"
                 ></canvas>
               </section>
+
+              <div
+                class="vertical-stack-splitter"
+                data-vertical-splitter="simulator-curves"
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="调整曲线和表格高度"
+                tabindex="0"
+              ></div>
 
               <section class="panel curve-table-panel">
                 <div class="panel-head">
@@ -539,7 +553,10 @@
               </div>
             </aside>
 
-            <div class="runtime-workspace">
+            <div
+              class="runtime-workspace vertical-split-workspace"
+              data-vertical-split="simulator-runtime"
+            >
               <section class="panel runtime-table-panel">
                 <div class="panel-head">
                 <h2>控制指令</h2>
@@ -551,6 +568,15 @@
                 <div class="sr-only">指令类型 设备 设备类型 模式 指令项 控制指令 接收本机时刻 接收仿真时刻 实时值 量测值</div>
                 <div id="deviceTable" class="runtime-device-wrap" data-runtime-role="device-table"></div>
               </section>
+
+              <div
+                class="vertical-stack-splitter"
+                data-vertical-splitter="simulator-runtime"
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="调整控制指令表格和曲线高度"
+                tabindex="0"
+              ></div>
 
               <section class="panel runtime-trace-panel">
                 <div class="panel-head">
@@ -607,7 +633,10 @@
               </div>
             </aside>
 
-            <div class="measurement-workspace">
+            <div
+              class="measurement-workspace vertical-split-workspace"
+              data-vertical-split="simulator-measurements"
+            >
               <section class="panel measurement-table-panel">
                 <div class="panel-head">
                   <h2>量测值与真值</h2>
@@ -620,6 +649,15 @@
                   data-measurement-role="compare-table"
                 ></div>
               </section>
+
+              <div
+                class="vertical-stack-splitter"
+                data-vertical-splitter="simulator-measurements"
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="调整量测表格和曲线高度"
+                tabindex="0"
+              ></div>
 
               <section class="panel measurement-trace-panel">
                 <div class="panel-head">
@@ -697,6 +735,30 @@
           <div class="modal-actions">
             <button id="cancelStartSimulation" type="button">取消</button>
             <button id="confirmStartSimulation" class="primary" type="submit">启动</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="newModelDialog" class="modal-backdrop" hidden>
+        <form id="newModelForm" class="modal-card" aria-modal="true" role="dialog" aria-labelledby="newModelTitle">
+          <div class="modal-head">
+            <h2 id="newModelTitle">新建模型</h2>
+            <button id="closeNewModelDialog" class="icon-button" type="button" title="关闭">
+              <svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z" /></svg>
+            </button>
+          </div>
+          <label class="modal-field">模型名称
+            <input id="newModelName" name="newModelName" type="text" autocomplete="off" required />
+          </label>
+          <div class="new-model-file-row">
+            <button id="selectNewModelFile" type="button">选择 E 文件</button>
+            <span id="newModelFilename">未选择文件</span>
+          </div>
+          <p class="modal-hint">将读取上传的 model.e，并自动生成 meas.e、control.e、stat.e、weather.e、curves.e 等定义文件。</p>
+          <p id="newModelMessage" class="modal-message" aria-live="polite"></p>
+          <div class="modal-actions">
+            <button id="cancelNewModel" type="button">取消</button>
+            <button id="confirmNewModel" class="primary" type="submit">新建</button>
           </div>
         </form>
       </div>

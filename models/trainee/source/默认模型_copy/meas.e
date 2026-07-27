@@ -669,8 +669,8 @@
 # 667  DCACConverter.ACDC变流器-2.Q_AC             DCACConverter  ACDC变流器-2           Q_AC              10000   1      0
 # 668  DCACConverter.ACDC变流器-2.V_AC             DCACConverter  ACDC变流器-2           V_AC              10000   1      0
 # 669  DCACConverter.ACDC变流器-2.I_AC             DCACConverter  ACDC变流器-2           I_AC              10000   1      0
-# 670  weather_wind_speed                       Environment    weather             WIND_SPEED        1.0     1      19.884
-# 671  weather_air_temp                         Environment    weather             AIR_TEMP          1.0     1      27.13
+# 670  weather_wind_speed                       Environment    weather             WIND_SPEED        1.0     1      12.0
+# 671  weather_air_temp                         Environment    weather             AIR_TEMP          1.0     1      -18.0
 # 672  weather_humidity                         Environment    weather             HUMIDITY          1.0     1      72.0
 # 673  weather_air_pressure                     Environment    weather             AIR_PRESSURE      1.0     1      960.0
 # 674  weather_solar_irradiance                 Environment    weather             SOLAR_IRRADIANCE  1.0     1      0.0

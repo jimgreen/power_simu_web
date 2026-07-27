@@ -106,6 +106,24 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
             self.assertNotIn(f'id="{element_id}"', status_strip)
             self.assertNotIn(f'"{element_id}"', self.script)
 
+    def test_trainee_home_data_source_uses_detailed_receive_address(self):
+        self.assertIn('teacherSnapshotPath: localStorage.getItem("polarTeacherSnapshotPath")', self.script)
+        self.assertIn("function teacherSnapshotPath()", self.script)
+        self.assertIn("function teacherReceiveAddress()", self.script)
+        self.assertIn("function displayReceiveAddress", self.script)
+        self.assertIn("state.teacherSnapshotPath = connection.snapshotPath", self.script)
+        self.assertIn('localStorage.setItem("polarTeacherSnapshotPath", state.teacherSnapshotPath)', self.script)
+
+        receive_mode_block = self.script.split("function renderReceiveMode", 1)[1].split("function curveMinute", 1)[0]
+        self.assertIn("const receiveAddress = teacherReceiveAddress();", receive_mode_block)
+        self.assertIn("const receiveAddressText = displayReceiveAddress(receiveAddress);", receive_mode_block)
+        self.assertIn("sourceText.title = receiveAddress;", receive_mode_block)
+        self.assertIn("sourceText.textContent = receiveAddressText", receive_mode_block)
+        self.assertNotIn(": teacherApiBase;", receive_mode_block)
+
+        self.assertIn("#teacherSourceText", self.styles)
+        self.assertIn("overflow-wrap: anywhere;", self.styles)
+
     def test_trainee_home_has_dynamic_flow_styles(self):
         green_share_start = self.styles.index(".energy-green-share {")
         green_share_block = self.styles[green_share_start : self.styles.index("\n}", green_share_start) + 2]

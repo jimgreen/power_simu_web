@@ -2022,6 +2022,49 @@ class PolarMicrogridSimulator:
             simu_time=simu_time,
         )
 
+    def _power_flow_failure_result(self, error: BaseException) -> str:
+        text = f"{type(error).__name__}: {error}".casefold()
+        divergence_markers = (
+            "normf=nan",
+            "normf=inf",
+            "nan",
+            "overflow",
+            "singular",
+            "未收敛",
+            "发散",
+            "load flow failed",
+            "潮流",
+        )
+        return "数值发散" if any(marker in text for marker in divergence_markers) else "失败"
+
+    def _append_power_flow_failure_log(
+        self,
+        error: BaseException,
+        minute: int,
+        absolute_minute: int,
+        clock_advance: int,
+        period_seconds: float,
+    ) -> None:
+        simu_time = minute_to_time(minute)
+        result = self._power_flow_failure_result(error)
+        detail = [
+            (
+                f"计算失败 时刻 {simu_time}，累计分钟 {absolute_minute}，推进 {clock_advance} min，"
+                f"仿真周期 {format_number(period_seconds)} s"
+            ),
+            f"失败类型 {result}，异常 {type(error).__name__}: {error}",
+            "处理措施 本轮潮流结果未写入，仿真时钟不推进；时钟保护逻辑将切换为暂停状态",
+            *self._input_boundary_lines(minute, absolute_minute, clock_advance, period_seconds),
+        ]
+        self._append_runtime_log(
+            "潮流计算",
+            "内存模型 / 量测快照",
+            result,
+            detail,
+            level="error",
+            simu_time=simu_time,
+        )
+
     def apply_student_commands(self, payload: Mapping[str, Any], source: str = "") -> Dict[str, int]:
         if _has_cancel_command_payload(payload):
             return self.cancel_student_commands(payload, source=source)  # type: ignore[return-value]
@@ -2227,7 +2270,16 @@ class PolarMicrogridSimulator:
             absolute_minute = self.clock.absolute_minute
             self._prepare_runtime_inputs(minute, absolute_minute)
             config = self._make_config(period_seconds=period_seconds)
-            kernel_result = self.kernel(config)
+            try:
+                kernel_result = self.kernel(config)
+            except Exception as exc:
+                self.latest_result = {
+                    "solver_info": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                self._append_power_flow_failure_log(exc, minute, absolute_minute, clock_advance, period_seconds)
+                self.clock.updated_at = time.time()
+                raise
             self.latest_model_book = getattr(kernel_result, "model_book", None)
             self._store_kernel_measurement_rows(kernel_result)
             self._apply_measurement_faults(minute, absolute_minute)

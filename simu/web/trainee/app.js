@@ -29,6 +29,7 @@ const state = {
   lastTeacherSnapshotLogKey: "",
   interactionLink: localStorage.getItem("polarTeacherInteractionLink") || "",
   teacherModelName: localStorage.getItem("polarTeacherModelName") || "",
+  teacherSnapshotPath: localStorage.getItem("polarTeacherSnapshotPath") || "",
   teacherCommandPath: localStorage.getItem("polarTeacherCommandPath") || "",
   localDefinitionSnapshot: null,
   localDefinitionModelId: "",
@@ -397,6 +398,41 @@ async function teacherApi(path, options = {}) {
   return response.json();
 }
 
+function teacherSnapshotPath() {
+  if (state.teacherSnapshotPath) return state.teacherSnapshotPath;
+  try {
+    const legacyConnection = state.interactionLink
+      ? legacyTeacherInteractionConnection(normalizeConnectionUrl(state.interactionLink))
+      : null;
+    if (legacyConnection?.snapshotPath) return legacyConnection.snapshotPath;
+  } catch (_error) {
+    // Ignore malformed cached links; fall back to the currently selected model.
+  }
+  return state.activeModelId
+    ? `/api/snapshot?model_id=${encodeURIComponent(state.activeModelId)}`
+    : "/api/snapshot";
+}
+
+function teacherReceiveAddress() {
+  return connectionApiUrl({ teacherApiBase }, teacherSnapshotPath());
+}
+
+function displayReceiveAddress(address) {
+  try {
+    return decodeURI(String(address || ""));
+  } catch (_error) {
+    return String(address || "");
+  }
+}
+
+async function teacherSnapshotApi() {
+  const response = await fetch(teacherReceiveAddress(), {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+
 function teacherCommandPath() {
   if (state.teacherCommandPath) return state.teacherCommandPath;
   return state.activeModelId
@@ -629,11 +665,13 @@ function applyTeacherConnection(connection) {
   teacherApiBase = connection.teacherApiBase;
   state.interactionLink = connection.link;
   state.teacherModelName = connection.modelName;
+  state.teacherSnapshotPath = connection.snapshotPath;
   state.teacherCommandPath = connection.commandPath;
   state.activeModelId = connection.modelId;
   localStorage.setItem("polarTeacherApiUrl", teacherApiBase);
   localStorage.setItem("polarTeacherInteractionLink", state.interactionLink);
   localStorage.setItem("polarTeacherModelName", state.teacherModelName);
+  localStorage.setItem("polarTeacherSnapshotPath", state.teacherSnapshotPath);
   localStorage.setItem("polarTeacherCommandPath", state.teacherCommandPath);
   localStorage.setItem("polarTraineeModelId", state.activeModelId);
   renderModelSelector();
@@ -957,7 +995,7 @@ async function startReceiveModeFromLink() {
       "接收模式",
       "模拟台交互链接",
       "启动接收",
-      `模型 ${connection.modelName}；地址 ${connection.teacherApiBase}`,
+      `模型 ${connection.modelName}；接收地址 ${teacherReceiveAddress()}`,
       "ok",
     );
     if (usingTeacherBaseline) {
@@ -1316,7 +1354,7 @@ async function refreshFromTeacher(epoch = state.receiveEpoch) {
   if (state.receiveRequestActive) return;
   state.receiveRequestActive = true;
   try {
-    const snapshot = await teacherApi("/api/snapshot");
+    const snapshot = await teacherSnapshotApi();
     if (!state.receiveMode || epoch !== state.receiveEpoch) return;
     acceptTeacherSnapshot(snapshot, epoch);
   } catch (_error) {
@@ -1390,12 +1428,10 @@ function renderReceiveMode(extraText = "") {
     stateText.textContent = extraText || label;
   }
   if (sourceText) {
-    const modelLabel = state.teacherModelName || state.activeModelId || "默认模型";
-    sourceText.textContent = state.receiveMode
-      ? `${modelLabel} @ ${teacherApiBase} · ${state.lastReceiveAt || "--"}`
-      : state.frozen
-        ? `冻结于 ${state.lastReceiveAt || "--"}`
-        : teacherApiBase;
+    const receiveAddress = teacherReceiveAddress();
+    const receiveAddressText = displayReceiveAddress(receiveAddress);
+    sourceText.title = receiveAddress;
+    sourceText.textContent = receiveAddressText || "--";
   }
 }
 

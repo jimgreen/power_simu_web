@@ -68,6 +68,7 @@ const state = {
   chartSeriesHitData: {},
   chartPlotInfo: {},
   collapsedDeviceTreeGroups: {},
+  deviceTreeSearch: {},
   activeMeasurementTab: "telemetry",
   selectedMeasurementKey: "",
   measurementTraceHistory: [],
@@ -3158,16 +3159,77 @@ function deviceTreeChildren(isCollapsed, childrenHtml) {
         </div>`;
 }
 
+function deviceTreeSearchText(scope) {
+  return String(state.deviceTreeSearch?.[scope] || "").trim().toLocaleLowerCase("zh-CN");
+}
+
+function deviceTreeVisibleName(item, devType = "") {
+  const name = deviceName(item);
+  if ((devType || deviceType(item)) === "Environment" && name === "weather") return "气象";
+  return name;
+}
+
+function deviceTreeSearchFields(item, devType = "") {
+  const raw = item?.raw || {};
+  return [
+    devType,
+    deviceType(item),
+    deviceName(item),
+    deviceTreeVisibleName(item, devType),
+    deviceIndex(item),
+    raw.idx,
+    item?.count,
+    item?.mode,
+    item ? deviceTreeBadge(item) : "",
+  ].filter((value) => value !== undefined && value !== null && String(value).trim() !== "");
+}
+
+function filterDeviceTreeGroups(groupEntries, scope) {
+  const query = deviceTreeSearchText(scope);
+  const total = groupEntries.reduce((sum, [, items]) => sum + items.length, 0);
+  if (!query) return { groupEntries, total, filteredTotal: total, query };
+  const filtered = groupEntries
+    .map(([devType, items]) => {
+      const typeText = [devType, devType === "Environment" ? "气象环境" : ""]
+        .join(" ")
+        .toLocaleLowerCase("zh-CN");
+      const matchedItems = typeText.includes(query)
+        ? items
+        : items.filter((item) => deviceTreeSearchFields(item, devType).join(" ").toLocaleLowerCase("zh-CN").includes(query));
+      return [devType, matchedItems];
+    })
+    .filter(([, items]) => items.length);
+  const filteredTotal = filtered.reduce((sum, [, items]) => sum + items.length, 0);
+  return { groupEntries: filtered, total, filteredTotal, query };
+}
+
+function deviceTreeSummary(result) {
+  return result.query
+    ? `${result.groupEntries.length} 类 · ${result.filteredTotal}/${result.total} 台`
+    : `${result.groupEntries.length} 类 · ${result.total} 台`;
+}
+
+function renderDeviceTreeFilterEmpty(query) {
+  return query ? `<div class="empty-state">未匹配“${escapeHtml(query)}”</div>` : '<div class="empty-state">暂无设备</div>';
+}
+
+function refreshDeviceTreeFilterScope(scope) {
+  if (scope === "model") renderTraineeModelDeviceTree();
+  if (scope === "measurement") renderDeviceTree("measurementDeviceTree", "measurementTreeSummary", measurementDevices(), state.measurementFilter, "measurement", "measurement");
+  if (scope === "control") renderDeviceTree("commandDeviceTree", "commandTreeSummary", controlDefinitionDevices(), state.controlFilter, "control", "control");
+}
+
 function renderDeviceTree(containerId, summaryId, devices, filter, scope, dataPrefix) {
   const container = $(containerId);
   if (!container) return;
   const groups = devicesByType(devices);
+  const treeResult = filterDeviceTreeGroups(groups, scope);
   const total = devices.length;
-  $(summaryId).textContent = `${groups.length} 类 · ${total} 台`;
+  $(summaryId).textContent = deviceTreeSummary(treeResult);
   const rootActive = filter.dev_type === "all";
   const rootAttr = `data-${dataPrefix}-tree-type="all" data-${dataPrefix}-tree-name=""`;
-  const groupHtml = groups.map(([devType, items]) => {
-    const isCollapsed = isDeviceTreeGroupCollapsed(scope, devType);
+  const groupHtml = treeResult.groupEntries.map(([devType, items]) => {
+    const isCollapsed = treeResult.query ? false : isDeviceTreeGroupCollapsed(scope, devType);
     const typeActive = filter.dev_type === devType && !filter.dev_name;
     const parentActive = filter.dev_type === devType;
     return `
@@ -3202,9 +3264,9 @@ function renderDeviceTree(containerId, summaryId, devices, filter, scope, dataPr
   container.innerHTML = `
     <button type="button" class="tree-node tree-root ${rootActive ? "is-active" : ""}" ${rootAttr}>
       <span>全部设备</span>
-      <strong>${total}</strong>
+      <strong>${treeResult.query ? treeResult.filteredTotal : total}</strong>
     </button>
-    ${groupHtml || '<div class="empty-state">暂无设备</div>'}`;
+    ${groupHtml || renderDeviceTreeFilterEmpty(treeResult.query)}`;
 }
 
 function selectTreeFilter(filterName, devType, devName = "") {
@@ -3328,14 +3390,15 @@ function renderTraineeModelDeviceTree(snapshot = state.snapshot || {}) {
   if (!container) return;
   const devices = definedModelDevices(snapshot);
   const groups = devicesByType(devices).map(([devType, items]) => [devType, [...items].sort(compareModelRowsByIndex)]);
-  $("modelTreeSummary").textContent = `${groups.length} 类 · ${devices.length} 台`;
+  const treeResult = filterDeviceTreeGroups(groups, "model");
+  $("modelTreeSummary").textContent = deviceTreeSummary(treeResult);
   container.innerHTML = `
     <button type="button" class="tree-node tree-root ${state.modelFilter.dev_type === "all" ? "is-active" : ""}"
       data-model-tree-type="all" data-model-tree-name="">
-      <span>全部设备</span><strong>${devices.length}</strong>
+      <span>全部设备</span><strong>${treeResult.query ? treeResult.filteredTotal : devices.length}</strong>
     </button>
-    ${groups.map(([devType, items]) => {
-      const isCollapsed = isDeviceTreeGroupCollapsed("model", devType);
+    ${treeResult.groupEntries.map(([devType, items]) => {
+      const isCollapsed = treeResult.query ? false : isDeviceTreeGroupCollapsed("model", devType);
       return `<div class="tree-group">
         <button type="button"
           class="tree-node tree-type ${isCollapsed ? "is-collapsed" : ""} ${state.modelFilter.dev_type === devType && !state.modelFilter.dev_name ? "is-active" : state.modelFilter.dev_type === devType ? "is-parent-active" : ""}"
@@ -3351,7 +3414,7 @@ function renderTraineeModelDeviceTree(snapshot = state.snapshot || {}) {
             <span class="model-tree-name">${escapeHtml(deviceName(dev))}</span>
           </button>`).join(""))}
       </div>`;
-    }).join("") || '<div class="empty-state">暂无设备</div>'}`;
+    }).join("") || renderDeviceTreeFilterEmpty(treeResult.query)}`;
 }
 
 function renderTraineeModelParamTable(snapshot = state.snapshot || {}) {
@@ -4856,6 +4919,14 @@ function handleTreeClick(event) {
     else if (selection) selectTreeFilter(selection[0], selection[1], selection[2]);
   });
 }
+
+document.addEventListener("input", (event) => {
+  const input = event.target.closest?.("[data-device-tree-filter-scope]");
+  if (!input) return;
+  const scope = input.dataset.deviceTreeFilterScope || "";
+  state.deviceTreeSearch[scope] = input.value || "";
+  refreshDeviceTreeFilterScope(scope);
+});
 
 document.addEventListener("click", (event) => {
   handleTreeClick(event);

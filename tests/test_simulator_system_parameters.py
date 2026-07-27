@@ -34,6 +34,38 @@ class SimulatorSystemParametersTest(unittest.TestCase):
         self.assertEqual(restored.snapshot()["system_parameters"]["clock_speed"], 5.0)
         self.assertEqual(restored.snapshot()["system_parameters"]["compute_interval_seconds"], 0.5)
 
+    def test_storage_initial_soc_defaults_persists_and_resets_on_stop_start(self):
+        from simu.generate_simple_model import write_model_dir
+        from simu.service import PolarMicrogridSimulator
+
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        root = Path(workspace.name)
+        source = root / "source"
+        runtime = root / "runtime"
+        write_model_dir(source)
+        service = PolarMicrogridSimulator(source, runtime, kernel=lambda _config: None)
+
+        self.assertEqual(service.snapshot()["system_parameters"]["storage_initial_soc"], 0.5)
+
+        result = service.set_system_parameters({"storage_initial_soc": 0.65})
+        self.assertEqual(result["system_parameters"]["storage_initial_soc"], 0.65)
+        self.assertEqual(service.local_settings["system_parameters"]["storage_initial_soc"], 0.65)
+
+        def current_soc() -> float:
+            return float(service.runtime_stat_book.data["StorageSoc"].data[0]["soc_curr"])
+
+        service.runtime_stat_book.data["StorageSoc"].data[0]["soc_curr"] = "0.21"
+        service.control_clock({"action": "stop"})
+        self.assertAlmostEqual(current_soc(), 0.65)
+
+        service.runtime_stat_book.data["StorageSoc"].data[0]["soc_curr"] = "0.31"
+        service.control_clock({"action": "start"})
+        self.assertAlmostEqual(current_soc(), 0.65)
+
+        restored = PolarMicrogridSimulator(source, runtime, kernel=lambda _config: None)
+        self.assertEqual(restored.snapshot()["system_parameters"]["storage_initial_soc"], 0.65)
+
     def test_clock_worker_respects_configured_compute_interval(self):
         from simu.generate_simple_model import write_model_dir
         from simu.server import _advance_clock_if_due

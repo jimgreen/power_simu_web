@@ -206,6 +206,9 @@
                 <h2>设备树</h2>
                 <span id="modelTreeSummary">0 类 · 0 台</span>
               </div>
+              <label class="device-tree-filter">
+                <input type="search" data-device-tree-filter-scope="model" aria-label="过滤电网模型设备树" placeholder="过滤设备" autocomplete="off" />
+              </label>
               <div id="modelDeviceTree" class="device-tree" aria-label="电网模型设备树">
                 <button
                   type="button"
@@ -360,6 +363,9 @@
                     <h2>设备树</h2>
                     <span id="faultDeviceTreeSummary">0 类 · 0 台</span>
                   </div>
+                  <label class="device-tree-filter">
+                    <input type="search" data-device-tree-filter-scope="faultDevice" aria-label="过滤设备故障设备树" placeholder="过滤设备" autocomplete="off" />
+                  </label>
                   <div id="faultDeviceTree" class="fault-tree device-tree" aria-label="设备故障设备树">
                     <button
                       type="button"
@@ -394,6 +400,9 @@
                     <h2>设备树</h2>
                     <span id="faultMeasurementTreeSummary">0 类 · 0 台</span>
                   </div>
+                  <label class="device-tree-filter">
+                    <input type="search" data-device-tree-filter-scope="faultMeasurement" aria-label="过滤量测故障设备树" placeholder="过滤设备" autocomplete="off" />
+                  </label>
                   <div id="faultMeasurementTree" class="fault-tree device-tree" aria-label="量测故障设备树">
                     <button
                       type="button"
@@ -430,6 +439,9 @@
                 <h2>设备树</h2>
                 <span id="modeTreeSummary">0 类</span>
               </div>
+              <label class="device-tree-filter">
+                <input type="search" data-device-tree-filter-scope="mode" aria-label="过滤运行模式设备树" placeholder="过滤设备" autocomplete="off" />
+              </label>
               <div id="modeDeviceTree" class="device-tree" aria-label="运行模式设备树"></div>
             </aside>
 
@@ -506,6 +518,25 @@
                       </td>
                       <td>s</td>
                     </tr>
+                    <tr>
+                      <td>
+                        <strong>储能SOC初始值</strong>
+                        <small>停止/启动时恢复</small>
+                      </td>
+                      <td id="currentStorageInitialSoc" class="numeric-cell">0.5</td>
+                      <td>
+                        <input
+                          id="parameterStorageInitialSoc"
+                          name="storage_initial_soc"
+                          type="number"
+                          min="0"
+                          max="1"
+                          step="0.01"
+                          value="0.5"
+                        />
+                      </td>
+                      <td>p.u.</td>
+                    </tr>
                   </tbody>
                 </table>
               </form>
@@ -523,6 +554,7 @@
                 <div><dt>模拟时刻</dt><dd id="parameterClockTime">--</dd></div>
                 <div><dt>推进步长</dt><dd id="parameterEffectiveStep">--</dd></div>
                 <div><dt>计算周期</dt><dd id="parameterComputePeriod">--</dd></div>
+                <div><dt>SOC初始值</dt><dd id="parameterStorageInitialSocState">--</dd></div>
               </dl>
             </section>
           </div>
@@ -535,6 +567,9 @@
                 <h2>设备树</h2>
                 <span id="runtimeTreeSummary">0 类 · 0 台</span>
               </div>
+              <label class="device-tree-filter">
+                <input type="search" data-device-tree-filter-scope="runtime" aria-label="过滤控制指令设备树" placeholder="过滤设备" autocomplete="off" />
+              </label>
               <div id="runtimeDeviceTree" class="device-tree" aria-label="控制指令设备树">
                 <button
                   type="button"
@@ -615,6 +650,9 @@
                 <h2>设备树</h2>
                 <span id="measurementCompareTreeSummary">0 类 · 0 台</span>
               </div>
+              <label class="device-tree-filter">
+                <input type="search" data-device-tree-filter-scope="measurement" aria-label="过滤实时量测设备树" placeholder="过滤设备" autocomplete="off" />
+              </label>
               <div id="measurementCompareDeviceTree" class="device-tree" aria-label="实时量测设备树">
                 <button
                   type="button"

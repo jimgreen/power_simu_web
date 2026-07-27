@@ -92,6 +92,7 @@ CONTROL_DEFINITION_BLOCKS = ("RunStat", "CbOpenStat", "SetValue", "StorageSoc")
 CLOCK_SPEED_LEVELS = (1.0, 5.0, 15.0, 30.0, 60.0)
 DEFAULT_CONTROL_VALID_MINUTES = 5.0
 DEFAULT_COMPUTE_INTERVAL_SECONDS = 1.0
+DEFAULT_STORAGE_INITIAL_SOC = 0.5
 LOG_DECIMAL_PATTERN = re.compile(r"(?<![\w:])[-+]?\d+\.\d+(?:e[-+]?\d+)?(?![\w:])", re.IGNORECASE)
 
 
@@ -189,6 +190,13 @@ def _compute_interval_seconds(value: Any, default: float = DEFAULT_COMPUTE_INTER
     if interval is None or not math.isfinite(interval):
         interval = default
     return min(3600.0, max(0.1, float(interval)))
+
+
+def _storage_initial_soc(value: Any, default: float = DEFAULT_STORAGE_INITIAL_SOC) -> float:
+    soc = _to_float(value, default)
+    if soc is None or not math.isfinite(soc):
+        soc = default
+    return min(1.0, max(0.0, float(soc)))
 
 
 def _next_clock_speed(value: Any) -> float:
@@ -606,6 +614,7 @@ class PolarMicrogridSimulator:
         self.kernel = kernel or simu_loop.run_once
         self.period_seconds = float(period_seconds)
         self.compute_interval_seconds = _compute_interval_seconds(compute_interval_seconds)
+        self.storage_initial_soc = DEFAULT_STORAGE_INITIAL_SOC
         self.noise_std = noise_std
         self.random_seed = random_seed
         self.clock = ClockState()
@@ -833,11 +842,17 @@ class PolarMicrogridSimulator:
                 params.get("compute_interval_seconds", params.get("calculation_period_seconds")),
                 self.compute_interval_seconds,
             )
+        if "storage_initial_soc" in params or "initial_storage_soc" in params:
+            self.storage_initial_soc = _storage_initial_soc(
+                params.get("storage_initial_soc", params.get("initial_storage_soc")),
+                self.storage_initial_soc,
+            )
 
     def system_parameters(self) -> Dict[str, Any]:
         return {
             "clock_speed": _nearest_clock_speed(self.clock.speed),
             "compute_interval_seconds": self.compute_interval_seconds,
+            "storage_initial_soc": self.storage_initial_soc,
             "clock_step_minutes": max(1, int(self.clock.step_minutes)),
             "effective_step_minutes": _effective_clock_step(self.clock.step_minutes, self.clock.speed),
         }
@@ -853,6 +868,11 @@ class PolarMicrogridSimulator:
                     payload.get("compute_interval_seconds", payload.get("calculation_period_seconds")),
                     self.compute_interval_seconds,
                 )
+            if "storage_initial_soc" in payload or "initial_storage_soc" in payload:
+                self.storage_initial_soc = _storage_initial_soc(
+                    payload.get("storage_initial_soc", payload.get("initial_storage_soc")),
+                    self.storage_initial_soc,
+                )
 
             effective_step = _effective_clock_step(self.clock.step_minutes, self.clock.speed)
             self.clock.absolute_minute = _align_minute_to_step(self.clock.absolute_minute, effective_step)
@@ -865,6 +885,7 @@ class PolarMicrogridSimulator:
                 {
                     "clock_speed": self.clock.speed,
                     "compute_interval_seconds": self.compute_interval_seconds,
+                    "storage_initial_soc": self.storage_initial_soc,
                 }
             )
             self.local_settings["system_parameters"] = params
@@ -876,6 +897,7 @@ class PolarMicrogridSimulator:
                 [
                     f"仿真步长/加速比 x{format_number(self.clock.speed)}",
                     f"仿真周期 {format_number(self.compute_interval_seconds)} s",
+                    f"储能SOC初始值 {format_number(self.storage_initial_soc)}",
                     f"有效推进步长 {effective_step} min",
                 ],
                 level="ok",
@@ -921,6 +943,30 @@ class PolarMicrogridSimulator:
         book = self.runtime_stat_book
         for name, headers in STAT_HEADERS.items():
             _ensure_block(book, name, headers)
+        self.runtime_stat_book = book
+
+    def _reset_storage_soc_to_initial(self) -> None:
+        book = self.runtime_stat_book
+        storage_block = book.data.get("StorageSoc") or book.data.get("StorageStatus")
+        if storage_block is None:
+            return
+        if storage_block is not book.data.get("StorageSoc"):
+            legacy_rows = [
+                {
+                    "dev_type": row.get("dev_type", ""),
+                    "idx": row.get("idx", ""),
+                    "name": row.get("name", row.get("dev_name", "")),
+                    "soc_curr": row.get("soc_curr", row.get("soc", row.get("soc_cur", ""))),
+                }
+                for row in storage_block.data
+            ]
+            storage_block = _ensure_block(book, "StorageSoc", STAT_HEADERS["StorageSoc"])
+            storage_block.data = legacy_rows
+        else:
+            storage_block = _ensure_block(book, "StorageSoc", STAT_HEADERS["StorageSoc"])
+        initial_soc = _number_text(self.storage_initial_soc)
+        for row in storage_block.data:
+            row["soc_curr"] = initial_soc
         self.runtime_stat_book = book
 
     def _base_stat_book_for_controls(self) -> EBook:
@@ -2234,9 +2280,11 @@ class PolarMicrogridSimulator:
                 self.clock.minute = minute % 1440
             if "speed" in payload:
                 self.clock.speed = _nearest_clock_speed(payload.get("speed"))
+            should_reset_storage_soc = False
             if action == "start":
                 if previous_state == "stopped":
                     self.clock.run_id += 1
+                    should_reset_storage_soc = True
                 self.clock.state = "running"
             elif action == "pause":
                 self.clock.state = "paused"
@@ -2245,6 +2293,7 @@ class PolarMicrogridSimulator:
                 self.clock.absolute_minute = 0
                 self.clock.minute = 0
                 self.clock.step_count = 0
+                should_reset_storage_soc = True
             elif action in ("faster", "speed_up"):
                 self.clock.speed = _next_clock_speed(self.clock.speed)
             elif action in ("slower", "speed_down"):
@@ -2252,6 +2301,8 @@ class PolarMicrogridSimulator:
             effective_step = _effective_clock_step(self.clock.step_minutes, self.clock.speed)
             self.clock.absolute_minute = _align_minute_to_step(self.clock.absolute_minute, effective_step)
             self.clock.minute = self.clock.absolute_minute % 1440
+            if should_reset_storage_soc:
+                self._reset_storage_soc_to_initial()
             if action in ("start", "stop"):
                 self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
             if action == "step":

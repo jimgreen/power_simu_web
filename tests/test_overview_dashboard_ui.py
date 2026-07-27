@@ -147,7 +147,7 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("(1.0 - power.diesel / power.load) * 100.0", app_js)
         self.assertIn('setOverviewText("overviewFlowGreenShare"', app_js)
         self.assertIn("return number.toFixed(2);", app_js)
-        self.assertIn("top: 50%;", green_share_block)
+        self.assertIn("top: var(--energy-trunk-y);", green_share_block)
         self.assertIn("transform: translate(-50%, calc(-100% - 8px));", green_share_block)
         self.assertNotIn("top: 54px;", green_share_block)
         self.assertIn("border-left: 3px solid var(--green);", green_share_block)
@@ -224,6 +224,30 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("min-height: 96px;", styles)
         self.assertIn(".energy-device.storage small", styles)
         self.assertNotIn(".simulation-flow", styles)
+
+    def test_overview_storage_card_stays_below_green_share_on_short_desktop(self):
+        styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
+
+        def css_block(selector: str, text: str = styles) -> str:
+            marker = f"{selector} {{"
+            start = text.index(marker)
+            end = text.index("\n}", start)
+            return text[start : end + 2]
+
+        energy_flow_block = css_block(".energy-flow-map")
+        trunk_block = css_block(".energy-main-trunk")
+        green_share_block = css_block(".energy-green-share")
+        storage_branch_block = css_block(".energy-storage-branch")
+        low_height_start = styles.index("@media (max-height: 780px)")
+        mobile_start = styles.index("@media (max-width: 820px)", low_height_start)
+        low_height_styles = styles[low_height_start:mobile_start]
+        low_height_flow_block = css_block(".energy-flow-map", low_height_styles)
+
+        self.assertIn("--energy-trunk-y: 50%;", energy_flow_block)
+        self.assertIn("top: var(--energy-trunk-y);", trunk_block)
+        self.assertIn("top: var(--energy-trunk-y);", green_share_block)
+        self.assertIn("top: calc(var(--energy-trunk-y) + 2px);", storage_branch_block)
+        self.assertIn("--energy-trunk-y: 32%;", low_height_flow_block)
 
     def test_overview_bottom_tables_have_draggable_height_splitter(self):
         html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")

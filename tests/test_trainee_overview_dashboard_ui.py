@@ -144,7 +144,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("@keyframes energyFlowReverse", self.styles)
         self.assertIn("@keyframes energyFlowUp", self.styles)
         self.assertIn("--flow-thickness", self.styles)
-        self.assertIn("top: 50%;", green_share_block)
+        self.assertIn("top: var(--energy-trunk-y);", green_share_block)
         self.assertIn("transform: translate(-50%, calc(-100% - 8px));", green_share_block)
         self.assertNotIn("top: 54px;", green_share_block)
 
@@ -180,6 +180,28 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertNotIn(".energy-board-head", self.styles)
         self.assertNotIn(".energy-board-meta", self.styles)
         self.assertNotIn("min-height: 340px;", self.styles)
+
+    def test_trainee_home_storage_card_stays_below_green_share_on_short_desktop(self):
+        def css_block(selector: str, text: str = self.styles) -> str:
+            marker = f"{selector} {{"
+            start = text.index(marker)
+            end = text.index("\n}", start)
+            return text[start : end + 2]
+
+        energy_flow_block = css_block(".energy-flow-map")
+        trunk_block = css_block(".energy-main-trunk")
+        green_share_block = css_block(".energy-green-share")
+        storage_branch_block = css_block(".energy-storage-branch")
+        low_height_start = self.styles.index("@media (max-height: 780px)")
+        mobile_start = self.styles.index("@media (max-width: 820px)", low_height_start)
+        low_height_styles = self.styles[low_height_start:mobile_start]
+        low_height_flow_block = css_block(".energy-flow-map", low_height_styles)
+
+        self.assertIn("--energy-trunk-y: 50%;", energy_flow_block)
+        self.assertIn("top: var(--energy-trunk-y);", trunk_block)
+        self.assertIn("top: var(--energy-trunk-y);", green_share_block)
+        self.assertIn("top: calc(var(--energy-trunk-y) + 2px);", storage_branch_block)
+        self.assertIn("--energy-trunk-y: 32%;", low_height_flow_block)
 
     def test_trainee_topbar_removes_send_command_button(self):
         self.assertNotIn("发送指令", self.html)

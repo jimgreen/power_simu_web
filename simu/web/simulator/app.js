@@ -68,13 +68,14 @@ const state = {
   cloneSourceModelId: "",
   modeFilter: { dev_type: "all", dev_name: "" },
   collapsedDeviceTreeGroups: {},
+  deviceTreeSearch: {},
   runtimeLogs: [],
   runtimeLogTypeFilter: "all",
   runtimeLogPage: 1,
   runtimeLogPageSize: 20,
   runtimeLogSeq: 0,
   lastRuntimeLogKey: "",
-  systemParameters: { clock_speed: 1, compute_interval_seconds: 1 },
+  systemParameters: { clock_speed: 1, compute_interval_seconds: 1, storage_initial_soc: 0.5 },
   systemParametersDirty: false,
   systemParametersSaving: false,
   overviewBottomHeight: overviewInitialBottomHeight(),
@@ -379,6 +380,70 @@ function deviceTreeChildren(isCollapsed, childrenHtml) {
         </div>`;
 }
 
+function deviceTreeSearchText(scope) {
+  return String(state.deviceTreeSearch?.[scope] || "").trim().toLocaleLowerCase("zh-CN");
+}
+
+function deviceTreeVisibleName(item, devType = "") {
+  const name = String(item?.dev_name ?? item?.name ?? "");
+  if ((devType || item?.dev_type) === "Environment" && name === "weather") return "气象";
+  return name;
+}
+
+function deviceTreeSearchFields(item, devType = "") {
+  const raw = item?.raw || {};
+  return [
+    devType,
+    item?.dev_type,
+    item?.dev_name,
+    item?.name,
+    deviceTreeVisibleName(item, devType),
+    item?.idx,
+    raw.idx,
+    item?.count,
+    item?.mode,
+    item ? deviceTreeBadge(item) : "",
+  ].filter((value) => value !== undefined && value !== null && String(value).trim() !== "");
+}
+
+function filterDeviceTreeGroups(groupEntries, scope) {
+  const query = deviceTreeSearchText(scope);
+  const total = groupEntries.reduce((sum, [, items]) => sum + items.length, 0);
+  if (!query) return { groupEntries, total, filteredTotal: total, query };
+  const filtered = groupEntries
+    .map(([devType, items]) => {
+      const typeText = [devType, devType === "Environment" ? "气象环境" : ""]
+        .join(" ")
+        .toLocaleLowerCase("zh-CN");
+      const matchedItems = typeText.includes(query)
+        ? items
+        : items.filter((item) => deviceTreeSearchFields(item, devType).join(" ").toLocaleLowerCase("zh-CN").includes(query));
+      return [devType, matchedItems];
+    })
+    .filter(([, items]) => items.length);
+  const filteredTotal = filtered.reduce((sum, [, items]) => sum + items.length, 0);
+  return { groupEntries: filtered, total, filteredTotal, query };
+}
+
+function deviceTreeSummary(result) {
+  return result.query
+    ? `${result.groupEntries.length} 类 · ${result.filteredTotal}/${result.total} 台`
+    : `${result.groupEntries.length} 类 · ${result.total} 台`;
+}
+
+function renderDeviceTreeFilterEmpty(query) {
+  return query ? `<div class="empty-state">未匹配“${escapeHtml(query)}”</div>` : '<div class="empty-state">暂无设备</div>';
+}
+
+function refreshDeviceTreeFilterScope(scope) {
+  if (scope === "model") renderGridModelDeviceTree();
+  if (scope === "faultDevice") renderFaultDeviceTree();
+  if (scope === "faultMeasurement") renderFaultMeasurementTree();
+  if (scope === "mode") renderModeDeviceTree();
+  if (scope === "runtime") renderRuntimeDeviceTree();
+  if (scope === "measurement") renderMeasurementCompareDeviceTree();
+}
+
 function simulationModeLocked(clock = state.snapshot?.clock) {
   return Boolean(clock) && clock.state !== "stopped";
 }
@@ -440,6 +505,7 @@ function snapshotSystemParameters(snapshot = state.snapshot || {}) {
   return {
     clock_speed: parameterNumber(params.clock_speed ?? clock.speed, 1),
     compute_interval_seconds: parameterNumber(params.compute_interval_seconds, 1),
+    storage_initial_soc: Math.max(0, Math.min(1, parameterNumber(params.storage_initial_soc, 0.5))),
     clock_step_minutes: parameterNumber(params.clock_step_minutes ?? clock.step_minutes, 1),
     effective_step_minutes: parameterNumber(
       params.effective_step_minutes,
@@ -453,16 +519,20 @@ function renderSystemParameters(snapshot = state.snapshot) {
   state.systemParameters = params;
   const currentSpeed = $("currentClockSpeed");
   const currentInterval = $("currentComputeInterval");
+  const currentStorageInitialSoc = $("currentStorageInitialSoc");
   if (currentSpeed) currentSpeed.textContent = `x${parameterText(params.clock_speed, 1)}`;
   if (currentInterval) currentInterval.textContent = `${parameterText(params.compute_interval_seconds, 2)} s`;
+  if (currentStorageInitialSoc) currentStorageInitialSoc.textContent = parameterText(params.storage_initial_soc, 2);
 
   const form = $("systemParameterForm");
   const isEditing = Boolean(form?.contains(document.activeElement));
   if (!state.systemParametersDirty && !isEditing) {
     const speedInput = $("parameterClockSpeed");
     const intervalInput = $("parameterComputeInterval");
+    const storageInitialSocInput = $("parameterStorageInitialSoc");
     if (speedInput) speedInput.value = String(params.clock_speed);
     if (intervalInput) intervalInput.value = parameterText(params.compute_interval_seconds, 2);
+    if (storageInitialSocInput) storageInitialSocInput.value = parameterText(params.storage_initial_soc, 2);
   }
 
   const summary = $("systemParameterSummary");
@@ -471,7 +541,7 @@ function renderSystemParameters(snapshot = state.snapshot) {
       ? "保存中"
       : state.systemParametersDirty
         ? "有未保存修改"
-        : `x${parameterText(params.clock_speed, 1)} · ${parameterText(params.compute_interval_seconds, 2)} s`;
+        : `x${parameterText(params.clock_speed, 1)} · ${parameterText(params.compute_interval_seconds, 2)} s · SOC ${parameterText(params.storage_initial_soc, 2)}`;
   }
 
   const modelName = snapshot?.model?.name || snapshot?.model?.id || state.activeModelId || "--";
@@ -487,6 +557,7 @@ function renderSystemParameters(snapshot = state.snapshot) {
     parameterClockTime: snapshot?.clock ? formatSimulationClock(clock) : "--",
     parameterEffectiveStep: `${parameterText(params.effective_step_minutes, 1)} min`,
     parameterComputePeriod: `${parameterText(params.compute_interval_seconds, 2)} s`,
+    parameterStorageInitialSocState: parameterText(params.storage_initial_soc, 2),
   };
   Object.entries(values).forEach(([id, text]) => {
     const node = $(id);
@@ -505,6 +576,16 @@ function systemParameterPayload() {
     compute_interval_seconds: parameterNumber(
       $("parameterComputeInterval")?.value,
       state.systemParameters.compute_interval_seconds || 1,
+    ),
+    storage_initial_soc: Math.max(
+      0,
+      Math.min(
+        1,
+        parameterNumber(
+          $("parameterStorageInitialSoc")?.value,
+          state.systemParameters.storage_initial_soc ?? 0.5,
+        ),
+      ),
     ),
   };
 }
@@ -1619,7 +1700,7 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.runtimeLogTypeFilter = "all";
   state.runtimeLogSeq = 0;
   state.lastRuntimeLogKey = "";
-  state.systemParameters = { clock_speed: 1, compute_interval_seconds: 1 };
+  state.systemParameters = { clock_speed: 1, compute_interval_seconds: 1, storage_initial_soc: 0.5 };
   state.systemParametersDirty = false;
   state.systemParametersSaving = false;
   state.runtimeTraceHistory = [];
@@ -3747,7 +3828,8 @@ function renderGridModelDeviceTree() {
     devType,
     [...items].sort(compareModelRowsByIndex),
   ]);
-  $("modelTreeSummary").textContent = `${groupEntries.length} 类 · ${devices.length} 台`;
+  const treeResult = filterDeviceTreeGroups(groupEntries, "model");
+  $("modelTreeSummary").textContent = deviceTreeSummary(treeResult);
   container.innerHTML = `
     <button
       type="button"
@@ -3756,10 +3838,10 @@ function renderGridModelDeviceTree() {
       data-model-tree-name=""
     >
       <span>全部设备</span>
-      <strong>${devices.length}</strong>
+      <strong>${treeResult.query ? treeResult.filteredTotal : devices.length}</strong>
     </button>
-    ${groupEntries.map(([devType, items]) => {
-      const isCollapsed = isDeviceTreeGroupCollapsed("model", devType);
+    ${treeResult.groupEntries.map(([devType, items]) => {
+      const isCollapsed = treeResult.query ? false : isDeviceTreeGroupCollapsed("model", devType);
       return `
       <div class="tree-group">
         <button
@@ -3788,7 +3870,7 @@ function renderGridModelDeviceTree() {
           }).join(""))}
       </div>
     `;
-    }).join("")}
+    }).join("") || renderDeviceTreeFilterEmpty(treeResult.query)}
   `;
 }
 
@@ -4157,7 +4239,8 @@ function renderRuntimeDeviceTree() {
   const devices = runtimeDevices();
   const filter = state.runtimeDeviceFilter || { dev_type: "all", dev_name: "" };
   const groupEntries = groupedByDeviceType(devices);
-  $("runtimeTreeSummary").textContent = `${groupEntries.length} 类 · ${devices.length} 台`;
+  const treeResult = filterDeviceTreeGroups(groupEntries, "runtime");
+  $("runtimeTreeSummary").textContent = deviceTreeSummary(treeResult);
   container.innerHTML = `
     <button
       type="button"
@@ -4166,10 +4249,10 @@ function renderRuntimeDeviceTree() {
       data-runtime-tree-name=""
     >
       <span>全部设备</span>
-      <strong>${devices.length}</strong>
+      <strong>${treeResult.query ? treeResult.filteredTotal : devices.length}</strong>
     </button>
-    ${groupEntries.map(([devType, items]) => {
-      const isCollapsed = isDeviceTreeGroupCollapsed("runtime", devType);
+    ${treeResult.groupEntries.map(([devType, items]) => {
+      const isCollapsed = treeResult.query ? false : isDeviceTreeGroupCollapsed("runtime", devType);
       return `
       <div class="tree-group">
         <button
@@ -4195,7 +4278,7 @@ function renderRuntimeDeviceTree() {
           `).join(""))}
       </div>
     `;
-    }).join("")}
+    }).join("") || renderDeviceTreeFilterEmpty(treeResult.query)}
   `;
 }
 
@@ -5196,13 +5279,60 @@ function renderMeasurementCompareTabs(telemetryRows, signalRows) {
   `;
 }
 
+function measurementCompareTableStructureKey(rows) {
+  const filter = state.measurementCompareFilter || { dev_type: "all", dev_name: "" };
+  return [
+    state.activeMeasurementCompareTab || "telemetry",
+    filter.dev_type || "all",
+    filter.dev_name || "",
+    rows.map((row) => measurementKey(row)).join("||"),
+  ].join("::");
+}
+
+function measurementLiveCellHtml(row, field) {
+  if (field === "real") return formatMeasurementValue(row.real_value);
+  if (field === "scada") return formatMeasurementValue(row.scada_value);
+  if (field === "weight") return escapeHtml(row.weight);
+  if (field === "status") {
+    const valid = Number(row.valid) === 1;
+    return `<span class="status-dot ${valid ? "on" : ""}"></span>${valid ? "有效" : "无效"}`;
+  }
+  if (field === "diff") return row.diff === null ? "--" : formatMeasurementValue(row.diff);
+  return "";
+}
+
+function updateMeasurementCompareTableLiveCells(rows, selectedKey) {
+  const tableRows = Array.from(document.querySelectorAll("#measurementCompareTable [data-measurement-row-key]"));
+  if (tableRows.length !== rows.length) return false;
+  const rowsByKey = new Map(rows.map((row) => [measurementKey(row), row]));
+  for (const tableRow of tableRows) {
+    const key = tableRow.dataset.measurementRowKey || "";
+    const row = rowsByKey.get(key);
+    if (!row) return false;
+    const selected = key === selectedKey;
+    tableRow.classList.toggle("is-selected", selected);
+    tableRow.setAttribute("aria-selected", selected ? "true" : "false");
+    tableRow.querySelectorAll("[data-measurement-live-field]").forEach((cell) => {
+      const field = cell.dataset.measurementLiveField || "";
+      cell.innerHTML = measurementLiveCellHtml(row, field);
+      if (field === "diff") {
+        const diffActive = row.diff !== null && Math.abs(row.diff) >= 1e-6;
+        cell.classList.toggle("diff-active", diffActive);
+        cell.classList.toggle("diff-neutral", !diffActive);
+      }
+    });
+  }
+  return true;
+}
+
 function renderMeasurementCompareDeviceTree(rows = measurementCompareRows()) {
   const container = $("measurementCompareDeviceTree");
   if (!container) return;
   const devices = measurementCompareDevices(rows);
   const filter = state.measurementCompareFilter || { dev_type: "all", dev_name: "" };
   const groupEntries = groupedByDeviceType(devices);
-  $("measurementCompareTreeSummary").textContent = `${groupEntries.length} 类 · ${devices.length} 台`;
+  const treeResult = filterDeviceTreeGroups(groupEntries, "measurement");
+  $("measurementCompareTreeSummary").textContent = deviceTreeSummary(treeResult);
   container.innerHTML = `
     <button
       type="button"
@@ -5211,10 +5341,10 @@ function renderMeasurementCompareDeviceTree(rows = measurementCompareRows()) {
       data-measurement-tree-name=""
     >
       <span>全部设备</span>
-      <strong>${devices.length}</strong>
+      <strong>${treeResult.query ? treeResult.filteredTotal : devices.length}</strong>
     </button>
-    ${groupEntries.map(([devType, items]) => {
-      const isCollapsed = isDeviceTreeGroupCollapsed("measurement", devType);
+    ${treeResult.groupEntries.map(([devType, items]) => {
+      const isCollapsed = treeResult.query ? false : isDeviceTreeGroupCollapsed("measurement", devType);
       return `
       <div class="tree-group">
         <button
@@ -5240,7 +5370,7 @@ function renderMeasurementCompareDeviceTree(rows = measurementCompareRows()) {
           `).join(""))}
       </div>
     `;
-    }).join("")}
+    }).join("") || renderDeviceTreeFilterEmpty(treeResult.query)}
   `;
 }
 
@@ -5263,21 +5393,33 @@ function renderMeasurementCompareTable() {
   const activeLabel = state.activeMeasurementCompareTab === "signal" ? "遥信" : "遥测";
   $("measurementCompareSummary").textContent = `${activeLabel} ${rows.length}/${filteredRows.length} 点 · 有效 ${validCount} 点`;
   const tabHtml = renderMeasurementCompareTabs(telemetryRows, signalRows);
+  const structureKey = measurementCompareTableStructureKey(rows);
   if (!allRows.length) {
+    container.dataset.measurementStructureKey = "";
     container.innerHTML = `${tabHtml}<div class="measurement-type-tab-page is-active"><div class="empty-state">暂无实时量测数据</div></div>`;
     drawMeasurementTraceChart();
     return;
   }
   if (!filteredRows.length) {
+    container.dataset.measurementStructureKey = "";
     container.innerHTML = `${tabHtml}<div class="measurement-type-tab-page is-active"><div class="empty-state">当前筛选无量测</div></div>`;
     drawMeasurementTraceChart();
     return;
   }
   if (!rows.length) {
+    container.dataset.measurementStructureKey = "";
     container.innerHTML = `${tabHtml}<div class="measurement-type-tab-page is-active"><div class="empty-state">当前分类无量测</div></div>`;
     drawMeasurementTraceChart();
     return;
   }
+  if (
+    container.dataset.measurementStructureKey === structureKey
+    && updateMeasurementCompareTableLiveCells(rows, selectedKey)
+  ) {
+    drawMeasurementTraceChart();
+    return;
+  }
+  container.dataset.measurementStructureKey = structureKey;
   container.innerHTML = `
     ${tabHtml}
     <div class="measurement-type-tab-page is-active">
@@ -5301,6 +5443,7 @@ function renderMeasurementCompareTable() {
           return `
             <tr
               class="${key === selectedKey ? "is-selected" : ""}"
+              data-measurement-row-key="${escapeHtml(key)}"
               data-measurement-select-key="${escapeHtml(key)}"
               tabindex="0"
               aria-selected="${key === selectedKey ? "true" : "false"}"
@@ -5308,11 +5451,11 @@ function renderMeasurementCompareTable() {
               <td>${escapeHtml(measurementDisplayName(row) || "--")}</td>
               <td>${escapeHtml(measurementDeviceDisplay(row))}</td>
               <td>${escapeHtml(measurementTypeDisplay(row) || "--")}</td>
-              <td class="numeric-cell">${formatMeasurementValue(row.real_value)}</td>
-              <td class="numeric-cell">${formatMeasurementValue(row.scada_value)}</td>
-              <td class="numeric-cell ${diffClass}">${row.diff === null ? "--" : formatMeasurementValue(row.diff)}</td>
-              <td class="numeric-cell">${escapeHtml(row.weight)}</td>
-              <td><span class="status-dot ${Number(row.valid) === 1 ? "on" : ""}"></span>${Number(row.valid) === 1 ? "有效" : "无效"}</td>
+              <td class="numeric-cell" data-measurement-live-field="real">${formatMeasurementValue(row.real_value)}</td>
+              <td class="numeric-cell" data-measurement-live-field="scada">${formatMeasurementValue(row.scada_value)}</td>
+              <td class="numeric-cell ${diffClass}" data-measurement-live-field="diff">${row.diff === null ? "--" : formatMeasurementValue(row.diff)}</td>
+              <td class="numeric-cell" data-measurement-live-field="weight">${escapeHtml(row.weight)}</td>
+              <td data-measurement-live-field="status"><span class="status-dot ${Number(row.valid) === 1 ? "on" : ""}"></span>${Number(row.valid) === 1 ? "有效" : "无效"}</td>
             </tr>
           `;
         }).join("")}
@@ -5499,7 +5642,8 @@ function renderFaultDeviceTree() {
   const devices = faultDevices();
   const filter = state.faultDeviceFilter || { dev_type: "all", dev_name: "" };
   const groupEntries = groupedByDeviceType(devices);
-  $("faultDeviceTreeSummary").textContent = `${groupEntries.length} 类 · ${devices.length} 台`;
+  const treeResult = filterDeviceTreeGroups(groupEntries, "faultDevice");
+  $("faultDeviceTreeSummary").textContent = deviceTreeSummary(treeResult);
   container.innerHTML = `
     <button
       type="button"
@@ -5508,10 +5652,10 @@ function renderFaultDeviceTree() {
       data-fault-device-tree-name=""
     >
       <span>全部设备</span>
-      <strong>${devices.length}</strong>
+      <strong>${treeResult.query ? treeResult.filteredTotal : devices.length}</strong>
     </button>
-    ${groupEntries.map(([devType, items]) => {
-      const isCollapsed = isDeviceTreeGroupCollapsed("faultDevice", devType);
+    ${treeResult.groupEntries.map(([devType, items]) => {
+      const isCollapsed = treeResult.query ? false : isDeviceTreeGroupCollapsed("faultDevice", devType);
       return `
       <div class="tree-group">
         <button
@@ -5537,7 +5681,7 @@ function renderFaultDeviceTree() {
           `).join(""))}
       </div>
     `;
-    }).join("")}
+    }).join("") || renderDeviceTreeFilterEmpty(treeResult.query)}
   `;
 }
 
@@ -5548,7 +5692,8 @@ function renderFaultMeasurementTree() {
   const devices = faultMeasurementDevices(measurements);
   const filter = state.faultMeasurementFilter || { dev_type: "all", dev_name: "", key: "" };
   const groupEntries = groupedByDeviceType(devices);
-  $("faultMeasurementTreeSummary").textContent = `${groupEntries.length} 类 · ${devices.length} 台`;
+  const treeResult = filterDeviceTreeGroups(groupEntries, "faultMeasurement");
+  $("faultMeasurementTreeSummary").textContent = deviceTreeSummary(treeResult);
   container.innerHTML = `
     <button
       type="button"
@@ -5557,10 +5702,10 @@ function renderFaultMeasurementTree() {
       data-fault-measurement-tree-name=""
     >
       <span>全部设备</span>
-      <strong>${devices.length}</strong>
+      <strong>${treeResult.query ? treeResult.filteredTotal : devices.length}</strong>
     </button>
-    ${groupEntries.map(([devType, items]) => {
-      const isCollapsed = isDeviceTreeGroupCollapsed("faultMeasurement", devType);
+    ${treeResult.groupEntries.map(([devType, items]) => {
+      const isCollapsed = treeResult.query ? false : isDeviceTreeGroupCollapsed("faultMeasurement", devType);
       return `
       <div class="tree-group">
         <button
@@ -5586,7 +5731,7 @@ function renderFaultMeasurementTree() {
           `).join(""))}
       </div>
     `;
-    }).join("")}
+    }).join("") || renderDeviceTreeFilterEmpty(treeResult.query)}
   `;
 }
 
@@ -5890,7 +6035,8 @@ function renderModeDeviceTree() {
     groups.set(item.dev_type, list);
   });
   const groupEntries = Array.from(groups.entries()).sort(([left], [right]) => left.localeCompare(right));
-  $("modeTreeSummary").textContent = `${groupEntries.length} 类 · ${state.modes.length} 台`;
+  const treeResult = filterDeviceTreeGroups(groupEntries, "mode");
+  $("modeTreeSummary").textContent = deviceTreeSummary(treeResult);
   container.innerHTML = `
     <button
       type="button"
@@ -5899,10 +6045,10 @@ function renderModeDeviceTree() {
       data-mode-tree-name=""
     >
       <span>全部设备</span>
-      <strong>${state.modes.length}</strong>
+      <strong>${treeResult.query ? treeResult.filteredTotal : state.modes.length}</strong>
     </button>
-    ${groupEntries.map(([devType, items]) => {
-      const isCollapsed = isDeviceTreeGroupCollapsed("mode", devType);
+    ${treeResult.groupEntries.map(([devType, items]) => {
+      const isCollapsed = treeResult.query ? false : isDeviceTreeGroupCollapsed("mode", devType);
       return `
       <div class="tree-group">
         <button
@@ -5928,7 +6074,7 @@ function renderModeDeviceTree() {
           `).join(""))}
       </div>
     `;
-    }).join("")}
+    }).join("") || renderDeviceTreeFilterEmpty(treeResult.query)}
   `;
 }
 
@@ -6177,9 +6323,16 @@ document.querySelectorAll("[data-fault-tab]").forEach((button) => {
 $("pushModes").addEventListener("click", pushSettings);
 $("saveSystemParameters").addEventListener("click", saveSystemParameters);
 $("resetSystemParameters").addEventListener("click", resetSystemParameterForm);
-["parameterClockSpeed", "parameterComputeInterval"].forEach((id) => {
+["parameterClockSpeed", "parameterComputeInterval", "parameterStorageInitialSoc"].forEach((id) => {
   const element = $(id);
   if (element) element.addEventListener("input", markSystemParametersDirty);
+});
+document.addEventListener("input", (event) => {
+  const input = event.target.closest?.("[data-device-tree-filter-scope]");
+  if (!input) return;
+  const scope = input.dataset.deviceTreeFilterScope || "";
+  state.deviceTreeSearch[scope] = input.value || "";
+  refreshDeviceTreeFilterScope(scope);
 });
 document.addEventListener("click", (event) => {
   const chartToggle = event.target.closest("[data-chart-toggle][data-chart-series]");

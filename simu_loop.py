@@ -74,6 +74,17 @@ DEFAULT_PERIOD_SECONDS = 60.0
 DEFAULT_STORAGE_CAPACITY_KWH = 50.0
 DEFAULT_DC_EXPORT_EFFICIENCY = 0.98
 SIGNAL_MEASUREMENT_TYPES = {"RUN_STAT", "STATUS"}
+GENERIC_CURRENT_BRANCH_TYPES = {
+    "ACBranch",
+    "ACTransformer",
+    "ACSwitch",
+    "ACBreak",
+    "ACZeroBranch",
+    "DCBranch",
+    "DCSwitch",
+    "DCBreak",
+    "DCZeroBranch",
+}
 
 
 @dataclass(frozen=True)
@@ -407,6 +418,58 @@ def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
+def _efficiency_from_text(value, default: float = 1.0) -> float:
+    number = _ratio_from_text(value, None)
+    if number is None:
+        return float(default)
+    if number > 1.0:
+        number /= 100.0
+    return _clamp(float(number), 1e-9, 1.0)
+
+
+def _efficiency_from_fields(row: Optional[Mapping[str, Any]], fields: Sequence[str], default: float = 1.0) -> float:
+    if row is None:
+        return float(default)
+    for field in fields:
+        value = row.get(field)
+        if value not in (None, ""):
+            return _efficiency_from_text(value, default)
+    return float(default)
+
+
+def _storage_efficiencies(define: Optional[Mapping[str, Any]]) -> Tuple[float, float]:
+    shared = _efficiency_from_fields(
+        define,
+        (
+            "charge_discharge_efficiency",
+            "charge_discharge_eff",
+            "round_trip_efficiency",
+            "storage_efficiency",
+            "efficiency",
+            "eta",
+        ),
+        1.0,
+    )
+    charge_efficiency = _efficiency_from_fields(
+        define,
+        ("charge_efficiency", "charging_efficiency", "charge_eff", "eta_charge", "charge_eta"),
+        shared,
+    )
+    discharge_efficiency = _efficiency_from_fields(
+        define,
+        (
+            "discharge_efficiency",
+            "discharging_efficiency",
+            "dis_charge_efficiency",
+            "discharge_eff",
+            "eta_discharge",
+            "discharge_eta",
+        ),
+        shared,
+    )
+    return charge_efficiency, discharge_efficiency
+
+
 def _is_running_row(row: dict) -> bool:
     return _safe_int(row.get("run_stat", 1), 1) == 1
 
@@ -531,6 +594,7 @@ def _embedded_device_define_book(model_book: EBook) -> EBook:
                 "soc_cur": _ratio_from_text(row.get("state_of_charge"), 0.5) or 0.5,
                 "charge_p_max": _numeric_from_text(row.get("max_charge_power"), 0.0) or 0.0,
                 "dis_charge_p_max": _numeric_from_text(row.get("max_discharge_power"), 0.0) or 0.0,
+                "charge_discharge_efficiency": _efficiency_from_text(row.get("charge_discharge_efficiency"), 1.0),
             }
         )
 
@@ -1243,11 +1307,12 @@ def apply_storage_constraints_book(
         capacity = max(float(capacity if capacity is not None else DEFAULT_STORAGE_CAPACITY_KWH), 1e-9)
         charge_max = _safe_float((define or {}).get("charge_p_max", abs(command)), abs(command)) or 0.0
         discharge_max = _safe_float((define or {}).get("dis_charge_p_max", abs(command)), abs(command)) or 0.0
+        charge_efficiency, discharge_efficiency = _storage_efficiencies(define)
         if period_hours > 0.0:
             discharge_soc_margin = max(0.0, float(soc) - soc_min)
             charge_soc_margin = max(0.0, soc_max - float(soc))
-            discharge_max = min(discharge_max, discharge_soc_margin * capacity / period_hours)
-            charge_max = min(charge_max, charge_soc_margin * capacity / period_hours)
+            discharge_max = min(discharge_max, discharge_soc_margin * capacity * discharge_efficiency / period_hours)
+            charge_max = min(charge_max, charge_soc_margin * capacity / charge_efficiency / period_hours)
         if command > 0.0:
             target = 0.0 if soc <= soc_min else min(command, discharge_max)
         elif command < 0.0:
@@ -1486,16 +1551,70 @@ def update_storage_soc(
     model_book: EBook,
     period_seconds: float,
     dev_define_file: Optional[Path] = None,
+    snapshot=None,
 ) -> int:
     dev_stat_file = Path(dev_stat_file)
     if not dev_stat_file.exists():
         return 0
     stat_book = EBook(dev_stat_file)
     dev_define = _capability_define_book(model_book, dev_define_file)
-    changed = update_storage_soc_book(stat_book, model_book, period_seconds, dev_define)
+    changed = update_storage_soc_book(stat_book, model_book, period_seconds, dev_define, snapshot=snapshot)
     if changed:
         write_ebook_aligned(stat_book, dev_stat_file)
     return changed
+
+
+def _unique_names(*names: str) -> List[str]:
+    result: List[str] = []
+    seen: set[str] = set()
+    for name in names:
+        if not name or name in seen:
+            continue
+        result.append(name)
+        seen.add(name)
+    return result
+
+
+def _storage_power_lookup(powers: Mapping[str, float], storage_name: str, source_name: str) -> Optional[float]:
+    for name in _unique_names(source_name, storage_name, _storage_source_name(storage_name)):
+        if name in powers:
+            return powers[name]
+    return None
+
+
+def _snapshot_storage_power_by_name(snapshot, model_book: EBook, dev_define: EBook) -> Dict[str, float]:
+    if snapshot is None or not hasattr(snapshot, "value"):
+        return {}
+    powers: Dict[str, float] = {}
+    for row, storage_name, _define, _pos in _storage_target_rows(model_book, dev_define):
+        row_name = str(row.get("name", ""))
+        candidates = _unique_names(row_name, _storage_source_name(storage_name), storage_name)
+        actual_power: Optional[float] = None
+        for candidate in candidates:
+            try:
+                value = snapshot.value("DCGenerator", candidate, "P_GEN")
+            except Exception:
+                value = None
+            if value is None:
+                continue
+            try:
+                actual_power = float(value)
+            except (TypeError, ValueError):
+                continue
+            break
+        if actual_power is None:
+            continue
+        for candidate in candidates:
+            powers[candidate] = actual_power
+    return powers
+
+
+def _storage_internal_power_for_soc(terminal_power: float, charge_efficiency: float, discharge_efficiency: float) -> float:
+    if terminal_power > 0.0:
+        return terminal_power / max(discharge_efficiency, 1e-9)
+    if terminal_power < 0.0:
+        return terminal_power * charge_efficiency
+    return 0.0
 
 
 def update_storage_soc_book(
@@ -1503,12 +1622,17 @@ def update_storage_soc_book(
     model_book: EBook,
     period_seconds: float,
     dev_define: EBook,
+    storage_power_by_name: Optional[Mapping[str, float]] = None,
+    snapshot=None,
 ) -> int:
     block = _storage_soc_block(stat_book)
     if block is None:
         return 0
     dc_generator = model_book.data.get("DCGenerator")
     dc_generator_by_name = _rows_by_name(dc_generator) if dc_generator is not None else {}
+    actual_storage_power = dict(storage_power_by_name or {})
+    if snapshot is not None:
+        actual_storage_power.update(_snapshot_storage_power_by_name(snapshot, model_book, dev_define))
     changed = 0
     for pos, row in enumerate(_sorted_rows(block.data)):
         ess_name = str(row.get("name", ""))
@@ -1517,15 +1641,20 @@ def update_storage_soc_book(
             continue
         try:
             soc = float(row.get("soc_curr", 0.5))
-            p_set = float(source.get("p_set", 0.0))
         except (TypeError, ValueError):
             continue
+        source_name = str(source.get("name", ""))
+        actual_power = _storage_power_lookup(actual_storage_power, ess_name, source_name)
+        if actual_power is None:
+            try:
+                actual_power = float(source.get("p_set", 0.0))
+            except (TypeError, ValueError):
+                continue
         define = _storage_define_for(dev_define, ess_name, pos)
         capacity = _safe_float((define or {}).get("emva", DEFAULT_STORAGE_CAPACITY_KWH), DEFAULT_STORAGE_CAPACITY_KWH) or DEFAULT_STORAGE_CAPACITY_KWH
-        soc_min = _safe_float((define or {}).get("soc_min", 0.0), 0.0) or 0.0
-        soc_max = _safe_float((define or {}).get("soc_max", 1.0), 1.0) or 1.0
-        next_soc = soc - p_set * float(period_seconds) / 3600.0 / max(capacity, 1e-9)
-        next_soc = _clamp(next_soc, soc_min, soc_max)
+        charge_efficiency, discharge_efficiency = _storage_efficiencies(define)
+        soc_power = _storage_internal_power_for_soc(actual_power, charge_efficiency, discharge_efficiency)
+        next_soc = soc - soc_power * float(period_seconds) / 3600.0 / max(capacity, 1e-9)
         changed += _set_row_value(row, "soc_curr", format_number(next_soc))
     return changed
 
@@ -1840,6 +1969,13 @@ def _measurement_value(
         return None if signal_values is None else signal_values.get((dev_type, dev_name, meas_type))
     if dev_type == "Environment" and dev_name == "weather":
         return _weather_measurement_value(meas_type, weather)
+    if meas_type == "I" and dev_type in GENERIC_CURRENT_BRANCH_TYPES:
+        for terminal_meas_type in ("I_FROM", "I_TO"):
+            value = snapshot.value(dev_type, dev_name, terminal_meas_type)
+            number = _safe_float(value, None)
+            if number is not None:
+                return abs(number)
+        return None
     if dev_type in ("ESS", "Storage"):
         if meas_type == "SOC":
             return None if storage_soc is None else storage_soc.get(dev_name)
@@ -2039,7 +2175,7 @@ def run_once(
             mode_book,
         )
         snapshot, solver_info = _solve_snapshot_from_book(solver, model_book, config.model_file)
-        soc_updates = update_storage_soc_book(stat_book, model_book, config.period_seconds, dev_define)
+        soc_updates = update_storage_soc_book(stat_book, model_book, config.period_seconds, dev_define, snapshot=snapshot)
         storage_soc = _storage_soc_values_from_book(stat_book)
         signal_values = _signal_measurement_values_from_book(stat_book)
         before, real_rows, after, updated, missing = build_real_rows_from_data(
@@ -2080,7 +2216,7 @@ def run_once(
         config.mode_file,
     )
     snapshot, solver_info = _solve_snapshot_from_book(solver, model_book, config.model_file)
-    soc_updates = update_storage_soc(config.dev_stat_file, model_book, config.period_seconds, config.dev_define_file)
+    soc_updates = update_storage_soc(config.dev_stat_file, model_book, config.period_seconds, config.dev_define_file, snapshot=snapshot)
 
     before, real_rows, after, updated, missing = build_real_rows(
         config.meas_file,

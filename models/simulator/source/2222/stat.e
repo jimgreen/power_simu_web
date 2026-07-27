@@ -172,43 +172,12 @@
 # AcE2Hydro      交流电制氢-1             1
 # Hydro2DcE      直流燃料电池-1            1
 </RunStat>
-<CbOpenStat>
-@ dev_type  dev_name  status
-# ACBreak   交流断路器-1   1
-# ACBreak   交流断路器-2   1
-# ACBreak   盒型开关-3    1
-# ACBreak   盒型开关-4    1
-# ACBreak   盒型开关-5    1
-# ACBreak   盒型开关-6    1
-# ACBreak   盒型开关-7    1
-# ACBreak   盒型开关-8    1
-# ACBreak   盒型开关-9    1
-# DCBreak   直流断路器-1   1
-# DCBreak   直流断路器-2   1
-# DCBreak   直流断路器-3   1
-# DCBreak   直流断路器-4   1
-# DCBreak   直流断路器-5   1
-# DCBreak   直流断路器-6   1
-# DCBreak   直流断路器-7   1
-# DCBreak   直流断路器-8   1
-# DCBreak   直流断路器-9   1
-# DCBreak   直流断路器-11  1
-# DCBreak   直流断路器-12  1
-# DCBreak   直流断路器-13  1
-# DCBreak   直流断路器-14  1
-# DCBreak   直流断路器-15  1
-# DCBreak   直流断路器-16  1
-# DCBreak   直流断路器-17  1
-# DCBreak   直流断路器-18  1
-# DCBreak   直流断路器-20  1
-# DCBreak   直流断路器-21  1
-# DCBreak   直流断路器-29  1
-# DCBreak   直流断路器-30  1
-# DCBreak   直流断路器-31  1
-# DCBreak   直流断路器-32  1
-</CbOpenStat>
 <SetValue>
 @ dev_type       dev_name            set_type  set_value
+# ACLoad         交流负荷-1              p_set     1.0
+# ACLoad         交流负荷-1              q_set     1.0
+# ACLoad         交流电制氢-1_交流设备端交流电负荷  p_set     1.0
+# ACLoad         交流电制氢-1_交流设备端交流电负荷  q_set     1.0
 # ACGenerator    交流风电-1              p_set     0
 # ACGenerator    交流风电-1              q_set     0
 # ACGenerator    交流风电-1              v_set     380
@@ -356,11 +325,42 @@
 # DCACConverter  ACDC变流器-2           q_ac_set  0
 # DCACConverter  ACDC变流器-2           v_ac_set  380
 # DCACConverter  ACDC变流器-2           v_dc_set  750
-# ACLoad         交流负荷-1              p_set     1.0
-# ACLoad         交流负荷-1              q_set     1.0
-# ACLoad         交流电制氢-1_交流设备端交流电负荷  p_set     1.0
-# ACLoad         交流电制氢-1_交流设备端交流电负荷  q_set     1.0
 </SetValue>
+<CbOpenStat>
+@ dev_type  dev_name  status
+# ACBreak   交流断路器-1   1
+# ACBreak   交流断路器-2   1
+# ACBreak   盒型开关-3    1
+# ACBreak   盒型开关-4    1
+# ACBreak   盒型开关-5    1
+# ACBreak   盒型开关-6    1
+# ACBreak   盒型开关-7    1
+# ACBreak   盒型开关-8    1
+# ACBreak   盒型开关-9    1
+# DCBreak   直流断路器-1   1
+# DCBreak   直流断路器-2   1
+# DCBreak   直流断路器-3   1
+# DCBreak   直流断路器-4   1
+# DCBreak   直流断路器-5   1
+# DCBreak   直流断路器-6   1
+# DCBreak   直流断路器-7   1
+# DCBreak   直流断路器-8   1
+# DCBreak   直流断路器-9   1
+# DCBreak   直流断路器-11  1
+# DCBreak   直流断路器-12  1
+# DCBreak   直流断路器-13  1
+# DCBreak   直流断路器-14  1
+# DCBreak   直流断路器-15  1
+# DCBreak   直流断路器-16  1
+# DCBreak   直流断路器-17  1
+# DCBreak   直流断路器-18  1
+# DCBreak   直流断路器-20  1
+# DCBreak   直流断路器-21  1
+# DCBreak   直流断路器-29  1
+# DCBreak   直流断路器-30  1
+# DCBreak   直流断路器-31  1
+# DCBreak   直流断路器-32  1
+</CbOpenStat>
 <StorageSoc>
 @ dev_type     idx  name     soc_curr
 # DCGenerator  4    电化学储能-1  0.5

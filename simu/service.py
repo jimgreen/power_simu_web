@@ -3418,6 +3418,7 @@ class PolarMicrogridSimulator:
             "name": self.model_name,
             "sim_dir": str(self.sim_dir),
             "runtime_dir": str(self.runtime_dir),
+            "clock_state": self.clock.state,
         }
 
     def snapshot(self) -> Dict[str, Any]:
@@ -3684,6 +3685,46 @@ class MultiModelSimulator:
             self._append_manifest_model(target_id, target_dir)
             return service.model_info()
 
+    def delete_model(self, model_id: Any) -> Dict[str, Any]:
+        target_id = _safe_model_id(model_id)
+        with self.lock:
+            if self.directory_backed:
+                self._sync_models_from_directory_locked()
+            service = self._services.get(target_id)
+            if service is None:
+                raise KeyError(f"Unknown simulation model: {model_id}")
+            if len(self._services) <= 1:
+                raise ValueError("至少需要保留一个模型")
+            if service.clock.state != "stopped":
+                raise ValueError(f"模型正在运行中，无法删除: {target_id}")
+
+            source_dir = Path(service.sim_dir).resolve()
+            runtime_dir = Path(service.runtime_dir).resolve()
+            models_root = self.models_root.resolve()
+            runtime_root = self.runtime_dir.resolve()
+            try:
+                source_dir.relative_to(models_root)
+                runtime_dir.relative_to(runtime_root)
+            except ValueError as exc:
+                raise ValueError(f"模型目录无效，无法删除: {target_id}") from exc
+
+            removed = service.model_info()
+            self._services.pop(target_id, None)
+            if source_dir.exists():
+                shutil.rmtree(source_dir)
+            if runtime_dir.exists():
+                shutil.rmtree(runtime_dir)
+            self._remove_manifest_model(target_id)
+
+            if self.default_model_id == target_id:
+                remaining_ids = list(self._services)
+                self.default_model_id = self._preferred_default_model_id(remaining_ids, remaining_ids[0])
+            return {
+                **removed,
+                "deleted": True,
+                "active_model_id": self.default_model_id,
+            }
+
     def validate_new_model_name(self, new_model_id: Any) -> str:
         target_id = _safe_model_id(new_model_id)
         target_keys = {_model_key(new_model_id), _model_key(target_id)}
@@ -3727,6 +3768,33 @@ class MultiModelSimulator:
             payload["models"] = items
         else:
             payload = items
+        _write_json(manifest, payload)
+
+    def _remove_manifest_model(self, model_id: str) -> None:
+        manifest = self.models_root.parent / "models.json"
+        if not manifest.exists():
+            return
+        payload = _read_json(manifest, {"models": []})
+        is_mapping = isinstance(payload, Mapping)
+        items = payload.get("models", []) if is_mapping else payload
+        if not isinstance(items, list):
+            return
+        target_key = _model_key(model_id)
+        next_items = [
+            item
+            for item in items
+            if not (
+                isinstance(item, Mapping)
+                and _model_key(item.get("id", item.get("model_id", item.get("name", "")))) == target_key
+            )
+        ]
+        if len(next_items) == len(items):
+            return
+        if is_mapping:
+            payload = dict(payload)
+            payload["models"] = next_items
+        else:
+            payload = next_items
         _write_json(manifest, payload)
 
     def service_for(self, model_id: Optional[str] = None) -> PolarMicrogridSimulator:

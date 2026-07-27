@@ -1000,6 +1000,22 @@ def make_http_server(
                 catalog["active_model_id"] = model["id"]
                 self._send_json({"model": model, **catalog})
                 return
+            if path == "/api/models/delete":
+                if not hasattr(service, "delete_model"):
+                    raise JsonApiError(400, "Current simulator does not support multiple model folders")
+                model_id = self._request_model_id(payload)
+                if not str(model_id or "").strip():
+                    raise JsonApiError(400, "Model id is required")
+                try:
+                    deleted = service.delete_model(model_id)  # type: ignore[union-attr]
+                except KeyError as exc:
+                    raise JsonApiError(404, str(exc)) from exc
+                except ValueError as exc:
+                    raise JsonApiError(400, str(exc)) from exc
+                catalog = dict(self._model_catalog())
+                catalog["active_model_id"] = deleted.get("active_model_id", catalog.get("active_model_id"))
+                self._send_json({"deleted": deleted, **catalog})
+                return
             if path == "/api/models/import-definitions":
                 data_base64 = str(payload.get("data_base64", ""))
                 if not data_base64:

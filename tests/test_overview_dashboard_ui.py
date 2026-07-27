@@ -8,6 +8,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class OverviewDashboardUiTest(unittest.TestCase):
+    def test_overview_status_strip_keeps_content_vertically_centered(self):
+        styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
+
+        generic_panel_index = styles.index(".panel {")
+        override_selector = ".panel.overview-status-panel {"
+        self.assertIn(override_selector, styles)
+        self.assertGreater(styles.index(override_selector), generic_panel_index)
+        status_block = styles.split(override_selector, 1)[1].split("}", 1)[0]
+        self.assertIn("padding: 0", status_block)
+        self.assertIn("align-items: stretch", status_block)
+
     def test_overview_merges_realtime_results_into_energy_flow(self):
         html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
         app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
@@ -187,6 +198,7 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("align-self: center;", energy_flow_block)
         self.assertIn("height: min(100%, 390px);", energy_flow_block)
         self.assertIn("min-height: 0;", energy_board_block)
+        self.assertIn("place-items: center;", energy_board_block)
         self.assertIn("min-height: 0;", energy_flow_block)
         self.assertIn("grid-template-rows: minmax(0, 1fr);", energy_board_block)
         self.assertIn("padding: 0;", energy_board_block)
@@ -206,7 +218,9 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertNotIn("min-height: 276px;", low_height_board_block)
         self.assertNotIn("min-height: 240px;", low_height_flow_block)
         self.assertIn("height: 230px;", styles)
-        self.assertIn("bottom: 110px;", styles)
+        self.assertIn("padding-bottom: 72px;", styles)
+        self.assertIn("bottom: 178px;", styles)
+        self.assertIn("padding-bottom: 4px;", low_height_styles)
         self.assertIn("min-height: 96px;", styles)
         self.assertIn(".energy-device.storage small", styles)
         self.assertNotIn(".simulation-flow", styles)
@@ -221,7 +235,8 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn('aria-orientation="horizontal"', html)
         self.assertIn("调整下方表格高度", html)
         self.assertIn("--overview-bottom-height", styles)
-        self.assertIn("grid-template-rows: auto minmax(390px, 1fr) 10px minmax(96px, var(--overview-bottom-height));", styles)
+        self.assertIn("grid-template-rows: auto minmax(180px, 1fr) 10px minmax(96px, var(--overview-bottom-height));", styles)
+        self.assertIn("const OVERVIEW_BOTTOM_MAX_HEIGHT = 640;", app_js)
         self.assertIn(".overview-bottom-splitter", styles)
         self.assertIn("cursor: row-resize;", styles)
         self.assertIn("is-overview-splitter-dragging", styles)

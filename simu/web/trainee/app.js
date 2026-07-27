@@ -7,7 +7,7 @@ let teacherApiBase = (
 const OVERVIEW_BOTTOM_HEIGHT_KEY = "polarTraineeOverviewBottomHeight";
 const OVERVIEW_BOTTOM_DEFAULT_HEIGHT = 156;
 const OVERVIEW_BOTTOM_MIN_HEIGHT = 96;
-const OVERVIEW_BOTTOM_MAX_HEIGHT = 380;
+const OVERVIEW_BOTTOM_MAX_HEIGHT = 640;
 const VERTICAL_SPLIT_STORAGE_KEY = "polarTraineeVerticalSplitRatios";
 const VERTICAL_SPLIT_DEFAULTS = {
   "trainee-curves": 60,
@@ -1654,7 +1654,7 @@ function overviewBottomHeightBounds() {
   const mainGrid = document.querySelector(".overview-main-grid");
   const statusHeight = document.querySelector(".overview-status-panel")?.getBoundingClientRect().height || 68;
   const splitterHeight = $("overviewBottomSplitter")?.getBoundingClientRect().height || 10;
-  const mainMinHeight = Number.parseFloat(mainGrid ? getComputedStyle(mainGrid).minHeight : "") || 390;
+  const mainMinHeight = Number.parseFloat(mainGrid ? getComputedStyle(mainGrid).minHeight : "") || 180;
   const rowGap = Number.parseFloat(dashboardStyle?.rowGap || dashboardStyle?.gap || "") || 12;
   const reservedHeight = statusHeight + mainMinHeight + splitterHeight + rowGap * 3;
   const dynamicMax = dashboardHeight > 0 ? dashboardHeight - reservedHeight : OVERVIEW_BOTTOM_MAX_HEIGHT;

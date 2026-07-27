@@ -2,7 +2,7 @@ const apiBase = (window.POLAR_SIM_API_URL || localStorage.getItem("polarSimApiUr
 const OVERVIEW_BOTTOM_HEIGHT_KEY = "polarOverviewBottomHeight";
 const OVERVIEW_BOTTOM_DEFAULT_HEIGHT = 156;
 const OVERVIEW_BOTTOM_MIN_HEIGHT = 96;
-const OVERVIEW_BOTTOM_MAX_HEIGHT = 380;
+const OVERVIEW_BOTTOM_MAX_HEIGHT = 640;
 const VERTICAL_SPLIT_STORAGE_KEY = "polarSimulatorVerticalSplitRatios";
 const VERTICAL_SPLIT_DEFAULTS = {
   "simulator-curves": 60,
@@ -64,6 +64,8 @@ const state = {
   measurementTraceWindowMinutes: 60,
   lastMeasurementTraceKey: "",
   traceRunId: null,
+  selectedManagementModelId: "",
+  cloneSourceModelId: "",
   modeFilter: { dev_type: "all", dev_name: "" },
   collapsedDeviceTreeGroups: {},
   runtimeLogs: [],
@@ -744,6 +746,154 @@ function validateNewModelForm(showBlank = false) {
   return true;
 }
 
+function setModelManagementMessage(text, kind = "") {
+  const message = $("modelManagementMessage");
+  if (!message) return;
+  message.textContent = text || "";
+  message.classList.toggle("is-error", kind === "error");
+  message.classList.toggle("is-ok", kind === "ok");
+}
+
+function modelClockState(model) {
+  const modelId = String(model?.id || "");
+  if (modelId && modelId === state.activeModelId && state.snapshot?.clock?.state) {
+    return state.snapshot.clock.state;
+  }
+  return String(model?.clock_state || "stopped");
+}
+
+function modelClockStateText(clockState) {
+  return {
+    running: "运行中",
+    paused: "暂停中",
+    stopped: "已停止",
+  }[clockState] || clockState || "--";
+}
+
+function ensureSelectedManagementModelId(models = normalizeModels(state.models)) {
+  if (!models.length) {
+    state.selectedManagementModelId = "";
+    return "";
+  }
+  const selectedId = String(state.selectedManagementModelId || "");
+  if (selectedId && models.some((model) => String(model.id || "") === selectedId)) {
+    return selectedId;
+  }
+  const activeId = String(state.activeModelId || "");
+  const nextId = (activeId && models.some((model) => String(model.id || "") === activeId))
+    ? activeId
+    : String(models[0]?.id || "");
+  state.selectedManagementModelId = nextId;
+  return nextId;
+}
+
+function selectedManagementModelId() {
+  return ensureSelectedManagementModelId();
+}
+
+function selectedManagementModel() {
+  const modelId = selectedManagementModelId();
+  return normalizeModels(state.models).find((model) => String(model.id || "") === modelId) || null;
+}
+
+function updateModelContextMenuActions() {
+  const models = normalizeModels(state.models);
+  const selected = selectedManagementModel();
+  const hasSelected = Boolean(selected);
+  const clockState = selected ? modelClockState(selected) : "";
+  const menu = $("modelContextMenu");
+  const exportButton = menu?.querySelector('[data-model-context-action="export"]');
+  const cloneButton = menu?.querySelector('[data-model-context-action="clone"]');
+  const deleteButton = menu?.querySelector('[data-model-context-action="delete"]');
+  if (exportButton) exportButton.disabled = !hasSelected;
+  if (cloneButton) cloneButton.disabled = !hasSelected;
+  if (deleteButton) {
+    const canDelete = hasSelected && models.length > 1 && clockState === "stopped";
+    deleteButton.disabled = !canDelete;
+    deleteButton.title = !hasSelected
+      ? "请选择模型"
+      : (models.length <= 1
+        ? "至少需要保留一个模型"
+        : (clockState === "stopped" ? "删除选中的模型" : "模型运行中或暂停中，不能删除"));
+  }
+}
+
+function setSelectedManagementModel(modelId, render = true) {
+  state.selectedManagementModelId = String(modelId || "");
+  ensureSelectedManagementModelId();
+  updateModelContextMenuActions();
+  if (render) renderModelManagementList();
+}
+
+function renderModelManagementList() {
+  const list = $("modelManagementList");
+  if (!list) return;
+  const models = normalizeModels(state.models);
+  if (!models.length) {
+    list.innerHTML = '<div class="model-management-empty">暂无模型</div>';
+    state.selectedManagementModelId = "";
+    updateModelContextMenuActions();
+    return;
+  }
+  const selectedId = ensureSelectedManagementModelId(models);
+  const branchHtml = models.map((model) => {
+    const modelId = String(model.id || "");
+    const isActive = modelId === state.activeModelId;
+    const isSelected = modelId === selectedId;
+    const clockState = modelClockState(model);
+    return `
+      <div
+        class="model-management-item ${isActive ? "is-active" : ""} ${isSelected ? "is-selected" : ""}"
+        role="treeitem"
+        tabindex="0"
+        aria-selected="${isSelected ? "true" : "false"}"
+        data-model-id="${escapeHtml(modelId)}"
+      >
+        <span class="model-management-node-mark" aria-hidden="true"></span>
+        <strong class="model-node-name">${escapeHtml(model.name || modelId)}</strong>
+        <div class="model-item-badges">
+          ${isActive ? '<span class="model-current-pill">当前</span>' : ""}
+          <span class="model-state-pill" data-state="${escapeHtml(clockState)}">${escapeHtml(modelClockStateText(clockState))}</span>
+        </div>
+      </div>
+    `;
+  }).join("");
+  list.innerHTML = `
+    <div class="model-management-tree-root" role="treeitem" aria-expanded="true">
+      <span class="model-management-root-caret" aria-hidden="true">▾</span>
+      <strong>模型列表</strong>
+      <small>${models.length} 个</small>
+    </div>
+    <div class="model-management-branches" role="group">
+      ${branchHtml}
+    </div>
+  `;
+  updateModelContextMenuActions();
+}
+
+async function openModelManagementDialog() {
+  const dialog = $("modelManagementDialog");
+  if (!dialog) return;
+  dialog.hidden = false;
+  setModelManagementMessage("正在读取模型列表...");
+  try {
+    await loadModels();
+    ensureSelectedManagementModelId();
+    renderModelManagementList();
+    setModelManagementMessage(`共 ${state.models.length} 个模型，右键模型节点可操作。`, "ok");
+  } catch (error) {
+    renderModelManagementList();
+    setModelManagementMessage(apiErrorText(error), "error");
+  }
+}
+
+function closeModelManagementDialog() {
+  closeModelContextMenu();
+  const dialog = $("modelManagementDialog");
+  if (dialog) dialog.hidden = true;
+  setModelManagementMessage("");
+}
+
 function openNewModelDialog() {
   const dialog = $("newModelDialog");
   const input = $("newModelName");
@@ -811,6 +961,7 @@ async function createNewModelFromFile() {
     const newModelId = result.model?.id || result.active_model_id || name;
     closeNewModelDialog();
     setActiveModel(newModelId, true);
+    renderModelManagementList();
   } catch (error) {
     const message = apiErrorText(error);
     if (message.includes("已存在")) await loadModels();
@@ -855,11 +1006,14 @@ function validateCloneModelName(showBlank = false) {
   return true;
 }
 
-function openCloneModelDialog() {
+function openCloneModelDialog(sourceModelId = "") {
   const dialog = $("cloneModelDialog");
   const input = $("cloneModelName");
   if (!dialog || !input) return;
-  input.value = modelCloneDefaultName();
+  state.cloneSourceModelId = sourceModelId || state.activeModelId || "";
+  const source = state.models.find((model) => model.id === state.cloneSourceModelId) || activeModelInfo();
+  const base = String(source.name || source.id || "model").replace(/\s+/g, "_");
+  input.value = uniqueCloneName(base);
   validateCloneModelName();
   dialog.hidden = false;
   requestAnimationFrame(() => {
@@ -871,6 +1025,7 @@ function openCloneModelDialog() {
 function closeCloneModelDialog() {
   const dialog = $("cloneModelDialog");
   if (dialog) dialog.hidden = true;
+  state.cloneSourceModelId = "";
 }
 
 function apiErrorText(error) {
@@ -932,13 +1087,11 @@ function modelCloneDefaultName() {
 
 function setCloneModelBusy(isBusy) {
   const confirm = $("confirmCloneModel");
-  const button = $("cloneModelButton");
   const input = $("cloneModelName");
   if (confirm) {
     confirm.disabled = isBusy;
     confirm.textContent = isBusy ? "复制中" : "复制";
   }
-  if (button) button.disabled = isBusy;
   if (input) input.disabled = isBusy;
 }
 
@@ -952,14 +1105,18 @@ async function cloneCurrentModel() {
   setCloneModelBusy(true);
   setCloneModelMessage("正在复制模型文件夹...");
   try {
+    const sourceModelId = state.cloneSourceModelId || state.activeModelId || "";
     const result = await api("/api/models/clone", {
+      modelScoped: false,
       method: "POST",
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ model_id: sourceModelId, name }),
     });
     state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
     const newModelId = result.model?.id || result.active_model_id || name;
+    state.selectedManagementModelId = newModelId;
     closeCloneModelDialog();
     setActiveModel(newModelId, true);
+    renderModelManagementList();
   } catch (error) {
     setCloneModelMessage(apiErrorText(error), "error");
   } finally {
@@ -1075,6 +1232,7 @@ async function importDefinitionModel() {
     const newModelId = result.model?.id || result.active_model_id || name;
     closeImportModelDialog();
     setActiveModel(newModelId, true);
+    renderModelManagementList();
   } catch (error) {
     const message = apiErrorText(error);
     if (message.includes("已存在")) await loadModels();
@@ -1196,23 +1354,26 @@ function safeExportFilename(filename) {
   return cleaned.toLowerCase().endsWith(".zip") ? cleaned : `${cleaned}.zip`;
 }
 
-async function exportDefinitionsArchive() {
-  const button = $("exportDefinitionsButton");
-  if (!button) return;
-  const originalText = button.textContent;
-  button.disabled = true;
+async function exportDefinitionsArchive(modelId = state.activeModelId, actionButton = null) {
+  const button = actionButton;
+  const originalText = button?.textContent || "";
+  if (button) button.disabled = true;
   try {
     let directoryHandle = null;
     if (typeof window.showDirectoryPicker === "function") {
-      button.textContent = "选择目录";
+      if (button) button.textContent = "选择目录";
       directoryHandle = await window.showDirectoryPicker({
         id: "simu-definition-export",
         mode: "readwrite",
         startIn: "downloads",
       });
     }
-    button.textContent = "导出中";
-    const payload = await api("/api/export-definitions?format=json");
+    if (button) button.textContent = "导出中";
+    const targetModelId = String(modelId || state.activeModelId || "").trim();
+    const exportPath = targetModelId
+      ? `/api/export-definitions?format=json&model_id=${encodeURIComponent(targetModelId)}`
+      : "/api/export-definitions?format=json";
+    const payload = await api(exportPath, { modelScoped: false });
     const blob = blobFromBase64(payload.data_base64, payload.content_type);
     const filename = safeExportFilename(filenameFromDisposition("", payload.filename || "model_definitions.zip"));
     if (directoryHandle) {
@@ -1220,7 +1381,7 @@ async function exportDefinitionsArchive() {
       const writable = await fileHandle.createWritable();
       await writable.write(blob);
       await writable.close();
-      button.textContent = "已导出";
+      if (button) button.textContent = "已导出";
     } else {
       downloadBlob(blob, filename);
     }
@@ -1228,8 +1389,114 @@ async function exportDefinitionsArchive() {
     if (error?.name === "AbortError") return;
     alert(apiErrorText(error));
   } finally {
-    button.disabled = false;
-    button.textContent = originalText;
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+}
+
+async function deleteManagedModel(modelId) {
+  const target = state.models.find((model) => model.id === modelId);
+  if (!target) return;
+  if (normalizeModels(state.models).length <= 1) {
+    setModelManagementMessage("至少需要保留一个模型。", "error");
+    return;
+  }
+  if (modelClockState(target) !== "stopped") {
+    setModelManagementMessage("模型运行中或暂停中，不能删除。", "error");
+    return;
+  }
+  const modelName = target.name || target.id || modelId;
+  if (!window.confirm(`确认删除模型“${modelName}”吗？此操作会删除对应模型文件夹和运行数据。`)) {
+    return;
+  }
+  setModelManagementMessage(`正在删除模型：${modelName}`);
+  try {
+    const result = await api("/api/models/delete", {
+      modelScoped: false,
+      method: "POST",
+      body: JSON.stringify({ model_id: modelId }),
+    });
+    state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
+    const nextId = state.models.some((model) => model.id === state.activeModelId)
+      ? state.activeModelId
+      : (result.active_model_id || state.models[0]?.id || "");
+    state.selectedManagementModelId = nextId;
+    setActiveModel(nextId, true);
+    renderModelManagementList();
+    setModelManagementMessage(`已删除模型：${modelName}`, "ok");
+  } catch (error) {
+    await loadModels();
+    renderModelManagementList();
+    setModelManagementMessage(apiErrorText(error), "error");
+  }
+}
+
+function handleModelManagementAction(event) {
+  closeModelContextMenu();
+  const item = event.target instanceof Element ? event.target.closest(".model-management-item[data-model-id]") : null;
+  if (!item) return;
+  const modelId = item.dataset.modelId || "";
+  if (!modelId) return;
+  setSelectedManagementModel(modelId);
+  setModelManagementMessage("右键模型节点可导出、复制或删除。", "ok");
+}
+
+function handleModelManagementKeydown(event) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  closeModelContextMenu();
+  const item = event.target instanceof Element ? event.target.closest(".model-management-item[data-model-id]") : null;
+  if (!item) return;
+  event.preventDefault();
+  const modelId = item.dataset.modelId || "";
+  setSelectedManagementModel(modelId);
+  setModelManagementMessage("右键模型节点可导出、复制或删除。", "ok");
+}
+
+function closeModelContextMenu() {
+  const menu = $("modelContextMenu");
+  if (!menu) return;
+  menu.hidden = true;
+}
+
+function positionModelContextMenu(menu, x, y) {
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  requestAnimationFrame(() => {
+    const rect = menu.getBoundingClientRect();
+    const maxLeft = Math.max(8, window.innerWidth - rect.width - 8);
+    const maxTop = Math.max(8, window.innerHeight - rect.height - 8);
+    menu.style.left = `${Math.max(8, Math.min(x, maxLeft))}px`;
+    menu.style.top = `${Math.max(8, Math.min(y, maxTop))}px`;
+  });
+}
+
+function openModelContextMenu(event) {
+  const item = event.target instanceof Element ? event.target.closest(".model-management-item[data-model-id]") : null;
+  if (!item) return;
+  event.preventDefault();
+  const modelId = item.dataset.modelId || "";
+  if (!modelId) return;
+  setSelectedManagementModel(modelId);
+  const menu = $("modelContextMenu");
+  if (!menu) return;
+  updateModelContextMenuActions();
+  menu.hidden = false;
+  positionModelContextMenu(menu, event.clientX, event.clientY);
+}
+
+function handleModelContextMenuAction(event) {
+  const button = event.target instanceof Element ? event.target.closest("[data-model-context-action]") : null;
+  if (!button || button.disabled) return;
+  const action = button.dataset.modelContextAction || "";
+  closeModelContextMenu();
+  if (action === "export") {
+    exportDefinitionsArchive(selectedManagementModelId(), button);
+  } else if (action === "clone") {
+    openCloneModelDialog(selectedManagementModelId());
+  } else if (action === "delete") {
+    deleteManagedModel(selectedManagementModelId());
   }
 }
 
@@ -1331,6 +1598,7 @@ function renderModelSelector() {
   selector.disabled = models.length <= 1;
   const active = models.find((model) => model.id === selector.value) || models[0] || {};
   $("activeModelName").textContent = active.name || active.id || "默认模型";
+  if (!$("modelManagementDialog")?.hidden) renderModelManagementList();
 }
 
 function setActiveModel(modelId, shouldRefresh = true) {
@@ -1340,6 +1608,7 @@ function setActiveModel(modelId, shouldRefresh = true) {
     return;
   }
   state.activeModelId = nextId;
+  state.selectedManagementModelId = nextId;
   localStorage.setItem("polarSimulatorModelId", nextId);
   state.snapshot = null;
   state.settingsLoaded = false;
@@ -2749,7 +3018,7 @@ function overviewBottomHeightBounds() {
   const mainGrid = document.querySelector(".overview-main-grid");
   const statusHeight = document.querySelector(".overview-status-panel")?.getBoundingClientRect().height || 68;
   const splitterHeight = $("overviewBottomSplitter")?.getBoundingClientRect().height || 10;
-  const mainMinHeight = Number.parseFloat(mainGrid ? getComputedStyle(mainGrid).minHeight : "") || 390;
+  const mainMinHeight = Number.parseFloat(mainGrid ? getComputedStyle(mainGrid).minHeight : "") || 180;
   const rowGap = Number.parseFloat(dashboardStyle?.rowGap || dashboardStyle?.gap || "") || 12;
   const reservedHeight = statusHeight + mainMinHeight + splitterHeight + rowGap * 3;
   const dynamicMax = dashboardHeight > 0 ? dashboardHeight - reservedHeight : OVERVIEW_BOTTOM_MAX_HEIGHT;
@@ -5761,7 +6030,21 @@ async function pushSettings() {
 document.querySelectorAll("[data-clock]").forEach((button) => {
   button.addEventListener("click", () => handleClockAction(button.dataset.clock));
 });
-$("exportDefinitionsButton").addEventListener("click", exportDefinitionsArchive);
+$("modelManagementButton").addEventListener("click", openModelManagementDialog);
+$("closeModelManagementDialog").addEventListener("click", closeModelManagementDialog);
+$("cancelModelManagementDialog").addEventListener("click", closeModelManagementDialog);
+$("modelManagementDialog").addEventListener("click", (event) => {
+  if (event.target.id === "modelManagementDialog") closeModelManagementDialog();
+});
+$("modelManagementList").addEventListener("click", handleModelManagementAction);
+$("modelManagementList").addEventListener("keydown", handleModelManagementKeydown);
+$("modelManagementList").addEventListener("contextmenu", openModelContextMenu);
+$("modelManagementList").addEventListener("scroll", closeModelContextMenu);
+$("modelContextMenu").addEventListener("click", handleModelContextMenuAction);
+document.addEventListener("click", (event) => {
+  if (event.target instanceof Element && event.target.closest("#modelContextMenu")) return;
+  closeModelContextMenu();
+});
 $("newModelButton").addEventListener("click", openNewModelDialog);
 $("selectNewModelFile").addEventListener("click", () => $("newModelFileInput").click());
 $("newModelFileInput").addEventListener("change", handleNewModelFileSelected);
@@ -5806,7 +6089,6 @@ $("importModelForm").addEventListener("submit", (event) => {
   importDefinitionModel();
 });
 $("importModelName").addEventListener("input", () => validateImportModelName());
-$("cloneModelButton").addEventListener("click", openCloneModelDialog);
 $("closeCloneModelDialog").addEventListener("click", closeCloneModelDialog);
 $("cancelCloneModel").addEventListener("click", closeCloneModelDialog);
 $("cloneModelDialog").addEventListener("click", (event) => {
@@ -5818,6 +6100,7 @@ $("cloneModelForm").addEventListener("submit", (event) => {
 });
 $("cloneModelName").addEventListener("input", () => validateCloneModelName());
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeModelContextMenu();
   if (event.key === "Escape" && !$("startSimulationDialog").hidden) {
     closeStartSimulationDialog();
     return;
@@ -5836,6 +6119,10 @@ document.addEventListener("keydown", (event) => {
   }
   if (event.key === "Escape" && !$("traineeLinkDialog").hidden) {
     closeTraineeLinkDialog();
+    return;
+  }
+  if (event.key === "Escape" && !$("modelManagementDialog").hidden) {
+    closeModelManagementDialog();
   }
 });
 

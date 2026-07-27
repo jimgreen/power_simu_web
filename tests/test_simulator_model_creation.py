@@ -120,12 +120,85 @@ class SimulatorModelCreationTest(unittest.TestCase):
             self.assertTrue((models_root / "接口新模型/model.e").exists())
             self.assertIn("接口新模型", {model["id"] for model in body["models"]})
 
-    def test_simulator_ui_has_new_model_button_and_dialog(self):
+    def test_delete_model_rejects_running_model_and_removes_stopped_model_folder(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            models_root = temp_root / "models"
+            copytree(ROOT / "models/simulator/source/默认模型", models_root / "默认模型")
+            copytree(ROOT / "models/simulator/source/简单模型", models_root / "运行模型")
+            manager = MultiModelSimulator.discover(
+                models_root.parent,
+                temp_root / "runtime",
+                models_dir=models_root,
+            )
+
+            manager.service_for("运行模型").control_clock({"action": "start"})
+
+            with self.assertRaisesRegex(ValueError, "运行中"):
+                manager.delete_model("运行模型")
+
+            manager.service_for("运行模型").control_clock({"action": "stop"})
+            deleted = manager.delete_model("运行模型")
+
+            self.assertEqual(deleted["id"], "运行模型")
+            self.assertFalse((models_root / "运行模型").exists())
+            self.assertFalse((temp_root / "runtime" / "运行模型").exists())
+            self.assertNotIn("运行模型", {model["id"] for model in manager.models()})
+
+    def test_simulator_ui_uses_single_model_management_button_and_dialog(self):
         html = (ROOT / "simu/web/simulator/index.html").read_text(encoding="utf-8")
         script = (ROOT / "simu/web/simulator/app.js").read_text(encoding="utf-8")
+        styles = (ROOT / "simu/web/simulator/styles.css").read_text(encoding="utf-8")
 
         toolbar = html.split('<div class="model-toolbar">', 1)[1].split("</div>", 1)[0]
-        self.assertLess(toolbar.index('id="newModelButton"'), toolbar.index('id="modelSelector"'))
+        self.assertLess(toolbar.index('id="modelManagementButton"'), toolbar.index('id="modelSelector"'))
+        self.assertNotIn('id="newModelButton"', toolbar)
+        self.assertNotIn('id="exportDefinitionsButton"', toolbar)
+        self.assertNotIn('id="importDefinitionsButton"', toolbar)
+        self.assertNotIn('id="cloneModelButton"', toolbar)
+        self.assertIn('id="modelManagementDialog"', html)
+        self.assertIn('id="modelManagementList"', html)
+        self.assertIn('<div id="modelManagementList"', html)
+        self.assertIn('role="tree"', html)
+        self.assertNotIn("model-management-table", html)
+        self.assertIn('data-model-management-action="new"', html)
+        self.assertIn('data-model-management-action="import"', html)
+        self.assertNotIn('id="exportDefinitionsButton"', html)
+        self.assertNotIn('id="cloneModelButton"', html)
+        self.assertNotIn('id="deleteSelectedModelButton"', html)
+        self.assertIn('id="modelContextMenu"', html)
+        self.assertIn('data-model-context-action="export"', html)
+        self.assertIn('data-model-context-action="clone"', html)
+        self.assertIn('data-model-context-action="delete"', html)
+        self.assertNotIn(">导出选中<", html)
+        self.assertNotIn(">复制选中<", html)
+        self.assertNotIn(">导出当前<", html)
+        self.assertNotIn(">复制当前<", html)
+        self.assertIn("renderModelManagementList", script)
+        self.assertIn("model-management-item", script)
+        self.assertIn("model-management-tree-root", script)
+        self.assertIn('role="treeitem"', script)
+        self.assertIn("selectedManagementModelId", script)
+        self.assertIn("setSelectedManagementModel", script)
+        self.assertIn("openModelContextMenu", script)
+        self.assertIn('addEventListener("contextmenu"', script)
+        self.assertIn("handleModelContextMenuAction", script)
+        self.assertIn("deleteManagedModel(selectedManagementModelId()", script)
+        self.assertIn('api("/api/models/delete"', script)
+        self.assertNotIn("模型目录", script)
+        self.assertNotIn("已选中", script)
+        self.assertNotIn("model-selected-pill", script)
+        self.assertNotIn("model-item-path", script)
+        self.assertIn(".model-management-list-wrap", styles)
+        self.assertIn("overflow-y: auto", styles)
+        self.assertIn("overflow-x: hidden", styles)
+        self.assertIn(".model-management-item", styles)
+        self.assertIn(".model-management-tree-root", styles)
+        self.assertIn(".model-management-branches", styles)
+        self.assertIn(".model-context-menu", styles)
+        self.assertNotIn(".model-selected-pill", styles)
+        self.assertNotIn(".model-item-path", styles)
+        self.assertNotIn(".model-management-table", styles)
         self.assertIn('id="newModelDialog"', html)
         self.assertIn('id="newModelName"', html)
         self.assertIn('id="newModelFileInput"', html)

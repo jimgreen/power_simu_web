@@ -2374,10 +2374,16 @@ canvas {
   display: none;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
+  flex-direction: column;
 }
 .runtime-command-tab-page.is-active {
-  display: block;
+  display: flex;
+}
+.runtime-command-table-wrap {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
 }
 .command-set-type {
   display: inline;

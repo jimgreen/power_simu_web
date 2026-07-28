@@ -338,6 +338,9 @@ function scheduleVirtualTableRender(key) {
     if (key === "measurementCompare" && currentPageName() === "measurements") {
       renderMeasurementCompareTable();
     }
+    if (key.startsWith("runtimeCommand") && currentPageName() === "runtime") {
+      renderRuntimeDeviceTable();
+    }
   });
 }
 
@@ -2698,6 +2701,7 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.curveSeriesByMode = {};
   state.curvesLoadedModelId = "";
   renderModelSelector();
+  if (currentPageName() === "curves") renderCurveEditorLoading("正在加载曲线摘要...");
   if (shouldRefresh) refresh();
 }
 
@@ -3183,18 +3187,21 @@ function curveSummaryFromCurves(curves = {}) {
   };
 }
 
+function curveSummaryHasCatalog(summary = state.curveSummary) {
+  return Boolean(summary && Array.isArray(summary.environment) && Array.isArray(summary.loads));
+}
+
 function applyCurveSummary(summary, modelId = state.activeModelId) {
   if (!summary || typeof summary !== "object") return;
   const mode = CURVE_MODES[summary.mode] ? summary.mode : "day";
   state.curveSummary = summary;
   state.curveSummaryLoadedModelId = modelId || "loaded";
-  state.curvesLoadedModelId = modelId || "loaded";
   state.curveMode = mode;
   localStorage.setItem("polarSimulatorCurveMode", mode);
 }
 
 async function loadCurveSummary(modelId = state.activeModelId) {
-  if (state.curveSummaryLoadedModelId === modelId && state.curveSummary) return state.curveSummary;
+  if (state.curveSummaryLoadedModelId === modelId && curveSummaryHasCatalog(state.curveSummary)) return state.curveSummary;
   if (state.curveSummaryRequest && state.curveSummaryRequestModelId === modelId) return state.curveSummaryRequest;
   state.curveSummaryRequestModelId = modelId;
   state.curveSummaryRequest = api("/api/curves/summary")
@@ -3556,8 +3563,21 @@ function renderCurveTableLoading(message = "正在加载曲线数据...") {
     </table>`;
 }
 
+function renderCurveTreeLoading(message = "正在加载曲线摘要...") {
+  const container = $("curveTree");
+  if (!container) return;
+  const summary = $("curveTreeSummary");
+  const activeInput = $("activeCurve");
+  const activeLabel = $("activeCurveLabel");
+  if (summary) summary.textContent = "加载中";
+  if (activeInput) activeInput.value = "";
+  if (activeLabel) activeLabel.textContent = "--";
+  container.innerHTML = `<div class="empty-state">${escapeHtml(message)}</div>`;
+}
+
 function renderCurveEditorLoading(message) {
-  renderCurveTree();
+  if (curveSummaryHasCatalog(state.curveSummary)) renderCurveTree();
+  else renderCurveTreeLoading(message);
   renderCurveModeControls();
   updateCurveModeLabels();
   const status = $("curveStatus");
@@ -3572,7 +3592,7 @@ function renderCurveEditor(force = false) {
     renderCurveEditorLoading("正在加载模型列表...");
     return;
   }
-  const summaryMissing = state.curveSummaryLoadedModelId !== modelId || !state.curveSummary;
+  const summaryMissing = state.curveSummaryLoadedModelId !== modelId || !curveSummaryHasCatalog(state.curveSummary);
   if (summaryMissing) {
     renderCurveEditorLoading("正在加载曲线摘要...");
     loadCurveSummary(modelId).then(() => {
@@ -4903,7 +4923,7 @@ function renderSnapshot(snapshot) {
       time_step_minutes: Number(snapshot.curve_boundary.time_step_minutes) || curveStepMinutes(boundaryMode),
       point_count: Number(snapshot.curve_boundary.point_count) || curvePointCount(boundaryMode),
     };
-    state.curveSummaryLoadedModelId = state.activeModelId;
+    if (!curveSummaryHasCatalog(state.curveSummary)) state.curveSummaryLoadedModelId = "";
   }
   const solverInfo = $("solverInfo");
   if (solverInfo) solverInfo.textContent = snapshot.result.solver_info || "待运行";
@@ -5408,8 +5428,18 @@ function runtimeSnapshotDevice(devType, devName, snapshot = state.snapshot || {}
   return (snapshot.devices || []).find((dev) => dev.dev_type === devType && dev.dev_name === devName) || null;
 }
 
-function runtimeControlDeviceFromRow(row, snapshot = state.snapshot || {}) {
-  const live = runtimeSnapshotDevice(row.dev_type, row.dev_name, snapshot) || {};
+function runtimeSnapshotDevicesByKey(snapshot = state.snapshot || {}) {
+  const snapshotDevicesByKey = new Map();
+  (snapshot.devices || []).forEach((dev) => {
+    snapshotDevicesByKey.set(`${dev.dev_type || ""}|${dev.dev_name || ""}`, dev);
+  });
+  return snapshotDevicesByKey;
+}
+
+function runtimeControlDeviceFromRow(row, snapshot = state.snapshot || {}, context = null) {
+  const live = context?.snapshotDevicesByKey?.get(`${row.dev_type || ""}|${row.dev_name || ""}`)
+    || runtimeSnapshotDevice(row.dev_type, row.dev_name, snapshot)
+    || {};
   return {
     ...live,
     dev_type: row.dev_type,
@@ -5513,12 +5543,26 @@ function runtimeMeasTypeMatchesSetKey(measType, setKey) {
   return type === key.toUpperCase();
 }
 
-function runtimeMeasurementPair(dev, meta, measurements = state.snapshot?.measurements || {}) {
-  const best = measurementCompareRows(measurements).find((row) => (
-    row.dev_type === dev.dev_type
-    && row.dev_name === dev.dev_name
-    && runtimeMeasTypeMatchesSetKey(row.meas_type, meta.key || meta.kind)
-  )) || {};
+function groupRuntimeMeasurementRowsByDevice(rows = []) {
+  const rowsByDevice = new Map();
+  (rows || []).forEach((row) => {
+    const key = `${row.dev_type || ""}|${row.dev_name || ""}`;
+    const deviceRows = rowsByDevice.get(key) || [];
+    deviceRows.push(row);
+    rowsByDevice.set(key, deviceRows);
+  });
+  return rowsByDevice;
+}
+
+function runtimeMeasurementRowsByDevice(measurements = state.snapshot?.measurements || {}) {
+  return groupRuntimeMeasurementRowsByDevice(measurementCompareRows(measurements));
+}
+
+function runtimeMeasurementPair(dev, meta, measurements = state.snapshot?.measurements || {}, context = null) {
+  const measurementRowsByDevice = context?.measurementRowsByDevice
+    || groupRuntimeMeasurementRowsByDevice(measurementCompareRows(measurements));
+  const rows = measurementRowsByDevice.get(`${dev.dev_type || ""}|${dev.dev_name || ""}`) || [];
+  const best = rows.find((row) => runtimeMeasTypeMatchesSetKey(row.meas_type, meta.key || meta.kind)) || {};
   return {
     name: best.name || "",
     meas_type: best.meas_type || "",
@@ -5527,9 +5571,9 @@ function runtimeMeasurementPair(dev, meta, measurements = state.snapshot?.measur
   };
 }
 
-function runtimeDeviceTraceSignal(dev, measurements = state.snapshot?.measurements || {}) {
+function runtimeDeviceTraceSignal(dev, measurements = state.snapshot?.measurements || {}, context = null) {
   const control = runtimeControlMeta(dev);
-  const pair = runtimeMeasurementPair(dev, control, measurements);
+  const pair = runtimeMeasurementPair(dev, control, measurements, context);
   return {
     control: control.value,
     real: pair.real,
@@ -5599,10 +5643,10 @@ function applyRuntimeCommandTableFilters(rows) {
   });
 }
 
-function runtimeCommandRowsForDevices(devices, measurements = state.snapshot?.measurements || {}) {
+function runtimeCommandRowsForDevices(devices, measurements = state.snapshot?.measurements || {}, context = null) {
   return [
-    ...runtimeRemoteControlRows(devices),
-    ...runtimeRemoteAdjustmentRows(devices, measurements),
+    ...runtimeRemoteControlRows(devices, context),
+    ...runtimeRemoteAdjustmentRows(devices, measurements, context),
   ];
 }
 
@@ -5628,10 +5672,13 @@ function appendRuntimeTrace(snapshot) {
     devices: {},
     commands: {},
   };
+  const context = runtimeCommandBuildContext(snapshot, snapshot.measurements || {});
+  const devices = [];
   controlDefinitionDevices(snapshot).forEach((dev) => {
-    point.devices[deviceKey(dev)] = runtimeDeviceTraceSignal(dev, snapshot.measurements || {});
+    devices.push(dev);
+    point.devices[deviceKey(dev)] = runtimeDeviceTraceSignal(dev, snapshot.measurements || {}, context);
   });
-  runtimeCommandRowsForDevices(controlDefinitionDevices(snapshot), snapshot.measurements || {}).forEach((row) => {
+  runtimeCommandRowsForDevices(devices, snapshot.measurements || {}, context).forEach((row) => {
     point.commands[runtimeCommandTraceKey(row)] = {
       control: numberOrNull(row.control_value),
       real: numberOrNull(row.real_value),
@@ -5780,7 +5827,60 @@ function activeCommandHistory(snapshot = state.snapshot || {}) {
   });
 }
 
-function runtimeCommandRefreshInfo(dev, commandType, setType = "", snapshot = state.snapshot || {}) {
+function runtimeCommandRefreshIndex(snapshot = state.snapshot || {}) {
+  const commandRefreshIndex = {
+    run_stat: new Map(),
+    status: new Map(),
+    set_value: new Map(),
+  };
+  activeCommandHistory(snapshot).forEach((entry) => {
+    const normalized = entry.normalized || {};
+    const payload = entry.payload || {};
+    const info = commandReceiveTimeInfo(entry);
+    const setItems = Array.isArray(normalized.set_values)
+      ? normalized.set_values
+      : Array.isArray(payload.set_values)
+        ? payload.set_values
+        : [];
+    setItems.forEach((item) => {
+      if (!item?.dev_type || !item?.dev_name || !item?.set_type) return;
+      commandRefreshIndex.set_value.set(
+        `${item.dev_type}|${item.dev_name}|${item.set_type}`,
+        info,
+      );
+    });
+    const runItems = Array.isArray(normalized.run_status)
+      ? normalized.run_status
+      : Array.isArray(payload.run_status)
+        ? payload.run_status
+        : [];
+    runItems.forEach((item) => {
+      if (!item?.dev_type || !item?.dev_name) return;
+      if (Object.prototype.hasOwnProperty.call(item, "status")) {
+        commandRefreshIndex.status.set(`${item.dev_type}|${item.dev_name}|status`, info);
+      }
+      if (item.run_stat !== undefined && item.run_stat !== "") {
+        commandRefreshIndex.run_stat.set(`${item.dev_type}|${item.dev_name}|run_stat`, info);
+      }
+    });
+  });
+  return commandRefreshIndex;
+}
+
+function runtimeCommandBuildContext(snapshot = state.snapshot || {}, measurements = snapshot.measurements || {}, options = {}) {
+  return {
+    commandRefreshIndex: runtimeCommandRefreshIndex(snapshot),
+    measurementRowsByDevice: options.includeMeasurements === false ? null : runtimeMeasurementRowsByDevice(measurements),
+    snapshotDevicesByKey: runtimeSnapshotDevicesByKey(snapshot),
+  };
+}
+
+function runtimeCommandRefreshInfo(dev, commandType, setType = "", snapshot = state.snapshot || {}, context = null) {
+  const commandRefreshIndex = context?.commandRefreshIndex || runtimeCommandRefreshIndex(snapshot);
+  const key = `${dev.dev_type || ""}|${dev.dev_name || ""}|${commandType === "set_value" ? setType : commandType}`;
+  const indexed = commandRefreshIndex[commandType]?.get(key);
+  if (indexed) return indexed;
+  if (context?.commandRefreshIndex) return emptyCommandTimeInfo();
   const history = activeCommandHistory(snapshot).reverse();
   for (const entry of history) {
     const normalized = entry.normalized || {};
@@ -5813,14 +5913,15 @@ function selectedRuntimeDeviceKeys(devices) {
   return new Set((devices || []).map((dev) => deviceKey(dev)));
 }
 
-function runtimeRemoteControlRows(devices) {
+function runtimeRemoteControlRows(devices, context = null, options = {}) {
+  const live = options.live !== false;
   const selectedKeys = selectedRuntimeDeviceKeys(devices);
   const runRows = definedControlRows("RunStat").filter((row) => selectedKeys.has(`${row.dev_type}|${row.dev_name}`));
   const cbRows = definedControlRows("CbOpenStat").filter((row) => selectedKeys.has(`${row.dev_type}|${row.dev_name}`));
   return [
     ...runRows.map((definitionRow) => {
-      const dev = runtimeControlDeviceFromRow(definitionRow);
-      const runStatTime = runtimeCommandRefreshInfo(dev, "run_stat");
+      const dev = runtimeControlDeviceFromRow(definitionRow, state.snapshot || {}, context);
+      const runStatTime = live ? runtimeCommandRefreshInfo(dev, "run_stat", "", state.snapshot || {}, context) : emptyCommandTimeInfo();
       const value = Number(dev.run_stat ?? definitionRow.run_stat ?? 0);
       return {
         category: "遥控指令",
@@ -5842,8 +5943,8 @@ function runtimeRemoteControlRows(devices) {
       };
     }),
     ...cbRows.map((definitionRow) => {
-      const dev = runtimeControlDeviceFromRow(definitionRow);
-      const statusTime = runtimeCommandRefreshInfo(dev, "status");
+      const dev = runtimeControlDeviceFromRow(definitionRow, state.snapshot || {}, context);
+      const statusTime = live ? runtimeCommandRefreshInfo(dev, "status", "", state.snapshot || {}, context) : emptyCommandTimeInfo();
       const value = Number(dev.status ?? definitionRow.status ?? 0);
       return {
         category: "遥控指令",
@@ -5867,17 +5968,18 @@ function runtimeRemoteControlRows(devices) {
   ];
 }
 
-function runtimeRemoteAdjustmentRows(devices, measurements = state.snapshot?.measurements || {}) {
+function runtimeRemoteAdjustmentRows(devices, measurements = state.snapshot?.measurements || {}, context = null, options = {}) {
+  const live = options.live !== false;
   const selectedKeys = selectedRuntimeDeviceKeys(devices);
   return definedControlRows("SetValue")
     .filter((row) => selectedKeys.has(`${row.dev_type}|${row.dev_name}`))
     .map((definitionRow) => {
-      const dev = runtimeControlDeviceFromRow(definitionRow);
+      const dev = runtimeControlDeviceFromRow(definitionRow, state.snapshot || {}, context);
       const key = definitionRow.set_type || "";
       const value = dev.set_values?.[key] ?? definitionRow.set_value;
       const meta = runtimeMetaFromSetKey(key, Number(value));
-      const pair = runtimeMeasurementPair(dev, meta, measurements);
-      const commandTime = runtimeCommandRefreshInfo(dev, "set_value", key);
+      const pair = live ? runtimeMeasurementPair(dev, meta, measurements, context) : {};
+      const commandTime = live ? runtimeCommandRefreshInfo(dev, "set_value", key, state.snapshot || {}, context) : emptyCommandTimeInfo();
       return {
         category: "遥调指令",
         command_kind: "remote_adjustment",
@@ -5899,6 +6001,70 @@ function runtimeRemoteAdjustmentRows(devices, measurements = state.snapshot?.mea
     });
 }
 
+function renderRuntimeCommandTabs(remoteControlRows, remoteAdjustmentRows, activeTab = state.activeRuntimeCommandTab) {
+  const normalizedTab = activeTab === "remote_adjustment" ? "remote_adjustment" : "remote_control";
+  return `
+    <div class="runtime-command-tabs" role="tablist" aria-label="控制指令类型">
+      <button
+        type="button"
+        role="tab"
+        class="runtime-command-tab ${normalizedTab === "remote_control" ? "is-active" : ""}"
+        data-runtime-command-tab="remote_control"
+        aria-selected="${normalizedTab === "remote_control" ? "true" : "false"}"
+      >
+        <span>遥控指令</span><strong>${remoteControlRows.length}</strong>
+      </button>
+      <button
+        type="button"
+        role="tab"
+        class="runtime-command-tab ${normalizedTab === "remote_adjustment" ? "is-active" : ""}"
+        data-runtime-command-tab="remote_adjustment"
+        aria-selected="${normalizedTab === "remote_adjustment" ? "true" : "false"}"
+      >
+        <span>遥调指令</span><strong>${remoteAdjustmentRows.length}</strong>
+      </button>
+    </div>
+  `;
+}
+
+function runtimeCommandTableStructureKey(rows) {
+  const filter = state.runtimeDeviceFilter || { dev_type: "all", dev_name: "" };
+  return [
+    state.activeRuntimeCommandTab || "remote_control",
+    deviceTreeFilterSelection(filter).map((item) => deviceTreeFilterKey(item.dev_type, item.dev_name)).join("|"),
+    state.runtimeCommandKeywordFilter || "",
+    state.runtimeCommandTypeFilter || "all",
+    rows.map((row) => runtimeCommandTraceKey(row)).join("||"),
+  ].join("::");
+}
+
+function runtimeCommandLiveCellHtml(row, field) {
+  if (field === "control") return escapeHtml(row.command_text || "--");
+  if (field === "wall_time") return escapeHtml(row.receive_time?.wall_time || "--");
+  if (field === "simu_time") return escapeHtml(row.receive_time?.simu_time || row.refresh_time || "--");
+  if (field === "real") return escapeHtml(row.real_text || "--");
+  if (field === "scada") return escapeHtml(row.scada_text || "--");
+  return "";
+}
+
+function updateRuntimeCommandTableLiveCells(rows) {
+  const tableRows = Array.from(document.querySelectorAll("#deviceTable [data-runtime-command-row-key]"));
+  if (tableRows.length !== rows.length) return false;
+  const rowsByKey = new Map(rows.map((row) => [runtimeCommandTraceKey(row), row]));
+  for (const tableRow of tableRows) {
+    const key = tableRow.dataset.runtimeCommandRowKey || "";
+    const row = rowsByKey.get(key);
+    if (!row) return false;
+    const selected = key === state.selectedRuntimeCommandKey;
+    tableRow.classList.toggle("is-selected", selected);
+    tableRow.dataset.runtimeCommandRowLabel = runtimeCommandTraceLabel(row);
+    tableRow.querySelectorAll("[data-runtime-command-live-field]").forEach((cell) => {
+      cell.innerHTML = runtimeCommandLiveCellHtml(row, cell.dataset.runtimeCommandLiveField || "");
+    });
+  }
+  return true;
+}
+
 function renderRuntimeCommandRows(rows) {
   return rows.map((row) => {
     const traceKey = runtimeCommandTraceKey(row);
@@ -5914,17 +6080,17 @@ function renderRuntimeCommandRows(rows) {
       <td>${escapeHtml(row.device.dev_type)}</td>
       <td>${escapeHtml(row.device.mode || "--")}</td>
       <td>${escapeHtml(row.command)} <small class="command-set-type">${escapeHtml(row.set_type)}</small></td>
-      <td class="numeric-cell">${escapeHtml(row.command_text)}</td>
-      <td class="mono-cell">${escapeHtml(row.receive_time?.wall_time || "--")}</td>
-      <td class="mono-cell">${escapeHtml(row.receive_time?.simu_time || row.refresh_time || "--")}</td>
-      <td class="numeric-cell">${escapeHtml(row.real_text)}</td>
-      <td class="numeric-cell">${escapeHtml(row.scada_text)}</td>
+      <td class="numeric-cell" data-runtime-command-live-field="control">${escapeHtml(row.command_text)}</td>
+      <td class="mono-cell" data-runtime-command-live-field="wall_time">${escapeHtml(row.receive_time?.wall_time || "--")}</td>
+      <td class="mono-cell" data-runtime-command-live-field="simu_time">${escapeHtml(row.receive_time?.simu_time || row.refresh_time || "--")}</td>
+      <td class="numeric-cell" data-runtime-command-live-field="real">${escapeHtml(row.real_text)}</td>
+      <td class="numeric-cell" data-runtime-command-live-field="scada">${escapeHtml(row.scada_text)}</td>
     </tr>
   `;
   }).join("");
 }
 
-function renderRuntimeCommandTable(rows, emptyText) {
+function renderRuntimeCommandTable(rows, emptyText, virtualRows = { beforeHeight: 0, afterHeight: 0 }) {
   if (!rows.length) return `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
   return `
     <table class="runtime-device-table runtime-command-table">
@@ -5941,7 +6107,11 @@ function renderRuntimeCommandTable(rows, emptyText) {
           <th>量测值</th>
         </tr>
       </thead>
-      <tbody>${renderRuntimeCommandRows(rows)}</tbody>
+      <tbody>
+        ${renderVirtualSpacerRow(virtualRows.beforeHeight, 9)}
+        ${renderRuntimeCommandRows(rows)}
+        ${renderVirtualSpacerRow(virtualRows.afterHeight, 9)}
+      </tbody>
     </table>
   `;
 }
@@ -5951,8 +6121,12 @@ function renderRuntimeDeviceTable() {
   if (!container) return;
   const devices = runtimeDevices();
   const selectedDevices = filteredRuntimeDevices(devices);
-  const remoteControlRows = runtimeRemoteControlRows(selectedDevices);
-  const remoteAdjustmentRows = runtimeRemoteAdjustmentRows(selectedDevices);
+  const activeTab = state.activeRuntimeCommandTab === "remote_adjustment" ? "remote_adjustment" : "remote_control";
+  const context = runtimeCommandBuildContext(state.snapshot || {}, state.snapshot?.measurements || {}, {
+    includeMeasurements: activeTab === "remote_adjustment",
+  });
+  const remoteControlRows = runtimeRemoteControlRows(selectedDevices, context, { live: activeTab === "remote_control" });
+  const remoteAdjustmentRows = runtimeRemoteAdjustmentRows(selectedDevices, state.snapshot?.measurements || {}, context, { live: activeTab === "remote_adjustment" });
   const totalCommandRows = [...remoteControlRows, ...remoteAdjustmentRows];
   syncRuntimeCommandTypeFilter(totalCommandRows);
   const filteredRemoteControlRows = applyRuntimeCommandTableFilters(remoteControlRows);
@@ -5969,34 +6143,55 @@ function renderRuntimeDeviceTable() {
     ? `${runtimeFilterLabel()} · ${commandCount}/${totalCommandCount} 条指令`
     : `${runtimeFilterLabel()} · ${totalCommandCount} 条指令`;
   if (!devices.length) {
+    container.dataset.runtimeCommandStructureKey = "";
     container.innerHTML = '<div class="empty-state">暂无设备数据</div>';
     return;
   }
   if (!selectedDevices.length) {
+    container.dataset.runtimeCommandStructureKey = "";
     container.innerHTML = '<div class="empty-state">当前筛选无设备</div>';
     return;
   }
   if (!totalCommandCount) {
+    container.dataset.runtimeCommandStructureKey = "";
     container.innerHTML = '<div class="empty-state">当前筛选无控制指令</div>';
     return;
   }
-  const activeTab = state.activeRuntimeCommandTab === "remote_adjustment" ? "remote_adjustment" : "remote_control";
+  const tabHtml = renderRuntimeCommandTabs(filteredRemoteControlRows, filteredRemoteAdjustmentRows, activeTab);
+  const activeRows = activeTab === "remote_adjustment"
+    ? filteredRemoteAdjustmentRows
+    : filteredRemoteControlRows;
+  const virtualRows = virtualTableWindow(`runtimeCommand:${activeTab}`, activeRows);
+  const structureKey = [
+    runtimeCommandTableStructureKey(activeRows),
+    virtualRows.enabled ? "virtual" : "full",
+    virtualRows.start,
+    virtualRows.end,
+  ].join("|");
+  const emptyText = activeTab === "remote_adjustment"
+    ? (filterActive ? "当前过滤无遥调指令" : "当前筛选无遥调指令")
+    : (filterActive ? "当前过滤无遥控指令" : "当前筛选无遥控指令");
+  if (!activeRows.length) {
+    container.dataset.runtimeCommandStructureKey = "";
+    container.innerHTML = `${tabHtml}<section class="runtime-command-tab-page is-active" data-runtime-command-page="${activeTab}" role="tabpanel"><div class="empty-state">${escapeHtml(emptyText)}</div></section>`;
+    return;
+  }
+  if (
+    container.dataset.runtimeCommandStructureKey === structureKey
+    && updateRuntimeCommandTableLiveCells(virtualRows.rows)
+  ) {
+    return;
+  }
+  container.dataset.runtimeCommandStructureKey = structureKey;
   container.innerHTML = `
-    <div class="runtime-command-tabs" role="tablist" aria-label="控制指令类型">
-      <button type="button" role="tab" class="runtime-command-tab ${activeTab === "remote_control" ? "is-active" : ""}" data-runtime-command-tab="remote_control" aria-selected="${activeTab === "remote_control"}">
-        <span>遥控指令</span><strong>${filteredRemoteControlRows.length}</strong>
-      </button>
-      <button type="button" role="tab" class="runtime-command-tab ${activeTab === "remote_adjustment" ? "is-active" : ""}" data-runtime-command-tab="remote_adjustment" aria-selected="${activeTab === "remote_adjustment"}">
-        <span>遥调指令</span><strong>${filteredRemoteAdjustmentRows.length}</strong>
-      </button>
-    </div>
-    <section class="runtime-command-tab-page ${activeTab === "remote_control" ? "is-active" : ""}" data-runtime-command-page="remote_control" role="tabpanel">
-      ${renderRuntimeCommandTable(filteredRemoteControlRows, filterActive ? "当前过滤无遥控指令" : "当前筛选无遥控指令")}
-    </section>
-    <section class="runtime-command-tab-page ${activeTab === "remote_adjustment" ? "is-active" : ""}" data-runtime-command-page="remote_adjustment" role="tabpanel">
-      ${renderRuntimeCommandTable(filteredRemoteAdjustmentRows, filterActive ? "当前过滤无遥调指令" : "当前筛选无遥调指令")}
+    ${tabHtml}
+    <section class="runtime-command-tab-page is-active" data-runtime-command-page="${activeTab}" role="tabpanel">
+      <div class="runtime-command-table-wrap virtual-table-scroll" data-virtual-table="runtimeCommand:${activeTab}">
+        ${renderRuntimeCommandTable(virtualRows.rows, emptyText, virtualRows)}
+      </div>
     </section>
   `;
+  restoreVirtualTableScroll(container, `runtimeCommand:${activeTab}`);
 }
 
 function setRuntimeCommandTab(tabName) {
@@ -6020,7 +6215,8 @@ function selectRuntimeCommandTrace(key, label = "") {
 
 function selectedRuntimeCommandTraceRows() {
   const devices = filteredRuntimeDevices(runtimeDevices());
-  return runtimeCommandRowsForDevices(devices, state.snapshot?.measurements || {});
+  const context = runtimeCommandBuildContext(state.snapshot || {}, state.snapshot?.measurements || {});
+  return runtimeCommandRowsForDevices(devices, state.snapshot?.measurements || {}, context);
 }
 
 function selectedRuntimeCommandTraceSeries() {

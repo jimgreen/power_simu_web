@@ -158,6 +158,27 @@ class CurveLazyLoadingTest(unittest.TestCase):
         self.assertIn("if (!state.modelsLoaded)", render_block)
         self.assertLess(render_block.index("if (!state.modelsLoaded)"), render_block.index("loadCurveSummary(modelId)"))
 
+    def test_curve_page_model_switch_boundary_snapshot_does_not_skip_curve_summary_reload(self):
+        script = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        render_block = script.split("function renderCurveEditor", 1)[1].split(
+            "function generateCurves",
+            1,
+        )[0]
+        boundary_block = script.split("} else if (snapshot.curve_boundary?.mode)", 1)[1].split(
+            "const solverInfo",
+            1,
+        )[0]
+        apply_summary_block = script.split("function applyCurveSummary", 1)[1].split(
+            "async function loadCurveSummary",
+            1,
+        )[0]
+
+        self.assertIn("function curveSummaryHasCatalog", script)
+        self.assertIn("!curveSummaryHasCatalog(state.curveSummary)", render_block)
+        self.assertNotIn("state.curveSummaryLoadedModelId = state.activeModelId", boundary_block)
+        self.assertIn('state.curveSummaryLoadedModelId = "";', boundary_block)
+        self.assertNotIn('state.curvesLoadedModelId = modelId || "loaded";', apply_summary_block)
+
 
 if __name__ == "__main__":
     unittest.main()

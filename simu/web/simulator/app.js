@@ -14,8 +14,12 @@ const VERTICAL_SPLIT_MIN_TOP_PX = 120;
 const VERTICAL_SPLIT_MIN_BOTTOM_PX = 120;
 const state = {
   snapshot: null,
+  activePage: "",
+  pageSections: {},
+  pageMain: null,
   models: [],
   activeModelId: localStorage.getItem("polarSimulatorModelId") || "",
+  refreshRequestActive: false,
   deviceFaults: [],
   measurementFaults: [],
   modes: [],
@@ -57,7 +61,11 @@ const state = {
   runtimeTraceHistory: [],
   runtimeTraceWindowMinutes: 60,
   lastRuntimeTraceKey: "",
+  runtimeCommandKeywordFilter: "",
+  runtimeCommandTypeFilter: "all",
   measurementCompareFilter: { dev_type: "all", dev_name: "" },
+  measurementCompareKeywordFilter: "",
+  measurementCompareTypeFilter: "all",
   activeMeasurementCompareTab: "telemetry",
   selectedMeasurementKey: "",
   measurementTraceHistory: [],
@@ -69,12 +77,19 @@ const state = {
   modeFilter: { dev_type: "all", dev_name: "" },
   collapsedDeviceTreeGroups: {},
   deviceTreeSearch: {},
+  deviceTreeSelectionAnchors: {},
   runtimeLogs: [],
   runtimeLogTypeFilter: "all",
   runtimeLogPage: 1,
   runtimeLogPageSize: 20,
   runtimeLogSeq: 0,
+  runtimeLogBackendSeq: 0,
+  runtimeLogRequestActive: false,
+  runtimeLogHistoryRequestActive: false,
+  runtimeLogTotal: 0,
   lastRuntimeLogKey: "",
+  measurementDeltaSeq: 0,
+  measurementDeltaRequestActive: false,
   systemParameters: { clock_speed: 1, compute_interval_seconds: 1, storage_initial_soc: 0.5 },
   systemParametersDirty: false,
   systemParametersSaving: false,
@@ -82,6 +97,8 @@ const state = {
   overviewBottomSplitDrag: null,
   verticalSplitRatios: initialVerticalSplitRatios(),
   verticalSplitDrag: null,
+  virtualTables: {},
+  virtualTableScrollRaf: {},
 };
 
 const $ = (id) => document.getElementById(id);
@@ -108,6 +125,10 @@ const LOAD_CURVE_META = { label: "负荷", color: "#c93a3a", min: 0, max: 500, d
 const LOAD_CURVE_COLORS = ["#c93a3a", "#8a4fbf", "#23854a", "#d16300", "#4369b2", "#0a8b8b"];
 const CURVE_PLOT = { left: 58, right: 24, top: 46, bottom: 34 };
 const TRACE_HISTORY_LIMIT = 45000;
+const TRACE_HIGH_RES_WINDOW_MINUTES = 24 * 60;
+const VIRTUAL_TABLE_ROW_HEIGHT = 34;
+const VIRTUAL_TABLE_MIN_ROWS = 220;
+const VIRTUAL_TABLE_BUFFER_ROWS = 12;
 const WEATHER_MEASUREMENT_LABELS = {
   WIND_SPEED: { label: "风速", unit: "m/s", order: 0 },
   SOLAR_IRRADIANCE: { label: "太阳辐照", unit: "W/m2", order: 1 },
@@ -191,6 +212,132 @@ function resizeCanvasToRenderedSize(canvas, fallbackWidth = 900, fallbackHeight 
   canvas.width = width;
   canvas.height = height;
   return true;
+}
+
+function sampleCurvePointsForCanvas(values, canvasWidth, density = 1.5) {
+  const total = Array.isArray(values) ? values.length : 0;
+  const target = Math.max(16, Math.floor((Number(canvasWidth) || 900) * density));
+  if (total <= target) return values.map((value, index) => ({ index, value }));
+  const bucketSize = total / target;
+  const sampled = new Map();
+  for (let bucket = 0; bucket < target; bucket += 1) {
+    const start = Math.floor(bucket * bucketSize);
+    const end = Math.min(total, Math.max(start + 1, Math.ceil((bucket + 1) * bucketSize)));
+    let minIndex = start;
+    let maxIndex = start;
+    for (let index = start; index < end; index += 1) {
+      if (Number(values[index]) < Number(values[minIndex])) minIndex = index;
+      if (Number(values[index]) > Number(values[maxIndex])) maxIndex = index;
+    }
+    [start, minIndex, maxIndex, end - 1].forEach((index) => sampled.set(index, values[index]));
+  }
+  sampled.set(total - 1, values[total - 1]);
+  return Array.from(sampled.entries())
+    .sort((left, right) => left[0] - right[0])
+    .map(([index, value]) => ({ index, value }));
+}
+
+function compactTraceHistory(history, visibleWindowMinutes = 24 * 60) {
+  if (!Array.isArray(history) || history.length <= TRACE_HISTORY_LIMIT) return history || [];
+  const latestMinute = Number(history[history.length - 1]?.minute ?? 0) || 0;
+  const highResStart = latestMinute - Math.max(TRACE_HIGH_RES_WINDOW_MINUTES, Number(visibleWindowMinutes) || 0);
+  const recent = [];
+  const archived = new Map();
+  const bucketMinutes = Math.max(5, Math.ceil(Math.max(1, latestMinute - highResStart) / 1200));
+  history.forEach((point) => {
+    const minute = Number(point?.minute ?? 0) || 0;
+    if (minute >= highResStart) {
+      recent.push(point);
+      return;
+    }
+    const bucket = Math.floor(minute / bucketMinutes);
+    archived.set(bucket, point);
+  });
+  return [...archived.values(), ...recent].slice(-TRACE_HISTORY_LIMIT);
+}
+
+function virtualTableWindow(key, rows, options = {}) {
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  const total = sourceRows.length;
+  const rowHeight = Math.max(1, Number(options.rowHeight) || VIRTUAL_TABLE_ROW_HEIGHT);
+  const minRows = Math.max(1, Number(options.minRows) || VIRTUAL_TABLE_MIN_ROWS);
+  const bufferRows = Math.max(0, Number(options.bufferRows) || VIRTUAL_TABLE_BUFFER_ROWS);
+  if (total <= minRows) {
+    return {
+      enabled: false,
+      rows: sourceRows,
+      start: 0,
+      end: total,
+      beforeHeight: 0,
+      afterHeight: 0,
+      rowHeight,
+      total,
+    };
+  }
+  const tableState = state.virtualTables?.[key] || {};
+  const viewportHeight = Math.max(180, Number(tableState.viewportHeight) || 420);
+  const maxScrollTop = Math.max(0, total * rowHeight - viewportHeight);
+  const scrollTop = clamp(Number(tableState.scrollTop) || 0, 0, maxScrollTop);
+  const visibleRows = Math.ceil(viewportHeight / rowHeight) + bufferRows * 2;
+  const maxStart = Math.max(0, total - visibleRows);
+  const start = clamp(Math.floor(scrollTop / rowHeight) - bufferRows, 0, maxStart);
+  const end = Math.min(total, start + visibleRows);
+  state.virtualTables[key] = { ...tableState, scrollTop, viewportHeight };
+  return {
+    enabled: true,
+    rows: sourceRows.slice(start, end),
+    start,
+    end,
+    beforeHeight: start * rowHeight,
+    afterHeight: Math.max(0, total - end) * rowHeight,
+    rowHeight,
+    total,
+    scrollTop,
+    viewportHeight,
+  };
+}
+
+function renderVirtualSpacerRow(height, colSpan) {
+  if (!height || height <= 0) return "";
+  return `<tr class="virtual-table-spacer" aria-hidden="true"><td colspan="${Number(colSpan) || 1}" style="height:${Math.round(height)}px"></td></tr>`;
+}
+
+function restoreVirtualTableScroll(container, key) {
+  const scroller = container?.querySelector?.(`[data-virtual-table="${key}"]`);
+  if (!scroller) return;
+  const tableState = state.virtualTables?.[key] || {};
+  const scrollTop = Number(tableState.scrollTop) || 0;
+  if (Math.abs(scroller.scrollTop - scrollTop) > 1) scroller.scrollTop = scrollTop;
+  state.virtualTables[key] = {
+    ...tableState,
+    scrollTop: scroller.scrollTop,
+    viewportHeight: scroller.clientHeight || tableState.viewportHeight || 420,
+  };
+}
+
+function scheduleVirtualTableRender(key) {
+  if (!key) return;
+  state.virtualTableScrollRaf = state.virtualTableScrollRaf || {};
+  if (state.virtualTableScrollRaf[key]) return;
+  state.virtualTableScrollRaf[key] = requestAnimationFrame(() => {
+    delete state.virtualTableScrollRaf[key];
+    if (key === "measurementCompare" && currentPageName() === "measurements") {
+      renderMeasurementCompareTable();
+    }
+  });
+}
+
+function handleVirtualTableScroll(event) {
+  const scroller = event.target instanceof Element ? event.target.closest("[data-virtual-table]") : null;
+  if (!scroller || scroller !== event.target) return;
+  const key = scroller.dataset.virtualTable || "";
+  const tableState = state.virtualTables?.[key] || {};
+  state.virtualTables[key] = {
+    ...tableState,
+    scrollTop: scroller.scrollTop,
+    viewportHeight: scroller.clientHeight || tableState.viewportHeight || 420,
+  };
+  scheduleVirtualTableRender(key);
 }
 
 function setChartCursorFromEvent(chartKey, canvas, plot, event, drawFn) {
@@ -435,6 +582,181 @@ function renderDeviceTreeFilterEmpty(query) {
   return query ? `<div class="empty-state">未匹配“${escapeHtml(query)}”</div>` : '<div class="empty-state">暂无设备</div>';
 }
 
+function deviceTreeItemType(item) {
+  return String(item?.dev_type || item?.type || "");
+}
+
+function deviceTreeItemName(item) {
+  return String(item?.dev_name || item?.name || "");
+}
+
+function deviceTreeFilterKey(devType, devName = "") {
+  return `${devType || "all"}::${devName || ""}`;
+}
+
+function deviceTreeFilterItem(devType, devName = "") {
+  return { dev_type: devType || "all", dev_name: devName || "" };
+}
+
+function uniqueDeviceTreeSelection(items) {
+  const seen = new Set();
+  const result = [];
+  (items || []).forEach((item) => {
+    const devType = String(item?.dev_type || "all");
+    const devName = String(item?.dev_name || "");
+    const key = deviceTreeFilterKey(devType, devName);
+    if (seen.has(key)) return;
+    seen.add(key);
+    result.push(deviceTreeFilterItem(devType, devName));
+  });
+  return result.some((item) => item.dev_type === "all")
+    ? [deviceTreeFilterItem("all", "")]
+    : result;
+}
+
+function deviceTreeFilterSelection(filter = {}) {
+  const selectedItems = Array.isArray(filter?.selected_items) ? filter.selected_items : [];
+  const selected = uniqueDeviceTreeSelection(selectedItems);
+  if (selected.length) return selected;
+  return [deviceTreeFilterItem(filter?.dev_type || "all", filter?.dev_name || "")];
+}
+
+function withDeviceTreeSelection(filter = {}, selection = []) {
+  const selected = uniqueDeviceTreeSelection(selection);
+  const primary = selected[0] || deviceTreeFilterItem("all", "");
+  return {
+    ...filter,
+    dev_type: primary.dev_type,
+    dev_name: primary.dev_name,
+    selected_items: selected.length ? selected : [deviceTreeFilterItem("all", "")],
+  };
+}
+
+function isDeviceTreeNodeActive(filter, devType, devName = "") {
+  const key = deviceTreeFilterKey(devType || "all", devName || "");
+  return deviceTreeFilterSelection(filter).some((item) => deviceTreeFilterKey(item.dev_type, item.dev_name) === key);
+}
+
+function isDeviceTreeParentActive(filter, devType) {
+  return deviceTreeFilterSelection(filter).some((item) => item.dev_type === devType);
+}
+
+function deviceFilterMatches(dev, filter) {
+  const selection = deviceTreeFilterSelection(filter);
+  if (selection.some((item) => item.dev_type === "all")) return true;
+  const devType = deviceTreeItemType(dev);
+  const devName = deviceTreeItemName(dev);
+  return selection.some((item) => item.dev_type === devType && (!item.dev_name || item.dev_name === devName));
+}
+
+function deviceTreeButtonItem(button, dataPrefix) {
+  const dataset = button?.dataset || {};
+  const typeKey = `${dataPrefix}TreeType`;
+  const nameKey = `${dataPrefix}TreeName`;
+  return deviceTreeFilterItem(dataset[typeKey] || "all", dataset[nameKey] || "");
+}
+
+function selectDeviceTreeRangeItems(button, dataPrefix, anchorKey = "") {
+  const container = button?.closest?.(".device-tree") || button?.parentElement;
+  if (!container) return [deviceTreeButtonItem(button, dataPrefix)];
+  const selector = `[data-${dataPrefix.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}-tree-type]`;
+  const buttons = Array.from(container.querySelectorAll(selector)).filter((item) => item instanceof HTMLElement);
+  const currentKey = deviceTreeFilterKey(
+    button.dataset?.[`${dataPrefix}TreeType`] || "all",
+    button.dataset?.[`${dataPrefix}TreeName`] || "",
+  );
+  const currentIndex = buttons.findIndex((item) => deviceTreeFilterKey(
+    item.dataset?.[`${dataPrefix}TreeType`] || "all",
+    item.dataset?.[`${dataPrefix}TreeName`] || "",
+  ) === currentKey);
+  const anchorIndex = buttons.findIndex((item) => deviceTreeFilterKey(
+    item.dataset?.[`${dataPrefix}TreeType`] || "all",
+    item.dataset?.[`${dataPrefix}TreeName`] || "",
+  ) === anchorKey);
+  if (currentIndex < 0 || anchorIndex < 0) return [deviceTreeButtonItem(button, dataPrefix)];
+  const [start, end] = currentIndex < anchorIndex ? [currentIndex, anchorIndex] : [anchorIndex, currentIndex];
+  return buttons.slice(start, end + 1).map((item) => deviceTreeButtonItem(item, dataPrefix));
+}
+
+function updateDeviceTreeFilterSelection(filterName, devType, devName = "", event = null, dataPrefix = "", button = null) {
+  const currentFilter = state[filterName] || { dev_type: "all", dev_name: "" };
+  const clicked = deviceTreeFilterItem(devType || "all", devName || "");
+  const clickedKey = deviceTreeFilterKey(clicked.dev_type, clicked.dev_name);
+  const isMulti = Boolean(event?.ctrlKey || event?.metaKey);
+  const isRange = Boolean(event?.shiftKey);
+  let nextSelection = [clicked];
+  const targetButton = button || event?.currentTarget;
+  if (clicked.dev_type !== "all" && isRange && dataPrefix && targetButton) {
+    nextSelection = selectDeviceTreeRangeItems(
+      targetButton,
+      dataPrefix,
+      state.deviceTreeSelectionAnchors?.[filterName] || "",
+    );
+  } else if (clicked.dev_type !== "all" && isMulti) {
+    const currentSelection = deviceTreeFilterSelection(currentFilter).filter((item) => item.dev_type !== "all");
+    const exists = currentSelection.some((item) => deviceTreeFilterKey(item.dev_type, item.dev_name) === clickedKey);
+    nextSelection = exists
+      ? currentSelection.filter((item) => deviceTreeFilterKey(item.dev_type, item.dev_name) !== clickedKey)
+      : [...currentSelection, clicked];
+    if (!nextSelection.length) nextSelection = [deviceTreeFilterItem("all", "")];
+  }
+  state.deviceTreeSelectionAnchors = {
+    ...(state.deviceTreeSelectionAnchors || {}),
+    [filterName]: clickedKey,
+  };
+  state[filterName] = withDeviceTreeSelection(currentFilter, nextSelection);
+  return state[filterName];
+}
+
+function deviceFilterLabel(filter = {}) {
+  const selection = deviceTreeFilterSelection(filter);
+  if (!selection.length || selection[0].dev_type === "all") return "全部设备";
+  if (selection.length > 1) return `已选 ${selection.length} 项`;
+  return selection[0].dev_name || selection[0].dev_type;
+}
+
+function tableFilterText(value) {
+  return String(value ?? "").trim().toLocaleLowerCase("zh-CN");
+}
+
+function tableFilterMatchesKeyword(fields, keyword) {
+  const query = tableFilterText(keyword);
+  if (!query) return true;
+  return (fields || []).some((field) => tableFilterText(field).includes(query));
+}
+
+function tableFilterTypeOptions(rows, labelFn) {
+  const labels = new Map();
+  (rows || []).forEach((row) => {
+    const label = String(labelFn(row) || "").trim();
+    if (label) labels.set(label, label);
+  });
+  return Array.from(labels.values()).sort((left, right) => left.localeCompare(right, "zh-CN"));
+}
+
+function syncTableKeywordFilter(inputId, value) {
+  const input = $(inputId);
+  if (input && input.value !== String(value || "")) input.value = String(value || "");
+}
+
+function syncTableTypeFilter(selectId, stateKey, options) {
+  const select = $(selectId);
+  if (!select) return;
+  if (state[stateKey] !== "all" && !(options || []).includes(state[stateKey])) {
+    state[stateKey] = "all";
+  }
+  const html = [
+    '<option value="all">全部类型</option>',
+    ...(options || []).map((option) => `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`),
+  ].join("");
+  if (select.innerHTML !== html) select.innerHTML = html;
+  if (select.value !== state[stateKey]) select.value = state[stateKey];
+}
+
+function tableFilterIsActive(keyword, type) {
+  return Boolean(String(keyword || "").trim()) || (type && type !== "all");
+}
+
 function refreshDeviceTreeFilterScope(scope) {
   if (scope === "model") renderGridModelDeviceTree();
   if (scope === "faultDevice") renderFaultDeviceTree();
@@ -462,6 +784,13 @@ function formatSimulationClock(clock) {
   return `${String(month + 1).padStart(2, "0")}-${String(dayOfYear + 1).padStart(2, "0")} ${timeText}`;
 }
 
+function clockControlButtonDisabled(action, clockState) {
+  if (clockState === "running" && ["start", "step"].includes(action)) return true;
+  if (clockState === "paused" && action === "pause") return true;
+  if (clockState === "stopped" && ["stop", "pause", "step"].includes(action)) return true;
+  return false;
+}
+
 function renderClock(clock) {
   if (!clock) return;
   $("simState").textContent = clock.state || "stopped";
@@ -484,6 +813,8 @@ function renderClock(clock) {
     if (["start", "pause", "stop"].includes(action)) {
       button.setAttribute("aria-pressed", isActive ? "true" : "false");
     }
+    button.disabled = clockControlButtonDisabled(action, clock.state || "stopped");
+    button.setAttribute("aria-disabled", button.disabled ? "true" : "false");
   });
   renderCurveModeControls();
 }
@@ -1326,47 +1657,93 @@ async function importDefinitionModel() {
   }
 }
 
-function pageFromHash() {
+const SIMULATOR_PAGE_ROUTES = {
+  "/": "overview",
+  "/overview": "overview",
+  "/model": "model",
+  "/curves": "curves",
+  "/faults": "faults",
+  "/modes": "modes",
+  "/parameters": "parameters",
+  "/runtime": "runtime",
+  "/measurements": "measurements",
+  "/logs": "logs",
+};
+
+function normalizePagePath(pathname) {
+  const path = String(pathname || "/").replace(/\/+$/, "") || "/";
+  return path.startsWith("/") ? path : `/${path}`;
+}
+
+function pagePath(page) {
+  return page === "overview" ? "/" : `/${page}`;
+}
+
+function pageFromLocation() {
   const fallback = document.querySelector(".app-shell")?.dataset.defaultPage || "overview";
-  return (location.hash || "").replace("#", "") || fallback;
+  const hashPage = (location.hash || "").replace("#", "").trim();
+  if (hashPage) return hashPage;
+  return SIMULATOR_PAGE_ROUTES[normalizePagePath(location.pathname)] || fallback;
+}
+
+function currentPageName() {
+  return state.activePage || document.querySelector("[data-page].is-active")?.dataset.page || pageFromLocation();
+}
+
+function collectPageSections() {
+  const main = document.querySelector(".page-main");
+  if (!main) return;
+  state.pageMain = main;
+  state.pageSections = {};
+  Array.from(main.children).forEach((section) => {
+    if (!(section instanceof HTMLElement) || !section.dataset.page) return;
+    section.classList.remove("is-active");
+    state.pageSections[section.dataset.page] = section;
+    section.remove();
+  });
+}
+
+function mountPageSection(page) {
+  const main = state.pageMain || document.querySelector(".page-main");
+  const section = state.pageSections?.[page];
+  if (!main || !section) return;
+  const current = Array.from(main.children).find((child) => child instanceof HTMLElement && child.dataset.page);
+  if (current === section) {
+    section.classList.add("is-active");
+    return;
+  }
+  if (current) {
+    current.classList.remove("is-active");
+    current.remove();
+  }
+  section.classList.add("is-active");
+  main.appendChild(section);
 }
 
 function showPage(page, updateHash = true) {
-  const sections = Array.from(document.querySelectorAll("[data-page]"));
-  const target = sections.some((section) => section.dataset.page === page) ? page : "overview";
-  sections.forEach((section) => section.classList.toggle("is-active", section.dataset.page === target));
+  const target = state.pageSections?.[page] ? page : "overview";
+  state.activePage = target;
+  mountPageSection(target);
   document.querySelectorAll("[data-nav-page]").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.navPage === target);
   });
-  if (updateHash && location.hash !== `#${target}`) {
-    history.replaceState(null, "", `#${target}`);
+  const nextPath = pagePath(target);
+  if (updateHash && normalizePagePath(location.pathname) !== nextPath) {
+    history.pushState(null, "", nextPath);
+  } else if (location.hash) {
+    history.replaceState(null, "", nextPath);
   }
-  if (target === "curves" && Object.keys(state.curveSeries).length) {
-    requestAnimationFrame(() => {
-      resizeCurveCanvas();
-      renderCurveEditor(true);
-    });
-  }
-  if (target === "model") {
-    requestAnimationFrame(() => renderGridModelPage());
-  }
-  if (target === "parameters") {
-    requestAnimationFrame(() => renderSystemParameters(state.snapshot));
-  }
-  if (target === "runtime") {
-    requestAnimationFrame(() => drawRuntimeTraceChart());
-  }
-  if (target === "measurements") {
-    requestAnimationFrame(() => drawMeasurementTraceChart());
-  }
+  requestAnimationFrame(() => renderActiveSimulatorPage(state.snapshot, true));
 }
 
 function initPageNavigation() {
+  collectPageSections();
   document.querySelectorAll("[data-nav-page]").forEach((button) => {
     button.addEventListener("click", () => showPage(button.dataset.navPage));
   });
-  window.addEventListener("hashchange", () => showPage(pageFromHash(), false));
-  showPage(pageFromHash(), false);
+  window.addEventListener("popstate", () => showPage(pageFromLocation(), false));
+  window.addEventListener("hashchange", () => showPage(pageFromLocation(), true));
+  showPage(pageFromLocation(), false);
 }
 
 function modelScopedPath(path) {
@@ -1386,9 +1763,195 @@ async function api(path, options = {}) {
   return response.json();
 }
 
+const STATIC_SNAPSHOT_KEYS = [
+  "files",
+  "source_files",
+  "work_files",
+  "definitions",
+  "curves",
+  "settings",
+  "device_parameters",
+];
+
+function hasStaticSnapshotPayload(snapshot) {
+  return Boolean(snapshot && STATIC_SNAPSHOT_KEYS.every((key) => snapshot[key] !== undefined));
+}
+
+function mergeSnapshot(previous, incoming) {
+  if (!previous || !incoming) return incoming;
+  const merged = { ...previous, ...incoming };
+  STATIC_SNAPSHOT_KEYS.forEach((key) => {
+    if (incoming[key] === undefined && previous[key] !== undefined) merged[key] = previous[key];
+  });
+  if (incoming.runtime_logs === undefined) delete merged.runtime_logs;
+  return merged;
+}
+
+function snapshotPollPath() {
+  const currentModelId = String(state.snapshot?.model?.id || "");
+  const needsStaticPayload = !hasStaticSnapshotPayload(state.snapshot)
+    || (currentModelId && state.activeModelId && currentModelId !== state.activeModelId);
+  if (needsStaticPayload) return "/api/snapshot";
+  return "/api/snapshot?lite=1&logs=0&measurements=0";
+}
+
 function apiUrl(path, modelScoped = true) {
   const targetPath = modelScoped ? modelScopedPath(path) : path;
   return `${apiBase}${targetPath}`;
+}
+
+function mergeRuntimeLogItems(items = [], { reset = false, latestSeq = 0, total = null } = {}) {
+  if (reset) state.runtimeLogs = [];
+  const bySeq = new Map();
+  state.runtimeLogs.forEach((item) => {
+    const seq = Number(item.seq) || 0;
+    if (seq) bySeq.set(seq, item);
+  });
+  (items || []).forEach((item, index) => {
+    const normalized = normalizeRuntimeLog(item, index + 1);
+    const seq = Number(normalized.seq) || 0;
+    if (seq) bySeq.set(seq, normalized);
+  });
+  state.runtimeLogs = Array.from(bySeq.values())
+    .sort((left, right) => Number(right.seq || 0) - Number(left.seq || 0))
+    .slice(0, 300);
+  state.runtimeLogBackendSeq = Math.max(
+    Number(state.runtimeLogBackendSeq) || 0,
+    Number(latestSeq) || 0,
+    state.runtimeLogs.reduce((maxSeq, item) => Math.max(maxSeq, Number(item.seq) || 0), 0),
+  );
+  if (Number.isFinite(Number(total))) {
+    state.runtimeLogTotal = Math.max(Number(total) || 0, state.runtimeLogs.length);
+  } else {
+    state.runtimeLogTotal = Math.max(Number(state.runtimeLogTotal) || 0, state.runtimeLogs.length);
+  }
+  state.runtimeLogSeq = Math.max(state.runtimeLogSeq, state.runtimeLogBackendSeq);
+}
+
+async function refreshRuntimeLogs(renderNow = false) {
+  if (state.runtimeLogRequestActive) return;
+  state.runtimeLogRequestActive = true;
+  try {
+    const payload = await api(`/api/runtime-logs?after_seq=${state.runtimeLogBackendSeq}&limit=200`);
+    const items = payload.items || payload.logs || [];
+    const receivedLatestSeq = items.reduce(
+      (maxSeq, item) => Math.max(maxSeq, Number(item.seq) || 0),
+      Number(state.runtimeLogBackendSeq) || 0,
+    );
+    mergeRuntimeLogItems(items, {
+      reset: Boolean(payload.reset),
+      latestSeq: receivedLatestSeq || payload.latest_seq,
+      total: payload.total,
+    });
+    if (renderNow && currentPageName() === "logs") renderRuntimeLogs();
+  } catch (error) {
+    console.error("运行日志增量刷新失败", error);
+  } finally {
+    state.runtimeLogRequestActive = false;
+  }
+}
+
+async function fetchRuntimeLogHistoryPage(renderNow = false) {
+  if (state.runtimeLogHistoryRequestActive || state.runtimeLogTypeFilter !== "all") return;
+  const oldestSeq = state.runtimeLogs.reduce((minSeq, item) => {
+    const seq = Number(item.seq) || 0;
+    return seq > 0 ? Math.min(minSeq, seq) : minSeq;
+  }, Number.POSITIVE_INFINITY);
+  if (!Number.isFinite(oldestSeq) || oldestSeq <= 1) return;
+  state.runtimeLogHistoryRequestActive = true;
+  try {
+    const payload = await api(`/api/runtime-logs?before_seq=${oldestSeq}&limit=120`);
+    mergeRuntimeLogItems(payload.items || payload.logs || [], {
+      latestSeq: payload.latest_seq,
+      total: payload.total,
+    });
+    if (renderNow && currentPageName() === "logs") renderRuntimeLogs();
+  } catch (error) {
+    console.error("运行日志历史分页拉取失败", error);
+  } finally {
+    state.runtimeLogHistoryRequestActive = false;
+  }
+}
+
+function measurementNameKey(item) {
+  return String(item?.name || "");
+}
+
+function measurementChannelIndex(rows = []) {
+  return new Map((rows || []).map((row) => [measurementNameKey(row), row]));
+}
+
+function ensureMeasurementChannelRow(measurements, definitionsByName, channel, item) {
+  if (item.deleted) {
+    measurements[channel] = (measurements[channel] || []).filter((row) => measurementNameKey(row) !== item.name);
+    return null;
+  }
+  const rows = measurements[channel] || [];
+  let row = rows.find((entry) => measurementNameKey(entry) === item.name);
+  if (!row) {
+    const definition = definitionsByName.get(item.name);
+    if (!definition) return null;
+    row = { ...definition };
+    rows.push(row);
+    measurements[channel] = rows;
+  }
+  return row;
+}
+
+function applyMeasurementDelta(payload) {
+  if (!payload || !state.snapshot) return false;
+  const measurements = state.snapshot.measurements || {};
+  state.snapshot.measurements = measurements;
+  const definitions = measurements.definitions || state.snapshot.definitions?.measurement || [];
+  const definitionsByName = new Map(definitions.map((row) => [measurementNameKey(row), row]));
+  let changed = false;
+  (payload.items || []).forEach((item) => {
+    if (!item?.name) return;
+    if (item.deleted) {
+      ensureMeasurementChannelRow(measurements, definitionsByName, "real", item);
+      ensureMeasurementChannelRow(measurements, definitionsByName, "scada", item);
+      changed = true;
+      return;
+    }
+    const realRow = item.real_value !== undefined && item.real_value !== null
+      ? ensureMeasurementChannelRow(measurements, definitionsByName, "real", item)
+      : null;
+    const scadaRow = item.scada_value !== undefined && item.scada_value !== null
+      ? ensureMeasurementChannelRow(measurements, definitionsByName, "scada", item)
+      : null;
+    if (realRow) {
+      realRow.value = item.real_value;
+      realRow.valid = item.valid;
+      realRow.updated_simu_time = item.updated_simu_time;
+      realRow.updated_wall_time = item.updated_wall_time;
+      changed = true;
+    }
+    if (scadaRow) {
+      scadaRow.value = item.scada_value;
+      scadaRow.valid = item.valid;
+      scadaRow.updated_simu_time = item.updated_simu_time;
+      scadaRow.updated_wall_time = item.updated_wall_time;
+      changed = true;
+    }
+  });
+  state.measurementDeltaSeq = Math.max(Number(state.measurementDeltaSeq) || 0, Number(payload.seq) || 0);
+  return changed;
+}
+
+async function refreshMeasurementDelta(renderNow = false) {
+  if (state.measurementDeltaRequestActive || !state.snapshot) return false;
+  state.measurementDeltaRequestActive = true;
+  try {
+    const payload = await api(`/api/measurements/delta?after_seq=${state.measurementDeltaSeq}`);
+    const changed = applyMeasurementDelta(payload);
+    if (changed && renderNow && currentPageName() === "measurements") renderMeasurementCompareTable();
+    return changed;
+  } catch (error) {
+    console.error("量测增量刷新失败", error);
+    return false;
+  } finally {
+    state.measurementDeltaRequestActive = false;
+  }
 }
 
 function filenameFromDisposition(disposition, fallback) {
@@ -1699,7 +2262,10 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.runtimeLogs = [];
   state.runtimeLogTypeFilter = "all";
   state.runtimeLogSeq = 0;
+  state.runtimeLogBackendSeq = 0;
+  state.runtimeLogTotal = 0;
   state.lastRuntimeLogKey = "";
+  state.measurementDeltaSeq = 0;
   state.systemParameters = { clock_speed: 1, compute_interval_seconds: 1, storage_initial_soc: 0.5 };
   state.systemParametersDirty = false;
   state.systemParametersSaving = false;
@@ -1717,6 +2283,7 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.runtimeDeviceFilter = { dev_type: "all", dev_name: "" };
   state.activeRuntimeCommandTab = "remote_control";
   state.measurementCompareFilter = { dev_type: "all", dev_name: "" };
+  state.deviceTreeSelectionAnchors = {};
   state.activeCurveKey = "wind_speed_mps";
   state.selectedCurveKeys = ["wind_speed_mps"];
   state.curveEditKey = "";
@@ -2516,16 +3083,16 @@ function drawCurves() {
   drawCurveXAxis(ctx, canvas, plot);
   metas.forEach((meta) => {
     const values = state.curveSeries[meta.key] || [];
-    const stride = Math.max(1, Math.floor(values.length / Math.max(1, (right - left) * 1.4)));
+    const sampledPoints = sampleCurvePointsForCanvas(values, right - left, 1.4);
     ctx.strokeStyle = meta.color;
     ctx.lineWidth = editKey && meta.key === editKey ? 3.5 : 2;
     ctx.beginPath();
-    for (let i = 0; i < values.length; i += stride) {
-      const x = left + (i / Math.max(1, values.length - 1)) * (right - left);
-      const y = valueToY(values[i], meta, canvas);
-      if (i === 0) ctx.moveTo(x, y);
+    sampledPoints.forEach((point, index) => {
+      const x = left + (point.index / Math.max(1, values.length - 1)) * (right - left);
+      const y = valueToY(point.value, meta, canvas);
+      if (index === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
-    }
+    });
     const lastX = right;
     const lastY = valueToY(values[values.length - 1] || 0, meta, canvas);
     ctx.lineTo(lastX, lastY);
@@ -2933,19 +3500,29 @@ function initMeasurementMonitor() {
 }
 
 async function refresh() {
+  if (state.refreshRequestActive) return;
+  state.refreshRequestActive = true;
   try {
-    const snapshot = await api("/api/snapshot");
+    const snapshot = mergeSnapshot(state.snapshot, await api(snapshotPollPath()));
     state.snapshot = snapshot;
+    await Promise.all([
+      refreshRuntimeLogs(false),
+      refreshMeasurementDelta(false),
+    ]);
     renderSnapshot(snapshot);
   } catch (error) {
     console.error("模拟台快照刷新失败", error);
     $("simState").textContent = "offline";
-    $("solverInfo").textContent = "连接失败";
+    const solverInfo = $("solverInfo");
+    if (solverInfo) solverInfo.textContent = "连接失败";
+  } finally {
+    state.refreshRequestActive = false;
   }
 }
 
 function latestRuntimeLog(snapshot, type) {
-  return [...(snapshot.runtime_logs || [])].reverse().find((item) => item?.type === type) || null;
+  const logs = state.runtimeLogs.length ? state.runtimeLogs : (snapshot.runtime_logs || []);
+  return [...logs].find((item) => item?.type === type) || null;
 }
 
 function logDetailText(log) {
@@ -3377,7 +3954,7 @@ function initVerticalSplitters() {
 function renderOverviewEvents(snapshot) {
   const container = $("commandInbox");
   if (!container) return;
-  const logs = [...(snapshot.runtime_logs || [])].slice(-3).reverse();
+  const logs = (state.runtimeLogs.length ? state.runtimeLogs : [...(snapshot.runtime_logs || [])].reverse()).slice(0, 3);
   if (logs.length) {
     container.innerHTML = logs.map((item) => `
       <div class="overview-event-item">
@@ -3529,13 +4106,54 @@ function renderOverviewDashboard(snapshot) {
   renderOverviewEvents(snapshot);
 }
 
+function renderActiveSimulatorPage(snapshot = state.snapshot, force = false) {
+  const activePage = currentPageName();
+  if (activePage === "overview") {
+    if (snapshot) renderOverviewDashboard(snapshot);
+    initOverviewBottomSplitter();
+    return;
+  }
+  if (activePage === "model") {
+    renderGridModelPage();
+    return;
+  }
+  if (activePage === "curves") {
+    resizeCurveCanvas();
+    renderCurveEditor(force);
+    return;
+  }
+  if (activePage === "faults") {
+    renderFaults(force);
+    return;
+  }
+  if (activePage === "modes") {
+    renderModes(force);
+    return;
+  }
+  if (activePage === "parameters") {
+    renderSystemParameters(snapshot);
+    return;
+  }
+  if (activePage === "runtime") {
+    renderRuntimeMonitor(force);
+    return;
+  }
+  if (activePage === "measurements") {
+    renderMeasurementCompareTable();
+    return;
+  }
+  if (activePage === "logs") {
+    renderRuntimeLogs();
+  }
+}
+
 function renderSnapshot(snapshot) {
   if (snapshot.model?.id && snapshot.model.id !== state.activeModelId) {
     state.activeModelId = snapshot.model.id;
   }
   renderModelSelector();
   renderClock(snapshot.clock);
-  renderSystemParameters(snapshot);
+  state.systemParameters = snapshotSystemParameters(snapshot || {});
   const runId = Number(snapshot.clock?.run_id ?? 0);
   if (state.traceRunId !== null && runId !== state.traceRunId) {
     state.runtimeTraceHistory = [];
@@ -3547,37 +4165,30 @@ function renderSnapshot(snapshot) {
   if (state.curvesLoadedModelId !== state.activeModelId) {
     loadCurvesFromSnapshot(snapshot.curves, state.activeModelId);
   }
-  $("solverInfo").textContent = snapshot.result.solver_info || "待运行";
-  renderOverviewDashboard(snapshot);
-  appendRuntimeLog(snapshot);
+  const solverInfo = $("solverInfo");
+  if (solverInfo) solverInfo.textContent = snapshot.result.solver_info || "待运行";
+  if (Array.isArray(snapshot.runtime_logs)) appendRuntimeLog(snapshot);
   appendRuntimeTrace(snapshot);
   appendMeasurementTrace(snapshot);
-  renderRuntimeLogs();
-  renderMeasurementCompareTable();
-  renderGridModelPage();
   if (!state.settingsLoaded) {
     state.deviceFaults = [...(snapshot.settings?.device_faults || [])];
     state.measurementFaults = [...(snapshot.settings?.measurement_faults || [])];
     state.settingsLoaded = true;
   }
-  renderRuntimeMonitor();
-  renderCurveEditor();
-  renderFaults();
   state.modes = syncModesFromDevices(snapshot.devices || [], [
     ...(snapshot.settings?.modes || []),
     ...state.modes,
   ]);
-  renderModes();
+  renderActiveSimulatorPage(snapshot);
 }
 
 function appendRuntimeLog(snapshot) {
   const backendLogs = snapshot.runtime_logs;
   if (Array.isArray(backendLogs)) {
-    state.runtimeLogs = backendLogs
-      .map((item, index) => normalizeRuntimeLog(item, index + 1))
-      .sort((left, right) => Number(right.seq || 0) - Number(left.seq || 0))
-      .slice(0, 300);
-    state.runtimeLogSeq = state.runtimeLogs.reduce((maxSeq, item) => Math.max(maxSeq, Number(item.seq) || 0), state.runtimeLogSeq);
+    mergeRuntimeLogItems(backendLogs, {
+      reset: true,
+      latestSeq: backendLogs.reduce((maxSeq, item) => Math.max(maxSeq, Number(item.seq) || 0), 0),
+    });
     return;
   }
   const clock = snapshot.clock || {};
@@ -3643,8 +4254,11 @@ function renderRuntimeLogs() {
   const allLogs = filteredRuntimeLogs();
   const logs = pagedRuntimeLogs(allLogs);
   renderRuntimeLogPager(allLogs);
+  const totalLogs = state.runtimeLogTypeFilter === "all"
+    ? Math.max(state.runtimeLogs.length, Number(state.runtimeLogTotal) || 0)
+    : state.runtimeLogs.length;
   $("runtimeLogSummary").textContent = state.runtimeLogTypeFilter === "all"
-    ? `最近 ${state.runtimeLogs.length} 条`
+    ? `已加载 ${state.runtimeLogs.length}/${totalLogs} 条`
     : `${allLogs.length}/${state.runtimeLogs.length} 条`;
   if (!allLogs.length) {
     container.innerHTML = '<div class="empty-state">暂无运行日志</div>';
@@ -3710,9 +4324,7 @@ function gridModelDevices() {
 }
 
 function gridModelFilterMatches(dev, filter = state.modelDeviceFilter || { dev_type: "all", dev_name: "" }) {
-  if (filter.dev_type && filter.dev_type !== "all" && dev.dev_type !== filter.dev_type) return false;
-  if (filter.dev_name && dev.dev_name !== filter.dev_name) return false;
-  return true;
+  return deviceFilterMatches(dev, filter);
 }
 
 function filteredGridModelDevices(devices = gridModelDevices()) {
@@ -3720,9 +4332,7 @@ function filteredGridModelDevices(devices = gridModelDevices()) {
 }
 
 function gridModelFilterLabel(filter = state.modelDeviceFilter || { dev_type: "all", dev_name: "" }) {
-  if (filter.dev_type === "all") return "全部设备";
-  if (filter.dev_name) return filter.dev_name;
-  return filter.dev_type;
+  return deviceFilterLabel(filter);
 }
 
 function formatModelParamValue(value) {
@@ -3833,7 +4443,7 @@ function renderGridModelDeviceTree() {
   container.innerHTML = `
     <button
       type="button"
-      class="tree-node tree-root ${filter.dev_type === "all" ? "is-active" : ""}"
+      class="tree-node tree-root ${isDeviceTreeNodeActive(filter, "all", "") ? "is-active" : ""}"
       data-model-tree-type="all"
       data-model-tree-name=""
     >
@@ -3846,7 +4456,7 @@ function renderGridModelDeviceTree() {
       <div class="tree-group">
         <button
           type="button"
-          class="tree-node tree-type ${isCollapsed ? "is-collapsed" : ""} ${filter.dev_type === devType && !filter.dev_name ? "is-active" : filter.dev_type === devType ? "is-parent-active" : ""}"
+          class="tree-node tree-type ${isCollapsed ? "is-collapsed" : ""} ${isDeviceTreeNodeActive(filter, devType, "") ? "is-active" : isDeviceTreeParentActive(filter, devType) ? "is-parent-active" : ""}"
           data-model-tree-type="${escapeHtml(devType)}"
           data-model-tree-name=""
           ${deviceTreeTypeAttrs("model", devType, isCollapsed)}
@@ -3859,7 +4469,7 @@ function renderGridModelDeviceTree() {
             return `
             <button
               type="button"
-              class="tree-node tree-child model-tree-child ${filter.dev_type === dev.dev_type && filter.dev_name === dev.dev_name ? "is-active" : ""}"
+              class="tree-node tree-child model-tree-child ${isDeviceTreeNodeActive(filter, dev.dev_type, dev.dev_name) ? "is-active" : ""}"
               data-model-tree-type="${escapeHtml(dev.dev_type)}"
               data-model-tree-name="${escapeHtml(dev.dev_name)}"
             >
@@ -3899,7 +4509,10 @@ function filteredRuntimeLogs() {
 
 function runtimeLogPageCount(logs = filteredRuntimeLogs()) {
   const pageSize = Math.max(1, Number(state.runtimeLogPageSize) || 20);
-  return Math.max(1, Math.ceil((logs || []).length / pageSize));
+  const total = state.runtimeLogTypeFilter === "all"
+    ? Math.max((logs || []).length, Number(state.runtimeLogTotal) || 0)
+    : (logs || []).length;
+  return Math.max(1, Math.ceil(total / pageSize));
 }
 
 function pagedRuntimeLogs(logs = filteredRuntimeLogs()) {
@@ -3908,6 +4521,14 @@ function pagedRuntimeLogs(logs = filteredRuntimeLogs()) {
   state.runtimeLogPage = Math.min(Math.max(1, Number(state.runtimeLogPage) || 1), pageCount);
   const start = (state.runtimeLogPage - 1) * pageSize;
   return logs.slice(start, start + pageSize);
+}
+
+async function ensureRuntimeLogPageLoaded(page = state.runtimeLogPage) {
+  if (state.runtimeLogTypeFilter !== "all") return;
+  const pageSize = Math.max(1, Number(state.runtimeLogPageSize) || 20);
+  const neededRows = Math.max(0, Number(page) || 1) * pageSize;
+  if (state.runtimeLogs.length >= neededRows) return;
+  await fetchRuntimeLogHistoryPage(false);
 }
 
 function renderRuntimeLogPager(logs = filteredRuntimeLogs()) {
@@ -3920,9 +4541,12 @@ function renderRuntimeLogPager(logs = filteredRuntimeLogs()) {
   const pageCount = runtimeLogPageCount(logs);
   const page = Math.min(Math.max(1, Number(state.runtimeLogPage) || 1), pageCount);
   const start = (page - 1) * state.runtimeLogPageSize + 1;
-  const end = Math.min(logs.length, page * state.runtimeLogPageSize);
+  const total = state.runtimeLogTypeFilter === "all"
+    ? Math.max(logs.length, Number(state.runtimeLogTotal) || 0)
+    : logs.length;
+  const end = Math.min(total, page * state.runtimeLogPageSize);
   pager.innerHTML = `
-    <span>${start}-${end} / ${logs.length} 条</span>
+    <span>${start}-${end} / ${total} 条</span>
     <button type="button" data-runtime-log-page="prev" ${page <= 1 ? "disabled" : ""}>上一页</button>
     <strong>第 ${page} / ${pageCount} 页</strong>
     <button type="button" data-runtime-log-page="next" ${page >= pageCount ? "disabled" : ""}>下一页</button>
@@ -3994,9 +4618,16 @@ function renderGridModelPage() {
   renderGridModelParamTable();
 }
 
-function setGridModelFilter(devType, devName = "") {
-  state.modelDeviceFilter = { dev_type: devType || "all", dev_name: devName || "" };
-  if (devType && devType !== "all") state.activeModelParamTab = devType;
+function setGridModelFilter(devType, devName = "", event = null, button = null) {
+  state.modelDeviceFilter = updateDeviceTreeFilterSelection(
+    "modelDeviceFilter",
+    devType,
+    devName,
+    event,
+    "model",
+    button,
+  );
+  if (devType && devType !== "all" && !devName) state.activeModelParamTab = devType;
   renderGridModelPage();
 }
 
@@ -4079,9 +4710,7 @@ function runtimeDevices() {
 }
 
 function runtimeFilterMatches(dev, filter = state.runtimeDeviceFilter || { dev_type: "all", dev_name: "" }) {
-  if (filter.dev_type && filter.dev_type !== "all" && dev.dev_type !== filter.dev_type) return false;
-  if (filter.dev_name && dev.dev_name !== filter.dev_name) return false;
-  return true;
+  return deviceFilterMatches(dev, filter);
 }
 
 function filteredRuntimeDevices(devices = runtimeDevices()) {
@@ -4187,6 +4816,48 @@ function runtimeCommandTraceLabel(row) {
   return row.trace_label || `${dev.dev_name || "--"} · ${row.command || "--"} ${row.set_type || ""}`.trim();
 }
 
+function runtimeCommandTypeLabel(row) {
+  return row?.command || row?.set_type || row?.category || row?.signal_kind || "";
+}
+
+function runtimeCommandFilterFields(row) {
+  const dev = row?.device || {};
+  return [
+    runtimeCommandTraceLabel(row),
+    runtimeCommandTypeLabel(row),
+    row?.category,
+    row?.command_kind,
+    row?.command,
+    row?.set_type,
+    row?.signal_kind,
+    row?.command_text,
+    row?.real_text,
+    row?.scada_text,
+    dev.dev_type,
+    dev.dev_name,
+    dev.mode,
+  ];
+}
+
+function syncRuntimeCommandTypeFilter(rows) {
+  syncTableKeywordFilter("runtimeCommandKeywordFilter", state.runtimeCommandKeywordFilter);
+  syncTableTypeFilter(
+    "runtimeCommandTypeFilter",
+    "runtimeCommandTypeFilter",
+    tableFilterTypeOptions(rows, runtimeCommandTypeLabel),
+  );
+}
+
+function applyRuntimeCommandTableFilters(rows) {
+  const keyword = state.runtimeCommandKeywordFilter || "";
+  const type = state.runtimeCommandTypeFilter || "all";
+  return (rows || []).filter((row) => {
+    if (!tableFilterMatchesKeyword(runtimeCommandFilterFields(row), keyword)) return false;
+    if (type !== "all" && runtimeCommandTypeLabel(row) !== type) return false;
+    return true;
+  });
+}
+
 function runtimeCommandRowsForDevices(devices, measurements = state.snapshot?.measurements || {}) {
   return [
     ...runtimeRemoteControlRows(devices),
@@ -4230,7 +4901,7 @@ function appendRuntimeTrace(snapshot) {
     };
   });
   state.runtimeTraceHistory.push(point);
-  state.runtimeTraceHistory = state.runtimeTraceHistory.slice(-TRACE_HISTORY_LIMIT);
+  state.runtimeTraceHistory = compactTraceHistory(state.runtimeTraceHistory, state.runtimeTraceWindowMinutes);
 }
 
 function renderRuntimeDeviceTree() {
@@ -4244,7 +4915,7 @@ function renderRuntimeDeviceTree() {
   container.innerHTML = `
     <button
       type="button"
-      class="tree-node tree-root ${filter.dev_type === "all" ? "is-active" : ""}"
+      class="tree-node tree-root ${isDeviceTreeNodeActive(filter, "all", "") ? "is-active" : ""}"
       data-runtime-tree-type="all"
       data-runtime-tree-name=""
     >
@@ -4257,7 +4928,7 @@ function renderRuntimeDeviceTree() {
       <div class="tree-group">
         <button
           type="button"
-          class="tree-node tree-type ${isCollapsed ? "is-collapsed" : ""} ${filter.dev_type === devType && !filter.dev_name ? "is-active" : filter.dev_type === devType ? "is-parent-active" : ""}"
+          class="tree-node tree-type ${isCollapsed ? "is-collapsed" : ""} ${isDeviceTreeNodeActive(filter, devType, "") ? "is-active" : isDeviceTreeParentActive(filter, devType) ? "is-parent-active" : ""}"
           data-runtime-tree-type="${escapeHtml(devType)}"
           data-runtime-tree-name=""
           ${deviceTreeTypeAttrs("runtime", devType, isCollapsed)}
@@ -4268,7 +4939,7 @@ function renderRuntimeDeviceTree() {
         ${deviceTreeChildren(isCollapsed, items.map((dev) => `
             <button
               type="button"
-              class="tree-node tree-child ${filter.dev_type === dev.dev_type && filter.dev_name === dev.dev_name ? "is-active" : ""}"
+              class="tree-node tree-child ${isDeviceTreeNodeActive(filter, dev.dev_type, dev.dev_name) ? "is-active" : ""}"
               data-runtime-tree-type="${escapeHtml(dev.dev_type)}"
               data-runtime-tree-name="${escapeHtml(dev.dev_name)}"
             >
@@ -4282,15 +4953,20 @@ function renderRuntimeDeviceTree() {
   `;
 }
 
-function setRuntimeDeviceFilter(devType, devName = "") {
-  state.runtimeDeviceFilter = { dev_type: devType || "all", dev_name: devName || "" };
+function setRuntimeDeviceFilter(devType, devName = "", event = null, button = null) {
+  state.runtimeDeviceFilter = updateDeviceTreeFilterSelection(
+    "runtimeDeviceFilter",
+    devType,
+    devName,
+    event,
+    "runtime",
+    button,
+  );
   renderRuntimeMonitor(true);
 }
 
 function runtimeFilterLabel(filter = state.runtimeDeviceFilter || { dev_type: "all", dev_name: "" }) {
-  if (filter.dev_type === "all") return "全部设备";
-  if (filter.dev_name) return filter.dev_name;
-  return filter.dev_type;
+  return deviceFilterLabel(filter);
 }
 
 function formatRuntimeSignal(value, unit) {
@@ -4534,13 +5210,21 @@ function renderRuntimeDeviceTable() {
   const selectedDevices = filteredRuntimeDevices(devices);
   const remoteControlRows = runtimeRemoteControlRows(selectedDevices);
   const remoteAdjustmentRows = runtimeRemoteAdjustmentRows(selectedDevices);
-  const commandCount = remoteControlRows.length + remoteAdjustmentRows.length;
-  const visibleCommandKeys = new Set([...remoteControlRows, ...remoteAdjustmentRows].map(runtimeCommandTraceKey));
+  const totalCommandRows = [...remoteControlRows, ...remoteAdjustmentRows];
+  syncRuntimeCommandTypeFilter(totalCommandRows);
+  const filteredRemoteControlRows = applyRuntimeCommandTableFilters(remoteControlRows);
+  const filteredRemoteAdjustmentRows = applyRuntimeCommandTableFilters(remoteAdjustmentRows);
+  const commandCount = filteredRemoteControlRows.length + filteredRemoteAdjustmentRows.length;
+  const totalCommandCount = totalCommandRows.length;
+  const visibleCommandKeys = new Set([...filteredRemoteControlRows, ...filteredRemoteAdjustmentRows].map(runtimeCommandTraceKey));
   if (state.selectedRuntimeCommandKey && !visibleCommandKeys.has(state.selectedRuntimeCommandKey)) {
     state.selectedRuntimeCommandKey = "";
     state.selectedRuntimeCommandLabel = "";
   }
-  $("runtimeDeviceSummary").textContent = `${runtimeFilterLabel()} · ${commandCount} 条指令`;
+  const filterActive = tableFilterIsActive(state.runtimeCommandKeywordFilter, state.runtimeCommandTypeFilter);
+  $("runtimeDeviceSummary").textContent = filterActive
+    ? `${runtimeFilterLabel()} · ${commandCount}/${totalCommandCount} 条指令`
+    : `${runtimeFilterLabel()} · ${totalCommandCount} 条指令`;
   if (!devices.length) {
     container.innerHTML = '<div class="empty-state">暂无设备数据</div>';
     return;
@@ -4549,7 +5233,7 @@ function renderRuntimeDeviceTable() {
     container.innerHTML = '<div class="empty-state">当前筛选无设备</div>';
     return;
   }
-  if (!commandCount) {
+  if (!totalCommandCount) {
     container.innerHTML = '<div class="empty-state">当前筛选无控制指令</div>';
     return;
   }
@@ -4557,17 +5241,17 @@ function renderRuntimeDeviceTable() {
   container.innerHTML = `
     <div class="runtime-command-tabs" role="tablist" aria-label="控制指令类型">
       <button type="button" role="tab" class="runtime-command-tab ${activeTab === "remote_control" ? "is-active" : ""}" data-runtime-command-tab="remote_control" aria-selected="${activeTab === "remote_control"}">
-        <span>遥控指令</span><strong>${remoteControlRows.length}</strong>
+        <span>遥控指令</span><strong>${filteredRemoteControlRows.length}</strong>
       </button>
       <button type="button" role="tab" class="runtime-command-tab ${activeTab === "remote_adjustment" ? "is-active" : ""}" data-runtime-command-tab="remote_adjustment" aria-selected="${activeTab === "remote_adjustment"}">
-        <span>遥调指令</span><strong>${remoteAdjustmentRows.length}</strong>
+        <span>遥调指令</span><strong>${filteredRemoteAdjustmentRows.length}</strong>
       </button>
     </div>
     <section class="runtime-command-tab-page ${activeTab === "remote_control" ? "is-active" : ""}" data-runtime-command-page="remote_control" role="tabpanel">
-      ${renderRuntimeCommandTable(remoteControlRows, "当前筛选无遥控指令")}
+      ${renderRuntimeCommandTable(filteredRemoteControlRows, filterActive ? "当前过滤无遥控指令" : "当前筛选无遥控指令")}
     </section>
     <section class="runtime-command-tab-page ${activeTab === "remote_adjustment" ? "is-active" : ""}" data-runtime-command-page="remote_adjustment" role="tabpanel">
-      ${renderRuntimeCommandTable(remoteAdjustmentRows, "当前筛选无遥调指令")}
+      ${renderRuntimeCommandTable(filteredRemoteAdjustmentRows, filterActive ? "当前过滤无遥调指令" : "当前筛选无遥调指令")}
     </section>
   `;
 }
@@ -5038,7 +5722,7 @@ function appendMeasurementTrace(snapshot) {
     };
   });
   state.measurementTraceHistory.push(point);
-  state.measurementTraceHistory = state.measurementTraceHistory.slice(-TRACE_HISTORY_LIMIT);
+  state.measurementTraceHistory = compactTraceHistory(state.measurementTraceHistory, state.measurementTraceWindowMinutes);
 }
 
 function ensureSelectedMeasurementKey(rows, fallbackRows = []) {
@@ -5228,9 +5912,41 @@ function measurementCompareDevices(rows = measurementCompareRows()) {
 
 function filteredMeasurementCompareRows(rows = measurementCompareRows()) {
   const filter = state.measurementCompareFilter || { dev_type: "all", dev_name: "" };
-  return rows.filter((row) => {
-    if (filter.dev_type && filter.dev_type !== "all" && row.dev_type !== filter.dev_type) return false;
-    if (filter.dev_name && row.dev_name !== filter.dev_name) return false;
+  return rows.filter((row) => deviceFilterMatches(row, filter));
+}
+
+function measurementCompareTypeFilterLabel(row) {
+  return measurementTypeDisplay(row) || row?.meas_type || "";
+}
+
+function measurementCompareFilterFields(row) {
+  return [
+    measurementDisplayName(row),
+    measurementDeviceDisplay(row),
+    measurementCompareTypeFilterLabel(row),
+    row?.name,
+    row?.idx,
+    row?.dev_type,
+    row?.dev_name,
+    row?.meas_type,
+  ];
+}
+
+function syncMeasurementCompareTypeFilter(rows) {
+  syncTableKeywordFilter("measurementCompareKeywordFilter", state.measurementCompareKeywordFilter);
+  syncTableTypeFilter(
+    "measurementCompareTypeFilter",
+    "measurementCompareTypeFilter",
+    tableFilterTypeOptions(rows, measurementCompareTypeFilterLabel),
+  );
+}
+
+function applyMeasurementCompareTableFilters(rows) {
+  const keyword = state.measurementCompareKeywordFilter || "";
+  const type = state.measurementCompareTypeFilter || "all";
+  return (rows || []).filter((row) => {
+    if (!tableFilterMatchesKeyword(measurementCompareFilterFields(row), keyword)) return false;
+    if (type !== "all" && measurementCompareTypeFilterLabel(row) !== type) return false;
     return true;
   });
 }
@@ -5283,8 +5999,9 @@ function measurementCompareTableStructureKey(rows) {
   const filter = state.measurementCompareFilter || { dev_type: "all", dev_name: "" };
   return [
     state.activeMeasurementCompareTab || "telemetry",
-    filter.dev_type || "all",
-    filter.dev_name || "",
+    deviceTreeFilterSelection(filter).map((item) => deviceTreeFilterKey(item.dev_type, item.dev_name)).join("|"),
+    state.measurementCompareKeywordFilter || "",
+    state.measurementCompareTypeFilter || "all",
     rows.map((row) => measurementKey(row)).join("||"),
   ].join("::");
 }
@@ -5336,7 +6053,7 @@ function renderMeasurementCompareDeviceTree(rows = measurementCompareRows()) {
   container.innerHTML = `
     <button
       type="button"
-      class="tree-node tree-root ${filter.dev_type === "all" ? "is-active" : ""}"
+      class="tree-node tree-root ${isDeviceTreeNodeActive(filter, "all", "") ? "is-active" : ""}"
       data-measurement-tree-type="all"
       data-measurement-tree-name=""
     >
@@ -5349,7 +6066,7 @@ function renderMeasurementCompareDeviceTree(rows = measurementCompareRows()) {
       <div class="tree-group">
         <button
           type="button"
-          class="tree-node tree-type ${isCollapsed ? "is-collapsed" : ""} ${filter.dev_type === devType && !filter.dev_name ? "is-active" : filter.dev_type === devType ? "is-parent-active" : ""}"
+          class="tree-node tree-type ${isCollapsed ? "is-collapsed" : ""} ${isDeviceTreeNodeActive(filter, devType, "") ? "is-active" : isDeviceTreeParentActive(filter, devType) ? "is-parent-active" : ""}"
           data-measurement-tree-type="${escapeHtml(devType)}"
           data-measurement-tree-name=""
           ${deviceTreeTypeAttrs("measurement", devType, isCollapsed)}
@@ -5360,7 +6077,7 @@ function renderMeasurementCompareDeviceTree(rows = measurementCompareRows()) {
         ${deviceTreeChildren(isCollapsed, items.map((item) => `
             <button
               type="button"
-              class="tree-node tree-child ${filter.dev_type === item.dev_type && filter.dev_name === item.dev_name ? "is-active" : ""}"
+              class="tree-node tree-child ${isDeviceTreeNodeActive(filter, item.dev_type, item.dev_name) ? "is-active" : ""}"
               data-measurement-tree-type="${escapeHtml(item.dev_type)}"
               data-measurement-tree-name="${escapeHtml(item.dev_name)}"
             >
@@ -5374,8 +6091,15 @@ function renderMeasurementCompareDeviceTree(rows = measurementCompareRows()) {
   `;
 }
 
-function setMeasurementCompareFilter(devType, devName = "") {
-  state.measurementCompareFilter = { dev_type: devType || "all", dev_name: devName || "" };
+function setMeasurementCompareFilter(devType, devName = "", event = null, button = null) {
+  state.measurementCompareFilter = updateDeviceTreeFilterSelection(
+    "measurementCompareFilter",
+    devType,
+    devName,
+    event,
+    "measurement",
+    button,
+  );
   renderMeasurementCompareTable();
 }
 
@@ -5385,15 +6109,26 @@ function renderMeasurementCompareTable() {
   const allRows = measurementCompareRows();
   renderMeasurementCompareDeviceTree(allRows);
   const filteredRows = filteredMeasurementCompareRows(allRows);
-  const telemetryRows = measurementTelemetryRows(filteredRows);
-  const signalRows = measurementSignalRows(filteredRows);
-  const rows = activeMeasurementCompareRows(filteredRows);
+  syncMeasurementCompareTypeFilter(filteredRows);
+  const tableFilteredRows = applyMeasurementCompareTableFilters(filteredRows);
+  const telemetryRows = measurementTelemetryRows(tableFilteredRows);
+  const signalRows = measurementSignalRows(tableFilteredRows);
+  const rows = activeMeasurementCompareRows(tableFilteredRows);
   const selectedKey = ensureSelectedMeasurementKey(rows, []);
   const validCount = rows.filter((row) => Number(row.valid) === 1).length;
   const activeLabel = state.activeMeasurementCompareTab === "signal" ? "遥信" : "遥测";
-  $("measurementCompareSummary").textContent = `${activeLabel} ${rows.length}/${filteredRows.length} 点 · 有效 ${validCount} 点`;
+  const filterActive = tableFilterIsActive(state.measurementCompareKeywordFilter, state.measurementCompareTypeFilter);
+  $("measurementCompareSummary").textContent = filterActive
+    ? `${activeLabel} ${rows.length}/${tableFilteredRows.length} 点 · 有效 ${validCount} 点 · 过滤 ${tableFilteredRows.length}/${filteredRows.length} 点`
+    : `${activeLabel} ${rows.length}/${filteredRows.length} 点 · 有效 ${validCount} 点`;
   const tabHtml = renderMeasurementCompareTabs(telemetryRows, signalRows);
-  const structureKey = measurementCompareTableStructureKey(rows);
+  const virtualRows = virtualTableWindow("measurementCompare", rows);
+  const structureKey = [
+    measurementCompareTableStructureKey(rows),
+    virtualRows.enabled ? "virtual" : "full",
+    virtualRows.start,
+    virtualRows.end,
+  ].join("|");
   if (!allRows.length) {
     container.dataset.measurementStructureKey = "";
     container.innerHTML = `${tabHtml}<div class="measurement-type-tab-page is-active"><div class="empty-state">暂无实时量测数据</div></div>`;
@@ -5403,6 +6138,12 @@ function renderMeasurementCompareTable() {
   if (!filteredRows.length) {
     container.dataset.measurementStructureKey = "";
     container.innerHTML = `${tabHtml}<div class="measurement-type-tab-page is-active"><div class="empty-state">当前筛选无量测</div></div>`;
+    drawMeasurementTraceChart();
+    return;
+  }
+  if (!tableFilteredRows.length) {
+    container.dataset.measurementStructureKey = "";
+    container.innerHTML = `${tabHtml}<div class="measurement-type-tab-page is-active"><div class="empty-state">当前过滤无量测</div></div>`;
     drawMeasurementTraceChart();
     return;
   }
@@ -5423,6 +6164,7 @@ function renderMeasurementCompareTable() {
   container.innerHTML = `
     ${tabHtml}
     <div class="measurement-type-tab-page is-active">
+    <div class="virtual-table-scroll" data-virtual-table="measurementCompare">
     <table class="measurement-compare-table">
       <thead>
         <tr>
@@ -5437,7 +6179,8 @@ function renderMeasurementCompareTable() {
         </tr>
       </thead>
       <tbody>
-        ${rows.map((row) => {
+        ${renderVirtualSpacerRow(virtualRows.beforeHeight, 8)}
+        ${virtualRows.rows.map((row) => {
           const diffClass = row.diff === null || Math.abs(row.diff) < 1e-6 ? "diff-neutral" : "diff-active";
           const key = measurementKey(row);
           return `
@@ -5459,9 +6202,12 @@ function renderMeasurementCompareTable() {
             </tr>
           `;
         }).join("")}
+        ${renderVirtualSpacerRow(virtualRows.afterHeight, 8)}
       </tbody>
     </table>
+    </div>
     </div>`;
+  restoreVirtualTableScroll(container, "measurementCompare");
   drawMeasurementTraceChart();
 }
 
@@ -5602,11 +6348,7 @@ function filteredFaultDevices() {
   const filter = state.faultDeviceFilter || { dev_type: "all", dev_name: "" };
   return faultDevices()
     .map((dev, index) => ({ dev, index }))
-    .filter(({ dev }) => {
-      if (filter.dev_type && filter.dev_type !== "all" && dev.dev_type !== filter.dev_type) return false;
-      if (filter.dev_name && dev.dev_name !== filter.dev_name) return false;
-      return true;
-    });
+    .filter(({ dev }) => deviceFilterMatches(dev, filter));
 }
 
 function filteredFaultMeasurements() {
@@ -5614,8 +6356,7 @@ function filteredFaultMeasurements() {
   return faultMeasurements()
     .map((meas, index) => ({ meas, index }))
     .filter(({ meas }) => {
-      if (filter.dev_type && filter.dev_type !== "all" && meas.dev_type !== filter.dev_type) return false;
-      if (filter.dev_name && meas.dev_name !== filter.dev_name) return false;
+      if (!deviceFilterMatches(meas, filter)) return false;
       if (filter.key && measurementKey(meas) !== filter.key) return false;
       return true;
     });
@@ -5647,7 +6388,7 @@ function renderFaultDeviceTree() {
   container.innerHTML = `
     <button
       type="button"
-      class="tree-node tree-root ${filter.dev_type === "all" ? "is-active" : ""}"
+      class="tree-node tree-root ${isDeviceTreeNodeActive(filter, "all", "") ? "is-active" : ""}"
       data-fault-device-tree-type="all"
       data-fault-device-tree-name=""
     >
@@ -5660,7 +6401,7 @@ function renderFaultDeviceTree() {
       <div class="tree-group">
         <button
           type="button"
-          class="tree-node tree-type ${isCollapsed ? "is-collapsed" : ""} ${filter.dev_type === devType && !filter.dev_name ? "is-active" : filter.dev_type === devType ? "is-parent-active" : ""}"
+          class="tree-node tree-type ${isCollapsed ? "is-collapsed" : ""} ${isDeviceTreeNodeActive(filter, devType, "") ? "is-active" : isDeviceTreeParentActive(filter, devType) ? "is-parent-active" : ""}"
           data-fault-device-tree-type="${escapeHtml(devType)}"
           data-fault-device-tree-name=""
           ${deviceTreeTypeAttrs("faultDevice", devType, isCollapsed)}
@@ -5671,7 +6412,7 @@ function renderFaultDeviceTree() {
         ${deviceTreeChildren(isCollapsed, items.map((dev) => `
             <button
               type="button"
-              class="tree-node tree-child ${filter.dev_type === dev.dev_type && filter.dev_name === dev.dev_name ? "is-active" : ""}"
+              class="tree-node tree-child ${isDeviceTreeNodeActive(filter, dev.dev_type, dev.dev_name) ? "is-active" : ""}"
               data-fault-device-tree-type="${escapeHtml(dev.dev_type)}"
               data-fault-device-tree-name="${escapeHtml(dev.dev_name)}"
             >
@@ -5697,7 +6438,7 @@ function renderFaultMeasurementTree() {
   container.innerHTML = `
     <button
       type="button"
-      class="tree-node tree-root ${filter.dev_type === "all" ? "is-active" : ""}"
+      class="tree-node tree-root ${isDeviceTreeNodeActive(filter, "all", "") ? "is-active" : ""}"
       data-fault-measurement-tree-type="all"
       data-fault-measurement-tree-name=""
     >
@@ -5710,7 +6451,7 @@ function renderFaultMeasurementTree() {
       <div class="tree-group">
         <button
           type="button"
-          class="tree-node tree-type ${isCollapsed ? "is-collapsed" : ""} ${filter.dev_type === devType && !filter.dev_name ? "is-active" : filter.dev_type === devType ? "is-parent-active" : ""}"
+          class="tree-node tree-type ${isCollapsed ? "is-collapsed" : ""} ${isDeviceTreeNodeActive(filter, devType, "") ? "is-active" : isDeviceTreeParentActive(filter, devType) ? "is-parent-active" : ""}"
           data-fault-measurement-tree-type="${escapeHtml(devType)}"
           data-fault-measurement-tree-name=""
           ${deviceTreeTypeAttrs("faultMeasurement", devType, isCollapsed)}
@@ -5721,7 +6462,7 @@ function renderFaultMeasurementTree() {
         ${deviceTreeChildren(isCollapsed, items.map((dev) => `
             <button
               type="button"
-              class="tree-node tree-child ${filter.dev_type === dev.dev_type && filter.dev_name === dev.dev_name ? "is-active" : ""}"
+              class="tree-node tree-child ${isDeviceTreeNodeActive(filter, dev.dev_type, dev.dev_name) ? "is-active" : ""}"
               data-fault-measurement-tree-type="${escapeHtml(dev.dev_type)}"
               data-fault-measurement-tree-name="${escapeHtml(dev.dev_name)}"
             >
@@ -5735,13 +6476,30 @@ function renderFaultMeasurementTree() {
   `;
 }
 
-function setDeviceFaultFilter(devType, devName = "") {
-  state.faultDeviceFilter = { dev_type: devType || "all", dev_name: devName || "" };
+function setDeviceFaultFilter(devType, devName = "", event = null, button = null) {
+  state.faultDeviceFilter = updateDeviceTreeFilterSelection(
+    "faultDeviceFilter",
+    devType,
+    devName,
+    event,
+    "faultDevice",
+    button,
+  );
   renderFaults(true);
 }
 
-function setMeasurementFaultFilter(devType, devName = "") {
-  state.faultMeasurementFilter = { dev_type: devType || "all", dev_name: devName || "", key: "" };
+function setMeasurementFaultFilter(devType, devName = "", event = null, button = null) {
+  state.faultMeasurementFilter = {
+    ...updateDeviceTreeFilterSelection(
+      "faultMeasurementFilter",
+      devType,
+      devName,
+      event,
+      "faultMeasurement",
+      button,
+    ),
+    key: "",
+  };
   renderFaults(true);
 }
 
@@ -6007,11 +6765,7 @@ function modeRows() {
   const filter = state.modeFilter || { dev_type: "all", dev_name: "" };
   return state.modes
     .map((item, index) => ({ item, index, device: devices.get(deviceKey(item)) }))
-    .filter(({ item }) => {
-      if (filter.dev_type && filter.dev_type !== "all" && item.dev_type !== filter.dev_type) return false;
-      if (filter.dev_name && item.dev_name !== filter.dev_name) return false;
-      return true;
-    });
+    .filter(({ item }) => deviceFilterMatches(item, filter));
 }
 
 function modeOptionsHtml(value) {
@@ -6040,7 +6794,7 @@ function renderModeDeviceTree() {
   container.innerHTML = `
     <button
       type="button"
-      class="tree-node tree-root ${filter.dev_type === "all" ? "is-active" : ""}"
+      class="tree-node tree-root ${isDeviceTreeNodeActive(filter, "all", "") ? "is-active" : ""}"
       data-mode-tree-type="all"
       data-mode-tree-name=""
     >
@@ -6053,7 +6807,7 @@ function renderModeDeviceTree() {
       <div class="tree-group">
         <button
           type="button"
-          class="tree-node tree-type ${isCollapsed ? "is-collapsed" : ""} ${filter.dev_type === devType && !filter.dev_name ? "is-active" : filter.dev_type === devType ? "is-parent-active" : ""}"
+          class="tree-node tree-type ${isCollapsed ? "is-collapsed" : ""} ${isDeviceTreeNodeActive(filter, devType, "") ? "is-active" : isDeviceTreeParentActive(filter, devType) ? "is-parent-active" : ""}"
           data-mode-tree-type="${escapeHtml(devType)}"
           data-mode-tree-name=""
           ${deviceTreeTypeAttrs("mode", devType, isCollapsed)}
@@ -6064,7 +6818,7 @@ function renderModeDeviceTree() {
         ${deviceTreeChildren(isCollapsed, items.map((item) => `
             <button
               type="button"
-              class="tree-node tree-child ${filter.dev_type === item.dev_type && filter.dev_name === item.dev_name ? "is-active" : ""}"
+              class="tree-node tree-child ${isDeviceTreeNodeActive(filter, item.dev_type, item.dev_name) ? "is-active" : ""}"
               data-mode-tree-type="${escapeHtml(item.dev_type)}"
               data-mode-tree-name="${escapeHtml(item.dev_name)}"
             >
@@ -6134,8 +6888,15 @@ function renderModes(force = false) {
   renderModeDeviceTable();
 }
 
-function setModeFilter(devType, devName = "") {
-  state.modeFilter = { dev_type: devType || "all", dev_name: devName || "" };
+function setModeFilter(devType, devName = "", event = null, button = null) {
+  state.modeFilter = updateDeviceTreeFilterSelection(
+    "modeFilter",
+    devType,
+    devName,
+    event,
+    "mode",
+    button,
+  );
   renderModes(true);
 }
 
@@ -6299,7 +7060,7 @@ $("runtimeLogTypeFilter").addEventListener("change", (event) => {
   renderRuntimeLogs();
 });
 $("clearRuntimeLogs").addEventListener("click", clearRuntimeLogs);
-$("runtimeLogPager").addEventListener("click", (event) => {
+$("runtimeLogPager").addEventListener("click", async (event) => {
   const button = event.target instanceof Element ? event.target.closest("[data-runtime-log-page]") : null;
   if (!button) return;
   const direction = button.dataset.runtimeLogPage;
@@ -6307,6 +7068,7 @@ $("runtimeLogPager").addEventListener("click", (event) => {
   state.runtimeLogPage = direction === "prev"
     ? Math.max(1, state.runtimeLogPage - 1)
     : Math.min(pageCount, state.runtimeLogPage + 1);
+  await ensureRuntimeLogPageLoaded(state.runtimeLogPage);
   renderRuntimeLogs();
 });
 $("saveDeviceFaults").addEventListener("click", async () => {
@@ -6327,13 +7089,38 @@ $("resetSystemParameters").addEventListener("click", resetSystemParameterForm);
   const element = $(id);
   if (element) element.addEventListener("input", markSystemParametersDirty);
 });
+function handleSimulatorTableFilterControl(target) {
+  if (!(target instanceof Element)) return false;
+  const control = target.closest("[data-table-filter-scope]");
+  if (!(control instanceof HTMLInputElement || control instanceof HTMLSelectElement)) return false;
+  const scope = control.dataset.tableFilterScope || "";
+  const field = control.dataset.tableFilterField || "";
+  if (scope === "measurementCompare") {
+    if (field === "type") state.measurementCompareTypeFilter = control.value || "all";
+    else state.measurementCompareKeywordFilter = control.value || "";
+    renderMeasurementCompareTable();
+    drawMeasurementTraceChart();
+    return true;
+  }
+  if (scope === "runtimeCommand") {
+    if (field === "type") state.runtimeCommandTypeFilter = control.value || "all";
+    else state.runtimeCommandKeywordFilter = control.value || "";
+    renderRuntimeDeviceTable();
+    drawRuntimeTraceChart();
+    return true;
+  }
+  return false;
+}
+
 document.addEventListener("input", (event) => {
+  if (handleSimulatorTableFilterControl(event.target)) return;
   const input = event.target.closest?.("[data-device-tree-filter-scope]");
   if (!input) return;
   const scope = input.dataset.deviceTreeFilterScope || "";
   state.deviceTreeSearch[scope] = input.value || "";
   refreshDeviceTreeFilterScope(scope);
 });
+document.addEventListener("scroll", handleVirtualTableScroll, true);
 document.addEventListener("click", (event) => {
   const chartToggle = event.target.closest("[data-chart-toggle][data-chart-series]");
   if (chartToggle) {
@@ -6382,7 +7169,7 @@ document.addEventListener("click", (event) => {
   }
   const faultDeviceTreeButton = event.target.closest("[data-fault-device-tree-type]");
   if (faultDeviceTreeButton) {
-    if (faultDeviceTreeButton.dataset.treeToggleScope) {
+    if (faultDeviceTreeButton.dataset.treeToggleScope && !(event.ctrlKey || event.metaKey || event.shiftKey)) {
       toggleDeviceTreeGroup(
         faultDeviceTreeButton.dataset.treeToggleScope,
         faultDeviceTreeButton.dataset.treeToggleGroup,
@@ -6391,11 +7178,13 @@ document.addEventListener("click", (event) => {
     setDeviceFaultFilter(
       faultDeviceTreeButton.dataset.faultDeviceTreeType,
       faultDeviceTreeButton.dataset.faultDeviceTreeName || "",
+      event,
+      faultDeviceTreeButton,
     );
   }
   const faultMeasurementTreeButton = event.target.closest("[data-fault-measurement-tree-type]");
   if (faultMeasurementTreeButton) {
-    if (faultMeasurementTreeButton.dataset.treeToggleScope) {
+    if (faultMeasurementTreeButton.dataset.treeToggleScope && !(event.ctrlKey || event.metaKey || event.shiftKey)) {
       toggleDeviceTreeGroup(
         faultMeasurementTreeButton.dataset.treeToggleScope,
         faultMeasurementTreeButton.dataset.treeToggleGroup,
@@ -6404,6 +7193,8 @@ document.addEventListener("click", (event) => {
     setMeasurementFaultFilter(
       faultMeasurementTreeButton.dataset.faultMeasurementTreeType,
       faultMeasurementTreeButton.dataset.faultMeasurementTreeName || "",
+      event,
+      faultMeasurementTreeButton,
     );
   }
   const measurementSelectRow = event.target.closest("[data-measurement-select-key]");
@@ -6412,7 +7203,7 @@ document.addEventListener("click", (event) => {
   }
   const measurementTreeButton = event.target.closest("[data-measurement-tree-type]");
   if (measurementTreeButton) {
-    if (measurementTreeButton.dataset.treeToggleScope) {
+    if (measurementTreeButton.dataset.treeToggleScope && !(event.ctrlKey || event.metaKey || event.shiftKey)) {
       toggleDeviceTreeGroup(
         measurementTreeButton.dataset.treeToggleScope,
         measurementTreeButton.dataset.treeToggleGroup,
@@ -6421,11 +7212,13 @@ document.addEventListener("click", (event) => {
     setMeasurementCompareFilter(
       measurementTreeButton.dataset.measurementTreeType,
       measurementTreeButton.dataset.measurementTreeName || "",
+      event,
+      measurementTreeButton,
     );
   }
   const modelTreeButton = event.target.closest("[data-model-tree-type]");
   if (modelTreeButton) {
-    if (modelTreeButton.dataset.treeToggleScope) {
+    if (modelTreeButton.dataset.treeToggleScope && !(event.ctrlKey || event.metaKey || event.shiftKey)) {
       toggleDeviceTreeGroup(
         modelTreeButton.dataset.treeToggleScope,
         modelTreeButton.dataset.treeToggleGroup,
@@ -6434,11 +7227,13 @@ document.addEventListener("click", (event) => {
     setGridModelFilter(
       modelTreeButton.dataset.modelTreeType,
       modelTreeButton.dataset.modelTreeName || "",
+      event,
+      modelTreeButton,
     );
   }
   const runtimeTreeButton = event.target.closest("[data-runtime-tree-type]");
   if (runtimeTreeButton) {
-    if (runtimeTreeButton.dataset.treeToggleScope) {
+    if (runtimeTreeButton.dataset.treeToggleScope && !(event.ctrlKey || event.metaKey || event.shiftKey)) {
       toggleDeviceTreeGroup(
         runtimeTreeButton.dataset.treeToggleScope,
         runtimeTreeButton.dataset.treeToggleGroup,
@@ -6447,17 +7242,19 @@ document.addEventListener("click", (event) => {
     setRuntimeDeviceFilter(
       runtimeTreeButton.dataset.runtimeTreeType,
       runtimeTreeButton.dataset.runtimeTreeName || "",
+      event,
+      runtimeTreeButton,
     );
   }
   const modeTreeButton = event.target.closest("[data-mode-tree-type]");
   if (modeTreeButton) {
-    if (modeTreeButton.dataset.treeToggleScope) {
+    if (modeTreeButton.dataset.treeToggleScope && !(event.ctrlKey || event.metaKey || event.shiftKey)) {
       toggleDeviceTreeGroup(
         modeTreeButton.dataset.treeToggleScope,
         modeTreeButton.dataset.treeToggleGroup,
       );
     }
-    setModeFilter(modeTreeButton.dataset.modeTreeType, modeTreeButton.dataset.modeTreeName || "");
+    setModeFilter(modeTreeButton.dataset.modeTreeType, modeTreeButton.dataset.modeTreeName || "", event, modeTreeButton);
   }
 });
 document.addEventListener("dblclick", (event) => {
@@ -6470,6 +7267,7 @@ document.addEventListener("dblclick", (event) => {
   );
 });
 document.addEventListener("change", (event) => {
+  if (handleSimulatorTableFilterControl(event.target)) return;
   if (event.target.dataset.modeField !== undefined) {
     updateModeValue(Number(event.target.dataset.modeDeviceIndex), event.target.dataset.modeField, event.target.value);
   }
@@ -6491,7 +7289,6 @@ document.addEventListener("input", (event) => {
     updateMeasurementFault(Number(event.target.dataset.measIndex), event.target.dataset.measField, event.target.value, false);
   }
 });
-initPageNavigation();
 generateCurves(0);
 initCurveEditor();
 initRuntimeMonitor();
@@ -6500,5 +7297,6 @@ initOverviewBottomSplitter();
 initVerticalSplitters();
 setFaultTab(state.activeFaultTab);
 renderFaults(true);
+initPageNavigation();
 setInterval(refresh, 1000);
 loadModels().finally(refresh);

@@ -245,6 +245,38 @@ h2 {
   font-size: 12px;
   font-weight: 700;
 }
+.table-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: -2px 0 8px;
+  min-width: 0;
+}
+.table-filter-bar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.table-filter-bar input,
+.table-filter-bar select {
+  height: 30px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 9px;
+  color: var(--ink);
+  background: #fff;
+  font: inherit;
+}
+.table-filter-bar input {
+  width: clamp(150px, 22vw, 260px);
+}
+.table-filter-bar select {
+  width: 150px;
+}
 
 .overview-grid {
   flex: 1;
@@ -571,6 +603,7 @@ body.is-vertical-splitter-dragging {
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   place-items: center;
+  container-type: size;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -581,6 +614,8 @@ body.is-vertical-splitter-dragging {
   --green-flow-color: #2f9e62;
   --diesel-flow-color: #c84f4f;
   --energy-trunk-y: 50%;
+  --energy-trunk-y: min(50%, calc(100% - 110px));
+  --energy-storage-gap: 28px;
   position: relative;
   width: min(100%, 1360px);
   min-height: 0;
@@ -878,25 +913,25 @@ body.is-vertical-splitter-dragging {
   --flow-head-half: 6px;
   --flow-opacity: 0.48;
   --flow-duration: 1.25s;
-  position: relative;
+  position: absolute;
   z-index: 2;
-  grid-column: 3;
-  align-self: stretch;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  left: 50%;
+  top: calc(var(--energy-trunk-y) + var(--energy-storage-gap));
+  width: min(300px, 76%);
   min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
-  padding-bottom: 72px;
+  transform: translateX(-50%);
+  display: block;
   pointer-events: none;
 }
 .energy-storage-branch {
   position: absolute;
   left: 50%;
-  top: calc(var(--energy-trunk-y) + 2px);
-  bottom: 178px;
+  top: auto;
+  bottom: calc(100% + 2px);
   width: var(--flow-thickness);
+  height: calc(var(--energy-storage-gap) - 4px);
   transform: translateX(-50%);
   border-radius: 999px;
   background-color: var(--flow-color);
@@ -969,8 +1004,8 @@ body.is-vertical-splitter-dragging {
   }
 }
 .energy-storage-branch-wrap .energy-device.storage {
-  width: min(300px, 76%);
-  min-height: 96px;
+  width: 100%;
+  min-height: 82px;
   max-height: none;
   pointer-events: auto;
 }
@@ -978,6 +1013,37 @@ body.is-vertical-splitter-dragging {
   overflow: visible;
   line-height: 17px;
   white-space: nowrap;
+}
+@container (max-height: 220px) {
+  .energy-flow-map {
+    --energy-trunk-y: min(50%, calc(100% - 86px));
+    --energy-storage-gap: 18px;
+  }
+  .energy-green-share {
+    min-width: 150px;
+    padding: 6px 10px;
+    transform: translate(-50%, calc(-100% - 6px));
+    gap: 2px;
+  }
+  .energy-green-share span {
+    font-size: 11px;
+    line-height: 13px;
+  }
+  .energy-green-share strong {
+    font-size: 18px;
+  }
+  .energy-storage-branch-wrap .energy-device.storage {
+    min-height: 64px;
+    padding: 7px 10px;
+    gap: 3px;
+  }
+  .energy-storage-branch-wrap .energy-device.storage strong {
+    font-size: 18px;
+  }
+  .energy-storage-branch-wrap .energy-device.storage small {
+    font-size: 11px;
+    line-height: 13px;
+  }
 }
 .boundary-list {
   flex: 1;
@@ -1600,7 +1666,20 @@ body.is-vertical-splitter-dragging {
 .measurement-type-tab-page {
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.virtual-table-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
   overflow: auto;
+}
+.virtual-table-spacer td {
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
 }
 table {
   width: 100%;
@@ -2248,12 +2327,6 @@ canvas {
   .energy-bus-rail {
     height: 156px;
   }
-  .energy-storage-branch {
-    bottom: 84px;
-  }
-  .energy-storage-branch-wrap {
-    padding-bottom: 4px;
-  }
   .energy-storage-branch-wrap .energy-device.storage {
     min-height: 82px;
     max-height: none;
@@ -2362,8 +2435,13 @@ canvas {
     display: none;
   }
   .energy-storage-branch-wrap {
+    position: relative;
     grid-column: auto;
-    padding-bottom: 0;
+    grid-row: auto;
+    left: auto;
+    top: auto;
+    width: 100%;
+    transform: none;
   }
   .energy-storage-branch-wrap .energy-device.storage {
     width: 100%;

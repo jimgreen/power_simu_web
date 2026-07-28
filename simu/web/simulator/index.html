@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>极地微电网模拟台</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -38,6 +38,32 @@
             <small id="simSpeed" hidden>x1</small>
           </div>
         </div>
+        <div class="overview-clock-controls topbar-clock-controls" aria-label="时钟控制">
+          <div class="overview-clock-control-label">
+            <span>时钟控制</span>
+            <strong id="overviewClockSpeed">x1</strong>
+          </div>
+          <div class="overview-clock-button-group">
+            <button class="icon-button" type="button" data-clock="start" title="启动" aria-pressed="false">
+              <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+            </button>
+            <button class="icon-button" type="button" data-clock="pause" title="暂停" aria-pressed="false" aria-disabled="true" disabled>
+              <svg viewBox="0 0 24 24"><path d="M7 5h4v14H7zM13 5h4v14h-4z" /></svg>
+            </button>
+            <button class="icon-button" type="button" data-clock="stop" title="停止" aria-pressed="true" aria-disabled="true" disabled>
+              <svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z" /></svg>
+            </button>
+            <button class="icon-button" type="button" data-clock="step" title="单步" aria-disabled="true" disabled>
+              <svg viewBox="0 0 24 24"><path d="M5 5v14l9-7-9-7zm11 0h3v14h-3z" /></svg>
+            </button>
+            <button class="icon-button" type="button" data-clock="slower" title="减速">
+              <svg viewBox="0 0 24 24"><path d="M11 7 6 12l5 5V7zm7 0-5 5 5 5V7z" /></svg>
+            </button>
+            <button class="icon-button" type="button" data-clock="faster" title="加速">
+              <svg viewBox="0 0 24 24"><path d="m6 7 5 5-5 5V7zm7 0 5 5-5 5V7z" /></svg>
+            </button>
+          </div>
+        </div>
       </header>
 
       <nav class="page-nav" aria-label="模拟台主题导航">
@@ -56,32 +82,6 @@
         <section class="page-section is-active" data-page="overview">
           <div class="overview-dashboard">
             <section class="panel overview-status-panel">
-              <div class="overview-clock-controls" aria-label="时钟控制">
-                <div class="overview-clock-control-label">
-                  <span>时钟控制</span>
-                  <strong id="overviewClockSpeed">x1</strong>
-                </div>
-                <div class="overview-clock-button-group">
-                  <button class="icon-button" type="button" data-clock="start" title="启动" aria-pressed="false">
-                    <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
-                  </button>
-                  <button class="icon-button" type="button" data-clock="pause" title="暂停" aria-pressed="false">
-                    <svg viewBox="0 0 24 24"><path d="M7 5h4v14H7zM13 5h4v14h-4z" /></svg>
-                  </button>
-                  <button class="icon-button" type="button" data-clock="stop" title="停止" aria-pressed="true">
-                    <svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z" /></svg>
-                  </button>
-                  <button class="icon-button" type="button" data-clock="step" title="单步">
-                    <svg viewBox="0 0 24 24"><path d="M5 5v14l9-7-9-7zm11 0h3v14h-3z" /></svg>
-                  </button>
-                  <button class="icon-button" type="button" data-clock="slower" title="减速">
-                    <svg viewBox="0 0 24 24"><path d="M11 7 6 12l5 5V7zm7 0-5 5 5 5V7z" /></svg>
-                  </button>
-                  <button class="icon-button" type="button" data-clock="faster" title="加速">
-                    <svg viewBox="0 0 24 24"><path d="m6 7 5 5-5 5V7zm7 0 5 5-5 5V7z" /></svg>
-                  </button>
-                </div>
-              </div>
               <div class="overview-status-primary">
                 <span class="overview-state-dot" id="overviewStateDot"></span>
                 <div><small>当前状态</small><strong id="overviewState">已停止</strong></div>
@@ -595,6 +595,27 @@
                     <span id="solverInfo">待运行</span>
                   </div>
                 </div>
+                <div class="table-filter-bar" aria-label="控制指令过滤">
+                  <label>名称
+                    <input
+                      id="runtimeCommandKeywordFilter"
+                      type="search"
+                      data-table-filter-scope="runtimeCommand"
+                      data-table-filter-field="keyword"
+                      placeholder="过滤指令或设备"
+                      autocomplete="off"
+                    />
+                  </label>
+                  <label>类型
+                    <select
+                      id="runtimeCommandTypeFilter"
+                      data-table-filter-scope="runtimeCommand"
+                      data-table-filter-field="type"
+                    >
+                      <option value="all">全部类型</option>
+                    </select>
+                  </label>
+                </div>
                 <div class="sr-only">指令类型 设备 设备类型 模式 指令项 控制指令 接收本机时刻 接收仿真时刻 实时值 量测值</div>
                 <div id="deviceTable" class="runtime-device-wrap" data-runtime-role="device-table"></div>
               </section>
@@ -674,6 +695,27 @@
                 <div class="panel-head">
                   <h2>量测值与真值</h2>
                   <span id="measurementCompareSummary">待同步</span>
+                </div>
+                <div class="table-filter-bar" aria-label="实时量测过滤">
+                  <label>名称
+                    <input
+                      id="measurementCompareKeywordFilter"
+                      type="search"
+                      data-table-filter-scope="measurementCompare"
+                      data-table-filter-field="keyword"
+                      placeholder="过滤量测或设备"
+                      autocomplete="off"
+                    />
+                  </label>
+                  <label>类型
+                    <select
+                      id="measurementCompareTypeFilter"
+                      data-table-filter-scope="measurementCompare"
+                      data-table-filter-field="type"
+                    >
+                      <option value="all">全部类型</option>
+                    </select>
+                  </label>
                 </div>
                 <div class="sr-only">量测名称 设备 量测类型 真值 量测值 偏差 状态</div>
                 <div
@@ -892,6 +934,6 @@
         </form>
       </div>
     </div>
-    <script src="./app.js"></script>
+    <script src="/app.js"></script>
   </body>
 </html>

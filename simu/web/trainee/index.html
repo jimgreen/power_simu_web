@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>极地微电网学员台</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -263,6 +263,27 @@
                   <h2>量测值</h2>
                   <span id="measurementValidCount">0 可用</span>
                 </div>
+                <div class="table-filter-bar" aria-label="量测过滤">
+                  <label>名称
+                    <input
+                      id="measurementKeywordFilter"
+                      type="search"
+                      data-table-filter-scope="measurement"
+                      data-table-filter-field="keyword"
+                      placeholder="过滤量测或设备"
+                      autocomplete="off"
+                    />
+                  </label>
+                  <label>类型
+                    <select
+                      id="measurementTypeFilter"
+                      data-table-filter-scope="measurement"
+                      data-table-filter-field="type"
+                    >
+                      <option value="all">全部类型</option>
+                    </select>
+                  </label>
+                </div>
                 <div id="measurementTable" class="measurement-compare-wrap"></div>
               </section>
 
@@ -318,6 +339,27 @@
               <div class="panel-head">
                 <h2>控制指令</h2>
                 <span id="commandPendingCount">0 待发</span>
+              </div>
+              <div class="table-filter-bar" aria-label="控制指令过滤">
+                <label>名称
+                  <input
+                    id="commandKeywordFilter"
+                    type="search"
+                    data-table-filter-scope="command"
+                    data-table-filter-field="keyword"
+                    placeholder="过滤指令或设备"
+                    autocomplete="off"
+                  />
+                </label>
+                <label>类型
+                  <select
+                    id="commandTypeFilter"
+                    data-table-filter-scope="command"
+                    data-table-filter-field="type"
+                  >
+                    <option value="all">全部类型</option>
+                  </select>
+                </label>
               </div>
               <div
                 class="command-split-workspace vertical-split-workspace"
@@ -535,6 +577,6 @@
         </div>
       </form>
     </dialog>
-    <script src="./app.js"></script>
+    <script src="/app.js"></script>
   </body>
 </html>

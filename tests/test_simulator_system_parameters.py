@@ -66,6 +66,30 @@ class SimulatorSystemParametersTest(unittest.TestCase):
         restored = PolarMicrogridSimulator(source, runtime, kernel=lambda _config: None)
         self.assertEqual(restored.snapshot()["system_parameters"]["storage_initial_soc"], 0.65)
 
+    def test_storage_soc_resets_when_day_simulation_wraps_to_zero_clock(self):
+        from simu.generate_simple_model import write_model_dir
+        from simu.service import PolarMicrogridSimulator
+
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        root = Path(workspace.name)
+        source = root / "source"
+        runtime = root / "runtime"
+        write_model_dir(source)
+        service = PolarMicrogridSimulator(source, runtime, kernel=lambda _config: None)
+        service.set_system_parameters({"storage_initial_soc": 0.72})
+        service.control_clock({"action": "start", "minute": 1439, "step_minutes": 1, "speed": 1})
+        service.runtime_stat_book.data["StorageSoc"].data[0]["soc_curr"] = "0.24"
+
+        snapshot = service.step(advance_minutes=1)
+
+        self.assertEqual(snapshot["clock"]["time"], "00:00:00")
+        self.assertEqual(snapshot["clock"]["minute"], 0)
+        self.assertAlmostEqual(float(service.runtime_stat_book.data["StorageSoc"].data[0]["soc_curr"]), 0.72)
+        storage_devices = [item for item in snapshot["devices"] if item.get("soc_curr") is not None]
+        self.assertTrue(storage_devices)
+        self.assertTrue(all(float(item["soc_curr"]) == 0.72 for item in storage_devices))
+
     def test_clock_worker_respects_configured_compute_interval(self):
         from simu.generate_simple_model import write_model_dir
         from simu.server import _advance_clock_if_due

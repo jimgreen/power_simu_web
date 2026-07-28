@@ -898,6 +898,31 @@ def make_http_server(
                 host = f"{server_host}:{server_port}"
             return f"{scheme}://{host}".rstrip("/")
 
+        def _truthy_query(self, name: str) -> bool:
+            value = (parse_qs(urlparse(self.path).query).get(name) or [""])[0]
+            return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+        def _falsey_query(self, name: str) -> bool:
+            value = (parse_qs(urlparse(self.path).query).get(name) or [""])[0]
+            return str(value).strip().lower() in {"0", "false", "no", "off"}
+
+        def _int_query(self, name: str, default: int, minimum: int = 0, maximum: int = 500) -> int:
+            raw = (parse_qs(urlparse(self.path).query).get(name) or [default])[0]
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                return default
+            return max(minimum, min(maximum, value))
+
+        def _optional_int_query(self, name: str) -> Optional[int]:
+            values = parse_qs(urlparse(self.path).query).get(name)
+            if not values or values[0] in (None, ""):
+                return None
+            try:
+                return int(values[0])
+            except (TypeError, ValueError):
+                return None
+
         def _trainee_link_payload(self, target: PolarMicrogridSimulator) -> Mapping[str, Any]:
             model = target.model_info()
             model_id = str(model.get("id", target.model_id))
@@ -914,6 +939,8 @@ def make_http_server(
                 "model_name": model.get("name", model_id),
                 "snapshot_path": f"/api/snapshot?model_id={encoded_model_id}",
                 "command_path": f"/api/student/commands?model_id={encoded_model_id}",
+                "runtime_logs_path": f"/api/runtime-logs?model_id={encoded_model_id}",
+                "measurement_delta_path": f"/api/measurements/delta?model_id={encoded_model_id}",
                 "telemetry_path": f"/api/external/telemetry?model_id={encoded_model_id}",
                 "selected_telemetry_path": f"/api/external/telemetry/query?model_id={encoded_model_id}",
                 "control_values_path": f"/api/external/controls?model_id={encoded_model_id}",
@@ -929,9 +956,35 @@ def make_http_server(
             elif path == "/api/models":
                 self._send_json(self._model_catalog())
             elif path == "/api/snapshot":
-                self._send_json(target.snapshot())
+                lite = self._truthy_query("lite")
+                default_log_limit = 20 if lite else 300
+                self._send_json(
+                    target.snapshot(
+                        include_static=not lite,
+                        runtime_log_limit=self._int_query("log_limit", default_log_limit),
+                        include_runtime_logs=not (
+                            self._falsey_query("logs") or self._falsey_query("runtime_logs")
+                        ),
+                        include_measurements=not self._falsey_query("measurements"),
+                    )
+                )
+            elif path == "/api/runtime-logs":
+                self._send_json(
+                    target.runtime_logs_delta(
+                        after_seq=self._int_query("after_seq", 0, 0, 2_000_000_000),
+                        before_seq=self._optional_int_query("before_seq"),
+                        limit=self._int_query("limit", 100, 1, 500),
+                        log_type=(parse_qs(urlparse(self.path).query).get("type") or [""])[0],
+                    )
+                )
             elif path == "/api/measurements":
                 self._send_json(target.measurements())
+            elif path == "/api/measurements/delta":
+                self._send_json(
+                    target.measurement_delta(
+                        after_seq=self._int_query("after_seq", 0, 0, 2_000_000_000),
+                    )
+                )
             elif path == "/api/external/telemetry":
                 self._send_json(target.latest_telemetry_values())
             elif path == "/api/external/controls":

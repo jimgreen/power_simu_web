@@ -19,6 +19,9 @@ const VERTICAL_SPLIT_MIN_TOP_PX = 120;
 const VERTICAL_SPLIT_MIN_BOTTOM_PX = 120;
 const state = {
   snapshot: null,
+  activePage: "",
+  pageSections: {},
+  pageMain: null,
   models: [],
   activeModelId: localStorage.getItem("polarTraineeModelId") || "",
   receiveMode: false,
@@ -31,9 +34,11 @@ const state = {
   teacherModelName: localStorage.getItem("polarTeacherModelName") || "",
   teacherSnapshotPath: localStorage.getItem("polarTeacherSnapshotPath") || "",
   teacherCommandPath: localStorage.getItem("polarTeacherCommandPath") || "",
+  teacherMeasurementDeltaPath: localStorage.getItem("polarTeacherMeasurementDeltaPath") || "",
   localDefinitionSnapshot: null,
   localDefinitionModelId: "",
   receiveReconnectAttempts: 0,
+  refreshRequestActive: false,
   receiveRequestActive: false,
   definitionMismatchLastKey: "",
   runtimeLogs: [],
@@ -56,7 +61,13 @@ const state = {
   remoteAdjustmentSending: false,
   commandCancelSending: new Set(),
   measurementFilter: { dev_type: "all", dev_name: "" },
+  measurementKeywordFilter: "",
+  measurementTypeFilter: "all",
+  measurementDeltaSeq: 0,
+  measurementDeltaRequestActive: false,
   controlFilter: { dev_type: "all", dev_name: "" },
+  commandKeywordFilter: "",
+  commandTypeFilter: "all",
   activeControlTab: "remote-control",
   selectedCommandTraceKey: "",
   selectedCommandTraceLabel: "",
@@ -90,10 +101,17 @@ const state = {
   overviewBottomSplitDrag: null,
   verticalSplitRatios: initialVerticalSplitRatios(),
   verticalSplitDrag: null,
+  deviceTreeSelectionAnchors: {},
+  virtualTables: {},
+  virtualTableScrollRaf: {},
 };
 const pending = { run_status: new Map(), set_values: new Map() };
 const RENEWABLE_COMMAND_VALID_MINUTES = 5;
 const TRACE_HISTORY_LIMIT = 45000;
+const TRACE_HIGH_RES_WINDOW_MINUTES = 24 * 60;
+const VIRTUAL_TABLE_ROW_HEIGHT = 34;
+const VIRTUAL_TABLE_MIN_ROWS = 220;
+const VIRTUAL_TABLE_BUFFER_ROWS = 12;
 const CURVE_DISPLAY_MODES = {
   year: { key: "year", label: "年仿真", pointCount: 8760, stepMinutes: 60, tableTitle: "年曲线数据表", tableSummary: "1小时间隔 · 只读" },
   day: { key: "day", label: "日仿真", pointCount: 1440, stepMinutes: 1, tableTitle: "日曲线数据表", tableSummary: "1分钟间隔 · 只读" },
@@ -187,6 +205,132 @@ function canvasRenderedSize(canvas, fallbackWidth = 900, fallbackHeight = 260) {
     width: Math.max(1, Math.floor(rect.width || canvas.clientWidth || fallbackWidth)),
     height: Math.max(1, Math.floor(rect.height || canvas.clientHeight || fallbackHeight)),
   };
+}
+
+function sampleCurvePointsForCanvas(values, canvasWidth, density = 1.5) {
+  const total = Array.isArray(values) ? values.length : 0;
+  const target = Math.max(16, Math.floor((Number(canvasWidth) || 900) * density));
+  if (total <= target) return values.map((value, index) => ({ index, value }));
+  const bucketSize = total / target;
+  const sampled = new Map();
+  for (let bucket = 0; bucket < target; bucket += 1) {
+    const start = Math.floor(bucket * bucketSize);
+    const end = Math.min(total, Math.max(start + 1, Math.ceil((bucket + 1) * bucketSize)));
+    let minIndex = start;
+    let maxIndex = start;
+    for (let index = start; index < end; index += 1) {
+      if (Number(values[index]) < Number(values[minIndex])) minIndex = index;
+      if (Number(values[index]) > Number(values[maxIndex])) maxIndex = index;
+    }
+    [start, minIndex, maxIndex, end - 1].forEach((index) => sampled.set(index, values[index]));
+  }
+  sampled.set(total - 1, values[total - 1]);
+  return Array.from(sampled.entries())
+    .sort((left, right) => left[0] - right[0])
+    .map(([index, value]) => ({ index, value }));
+}
+
+function compactTraceHistory(history, visibleWindowMinutes = 24 * 60) {
+  if (!Array.isArray(history) || history.length <= TRACE_HISTORY_LIMIT) return history || [];
+  const latestMinute = Number(history[history.length - 1]?.minute ?? 0) || 0;
+  const highResStart = latestMinute - Math.max(TRACE_HIGH_RES_WINDOW_MINUTES, Number(visibleWindowMinutes) || 0);
+  const recent = [];
+  const archived = new Map();
+  const bucketMinutes = Math.max(5, Math.ceil(Math.max(1, latestMinute - highResStart) / 1200));
+  history.forEach((point) => {
+    const minute = Number(point?.minute ?? 0) || 0;
+    if (minute >= highResStart) {
+      recent.push(point);
+      return;
+    }
+    const bucket = Math.floor(minute / bucketMinutes);
+    archived.set(bucket, point);
+  });
+  return [...archived.values(), ...recent].slice(-TRACE_HISTORY_LIMIT);
+}
+
+function virtualTableWindow(key, rows, options = {}) {
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  const total = sourceRows.length;
+  const rowHeight = Math.max(1, Number(options.rowHeight) || VIRTUAL_TABLE_ROW_HEIGHT);
+  const minRows = Math.max(1, Number(options.minRows) || VIRTUAL_TABLE_MIN_ROWS);
+  const bufferRows = Math.max(0, Number(options.bufferRows) || VIRTUAL_TABLE_BUFFER_ROWS);
+  if (total <= minRows) {
+    return {
+      enabled: false,
+      rows: sourceRows,
+      start: 0,
+      end: total,
+      beforeHeight: 0,
+      afterHeight: 0,
+      rowHeight,
+      total,
+    };
+  }
+  const tableState = state.virtualTables?.[key] || {};
+  const viewportHeight = Math.max(180, Number(tableState.viewportHeight) || 420);
+  const maxScrollTop = Math.max(0, total * rowHeight - viewportHeight);
+  const scrollTop = clamp(Number(tableState.scrollTop) || 0, 0, maxScrollTop);
+  const visibleRows = Math.ceil(viewportHeight / rowHeight) + bufferRows * 2;
+  const maxStart = Math.max(0, total - visibleRows);
+  const start = clamp(Math.floor(scrollTop / rowHeight) - bufferRows, 0, maxStart);
+  const end = Math.min(total, start + visibleRows);
+  state.virtualTables[key] = { ...tableState, scrollTop, viewportHeight };
+  return {
+    enabled: true,
+    rows: sourceRows.slice(start, end),
+    start,
+    end,
+    beforeHeight: start * rowHeight,
+    afterHeight: Math.max(0, total - end) * rowHeight,
+    rowHeight,
+    total,
+    scrollTop,
+    viewportHeight,
+  };
+}
+
+function renderVirtualSpacerRow(height, colSpan) {
+  if (!height || height <= 0) return "";
+  return `<tr class="virtual-table-spacer" aria-hidden="true"><td colspan="${Number(colSpan) || 1}" style="height:${Math.round(height)}px"></td></tr>`;
+}
+
+function restoreVirtualTableScroll(container, key) {
+  const scroller = container?.querySelector?.(`[data-virtual-table="${key}"]`);
+  if (!scroller) return;
+  const tableState = state.virtualTables?.[key] || {};
+  const scrollTop = Number(tableState.scrollTop) || 0;
+  if (Math.abs(scroller.scrollTop - scrollTop) > 1) scroller.scrollTop = scrollTop;
+  state.virtualTables[key] = {
+    ...tableState,
+    scrollTop: scroller.scrollTop,
+    viewportHeight: scroller.clientHeight || tableState.viewportHeight || 420,
+  };
+}
+
+function scheduleVirtualTableRender(key) {
+  if (!key) return;
+  state.virtualTableScrollRaf = state.virtualTableScrollRaf || {};
+  if (state.virtualTableScrollRaf[key]) return;
+  state.virtualTableScrollRaf[key] = requestAnimationFrame(() => {
+    delete state.virtualTableScrollRaf[key];
+    if (key === "measurement" && currentPageName() === "measurements") {
+      renderMeasurements(state.snapshot || {});
+    }
+  });
+}
+
+function handleVirtualTableScroll(event) {
+  const scroller = event.target instanceof Element ? event.target.closest("[data-virtual-table]") : null;
+  if (!scroller || scroller !== event.target) return;
+  const key = scroller.dataset.virtualTable || "";
+  const tableState = state.virtualTables?.[key] || {};
+  state.virtualTables[key] = {
+    ...tableState,
+    scrollTop: scroller.scrollTop,
+    viewportHeight: scroller.clientHeight || tableState.viewportHeight || 420,
+  };
+  scheduleVirtualTableRender(key);
 }
 
 function setChartCursorFromEvent(chartKey, canvas, plot, event, drawFn) {
@@ -336,34 +480,93 @@ function initTraceChartInteractions(chartKey, canvasId, drawFn) {
   });
 }
 
-function pageFromHash() {
+const TRAINEE_PAGE_ROUTES = {
+  "/": "overview",
+  "/overview": "overview",
+  "/model": "model",
+  "/curves": "curves",
+  "/measurements": "measurements",
+  "/commands": "commands",
+  "/renewable": "renewable",
+  "/history": "history",
+};
+
+function normalizePagePath(pathname) {
+  const path = String(pathname || "/").replace(/\/+$/, "") || "/";
+  return path.startsWith("/") ? path : `/${path}`;
+}
+
+function pagePath(page) {
+  return page === "overview" ? "/" : `/${page}`;
+}
+
+function pageFromLocation() {
   const fallback = document.querySelector(".app-shell")?.dataset.defaultPage || "overview";
-  return (location.hash || "").replace("#", "") || fallback;
+  const hashPage = (location.hash || "").replace("#", "").trim();
+  if (hashPage) return hashPage;
+  return TRAINEE_PAGE_ROUTES[normalizePagePath(location.pathname)] || fallback;
+}
+
+function currentPageName() {
+  return state.activePage || document.querySelector("[data-page].is-active")?.dataset.page || pageFromLocation();
+}
+
+function collectPageSections() {
+  const main = document.querySelector(".page-main");
+  if (!main) return;
+  state.pageMain = main;
+  state.pageSections = {};
+  Array.from(main.children).forEach((section) => {
+    if (!(section instanceof HTMLElement) || !section.dataset.page) return;
+    section.classList.remove("is-active");
+    state.pageSections[section.dataset.page] = section;
+    section.remove();
+  });
+}
+
+function mountPageSection(page) {
+  const main = state.pageMain || document.querySelector(".page-main");
+  const section = state.pageSections?.[page];
+  if (!main || !section) return;
+  const current = Array.from(main.children).find((child) => child instanceof HTMLElement && child.dataset.page);
+  if (current === section) {
+    section.classList.add("is-active");
+    return;
+  }
+  if (current) {
+    current.classList.remove("is-active");
+    current.remove();
+  }
+  section.classList.add("is-active");
+  main.appendChild(section);
 }
 
 function showPage(page, updateHash = true) {
-  const sections = Array.from(document.querySelectorAll("[data-page]"));
-  const target = sections.some((section) => section.dataset.page === page) ? page : "overview";
-  sections.forEach((section) => section.classList.toggle("is-active", section.dataset.page === target));
+  const target = state.pageSections?.[page] ? page : "overview";
+  state.activePage = target;
+  mountPageSection(target);
   document.querySelectorAll("[data-nav-page]").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.navPage === target);
   });
-  if (updateHash && location.hash !== `#${target}`) {
-    history.replaceState(null, "", `#${target}`);
+  const nextPath = pagePath(target);
+  if (updateHash && normalizePagePath(location.pathname) !== nextPath) {
+    history.pushState(null, "", nextPath);
+  } else if (location.hash) {
+    history.replaceState(null, "", nextPath);
   }
   requestAnimationFrame(() => {
-    if (target === "model") renderTraineeModelPage();
-    if (target === "curves") renderCurveDisplay(state.snapshot || {}, true);
-    drawMeasurementTraceChart();
+    renderActiveTraineePage(state.snapshot || {}, true);
   });
 }
 
 function initPageNavigation() {
+  collectPageSections();
   document.querySelectorAll("[data-nav-page]").forEach((button) => {
     button.addEventListener("click", () => showPage(button.dataset.navPage));
   });
-  window.addEventListener("hashchange", () => showPage(pageFromHash(), false));
-  showPage(pageFromHash(), false);
+  window.addEventListener("popstate", () => showPage(pageFromLocation(), false));
+  window.addEventListener("hashchange", () => showPage(pageFromLocation(), true));
+  showPage(pageFromLocation(), false);
 }
 
 function modelScopedPath(path) {
@@ -387,6 +590,53 @@ async function api(path, options = {}) {
   });
   if (!response.ok) throw new Error(await response.text());
   return response.json();
+}
+
+const STATIC_SNAPSHOT_KEYS = [
+  "files",
+  "source_files",
+  "work_files",
+  "definitions",
+  "curves",
+  "settings",
+  "device_parameters",
+];
+
+function hasStaticSnapshotPayload(snapshot) {
+  return Boolean(snapshot && STATIC_SNAPSHOT_KEYS.every((key) => snapshot[key] !== undefined));
+}
+
+function mergeSnapshot(previous, incoming) {
+  if (!previous || !incoming) return incoming;
+  const merged = { ...previous, ...incoming };
+  STATIC_SNAPSHOT_KEYS.forEach((key) => {
+    if (incoming[key] === undefined && previous[key] !== undefined) merged[key] = previous[key];
+  });
+  return merged;
+}
+
+function snapshotLogLimit() {
+  return currentPageName() === "history" ? 300 : 20;
+}
+
+function snapshotPollPath() {
+  const currentModelId = String(state.snapshot?.model?.id || "");
+  const needsStaticPayload = !hasStaticSnapshotPayload(state.snapshot)
+    || (currentModelId && state.activeModelId && currentModelId !== state.activeModelId);
+  if (needsStaticPayload) return "/api/snapshot";
+  return "/api/snapshot?lite=1&logs=0&measurements=0";
+}
+
+function appendUrlQuery(url, params) {
+  try {
+    const target = new URL(url, location.href);
+    Object.entries(params || {}).forEach(([key, value]) => target.searchParams.set(key, String(value)));
+    return target.href;
+  } catch (_error) {
+    const separator = String(url || "").includes("?") ? "&" : "?";
+    const query = new URLSearchParams(params || {}).toString();
+    return `${url}${separator}${query}`;
+  }
 }
 
 async function teacherApi(path, options = {}) {
@@ -418,6 +668,25 @@ function teacherReceiveAddress() {
   return connectionApiUrl({ teacherApiBase }, teacherSnapshotPath());
 }
 
+function teacherSnapshotPollAddress() {
+  return appendUrlQuery(teacherReceiveAddress(), { lite: 1, logs: 0, measurements: 0 });
+}
+
+function measurementDeltaPathFromSnapshotPath(snapshotPath = "") {
+  try {
+    const url = new URL(snapshotPath || "/api/snapshot", location.href);
+    const query = url.search || "";
+    return `/api/measurements/delta${query}`;
+  } catch (_error) {
+    return "/api/measurements/delta";
+  }
+}
+
+function teacherMeasurementDeltaAddress() {
+  const path = state.teacherMeasurementDeltaPath || measurementDeltaPathFromSnapshotPath(teacherSnapshotPath());
+  return appendUrlQuery(connectionApiUrl({ teacherApiBase }, path), { after_seq: state.measurementDeltaSeq });
+}
+
 function displayReceiveAddress(address) {
   try {
     return decodeURI(String(address || ""));
@@ -427,11 +696,91 @@ function displayReceiveAddress(address) {
 }
 
 async function teacherSnapshotApi() {
-  const response = await fetch(teacherReceiveAddress(), {
+  const response = await fetch(teacherSnapshotPollAddress(), {
     headers: { Accept: "application/json" },
   });
   if (!response.ok) throw new Error(await response.text());
   return response.json();
+}
+
+function measurementNameKey(item) {
+  return String(item?.name || "");
+}
+
+function ensureMeasurementChannelRow(measurements, definitionsByName, channel, item) {
+  if (item.deleted) {
+    measurements[channel] = (measurements[channel] || []).filter((row) => measurementNameKey(row) !== item.name);
+    return null;
+  }
+  const rows = measurements[channel] || [];
+  let row = rows.find((entry) => measurementNameKey(entry) === item.name);
+  if (!row) {
+    const definition = definitionsByName.get(item.name);
+    if (!definition) return null;
+    row = { ...definition };
+    rows.push(row);
+    measurements[channel] = rows;
+  }
+  return row;
+}
+
+function applyMeasurementDelta(payload) {
+  if (!payload || !state.snapshot) return false;
+  const measurements = state.snapshot.measurements || {};
+  state.snapshot.measurements = measurements;
+  const definitions = measurements.definitions || state.snapshot.definitions?.measurement || [];
+  const definitionsByName = new Map(definitions.map((row) => [measurementNameKey(row), row]));
+  let changed = false;
+  (payload.items || []).forEach((item) => {
+    if (!item?.name) return;
+    if (item.deleted) {
+      ensureMeasurementChannelRow(measurements, definitionsByName, "real", item);
+      ensureMeasurementChannelRow(measurements, definitionsByName, "scada", item);
+      changed = true;
+      return;
+    }
+    const realRow = item.real_value !== undefined && item.real_value !== null
+      ? ensureMeasurementChannelRow(measurements, definitionsByName, "real", item)
+      : null;
+    const scadaRow = item.scada_value !== undefined && item.scada_value !== null
+      ? ensureMeasurementChannelRow(measurements, definitionsByName, "scada", item)
+      : null;
+    if (realRow) {
+      realRow.value = item.real_value;
+      realRow.valid = item.valid;
+      realRow.updated_simu_time = item.updated_simu_time;
+      realRow.updated_wall_time = item.updated_wall_time;
+      changed = true;
+    }
+    if (scadaRow) {
+      scadaRow.value = item.scada_value;
+      scadaRow.valid = item.valid;
+      scadaRow.updated_simu_time = item.updated_simu_time;
+      scadaRow.updated_wall_time = item.updated_wall_time;
+      changed = true;
+    }
+  });
+  state.measurementDeltaSeq = Math.max(Number(state.measurementDeltaSeq) || 0, Number(payload.seq) || 0);
+  return changed;
+}
+
+async function refreshMeasurementDelta(renderNow = false) {
+  if (state.measurementDeltaRequestActive || !state.snapshot) return false;
+  state.measurementDeltaRequestActive = true;
+  try {
+    const payload = state.receiveMode
+      ? await (async () => {
+          const response = await fetch(teacherMeasurementDeltaAddress(), { headers: { Accept: "application/json" } });
+          if (!response.ok) throw new Error(await response.text());
+          return response.json();
+        })()
+      : await api(`/api/measurements/delta?after_seq=${state.measurementDeltaSeq}`);
+    const changed = applyMeasurementDelta(payload);
+    if (changed && renderNow && currentPageName() === "measurements") renderMeasurements(state.snapshot || {});
+    return changed;
+  } finally {
+    state.measurementDeltaRequestActive = false;
+  }
 }
 
 function teacherCommandPath() {
@@ -566,6 +915,7 @@ function legacyTeacherInteractionConnection(url) {
     modelName: String(modelId),
     snapshotPath: `/api/snapshot?model_id=${encodedModelId}`,
     commandPath: `/api/student/commands?model_id=${encodedModelId}`,
+    measurementDeltaPath: `/api/measurements/delta?model_id=${encodedModelId}`,
   };
 }
 
@@ -598,6 +948,11 @@ async function resolveTeacherInteractionLink(rawLink) {
     modelName: String(payload.model_name || modelId),
     snapshotPath: String(payload.snapshot_path || `/api/snapshot?model_id=${encodeURIComponent(modelId)}`),
     commandPath: String(payload.command_path || `/api/student/commands?model_id=${encodeURIComponent(modelId)}`),
+    measurementDeltaPath: String(
+      payload.measurement_delta_path || measurementDeltaPathFromSnapshotPath(
+        payload.snapshot_path || `/api/snapshot?model_id=${encodeURIComponent(modelId)}`,
+      ),
+    ),
   };
 }
 
@@ -668,12 +1023,15 @@ function applyTeacherConnection(connection) {
   state.teacherModelName = connection.modelName;
   state.teacherSnapshotPath = connection.snapshotPath;
   state.teacherCommandPath = connection.commandPath;
+  state.teacherMeasurementDeltaPath = connection.measurementDeltaPath;
   state.activeModelId = connection.modelId;
+  state.measurementDeltaSeq = 0;
   localStorage.setItem("polarTeacherApiUrl", teacherApiBase);
   localStorage.setItem("polarTeacherInteractionLink", state.interactionLink);
   localStorage.setItem("polarTeacherModelName", state.teacherModelName);
   localStorage.setItem("polarTeacherSnapshotPath", state.teacherSnapshotPath);
   localStorage.setItem("polarTeacherCommandPath", state.teacherCommandPath);
+  localStorage.setItem("polarTeacherMeasurementDeltaPath", state.teacherMeasurementDeltaPath);
   localStorage.setItem("polarTraineeModelId", state.activeModelId);
   renderModelSelector();
 }
@@ -1293,6 +1651,7 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.commandTraceHistory = [];
   state.traceRunId = null;
   state.selectedMeasurementKey = "";
+  state.measurementDeltaSeq = 0;
   state.selectedCommandTraceKey = "";
   state.selectedCommandTraceLabel = "";
   state.modelFilter = { dev_type: "all", dev_name: "" };
@@ -1311,6 +1670,7 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.measurementFilter = { dev_type: "all", dev_name: "" };
   state.controlFilter = { dev_type: "all", dev_name: "" };
   state.activeControlTab = "remote-control";
+  state.deviceTreeSelectionAnchors = {};
   if (shouldRefresh) stopRenewableControl("模型已切换，策略已停止。", true);
   renderModelSelector();
   updatePendingCount();
@@ -1339,15 +1699,21 @@ async function refresh() {
     renderReceiveMode();
     return;
   }
+  if (state.refreshRequestActive) return;
+  state.refreshRequestActive = true;
   try {
-    const snapshot = await api("/api/snapshot");
+    const snapshot = mergeSnapshot(state.snapshot, await api(snapshotPollPath()));
+    state.snapshot = snapshot;
+    await refreshMeasurementDelta(false);
     $("connectionDot").className = "ok";
     $("connectionText").textContent = "在线";
     state.snapshotSource = "local";
-    renderSnapshot(snapshot);
+    renderSnapshot(state.snapshot);
   } catch (_error) {
     $("connectionDot").className = "off";
     $("connectionText").textContent = "离线";
+  } finally {
+    state.refreshRequestActive = false;
   }
 }
 
@@ -1355,9 +1721,11 @@ async function refreshFromTeacher(epoch = state.receiveEpoch) {
   if (state.receiveRequestActive) return;
   state.receiveRequestActive = true;
   try {
-    const snapshot = await teacherSnapshotApi();
+    const snapshot = mergeSnapshot(state.snapshot, await teacherSnapshotApi());
     if (!state.receiveMode || epoch !== state.receiveEpoch) return;
-    acceptTeacherSnapshot(snapshot, epoch);
+    state.snapshot = snapshot;
+    await refreshMeasurementDelta(false);
+    acceptTeacherSnapshot(state.snapshot, epoch);
   } catch (_error) {
     if (!state.receiveMode || epoch !== state.receiveEpoch) return;
     $("connectionDot").className = "off";
@@ -1392,21 +1760,12 @@ function renderSnapshot(snapshot) {
     state.selectedMeasurementKey = "";
   }
   state.traceRunId = runId;
-  renderTeacherWeather(snapshot);
   renderReceiveMode();
-  renderTraineeModelPage(snapshot);
-  if (document.querySelector('[data-page="curves"]')?.classList.contains("is-active")) {
-    renderCurveDisplay(snapshot);
-  }
   appendMeasurementTrace(snapshot);
   appendCommandTrace(snapshot);
-  renderMeasurements(snapshot);
-  renderCombinedControlPage();
-  renderRenewableControl(snapshot);
   syncCommandHistoryLogs(snapshot.commands?.history || []);
-  renderHistory();
   updatePendingCount();
-  renderTraineeOverviewDashboard(snapshot);
+  renderActiveTraineePage(snapshot);
   maybeRunRenewableControl(snapshot);
 }
 
@@ -2005,6 +2364,39 @@ function renderTraineeOverviewDashboard(snapshot) {
   renderTraineeOverviewEvents();
 }
 
+function renderActiveTraineePage(snapshot = state.snapshot || {}, force = false) {
+  const activePage = currentPageName();
+  if (activePage === "overview") {
+    renderTeacherWeather(snapshot);
+    renderTraineeOverviewDashboard(snapshot);
+    initOverviewBottomSplitter();
+    return;
+  }
+  if (activePage === "model") {
+    renderTraineeModelPage(snapshot);
+    return;
+  }
+  if (activePage === "curves") {
+    renderCurveDisplay(snapshot, force);
+    return;
+  }
+  if (activePage === "measurements") {
+    renderMeasurements(snapshot);
+    return;
+  }
+  if (activePage === "commands") {
+    renderCombinedControlPage();
+    return;
+  }
+  if (activePage === "renewable") {
+    renderRenewableControl(snapshot);
+    return;
+  }
+  if (activePage === "history") {
+    renderHistory();
+  }
+}
+
 function curveDisplayMode(snapshot = state.snapshot || {}) {
   const curves = snapshot.curves || {};
   const rawMode = String(curves.mode || "").toLowerCase();
@@ -2501,16 +2893,16 @@ function drawCurveDisplay(snapshot = state.snapshot || {}) {
   const activeKey = isCurveDisplaySeriesHidden(state.activeCurveDisplayKey) ? "" : state.activeCurveDisplayKey;
   metas.forEach((meta) => {
     const values = seriesByKey.get(meta.key) || [];
-    const stride = Math.max(1, Math.floor(values.length / Math.max(1, (right - left) * 1.4)));
+    const sampledPoints = sampleCurvePointsForCanvas(values, right - left, 1.4);
     ctx.strokeStyle = meta.color;
     ctx.lineWidth = activeKey === meta.key ? 3.4 : 2;
     ctx.beginPath();
-    for (let i = 0; i < values.length; i += stride) {
-      const x = left + (i / Math.max(1, values.length - 1)) * (right - left);
-      const y = curveDisplayValueToY(values[i], meta, canvas);
-      if (i === 0) ctx.moveTo(x, y);
+    sampledPoints.forEach((point, index) => {
+      const x = left + (point.index / Math.max(1, values.length - 1)) * (right - left);
+      const y = curveDisplayValueToY(point.value, meta, canvas);
+      if (index === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
-    }
+    });
     if (values.length) ctx.lineTo(right, curveDisplayValueToY(values[values.length - 1], meta, canvas));
     ctx.stroke();
   });
@@ -3213,6 +3605,181 @@ function renderDeviceTreeFilterEmpty(query) {
   return query ? `<div class="empty-state">未匹配“${escapeHtml(query)}”</div>` : '<div class="empty-state">暂无设备</div>';
 }
 
+function deviceTreeItemType(item) {
+  return String(item?.dev_type || item?.type || "");
+}
+
+function deviceTreeItemName(item) {
+  return String(item?.dev_name || item?.name || "");
+}
+
+function deviceTreeFilterKey(devType, devName = "") {
+  return `${devType || "all"}::${devName || ""}`;
+}
+
+function deviceTreeFilterItem(devType, devName = "") {
+  return { dev_type: devType || "all", dev_name: devName || "" };
+}
+
+function uniqueDeviceTreeSelection(items) {
+  const seen = new Set();
+  const result = [];
+  (items || []).forEach((item) => {
+    const devType = String(item?.dev_type || "all");
+    const devName = String(item?.dev_name || "");
+    const key = deviceTreeFilterKey(devType, devName);
+    if (seen.has(key)) return;
+    seen.add(key);
+    result.push(deviceTreeFilterItem(devType, devName));
+  });
+  return result.some((item) => item.dev_type === "all")
+    ? [deviceTreeFilterItem("all", "")]
+    : result;
+}
+
+function deviceTreeFilterSelection(filter = {}) {
+  const selectedItems = Array.isArray(filter?.selected_items) ? filter.selected_items : [];
+  const selected = uniqueDeviceTreeSelection(selectedItems);
+  if (selected.length) return selected;
+  return [deviceTreeFilterItem(filter?.dev_type || "all", filter?.dev_name || "")];
+}
+
+function withDeviceTreeSelection(filter = {}, selection = []) {
+  const selected = uniqueDeviceTreeSelection(selection);
+  const primary = selected[0] || deviceTreeFilterItem("all", "");
+  return {
+    ...filter,
+    dev_type: primary.dev_type,
+    dev_name: primary.dev_name,
+    selected_items: selected.length ? selected : [deviceTreeFilterItem("all", "")],
+  };
+}
+
+function isDeviceTreeNodeActive(filter, devType, devName = "") {
+  const key = deviceTreeFilterKey(devType || "all", devName || "");
+  return deviceTreeFilterSelection(filter).some((item) => deviceTreeFilterKey(item.dev_type, item.dev_name) === key);
+}
+
+function isDeviceTreeParentActive(filter, devType) {
+  return deviceTreeFilterSelection(filter).some((item) => item.dev_type === devType);
+}
+
+function deviceFilterMatches(dev, filter) {
+  const selection = deviceTreeFilterSelection(filter);
+  if (selection.some((item) => item.dev_type === "all")) return true;
+  const devType = deviceTreeItemType(dev);
+  const devName = deviceTreeItemName(dev);
+  return selection.some((item) => item.dev_type === devType && (!item.dev_name || item.dev_name === devName));
+}
+
+function deviceTreeButtonItem(button, dataPrefix) {
+  const dataset = button?.dataset || {};
+  const typeKey = `${dataPrefix}TreeType`;
+  const nameKey = `${dataPrefix}TreeName`;
+  return deviceTreeFilterItem(dataset[typeKey] || "all", dataset[nameKey] || "");
+}
+
+function selectDeviceTreeRangeItems(button, dataPrefix, anchorKey = "") {
+  const container = button?.closest?.(".device-tree") || button?.parentElement;
+  if (!container) return [deviceTreeButtonItem(button, dataPrefix)];
+  const selector = `[data-${dataPrefix.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}-tree-type]`;
+  const buttons = Array.from(container.querySelectorAll(selector)).filter((item) => item instanceof HTMLElement);
+  const currentKey = deviceTreeFilterKey(
+    button.dataset?.[`${dataPrefix}TreeType`] || "all",
+    button.dataset?.[`${dataPrefix}TreeName`] || "",
+  );
+  const currentIndex = buttons.findIndex((item) => deviceTreeFilterKey(
+    item.dataset?.[`${dataPrefix}TreeType`] || "all",
+    item.dataset?.[`${dataPrefix}TreeName`] || "",
+  ) === currentKey);
+  const anchorIndex = buttons.findIndex((item) => deviceTreeFilterKey(
+    item.dataset?.[`${dataPrefix}TreeType`] || "all",
+    item.dataset?.[`${dataPrefix}TreeName`] || "",
+  ) === anchorKey);
+  if (currentIndex < 0 || anchorIndex < 0) return [deviceTreeButtonItem(button, dataPrefix)];
+  const [start, end] = currentIndex < anchorIndex ? [currentIndex, anchorIndex] : [anchorIndex, currentIndex];
+  return buttons.slice(start, end + 1).map((item) => deviceTreeButtonItem(item, dataPrefix));
+}
+
+function updateDeviceTreeFilterSelection(filterName, devType, devName = "", event = null, dataPrefix = "", button = null) {
+  const currentFilter = state[filterName] || { dev_type: "all", dev_name: "" };
+  const clicked = deviceTreeFilterItem(devType || "all", devName || "");
+  const clickedKey = deviceTreeFilterKey(clicked.dev_type, clicked.dev_name);
+  const isMulti = Boolean(event?.ctrlKey || event?.metaKey);
+  const isRange = Boolean(event?.shiftKey);
+  let nextSelection = [clicked];
+  const targetButton = button || event?.currentTarget;
+  if (clicked.dev_type !== "all" && isRange && dataPrefix && targetButton) {
+    nextSelection = selectDeviceTreeRangeItems(
+      targetButton,
+      dataPrefix,
+      state.deviceTreeSelectionAnchors?.[filterName] || "",
+    );
+  } else if (clicked.dev_type !== "all" && isMulti) {
+    const currentSelection = deviceTreeFilterSelection(currentFilter).filter((item) => item.dev_type !== "all");
+    const exists = currentSelection.some((item) => deviceTreeFilterKey(item.dev_type, item.dev_name) === clickedKey);
+    nextSelection = exists
+      ? currentSelection.filter((item) => deviceTreeFilterKey(item.dev_type, item.dev_name) !== clickedKey)
+      : [...currentSelection, clicked];
+    if (!nextSelection.length) nextSelection = [deviceTreeFilterItem("all", "")];
+  }
+  state.deviceTreeSelectionAnchors = {
+    ...(state.deviceTreeSelectionAnchors || {}),
+    [filterName]: clickedKey,
+  };
+  state[filterName] = withDeviceTreeSelection(currentFilter, nextSelection);
+  return state[filterName];
+}
+
+function deviceFilterLabel(filter = {}) {
+  const selection = deviceTreeFilterSelection(filter);
+  if (!selection.length || selection[0].dev_type === "all") return "全部设备";
+  if (selection.length > 1) return `已选 ${selection.length} 项`;
+  return selection[0].dev_name || selection[0].dev_type;
+}
+
+function tableFilterText(value) {
+  return String(value ?? "").trim().toLocaleLowerCase("zh-CN");
+}
+
+function tableFilterMatchesKeyword(fields, keyword) {
+  const query = tableFilterText(keyword);
+  if (!query) return true;
+  return (fields || []).some((field) => tableFilterText(field).includes(query));
+}
+
+function tableFilterTypeOptions(rows, labelFn) {
+  const labels = new Map();
+  (rows || []).forEach((row) => {
+    const label = String(labelFn(row) || "").trim();
+    if (label) labels.set(label, label);
+  });
+  return Array.from(labels.values()).sort((left, right) => left.localeCompare(right, "zh-CN"));
+}
+
+function syncTableKeywordFilter(inputId, value) {
+  const input = $(inputId);
+  if (input && input.value !== String(value || "")) input.value = String(value || "");
+}
+
+function syncTableTypeFilter(selectId, stateKey, options) {
+  const select = $(selectId);
+  if (!select) return;
+  if (state[stateKey] !== "all" && !(options || []).includes(state[stateKey])) {
+    state[stateKey] = "all";
+  }
+  const html = [
+    '<option value="all">全部类型</option>',
+    ...(options || []).map((option) => `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`),
+  ].join("");
+  if (select.innerHTML !== html) select.innerHTML = html;
+  if (select.value !== state[stateKey]) select.value = state[stateKey];
+}
+
+function tableFilterIsActive(keyword, type) {
+  return Boolean(String(keyword || "").trim()) || (type && type !== "all");
+}
+
 function refreshDeviceTreeFilterScope(scope) {
   if (scope === "model") renderTraineeModelDeviceTree();
   if (scope === "measurement") renderDeviceTree("measurementDeviceTree", "measurementTreeSummary", measurementDevices(), state.measurementFilter, "measurement", "measurement");
@@ -3226,12 +3793,12 @@ function renderDeviceTree(containerId, summaryId, devices, filter, scope, dataPr
   const treeResult = filterDeviceTreeGroups(groups, scope);
   const total = devices.length;
   $(summaryId).textContent = deviceTreeSummary(treeResult);
-  const rootActive = filter.dev_type === "all";
+  const rootActive = isDeviceTreeNodeActive(filter, "all", "");
   const rootAttr = `data-${dataPrefix}-tree-type="all" data-${dataPrefix}-tree-name=""`;
   const groupHtml = treeResult.groupEntries.map(([devType, items]) => {
     const isCollapsed = treeResult.query ? false : isDeviceTreeGroupCollapsed(scope, devType);
-    const typeActive = filter.dev_type === devType && !filter.dev_name;
-    const parentActive = filter.dev_type === devType;
+    const typeActive = isDeviceTreeNodeActive(filter, devType, "");
+    const parentActive = isDeviceTreeParentActive(filter, devType);
     return `
       <div class="tree-group">
         <button
@@ -3247,7 +3814,7 @@ function renderDeviceTree(containerId, summaryId, devices, filter, scope, dataPr
         ${deviceTreeChildren(isCollapsed, items.map((dev) => {
           const name = deviceName(dev);
           const displayName = devType === "Environment" && name === "weather" ? "气象" : name;
-          const isActive = filter.dev_type === devType && filter.dev_name === name;
+          const isActive = isDeviceTreeNodeActive(filter, devType, name);
           return `
             <button
               type="button"
@@ -3269,18 +3836,21 @@ function renderDeviceTree(containerId, summaryId, devices, filter, scope, dataPr
     ${groupHtml || renderDeviceTreeFilterEmpty(treeResult.query)}`;
 }
 
-function selectTreeFilter(filterName, devType, devName = "") {
-  state[filterName] = { dev_type: devType || "all", dev_name: devName || "" };
+function selectTreeFilter(filterName, devType, devName = "", event = null, button = null, dataPrefix = "") {
+  state[filterName] = updateDeviceTreeFilterSelection(
+    filterName,
+    devType,
+    devName,
+    event,
+    dataPrefix,
+    button,
+  );
   if (filterName === "measurementFilter") renderMeasurements(state.snapshot || {});
   if (filterName === "controlFilter") renderCombinedControlPage();
 }
 
 function filteredDevices(devices, filter) {
-  return (devices || []).filter((dev) => {
-    if (filter.dev_type && filter.dev_type !== "all" && deviceType(dev) !== filter.dev_type) return false;
-    if (filter.dev_name && deviceName(dev) !== filter.dev_name) return false;
-    return true;
-  });
+  return (devices || []).filter((dev) => deviceFilterMatches(dev, filter));
 }
 
 function definitionBlocks(kind, snapshot = state.snapshot || {}) {
@@ -3381,8 +3951,7 @@ function renderModelAttributeTable(rows) {
 }
 
 function modelFilterLabel() {
-  if (state.modelFilter.dev_type === "all") return "全部设备";
-  return state.modelFilter.dev_name || state.modelFilter.dev_type;
+  return deviceFilterLabel(state.modelFilter);
 }
 
 function renderTraineeModelDeviceTree(snapshot = state.snapshot || {}) {
@@ -3393,7 +3962,7 @@ function renderTraineeModelDeviceTree(snapshot = state.snapshot || {}) {
   const treeResult = filterDeviceTreeGroups(groups, "model");
   $("modelTreeSummary").textContent = deviceTreeSummary(treeResult);
   container.innerHTML = `
-    <button type="button" class="tree-node tree-root ${state.modelFilter.dev_type === "all" ? "is-active" : ""}"
+    <button type="button" class="tree-node tree-root ${isDeviceTreeNodeActive(state.modelFilter, "all", "") ? "is-active" : ""}"
       data-model-tree-type="all" data-model-tree-name="">
       <span>全部设备</span><strong>${treeResult.query ? treeResult.filteredTotal : devices.length}</strong>
     </button>
@@ -3401,14 +3970,14 @@ function renderTraineeModelDeviceTree(snapshot = state.snapshot || {}) {
       const isCollapsed = treeResult.query ? false : isDeviceTreeGroupCollapsed("model", devType);
       return `<div class="tree-group">
         <button type="button"
-          class="tree-node tree-type ${isCollapsed ? "is-collapsed" : ""} ${state.modelFilter.dev_type === devType && !state.modelFilter.dev_name ? "is-active" : state.modelFilter.dev_type === devType ? "is-parent-active" : ""}"
+          class="tree-node tree-type ${isCollapsed ? "is-collapsed" : ""} ${isDeviceTreeNodeActive(state.modelFilter, devType, "") ? "is-active" : isDeviceTreeParentActive(state.modelFilter, devType) ? "is-parent-active" : ""}"
           data-model-tree-type="${escapeHtml(devType)}" data-model-tree-name=""
           ${deviceTreeTypeAttrs("model", devType, isCollapsed)}>
           ${deviceTreeTypeLabel(devType)}<strong>${items.length}</strong>
         </button>
         ${deviceTreeChildren(isCollapsed, items.map((dev) => `
           <button type="button"
-            class="tree-node tree-child model-tree-child ${state.modelFilter.dev_type === devType && state.modelFilter.dev_name === deviceName(dev) ? "is-active" : ""}"
+            class="tree-node tree-child model-tree-child ${isDeviceTreeNodeActive(state.modelFilter, devType, deviceName(dev)) ? "is-active" : ""}"
             data-model-tree-type="${escapeHtml(devType)}" data-model-tree-name="${escapeHtml(deviceName(dev))}">
             <span class="model-tree-idx">${escapeHtml(formatModelParamValue(deviceIndex(dev)))}</span>
             <span class="model-tree-name">${escapeHtml(deviceName(dev))}</span>
@@ -3455,9 +4024,16 @@ function renderTraineeModelPage(snapshot = state.snapshot || {}) {
   renderTraineeModelParamTable(snapshot);
 }
 
-function setTraineeModelFilter(devType, devName = "") {
-  state.modelFilter = { dev_type: devType || "all", dev_name: devName || "" };
-  if (devType && devType !== "all") state.activeModelParamTab = devType;
+function setTraineeModelFilter(devType, devName = "", event = null, button = null) {
+  state.modelFilter = updateDeviceTreeFilterSelection(
+    "modelFilter",
+    devType,
+    devName,
+    event,
+    "model",
+    button,
+  );
+  if (devType && devType !== "all" && !devName) state.activeModelParamTab = devType;
   renderTraineeModelPage();
 }
 
@@ -3571,9 +4147,41 @@ function measurementKey(meas) {
 }
 
 function filteredMeasurements(rows, filter) {
+  return (rows || []).filter((row) => deviceFilterMatches(row, filter));
+}
+
+function measurementTypeFilterLabel(row) {
+  return measurementTypeDisplay(row) || row?.meas_type || "";
+}
+
+function measurementTableFilterFields(row) {
+  return [
+    measurementDisplayName(row),
+    measurementDeviceDisplay(row),
+    measurementTypeFilterLabel(row),
+    row?.name,
+    row?.idx,
+    row?.dev_type,
+    row?.dev_name,
+    row?.meas_type,
+  ];
+}
+
+function syncMeasurementTypeFilter(rows) {
+  syncTableKeywordFilter("measurementKeywordFilter", state.measurementKeywordFilter);
+  syncTableTypeFilter(
+    "measurementTypeFilter",
+    "measurementTypeFilter",
+    tableFilterTypeOptions(rows, measurementTypeFilterLabel),
+  );
+}
+
+function applyMeasurementTableFilters(rows) {
+  const keyword = state.measurementKeywordFilter || "";
+  const type = state.measurementTypeFilter || "all";
   return (rows || []).filter((row) => {
-    if (filter.dev_type && filter.dev_type !== "all" && row.dev_type !== filter.dev_type) return false;
-    if (filter.dev_name && row.dev_name !== filter.dev_name) return false;
+    if (!tableFilterMatchesKeyword(measurementTableFilterFields(row), keyword)) return false;
+    if (type !== "all" && measurementTypeFilterLabel(row) !== type) return false;
     return true;
   });
 }
@@ -3629,55 +4237,132 @@ function ensureSelectedMeasurement(rows) {
   }
 }
 
+function measurementTableStructureKey(rows) {
+  return [
+    state.activeMeasurementTab || "telemetry",
+    deviceTreeFilterSelection(state.measurementFilter).map((item) => deviceTreeFilterKey(item.dev_type, item.dev_name)).join("|"),
+    state.measurementKeywordFilter || "",
+    state.measurementTypeFilter || "all",
+    rows.map((row) => measurementKey(row)).join("||"),
+  ].join("::");
+}
+
+function measurementLiveCellHtml(row, field) {
+  if (field === "value") return formatNumber(row.value);
+  if (field === "status") {
+    const valid = Number(row.valid) ? true : false;
+    return `<span class="status-pill ${valid ? "is-ok" : "is-off"}">${valid ? "可用" : "停用"}</span>`;
+  }
+  return "";
+}
+
+function updateMeasurementTableLiveCells(rows) {
+  const tableRows = Array.from(document.querySelectorAll("#measurementTable [data-measurement-row-key]"));
+  if (tableRows.length !== rows.length) return false;
+  const rowsByKey = new Map(rows.map((row) => [measurementKey(row), row]));
+  for (const tableRow of tableRows) {
+    const key = tableRow.dataset.measurementRowKey || "";
+    const row = rowsByKey.get(key);
+    if (!row) return false;
+    tableRow.classList.toggle("is-selected", key === state.selectedMeasurementKey);
+    tableRow.querySelectorAll("[data-measurement-live-field]").forEach((cell) => {
+      const field = cell.dataset.measurementLiveField || "";
+      cell.innerHTML = measurementLiveCellHtml(row, field);
+      if (field === "value") {
+        const value = Number(row.value || 0);
+        cell.classList.toggle("value-bad", Math.abs(value) > 10000);
+        cell.classList.toggle("value-warn", Math.abs(value) > 1000 && Math.abs(value) <= 10000);
+      }
+    });
+  }
+  return true;
+}
+
 function renderMeasurements(snapshot = state.snapshot || {}) {
+  const container = $("measurementTable");
+  if (!container) return;
   const devices = measurementsDevices(snapshot);
   renderDeviceTree("measurementDeviceTree", "measurementTreeSummary", devices, state.measurementFilter, "measurement", "measurement");
   const allRows = measurementRows(snapshot);
   const filteredRows = filteredMeasurements(allRows, state.measurementFilter);
-  const telemetryRows = measurementTelemetryRows(filteredRows);
-  const signalRows = measurementSignalRows(filteredRows);
-  const rows = activeMeasurementRows(filteredRows);
+  syncMeasurementTypeFilter(filteredRows);
+  const tableFilteredRows = applyMeasurementTableFilters(filteredRows);
+  const telemetryRows = measurementTelemetryRows(tableFilteredRows);
+  const signalRows = measurementSignalRows(tableFilteredRows);
+  const rows = activeMeasurementRows(tableFilteredRows);
   ensureSelectedMeasurement(rows);
   const validCount = rows.filter((item) => Number(item.valid) === 1).length;
   const activeLabel = state.activeMeasurementTab === "signal" ? "遥信" : "遥测";
-  $("measurementValidCount").textContent = `${activeLabel} ${rows.length}/${filteredRows.length} 点 · 有效 ${validCount} 点`;
+  const filterActive = tableFilterIsActive(state.measurementKeywordFilter, state.measurementTypeFilter);
+  $("measurementValidCount").textContent = filterActive
+    ? `${activeLabel} ${rows.length}/${tableFilteredRows.length} 点 · 有效 ${validCount} 点 · 过滤 ${tableFilteredRows.length}/${filteredRows.length} 点`
+    : `${activeLabel} ${rows.length}/${filteredRows.length} 点 · 有效 ${validCount} 点`;
   const tabHtml = renderMeasurementTabs(telemetryRows, signalRows);
   if (!allRows.length) {
-    $("measurementTable").innerHTML = `${tabHtml}<div class="measurement-type-tab-page is-active"><div class="empty-state">暂无量测数据</div></div>`;
+    container.dataset.measurementStructureKey = "";
+    container.innerHTML = `${tabHtml}<div class="measurement-type-tab-page is-active"><div class="empty-state">暂无量测数据</div></div>`;
     drawMeasurementTraceChart();
     return;
   }
   if (!filteredRows.length) {
-    $("measurementTable").innerHTML = `${tabHtml}<div class="measurement-type-tab-page is-active"><div class="empty-state">当前筛选无量测</div></div>`;
+    container.dataset.measurementStructureKey = "";
+    container.innerHTML = `${tabHtml}<div class="measurement-type-tab-page is-active"><div class="empty-state">当前筛选无量测</div></div>`;
+    drawMeasurementTraceChart();
+    return;
+  }
+  if (!tableFilteredRows.length) {
+    container.dataset.measurementStructureKey = "";
+    container.innerHTML = `${tabHtml}<div class="measurement-type-tab-page is-active"><div class="empty-state">当前过滤无量测</div></div>`;
     drawMeasurementTraceChart();
     return;
   }
   if (!rows.length) {
-    $("measurementTable").innerHTML = `${tabHtml}<div class="measurement-type-tab-page is-active"><div class="empty-state">当前分类无量测</div></div>`;
+    container.dataset.measurementStructureKey = "";
+    container.innerHTML = `${tabHtml}<div class="measurement-type-tab-page is-active"><div class="empty-state">当前分类无量测</div></div>`;
     drawMeasurementTraceChart();
     return;
   }
-  $("measurementTable").innerHTML = `
+  const virtualRows = virtualTableWindow("measurement", rows);
+  const structureKey = [
+    measurementTableStructureKey(rows),
+    virtualRows.enabled ? "virtual" : "full",
+    virtualRows.start,
+    virtualRows.end,
+  ].join("|");
+  if (
+    container.dataset.measurementStructureKey === structureKey
+    && updateMeasurementTableLiveCells(rows)
+  ) {
+    drawMeasurementTraceChart();
+    return;
+  }
+  container.dataset.measurementStructureKey = structureKey;
+  container.innerHTML = `
     ${tabHtml}
     <div class="measurement-type-tab-page is-active">
+    <div class="virtual-table-scroll" data-virtual-table="measurement">
     <table class="measurement-compare-table">
       <thead><tr><th>idx</th><th>量测名</th><th>设备</th><th>类型</th><th>量测值</th><th>状态</th></tr></thead>
       <tbody>
-        ${rows.map((item) => {
+        ${renderVirtualSpacerRow(virtualRows.beforeHeight, 6)}
+        ${virtualRows.rows.map((item) => {
           const key = measurementKey(item);
           const valueClass = Math.abs(Number(item.value || 0)) > 10000 ? "value-bad" : Math.abs(Number(item.value || 0)) > 1000 ? "value-warn" : "";
-          return `<tr class="${key === state.selectedMeasurementKey ? "is-selected" : ""}" data-measurement-select-key="${escapeHtml(key)}">
+          return `<tr class="${key === state.selectedMeasurementKey ? "is-selected" : ""}" data-measurement-row-key="${escapeHtml(key)}" data-measurement-select-key="${escapeHtml(key)}">
             <td>${escapeHtml(item.idx ?? "")}</td>
             <td>${escapeHtml(measurementDisplayName(item) || "")}</td>
             <td>${escapeHtml(measurementDeviceDisplay(item))}</td>
             <td>${escapeHtml(measurementTypeDisplay(item))}</td>
-            <td class="numeric-cell ${valueClass}">${formatNumber(item.value)}</td>
-            <td><span class="status-pill ${Number(item.valid) ? "is-ok" : "is-off"}">${Number(item.valid) ? "可用" : "停用"}</span></td>
+            <td class="numeric-cell ${valueClass}" data-measurement-live-field="value">${formatNumber(item.value)}</td>
+            <td data-measurement-live-field="status"><span class="status-pill ${Number(item.valid) ? "is-ok" : "is-off"}">${Number(item.valid) ? "可用" : "停用"}</span></td>
           </tr>`;
         }).join("")}
+        ${renderVirtualSpacerRow(virtualRows.afterHeight, 6)}
       </tbody>
     </table>
+    </div>
     </div>`;
+  restoreVirtualTableScroll(container, "measurement");
   drawMeasurementTraceChart();
 }
 
@@ -3696,7 +4381,7 @@ function appendMeasurementTrace(snapshot) {
     };
   });
   state.measurementTraceHistory.push(point);
-  state.measurementTraceHistory = state.measurementTraceHistory.slice(-TRACE_HISTORY_LIMIT);
+  state.measurementTraceHistory = compactTraceHistory(state.measurementTraceHistory, state.measurementTraceWindowMinutes);
 }
 
 function traceAxisStepMinutes(windowMinutes) {
@@ -4006,7 +4691,7 @@ function appendCommandTrace(snapshot) {
     };
   });
   state.commandTraceHistory.push(point);
-  state.commandTraceHistory = state.commandTraceHistory.slice(-TRACE_HISTORY_LIMIT);
+  state.commandTraceHistory = compactTraceHistory(state.commandTraceHistory, state.commandTraceWindowMinutes);
 }
 
 function drawCommandTraceChart() {
@@ -4265,22 +4950,87 @@ async function sendCommandCancel(commandName, label = "") {
   }
 }
 
-function renderRunControls(devices) {
-  const visibleDevices = filteredDevices(devices, state.controlFilter);
-  const rows = [
-    ...selectedControlRows("RunStat", visibleDevices).map((row) => ({
+function remoteControlCommandRows(devices, snapshot = state.snapshot || {}) {
+  return [
+    ...selectedControlRows("RunStat", devices, snapshot).map((row) => ({
       definition: row,
-      dev: controlDeviceFromRow(row),
+      dev: controlDeviceFromRow(row, snapshot),
       commandType: "run_stat",
       valueKey: "run_stat",
+      typeLabel: remoteControlLabel("run_stat"),
     })),
-    ...selectedControlRows("CbOpenStat", visibleDevices).map((row) => ({
+    ...selectedControlRows("CbOpenStat", devices, snapshot).map((row) => ({
       definition: row,
-      dev: controlDeviceFromRow(row),
+      dev: controlDeviceFromRow(row, snapshot),
       commandType: "status",
       valueKey: "status",
+      typeLabel: remoteControlLabel("status"),
     })),
+  ].map((row) => ({
+    ...row,
+    key: `${deviceKey(row.dev)}|${row.commandType}`,
+    traceKey: commandTraceRunKey(row.dev, row.commandType),
+    name: `${deviceName(row.dev)}.${remoteControlLabel(row.commandType)}`,
+    category: "遥控",
+  }));
+}
+
+function commandTableTypeLabel(row) {
+  if (row?.typeLabel) return row.typeLabel;
+  if (row?.commandType) return remoteControlLabel(row.commandType);
+  if (row?.setType) return remoteAdjustmentTypeLabel(row.setType);
+  return row?.category || "";
+}
+
+function commandTableName(row) {
+  if (row?.name) return row.name;
+  if (row?.commandType) return `${deviceName(row.dev)}.${remoteControlLabel(row.commandType)}`;
+  if (row?.setType) return remoteAdjustmentName(row.dev, row.setType);
+  return "";
+}
+
+function commandTableFilterFields(row) {
+  return [
+    commandTableName(row),
+    commandTableTypeLabel(row),
+    row?.category,
+    row?.commandType,
+    row?.setType,
+    row?.key,
+    row?.traceKey,
+    row?.definition?.idx,
+    deviceType(row?.dev || {}),
+    deviceName(row?.dev || {}),
   ];
+}
+
+function syncCommandTypeFilter(rows) {
+  syncTableKeywordFilter("commandKeywordFilter", state.commandKeywordFilter);
+  syncTableTypeFilter(
+    "commandTypeFilter",
+    "commandTypeFilter",
+    tableFilterTypeOptions(rows, commandTableTypeLabel),
+  );
+}
+
+function applyCommandTableFilters(rows) {
+  const keyword = state.commandKeywordFilter || "";
+  const type = state.commandTypeFilter || "all";
+  return (rows || []).filter((row) => {
+    if (!tableFilterMatchesKeyword(commandTableFilterFields(row), keyword)) return false;
+    if (type !== "all" && commandTableTypeLabel(row) !== type) return false;
+    return true;
+  });
+}
+
+function renderRunControls(devices) {
+  const visibleDevices = filteredDevices(devices, state.controlFilter);
+  const allRows = remoteControlCommandRows(visibleDevices);
+  const rows = applyCommandTableFilters(allRows);
+  if (!rows.length) {
+    $("runControlTable").innerHTML = `<div class="empty-state">${allRows.length ? "当前过滤无遥控指令" : "当前筛选无遥控指令"}</div>`;
+    return;
+  }
   $("runControlTable").innerHTML = `
     <table class="runtime-device-table">
       <thead><tr><th>idx</th><th>遥控名称</th><th>设备名称</th><th>类型</th><th>当前状态</th><th>下发状态</th><th>下发本机时刻</th><th>下发仿真时刻</th><th>操作</th></tr></thead>
@@ -4399,6 +5149,8 @@ function remoteAdjustmentRows(devices, snapshot = state.snapshot || {}) {
       dev,
       setType,
       name: remoteAdjustmentName(dev, setType),
+      typeLabel: remoteAdjustmentTypeLabel(setType),
+      category: "遥调",
       measurement: remoteAdjustmentMeasurement(dev, setType, snapshot),
       controlValue: (() => {
         const current = currentSetValue(dev, setType);
@@ -4419,7 +5171,12 @@ function formatRemoteAdjustmentValue(value) {
 
 function renderSetpointControls(devices) {
   const visibleDevices = filteredDevices(devices || [], state.controlFilter);
-  const rows = remoteAdjustmentRows(visibleDevices);
+  const allRows = remoteAdjustmentRows(visibleDevices);
+  const rows = applyCommandTableFilters(allRows);
+  if (!rows.length) {
+    $("setpointControlTable").innerHTML = `<div class="empty-state">${allRows.length ? "当前过滤无遥调指令" : "当前筛选无遥调指令"}</div>`;
+    return;
+  }
   $("setpointControlTable").innerHTML = `
     <table class="runtime-device-table remote-adjustment-table">
       <colgroup>
@@ -4449,23 +5206,17 @@ function renderSetpointControls(devices) {
 }
 
 function commandTraceRowsForActiveTab(devices = controlDefinitionDevices()) {
+  const visibleDevices = filteredDevices(devices || [], state.controlFilter);
   if (state.activeControlTab === "remote-adjustment") {
-    return remoteAdjustmentRows(filteredDevices(devices || [], state.controlFilter)).map((row) => ({
+    return applyCommandTableFilters(remoteAdjustmentRows(visibleDevices)).map((row) => ({
       key: row.traceKey,
       label: row.name,
     }));
   }
-  const visibleDevices = filteredDevices(devices || [], state.controlFilter);
-  return [
-    ...selectedControlRows("RunStat", visibleDevices).map((row) => {
-      const dev = controlDeviceFromRow(row);
-      return { key: commandTraceRunKey(dev, "run_stat"), label: `${deviceName(dev)}.设备投退` };
-    }),
-    ...selectedControlRows("CbOpenStat", visibleDevices).map((row) => {
-      const dev = controlDeviceFromRow(row);
-      return { key: commandTraceRunKey(dev, "status"), label: `${deviceName(dev)}.开关开合` };
-    }),
-  ];
+  return applyCommandTableFilters(remoteControlCommandRows(visibleDevices)).map((row) => ({
+    key: row.traceKey,
+    label: row.name,
+  }));
 }
 
 function ensureSelectedCommandTrace(devices = controlDefinitionDevices()) {
@@ -4497,6 +5248,11 @@ function renderControlTabs() {
 
 function renderCombinedControlPage(devices = controlDefinitionDevices()) {
   renderDeviceTree("commandDeviceTree", "commandTreeSummary", devices, state.controlFilter, "control", "control");
+  const visibleDevices = filteredDevices(devices || [], state.controlFilter);
+  syncCommandTypeFilter([
+    ...remoteControlCommandRows(visibleDevices),
+    ...remoteAdjustmentRows(visibleDevices),
+  ]);
   ensureSelectedCommandTrace(devices);
   renderRunControls(devices);
   renderSetpointControls(devices);
@@ -4914,19 +5670,44 @@ function handleTreeClick(event) {
         ? ["controlFilter", button.dataset.controlTreeType, button.dataset.controlTreeName || ""]
           : null;
   requestAnimationFrame(() => {
-    if (toggleScope) toggleDeviceTreeGroup(toggleScope, toggleGroup);
-    if (selection?.[0] === "modelFilter") setTraineeModelFilter(selection[1], selection[2]);
-    else if (selection) selectTreeFilter(selection[0], selection[1], selection[2]);
+    if (toggleScope && !(event.ctrlKey || event.metaKey || event.shiftKey)) toggleDeviceTreeGroup(toggleScope, toggleGroup);
+    if (selection?.[0] === "modelFilter") setTraineeModelFilter(selection[1], selection[2], event, button);
+    else if (selection) selectTreeFilter(selection[0], selection[1], selection[2], event, button, selection[0] === "measurementFilter" ? "measurement" : "control");
   });
 }
 
+function handleTraineeTableFilterControl(target) {
+  if (!(target instanceof Element)) return false;
+  const control = target.closest("[data-table-filter-scope]");
+  if (!(control instanceof HTMLInputElement || control instanceof HTMLSelectElement)) return false;
+  const scope = control.dataset.tableFilterScope || "";
+  const field = control.dataset.tableFilterField || "";
+  if (scope === "measurement") {
+    if (field === "type") state.measurementTypeFilter = control.value || "all";
+    else state.measurementKeywordFilter = control.value || "";
+    renderMeasurements(state.snapshot || {});
+    drawMeasurementTraceChart();
+    return true;
+  }
+  if (scope === "command") {
+    if (field === "type") state.commandTypeFilter = control.value || "all";
+    else state.commandKeywordFilter = control.value || "";
+    renderCombinedControlPage();
+    drawCommandTraceChart();
+    return true;
+  }
+  return false;
+}
+
 document.addEventListener("input", (event) => {
+  if (handleTraineeTableFilterControl(event.target)) return;
   const input = event.target.closest?.("[data-device-tree-filter-scope]");
   if (!input) return;
   const scope = input.dataset.deviceTreeFilterScope || "";
   state.deviceTreeSearch[scope] = input.value || "";
   refreshDeviceTreeFilterScope(scope);
 });
+document.addEventListener("scroll", handleVirtualTableScroll, true);
 
 document.addEventListener("click", (event) => {
   handleTreeClick(event);
@@ -5020,6 +5801,7 @@ document.addEventListener("dblclick", (event) => {
 document.addEventListener("change", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement)) return;
+  if (handleTraineeTableFilterControl(target)) return;
   const runKey = target.dataset.runKey;
   if (runKey) {
     const [dev_type, dev_name, commandType = "run_stat"] = runKey.split("|");
@@ -5178,10 +5960,10 @@ window.addEventListener("resize", () => {
   drawCurveDisplay(state.snapshot || {});
 });
 
-initPageNavigation();
 initOverviewBottomSplitter();
 initVerticalSplitters();
 renderReceiveMode();
 renderHistory();
+initPageNavigation();
 loadModels().finally(refresh);
 setInterval(refresh, 1000);

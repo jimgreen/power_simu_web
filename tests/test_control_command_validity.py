@@ -3,6 +3,10 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from shutil import copytree
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class ControlCommandValidityTest(unittest.TestCase):
@@ -61,18 +65,19 @@ class ControlCommandValidityTest(unittest.TestCase):
         self.assertEqual(result["ignored"], 1)
         self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "10")
 
-    def test_trainee_control_command_expires_without_refresh(self):
+    def test_strategy_control_command_expires_without_refresh(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
 
         result = service.apply_student_commands(
             {
                 "valid_for_minutes": 1,
+                "strategy": {"name": "renewable_priority"},
                 "set_values": [
                     {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 20}
                 ],
             },
-            source="trainee-ui",
+            source="trainee-renewable-priority",
         )
 
         self.assertEqual(result["set_values"], 1)
@@ -81,18 +86,19 @@ class ControlCommandValidityTest(unittest.TestCase):
         service.step()
         self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "10")
 
-    def test_trainee_control_command_can_remain_active_until_absolute_expiry(self):
+    def test_strategy_control_command_can_remain_active_until_absolute_expiry(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
 
         result = service.apply_student_commands(
             {
                 "expires_at_absolute_minute": 10,
+                "strategy": {"name": "renewable_priority"},
                 "set_values": [
                     {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 20}
                 ],
             },
-            source="trainee-ui",
+            source="trainee-renewable-priority",
         )
 
         self.assertEqual(result["set_values"], 1)
@@ -102,6 +108,119 @@ class ControlCommandValidityTest(unittest.TestCase):
         for _ in range(5):
             service.step()
         self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "10")
+
+    def test_manual_control_commands_have_no_time_limit(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        result = service.apply_student_commands(
+            {
+                "set_values": [
+                    {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 20}
+                ],
+            },
+            source="trainee-ui",
+        )
+
+        self.assertEqual(result["set_values"], 1)
+        self.assertTrue(service.command_history[-1]["manual_hold"])
+        self.assertIsNone(service.command_history[-1]["expires_at_absolute_minute"])
+        for _ in range(30):
+            service.step()
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
+
+    def test_manual_control_commands_override_later_strategy_commands(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        service.apply_student_commands(
+            {
+                "set_values": [
+                    {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 20}
+                ],
+            },
+            source="trainee-ui",
+        )
+        service.apply_student_commands(
+            {
+                "valid_for_minutes": 5,
+                "strategy": {"name": "renewable_priority"},
+                "set_values": [
+                    {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 5}
+                ],
+            },
+            source="trainee-renewable-priority",
+        )
+
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
+        by_name = {item["name"]: item for item in service.latest_control_values()["items"]}
+        self.assertTrue(by_name["ESS.ess01.p_set"]["active"])
+        self.assertIsNone(by_name["ESS.ess01.p_set"]["expires_at_absolute_minute"])
+
+    def test_manual_control_commands_are_not_evicted_by_frequent_strategy_refreshes(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        service.apply_student_commands(
+            {
+                "set_values": [
+                    {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 20}
+                ],
+            },
+            source="trainee-ui",
+        )
+        for index in range(250):
+            service.apply_student_commands(
+                {
+                    "valid_for_minutes": 5,
+                    "strategy": {"name": "renewable_priority", "seq": index},
+                    "set_values": [
+                        {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 5}
+                    ],
+                },
+                source="trainee-renewable-priority",
+            )
+
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
+        from simu.service import PolarMicrogridSimulator
+
+        restarted = PolarMicrogridSimulator(service.sim_dir, service.runtime_dir, kernel=lambda _config: None)
+        restarted.control_clock({"action": "start", "minute": 0})
+        self.assertEqual(self._set_value(restarted, "ESS", "ess01", "p_set"), "20")
+
+    def test_manual_acdc_active_power_command_with_stale_trainee_expiry_survives_next_step(self):
+        from simu.service import PolarMicrogridSimulator
+
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        source = Path(workspace.name) / "source"
+        copytree(ROOT / "models" / "simulator" / "source" / "默认模型", source)
+        service = PolarMicrogridSimulator(source, Path(workspace.name) / "runtime", kernel=lambda _config: None)
+
+        service.control_clock({"action": "start", "minute": 0, "step_minutes": 30})
+        service.clock.absolute_minute = 43 * 1440 + 23 * 60 + 30
+        service.clock.minute = 23 * 60 + 30
+        result = service.apply_student_commands(
+            {
+                "sent_absolute_minute": 0,
+                "expires_at_absolute_minute": 1440,
+                "set_values": [
+                    {
+                        "dev_type": "DCACConverter",
+                        "dev_name": "ACDC变流器-1",
+                        "set_type": "p_ac_set",
+                        "set_value": -12.5,
+                    }
+                ],
+            },
+            source="trainee-ui",
+        )
+
+        self.assertEqual(result["set_values"], 1)
+        self.assertEqual(self._set_value(service, "DCACConverter", "ACDC变流器-1", "p_ac_set"), "-12.5")
+        service.step(advance_minutes=30)
+        service.step(advance_minutes=30)
+        self.assertEqual(self._set_value(service, "DCACConverter", "ACDC变流器-1", "p_ac_set"), "-12.5")
 
     def test_manual_control_commands_survive_stop_start_and_service_restart_until_cancelled(self):
         workspace, service = self._make_service()

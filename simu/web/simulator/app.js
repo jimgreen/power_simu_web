@@ -73,6 +73,7 @@ const state = {
   lastMeasurementTraceKey: "",
   traceRunId: null,
   selectedManagementModelId: "",
+  updateTargetModelId: "",
   cloneSourceModelId: "",
   modeFilter: { dev_type: "all", dev_name: "" },
   collapsedDeviceTreeGroups: {},
@@ -102,6 +103,7 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
+const deviceTreeRenderKeys = new WeakMap();
 const MODE_OPTIONS = ["PQ", "PV", "PH", "V"];
 
 function overviewInitialBottomHeight() {
@@ -142,6 +144,9 @@ const SIGNAL_MEASUREMENT_LABELS = {
 };
 let pendingImportDefinitionFile = null;
 let pendingNewModelFile = null;
+let pendingNewModelSvgFile = null;
+let pendingUpdateModelFile = null;
+let pendingUpdateModelSvgFile = null;
 
 function chartHiddenSet(chartKey) {
   const hidden = state.chartSeriesHidden?.[chartKey] || [];
@@ -580,6 +585,23 @@ function deviceTreeSummary(result) {
 
 function renderDeviceTreeFilterEmpty(query) {
   return query ? `<div class="empty-state">未匹配“${escapeHtml(query)}”</div>` : '<div class="empty-state">暂无设备</div>';
+}
+
+function updateDeviceTreeHtml(container, html, renderKey = html) {
+  if (!container) return;
+  const key = String(renderKey || "");
+  if (deviceTreeRenderKeys.get(container) === key) return;
+  const scrollTop = container.scrollTop;
+  const restoreScrollTop = () => {
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    container.scrollTop = Math.min(scrollTop, maxScrollTop);
+  };
+  container.innerHTML = html;
+  deviceTreeRenderKeys.set(container, key);
+  restoreScrollTop();
+  requestAnimationFrame(() => {
+    restoreScrollTop();
+  });
 }
 
 function deviceTreeItemType(item) {
@@ -1102,6 +1124,7 @@ function setNewModelBusy(isBusy) {
   const button = $("newModelButton");
   const input = $("newModelName");
   const selectButton = $("selectNewModelFile");
+  const selectSvgButton = $("selectNewModelSvgFile");
   if (confirm) {
     confirm.disabled = isBusy;
     confirm.textContent = isBusy ? "新建中" : "新建";
@@ -1109,6 +1132,7 @@ function setNewModelBusy(isBusy) {
   if (button) button.disabled = isBusy;
   if (input) input.disabled = isBusy;
   if (selectButton) selectButton.disabled = isBusy;
+  if (selectSvgButton) selectSvgButton.disabled = isBusy;
 }
 
 function uniqueNewModelName(baseName = "新模型") {
@@ -1216,9 +1240,17 @@ function updateModelContextMenuActions() {
   const menu = $("modelContextMenu");
   const exportButton = menu?.querySelector('[data-model-context-action="export"]');
   const cloneButton = menu?.querySelector('[data-model-context-action="clone"]');
+  const updateButton = menu?.querySelector('[data-model-context-action="update"]');
   const deleteButton = menu?.querySelector('[data-model-context-action="delete"]');
   if (exportButton) exportButton.disabled = !hasSelected;
   if (cloneButton) cloneButton.disabled = !hasSelected;
+  if (updateButton) {
+    const canUpdate = hasSelected && clockState === "stopped";
+    updateButton.disabled = !canUpdate;
+    updateButton.title = !hasSelected
+      ? "请选择模型"
+      : (clockState === "stopped" ? "导入修改后的模型与图形数据" : "模型运行中或暂停中，不能修改");
+  }
   if (deleteButton) {
     const canDelete = hasSelected && models.length > 1 && clockState === "stopped";
     deleteButton.disabled = !canDelete;
@@ -1310,11 +1342,16 @@ function openNewModelDialog() {
   const dialog = $("newModelDialog");
   const input = $("newModelName");
   const filename = $("newModelFilename");
+  const svgFilename = $("newModelSvgFilename");
   const fileInput = $("newModelFileInput");
+  const svgInput = $("newModelSvgInput");
   if (!dialog || !input) return;
   pendingNewModelFile = null;
+  pendingNewModelSvgFile = null;
   if (fileInput) fileInput.value = "";
+  if (svgInput) svgInput.value = "";
   if (filename) filename.textContent = "未选择文件";
+  if (svgFilename) svgFilename.textContent = "未选择图形";
   input.value = uniqueNewModelName("新模型");
   dialog.hidden = false;
   validateNewModelForm();
@@ -1328,10 +1365,15 @@ function closeNewModelDialog() {
   const dialog = $("newModelDialog");
   if (dialog) dialog.hidden = true;
   pendingNewModelFile = null;
+  pendingNewModelSvgFile = null;
   const fileInput = $("newModelFileInput");
+  const svgInput = $("newModelSvgInput");
   const filename = $("newModelFilename");
+  const svgFilename = $("newModelSvgFilename");
   if (fileInput) fileInput.value = "";
+  if (svgInput) svgInput.value = "";
   if (filename) filename.textContent = "未选择文件";
+  if (svgFilename) svgFilename.textContent = "未选择图形";
   setNewModelMessage("");
   setNewModelBusy(false);
 }
@@ -1348,6 +1390,20 @@ function handleNewModelFileSelected(event) {
   validateNewModelForm(Boolean(file));
 }
 
+function handleNewModelSvgFileSelected(event) {
+  const file = event.target.files?.[0] || null;
+  pendingNewModelSvgFile = file;
+  const filename = $("newModelSvgFilename");
+  if (filename) filename.textContent = file?.name || "未选择图形";
+  if (file && !String(file.name || "").toLowerCase().endsWith(".svg")) {
+    setNewModelMessage("请选择 .svg 格式的接线图文件。", "error");
+    const confirm = $("confirmNewModel");
+    if (confirm) confirm.disabled = true;
+    return;
+  }
+  validateNewModelForm(Boolean(pendingNewModelFile));
+}
+
 async function createNewModelFromFile() {
   const file = pendingNewModelFile;
   const input = $("newModelName");
@@ -1360,6 +1416,9 @@ async function createNewModelFromFile() {
   setNewModelMessage("正在读取 model.e 并生成模型定义...");
   try {
     const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
+    const diagramSvgBase64 = pendingNewModelSvgFile
+      ? arrayBufferToBase64(await pendingNewModelSvgFile.arrayBuffer())
+      : "";
     const result = await api("/api/models/create", {
       modelScoped: false,
       method: "POST",
@@ -1367,6 +1426,8 @@ async function createNewModelFromFile() {
         name,
         filename: file.name,
         data_base64: dataBase64,
+        diagram_filename: pendingNewModelSvgFile?.name || "",
+        diagram_svg_base64: diagramSvgBase64,
       }),
     });
     state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
@@ -1384,6 +1445,151 @@ async function createNewModelFromFile() {
   } finally {
     setNewModelBusy(false);
     if (!$("newModelDialog").hidden) validateNewModelForm();
+  }
+}
+
+function setUpdateModelMessage(text, kind = "") {
+  const message = $("updateModelMessage");
+  if (!message) return;
+  message.textContent = text || "";
+  message.classList.toggle("is-error", kind === "error");
+  message.classList.toggle("is-ok", kind === "ok");
+}
+
+function setUpdateModelBusy(isBusy) {
+  const confirm = $("confirmUpdateModel");
+  const selectFile = $("selectUpdateModelFile");
+  const selectSvg = $("selectUpdateModelSvgFile");
+  if (confirm) {
+    confirm.disabled = isBusy;
+    confirm.textContent = isBusy ? "修改中" : "修改";
+  }
+  if (selectFile) selectFile.disabled = isBusy;
+  if (selectSvg) selectSvg.disabled = isBusy;
+}
+
+function validateUpdateModelForm(showBlank = false) {
+  const confirm = $("confirmUpdateModel");
+  const target = state.models.find((model) => model.id === state.updateTargetModelId);
+  if (!target) {
+    if (confirm) confirm.disabled = true;
+    setUpdateModelMessage("请选择要修改的模型。", "error");
+    return false;
+  }
+  if (modelClockState(target) !== "stopped") {
+    if (confirm) confirm.disabled = true;
+    setUpdateModelMessage("模型运行中或暂停中，不能修改。", "error");
+    return false;
+  }
+  if (!pendingUpdateModelFile) {
+    if (confirm) confirm.disabled = true;
+    setUpdateModelMessage(showBlank ? "请选择 model.e 文件。" : "");
+    return false;
+  }
+  if (!String(pendingUpdateModelFile.name || "").toLowerCase().endsWith(".e")) {
+    if (confirm) confirm.disabled = true;
+    setUpdateModelMessage("请选择 .e 格式的模型定义文件。", "error");
+    return false;
+  }
+  if (pendingUpdateModelSvgFile && !String(pendingUpdateModelSvgFile.name || "").toLowerCase().endsWith(".svg")) {
+    if (confirm) confirm.disabled = true;
+    setUpdateModelMessage("请选择 .svg 格式的接线图文件。", "error");
+    return false;
+  }
+  if (confirm) confirm.disabled = false;
+  setUpdateModelMessage("");
+  return true;
+}
+
+function openUpdateModelDialog(modelId = selectedManagementModelId()) {
+  const target = normalizeModels(state.models).find((model) => String(model.id || "") === String(modelId || ""));
+  if (!target) {
+    setModelManagementMessage("请选择要修改的模型。", "error");
+    return;
+  }
+  if (modelClockState(target) !== "stopped") {
+    setModelManagementMessage("模型运行中或暂停中，不能修改。", "error");
+    return;
+  }
+  state.updateTargetModelId = String(target.id || "");
+  pendingUpdateModelFile = null;
+  pendingUpdateModelSvgFile = null;
+  const dialog = $("updateModelDialog");
+  if (!dialog) return;
+  const fileInput = $("updateModelFileInput");
+  const svgInput = $("updateModelSvgInput");
+  if (fileInput) fileInput.value = "";
+  if (svgInput) svgInput.value = "";
+  $("updateModelTargetName").textContent = target.name || target.id || "--";
+  $("updateModelFilename").textContent = "未选择文件";
+  $("updateModelSvgFilename").textContent = "未选择图形";
+  dialog.hidden = false;
+  validateUpdateModelForm();
+}
+
+function closeUpdateModelDialog() {
+  const dialog = $("updateModelDialog");
+  if (dialog) dialog.hidden = true;
+  state.updateTargetModelId = "";
+  pendingUpdateModelFile = null;
+  pendingUpdateModelSvgFile = null;
+  const fileInput = $("updateModelFileInput");
+  const svgInput = $("updateModelSvgInput");
+  if (fileInput) fileInput.value = "";
+  if (svgInput) svgInput.value = "";
+  setUpdateModelMessage("");
+  setUpdateModelBusy(false);
+}
+
+function handleUpdateModelFileSelected(event) {
+  const file = event.target.files?.[0] || null;
+  pendingUpdateModelFile = file;
+  const filename = $("updateModelFilename");
+  if (filename) filename.textContent = file?.name || "未选择文件";
+  validateUpdateModelForm(Boolean(file));
+}
+
+function handleUpdateModelSvgFileSelected(event) {
+  const file = event.target.files?.[0] || null;
+  pendingUpdateModelSvgFile = file;
+  const filename = $("updateModelSvgFilename");
+  if (filename) filename.textContent = file?.name || "未选择图形";
+  validateUpdateModelForm(Boolean(pendingUpdateModelFile));
+}
+
+async function updateModelFromFile() {
+  const file = pendingUpdateModelFile;
+  const modelId = state.updateTargetModelId;
+  if (!file || !validateUpdateModelForm(true)) return;
+  setUpdateModelBusy(true);
+  setUpdateModelMessage("正在导入修改后的模型与图形数据...");
+  try {
+    const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
+    const diagramSvgBase64 = pendingUpdateModelSvgFile
+      ? arrayBufferToBase64(await pendingUpdateModelSvgFile.arrayBuffer())
+      : "";
+    const result = await api("/api/models/update-definitions", {
+      modelScoped: false,
+      method: "POST",
+      body: JSON.stringify({
+        model_id: modelId,
+        filename: file.name,
+        data_base64: dataBase64,
+        diagram_filename: pendingUpdateModelSvgFile?.name || "",
+        diagram_svg_base64: diagramSvgBase64,
+      }),
+    });
+    state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
+    closeUpdateModelDialog();
+    state.selectedManagementModelId = modelId;
+    setActiveModel(modelId, true);
+    renderModelManagementList();
+    setModelManagementMessage("模型已修改。", "ok");
+  } catch (error) {
+    setUpdateModelMessage(apiErrorText(error), "error");
+  } finally {
+    setUpdateModelBusy(false);
+    if (!$("updateModelDialog").hidden) validateUpdateModelForm();
   }
 }
 
@@ -1661,6 +1867,7 @@ const SIMULATOR_PAGE_ROUTES = {
   "/": "overview",
   "/overview": "overview",
   "/model": "model",
+  "/diagram": "diagram",
   "/curves": "curves",
   "/faults": "faults",
   "/modes": "modes",
@@ -1771,6 +1978,7 @@ const STATIC_SNAPSHOT_KEYS = [
   "curves",
   "settings",
   "device_parameters",
+  "diagram",
 ];
 
 function hasStaticSnapshotPayload(snapshot) {
@@ -2084,7 +2292,7 @@ function handleModelManagementAction(event) {
   const modelId = item.dataset.modelId || "";
   if (!modelId) return;
   setSelectedManagementModel(modelId);
-  setModelManagementMessage("右键模型节点可导出、复制或删除。", "ok");
+  setModelManagementMessage("右键模型节点可导出、复制、修改或删除。", "ok");
 }
 
 function handleModelManagementKeydown(event) {
@@ -2095,7 +2303,7 @@ function handleModelManagementKeydown(event) {
   event.preventDefault();
   const modelId = item.dataset.modelId || "";
   setSelectedManagementModel(modelId);
-  setModelManagementMessage("右键模型节点可导出、复制或删除。", "ok");
+  setModelManagementMessage("右键模型节点可导出、复制、修改或删除。", "ok");
 }
 
 function closeModelContextMenu() {
@@ -2135,12 +2343,21 @@ function handleModelContextMenuAction(event) {
   if (!button || button.disabled) return;
   const action = button.dataset.modelContextAction || "";
   closeModelContextMenu();
-  if (action === "export") {
-    exportDefinitionsArchive(selectedManagementModelId(), button);
-  } else if (action === "clone") {
-    openCloneModelDialog(selectedManagementModelId());
-  } else if (action === "delete") {
-    deleteManagedModel(selectedManagementModelId());
+  switch (action) {
+    case "export":
+      exportDefinitionsArchive(selectedManagementModelId(), button);
+      break;
+    case "clone":
+      openCloneModelDialog(selectedManagementModelId());
+      break;
+    case "update":
+      openUpdateModelDialog(selectedManagementModelId());
+      break;
+    case "delete":
+      deleteManagedModel(selectedManagementModelId());
+      break;
+    default:
+      break;
   }
 }
 
@@ -2311,6 +2528,156 @@ function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]
   ));
+}
+
+function sanitizeDiagramSvg(svgText) {
+  const raw = String(svgText || "").trim();
+  if (!raw) return "";
+  const documentParser = new DOMParser();
+  const parsed = documentParser.parseFromString(raw, "image/svg+xml");
+  if (parsed.querySelector("parsererror")) return "";
+  const svg = parsed.querySelector("svg");
+  if (!svg) return "";
+  svg.querySelectorAll("script, foreignObject, iframe, object, embed").forEach((node) => node.remove());
+  svg.querySelectorAll("*").forEach((node) => {
+    [...node.attributes].forEach((attribute) => {
+      const name = attribute.name.toLowerCase();
+      const value = String(attribute.value || "").trim().toLowerCase();
+      if (name.startsWith("on") || value.startsWith("javascript:")) node.removeAttribute(attribute.name);
+      if ((name === "href" || name.endsWith(":href")) && value.startsWith("javascript:")) node.removeAttribute(attribute.name);
+    });
+  });
+  svg.classList.add("model-diagram-svg");
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  return svg.outerHTML;
+}
+
+function diagramNumberText(value) {
+  const number = Number(value);
+  if (Number.isFinite(number)) return number.toFixed(2);
+  const text = String(value ?? "").trim();
+  return text || "--";
+}
+
+function diagramRowText(row) {
+  if (!row) return "--";
+  const unit = String(row.unit || "").trim();
+  return `${diagramNumberText(row.value)}${unit ? ` ${unit}` : ""}`;
+}
+
+function addDiagramMeasurementAliases(map, row) {
+  if (!row) return;
+  const aliases = [
+    row.name,
+    measurementKey(row),
+    `${row.dev_type || ""}.${row.dev_name || ""}.${row.meas_type || ""}`,
+  ].map((item) => String(item || "").trim()).filter(Boolean);
+  aliases.forEach((alias) => map.set(alias, row));
+}
+
+function diagramMeasurementMaps(snapshot = state.snapshot || {}) {
+  const measurements = snapshot.measurements || {};
+  const scada = new Map();
+  const real = new Map();
+  (measurements.scada || []).forEach((row) => addDiagramMeasurementAliases(scada, row));
+  (measurements.real || []).forEach((row) => addDiagramMeasurementAliases(real, row));
+  return { scada, real };
+}
+
+function addDiagramControlAliases(map, aliases, value, updated) {
+  aliases.map((item) => String(item || "").trim()).filter(Boolean).forEach((alias) => {
+    map.set(alias, { value, updated });
+  });
+}
+
+function diagramControlMap(snapshot = state.snapshot || {}) {
+  const map = new Map();
+  activeCommandHistory(snapshot).forEach((entry) => {
+    const normalized = entry.normalized || {};
+    const payload = entry.payload || {};
+    const updated = entry.receive_simu_time || entry.simu_time || entry.wall_time || "";
+    (normalized.run_status || payload.run_status || []).forEach((item) => {
+      const devType = item.dev_type || "";
+      const devName = item.dev_name || "";
+      addDiagramControlAliases(map, [
+        item.name,
+        `${devType}.${devName}.RUN_STAT`,
+        `${devType}.${devName}.STATUS`,
+      ], item.run_stat ?? item.status ?? item.value, updated);
+    });
+    (normalized.set_values || payload.set_values || payload.setpoints || []).forEach((item) => {
+      const devType = item.dev_type || "";
+      const devName = item.dev_name || "";
+      const setType = item.set_type || "";
+      addDiagramControlAliases(map, [
+        item.name,
+        `${devType}.${devName}.${setType}`,
+      ], item.set_value ?? item.value, updated);
+    });
+  });
+  return map;
+}
+
+function diagramBindingValue(name, maps, channel = "scada") {
+  const key = String(name || "").trim();
+  if (!key) return null;
+  if (channel === "real") return maps.real.get(key) || null;
+  if (channel === "control") return maps.controls.get(key) || null;
+  return maps.scada.get(key) || maps.real.get(key) || null;
+}
+
+function setDiagramElementValue(element, row) {
+  const text = row?.value === undefined ? "--" : (row.unit !== undefined ? diagramRowText(row) : diagramNumberText(row.value));
+  const tag = String(element.tagName || "").toLowerCase();
+  if (["text", "tspan", "title", "desc"].includes(tag) || element instanceof HTMLElement) {
+    element.textContent = text;
+  } else {
+    element.setAttribute("data-current-value", text);
+  }
+  element.classList.toggle("is-diagram-bound", row !== null && row !== undefined);
+  element.setAttribute("data-bound-value", text);
+  if (row?.updated) element.setAttribute("data-bound-time", row.updated);
+}
+
+function updateDiagramRealtimeBindings(container = $("modelDiagramCanvas"), snapshot = state.snapshot || {}) {
+  if (!container) return;
+  const measurementMaps = diagramMeasurementMaps(snapshot);
+  const maps = { ...measurementMaps, controls: diagramControlMap(snapshot) };
+  container.querySelectorAll("[data-meas-name], [data-scada-name]").forEach((element) => {
+    const name = element.getAttribute("data-meas-name") || element.getAttribute("data-scada-name") || "";
+    setDiagramElementValue(element, diagramBindingValue(name, maps, "scada"));
+  });
+  container.querySelectorAll("[data-real-name]").forEach((element) => {
+    setDiagramElementValue(element, diagramBindingValue(element.getAttribute("data-real-name"), maps, "real"));
+  });
+  container.querySelectorAll("[data-control-name]").forEach((element) => {
+    setDiagramElementValue(element, diagramBindingValue(element.getAttribute("data-control-name"), maps, "control"));
+  });
+}
+
+function renderModelDiagramPage(snapshot = state.snapshot || {}) {
+  const activeSnapshot = snapshot || {};
+  const canvas = $("modelDiagramCanvas");
+  const summary = $("modelDiagramSummary");
+  if (!canvas) return;
+  const diagram = activeSnapshot.diagram || {};
+  const modelName = activeSnapshot.model?.name || activeSnapshot.model?.id || "当前模型";
+  if (!diagram.svg) {
+    canvas.dataset.diagramKey = "";
+    canvas.innerHTML = '<div class="empty-state">当前模型未配置接线图</div>';
+    if (summary) summary.textContent = `${modelName} · 未配置`;
+    return;
+  }
+  const key = `${activeSnapshot.model?.id || ""}|${diagram.updated_at || ""}|${diagram.size || ""}`;
+  if (canvas.dataset.diagramKey !== key) {
+    const sanitized = sanitizeDiagramSvg(diagram.svg);
+    canvas.dataset.diagramKey = key;
+    canvas.innerHTML = sanitized
+      ? `<div class="model-diagram-svg-wrap">${sanitized}</div>`
+      : '<div class="empty-state">接线图 SVG 无法解析</div>';
+  }
+  if (summary) summary.textContent = `${modelName} · ${diagram.filename || "diagram.svg"}`;
+  updateDiagramRealtimeBindings(canvas, activeSnapshot);
 }
 
 function runtimeLogTime() {
@@ -4117,6 +4484,10 @@ function renderActiveSimulatorPage(snapshot = state.snapshot, force = false) {
     renderGridModelPage();
     return;
   }
+  if (activePage === "diagram") {
+    renderModelDiagramPage(snapshot);
+    return;
+  }
   if (activePage === "curves") {
     resizeCurveCanvas();
     renderCurveEditor(force);
@@ -4440,7 +4811,7 @@ function renderGridModelDeviceTree() {
   ]);
   const treeResult = filterDeviceTreeGroups(groupEntries, "model");
   $("modelTreeSummary").textContent = deviceTreeSummary(treeResult);
-  container.innerHTML = `
+  const treeHtml = `
     <button
       type="button"
       class="tree-node tree-root ${isDeviceTreeNodeActive(filter, "all", "") ? "is-active" : ""}"
@@ -4482,6 +4853,7 @@ function renderGridModelDeviceTree() {
     `;
     }).join("") || renderDeviceTreeFilterEmpty(treeResult.query)}
   `;
+  updateDeviceTreeHtml(container, treeHtml);
 }
 
 function runtimeLogTypes() {
@@ -4912,7 +5284,7 @@ function renderRuntimeDeviceTree() {
   const groupEntries = groupedByDeviceType(devices);
   const treeResult = filterDeviceTreeGroups(groupEntries, "runtime");
   $("runtimeTreeSummary").textContent = deviceTreeSummary(treeResult);
-  container.innerHTML = `
+  const treeHtml = `
     <button
       type="button"
       class="tree-node tree-root ${isDeviceTreeNodeActive(filter, "all", "") ? "is-active" : ""}"
@@ -4951,6 +5323,7 @@ function renderRuntimeDeviceTree() {
     `;
     }).join("") || renderDeviceTreeFilterEmpty(treeResult.query)}
   `;
+  updateDeviceTreeHtml(container, treeHtml);
 }
 
 function setRuntimeDeviceFilter(devType, devName = "", event = null, button = null) {
@@ -5028,12 +5401,13 @@ function activeCommandHistory(snapshot = state.snapshot || {}) {
       const entryRunId = numberOrNull(entry.run_id);
       if (entryRunId === null || entryRunId !== currentRunId) return false;
     }
+    const accepted = entry.accepted || {};
+    const acceptedCount = Number(accepted.run_status || 0) + Number(accepted.set_values || 0);
+    if (manualHold) return acceptedCount > 0;
     const issued = numberOrNull(entry.issued_absolute_minute);
     const expires = numberOrNull(entry.expires_at_absolute_minute);
     if (issued === null || expires === null) return false;
-    const accepted = entry.accepted || {};
-    const acceptedCount = Number(accepted.run_status || 0) + Number(accepted.set_values || 0);
-    return acceptedCount > 0 && currentMinute < expires && (manualHold || issued <= currentMinute);
+    return acceptedCount > 0 && currentMinute < expires && issued <= currentMinute;
   });
 }
 
@@ -6050,7 +6424,7 @@ function renderMeasurementCompareDeviceTree(rows = measurementCompareRows()) {
   const groupEntries = groupedByDeviceType(devices);
   const treeResult = filterDeviceTreeGroups(groupEntries, "measurement");
   $("measurementCompareTreeSummary").textContent = deviceTreeSummary(treeResult);
-  container.innerHTML = `
+  const treeHtml = `
     <button
       type="button"
       class="tree-node tree-root ${isDeviceTreeNodeActive(filter, "all", "") ? "is-active" : ""}"
@@ -6089,6 +6463,7 @@ function renderMeasurementCompareDeviceTree(rows = measurementCompareRows()) {
     `;
     }).join("") || renderDeviceTreeFilterEmpty(treeResult.query)}
   `;
+  updateDeviceTreeHtml(container, treeHtml);
 }
 
 function setMeasurementCompareFilter(devType, devName = "", event = null, button = null) {
@@ -6385,7 +6760,7 @@ function renderFaultDeviceTree() {
   const groupEntries = groupedByDeviceType(devices);
   const treeResult = filterDeviceTreeGroups(groupEntries, "faultDevice");
   $("faultDeviceTreeSummary").textContent = deviceTreeSummary(treeResult);
-  container.innerHTML = `
+  const treeHtml = `
     <button
       type="button"
       class="tree-node tree-root ${isDeviceTreeNodeActive(filter, "all", "") ? "is-active" : ""}"
@@ -6424,6 +6799,7 @@ function renderFaultDeviceTree() {
     `;
     }).join("") || renderDeviceTreeFilterEmpty(treeResult.query)}
   `;
+  updateDeviceTreeHtml(container, treeHtml);
 }
 
 function renderFaultMeasurementTree() {
@@ -6435,7 +6811,7 @@ function renderFaultMeasurementTree() {
   const groupEntries = groupedByDeviceType(devices);
   const treeResult = filterDeviceTreeGroups(groupEntries, "faultMeasurement");
   $("faultMeasurementTreeSummary").textContent = deviceTreeSummary(treeResult);
-  container.innerHTML = `
+  const treeHtml = `
     <button
       type="button"
       class="tree-node tree-root ${isDeviceTreeNodeActive(filter, "all", "") ? "is-active" : ""}"
@@ -6474,6 +6850,7 @@ function renderFaultMeasurementTree() {
     `;
     }).join("") || renderDeviceTreeFilterEmpty(treeResult.query)}
   `;
+  updateDeviceTreeHtml(container, treeHtml);
 }
 
 function setDeviceFaultFilter(devType, devName = "", event = null, button = null) {
@@ -6791,7 +7168,7 @@ function renderModeDeviceTree() {
   const groupEntries = Array.from(groups.entries()).sort(([left], [right]) => left.localeCompare(right));
   const treeResult = filterDeviceTreeGroups(groupEntries, "mode");
   $("modeTreeSummary").textContent = deviceTreeSummary(treeResult);
-  container.innerHTML = `
+  const treeHtml = `
     <button
       type="button"
       class="tree-node tree-root ${isDeviceTreeNodeActive(filter, "all", "") ? "is-active" : ""}"
@@ -6830,6 +7207,7 @@ function renderModeDeviceTree() {
     `;
     }).join("") || renderDeviceTreeFilterEmpty(treeResult.query)}
   `;
+  updateDeviceTreeHtml(container, treeHtml);
 }
 
 function renderModeDeviceTable() {
@@ -6955,6 +7333,8 @@ document.addEventListener("click", (event) => {
 $("newModelButton").addEventListener("click", openNewModelDialog);
 $("selectNewModelFile").addEventListener("click", () => $("newModelFileInput").click());
 $("newModelFileInput").addEventListener("change", handleNewModelFileSelected);
+$("selectNewModelSvgFile").addEventListener("click", () => $("newModelSvgInput").click());
+$("newModelSvgInput").addEventListener("change", handleNewModelSvgFileSelected);
 $("importDefinitionsButton").addEventListener("click", () => $("importDefinitionsInput").click());
 $("importDefinitionsInput").addEventListener("change", (event) => {
   const file = event.target.files?.[0];
@@ -6986,6 +7366,19 @@ $("newModelForm").addEventListener("submit", (event) => {
   createNewModelFromFile();
 });
 $("newModelName").addEventListener("input", () => validateNewModelForm());
+$("closeUpdateModelDialog").addEventListener("click", closeUpdateModelDialog);
+$("cancelUpdateModel").addEventListener("click", closeUpdateModelDialog);
+$("updateModelDialog").addEventListener("click", (event) => {
+  if (event.target.id === "updateModelDialog") closeUpdateModelDialog();
+});
+$("selectUpdateModelFile").addEventListener("click", () => $("updateModelFileInput").click());
+$("updateModelFileInput").addEventListener("change", handleUpdateModelFileSelected);
+$("selectUpdateModelSvgFile").addEventListener("click", () => $("updateModelSvgInput").click());
+$("updateModelSvgInput").addEventListener("change", handleUpdateModelSvgFileSelected);
+$("updateModelForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  updateModelFromFile();
+});
 $("closeImportModelDialog").addEventListener("click", closeImportModelDialog);
 $("cancelImportModel").addEventListener("click", closeImportModelDialog);
 $("importModelDialog").addEventListener("click", (event) => {
@@ -7018,6 +7411,10 @@ document.addEventListener("keydown", (event) => {
   }
   if (event.key === "Escape" && !$("newModelDialog").hidden) {
     closeNewModelDialog();
+    return;
+  }
+  if (event.key === "Escape" && !$("updateModelDialog").hidden) {
+    closeUpdateModelDialog();
     return;
   }
   if (event.key === "Escape" && !$("cloneModelDialog").hidden) {

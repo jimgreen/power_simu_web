@@ -15,7 +15,7 @@ class ActivePageRenderingUiTest(unittest.TestCase):
         self.assertIn('href="/styles.css"', html)
         self.assertIn('src="/app.js"', html)
         self.assertIn("const SIMULATOR_PAGE_ROUTES", script)
-        for route in ('"/logs": "logs"', '"/modes": "modes"', '"/measurements": "measurements"'):
+        for route in ('"/logs": "logs"', '"/modes": "modes"', '"/measurements": "measurements"', '"/diagram": "diagram"'):
             self.assertIn(route, script)
         self.assertIn("function collectPageSections", script)
         self.assertIn("function mountPageSection", script)
@@ -31,7 +31,7 @@ class ActivePageRenderingUiTest(unittest.TestCase):
         self.assertIn('href="/styles.css"', html)
         self.assertIn('src="/app.js"', html)
         self.assertIn("const TRAINEE_PAGE_ROUTES", script)
-        for route in ('"/history": "history"', '"/commands": "commands"', '"/measurements": "measurements"'):
+        for route in ('"/history": "history"', '"/commands": "commands"', '"/measurements": "measurements"', '"/diagram": "diagram"'):
             self.assertIn(route, script)
         self.assertIn("function collectPageSections", script)
         self.assertIn("function mountPageSection", script)
@@ -50,6 +50,7 @@ class ActivePageRenderingUiTest(unittest.TestCase):
         for heavy_render in (
             "renderRuntimeLogs()",
             "renderMeasurementCompareTable()",
+            "renderModelDiagramPage()",
             "renderGridModelPage()",
             "renderRuntimeMonitor()",
             "renderCurveEditor()",
@@ -69,11 +70,37 @@ class ActivePageRenderingUiTest(unittest.TestCase):
             "renderTraineeModelPage(snapshot)",
             "renderCurveDisplay(snapshot)",
             "renderMeasurements(snapshot)",
+            "renderModelDiagramPage(snapshot)",
             "renderCombinedControlPage()",
             "renderRenewableControl(snapshot)",
             "renderHistory()",
         ):
             self.assertNotIn(heavy_render, render_snapshot)
+
+    def test_trainee_runtime_logs_do_not_render_detached_history_page(self):
+        script = (ROOT / "simu" / "web" / "trainee" / "app.js").read_text(encoding="utf-8")
+        add_log_block = script.split("function addRuntimeLog", 1)[1].split("function runtimeLogDetailText", 1)[0]
+        render_history_block = script.split("function renderHistory()", 1)[1].split("function traineeRuntimeLogTypes", 1)[0]
+
+        self.assertIn("function renderHistoryIfMounted", script)
+        self.assertIn("renderHistoryIfMounted();", add_log_block)
+        self.assertIn('const historyCount = $("historyCount");', render_history_block)
+        self.assertIn('const commandHistory = $("commandHistory");', render_history_block)
+        self.assertIn("if (!historyCount || !commandHistory) return;", render_history_block)
+
+    def test_trainee_pending_command_refresh_tolerates_detached_pages(self):
+        script = (ROOT / "simu" / "web" / "trainee" / "app.js").read_text(encoding="utf-8")
+        preview_block = script.split("function renderActiveCommandPreview", 1)[1].split("function updatePendingCount", 1)[0]
+        update_block = script.split("function updatePendingCount", 1)[1].split("function formatNumber", 1)[0]
+
+        self.assertIn('const pendingSummary = $("pendingSummary");', preview_block)
+        self.assertIn('const pendingPreview = $("pendingPreview");', preview_block)
+        self.assertIn("if (!pendingSummary || !pendingPreview) return;", preview_block)
+        self.assertIn('setOptionalText("pendingCount"', update_block)
+        self.assertIn('setOptionalText("runPendingCount"', update_block)
+        self.assertIn('setOptionalText("setpointPendingCount"', update_block)
+        self.assertIn('setOptionalText("commandPendingCount"', update_block)
+        self.assertIn('setOptionalText("commandState"', update_block)
 
 
 if __name__ == "__main__":

@@ -511,7 +511,6 @@ h1 {
 .data-table,
 .model-param-wrap,
 .runtime-device-wrap,
-.runtime-log-wrap,
 .measurement-compare-wrap,
 .fault-list,
 .log-list,
@@ -527,7 +526,6 @@ h1 {
 .data-table::-webkit-scrollbar,
 .model-param-wrap::-webkit-scrollbar,
 .runtime-device-wrap::-webkit-scrollbar,
-.runtime-log-wrap::-webkit-scrollbar,
 .measurement-compare-wrap::-webkit-scrollbar,
 .fault-list::-webkit-scrollbar,
 .log-list::-webkit-scrollbar,
@@ -1767,6 +1765,7 @@ input[type="range"] { padding: 0; accent-color: var(--teal); }
   flex-direction: column;
   gap: 6px;
   max-height: none;
+  overflow-anchor: none;
   overflow-x: hidden;
   overflow-y: auto;
   padding-right: 2px;
@@ -2093,6 +2092,46 @@ canvas {
   grid-template-columns: 280px minmax(0, 1fr);
   gap: 14px;
   align-items: stretch;
+}
+.model-diagram-panel {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.model-diagram-canvas {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+.model-diagram-svg-wrap {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.model-diagram-svg {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+}
+.model-diagram-svg text.is-diagram-bound,
+.model-diagram-svg tspan.is-diagram-bound {
+  font-weight: 700;
+  fill: var(--teal-dark);
 }
 .model-tree-panel {
   display: flex;
@@ -2454,6 +2493,26 @@ canvas {
   border: 1px solid var(--line);
   border-radius: 8px;
 }
+.runtime-log-wrap {
+  overflow-y: auto;
+  scrollbar-color: #9fb0b7 transparent;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+.runtime-log-wrap::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+.runtime-log-wrap::-webkit-scrollbar-track {
+  background: transparent;
+}
+.runtime-log-wrap::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: #aebcc2;
+}
+.runtime-log-wrap::-webkit-scrollbar-thumb:hover {
+  background: #879aa2;
+}
 .measurement-compare-wrap {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -2631,6 +2690,7 @@ canvas {
 }
 .page-section[data-page="logs"] > .panel {
   flex: 1;
+  min-height: 0;
   width: 100%;
   display: flex;
   flex-direction: column;

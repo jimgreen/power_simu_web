@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_trainee_receive_start_validates_link_snapshot_and_local_definition():
     script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
 
+    assert 'api("/api/trainee/connect"' in script
     assert "fetchTeacherSnapshot(connection)" in script
     assert "fetchLocalDefinitionSnapshot" in script
     assert "selectLocalDefinitionSnapshotForTeacher(connection, teacherSnapshot)" in script
@@ -37,6 +38,7 @@ def test_trainee_receive_runtime_logs_each_issue_and_stops_after_consecutive_fai
     assert "function stopReceiveAfterPersistentIssue" in script
     assert "attemptTeacherReconnect(epoch)" in script
     assert "resolveTeacherInteractionLink(state.interactionLink)" in script
+    assert "/api/trainee/snapshot" in script
     assert "通讯失败" in script
     assert "数据接收失败" in script
     assert "模拟台未启动仿真" in script
@@ -63,12 +65,12 @@ def test_trainee_receive_runtime_definition_mismatch_warning_dialog():
 def test_trainee_commands_are_sent_through_interaction_link_command_path():
     script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
 
-    assert "teacherCommandPath: localStorage.getItem(\"polarTeacherCommandPath\")" in script
+    assert "modelContexts:" in script
     assert "state.teacherCommandPath = connection.commandPath" in script
-    assert "localStorage.setItem(\"polarTeacherCommandPath\", state.teacherCommandPath)" in script
+    assert "localStorage.setItem(\"polarTeacherCommandPath\", state.teacherCommandPath)" not in script
     assert "function teacherCommandPath()" in script
     assert "async function teacherCommandApi" in script
-    assert "connectionApiUrl({ teacherApiBase }, teacherCommandPath())" in script
+    assert 'api("/api/trainee/commands", options)' in script
     assert "await teacherCommandApi({ method: \"POST\", body: JSON.stringify(payload) })" in script
     assert "await teacherCommandApi({ method: \"POST\", body: JSON.stringify(body) })" in script
 
@@ -82,15 +84,19 @@ def test_manual_telecontrol_and_teleadjust_commands_require_teacher_link():
     assert script.count("const useInteractionLink = hasTeacherCommandConnection();") >= 2
     assert "await postTeacherCommand(body)" in script
     assert "await api(\"/api/student/commands\", { method: \"POST\", body: JSON.stringify(body) })" not in script
+    assert "fetch(connectionApiUrl(connection" not in script
 
 
 def test_trainee_accepts_legacy_teacher_link_when_link_route_is_missing():
     script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+    server = (ROOT / "simu/server.py").read_text(encoding="utf-8")
 
     assert "function legacyTeacherInteractionConnection" in script
     assert "\"/api/trainee-link\"" in script
     assert "\"/api/client-link\"" in script
-    assert "Unknown API route" in script
-    assert "response.status === 404" in script
+    assert "Unknown API route" not in script
+    assert "response.status === 404" not in script
+    assert "def _legacy_trainee_connection_from_link" in server
+    assert "exc.status == 404" in server
     assert "snapshotPath: `/api/snapshot?model_id=${encodedModelId}`" in script
     assert "commandPath: `/api/student/commands?model_id=${encodedModelId}`" in script

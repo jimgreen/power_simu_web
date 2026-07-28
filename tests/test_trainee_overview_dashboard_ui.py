@@ -107,12 +107,14 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
             self.assertNotIn(f'"{element_id}"', self.script)
 
     def test_trainee_home_data_source_uses_detailed_receive_address(self):
-        self.assertIn('teacherSnapshotPath: localStorage.getItem("polarTeacherSnapshotPath")', self.script)
+        self.assertIn("MODEL_CONTEXTS_STORAGE_KEY", self.script)
+        self.assertIn("teacherSnapshotPath: context.teacherSnapshotPath", self.script)
         self.assertIn("function teacherSnapshotPath()", self.script)
         self.assertIn("function teacherReceiveAddress()", self.script)
         self.assertIn("function displayReceiveAddress", self.script)
         self.assertIn("state.teacherSnapshotPath = connection.snapshotPath", self.script)
-        self.assertIn('localStorage.setItem("polarTeacherSnapshotPath", state.teacherSnapshotPath)', self.script)
+        self.assertIn("persistActiveModelContext();", self.script)
+        self.assertNotIn('localStorage.setItem("polarTeacherSnapshotPath", state.teacherSnapshotPath)', self.script)
 
         receive_mode_block = self.script.split("function renderReceiveMode", 1)[1].split("function curveMinute", 1)[0]
         self.assertIn("const receiveAddress = teacherReceiveAddress();", receive_mode_block)

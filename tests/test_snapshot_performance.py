@@ -29,7 +29,7 @@ class SnapshotPerformanceTest(unittest.TestCase):
 
         snapshot = service.snapshot()
 
-        for key in ("files", "source_files", "work_files", "definitions", "curves", "settings", "device_parameters"):
+        for key in ("files", "source_files", "work_files", "definitions", "curves", "settings", "device_parameters", "diagram"):
             self.assertIn(key, snapshot)
         self.assertIn("measurements", snapshot)
         self.assertIn("devices", snapshot)
@@ -41,7 +41,7 @@ class SnapshotPerformanceTest(unittest.TestCase):
         full = service.snapshot()
         lite = service.snapshot(include_static=False, runtime_log_limit=2)
 
-        for key in ("files", "source_files", "work_files", "definitions", "curves", "settings", "device_parameters"):
+        for key in ("files", "source_files", "work_files", "definitions", "curves", "settings", "device_parameters", "diagram"):
             self.assertNotIn(key, lite)
         self.assertIn("measurements", lite)
         self.assertIn("devices", lite)

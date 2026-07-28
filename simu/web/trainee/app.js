@@ -1,9 +1,5 @@
 const apiBase = (window.POLAR_SIM_API_URL || localStorage.getItem("polarSimApiUrl") || location.origin).replace(/\/$/, "");
-let teacherApiBase = (
-  window.POLAR_TEACHER_API_URL ||
-  localStorage.getItem("polarTeacherApiUrl") ||
-  "http://127.0.0.1:8710"
-).replace(/\/$/, "");
+const MODEL_CONTEXTS_STORAGE_KEY = "polarTraineeModelContexts";
 const OVERVIEW_BOTTOM_HEIGHT_KEY = "polarTraineeOverviewBottomHeight";
 const OVERVIEW_BOTTOM_DEFAULT_HEIGHT = 156;
 const OVERVIEW_BOTTOM_MIN_HEIGHT = 96;
@@ -17,6 +13,32 @@ const VERTICAL_SPLIT_DEFAULTS = {
 const VERTICAL_SPLIT_DEFAULT_RATIO = 55;
 const VERTICAL_SPLIT_MIN_TOP_PX = 120;
 const VERTICAL_SPLIT_MIN_BOTTOM_PX = 120;
+
+function readStoredModelContexts() {
+  let contexts = {};
+  try {
+    const parsed = JSON.parse(localStorage.getItem(MODEL_CONTEXTS_STORAGE_KEY) || "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) contexts = parsed;
+  } catch (_error) {
+    contexts = {};
+  }
+  const legacyModelId = localStorage.getItem("polarTraineeModelId") || "";
+  const legacyLink = localStorage.getItem("polarTeacherInteractionLink") || "";
+  if (legacyModelId && legacyLink && !contexts[legacyModelId]) {
+    contexts[legacyModelId] = {
+      interactionLink: legacyLink,
+      teacherApiBase: (localStorage.getItem("polarTeacherApiUrl") || "").replace(/\/$/, ""),
+      teacherModelName: localStorage.getItem("polarTeacherModelName") || legacyModelId,
+      teacherSnapshotPath: localStorage.getItem("polarTeacherSnapshotPath") || "",
+      teacherCommandPath: localStorage.getItem("polarTeacherCommandPath") || "",
+      teacherMeasurementDeltaPath: localStorage.getItem("polarTeacherMeasurementDeltaPath") || "",
+      receiveMode: false,
+      frozen: false,
+    };
+  }
+  return contexts;
+}
+
 const state = {
   snapshot: null,
   activePage: "",
@@ -24,22 +46,26 @@ const state = {
   pageMain: null,
   models: [],
   activeModelId: localStorage.getItem("polarTraineeModelId") || "",
+  modelContexts: readStoredModelContexts(),
   receiveMode: false,
   frozen: false,
   receiveEpoch: 0,
   lastReceiveAt: "",
   snapshotSource: "",
   lastTeacherSnapshotLogKey: "",
-  interactionLink: localStorage.getItem("polarTeacherInteractionLink") || "",
-  teacherModelName: localStorage.getItem("polarTeacherModelName") || "",
-  teacherSnapshotPath: localStorage.getItem("polarTeacherSnapshotPath") || "",
-  teacherCommandPath: localStorage.getItem("polarTeacherCommandPath") || "",
-  teacherMeasurementDeltaPath: localStorage.getItem("polarTeacherMeasurementDeltaPath") || "",
+  interactionLink: "",
+  teacherApiBase: "",
+  teacherModelId: "",
+  teacherModelName: "",
+  teacherSnapshotPath: "",
+  teacherCommandPath: "",
+  teacherMeasurementDeltaPath: "",
   localDefinitionSnapshot: null,
   localDefinitionModelId: "",
   receiveReconnectAttempts: 0,
   refreshRequestActive: false,
   receiveRequestActive: false,
+  receiveStateSyncActive: false,
   definitionMismatchLastKey: "",
   runtimeLogs: [],
   runtimeLogTypeFilter: "all",
@@ -47,6 +73,9 @@ const state = {
   runtimeLogPageSize: 20,
   runtimeLogSeq: 0,
   seenCommandHistoryKeys: new Set(),
+  selectedManagementModelId: "",
+  cloneSourceModelId: "",
+  updateTargetModelId: "",
   modelFilter: { dev_type: "all", dev_name: "" },
   activeModelParamTab: "",
   activeCurveDisplayKey: "wind_speed_mps",
@@ -106,6 +135,8 @@ const state = {
   virtualTableScrollRaf: {},
 };
 const pending = { run_status: new Map(), set_values: new Map() };
+let pendingImportDefinitionFile = null;
+let pendingUpdateDefinitionFile = null;
 const RENEWABLE_COMMAND_VALID_MINUTES = 5;
 const TRACE_HISTORY_LIMIT = 45000;
 const TRACE_HIGH_RES_WINDOW_MINUTES = 24 * 60;
@@ -140,6 +171,209 @@ const RECEIVE_MAX_RECONNECT_ATTEMPTS = 3;
 const RECEIVE_WARNING_LIMIT = 40;
 
 const $ = (id) => document.getElementById(id);
+const deviceTreeRenderKeys = new WeakMap();
+
+function contextKey(modelId = state.activeModelId) {
+  return String(modelId || "__default__");
+}
+
+function defaultModelContext(modelId = state.activeModelId) {
+  return {
+    modelId: contextKey(modelId),
+    receiveMode: false,
+    frozen: false,
+    interactionLink: "",
+    teacherApiBase: "",
+    teacherModelId: "",
+    teacherModelName: "",
+    teacherSnapshotPath: "",
+    teacherCommandPath: "",
+    teacherMeasurementDeltaPath: "",
+    lastReceiveAt: "",
+    snapshotSource: "",
+    lastTeacherSnapshotLogKey: "",
+    receiveReconnectAttempts: 0,
+    measurementDeltaSeq: 0,
+    runtimeLogSeq: 0,
+    runtimeLogs: [],
+    snapshot: null,
+    measurementTraceHistory: [],
+    commandTraceHistory: [],
+  };
+}
+
+function activeModelContext(modelId = state.activeModelId) {
+  const key = contextKey(modelId);
+  return { ...defaultModelContext(modelId), ...(state.modelContexts[key] || {}) };
+}
+
+function serializableModelContext(context) {
+  return {
+    receiveMode: Boolean(context.receiveMode),
+    frozen: Boolean(context.frozen),
+    interactionLink: context.interactionLink || "",
+    teacherApiBase: context.teacherApiBase || "",
+    teacherModelId: context.teacherModelId || "",
+    teacherModelName: context.teacherModelName || "",
+    teacherSnapshotPath: context.teacherSnapshotPath || "",
+    teacherCommandPath: context.teacherCommandPath || "",
+    teacherMeasurementDeltaPath: context.teacherMeasurementDeltaPath || "",
+    lastReceiveAt: context.lastReceiveAt || "",
+  };
+}
+
+function persistModelContextsToStorage() {
+  const payload = {};
+  Object.entries(state.modelContexts || {}).forEach(([key, context]) => {
+    payload[key] = serializableModelContext(context || {});
+  });
+  localStorage.setItem(MODEL_CONTEXTS_STORAGE_KEY, JSON.stringify(payload));
+}
+
+function captureActiveModelContext(overrides = {}) {
+  return {
+    ...activeModelContext(),
+    receiveMode: state.receiveMode,
+    frozen: state.frozen,
+    interactionLink: state.interactionLink,
+    teacherApiBase: state.teacherApiBase,
+    teacherModelId: state.teacherModelId,
+    teacherModelName: state.teacherModelName,
+    teacherSnapshotPath: state.teacherSnapshotPath,
+    teacherCommandPath: state.teacherCommandPath,
+    teacherMeasurementDeltaPath: state.teacherMeasurementDeltaPath,
+    lastReceiveAt: state.lastReceiveAt,
+    snapshotSource: state.snapshotSource,
+    lastTeacherSnapshotLogKey: state.lastTeacherSnapshotLogKey,
+    receiveReconnectAttempts: state.receiveReconnectAttempts,
+    measurementDeltaSeq: state.measurementDeltaSeq,
+    runtimeLogSeq: state.runtimeLogSeq,
+    runtimeLogs: state.runtimeLogs,
+    snapshot: state.snapshot,
+    measurementTraceHistory: state.measurementTraceHistory,
+    commandTraceHistory: state.commandTraceHistory,
+    ...overrides,
+  };
+}
+
+function persistActiveModelContext(overrides = {}) {
+  if (!state.activeModelId) return;
+  state.modelContexts[contextKey()] = captureActiveModelContext(overrides);
+  persistModelContextsToStorage();
+}
+
+function restoreModelContext(modelId = state.activeModelId) {
+  const context = activeModelContext(modelId);
+  state.receiveMode = Boolean(context.receiveMode);
+  state.frozen = Boolean(context.frozen);
+  state.interactionLink = context.interactionLink || "";
+  state.teacherApiBase = (context.teacherApiBase || "").replace(/\/$/, "");
+  state.teacherModelId = context.teacherModelId || "";
+  state.teacherModelName = context.teacherModelName || "";
+  state.teacherSnapshotPath = context.teacherSnapshotPath || "";
+  state.teacherCommandPath = context.teacherCommandPath || "";
+  state.teacherMeasurementDeltaPath = context.teacherMeasurementDeltaPath || "";
+  state.lastReceiveAt = context.lastReceiveAt || "";
+  state.snapshotSource = context.snapshotSource || "";
+  state.lastTeacherSnapshotLogKey = context.lastTeacherSnapshotLogKey || "";
+  state.receiveReconnectAttempts = Number(context.receiveReconnectAttempts) || 0;
+  state.measurementDeltaSeq = Number(context.measurementDeltaSeq) || 0;
+  state.runtimeLogSeq = Number(context.runtimeLogSeq) || 0;
+  state.runtimeLogs = Array.isArray(context.runtimeLogs) ? context.runtimeLogs : [];
+  state.snapshot = context.snapshot || null;
+  state.measurementTraceHistory = Array.isArray(context.measurementTraceHistory) ? context.measurementTraceHistory : [];
+  state.commandTraceHistory = Array.isArray(context.commandTraceHistory) ? context.commandTraceHistory : [];
+}
+
+function receiveContextFromBackend(payload = {}) {
+  return {
+    receiveMode: Boolean(payload.active ?? payload.receiveMode),
+    frozen: Boolean(payload.frozen),
+    interactionLink: payload.interaction_link || payload.interactionLink || "",
+    teacherApiBase: (payload.teacher_api_base || payload.teacherApiBase || "").replace(/\/$/, ""),
+    teacherModelId: payload.teacher_model_id || payload.teacherModelId || "",
+    teacherModelName: payload.teacher_model_name || payload.teacherModelName || payload.model_name || "",
+    teacherSnapshotPath: payload.snapshot_path || payload.snapshotPath || "",
+    teacherCommandPath: payload.command_path || payload.commandPath || "",
+    teacherMeasurementDeltaPath: payload.measurement_delta_path || payload.measurementDeltaPath || "",
+    lastReceiveAt: payload.last_receive_at || payload.lastReceiveAt || "",
+  };
+}
+
+function receiveStatePayloadFromContext(context, overrides = {}) {
+  const merged = { ...context, ...overrides };
+  return {
+    active: Boolean(merged.active ?? merged.receiveMode),
+    frozen: Boolean(merged.frozen),
+    interaction_link: merged.interactionLink || merged.interaction_link || "",
+    teacher_api_base: merged.teacherApiBase || merged.teacher_api_base || "",
+    teacher_model_id: merged.teacherModelId || merged.teacher_model_id || state.activeModelId || "",
+    teacher_model_name: merged.teacherModelName || merged.teacher_model_name || merged.teacherModelName || "",
+    snapshot_path: merged.teacherSnapshotPath || merged.snapshot_path || "",
+    command_path: merged.teacherCommandPath || merged.command_path || "",
+    measurement_delta_path: merged.teacherMeasurementDeltaPath || merged.measurement_delta_path || "",
+    last_receive_at: merged.lastReceiveAt || merged.last_receive_at || "",
+  };
+}
+
+function mergeBackendReceiveState(modelId, payload = {}, applyIfActive = false) {
+  const key = contextKey(modelId);
+  const previous = activeModelContext(modelId);
+  state.modelContexts[key] = {
+    ...previous,
+    ...receiveContextFromBackend(payload),
+  };
+  persistModelContextsToStorage();
+  if (applyIfActive && contextKey() === key) restoreModelContext(modelId);
+  return state.modelContexts[key];
+}
+
+async function saveTraineeReceiveState(modelId = state.activeModelId, overrides = {}) {
+  const key = contextKey(modelId);
+  const context = key === contextKey() ? captureActiveModelContext(overrides) : { ...activeModelContext(modelId), ...overrides };
+  const result = await api(`/api/trainee/receive-state?model_id=${encodeURIComponent(modelId)}`, {
+    method: "POST",
+    modelScoped: false,
+    body: JSON.stringify(receiveStatePayloadFromContext(context, overrides)),
+  });
+  mergeBackendReceiveState(modelId, result, key === contextKey());
+  return result;
+}
+
+async function syncActiveReceiveStateFromBackend(modelId = state.activeModelId) {
+  if (!modelId) return null;
+  const payload = await api(`/api/trainee/receive-state?model_id=${encodeURIComponent(modelId)}`, { modelScoped: false });
+  return mergeBackendReceiveState(modelId, payload, contextKey(modelId) === contextKey());
+}
+
+async function syncActiveReceiveStateBeforeRefresh() {
+  if (!state.activeModelId || state.receiveStateSyncActive) return;
+  state.receiveStateSyncActive = true;
+  const previousReceiveMode = state.receiveMode;
+  const previousLink = state.interactionLink;
+  try {
+    await syncActiveReceiveStateFromBackend(state.activeModelId);
+    if (state.receiveMode !== previousReceiveMode || state.interactionLink !== previousLink) {
+      state.receiveEpoch += 1;
+      state.receiveRequestActive = false;
+      if (state.receiveMode) {
+        state.frozen = false;
+        state.lastReceiveAt = "";
+        state.snapshotSource = "";
+      }
+    }
+  } catch (_error) {
+    // Keep the visible page usable if the local trainee service cannot read the shared receive state.
+  } finally {
+    state.receiveStateSyncActive = false;
+  }
+}
+
+function mergeReceiveStatesFromBackend(items = {}) {
+  Object.entries(items || {}).forEach(([modelId, payload]) => {
+    mergeBackendReceiveState(modelId, payload, false);
+  });
+}
 
 function overviewInitialBottomHeight() {
   const storedHeight = Number(localStorage.getItem(OVERVIEW_BOTTOM_HEIGHT_KEY));
@@ -484,6 +718,7 @@ const TRAINEE_PAGE_ROUTES = {
   "/": "overview",
   "/overview": "overview",
   "/model": "model",
+  "/diagram": "diagram",
   "/curves": "curves",
   "/measurements": "measurements",
   "/commands": "commands",
@@ -600,6 +835,7 @@ const STATIC_SNAPSHOT_KEYS = [
   "curves",
   "settings",
   "device_parameters",
+  "diagram",
 ];
 
 function hasStaticSnapshotPayload(snapshot) {
@@ -639,16 +875,6 @@ function appendUrlQuery(url, params) {
   }
 }
 
-async function teacherApi(path, options = {}) {
-  const targetPath = teacherScopedPath(path);
-  const response = await fetch(`${teacherApiBase}${targetPath}`, {
-    ...options,
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-  });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
-}
-
 function teacherSnapshotPath() {
   if (state.teacherSnapshotPath) return state.teacherSnapshotPath;
   try {
@@ -665,11 +891,14 @@ function teacherSnapshotPath() {
 }
 
 function teacherReceiveAddress() {
-  return connectionApiUrl({ teacherApiBase }, teacherSnapshotPath());
+  const base = state.teacherApiBase || "";
+  const path = teacherSnapshotPath();
+  if (!base) return path;
+  return connectionApiUrl({ teacherApiBase: base }, path);
 }
 
 function teacherSnapshotPollAddress() {
-  return appendUrlQuery(teacherReceiveAddress(), { lite: 1, logs: 0, measurements: 0 });
+  return appendUrlQuery("/api/trainee/snapshot", { lite: 1, logs: 0, measurements: 0 });
 }
 
 function measurementDeltaPathFromSnapshotPath(snapshotPath = "") {
@@ -683,8 +912,7 @@ function measurementDeltaPathFromSnapshotPath(snapshotPath = "") {
 }
 
 function teacherMeasurementDeltaAddress() {
-  const path = state.teacherMeasurementDeltaPath || measurementDeltaPathFromSnapshotPath(teacherSnapshotPath());
-  return appendUrlQuery(connectionApiUrl({ teacherApiBase }, path), { after_seq: state.measurementDeltaSeq });
+  return appendUrlQuery("/api/trainee/measurements/delta", { after_seq: state.measurementDeltaSeq });
 }
 
 function displayReceiveAddress(address) {
@@ -696,11 +924,7 @@ function displayReceiveAddress(address) {
 }
 
 async function teacherSnapshotApi() {
-  const response = await fetch(teacherSnapshotPollAddress(), {
-    headers: { Accept: "application/json" },
-  });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
+  return api(teacherSnapshotPollAddress());
 }
 
 function measurementNameKey(item) {
@@ -769,11 +993,7 @@ async function refreshMeasurementDelta(renderNow = false) {
   state.measurementDeltaRequestActive = true;
   try {
     const payload = state.receiveMode
-      ? await (async () => {
-          const response = await fetch(teacherMeasurementDeltaAddress(), { headers: { Accept: "application/json" } });
-          if (!response.ok) throw new Error(await response.text());
-          return response.json();
-        })()
+      ? await api(teacherMeasurementDeltaAddress())
       : await api(`/api/measurements/delta?after_seq=${state.measurementDeltaSeq}`);
     const changed = applyMeasurementDelta(payload);
     if (changed && renderNow && currentPageName() === "measurements") renderMeasurements(state.snapshot || {});
@@ -795,16 +1015,11 @@ function teacherCommandTargetName() {
 }
 
 async function teacherCommandApi(options = {}) {
-  const response = await fetch(connectionApiUrl({ teacherApiBase }, teacherCommandPath()), {
-    ...options,
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-  });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
+  return api("/api/trainee/commands", options);
 }
 
 function hasTeacherCommandConnection() {
-  return Boolean(state.interactionLink && state.teacherCommandPath && teacherApiBase);
+  return Boolean(state.interactionLink && state.teacherCommandPath && state.teacherApiBase);
 }
 
 async function postTeacherCommand(body) {
@@ -833,10 +1048,168 @@ function manualCommandExpiresAtAbsoluteMinute(snapshot = state.snapshot || {}) {
   return Math.max(cycleEnd, current + Math.max(1, stepMinutes * speed));
 }
 
+function manualCommandHoldPayload() {
+  return {
+    manual_hold: true,
+    hold_until_cancelled: true,
+    priority: "manual",
+  };
+}
+
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]
   ));
+}
+
+function sanitizeDiagramSvg(svgText) {
+  const raw = String(svgText || "").trim();
+  if (!raw) return "";
+  const documentParser = new DOMParser();
+  const parsed = documentParser.parseFromString(raw, "image/svg+xml");
+  if (parsed.querySelector("parsererror")) return "";
+  const svg = parsed.querySelector("svg");
+  if (!svg) return "";
+  svg.querySelectorAll("script, foreignObject, iframe, object, embed").forEach((node) => node.remove());
+  svg.querySelectorAll("*").forEach((node) => {
+    [...node.attributes].forEach((attribute) => {
+      const name = attribute.name.toLowerCase();
+      const value = String(attribute.value || "").trim().toLowerCase();
+      if (name.startsWith("on") || value.startsWith("javascript:")) node.removeAttribute(attribute.name);
+      if ((name === "href" || name.endsWith(":href")) && value.startsWith("javascript:")) node.removeAttribute(attribute.name);
+    });
+  });
+  svg.classList.add("model-diagram-svg");
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  return svg.outerHTML;
+}
+
+function diagramNumberText(value) {
+  const number = Number(value);
+  if (Number.isFinite(number)) return number.toFixed(2);
+  const text = String(value ?? "").trim();
+  return text || "--";
+}
+
+function diagramRowText(row) {
+  if (!row) return "--";
+  const unit = String(row.unit || "").trim();
+  return `${diagramNumberText(row.value)}${unit ? ` ${unit}` : ""}`;
+}
+
+function addDiagramMeasurementAliases(map, row) {
+  if (!row) return;
+  const aliases = [
+    row.name,
+    measurementKey(row),
+    `${row.dev_type || ""}.${row.dev_name || ""}.${row.meas_type || ""}`,
+  ].map((item) => String(item || "").trim()).filter(Boolean);
+  aliases.forEach((alias) => map.set(alias, row));
+}
+
+function diagramMeasurementMaps(snapshot = state.snapshot || {}) {
+  const measurements = snapshot.measurements || {};
+  const scada = new Map();
+  const real = new Map();
+  (measurements.scada || []).forEach((row) => addDiagramMeasurementAliases(scada, row));
+  (measurements.real || []).forEach((row) => addDiagramMeasurementAliases(real, row));
+  return { scada, real };
+}
+
+function addDiagramControlAliases(map, aliases, value, updated) {
+  aliases.map((item) => String(item || "").trim()).filter(Boolean).forEach((alias) => {
+    map.set(alias, { value, updated });
+  });
+}
+
+function diagramControlMap(snapshot = state.snapshot || {}) {
+  const map = new Map();
+  activeCommandHistory(snapshot).forEach((entry) => {
+    const normalized = entry.normalized || {};
+    const payload = entry.payload || {};
+    const updated = entry.issue_simu_time || entry.receive_simu_time || entry.simu_time || entry.wall_time || "";
+    (normalized.run_status || payload.run_status || []).forEach((item) => {
+      const devType = item.dev_type || "";
+      const devName = item.dev_name || "";
+      addDiagramControlAliases(map, [
+        item.name,
+        `${devType}.${devName}.RUN_STAT`,
+        `${devType}.${devName}.STATUS`,
+      ], item.run_stat ?? item.status ?? item.value, updated);
+    });
+    (normalized.set_values || payload.set_values || payload.setpoints || []).forEach((item) => {
+      const devType = item.dev_type || "";
+      const devName = item.dev_name || "";
+      const setType = item.set_type || "";
+      addDiagramControlAliases(map, [
+        item.name,
+        `${devType}.${devName}.${setType}`,
+      ], item.set_value ?? item.value, updated);
+    });
+  });
+  return map;
+}
+
+function diagramBindingValue(name, maps, channel = "scada") {
+  const key = String(name || "").trim();
+  if (!key) return null;
+  if (channel === "real") return maps.real.get(key) || null;
+  if (channel === "control") return maps.controls.get(key) || null;
+  return maps.scada.get(key) || maps.real.get(key) || null;
+}
+
+function setDiagramElementValue(element, row) {
+  const text = row?.value === undefined ? "--" : (row.unit !== undefined ? diagramRowText(row) : diagramNumberText(row.value));
+  const tag = String(element.tagName || "").toLowerCase();
+  if (["text", "tspan", "title", "desc"].includes(tag) || element instanceof HTMLElement) {
+    element.textContent = text;
+  } else {
+    element.setAttribute("data-current-value", text);
+  }
+  element.classList.toggle("is-diagram-bound", row !== null && row !== undefined);
+  element.setAttribute("data-bound-value", text);
+  if (row?.updated) element.setAttribute("data-bound-time", row.updated);
+}
+
+function updateDiagramRealtimeBindings(container = $("modelDiagramCanvas"), snapshot = state.snapshot || {}) {
+  if (!container) return;
+  const measurementMaps = diagramMeasurementMaps(snapshot);
+  const maps = { ...measurementMaps, controls: diagramControlMap(snapshot) };
+  container.querySelectorAll("[data-meas-name], [data-scada-name]").forEach((element) => {
+    const name = element.getAttribute("data-meas-name") || element.getAttribute("data-scada-name") || "";
+    setDiagramElementValue(element, diagramBindingValue(name, maps, "scada"));
+  });
+  container.querySelectorAll("[data-real-name]").forEach((element) => {
+    setDiagramElementValue(element, diagramBindingValue(element.getAttribute("data-real-name"), maps, "real"));
+  });
+  container.querySelectorAll("[data-control-name]").forEach((element) => {
+    setDiagramElementValue(element, diagramBindingValue(element.getAttribute("data-control-name"), maps, "control"));
+  });
+}
+
+function renderModelDiagramPage(snapshot = state.snapshot || {}) {
+  const activeSnapshot = snapshot || {};
+  const canvas = $("modelDiagramCanvas");
+  const summary = $("modelDiagramSummary");
+  if (!canvas) return;
+  const diagram = activeSnapshot.diagram || {};
+  const modelName = activeSnapshot.model?.name || activeSnapshot.model?.id || "当前模型";
+  if (!diagram.svg) {
+    canvas.dataset.diagramKey = "";
+    canvas.innerHTML = '<div class="empty-state">当前模型未配置接线图</div>';
+    if (summary) summary.textContent = `${modelName} · 未配置`;
+    return;
+  }
+  const key = `${activeSnapshot.model?.id || ""}|${diagram.updated_at || ""}|${diagram.size || ""}`;
+  if (canvas.dataset.diagramKey !== key) {
+    const sanitized = sanitizeDiagramSvg(diagram.svg);
+    canvas.dataset.diagramKey = key;
+    canvas.innerHTML = sanitized
+      ? `<div class="model-diagram-svg-wrap">${sanitized}</div>`
+      : '<div class="empty-state">接线图 SVG 无法解析</div>';
+  }
+  if (summary) summary.textContent = `${modelName} · ${diagram.filename || "diagram.svg"}`;
+  updateDiagramRealtimeBindings(canvas, activeSnapshot);
 }
 
 function apiErrorText(error) {
@@ -921,38 +1294,27 @@ function legacyTeacherInteractionConnection(url) {
 
 async function resolveTeacherInteractionLink(rawLink) {
   const url = normalizeConnectionUrl(rawLink);
-  const response = await fetch(url.href, { headers: { Accept: "application/json" } });
-  const text = await response.text();
-  if (!response.ok) {
-    const legacyConnection = legacyTeacherInteractionConnection(url);
-    if (legacyConnection && (response.status === 404 || /Unknown API route/i.test(text))) {
-      return legacyConnection;
-    }
-    throw new Error(text);
-  }
-  let payload = {};
-  try {
-    payload = JSON.parse(text);
-  } catch (_error) {
-    throw new Error("交互链接返回内容不是有效 JSON，请重新从模拟台复制链接。");
-  }
-  if (payload.type !== "polar-microgrid-trainee-link" || payload.role !== "simulator") {
-    throw new Error("交互链接无效，请使用模拟台生成的链接。");
-  }
-  const modelId = payload.model_id || url.searchParams.get("model_id") || "";
+  const payload = await api("/api/trainee/connect", {
+    method: "POST",
+    modelScoped: false,
+    body: JSON.stringify({ link: url.href }),
+  });
+  const connection = payload.connection || {};
+  const modelId = connection.model_id || connection.modelId || url.searchParams.get("model_id") || "";
   if (!modelId) throw new Error("交互链接缺少模型标识。");
   return {
-    link: payload.link || url.href,
-    teacherApiBase: String(payload.teacher_api_base || url.origin).replace(/\/$/, ""),
+    link: connection.link || url.href,
+    teacherApiBase: String(connection.teacher_api_base || connection.teacherApiBase || url.origin).replace(/\/$/, ""),
     modelId: String(modelId),
-    modelName: String(payload.model_name || modelId),
-    snapshotPath: String(payload.snapshot_path || `/api/snapshot?model_id=${encodeURIComponent(modelId)}`),
-    commandPath: String(payload.command_path || `/api/student/commands?model_id=${encodeURIComponent(modelId)}`),
+    modelName: String(connection.model_name || connection.modelName || modelId),
+    snapshotPath: String(connection.snapshot_path || connection.snapshotPath || `/api/snapshot?model_id=${encodeURIComponent(modelId)}`),
+    commandPath: String(connection.command_path || connection.commandPath || `/api/student/commands?model_id=${encodeURIComponent(modelId)}`),
     measurementDeltaPath: String(
-      payload.measurement_delta_path || measurementDeltaPathFromSnapshotPath(
-        payload.snapshot_path || `/api/snapshot?model_id=${encodeURIComponent(modelId)}`,
+      connection.measurement_delta_path || connection.measurementDeltaPath || measurementDeltaPathFromSnapshotPath(
+        connection.snapshot_path || connection.snapshotPath || `/api/snapshot?model_id=${encodeURIComponent(modelId)}`,
       ),
     ),
+    initialSnapshot: payload.snapshot || null,
   };
 }
 
@@ -964,11 +1326,8 @@ function connectionApiUrl(connection, path) {
 }
 
 async function fetchTeacherSnapshot(connection) {
-  const response = await fetch(connectionApiUrl(connection, connection.snapshotPath), {
-    headers: { Accept: "application/json" },
-  });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
+  if (connection?.initialSnapshot) return connection.initialSnapshot;
+  return teacherSnapshotApi();
 }
 
 function hasLocalDefinitionModel(modelId) {
@@ -1018,21 +1377,17 @@ async function selectLocalDefinitionSnapshotForTeacher(connection, teacherSnapsh
 }
 
 function applyTeacherConnection(connection) {
-  teacherApiBase = connection.teacherApiBase;
   state.interactionLink = connection.link;
+  state.teacherApiBase = (connection.teacherApiBase || "").replace(/\/$/, "");
+  state.teacherModelId = connection.modelId;
   state.teacherModelName = connection.modelName;
   state.teacherSnapshotPath = connection.snapshotPath;
   state.teacherCommandPath = connection.commandPath;
   state.teacherMeasurementDeltaPath = connection.measurementDeltaPath;
   state.activeModelId = connection.modelId;
   state.measurementDeltaSeq = 0;
-  localStorage.setItem("polarTeacherApiUrl", teacherApiBase);
-  localStorage.setItem("polarTeacherInteractionLink", state.interactionLink);
-  localStorage.setItem("polarTeacherModelName", state.teacherModelName);
-  localStorage.setItem("polarTeacherSnapshotPath", state.teacherSnapshotPath);
-  localStorage.setItem("polarTeacherCommandPath", state.teacherCommandPath);
-  localStorage.setItem("polarTeacherMeasurementDeltaPath", state.teacherMeasurementDeltaPath);
   localStorage.setItem("polarTraineeModelId", state.activeModelId);
+  persistActiveModelContext();
   renderModelSelector();
 }
 
@@ -1201,6 +1556,10 @@ function stopReceiveAfterPersistentIssue(result, detail = [], simTime = "") {
   state.frozen = true;
   state.receiveEpoch += 1;
   state.receiveRequestActive = false;
+  persistActiveModelContext({ receiveMode: false, frozen: true });
+  saveTraineeReceiveState(state.activeModelId, { active: false, frozen: true }).catch((error) => {
+    addRuntimeLog("接收模式", "学员台服务端", "保存保护状态失败", apiErrorText(error), "warn");
+  });
   addRuntimeLog(
     "实时交互",
     "接收保护",
@@ -1349,6 +1708,8 @@ async function startReceiveModeFromLink() {
     state.lastReceiveAt = "";
     state.snapshotSource = "";
     state.lastTeacherSnapshotLogKey = "";
+    persistActiveModelContext();
+    await saveTraineeReceiveState(state.activeModelId, { active: true, frozen: false });
     closeReceiveLinkDialog();
     addRuntimeLog(
       "接收模式",
@@ -1513,12 +1874,13 @@ function activeCommandHistory(snapshot = state.snapshot || {}) {
       const entryRunId = Number(entry.run_id);
       if (!Number.isFinite(entryRunId) || entryRunId !== currentRunId) return false;
     }
+    const accepted = entry.accepted || {};
+    const acceptedCount = Number(accepted.run_status || 0) + Number(accepted.set_values || 0);
+    if (manualHold) return acceptedCount > 0;
     const issued = Number(entry.issued_absolute_minute);
     const expires = Number(entry.expires_at_absolute_minute);
     if (!Number.isFinite(issued) || !Number.isFinite(expires)) return false;
-    const accepted = entry.accepted || {};
-    const acceptedCount = Number(accepted.run_status || 0) + Number(accepted.set_values || 0);
-    return acceptedCount > 0 && currentMinute < expires && (manualHold || issued <= currentMinute);
+    return acceptedCount > 0 && currentMinute < expires && issued <= currentMinute;
   });
 }
 
@@ -1535,7 +1897,7 @@ function addRuntimeLog(type, target, result, detail = "", level = "info", render
     level,
   });
   state.runtimeLogs = state.runtimeLogs.slice(0, 300);
-  if (renderNow) renderHistory();
+  if (renderNow) renderHistoryIfMounted();
 }
 
 function runtimeLogDetailText(detail) {
@@ -1567,49 +1929,696 @@ function setImportStatus(text, kind = "") {
   target.classList.toggle("is-ok", kind === "ok");
 }
 
-async function importDefinitionArchive(file) {
-  if (!file) return;
-  const button = $("importDefinitionsButton");
-  if (button) {
-    button.disabled = true;
-    button.textContent = "导入中";
+function normalizeModels(models = state.models) {
+  return (Array.isArray(models) ? models : [])
+    .map((model) => ({
+      ...model,
+      id: String(model?.id || model?.model_id || "").trim(),
+      name: String(model?.name || model?.model_name || model?.id || model?.model_id || "").trim(),
+    }))
+    .filter((model) => model.id);
+}
+
+function modelById(modelId) {
+  const targetId = String(modelId || "");
+  return normalizeModels().find((model) => model.id === targetId) || null;
+}
+
+function isModelNameTaken(name, ignoreId = "") {
+  const normalized = String(name || "").trim();
+  const ignored = String(ignoreId || "").trim();
+  return normalizeModels().some((model) => (model.id === normalized || model.name === normalized) && model.id !== ignored);
+}
+
+function traineeReceiveStateForModel(modelId) {
+  return activeModelContext(modelId);
+}
+
+function modelManagementState(model) {
+  const modelId = String(model?.id || "");
+  const context = traineeReceiveStateForModel(modelId);
+  if (context.receiveMode) return "receiving";
+  if (context.frozen) return "frozen";
+  return String(model?.clock_state || "stopped");
+}
+
+function modelManagementStateText(value) {
+  return {
+    receiving: "接收中",
+    frozen: "已冻结",
+    running: "运行中",
+    paused: "暂停中",
+    stopped: "已停止",
+  }[value] || value || "--";
+}
+
+function canEditManagedModel(model) {
+  const stateText = modelManagementState(model);
+  return stateText !== "receiving" && stateText !== "running" && stateText !== "paused";
+}
+
+function setModelManagementMessage(text, kind = "") {
+  const message = $("modelManagementMessage");
+  if (!message) return;
+  message.textContent = text || "";
+  message.classList.toggle("is-error", kind === "error");
+  message.classList.toggle("is-ok", kind === "ok");
+}
+
+function ensureSelectedManagementModelId(models = normalizeModels()) {
+  if (!models.length) {
+    state.selectedManagementModelId = "";
+    return "";
   }
+  const selectedId = String(state.selectedManagementModelId || "");
+  if (selectedId && models.some((model) => model.id === selectedId)) return selectedId;
+  const activeId = String(state.activeModelId || "");
+  const nextId = activeId && models.some((model) => model.id === activeId) ? activeId : models[0].id;
+  state.selectedManagementModelId = nextId;
+  return nextId;
+}
+
+function selectedManagementModelId() {
+  return ensureSelectedManagementModelId();
+}
+
+function selectedManagementModel() {
+  return modelById(selectedManagementModelId());
+}
+
+function updateModelContextMenuActions() {
+  const models = normalizeModels();
+  const selected = selectedManagementModel();
+  const hasSelected = Boolean(selected);
+  const editable = selected ? canEditManagedModel(selected) : false;
+  const menu = $("modelContextMenu");
+  const exportButton = menu?.querySelector('[data-model-context-action="export"]');
+  const cloneButton = menu?.querySelector('[data-model-context-action="clone"]');
+  const updateButton = menu?.querySelector('[data-model-context-action="update"]');
+  const deleteButton = menu?.querySelector('[data-model-context-action="delete"]');
+  if (exportButton) exportButton.disabled = !hasSelected;
+  if (cloneButton) cloneButton.disabled = !hasSelected;
+  if (updateButton) {
+    updateButton.disabled = !editable;
+    updateButton.title = !hasSelected
+      ? "请选择模型"
+      : (editable ? "导入修改后的模型与图形等定义数据" : "模型正在接收或运行中，不能修改");
+  }
+  if (deleteButton) {
+    const canDelete = hasSelected && models.length > 1 && editable;
+    deleteButton.disabled = !canDelete;
+    deleteButton.title = !hasSelected
+      ? "请选择模型"
+      : (models.length <= 1
+        ? "至少需要保留一个模型"
+        : (editable ? "删除选中的本地模型" : "模型正在接收或运行中，不能删除"));
+  }
+}
+
+function setSelectedManagementModel(modelId, render = true) {
+  state.selectedManagementModelId = String(modelId || "");
+  ensureSelectedManagementModelId();
+  updateModelContextMenuActions();
+  if (render) renderModelManagementList();
+}
+
+function renderModelManagementList() {
+  const list = $("modelManagementList");
+  if (!list) return;
+  const models = normalizeModels();
+  if (!models.length) {
+    list.innerHTML = '<div class="model-management-empty">暂无本地模型</div>';
+    state.selectedManagementModelId = "";
+    updateModelContextMenuActions();
+    return;
+  }
+  const selectedId = ensureSelectedManagementModelId(models);
+  const branchHtml = models.map((model) => {
+    const isActive = model.id === state.activeModelId;
+    const isSelected = model.id === selectedId;
+    const operationState = modelManagementState(model);
+    return `
+      <div
+        class="model-management-item ${isActive ? "is-active" : ""} ${isSelected ? "is-selected" : ""}"
+        role="treeitem"
+        tabindex="0"
+        aria-selected="${isSelected ? "true" : "false"}"
+        data-model-id="${escapeHtml(model.id)}"
+      >
+        <span class="model-management-node-mark" aria-hidden="true"></span>
+        <strong class="model-node-name">${escapeHtml(model.name || model.id)}</strong>
+        <div class="model-item-badges">
+          ${isActive ? '<span class="model-current-pill">当前</span>' : ""}
+          <span class="model-state-pill" data-state="${escapeHtml(operationState)}">${escapeHtml(modelManagementStateText(operationState))}</span>
+        </div>
+      </div>
+    `;
+  }).join("");
+  list.innerHTML = `
+    <div class="model-management-tree-root" role="treeitem" aria-expanded="true">
+      <span class="model-management-root-caret" aria-hidden="true">▾</span>
+      <strong>模型列表</strong>
+      <small>${models.length} 个</small>
+    </div>
+    <div class="model-management-branches" role="group">${branchHtml}</div>
+  `;
+  updateModelContextMenuActions();
+}
+
+async function openModelManagementDialog() {
+  const dialog = $("modelManagementDialog");
+  if (!dialog) return;
+  if (!dialog.open) dialog.showModal();
+  setModelManagementMessage("正在读取模型列表...");
+  try {
+    await loadModels();
+    ensureSelectedManagementModelId();
+    renderModelManagementList();
+    setModelManagementMessage("右键模型节点可导出、复制、修改或删除。", "ok");
+  } catch (error) {
+    renderModelManagementList();
+    setModelManagementMessage(apiErrorText(error), "error");
+  }
+}
+
+function closeModelManagementDialog() {
+  closeModelContextMenu();
+  const dialog = $("modelManagementDialog");
+  if (dialog?.open) dialog.close();
+}
+
+function closeModelContextMenu() {
+  const menu = $("modelContextMenu");
+  if (menu) menu.hidden = true;
+}
+
+function positionModelContextMenu(menu, x, y) {
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  requestAnimationFrame(() => {
+    const rect = menu.getBoundingClientRect();
+    const maxLeft = Math.max(8, window.innerWidth - rect.width - 8);
+    const maxTop = Math.max(8, window.innerHeight - rect.height - 8);
+    menu.style.left = `${Math.max(8, Math.min(x, maxLeft))}px`;
+    menu.style.top = `${Math.max(8, Math.min(y, maxTop))}px`;
+  });
+}
+
+function handleModelManagementAction(event) {
+  closeModelContextMenu();
+  const item = event.target instanceof Element ? event.target.closest(".model-management-item[data-model-id]") : null;
+  if (!item) return;
+  setSelectedManagementModel(item.dataset.modelId || "");
+  setModelManagementMessage("右键模型节点可导出、复制、修改或删除。", "ok");
+}
+
+function handleModelManagementKeydown(event) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const item = event.target instanceof Element ? event.target.closest(".model-management-item[data-model-id]") : null;
+  if (!item) return;
+  event.preventDefault();
+  setSelectedManagementModel(item.dataset.modelId || "");
+}
+
+function openModelContextMenu(event) {
+  const item = event.target instanceof Element ? event.target.closest(".model-management-item[data-model-id]") : null;
+  if (!item) return;
+  event.preventDefault();
+  setSelectedManagementModel(item.dataset.modelId || "");
+  const menu = $("modelContextMenu");
+  if (!menu) return;
+  updateModelContextMenuActions();
+  menu.hidden = false;
+  positionModelContextMenu(menu, event.clientX, event.clientY);
+}
+
+function suggestedImportModelName(filename) {
+  return String(filename || "导入模型")
+    .replace(/\.zip$/i, "")
+    .replace(/_definitions_\d{8}_\d{6}$/i, "")
+    .replace(/_definitions$/i, "")
+    .trim() || "导入模型";
+}
+
+function setImportModelMessage(text, kind = "") {
+  const message = $("importModelMessage");
+  if (!message) return;
+  message.textContent = text || "";
+  message.classList.toggle("is-error", kind === "error");
+  message.classList.toggle("is-ok", kind === "ok");
+}
+
+function validateImportModelName(showBlank = false) {
+  const input = $("importModelName");
+  const confirm = $("confirmImportModel");
+  const name = String(input?.value || "").trim();
+  if (!pendingImportDefinitionFile) {
+    if (confirm) confirm.disabled = true;
+    setImportModelMessage(showBlank ? "请选择定义包。" : "");
+    return false;
+  }
+  if (!name) {
+    if (confirm) confirm.disabled = true;
+    setImportModelMessage(showBlank ? "请输入新模型名称。" : "", showBlank ? "error" : "");
+    return false;
+  }
+  if (isModelNameTaken(name)) {
+    if (confirm) confirm.disabled = true;
+    setImportModelMessage(`模型已存在：${name}，请输入新的模型名称。`, "error");
+    return false;
+  }
+  if (confirm) confirm.disabled = false;
+  setImportModelMessage("");
+  return true;
+}
+
+function openImportModelDialog(file) {
+  const dialog = $("importModelDialog");
+  const input = $("importModelName");
+  if (!dialog || !input || !file) return;
+  pendingImportDefinitionFile = file;
+  $("importModelFilename").textContent = file.name;
+  input.value = suggestedImportModelName(file.name);
+  setImportModelMessage("");
+  validateImportModelName();
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => {
+    input.focus();
+    input.select();
+  });
+}
+
+function closeImportModelDialog() {
+  const dialog = $("importModelDialog");
+  if (dialog?.open) dialog.close();
+  pendingImportDefinitionFile = null;
+  const input = $("definitionArchiveInput");
+  if (input) input.value = "";
+  setImportModelMessage("");
+}
+
+function setImportModelBusy(isBusy) {
+  const confirm = $("confirmImportModel");
+  const input = $("importModelName");
+  const button = $("importDefinitionsButton");
+  if (confirm) {
+    confirm.disabled = isBusy;
+    confirm.textContent = isBusy ? "导入中" : "导入";
+  }
+  if (input) input.disabled = isBusy;
+  if (button) button.disabled = isBusy;
+}
+
+async function importDefinitionModel() {
+  const file = pendingImportDefinitionFile;
+  const input = $("importModelName");
+  const name = String(input?.value || "").trim();
+  if (!file || !validateImportModelName(true)) {
+    input?.focus();
+    return;
+  }
+  setImportModelBusy(true);
+  setImportModelMessage("正在创建模型文件夹并导入定义数据...");
   setImportStatus(file.name);
-  addRuntimeLog("模型交互", "学员台 /api/models/import-definitions", "开始导入", file.name);
+  addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "导入请求", `${name} ← ${file.name}`);
   try {
     const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
     const result = await api("/api/models/import-definitions", {
+      modelScoped: false,
       method: "POST",
-      body: JSON.stringify({ filename: file.name, data_base64: dataBase64 }),
+      body: JSON.stringify({
+        create_model: true,
+        name,
+        filename: file.name,
+        data_base64: dataBase64,
+      }),
     });
-    state.receiveMode = false;
-    state.receiveEpoch += 1;
-    state.frozen = false;
-    state.snapshot = null;
-    state.localDefinitionSnapshot = null;
-    state.localDefinitionModelId = "";
-    state.receiveReconnectAttempts = 0;
-    state.receiveRequestActive = false;
-    setImportStatus(`已导入 ${result.imported?.curve_points || 0} 点曲线`, "ok");
-    addRuntimeLog(
-      "模型交互",
-      "学员台 /api/models/import-definitions",
-      "导入成功",
-      `曲线 ${result.imported?.curve_points || 0} 点；负荷 ${result.imported?.load_count || 0} 类`,
-      "ok",
-    );
-    await loadModels();
-    await refresh();
+    state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
+    const newModelId = result.model?.id || result.active_model_id || name;
+    closeImportModelDialog();
+    state.selectedManagementModelId = newModelId;
+    setActiveModel(newModelId, true);
+    renderModelManagementList();
+    setModelManagementMessage(`已导入模型：${name}`, "ok");
+    setImportStatus(`已导入模型：${name}`, "ok");
+    addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "导入成功", `模型 ${name}`, "ok");
   } catch (error) {
-    setImportStatus(apiErrorText(error), "error");
-    addRuntimeLog("模型交互", "学员台 /api/models/import-definitions", "导入失败", apiErrorText(error), "error");
+    const message = apiErrorText(error);
+    if (message.includes("已存在")) await loadModels();
+    setImportModelMessage(message.includes("已存在") ? `${message}，请输入新的模型名称。` : message, "error");
+    setImportStatus(message, "error");
+    addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "导入失败", message, "error");
+  } finally {
+    setImportModelBusy(false);
+  }
+}
+
+function setUpdateModelMessage(text, kind = "") {
+  const message = $("updateModelMessage");
+  if (!message) return;
+  message.textContent = text || "";
+  message.classList.toggle("is-error", kind === "error");
+  message.classList.toggle("is-ok", kind === "ok");
+}
+
+function validateUpdateModelForm(showBlank = false) {
+  const confirm = $("confirmUpdateModel");
+  const target = modelById(state.updateTargetModelId);
+  if (!target) {
+    if (confirm) confirm.disabled = true;
+    setUpdateModelMessage("请选择要修改的模型。", "error");
+    return false;
+  }
+  if (!canEditManagedModel(target)) {
+    if (confirm) confirm.disabled = true;
+    setUpdateModelMessage("模型正在接收或运行中，不能修改。", "error");
+    return false;
+  }
+  if (!pendingUpdateDefinitionFile) {
+    if (confirm) confirm.disabled = true;
+    setUpdateModelMessage(showBlank ? "请选择定义包。" : "");
+    return false;
+  }
+  if (!String(pendingUpdateDefinitionFile.name || "").toLowerCase().endsWith(".zip")) {
+    if (confirm) confirm.disabled = true;
+    setUpdateModelMessage("请选择 .zip 格式的定义包。", "error");
+    return false;
+  }
+  if (confirm) confirm.disabled = false;
+  setUpdateModelMessage("");
+  return true;
+}
+
+function openUpdateModelDialog(modelId = selectedManagementModelId()) {
+  const target = modelById(modelId);
+  if (!target) {
+    setModelManagementMessage("请选择要修改的模型。", "error");
+    return;
+  }
+  if (!canEditManagedModel(target)) {
+    setModelManagementMessage("模型正在接收或运行中，不能修改。", "error");
+    return;
+  }
+  state.updateTargetModelId = target.id;
+  pendingUpdateDefinitionFile = null;
+  $("updateModelTargetName").textContent = target.name || target.id;
+  $("updateModelFilename").textContent = "未选择文件";
+  const input = $("updateModelFileInput");
+  if (input) input.value = "";
+  setUpdateModelMessage("");
+  validateUpdateModelForm();
+  const dialog = $("updateModelDialog");
+  if (!dialog?.open) dialog?.showModal();
+}
+
+function closeUpdateModelDialog() {
+  const dialog = $("updateModelDialog");
+  if (dialog?.open) dialog.close();
+  state.updateTargetModelId = "";
+  pendingUpdateDefinitionFile = null;
+  const input = $("updateModelFileInput");
+  if (input) input.value = "";
+  setUpdateModelMessage("");
+}
+
+function handleUpdateModelFileSelected(event) {
+  const file = event.target.files?.[0] || null;
+  pendingUpdateDefinitionFile = file;
+  $("updateModelFilename").textContent = file?.name || "未选择文件";
+  validateUpdateModelForm(Boolean(file));
+}
+
+async function updateManagedModelFromArchive() {
+  const file = pendingUpdateDefinitionFile;
+  const modelId = state.updateTargetModelId;
+  if (!file || !validateUpdateModelForm(true)) return;
+  const target = modelById(modelId) || {};
+  const modelName = target.name || target.id || modelId;
+  const confirm = $("confirmUpdateModel");
+  if (confirm) {
+    confirm.disabled = true;
+    confirm.textContent = "修改中";
+  }
+  setUpdateModelMessage("正在导入修改后的模型与图形等定义数据...");
+  addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "修改请求", `${modelName} ← ${file.name}`);
+  try {
+    const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
+    const result = await api("/api/models/import-definitions", {
+      modelScoped: false,
+      method: "POST",
+      body: JSON.stringify({
+        model_id: modelId,
+        filename: file.name,
+        data_base64: dataBase64,
+      }),
+    });
+    state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
+    closeUpdateModelDialog();
+    setActiveModel(modelId, true);
+    renderModelManagementList();
+    setModelManagementMessage(`模型已修改：${modelName}`, "ok");
+    setImportStatus(`模型已修改：${modelName}`, "ok");
+    addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "修改成功", `模型 ${modelName}`, "ok");
+  } catch (error) {
+    const message = apiErrorText(error);
+    setUpdateModelMessage(message, "error");
+    setModelManagementMessage(message, "error");
+    addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "修改失败", message, "error");
+  } finally {
+    if (confirm) {
+      confirm.textContent = "修改";
+      validateUpdateModelForm();
+    }
+  }
+}
+
+function setCloneModelMessage(text, kind = "") {
+  const message = $("cloneModelMessage");
+  if (!message) return;
+  message.textContent = text || "";
+  message.classList.toggle("is-error", kind === "error");
+  message.classList.toggle("is-ok", kind === "ok");
+}
+
+function uniqueCloneModelName(sourceName = "模型") {
+  const base = String(sourceName || "模型").trim().replace(/_copy\d*$/i, "") || "模型";
+  let candidate = `${base}_copy`;
+  let index = 2;
+  while (isModelNameTaken(candidate)) {
+    candidate = `${base}_copy${index}`;
+    index += 1;
+  }
+  return candidate;
+}
+
+function validateCloneModelName(showBlank = false) {
+  const input = $("cloneModelName");
+  const confirm = $("confirmCloneModel");
+  const name = String(input?.value || "").trim();
+  if (!name) {
+    if (confirm) confirm.disabled = true;
+    setCloneModelMessage(showBlank ? "请输入新模型名称。" : "", showBlank ? "error" : "");
+    return false;
+  }
+  if (isModelNameTaken(name)) {
+    if (confirm) confirm.disabled = true;
+    setCloneModelMessage(`模型已存在：${name}，请输入新的模型名称。`, "error");
+    return false;
+  }
+  if (confirm) confirm.disabled = false;
+  setCloneModelMessage("");
+  return true;
+}
+
+function openCloneModelDialog(modelId = selectedManagementModelId()) {
+  const source = modelById(modelId);
+  if (!source) {
+    setModelManagementMessage("请选择要复制的模型。", "error");
+    return;
+  }
+  state.cloneSourceModelId = source.id;
+  $("cloneModelSourceName").textContent = source.name || source.id;
+  const input = $("cloneModelName");
+  if (input) input.value = uniqueCloneModelName(source.name || source.id);
+  setCloneModelMessage("");
+  validateCloneModelName();
+  const dialog = $("cloneModelDialog");
+  if (!dialog?.open) dialog?.showModal();
+  requestAnimationFrame(() => {
+    input?.focus();
+    input?.select();
+  });
+}
+
+function closeCloneModelDialog() {
+  const dialog = $("cloneModelDialog");
+  if (dialog?.open) dialog.close();
+  state.cloneSourceModelId = "";
+  setCloneModelMessage("");
+}
+
+async function cloneManagedModel() {
+  const sourceId = state.cloneSourceModelId || selectedManagementModelId();
+  const input = $("cloneModelName");
+  const name = String(input?.value || "").trim();
+  if (!sourceId || !validateCloneModelName(true)) return;
+  const confirm = $("confirmCloneModel");
+  if (confirm) {
+    confirm.disabled = true;
+    confirm.textContent = "复制中";
+  }
+  try {
+    const result = await api("/api/models/clone", {
+      modelScoped: false,
+      method: "POST",
+      body: JSON.stringify({ model_id: sourceId, name }),
+    });
+    state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
+    const newModelId = result.model?.id || result.active_model_id || name;
+    closeCloneModelDialog();
+    state.selectedManagementModelId = newModelId;
+    setActiveModel(newModelId, true);
+    renderModelManagementList();
+    setModelManagementMessage(`已复制模型：${name}`, "ok");
+    addRuntimeLog("模型管理", "学员台 /api/models/clone", "复制成功", `${sourceId} → ${name}`, "ok");
+  } catch (error) {
+    const message = apiErrorText(error);
+    if (message.includes("已存在")) await loadModels();
+    setCloneModelMessage(message.includes("已存在") ? `${message}，请输入新的模型名称。` : message, "error");
+    addRuntimeLog("模型管理", "学员台 /api/models/clone", "复制失败", message, "error");
+  } finally {
+    if (confirm) {
+      confirm.textContent = "复制";
+      validateCloneModelName();
+    }
+  }
+}
+
+function blobFromBase64(dataBase64, contentType) {
+  const binary = atob(dataBase64 || "");
+  const chunkSize = 65536;
+  const chunks = [];
+  for (let offset = 0; offset < binary.length; offset += chunkSize) {
+    const slice = binary.slice(offset, offset + chunkSize);
+    const bytes = new Uint8Array(slice.length);
+    for (let idx = 0; idx < slice.length; idx += 1) bytes[idx] = slice.charCodeAt(idx);
+    chunks.push(bytes);
+  }
+  return new Blob(chunks, { type: contentType || "application/zip" });
+}
+
+function downloadBlob(blob, filename) {
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+}
+
+function safeExportFilename(filename) {
+  const cleaned = String(filename || "model_definitions.zip").replace(/[\\/:*?"<>|]/g, "_");
+  return cleaned.toLowerCase().endsWith(".zip") ? cleaned : `${cleaned}.zip`;
+}
+
+async function exportDefinitionsArchive(modelId = selectedManagementModelId(), actionButton = null) {
+  const targetModelId = String(modelId || "").trim();
+  if (!targetModelId) {
+    setModelManagementMessage("请选择要导出的模型。", "error");
+    return;
+  }
+  const button = actionButton;
+  const originalText = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "导出中";
+  }
+  try {
+    const payload = await api("/api/export-definitions?format=json&model_id=" + encodeURIComponent(targetModelId), {
+      modelScoped: false,
+    });
+    const filename = safeExportFilename(payload.filename || `${targetModelId}_definitions.zip`);
+    downloadBlob(blobFromBase64(payload.data_base64, payload.content_type), filename);
+    setModelManagementMessage(`已导出模型：${targetModelId}`, "ok");
+    addRuntimeLog("模型管理", "学员台 /api/export-definitions", "导出成功", targetModelId, "ok");
+  } catch (error) {
+    const message = apiErrorText(error);
+    setModelManagementMessage(message, "error");
+    addRuntimeLog("模型管理", "学员台 /api/export-definitions", "导出失败", message, "error");
   } finally {
     if (button) {
       button.disabled = false;
-      button.textContent = "导入定义";
+      button.textContent = originalText;
     }
-    const input = $("definitionArchiveInput");
-    if (input) input.value = "";
+  }
+}
+
+async function deleteManagedModel(modelId = selectedManagementModelId()) {
+  const target = modelById(modelId);
+  const models = normalizeModels();
+  if (!target) {
+    setModelManagementMessage("请选择要删除的模型。", "error");
+    return;
+  }
+  if (models.length <= 1) {
+    setModelManagementMessage("至少需要保留一个模型。", "error");
+    return;
+  }
+  if (!canEditManagedModel(target)) {
+    setModelManagementMessage("模型正在接收或运行中，不能删除。", "error");
+    return;
+  }
+  const modelName = target.name || target.id;
+  if (!window.confirm(`确认删除模型“${modelName}”吗？此操作会删除本地模型文件夹和运行数据。`)) return;
+  setModelManagementMessage(`正在删除模型：${modelName}`);
+  try {
+    const result = await api("/api/models/delete", {
+      modelScoped: false,
+      method: "POST",
+      body: JSON.stringify({ model_id: target.id }),
+    });
+    delete state.modelContexts[contextKey(target.id)];
+    persistModelContextsToStorage();
+    state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
+    const nextId = state.models.some((model) => model.id === state.activeModelId)
+      ? state.activeModelId
+      : (result.active_model_id || state.models[0]?.id || "");
+    state.selectedManagementModelId = nextId;
+    setActiveModel(nextId, true);
+    renderModelManagementList();
+    setModelManagementMessage(`已删除模型：${modelName}`, "ok");
+    addRuntimeLog("模型管理", "学员台 /api/models/delete", "删除成功", modelName, "ok");
+  } catch (error) {
+    await loadModels();
+    renderModelManagementList();
+    const message = apiErrorText(error);
+    setModelManagementMessage(message, "error");
+    addRuntimeLog("模型管理", "学员台 /api/models/delete", "删除失败", message, "error");
+  }
+}
+
+function handleModelContextMenuAction(event) {
+  const button = event.target instanceof Element ? event.target.closest("[data-model-context-action]") : null;
+  if (!button || button.disabled) return;
+  const action = button.dataset.modelContextAction || "";
+  closeModelContextMenu();
+  switch (action) {
+    case "export":
+      exportDefinitionsArchive(selectedManagementModelId(), button);
+      break;
+    case "clone":
+      openCloneModelDialog(selectedManagementModelId());
+      break;
+    case "update":
+      openUpdateModelDialog(selectedManagementModelId());
+      break;
+    case "delete":
+      deleteManagedModel(selectedManagementModelId());
+      break;
+    default:
+      break;
   }
 }
 
@@ -1627,7 +2636,7 @@ function renderModelSelector() {
       <option value="${escapeHtml(model.id)}">${escapeHtml(model.name || model.id)}</option>
     `).join("");
     selector.value = activeModelId;
-    selector.disabled = state.receiveMode || models.length <= 1;
+    selector.disabled = models.length <= 1;
     activeModelId = selector.value;
   }
   const active = models.find((model) => model.id === activeModelId) || models[0] || {};
@@ -1638,20 +2647,18 @@ function renderModelSelector() {
 }
 
 function setActiveModel(modelId, shouldRefresh = true) {
+  persistActiveModelContext();
   const nextId = modelId || state.models[0]?.id || "";
   state.activeModelId = nextId;
   localStorage.setItem("polarTraineeModelId", nextId);
-  state.frozen = false;
+  restoreModelContext(nextId);
   pending.run_status.clear();
   pending.set_values.clear();
+  if (!state.receiveMode) state.frozen = false;
   state.localDefinitionSnapshot = null;
   state.localDefinitionModelId = "";
-  state.receiveReconnectAttempts = 0;
-  state.measurementTraceHistory = [];
-  state.commandTraceHistory = [];
   state.traceRunId = null;
   state.selectedMeasurementKey = "";
-  state.measurementDeltaSeq = 0;
   state.selectedCommandTraceKey = "";
   state.selectedCommandTraceLabel = "";
   state.modelFilter = { dev_type: "all", dev_name: "" };
@@ -1671,8 +2678,9 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.controlFilter = { dev_type: "all", dev_name: "" };
   state.activeControlTab = "remote-control";
   state.deviceTreeSelectionAnchors = {};
-  if (shouldRefresh) stopRenewableControl("模型已切换，策略已停止。", true);
+  if (shouldRefresh) stopRenewableControl("模型已切换，当前页面策略已停止。", true);
   renderModelSelector();
+  if ($("modelManagementDialog")?.open) renderModelManagementList();
   updatePendingCount();
   if (shouldRefresh) refresh();
 }
@@ -1681,16 +2689,25 @@ async function loadModels() {
   try {
     const catalog = await api("/api/models", { modelScoped: false });
     state.models = Array.isArray(catalog.models) ? catalog.models : [];
+    try {
+      const receiveStates = await api("/api/trainee/receive-states", { modelScoped: false });
+      mergeReceiveStatesFromBackend(receiveStates.items || {});
+    } catch (_error) {
+      // Older trainee services may not have receive-state persistence; local contexts still work.
+    }
     const preferred = state.activeModelId || catalog.active_model_id || state.models[0]?.id || "";
     const exists = state.models.some((model) => model.id === preferred);
     setActiveModel(exists ? preferred : state.models[0]?.id || "", false);
+    if ($("modelManagementDialog")?.open) renderModelManagementList();
   } catch (_error) {
     state.models = [];
     renderModelSelector();
+    if ($("modelManagementDialog")?.open) renderModelManagementList();
   }
 }
 
 async function refresh() {
+  await syncActiveReceiveStateBeforeRefresh();
   if (state.receiveMode) {
     await refreshFromTeacher(state.receiveEpoch);
     return;
@@ -1749,7 +2766,6 @@ function renderSnapshot(snapshot) {
   }
   if (state.snapshotSource === "teacher" && snapshot.model?.name) {
     state.teacherModelName = snapshot.model.name;
-    localStorage.setItem("polarTeacherModelName", state.teacherModelName);
   }
   renderModelSelector();
   renderClock(snapshot.clock || {});
@@ -1767,6 +2783,7 @@ function renderSnapshot(snapshot) {
   updatePendingCount();
   renderActiveTraineePage(snapshot);
   maybeRunRenewableControl(snapshot);
+  persistActiveModelContext();
 }
 
 function renderReceiveMode(extraText = "") {
@@ -2003,6 +3020,11 @@ function renderEnergyFlowVisuals(power, storagePower, greenPowerShare) {
 }
 
 function setOverviewText(id, value) {
+  const element = $(id);
+  if (element) element.textContent = value;
+}
+
+function setOptionalText(id, value) {
   const element = $(id);
   if (element) element.textContent = value;
 }
@@ -2374,6 +3396,10 @@ function renderActiveTraineePage(snapshot = state.snapshot || {}, force = false)
   }
   if (activePage === "model") {
     renderTraineeModelPage(snapshot);
+    return;
+  }
+  if (activePage === "diagram") {
+    renderModelDiagramPage(snapshot);
     return;
   }
   if (activePage === "curves") {
@@ -3605,6 +4631,23 @@ function renderDeviceTreeFilterEmpty(query) {
   return query ? `<div class="empty-state">未匹配“${escapeHtml(query)}”</div>` : '<div class="empty-state">暂无设备</div>';
 }
 
+function updateDeviceTreeHtml(container, html, renderKey = html) {
+  if (!container) return;
+  const key = String(renderKey || "");
+  if (deviceTreeRenderKeys.get(container) === key) return;
+  const scrollTop = container.scrollTop;
+  const restoreScrollTop = () => {
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    container.scrollTop = Math.min(scrollTop, maxScrollTop);
+  };
+  container.innerHTML = html;
+  deviceTreeRenderKeys.set(container, key);
+  restoreScrollTop();
+  requestAnimationFrame(() => {
+    restoreScrollTop();
+  });
+}
+
 function deviceTreeItemType(item) {
   return String(item?.dev_type || item?.type || "");
 }
@@ -3828,12 +4871,13 @@ function renderDeviceTree(containerId, summaryId, devices, filter, scope, dataPr
         }).join(""))}
       </div>`;
   }).join("");
-  container.innerHTML = `
+  const treeHtml = `
     <button type="button" class="tree-node tree-root ${rootActive ? "is-active" : ""}" ${rootAttr}>
       <span>全部设备</span>
       <strong>${treeResult.query ? treeResult.filteredTotal : total}</strong>
     </button>
     ${groupHtml || renderDeviceTreeFilterEmpty(treeResult.query)}`;
+  updateDeviceTreeHtml(container, treeHtml);
 }
 
 function selectTreeFilter(filterName, devType, devName = "", event = null, button = null, dataPrefix = "") {
@@ -3961,7 +5005,7 @@ function renderTraineeModelDeviceTree(snapshot = state.snapshot || {}) {
   const groups = devicesByType(devices).map(([devType, items]) => [devType, [...items].sort(compareModelRowsByIndex)]);
   const treeResult = filterDeviceTreeGroups(groups, "model");
   $("modelTreeSummary").textContent = deviceTreeSummary(treeResult);
-  container.innerHTML = `
+  const treeHtml = `
     <button type="button" class="tree-node tree-root ${isDeviceTreeNodeActive(state.modelFilter, "all", "") ? "is-active" : ""}"
       data-model-tree-type="all" data-model-tree-name="">
       <span>全部设备</span><strong>${treeResult.query ? treeResult.filteredTotal : devices.length}</strong>
@@ -3984,6 +5028,7 @@ function renderTraineeModelDeviceTree(snapshot = state.snapshot || {}) {
           </button>`).join(""))}
       </div>`;
     }).join("") || renderDeviceTreeFilterEmpty(treeResult.query)}`;
+  updateDeviceTreeHtml(container, treeHtml);
 }
 
 function renderTraineeModelParamTable(snapshot = state.snapshot || {}) {
@@ -5303,18 +6348,21 @@ function syncCommandHistoryLogs(history = []) {
 }
 
 function renderHistory() {
+  const historyCount = $("historyCount");
+  const commandHistory = $("commandHistory");
+  if (!historyCount || !commandHistory) return;
   syncTraineeRuntimeLogTypeFilter();
   const allLogs = filteredTraineeRuntimeLogs();
   const logs = pagedTraineeRuntimeLogs(allLogs);
   renderTraineeRuntimeLogPager(allLogs);
-  $("historyCount").textContent = state.runtimeLogTypeFilter === "all"
+  historyCount.textContent = state.runtimeLogTypeFilter === "all"
     ? `${state.runtimeLogs.length} 条`
     : `${allLogs.length}/${state.runtimeLogs.length} 条`;
   if (!allLogs.length) {
-    $("commandHistory").innerHTML = '<div class="empty-state">暂无运行日志</div>';
+    commandHistory.innerHTML = '<div class="empty-state">暂无运行日志</div>';
     return;
   }
-  $("commandHistory").innerHTML = `
+  commandHistory.innerHTML = `
     <table class="runtime-log-table">
       <thead><tr><th>本机时刻</th><th>仿真时刻</th><th>类型</th><th>对象</th><th>结果</th><th>详情</th></tr></thead>
       <tbody>
@@ -5330,6 +6378,11 @@ function renderHistory() {
         `).join("")}
       </tbody>
     </table>`;
+}
+
+function renderHistoryIfMounted() {
+  if (!$("historyCount") || !$("commandHistory")) return;
+  renderHistory();
 }
 
 function traineeRuntimeLogTypes() {
@@ -5392,7 +6445,7 @@ function clearTraineeRuntimeLogs() {
   state.runtimeLogSeq = 0;
   state.runtimeLogPage = 1;
   state.runtimeLogTypeFilter = "all";
-  renderHistory();
+  renderHistoryIfMounted();
 }
 
 function activeCommandPreviewRows(snapshot = state.snapshot || {}) {
@@ -5438,9 +6491,12 @@ function activeCommandPreviewRows(snapshot = state.snapshot || {}) {
 }
 
 function renderActiveCommandPreview(snapshot = state.snapshot || {}) {
+  const pendingSummary = $("pendingSummary");
+  const pendingPreview = $("pendingPreview");
+  if (!pendingSummary || !pendingPreview) return;
   const rows = activeCommandPreviewRows(snapshot);
-  $("pendingSummary").textContent = `${rows.length} 项`;
-  $("pendingPreview").innerHTML = rows.length ? `
+  pendingSummary.textContent = `${rows.length} 项`;
+  pendingPreview.innerHTML = rows.length ? `
     <table class="active-command-preview-table">
       <thead>
         <tr>
@@ -5468,11 +6524,11 @@ function renderActiveCommandPreview(snapshot = state.snapshot || {}) {
 
 function updatePendingCount() {
   const total = pending.run_status.size + pending.set_values.size;
-  $("pendingCount").textContent = total;
-  $("runPendingCount").textContent = `${pending.run_status.size} 待发`;
-  $("setpointPendingCount").textContent = `${pending.set_values.size} 待发`;
-  $("commandPendingCount").textContent = `${total} 待发`;
-  $("commandState").textContent = total ? "待发送" : "待命";
+  setOptionalText("pendingCount", total);
+  setOptionalText("runPendingCount", `${pending.run_status.size} 待发`);
+  setOptionalText("setpointPendingCount", `${pending.set_values.size} 待发`);
+  setOptionalText("commandPendingCount", `${total} 待发`);
+  setOptionalText("commandState", total ? "待发送" : "待命");
   renderActiveCommandPreview();
 }
 
@@ -5536,7 +6592,7 @@ async function sendRemoteControlCommand() {
   command[commandType] = Number(selected.value) ? 1 : 0;
   const body = withCommandSendTime({
     source: "trainee-ui",
-    expires_at_absolute_minute: manualCommandExpiresAtAbsoluteMinute(),
+    ...manualCommandHoldPayload(),
     run_status: [command],
     set_values: [],
   });
@@ -5619,7 +6675,7 @@ async function sendRemoteAdjustmentCommand() {
   };
   const body = withCommandSendTime({
     source: "trainee-ui",
-    expires_at_absolute_minute: manualCommandExpiresAtAbsoluteMinute(),
+    ...manualCommandHoldPayload(),
     run_status: [],
     set_values: [command],
   });
@@ -5833,23 +6889,78 @@ document.addEventListener("input", (event) => {
   }
 });
 
-function toggleReceiveMode() {
+async function toggleReceiveMode() {
   if (state.receiveMode) {
     state.receiveMode = false;
     state.frozen = true;
     state.receiveEpoch += 1;
     state.receiveReconnectAttempts = 0;
     state.receiveRequestActive = false;
+    persistActiveModelContext({ receiveMode: false, frozen: true });
     addRuntimeLog("接收模式", "模拟台实时数据", "停止接收", `冻结于 ${state.lastReceiveAt || "--"}`, "warn");
     stopRenewableControl("接收已停止，新能源优先策略已暂停。", true);
+    try {
+      await saveTraineeReceiveState(state.activeModelId, { active: false, frozen: true });
+    } catch (error) {
+      addRuntimeLog("接收模式", "学员台服务端", "保存停止状态失败", apiErrorText(error), "warn");
+    }
     renderReceiveMode();
     return;
   }
   openReceiveLinkDialog();
 }
 
+$("modelManagementButton").addEventListener("click", openModelManagementDialog);
+$("closeModelManagementDialog").addEventListener("click", closeModelManagementDialog);
+$("cancelModelManagementDialog").addEventListener("click", closeModelManagementDialog);
+$("modelManagementDialog").addEventListener("click", (event) => {
+  if (event.target === $("modelManagementDialog")) closeModelManagementDialog();
+});
+$("modelManagementList").addEventListener("click", handleModelManagementAction);
+$("modelManagementList").addEventListener("keydown", handleModelManagementKeydown);
+$("modelManagementList").addEventListener("contextmenu", openModelContextMenu);
+$("modelManagementList").addEventListener("scroll", closeModelContextMenu);
+$("modelContextMenu").addEventListener("click", handleModelContextMenuAction);
+document.addEventListener("click", (event) => {
+  if (event.target instanceof Element && event.target.closest("#modelContextMenu")) return;
+  closeModelContextMenu();
+});
 $("importDefinitionsButton").addEventListener("click", () => $("definitionArchiveInput").click());
-$("definitionArchiveInput").addEventListener("change", (event) => importDefinitionArchive(event.target.files?.[0]));
+$("definitionArchiveInput").addEventListener("change", (event) => {
+  const file = event.target.files?.[0];
+  if (file) openImportModelDialog(file);
+});
+$("closeImportModelDialog").addEventListener("click", closeImportModelDialog);
+$("cancelImportModel").addEventListener("click", closeImportModelDialog);
+$("importModelDialog").addEventListener("click", (event) => {
+  if (event.target === $("importModelDialog")) closeImportModelDialog();
+});
+$("importModelForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  importDefinitionModel();
+});
+$("importModelName").addEventListener("input", () => validateImportModelName());
+$("closeUpdateModelDialog").addEventListener("click", closeUpdateModelDialog);
+$("cancelUpdateModel").addEventListener("click", closeUpdateModelDialog);
+$("updateModelDialog").addEventListener("click", (event) => {
+  if (event.target === $("updateModelDialog")) closeUpdateModelDialog();
+});
+$("selectUpdateModelFile").addEventListener("click", () => $("updateModelFileInput").click());
+$("updateModelFileInput").addEventListener("change", handleUpdateModelFileSelected);
+$("updateModelForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  updateManagedModelFromArchive();
+});
+$("closeCloneModelDialog").addEventListener("click", closeCloneModelDialog);
+$("cancelCloneModel").addEventListener("click", closeCloneModelDialog);
+$("cloneModelDialog").addEventListener("click", (event) => {
+  if (event.target === $("cloneModelDialog")) closeCloneModelDialog();
+});
+$("cloneModelForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  cloneManagedModel();
+});
+$("cloneModelName").addEventListener("input", () => validateCloneModelName());
 $("traineeRunToggle").addEventListener("click", toggleReceiveMode);
 $("receiveLinkClose").addEventListener("click", closeReceiveLinkDialog);
 $("receiveLinkCancel").addEventListener("click", closeReceiveLinkDialog);

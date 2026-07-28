@@ -55,17 +55,19 @@ class TraineeRemoteAdjustmentUiTest(unittest.TestCase):
         self.assertIn("sendRemoteAdjustmentCommand", self.script)
         self.assertIn("set_values: [command]", self.script)
 
-    def test_manual_commands_use_cycle_end_expiry_instead_of_short_strategy_ttl(self):
-        self.assertIn("function manualCommandExpiresAtAbsoluteMinute", self.script)
+    def test_manual_commands_are_marked_hold_until_cancelled_without_expiry(self):
+        self.assertIn("function manualCommandHoldPayload", self.script)
         remote_control_block = self.script.split("async function sendRemoteControlCommand()", 1)[1].split("function findRemoteAdjustmentByKey", 1)[0]
         remote_adjustment_block = self.script.split("async function sendRemoteAdjustmentCommand()", 1)[1].split("function handleTreeClick", 1)[0]
         renewable_block = self.script.split("async function sendRenewableControlPlan", 1)[1].split("function maybeRunRenewableControl", 1)[0]
 
-        self.assertIn("expires_at_absolute_minute: manualCommandExpiresAtAbsoluteMinute()", remote_control_block)
-        self.assertIn("expires_at_absolute_minute: manualCommandExpiresAtAbsoluteMinute()", remote_adjustment_block)
+        self.assertIn("...manualCommandHoldPayload()", remote_control_block)
+        self.assertIn("...manualCommandHoldPayload()", remote_adjustment_block)
         self.assertIn("withCommandSendTime({", remote_control_block)
         self.assertIn("withCommandSendTime({", remote_adjustment_block)
         self.assertIn("withCommandSendTime({", renewable_block)
+        self.assertNotIn("expires_at_absolute_minute", remote_control_block)
+        self.assertNotIn("expires_at_absolute_minute", remote_adjustment_block)
         self.assertNotIn("valid_for_minutes: CONTROL_COMMAND_VALID_MINUTES", remote_control_block)
         self.assertNotIn("valid_for_minutes: CONTROL_COMMAND_VALID_MINUTES", remote_adjustment_block)
         self.assertIn("valid_for_minutes: RENEWABLE_COMMAND_VALID_MINUTES", renewable_block)
@@ -85,7 +87,8 @@ class TraineeRemoteAdjustmentUiTest(unittest.TestCase):
         self.assertIn("const manualHold = manualCommandHoldsAcrossClockLifecycle(entry);", active_block)
         self.assertIn("if (!manualHold) {", active_block)
         self.assertIn("entryRunId !== currentRunId", active_block)
-        self.assertIn("currentMinute < expires && (manualHold || issued <= currentMinute)", active_block)
+        self.assertIn("if (manualHold) return acceptedCount > 0;", active_block)
+        self.assertIn("currentMinute < expires && issued <= currentMinute", active_block)
 
 
 if __name__ == "__main__":

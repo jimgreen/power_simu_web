@@ -7,6 +7,7 @@ import base64
 import json
 import math
 import mimetypes
+import re
 import threading
 import time
 import zipfile
@@ -16,7 +17,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, quote, urljoin, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 try:
@@ -40,6 +41,7 @@ except ImportError:  # The migrated web repo can run outside the original packag
 try:
     from .service import (
         DEFAULT_WEATHER,
+        DIAGRAM_FILE_NAME,
         MEAS_HEADER,
         SIGNAL_MEASUREMENTS,
         STAT_HEADERS,
@@ -52,6 +54,7 @@ try:
 except ImportError:  # pragma: no cover - legacy package compatibility.
     from hybrid_power_system_analysis.polar_microgrid_sim.service import (
         DEFAULT_WEATHER,
+        DIAGRAM_FILE_NAME,
         MEAS_HEADER,
         SIGNAL_MEASUREMENTS,
         STAT_HEADERS,
@@ -344,6 +347,41 @@ def _read_zip_text(archive: zipfile.ZipFile, entry_name: str, required: bool = T
             raise ValueError(f"Definition archive is missing {entry_name}") from None
         return None
     return data.decode("utf-8-sig")
+
+
+def _normalize_diagram_svg_text(svg_text: Optional[str]) -> Optional[str]:
+    if svg_text is None:
+        return None
+    text = str(svg_text).lstrip("\ufeff")
+    if not text.strip():
+        return None
+    lower = text.lower()
+    if "<svg" not in lower:
+        raise ValueError("SVG图形文件必须包含 <svg> 根图形内容")
+    if "<script" in lower or "javascript:" in lower or re.search(r"\son[a-z0-9_-]+\s*=", text, re.IGNORECASE):
+        raise ValueError("SVG图形文件不能包含脚本、事件属性或 javascript 链接")
+    return text
+
+
+def _decode_optional_svg_payload(payload: Mapping[str, Any]) -> Optional[str]:
+    data_base64 = str(payload.get("diagram_svg_base64", payload.get("svg_base64", "")) or "")
+    if not data_base64:
+        return None
+    try:
+        return base64.b64decode(data_base64, validate=True).decode("utf-8-sig")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError("SVG图形文件解析失败") from exc
+
+
+def _write_model_diagram(target_dir: Path, diagram_svg_text: Optional[str], *, remove_when_absent: bool = False) -> bool:
+    path = target_dir / DIAGRAM_FILE_NAME
+    normalized = _normalize_diagram_svg_text(diagram_svg_text)
+    if normalized is None:
+        if remove_when_absent and path.exists() and path.is_file():
+            path.unlink()
+        return False
+    path.write_text(normalized, encoding="utf-8")
+    return True
 
 
 MODEL_DEVICE_BLOCKS = {
@@ -659,14 +697,63 @@ def _generated_curves_payload(model_book: EBook) -> dict[str, Any]:
     }
 
 
-def create_model_from_efile(manager: MultiModelSimulator, new_model_name: Any, model_text: str) -> Mapping[str, Any]:
-    """Create one simulator source model folder from an uploaded model.e file."""
-    target_id = manager.validate_new_model_name(new_model_name)
+def _generated_model_artifacts(model_text: str) -> Mapping[str, Any]:
     if not str(model_text or "").strip():
         raise ValueError("model.e 不能为空")
     model_book = _book_from_text(model_text)
     if not _model_book_has_power_model(model_book):
         raise ValueError("model.e 中未找到可识别的电网模型设备块")
+
+    control_blocks = _generated_control_blocks(model_book)
+    return {
+        "model_book": model_book,
+        "stat_book": _ebook_from_blocks(control_blocks),
+        "control_book": _ebook_from_blocks(control_blocks),
+        "meas_book": _generated_measurement_book(model_book, control_blocks),
+        "weather_book": _generated_weather_book(),
+        "curves_payload": _generated_curves_payload(model_book),
+    }
+
+
+def _write_generated_model_artifacts(
+    target_dir: Path,
+    artifacts: Mapping[str, Any],
+    *,
+    diagram_svg_text: Optional[str] = None,
+    remove_diagram_when_absent: bool = False,
+) -> list[str]:
+    normalized_diagram = _normalize_diagram_svg_text(diagram_svg_text)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    model_book = artifacts["model_book"]
+    meas_book = artifacts["meas_book"]
+    stat_book = artifacts["stat_book"]
+    control_book = artifacts["control_book"]
+    weather_book = artifacts["weather_book"]
+    curves_payload = artifacts["curves_payload"]
+    simu_loop.write_ebook_aligned(model_book, target_dir / "model.e")
+    simu_loop.clear_model_book_cache(target_dir / "model.e")
+    simu_loop.write_ebook_aligned(meas_book, target_dir / "meas.e")
+    simu_loop.write_ebook_aligned(stat_book, target_dir / "stat.e")
+    simu_loop.write_ebook_aligned(control_book, target_dir / "control.e")
+    simu_loop.write_ebook_aligned(weather_book, target_dir / "weather.e")
+    _write_json_file(target_dir / "curves.json", curves_payload)
+    (target_dir / "curves.e").write_text(_curve_definition_text(curves_payload), encoding="utf-8")
+    written = ["model.e", "meas.e", "control.e", "stat.e", "weather.e", "curves.e", "curves.json"]
+    if _write_model_diagram(target_dir, normalized_diagram, remove_when_absent=remove_diagram_when_absent):
+        written.append(DIAGRAM_FILE_NAME)
+    return written
+
+
+def create_model_from_efile(
+    manager: MultiModelSimulator,
+    new_model_name: Any,
+    model_text: str,
+    *,
+    diagram_svg_text: Optional[str] = None,
+) -> Mapping[str, Any]:
+    """Create one simulator source model folder from an uploaded model.e file."""
+    target_id = manager.validate_new_model_name(new_model_name)
+    artifacts = _generated_model_artifacts(model_text)
 
     target_dir = (manager.models_root / target_id).resolve()
     try:
@@ -676,31 +763,66 @@ def create_model_from_efile(manager: MultiModelSimulator, new_model_name: Any, m
     if target_dir.exists():
         raise ValueError(f"模型文件夹已存在: {target_id}")
 
-    control_blocks = _generated_control_blocks(model_book)
-    stat_book = _ebook_from_blocks(control_blocks)
-    control_book = _ebook_from_blocks(control_blocks)
-    meas_book = _generated_measurement_book(model_book, control_blocks)
-    weather_book = _generated_weather_book()
-    curves_payload = _generated_curves_payload(model_book)
-
-    target_dir.mkdir(parents=True, exist_ok=False)
-    simu_loop.write_ebook_aligned(model_book, target_dir / "model.e")
-    simu_loop.clear_model_book_cache(target_dir / "model.e")
-    simu_loop.write_ebook_aligned(meas_book, target_dir / "meas.e")
-    simu_loop.write_ebook_aligned(stat_book, target_dir / "stat.e")
-    simu_loop.write_ebook_aligned(control_book, target_dir / "control.e")
-    simu_loop.write_ebook_aligned(weather_book, target_dir / "weather.e")
-    _write_json_file(target_dir / "curves.json", curves_payload)
-    (target_dir / "curves.e").write_text(_curve_definition_text(curves_payload), encoding="utf-8")
+    written = _write_generated_model_artifacts(target_dir, artifacts, diagram_svg_text=diagram_svg_text)
+    meas_book = artifacts["meas_book"]
+    curves_payload = artifacts["curves_payload"]
 
     manager._append_manifest_model(target_id, target_dir)
     model_info = manager.service_for(target_id).model_info()
     return {
         **model_info,
         "created": {
-            "files": ["model.e", "meas.e", "control.e", "stat.e", "weather.e", "curves.e", "curves.json"],
+            "files": written,
             "measurement_count": len(meas_book.data["Measurement"].data),
             "curve_points": curves_payload["point_count"],
+        },
+    }
+
+
+def update_model_from_efile(
+    manager: MultiModelSimulator,
+    model_id: Any,
+    model_text: str,
+    *,
+    diagram_svg_text: Optional[str] = None,
+    replace_diagram: bool = False,
+) -> Mapping[str, Any]:
+    """Replace an existing stopped model's source definitions from an uploaded model.e file."""
+    target = manager.service_for(model_id)
+    if target.clock.state != "stopped":
+        raise ValueError(f"模型运行中或暂停中，无法更新定义: {target.model_id}")
+    artifacts = _generated_model_artifacts(model_text)
+    target_dir = Path(target.sim_dir).resolve()
+    try:
+        target_dir.relative_to(manager.models_root.resolve())
+    except ValueError as exc:
+        raise ValueError(f"模型目录无效，无法更新定义: {target.model_id}") from exc
+
+    written = _write_generated_model_artifacts(
+        target_dir,
+        artifacts,
+        diagram_svg_text=diagram_svg_text,
+        remove_diagram_when_absent=replace_diagram,
+    )
+    for path in (target.work_files.get("stat"), target.work_files.get("weather")):
+        if path and Path(path).exists() and Path(path).is_file():
+            Path(path).unlink()
+    target._copy_runtime_inputs()
+    target.reload_definition_state()
+    target.ensure_weather_measurements_in_definition_files()
+    target.curves = dict(artifacts["curves_payload"])
+    _write_json_file(target.curves_file, target.curves)
+    target.clock.step_minutes = max(1, int(_to_float(target.curves.get("time_step_minutes"), 1) or 1))
+    target.reload_definition_state()
+    target._materialize_active_control_commands(target.clock.absolute_minute, persist=True)
+    target.latest_result = {}
+    model_info = target.model_info()
+    return {
+        **model_info,
+        "updated": {
+            "files": written,
+            "measurement_count": len(artifacts["meas_book"].data["Measurement"].data),
+            "curve_points": artifacts["curves_payload"]["point_count"],
         },
     }
 
@@ -716,8 +838,10 @@ def import_definition_archive(service: PolarMicrogridSimulator, data: bytes) -> 
         meas_text = _read_zip_text(archive, "meas.e")
         control_text = _read_zip_text(archive, "control.e")
         curves_text = _read_zip_text(archive, "curves.e")
+        diagram_text = _read_zip_text(archive, DIAGRAM_FILE_NAME, required=False)
 
     assert model_text is not None and meas_text is not None and control_text is not None and curves_text is not None
+    diagram_text = _normalize_diagram_svg_text(diagram_text)
     curves_payload = _curves_from_definition_text(curves_text)
     written_files: list[str] = []
     root = Path(service.sim_dir)
@@ -727,12 +851,15 @@ def import_definition_archive(service: PolarMicrogridSimulator, data: bytes) -> 
     (root / "meas.e").write_text(meas_text, encoding="utf-8")
     (root / "control.e").write_text(control_text, encoding="utf-8")
     (root / "curves.e").write_text(curves_text, encoding="utf-8")
+    diagram_written = _write_model_diagram(root, diagram_text, remove_when_absent=True)
     legacy_device = root / "device.e"
     if legacy_device.exists() and legacy_device.is_file():
         legacy_device.unlink()
     _merge_control_definition(root / "stat.e", control_text, meas_text)
     _write_json_file(root / "curves.json", curves_payload)
     names = ["model.e", "meas.e", "control.e", "curves.e", "stat.e", "curves.json"]
+    if diagram_written:
+        names.append(DIAGRAM_FILE_NAME)
     written_files.extend(str(root / name) for name in names)
 
     service.reload_definition_state()
@@ -748,6 +875,7 @@ def import_definition_archive(service: PolarMicrogridSimulator, data: bytes) -> 
         "curve_mode": curves_payload.get("mode"),
         "curve_points": curves_payload.get("point_count"),
         "load_count": len(curves_payload.get("loads", {})),
+        "diagram": diagram_written,
     }
 
 
@@ -764,8 +892,10 @@ def import_definition_model(
             _read_zip_text(archive, "model.e")
             _read_zip_text(archive, "meas.e")
             _read_zip_text(archive, "control.e")
+            diagram_text = _read_zip_text(archive, DIAGRAM_FILE_NAME, required=False)
         assert curves_text is not None
         _curves_from_definition_text(curves_text)
+        _normalize_diagram_svg_text(diagram_text)
     except zipfile.BadZipFile as exc:
         raise ValueError("Invalid definition archive") from exc
 
@@ -795,6 +925,9 @@ def make_definition_archive(service: PolarMicrogridSimulator) -> tuple[str, byte
         archive.write(meas_path, "meas.e")
         archive.writestr("control.e", control_text.encode("utf-8"))
         archive.writestr("curves.e", _curve_definition_text(service.curves).encode("utf-8"))
+        diagram_path = Path(getattr(service, "source_files", {}).get("diagram", service.sim_dir / DIAGRAM_FILE_NAME))
+        if diagram_path.exists() and diagram_path.is_file():
+            archive.write(diagram_path, DIAGRAM_FILE_NAME)
     return archive_name, buffer.getvalue()
 
 
@@ -948,6 +1081,149 @@ def make_http_server(
                 "shareable": True,
             }
 
+        def _json_request_to_url(
+            self,
+            url: str,
+            *,
+            method: str = "GET",
+            payload: Optional[Mapping[str, Any]] = None,
+            timeout: float = 10.0,
+        ) -> Any:
+            body = None
+            headers = {"Accept": "application/json"}
+            if method in ("POST", "PUT"):
+                body = json.dumps(payload or {}, ensure_ascii=False, default=str).encode("utf-8")
+                headers["Content-Type"] = "application/json; charset=utf-8"
+            request = Request(url, data=body, headers=headers, method=method)
+            try:
+                with urlopen(request, timeout=timeout) as response:
+                    text = response.read().decode("utf-8")
+            except HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                raise JsonApiError(exc.code, detail or exc.reason) from exc
+            except URLError as exc:
+                raise JsonApiError(502, f"模拟台服务不可达：{exc}") from exc
+            try:
+                return json.loads(text) if text else {}
+            except json.JSONDecodeError as exc:
+                raise JsonApiError(502, "模拟台返回内容不是有效 JSON") from exc
+
+        def _legacy_trainee_connection_from_link(self, raw_link: str, parsed: Any) -> Optional[Mapping[str, Any]]:
+            path = parsed.path.replace("//", "/").rstrip("/")
+            if path not in {"/api/trainee-link", "/api/client-link"}:
+                return None
+            values = parse_qs(parsed.query)
+            model_id = (values.get("model_id") or values.get("model") or [""])[0]
+            if not model_id:
+                return None
+            encoded_model_id = quote(model_id, safe="")
+            base_url = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+            return {
+                "type": "polar-microgrid-trainee-link",
+                "role": "simulator",
+                "link": raw_link,
+                "teacher_api_base": base_url,
+                "model_id": model_id,
+                "model_name": model_id,
+                "snapshot_path": f"/api/snapshot?model_id={encoded_model_id}",
+                "command_path": f"/api/student/commands?model_id={encoded_model_id}",
+                "measurement_delta_path": f"/api/measurements/delta?model_id={encoded_model_id}",
+            }
+
+        def _resolve_trainee_connection(self, raw_link: str) -> Mapping[str, Any]:
+            raw = str(raw_link or "").strip()
+            if not raw:
+                raise JsonApiError(400, "请输入模拟台生成的交互链接")
+            parsed = urlparse(raw)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise JsonApiError(400, "交互链接必须是完整的 http 或 https 地址")
+            try:
+                payload = self._json_request_to_url(raw)
+            except JsonApiError as exc:
+                legacy = self._legacy_trainee_connection_from_link(raw, parsed)
+                if legacy and exc.status == 404:
+                    payload = legacy
+                else:
+                    raise
+            if not isinstance(payload, Mapping):
+                raise JsonApiError(400, "交互链接返回内容不是对象")
+            if payload.get("type") != "polar-microgrid-trainee-link" or payload.get("role") != "simulator":
+                raise JsonApiError(400, "交互链接无效，请使用模拟台生成的链接")
+            model_id = str(payload.get("model_id") or (parse_qs(parsed.query).get("model_id") or [""])[0]).strip()
+            if not model_id:
+                raise JsonApiError(400, "交互链接缺少模型标识")
+            encoded_model_id = quote(model_id, safe="")
+            base_url = str(payload.get("teacher_api_base") or f"{parsed.scheme}://{parsed.netloc}").rstrip("/")
+            snapshot_path = str(payload.get("snapshot_path") or f"/api/snapshot?model_id={encoded_model_id}")
+            return {
+                "link": str(payload.get("link") or raw),
+                "teacher_api_base": base_url,
+                "model_id": model_id,
+                "model_name": str(payload.get("model_name") or model_id),
+                "snapshot_path": snapshot_path,
+                "command_path": str(payload.get("command_path") or f"/api/student/commands?model_id={encoded_model_id}"),
+                "measurement_delta_path": str(
+                    payload.get("measurement_delta_path") or self._measurement_delta_path_from_snapshot_path(snapshot_path)
+                ),
+            }
+
+        def _measurement_delta_path_from_snapshot_path(self, snapshot_path: str) -> str:
+            parsed = urlparse(snapshot_path or "/api/snapshot")
+            return urlunparse(("", "", "/api/measurements/delta", "", parsed.query, ""))
+
+        def _with_query_overrides(self, path: str, overrides: Mapping[str, Any]) -> str:
+            parsed = urlparse(path or "")
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            for key, value in overrides.items():
+                if value is None:
+                    continue
+                query[key] = [str(value)]
+            return urlunparse(
+                (
+                    parsed.scheme,
+                    parsed.netloc,
+                    parsed.path,
+                    parsed.params,
+                    urlencode(query, doseq=True),
+                    parsed.fragment,
+                )
+            )
+
+        def _trainee_remote_url(
+            self,
+            target: PolarMicrogridSimulator,
+            path_key: str,
+            *,
+            default_path: str,
+            query_overrides: Optional[Mapping[str, Any]] = None,
+        ) -> str:
+            receive_state = target.trainee_receive_state()
+            if not receive_state.get("active"):
+                raise JsonApiError(409, "当前模型未启动接收")
+            base_url = str(receive_state.get("teacher_api_base") or "").rstrip("/")
+            if not base_url:
+                raise JsonApiError(409, "当前模型未配置模拟台服务地址")
+            remote_path = str(receive_state.get(path_key) or default_path)
+            if query_overrides:
+                remote_path = self._with_query_overrides(remote_path, query_overrides)
+            if remote_path.startswith("http://") or remote_path.startswith("https://"):
+                return remote_path
+            return urljoin(base_url + "/", remote_path.lstrip("/"))
+
+        def _trainee_snapshot_query_overrides(self) -> Mapping[str, Any]:
+            values = parse_qs(urlparse(self.path).query)
+            allowed = ("lite", "logs", "runtime_logs", "measurements", "log_limit")
+            return {key: values[key][0] for key in allowed if values.get(key)}
+
+        def _handle_trainee_connect(self, payload: Mapping[str, Any]) -> None:
+            connection = self._resolve_trainee_connection(str(payload.get("link", payload.get("interaction_link", ""))))
+            snapshot_url = urljoin(
+                connection["teacher_api_base"].rstrip("/") + "/",
+                str(connection["snapshot_path"]).lstrip("/"),
+            )
+            snapshot = self._json_request_to_url(snapshot_url)
+            self._send_json({"connection": connection, "snapshot": snapshot})
+
         def _handle_api_get(self) -> None:
             path = urlparse(self.path).path
             target = self._target_service()
@@ -995,6 +1271,29 @@ def make_http_server(
                 self._send_json(target.curves)
             elif path == "/api/settings":
                 self._send_json(target.local_settings)
+            elif path == "/api/trainee/receive-state":
+                self._send_json(target.trainee_receive_state())
+            elif path == "/api/trainee/receive-states":
+                if hasattr(service, "trainee_receive_states"):
+                    self._send_json({"items": service.trainee_receive_states()})  # type: ignore[union-attr]
+                else:
+                    self._send_json({"items": {target.model_id: target.trainee_receive_state()}})
+            elif path == "/api/trainee/snapshot":
+                remote_url = self._trainee_remote_url(
+                    target,
+                    "snapshot_path",
+                    default_path="/api/snapshot",
+                    query_overrides=self._trainee_snapshot_query_overrides(),
+                )
+                self._send_json(self._json_request_to_url(remote_url))
+            elif path == "/api/trainee/measurements/delta":
+                remote_url = self._trainee_remote_url(
+                    target,
+                    "measurement_delta_path",
+                    default_path=self._measurement_delta_path_from_snapshot_path(target.trainee_receive_state().get("snapshot_path", "")),
+                    query_overrides={"after_seq": self._int_query("after_seq", 0, 0, 2_000_000_000)},
+                )
+                self._send_json(self._json_request_to_url(remote_url))
             elif path in ("/api/trainee-link", "/api/client-link"):
                 self._send_json(self._trainee_link_payload(target))
             elif path == "/api/config":
@@ -1032,12 +1331,44 @@ def make_http_server(
                 try:
                     model_data = base64.b64decode(data_base64, validate=True)
                     model_text = model_data.decode("utf-8-sig")
-                    model = create_model_from_efile(service, model_name, model_text)  # type: ignore[arg-type]
+                    diagram_svg_text = _decode_optional_svg_payload(payload)
+                    model = create_model_from_efile(
+                        service,  # type: ignore[arg-type]
+                        model_name,
+                        model_text,
+                        diagram_svg_text=diagram_svg_text,
+                    )
                 except (UnicodeDecodeError, ValueError, OSError) as exc:
                     raise JsonApiError(400, str(exc)) from exc
                 catalog = dict(self._model_catalog())
                 catalog["active_model_id"] = model["id"]
                 self._send_json({"model": model, **catalog})
+                return
+            if path == "/api/models/update-definitions":
+                if not hasattr(service, "service_for") or not hasattr(service, "models_root"):
+                    raise JsonApiError(400, "Current simulator does not support multiple model folders")
+                model_id = self._request_model_id(payload)
+                if not str(model_id or "").strip():
+                    raise JsonApiError(400, "Model id is required")
+                data_base64 = str(payload.get("data_base64", ""))
+                if not data_base64:
+                    raise JsonApiError(400, "model.e data is required")
+                try:
+                    model_data = base64.b64decode(data_base64, validate=True)
+                    model_text = model_data.decode("utf-8-sig")
+                    diagram_svg_text = _decode_optional_svg_payload(payload)
+                    model = update_model_from_efile(
+                        service,  # type: ignore[arg-type]
+                        model_id,
+                        model_text,
+                        diagram_svg_text=diagram_svg_text,
+                        replace_diagram=bool(payload.get("replace_diagram", False)),
+                    )
+                except (UnicodeDecodeError, ValueError, OSError, KeyError) as exc:
+                    raise JsonApiError(400, str(exc)) from exc
+                catalog = dict(self._model_catalog())
+                catalog["active_model_id"] = model["id"]
+                self._send_json({"model": model, "updated": model["updated"], **catalog})
                 return
             if path == "/api/models/clone":
                 if not hasattr(service, "clone_model"):
@@ -1097,9 +1428,25 @@ def make_http_server(
                 self._send_json({"imported": imported, **self._model_catalog()})
                 return
 
+            if path == "/api/trainee/connect":
+                self._handle_trainee_connect(payload)
+                return
+
             target = self._target_service(payload)
             if path == "/api/student/commands":
                 self._send_json(target.apply_student_commands(payload, source=str(payload.get("source", ""))))
+            elif path == "/api/trainee/receive-state":
+                self._send_json(target.set_trainee_receive_state(payload))
+            elif path == "/api/trainee/commands":
+                remote_url = self._trainee_remote_url(
+                    target,
+                    "command_path",
+                    default_path="/api/student/commands",
+                )
+                command_payload = dict(payload)
+                command_payload.pop("model_id", None)
+                command_payload.pop("model", None)
+                self._send_json(self._json_request_to_url(remote_url, method="POST", payload=command_payload))
             elif path == "/api/external/telemetry/query":
                 self._send_json(target.selected_telemetry_values(payload))
             elif path == "/api/external/controls":

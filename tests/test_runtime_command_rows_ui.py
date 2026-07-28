@@ -41,7 +41,8 @@ class RuntimeCommandRowsUiTest(unittest.TestCase):
         self.assertIn("const manualHold = manualCommandHoldsAcrossClockLifecycle(entry);", active_block)
         self.assertIn("if (!manualHold) {", active_block)
         self.assertIn("entryRunId !== currentRunId", active_block)
-        self.assertIn("currentMinute < expires && (manualHold || issued <= currentMinute)", active_block)
+        self.assertIn("if (manualHold) return acceptedCount > 0;", active_block)
+        self.assertIn("currentMinute < expires && issued <= currentMinute", active_block)
 
     def test_runtime_command_tables_keep_each_command_on_one_line(self):
         self.assertIn(".runtime-command-table th,\n.runtime-command-table td", self.styles)

@@ -88,9 +88,11 @@ STAT_HEADERS = {
 
 SOURCE_DEFINITION_FILES = ("model.e", "meas.e", "stat.e", "control.e", "weather.e", "curves.e")
 LEGACY_RUNTIME_DEFINITION_FILES = SOURCE_DEFINITION_FILES + ("device.e",)
+DIAGRAM_FILE_NAME = "diagram.svg"
 CONTROL_DEFINITION_BLOCKS = ("RunStat", "CbOpenStat", "SetValue", "StorageSoc")
 CLOCK_SPEED_LEVELS = (1.0, 5.0, 15.0, 30.0, 60.0)
 DEFAULT_CONTROL_VALID_MINUTES = 5.0
+COMMAND_HISTORY_RECENT_LIMIT = 200
 DEFAULT_COMPUTE_INTERVAL_SECONDS = 1.0
 DEFAULT_STORAGE_INITIAL_SOC = 0.5
 LOG_DECIMAL_PATTERN = re.compile(r"(?<![\w:])[-+]?\d+\.\d+(?:e[-+]?\d+)?(?![\w:])", re.IGNORECASE)
@@ -501,6 +503,65 @@ def _command_expires_at(payload: Mapping[str, Any], item: Optional[Mapping[str, 
     return issued_absolute_minute + _command_valid_minutes(payload, item)
 
 
+def _has_relative_command_validity(payload: Mapping[str, Any], item: Optional[Mapping[str, Any]] = None) -> bool:
+    minute_keys = (
+        "valid_for_minutes",
+        "valid_minutes",
+        "validity_minutes",
+        "duration_minutes",
+        "ttl_minutes",
+    )
+    second_keys = ("valid_for_seconds", "valid_seconds", "ttl_seconds", "duration_seconds")
+    return (
+        _first_number(item or {}, minute_keys) is not None
+        or _first_number(payload, minute_keys) is not None
+        or _first_number(item or {}, second_keys) is not None
+        or _first_number(payload, second_keys) is not None
+    )
+
+
+def _has_stale_absolute_command_expiry(
+    payload: Mapping[str, Any],
+    issued_absolute_minute: float,
+    item: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    absolute_keys = (
+        "expires_at_absolute_minute",
+        "expire_absolute_minute",
+        "valid_until_absolute_minute",
+        "end_absolute_minute",
+    )
+    absolute = _first_number(item or {}, absolute_keys)
+    if absolute is None:
+        absolute = _first_number(payload, absolute_keys)
+    return absolute is not None and absolute <= issued_absolute_minute
+
+
+def _sender_command_valid_minutes(payload: Mapping[str, Any], item: Optional[Mapping[str, Any]] = None) -> Optional[float]:
+    absolute_keys = (
+        "expires_at_absolute_minute",
+        "expire_absolute_minute",
+        "valid_until_absolute_minute",
+        "end_absolute_minute",
+    )
+    sent_keys = (
+        "sent_absolute_minute",
+        "trainee_sent_absolute_minute",
+        "command_absolute_minute",
+        "sender_absolute_minute",
+    )
+    absolute = _first_number(item or {}, absolute_keys)
+    if absolute is None:
+        absolute = _first_number(payload, absolute_keys)
+    sent = _first_number(item or {}, sent_keys)
+    if sent is None:
+        sent = _first_number(payload, sent_keys)
+    if absolute is None or sent is None:
+        return None
+    duration = absolute - sent
+    return duration if duration > 0 else None
+
+
 def _normalize_points(points: Any, value_aliases: Sequence[str]) -> List[Dict[str, Any]]:
     if points is None:
         return []
@@ -655,6 +716,7 @@ class PolarMicrogridSimulator:
             "weather": self.sim_dir / "weather.e",
             "curves": self.sim_dir / "curves.json",
             "curves_e": self.sim_dir / "curves.e",
+            "diagram": self.sim_dir / DIAGRAM_FILE_NAME,
         }
         self.work_files = {
             "stat": self.work_dir / "stat.e",
@@ -670,12 +732,14 @@ class PolarMicrogridSimulator:
             "yt_ctrl": self.runtime_dir / "yt_ctrl.e",
             "real": self.runtime_dir / "real.e",
             "scada": self.runtime_dir / "scada.e",
+            "diagram": self.source_files["diagram"],
         }
         self.curves_file = self.runtime_dir / "curves.json"
         self.source_curves_file = self.source_files["curves"]
         self.settings_file = self.runtime_dir / "local_settings.json"
         self.commands_file = self.runtime_dir / "commands.json"
         self.runtime_logs_file = self.runtime_dir / "runtime_logs.json"
+        self.trainee_receive_file = self.runtime_dir / "trainee_receive.json"
 
         self._copy_runtime_inputs()
         self.weather_defaults = self._read_weather_defaults()
@@ -787,6 +851,82 @@ class PolarMicrogridSimulator:
     def _write_runtime_logs(self) -> None:
         _write_json(self.runtime_logs_file, self.runtime_logs[-500:])
 
+    def _default_trainee_receive_state(self) -> Dict[str, Any]:
+        return {
+            "model_id": self.model_id,
+            "model_name": self.model_name,
+            "active": False,
+            "frozen": False,
+            "interaction_link": "",
+            "teacher_api_base": "",
+            "teacher_model_id": "",
+            "teacher_model_name": "",
+            "snapshot_path": "",
+            "command_path": "",
+            "measurement_delta_path": "",
+            "last_receive_at": "",
+            "updated_at": "",
+        }
+
+    def _normalize_trainee_receive_state(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        current = self._default_trainee_receive_state()
+        current.update(
+            {
+                key: payload.get(key, current[key])
+                for key in current
+                if key in payload and key not in {"model_id", "model_name"}
+            }
+        )
+        aliases = {
+            "active": ("active", "receive_mode", "receiveMode"),
+            "frozen": ("frozen",),
+            "interaction_link": ("interaction_link", "interactionLink", "link"),
+            "teacher_api_base": ("teacher_api_base", "teacherApiBase"),
+            "teacher_model_id": ("teacher_model_id", "teacherModelId", "model_id"),
+            "teacher_model_name": ("teacher_model_name", "teacherModelName", "model_name"),
+            "snapshot_path": ("snapshot_path", "snapshotPath"),
+            "command_path": ("command_path", "commandPath"),
+            "measurement_delta_path": ("measurement_delta_path", "measurementDeltaPath"),
+            "last_receive_at": ("last_receive_at", "lastReceiveAt"),
+            "updated_at": ("updated_at", "updatedAt"),
+        }
+        normalized: Dict[str, Any] = {
+            "model_id": self.model_id,
+            "model_name": self.model_name,
+        }
+        for key, names in aliases.items():
+            value = current.get(key, "")
+            for name in names:
+                if name in payload:
+                    value = payload.get(name)
+                    break
+            if key in {"active", "frozen"}:
+                normalized[key] = bool(value)
+                continue
+            normalized[key] = str(value or "").strip()
+        normalized["teacher_api_base"] = normalized["teacher_api_base"].rstrip("/")
+        if not normalized["teacher_model_id"] and normalized["active"]:
+            normalized["teacher_model_id"] = self.model_id
+        if not normalized["teacher_model_name"] and normalized["teacher_model_id"]:
+            normalized["teacher_model_name"] = normalized["teacher_model_id"]
+        return normalized
+
+    def trainee_receive_state(self) -> Dict[str, Any]:
+        raw = _read_json(self.trainee_receive_file, {})
+        if not isinstance(raw, Mapping):
+            raw = {}
+        return self._normalize_trainee_receive_state(raw)
+
+    def set_trainee_receive_state(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        with self.lock:
+            existing = self.trainee_receive_state()
+            merged = {**existing, **dict(payload)}
+            if "updated_at" not in merged and "updatedAt" not in merged:
+                merged["updated_at"] = _now_text()
+            normalized = self._normalize_trainee_receive_state(merged)
+            _write_json(self.trainee_receive_file, normalized)
+            return normalized
+
     def _ensure_weather_measurements_in_file(self, meas_file: Path) -> bool:
         meas_file = Path(meas_file)
         if not meas_file.exists():
@@ -828,14 +968,43 @@ class PolarMicrogridSimulator:
         items = _read_json(self.commands_file, [])
         if not isinstance(items, list):
             return []
-        history = [item for item in items[-200:] if isinstance(item, dict)]
+        history = [item for item in items if isinstance(item, dict)]
         changed = self._repair_legacy_cancel_command_entries(history)
+        compacted = self._compact_command_history(history)
+        if len(compacted) != len(history):
+            changed = True
+            history = compacted
         if changed:
-            _write_json(self.commands_file, history[-200:])
+            _write_json(self.commands_file, history)
         return history
 
+    def _preserve_command_history_entry(self, item: Mapping[str, Any]) -> bool:
+        return (
+            _manual_command_holds_across_clock_lifecycle(item)
+            and self._command_entry_has_accepted_controls(item)
+            and not item.get("cancelled")
+        )
+
+    def _compact_command_history(self, history: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        recent_start = max(0, len(history) - COMMAND_HISTORY_RECENT_LIMIT)
+        recent_ids = {id(item) for item in history[recent_start:]}
+        return [
+            item
+            for item in history
+            if id(item) in recent_ids or self._preserve_command_history_entry(item)
+        ]
+
+    def _trim_command_history(self) -> None:
+        acknowledged_ids = {id(item) for item in self.command_history[: self._last_command_response_index]}
+        compacted = self._compact_command_history(self.command_history)
+        if len(compacted) == len(self.command_history):
+            return
+        self.command_history = compacted
+        self._last_command_response_index = sum(1 for item in self.command_history if id(item) in acknowledged_ids)
+
     def _write_command_history(self) -> None:
-        _write_json(self.commands_file, self.command_history[-200:])
+        self._trim_command_history()
+        _write_json(self.commands_file, self.command_history)
 
     def _apply_stored_system_parameters(self) -> None:
         params = self.local_settings.get("system_parameters", {})
@@ -921,6 +1090,9 @@ class PolarMicrogridSimulator:
                 source = self.sim_dir / name
                 if source.exists():
                     shutil.copy2(source, target_dir / name)
+            diagram = self.sim_dir / DIAGRAM_FILE_NAME
+            if diagram.exists():
+                shutil.copy2(diagram, target_dir / DIAGRAM_FILE_NAME)
             if self.curves:
                 _write_json(target_dir / "curves.json", self.curves)
 
@@ -1129,6 +1301,8 @@ class PolarMicrogridSimulator:
             return False
         current = float(absolute_minute)
         manual_hold = _manual_command_holds_across_clock_lifecycle(item)
+        if manual_hold:
+            return True
         if not manual_hold:
             entry_run_id = _to_float(item.get("run_id"), None)
             expected_run_id = int(run_id if run_id is not None else (_to_float(self.clock.run_id, 0) or 0))
@@ -1163,11 +1337,12 @@ class PolarMicrogridSimulator:
 
     def _active_control_command_entries(self, absolute_minute: int | float) -> List[Mapping[str, Any]]:
         current_run_id = int(_to_float(self.clock.run_id, 0) or 0)
-        active: List[Mapping[str, Any]] = []
-        for item in self.command_history:
+        active: List[Tuple[int, Mapping[str, Any]]] = []
+        for index, item in enumerate(self.command_history):
             if self._command_entry_is_active(item, absolute_minute, current_run_id):
-                active.append(item)
-        return active
+                active.append((index, item))
+        active.sort(key=lambda pair: (1 if _manual_command_holds_across_clock_lifecycle(pair[1]) else 0, pair[0]))
+        return [item for _index, item in active]
 
     def _materialize_active_control_commands(self, absolute_minute: int | float, *, persist: bool = False) -> Dict[str, int]:
         book = self._base_stat_book_for_controls()
@@ -1499,10 +1674,6 @@ class PolarMicrogridSimulator:
                 "payload": json.loads(json.dumps(payload, ensure_ascii=False, default=str)),
             }
             self.command_history.append(cancel_entry)
-            drop_count = max(0, len(self.command_history) - 200)
-            if drop_count:
-                self.command_history = self.command_history[drop_count:]
-                self._last_command_response_index = max(0, self._last_command_response_index - drop_count)
             self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
             self._write_command_history()
             time_payload = self._api_time_payload()
@@ -1669,14 +1840,21 @@ class PolarMicrogridSimulator:
         *,
         eligible_source: bool,
         issued_absolute_minute: float,
-        expires_at_absolute_minute: float,
+        expires_at_absolute_minute: Optional[float],
     ) -> List[str]:
-        valid_for = max(0.0, expires_at_absolute_minute - issued_absolute_minute)
+        valid_text = (
+            "无时间限制，人工指令保持有效直到取消"
+            if expires_at_absolute_minute is None
+            else (
+                f"有效期 {format_number(max(0.0, expires_at_absolute_minute - issued_absolute_minute))} min，"
+                f"截止累计分钟 {format_number(expires_at_absolute_minute)}"
+            )
+        )
         lines = [
             f"来源 {source}",
             (
                 f"来源校验 {'学员台有效来源' if eligible_source else '非学员台来源，忽略为无效控制'}，"
-                f"有效期 {format_number(valid_for)} min，截止累计分钟 {format_number(expires_at_absolute_minute)}"
+                f"{valid_text}"
             ),
             f"接受投退 {accepted.get('run_status', 0)} 条，设值 {accepted.get('set_values', 0)} 条，忽略 {accepted.get('ignored', 0)} 条",
         ]
@@ -2227,12 +2405,17 @@ class PolarMicrogridSimulator:
             issued_absolute_minute = float(self.clock.absolute_minute)
             received_wall_time = _now_text()
             received_simu_time = minute_to_time(self.clock.minute)
-            expires_at_absolute_minute = _command_expires_at(payload, None, issued_absolute_minute)
+            manual_hold = _manual_command_holds_across_clock_lifecycle(payload, source)
+            expires_at_absolute_minute = None if manual_hold else _command_expires_at(payload, None, issued_absolute_minute)
             accepted_run = len(normalized_run_items) if eligible_source else 0
             accepted_set = len(normalized_set_items) if eligible_source else 0
             ignored = 0 if eligible_source else len(normalized_run_items) + len(normalized_set_items)
             accepted = {"run_status": accepted_run, "set_values": accepted_set, "ignored": ignored}
-            manual_hold = _manual_command_holds_across_clock_lifecycle(payload, source)
+            valid_for_minutes = (
+                None
+                if expires_at_absolute_minute is None
+                else max(0.0, expires_at_absolute_minute - issued_absolute_minute)
+            )
             command_entry = {
                 "time": received_wall_time,
                 "received_wall_time": received_wall_time,
@@ -2244,7 +2427,7 @@ class PolarMicrogridSimulator:
                 "manual_hold": manual_hold,
                 "issued_absolute_minute": issued_absolute_minute,
                 "expires_at_absolute_minute": expires_at_absolute_minute,
-                "valid_for_minutes": max(0.0, expires_at_absolute_minute - issued_absolute_minute),
+                "valid_for_minutes": valid_for_minutes,
                 "accepted": accepted,
                 "normalized": {
                     "run_status": normalized_run_items if eligible_source else [],
@@ -2253,10 +2436,6 @@ class PolarMicrogridSimulator:
                 "payload": json.loads(json.dumps(payload, ensure_ascii=False, default=str)),
             }
             self.command_history.append(command_entry)
-            drop_count = max(0, len(self.command_history) - 200)
-            if drop_count:
-                self.command_history = self.command_history[drop_count:]
-                self._last_command_response_index = max(0, self._last_command_response_index - drop_count)
             self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
             self._write_command_history()
             self._append_runtime_log(
@@ -3671,6 +3850,34 @@ class PolarMicrogridSimulator:
             soc_values[name] = _to_float(row.get("soc_curr", row.get("soc", 0.0)), 0.0) or 0.0
         return run_stats, cb_status, set_values, soc_values
 
+    def model_diagram(self) -> Dict[str, Any]:
+        path = self.source_files.get("diagram", self.sim_dir / DIAGRAM_FILE_NAME)
+        payload: Dict[str, Any] = {
+            "present": False,
+            "filename": DIAGRAM_FILE_NAME,
+            "path": str(path),
+            "svg": "",
+            "updated_at": 0,
+            "size": 0,
+        }
+        if not path.exists() or not path.is_file():
+            return payload
+        try:
+            stat = path.stat()
+            payload.update(
+                {
+                    "present": True,
+                    "svg": path.read_text(encoding="utf-8-sig"),
+                    "updated_at": stat.st_mtime,
+                    "size": stat.st_size,
+                }
+            )
+        except OSError as exc:
+            payload["error"] = str(exc)
+        except UnicodeDecodeError:
+            payload["error"] = "diagram.svg is not valid UTF-8 text"
+        return payload
+
     def model_info(self) -> Dict[str, Any]:
         return {
             "id": self.model_id,
@@ -3725,6 +3932,7 @@ class PolarMicrogridSimulator:
                     "curves": self.curves,
                     "settings": self.local_settings,
                     "device_parameters": self.device_parameters(),
+                    "diagram": self.model_diagram(),
                 }
             )
         return snapshot
@@ -4100,6 +4308,12 @@ class MultiModelSimulator:
             if self.directory_backed:
                 self._sync_models_from_directory_locked()
             return [service.model_info() for service in self._services.values()]
+
+    def trainee_receive_states(self) -> Dict[str, Dict[str, Any]]:
+        with self.lock:
+            if self.directory_backed:
+                self._sync_models_from_directory_locked()
+            return {model_id: service.trainee_receive_state() for model_id, service in self._services.items()}
 
     def snapshot(
         self,

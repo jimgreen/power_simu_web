@@ -61,6 +61,66 @@ class SimulatorModelCreationTest(unittest.TestCase):
             devices = manager.service_for("新建测试模型").devices()
             self.assertGreater(len(devices), 0)
 
+    def test_create_model_from_uploaded_model_e_can_store_svg_diagram(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            models_root = temp_root / "models"
+            copytree(ROOT / "models/simulator/source/默认模型", models_root / "默认模型")
+            manager = MultiModelSimulator.discover(
+                models_root.parent,
+                temp_root / "runtime",
+                models_dir=models_root,
+            )
+            model_text = (ROOT / "models/simulator/source/简单模型/model.e").read_text(encoding="utf-8")
+            diagram_text = '<svg xmlns="http://www.w3.org/2000/svg"><text data-meas-name="ACGenerator.diesel_300kw.P_GEN"></text></svg>'
+
+            created = server_module.create_model_from_efile(
+                manager,
+                "带图模型",
+                model_text,
+                diagram_svg_text=diagram_text,
+            )
+
+            target_dir = models_root / "带图模型"
+            self.assertIn("diagram.svg", created["created"]["files"])
+            self.assertEqual((target_dir / "diagram.svg").read_text(encoding="utf-8"), diagram_text)
+            self.assertEqual(manager.service_for("带图模型").snapshot()["diagram"]["svg"], diagram_text)
+
+    def test_update_model_from_uploaded_model_e_can_replace_definition_and_svg_for_stopped_model_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            models_root = temp_root / "models"
+            copytree(ROOT / "models/simulator/source/默认模型", models_root / "默认模型")
+            manager = MultiModelSimulator.discover(
+                models_root.parent,
+                temp_root / "runtime",
+                models_dir=models_root,
+            )
+            model_text = (ROOT / "models/simulator/source/简单模型/model.e").read_text(encoding="utf-8")
+            diagram_text = '<svg xmlns="http://www.w3.org/2000/svg"><text data-meas-name="DCPVGen.pv_120kw.P_GEN"></text></svg>'
+
+            manager.service_for("默认模型").control_clock({"action": "start"})
+            with self.assertRaisesRegex(ValueError, "运行中"):
+                server_module.update_model_from_efile(
+                    manager,
+                    "默认模型",
+                    model_text,
+                    diagram_svg_text=diagram_text,
+                )
+            manager.service_for("默认模型").control_clock({"action": "stop"})
+
+            updated = server_module.update_model_from_efile(
+                manager,
+                "默认模型",
+                model_text,
+                diagram_svg_text=diagram_text,
+            )
+
+            self.assertEqual(updated["id"], "默认模型")
+            self.assertIn("diagram.svg", updated["updated"]["files"])
+            self.assertEqual((models_root / "默认模型" / "diagram.svg").read_text(encoding="utf-8"), diagram_text)
+            self.assertGreater(len(manager.service_for("默认模型").definitions()["measurement"]), 0)
+
     def test_create_model_rejects_duplicate_names_before_writing_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
@@ -103,6 +163,8 @@ class SimulatorModelCreationTest(unittest.TestCase):
                     "name": "接口新模型",
                     "filename": "model.e",
                     "data_base64": base64.b64encode(model_text.encode("utf-8")).decode("ascii"),
+                    "diagram_filename": "diagram.svg",
+                    "diagram_svg_base64": base64.b64encode(b'<svg xmlns="http://www.w3.org/2000/svg"></svg>').decode("ascii"),
                 }
                 request = Request(
                     f"http://127.0.0.1:{port}/api/models/create",
@@ -118,6 +180,7 @@ class SimulatorModelCreationTest(unittest.TestCase):
 
             self.assertEqual(body["model"]["id"], "接口新模型")
             self.assertTrue((models_root / "接口新模型/model.e").exists())
+            self.assertTrue((models_root / "接口新模型/diagram.svg").exists())
             self.assertIn("接口新模型", {model["id"] for model in body["models"]})
 
     def test_delete_model_rejects_running_model_and_removes_stopped_model_folder(self):
@@ -169,7 +232,14 @@ class SimulatorModelCreationTest(unittest.TestCase):
         self.assertIn('id="modelContextMenu"', html)
         self.assertIn('data-model-context-action="export"', html)
         self.assertIn('data-model-context-action="clone"', html)
+        self.assertIn('data-model-context-action="update"', html)
         self.assertIn('data-model-context-action="delete"', html)
+        self.assertIn('data-model-context-action="update">修改</button>', html)
+        self.assertIn('id="updateModelDialog"', html)
+        self.assertIn("<h2 id=\"updateModelTitle\">修改模型</h2>", html)
+        self.assertIn('id="updateModelFileInput"', html)
+        self.assertIn('id="updateModelSvgInput"', html)
+        self.assertIn("导入修改后的 model.e", html)
         self.assertNotIn(">导出选中<", html)
         self.assertNotIn(">复制选中<", html)
         self.assertNotIn(">导出当前<", html)
@@ -183,6 +253,12 @@ class SimulatorModelCreationTest(unittest.TestCase):
         self.assertIn("openModelContextMenu", script)
         self.assertIn('addEventListener("contextmenu"', script)
         self.assertIn("handleModelContextMenuAction", script)
+        self.assertIn("右键模型节点可导出、复制、修改或删除。", script)
+        self.assertIn("openUpdateModelDialog", script)
+        self.assertIn('api("/api/models/update-definitions"', script)
+        self.assertIn('case "update":', script)
+        self.assertIn("openUpdateModelDialog(selectedManagementModelId())", script)
+        self.assertIn('diagram_svg_base64: diagramSvgBase64', script)
         self.assertIn("deleteManagedModel(selectedManagementModelId()", script)
         self.assertIn('api("/api/models/delete"', script)
         self.assertNotIn("模型目录", script)
@@ -203,11 +279,14 @@ class SimulatorModelCreationTest(unittest.TestCase):
         self.assertIn('id="newModelName"', html)
         self.assertIn('id="newModelFileInput"', html)
         self.assertIn('accept=".e"', html)
+        self.assertIn('id="newModelSvgInput"', html)
+        self.assertIn('accept=".svg,image/svg+xml"', html)
         self.assertIn("openNewModelDialog", script)
         self.assertIn("validateNewModelForm", script)
         self.assertIn('api("/api/models/create"', script)
         self.assertRegex(script, re.compile(r'api\("/api/models/create",\s*\{[^}]*modelScoped:\s*false', re.DOTALL))
         self.assertIn("data_base64", script)
+        self.assertIn("diagram_svg_base64", script)
         self.assertIn("模型已存在", script)
 
 

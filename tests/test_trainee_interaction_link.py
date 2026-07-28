@@ -72,9 +72,11 @@ class TraineeInteractionLinkTest(unittest.TestCase):
         self.assertIn("一个链接可供多个学员台", html)
         self.assertIn("openReceiveLinkDialog", script)
         self.assertIn("resolveTeacherInteractionLink", script)
-        self.assertIn("polar-microgrid-trainee-link", script)
-        self.assertIn("teacherApiBase = connection.teacherApiBase", script)
+        self.assertIn("/api/trainee/connect", script)
+        self.assertIn('api("/api/trainee/connect"', script)
+        self.assertIn("state.teacherApiBase = (connection.teacherApiBase || \"\").replace", script)
         self.assertIn("state.activeModelId = connection.modelId", script)
+        self.assertNotIn("fetch(url.href", script)
         self.assertIn(".receive-link-dialog", styles)
 
 

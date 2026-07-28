@@ -4,6 +4,9 @@ const OVERVIEW_BOTTOM_HEIGHT_KEY = "polarTraineeOverviewBottomHeight";
 const OVERVIEW_BOTTOM_DEFAULT_HEIGHT = 156;
 const OVERVIEW_BOTTOM_MIN_HEIGHT = 96;
 const OVERVIEW_BOTTOM_MAX_HEIGHT = 640;
+const OVERVIEW_BOTTOM_COLUMN_RATIO_KEY = "polarTraineeOverviewBottomColumnRatio";
+const OVERVIEW_BOTTOM_COLUMN_DEFAULT_RATIO = 50;
+const OVERVIEW_BOTTOM_COLUMN_MIN_WIDTH_PX = 260;
 const VERTICAL_SPLIT_STORAGE_KEY = "polarTraineeVerticalSplitRatios";
 const VERTICAL_SPLIT_DEFAULTS = {
   "trainee-curves": 60,
@@ -13,6 +16,9 @@ const VERTICAL_SPLIT_DEFAULTS = {
 const VERTICAL_SPLIT_DEFAULT_RATIO = 55;
 const VERTICAL_SPLIT_MIN_TOP_PX = 120;
 const VERTICAL_SPLIT_MIN_BOTTOM_PX = 120;
+const STATIC_CACHE_STORAGE_KEY = "polarTraineeStaticCacheV1";
+const STATIC_CACHE_MODEL_LIMIT = 4;
+const API_REQUEST_TIMEOUT_MS = 30000;
 
 function readStoredModelContexts() {
   let contexts = {};
@@ -66,6 +72,7 @@ const state = {
   refreshRequestActive: false,
   receiveRequestActive: false,
   receiveStateSyncActive: false,
+  lastReceiveStateSyncAtMs: 0,
   definitionMismatchLastKey: "",
   runtimeLogs: [],
   runtimeLogTypeFilter: "all",
@@ -83,6 +90,7 @@ const state = {
   hiddenCurveDisplayKeys: [],
   curveDisplayCursor: { visible: false, x: 0, y: 0, index: 0 },
   curveDisplayLegendHitBoxes: [],
+  lastCurveDisplayRenderKey: "",
   lastCurveDisplayTableKey: "",
   remoteControlDevice: null,
   remoteControlSending: false,
@@ -97,6 +105,7 @@ const state = {
   controlFilter: { dev_type: "all", dev_name: "" },
   commandKeywordFilter: "",
   commandTypeFilter: "all",
+  commandOnlyActive: false,
   activeControlTab: "remote-control",
   selectedCommandTraceKey: "",
   selectedCommandTraceLabel: "",
@@ -128,6 +137,8 @@ const state = {
   },
   overviewBottomHeight: overviewInitialBottomHeight(),
   overviewBottomSplitDrag: null,
+  overviewBottomColumnRatio: overviewInitialBottomColumnRatio(),
+  overviewBottomColumnSplitDrag: null,
   verticalSplitRatios: initialVerticalSplitRatios(),
   verticalSplitDrag: null,
   deviceTreeSelectionAnchors: {},
@@ -168,6 +179,7 @@ const SIGNAL_MEASUREMENT_LABELS = {
   RUN_STAT: { label: "运行状态", order: 0 },
   STATUS: { label: "开关状态", order: 1 },
 };
+const RECEIVE_STATE_SYNC_INTERVAL_MS = 5000;
 const RECEIVE_MAX_RECONNECT_ATTEMPTS = 3;
 const RECEIVE_WARNING_LIMIT = 40;
 
@@ -347,9 +359,11 @@ async function syncActiveReceiveStateFromBackend(modelId = state.activeModelId) 
   return mergeBackendReceiveState(modelId, payload, contextKey(modelId) === contextKey());
 }
 
-async function syncActiveReceiveStateBeforeRefresh() {
+async function syncActiveReceiveStateBeforeRefresh(force = false) {
   if (!state.activeModelId || state.receiveStateSyncActive) return;
+  if (!force && Date.now() - state.lastReceiveStateSyncAtMs < RECEIVE_STATE_SYNC_INTERVAL_MS) return;
   state.receiveStateSyncActive = true;
+  state.lastReceiveStateSyncAtMs = Date.now();
   const previousReceiveMode = state.receiveMode;
   const previousLink = state.interactionLink;
   try {
@@ -380,6 +394,12 @@ function overviewInitialBottomHeight() {
   const storedHeight = Number(localStorage.getItem(OVERVIEW_BOTTOM_HEIGHT_KEY));
   if (!Number.isFinite(storedHeight) || storedHeight <= 0) return OVERVIEW_BOTTOM_DEFAULT_HEIGHT;
   return Math.max(OVERVIEW_BOTTOM_MIN_HEIGHT, Math.min(OVERVIEW_BOTTOM_MAX_HEIGHT, storedHeight));
+}
+
+function overviewInitialBottomColumnRatio() {
+  const storedRatio = Number(localStorage.getItem(OVERVIEW_BOTTOM_COLUMN_RATIO_KEY));
+  if (!Number.isFinite(storedRatio) || storedRatio <= 0) return OVERVIEW_BOTTOM_COLUMN_DEFAULT_RATIO;
+  return Math.max(10, Math.min(90, storedRatio));
 }
 
 function chartHiddenSet(chartKey) {
@@ -531,7 +551,8 @@ function renderVirtualSpacerRow(height, colSpan) {
 }
 
 function restoreVirtualTableScroll(container, key) {
-  const scroller = container?.querySelector?.(`[data-virtual-table="${key}"]`);
+  const selector = `[data-virtual-table="${key}"]`;
+  const scroller = container?.matches?.(selector) ? container : container?.querySelector?.(selector);
   if (!scroller) return;
   const tableState = state.virtualTables?.[key] || {};
   const scrollTop = Number(tableState.scrollTop) || 0;
@@ -551,6 +572,12 @@ function scheduleVirtualTableRender(key) {
     delete state.virtualTableScrollRaf[key];
     if (key === "measurement" && currentPageName() === "measurements") {
       renderMeasurements(state.snapshot || {});
+    }
+    if (key.startsWith("traineeCommand:") && currentPageName() === "commands") {
+      renderCombinedControlPage();
+    }
+    if (key.startsWith("curveDisplay:") && currentPageName() === "curves") {
+      renderCurveDisplayTable(state.snapshot || {}, true);
     }
   });
 }
@@ -818,14 +845,42 @@ function teacherScopedPath(path) {
 }
 
 async function api(path, options = {}) {
-  const { modelScoped = true, ...fetchOptions } = options;
+  const {
+    modelScoped = true,
+    timeoutMs = API_REQUEST_TIMEOUT_MS,
+    signal: callerSignal,
+    ...fetchOptions
+  } = options;
   const targetPath = modelScoped ? modelScopedPath(path) : path;
-  const response = await fetch(`${apiBase}${targetPath}`, {
-    ...fetchOptions,
-    headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) },
-  });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
+  const controller = new AbortController();
+  const boundedTimeout = Math.max(0, Number(timeoutMs) || 0);
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort();
+  const timeoutId = boundedTimeout
+    ? setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, boundedTimeout)
+    : null;
+  if (callerSignal) {
+    if (callerSignal.aborted) controller.abort();
+    else callerSignal.addEventListener("abort", abortFromCaller, { once: true });
+  }
+  try {
+    const response = await fetch(`${apiBase}${targetPath}`, {
+      ...fetchOptions,
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) },
+    });
+    if (!response.ok) throw new Error(await response.text());
+    return response.json();
+  } catch (error) {
+    if (timedOut) throw new Error(`请求超时（${Math.round(boundedTimeout / 1000)} 秒）`);
+    throw error;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    callerSignal?.removeEventListener?.("abort", abortFromCaller);
+  }
 }
 
 const STATIC_SNAPSHOT_KEYS = [
@@ -839,15 +894,139 @@ const STATIC_SNAPSHOT_KEYS = [
   "diagram",
 ];
 
-function hasStaticSnapshotPayload(snapshot) {
-  return Boolean(snapshot && STATIC_SNAPSHOT_KEYS.every((key) => snapshot[key] !== undefined));
+const STATIC_SNAPSHOT_KEYS_BY_PAGE = {
+  "overview": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"],
+  "model": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"],
+  "diagram": ["files", "source_files", "work_files", "definitions", "diagram"],
+  "curves": ["files", "source_files", "work_files", "definitions", "curves"],
+  "measurements": ["files", "source_files", "work_files", "definitions"],
+  "commands": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"],
+  "renewable": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"],
+  "history": [],
+};
+const CACHEABLE_STATIC_KEYS = STATIC_SNAPSHOT_KEYS.filter((key) => key !== "curves");
+
+function staticSnapshotKeysForPage(page = currentPageName()) {
+  return STATIC_SNAPSHOT_KEYS_BY_PAGE[page] || STATIC_SNAPSHOT_KEYS;
+}
+
+function hasStaticSnapshotPayload(snapshot, requiredKeys = STATIC_SNAPSHOT_KEYS) {
+  return Boolean(snapshot && requiredKeys.every((key) => snapshot[key] !== undefined));
+}
+
+function staticMetaSignature(meta) {
+  return JSON.stringify(meta || null);
+}
+
+function staticMetaMatches(left, right) {
+  return staticMetaSignature(left) === staticMetaSignature(right);
+}
+
+function staticCacheModelKey(snapshot = state.snapshot || {}) {
+  const modelId = String(snapshot?.model?.id || state.activeModelId || "");
+  if (!modelId) return "";
+  if (state.receiveMode || state.snapshotSource === "teacher" || state.teacherApiBase) {
+    return [
+      "teacher",
+      state.teacherApiBase || "",
+      state.teacherSnapshotPath || "",
+      state.teacherModelId || modelId,
+    ].join("|");
+  }
+  return `local|${modelId}`;
+}
+
+function readStaticCacheStore() {
+  try {
+    const raw = localStorage.getItem(STATIC_CACHE_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function writeStaticCacheStore(store) {
+  try {
+    localStorage.setItem(STATIC_CACHE_STORAGE_KEY, JSON.stringify(store));
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function pruneStaticCacheStore(store) {
+  const entries = Object.entries(store || {})
+    .sort((left, right) => Number(right[1]?.updatedAt || 0) - Number(left[1]?.updatedAt || 0));
+  return Object.fromEntries(entries.slice(0, STATIC_CACHE_MODEL_LIMIT));
+}
+
+function restoreStaticSnapshotCache(snapshot, page = currentPageName()) {
+  if (!snapshot?.static_meta) return snapshot;
+  const cacheKey = staticCacheModelKey(snapshot);
+  if (!cacheKey) return snapshot;
+  const requiredKeys = staticSnapshotKeysForPage(page).filter((key) => CACHEABLE_STATIC_KEYS.includes(key));
+  if (!requiredKeys.length) return snapshot;
+  const entry = readStaticCacheStore()[cacheKey];
+  if (!entry?.fields) return snapshot;
+  let restored = snapshot;
+  requiredKeys.forEach((key) => {
+    if (restored[key] !== undefined) return;
+    const cached = entry.fields[key];
+    if (!cached || !staticMetaMatches(cached.meta, restored.static_meta?.[key])) return;
+    if (restored === snapshot) restored = { ...snapshot };
+    restored[key] = cached.value;
+  });
+  return restored;
+}
+
+function persistStaticSnapshotCache(snapshot, page = currentPageName()) {
+  if (!snapshot?.static_meta) return;
+  const cacheKey = staticCacheModelKey(snapshot);
+  if (!cacheKey) return;
+  const requiredKeys = staticSnapshotKeysForPage(page).filter((key) => (
+    CACHEABLE_STATIC_KEYS.includes(key)
+    && snapshot[key] !== undefined
+    && snapshot.static_meta?.[key] !== undefined
+  ));
+  if (!requiredKeys.length) return;
+  const store = readStaticCacheStore();
+  const entry = store[cacheKey] || { fields: {} };
+  const fields = { ...(entry.fields || {}) };
+  requiredKeys.forEach((key) => {
+    fields[key] = {
+      meta: snapshot.static_meta[key],
+      value: snapshot[key],
+    };
+  });
+  store[cacheKey] = { updatedAt: Date.now(), fields };
+  if (writeStaticCacheStore(pruneStaticCacheStore(store))) return;
+  requiredKeys.forEach((key) => {
+    if (fields[key]?.value?.svg) delete fields[key];
+  });
+  store[cacheKey] = { updatedAt: Date.now(), fields };
+  writeStaticCacheStore(pruneStaticCacheStore(store));
+}
+
+function staticSnapshotMissingKeys(snapshot, requiredKeys = STATIC_SNAPSHOT_KEYS) {
+  return (requiredKeys || []).filter((key) => snapshot?.[key] === undefined);
 }
 
 function mergeSnapshot(previous, incoming) {
   if (!previous || !incoming) return incoming;
   const merged = { ...previous, ...incoming };
   STATIC_SNAPSHOT_KEYS.forEach((key) => {
-    if (incoming[key] === undefined && previous[key] !== undefined) merged[key] = previous[key];
+    if (
+      incoming[key] === undefined
+      && previous[key] !== undefined
+      && (
+        !incoming.static_meta?.[key]
+        || !previous.static_meta?.[key]
+        || staticMetaMatches(incoming.static_meta[key], previous.static_meta[key])
+      )
+    ) {
+      merged[key] = previous[key];
+    }
   });
   if (incoming.runtime_logs === undefined) delete merged.runtime_logs;
   return merged;
@@ -861,15 +1040,36 @@ function snapshotLogLimit(page = currentPageName()) {
   return page === "history" ? 300 : 20;
 }
 
-function snapshotPollPath(page = currentPageName()) {
+function pageNeedsDevices(page = currentPageName()) {
+  return ["overview", "model", "commands", "renewable"].includes(page);
+}
+
+function pageNeedsCommands(page = currentPageName()) {
+  return ["overview", "commands", "renewable"].includes(page);
+}
+
+function snapshotPollPath(page = currentPageName(), forceStaticKeys = null) {
+  if (!Array.isArray(forceStaticKeys) && state.snapshot?.static_meta) {
+    state.snapshot = restoreStaticSnapshotCache(state.snapshot, page);
+  }
   const currentModelId = String(state.snapshot?.model?.id || "");
-  const logParams = pageNeedsRuntimeLogs(page)
-    ? { log_limit: snapshotLogLimit(page) }
-    : { logs: 0 };
-  const needsStaticPayload = !hasStaticSnapshotPayload(state.snapshot)
-    || (currentModelId && state.activeModelId && currentModelId !== state.activeModelId);
-  if (needsStaticPayload) return appendUrlQuery("/api/snapshot", logParams);
-  return appendUrlQuery("/api/snapshot", { lite: 1, ...logParams, measurements: 0 });
+  const modelChanged = currentModelId && state.activeModelId && currentModelId !== state.activeModelId;
+  const requiredStaticKeys = Array.isArray(forceStaticKeys)
+    ? forceStaticKeys
+    : (
+      state.snapshot?.static_meta && !modelChanged
+        ? staticSnapshotMissingKeys(state.snapshot, staticSnapshotKeysForPage(page))
+        : staticSnapshotKeysForPage(page)
+    );
+  const params = new URLSearchParams();
+  params.set("measurements", "0");
+  params.set("devices", pageNeedsDevices(page) ? "1" : "0");
+  params.set("commands", pageNeedsCommands(page) ? "1" : "0");
+  if (pageNeedsRuntimeLogs(page)) params.set("log_limit", String(snapshotLogLimit(page)));
+  else params.set("logs", "0");
+  if (requiredStaticKeys.length) params.set("static", requiredStaticKeys.join(","));
+  else params.set("lite", "1");
+  return `/api/snapshot?${params.toString()}`;
 }
 
 function appendUrlQuery(url, params) {
@@ -907,16 +1107,29 @@ function teacherReceiveAddress() {
   return connectionApiUrl({ teacherApiBase: base }, path);
 }
 
-function teacherSnapshotPollAddress() {
+function teacherSnapshotPollAddress(page = currentPageName(), forceStaticKeys = null) {
+  if (!Array.isArray(forceStaticKeys) && state.snapshot?.static_meta) {
+    state.snapshot = restoreStaticSnapshotCache(state.snapshot, page);
+  }
   const currentModelId = String(state.snapshot?.model?.id || "");
   const expectedTeacherModelId = String(state.teacherModelId || "");
-  const logParams = pageNeedsRuntimeLogs()
-    ? { log_limit: snapshotLogLimit() }
-    : { logs: 0 };
-  const needsStaticPayload = !hasStaticSnapshotPayload(state.snapshot)
-    || (currentModelId && expectedTeacherModelId && currentModelId !== expectedTeacherModelId);
-  if (needsStaticPayload) return appendUrlQuery("/api/trainee/snapshot", logParams);
-  return appendUrlQuery("/api/trainee/snapshot", { lite: 1, ...logParams, measurements: 0 });
+  const modelChanged = currentModelId && expectedTeacherModelId && currentModelId !== expectedTeacherModelId;
+  const requiredStaticKeys = Array.isArray(forceStaticKeys)
+    ? forceStaticKeys
+    : (
+      state.snapshot?.static_meta && !modelChanged
+        ? staticSnapshotMissingKeys(state.snapshot, staticSnapshotKeysForPage(page))
+        : staticSnapshotKeysForPage(page)
+    );
+  const params = new URLSearchParams();
+  params.set("measurements", "0");
+  params.set("devices", pageNeedsDevices(page) ? "1" : "0");
+  params.set("commands", pageNeedsCommands(page) ? "1" : "0");
+  if (pageNeedsRuntimeLogs(page)) params.set("log_limit", String(snapshotLogLimit(page)));
+  else params.set("logs", "0");
+  if (requiredStaticKeys.length) params.set("static", requiredStaticKeys.join(","));
+  else params.set("lite", "1");
+  return `/api/trainee/snapshot?${params.toString()}`;
 }
 
 function measurementDeltaPathFromSnapshotPath(snapshotPath = "") {
@@ -941,8 +1154,8 @@ function displayReceiveAddress(address) {
   }
 }
 
-async function teacherSnapshotApi() {
-  return api(teacherSnapshotPollAddress());
+async function teacherSnapshotApi(page = currentPageName(), forceStaticKeys = null) {
+  return api(teacherSnapshotPollAddress(page, forceStaticKeys));
 }
 
 function measurementNameKey(item) {
@@ -970,6 +1183,10 @@ function applyMeasurementDelta(payload) {
   if (!payload || !state.snapshot) return false;
   const measurements = state.snapshot.measurements || {};
   state.snapshot.measurements = measurements;
+  if (payload.reset) {
+    measurements.real = [];
+    measurements.scada = [];
+  }
   const definitions = measurements.definitions || state.snapshot.definitions?.measurement || [];
   const definitionsByName = new Map(definitions.map((row) => [measurementNameKey(row), row]));
   let changed = false;
@@ -1002,7 +1219,8 @@ function applyMeasurementDelta(payload) {
       changed = true;
     }
   });
-  state.measurementDeltaSeq = Math.max(Number(state.measurementDeltaSeq) || 0, Number(payload.seq) || 0);
+  if (payload.reset) state.measurementDeltaSeq = Number(payload.seq) || 0;
+  else state.measurementDeltaSeq = Math.max(Number(state.measurementDeltaSeq) || 0, Number(payload.seq) || 0);
   return changed;
 }
 
@@ -1647,6 +1865,7 @@ function handleReceiveDefinitionMismatch(messages, result = "定义不一致", s
 
 function validateTeacherSnapshotDefinitions(snapshot, result = "定义不一致") {
   if (!state.localDefinitionSnapshot) return true;
+  if (!hasStaticSnapshotPayload(snapshot)) return true;
   const messages = compareSnapshotDefinitions(state.localDefinitionSnapshot, snapshot);
   if (!messages.length) {
     state.definitionMismatchLastKey = "";
@@ -2879,6 +3098,7 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.hiddenCurveDisplayKeys = [];
   state.curveDisplayCursor = { visible: false, x: 0, y: 0, index: 0 };
   state.curveDisplayLegendHitBoxes = [];
+  state.lastCurveDisplayRenderKey = "";
   state.lastCurveDisplayTableKey = "";
   state.chartSeriesHidden = {};
   state.chartSeriesSelected = {};
@@ -2930,8 +3150,17 @@ async function refresh() {
   if (state.refreshRequestActive) return;
   state.refreshRequestActive = true;
   try {
-    const snapshot = mergeSnapshot(state.snapshot, await api(snapshotPollPath()));
+    const page = currentPageName();
+    let snapshot = mergeSnapshot(state.snapshot, await api(snapshotPollPath(page)));
+    snapshot = restoreStaticSnapshotCache(snapshot, page);
+    let missingStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
+    if (missingStaticKeys.length) {
+      snapshot = mergeSnapshot(snapshot, await api(snapshotPollPath(page, missingStaticKeys)));
+      snapshot = restoreStaticSnapshotCache(snapshot, page);
+      missingStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
+    }
     state.snapshot = snapshot;
+    if (!missingStaticKeys.length) persistStaticSnapshotCache(state.snapshot, page);
     await refreshMeasurementDelta(false);
     $("connectionDot").className = "ok";
     $("connectionText").textContent = "在线";
@@ -2949,9 +3178,18 @@ async function refreshFromTeacher(epoch = state.receiveEpoch) {
   if (state.receiveRequestActive) return;
   state.receiveRequestActive = true;
   try {
-    const snapshot = mergeSnapshot(state.snapshot, await teacherSnapshotApi());
+    const page = currentPageName();
+    let snapshot = mergeSnapshot(state.snapshot, await teacherSnapshotApi(page));
+    snapshot = restoreStaticSnapshotCache(snapshot, page);
+    let missingStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
+    if (missingStaticKeys.length) {
+      snapshot = mergeSnapshot(snapshot, await teacherSnapshotApi(page, missingStaticKeys));
+      snapshot = restoreStaticSnapshotCache(snapshot, page);
+      missingStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
+    }
     if (!state.receiveMode || epoch !== state.receiveEpoch) return;
     state.snapshot = snapshot;
+    if (!missingStaticKeys.length) persistStaticSnapshotCache(state.snapshot, page);
     await refreshMeasurementDelta(false);
     acceptTeacherSnapshot(state.snapshot, epoch);
   } catch (_error) {
@@ -3086,20 +3324,25 @@ function commandNumber(value) {
 
 function currentWeatherLoad(snapshot = state.snapshot || {}) {
   const curves = snapshot.curves || {};
+  const boundary = snapshot.curve_boundary || {};
   const minute = curveMinute(snapshot);
   const weather = curves.weather || [];
   const loads = curves.loads || {};
+  const boundaryPoint = boundary.point || {};
   let loadTotal = Object.values(loads).reduce((total, points) => (
     total + interpolateCurve(points, minute, "p_kw", 0)
   ), 0);
+  if (!Object.keys(loads).length && Number.isFinite(Number(boundary.load_total))) {
+    loadTotal = Number(boundary.load_total);
+  }
   if (!Number.isFinite(loadTotal) || loadTotal <= 0) {
     loadTotal = estimateLoadFromDevices(snapshot.devices || []);
   }
   return {
-    minute,
-    windSpeed: interpolateCurve(weather, minute, "wind_speed_mps", 0),
-    solarIrradiance: interpolateCurve(weather, minute, "solar_irradiance_w_m2", 0),
-    airTemp: interpolateCurve(weather, minute, "air_temp_c", 25),
+    minute: Number(boundary.target_minute ?? minute) || minute,
+    windSpeed: weather.length ? interpolateCurve(weather, minute, "wind_speed_mps", 0) : Number(boundaryPoint.wind_speed_mps ?? 0),
+    solarIrradiance: weather.length ? interpolateCurve(weather, minute, "solar_irradiance_w_m2", 0) : Number(boundaryPoint.solar_irradiance_w_m2 ?? 0),
+    airTemp: weather.length ? interpolateCurve(weather, minute, "air_temp_c", 25) : Number(boundaryPoint.air_temp_c ?? 25),
     loadKw: loadTotal,
   };
 }
@@ -3357,6 +3600,122 @@ function initOverviewBottomSplitter() {
   window.addEventListener("resize", () => applyOverviewBottomHeight(state.overviewBottomHeight, true));
 }
 
+function overviewBottomColumnRatioBounds() {
+  const bottomGrid = document.querySelector(".overview-bottom-grid");
+  const splitter = $("overviewBottomColumnSplitter");
+  const gridWidth = bottomGrid?.getBoundingClientRect().width || 0;
+  const splitterWidth = splitter?.getBoundingClientRect().width || 12;
+  const contentWidth = Math.max(0, gridWidth - splitterWidth);
+  if (contentWidth < OVERVIEW_BOTTOM_COLUMN_MIN_WIDTH_PX * 2) {
+    return { min: 0, max: 100, contentWidth };
+  }
+  const minRatio = (OVERVIEW_BOTTOM_COLUMN_MIN_WIDTH_PX / contentWidth) * 100;
+  return { min: minRatio, max: 100 - minRatio, contentWidth };
+}
+
+function applyOverviewBottomColumnRatio(ratio, persist = false) {
+  const numericRatio = Number(ratio);
+  const requestedRatio = Number.isFinite(numericRatio) ? numericRatio : OVERVIEW_BOTTOM_COLUMN_DEFAULT_RATIO;
+  const bounds = overviewBottomColumnRatioBounds();
+  const nextRatio = Number(clamp(requestedRatio, bounds.min, bounds.max).toFixed(2));
+  state.overviewBottomColumnRatio = nextRatio;
+  const bottomGrid = document.querySelector(".overview-bottom-grid");
+  if (bottomGrid) {
+    bottomGrid.style.setProperty("--overview-bottom-left-ratio", `${nextRatio}fr`);
+    bottomGrid.style.setProperty("--overview-bottom-right-ratio", `${Number((100 - nextRatio).toFixed(2))}fr`);
+  }
+  const splitter = $("overviewBottomColumnSplitter");
+  if (splitter) {
+    splitter.setAttribute("aria-valuemin", bounds.min.toFixed(2));
+    splitter.setAttribute("aria-valuemax", bounds.max.toFixed(2));
+    splitter.setAttribute("aria-valuenow", String(nextRatio));
+    splitter.setAttribute("aria-valuetext", `左侧 ${nextRatio.toFixed(2)}%，右侧 ${(100 - nextRatio).toFixed(2)}%`);
+  }
+  if (persist) localStorage.setItem(OVERVIEW_BOTTOM_COLUMN_RATIO_KEY, String(nextRatio));
+}
+
+function beginOverviewBottomColumnSplitterDrag(event) {
+  if (event.button !== undefined && event.button !== 0) return;
+  const splitter = $("overviewBottomColumnSplitter");
+  const bottomGrid = document.querySelector(".overview-bottom-grid");
+  if (!splitter || !bottomGrid) return;
+  const bounds = overviewBottomColumnRatioBounds();
+  if (bounds.contentWidth <= 0) return;
+  event.preventDefault();
+  state.overviewBottomColumnSplitDrag = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startRatio: state.overviewBottomColumnRatio,
+    contentWidth: bounds.contentWidth,
+  };
+  splitter.classList.add("is-dragging");
+  document.body.classList.add("is-overview-column-splitter-dragging");
+  if (splitter.setPointerCapture && event.pointerId !== undefined) {
+    try {
+      splitter.setPointerCapture(event.pointerId);
+    } catch (error) {
+      // Synthetic or cancelled pointer events do not always have capturable pointers.
+    }
+  }
+}
+
+function handleOverviewBottomColumnSplitterDrag(event) {
+  const drag = state.overviewBottomColumnSplitDrag;
+  if (!drag) return;
+  if (drag.pointerId !== undefined && event.pointerId !== undefined && drag.pointerId !== event.pointerId) return;
+  event.preventDefault();
+  const deltaRatio = ((event.clientX - drag.startX) / drag.contentWidth) * 100;
+  applyOverviewBottomColumnRatio(drag.startRatio + deltaRatio);
+}
+
+function finishOverviewBottomColumnSplitterDrag(event) {
+  const drag = state.overviewBottomColumnSplitDrag;
+  if (!drag) return;
+  if (drag.pointerId !== undefined && event?.pointerId !== undefined && drag.pointerId !== event.pointerId) return;
+  const splitter = $("overviewBottomColumnSplitter");
+  if (splitter) {
+    splitter.classList.remove("is-dragging");
+    if (splitter.releasePointerCapture && drag.pointerId !== undefined) {
+      try {
+        splitter.releasePointerCapture(drag.pointerId);
+      } catch (error) {
+        // Pointer capture may already be gone if the pointer left the window.
+      }
+    }
+  }
+  document.body.classList.remove("is-overview-column-splitter-dragging");
+  state.overviewBottomColumnSplitDrag = null;
+  applyOverviewBottomColumnRatio(state.overviewBottomColumnRatio, true);
+}
+
+function handleOverviewBottomColumnSplitterKeydown(event) {
+  const bounds = overviewBottomColumnRatioBounds();
+  let nextRatio = null;
+  if (event.key === "ArrowLeft") nextRatio = state.overviewBottomColumnRatio - 2;
+  if (event.key === "ArrowRight") nextRatio = state.overviewBottomColumnRatio + 2;
+  if (event.key === "PageUp") nextRatio = state.overviewBottomColumnRatio - 8;
+  if (event.key === "PageDown") nextRatio = state.overviewBottomColumnRatio + 8;
+  if (event.key === "Home") nextRatio = bounds.min;
+  if (event.key === "End") nextRatio = bounds.max;
+  if (nextRatio === null) return;
+  event.preventDefault();
+  applyOverviewBottomColumnRatio(nextRatio, true);
+}
+
+function initOverviewBottomColumnSplitter() {
+  const splitter = $("overviewBottomColumnSplitter");
+  if (!splitter) return;
+  applyOverviewBottomColumnRatio(state.overviewBottomColumnRatio);
+  if (splitter.dataset.splitterReady === "true") return;
+  splitter.dataset.splitterReady = "true";
+  splitter.addEventListener("pointerdown", beginOverviewBottomColumnSplitterDrag);
+  splitter.addEventListener("keydown", handleOverviewBottomColumnSplitterKeydown);
+  window.addEventListener("pointermove", handleOverviewBottomColumnSplitterDrag);
+  window.addEventListener("pointerup", finishOverviewBottomColumnSplitterDrag);
+  window.addEventListener("pointercancel", finishOverviewBottomColumnSplitterDrag);
+  window.addEventListener("resize", () => applyOverviewBottomColumnRatio(overviewInitialBottomColumnRatio()));
+}
+
 function initialVerticalSplitRatios() {
   const ratios = { ...VERTICAL_SPLIT_DEFAULTS };
   try {
@@ -3392,6 +3751,10 @@ function verticalSplitBounds(container) {
   const minRatio = clamp((minTop / availableHeight) * 100, 8, 88);
   const maxRatio = clamp(100 - (minBottom / availableHeight) * 100, 12, 92);
   if (minRatio <= maxRatio) return { min: minRatio, max: maxRatio };
+  if (container.hasAttribute("data-vertical-split-min-bottom")) {
+    const bottomPriorityRatio = clamp(maxRatio, 8, 92);
+    return { min: bottomPriorityRatio, max: bottomPriorityRatio };
+  }
   const centerRatio = clamp(50, 8, 92);
   return { min: centerRatio, max: centerRatio };
 }
@@ -3533,7 +3896,7 @@ function overviewClockText(snapshot) {
 function renderTraineeOverviewEvents() {
   const container = $("traineeOverviewEvents");
   if (!container) return;
-  const logs = state.runtimeLogs.slice(0, 4);
+  const logs = state.runtimeLogs.slice(0, 8);
   setOverviewText("overviewEventCount", `${logs.length} 条`);
   if (logs.length) {
     container.innerHTML = logs.map((item) => `
@@ -3603,6 +3966,7 @@ function renderActiveTraineePage(snapshot = state.snapshot || {}, force = false)
     renderTeacherWeather(snapshot);
     renderTraineeOverviewDashboard(snapshot);
     initOverviewBottomSplitter();
+    initOverviewBottomColumnSplitter();
     return;
   }
   if (activePage === "model") {
@@ -3636,9 +4000,10 @@ function renderActiveTraineePage(snapshot = state.snapshot || {}, force = false)
 
 function curveDisplayMode(snapshot = state.snapshot || {}) {
   const curves = snapshot.curves || {};
-  const rawMode = String(curves.mode || "").toLowerCase();
+  const boundary = snapshot.curve_boundary || {};
+  const rawMode = String(curves.mode || boundary.mode || "").toLowerCase();
   if (CURVE_DISPLAY_MODES[rawMode]) return rawMode;
-  const pointCount = Number(curves.point_count || curves.weather?.length || 0);
+  const pointCount = Number(curves.point_count || curves.weather?.length || boundary.point_count || 0);
   return pointCount > 2000 ? "year" : "day";
 }
 
@@ -3646,15 +4011,16 @@ function curveDisplayConfig(snapshot = state.snapshot || {}) {
   const mode = curveDisplayMode(snapshot);
   const defaults = CURVE_DISPLAY_MODES[mode];
   const curves = snapshot.curves || {};
+  const boundary = snapshot.curve_boundary || {};
   const loads = curves.loads && typeof curves.loads === "object" ? curves.loads : {};
   const maxLoadCount = Object.values(loads).reduce((maxCount, points) => (
     Math.max(maxCount, Array.isArray(points) ? points.length : 0)
   ), 0);
   const pointCount = Math.max(
     1,
-    Number(curves.point_count || 0) || Math.max(Array.isArray(curves.weather) ? curves.weather.length : 0, maxLoadCount, defaults.pointCount),
+    Number(curves.point_count || 0) || Math.max(Array.isArray(curves.weather) ? curves.weather.length : 0, maxLoadCount, Number(boundary.point_count) || 0, defaults.pointCount),
   );
-  const stepMinutes = Math.max(1, Number(curves.time_step_minutes || defaults.stepMinutes) || defaults.stepMinutes);
+  const stepMinutes = Math.max(1, Number(curves.time_step_minutes || boundary.time_step_minutes || defaults.stepMinutes) || defaults.stepMinutes);
   return { ...defaults, pointCount, stepMinutes, durationMinutes: pointCount * stepMinutes };
 }
 
@@ -4175,15 +4541,21 @@ function renderCurveDisplayTable(snapshot = state.snapshot || {}, force = false)
   const config = curveDisplayConfig(snapshot);
   const metas = selectedCurveDisplayKeys(snapshot).map((key) => curveDisplayMetaForKey(key, snapshot));
   const seriesByKey = new Map(metas.map((meta) => [meta.key, curveDisplaySeries(meta.key, snapshot)]));
+  const tableKey = `curveDisplay:${state.activeModelId}:${config.key}`;
   const signature = JSON.stringify({
     model: state.activeModelId,
     mode: config.key,
     points: config.pointCount,
     selected: metas.map((meta) => meta.key),
+    staticMeta: snapshot.static_meta?.curves || null,
     source: `${snapshot.curves?.weather?.length || 0}|${Object.values(snapshot.curves?.loads || {}).map((points) => points?.length || 0).join(",")}`,
   });
   if (!force && signature === state.lastCurveDisplayTableKey) return;
   state.lastCurveDisplayTableKey = signature;
+  const rowIndexes = Array.from({ length: config.pointCount }, (_unused, index) => index);
+  const virtualRows = virtualTableWindow(tableKey, rowIndexes);
+  const columnCount = metas.length + 1;
+  container.setAttribute("data-virtual-table", tableKey);
   container.innerHTML = `
     <table class="curve-table curve-display-table">
       <thead>
@@ -4193,14 +4565,17 @@ function renderCurveDisplayTable(snapshot = state.snapshot || {}, force = false)
         </tr>
       </thead>
       <tbody>
-        ${Array.from({ length: config.pointCount }, (_unused, index) => `
+        ${renderVirtualSpacerRow(virtualRows.beforeHeight, columnCount)}
+        ${virtualRows.rows.map((index) => `
           <tr>
             <td>${formatCurveDisplayTableTime(curveDisplayPointMinute(index, snapshot), snapshot)}</td>
             ${metas.map((meta) => `<td class="numeric-cell">${formatNumber(seriesByKey.get(meta.key)?.[index])}</td>`).join("")}
           </tr>
         `).join("")}
+        ${renderVirtualSpacerRow(virtualRows.afterHeight, columnCount)}
       </tbody>
     </table>`;
+  restoreVirtualTableScroll(container, tableKey);
 }
 
 function renderCurveDisplay(snapshot = state.snapshot || {}, forceTable = false) {
@@ -4208,14 +4583,25 @@ function renderCurveDisplay(snapshot = state.snapshot || {}, forceTable = false)
   if (!container) return;
   if (!snapshot?.curves) {
     container.innerHTML = '<div class="empty-state">暂无曲线数据</div>';
+    $("curveDisplayTable").removeAttribute("data-virtual-table");
     $("curveDisplayTable").innerHTML = '<div class="empty-state">暂无曲线数据</div>';
     return;
   }
+  const renderKey = JSON.stringify({
+    model: state.activeModelId,
+    mode: curveDisplayMode(snapshot),
+    points: curveDisplayConfig(snapshot).pointCount,
+    selected: selectedCurveDisplayKeys(snapshot),
+    hidden: [...(state.hiddenCurveDisplayKeys || [])].sort(),
+    staticMeta: snapshot.static_meta?.curves || null,
+  });
+  if (!forceTable && renderKey === state.lastCurveDisplayRenderKey) return;
+  state.lastCurveDisplayRenderKey = renderKey;
   renderCurveDisplayTree(snapshot);
   renderCurveDisplayModeControls(snapshot);
   renderCurveDisplayLabels(snapshot);
   drawCurveDisplay(snapshot);
-  renderCurveDisplayTable(snapshot, forceTable);
+  renderCurveDisplayTable(snapshot);
 }
 
 function pointerPositionOnCurveDisplayCanvas(event) {
@@ -6161,14 +6547,14 @@ function remoteControlLabel(commandType) {
   return commandType === "status" ? "开关开合" : "设备投退";
 }
 
-function activeCommandCancelName(dev, commandType, setType = "", snapshot = state.snapshot || {}) {
+function activeCommandCancelName(dev, commandType, setType = "", snapshot = state.snapshot || {}, issuedTime = null) {
   if (!dev) return "";
   const fieldName = commandType === "set_value" ? setType : (commandType === "status" ? "status" : "run_stat");
   if (!fieldName) return "";
-  const issuedTime = commandType === "set_value"
+  const activeIssuedTime = issuedTime || (commandType === "set_value"
     ? remoteAdjustmentIssuedTimeInfo(dev, setType, snapshot)
-    : remoteControlIssuedTimeInfo(dev, fieldName, snapshot);
-  if (!issuedTime || issuedTime.wall_time === "--") return "";
+    : remoteControlIssuedTimeInfo(dev, fieldName, snapshot));
+  if (!activeIssuedTime || activeIssuedTime.wall_time === "--") return "";
   return `${deviceType(dev)}.${deviceName(dev)}.${fieldName}`;
 }
 
@@ -6222,13 +6608,20 @@ function remoteControlCommandRows(devices, snapshot = state.snapshot || {}) {
       valueKey: "status",
       typeLabel: remoteControlLabel("status"),
     })),
-  ].map((row) => ({
-    ...row,
-    key: `${deviceKey(row.dev)}|${row.commandType}`,
-    traceKey: commandTraceRunKey(row.dev, row.commandType),
-    name: `${deviceName(row.dev)}.${remoteControlLabel(row.commandType)}`,
-    category: "遥控",
-  }));
+  ].map((row) => {
+    const issuedTime = remoteControlIssuedTimeInfo(row.dev, row.commandType, snapshot);
+    const cancelName = activeCommandCancelName(row.dev, row.commandType, "", snapshot, issuedTime);
+    return {
+      ...row,
+      key: `${deviceKey(row.dev)}|${row.commandType}`,
+      traceKey: commandTraceRunKey(row.dev, row.commandType),
+      name: `${deviceName(row.dev)}.${remoteControlLabel(row.commandType)}`,
+      category: "遥控",
+      issuedTime,
+      cancelName,
+      active: Boolean(cancelName),
+    };
+  });
 }
 
 function commandTableTypeLabel(row) {
@@ -6273,62 +6666,209 @@ function applyCommandTableFilters(rows) {
   const keyword = state.commandKeywordFilter || "";
   const type = state.commandTypeFilter || "all";
   return (rows || []).filter((row) => {
+    if (state.commandOnlyActive && !row.active) return false;
     if (!tableFilterMatchesKeyword(commandTableFilterFields(row), keyword)) return false;
     if (type !== "all" && commandTableTypeLabel(row) !== type) return false;
     return true;
   });
 }
 
-function renderRunControls(devices) {
-  const visibleDevices = filteredDevices(devices, state.controlFilter);
-  const allRows = remoteControlCommandRows(visibleDevices);
-  const rows = applyCommandTableFilters(allRows);
-  if (!rows.length) {
-    $("runControlTable").innerHTML = `<div class="empty-state">${allRows.length ? "当前过滤无遥控指令" : "当前筛选无遥控指令"}</div>`;
-    return;
+function syncCommandOnlyActiveControl() {
+  const input = $("commandOnlyActive");
+  const text = $("commandOnlyActiveText");
+  if (input) input.checked = Boolean(state.commandOnlyActive);
+  if (text) text.textContent = state.commandOnlyActive ? "是" : "否";
+}
+
+function traineeCommandTraceKey(row) {
+  return String(row?.traceKey || row?.key || "");
+}
+
+function traineeCommandColumnCount(activeTab) {
+  return activeTab === "remote-adjustment" ? 6 : 9;
+}
+
+function traineeCommandTableStructureKey(rows, activeTab = state.activeControlTab) {
+  const filter = state.controlFilter || { dev_type: "all", dev_name: "" };
+  return [
+    activeTab,
+    deviceTreeFilterSelection(filter).map((item) => deviceTreeFilterKey(item.dev_type, item.dev_name)).join("|"),
+    state.commandKeywordFilter || "",
+    state.commandTypeFilter || "all",
+    state.commandOnlyActive ? "active" : "all",
+    rows.map((row) => traineeCommandTraceKey(row)).join("||"),
+  ].join("::");
+}
+
+function traineeCommandCancelButtonHtml(cancelName, cancelLabel) {
+  const sending = cancelName && state.commandCancelSending.has(cancelName);
+  return `
+    <button type="button" class="command-cancel-button" data-command-cancel-name="${escapeHtml(cancelName)}" data-command-cancel-label="${escapeHtml(cancelLabel)}" ${cancelName && !sending ? "" : "disabled"}>
+      ${sending ? "取消中" : "取消指令"}
+    </button>
+  `;
+}
+
+function traineeRemoteControlLiveValue(row, field) {
+  const key = `${deviceKey(row.dev)}|${row.commandType}`;
+  if (field === "status") {
+    return `<span class="status-pill ${Number(row.dev[row.valueKey]) ? "is-ok" : "is-off"}">${remoteControlValueText(row.commandType, row.dev[row.valueKey])}</span>`;
   }
-  $("runControlTable").innerHTML = `
+  if (field === "control") {
+    const pendingCommand = pending.run_status.get(key);
+    const currentValue = Number(pendingCommand ? pendingCommand[row.valueKey] : row.dev[row.valueKey]);
+    return `
+      <label class="inline-toggle">
+        <input type="checkbox" data-run-key="${escapeHtml(key)}" data-command-type="${escapeHtml(row.commandType)}" ${currentValue ? "checked" : ""} />
+        <span>${remoteControlValueText(row.commandType, currentValue)}</span>
+      </label>
+    `;
+  }
+  if (field === "wall_time") return escapeHtml(row.issuedTime?.wall_time || "--");
+  if (field === "simu_time") return escapeHtml(row.issuedTime?.simu_time || "--");
+  if (field === "cancel") {
+    return traineeCommandCancelButtonHtml(
+      row.cancelName || "",
+      `${deviceName(row.dev)}.${remoteControlLabel(row.commandType)}`,
+    );
+  }
+  return "";
+}
+
+function traineeRemoteAdjustmentLiveValue(row, field) {
+  if (field === "measurement") return escapeHtml(formatRemoteAdjustmentValue(row.measurement));
+  if (field === "control") return escapeHtml(formatRemoteAdjustmentValue(row.controlValue));
+  if (field === "wall_time") return escapeHtml(row.issuedTime?.wall_time || row.issuedAt || "--");
+  if (field === "simu_time") return escapeHtml(row.issuedTime?.simu_time || "--");
+  if (field === "cancel") return traineeCommandCancelButtonHtml(row.cancelName, row.name);
+  return "";
+}
+
+function traineeCommandLiveCellHtml(row, field, activeTab = state.activeControlTab) {
+  return activeTab === "remote-adjustment"
+    ? traineeRemoteAdjustmentLiveValue(row, field)
+    : traineeRemoteControlLiveValue(row, field);
+}
+
+function updateTraineeCommandTableLiveCells(container, rows, activeTab = state.activeControlTab) {
+  const tableRows = Array.from(container?.querySelectorAll?.("[data-trainee-command-row-key]") || []);
+  if (tableRows.length !== rows.length) return false;
+  const rowsByKey = new Map(rows.map((row) => [traineeCommandTraceKey(row), row]));
+  for (const tableRow of tableRows) {
+    const key = tableRow.dataset.traineeCommandRowKey || "";
+    const row = rowsByKey.get(key);
+    if (!row) return false;
+    tableRow.classList.toggle("is-selected", key === state.selectedCommandTraceKey);
+    tableRow.dataset.commandTraceLabel = row.name || "";
+    tableRow.querySelectorAll("[data-trainee-command-live-field]").forEach((cell) => {
+      cell.innerHTML = traineeCommandLiveCellHtml(row, cell.dataset.traineeCommandLiveField || "", activeTab);
+    });
+  }
+  return true;
+}
+
+function renderTraineeCommandRows(rows, activeTab = state.activeControlTab) {
+  if (activeTab === "remote-adjustment") {
+    return rows.map((row) => `<tr class="${row.traceKey === state.selectedCommandTraceKey ? "is-selected" : ""}" data-trainee-command-row-key="${escapeHtml(row.traceKey)}" data-command-trace-key="${escapeHtml(row.traceKey)}" data-command-trace-label="${escapeHtml(row.name)}" data-remote-adjustment-key="${escapeHtml(row.key)}" title="单击选中曲线，双击进行遥调操作">
+      <td><span class="remote-adjustment-name-cell"><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(deviceType(row.dev))}</small></span></td>
+      <td class="numeric-cell" data-trainee-command-live-field="measurement">${traineeCommandLiveCellHtml(row, "measurement", activeTab)}</td>
+      <td class="numeric-cell" data-trainee-command-live-field="control">${traineeCommandLiveCellHtml(row, "control", activeTab)}</td>
+      <td class="mono-cell command-issued-at-cell" data-trainee-command-live-field="wall_time">${traineeCommandLiveCellHtml(row, "wall_time", activeTab)}</td>
+      <td class="mono-cell command-issued-at-cell" data-trainee-command-live-field="simu_time">${traineeCommandLiveCellHtml(row, "simu_time", activeTab)}</td>
+      <td data-trainee-command-live-field="cancel">${traineeCommandLiveCellHtml(row, "cancel", activeTab)}</td>
+    </tr>`).join("");
+  }
+  return rows.map((row) => {
+    const key = `${deviceKey(row.dev)}|${row.commandType}`;
+    const traceKey = commandTraceRunKey(row.dev, row.commandType);
+    const classes = [
+      pending.run_status.has(key) ? "is-pending" : "",
+      traceKey === state.selectedCommandTraceKey ? "is-selected" : "",
+    ].filter(Boolean).join(" ");
+    return `<tr class="${classes}" data-trainee-command-row-key="${escapeHtml(traceKey)}" data-command-trace-key="${escapeHtml(traceKey)}" data-command-trace-label="${escapeHtml(`${deviceName(row.dev)}.${remoteControlLabel(row.commandType)}`)}" data-run-status-command="${escapeHtml(key)}" title="单击选中曲线，双击进行遥控操作">
+      <td>${escapeHtml(deviceIndex(row.dev))}</td>
+      <td>${escapeHtml(`${deviceName(row.dev)}.${remoteControlLabel(row.commandType)}`)}</td>
+      <td>${escapeHtml(deviceName(row.dev))}</td>
+      <td>${escapeHtml(deviceType(row.dev))}</td>
+      <td class="run-status-command-cell" title="双击进行遥控操作" data-trainee-command-live-field="status">${traineeCommandLiveCellHtml(row, "status", activeTab)}</td>
+      <td data-trainee-command-live-field="control">${traineeCommandLiveCellHtml(row, "control", activeTab)}</td>
+      <td class="mono-cell command-issued-at-cell" data-trainee-command-live-field="wall_time">${traineeCommandLiveCellHtml(row, "wall_time", activeTab)}</td>
+      <td class="mono-cell command-issued-at-cell" data-trainee-command-live-field="simu_time">${traineeCommandLiveCellHtml(row, "simu_time", activeTab)}</td>
+      <td data-trainee-command-live-field="cancel">${traineeCommandLiveCellHtml(row, "cancel", activeTab)}</td>
+    </tr>`;
+  }).join("");
+}
+
+function renderTraineeCommandTable(rows, activeTab, emptyText, virtualRows = { beforeHeight: 0, afterHeight: 0 }) {
+  if (!rows.length) return `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
+  const columnCount = traineeCommandColumnCount(activeTab);
+  if (activeTab === "remote-adjustment") {
+    return `
+      <table class="runtime-device-table remote-adjustment-table">
+        <colgroup>
+          <col class="remote-adjustment-name-col" />
+          <col class="remote-adjustment-value-col" />
+          <col class="remote-adjustment-value-col" />
+          <col class="remote-adjustment-time-col" />
+          <col class="remote-adjustment-time-col" />
+          <col class="remote-adjustment-action-col" />
+        </colgroup>
+        <thead><tr><th>遥调名称</th><th>量测值</th><th>控制值</th><th>下发本机时刻</th><th>下发仿真时刻</th><th>操作</th></tr></thead>
+        <tbody>
+          ${renderVirtualSpacerRow(virtualRows.beforeHeight, columnCount)}
+          ${renderTraineeCommandRows(rows, activeTab)}
+          ${renderVirtualSpacerRow(virtualRows.afterHeight, columnCount)}
+        </tbody>
+      </table>`;
+  }
+  return `
     <table class="runtime-device-table">
       <thead><tr><th>idx</th><th>遥控名称</th><th>设备名称</th><th>类型</th><th>当前状态</th><th>下发状态</th><th>下发本机时刻</th><th>下发仿真时刻</th><th>操作</th></tr></thead>
       <tbody>
-        ${rows.map(({ dev, commandType, valueKey }) => {
-          const key = `${deviceKey(dev)}|${commandType}`;
-          const traceKey = commandTraceRunKey(dev, commandType);
-          const pendingCommand = pending.run_status.get(key);
-          const currentValue = Number(pendingCommand ? pendingCommand[valueKey] : dev[valueKey]);
-          const issuedAt = remoteControlIssuedTimeInfo(dev, commandType);
-          const cancelName = activeCommandCancelName(dev, commandType);
-          const cancelLabel = `${deviceName(dev)}.${remoteControlLabel(commandType)}`;
-          const cancelSending = cancelName && state.commandCancelSending.has(cancelName);
-          const classes = [
-            pending.run_status.has(key) ? "is-pending" : "",
-            traceKey === state.selectedCommandTraceKey ? "is-selected" : "",
-          ].filter(Boolean).join(" ");
-          return `<tr class="${classes}" data-command-trace-key="${escapeHtml(traceKey)}" data-command-trace-label="${escapeHtml(`${deviceName(dev)}.${remoteControlLabel(commandType)}`)}" data-run-status-command="${escapeHtml(key)}" title="单击选中曲线，双击进行遥控操作">
-            <td>${escapeHtml(deviceIndex(dev))}</td>
-            <td>${escapeHtml(`${deviceName(dev)}.${remoteControlLabel(commandType)}`)}</td>
-            <td>${escapeHtml(deviceName(dev))}</td>
-            <td>${escapeHtml(deviceType(dev))}</td>
-            <td class="run-status-command-cell" title="双击进行遥控操作">
-              <span class="status-pill ${Number(dev[valueKey]) ? "is-ok" : "is-off"}">${remoteControlValueText(commandType, dev[valueKey])}</span>
-            </td>
-            <td>
-              <label class="inline-toggle">
-                <input type="checkbox" data-run-key="${escapeHtml(key)}" data-command-type="${escapeHtml(commandType)}" ${currentValue ? "checked" : ""} />
-                <span>${remoteControlValueText(commandType, currentValue)}</span>
-              </label>
-            </td>
-            <td class="mono-cell command-issued-at-cell">${escapeHtml(issuedAt.wall_time)}</td>
-            <td class="mono-cell command-issued-at-cell">${escapeHtml(issuedAt.simu_time)}</td>
-            <td>
-              <button type="button" class="command-cancel-button" data-command-cancel-name="${escapeHtml(cancelName)}" data-command-cancel-label="${escapeHtml(cancelLabel)}" ${cancelName && !cancelSending ? "" : "disabled"}>
-                ${cancelSending ? "取消中" : "取消指令"}
-              </button>
-            </td>
-          </tr>`;
-        }).join("")}
+        ${renderVirtualSpacerRow(virtualRows.beforeHeight, columnCount)}
+        ${renderTraineeCommandRows(rows, activeTab)}
+        ${renderVirtualSpacerRow(virtualRows.afterHeight, columnCount)}
       </tbody>
     </table>`;
+}
+
+function renderTraineeCommandTableContainer(container, activeTab, rows, allRows, emptyText) {
+  if (!container) return;
+  const key = `traineeCommand:${activeTab}`;
+  const activeRows = rows;
+  const virtualRows = virtualTableWindow(`traineeCommand:${activeTab}`, activeRows);
+  const structureKey = [
+    traineeCommandTableStructureKey(activeRows, activeTab),
+    virtualRows.enabled ? "virtual" : "full",
+    virtualRows.start,
+    virtualRows.end,
+  ].join("|");
+  container.classList.add("virtual-table-scroll");
+  container.setAttribute("data-virtual-table", `traineeCommand:${activeTab}`);
+  if (!rows.length) {
+    container.dataset.traineeCommandStructureKey = "";
+    container.innerHTML = `<div class="empty-state">${allRows.length ? escapeHtml(emptyText.filtered) : escapeHtml(emptyText.empty)}</div>`;
+    return;
+  }
+  if (
+    container.dataset.traineeCommandStructureKey === structureKey
+    && updateTraineeCommandTableLiveCells(container, virtualRows.rows, activeTab)
+  ) {
+    return;
+  }
+  container.dataset.traineeCommandStructureKey = structureKey;
+  container.innerHTML = renderTraineeCommandTable(virtualRows.rows, activeTab, allRows.length ? emptyText.filtered : emptyText.empty, virtualRows);
+  restoreVirtualTableScroll(container, key);
+}
+
+function renderRunControls(devices, options = {}) {
+  const visibleDevices = filteredDevices(devices, state.controlFilter);
+  const allRows = options.rows || remoteControlCommandRows(visibleDevices);
+  const rows = applyCommandTableFilters(allRows);
+  renderTraineeCommandTableContainer($("runControlTable"), "remote-control", rows, allRows, {
+    filtered: "当前过滤无遥控指令",
+    empty: "当前筛选无遥控指令",
+  });
 }
 
 function currentSetValue(dev, setType) {
@@ -6394,11 +6934,12 @@ function remoteAdjustmentIssuedAt(dev, setType, snapshot = state.snapshot || {})
   return remoteAdjustmentIssuedTimeInfo(dev, setType, snapshot).wall_time;
 }
 
-function remoteAdjustmentRows(devices, snapshot = state.snapshot || {}) {
+function remoteAdjustmentRows(devices, snapshot = state.snapshot || {}, options = {}) {
   return selectedControlRows("SetValue", devices, snapshot).map((definitionRow) => {
     const dev = controlDeviceFromRow(definitionRow, snapshot);
     const setType = definitionRow.set_type || "";
     const issuedTime = remoteAdjustmentIssuedTimeInfo(dev, setType, snapshot);
+    const cancelName = activeCommandCancelName(dev, "set_value", setType, snapshot, issuedTime);
     return {
       key: `${deviceKey(dev)}|${setType}`,
       traceKey: commandTraceAdjustmentKey(dev, setType),
@@ -6407,15 +6948,16 @@ function remoteAdjustmentRows(devices, snapshot = state.snapshot || {}) {
       name: remoteAdjustmentName(dev, setType),
       typeLabel: remoteAdjustmentTypeLabel(setType),
       category: "遥调",
-      measurement: remoteAdjustmentMeasurement(dev, setType, snapshot),
+      measurement: options.includeMeasurements === false ? null : remoteAdjustmentMeasurement(dev, setType, snapshot),
       controlValue: (() => {
         const current = currentSetValue(dev, setType);
         return current === "" || current === undefined || current === null ? definitionRow.set_value : current;
       })(),
       issuedAt: issuedTime.wall_time,
       issuedTime,
-      cancelName: activeCommandCancelName(dev, "set_value", setType, snapshot),
-      cancelSending: state.commandCancelSending.has(activeCommandCancelName(dev, "set_value", setType, snapshot)),
+      cancelName,
+      active: Boolean(cancelName),
+      cancelSending: state.commandCancelSending.has(cancelName),
     };
   });
 }
@@ -6425,40 +6967,14 @@ function formatRemoteAdjustmentValue(value) {
   return formatNumber(value);
 }
 
-function renderSetpointControls(devices) {
+function renderSetpointControls(devices, options = {}) {
   const visibleDevices = filteredDevices(devices || [], state.controlFilter);
-  const allRows = remoteAdjustmentRows(visibleDevices);
+  const allRows = options.rows || remoteAdjustmentRows(visibleDevices);
   const rows = applyCommandTableFilters(allRows);
-  if (!rows.length) {
-    $("setpointControlTable").innerHTML = `<div class="empty-state">${allRows.length ? "当前过滤无遥调指令" : "当前筛选无遥调指令"}</div>`;
-    return;
-  }
-  $("setpointControlTable").innerHTML = `
-    <table class="runtime-device-table remote-adjustment-table">
-      <colgroup>
-        <col class="remote-adjustment-name-col" />
-        <col class="remote-adjustment-value-col" />
-        <col class="remote-adjustment-value-col" />
-        <col class="remote-adjustment-time-col" />
-        <col class="remote-adjustment-time-col" />
-        <col class="remote-adjustment-action-col" />
-      </colgroup>
-      <thead><tr><th>遥调名称</th><th>量测值</th><th>控制值</th><th>下发本机时刻</th><th>下发仿真时刻</th><th>操作</th></tr></thead>
-      <tbody>
-        ${rows.map((row) => `<tr class="${row.traceKey === state.selectedCommandTraceKey ? "is-selected" : ""}" data-command-trace-key="${escapeHtml(row.traceKey)}" data-command-trace-label="${escapeHtml(row.name)}" data-remote-adjustment-key="${escapeHtml(row.key)}" title="单击选中曲线，双击进行遥调操作">
-          <td><span class="remote-adjustment-name-cell"><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(deviceType(row.dev))}</small></span></td>
-          <td class="numeric-cell">${formatRemoteAdjustmentValue(row.measurement)}</td>
-          <td class="numeric-cell">${formatRemoteAdjustmentValue(row.controlValue)}</td>
-          <td class="mono-cell command-issued-at-cell">${escapeHtml(row.issuedTime?.wall_time || row.issuedAt || "--")}</td>
-          <td class="mono-cell command-issued-at-cell">${escapeHtml(row.issuedTime?.simu_time || "--")}</td>
-          <td>
-            <button type="button" class="command-cancel-button" data-command-cancel-name="${escapeHtml(row.cancelName)}" data-command-cancel-label="${escapeHtml(row.name)}" ${row.cancelName && !row.cancelSending ? "" : "disabled"}>
-              ${row.cancelSending ? "取消中" : "取消指令"}
-            </button>
-          </td>
-        </tr>`).join("")}
-      </tbody>
-    </table>`;
+  renderTraineeCommandTableContainer($("setpointControlTable"), "remote-adjustment", rows, allRows, {
+    filtered: "当前过滤无遥调指令",
+    empty: "当前筛选无遥调指令",
+  });
 }
 
 function commandTraceRowsForActiveTab(devices = controlDefinitionDevices()) {
@@ -6503,15 +7019,37 @@ function renderControlTabs() {
 }
 
 function renderCombinedControlPage(devices = controlDefinitionDevices()) {
+  syncCommandOnlyActiveControl();
   renderDeviceTree("commandDeviceTree", "commandTreeSummary", devices, state.controlFilter, "control", "control");
   const visibleDevices = filteredDevices(devices || [], state.controlFilter);
-  syncCommandTypeFilter([
-    ...remoteControlCommandRows(visibleDevices),
-    ...remoteAdjustmentRows(visibleDevices),
-  ]);
+  const activeTab = state.activeControlTab === "remote-adjustment" ? "remote-adjustment" : "remote-control";
+  state.activeControlTab = activeTab;
+  const remoteControlRows = remoteControlCommandRows(visibleDevices);
+  const remoteAdjustmentRowsForFilter = remoteAdjustmentRows(visibleDevices, state.snapshot || {}, {
+    includeMeasurements: activeTab === "remote-adjustment",
+  });
+  const activeRows = activeTab === "remote-adjustment"
+    ? remoteAdjustmentRowsForFilter
+    : remoteControlRows;
+  syncCommandTypeFilter([...remoteControlRows, ...remoteAdjustmentRowsForFilter]);
   ensureSelectedCommandTrace(devices);
-  renderRunControls(devices);
-  renderSetpointControls(devices);
+  if (activeTab === "remote-adjustment") {
+    const runContainer = $("runControlTable");
+    if (runContainer) {
+      runContainer.dataset.traineeCommandStructureKey = "";
+      runContainer.removeAttribute("data-virtual-table");
+      runContainer.innerHTML = "";
+    }
+    renderSetpointControls(devices, { rows: activeRows });
+  } else {
+    const setpointContainer = $("setpointControlTable");
+    if (setpointContainer) {
+      setpointContainer.dataset.traineeCommandStructureKey = "";
+      setpointContainer.removeAttribute("data-virtual-table");
+      setpointContainer.innerHTML = "";
+    }
+    renderRunControls(devices, { rows: activeRows });
+  }
   renderControlTabs();
   drawCommandTraceChart();
 }
@@ -6681,6 +7219,7 @@ function activeCommandPreviewRows(snapshot = state.snapshot || {}) {
         actual_value: actualValue === undefined || actualValue === ""
           ? "--"
           : remoteControlValueText(commandType, actualValue),
+        wall_time: timeInfo.wall_time || "--",
         time: timeInfo.simu_time || "--",
       });
     });
@@ -6694,6 +7233,7 @@ function activeCommandPreviewRows(snapshot = state.snapshot || {}) {
         name: item.dev_name || item.name || "--",
         value: formatNumber(item.set_value),
         actual_value: formatRemoteAdjustmentValue(actualValue),
+        wall_time: timeInfo.wall_time || "--",
         time: timeInfo.simu_time || "--",
       });
     });
@@ -6711,6 +7251,7 @@ function renderActiveCommandPreview(snapshot = state.snapshot || {}) {
     <table class="active-command-preview-table">
       <thead>
         <tr>
+          <th>下发本机时刻</th>
           <th>设备</th>
           <th>指令</th>
           <th>指令值</th>
@@ -6721,6 +7262,7 @@ function renderActiveCommandPreview(snapshot = state.snapshot || {}) {
       <tbody>
         ${rows.slice(0, 12).map((item) => `
           <tr>
+            <td title="${escapeHtml(item.wall_time)}">${escapeHtml(item.wall_time)}</td>
             <td title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</td>
             <td title="${escapeHtml(item.type)}">${escapeHtml(item.type)}</td>
             <td title="${escapeHtml(item.value)}">${escapeHtml(item.value)}</td>
@@ -6973,6 +7515,15 @@ document.addEventListener("input", (event) => {
   const scope = input.dataset.deviceTreeFilterScope || "";
   state.deviceTreeSearch[scope] = input.value || "";
   refreshDeviceTreeFilterScope(scope);
+});
+document.addEventListener("change", (event) => {
+  if (!(event.target instanceof Element)) return;
+  const target = event.target;
+  const onlyActiveToggle = target.closest("#commandOnlyActive");
+  if (!(onlyActiveToggle instanceof HTMLInputElement)) return;
+  state.commandOnlyActive = onlyActiveToggle.checked;
+  syncCommandOnlyActiveControl();
+  renderCombinedControlPage();
 });
 document.addEventListener("scroll", handleVirtualTableScroll, true);
 
@@ -7296,6 +7847,7 @@ window.addEventListener("resize", () => {
 });
 
 initOverviewBottomSplitter();
+initOverviewBottomColumnSplitter();
 initVerticalSplitters();
 renderReceiveMode();
 renderHistory();

@@ -8,6 +8,25 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class OverviewDashboardUiTest(unittest.TestCase):
+    def test_overview_event_panel_shows_up_to_eight_rows(self):
+        app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        renderer = app_js.split("function renderOverviewEvents(snapshot) {", 1)[1].split(
+            "function activeRuntimeCommandKeySet",
+            1,
+        )[0]
+
+        self.assertIn(".slice(0, 8)", renderer)
+        self.assertNotIn(".slice(0, 3)", renderer)
+
+    def test_overview_event_panel_scrolls_inside_its_existing_height(self):
+        styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
+        event_list_block = styles.split(".overview-event-list {", 1)[1].split("}", 1)[0]
+
+        self.assertIn("overflow-x: hidden;", event_list_block)
+        self.assertIn("overflow-y: auto;", event_list_block)
+        self.assertIn("scrollbar-gutter: stable;", event_list_block)
+        self.assertNotIn("overflow: hidden;", event_list_block)
+
     def test_overview_status_strip_keeps_content_vertically_centered(self):
         styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
 
@@ -39,8 +58,21 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("overviewActiveRuntimeCommandRows", app_js)
         self.assertIn("activeRuntimeCommandKeySet", app_js)
         self.assertIn("commandTimeInfoAvailable(row.receive_time)", app_js)
-        self.assertIn("接收本机时刻", app_js)
-        self.assertIn("接收仿真时刻", app_js)
+        command_table = app_js.split("function renderOverviewActiveCommands", 1)[1].split(
+            "function renderOverviewDashboard",
+            1,
+        )[0]
+        self.assertIn("<th>本机时刻</th>\n          <th>设备</th>", command_table)
+        self.assertIn("<th>仿真时刻</th>", command_table)
+        self.assertNotIn("<th>类型</th>", command_table)
+        self.assertNotIn("接收本机时刻", command_table)
+        self.assertNotIn("接收仿真时刻", command_table)
+        self.assertNotIn("row.category", command_table)
+        self.assertIn(
+            '<td class="mono-cell">${escapeHtml(row.receive_time?.wall_time || "--")}</td>\n'
+            '            <td>${escapeHtml(row.device?.dev_name || "--")}</td>',
+            command_table,
+        )
         for element_id in (
             "overviewFlowWindPower",
             "overviewFlowSolarPower",
@@ -76,6 +108,27 @@ class OverviewDashboardUiTest(unittest.TestCase):
             self.assertNotIn(f'id="{removed_id}"', html)
         self.assertIn("renderOverviewDashboard", app_js)
         self.assertIn("parsePowerFlowOverview", app_js)
+
+    def test_overview_active_command_table_keeps_command_item_text_visible(self):
+        styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
+        app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        table_block = styles.split(".overview-command-table {", 1)[1].split("}", 1)[0]
+
+        self.assertNotIn("min-width:", table_block)
+        self.assertIn(
+            "grid-template-columns: minmax(0, var(--overview-bottom-left-ratio, 50fr)) "
+            "12px minmax(0, var(--overview-bottom-right-ratio, 50fr));",
+            styles,
+        )
+        self.assertIn(".overview-command-table th:nth-child(3) { width: 168px; }", styles)
+        self.assertIn("runtimeCommandBuildContext(snapshot, measurements)", app_js)
+
+    def test_overview_active_command_table_aligns_headers_and_values_right(self):
+        styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
+        selector = ".overview-command-table th,\n.overview-command-table td {"
+        alignment_block = styles.split(selector, 1)[1].split("}", 1)[0]
+
+        self.assertIn("text-align: right;", alignment_block)
 
     def test_overview_middle_uses_large_energy_flow_without_process_strip(self):
         html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")

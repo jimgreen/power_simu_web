@@ -127,6 +127,8 @@ class ModelSourceRuntimeSeparationTest(unittest.TestCase):
             "</StorageSoc>\n",
             encoding="utf-8",
         )
+        service.source_stat_book = simu_loop.EBook(source_stat)
+        service.runtime_stat_book = simu_loop.EBook(service.work_files["stat"])
 
         service.step()
 
@@ -134,12 +136,126 @@ class ModelSourceRuntimeSeparationTest(unittest.TestCase):
         runtime_soc = captured["config"].dev_stat_book.data["StorageSoc"].data
         self.assertEqual(
             [(row["dev_type"], row["idx"], row["name"]) for row in runtime_soc],
-            [("ESS", "1", "ess01")],
-        )
-        self.assertNotEqual(
-            [(row["dev_type"], row["idx"], row["name"]) for row in runtime_soc],
             [(row["dev_type"], row["idx"], row["name"]) for row in source_soc],
         )
+
+    def test_stale_commands_for_removed_devices_do_not_create_runtime_devices_or_measurements(self):
+        from simu.service import STAT_HEADERS, _make_book
+
+        workspace, _source, _runtime, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        service.source_model_book = _make_book(
+            {
+                "DCGenerator": (
+                    ("idx", "name", "dev_type", "node", "control_type", "v_set", "p_set", "run_stat"),
+                    [
+                        {
+                            "idx": "3",
+                            "name": "new_storage",
+                            "dev_type": "dc-storage",
+                            "node": "1",
+                            "control_type": "V",
+                            "v_set": "500",
+                            "p_set": "0",
+                            "run_stat": "1",
+                        }
+                    ],
+                )
+            }
+        )
+        service.source_stat_book = _make_book(
+            {
+                "RunStat": (
+                    STAT_HEADERS["RunStat"],
+                    [{"dev_type": "DCGenerator", "dev_name": "new_storage", "run_stat": "1"}],
+                ),
+                "SetValue": (
+                    STAT_HEADERS["SetValue"],
+                    [
+                        {
+                            "dev_type": "DCGenerator",
+                            "dev_name": "new_storage",
+                            "set_type": "p_set",
+                            "set_value": "0",
+                        }
+                    ],
+                ),
+                "StorageSoc": (
+                    STAT_HEADERS["StorageSoc"],
+                    [{"dev_type": "DCGenerator", "idx": "3", "name": "new_storage", "soc_curr": "0.5"}],
+                ),
+            }
+        )
+        service.control_book = service.source_stat_book
+        service.dev_define_book = _make_book({})
+        service.runtime_stat_book = service._base_stat_book_for_controls()
+        service.measurement_rows = [
+            ["1", "DCGenerator.new_storage.P_GEN", "DCGenerator", "new_storage", "P_GEN", "10000.0", "1", "0.0"],
+            ["2", "DCGenerator.new_storage.run_stat", "DCGenerator", "new_storage", "RUN_STAT", "1.0", "1", "1.0"],
+        ]
+        service.latest_real_rows = []
+        service.latest_scada_rows = []
+        service.command_history = [
+            {
+                "eligible_source": True,
+                "manual_hold": True,
+                "accepted": {"run_status": 2, "set_values": 1, "ignored": 0},
+                "normalized": {
+                    "run_status": [
+                        {"dev_type": "ESS", "dev_name": "ess01", "run_stat": "0"},
+                        {"dev_type": "DCGenerator", "dev_name": "ess01_vsrc", "run_stat": "0"},
+                    ],
+                    "set_values": [
+                        {
+                            "dev_type": "DCGenerator",
+                            "dev_name": "ess01_vsrc",
+                            "set_type": "p_set",
+                            "set_value": "60",
+                        }
+                    ],
+                },
+            }
+        ]
+
+        service._materialize_active_control_commands(service.clock.absolute_minute)
+
+        device_keys = {(item["dev_type"], item["dev_name"]) for item in service.devices()}
+        self.assertIn(("DCGenerator", "new_storage"), device_keys)
+        self.assertNotIn(("ESS", "ess01"), device_keys)
+        self.assertNotIn(("DCGenerator", "ess01_vsrc"), device_keys)
+
+        measurements = service.measurements()
+        measurement_keys = {
+            (item["dev_type"], item["dev_name"], item["meas_type"])
+            for channel in ("definitions", "real", "scada")
+            for item in measurements[channel]
+        }
+        self.assertIn(("DCGenerator", "new_storage", "RUN_STAT"), measurement_keys)
+        self.assertNotIn(("ESS", "ess01", "RUN_STAT"), measurement_keys)
+        self.assertNotIn(("DCGenerator", "ess01_vsrc", "RUN_STAT"), measurement_keys)
+
+    def test_student_commands_for_undefined_controls_are_ignored(self):
+        workspace, _source, _runtime, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        accepted = service.apply_student_commands(
+            {
+                "run_status": [{"dev_type": "ESS", "dev_name": "removed_storage", "run_stat": 0}],
+                "set_values": [
+                    {
+                        "dev_type": "DCGenerator",
+                        "dev_name": "removed_storage_vsrc",
+                        "set_type": "p_set",
+                        "set_value": 60,
+                    }
+                ],
+            },
+            source="trainee-ui",
+        )
+
+        self.assertEqual(accepted, {"run_status": 0, "set_values": 0, "ignored": 2})
+        self.assertEqual(service.command_history[-1]["normalized"], {"run_status": [], "set_values": []})
 
     def test_import_definition_archive_updates_source_without_runtime_definitions(self):
         from simu.server import import_definition_archive, make_definition_archive

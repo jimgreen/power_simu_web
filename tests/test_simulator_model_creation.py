@@ -10,6 +10,7 @@ from shutil import copytree
 import simu_loop
 import simu.server as server_module
 from simu.service import MultiModelSimulator
+from tests.model_fixtures import SIMPLE_MODEL_SOURCE
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,13 +21,13 @@ class SimulatorModelCreationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
             models_root = temp_root / "models"
-            copytree(ROOT / "models/simulator/source/默认模型", models_root / "默认模型")
+            copytree(SIMPLE_MODEL_SOURCE, models_root / "默认模型")
             manager = MultiModelSimulator.discover(
                 models_root.parent,
                 temp_root / "runtime",
                 models_dir=models_root,
             )
-            model_text = (ROOT / "models/simulator/source/简单模型/model.e").read_text(encoding="utf-8")
+            model_text = (SIMPLE_MODEL_SOURCE / "model.e").read_text(encoding="utf-8")
             create_model_from_efile = getattr(server_module, "create_model_from_efile", None)
             self.assertIsNotNone(create_model_from_efile)
 
@@ -65,13 +66,13 @@ class SimulatorModelCreationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
             models_root = temp_root / "models"
-            copytree(ROOT / "models/simulator/source/默认模型", models_root / "默认模型")
+            copytree(SIMPLE_MODEL_SOURCE, models_root / "默认模型")
             manager = MultiModelSimulator.discover(
                 models_root.parent,
                 temp_root / "runtime",
                 models_dir=models_root,
             )
-            model_text = (ROOT / "models/simulator/source/简单模型/model.e").read_text(encoding="utf-8")
+            model_text = (SIMPLE_MODEL_SOURCE / "model.e").read_text(encoding="utf-8")
             diagram_text = '<svg xmlns="http://www.w3.org/2000/svg"><text data-meas-name="ACGenerator.diesel_300kw.P_GEN"></text></svg>'
 
             created = server_module.create_model_from_efile(
@@ -90,13 +91,13 @@ class SimulatorModelCreationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
             models_root = temp_root / "models"
-            copytree(ROOT / "models/simulator/source/默认模型", models_root / "默认模型")
+            copytree(SIMPLE_MODEL_SOURCE, models_root / "默认模型")
             manager = MultiModelSimulator.discover(
                 models_root.parent,
                 temp_root / "runtime",
                 models_dir=models_root,
             )
-            model_text = (ROOT / "models/simulator/source/简单模型/model.e").read_text(encoding="utf-8")
+            model_text = (SIMPLE_MODEL_SOURCE / "model.e").read_text(encoding="utf-8")
             diagram_text = '<svg xmlns="http://www.w3.org/2000/svg"><text data-meas-name="DCPVGen.pv_120kw.P_GEN"></text></svg>'
 
             manager.service_for("默认模型").control_clock({"action": "start"})
@@ -125,13 +126,13 @@ class SimulatorModelCreationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
             models_root = temp_root / "models"
-            copytree(ROOT / "models/simulator/source/默认模型", models_root / "默认模型")
+            copytree(SIMPLE_MODEL_SOURCE, models_root / "默认模型")
             manager = MultiModelSimulator.discover(
                 models_root.parent,
                 temp_root / "runtime",
                 models_dir=models_root,
             )
-            model_text = (ROOT / "models/simulator/source/简单模型/model.e").read_text(encoding="utf-8")
+            model_text = (SIMPLE_MODEL_SOURCE / "model.e").read_text(encoding="utf-8")
             create_model_from_efile = getattr(server_module, "create_model_from_efile", None)
             self.assertIsNotNone(create_model_from_efile)
 
@@ -147,7 +148,7 @@ class SimulatorModelCreationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
             models_root = temp_root / "models"
-            copytree(ROOT / "models/simulator/source/默认模型", models_root / "默认模型")
+            copytree(SIMPLE_MODEL_SOURCE, models_root / "默认模型")
             manager = MultiModelSimulator.discover(
                 models_root.parent,
                 temp_root / "runtime",
@@ -158,7 +159,7 @@ class SimulatorModelCreationTest(unittest.TestCase):
             thread.start()
             port = server.server_address[1]
             try:
-                model_text = (ROOT / "models/simulator/source/简单模型/model.e").read_text(encoding="utf-8")
+                model_text = (SIMPLE_MODEL_SOURCE / "model.e").read_text(encoding="utf-8")
                 payload = {
                     "name": "接口新模型",
                     "filename": "model.e",
@@ -187,8 +188,8 @@ class SimulatorModelCreationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
             models_root = temp_root / "models"
-            copytree(ROOT / "models/simulator/source/默认模型", models_root / "默认模型")
-            copytree(ROOT / "models/simulator/source/简单模型", models_root / "运行模型")
+            copytree(SIMPLE_MODEL_SOURCE, models_root / "默认模型")
+            copytree(SIMPLE_MODEL_SOURCE, models_root / "运行模型")
             manager = MultiModelSimulator.discover(
                 models_root.parent,
                 temp_root / "runtime",

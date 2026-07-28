@@ -3,6 +3,9 @@ const OVERVIEW_BOTTOM_HEIGHT_KEY = "polarOverviewBottomHeight";
 const OVERVIEW_BOTTOM_DEFAULT_HEIGHT = 156;
 const OVERVIEW_BOTTOM_MIN_HEIGHT = 96;
 const OVERVIEW_BOTTOM_MAX_HEIGHT = 640;
+const OVERVIEW_BOTTOM_COLUMN_RATIO_KEY = "polarSimulatorOverviewBottomColumnRatio";
+const OVERVIEW_BOTTOM_COLUMN_DEFAULT_RATIO = 50;
+const OVERVIEW_BOTTOM_COLUMN_MIN_WIDTH_PX = 260;
 const VERTICAL_SPLIT_STORAGE_KEY = "polarSimulatorVerticalSplitRatios";
 const VERTICAL_SPLIT_DEFAULTS = {
   "simulator-curves": 60,
@@ -14,6 +17,8 @@ const VERTICAL_SPLIT_MIN_TOP_PX = 120;
 const VERTICAL_SPLIT_MIN_BOTTOM_PX = 120;
 const STATIC_CACHE_STORAGE_KEY = "polarSimulatorStaticCacheV1";
 const STATIC_CACHE_MODEL_LIMIT = 4;
+const API_REQUEST_TIMEOUT_MS = 30000;
+const CURVE_REQUEST_TIMEOUT_MS = 8000;
 const state = {
   snapshot: null,
   activePage: "",
@@ -33,7 +38,16 @@ const state = {
   curveSummaryLoadedModelId: "",
   curveSummaryRequest: null,
   curveSummaryRequestModelId: "",
+  curveSummaryAbortController: null,
   curveSeriesRequestKey: "",
+  curveSeriesRequest: null,
+  curveSeriesAbortController: null,
+  curveEditorLoadRequest: null,
+  curveEditorLoadRequestKey: "",
+  curveLoadError: "",
+  curveDataRevision: 0,
+  lastCurveEditorRenderKey: "",
+  lastCurveEditorTableKey: "",
   curveDirtyKeys: new Set(),
   curveSeries: {},
   curveSeriesByMode: {},
@@ -72,6 +86,7 @@ const state = {
   lastRuntimeTraceKey: "",
   runtimeCommandKeywordFilter: "",
   runtimeCommandTypeFilter: "all",
+  runtimeCommandOnlyActive: false,
   measurementCompareFilter: { dev_type: "all", dev_name: "" },
   measurementCompareKeywordFilter: "",
   measurementCompareTypeFilter: "all",
@@ -105,6 +120,8 @@ const state = {
   systemParametersSaving: false,
   overviewBottomHeight: overviewInitialBottomHeight(),
   overviewBottomSplitDrag: null,
+  overviewBottomColumnRatio: overviewInitialBottomColumnRatio(),
+  overviewBottomColumnSplitDrag: null,
   verticalSplitRatios: initialVerticalSplitRatios(),
   verticalSplitDrag: null,
   virtualTables: {},
@@ -119,6 +136,12 @@ function overviewInitialBottomHeight() {
   const storedHeight = Number(localStorage.getItem(OVERVIEW_BOTTOM_HEIGHT_KEY));
   if (!Number.isFinite(storedHeight) || storedHeight <= 0) return OVERVIEW_BOTTOM_DEFAULT_HEIGHT;
   return Math.max(OVERVIEW_BOTTOM_MIN_HEIGHT, Math.min(OVERVIEW_BOTTOM_MAX_HEIGHT, storedHeight));
+}
+
+function overviewInitialBottomColumnRatio() {
+  const storedRatio = Number(localStorage.getItem(OVERVIEW_BOTTOM_COLUMN_RATIO_KEY));
+  if (!Number.isFinite(storedRatio) || storedRatio <= 0) return OVERVIEW_BOTTOM_COLUMN_DEFAULT_RATIO;
+  return Math.max(10, Math.min(90, storedRatio));
 }
 
 const CURVE_MODES = {
@@ -317,7 +340,8 @@ function renderVirtualSpacerRow(height, colSpan) {
 }
 
 function restoreVirtualTableScroll(container, key) {
-  const scroller = container?.querySelector?.(`[data-virtual-table="${key}"]`);
+  const selector = `[data-virtual-table="${key}"]`;
+  const scroller = container?.matches?.(selector) ? container : container?.querySelector?.(selector);
   if (!scroller) return;
   const tableState = state.virtualTables?.[key] || {};
   const scrollTop = Number(tableState.scrollTop) || 0;
@@ -340,6 +364,9 @@ function scheduleVirtualTableRender(key) {
     }
     if (key.startsWith("runtimeCommand") && currentPageName() === "runtime") {
       renderRuntimeDeviceTable();
+    }
+    if (key.startsWith("curveEditor:") && currentPageName() === "curves") {
+      renderHourlyTable(true);
     }
   });
 }
@@ -1945,6 +1972,8 @@ function mountPageSection(page) {
 
 function showPage(page, updateHash = true) {
   const target = state.pageSections?.[page] ? page : "overview";
+  const previousPage = state.activePage || currentPageName();
+  if (previousPage === "curves" && target !== "curves") cancelCurveRequests();
   state.activePage = target;
   mountPageSection(target);
   document.querySelectorAll("[data-nav-page]").forEach((button) => {
@@ -1981,14 +2010,42 @@ function modelScopedPath(path) {
 }
 
 async function api(path, options = {}) {
-  const { modelScoped = true, ...fetchOptions } = options;
+  const {
+    modelScoped = true,
+    timeoutMs = API_REQUEST_TIMEOUT_MS,
+    signal: callerSignal,
+    ...fetchOptions
+  } = options;
   const targetPath = modelScoped ? modelScopedPath(path) : path;
-  const response = await fetch(`${apiBase}${targetPath}`, {
-    ...fetchOptions,
-    headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) },
-  });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
+  const controller = new AbortController();
+  const boundedTimeout = Math.max(0, Number(timeoutMs) || 0);
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort();
+  const timeoutId = boundedTimeout
+    ? setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, boundedTimeout)
+    : null;
+  if (callerSignal) {
+    if (callerSignal.aborted) controller.abort();
+    else callerSignal.addEventListener("abort", abortFromCaller, { once: true });
+  }
+  try {
+    const response = await fetch(`${apiBase}${targetPath}`, {
+      ...fetchOptions,
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) },
+    });
+    if (!response.ok) throw new Error(await response.text());
+    return response.json();
+  } catch (error) {
+    if (timedOut) throw new Error(`请求超时（${Math.round(boundedTimeout / 1000)} 秒）`);
+    throw error;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    callerSignal?.removeEventListener?.("abort", abortFromCaller);
+  }
 }
 
 const STATIC_SNAPSHOT_KEYS = [
@@ -2187,10 +2244,13 @@ function mergeRuntimeLogItems(items = [], { reset = false, latestSeq = 0, total 
   state.runtimeLogs = Array.from(bySeq.values())
     .sort((left, right) => Number(right.seq || 0) - Number(left.seq || 0))
     .slice(0, 300);
-  state.runtimeLogBackendSeq = Math.max(
-    Number(state.runtimeLogBackendSeq) || 0,
+  const nextBackendSeq = Math.max(
     Number(latestSeq) || 0,
     state.runtimeLogs.reduce((maxSeq, item) => Math.max(maxSeq, Number(item.seq) || 0), 0),
+  );
+  state.runtimeLogBackendSeq = reset ? nextBackendSeq : Math.max(
+    Number(state.runtimeLogBackendSeq) || 0,
+    nextBackendSeq,
   );
   if (Number.isFinite(Number(total))) {
     state.runtimeLogTotal = Math.max(Number(total) || 0, state.runtimeLogs.length);
@@ -2274,6 +2334,10 @@ function applyMeasurementDelta(payload) {
   if (!payload || !state.snapshot) return false;
   const measurements = state.snapshot.measurements || {};
   state.snapshot.measurements = measurements;
+  if (payload.reset) {
+    measurements.real = [];
+    measurements.scada = [];
+  }
   const definitions = measurements.definitions || state.snapshot.definitions?.measurement || [];
   const definitionsByName = new Map(definitions.map((row) => [measurementNameKey(row), row]));
   let changed = false;
@@ -2306,7 +2370,8 @@ function applyMeasurementDelta(payload) {
       changed = true;
     }
   });
-  state.measurementDeltaSeq = Math.max(Number(state.measurementDeltaSeq) || 0, Number(payload.seq) || 0);
+  if (payload.reset) state.measurementDeltaSeq = Number(payload.seq) || 0;
+  else state.measurementDeltaSeq = Math.max(Number(state.measurementDeltaSeq) || 0, Number(payload.seq) || 0);
   return changed;
 }
 
@@ -2655,6 +2720,7 @@ function setActiveModel(modelId, shouldRefresh = true) {
     refresh();
     return;
   }
+  cancelCurveRequests();
   state.activeModelId = nextId;
   state.selectedManagementModelId = nextId;
   localStorage.setItem("polarSimulatorModelId", nextId);
@@ -2695,7 +2761,16 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.curveSummaryLoadedModelId = "";
   state.curveSummaryRequest = null;
   state.curveSummaryRequestModelId = "";
+  state.curveSummaryAbortController = null;
   state.curveSeriesRequestKey = "";
+  state.curveSeriesRequest = null;
+  state.curveSeriesAbortController = null;
+  state.curveEditorLoadRequest = null;
+  state.curveEditorLoadRequestKey = "";
+  state.curveLoadError = "";
+  state.curveDataRevision += 1;
+  state.lastCurveEditorRenderKey = "";
+  state.lastCurveEditorTableKey = "";
   state.curveDirtyKeys = new Set();
   state.curveSeries = {};
   state.curveSeriesByMode = {};
@@ -3111,6 +3186,9 @@ function markCurveDirty(key) {
   if (!key) return;
   if (!(state.curveDirtyKeys instanceof Set)) state.curveDirtyKeys = new Set(state.curveDirtyKeys || []);
   state.curveDirtyKeys.add(key);
+  state.curveDataRevision += 1;
+  state.lastCurveEditorRenderKey = "";
+  state.lastCurveEditorTableKey = "";
 }
 
 function markCurveKeysDirty(keys = []) {
@@ -3167,6 +3245,9 @@ function loadCurvesFromSnapshot(curves, modelId = state.activeModelId) {
   state.curveSeriesByMode[mode] = state.curveSeries;
   syncCurvePayload(false);
   state.curvesLoadedModelId = modelId || "loaded";
+  state.curveDataRevision += 1;
+  state.lastCurveEditorRenderKey = "";
+  state.lastCurveEditorTableKey = "";
 }
 
 function curveSummaryFromCurves(curves = {}) {
@@ -3197,22 +3278,49 @@ function applyCurveSummary(summary, modelId = state.activeModelId) {
   state.curveSummary = summary;
   state.curveSummaryLoadedModelId = modelId || "loaded";
   state.curveMode = mode;
+  state.curveLoadError = "";
+  state.lastCurveEditorRenderKey = "";
+  state.lastCurveEditorTableKey = "";
   localStorage.setItem("polarSimulatorCurveMode", mode);
+}
+
+function isAbortRequestError(error) {
+  return error?.name === "AbortError";
+}
+
+function cancelCurveRequests() {
+  state.curveSummaryAbortController?.abort();
+  state.curveSeriesAbortController?.abort();
+  state.curveSummaryAbortController = null;
+  state.curveSeriesAbortController = null;
+  state.curveSummaryRequest = null;
+  state.curveSummaryRequestModelId = "";
+  state.curveSeriesRequest = null;
+  state.curveSeriesRequestKey = "";
+  state.curveEditorLoadRequest = null;
+  state.curveEditorLoadRequestKey = "";
 }
 
 async function loadCurveSummary(modelId = state.activeModelId) {
   if (state.curveSummaryLoadedModelId === modelId && curveSummaryHasCatalog(state.curveSummary)) return state.curveSummary;
   if (state.curveSummaryRequest && state.curveSummaryRequestModelId === modelId) return state.curveSummaryRequest;
+  state.curveSummaryAbortController?.abort();
+  const controller = new AbortController();
+  state.curveSummaryAbortController = controller;
   state.curveSummaryRequestModelId = modelId;
-  state.curveSummaryRequest = api("/api/curves/summary")
+  state.curveSummaryRequest = api("/api/curves/summary", {
+    signal: controller.signal,
+    timeoutMs: CURVE_REQUEST_TIMEOUT_MS,
+  })
     .then((summary) => {
       if (modelId === state.activeModelId) applyCurveSummary(summary, modelId);
       return summary;
     })
     .finally(() => {
-      if (state.curveSummaryRequestModelId === modelId) {
+      if (state.curveSummaryRequestModelId === modelId && state.curveSummaryAbortController === controller) {
         state.curveSummaryRequest = null;
         state.curveSummaryRequestModelId = "";
+        state.curveSummaryAbortController = null;
       }
     });
   return state.curveSummaryRequest;
@@ -3233,6 +3341,10 @@ function applyCurveSeriesPayload(payload = {}, requestedKeys = []) {
     if (!curveHasLoadedSeries(key)) normalizeCurveSeriesLength(key, curveFallbackValue(key));
   });
   state.curveSeriesByMode[state.curveMode] = state.curveSeries;
+  state.curveDataRevision += 1;
+  state.curveLoadError = "";
+  state.lastCurveEditorRenderKey = "";
+  state.lastCurveEditorTableKey = "";
 }
 
 async function ensureCurveSeriesLoaded(keys = selectedCurveKeys()) {
@@ -3241,21 +3353,35 @@ async function ensureCurveSeriesLoaded(keys = selectedCurveKeys()) {
   if (!keysToFetch.length) return true;
   const modelId = state.activeModelId;
   const requestKey = `${modelId}|${keysToFetch.slice().sort().join("|")}`;
-  if (state.curveSeriesRequestKey === requestKey) return false;
+  if (state.curveSeriesRequestKey === requestKey && state.curveSeriesRequest) return state.curveSeriesRequest;
+  state.curveSeriesAbortController?.abort();
+  const controller = new AbortController();
   state.curveSeriesRequestKey = requestKey;
-  try {
-    const payload = await api(`/api/curves/series?keys=${encodeURIComponent(keysToFetch.join(","))}`);
-    if (modelId === state.activeModelId) {
-      applyCurveSeriesPayload(payload, keysToFetch);
-    }
-    return true;
-  } catch (error) {
-    const status = $("curveStatus");
-    if (status) status.textContent = `曲线加载失败：${apiErrorText(error)}`;
-    return false;
-  } finally {
-    if (state.curveSeriesRequestKey === requestKey) state.curveSeriesRequestKey = "";
-  }
+  state.curveSeriesAbortController = controller;
+  state.curveSeriesRequest = api(`/api/curves/series?keys=${encodeURIComponent(keysToFetch.join(","))}`, {
+    signal: controller.signal,
+    timeoutMs: CURVE_REQUEST_TIMEOUT_MS,
+  })
+    .then((payload) => {
+      if (modelId === state.activeModelId) applyCurveSeriesPayload(payload, keysToFetch);
+      return true;
+    })
+    .catch((error) => {
+      if (!isAbortRequestError(error)) {
+        state.curveLoadError = apiErrorText(error);
+        const status = $("curveStatus");
+        if (status) status.textContent = `曲线加载失败：${state.curveLoadError}`;
+      }
+      return false;
+    })
+    .finally(() => {
+      if (state.curveSeriesRequestKey === requestKey && state.curveSeriesAbortController === controller) {
+        state.curveSeriesRequest = null;
+        state.curveSeriesRequestKey = "";
+        state.curveSeriesAbortController = null;
+      }
+    });
+  return state.curveSeriesRequest;
 }
 
 async function switchSimulationMode(mode) {
@@ -3555,6 +3681,7 @@ function drawCurveLoading(message = "正在加载曲线...") {
 function renderCurveTableLoading(message = "正在加载曲线数据...") {
   const container = $("hourlyCurveTable");
   if (!container) return;
+  container.removeAttribute("data-virtual-table");
   container.innerHTML = `
     <table class="curve-table">
       <tbody>
@@ -3586,6 +3713,81 @@ function renderCurveEditorLoading(message) {
   renderCurveTableLoading(message);
 }
 
+function renderCurveEditorError(message = state.curveLoadError || "曲线加载失败") {
+  const detail = String(message || "曲线加载失败");
+  if (curveSummaryHasCatalog(state.curveSummary)) renderCurveTree();
+  else renderCurveTreeLoading("曲线摘要加载失败");
+  renderCurveModeControls();
+  updateCurveModeLabels();
+  const status = $("curveStatus");
+  if (status) status.textContent = `曲线加载失败：${detail}`;
+  drawCurveLoading("曲线加载失败，请重试");
+  const container = $("hourlyCurveTable");
+  if (container) {
+    container.removeAttribute("data-virtual-table");
+    container.innerHTML = `
+      <div class="empty-state">
+        <span>${escapeHtml(detail)}</span>
+        <button type="button" class="primary" data-curve-retry>重试</button>
+      </div>`;
+  }
+}
+
+function startCurveEditorLoad(modelId = state.activeModelId) {
+  const requestKey = String(modelId || "");
+  if (state.curveEditorLoadRequest && state.curveEditorLoadRequestKey === requestKey) {
+    return state.curveEditorLoadRequest;
+  }
+  state.curveLoadError = "";
+  state.curveEditorLoadRequestKey = requestKey;
+  let request;
+  request = (async () => {
+    await loadCurveSummary(modelId);
+    if (modelId !== state.activeModelId || currentPageName() !== "curves") return false;
+    const loaded = await ensureCurveSeriesLoaded(selectedCurveKeys());
+    if (modelId !== state.activeModelId || currentPageName() !== "curves") return false;
+    if (!loaded) throw new Error(state.curveLoadError || "曲线数据加载失败");
+    state.lastCurveEditorRenderKey = "";
+    renderCurveEditor(true);
+    return true;
+  })()
+    .catch((error) => {
+      if (isAbortRequestError(error) || modelId !== state.activeModelId || currentPageName() !== "curves") {
+        return false;
+      }
+      state.curveLoadError = apiErrorText(error);
+      renderCurveEditorError(state.curveLoadError);
+      return false;
+    })
+    .finally(() => {
+      if (state.curveEditorLoadRequest === request) {
+        state.curveEditorLoadRequest = null;
+        state.curveEditorLoadRequestKey = "";
+      }
+    });
+  state.curveEditorLoadRequest = request;
+  return request;
+}
+
+function retryCurveEditorLoad() {
+  cancelCurveRequests();
+  state.curveLoadError = "";
+  state.lastCurveEditorRenderKey = "";
+  renderCurveEditorLoading("正在重新加载曲线...");
+  startCurveEditorLoad(state.activeModelId);
+}
+
+function curveEditorRenderKey() {
+  return JSON.stringify({
+    model: state.activeModelId,
+    mode: state.curveMode,
+    points: curvePointCount(),
+    selected: selectedCurveKeys(),
+    hidden: [...(state.hiddenCurveKeys || [])].sort(),
+    revision: state.curveDataRevision,
+  });
+}
+
 function renderCurveEditor(force = false) {
   const modelId = state.activeModelId;
   if (!state.modelsLoaded) {
@@ -3594,23 +3796,29 @@ function renderCurveEditor(force = false) {
   }
   const summaryMissing = state.curveSummaryLoadedModelId !== modelId || !curveSummaryHasCatalog(state.curveSummary);
   if (summaryMissing) {
+    if (state.curveLoadError) {
+      renderCurveEditorError(state.curveLoadError);
+      return;
+    }
     renderCurveEditorLoading("正在加载曲线摘要...");
-    loadCurveSummary(modelId).then(() => {
-      if (currentPageName() !== "curves" || modelId !== state.activeModelId) return;
-      ensureCurveSeriesLoaded(selectedCurveKeys()).then(() => renderCurveEditor(true));
-    });
+    startCurveEditorLoad(modelId);
     return;
   }
   const selectedKeys = selectedCurveKeys();
   const missingKeys = selectedKeys.filter((key) => !curveHasLoadedSeries(key));
   if (missingKeys.length) {
+    if (state.curveLoadError) {
+      renderCurveEditorError(state.curveLoadError);
+      return;
+    }
     renderCurveEditorLoading(`正在加载 ${missingKeys.length} 条曲线...`);
-    ensureCurveSeriesLoaded(selectedKeys).then(() => {
-      if (currentPageName() === "curves" && modelId === state.activeModelId) renderCurveEditor(true);
-    });
+    startCurveEditorLoad(modelId);
     return;
   }
   ensureCurveSeries(selectedKeys);
+  const renderKey = curveEditorRenderKey();
+  if (!force && renderKey === state.lastCurveEditorRenderKey) return;
+  state.lastCurveEditorRenderKey = renderKey;
   renderCurveTree();
   renderCurveModeControls();
   updateCurveModeLabels();
@@ -4084,11 +4292,24 @@ function formatCurveTableTime(minute) {
   return `${String(hour).padStart(2, "0")}:${String(minutePart).padStart(2, "0")}`;
 }
 
-function renderHourlyTable() {
+function renderHourlyTable(force = false) {
   const container = $("hourlyCurveTable");
   if (!container) return;
   const metas = visibleCurveMetas();
   const pointCount = curvePointCount();
+  const tableKey = `curveEditor:${state.activeModelId}:${state.curveMode}`;
+  const signature = JSON.stringify({
+    tableKey,
+    pointCount,
+    selected: metas.map((meta) => meta.key),
+    revision: state.curveDataRevision,
+  });
+  if (!force && signature === state.lastCurveEditorTableKey) return;
+  state.lastCurveEditorTableKey = signature;
+  const rowIndexes = Array.from({ length: pointCount }, (_unused, index) => index);
+  const virtualRows = virtualTableWindow(tableKey, rowIndexes);
+  const columnCount = metas.length + 1;
+  container.setAttribute("data-virtual-table", tableKey);
   container.innerHTML = `
     <table class="curve-table">
       <thead>
@@ -4098,7 +4319,8 @@ function renderHourlyTable() {
         </tr>
       </thead>
       <tbody>
-        ${Array.from({ length: pointCount }, (_unused, index) => `
+        ${renderVirtualSpacerRow(virtualRows.beforeHeight, columnCount)}
+        ${virtualRows.rows.map((index) => `
           <tr>
             <td>${formatCurveTableTime(pointMinute(index))}</td>
             ${metas.map((meta) => `
@@ -4110,8 +4332,10 @@ function renderHourlyTable() {
             `).join("")}
           </tr>
         `).join("")}
+        ${renderVirtualSpacerRow(virtualRows.afterHeight, columnCount)}
       </tbody>
     </table>`;
+  restoreVirtualTableScroll(container, tableKey);
 }
 
 function applyHourlyTableEdit(cell) {
@@ -4120,7 +4344,7 @@ function applyHourlyTableEdit(cell) {
   const meta = curveMetaForKey(key);
   const rawValue = Number(cell.textContent);
   if (!meta || !Number.isFinite(rawValue) || !Number.isInteger(index)) {
-    renderHourlyTable();
+    renderHourlyTable(true);
     return;
   }
   const value = roundCurveValue(key, rawValue);
@@ -4530,6 +4754,122 @@ function initOverviewBottomSplitter() {
   window.addEventListener("resize", () => applyOverviewBottomHeight(state.overviewBottomHeight, true));
 }
 
+function overviewBottomColumnRatioBounds() {
+  const bottomGrid = document.querySelector(".overview-bottom-grid");
+  const splitter = $("overviewBottomColumnSplitter");
+  const gridWidth = bottomGrid?.getBoundingClientRect().width || 0;
+  const splitterWidth = splitter?.getBoundingClientRect().width || 12;
+  const contentWidth = Math.max(0, gridWidth - splitterWidth);
+  if (contentWidth < OVERVIEW_BOTTOM_COLUMN_MIN_WIDTH_PX * 2) {
+    return { min: 0, max: 100, contentWidth };
+  }
+  const minRatio = (OVERVIEW_BOTTOM_COLUMN_MIN_WIDTH_PX / contentWidth) * 100;
+  return { min: minRatio, max: 100 - minRatio, contentWidth };
+}
+
+function applyOverviewBottomColumnRatio(ratio, persist = false) {
+  const numericRatio = Number(ratio);
+  const requestedRatio = Number.isFinite(numericRatio) ? numericRatio : OVERVIEW_BOTTOM_COLUMN_DEFAULT_RATIO;
+  const bounds = overviewBottomColumnRatioBounds();
+  const nextRatio = Number(clamp(requestedRatio, bounds.min, bounds.max).toFixed(2));
+  state.overviewBottomColumnRatio = nextRatio;
+  const bottomGrid = document.querySelector(".overview-bottom-grid");
+  if (bottomGrid) {
+    bottomGrid.style.setProperty("--overview-bottom-left-ratio", `${nextRatio}fr`);
+    bottomGrid.style.setProperty("--overview-bottom-right-ratio", `${Number((100 - nextRatio).toFixed(2))}fr`);
+  }
+  const splitter = $("overviewBottomColumnSplitter");
+  if (splitter) {
+    splitter.setAttribute("aria-valuemin", bounds.min.toFixed(2));
+    splitter.setAttribute("aria-valuemax", bounds.max.toFixed(2));
+    splitter.setAttribute("aria-valuenow", String(nextRatio));
+    splitter.setAttribute("aria-valuetext", `左侧 ${nextRatio.toFixed(2)}%，右侧 ${(100 - nextRatio).toFixed(2)}%`);
+  }
+  if (persist) localStorage.setItem(OVERVIEW_BOTTOM_COLUMN_RATIO_KEY, String(nextRatio));
+}
+
+function beginOverviewBottomColumnSplitterDrag(event) {
+  if (event.button !== undefined && event.button !== 0) return;
+  const splitter = $("overviewBottomColumnSplitter");
+  const bottomGrid = document.querySelector(".overview-bottom-grid");
+  if (!splitter || !bottomGrid) return;
+  const bounds = overviewBottomColumnRatioBounds();
+  if (bounds.contentWidth <= 0) return;
+  event.preventDefault();
+  state.overviewBottomColumnSplitDrag = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startRatio: state.overviewBottomColumnRatio,
+    contentWidth: bounds.contentWidth,
+  };
+  splitter.classList.add("is-dragging");
+  document.body.classList.add("is-overview-column-splitter-dragging");
+  if (splitter.setPointerCapture && event.pointerId !== undefined) {
+    try {
+      splitter.setPointerCapture(event.pointerId);
+    } catch (error) {
+      // Synthetic or cancelled pointer events do not always have capturable pointers.
+    }
+  }
+}
+
+function handleOverviewBottomColumnSplitterDrag(event) {
+  const drag = state.overviewBottomColumnSplitDrag;
+  if (!drag) return;
+  if (drag.pointerId !== undefined && event.pointerId !== undefined && drag.pointerId !== event.pointerId) return;
+  event.preventDefault();
+  const deltaRatio = ((event.clientX - drag.startX) / drag.contentWidth) * 100;
+  applyOverviewBottomColumnRatio(drag.startRatio + deltaRatio);
+}
+
+function finishOverviewBottomColumnSplitterDrag(event) {
+  const drag = state.overviewBottomColumnSplitDrag;
+  if (!drag) return;
+  if (drag.pointerId !== undefined && event?.pointerId !== undefined && drag.pointerId !== event.pointerId) return;
+  const splitter = $("overviewBottomColumnSplitter");
+  if (splitter) {
+    splitter.classList.remove("is-dragging");
+    if (splitter.releasePointerCapture && drag.pointerId !== undefined) {
+      try {
+        splitter.releasePointerCapture(drag.pointerId);
+      } catch (error) {
+        // Pointer capture may already be gone if the pointer left the window.
+      }
+    }
+  }
+  document.body.classList.remove("is-overview-column-splitter-dragging");
+  state.overviewBottomColumnSplitDrag = null;
+  applyOverviewBottomColumnRatio(state.overviewBottomColumnRatio, true);
+}
+
+function handleOverviewBottomColumnSplitterKeydown(event) {
+  const bounds = overviewBottomColumnRatioBounds();
+  let nextRatio = null;
+  if (event.key === "ArrowLeft") nextRatio = state.overviewBottomColumnRatio - 2;
+  if (event.key === "ArrowRight") nextRatio = state.overviewBottomColumnRatio + 2;
+  if (event.key === "PageUp") nextRatio = state.overviewBottomColumnRatio - 8;
+  if (event.key === "PageDown") nextRatio = state.overviewBottomColumnRatio + 8;
+  if (event.key === "Home") nextRatio = bounds.min;
+  if (event.key === "End") nextRatio = bounds.max;
+  if (nextRatio === null) return;
+  event.preventDefault();
+  applyOverviewBottomColumnRatio(nextRatio, true);
+}
+
+function initOverviewBottomColumnSplitter() {
+  const splitter = $("overviewBottomColumnSplitter");
+  if (!splitter) return;
+  applyOverviewBottomColumnRatio(state.overviewBottomColumnRatio);
+  if (splitter.dataset.splitterReady === "true") return;
+  splitter.dataset.splitterReady = "true";
+  splitter.addEventListener("pointerdown", beginOverviewBottomColumnSplitterDrag);
+  splitter.addEventListener("keydown", handleOverviewBottomColumnSplitterKeydown);
+  window.addEventListener("pointermove", handleOverviewBottomColumnSplitterDrag);
+  window.addEventListener("pointerup", finishOverviewBottomColumnSplitterDrag);
+  window.addEventListener("pointercancel", finishOverviewBottomColumnSplitterDrag);
+  window.addEventListener("resize", () => applyOverviewBottomColumnRatio(overviewInitialBottomColumnRatio()));
+}
+
 function initialVerticalSplitRatios() {
   const ratios = { ...VERTICAL_SPLIT_DEFAULTS };
   try {
@@ -4698,7 +5038,7 @@ function initVerticalSplitters() {
 function renderOverviewEvents(snapshot) {
   const container = $("commandInbox");
   if (!container) return;
-  const logs = (state.runtimeLogs.length ? state.runtimeLogs : [...(snapshot.runtime_logs || [])].reverse()).slice(0, 3);
+  const logs = (state.runtimeLogs.length ? state.runtimeLogs : [...(snapshot.runtime_logs || [])].reverse()).slice(0, 8);
   if (logs.length) {
     container.innerHTML = logs.map((item) => `
       <div class="overview-event-item">
@@ -4743,7 +5083,9 @@ function activeRuntimeCommandKeySet(snapshot = state.snapshot || {}) {
 function overviewActiveRuntimeCommandRows(snapshot = state.snapshot || {}) {
   const activeKeys = activeRuntimeCommandKeySet(snapshot);
   if (!activeKeys.size) return [];
-  return runtimeCommandRowsForDevices(controlDefinitionDevices(snapshot), snapshot.measurements || {})
+  const measurements = snapshot.measurements || {};
+  const context = runtimeCommandBuildContext(snapshot, measurements);
+  return runtimeCommandRowsForDevices(controlDefinitionDevices(snapshot), measurements, context)
     .filter((row) => {
       return activeKeys.has(runtimeCommandTraceKey(row)) && commandTimeInfoAvailable(row.receive_time);
     });
@@ -4763,12 +5105,11 @@ function renderOverviewActiveCommands(snapshot) {
     <table class="overview-command-table">
       <thead>
         <tr>
-          <th>类型</th>
+          <th>本机时刻</th>
           <th>设备</th>
           <th>指令项</th>
           <th>控制指令</th>
-          <th>接收本机时刻</th>
-          <th>接收仿真时刻</th>
+          <th>仿真时刻</th>
           <th>实时值</th>
           <th>量测值</th>
         </tr>
@@ -4776,11 +5117,10 @@ function renderOverviewActiveCommands(snapshot) {
       <tbody>
         ${rows.map((row) => `
           <tr title="${escapeHtml(runtimeCommandTraceLabel(row))}">
-            <td>${escapeHtml(row.category || "--")}</td>
+            <td class="mono-cell">${escapeHtml(row.receive_time?.wall_time || "--")}</td>
             <td>${escapeHtml(row.device?.dev_name || "--")}</td>
             <td>${escapeHtml(row.command || "--")} <small class="command-set-type">${escapeHtml(row.set_type || "")}</small></td>
             <td class="numeric-cell">${escapeHtml(row.command_text || "--")}</td>
-            <td class="mono-cell">${escapeHtml(row.receive_time?.wall_time || "--")}</td>
             <td class="mono-cell">${escapeHtml(row.receive_time?.simu_time || "--")}</td>
             <td class="numeric-cell">${escapeHtml(row.real_text || "--")}</td>
             <td class="numeric-cell">${escapeHtml(row.scada_text || "--")}</td>
@@ -4856,6 +5196,7 @@ function renderActiveSimulatorPage(snapshot = state.snapshot, force = false) {
   if (activePage === "overview") {
     if (snapshot) renderOverviewDashboard(snapshot);
     initOverviewBottomSplitter();
+    initOverviewBottomColumnSplitter();
     return;
   }
   if (activePage === "model") {
@@ -5571,6 +5912,27 @@ function runtimeMeasurementPair(dev, meta, measurements = state.snapshot?.measur
   };
 }
 
+function runtimeSignalMeasurementPair(dev, measType, measurements = state.snapshot?.measurements || {}, context = null) {
+  const measurementRowsByDevice = context?.measurementRowsByDevice
+    || runtimeMeasurementRowsByDevice(measurements);
+  const rows = measurementRowsByDevice.get(`${dev.dev_type || ""}|${dev.dev_name || ""}`) || [];
+  const expectedType = String(measType || "").toUpperCase();
+  const best = rows.find((row) => String(row.meas_type || "").toUpperCase() === expectedType) || {};
+  return {
+    name: best.name || "",
+    meas_type: best.meas_type || "",
+    real: numberOrNull(best.real_value),
+    scada: numberOrNull(best.scada_value),
+  };
+}
+
+function formatRuntimeRemoteSignal(value, commandType) {
+  const numeric = numberOrNull(value);
+  if (numeric === null) return "--";
+  if (commandType === "status") return numeric !== 0 ? "闭合" : "断开";
+  return numeric !== 0 ? "投入" : "退出";
+}
+
 function runtimeDeviceTraceSignal(dev, measurements = state.snapshot?.measurements || {}, context = null) {
   const control = runtimeControlMeta(dev);
   const pair = runtimeMeasurementPair(dev, control, measurements, context);
@@ -5637,10 +5999,18 @@ function applyRuntimeCommandTableFilters(rows) {
   const keyword = state.runtimeCommandKeywordFilter || "";
   const type = state.runtimeCommandTypeFilter || "all";
   return (rows || []).filter((row) => {
+    if (state.runtimeCommandOnlyActive && !row.active) return false;
     if (!tableFilterMatchesKeyword(runtimeCommandFilterFields(row), keyword)) return false;
     if (type !== "all" && runtimeCommandTypeLabel(row) !== type) return false;
     return true;
   });
+}
+
+function syncRuntimeCommandOnlyActiveControl() {
+  const input = $("runtimeCommandOnlyActive");
+  const text = $("runtimeCommandOnlyActiveText");
+  if (input) input.checked = Boolean(state.runtimeCommandOnlyActive);
+  if (text) text.textContent = state.runtimeCommandOnlyActive ? "是" : "否";
 }
 
 function runtimeCommandRowsForDevices(devices, measurements = state.snapshot?.measurements || {}, context = null) {
@@ -5921,7 +6291,10 @@ function runtimeRemoteControlRows(devices, context = null, options = {}) {
   return [
     ...runRows.map((definitionRow) => {
       const dev = runtimeControlDeviceFromRow(definitionRow, state.snapshot || {}, context);
-      const runStatTime = live ? runtimeCommandRefreshInfo(dev, "run_stat", "", state.snapshot || {}, context) : emptyCommandTimeInfo();
+      const runStatTime = runtimeCommandRefreshInfo(dev, "run_stat", "", state.snapshot || {}, context);
+      const runPair = live
+        ? runtimeSignalMeasurementPair(dev, "RUN_STAT", state.snapshot?.measurements || {}, context)
+        : {};
       const value = Number(dev.run_stat ?? definitionRow.run_stat ?? 0);
       return {
         category: "遥控指令",
@@ -5929,22 +6302,28 @@ function runtimeRemoteControlRows(devices, context = null, options = {}) {
         device: dev,
         command: "设备投退",
         set_type: "run_stat",
-        command_text: value !== 0 ? "投入" : "退出",
-        real_text: value !== 0 ? "投入" : "退出",
-        scada_text: "--",
+        command_text: formatRuntimeRemoteSignal(value, "run_stat"),
+        real_text: formatRuntimeRemoteSignal(runPair.real ?? value, "run_stat"),
+        scada_text: formatRuntimeRemoteSignal(runPair.scada, "run_stat"),
         refresh_time: runStatTime.simu_time,
         receive_time: runStatTime,
+        active: commandTimeInfoAvailable(runStatTime),
         control_value: value,
-        real_value: value,
-        scada_value: null,
+        real_value: runPair.real ?? value,
+        scada_value: runPair.scada ?? null,
         signal_kind: "STAT",
         unit: "",
+        meas_name: runPair.name || "",
+        meas_type: runPair.meas_type || "RUN_STAT",
         trace_label: `${dev.dev_name}.设备投退`,
       };
     }),
     ...cbRows.map((definitionRow) => {
       const dev = runtimeControlDeviceFromRow(definitionRow, state.snapshot || {}, context);
-      const statusTime = live ? runtimeCommandRefreshInfo(dev, "status", "", state.snapshot || {}, context) : emptyCommandTimeInfo();
+      const statusTime = runtimeCommandRefreshInfo(dev, "status", "", state.snapshot || {}, context);
+      const statusPair = live
+        ? runtimeSignalMeasurementPair(dev, "STATUS", state.snapshot?.measurements || {}, context)
+        : {};
       const value = Number(dev.status ?? definitionRow.status ?? 0);
       return {
         category: "遥控指令",
@@ -5952,16 +6331,19 @@ function runtimeRemoteControlRows(devices, context = null, options = {}) {
         device: dev,
         command: "开关开合",
         set_type: "status",
-        command_text: value !== 0 ? "闭合" : "断开",
-        real_text: value !== 0 ? "闭合" : "断开",
-        scada_text: "--",
+        command_text: formatRuntimeRemoteSignal(value, "status"),
+        real_text: formatRuntimeRemoteSignal(statusPair.real ?? value, "status"),
+        scada_text: formatRuntimeRemoteSignal(statusPair.scada, "status"),
         refresh_time: statusTime.simu_time,
         receive_time: statusTime,
+        active: commandTimeInfoAvailable(statusTime),
         control_value: value,
-        real_value: value,
-        scada_value: null,
+        real_value: statusPair.real ?? value,
+        scada_value: statusPair.scada ?? null,
         signal_kind: "STAT",
         unit: "",
+        meas_name: statusPair.name || "",
+        meas_type: statusPair.meas_type || "STATUS",
         trace_label: `${dev.dev_name}.开关开合`,
       };
     }),
@@ -5979,7 +6361,7 @@ function runtimeRemoteAdjustmentRows(devices, measurements = state.snapshot?.mea
       const value = dev.set_values?.[key] ?? definitionRow.set_value;
       const meta = runtimeMetaFromSetKey(key, Number(value));
       const pair = live ? runtimeMeasurementPair(dev, meta, measurements, context) : {};
-      const commandTime = live ? runtimeCommandRefreshInfo(dev, "set_value", key, state.snapshot || {}, context) : emptyCommandTimeInfo();
+      const commandTime = runtimeCommandRefreshInfo(dev, "set_value", key, state.snapshot || {}, context);
       return {
         category: "遥调指令",
         command_kind: "remote_adjustment",
@@ -5991,6 +6373,7 @@ function runtimeRemoteAdjustmentRows(devices, measurements = state.snapshot?.mea
         scada_text: formatRuntimeSignal(pair.scada, meta.unit),
         refresh_time: commandTime.simu_time,
         receive_time: commandTime,
+        active: commandTimeInfoAvailable(commandTime),
         control_value: meta.value,
         real_value: pair.real,
         scada_value: pair.scada,
@@ -6034,16 +6417,30 @@ function runtimeCommandTableStructureKey(rows) {
     deviceTreeFilterSelection(filter).map((item) => deviceTreeFilterKey(item.dev_type, item.dev_name)).join("|"),
     state.runtimeCommandKeywordFilter || "",
     state.runtimeCommandTypeFilter || "all",
+    state.runtimeCommandOnlyActive ? "active" : "all",
     rows.map((row) => runtimeCommandTraceKey(row)).join("||"),
   ].join("::");
 }
 
+function runtimeCommandTableValueText(row, field) {
+  const textFields = {
+    control: "command_text",
+    real: "real_text",
+    scada: "scada_text",
+  };
+  const text = String(row?.[textFields[field]] ?? "--");
+  const unit = String(row?.unit || "").trim();
+  if (!unit || text === "--") return text;
+  const suffix = ` ${unit}`;
+  return text.endsWith(suffix) ? text.slice(0, -suffix.length) : text;
+}
+
 function runtimeCommandLiveCellHtml(row, field) {
-  if (field === "control") return escapeHtml(row.command_text || "--");
+  if (field === "control") return escapeHtml(runtimeCommandTableValueText(row, "control"));
   if (field === "wall_time") return escapeHtml(row.receive_time?.wall_time || "--");
   if (field === "simu_time") return escapeHtml(row.receive_time?.simu_time || row.refresh_time || "--");
-  if (field === "real") return escapeHtml(row.real_text || "--");
-  if (field === "scada") return escapeHtml(row.scada_text || "--");
+  if (field === "real") return escapeHtml(runtimeCommandTableValueText(row, "real"));
+  if (field === "scada") return escapeHtml(runtimeCommandTableValueText(row, "scada"));
   return "";
 }
 
@@ -6080,11 +6477,11 @@ function renderRuntimeCommandRows(rows) {
       <td>${escapeHtml(row.device.dev_type)}</td>
       <td>${escapeHtml(row.device.mode || "--")}</td>
       <td>${escapeHtml(row.command)} <small class="command-set-type">${escapeHtml(row.set_type)}</small></td>
-      <td class="numeric-cell" data-runtime-command-live-field="control">${escapeHtml(row.command_text)}</td>
+      <td class="numeric-cell" data-runtime-command-live-field="control">${runtimeCommandLiveCellHtml(row, "control")}</td>
       <td class="mono-cell" data-runtime-command-live-field="wall_time">${escapeHtml(row.receive_time?.wall_time || "--")}</td>
       <td class="mono-cell" data-runtime-command-live-field="simu_time">${escapeHtml(row.receive_time?.simu_time || row.refresh_time || "--")}</td>
-      <td class="numeric-cell" data-runtime-command-live-field="real">${escapeHtml(row.real_text)}</td>
-      <td class="numeric-cell" data-runtime-command-live-field="scada">${escapeHtml(row.scada_text)}</td>
+      <td class="numeric-cell" data-runtime-command-live-field="real">${runtimeCommandLiveCellHtml(row, "real")}</td>
+      <td class="numeric-cell" data-runtime-command-live-field="scada">${runtimeCommandLiveCellHtml(row, "scada")}</td>
     </tr>
   `;
   }).join("");
@@ -6119,11 +6516,12 @@ function renderRuntimeCommandTable(rows, emptyText, virtualRows = { beforeHeight
 function renderRuntimeDeviceTable() {
   const container = $("deviceTable");
   if (!container) return;
+  syncRuntimeCommandOnlyActiveControl();
   const devices = runtimeDevices();
   const selectedDevices = filteredRuntimeDevices(devices);
   const activeTab = state.activeRuntimeCommandTab === "remote_adjustment" ? "remote_adjustment" : "remote_control";
   const context = runtimeCommandBuildContext(state.snapshot || {}, state.snapshot?.measurements || {}, {
-    includeMeasurements: activeTab === "remote_adjustment",
+    includeMeasurements: true,
   });
   const remoteControlRows = runtimeRemoteControlRows(selectedDevices, context, { live: activeTab === "remote_control" });
   const remoteAdjustmentRows = runtimeRemoteAdjustmentRows(selectedDevices, state.snapshot?.measurements || {}, context, { live: activeTab === "remote_adjustment" });
@@ -6138,7 +6536,8 @@ function renderRuntimeDeviceTable() {
     state.selectedRuntimeCommandKey = "";
     state.selectedRuntimeCommandLabel = "";
   }
-  const filterActive = tableFilterIsActive(state.runtimeCommandKeywordFilter, state.runtimeCommandTypeFilter);
+  const filterActive = state.runtimeCommandOnlyActive
+    || tableFilterIsActive(state.runtimeCommandKeywordFilter, state.runtimeCommandTypeFilter);
   $("runtimeDeviceSummary").textContent = filterActive
     ? `${runtimeFilterLabel()} · ${commandCount}/${totalCommandCount} 条指令`
     : `${runtimeFilterLabel()} · ${totalCommandCount} 条指令`;
@@ -8014,7 +8413,17 @@ $("randomCurves").addEventListener("click", () => {
   generateCurves(Math.random() * 8 - 4);
   $("curveStatus").textContent = "本地扰动";
 });
-$("saveCurves").addEventListener("click", saveCurves);
+$("saveCurves").addEventListener("click", () => {
+  saveCurves().catch((error) => {
+    $("curveStatus").textContent = `保存失败：${apiErrorText(error)}`;
+  });
+});
+document.addEventListener("click", (event) => {
+  const retryButton = event.target instanceof Element ? event.target.closest("[data-curve-retry]") : null;
+  if (!retryButton) return;
+  event.preventDefault();
+  retryCurveEditorLoad();
+});
 document.querySelectorAll("[data-curve-mode]").forEach((button) => {
   button.addEventListener("click", () => switchSimulationMode(button.dataset.curveMode));
 });
@@ -8092,6 +8501,16 @@ document.addEventListener("input", (event) => {
   const scope = input.dataset.deviceTreeFilterScope || "";
   state.deviceTreeSearch[scope] = input.value || "";
   refreshDeviceTreeFilterScope(scope);
+});
+document.addEventListener("change", (event) => {
+  if (!(event.target instanceof Element)) return;
+  const target = event.target;
+  const onlyActiveToggle = target.closest("#runtimeCommandOnlyActive");
+  if (!(onlyActiveToggle instanceof HTMLInputElement)) return;
+  state.runtimeCommandOnlyActive = onlyActiveToggle.checked;
+  syncRuntimeCommandOnlyActiveControl();
+  renderRuntimeDeviceTable();
+  drawRuntimeTraceChart();
 });
 document.addEventListener("scroll", handleVirtualTableScroll, true);
 document.addEventListener("click", (event) => {
@@ -8267,6 +8686,7 @@ initCurveEditor();
 initRuntimeMonitor();
 initMeasurementMonitor();
 initOverviewBottomSplitter();
+initOverviewBottomColumnSplitter();
 initVerticalSplitters();
 setFaultTab(state.activeFaultTab);
 renderFaults(true);

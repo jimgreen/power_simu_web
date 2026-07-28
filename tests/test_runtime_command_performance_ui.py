@@ -36,8 +36,8 @@ class RuntimeCommandPerformanceUiTest(unittest.TestCase):
         self.assertIn('key.startsWith("runtimeCommand") && currentPageName() === "runtime"', self.script)
         self.assertIn(".runtime-command-table-wrap", self.styles)
 
-    def test_runtime_command_refresh_skips_hidden_tab_live_measurement_work(self):
-        self.assertIn("includeMeasurements: activeTab === \"remote_adjustment\"", self.script)
+    def test_runtime_command_refresh_reuses_measurement_index_for_either_active_tab(self):
+        self.assertIn("includeMeasurements: true", self.script)
         self.assertIn("runtimeRemoteControlRows(selectedDevices, context, { live: activeTab === \"remote_control\" })", self.script)
         self.assertIn("runtimeRemoteAdjustmentRows(selectedDevices, state.snapshot?.measurements || {}, context, { live: activeTab === \"remote_adjustment\" })", self.script)
         self.assertIn("function runtimeSnapshotDevicesByKey", self.script)

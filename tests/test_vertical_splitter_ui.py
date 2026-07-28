@@ -36,6 +36,19 @@ class VerticalSplitterUiTest(unittest.TestCase):
         self.assertGreaterEqual(self.trainee_html.count('class="vertical-stack-splitter"'), 3)
         self.assertIn('aria-orientation="horizontal"', self.trainee_html)
 
+    def test_trainee_trace_panels_reserve_space_for_axis_and_legend(self):
+        self.assertRegex(
+            self.trainee_html,
+            r'data-vertical-split="trainee-measurements"\s+'
+            r'data-vertical-split-min-bottom="380"',
+        )
+        self.assertRegex(
+            self.trainee_html,
+            r'data-vertical-split="trainee-commands"\s+'
+            r'data-vertical-split-min-bottom="330"',
+        )
+        self.assertIn("container.dataset.verticalSplitMinBottom", self.trainee_script)
+
     def test_splitter_styles_are_shared_by_simulator_and_trainee(self):
         for styles in (self.simulator_styles, self.trainee_styles):
             with self.subTest(styles_hash=hash(styles)):
@@ -55,6 +68,17 @@ class VerticalSplitterUiTest(unittest.TestCase):
                 self.assertIn("function handleVerticalSplitterKeydown", script)
                 self.assertIn("is-vertical-splitter-dragging", script)
                 self.assertIn("initVerticalSplitters();", script)
+
+    def test_trainee_splitter_prioritizes_chart_when_minimums_nearly_collide(self):
+        bounds = self.trainee_script.split("function verticalSplitBounds(container) {", 1)[1].split(
+            "function applyVerticalSplit",
+            1,
+        )[0]
+
+        self.assertIn('if (container.hasAttribute("data-vertical-split-min-bottom")) {', bounds)
+        self.assertIn("const bottomPriorityRatio = clamp(maxRatio, 8, 92);", bounds)
+        self.assertIn("return { min: bottomPriorityRatio, max: bottomPriorityRatio };", bounds)
+        self.assertIn("const centerRatio = clamp(50, 8, 92);", bounds)
 
 
 if __name__ == "__main__":

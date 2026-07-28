@@ -9,6 +9,7 @@ from urllib.request import Request, urlopen
 
 from simu.server import make_http_server
 from simu.service import PolarMicrogridSimulator
+from tests.model_fixtures import SIMPLE_MODEL_SOURCE
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,7 +33,7 @@ class ExternalRealtimeInterfacesTest(unittest.TestCase):
     def _make_service(self):
         workspace = tempfile.TemporaryDirectory()
         service = PolarMicrogridSimulator(
-            ROOT / "models/simulator/source/简单模型",
+            SIMPLE_MODEL_SOURCE,
             Path(workspace.name) / "runtime",
             model_id="simple_model",
             model_name="简单模型",

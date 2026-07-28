@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from simu.service import PolarMicrogridSimulator
+from tests.model_fixtures import SIMPLE_MODEL_SOURCE
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,7 +21,7 @@ class SimulationModeLockTest(unittest.TestCase):
         self.assertIn("selector.disabled = modeLocked", app_js)
 
     def test_backend_rejects_mode_change_while_running_or_paused(self):
-        source = ROOT / "models" / "simulator" / "source" / "简单模型"
+        source = SIMPLE_MODEL_SOURCE
         with tempfile.TemporaryDirectory() as temp_dir:
             runtime = Path(temp_dir) / "runtime"
             service = PolarMicrogridSimulator(

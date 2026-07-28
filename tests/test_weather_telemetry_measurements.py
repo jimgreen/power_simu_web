@@ -4,6 +4,7 @@ from pathlib import Path
 
 from simu.service import PolarMicrogridSimulator
 from simu.service import parse_measurement_rows
+from tests.model_fixtures import SIMPLE_MODEL_SOURCE
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,7 +82,7 @@ class WeatherTelemetryMeasurementsTest(unittest.TestCase):
     def test_weather_is_exposed_as_scada_telemetry(self):
         with tempfile.TemporaryDirectory() as temporary:
             service = PolarMicrogridSimulator(
-                ROOT / "models/simulator/source/简单模型",
+                SIMPLE_MODEL_SOURCE,
                 Path(temporary) / "runtime",
                 model_id="simple",
             )
@@ -114,7 +115,7 @@ class WeatherTelemetryMeasurementsTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             service = PolarMicrogridSimulator(
-                ROOT / "models/simulator/source/简单模型",
+                SIMPLE_MODEL_SOURCE,
                 Path(temporary) / "runtime",
                 model_id="simple",
             )

@@ -161,6 +161,14 @@
                 <div class="panel-head"><h2>最新交互事件</h2><span id="overviewEventCount">0 条</span></div>
                 <div id="traineeOverviewEvents" class="overview-event-list"></div>
               </section>
+              <div
+                id="overviewBottomColumnSplitter"
+                class="overview-bottom-column-splitter"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="调整两个表格宽度"
+                tabindex="0"
+              ></div>
               <section class="panel overview-pending-panel">
                 <div class="panel-head"><h2>当前有效指令</h2><span id="pendingSummary">0 项</span></div>
                 <div id="pendingPreview" class="active-command-preview-wrap"></div>
@@ -272,6 +280,7 @@
             <div
               class="measurement-workspace vertical-split-workspace"
               data-vertical-split="trainee-measurements"
+              data-vertical-split-min-bottom="380"
             >
               <section class="panel measurement-table-panel">
                 <div class="panel-head">
@@ -352,7 +361,15 @@
 
             <section class="panel runtime-table-panel combined-command-panel">
               <div class="panel-head">
-                <h2>控制指令</h2>
+                <div class="panel-title-group">
+                  <h2>控制指令</h2>
+                  <label class="command-active-only-toggle" for="commandOnlyActive">
+                    <span>只显示有效指令：</span>
+                    <input id="commandOnlyActive" type="checkbox" role="switch" aria-label="只显示有效指令" />
+                    <i class="command-active-only-track" aria-hidden="true"></i>
+                    <strong id="commandOnlyActiveText">否</strong>
+                  </label>
+                </div>
                 <span id="commandPendingCount">0 待发</span>
               </div>
               <div class="table-filter-bar" aria-label="控制指令过滤">
@@ -379,6 +396,7 @@
               <div
                 class="command-split-workspace vertical-split-workspace"
                 data-vertical-split="trainee-commands"
+                data-vertical-split-min-bottom="330"
               >
                 <div class="command-table-stack">
                   <div class="command-tab-bar" role="tablist" aria-label="控制指令类型">
@@ -479,17 +497,17 @@
 
         <section class="page-section" data-page="history">
           <section class="panel history-panel">
-            <div class="panel-head">
+            <div class="panel-head runtime-log-panel-head">
               <h2>运行日志</h2>
-              <span id="historyCount">0</span>
-            </div>
-            <div class="runtime-log-toolbar">
-              <label class="compact-field">日志类型
-                <select id="traineeRuntimeLogTypeFilter">
-                  <option value="all">全部类型</option>
-                </select>
-              </label>
-              <button id="clearRuntimeLogs" type="button">清空日志</button>
+              <div class="runtime-log-toolbar">
+                <span id="historyCount">0</span>
+                <label class="compact-field">日志类型
+                  <select id="traineeRuntimeLogTypeFilter">
+                    <option value="all">全部类型</option>
+                  </select>
+                </label>
+                <button id="clearRuntimeLogs" type="button">清空日志</button>
+              </div>
             </div>
             <div id="commandHistory" class="runtime-log-wrap"></div>
             <div id="traineeRuntimeLogPager" class="runtime-log-pager" aria-label="运行日志分页"></div>

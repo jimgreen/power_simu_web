@@ -756,6 +756,35 @@ body.is-overview-splitter-dragging {
   cursor: row-resize;
   user-select: none;
 }
+.overview-bottom-column-splitter {
+  position: relative;
+  min-width: 12px;
+  cursor: col-resize;
+  outline: none;
+  touch-action: none;
+}
+.overview-bottom-column-splitter::before {
+  content: "";
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 5px;
+  width: 2px;
+  border-radius: 999px;
+  background: #d3e0e4;
+  transition: background 0.15s ease, left 0.15s ease, width 0.15s ease;
+}
+.overview-bottom-column-splitter:hover::before,
+.overview-bottom-column-splitter:focus-visible::before,
+.overview-bottom-column-splitter.is-dragging::before {
+  left: 4px;
+  width: 4px;
+  background: var(--teal);
+}
+body.is-overview-column-splitter-dragging {
+  cursor: col-resize;
+  user-select: none;
+}
 .curve-workspace.vertical-split-workspace,
 .runtime-workspace.vertical-split-workspace,
 .measurement-workspace.vertical-split-workspace,
@@ -1303,8 +1332,11 @@ body.is-vertical-splitter-dragging {
 .overview-bottom-grid {
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(520px, 1fr) minmax(360px, 0.8fr);
-  gap: 12px;
+  grid-template-columns: minmax(0, var(--overview-bottom-left-ratio, 50fr)) 12px minmax(0, var(--overview-bottom-right-ratio, 50fr));
+  gap: 0;
+}
+.overview-bottom-grid > .panel {
+  min-width: 0;
 }
 .overview-active-command-panel {
   display: flex;
@@ -1326,15 +1358,15 @@ body.is-vertical-splitter-dragging {
 .overview-command-table th,
 .overview-command-table td {
   padding: 6px 8px;
+  text-align: right;
 }
-.overview-command-table th:nth-child(1) { width: 82px; }
+.overview-command-table th:nth-child(1) { width: 96px; }
 .overview-command-table th:nth-child(2) { width: 118px; }
-.overview-command-table th:nth-child(3) { width: 104px; }
+.overview-command-table th:nth-child(3) { width: 168px; }
 .overview-command-table th:nth-child(4) { width: 96px; }
-.overview-command-table th:nth-child(5) { width: 86px; }
-.overview-command-table th:nth-child(6) { width: 116px; }
-.overview-command-table th:nth-child(7),
-.overview-command-table th:nth-child(8) { width: 90px; }
+.overview-command-table th:nth-child(5) { width: 100px; }
+.overview-command-table th:nth-child(6),
+.overview-command-table th:nth-child(7) { width: 96px; }
 .overview-command-table td {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1343,7 +1375,9 @@ body.is-vertical-splitter-dragging {
 .overview-event-list {
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
   display: grid;
   align-content: start;
 }
@@ -1434,6 +1468,70 @@ body.is-vertical-splitter-dragging {
 .panel-actions span {
   font-size: 12px;
   color: var(--muted);
+}
+.panel-title-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 18px;
+  min-width: 0;
+}
+.command-active-only-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  position: relative;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.command-active-only-toggle input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.command-active-only-track {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  flex: 0 0 34px;
+  border: 1px solid #b8c5ca;
+  border-radius: 999px;
+  background: #dfe7ea;
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+.command-active-only-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(23, 32, 38, 0.24);
+  transition: transform 160ms ease;
+}
+.command-active-only-toggle input:checked + .command-active-only-track {
+  border-color: var(--teal);
+  background: var(--teal);
+}
+.command-active-only-toggle input:checked + .command-active-only-track::after {
+  transform: translateX(16px);
+}
+.command-active-only-toggle input:focus-visible + .command-active-only-track {
+  outline: 2px solid rgba(0, 140, 140, 0.28);
+  outline-offset: 2px;
+}
+.command-active-only-toggle strong {
+  min-width: 1em;
+  color: var(--teal-dark);
+  font-size: 12px;
+  font-weight: 700;
 }
 .table-filter-bar {
   display: flex;
@@ -2324,6 +2422,7 @@ canvas {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: right;
 }
 .runtime-command-table tbody tr.is-selected {
   background: #eaf6f6;
@@ -2957,6 +3056,9 @@ th {
   .overview-bottom-grid {
     display: grid;
     grid-template-columns: 1fr;
+  }
+  .overview-bottom-column-splitter {
+    display: none;
   }
   .overview-clock-controls {
     justify-content: flex-start;

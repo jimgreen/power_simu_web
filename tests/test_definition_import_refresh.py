@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 
 from simu.server import import_definition_archive, make_definition_archive, make_http_server
 from simu.service import MultiModelSimulator, PolarMicrogridSimulator
+from tests.model_fixtures import SIMPLE_MODEL_SOURCE
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +26,7 @@ class DefinitionImportRefreshTest(unittest.TestCase):
             copytree(ROOT / "models/trainee/source/默认模型", trainee_source)
             trainee = PolarMicrogridSimulator(trainee_source, trainee_runtime, model_id="test")
 
-            package_source = ROOT / "models/simulator/source/简单模型"
+            package_source = SIMPLE_MODEL_SOURCE
             package_runtime = temp_root / "package-runtime"
             package_service = PolarMicrogridSimulator(package_source, package_runtime, model_id="simple")
             _filename, archive = make_definition_archive(package_service)
@@ -45,7 +46,7 @@ class DefinitionImportRefreshTest(unittest.TestCase):
     def test_definition_package_embeds_device_parameters_in_model(self):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
-            package_source = ROOT / "models/simulator/source/简单模型"
+            package_source = SIMPLE_MODEL_SOURCE
             package_runtime = temp_root / "package-runtime"
             package_service = PolarMicrogridSimulator(package_source, package_runtime, model_id="simple")
             _filename, archive = make_definition_archive(package_service)
@@ -66,7 +67,7 @@ class DefinitionImportRefreshTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
             package_source = temp_root / "package-source"
-            copytree(ROOT / "models/simulator/source/简单模型", package_source)
+            copytree(SIMPLE_MODEL_SOURCE, package_source)
             diagram_text = '<svg xmlns="http://www.w3.org/2000/svg"><text data-meas-name="Environment.weather.WIND_SPEED"></text></svg>'
             (package_source / "diagram.svg").write_text(diagram_text, encoding="utf-8")
             package_service = PolarMicrogridSimulator(package_source, temp_root / "package-runtime", model_id="simple")
@@ -91,7 +92,7 @@ class DefinitionImportRefreshTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
             package_source = temp_root / "package-source"
-            copytree(ROOT / "models/simulator/source/简单模型", package_source)
+            copytree(SIMPLE_MODEL_SOURCE, package_source)
             diagram_path = package_source / "diagram.svg"
             if diagram_path.exists():
                 diagram_path.unlink()
@@ -109,7 +110,7 @@ class DefinitionImportRefreshTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
             package_service = PolarMicrogridSimulator(
-                ROOT / "models/simulator/source/简单模型",
+                SIMPLE_MODEL_SOURCE,
                 temp_root / "package-runtime",
                 model_id="simple",
             )
@@ -138,7 +139,7 @@ class DefinitionImportRefreshTest(unittest.TestCase):
             trainee = PolarMicrogridSimulator(trainee_source, trainee_runtime, model_id="test")
 
             package_service = PolarMicrogridSimulator(
-                ROOT / "models/simulator/source/简单模型",
+                SIMPLE_MODEL_SOURCE,
                 temp_root / "package-runtime",
                 model_id="simple",
             )
@@ -176,7 +177,7 @@ class DefinitionImportRefreshTest(unittest.TestCase):
                 models_dir=models_root,
             )
             package_service = PolarMicrogridSimulator(
-                ROOT / "models/simulator/source/简单模型",
+                SIMPLE_MODEL_SOURCE,
                 temp_root / "package-runtime",
                 model_id="simple",
             )

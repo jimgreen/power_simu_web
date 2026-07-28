@@ -192,6 +192,14 @@
                 <div class="panel-head"><h2>当前控制指令</h2><span id="overviewActiveCommandSummary">0 条有效指令</span></div>
                 <div id="overviewActiveCommandTable" class="overview-command-table-wrap"></div>
               </section>
+              <div
+                id="overviewBottomColumnSplitter"
+                class="overview-bottom-column-splitter"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="调整两个表格宽度"
+                tabindex="0"
+              ></div>
               <section class="panel overview-events-panel">
                 <div class="panel-head"><h2>最新运行事件</h2><span id="overviewCommandCount">0 条控制指令</span></div>
                 <div id="commandInbox" class="overview-event-list"></div>
@@ -600,7 +608,15 @@
             >
               <section class="panel runtime-table-panel">
                 <div class="panel-head">
-                <h2>控制指令</h2>
+                  <div class="panel-title-group">
+                    <h2>控制指令</h2>
+                    <label class="command-active-only-toggle" for="runtimeCommandOnlyActive">
+                      <span>只显示有效指令：</span>
+                      <input id="runtimeCommandOnlyActive" type="checkbox" role="switch" aria-label="只显示有效指令" />
+                      <i class="command-active-only-track" aria-hidden="true"></i>
+                      <strong id="runtimeCommandOnlyActiveText">否</strong>
+                    </label>
+                  </div>
                   <div class="panel-actions">
                     <span id="runtimeDeviceSummary">待同步</span>
                     <span id="solverInfo">待运行</span>

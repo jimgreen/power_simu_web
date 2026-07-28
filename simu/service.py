@@ -338,6 +338,28 @@ def _model_key(value: Any) -> str:
     return _safe_model_id(value).casefold()
 
 
+def _clear_directory_contents(directory: Path) -> int:
+    root = Path(directory).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    removed = 0
+    for path in list(root.iterdir()):
+        if path.is_symlink():
+            path.unlink()
+            removed += 1
+            continue
+        resolved = path.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"Refusing to clear path outside runtime directory: {path}") from exc
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        removed += 1
+    return removed
+
+
 def _make_book(blocks: Mapping[str, Tuple[Sequence[str], Sequence[Mapping[str, Any]]]]) -> EBook:
     book = EBook({})
     for name, (headers, rows) in blocks.items():
@@ -684,12 +706,16 @@ class PolarMicrogridSimulator:
         self.model_name = model_name or self.model_id
         self.kernel = kernel or simu_loop.run_once
         self.period_seconds = float(period_seconds)
-        self.compute_interval_seconds = _compute_interval_seconds(compute_interval_seconds)
+        self._initial_compute_interval_seconds = _compute_interval_seconds(compute_interval_seconds)
+        self.compute_interval_seconds = self._initial_compute_interval_seconds
         self.storage_initial_soc = DEFAULT_STORAGE_INITIAL_SOC
         self.noise_std = noise_std
         self.random_seed = random_seed
         self.clock = ClockState()
         self.lock = threading.RLock()
+        # Curve definitions change only through explicit editing APIs. Keep their
+        # short read lock separate from the long-running power-flow calculation lock.
+        self.curves_lock = threading.RLock()
         self.command_history: List[Dict[str, Any]] = []
         self.runtime_logs: List[Dict[str, Any]] = []
         self._runtime_log_seq = 0
@@ -751,13 +777,18 @@ class PolarMicrogridSimulator:
         self.runtime_logs_file = self.runtime_dir / "runtime_logs.json"
         self.trainee_receive_file = self.runtime_dir / "trainee_receive.json"
 
+        self._load_runtime_state_from_disk()
+
+    def _load_runtime_state_from_disk(self) -> None:
         self._copy_runtime_inputs()
         self.weather_defaults = self._read_weather_defaults()
         self.reload_definition_state()
         self.ensure_weather_measurements_in_definition_files()
         self.reload_definition_state()
-        self.curves = self._read_curves()
-        self.clock.step_minutes = max(1, int(_to_float(self.curves.get("time_step_minutes"), 1) or 1))
+        with self.curves_lock:
+            self.curves = self._read_curves()
+            curve_step_minutes = self.curves.get("time_step_minutes")
+        self.clock.step_minutes = max(1, int(_to_float(curve_step_minutes, 1) or 1))
         self.local_settings = self._read_local_settings()
         self._apply_stored_system_parameters()
         self.command_history = self._read_command_history()
@@ -766,6 +797,36 @@ class PolarMicrogridSimulator:
         self._runtime_log_seq = max((int(_to_float(item.get("seq"), 0) or 0) for item in self.runtime_logs), default=0)
         self.reload_definition_state()
         self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
+
+    def reset_runtime_for_model_change(self) -> Dict[str, int]:
+        """Discard runtime artifacts and rebuild a clean in-memory state from source definitions."""
+        with self.lock:
+            if self.clock.state != "stopped":
+                raise ValueError(f"模型运行中或暂停中，无法清理运行数据: {self.model_id}")
+            removed = _clear_directory_contents(self.runtime_dir)
+            self.runtime_dir.mkdir(parents=True, exist_ok=True)
+            self.work_dir.mkdir(parents=True, exist_ok=True)
+
+            self.compute_interval_seconds = self._initial_compute_interval_seconds
+            self.storage_initial_soc = DEFAULT_STORAGE_INITIAL_SOC
+            self.clock = ClockState()
+            self.command_history = []
+            self.runtime_logs = []
+            self._runtime_log_seq = 0
+            self._measurement_delta_seq = 0
+            self._measurement_delta_state = {}
+            self._measurement_delta_history = []
+            self._last_command_response_index = 0
+            self.latest_result = {}
+            self.latest_measurements = {}
+            self.latest_model_book = None
+            self.latest_real_rows = []
+            self.latest_scada_rows = []
+            self._fault_restore = {}
+            self._last_scada_values = {}
+
+            self._load_runtime_state_from_disk()
+            return {"removed": removed}
 
     def reload_definition_state(self) -> None:
         """Load source definition E files into the live calculation state."""
@@ -974,12 +1035,99 @@ class PolarMicrogridSimulator:
     def ensure_weather_measurements_in_definition_files(self) -> None:
         self._ensure_weather_measurements_in_file(self.source_files["meas"])
 
+    @staticmethod
+    def _command_item_sequence(container: Mapping[str, Any], keys: Sequence[str]) -> List[Any]:
+        for key in keys:
+            value = container.get(key)
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                return list(value)
+        return []
+
+    def _filter_loaded_command_history_to_definitions(
+        self,
+        history: Sequence[Dict[str, Any]],
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        filtered_history: List[Dict[str, Any]] = []
+        changed = False
+        run_keys = ("run_status", "runStatus")
+        set_keys = ("set_values", "setValues", "setpoints")
+
+        for item in history:
+            normalized = item.get("normalized", {})
+            normalized_map = normalized if isinstance(normalized, Mapping) else {}
+            payload = item.get("payload", {})
+            payload_map = payload if isinstance(payload, Mapping) else {}
+            accepted = item.get("accepted", {})
+            accepted_map = accepted if isinstance(accepted, Mapping) else {}
+            accepted_count = (
+                int(_to_float(accepted_map.get("run_status"), 0) or 0)
+                + int(_to_float(accepted_map.get("set_values"), 0) or 0)
+            )
+
+            normalized_has_control_keys = any(key in normalized_map for key in (*run_keys, *set_keys))
+            normalized_run = self._command_item_sequence(normalized_map, run_keys)
+            normalized_set = self._command_item_sequence(normalized_map, set_keys)
+            payload_run = self._command_item_sequence(payload_map, run_keys)
+            payload_set = self._command_item_sequence(payload_map, set_keys)
+            has_requested_controls = bool(normalized_run or normalized_set or payload_run or payload_set)
+
+            if not has_requested_controls:
+                filtered_history.append(item)
+                continue
+            if accepted_count <= 0:
+                changed = True
+                continue
+
+            source_run = normalized_run if normalized_has_control_keys else payload_run
+            source_set = normalized_set if normalized_has_control_keys else payload_set
+            requested_run = self._normalize_run_command_items(source_run)
+            requested_set = self._normalize_set_command_items(source_set)
+            retained_run = self._filter_defined_run_command_items(requested_run)
+            retained_set = self._filter_defined_set_command_items(requested_set)
+            if not retained_run and not retained_set:
+                changed = True
+                continue
+
+            cleaned = dict(item)
+            cleaned_normalized = dict(normalized_map)
+            cleaned_normalized["run_status"] = retained_run
+            cleaned_normalized["set_values"] = retained_set
+            cleaned["normalized"] = cleaned_normalized
+
+            if payload_map:
+                cleaned_payload = dict(payload_map)
+                for key in run_keys:
+                    if key in cleaned_payload:
+                        cleaned_payload[key] = [dict(row) for row in retained_run]
+                for key in set_keys:
+                    if key in cleaned_payload:
+                        cleaned_payload[key] = [dict(row) for row in retained_set]
+                cleaned["payload"] = cleaned_payload
+
+            cleaned_accepted = dict(accepted_map)
+            removed_count = max(0, len(requested_run) - len(retained_run)) + max(
+                0,
+                len(requested_set) - len(retained_set),
+            )
+            cleaned_accepted["run_status"] = len(retained_run)
+            cleaned_accepted["set_values"] = len(retained_set)
+            cleaned_accepted["ignored"] = int(_to_float(accepted_map.get("ignored"), 0) or 0) + removed_count
+            cleaned["accepted"] = cleaned_accepted
+
+            if cleaned != item:
+                changed = True
+            filtered_history.append(cleaned)
+
+        return filtered_history, changed
+
     def _read_command_history(self) -> List[Dict[str, Any]]:
         items = _read_json(self.commands_file, [])
         if not isinstance(items, list):
             return []
         history = [item for item in items if isinstance(item, dict)]
         changed = self._repair_legacy_cancel_command_entries(history)
+        history, definition_changed = self._filter_loaded_command_history_to_definitions(history)
+        changed = changed or definition_changed
         compacted = self._compact_command_history(history)
         if len(compacted) != len(history):
             changed = True
@@ -1354,12 +1502,75 @@ class PolarMicrogridSimulator:
         active.sort(key=lambda pair: (1 if _manual_command_holds_across_clock_lifecycle(pair[1]) else 0, pair[0]))
         return [item for _index, item in active]
 
+    def _defined_run_control_fields(self) -> Dict[Tuple[str, str], set[str]]:
+        fields: Dict[Tuple[str, str], set[str]] = {}
+        for row in self._control_definition_rows("RunStat"):
+            dev_type = str(row.get("dev_type", "")).strip()
+            dev_name = _dev_name(row).strip()
+            if dev_type and dev_name:
+                fields.setdefault((dev_type, dev_name), set()).add("run_stat")
+        for row in self._control_definition_rows("CbOpenStat"):
+            dev_type = str(row.get("dev_type", "")).strip()
+            dev_name = _dev_name(row).strip()
+            if dev_type and dev_name:
+                fields.setdefault((dev_type, dev_name), set()).add("status")
+        return fields
+
+    def _defined_set_control_keys(self) -> set[Tuple[str, str, str]]:
+        keys: set[Tuple[str, str, str]] = set()
+        for row in self._control_definition_rows("SetValue"):
+            dev_type = str(row.get("dev_type", "")).strip()
+            dev_name = _dev_name(row).strip()
+            set_type = str(row.get("set_type", "")).strip()
+            if dev_type and dev_name and set_type:
+                keys.add((dev_type, dev_name, set_type))
+        return keys
+
+    def _filter_defined_run_command_items(self, items: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+        allowed_fields = self._defined_run_control_fields()
+        filtered: List[Dict[str, Any]] = []
+        for item in items:
+            dev_type = str(item.get("dev_type", "")).strip()
+            dev_name = str(item.get("dev_name", "")).strip()
+            fields = allowed_fields.get((dev_type, dev_name), set())
+            if not dev_type or not dev_name or not fields:
+                continue
+            row: Dict[str, Any] = {"dev_type": dev_type, "dev_name": dev_name}
+            if item.get("run_stat", "") != "" and "run_stat" in fields:
+                row["run_stat"] = _number_text(item.get("run_stat"))
+            if "status" in item and "status" in fields:
+                row["status"] = _number_text(item.get("status"))
+            if len(row) > 2:
+                filtered.append(row)
+        return filtered
+
+    def _filter_defined_set_command_items(self, items: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+        allowed_keys = self._defined_set_control_keys()
+        filtered: List[Dict[str, Any]] = []
+        for item in items:
+            dev_type = str(item.get("dev_type", "")).strip()
+            dev_name = str(item.get("dev_name", "")).strip()
+            set_type = str(item.get("set_type", "")).strip()
+            if (dev_type, dev_name, set_type) not in allowed_keys:
+                continue
+            filtered.append(
+                {
+                    "dev_type": dev_type,
+                    "dev_name": dev_name,
+                    "set_type": set_type,
+                    "set_value": _number_text(item.get("set_value", "")),
+                }
+            )
+        return filtered
+
     def _materialize_active_control_commands(self, absolute_minute: int | float, *, persist: bool = False) -> Dict[str, int]:
         book = self._base_stat_book_for_controls()
         run_block = _ensure_block(book, "RunStat", STAT_HEADERS["RunStat"])
         cb_block = _ensure_block(book, "CbOpenStat", STAT_HEADERS["CbOpenStat"])
         set_block = _ensure_block(book, "SetValue", STAT_HEADERS["SetValue"])
         active_entries = self._active_control_command_entries(absolute_minute)
+        allowed_run_fields = self._defined_run_control_fields()
+        allowed_set_keys = self._defined_set_control_keys()
         applied_run = 0
         applied_set = 0
         active_set_rows: List[Dict[str, Any]] = []
@@ -1376,14 +1587,17 @@ class PolarMicrogridSimulator:
                     dev_name = str(item.get("dev_name", ""))
                     if not dev_type or not dev_name:
                         continue
+                    fields = allowed_run_fields.get((dev_type, dev_name), set())
+                    if not fields:
+                        continue
                     row = _find_dev_row(run_block, dev_type, dev_name)
-                    if row is None:
+                    if row is None and "run_stat" in fields and item.get("run_stat", "") != "":
                         row = {"dev_type": dev_type, "dev_name": dev_name, "run_stat": ""}
                         run_block.data.append(row)
-                    if item.get("run_stat", "") != "":
+                    if row is not None and item.get("run_stat", "") != "" and "run_stat" in fields:
                         row["run_stat"] = _number_text(item.get("run_stat"))
                         applied_run += 1
-                    if "status" in item:
+                    if "status" in item and "status" in fields:
                         cb_row = _find_dev_row(cb_block, dev_type, dev_name)
                         if cb_row is None:
                             cb_row = {"dev_type": dev_type, "dev_name": dev_name, "status": ""}
@@ -1397,6 +1611,8 @@ class PolarMicrogridSimulator:
                     dev_name = str(item.get("dev_name", ""))
                     set_type = str(item.get("set_type", ""))
                     if not dev_type or not dev_name or not set_type:
+                        continue
+                    if (dev_type, dev_name, set_type) not in allowed_set_keys:
                         continue
                     row = _find_set_row(set_block, dev_type, dev_name, set_type)
                     if row is None:
@@ -2409,8 +2625,10 @@ class PolarMicrogridSimulator:
             set_items = payload.get("set_values", payload.get("setValues", payload.get("setpoints", []))) or []
             run_sequence = list(run_items) if isinstance(run_items, Sequence) and not isinstance(run_items, (str, bytes)) else []
             set_sequence = list(set_items) if isinstance(set_items, Sequence) and not isinstance(set_items, (str, bytes)) else []
-            normalized_run_items = self._normalize_run_command_items(run_sequence)
-            normalized_set_items = self._normalize_set_command_items(set_sequence)
+            requested_run_items = self._normalize_run_command_items(run_sequence)
+            requested_set_items = self._normalize_set_command_items(set_sequence)
+            normalized_run_items = self._filter_defined_run_command_items(requested_run_items)
+            normalized_set_items = self._filter_defined_set_command_items(requested_set_items)
             eligible_source = _is_trainee_command_source(source)
             issued_absolute_minute = float(self.clock.absolute_minute)
             received_wall_time = _now_text()
@@ -2419,7 +2637,8 @@ class PolarMicrogridSimulator:
             expires_at_absolute_minute = None if manual_hold else _command_expires_at(payload, None, issued_absolute_minute)
             accepted_run = len(normalized_run_items) if eligible_source else 0
             accepted_set = len(normalized_set_items) if eligible_source else 0
-            ignored = 0 if eligible_source else len(normalized_run_items) + len(normalized_set_items)
+            requested_count = len(requested_run_items) + len(requested_set_items)
+            ignored = requested_count - accepted_run - accepted_set if eligible_source else requested_count
             accepted = {"run_status": accepted_run, "set_values": accepted_set, "ignored": ignored}
             valid_for_minutes = (
                 None
@@ -2495,7 +2714,7 @@ class PolarMicrogridSimulator:
         return expanded
 
     def set_curves(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
-        with self.lock:
+        with self.lock, self.curves_lock:
             mode = str(payload.get("mode", self.curves.get("mode", "day")) or "day").lower()
             if mode not in ("day", "year"):
                 mode = "day"
@@ -2540,7 +2759,7 @@ class PolarMicrogridSimulator:
             return {"weather_points": len(weather_points), "load_devices": len(loads), "mode": mode}
 
     def curves_summary(self) -> Dict[str, Any]:
-        with self.lock:
+        with self.curves_lock:
             mode = str(self.curves.get("mode", "day") or "day").lower()
             if mode not in ("day", "year"):
                 mode = "day"
@@ -2591,7 +2810,7 @@ class PolarMicrogridSimulator:
         return []
 
     def curves_series(self, keys: Sequence[str]) -> Dict[str, Any]:
-        with self.lock:
+        with self.curves_lock:
             mode = str(self.curves.get("mode", "day") or "day").lower()
             if mode not in ("day", "year"):
                 mode = "day"
@@ -2655,7 +2874,7 @@ class PolarMicrogridSimulator:
         return points
 
     def update_curve_series(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
-        with self.lock:
+        with self.lock, self.curves_lock:
             current_mode = str(self.curves.get("mode", "day") or "day").lower()
             mode = str(payload.get("mode", current_mode) or current_mode).lower()
             if mode not in ("day", "year"):
@@ -3081,7 +3300,7 @@ class PolarMicrogridSimulator:
         values = self._current_signal_values()
         rows: List[Dict[str, Any]] = []
         seen: set[Tuple[str, str, str]] = set()
-        for book in (self.control_book, self.source_stat_book, self.runtime_stat_book):
+        for book in (self.control_book, self.source_stat_book):
             for block_name, value_column, meas_type, name_suffix in SIGNAL_MEASUREMENTS:
                 block = book.data.get(block_name)
                 if block is None:
@@ -3318,7 +3537,10 @@ class PolarMicrogridSimulator:
         if after <= 0:
             items = list(current.values())
             reset = True
-        elif after >= self._measurement_delta_seq:
+        elif after > self._measurement_delta_seq:
+            items = list(current.values())
+            reset = True
+        elif after == self._measurement_delta_seq:
             items = []
         else:
             history = [entry for entry in self._measurement_delta_history if int(entry.get("seq", 0)) > after]
@@ -3420,18 +3642,30 @@ class PolarMicrogridSimulator:
                 for set_type in ("p_set", "v_set"):
                     if set_type not in device["set_types"]:
                         device["set_types"].append(set_type)
-        for (dev_type, dev_name), _run_stat in run_stats.items():
-            if dev_type in ("ESS", "Storage") and dev_name:
-                soc_values.setdefault(dev_name, 0.0)
+        source_storage_keys = {
+            (str(row.get("dev_type", "")).strip(), str(row.get("name", row.get("dev_name", ""))).strip())
+            for row in getattr(self.source_stat_book.data.get("StorageSoc"), "data", [])
+            if str(row.get("dev_type", "")).strip() and str(row.get("name", row.get("dev_name", ""))).strip()
+        }
         for name, soc in soc_values.items():
             if ("DCGenerator", name) in devices_by_key or ("DCGenerator", f"{name}_vsrc") in devices_by_key:
                 continue
-            storage_set_values = set_values.get(("ESS", name), set_values.get(("DCGenerator", f"{name}_vsrc"), {}))
+            source_storage_type = next(
+                (
+                    dev_type
+                    for dev_type, storage_name in source_storage_keys
+                    if storage_name == name and dev_type in ("ESS", "Storage")
+                ),
+                "",
+            )
+            if not source_storage_type:
+                continue
+            storage_set_values = set_values.get((source_storage_type, name), set_values.get(("DCGenerator", f"{name}_vsrc"), {}))
             devices.append(
                 {
-                    "dev_type": "ESS",
+                    "dev_type": source_storage_type,
                     "dev_name": name,
-                    "run_stat": int(_to_float(run_stats.get(("ESS", name), 1), 1) or 0),
+                    "run_stat": int(_to_float(run_stats.get((source_storage_type, name), 1), 1) or 0),
                     "status": 1,
                     "mode": "PH",
                     "set_types": ["p_set", "v_set"],
@@ -4389,10 +4623,18 @@ class MultiModelSimulator:
 
         return specs or [SimulationModelSpec("default", root, "默认模型").normalized()]
 
-    def _make_service(self, spec: SimulationModelSpec) -> PolarMicrogridSimulator:
+    def _make_service(
+        self,
+        spec: SimulationModelSpec,
+        *,
+        clear_runtime: bool = False,
+    ) -> PolarMicrogridSimulator:
+        runtime_dir = self.runtime_dir / spec.model_id
+        if clear_runtime:
+            _clear_directory_contents(runtime_dir)
         return PolarMicrogridSimulator(
             sim_dir=spec.sim_dir,
-            runtime_dir=self.runtime_dir / spec.model_id,
+            runtime_dir=runtime_dir,
             kernel=self.kernel,
             period_seconds=self.period_seconds,
             compute_interval_seconds=self.compute_interval_seconds,
@@ -4410,7 +4652,7 @@ class MultiModelSimulator:
         for spec in specs:
             ordered_ids.append(spec.model_id)
             if spec.model_id not in self._services:
-                self._services[spec.model_id] = self._make_service(spec)
+                self._services[spec.model_id] = self._make_service(spec, clear_runtime=True)
             else:
                 self._services[spec.model_id].model_name = spec.name
         self._services = {model_id: self._services[model_id] for model_id in ordered_ids}
@@ -4430,26 +4672,10 @@ class MultiModelSimulator:
                 raise ValueError(f"模型文件夹已存在: {target_id}")
 
             source.clone_files_to(target_dir)
-            service = PolarMicrogridSimulator(
-                sim_dir=target_dir,
-                runtime_dir=self.runtime_dir / target_id,
-                kernel=self.kernel,
-                period_seconds=self.period_seconds,
-                compute_interval_seconds=self.compute_interval_seconds,
-                noise_std=self.noise_std,
-                random_seed=self.random_seed,
-                model_id=target_id,
-                model_name=target_id,
+            service = self._make_service(
+                SimulationModelSpec(target_id, target_dir, target_id).normalized(),
+                clear_runtime=True,
             )
-            with source.lock:
-                service.command_history = [
-                    json.loads(json.dumps(item, ensure_ascii=False, default=str)) for item in source.command_history[-200:]
-                ]
-                service._write_command_history()
-                service.latest_result = json.loads(json.dumps(source.latest_result, ensure_ascii=False, default=str))
-                service.latest_measurements = json.loads(
-                    json.dumps(source.latest_measurements, ensure_ascii=False, default=str)
-                )
             self._services[target_id] = service
             self._append_manifest_model(target_id, target_dir)
             return service.model_info()

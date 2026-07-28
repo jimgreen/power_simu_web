@@ -824,18 +824,7 @@ def update_model_from_efile(
         diagram_svg_text=diagram_svg_text,
         remove_diagram_when_absent=replace_diagram,
     )
-    for path in (target.work_files.get("stat"), target.work_files.get("weather")):
-        if path and Path(path).exists() and Path(path).is_file():
-            Path(path).unlink()
-    target._copy_runtime_inputs()
-    target.reload_definition_state()
-    target.ensure_weather_measurements_in_definition_files()
-    target.curves = dict(artifacts["curves_payload"])
-    _write_json_file(target.curves_file, target.curves)
-    target.clock.step_minutes = max(1, int(_to_float(target.curves.get("time_step_minutes"), 1) or 1))
-    target.reload_definition_state()
-    target._materialize_active_control_commands(target.clock.absolute_minute, persist=True)
-    target.latest_result = {}
+    target.reset_runtime_for_model_change()
     model_info = target.model_info()
     return {
         **model_info,
@@ -848,6 +837,8 @@ def update_model_from_efile(
 
 
 def import_definition_archive(service: PolarMicrogridSimulator, data: bytes) -> Mapping[str, Any]:
+    if service.clock.state != "stopped":
+        raise ValueError(f"模型运行中或暂停中，无法更新定义: {service.model_id}")
     try:
         archive = zipfile.ZipFile(BytesIO(data), mode="r")
     except zipfile.BadZipFile as exc:
@@ -882,13 +873,7 @@ def import_definition_archive(service: PolarMicrogridSimulator, data: bytes) -> 
         names.append(DIAGRAM_FILE_NAME)
     written_files.extend(str(root / name) for name in names)
 
-    service.reload_definition_state()
-    service.ensure_weather_measurements_in_definition_files()
-    service.curves = dict(curves_payload)
-    _write_json_file(service.curves_file, curves_payload)
-    service.reload_definition_state()
-    service._materialize_active_control_commands(service.clock.absolute_minute, persist=True)
-    service.latest_result = {}
+    service.reset_runtime_for_model_change()
     return {
         "written": len(written_files),
         "files": written_files,

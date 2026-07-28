@@ -97,6 +97,46 @@ class CurveLazyLoadingTest(unittest.TestCase):
         self.assertEqual(service.curves["weather"][0]["solar_irradiance_w_m2"], 10)
         self.assertEqual(service.curves["loads"]["load_a"][0]["p_kw"], 100)
 
+    def test_curve_summary_is_not_blocked_by_running_simulation_lock(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        completed = threading.Event()
+
+        def read_summary():
+            service.curves_summary()
+            completed.set()
+
+        with service.lock:
+            thread = threading.Thread(target=read_summary, daemon=True)
+            thread.start()
+            finished_while_simulation_lock_was_held = completed.wait(0.2)
+
+        thread.join(timeout=1)
+        self.assertTrue(
+            finished_while_simulation_lock_was_held,
+            "曲线摘要读取不应等待潮流计算持有的主仿真锁",
+        )
+
+    def test_curve_series_is_not_blocked_by_running_simulation_lock(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        completed = threading.Event()
+
+        def read_series():
+            service.curves_series(["wind_speed_mps"])
+            completed.set()
+
+        with service.lock:
+            thread = threading.Thread(target=read_series, daemon=True)
+            thread.start()
+            finished_while_simulation_lock_was_held = completed.wait(0.2)
+
+        thread.join(timeout=1)
+        self.assertTrue(
+            finished_while_simulation_lock_was_held,
+            "曲线数据读取不应等待潮流计算持有的主仿真锁",
+        )
+
     def test_curve_lazy_http_endpoints(self):
         from simu.server import make_http_server
 
@@ -142,25 +182,25 @@ class CurveLazyLoadingTest(unittest.TestCase):
         self.assertIn("const boundary = snapshot.curve_boundary", script)
         self.assertIn("async function loadCurveSummary", script)
         self.assertIn("async function ensureCurveSeriesLoaded", script)
-        self.assertIn('api(`/api/curves/series?keys=${encodeURIComponent(keysToFetch.join(","))}`)', script)
+        self.assertIn('api(`/api/curves/series?keys=${encodeURIComponent(keysToFetch.join(","))}`, {', script)
         self.assertIn('api("/api/curves/series"', script)
         self.assertIn("const modelId = state.activeModelId;", script)
         self.assertIn("loadCurveSummary(modelId)", script)
 
     def test_curve_page_waits_for_model_catalog_before_lazy_fetching(self):
         script = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
-        render_block = script.split("function renderCurveEditor", 1)[1].split(
+        render_block = script.split("function renderCurveEditor(force", 1)[1].split(
             "function generateCurves",
             1,
         )[0]
 
         self.assertIn("modelsLoaded: false", script)
         self.assertIn("if (!state.modelsLoaded)", render_block)
-        self.assertLess(render_block.index("if (!state.modelsLoaded)"), render_block.index("loadCurveSummary(modelId)"))
+        self.assertLess(render_block.index("if (!state.modelsLoaded)"), render_block.index("startCurveEditorLoad(modelId)"))
 
     def test_curve_page_model_switch_boundary_snapshot_does_not_skip_curve_summary_reload(self):
         script = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
-        render_block = script.split("function renderCurveEditor", 1)[1].split(
+        render_block = script.split("function renderCurveEditor(force", 1)[1].split(
             "function generateCurves",
             1,
         )[0]
@@ -178,6 +218,53 @@ class CurveLazyLoadingTest(unittest.TestCase):
         self.assertNotIn("state.curveSummaryLoadedModelId = state.activeModelId", boundary_block)
         self.assertIn('state.curveSummaryLoadedModelId = "";', boundary_block)
         self.assertNotIn('state.curvesLoadedModelId = modelId || "loaded";', apply_summary_block)
+
+    def test_simulator_curve_page_bounds_requests_and_recovers_from_failures(self):
+        script = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("const API_REQUEST_TIMEOUT_MS", script)
+        self.assertIn("const CURVE_REQUEST_TIMEOUT_MS", script)
+        self.assertIn("new AbortController()", script)
+        self.assertIn("function cancelCurveRequests", script)
+        self.assertIn("function startCurveEditorLoad", script)
+        self.assertIn("function renderCurveEditorError", script)
+        self.assertIn("data-curve-retry", script)
+        self.assertNotIn("loadCurveSummary(modelId).then(() =>", script)
+
+    def test_simulator_curve_table_uses_virtual_rows_and_skips_unchanged_refreshes(self):
+        script = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        table_block = script.split("function renderHourlyTable", 1)[1].split(
+            "function applyHourlyTableEdit",
+            1,
+        )[0]
+        render_block = script.split("function renderCurveEditor(force", 1)[1].split(
+            "function generateCurves",
+            1,
+        )[0]
+
+        self.assertIn("virtualTableWindow", table_block)
+        self.assertIn("renderVirtualSpacerRow", table_block)
+        self.assertIn("data-virtual-table", table_block)
+        self.assertNotIn("Array.from({ length: pointCount }, (_unused, index) => `", table_block)
+        self.assertIn("lastCurveEditorRenderKey", render_block)
+
+    def test_trainee_curve_page_uses_virtual_rows_and_skips_unchanged_refreshes(self):
+        script = (ROOT / "simu" / "web" / "trainee" / "app.js").read_text(encoding="utf-8")
+        table_block = script.split("function renderCurveDisplayTable", 1)[1].split(
+            "function renderCurveDisplay",
+            1,
+        )[0]
+        render_block = script.split("function renderCurveDisplay(snapshot", 1)[1].split(
+            "function pointerPositionOnCurveDisplayCanvas",
+            1,
+        )[0]
+
+        self.assertIn("const API_REQUEST_TIMEOUT_MS", script)
+        self.assertIn("virtualTableWindow", table_block)
+        self.assertIn("renderVirtualSpacerRow", table_block)
+        self.assertIn("data-virtual-table", table_block)
+        self.assertNotIn("Array.from({ length: config.pointCount }, (_unused, index) => `", table_block)
+        self.assertIn("lastCurveDisplayRenderKey", render_block)
 
 
 if __name__ == "__main__":

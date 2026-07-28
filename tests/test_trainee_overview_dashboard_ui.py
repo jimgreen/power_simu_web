@@ -14,6 +14,23 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         cls.script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
         cls.styles = (ROOT / "simu/web/trainee/styles.css").read_text(encoding="utf-8")
 
+    def test_trainee_overview_event_panel_shows_up_to_eight_rows(self):
+        renderer = self.script.split("function renderTraineeOverviewEvents() {", 1)[1].split(
+            "function renderTraineeOverviewDashboard",
+            1,
+        )[0]
+
+        self.assertIn(".slice(0, 8)", renderer)
+        self.assertNotIn(".slice(0, 4)", renderer)
+
+    def test_trainee_overview_event_panel_scrolls_inside_its_existing_height(self):
+        event_list_block = self.styles.split(".overview-event-list {", 1)[1].split("}", 1)[0]
+
+        self.assertIn("overflow-x: hidden;", event_list_block)
+        self.assertIn("overflow-y: auto;", event_list_block)
+        self.assertIn("scrollbar-gutter: stable;", event_list_block)
+        self.assertNotIn("overflow: hidden;", event_list_block)
+
     def test_trainee_home_uses_simulator_style_energy_flow(self):
         for text in ("实时绿电占比", "教员数据", "最新交互事件", "当前有效指令"):
             self.assertIn(text, self.html)
@@ -67,12 +84,18 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("遥控 · ${remoteControlLabel(commandType)}", self.script)
         self.assertIn("遥调 · ${remoteAdjustmentTypeLabel(item.set_type || \"\")}", self.script)
         self.assertIn("actual_value", self.script)
+        self.assertIn('wall_time: timeInfo.wall_time || "--"', self.script)
         self.assertIn("snapshotDevice(item.dev_type || \"\", item.dev_name || \"\", snapshot)", self.script)
         self.assertIn("remoteAdjustmentMeasurement(liveDev, item.set_type || \"\", snapshot)", self.script)
         self.assertIn('class="active-command-preview-wrap"', self.html)
         self.assertIn('class="active-command-preview-table"', self.script)
-        for column in ("设备", "指令", "指令值", "实时值", "仿真时刻"):
+        for column in ("下发本机时刻", "设备", "指令", "指令值", "实时值", "仿真时刻"):
             self.assertIn(f"<th>{column}</th>", self.script)
+        self.assertIn("<th>下发本机时刻</th>\n          <th>设备</th>", self.script)
+        self.assertIn('title="${escapeHtml(item.wall_time)}">${escapeHtml(item.wall_time)}</td>', self.script)
+        first_time_column = self.styles.split(".active-command-preview-table th:nth-child(1),", 1)[1].split("}", 1)[0]
+        self.assertIn("width: 18%;", first_time_column)
+        self.assertIn(".active-command-preview-table th:nth-child(6)", self.styles)
         self.assertNotIn('<div class="log-item">\\n      <strong>${escapeHtml(item.name)}</strong>', self.script)
         self.assertIn("暂无当前有效指令", self.script)
         self.assertIn("renderActiveCommandPreview();", self.script)

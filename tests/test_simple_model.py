@@ -6,10 +6,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.model_fixtures import SIMPLE_MODEL_SOURCE
 
-ROOT = Path(__file__).resolve().parents[1]
-SIMPLE_MODEL = "\u7b80\u5355\u6a21\u578b"
-SIMPLE_SOURCE = ROOT / "models" / "simulator" / "source" / SIMPLE_MODEL
+
+SIMPLE_SOURCE = SIMPLE_MODEL_SOURCE
 
 
 class SimpleSimulatorModelTest(unittest.TestCase):

@@ -5,6 +5,7 @@ from shutil import copytree
 
 from simu.server import import_definition_model, make_definition_archive
 from simu.service import MultiModelSimulator, PolarMicrogridSimulator
+from tests.model_fixtures import SIMPLE_MODEL_SOURCE
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,14 +16,14 @@ class SimulatorDefinitionImportTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
             models_root = temp_root / "models"
-            copytree(ROOT / "models/simulator/source/默认模型", models_root / "默认模型")
+            copytree(SIMPLE_MODEL_SOURCE, models_root / "默认模型")
             manager = MultiModelSimulator.discover(
                 models_root.parent,
                 temp_root / "runtime",
                 models_dir=models_root,
             )
             package_service = PolarMicrogridSimulator(
-                ROOT / "models/simulator/source/简单模型",
+                SIMPLE_MODEL_SOURCE,
                 temp_root / "package-runtime",
                 model_id="simple",
             )
@@ -41,7 +42,7 @@ class SimulatorDefinitionImportTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
             models_root = temp_root / "models"
-            copytree(ROOT / "models/simulator/source/默认模型", models_root / "默认模型")
+            copytree(SIMPLE_MODEL_SOURCE, models_root / "默认模型")
             manager = MultiModelSimulator.discover(
                 models_root.parent,
                 temp_root / "runtime",

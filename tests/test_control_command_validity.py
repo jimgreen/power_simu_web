@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from shutil import copytree
 
+from tests.model_fixtures import SIMPLE_MODEL_SOURCE
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -194,7 +196,7 @@ class ControlCommandValidityTest(unittest.TestCase):
         workspace = tempfile.TemporaryDirectory()
         self.addCleanup(workspace.cleanup)
         source = Path(workspace.name) / "source"
-        copytree(ROOT / "models" / "simulator" / "source" / "默认模型", source)
+        copytree(SIMPLE_MODEL_SOURCE, source)
         service = PolarMicrogridSimulator(source, Path(workspace.name) / "runtime", kernel=lambda _config: None)
 
         service.control_clock({"action": "start", "minute": 0, "step_minutes": 30})
@@ -207,8 +209,8 @@ class ControlCommandValidityTest(unittest.TestCase):
                 "set_values": [
                     {
                         "dev_type": "DCACConverter",
-                        "dev_name": "ACDC变流器-1",
-                        "set_type": "p_ac_set",
+                        "dev_name": "grid_inv_acp",
+                        "set_type": "p_set",
                         "set_value": -12.5,
                     }
                 ],
@@ -217,10 +219,10 @@ class ControlCommandValidityTest(unittest.TestCase):
         )
 
         self.assertEqual(result["set_values"], 1)
-        self.assertEqual(self._set_value(service, "DCACConverter", "ACDC变流器-1", "p_ac_set"), "-12.5")
+        self.assertEqual(self._set_value(service, "DCACConverter", "grid_inv_acp", "p_set"), "-12.5")
         service.step(advance_minutes=30)
         service.step(advance_minutes=30)
-        self.assertEqual(self._set_value(service, "DCACConverter", "ACDC变流器-1", "p_ac_set"), "-12.5")
+        self.assertEqual(self._set_value(service, "DCACConverter", "grid_inv_acp", "p_set"), "-12.5")
 
     def test_manual_control_commands_survive_stop_start_and_service_restart_until_cancelled(self):
         workspace, service = self._make_service()

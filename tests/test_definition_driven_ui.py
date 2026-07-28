@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from simu.service import PolarMicrogridSimulator
+from tests.model_fixtures import SIMPLE_MODEL_SOURCE
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,7 +20,7 @@ class DefinitionDrivenUiTest(unittest.TestCase):
     def test_snapshot_exposes_model_measurement_and_control_definitions(self):
         with tempfile.TemporaryDirectory() as temporary:
             service = PolarMicrogridSimulator(
-                ROOT / "models/simulator/source/简单模型",
+                SIMPLE_MODEL_SOURCE,
                 Path(temporary) / "runtime",
                 model_id="simple",
             )
@@ -86,11 +87,15 @@ class DefinitionDrivenUiTest(unittest.TestCase):
             "function currentSetValue",
             1,
         )[0]
+        trainee_control_cell_block = self.trainee_js.split("function traineeRemoteControlLiveValue", 1)[1].split(
+            "function traineeRemoteAdjustmentLiveValue",
+            1,
+        )[0]
 
         self.assertIn("controlDefinitionDevices(snapshot).forEach", simulator_trace_block)
         self.assertNotIn("(snapshot.devices || []).forEach", simulator_trace_block)
         self.assertNotIn("state.snapshot?.devices", trainee_find_block)
-        self.assertIn('data-run-key="${escapeHtml(key)}"', trainee_render_control_block)
+        self.assertIn('data-run-key="${escapeHtml(key)}"', trainee_control_cell_block)
         self.assertNotIn("commandKey", trainee_render_control_block)
 
     def test_remote_adjustment_measurement_uses_meas_e_rows_without_hardcoded_candidates(self):

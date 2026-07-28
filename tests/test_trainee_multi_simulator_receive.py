@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import base64
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from simu.generate_simple_model import write_model_dir
@@ -119,6 +121,49 @@ class TraineeMultiSimulatorReceiveTest(unittest.TestCase):
         self.assertEqual(fetched["teacher_api_base"], "http://teacher-alpha")
         self.assertFalse(beta["active"])
         self.assertEqual(beta["teacher_api_base"], "")
+
+    def test_trainee_rejects_definition_update_while_model_is_receiving(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manager = self._make_manager(root)
+            manager.service_for("alpha").set_trainee_receive_state(
+                {
+                    "active": True,
+                    "interaction_link": "http://teacher-alpha/api/trainee-link?model_id=alpha",
+                    "teacher_api_base": "http://teacher-alpha",
+                    "teacher_model_id": "alpha",
+                    "teacher_model_name": "Alpha",
+                    "snapshot_path": "/api/snapshot?model_id=alpha",
+                    "command_path": "/api/student/commands?model_id=alpha",
+                }
+            )
+            server = make_http_server(("127.0.0.1", 0), manager, role="trainee")
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                port = server.server_address[1]
+                model_text = (root / "source" / "beta" / "model.e").read_text(encoding="utf-8")
+                payload = {
+                    "model_id": "alpha",
+                    "filename": "model.e",
+                    "data_base64": base64.b64encode(model_text.encode("utf-8")).decode("ascii"),
+                }
+                request = Request(
+                    f"http://127.0.0.1:{port}/api/models/update-definitions",
+                    data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with self.assertRaises(HTTPError) as raised:
+                    urlopen(request, timeout=5)
+                body = raised.exception.read().decode("utf-8")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+        self.assertEqual(raised.exception.code, 400)
+        self.assertIn("接收中", body)
 
     def test_trainee_server_resolves_simulator_link_and_fetches_first_snapshot(self):
         with tempfile.TemporaryDirectory() as simulator_root, tempfile.TemporaryDirectory() as trainee_root:

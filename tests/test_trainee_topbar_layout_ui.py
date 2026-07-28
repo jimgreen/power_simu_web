@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -58,23 +59,41 @@ class TraineeTopbarLayoutUiTest(unittest.TestCase):
         self.assertIn('id="modelManagementDialog"', html)
         self.assertIn("<h2 id=\"modelManagementTitle\">模型管理</h2>", html)
         self.assertIn('id="modelManagementList"', html)
+        self.assertIn('id="newModelButton"', html)
         self.assertIn('id="importDefinitionsButton"', html)
         self.assertIn('data-model-context-action="export"', html)
         self.assertIn('data-model-context-action="clone"', html)
         self.assertIn('data-model-context-action="update"', html)
         self.assertIn('data-model-context-action="delete"', html)
+        self.assertIn('id="newModelDialog"', html)
+        self.assertIn("<h2 id=\"newModelTitle\">新建模型</h2>", html)
+        self.assertIn('id="newModelName"', html)
+        self.assertIn('id="newModelFileInput"', html)
+        self.assertIn('accept=".e"', html)
+        self.assertIn('id="newModelSvgInput"', html)
+        self.assertIn('accept=".svg,image/svg+xml"', html)
         self.assertIn('id="importModelDialog"', html)
         self.assertIn('id="updateModelDialog"', html)
+        self.assertIn('id="updateModelSvgInput"', html)
+        self.assertIn("选择 E 文件", html)
+        self.assertIn("导入修改后的 model.e", html)
         self.assertIn('id="cloneModelDialog"', html)
 
         self.assertIn("openModelManagementDialog", app_js)
         self.assertIn("renderModelManagementList", app_js)
         self.assertIn("handleModelContextMenuAction", app_js)
         self.assertIn("selectedManagementModelId", app_js)
+        self.assertIn("openNewModelDialog", app_js)
+        self.assertIn("createNewModelFromFile", app_js)
         self.assertIn("openImportModelDialog", app_js)
         self.assertIn("openUpdateModelDialog", app_js)
         self.assertIn("cloneManagedModel", app_js)
         self.assertIn("deleteManagedModel", app_js)
+        self.assertIn('api("/api/models/create"', app_js)
+        self.assertRegex(app_js, re.compile(r'api\("/api/models/create",\s*\{[^}]*modelScoped:\s*false', re.DOTALL))
+        self.assertIn('api("/api/models/update-definitions"', app_js)
+        self.assertRegex(app_js, re.compile(r'api\("/api/models/update-definitions",\s*\{[^}]*modelScoped:\s*false', re.DOTALL))
+        self.assertIn("diagram_svg_base64", app_js)
         self.assertIn('api("/api/models/import-definitions"', app_js)
         self.assertIn("create_model: true", app_js)
         self.assertIn('api("/api/models/clone"', app_js)

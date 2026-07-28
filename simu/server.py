@@ -1009,6 +1009,13 @@ def make_http_server(
                     raise JsonApiError(404, str(exc)) from exc
             return service  # type: ignore[return-value]
 
+        def _reject_active_trainee_receive_model(self, payload: Mapping[str, Any], operation: str) -> None:
+            if role != "trainee":
+                return
+            target = self._target_service(payload)
+            if target.trainee_receive_state().get("active"):
+                raise JsonApiError(400, f"模型正在接收中，不能{operation}。")
+
         def _model_catalog(self) -> Mapping[str, Any]:
             if hasattr(service, "models"):
                 return {
@@ -1350,6 +1357,7 @@ def make_http_server(
                 model_id = self._request_model_id(payload)
                 if not str(model_id or "").strip():
                     raise JsonApiError(400, "Model id is required")
+                self._reject_active_trainee_receive_model(payload, "修改")
                 data_base64 = str(payload.get("data_base64", ""))
                 if not data_base64:
                     raise JsonApiError(400, "model.e data is required")
@@ -1422,6 +1430,7 @@ def make_http_server(
                         catalog["active_model_id"] = model["id"]
                         self._send_json({"model": model, "imported": model["imported"], **catalog})
                         return
+                    self._reject_active_trainee_receive_model(payload, "修改")
                     imported = import_definition_archive(self._target_service(payload), archive_data)
                 except (ValueError, OSError) as exc:
                     raise JsonApiError(400, str(exc)) from exc

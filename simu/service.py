@@ -78,6 +78,16 @@ SIGNAL_MEASUREMENTS = (
     ("RunStat", "run_stat", "RUN_STAT", "run_stat"),
     ("CbOpenStat", "status", "STATUS", "status"),
 )
+SNAPSHOT_STATIC_FIELDS = (
+    "files",
+    "source_files",
+    "work_files",
+    "definitions",
+    "curves",
+    "settings",
+    "device_parameters",
+    "diagram",
+)
 
 STAT_HEADERS = {
     "RunStat": ("dev_type", "dev_name", "run_stat"),
@@ -2042,7 +2052,7 @@ class PolarMicrogridSimulator:
                 ("ACGenerator",),
                 ("wt", "wind"),
             ):
-                rated = simu_loop._safe_float((define or {}).get("rated_power", (define or {}).get("p_max", 10.0)), 10.0) or 10.0
+                rated = simu_loop._wind_rated_power_kw(row, define)
                 rated_speed = simu_loop._safe_float((define or {}).get("rated_wind_speed", 15.0), 15.0) or 15.0
                 cut_in = simu_loop._safe_float((define or {}).get("cut_in_speed", 5.0), 5.0) or 5.0
                 cut_out = simu_loop._safe_float((define or {}).get("cut_out_speed", 30.0), 30.0) or 30.0
@@ -2528,6 +2538,175 @@ class PolarMicrogridSimulator:
             self.clock.updated_at = time.time()
             _write_json(self.curves_file, self.curves)
             return {"weather_points": len(weather_points), "load_devices": len(loads), "mode": mode}
+
+    def curves_summary(self) -> Dict[str, Any]:
+        with self.lock:
+            mode = str(self.curves.get("mode", "day") or "day").lower()
+            if mode not in ("day", "year"):
+                mode = "day"
+            default_step = 60 if mode == "year" else 1
+            weather = self.curves.get("weather", [])
+            loads = self.curves.get("loads", {})
+            point_count = int(_to_float(self.curves.get("point_count"), 0) or 0)
+            if not point_count:
+                point_count = len(weather) if isinstance(weather, Sequence) else 0
+            return {
+                "mode": mode,
+                "time_step_minutes": int(_to_float(self.curves.get("time_step_minutes"), default_step) or default_step),
+                "point_count": point_count or (8760 if mode == "year" else 1440),
+                "environment": [
+                    {
+                        "key": key,
+                        "point_count": len(weather) if isinstance(weather, Sequence) else 0,
+                    }
+                    for key in ("wind_speed_mps", "solar_irradiance_w_m2", "air_temp_c")
+                ],
+                "loads": [
+                    {
+                        "key": f"load:{name}",
+                        "name": str(name),
+                        "point_count": len(points) if isinstance(points, Sequence) else 0,
+                    }
+                    for name, points in (loads.items() if isinstance(loads, Mapping) else [])
+                ],
+            }
+
+    def _curve_series_values(self, key: str) -> List[float]:
+        if key in ("wind_speed_mps", "solar_irradiance_w_m2", "air_temp_c"):
+            weather = self.curves.get("weather", [])
+            if not isinstance(weather, Sequence) or isinstance(weather, (str, bytes)):
+                return []
+            return [float(_to_float(point.get(key), 0.0) or 0.0) for point in weather if isinstance(point, Mapping)]
+        if key.startswith("load:"):
+            load_name = key.replace("load:", "", 1)
+            loads = self.curves.get("loads", {})
+            points = loads.get(load_name, []) if isinstance(loads, Mapping) else []
+            if not isinstance(points, Sequence) or isinstance(points, (str, bytes)):
+                return []
+            return [
+                float(_to_float(point.get("p_kw", point.get("value", point.get("load_kw"))), 0.0) or 0.0)
+                for point in points
+                if isinstance(point, Mapping)
+            ]
+        return []
+
+    def curves_series(self, keys: Sequence[str]) -> Dict[str, Any]:
+        with self.lock:
+            mode = str(self.curves.get("mode", "day") or "day").lower()
+            if mode not in ("day", "year"):
+                mode = "day"
+            default_step = 60 if mode == "year" else 1
+            point_count = int(_to_float(self.curves.get("point_count"), 8760 if mode == "year" else 1440) or 0)
+            requested = [str(key).strip() for key in keys if str(key).strip()]
+            if not requested:
+                requested = ["wind_speed_mps"]
+            series: Dict[str, List[float]] = {}
+            for key in requested:
+                values = self._curve_series_values(key)
+                if values:
+                    series[key] = values
+            return {
+                "mode": mode,
+                "time_step_minutes": int(_to_float(self.curves.get("time_step_minutes"), default_step) or default_step),
+                "point_count": point_count or (8760 if mode == "year" else 1440),
+                "series": series,
+            }
+
+    def _ensure_weather_curve_points(self, point_count: int, step_minutes: float) -> List[Dict[str, Any]]:
+        weather = self.curves.get("weather", [])
+        if not isinstance(weather, list):
+            weather = []
+        defaults = dict(DEFAULT_WEATHER)
+        while len(weather) < point_count:
+            index = len(weather)
+            weather.append({"minute": index * step_minutes, **defaults})
+        if len(weather) > point_count:
+            del weather[point_count:]
+        for index, point in enumerate(weather):
+            if not isinstance(point, dict):
+                point = {}
+                weather[index] = point
+            point["minute"] = _to_float(point.get("minute"), index * step_minutes) or index * step_minutes
+            for key, value in defaults.items():
+                point.setdefault(key, value)
+        self.curves["weather"] = weather
+        return weather
+
+    def _ensure_load_curve_points(self, load_name: str, point_count: int, step_minutes: float) -> List[Dict[str, Any]]:
+        loads = self.curves.get("loads")
+        if not isinstance(loads, dict):
+            loads = {}
+            self.curves["loads"] = loads
+        points = loads.get(load_name)
+        if not isinstance(points, list):
+            points = []
+            loads[load_name] = points
+        while len(points) < point_count:
+            index = len(points)
+            points.append({"minute": index * step_minutes, "p_kw": DEFAULT_WEATHER["load_kw"]})
+        if len(points) > point_count:
+            del points[point_count:]
+        for index, point in enumerate(points):
+            if not isinstance(point, dict):
+                point = {"p_kw": point}
+                points[index] = point
+            point["minute"] = _to_float(point.get("minute"), index * step_minutes) or index * step_minutes
+            point.setdefault("p_kw", DEFAULT_WEATHER["load_kw"])
+        return points
+
+    def update_curve_series(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        with self.lock:
+            current_mode = str(self.curves.get("mode", "day") or "day").lower()
+            mode = str(payload.get("mode", current_mode) or current_mode).lower()
+            if mode not in ("day", "year"):
+                mode = current_mode if current_mode in ("day", "year") else "day"
+            if mode != current_mode and self.clock.state != "stopped":
+                raise ValueError("仿真运行过程中不能切换仿真模式，请先停止仿真")
+            default_step = 60 if mode == "year" else 1
+            step_minutes = int(_to_float(payload.get("time_step_minutes"), self.curves.get("time_step_minutes", default_step)) or default_step)
+            point_count = int(_to_float(payload.get("point_count"), self.curves.get("point_count", 8760 if mode == "year" else 1440)) or 0)
+            raw_series = payload.get("series", {})
+            if not isinstance(raw_series, Mapping):
+                raw_series = {}
+            for values in raw_series.values():
+                if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+                    point_count = max(point_count, len(values))
+            point_count = point_count or (8760 if mode == "year" else 1440)
+            self.curves["mode"] = mode
+            self.curves["time_step_minutes"] = step_minutes
+            self.curves["point_count"] = point_count
+            updated: List[str] = []
+            for key, values in raw_series.items():
+                curve_key = str(key).strip()
+                if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+                    continue
+                if curve_key in ("wind_speed_mps", "solar_irradiance_w_m2", "air_temp_c"):
+                    weather = self._ensure_weather_curve_points(point_count, step_minutes)
+                    for index, value in enumerate(values[:point_count]):
+                        weather[index][curve_key] = _to_float(value, 0.0) or 0.0
+                    updated.append(curve_key)
+                elif curve_key.startswith("load:"):
+                    load_name = curve_key.replace("load:", "", 1)
+                    if not load_name:
+                        continue
+                    points = self._ensure_load_curve_points(load_name, point_count, step_minutes)
+                    for index, value in enumerate(values[:point_count]):
+                        points[index]["p_kw"] = _to_float(value, 0.0) or 0.0
+                    updated.append(curve_key)
+            self.clock.step_minutes = max(1, step_minutes)
+            self.clock.absolute_minute = _align_minute_to_step(
+                self.clock.absolute_minute,
+                _effective_clock_step(self.clock.step_minutes, self.clock.speed),
+            )
+            self.clock.minute = self.clock.absolute_minute % 1440
+            self.clock.updated_at = time.time()
+            _write_json(self.curves_file, self.curves)
+            return {
+                "updated": updated,
+                "mode": mode,
+                "time_step_minutes": step_minutes,
+                "point_count": point_count,
+            }
 
     def set_local_settings(self, payload: Mapping[str, Any]) -> Dict[str, int]:
         with self.lock:
@@ -3887,6 +4066,86 @@ class PolarMicrogridSimulator:
             "clock_state": self.clock.state,
         }
 
+    def _path_static_signature(self, paths: Sequence[Path | str | None]) -> Dict[str, Any]:
+        signatures: List[str] = []
+        for index, raw_path in enumerate(paths):
+            if raw_path is None:
+                signatures.append(f"{index}:<none>:0:0:0")
+                continue
+            path = Path(raw_path)
+            try:
+                stat = path.stat()
+            except OSError:
+                signatures.append(f"{index}:{path.name}:0:0:0")
+                continue
+            signatures.append(f"{index}:{path.name}:1:{stat.st_size}:{stat.st_mtime_ns}")
+        return {"signature": "|".join(signatures)}
+
+    def static_meta(self) -> Dict[str, Any]:
+        definition_paths = [
+            self.source_files.get("model"),
+            self.source_files.get("meas"),
+            self.source_files.get("stat"),
+            self.source_files.get("control"),
+            self.source_files.get("weather"),
+        ]
+        return {
+            "files": self._path_static_signature(list(self.files.values())),
+            "source_files": self._path_static_signature(list(self.source_files.values())),
+            "work_files": self._path_static_signature(list(self.work_files.values())),
+            "definitions": self._path_static_signature(definition_paths),
+            "curves": self._path_static_signature([self.source_curves_file, self.curves_file]),
+            "settings": self._path_static_signature([self.sim_dir / "local_settings.json", self.settings_file]),
+            "device_parameters": self._path_static_signature([self.source_files.get("model")]),
+            "diagram": self._path_static_signature([self.source_files.get("diagram")]),
+        }
+
+    def curve_boundary(self) -> Dict[str, Any]:
+        curve_mode = str(self.curves.get("mode", "day") or "day").lower()
+        if curve_mode not in ("day", "year"):
+            curve_mode = "day"
+        default_step = 60 if curve_mode == "year" else 1
+        step_minutes = int(_to_float(self.curves.get("time_step_minutes"), default_step) or default_step)
+        period_minutes = 365.0 * 24.0 * 60.0 if curve_mode == "year" else 1440.0
+        target_minute = (
+            float(_to_float(self.clock.absolute_minute, 0.0) or 0.0)
+            if curve_mode == "year"
+            else float(_to_float(self.clock.minute, 0.0) or 0.0)
+        )
+        weather = self.curves.get("weather", [])
+        if not isinstance(weather, Sequence) or isinstance(weather, (str, bytes)):
+            weather = []
+        point_count = int(_to_float(self.curves.get("point_count"), 0) or 0)
+        if not point_count:
+            point_count = len(weather)
+        index = max(0, self._curve_point_index(target_minute, period_minutes) - 1)
+        point = {
+            key: _interpolate(weather, target_minute, key, default, period_minutes=period_minutes)
+            for key, default in DEFAULT_WEATHER.items()
+            if key != "load_kw"
+        }
+        loads = self.curves.get("loads", {})
+        load_total = 0.0
+        load_count = 0
+        if isinstance(loads, Mapping):
+            for points in loads.values():
+                if not isinstance(points, Sequence) or isinstance(points, (str, bytes)):
+                    continue
+                value = _interpolate(points, target_minute, "p_kw", float("nan"), period_minutes=period_minutes)
+                if value == value:
+                    load_total += value
+                    load_count += 1
+        return {
+            "mode": curve_mode,
+            "time_step_minutes": step_minutes,
+            "point_count": point_count or (8760 if curve_mode == "year" else 1440),
+            "target_minute": target_minute,
+            "index": index,
+            "point": point,
+            "load_total": load_total,
+            "load_count": load_count,
+        }
+
     def snapshot(
         self,
         include_static: bool = True,
@@ -3894,6 +4153,9 @@ class PolarMicrogridSimulator:
         *,
         include_runtime_logs: bool = True,
         include_measurements: bool = True,
+        static_fields: Optional[Sequence[str]] = None,
+        include_devices: bool = True,
+        include_commands: bool = True,
     ) -> Dict[str, Any]:
         measurements: Dict[str, Any] = {}
         if include_measurements:
@@ -3911,30 +4173,45 @@ class PolarMicrogridSimulator:
             "model": self.model_info(),
             "clock": self.clock.as_dict(),
             "system_parameters": self.system_parameters(),
-            "commands": {"history": self.command_history[-50:]},
-            "devices": self.devices(),
+            "static_meta": self.static_meta(),
+            "curve_boundary": self.curve_boundary(),
             "result": self.latest_result,
             "summary": self._summary(summary_measurements),
         }
+        if include_commands:
+            snapshot["commands"] = {"history": self.command_history[-50:]}
+        if include_devices:
+            snapshot["devices"] = self.devices()
         if include_runtime_logs:
             snapshot["runtime_logs"] = logs
         if include_measurements:
             snapshot["measurements"] = measurements
         if include_static:
-            if not include_measurements:
-                measurements = self.measurements()
-            snapshot.update(
-                {
-                    "files": {key: str(path) for key, path in self.files.items()},
-                    "source_files": {key: str(path) for key, path in self.source_files.items()},
-                    "work_files": {key: str(path) for key, path in self.work_files.items()},
-                    "definitions": self.definitions(measurements),
-                    "curves": self.curves,
-                    "settings": self.local_settings,
-                    "device_parameters": self.device_parameters(),
-                    "diagram": self.model_diagram(),
+            requested_static_fields = set(SNAPSHOT_STATIC_FIELDS)
+            if static_fields is not None:
+                requested_static_fields = {
+                    str(field)
+                    for field in static_fields
+                    if str(field) in SNAPSHOT_STATIC_FIELDS
                 }
-            )
+            if "definitions" in requested_static_fields and not include_measurements:
+                measurements = self.measurements()
+            if "files" in requested_static_fields:
+                snapshot["files"] = {key: str(path) for key, path in self.files.items()}
+            if "source_files" in requested_static_fields:
+                snapshot["source_files"] = {key: str(path) for key, path in self.source_files.items()}
+            if "work_files" in requested_static_fields:
+                snapshot["work_files"] = {key: str(path) for key, path in self.work_files.items()}
+            if "definitions" in requested_static_fields:
+                snapshot["definitions"] = self.definitions(measurements)
+            if "curves" in requested_static_fields:
+                snapshot["curves"] = self.curves
+            if "settings" in requested_static_fields:
+                snapshot["settings"] = self.local_settings
+            if "device_parameters" in requested_static_fields:
+                snapshot["device_parameters"] = self.device_parameters()
+            if "diagram" in requested_static_fields:
+                snapshot["diagram"] = self.model_diagram()
         return snapshot
 
     def _summary(self, measurements: Mapping[str, Sequence[Mapping[str, Any]]]) -> Dict[str, Any]:
@@ -4323,12 +4600,18 @@ class MultiModelSimulator:
         *,
         include_runtime_logs: bool = True,
         include_measurements: bool = True,
+        static_fields: Optional[Sequence[str]] = None,
+        include_devices: bool = True,
+        include_commands: bool = True,
     ) -> Dict[str, Any]:
         return self.service_for(model_id).snapshot(
             include_static=include_static,
             runtime_log_limit=runtime_log_limit,
             include_runtime_logs=include_runtime_logs,
             include_measurements=include_measurements,
+            static_fields=static_fields,
+            include_devices=include_devices,
+            include_commands=include_commands,
         )
 
     def measurements(self, model_id: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
@@ -4367,6 +4650,15 @@ class MultiModelSimulator:
 
     def set_curves(self, payload: Mapping[str, Any], model_id: Optional[str] = None) -> Dict[str, Any]:
         return self.service_for(model_id).set_curves(payload)
+
+    def curves_summary(self, model_id: Optional[str] = None) -> Dict[str, Any]:
+        return self.service_for(model_id).curves_summary()
+
+    def curves_series(self, keys: Sequence[str], model_id: Optional[str] = None) -> Dict[str, Any]:
+        return self.service_for(model_id).curves_series(keys)
+
+    def update_curve_series(self, payload: Mapping[str, Any], model_id: Optional[str] = None) -> Dict[str, Any]:
+        return self.service_for(model_id).update_curve_series(payload)
 
     def set_local_settings(self, payload: Mapping[str, Any], model_id: Optional[str] = None) -> Dict[str, int]:
         return self.service_for(model_id).set_local_settings(payload)

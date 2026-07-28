@@ -1068,6 +1068,24 @@ def make_http_server(
             value = (parse_qs(urlparse(self.path).query).get(name) or [""])[0]
             return str(value).strip().lower() in {"0", "false", "no", "off"}
 
+        def _static_query(self, default_include_static: bool) -> tuple[bool, Optional[Sequence[str]]]:
+            values = parse_qs(urlparse(self.path).query).get("static")
+            if not values:
+                return default_include_static, None
+            raw = ",".join(str(value) for value in values).strip()
+            normalized = raw.lower()
+            if not raw or normalized in {"0", "false", "no", "off", "none"}:
+                return False, []
+            if normalized in {"1", "true", "yes", "on", "all"}:
+                return True, None
+            fields = [
+                field.strip()
+                for value in values
+                for field in str(value).split(",")
+                if field.strip()
+            ]
+            return bool(fields), fields
+
         def _int_query(self, name: str, default: int, minimum: int = 0, maximum: int = 500) -> int:
             raw = (parse_qs(urlparse(self.path).query).get(name) or [default])[0]
             try:
@@ -1241,7 +1259,7 @@ def make_http_server(
 
         def _trainee_snapshot_query_overrides(self) -> Mapping[str, Any]:
             values = parse_qs(urlparse(self.path).query)
-            allowed = ("lite", "logs", "runtime_logs", "measurements", "log_limit")
+            allowed = ("lite", "logs", "runtime_logs", "measurements", "log_limit", "devices", "commands", "static")
             return {key: values[key][0] for key in allowed if values.get(key)}
 
         def _handle_trainee_connect(self, payload: Mapping[str, Any]) -> None:
@@ -1262,15 +1280,19 @@ def make_http_server(
                 self._send_json(self._model_catalog())
             elif path == "/api/snapshot":
                 lite = self._truthy_query("lite")
+                include_static, static_fields = self._static_query(default_include_static=not lite)
                 default_log_limit = 20 if lite else 300
                 self._send_json(
                     target.snapshot(
-                        include_static=not lite,
+                        include_static=include_static,
                         runtime_log_limit=self._int_query("log_limit", default_log_limit),
                         include_runtime_logs=not (
                             self._falsey_query("logs") or self._falsey_query("runtime_logs")
                         ),
                         include_measurements=not self._falsey_query("measurements"),
+                        static_fields=static_fields,
+                        include_devices=not self._falsey_query("devices"),
+                        include_commands=not self._falsey_query("commands"),
                     )
                 )
             elif path == "/api/runtime-logs":
@@ -1298,6 +1320,17 @@ def make_http_server(
                 self._send_json({"devices": target.devices()})
             elif path == "/api/curves":
                 self._send_json(target.curves)
+            elif path == "/api/curves/summary":
+                self._send_json(target.curves_summary())
+            elif path == "/api/curves/series":
+                values = parse_qs(urlparse(self.path).query)
+                keys = [
+                    key.strip()
+                    for value in values.get("keys", [])
+                    for key in str(value).split(",")
+                    if key.strip()
+                ]
+                self._send_json(target.curves_series(keys))
             elif path == "/api/settings":
                 self._send_json(target.local_settings)
             elif path == "/api/trainee/receive-state":
@@ -1492,6 +1525,8 @@ def make_http_server(
                 self._send_json(target.step())
             elif path == "/api/curves":
                 self._send_json(target.set_curves(payload))
+            elif path == "/api/curves/series":
+                self._send_json(target.update_curve_series(payload))
             elif path == "/api/settings":
                 self._send_json(target.set_local_settings(payload))
             elif path == "/api/device-faults":

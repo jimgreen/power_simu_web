@@ -396,13 +396,38 @@ def _rated_power_from_name(value, default: Optional[float] = None) -> Optional[f
     match = re.search(r"([-+]?\d+(?:\.\d+)?)\s*(mw|kw|w)\b", text, re.IGNORECASE)
     if match is None:
         return default
-    number = float(match.group(1))
+    number = abs(float(match.group(1)))
     unit = match.group(2).casefold()
     if unit == "mw":
         return number * 1000.0
     if unit == "w":
         return number / 1000.0
     return number
+
+
+def _positive_numeric(value, default: Optional[float] = None) -> Optional[float]:
+    number = _numeric_from_text(value, None)
+    if number is None or number <= 0.0:
+        return default
+    return number
+
+
+def _wind_rated_power_kw(row: Optional[dict], define: Optional[dict] = None, default: float = 10.0) -> float:
+    source = row or {}
+    capability = define or {}
+    for value in (
+        source.get("rated_capacity"),
+        capability.get("rated_capacity"),
+        capability.get("rated_power"),
+        capability.get("p_max"),
+        source.get("rated_power"),
+        source.get("p_max"),
+        source.get("p_set"),
+    ):
+        rated = _positive_numeric(value, None)
+        if rated is not None:
+            return rated
+    return float(default)
 
 
 def _safe_int(value, default: int = 0) -> int:
@@ -536,13 +561,15 @@ def _embedded_device_define_book(model_book: EBook) -> EBook:
     for pos, row in enumerate(_sorted_rows(_book_rows(model_book, "ACWindGen")), start=1):
         source = ac_generators.get(str(row.get("idx_acgenerator", "")), {})
         source_name = str(source.get("name", row.get("name", f"wind_{pos}")))
-        rated = _numeric_from_text(row.get("rated_power"), None)
-        if rated is None:
-            rated = _rated_power_from_name(row.get("wind_turbine_model"), None)
-        if rated is None:
-            rated = _numeric_from_text(source.get("p_max"), None)
-        if rated is None or rated <= 0.0:
-            rated = _numeric_from_text(source.get("p_set"), 10.0) or 10.0
+        rated = (
+            _positive_numeric(source.get("rated_capacity"), None)
+            or _positive_numeric(row.get("rated_power"), None)
+            or _rated_power_from_name(row.get("wind_turbine_model"), None)
+            or _positive_numeric(source.get("p_max"), None)
+            or _positive_numeric(source.get("rated_power"), None)
+            or _positive_numeric(source.get("p_set"), None)
+            or 10.0
+        )
         wind_rows.append(
             {
                 "id": row.get("idx", pos),
@@ -1144,7 +1171,7 @@ def apply_wind_limits(
     changed = 0
     active_power_controls = active_power_controls or set()
     for table_name, row, define, _pos in rows:
-        rated = _safe_float((define or {}).get("rated_power", (define or {}).get("p_max", 10.0)), 10.0) or 10.0
+        rated = _wind_rated_power_kw(row, define)
         rated_speed = _safe_float((define or {}).get("rated_wind_speed", 15.0), 15.0) or 15.0
         cut_in = _safe_float((define or {}).get("cut_in_speed", 5.0), 5.0) or 5.0
         cut_out = _safe_float((define or {}).get("cut_out_speed", 30.0), 30.0) or 30.0

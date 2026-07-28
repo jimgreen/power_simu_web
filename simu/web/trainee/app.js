@@ -849,26 +849,35 @@ function mergeSnapshot(previous, incoming) {
   STATIC_SNAPSHOT_KEYS.forEach((key) => {
     if (incoming[key] === undefined && previous[key] !== undefined) merged[key] = previous[key];
   });
+  if (incoming.runtime_logs === undefined) delete merged.runtime_logs;
   return merged;
 }
 
-function snapshotLogLimit() {
-  return currentPageName() === "history" ? 300 : 20;
+function pageNeedsRuntimeLogs(page = currentPageName()) {
+  return ["overview", "history"].includes(page);
 }
 
-function snapshotPollPath() {
+function snapshotLogLimit(page = currentPageName()) {
+  return page === "history" ? 300 : 20;
+}
+
+function snapshotPollPath(page = currentPageName()) {
   const currentModelId = String(state.snapshot?.model?.id || "");
+  const logParams = pageNeedsRuntimeLogs(page)
+    ? { log_limit: snapshotLogLimit(page) }
+    : { logs: 0 };
   const needsStaticPayload = !hasStaticSnapshotPayload(state.snapshot)
     || (currentModelId && state.activeModelId && currentModelId !== state.activeModelId);
-  if (needsStaticPayload) return "/api/snapshot";
-  return "/api/snapshot?lite=1&logs=0&measurements=0";
+  if (needsStaticPayload) return appendUrlQuery("/api/snapshot", logParams);
+  return appendUrlQuery("/api/snapshot", { lite: 1, ...logParams, measurements: 0 });
 }
 
 function appendUrlQuery(url, params) {
   try {
+    const isAbsoluteUrl = /^https?:\/\//i.test(String(url || ""));
     const target = new URL(url, location.href);
     Object.entries(params || {}).forEach(([key, value]) => target.searchParams.set(key, String(value)));
-    return target.href;
+    return isAbsoluteUrl ? target.href : `${target.pathname}${target.search}${target.hash}`;
   } catch (_error) {
     const separator = String(url || "").includes("?") ? "&" : "?";
     const query = new URLSearchParams(params || {}).toString();
@@ -899,7 +908,15 @@ function teacherReceiveAddress() {
 }
 
 function teacherSnapshotPollAddress() {
-  return appendUrlQuery("/api/trainee/snapshot", { lite: 1, logs: 0, measurements: 0 });
+  const currentModelId = String(state.snapshot?.model?.id || "");
+  const expectedTeacherModelId = String(state.teacherModelId || "");
+  const logParams = pageNeedsRuntimeLogs()
+    ? { log_limit: snapshotLogLimit() }
+    : { logs: 0 };
+  const needsStaticPayload = !hasStaticSnapshotPayload(state.snapshot)
+    || (currentModelId && expectedTeacherModelId && currentModelId !== expectedTeacherModelId);
+  if (needsStaticPayload) return appendUrlQuery("/api/trainee/snapshot", logParams);
+  return appendUrlQuery("/api/trainee/snapshot", { lite: 1, ...logParams, measurements: 0 });
 }
 
 function measurementDeltaPathFromSnapshotPath(snapshotPath = "") {
@@ -1352,11 +1369,31 @@ async function fetchLocalDefinitionSnapshot(preferredModelId = "") {
 async function selectLocalDefinitionSnapshotForTeacher(connection, teacherSnapshot, preferredLocalModelId = state.activeModelId) {
   const teacherModelId = String(connection?.modelId || "");
   const localModelId = String(preferredLocalModelId || "");
-  if (hasLocalDefinitionModel(localModelId)) {
+  if (teacherModelId && hasLocalDefinitionModel(teacherModelId)) {
+    return { ...(await fetchLocalDefinitionSnapshot(teacherModelId)), usingTeacherBaseline: false };
+  }
+  if (!teacherModelId && hasLocalDefinitionModel(localModelId)) {
     return { ...(await fetchLocalDefinitionSnapshot(localModelId)), usingTeacherBaseline: false };
   }
-  if (hasLocalDefinitionModel(teacherModelId)) {
-    return { ...(await fetchLocalDefinitionSnapshot(teacherModelId)), usingTeacherBaseline: false };
+  if (teacherModelId) {
+    try {
+      const local = await fetchLocalDefinitionSnapshot();
+      return {
+        modelId: teacherModelId,
+        snapshot: teacherSnapshot,
+        usingTeacherBaseline: true,
+        fallbackModelId: local.modelId,
+        mismatchMessages: compareSnapshotDefinitions(local.snapshot, teacherSnapshot),
+      };
+    } catch (error) {
+      return {
+        modelId: teacherModelId,
+        snapshot: teacherSnapshot,
+        usingTeacherBaseline: true,
+        fallbackModelId: "",
+        mismatchMessages: [apiErrorText(error)],
+      };
+    }
   }
 
   try {

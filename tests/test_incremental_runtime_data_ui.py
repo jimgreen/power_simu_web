@@ -14,8 +14,8 @@ class IncrementalRuntimeDataUiTest(unittest.TestCase):
     def test_simulator_fast_poll_uses_incremental_logs_and_measurements(self):
         script = self._script("simulator")
 
-        self.assertIn("logs=0", script)
-        self.assertIn("measurements=0", script)
+        self.assertIn('params.set("logs", "0")', script)
+        self.assertIn('params.set("measurements", "0")', script)
         self.assertIn("refreshRuntimeLogs", script)
         self.assertIn("fetchRuntimeLogHistoryPage", script)
         self.assertIn("before_seq=${oldestSeq}", script)
@@ -29,7 +29,7 @@ class IncrementalRuntimeDataUiTest(unittest.TestCase):
     def test_trainee_fast_poll_uses_incremental_measurements_and_live_cells(self):
         script = self._script("trainee")
 
-        self.assertIn("measurements=0", script)
+        self.assertIn("measurements: 0", script)
         self.assertIn("teacherMeasurementDeltaAddress", script)
         self.assertIn("refreshMeasurementDelta", script)
         self.assertIn("applyMeasurementDelta", script)

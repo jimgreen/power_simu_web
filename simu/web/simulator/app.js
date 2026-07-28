@@ -12,12 +12,15 @@ const VERTICAL_SPLIT_DEFAULTS = {
 const VERTICAL_SPLIT_DEFAULT_RATIO = 55;
 const VERTICAL_SPLIT_MIN_TOP_PX = 120;
 const VERTICAL_SPLIT_MIN_BOTTOM_PX = 120;
+const STATIC_CACHE_STORAGE_KEY = "polarSimulatorStaticCacheV1";
+const STATIC_CACHE_MODEL_LIMIT = 4;
 const state = {
   snapshot: null,
   activePage: "",
   pageSections: {},
   pageMain: null,
   models: [],
+  modelsLoaded: false,
   activeModelId: localStorage.getItem("polarSimulatorModelId") || "",
   refreshRequestActive: false,
   deviceFaults: [],
@@ -26,6 +29,12 @@ const state = {
   weatherPoints: [],
   loadPoints: [],
   loadPointsByName: {},
+  curveSummary: null,
+  curveSummaryLoadedModelId: "",
+  curveSummaryRequest: null,
+  curveSummaryRequestModelId: "",
+  curveSeriesRequestKey: "",
+  curveDirtyKeys: new Set(),
   curveSeries: {},
   curveSeriesByMode: {},
   curveMode: localStorage.getItem("polarSimulatorCurveMode") || "year",
@@ -1944,7 +1953,12 @@ function showPage(page, updateHash = true) {
   } else if (location.hash) {
     history.replaceState(null, "", nextPath);
   }
-  requestAnimationFrame(() => renderActiveSimulatorPage(state.snapshot, true));
+  requestAnimationFrame(() => {
+    renderActiveSimulatorPage(state.snapshot, true);
+    if (state.snapshot && !hasStaticSnapshotPayload(state.snapshot, staticSnapshotKeysForPage(target))) {
+      refresh();
+    }
+  });
 }
 
 function initPageNavigation() {
@@ -1985,26 +1999,169 @@ const STATIC_SNAPSHOT_KEYS = [
   "diagram",
 ];
 
-function hasStaticSnapshotPayload(snapshot) {
-  return Boolean(snapshot && STATIC_SNAPSHOT_KEYS.every((key) => snapshot[key] !== undefined));
+const STATIC_SNAPSHOT_KEYS_BY_PAGE = {
+  "overview": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"],
+  "model": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"],
+  "diagram": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters", "diagram"],
+  "curves": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"],
+  "faults": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"],
+  "modes": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"],
+  "parameters": ["settings"],
+  "runtime": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"],
+  "measurements": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"],
+  "logs": [],
+};
+
+const CACHEABLE_STATIC_KEYS = STATIC_SNAPSHOT_KEYS.filter((key) => key !== "curves");
+
+function staticSnapshotKeysForPage(page = currentPageName()) {
+  return STATIC_SNAPSHOT_KEYS_BY_PAGE[page] || STATIC_SNAPSHOT_KEYS;
+}
+
+function hasStaticSnapshotPayload(snapshot, requiredKeys = STATIC_SNAPSHOT_KEYS) {
+  return Boolean(snapshot && requiredKeys.every((key) => snapshot[key] !== undefined));
+}
+
+function staticMetaSignature(meta) {
+  return JSON.stringify(meta || null);
+}
+
+function staticMetaMatches(left, right) {
+  return staticMetaSignature(left) === staticMetaSignature(right);
+}
+
+function readStaticCacheStore() {
+  try {
+    const raw = localStorage.getItem(STATIC_CACHE_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function writeStaticCacheStore(store) {
+  try {
+    localStorage.setItem(STATIC_CACHE_STORAGE_KEY, JSON.stringify(store));
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function pruneStaticCacheStore(store) {
+  const entries = Object.entries(store || {})
+    .sort((left, right) => Number(right[1]?.updatedAt || 0) - Number(left[1]?.updatedAt || 0));
+  return Object.fromEntries(entries.slice(0, STATIC_CACHE_MODEL_LIMIT));
+}
+
+function restoreStaticSnapshotCache(snapshot, page = currentPageName()) {
+  if (!snapshot?.model?.id || !snapshot.static_meta) return snapshot;
+  const requiredKeys = staticSnapshotKeysForPage(page).filter((key) => CACHEABLE_STATIC_KEYS.includes(key));
+  if (!requiredKeys.length) return snapshot;
+  const entry = readStaticCacheStore()[snapshot.model.id];
+  if (!entry?.fields) return snapshot;
+  let restored = snapshot;
+  requiredKeys.forEach((key) => {
+    if (restored[key] !== undefined) return;
+    const cached = entry.fields[key];
+    if (!cached || !staticMetaMatches(cached.meta, restored.static_meta?.[key])) return;
+    if (restored === snapshot) restored = { ...snapshot };
+    restored[key] = cached.value;
+  });
+  return restored;
+}
+
+function persistStaticSnapshotCache(snapshot, page = currentPageName()) {
+  if (!snapshot?.model?.id || !snapshot.static_meta) return;
+  const requiredKeys = staticSnapshotKeysForPage(page).filter((key) => (
+    CACHEABLE_STATIC_KEYS.includes(key)
+    && snapshot[key] !== undefined
+    && snapshot.static_meta?.[key] !== undefined
+  ));
+  if (!requiredKeys.length) return;
+  const store = readStaticCacheStore();
+  const entry = store[snapshot.model.id] || { fields: {} };
+  const fields = { ...(entry.fields || {}) };
+  requiredKeys.forEach((key) => {
+    fields[key] = {
+      meta: snapshot.static_meta[key],
+      value: snapshot[key],
+    };
+  });
+  store[snapshot.model.id] = { updatedAt: Date.now(), fields };
+  if (writeStaticCacheStore(pruneStaticCacheStore(store))) return;
+  requiredKeys.forEach((key) => {
+    if (fields[key]?.value?.svg) delete fields[key];
+  });
+  store[snapshot.model.id] = { updatedAt: Date.now(), fields };
+  writeStaticCacheStore(pruneStaticCacheStore(store));
+}
+
+function staticSnapshotMissingKeys(snapshot, requiredKeys = STATIC_SNAPSHOT_KEYS) {
+  return (requiredKeys || []).filter((key) => snapshot?.[key] === undefined);
+}
+
+function pageNeedsMeasurementDelta(page = currentPageName()) {
+  return ["overview", "diagram", "runtime", "measurements"].includes(page);
+}
+
+function pageNeedsRuntimeLogDelta(page = currentPageName()) {
+  return ["overview", "logs"].includes(page);
+}
+
+function pageNeedsDevices(page = currentPageName()) {
+  return ["overview", "faults", "modes", "runtime"].includes(page);
+}
+
+function pageNeedsCommands(page = currentPageName()) {
+  return ["overview", "diagram", "runtime"].includes(page);
 }
 
 function mergeSnapshot(previous, incoming) {
   if (!previous || !incoming) return incoming;
   const merged = { ...previous, ...incoming };
   STATIC_SNAPSHOT_KEYS.forEach((key) => {
-    if (incoming[key] === undefined && previous[key] !== undefined) merged[key] = previous[key];
+    if (
+      incoming[key] === undefined
+      && previous[key] !== undefined
+      && (
+        !incoming.static_meta?.[key]
+        || !previous.static_meta?.[key]
+        || staticMetaMatches(incoming.static_meta[key], previous.static_meta[key])
+      )
+    ) {
+      merged[key] = previous[key];
+    }
   });
   if (incoming.runtime_logs === undefined) delete merged.runtime_logs;
   return merged;
 }
 
-function snapshotPollPath() {
+function snapshotPollPath(page = currentPageName(), forceStaticKeys = null) {
+  if (!Array.isArray(forceStaticKeys) && state.snapshot?.static_meta) {
+    state.snapshot = restoreStaticSnapshotCache(state.snapshot, page);
+  }
   const currentModelId = String(state.snapshot?.model?.id || "");
-  const needsStaticPayload = !hasStaticSnapshotPayload(state.snapshot)
-    || (currentModelId && state.activeModelId && currentModelId !== state.activeModelId);
-  if (needsStaticPayload) return "/api/snapshot";
-  return "/api/snapshot?lite=1&logs=0&measurements=0";
+  const modelChanged = currentModelId && state.activeModelId && currentModelId !== state.activeModelId;
+  const requiredStaticKeys = Array.isArray(forceStaticKeys)
+    ? forceStaticKeys
+    : (
+      state.snapshot?.static_meta && !modelChanged
+        ? staticSnapshotMissingKeys(state.snapshot, staticSnapshotKeysForPage(page))
+        : []
+    );
+  const params = new URLSearchParams();
+  params.set("logs", "0");
+  params.set("measurements", "0");
+  params.set("devices", pageNeedsDevices(page) ? "1" : "0");
+  params.set("commands", pageNeedsCommands(page) ? "1" : "0");
+  if (requiredStaticKeys.length) {
+    params.set("static", requiredStaticKeys.join(","));
+  } else {
+    params.set("lite", "1");
+  }
+  return `/api/snapshot?${params.toString()}`;
 }
 
 function apiUrl(path, modelScoped = true) {
@@ -2164,6 +2321,20 @@ async function refreshMeasurementDelta(renderNow = false) {
   } finally {
     state.measurementDeltaRequestActive = false;
   }
+}
+
+async function refreshSnapshotPayload(page = currentPageName()) {
+  let snapshot = mergeSnapshot(state.snapshot, await api(snapshotPollPath(page)));
+  snapshot = restoreStaticSnapshotCache(snapshot, page);
+  let requiredStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
+  if (requiredStaticKeys.length) {
+    snapshot = mergeSnapshot(snapshot, await api(snapshotPollPath(page, requiredStaticKeys)));
+    snapshot = restoreStaticSnapshotCache(snapshot, page);
+    requiredStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
+  }
+  if (!requiredStaticKeys.length) persistStaticSnapshotCache(snapshot, page);
+  state.snapshot = snapshot;
+  return snapshot;
 }
 
 function filenameFromDisposition(disposition, fallback) {
@@ -2517,6 +2688,12 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.activeCurveKey = "wind_speed_mps";
   state.selectedCurveKeys = ["wind_speed_mps"];
   state.curveEditKey = "";
+  state.curveSummary = null;
+  state.curveSummaryLoadedModelId = "";
+  state.curveSummaryRequest = null;
+  state.curveSummaryRequestModelId = "";
+  state.curveSeriesRequestKey = "";
+  state.curveDirtyKeys = new Set();
   state.curveSeries = {};
   state.curveSeriesByMode = {};
   state.curvesLoadedModelId = "";
@@ -2534,6 +2711,8 @@ async function loadModels() {
   } catch (_error) {
     state.models = [];
     renderModelSelector();
+  } finally {
+    state.modelsLoaded = true;
   }
 }
 
@@ -2811,6 +2990,11 @@ function curveLoadDevices() {
   const unique = new Map();
   devices.forEach((dev) => unique.set(`${dev.dev_type}|${dev.dev_name}`, dev));
   const loads = Array.from(unique.values()).sort((left, right) => left.dev_name.localeCompare(right.dev_name));
+  if (!loads.length && Array.isArray(state.curveSummary?.loads)) {
+    return state.curveSummary.loads
+      .map((item) => ({ dev_type: item.dev_type || "ACLoad", dev_name: item.name || loadNameFromCurveKey(item.key) }))
+      .filter((dev) => dev.dev_name);
+  }
   return loads.length ? loads : [{ dev_type: "ACLoad", dev_name: "load_ac_1" }];
 }
 
@@ -2899,34 +3083,34 @@ function loadCurveSeriesTemplate() {
   return resampleSeries(state.curveSeries.load_kw || state.curveSeries[firstLoadKey], curvePointCount(), 120);
 }
 
-function ensureCurveLoadSeries() {
-  const template = loadCurveSeriesTemplate();
+function curveFallbackValue(key) {
+  if (String(key || "").startsWith("load:")) return 120;
+  return curveMetaForKey(key).min;
+}
+
+function curveHasLoadedSeries(key) {
+  return Array.isArray(state.curveSeries?.[key]) && state.curveSeries[key].length > 0;
+}
+
+function ensureCurveSeries(keys = selectedCurveKeys()) {
   let changed = false;
-  curveLoadDevices().forEach((dev) => {
-    const key = loadCurveKey(dev.dev_name);
-    if (!state.curveSeries[key]) {
-      state.curveSeries[key] = [...template];
-      changed = true;
-    } else if (state.curveSeries[key].length !== curvePointCount()) {
-      state.curveSeries[key] = resampleSeries(state.curveSeries[key], curvePointCount(), 120);
-      changed = true;
-    }
+  const available = new Set(allCurveKeys());
+  const targetKeys = Array.from(new Set(keys || []))
+    .filter((key) => available.has(key) || ENV_CURVE_KEYS.includes(key) || String(key || "").startsWith("load:"));
+  targetKeys.forEach((key) => {
+    changed = normalizeCurveSeriesLength(key, curveFallbackValue(key)) || changed;
   });
-  const activeKey = activeCurveKey();
-  if (activeKey.startsWith("load:") && !state.curveSeries[activeKey]) {
-    setActiveCurve(loadCurveKey(curveLoadDevices()[0]?.dev_name), false);
-    changed = true;
-  }
   return changed;
 }
 
-function ensureCurveSeries() {
-  let changed = false;
-  ENV_CURVE_KEYS.forEach((key) => {
-    changed = normalizeCurveSeriesLength(key, curveMetaForKey(key).min) || changed;
-  });
-  changed = ensureCurveLoadSeries() || changed;
-  return changed;
+function markCurveDirty(key) {
+  if (!key) return;
+  if (!(state.curveDirtyKeys instanceof Set)) state.curveDirtyKeys = new Set(state.curveDirtyKeys || []);
+  state.curveDirtyKeys.add(key);
+}
+
+function markCurveKeysDirty(keys = []) {
+  keys.forEach((key) => markCurveDirty(key));
 }
 
 function saveCurrentCurveModeSeries() {
@@ -2942,8 +3126,7 @@ function setCurveMode(mode, shouldRender = true) {
   state.curveEditKey = "";
   if (state.curveSeriesByMode[nextMode]) {
     state.curveSeries = state.curveSeriesByMode[nextMode];
-    ensureCurveSeries();
-    syncCurvePayload(false);
+    ensureCurveSeries(selectedCurveKeys());
   } else {
     generateCurves(0, nextMode, false);
   }
@@ -2961,6 +3144,8 @@ function loadCurvesFromSnapshot(curves, modelId = state.activeModelId) {
   const loads = curves.loads && typeof curves.loads === "object" ? curves.loads : {};
   state.curveMode = mode;
   localStorage.setItem("polarSimulatorCurveMode", mode);
+  state.curveSummary = curveSummaryFromCurves(curves);
+  state.curveSummaryLoadedModelId = modelId || "loaded";
   state.curveSeries = {
     wind_speed_mps: resampleSeries(weather.map((point) => Number(point.wind_speed_mps) || 0), config.pointCount, 0),
     solar_irradiance_w_m2: resampleSeries(weather.map((point) => Number(point.solar_irradiance_w_m2) || 0), config.pointCount, 0),
@@ -2978,6 +3163,92 @@ function loadCurvesFromSnapshot(curves, modelId = state.activeModelId) {
   state.curveSeriesByMode[mode] = state.curveSeries;
   syncCurvePayload(false);
   state.curvesLoadedModelId = modelId || "loaded";
+}
+
+function curveSummaryFromCurves(curves = {}) {
+  const mode = CURVE_MODES[curves.mode] ? curves.mode : "day";
+  const config = curveModeConfig(mode);
+  const weather = Array.isArray(curves.weather) ? curves.weather : [];
+  const loads = curves.loads && typeof curves.loads === "object" ? curves.loads : {};
+  return {
+    mode,
+    time_step_minutes: Number(curves.time_step_minutes || config.stepMinutes),
+    point_count: Number(curves.point_count || weather.length || config.pointCount),
+    environment: ENV_CURVE_KEYS.map((key) => ({ key, point_count: weather.length })),
+    loads: Object.keys(loads).map((name) => ({
+      key: loadCurveKey(name),
+      name,
+      point_count: Array.isArray(loads[name]) ? loads[name].length : 0,
+    })),
+  };
+}
+
+function applyCurveSummary(summary, modelId = state.activeModelId) {
+  if (!summary || typeof summary !== "object") return;
+  const mode = CURVE_MODES[summary.mode] ? summary.mode : "day";
+  state.curveSummary = summary;
+  state.curveSummaryLoadedModelId = modelId || "loaded";
+  state.curvesLoadedModelId = modelId || "loaded";
+  state.curveMode = mode;
+  localStorage.setItem("polarSimulatorCurveMode", mode);
+}
+
+async function loadCurveSummary(modelId = state.activeModelId) {
+  if (state.curveSummaryLoadedModelId === modelId && state.curveSummary) return state.curveSummary;
+  if (state.curveSummaryRequest && state.curveSummaryRequestModelId === modelId) return state.curveSummaryRequest;
+  state.curveSummaryRequestModelId = modelId;
+  state.curveSummaryRequest = api("/api/curves/summary")
+    .then((summary) => {
+      if (modelId === state.activeModelId) applyCurveSummary(summary, modelId);
+      return summary;
+    })
+    .finally(() => {
+      if (state.curveSummaryRequestModelId === modelId) {
+        state.curveSummaryRequest = null;
+        state.curveSummaryRequestModelId = "";
+      }
+    });
+  return state.curveSummaryRequest;
+}
+
+function applyCurveSeriesPayload(payload = {}, requestedKeys = []) {
+  if (!payload || typeof payload !== "object") return;
+  if (CURVE_MODES[payload.mode]) {
+    state.curveMode = payload.mode;
+    localStorage.setItem("polarSimulatorCurveMode", state.curveMode);
+  }
+  const series = payload.series && typeof payload.series === "object" ? payload.series : {};
+  Object.entries(series).forEach(([key, values]) => {
+    if (!Array.isArray(values)) return;
+    state.curveSeries[key] = resampleSeries(values.map((value) => Number(value) || 0), curvePointCount(), curveFallbackValue(key));
+  });
+  requestedKeys.forEach((key) => {
+    if (!curveHasLoadedSeries(key)) normalizeCurveSeriesLength(key, curveFallbackValue(key));
+  });
+  state.curveSeriesByMode[state.curveMode] = state.curveSeries;
+}
+
+async function ensureCurveSeriesLoaded(keys = selectedCurveKeys()) {
+  const requested = Array.from(new Set(keys || [])).filter(Boolean);
+  const keysToFetch = requested.filter((key) => !curveHasLoadedSeries(key));
+  if (!keysToFetch.length) return true;
+  const modelId = state.activeModelId;
+  const requestKey = `${modelId}|${keysToFetch.slice().sort().join("|")}`;
+  if (state.curveSeriesRequestKey === requestKey) return false;
+  state.curveSeriesRequestKey = requestKey;
+  try {
+    const payload = await api(`/api/curves/series?keys=${encodeURIComponent(keysToFetch.join(","))}`);
+    if (modelId === state.activeModelId) {
+      applyCurveSeriesPayload(payload, keysToFetch);
+    }
+    return true;
+  } catch (error) {
+    const status = $("curveStatus");
+    if (status) status.textContent = `曲线加载失败：${apiErrorText(error)}`;
+    return false;
+  } finally {
+    if (state.curveSeriesRequestKey === requestKey) state.curveSeriesRequestKey = "";
+  }
 }
 
 async function switchSimulationMode(mode) {
@@ -3255,12 +3526,76 @@ function setActiveCurve(key, shouldRender = true) {
   setSelectedCurves([nextKey], nextKey, shouldRender);
 }
 
-function renderCurveEditor(force = false) {
-  const seriesChanged = ensureCurveSeries();
-  if (seriesChanged) syncCurvePayload(false);
+function drawCurveLoading(message = "正在加载曲线...") {
+  const canvas = $("curveEditorChart");
+  if (!canvas) return;
+  resizeCurveCanvas();
+  const ctx = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#fcfeff";
+  ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = "#d8e1e5";
+  ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
+  ctx.fillStyle = "#63717a";
+  ctx.font = "14px Microsoft YaHei, Arial";
+  ctx.textAlign = "center";
+  ctx.fillText(message, width / 2, height / 2);
+  ctx.textAlign = "left";
+}
+
+function renderCurveTableLoading(message = "正在加载曲线数据...") {
+  const container = $("hourlyCurveTable");
+  if (!container) return;
+  container.innerHTML = `
+    <table class="curve-table">
+      <tbody>
+        <tr><td>${escapeHtml(message)}</td></tr>
+      </tbody>
+    </table>`;
+}
+
+function renderCurveEditorLoading(message) {
   renderCurveTree();
   renderCurveModeControls();
   updateCurveModeLabels();
+  const status = $("curveStatus");
+  if (status) status.textContent = message;
+  drawCurveLoading(message);
+  renderCurveTableLoading(message);
+}
+
+function renderCurveEditor(force = false) {
+  const modelId = state.activeModelId;
+  if (!state.modelsLoaded) {
+    renderCurveEditorLoading("正在加载模型列表...");
+    return;
+  }
+  const summaryMissing = state.curveSummaryLoadedModelId !== modelId || !state.curveSummary;
+  if (summaryMissing) {
+    renderCurveEditorLoading("正在加载曲线摘要...");
+    loadCurveSummary(modelId).then(() => {
+      if (currentPageName() !== "curves" || modelId !== state.activeModelId) return;
+      ensureCurveSeriesLoaded(selectedCurveKeys()).then(() => renderCurveEditor(true));
+    });
+    return;
+  }
+  const selectedKeys = selectedCurveKeys();
+  const missingKeys = selectedKeys.filter((key) => !curveHasLoadedSeries(key));
+  if (missingKeys.length) {
+    renderCurveEditorLoading(`正在加载 ${missingKeys.length} 条曲线...`);
+    ensureCurveSeriesLoaded(selectedKeys).then(() => {
+      if (currentPageName() === "curves" && modelId === state.activeModelId) renderCurveEditor(true);
+    });
+    return;
+  }
+  ensureCurveSeries(selectedKeys);
+  renderCurveTree();
+  renderCurveModeControls();
+  updateCurveModeLabels();
+  const status = $("curveStatus");
+  if (status && /^正在加载|^曲线加载失败/.test(status.textContent || "")) status.textContent = "已加载";
   const activeEditor = document.activeElement?.closest?.("#hourlyCurveTable");
   if (!force && activeEditor) return;
   drawCurves();
@@ -3303,6 +3638,7 @@ function generateCurves(jitter = 0, mode = state.curveMode, shouldRender = true)
   }
   state.curveSeries.load_kw = [...state.curveSeries[loadCurveKey(loadDevices[0]?.dev_name)]];
   state.curveSeriesByMode[state.curveMode] = state.curveSeries;
+  markCurveKeysDirty(Object.keys(state.curveSeries));
   syncCurvePayload(false);
   if (shouldRender) renderCurveEditor(true);
 }
@@ -3704,7 +4040,7 @@ function applyCurveDrag(event) {
     const weight = 1 - Math.abs(offset) / (brush + 1);
     values[point] = roundCurveValue(editKey, values[point] * (1 - weight) + targetValue * weight);
   }
-  syncCurvePayload();
+  markCurveDirty(editKey);
   drawCurves();
   $("curveStatus").textContent = "已修改";
 }
@@ -3770,7 +4106,7 @@ function applyHourlyTableEdit(cell) {
   const value = roundCurveValue(key, rawValue);
   const values = state.curveSeries[key] || [];
   if (index >= 0 && index < values.length) values[index] = value;
-  syncCurvePayload();
+  markCurveDirty(key);
   drawCurves();
   renderHourlyTable();
   $("curveStatus").textContent = "已修改";
@@ -3883,12 +4219,12 @@ async function refresh() {
   if (state.refreshRequestActive) return;
   state.refreshRequestActive = true;
   try {
-    const snapshot = mergeSnapshot(state.snapshot, await api(snapshotPollPath()));
-    state.snapshot = snapshot;
-    await Promise.all([
-      refreshRuntimeLogs(false),
-      refreshMeasurementDelta(false),
-    ]);
+    const activePage = currentPageName();
+    const snapshot = await refreshSnapshotPayload(activePage);
+    const deltaRequests = [];
+    if (pageNeedsRuntimeLogDelta(activePage)) deltaRequests.push(refreshRuntimeLogs(false));
+    if (pageNeedsMeasurementDelta(activePage)) deltaRequests.push(refreshMeasurementDelta(false));
+    await Promise.all(deltaRequests);
     renderSnapshot(snapshot);
   } catch (error) {
     console.error("模拟台快照刷新失败", error);
@@ -3946,6 +4282,14 @@ function parsePowerFlowOverview(snapshot) {
 }
 
 function overviewCurveBoundary(snapshot) {
+  const boundary = snapshot.curve_boundary || {};
+  if (boundary && typeof boundary === "object" && boundary.point) {
+    return {
+      point: boundary.point || {},
+      loadTotal: Number(boundary.load_total ?? boundary.loadTotal ?? 0),
+      index: Number(boundary.index) || 0,
+    };
+  }
   const curves = snapshot.curves || {};
   const weather = Array.isArray(curves.weather) ? curves.weather : [];
   const step = Math.max(1, Number(curves.time_step_minutes) || 1);
@@ -4446,7 +4790,8 @@ function renderOverviewDashboard(snapshot) {
     stateDot.classList.toggle("is-paused", clock.state === "paused");
   }
   setOverviewText("overviewModel", snapshot.model?.name || snapshot.model?.id || "--");
-  setOverviewText("overviewMode", snapshot.curves?.mode === "year" ? "年仿真" : "日仿真");
+  const overviewMode = snapshot.curve_boundary?.mode || snapshot.curves?.mode || state.curveMode;
+  setOverviewText("overviewMode", overviewMode === "year" ? "年仿真" : "日仿真");
   setOverviewText("overviewStep", `${formatOverviewNumber(clock.step_minutes || 1)} min`);
   setOverviewText("metricScada", validMeasurements);
   setOverviewText("overviewMeasurementTotal", totalMeasurements);
@@ -4546,15 +4891,26 @@ function renderSnapshot(snapshot) {
     state.lastMeasurementTraceKey = "";
   }
   state.traceRunId = runId;
-  if (state.curvesLoadedModelId !== state.activeModelId) {
+  if (snapshot.curves && state.curvesLoadedModelId !== state.activeModelId) {
     loadCurvesFromSnapshot(snapshot.curves, state.activeModelId);
+  } else if (snapshot.curve_boundary?.mode) {
+    const boundaryMode = CURVE_MODES[snapshot.curve_boundary.mode] ? snapshot.curve_boundary.mode : "day";
+    state.curveMode = boundaryMode;
+    localStorage.setItem("polarSimulatorCurveMode", boundaryMode);
+    state.curveSummary = {
+      ...(state.curveSummary || {}),
+      mode: boundaryMode,
+      time_step_minutes: Number(snapshot.curve_boundary.time_step_minutes) || curveStepMinutes(boundaryMode),
+      point_count: Number(snapshot.curve_boundary.point_count) || curvePointCount(boundaryMode),
+    };
+    state.curveSummaryLoadedModelId = state.activeModelId;
   }
   const solverInfo = $("solverInfo");
   if (solverInfo) solverInfo.textContent = snapshot.result.solver_info || "待运行";
   if (Array.isArray(snapshot.runtime_logs)) appendRuntimeLog(snapshot);
   appendRuntimeTrace(snapshot);
   appendMeasurementTrace(snapshot);
-  if (!state.settingsLoaded) {
+  if (!state.settingsLoaded && snapshot.settings !== undefined) {
     state.deviceFaults = [...(snapshot.settings?.device_faults || [])];
     state.measurementFaults = [...(snapshot.settings?.measurement_faults || [])];
     state.settingsLoaded = true;
@@ -7298,18 +7654,29 @@ function updateModeValue(index, field, rawValue) {
 }
 
 async function saveCurves() {
-  syncCurvePayload();
   const config = curveModeConfig();
-  await api("/api/curves", {
+  const dirtyKeys = state.curveDirtyKeys instanceof Set ? Array.from(state.curveDirtyKeys) : [];
+  const keysToSave = Array.from(new Set([...dirtyKeys, ...selectedCurveKeys()]))
+    .filter((key) => curveHasLoadedSeries(key));
+  if (!keysToSave.length) {
+    $("curveStatus").textContent = "没有需要保存的曲线";
+    return;
+  }
+  await ensureCurveSeriesLoaded(keysToSave);
+  const series = {};
+  keysToSave.forEach((key) => {
+    if (curveHasLoadedSeries(key)) series[key] = state.curveSeries[key].map((value) => roundCurveValue(key, value));
+  });
+  await api("/api/curves/series", {
     method: "POST",
     body: JSON.stringify({
       mode: state.curveMode,
       point_count: config.pointCount,
       time_step_minutes: config.stepMinutes,
-      weather: state.weatherPoints,
-      loads: state.loadPointsByName,
+      series,
     }),
   });
+  state.curveDirtyKeys = new Set();
   $("curveStatus").textContent = "已保存";
 }
 

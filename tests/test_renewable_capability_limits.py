@@ -264,6 +264,106 @@ class RenewableCapabilityLimitTest(unittest.TestCase):
         self.assertAlmostEqual(seen["wind"], 1.25)
         self.assertAlmostEqual(seen["pv"], 25.0)
 
+    def test_wind_limit_uses_rated_capacity_and_wind_speed_thresholds(self):
+        import simu_loop
+
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        root = Path(workspace.name)
+        model_file = root / "model.e"
+        stat_file = root / "stat.e"
+        weather_file = root / "weather.e"
+        yt_ctrl_file = root / "yt_ctrl.e"
+        meas_file = root / "meas.e"
+
+        model_file.write_text(
+            _efile_block(
+                "ACGenerator",
+                (
+                    "idx",
+                    "name",
+                    "dev_type",
+                    "node",
+                    "control_type",
+                    "p_set",
+                    "q_set",
+                    "v_set",
+                    "run_stat",
+                    "rated_capacity",
+                ),
+                [
+                    {
+                        "idx": 1,
+                        "name": "wind_alpha",
+                        "dev_type": "ac-wind-source",
+                        "node": 1,
+                        "control_type": "P",
+                        "p_set": 0,
+                        "q_set": 0,
+                        "v_set": 300,
+                        "run_stat": 1,
+                        "rated_capacity": 12,
+                    }
+                ],
+            )
+            + _efile_block(
+                "ACWindGen",
+                (
+                    "idx",
+                    "idx_acgenerator",
+                    "wind_turbine_model",
+                    "cut_in_wind_speed",
+                    "rated_wind_speed",
+                    "cut_out_wind_speed",
+                ),
+                [
+                    {
+                        "idx": 1,
+                        "idx_acgenerator": 1,
+                        "wind_turbine_model": "WT-5MW",
+                        "cut_in_wind_speed": 5,
+                        "rated_wind_speed": 15,
+                        "cut_out_wind_speed": 50,
+                    }
+                ],
+            ),
+            encoding="utf-8",
+        )
+        stat_file.write_text(_efile_block("SetValue", ("dev_type", "dev_name", "set_type", "set_value"), []), encoding="utf-8")
+        yt_ctrl_file.write_text(_efile_block("SetValue", ("dev_type", "dev_name", "set_type", "set_value"), []), encoding="utf-8")
+        meas_file.write_text(MEAS_TEXT, encoding="utf-8")
+
+        seen: dict[str, float] = {}
+
+        def fake_solver(merged_model: Path):
+            book = simu_loop.EBook(merged_model)
+            seen["wind"] = float(book.data["ACGenerator"].data[0]["p_set"])
+            return object(), "fake-solver"
+
+        config = simu_loop.SimulationConfig(
+            model_file=model_file,
+            meas_file=meas_file,
+            weather_file=weather_file,
+            dev_stat_file=stat_file,
+            yt_ctrl_file=yt_ctrl_file,
+            dev_define_file=None,
+            real_file=root / "real.e",
+            scada_file=root / "scada.e",
+            period_seconds=60.0,
+        )
+
+        for wind_speed, expected in ((4, 0.0), (10, 1.5), (15, 12.0), (50, 0.0)):
+            weather_file.write_text(
+                _efile_block(
+                    "Weather",
+                    ("time", "wind_speed_mps", "solar_irradiance_w_m2", "air_temp_c", "load_kw"),
+                    [{"time": "00:00:00", "wind_speed_mps": wind_speed, "solar_irradiance_w_m2": 0, "air_temp_c": 25, "load_kw": 0}],
+                ),
+                encoding="utf-8",
+            )
+            simu_loop.run_once(config, solver=fake_solver)
+            self.assertAlmostEqual(seen["wind"], expected)
+
     def test_wind_and_pv_limits_target_source_devices_not_converters(self):
         import simu_loop
 

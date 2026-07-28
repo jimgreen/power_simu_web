@@ -46,6 +46,61 @@ def test_trainee_receive_uses_teacher_definition_baseline_when_local_model_is_mi
     assert "state.localDefinitionSnapshot = definitionSnapshot" in script
 
 
+def test_trainee_receive_does_not_compare_current_model_when_teacher_model_is_missing_locally():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+    block = script.split("async function selectLocalDefinitionSnapshotForTeacher", 1)[1].split(
+        "function applyTeacherConnection",
+        1,
+    )[0]
+
+    assert "if (teacherModelId && hasLocalDefinitionModel(teacherModelId))" in block
+    assert "if (!teacherModelId && hasLocalDefinitionModel(localModelId))" in block
+    assert block.index("if (teacherModelId && hasLocalDefinitionModel(teacherModelId))") < block.index(
+        "if (!teacherModelId && hasLocalDefinitionModel(localModelId))"
+    )
+    assert "usingTeacherBaseline: true" in block
+
+
+def test_trainee_receive_poll_urls_remain_relative_before_api_prefixing():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+    block = script.split("function appendUrlQuery", 1)[1].split("function teacherSnapshotPath", 1)[0]
+
+    assert "const isAbsoluteUrl = /^https?:\\/\\//i.test(String(url || \"\"));" in block
+    assert "return isAbsoluteUrl ? target.href : `${target.pathname}${target.search}${target.hash}`;" in block
+    assert 'return appendUrlQuery("/api/trainee/snapshot", { lite: 1, ...logParams, measurements: 0 });' in script
+    assert 'return appendUrlQuery("/api/trainee/measurements/delta", { after_seq: state.measurementDeltaSeq });' in script
+
+
+def test_trainee_receive_fetches_static_snapshot_when_restored_receive_has_no_static_payload():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+    block = script.split("function teacherSnapshotPollAddress()", 1)[1].split(
+        "function measurementDeltaPathFromSnapshotPath",
+        1,
+    )[0]
+
+    assert "const expectedTeacherModelId = String(state.teacherModelId || \"\");" in block
+    assert "const needsStaticPayload = !hasStaticSnapshotPayload(state.snapshot)" in block
+    assert "currentModelId !== expectedTeacherModelId" in block
+    assert 'return appendUrlQuery("/api/trainee/snapshot", logParams);' in block
+    assert 'return appendUrlQuery("/api/trainee/snapshot", { lite: 1, ...logParams, measurements: 0 });' in block
+
+
+def test_trainee_receive_overview_keeps_teacher_runtime_logs_for_power_flow():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+    block = script.split("function teacherSnapshotPollAddress()", 1)[1].split(
+        "function measurementDeltaPathFromSnapshotPath",
+        1,
+    )[0]
+
+    assert "function pageNeedsRuntimeLogs" in script
+    assert 'return ["overview", "history"].includes(page);' in script
+    assert "const logParams = pageNeedsRuntimeLogs()" in block
+    assert "? { log_limit: snapshotLogLimit() }" in block
+    assert ": { logs: 0 };" in block
+    assert 'return appendUrlQuery("/api/trainee/snapshot", logParams);' in block
+    assert 'return appendUrlQuery("/api/trainee/snapshot", { lite: 1, ...logParams, measurements: 0 });' in block
+
+
 def test_trainee_receive_runtime_logs_each_issue_and_stops_after_consecutive_failures():
     script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
 

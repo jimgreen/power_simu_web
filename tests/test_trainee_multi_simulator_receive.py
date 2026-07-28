@@ -10,7 +10,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from simu.generate_simple_model import write_model_dir
-from simu.server import make_http_server
+from simu.server import make_definition_archive, make_http_server
 from simu.service import MultiModelSimulator, SimulationModelSpec
 
 
@@ -142,14 +142,14 @@ class TraineeMultiSimulatorReceiveTest(unittest.TestCase):
             thread.start()
             try:
                 port = server.server_address[1]
-                model_text = (root / "source" / "beta" / "model.e").read_text(encoding="utf-8")
+                filename, archive_data = make_definition_archive(manager.service_for("beta"))
                 payload = {
                     "model_id": "alpha",
-                    "filename": "model.e",
-                    "data_base64": base64.b64encode(model_text.encode("utf-8")).decode("ascii"),
+                    "filename": filename,
+                    "data_base64": base64.b64encode(archive_data).decode("ascii"),
                 }
                 request = Request(
-                    f"http://127.0.0.1:{port}/api/models/update-definitions",
+                    f"http://127.0.0.1:{port}/api/models/import-definitions",
                     data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                     headers={"Content-Type": "application/json"},
                     method="POST",

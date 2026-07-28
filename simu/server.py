@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import html
 import json
 import math
 import mimetypes
@@ -382,6 +383,25 @@ def _write_model_diagram(target_dir: Path, diagram_svg_text: Optional[str], *, r
         return False
     path.write_text(normalized, encoding="utf-8")
     return True
+
+
+def _fallback_definition_diagram_svg(service: PolarMicrogridSimulator) -> str:
+    model_id = html.escape(str(getattr(service, "model_id", "model") or "model"))
+    model_name = html.escape(str(getattr(service, "model_name", model_id) or model_id))
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">'
+        '<rect width="960" height="540" fill="#f8fafc"/>'
+        '<rect x="220" y="190" width="520" height="160" rx="12" fill="#ffffff" stroke="#94a3b8" stroke-width="2"/>'
+        '<text x="480" y="250" text-anchor="middle" font-family="Arial, sans-serif" '
+        'font-size="28" fill="#0f172a">'
+        f"{model_name}"
+        "</text>"
+        '<text x="480" y="295" text-anchor="middle" font-family="Arial, sans-serif" '
+        'font-size="18" fill="#475569">'
+        f"{model_id} · diagram.svg"
+        "</text>"
+        "</svg>"
+    )
 
 
 MODEL_DEVICE_BLOCKS = {
@@ -838,7 +858,7 @@ def import_definition_archive(service: PolarMicrogridSimulator, data: bytes) -> 
         meas_text = _read_zip_text(archive, "meas.e")
         control_text = _read_zip_text(archive, "control.e")
         curves_text = _read_zip_text(archive, "curves.e")
-        diagram_text = _read_zip_text(archive, DIAGRAM_FILE_NAME, required=False)
+        diagram_text = _read_zip_text(archive, DIAGRAM_FILE_NAME)
 
     assert model_text is not None and meas_text is not None and control_text is not None and curves_text is not None
     diagram_text = _normalize_diagram_svg_text(diagram_text)
@@ -892,7 +912,7 @@ def import_definition_model(
             _read_zip_text(archive, "model.e")
             _read_zip_text(archive, "meas.e")
             _read_zip_text(archive, "control.e")
-            diagram_text = _read_zip_text(archive, DIAGRAM_FILE_NAME, required=False)
+            diagram_text = _read_zip_text(archive, DIAGRAM_FILE_NAME)
         assert curves_text is not None
         _curves_from_definition_text(curves_text)
         _normalize_diagram_svg_text(diagram_text)
@@ -928,6 +948,8 @@ def make_definition_archive(service: PolarMicrogridSimulator) -> tuple[str, byte
         diagram_path = Path(getattr(service, "source_files", {}).get("diagram", service.sim_dir / DIAGRAM_FILE_NAME))
         if diagram_path.exists() and diagram_path.is_file():
             archive.write(diagram_path, DIAGRAM_FILE_NAME)
+        else:
+            archive.writestr(DIAGRAM_FILE_NAME, _fallback_definition_diagram_svg(service).encode("utf-8"))
     return archive_name, buffer.getvalue()
 
 

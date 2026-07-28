@@ -533,7 +533,7 @@
         <div class="remote-control-head">
           <div>
             <h2 id="newModelTitle">新建模型</h2>
-            <p>从本机 E 文件生成学员台本地模型</p>
+            <p>导入模拟台导出的定义压缩包</p>
           </div>
           <button id="closeNewModelDialog" class="dialog-close-button" type="button" aria-label="关闭新建窗口">×</button>
         </div>
@@ -541,16 +541,11 @@
           <input id="newModelName" name="newModelName" type="text" autocomplete="off" required />
         </label>
         <div class="new-model-file-row">
-          <button id="selectNewModelFile" type="button">选择 E 文件</button>
-          <input id="newModelFileInput" type="file" accept=".e" hidden />
+          <button id="selectNewModelFile" type="button">选择定义包</button>
+          <input id="newModelFileInput" type="file" accept=".zip,application/zip" hidden />
           <span id="newModelFilename">未选择文件</span>
         </div>
-        <div class="new-model-file-row">
-          <button id="selectNewModelSvgFile" type="button">选择 SVG 图</button>
-          <input id="newModelSvgInput" type="file" accept=".svg,image/svg+xml" hidden />
-          <span id="newModelSvgFilename">未选择图形</span>
-        </div>
-        <p class="remote-control-hint">将读取上传的 model.e，并自动生成 meas.e、control.e、stat.e、weather.e、curves.e 等定义文件。</p>
+        <p class="remote-control-hint">请选择模拟台导出的定义压缩包，其中包含模型、量测、控制、曲线与 SVG 图形定义。</p>
         <p id="newModelMessage" class="model-management-message" aria-live="polite"></p>
         <div class="dialog-actions">
           <button id="cancelNewModel" type="button">取消</button>
@@ -594,18 +589,12 @@
         </div>
         <dl class="import-file-summary">
           <div><dt>目标模型</dt><dd id="updateModelTargetName">--</dd></div>
-          <div><dt>E 文件</dt><dd id="updateModelFilename">未选择文件</dd></div>
-          <div><dt>SVG 图</dt><dd id="updateModelSvgFilename">未选择图形</dd></div>
+          <div><dt>定义包</dt><dd id="updateModelFilename">未选择文件</dd></div>
         </dl>
         <div class="new-model-file-row">
-          <button id="selectUpdateModelFile" type="button">选择 E 文件</button>
-          <input id="updateModelFileInput" type="file" accept=".e" hidden />
-          <span>导入修改后的 model.e，重新生成模型、量测、控制、状态与曲线定义</span>
-        </div>
-        <div class="new-model-file-row">
-          <button id="selectUpdateModelSvgFile" type="button">选择 SVG 图</button>
-          <input id="updateModelSvgInput" type="file" accept=".svg,image/svg+xml" hidden />
-          <span>导入修改后的 SVG 图形；未选择时保留现有接线图</span>
+          <button id="selectUpdateModelFile" type="button">选择定义包</button>
+          <input id="updateModelFileInput" type="file" accept=".zip,application/zip" hidden />
+          <span>导入模拟台导出的定义压缩包，覆盖选中模型的本地定义。</span>
         </div>
         <p class="remote-control-hint">接收中的模型不能修改；修改后会重新同步本地模型定义。</p>
         <p id="updateModelMessage" class="model-management-message" aria-live="polite"></p>

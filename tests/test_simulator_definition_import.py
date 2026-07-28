@@ -58,6 +58,7 @@ class SimulatorDefinitionImportTest(unittest.TestCase):
         self.assertIn('id="importDefinitionsButton"', html)
         self.assertIn('id="importModelDialog"', html)
         self.assertIn('id="importModelName"', html)
+        self.assertIn("SVG 图形", html)
         self.assertIn("validateImportModelName", script)
         self.assertIn("模型已存在", script)
         self.assertIn("create_model: true", script)

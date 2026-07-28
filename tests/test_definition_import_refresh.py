@@ -87,6 +87,48 @@ class DefinitionImportRefreshTest(unittest.TestCase):
             self.assertEqual((trainee_source / "diagram.svg").read_text(encoding="utf-8"), diagram_text)
             self.assertEqual(trainee.snapshot()["diagram"]["svg"], diagram_text)
 
+    def test_definition_package_always_contains_svg_diagram(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            package_source = temp_root / "package-source"
+            copytree(ROOT / "models/simulator/source/简单模型", package_source)
+            diagram_path = package_source / "diagram.svg"
+            if diagram_path.exists():
+                diagram_path.unlink()
+            package_service = PolarMicrogridSimulator(package_source, temp_root / "package-runtime", model_id="simple")
+
+            _filename, archive = make_definition_archive(package_service)
+
+            with zipfile.ZipFile(BytesIO(archive), mode="r") as definition_archive:
+                self.assertIn("diagram.svg", definition_archive.namelist())
+                diagram_text = definition_archive.read("diagram.svg").decode("utf-8")
+            self.assertIn("<svg", diagram_text)
+            self.assertIn("simple", diagram_text)
+
+    def test_import_definition_archive_requires_svg_diagram(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            package_service = PolarMicrogridSimulator(
+                ROOT / "models/simulator/source/简单模型",
+                temp_root / "package-runtime",
+                model_id="simple",
+            )
+            _filename, archive = make_definition_archive(package_service)
+            without_svg = BytesIO()
+            with zipfile.ZipFile(BytesIO(archive), mode="r") as source:
+                with zipfile.ZipFile(without_svg, mode="w", compression=zipfile.ZIP_DEFLATED) as target:
+                    for name in source.namelist():
+                        if name != "diagram.svg":
+                            target.writestr(name, source.read(name))
+
+            trainee_source = temp_root / "trainee-source"
+            trainee_runtime = temp_root / "trainee-runtime"
+            copytree(ROOT / "models/trainee/source/默认模型", trainee_source)
+            trainee = PolarMicrogridSimulator(trainee_source, trainee_runtime, model_id="trainee")
+
+            with self.assertRaisesRegex(ValueError, "diagram.svg"):
+                import_definition_archive(trainee, without_svg.getvalue())
+
     def test_import_definition_endpoint_overwrites_current_model(self):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)

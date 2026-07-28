@@ -137,9 +137,7 @@ const state = {
 const pending = { run_status: new Map(), set_values: new Map() };
 let pendingImportDefinitionFile = null;
 let pendingNewModelFile = null;
-let pendingNewModelSvgFile = null;
 let pendingUpdateModelFile = null;
-let pendingUpdateModelSvgFile = null;
 const RENEWABLE_COMMAND_VALID_MINUTES = 5;
 const TRACE_HISTORY_LIMIT = 45000;
 const TRACE_HIGH_RES_WINDOW_MINUTES = 24 * 60;
@@ -2176,7 +2174,6 @@ function setNewModelBusy(isBusy) {
   const input = $("newModelName");
   const button = $("newModelButton");
   const selectFile = $("selectNewModelFile");
-  const selectSvg = $("selectNewModelSvgFile");
   if (confirm) {
     confirm.disabled = isBusy;
     confirm.textContent = isBusy ? "新建中" : "新建";
@@ -2184,7 +2181,6 @@ function setNewModelBusy(isBusy) {
   if (input) input.disabled = isBusy;
   if (button) button.disabled = isBusy;
   if (selectFile) selectFile.disabled = isBusy;
-  if (selectSvg) selectSvg.disabled = isBusy;
 }
 
 function uniqueNewModelName(baseName = "新模型") {
@@ -2200,7 +2196,9 @@ function uniqueNewModelName(baseName = "新模型") {
 function suggestedNewModelName(filename) {
   return uniqueNewModelName(
     String(filename || "新模型")
-      .replace(/\.e$/i, "")
+      .replace(/\.zip$/i, "")
+      .replace(/_definitions_\d{8}_\d{6}$/i, "")
+      .replace(/_definitions$/i, "")
       .trim() || "新模型",
   );
 }
@@ -2221,17 +2219,12 @@ function validateNewModelForm(showBlank = false) {
   }
   if (!pendingNewModelFile) {
     if (confirm) confirm.disabled = true;
-    setNewModelMessage(showBlank ? "请选择 model.e 文件。" : "", showBlank ? "error" : "");
+    setNewModelMessage(showBlank ? "请选择模拟台导出的定义压缩包。" : "", showBlank ? "error" : "");
     return false;
   }
-  if (!String(pendingNewModelFile.name || "").toLowerCase().endsWith(".e")) {
+  if (!String(pendingNewModelFile.name || "").toLowerCase().endsWith(".zip")) {
     if (confirm) confirm.disabled = true;
-    setNewModelMessage("请选择 .e 格式的模型定义文件。", "error");
-    return false;
-  }
-  if (pendingNewModelSvgFile && !String(pendingNewModelSvgFile.name || "").toLowerCase().endsWith(".svg")) {
-    if (confirm) confirm.disabled = true;
-    setNewModelMessage("请选择 .svg 格式的接线图文件。", "error");
+    setNewModelMessage("请选择 .zip 格式的定义压缩包。", "error");
     return false;
   }
   if (confirm) confirm.disabled = false;
@@ -2244,13 +2237,9 @@ function openNewModelDialog() {
   const input = $("newModelName");
   if (!dialog || !input) return;
   pendingNewModelFile = null;
-  pendingNewModelSvgFile = null;
   const fileInput = $("newModelFileInput");
-  const svgInput = $("newModelSvgInput");
   if (fileInput) fileInput.value = "";
-  if (svgInput) svgInput.value = "";
   $("newModelFilename").textContent = "未选择文件";
-  $("newModelSvgFilename").textContent = "未选择图形";
   input.value = uniqueNewModelName("新模型");
   setNewModelMessage("");
   validateNewModelForm();
@@ -2265,13 +2254,9 @@ function closeNewModelDialog() {
   const dialog = $("newModelDialog");
   if (dialog?.open) dialog.close();
   pendingNewModelFile = null;
-  pendingNewModelSvgFile = null;
   const fileInput = $("newModelFileInput");
-  const svgInput = $("newModelSvgInput");
   if (fileInput) fileInput.value = "";
-  if (svgInput) svgInput.value = "";
   $("newModelFilename").textContent = "未选择文件";
-  $("newModelSvgFilename").textContent = "未选择图形";
   setNewModelMessage("");
   setNewModelBusy(false);
 }
@@ -2287,14 +2272,7 @@ function handleNewModelFileSelected(event) {
   validateNewModelForm(Boolean(file));
 }
 
-function handleNewModelSvgFileSelected(event) {
-  const file = event.target.files?.[0] || null;
-  pendingNewModelSvgFile = file;
-  $("newModelSvgFilename").textContent = file?.name || "未选择图形";
-  validateNewModelForm(Boolean(pendingNewModelFile));
-}
-
-async function createNewModelFromFile() {
+async function createNewModelFromArchive() {
   const file = pendingNewModelFile;
   const input = $("newModelName");
   const name = String(input?.value || "").trim();
@@ -2303,22 +2281,18 @@ async function createNewModelFromFile() {
     return;
   }
   setNewModelBusy(true);
-  setNewModelMessage("正在读取 model.e 并生成本地模型定义...");
-  addRuntimeLog("模型管理", "学员台 /api/models/create", "新建请求", `${name} ← ${file.name}`);
+  setNewModelMessage("正在导入模拟台定义压缩包并创建本地模型...");
+  addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "新建请求", `${name} ← ${file.name}`);
   try {
     const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
-    const diagramSvgBase64 = pendingNewModelSvgFile
-      ? arrayBufferToBase64(await pendingNewModelSvgFile.arrayBuffer())
-      : "";
-    const result = await api("/api/models/create", {
+    const result = await api("/api/models/import-definitions", {
       modelScoped: false,
       method: "POST",
       body: JSON.stringify({
+        create_model: true,
         name,
         filename: file.name,
         data_base64: dataBase64,
-        diagram_filename: pendingNewModelSvgFile?.name || "",
-        diagram_svg_base64: diagramSvgBase64,
       }),
     });
     state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
@@ -2329,13 +2303,13 @@ async function createNewModelFromFile() {
     renderModelManagementList();
     setModelManagementMessage(`已新建模型：${name}`, "ok");
     setImportStatus(`已新建模型：${name}`, "ok");
-    addRuntimeLog("模型管理", "学员台 /api/models/create", "新建成功", `模型 ${name}`, "ok");
+    addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "新建成功", `模型 ${name}`, "ok");
   } catch (error) {
     const message = apiErrorText(error);
     if (message.includes("已存在")) await loadModels();
     setNewModelMessage(message.includes("已存在") ? `${message}，请输入新的模型名称。` : message, "error");
     setImportStatus(message, "error");
-    addRuntimeLog("模型管理", "学员台 /api/models/create", "新建失败", message, "error");
+    addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "新建失败", message, "error");
   } finally {
     setNewModelBusy(false);
     if ($("newModelDialog")?.open) validateNewModelForm();
@@ -2478,17 +2452,12 @@ function validateUpdateModelForm(showBlank = false) {
   }
   if (!pendingUpdateModelFile) {
     if (confirm) confirm.disabled = true;
-    setUpdateModelMessage(showBlank ? "请选择 model.e 文件。" : "");
+    setUpdateModelMessage(showBlank ? "请选择模拟台导出的定义压缩包。" : "");
     return false;
   }
-  if (!String(pendingUpdateModelFile.name || "").toLowerCase().endsWith(".e")) {
+  if (!String(pendingUpdateModelFile.name || "").toLowerCase().endsWith(".zip")) {
     if (confirm) confirm.disabled = true;
-    setUpdateModelMessage("请选择 .e 格式的模型定义文件。", "error");
-    return false;
-  }
-  if (pendingUpdateModelSvgFile && !String(pendingUpdateModelSvgFile.name || "").toLowerCase().endsWith(".svg")) {
-    if (confirm) confirm.disabled = true;
-    setUpdateModelMessage("请选择 .svg 格式的接线图文件。", "error");
+    setUpdateModelMessage("请选择 .zip 格式的定义压缩包。", "error");
     return false;
   }
   if (confirm) confirm.disabled = false;
@@ -2508,14 +2477,10 @@ function openUpdateModelDialog(modelId = selectedManagementModelId()) {
   }
   state.updateTargetModelId = target.id;
   pendingUpdateModelFile = null;
-  pendingUpdateModelSvgFile = null;
   $("updateModelTargetName").textContent = target.name || target.id;
   $("updateModelFilename").textContent = "未选择文件";
-  $("updateModelSvgFilename").textContent = "未选择图形";
   const input = $("updateModelFileInput");
-  const svgInput = $("updateModelSvgInput");
   if (input) input.value = "";
-  if (svgInput) svgInput.value = "";
   setUpdateModelMessage("");
   validateUpdateModelForm();
   const dialog = $("updateModelDialog");
@@ -2527,11 +2492,8 @@ function closeUpdateModelDialog() {
   if (dialog?.open) dialog.close();
   state.updateTargetModelId = "";
   pendingUpdateModelFile = null;
-  pendingUpdateModelSvgFile = null;
   const input = $("updateModelFileInput");
-  const svgInput = $("updateModelSvgInput");
   if (input) input.value = "";
-  if (svgInput) svgInput.value = "";
   setUpdateModelMessage("");
 }
 
@@ -2542,14 +2504,7 @@ function handleUpdateModelFileSelected(event) {
   validateUpdateModelForm(Boolean(file));
 }
 
-function handleUpdateModelSvgFileSelected(event) {
-  const file = event.target.files?.[0] || null;
-  pendingUpdateModelSvgFile = file;
-  $("updateModelSvgFilename").textContent = file?.name || "未选择图形";
-  validateUpdateModelForm(Boolean(pendingUpdateModelFile));
-}
-
-async function updateModelFromFile() {
+async function updateModelFromArchive() {
   const file = pendingUpdateModelFile;
   const modelId = state.updateTargetModelId;
   if (!file || !validateUpdateModelForm(true)) return;
@@ -2560,22 +2515,17 @@ async function updateModelFromFile() {
     confirm.disabled = true;
     confirm.textContent = "修改中";
   }
-  setUpdateModelMessage("正在导入修改后的 model.e 并重新生成本地模型定义...");
-  addRuntimeLog("模型管理", "学员台 /api/models/update-definitions", "修改请求", `${modelName} ← ${file.name}`);
+  setUpdateModelMessage("正在导入模拟台定义压缩包并覆盖本地模型定义...");
+  addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "修改请求", `${modelName} ← ${file.name}`);
   try {
     const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
-    const diagramSvgBase64 = pendingUpdateModelSvgFile
-      ? arrayBufferToBase64(await pendingUpdateModelSvgFile.arrayBuffer())
-      : "";
-    const result = await api("/api/models/update-definitions", {
+    const result = await api("/api/models/import-definitions", {
       modelScoped: false,
       method: "POST",
       body: JSON.stringify({
         model_id: modelId,
         filename: file.name,
         data_base64: dataBase64,
-        diagram_filename: pendingUpdateModelSvgFile?.name || "",
-        diagram_svg_base64: diagramSvgBase64,
       }),
     });
     state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
@@ -2584,12 +2534,12 @@ async function updateModelFromFile() {
     renderModelManagementList();
     setModelManagementMessage(`模型已修改：${modelName}`, "ok");
     setImportStatus(`模型已修改：${modelName}`, "ok");
-    addRuntimeLog("模型管理", "学员台 /api/models/update-definitions", "修改成功", `模型 ${modelName}`, "ok");
+    addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "修改成功", `模型 ${modelName}`, "ok");
   } catch (error) {
     const message = apiErrorText(error);
     setUpdateModelMessage(message, "error");
     setModelManagementMessage(message, "error");
-    addRuntimeLog("模型管理", "学员台 /api/models/update-definitions", "修改失败", message, "error");
+    addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "修改失败", message, "error");
   } finally {
     if (confirm) {
       confirm.textContent = "修改";
@@ -7144,11 +7094,9 @@ $("newModelDialog").addEventListener("click", (event) => {
 });
 $("selectNewModelFile").addEventListener("click", () => $("newModelFileInput").click());
 $("newModelFileInput").addEventListener("change", handleNewModelFileSelected);
-$("selectNewModelSvgFile").addEventListener("click", () => $("newModelSvgInput").click());
-$("newModelSvgInput").addEventListener("change", handleNewModelSvgFileSelected);
 $("newModelForm").addEventListener("submit", (event) => {
   event.preventDefault();
-  createNewModelFromFile();
+  createNewModelFromArchive();
 });
 $("newModelName").addEventListener("input", () => validateNewModelForm());
 $("closeImportModelDialog").addEventListener("click", closeImportModelDialog);
@@ -7168,11 +7116,9 @@ $("updateModelDialog").addEventListener("click", (event) => {
 });
 $("selectUpdateModelFile").addEventListener("click", () => $("updateModelFileInput").click());
 $("updateModelFileInput").addEventListener("change", handleUpdateModelFileSelected);
-$("selectUpdateModelSvgFile").addEventListener("click", () => $("updateModelSvgInput").click());
-$("updateModelSvgInput").addEventListener("change", handleUpdateModelSvgFileSelected);
 $("updateModelForm").addEventListener("submit", (event) => {
   event.preventDefault();
-  updateModelFromFile();
+  updateModelFromArchive();
 });
 $("closeCloneModelDialog").addEventListener("click", closeCloneModelDialog);
 $("cancelCloneModel").addEventListener("click", closeCloneModelDialog);

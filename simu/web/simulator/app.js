@@ -1433,7 +1433,8 @@ async function createNewModelFromFile() {
     state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
     const newModelId = result.model?.id || result.active_model_id || name;
     closeNewModelDialog();
-    setActiveModel(newModelId, true);
+    state.selectedManagementModelId = newModelId;
+    renderModelSelector();
     renderModelManagementList();
   } catch (error) {
     const message = apiErrorText(error);
@@ -1561,6 +1562,7 @@ async function updateModelFromFile() {
   const file = pendingUpdateModelFile;
   const modelId = state.updateTargetModelId;
   if (!file || !validateUpdateModelForm(true)) return;
+  const updatedActiveModel = String(modelId || "") === String(state.activeModelId || "");
   setUpdateModelBusy(true);
   setUpdateModelMessage("正在导入修改后的模型与图形数据...");
   try {
@@ -1582,9 +1584,10 @@ async function updateModelFromFile() {
     state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
     closeUpdateModelDialog();
     state.selectedManagementModelId = modelId;
-    setActiveModel(modelId, true);
+    renderModelSelector();
     renderModelManagementList();
     setModelManagementMessage("模型已修改。", "ok");
+    if (updatedActiveModel) await refresh();
   } catch (error) {
     setUpdateModelMessage(apiErrorText(error), "error");
   } finally {
@@ -1733,7 +1736,7 @@ async function cloneCurrentModel() {
     const newModelId = result.model?.id || result.active_model_id || name;
     state.selectedManagementModelId = newModelId;
     closeCloneModelDialog();
-    setActiveModel(newModelId, true);
+    renderModelSelector();
     renderModelManagementList();
   } catch (error) {
     setCloneModelMessage(apiErrorText(error), "error");
@@ -1849,7 +1852,8 @@ async function importDefinitionModel() {
     state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
     const newModelId = result.model?.id || result.active_model_id || name;
     closeImportModelDialog();
-    setActiveModel(newModelId, true);
+    state.selectedManagementModelId = newModelId;
+    renderModelSelector();
     renderModelManagementList();
   } catch (error) {
     const message = apiErrorText(error);
@@ -2263,6 +2267,7 @@ async function deleteManagedModel(modelId) {
   if (!window.confirm(`确认删除模型“${modelName}”吗？此操作会删除对应模型文件夹和运行数据。`)) {
     return;
   }
+  const deletedActiveModel = String(target.id || "") === String(state.activeModelId || "");
   setModelManagementMessage(`正在删除模型：${modelName}`);
   try {
     const result = await api("/api/models/delete", {
@@ -2274,9 +2279,17 @@ async function deleteManagedModel(modelId) {
     const nextId = state.models.some((model) => model.id === state.activeModelId)
       ? state.activeModelId
       : (result.active_model_id || state.models[0]?.id || "");
-    state.selectedManagementModelId = nextId;
-    setActiveModel(nextId, true);
-    renderModelManagementList();
+    state.selectedManagementModelId = deletedActiveModel
+      ? nextId
+      : (state.models.some((model) => model.id === state.selectedManagementModelId)
+        ? state.selectedManagementModelId
+        : (state.activeModelId || nextId));
+    if (deletedActiveModel) {
+      setActiveModel(nextId, true);
+    } else {
+      renderModelSelector();
+      renderModelManagementList();
+    }
     setModelManagementMessage(`已删除模型：${modelName}`, "ok");
   } catch (error) {
     await loadModels();

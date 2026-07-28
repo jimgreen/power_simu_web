@@ -10,13 +10,30 @@ def test_trainee_receive_start_validates_link_snapshot_and_local_definition():
     assert 'api("/api/trainee/connect"' in script
     assert "fetchTeacherSnapshot(connection)" in script
     assert "fetchLocalDefinitionSnapshot" in script
-    assert "selectLocalDefinitionSnapshotForTeacher(connection, teacherSnapshot)" in script
+    assert "selectLocalDefinitionSnapshotForTeacher(connection, teacherSnapshot, activeModelIdBeforeReceive)" in script
     assert "state.localDefinitionSnapshot = definitionSnapshot" in script
     assert "state.receiveMode = true" in script
     assert "acceptTeacherSnapshot(teacherSnapshot, state.receiveEpoch)" in script
     start_block = script.split("async function startReceiveModeFromLink()", 1)[1].split("function runtimeLogTime", 1)[0]
     assert "openReceiveWarningDialog" not in start_block
     assert "addRuntimeLog(\"接收模式\", \"模拟台交互链接\", \"启动接收失败\"" in script
+
+
+def test_trainee_receive_start_does_not_switch_current_display_model():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+
+    apply_block = script.split("function applyTeacherConnection(connection)", 1)[1].split("function sortedUnique", 1)[0]
+    assert "state.activeModelId = connection.modelId" not in apply_block
+    assert 'localStorage.setItem("polarTraineeModelId"' not in apply_block
+    assert "renderModelSelector()" not in apply_block
+
+    start_block = script.split("async function startReceiveModeFromLink()", 1)[1].split("function runtimeLogTime", 1)[0]
+    assert "const activeModelIdBeforeReceive = state.activeModelId" in start_block
+    assert "selectLocalDefinitionSnapshotForTeacher(connection, teacherSnapshot, activeModelIdBeforeReceive)" in start_block
+    assert "saveTraineeReceiveState(activeModelIdBeforeReceive, { active: true, frozen: false })" in start_block
+
+    render_block = script.split("function renderSnapshot(snapshot)", 1)[1].split("function renderReceiveMode", 1)[0]
+    assert 'state.snapshotSource !== "teacher"' in render_block
 
 
 def test_trainee_receive_uses_teacher_definition_baseline_when_local_model_is_missing():

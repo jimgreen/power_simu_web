@@ -1349,8 +1349,12 @@ async function fetchLocalDefinitionSnapshot(preferredModelId = "") {
   return { modelId, snapshot };
 }
 
-async function selectLocalDefinitionSnapshotForTeacher(connection, teacherSnapshot) {
+async function selectLocalDefinitionSnapshotForTeacher(connection, teacherSnapshot, preferredLocalModelId = state.activeModelId) {
   const teacherModelId = String(connection?.modelId || "");
+  const localModelId = String(preferredLocalModelId || "");
+  if (hasLocalDefinitionModel(localModelId)) {
+    return { ...(await fetchLocalDefinitionSnapshot(localModelId)), usingTeacherBaseline: false };
+  }
   if (hasLocalDefinitionModel(teacherModelId)) {
     return { ...(await fetchLocalDefinitionSnapshot(teacherModelId)), usingTeacherBaseline: false };
   }
@@ -1385,11 +1389,8 @@ function applyTeacherConnection(connection) {
   state.teacherSnapshotPath = connection.snapshotPath;
   state.teacherCommandPath = connection.commandPath;
   state.teacherMeasurementDeltaPath = connection.measurementDeltaPath;
-  state.activeModelId = connection.modelId;
   state.measurementDeltaSeq = 0;
-  localStorage.setItem("polarTraineeModelId", state.activeModelId);
   persistActiveModelContext();
-  renderModelSelector();
 }
 
 function sortedUnique(values) {
@@ -1683,6 +1684,7 @@ async function startReceiveModeFromLink() {
   const input = $("receiveLinkInput");
   const confirmButton = $("confirmReceiveLink");
   if (!input || !confirmButton) return;
+  const activeModelIdBeforeReceive = state.activeModelId;
   confirmButton.disabled = true;
   setReceiveLinkMessage("正在校验交互链接。");
   try {
@@ -1695,7 +1697,7 @@ async function startReceiveModeFromLink() {
       usingTeacherBaseline,
       fallbackModelId,
       mismatchMessages,
-    } = await selectLocalDefinitionSnapshotForTeacher(connection, teacherSnapshot);
+    } = await selectLocalDefinitionSnapshotForTeacher(connection, teacherSnapshot, activeModelIdBeforeReceive);
     state.localDefinitionSnapshot = definitionSnapshot;
     state.localDefinitionModelId = localModelId;
     state.definitionMismatchLastKey = "";
@@ -1710,7 +1712,7 @@ async function startReceiveModeFromLink() {
     state.snapshotSource = "";
     state.lastTeacherSnapshotLogKey = "";
     persistActiveModelContext();
-    await saveTraineeReceiveState(state.activeModelId, { active: true, frozen: false });
+    await saveTraineeReceiveState(activeModelIdBeforeReceive, { active: true, frozen: false });
     closeReceiveLinkDialog();
     addRuntimeLog(
       "接收模式",
@@ -2299,7 +2301,7 @@ async function createNewModelFromArchive() {
     const newModelId = result.model?.id || result.active_model_id || name;
     closeNewModelDialog();
     state.selectedManagementModelId = newModelId;
-    setActiveModel(newModelId, true);
+    renderModelSelector();
     renderModelManagementList();
     setModelManagementMessage(`已新建模型：${name}`, "ok");
     setImportStatus(`已新建模型：${name}`, "ok");
@@ -2413,7 +2415,7 @@ async function importDefinitionModel() {
     const newModelId = result.model?.id || result.active_model_id || name;
     closeImportModelDialog();
     state.selectedManagementModelId = newModelId;
-    setActiveModel(newModelId, true);
+    renderModelSelector();
     renderModelManagementList();
     setModelManagementMessage(`已导入模型：${name}`, "ok");
     setImportStatus(`已导入模型：${name}`, "ok");
@@ -2510,6 +2512,7 @@ async function updateModelFromArchive() {
   if (!file || !validateUpdateModelForm(true)) return;
   const target = modelById(modelId) || {};
   const modelName = target.name || target.id || modelId;
+  const updatedActiveModel = String(modelId || "") === String(state.activeModelId || "");
   const confirm = $("confirmUpdateModel");
   if (confirm) {
     confirm.disabled = true;
@@ -2530,11 +2533,17 @@ async function updateModelFromArchive() {
     });
     state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
     closeUpdateModelDialog();
-    setActiveModel(modelId, true);
+    state.selectedManagementModelId = modelId;
+    renderModelSelector();
     renderModelManagementList();
     setModelManagementMessage(`模型已修改：${modelName}`, "ok");
     setImportStatus(`模型已修改：${modelName}`, "ok");
     addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "修改成功", `模型 ${modelName}`, "ok");
+    if (updatedActiveModel) {
+      state.localDefinitionSnapshot = null;
+      state.localDefinitionModelId = "";
+      await refresh();
+    }
   } catch (error) {
     const message = apiErrorText(error);
     setUpdateModelMessage(message, "error");
@@ -2633,7 +2642,7 @@ async function cloneManagedModel() {
     const newModelId = result.model?.id || result.active_model_id || name;
     closeCloneModelDialog();
     state.selectedManagementModelId = newModelId;
-    setActiveModel(newModelId, true);
+    renderModelSelector();
     renderModelManagementList();
     setModelManagementMessage(`已复制模型：${name}`, "ok");
     addRuntimeLog("模型管理", "学员台 /api/models/clone", "复制成功", `${sourceId} → ${name}`, "ok");
@@ -2728,6 +2737,7 @@ async function deleteManagedModel(modelId = selectedManagementModelId()) {
   }
   const modelName = target.name || target.id;
   if (!window.confirm(`确认删除模型“${modelName}”吗？此操作会删除本地模型文件夹和运行数据。`)) return;
+  const deletedActiveModel = String(target.id || "") === String(state.activeModelId || "");
   setModelManagementMessage(`正在删除模型：${modelName}`);
   try {
     const result = await api("/api/models/delete", {
@@ -2741,9 +2751,17 @@ async function deleteManagedModel(modelId = selectedManagementModelId()) {
     const nextId = state.models.some((model) => model.id === state.activeModelId)
       ? state.activeModelId
       : (result.active_model_id || state.models[0]?.id || "");
-    state.selectedManagementModelId = nextId;
-    setActiveModel(nextId, true);
-    renderModelManagementList();
+    state.selectedManagementModelId = deletedActiveModel
+      ? nextId
+      : (state.models.some((model) => model.id === state.selectedManagementModelId)
+        ? state.selectedManagementModelId
+        : (state.activeModelId || nextId));
+    if (deletedActiveModel) {
+      setActiveModel(nextId, true);
+    } else {
+      renderModelSelector();
+      renderModelManagementList();
+    }
     setModelManagementMessage(`已删除模型：${modelName}`, "ok");
     addRuntimeLog("模型管理", "学员台 /api/models/delete", "删除成功", modelName, "ok");
   } catch (error) {
@@ -2917,7 +2935,7 @@ async function refreshFromTeacher(epoch = state.receiveEpoch) {
 
 function renderSnapshot(snapshot) {
   state.snapshot = snapshot;
-  if (snapshot.model?.id && snapshot.model.id !== state.activeModelId) {
+  if (state.snapshotSource !== "teacher" && snapshot.model?.id && snapshot.model.id !== state.activeModelId) {
     state.activeModelId = snapshot.model.id;
   }
   if (state.snapshotSource === "teacher" && snapshot.model?.name) {

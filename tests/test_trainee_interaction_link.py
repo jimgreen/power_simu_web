@@ -75,7 +75,11 @@ class TraineeInteractionLinkTest(unittest.TestCase):
         self.assertIn("/api/trainee/connect", script)
         self.assertIn('api("/api/trainee/connect"', script)
         self.assertIn("state.teacherApiBase = (connection.teacherApiBase || \"\").replace", script)
-        self.assertIn("state.activeModelId = connection.modelId", script)
+        self.assertIn("state.teacherModelId = connection.modelId", script)
+        self.assertNotIn("state.activeModelId = connection.modelId", script)
+        self.assertIn("const activeModelIdBeforeReceive = state.activeModelId", script)
+        self.assertIn("selectLocalDefinitionSnapshotForTeacher(connection, teacherSnapshot, activeModelIdBeforeReceive)", script)
+        self.assertIn("saveTraineeReceiveState(activeModelIdBeforeReceive, { active: true", script)
         self.assertNotIn("fetch(url.href", script)
         self.assertIn(".receive-link-dialog", styles)
 

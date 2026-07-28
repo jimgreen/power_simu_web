@@ -218,7 +218,7 @@ def test_trainee_frontend_keeps_receive_contexts_per_model():
     assert "fetch(connectionApiUrl(connection" not in script
     assert "selector.disabled = models.length <= 1;" in script
     assert "selector.disabled = state.receiveMode || models.length <= 1;" not in script
-    assert "await saveTraineeReceiveState(state.activeModelId, { active: true" in script
+    assert "await saveTraineeReceiveState(activeModelIdBeforeReceive, { active: true" in script
     assert "await saveTraineeReceiveState(state.activeModelId, { active: false" in script
     assert "persistActiveModelContext();" in script
 

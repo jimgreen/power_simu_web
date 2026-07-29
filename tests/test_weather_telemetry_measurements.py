@@ -1,3 +1,5 @@
+import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +13,59 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WeatherTelemetryMeasurementsTest(unittest.TestCase):
+    def test_missing_wind_and_solar_boundaries_stay_unknown(self):
+        import simu_loop
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            runtime = root / "runtime"
+            shutil.copytree(SIMPLE_MODEL_SOURCE, source)
+            (source / "weather.e").unlink()
+            (source / "curves.json").write_text(
+                json.dumps(
+                    {
+                        "mode": "day",
+                        "time_step_minutes": 1,
+                        "point_count": 1,
+                        "weather": [
+                            {
+                                "minute": 0,
+                                "air_temp_c": -18.0,
+                                "air_pressure_hpa": 960.0,
+                                "humidity_pct": 72.0,
+                            }
+                        ],
+                        "loads": {},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            service = PolarMicrogridSimulator(source, runtime, model_id="unknown-weather", kernel=lambda _config: None)
+            service._write_current_weather(0, 0)
+
+            weather = simu_loop._weather_values_from_book(service.weather_book)
+            self.assertNotIn("wind_speed_mps", weather)
+            self.assertNotIn("solar_irradiance_w_m2", weather)
+
+            boundary = service.curve_boundary()["point"]
+            self.assertIsNone(boundary["wind_speed_mps"])
+            self.assertIsNone(boundary["solar_irradiance_w_m2"])
+
+            renewable_boundary = " ".join(service._renewable_limit_boundary_lines())
+            self.assertIn("风速未知", renewable_boundary)
+            self.assertIn("辐照未知", renewable_boundary)
+
+            weather_rows = {
+                row["meas_type"]: row
+                for row in service.snapshot()["measurements"]["scada"]
+                if row["dev_type"] == "Environment" and row["dev_name"] == "weather"
+            }
+            self.assertEqual(weather_rows["WIND_SPEED"]["valid"], 0)
+            self.assertEqual(weather_rows["SOLAR_IRRADIANCE"]["valid"], 0)
+
     def test_run_once_writes_weather_measurement_values_to_real_snapshot(self):
         import simu_loop
 

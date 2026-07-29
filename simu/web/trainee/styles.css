@@ -1614,13 +1614,21 @@ body.is-vertical-splitter-dragging {
   grid-template-columns: 1fr;
   gap: 8px;
 }
-.renewable-settings label {
+.renewable-settings label,
+.renewable-setting-row {
   display: grid;
   grid-template-columns: 76px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   color: var(--muted);
   font-size: 12px;
+}
+.renewable-loop-mode {
+  width: 100%;
+}
+.renewable-loop-mode button {
+  flex: 1 1 50%;
+  padding: 0 8px;
 }
 .renewable-metric-grid {
   margin: 12px 0 0;

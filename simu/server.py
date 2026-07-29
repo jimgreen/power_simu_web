@@ -46,6 +46,7 @@ try:
         MEAS_HEADER,
         SIGNAL_MEASUREMENTS,
         STAT_HEADERS,
+        UNKNOWN_WEATHER_VALUE,
         WEATHER_HEADER,
         WEATHER_MEASUREMENTS,
         MultiModelSimulator,
@@ -59,6 +60,7 @@ except ImportError:  # pragma: no cover - legacy package compatibility.
         MEAS_HEADER,
         SIGNAL_MEASUREMENTS,
         STAT_HEADERS,
+        UNKNOWN_WEATHER_VALUE,
         WEATHER_HEADER,
         WEATHER_MEASUREMENTS,
         MultiModelSimulator,
@@ -614,7 +616,15 @@ def _generated_measurement_book(
         for row in control_blocks.get("StorageSoc", ((), ()))[1]
     }
 
-    def add(dev_type: str, dev_name: str, meas_type: str, *, weight: float = 10000.0, value: Any = 0.0) -> None:
+    def add(
+        dev_type: str,
+        dev_name: str,
+        meas_type: str,
+        *,
+        weight: float = 10000.0,
+        value: Any = 0.0,
+        valid: int = 1,
+    ) -> None:
         if not dev_name:
             return
         base_name = f"{dev_type}.{dev_name}.{str(meas_type).lower() if meas_type in {'RUN_STAT', 'STATUS'} else meas_type}"
@@ -629,7 +639,7 @@ def _generated_measurement_book(
                 "dev_name": dev_name,
                 "meas_type": meas_type,
                 "weight": weight,
-                "valid": 1,
+                "valid": valid,
                 "value": value,
             }
         )
@@ -645,7 +655,15 @@ def _generated_measurement_book(
                 add(block_name, name, "SOC", value=row.get("soc_curr", row.get("soc", 0.5)))
 
     for weather_key, _name_suffix, meas_type in WEATHER_MEASUREMENTS:
-        add("Environment", "weather", meas_type, weight=1.0, value=DEFAULT_WEATHER.get(weather_key, 0.0))
+        value = _to_float(DEFAULT_WEATHER.get(weather_key), None)
+        add(
+            "Environment",
+            "weather",
+            meas_type,
+            weight=1.0,
+            value=value if value is not None else 0.0,
+            valid=1 if value is not None else 0,
+        )
 
     for block_name, value_column, meas_type, _name_suffix in SIGNAL_MEASUREMENTS:
         for row in control_blocks.get(block_name, ((), ()))[1]:
@@ -661,7 +679,10 @@ def _generated_measurement_book(
 
 
 def _generated_weather_book() -> EBook:
-    row = {**DEFAULT_WEATHER, "time": "00:00:00"}
+    row = {
+        **{key: UNKNOWN_WEATHER_VALUE if value is None else value for key, value in DEFAULT_WEATHER.items()},
+        "time": "00:00:00",
+    }
     return _ebook_from_blocks({"Weather": (WEATHER_HEADER, [row])})
 
 

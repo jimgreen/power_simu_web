@@ -457,11 +457,19 @@
               </div>
               <div class="renewable-actions">
                 <button id="renewableAutoToggle" class="renewable-auto-button" type="button">启动实时控制</button>
-                <button id="renewableSendOnce" type="button">单次计算下发</button>
+                <button id="renewableSendOnce" type="button">单次计算</button>
               </div>
               <div class="renewable-settings">
+                <div class="renewable-setting-row">
+                  <span>控制方式</span>
+                  <div id="renewableLoopMode" class="segmented-control renewable-loop-mode" role="group" aria-label="新能源控制方式">
+                    <button type="button" class="is-active" data-renewable-loop-mode="open" aria-pressed="true">开环</button>
+                    <button type="button" data-renewable-loop-mode="closed" aria-pressed="false">闭环</button>
+                  </div>
+                </div>
                 <label>周期
                   <select id="renewableControlPeriod">
+                    <option value="1">1秒</option>
                     <option value="2" selected>2秒</option>
                     <option value="5">5秒</option>
                     <option value="10">10秒</option>
@@ -480,7 +488,7 @@
                 <div><dt>储能功率</dt><dd id="renewableStorageKw">--</dd></div>
                 <div><dt>柴油缺额</dt><dd id="renewableDieselKw">--</dd></div>
                 <div><dt>弃风弃光</dt><dd id="renewableCurtailKw">--</dd></div>
-                <div><dt>最近下发</dt><dd id="renewableLastSent">--</dd></div>
+                <div><dt id="renewableLastActionLabel">最近计算</dt><dd id="renewableLastSent">--</dd></div>
               </dl>
               <p id="renewableControlStatus" class="renewable-status">请先启动接收模式，再启动实时控制。</p>
             </section>
@@ -737,6 +745,7 @@
         </div>
       </form>
     </dialog>
+    <script src="/renewable_recovery.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

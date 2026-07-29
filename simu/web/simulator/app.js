@@ -4556,6 +4556,10 @@ function formatOverviewNumber(value) {
   return number.toFixed(2);
 }
 
+function hasOverviewNumber(value) {
+  return value !== null && value !== undefined && String(value).trim() !== "" && Number.isFinite(Number(value));
+}
+
 function overviewPowerText(value) {
   return Number.isFinite(value) ? `${formatOverviewNumber(value)} kW` : "--";
 }
@@ -5120,10 +5124,10 @@ function renderOverviewActiveCommands(snapshot) {
             <td class="mono-cell">${escapeHtml(row.receive_time?.wall_time || "--")}</td>
             <td>${escapeHtml(row.device?.dev_name || "--")}</td>
             <td>${escapeHtml(row.command || "--")} <small class="command-set-type">${escapeHtml(row.set_type || "")}</small></td>
-            <td class="numeric-cell">${escapeHtml(row.command_text || "--")}</td>
+            <td class="numeric-cell">${escapeHtml(runtimeCommandTableValueText(row, "control"))}</td>
             <td class="mono-cell">${escapeHtml(row.receive_time?.simu_time || "--")}</td>
-            <td class="numeric-cell">${escapeHtml(row.real_text || "--")}</td>
-            <td class="numeric-cell">${escapeHtml(row.scada_text || "--")}</td>
+            <td class="numeric-cell">${escapeHtml(runtimeCommandTableValueText(row, "real"))}</td>
+            <td class="numeric-cell">${escapeHtml(runtimeCommandTableValueText(row, "scada"))}</td>
           </tr>
         `).join("")}
       </tbody>
@@ -5158,9 +5162,9 @@ function renderOverviewDashboard(snapshot) {
   setOverviewText("metricCommands", snapshot.summary?.command_count || 0);
   setOverviewText("metricAlarms", snapshot.summary?.alarm_count || 0);
   setOverviewText("overviewBoundaryTime", formatSimulationClock(clock));
-  setOverviewText("overviewWindSpeed", Number.isFinite(Number(boundary.point.wind_speed_mps)) ? `${formatOverviewNumber(boundary.point.wind_speed_mps)} m/s` : "--");
-  setOverviewText("overviewIrradiance", Number.isFinite(Number(boundary.point.solar_irradiance_w_m2)) ? `${formatOverviewNumber(boundary.point.solar_irradiance_w_m2)} W/m²` : "--");
-  setOverviewText("overviewTemperature", Number.isFinite(Number(boundary.point.air_temp_c)) ? `${formatOverviewNumber(boundary.point.air_temp_c)} ℃` : "--");
+  setOverviewText("overviewWindSpeed", hasOverviewNumber(boundary.point.wind_speed_mps) ? `${formatOverviewNumber(boundary.point.wind_speed_mps)} m/s` : "--");
+  setOverviewText("overviewIrradiance", hasOverviewNumber(boundary.point.solar_irradiance_w_m2) ? `${formatOverviewNumber(boundary.point.solar_irradiance_w_m2)} W/m²` : "--");
+  setOverviewText("overviewTemperature", hasOverviewNumber(boundary.point.air_temp_c) ? `${formatOverviewNumber(boundary.point.air_temp_c)} ℃` : "--");
   setOverviewText("overviewLoadBoundary", overviewPowerText(boundary.loadTotal));
   setOverviewText("overviewOnlineDevices", `${onlineDevices}/${devices.length} 台`);
   setOverviewText("overviewActiveCommands", `${activeOverviewCommands.length} 条`);
@@ -5173,9 +5177,9 @@ function renderOverviewDashboard(snapshot) {
   const storageLink = $("overviewStorageFlowLink");
   if (storageLink) storageLink.dataset.storageFlow = storageFlow;
   setOverviewText("overviewFlowWindPower", overviewPowerText(power.wind));
-  setOverviewText("overviewFlowWindMeta", Number.isFinite(Number(boundary.point.wind_speed_mps)) ? `风速 ${formatOverviewNumber(boundary.point.wind_speed_mps)} m/s` : "风速 --");
+  setOverviewText("overviewFlowWindMeta", hasOverviewNumber(boundary.point.wind_speed_mps) ? `风速 ${formatOverviewNumber(boundary.point.wind_speed_mps)} m/s` : "风速 未知");
   setOverviewText("overviewFlowSolarPower", overviewPowerText(power.solar));
-  setOverviewText("overviewFlowSolarMeta", Number.isFinite(Number(boundary.point.solar_irradiance_w_m2)) ? `辐照 ${formatOverviewNumber(boundary.point.solar_irradiance_w_m2)} W/m²` : "辐照 --");
+  setOverviewText("overviewFlowSolarMeta", hasOverviewNumber(boundary.point.solar_irradiance_w_m2) ? `辐照 ${formatOverviewNumber(boundary.point.solar_irradiance_w_m2)} W/m²` : "辐照 未知");
   setOverviewText("overviewFlowDieselPower", overviewPowerText(power.diesel));
   setOverviewText("overviewFlowStoragePower", overviewPowerText(storagePower));
   setOverviewText("overviewFlowStorageDirection", storagePower === null ? "待计算" : storagePower > 0 ? "放电" : storagePower < 0 ? "充电" : "静置");

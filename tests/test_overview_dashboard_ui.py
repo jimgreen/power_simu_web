@@ -130,6 +130,19 @@ class OverviewDashboardUiTest(unittest.TestCase):
 
         self.assertIn("text-align: right;", alignment_block)
 
+    def test_overview_active_command_table_hides_numeric_units(self):
+        app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        renderer = app_js.split("function renderOverviewActiveCommands", 1)[1].split(
+            "function renderOverviewDashboard",
+            1,
+        )[0]
+
+        for field in ("control", "real", "scada"):
+            self.assertIn(f'runtimeCommandTableValueText(row, "{field}")', renderer)
+        self.assertNotIn("escapeHtml(row.command_text || \"--\")", renderer)
+        self.assertNotIn("escapeHtml(row.real_text || \"--\")", renderer)
+        self.assertNotIn("escapeHtml(row.scada_text || \"--\")", renderer)
+
     def test_overview_middle_uses_large_energy_flow_without_process_strip(self):
         html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
         app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")

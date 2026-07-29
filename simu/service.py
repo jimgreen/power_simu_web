@@ -55,14 +55,15 @@ WEATHER_HEADER = (
 
 MEAS_HEADER = ("idx", "name", "dev_type", "dev_name", "meas_type", "weight", "valid", "value")
 
-DEFAULT_WEATHER = {
-    "wind_speed_mps": 12.0,
+DEFAULT_WEATHER: Dict[str, Optional[float]] = {
+    "wind_speed_mps": None,
     "air_temp_c": -18.0,
     "air_pressure_hpa": 960.0,
-    "solar_irradiance_w_m2": 0.0,
+    "solar_irradiance_w_m2": None,
     "humidity_pct": 72.0,
     "load_kw": 100.0,
 }
+UNKNOWN_WEATHER_VALUE = "NA"
 
 WEATHER_MEASUREMENTS = (
     ("wind_speed_mps", "wind_speed", "WIND_SPEED"),
@@ -232,6 +233,11 @@ def _number_text(value: Any) -> str:
     if number is None:
         return "" if value is None else str(value)
     return format_number(number)
+
+
+def _value_with_unit(value: Any, unit: str) -> str:
+    text = _number_text(value)
+    return f"{text} {unit}" if text else "未知"
 
 
 def format_number(value: float) -> str:
@@ -634,10 +640,10 @@ def _interpolate(
     points: Sequence[Mapping[str, Any]],
     minute: int | float,
     key: str,
-    default: float,
+    default: Optional[float],
     *,
     period_minutes: float = 1440.0,
-) -> float:
+) -> Optional[float]:
     pairs = []
     for point in points:
         value = _to_float(point.get(key), None)
@@ -1254,7 +1260,7 @@ class PolarMicrogridSimulator:
             if self.curves:
                 _write_json(target_dir / "curves.json", self.curves)
 
-    def _read_weather_defaults(self) -> Dict[str, float]:
+    def _read_weather_defaults(self) -> Dict[str, Optional[float]]:
         values = dict(DEFAULT_WEATHER)
         path = self.source_files.get("weather", self.files["weather"])
         if not path.exists():
@@ -2210,8 +2216,11 @@ class PolarMicrogridSimulator:
         detail = [
             f"曲线模式 {curve_mode}，目标分钟 {format_number(float(target_minute % period_minutes))}，点号 {self._curve_point_index(target_minute, period_minutes)}",
             (
-                f"环境 风速 {row.get('wind_speed_mps', '')} m/s，光照 {row.get('solar_irradiance_w_m2', '')} W/m2，"
-                f"气温 {row.get('air_temp_c', '')} ℃，气压 {row.get('air_pressure_hpa', '')} hPa，湿度 {row.get('humidity_pct', '')} %"
+                f"环境 风速 {_value_with_unit(row.get('wind_speed_mps', ''), 'm/s')}，"
+                f"光照 {_value_with_unit(row.get('solar_irradiance_w_m2', ''), 'W/m2')}，"
+                f"气温 {_value_with_unit(row.get('air_temp_c', ''), '℃')}，"
+                f"气压 {_value_with_unit(row.get('air_pressure_hpa', ''), 'hPa')}，"
+                f"湿度 {_value_with_unit(row.get('humidity_pct', ''), '%')}"
             ),
             f"负荷合计 {load_total} kW" + (f"；{ '，'.join(load_parts) }" if load_parts else "；未配置分项负荷，使用默认/总负荷"),
             "已更新内存天气边界，并作为本轮负荷、新能源限值计算输入",
@@ -2306,11 +2315,18 @@ class PolarMicrogridSimulator:
                 pv_available_total += float(available)
                 pv_execute_total += abs(_to_float(row.get("p_set"), 0.0) or 0.0)
 
+        wind_summary = (
+            "风电 风速未知，未执行最大可发限值计算"
+            if wind_speed is None
+            else f"风电 {wind_count} 台，可用 {format_number(wind_available_total)} kW，执行 {format_number(wind_execute_total)} kW"
+        )
+        pv_summary = (
+            "光伏 辐照未知，未执行最大可发限值计算"
+            if irradiance is None
+            else f"光伏 {pv_count} 台，可用 {format_number(pv_available_total)} kW，执行 {format_number(pv_execute_total)} kW"
+        )
         return [
-            (
-                f"新能源限值 风电 {wind_count} 台，可用 {format_number(wind_available_total)} kW，执行 {format_number(wind_execute_total)} kW；"
-                f"光伏 {pv_count} 台，可用 {format_number(pv_available_total)} kW，执行 {format_number(pv_execute_total)} kW"
-            )
+            f"新能源限值 {wind_summary}；{pv_summary}"
         ]
 
     def _input_boundary_lines(
@@ -2333,10 +2349,10 @@ class PolarMicrogridSimulator:
         run_on = len(run_rows) - len(run_off)
         cb_one = len(cb_rows) - len(cb_zero)
         weather_text = (
-            f"风速 {_number_text(weather.get('wind_speed_mps', ''))} m/s，"
-            f"辐照 {_number_text(weather.get('solar_irradiance_w_m2', ''))} W/m2，"
-            f"气温 {_number_text(weather.get('air_temp_c', ''))} ℃，"
-            f"负荷 {_number_text(weather.get('load_kw', ''))} kW"
+            f"风速 {_value_with_unit(weather.get('wind_speed_mps', ''), 'm/s')}，"
+            f"辐照 {_value_with_unit(weather.get('solar_irradiance_w_m2', ''), 'W/m2')}，"
+            f"气温 {_value_with_unit(weather.get('air_temp_c', ''), '℃')}，"
+            f"负荷 {_value_with_unit(weather.get('load_kw', ''), 'kW')}"
             if weather
             else "未读取到 Weather 块"
         )
@@ -3084,7 +3100,10 @@ class PolarMicrogridSimulator:
         )
 
     def _write_weather_row(self, row: Mapping[str, Any]) -> None:
-        clean = {header: row.get(header, "") for header in WEATHER_HEADER}
+        clean = {
+            header: UNKNOWN_WEATHER_VALUE if row.get(header, "") is None else row.get(header, "")
+            for header in WEATHER_HEADER
+        }
         self.weather_book = _make_book({"Weather": (WEATHER_HEADER, [clean])})
 
     def _apply_device_faults(self, minute: int, absolute_minute: int) -> None:
@@ -3251,7 +3270,7 @@ class PolarMicrogridSimulator:
         weather = self._current_weather_values()
         rows: List[Dict[str, Any]] = []
         for offset, (weather_key, name_suffix, meas_type) in enumerate(WEATHER_MEASUREMENTS):
-            value = _to_float(weather.get(weather_key), _to_float(DEFAULT_WEATHER.get(weather_key), 0.0))
+            value = _to_float(weather.get(weather_key), None)
             rows.append(
                 {
                     "idx": start_idx + offset,
@@ -3260,7 +3279,7 @@ class PolarMicrogridSimulator:
                     "dev_name": "weather",
                     "meas_type": meas_type,
                     "weight": 1.0,
-                    "valid": 1,
+                    "valid": 1 if value is not None else 0,
                     "value": value if value is not None else 0.0,
                 }
             )
@@ -3347,7 +3366,7 @@ class PolarMicrogridSimulator:
     def _with_weather_measurements(self, measurements: Mapping[str, Sequence[Mapping[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
         weather = self._current_weather_values()
         weather_values = {
-            meas_type: _to_float(weather.get(weather_key), _to_float(DEFAULT_WEATHER.get(weather_key), 0.0)) or 0.0
+            meas_type: _to_float(weather.get(weather_key), None)
             for weather_key, _name_suffix, meas_type in WEATHER_MEASUREMENTS
         }
         normalized: Dict[str, List[Dict[str, Any]]] = {
@@ -3363,9 +3382,13 @@ class PolarMicrogridSimulator:
                 if not self._is_weather_measurement_row(row):
                     continue
                 meas_type = str(row.get("meas_type", "")).upper()
-                if meas_type in weather_values:
-                    row["value"] = weather_values[meas_type]
-                row.setdefault("valid", 1)
+                value = weather_values.get(meas_type)
+                if value is not None:
+                    row["value"] = value
+                    row["valid"] = 1
+                else:
+                    row["value"] = _to_float(row.get("value"), 0.0) or 0.0
+                    row["valid"] = 0
                 row.setdefault("weight", 1.0)
 
         definition_weather_rows = [
@@ -3606,7 +3629,12 @@ class PolarMicrogridSimulator:
                         "dev_name": name,
                         "run_stat": int(_to_float(run_stats.get(key, row.get("run_stat", 1)), 1) or 0),
                         "status": int(_to_float(cb_status.get(key, row.get("status", 1)), 1) or 0),
-                        "mode": row.get("control_type", row.get("mode", "")),
+                        "mode": (
+                            row.get("control_type")
+                            or row.get("ac_control_type")
+                            or row.get("dc_control_type")
+                            or row.get("mode", "")
+                        ),
                         "set_types": set_types,
                         "set_values": set_values.get(key, {}),
                         "raw": {header: row.get(header, "") for header in block.header_list},
@@ -4355,7 +4383,7 @@ class PolarMicrogridSimulator:
         index = max(0, self._curve_point_index(target_minute, period_minutes) - 1)
         point = {
             key: _interpolate(weather, target_minute, key, default, period_minutes=period_minutes)
-            for key, default in DEFAULT_WEATHER.items()
+            for key, default in self.weather_defaults.items()
             if key != "load_kw"
         }
         loads = self.curves.get("loads", {})

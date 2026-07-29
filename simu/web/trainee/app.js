@@ -13,7 +13,6 @@ const VERTICAL_SPLIT_DEFAULTS = {
   "trainee-measurements": 52,
   "trainee-commands": 56,
   "trainee-renewable": 44,
-  "trainee-renewable-lower": 55,
 };
 const VERTICAL_SPLIT_DEFAULT_RATIO = 55;
 const VERTICAL_SPLIT_MIN_TOP_PX = 120;
@@ -132,10 +131,11 @@ const state = {
     enabled: false,
     loopMode: "open",
     intervalSeconds: 2,
-    socMin: 0.3,
-    socMax: 0.9,
     largeStepThresholdKw: 10,
     stepCoefficient: 0.03,
+    converterStepRatio: 0.03,
+    dieselDeadbandRatio: 0.03,
+    socDeadband: 0.05,
     sending: false,
     requestActive: false,
     actionActive: false,
@@ -146,6 +146,7 @@ const state = {
     lastStatus: "请选择单次计算或启动实时控制。",
     logs: [],
     strategyTab: "wind",
+    detailTab: "trend",
     logPage: 1,
     lastControlLogRenderKey: "",
   },
@@ -3856,7 +3857,7 @@ function redrawVerticalSplitContent(splitId) {
     if (splitId === "trainee-curves") drawCurveDisplay(state.snapshot || {});
     if (splitId === "trainee-measurements") drawMeasurementTraceChart();
     if (splitId === "trainee-commands") drawCommandTraceChart();
-    if (splitId === "trainee-renewable" || splitId === "trainee-renewable-lower") drawRenewableTrendChart();
+    if (splitId === "trainee-renewable" && state.renewableControl.detailTab === "trend") drawRenewableTrendChart();
   });
 }
 
@@ -4903,10 +4904,11 @@ function applyRenewableControlState(payload = {}) {
     loopMode: payload.loopMode === "closed" ? "closed" : "open",
     sending: Boolean(payload.sending),
     intervalSeconds: Math.max(1, toNumber(settings.intervalSeconds, control.intervalSeconds || 2)),
-    socMin: clamp(toNumber(settings.socMin, control.socMin ?? 0.3), 0, 1),
-    socMax: clamp(toNumber(settings.socMax, control.socMax ?? 0.9), 0, 1),
     largeStepThresholdKw: Math.max(0, toNumber(settings.largeStepThresholdKw, control.largeStepThresholdKw || 10)),
-    stepCoefficient: Math.max(0, toNumber(settings.stepCoefficient, control.stepCoefficient || 0.03)),
+    stepCoefficient: Math.max(0, toNumber(settings.renewableStepRatio ?? settings.stepCoefficient, control.stepCoefficient || 0.03)),
+    converterStepRatio: Math.max(0, toNumber(settings.converterStepRatio, control.converterStepRatio || 0.03)),
+    dieselDeadbandRatio: Math.max(0, toNumber(settings.dieselDeadbandRatio, control.dieselDeadbandRatio || 0.03)),
+    socDeadband: Math.max(0, toNumber(settings.socDeadband, control.socDeadband || 0.05)),
     lastPlan: payload.lastPlan || null,
     lastCalculatedAt: payload.lastCalculatedAt || "",
     lastSentAt: payload.lastSentAt || "",
@@ -4914,7 +4916,6 @@ function applyRenewableControlState(payload = {}) {
     revision: Number.isFinite(incomingRevision) ? incomingRevision : control.revision,
     logs: Array.isArray(payload.logs) ? payload.logs : [],
   });
-  control.socMax = Math.max(control.socMin, control.socMax);
   state.renewableTrendHistory = Array.isArray(payload.trend) ? payload.trend : [];
   return true;
 }
@@ -5034,6 +5035,27 @@ function renderRenewableStrategyTabs(plan) {
 
 function renewableControlLogs() {
   return Array.isArray(state.renewableControl.logs) ? state.renewableControl.logs : [];
+}
+
+function renderRenewableDetailTabs() {
+  const activeTab = state.renewableControl.detailTab === "logs" ? "logs" : "trend";
+  state.renewableControl.detailTab = activeTab;
+  document.querySelectorAll("[data-renewable-detail-tab]").forEach((button) => {
+    const active = button.dataset.renewableDetailTab === activeTab;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll("[data-renewable-detail-pane]").forEach((pane) => {
+    const active = pane.dataset.renewableDetailPane === activeTab;
+    pane.hidden = !active;
+    pane.classList.toggle("is-active", active);
+  });
+  if (activeTab === "logs") {
+    renderRenewableControlLogs();
+  } else {
+    requestAnimationFrame(drawRenewableTrendChart);
+  }
 }
 
 function renderRenewableControlLogs() {
@@ -5260,12 +5282,18 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     modeButton.disabled = control.sending || control.actionActive;
   });
   const periodInput = $("renewableControlPeriod");
-  const socMinInput = $("renewableSocMin");
-  const socMaxInput = $("renewableSocMax");
   if (periodInput && document.activeElement !== periodInput) periodInput.value = String(control.intervalSeconds || 2);
-  if (socMinInput && document.activeElement !== socMinInput) socMinInput.value = Number(control.socMin ?? 0.3).toFixed(2);
-  if (socMaxInput && document.activeElement !== socMaxInput) socMaxInput.value = Number(control.socMax ?? 0.9).toFixed(2);
-  [periodInput, socMinInput, socMaxInput].forEach((input) => {
+  const ratioInputs = {
+    renewableStepRatio: control.stepCoefficient,
+    converterStepRatio: control.converterStepRatio,
+    dieselDeadbandRatio: control.dieselDeadbandRatio,
+    socDeadband: control.socDeadband,
+  };
+  Object.entries(ratioInputs).forEach(([id, value]) => {
+    const input = $(id);
+    if (input && document.activeElement !== input) input.value = String(Number(value || 0) * 100);
+  });
+  [periodInput, ...Object.keys(ratioInputs).map((id) => $(id))].forEach((input) => {
     if (input) input.disabled = control.actionActive;
   });
   if (lastActionLabel) lastActionLabel.textContent = loopMode === "closed" ? "最近下发" : "最近计算";
@@ -5302,9 +5330,8 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     status.classList.toggle("is-error", !hasDecisionSnapshot && control.enabled);
   }
   if (summary) summary.textContent = `${plan?.commands?.length || 0} 条 · ${plan?.time || "--"} · ${loopModeLabel}`;
-  renderRenewableControlLogs();
+  renderRenewableDetailTabs();
   renderRenewableStrategyTabs(plan);
-  drawRenewableTrendChart();
   const table = $("renewableCommandTable");
   if (!table) return;
   const rows = renewableStrategyRows(plan);
@@ -5359,16 +5386,16 @@ async function setRenewableLoopMode(mode) {
 }
 
 async function updateRenewableSettings() {
-  const minValue = clamp(toNumber($("renewableSocMin")?.value, 0.3), 0, 1);
-  const maxValue = clamp(toNumber($("renewableSocMax")?.value, 0.9), minValue, 1);
   const intervalSeconds = Math.max(1, toNumber($("renewableControlPeriod")?.value, 2));
+  const ratio = (id, fallbackPercent) => Math.max(0, toNumber($(id)?.value, fallbackPercent)) / 100;
   await runRenewableControlAction("update_settings", {
     settings: {
       intervalSeconds,
-      socMin: minValue,
-      socMax: maxValue,
       largeStepThresholdKw: state.renewableControl.largeStepThresholdKw,
-      stepCoefficient: state.renewableControl.stepCoefficient,
+      renewableStepRatio: ratio("renewableStepRatio", 3),
+      converterStepRatio: ratio("converterStepRatio", 3),
+      dieselDeadbandRatio: ratio("dieselDeadbandRatio", 3),
+      socDeadband: ratio("socDeadband", 5),
     },
   });
 }
@@ -8057,14 +8084,24 @@ document.querySelectorAll("[data-renewable-loop-mode]").forEach((button) => {
   button.addEventListener("click", () => setRenewableLoopMode(button.dataset.renewableLoopMode));
 });
 $("renewableControlPeriod").addEventListener("change", updateRenewableSettings);
-$("renewableSocMin").addEventListener("change", updateRenewableSettings);
-$("renewableSocMax").addEventListener("change", updateRenewableSettings);
+[
+  "renewableStepRatio",
+  "converterStepRatio",
+  "dieselDeadbandRatio",
+  "socDeadband",
+].forEach((id) => $(id)?.addEventListener("change", updateRenewableSettings));
 document.querySelectorAll("[data-renewable-strategy-tab]").forEach((button) => {
   button.addEventListener("click", () => {
     const tabKey = button.dataset.renewableStrategyTab || "wind";
     if (!RENEWABLE_STRATEGY_TABS[tabKey]) return;
     state.renewableControl.strategyTab = tabKey;
     renderRenewableControl(state.snapshot || {});
+  });
+});
+document.querySelectorAll("[data-renewable-detail-tab]").forEach((button) => {
+  button.addEventListener("click", () => {
+    state.renewableControl.detailTab = button.dataset.renewableDetailTab === "logs" ? "logs" : "trend";
+    renderRenewableDetailTabs();
   });
 });
 $("renewableControlLogPager")?.addEventListener("click", (event) => {

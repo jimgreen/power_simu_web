@@ -12,7 +12,7 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
         cls.script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
         cls.styles = (ROOT / "simu/web/trainee/styles.css").read_text(encoding="utf-8")
 
-    def test_page_uses_left_sidebar_and_right_three_level_workspace(self):
+    def test_page_uses_left_sidebar_and_right_strategy_plus_tabbed_detail_workspace(self):
         self.assertIn('class="renewable-page-layout"', self.html)
         self.assertIn('class="renewable-side-column"', self.html)
         self.assertIn('<h2>参数配置</h2>', self.html)
@@ -20,8 +20,8 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
         self.assertIn('class="renewable-right-layout vertical-split-workspace"', self.html)
         self.assertIn('data-vertical-split="trainee-renewable"', self.html)
         self.assertIn('data-vertical-splitter="trainee-renewable"', self.html)
-        self.assertIn('data-vertical-split="trainee-renewable-lower"', self.html)
-        self.assertIn('data-vertical-splitter="trainee-renewable-lower"', self.html)
+        self.assertNotIn('data-vertical-split="trainee-renewable-lower"', self.html)
+        self.assertNotIn('data-vertical-splitter="trainee-renewable-lower"', self.html)
         self.assertIn('<h2>控制策略</h2>', self.html)
         self.assertIn('id="renewableCommandTable"', self.html)
         self.assertIn('<h2>综合功率趋势</h2>', self.html)
@@ -93,13 +93,19 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
         ):
             self.assertIn(label, backend)
 
-    def test_vertical_splitter_reuses_the_persisted_split_ratio_system(self):
+    def test_strategy_and_tabbed_detail_area_reuse_the_persisted_split_ratio_system(self):
         self.assertIn('"trainee-renewable": 44', self.script)
-        self.assertIn('"trainee-renewable-lower": 55', self.script)
+        self.assertNotIn('"trainee-renewable-lower": 55', self.script)
         self.assertIn(
             ".renewable-right-layout.vertical-split-workspace",
             self.styles,
         )
+        self.assertIn('data-renewable-detail-tab="trend"', self.html)
+        self.assertIn('data-renewable-detail-tab="logs"', self.html)
+        self.assertIn('data-renewable-detail-pane="trend"', self.html)
+        self.assertIn('data-renewable-detail-pane="logs"', self.html)
+        self.assertNotIn('data-vertical-splitter="trainee-renewable-lower"', self.html)
+        self.assertIn("function renderRenewableDetailTabs", self.script)
         self.assertIn(".renewable-side-column", self.styles)
         self.assertIn("grid-template-columns: clamp(", self.styles)
         self.assertIn("renewable-control-toolbar", self.styles)

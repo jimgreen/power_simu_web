@@ -252,7 +252,11 @@ class RenewableControlSettings:
     soc_max: float = 0.9
     large_step_threshold_kw: float = 10.0
     step_coefficient: float = 0.03
-    command_valid_minutes: float = 5.0
+    storage_switch_deadband_kw: float = 5.0
+    diesel_deadband_ratio: float = 0.03
+    soc_deadband: float = 0.05
+    converter_step_ratio: float = 0.03
+    command_valid_minutes: float = 120.0
 
     def normalized(self) -> "RenewableControlSettings":
         minimum = _clamp(float(self.soc_min), 0.0, 1.0)
@@ -264,6 +268,10 @@ class RenewableControlSettings:
             soc_max=maximum,
             large_step_threshold_kw=max(0.0, float(self.large_step_threshold_kw)),
             step_coefficient=max(0.0, float(self.step_coefficient)),
+            storage_switch_deadband_kw=max(0.0, float(self.storage_switch_deadband_kw)),
+            diesel_deadband_ratio=max(0.0, float(self.diesel_deadband_ratio)),
+            soc_deadband=_clamp(float(self.soc_deadband), 0.0, 1.0),
+            converter_step_ratio=max(0.0, float(self.converter_step_ratio)),
             command_valid_minutes=max(0.1, float(self.command_valid_minutes)),
         )
 
@@ -273,7 +281,11 @@ class RenewableControlSettings:
             "soc_min": ("soc_min", "socMin"),
             "soc_max": ("soc_max", "socMax"),
             "large_step_threshold_kw": ("large_step_threshold_kw", "largeStepThresholdKw"),
-            "step_coefficient": ("step_coefficient", "stepCoefficient"),
+            "step_coefficient": ("step_coefficient", "stepCoefficient", "renewableStepRatio"),
+            "storage_switch_deadband_kw": ("storage_switch_deadband_kw", "storageSwitchDeadbandKw"),
+            "diesel_deadband_ratio": ("diesel_deadband_ratio", "dieselDeadbandRatio"),
+            "soc_deadband": ("soc_deadband", "socDeadband"),
+            "converter_step_ratio": ("converter_step_ratio", "converterStepRatio"),
             "command_valid_minutes": ("command_valid_minutes", "commandValidMinutes"),
         }
         values: Dict[str, float] = {}
@@ -293,6 +305,11 @@ class RenewableControlSettings:
             "socMax": self.soc_max,
             "largeStepThresholdKw": self.large_step_threshold_kw,
             "stepCoefficient": self.step_coefficient,
+            "storageSwitchDeadbandKw": self.storage_switch_deadband_kw,
+            "renewableStepRatio": self.step_coefficient,
+            "dieselDeadbandRatio": self.diesel_deadband_ratio,
+            "socDeadband": self.soc_deadband,
+            "converterStepRatio": self.converter_step_ratio,
             "commandValidMinutes": self.command_valid_minutes,
         }
 
@@ -709,10 +726,10 @@ def _storage_rows(
                 1.0,
             ),
         )
-        defined_min = _ratio(parameter.get("soc_lower_limit", parameter.get("soc_min")), 0.0) or 0.0
-        defined_max = _ratio(parameter.get("soc_upper_limit", parameter.get("soc_max")), 1.0) or 1.0
-        soc_min = _clamp(max(defined_min, settings.soc_min), 0.0, 1.0)
-        soc_max = _clamp(min(defined_max, settings.soc_max), soc_min, 1.0)
+        defined_min = _ratio(parameter.get("soc_lower_limit", parameter.get("soc_min")), None)
+        defined_max = _ratio(parameter.get("soc_upper_limit", parameter.get("soc_max")), None)
+        soc_min = _clamp(defined_min if defined_min is not None else settings.soc_min, 0.0, 1.0)
+        soc_max = _clamp(defined_max if defined_max is not None else settings.soc_max, soc_min, 1.0)
         efficiency = max(EPSILON, _ratio(parameter.get("charge_discharge_efficiency"), 1.0) or 1.0)
         charge_max = max(0.0, _number(parameter.get("max_charge_power", parameter.get("charge_p_max")), 0.0) or 0.0)
         discharge_max = max(
@@ -725,6 +742,24 @@ def _storage_rows(
         )
         charge_by_energy = max(0.0, ((soc_max - (soc or 0.0)) * capacity) / (efficiency * step_hours)) if soc_known else 0.0
         discharge_by_energy = max(0.0, (((soc or 0.0) - soc_min) * capacity * efficiency) / step_hours) if soc_known else 0.0
+        soc_constraint = (
+            "offline"
+            if not online
+            else "unknown"
+            if not soc_known
+            else "above_upper"
+            if (soc or 0.0) >= soc_max
+            else "below_lower"
+            if (soc or 0.0) <= soc_min
+            else "normal"
+        )
+        status_label = {
+            "offline": "停用",
+            "unknown": "SOC未知",
+            "above_upper": "SOC达到上限·禁止充电",
+            "below_lower": "SOC达到下限·禁止放电",
+            "normal": "随网平衡",
+        }[soc_constraint]
         rows.append(
             {
                 "category": "储能平衡源",
@@ -738,12 +773,13 @@ def _storage_rows(
                 "socKnown": soc_known,
                 "socMin": soc_min,
                 "socMax": soc_max,
+                "socConstraint": soc_constraint,
                 "capacityKwh": capacity,
                 "chargePower": min(charge_max, charge_by_energy),
                 "dischargePower": min(discharge_max, discharge_by_energy),
                 "efficiency": efficiency,
                 "set_type": "",
-                "statusLabel": "停用" if not online else "随网平衡" if soc_known else "SOC未知",
+                "statusLabel": status_label,
             }
         )
     return rows
@@ -871,6 +907,42 @@ def _plan_recovery(
     }
 
 
+def _apply_storage_switch_deadband(
+    current_kw: float,
+    desired_kw: float,
+    deadband_kw: float,
+) -> Tuple[float, str]:
+    deadband = max(0.0, deadband_kw)
+    if deadband <= EPSILON:
+        return desired_kw, "disabled"
+    if abs(current_kw) <= EPSILON:
+        return (0.0, "idle_deadband") if abs(desired_kw) < deadband else (desired_kw, "direction_start_allowed")
+    if current_kw > 0.0 and desired_kw < 0.0:
+        return (0.0, "discharge_to_charge_blocked") if abs(desired_kw) < deadband else (desired_kw, "direction_switch_allowed")
+    if current_kw < 0.0 and desired_kw > 0.0:
+        return (0.0, "charge_to_discharge_blocked") if desired_kw < deadband else (desired_kw, "direction_switch_allowed")
+    return desired_kw, "same_direction"
+
+
+def _move_toward(current: float, target: float, step: float) -> float:
+    limit = max(0.0, step)
+    if limit <= EPSILON:
+        return current
+    if target > current:
+        return min(target, current + limit)
+    if target < current:
+        return max(target, current - limit)
+    return current
+
+
+def _diesel_boundary_violation(value_kw: float, minimum_kw: float, capacity_kw: float) -> float:
+    if value_kw < minimum_kw:
+        return minimum_kw - value_kw
+    if capacity_kw > EPSILON and value_kw > capacity_kw:
+        return value_kw - capacity_kw
+    return 0.0
+
+
 def _parallel_converter_limit(rows: Sequence[Mapping[str, Any]]) -> float:
     if not rows:
         return 0.0
@@ -946,6 +1018,7 @@ def calculate_renewable_control_plan(
             blocked=True,
         )
     renewable_current = sum(max(0.0, finite(row.get("currentKw"))) for row in online_renewable)
+    renewable_capacity = sum(max(0.0, finite(row.get("capacityKw"))) for row in online_renewable)
     wind_current = sum(max(0.0, finite(row.get("currentKw"))) for row in online_renewable if row["category"] == "风电")
     pv_current = sum(max(0.0, finite(row.get("currentKw"))) for row in online_renewable if row["category"] == "光伏")
 
@@ -954,12 +1027,49 @@ def calculate_renewable_control_plan(
     diesel_current = sum(max(0.0, finite(row.get("currentKw"))) for row in measured_diesel) if measured_diesel else None
     diesel_min = sum(max(0.0, finite(row.get("minKw"))) for row in online_diesel)
     diesel_capacity = sum(max(0.0, finite(row.get("capacityKw"))) for row in online_diesel)
+    diesel_deadband_kw = settings.diesel_deadband_ratio * diesel_capacity
 
     online_storage = [row for row in storage_rows if row["online"]]
     measured_storage = [row for row in online_storage if row.get("currentKw") is not None]
     storage_current = sum(finite(row.get("currentKw")) for row in measured_storage) if measured_storage else None
     known_soc = [finite(row.get("soc")) for row in online_storage if row.get("socKnown") and row.get("soc") is not None]
     storage_soc = sum(known_soc) / len(known_soc) if known_soc else None
+    known_soc_rows = [row for row in online_storage if row.get("socKnown") and row.get("soc") is not None]
+    storage_soc_lower_limit = (
+        sum(finite(row.get("socMin")) for row in known_soc_rows) / len(known_soc_rows)
+        if known_soc_rows
+        else None
+    )
+    storage_soc_upper_limit = (
+        sum(finite(row.get("socMax")) for row in known_soc_rows) / len(known_soc_rows)
+        if known_soc_rows
+        else None
+    )
+    storage_soc_region = (
+        "unknown"
+        if storage_soc is None or storage_soc_lower_limit is None or storage_soc_upper_limit is None
+        else "below_lower"
+        if storage_soc < storage_soc_lower_limit
+        else "low_guard"
+        if storage_soc < storage_soc_lower_limit + settings.soc_deadband
+        else "above_upper"
+        if storage_soc > storage_soc_upper_limit
+        else "high_guard"
+        if storage_soc > storage_soc_upper_limit - settings.soc_deadband
+        else "normal"
+    )
+    soc_above_upper_deadband = (
+        storage_soc is not None
+        and storage_soc_upper_limit is not None
+        and storage_soc > storage_soc_upper_limit + settings.soc_deadband + EPSILON
+    )
+    soc_below_lower_deadband = (
+        storage_soc is not None
+        and storage_soc_lower_limit is not None
+        and storage_soc < storage_soc_lower_limit - settings.soc_deadband - EPSILON
+    )
+    storage_above_upper = [row for row in online_storage if row.get("socConstraint") == "above_upper"]
+    storage_below_lower = [row for row in online_storage if row.get("socConstraint") == "below_lower"]
     raw_charge = sum(max(0.0, finite(row.get("chargePower"))) for row in online_storage)
     raw_discharge = sum(max(0.0, finite(row.get("dischargePower"))) for row in online_storage)
     converter_rows = _resolve_converter_capacities(converter_rows, max(raw_charge, raw_discharge))
@@ -971,6 +1081,14 @@ def calculate_renewable_control_plan(
     if any(finite(row.get("transferCapacityKw")) <= 0 for row in converter_rows):
         quality.add("部分在线功率控制型交直流变流器缺少有效容量边界", dispatch_forbidden=True)
     converter_limit = _parallel_converter_limit(converter_rows)
+    storage_power_capacity = max(raw_charge, raw_discharge)
+    if converter_rows and math.isfinite(converter_limit) and converter_limit > EPSILON:
+        storage_power_capacity = min(storage_power_capacity, converter_limit) if storage_power_capacity > EPSILON else converter_limit
+    converter_step_kw = (
+        settings.converter_step_ratio * converter_limit
+        if converter_rows and math.isfinite(converter_limit)
+        else 0.0
+    )
     if online_storage and not converter_rows:
         quality.add(
             "无在线功率控制型交直流变流器，储能保持当前功率且禁止闭环下发",
@@ -998,6 +1116,7 @@ def calculate_renewable_control_plan(
         else 0.0
     )
     diesel_down_margin = diesel_current_for_control - diesel_min
+    diesel_up_margin = max(0.0, diesel_capacity - diesel_current_for_control) if diesel_capacity > EPSILON else 0.0
     storage_min_target = -raw_charge if converter_rows else storage_current_for_control
     storage_max_target = raw_discharge if converter_rows else storage_current_for_control
     if converter_rows and math.isfinite(converter_limit):
@@ -1018,87 +1137,181 @@ def calculate_renewable_control_plan(
         0.0,
         renewable_current + diesel_down_margin + (storage_current_for_control - storage_min_target),
     )
-
-    known_rows = [row for row in online_renewable if row["environmentKnown"] and row["capabilityKnown"]]
-    known_dispatchable = [row for row in known_rows if row["commandable"]]
-    known_fixed = [row for row in known_rows if not row["commandable"]]
-    unknown_rows = [row for row in online_renewable if not row["environmentKnown"]]
-    for row in unknown_rows:
-        if row.get("planningCurrentKw") is None or finite(row.get("capacityKw")) <= 0:
-            quality.add(
-                f"{row['category']}{row['dev_name']}在环境量未知时缺少有效实时有功或额定容量",
-                blocked=True,
-            )
-    unknown_dispatchable = [
-        row
-        for row in unknown_rows
-        if row["commandable"] and row.get("planningCurrentKw") is not None and finite(row.get("capacityKw")) > 0
-    ]
-    unknown_fixed = [row for row in unknown_rows if row not in unknown_dispatchable]
-    unknown_dispatchable_baseline = sum(finite(row.get("planningCurrentKw")) for row in unknown_dispatchable)
-    unknown_fixed_kw = sum(finite(row.get("planningCurrentKw")) for row in unknown_fixed)
-    known_fixed_kw = sum(finite(row.get("planningCurrentKw")) for row in known_fixed)
-    unresolved_fixed_kw = sum(finite(row.get("planningCurrentKw")) for row in capability_unknown_rows)
-    fixed_renewable = unknown_fixed_kw + known_fixed_kw + unresolved_fixed_kw
-    if fixed_renewable > renewable_balance_limit + EPSILON:
-        quality.add("不可遥调新能源当前出力已经超过柴发下限与储能充电边界允许的范围", blocked=True)
-    dispatchable_room = max(0.0, renewable_balance_limit - fixed_renewable)
-    known_available_dispatchable = sum(finite(row.get("availableKw")) for row in known_dispatchable)
-    unknown_target_by_device: Dict[Tuple[str, str], float] = {}
-    if dispatchable_room < unknown_dispatchable_baseline - EPSILON:
-        reduced_targets = _allocate(unknown_dispatchable, dispatchable_room, "planningCurrentKw")
-        unknown_target_by_device = {
-            (row["dev_type"], row["dev_name"]): reduced_targets[index]
-            for index, row in enumerate(unknown_dispatchable)
-        }
-        unknown_target_total = sum(reduced_targets)
-        known_target = 0.0
-        recovery_room = 0.0
-    else:
-        unknown_target_by_device = {
-            (row["dev_type"], row["dev_name"]): finite(row.get("planningCurrentKw"))
-            for row in unknown_dispatchable
-        }
-        unknown_target_total = unknown_dispatchable_baseline
-        known_target = min(
-            known_available_dispatchable,
-            max(0.0, dispatchable_room - unknown_dispatchable_baseline),
-        )
-        recovery_room = max(
-            0.0,
-            dispatchable_room - unknown_dispatchable_baseline - known_target,
-        )
-    known_allocations = _allocate(known_dispatchable, known_target, "availableKw")
-    known_by_device = {
-        (row["dev_type"], row["dev_name"]): known_allocations[index]
-        for index, row in enumerate(known_dispatchable)
-    }
-    recovery_candidates = unknown_dispatchable if recovery_room > EPSILON else []
-    recovery_plan = _plan_recovery(recovery_candidates, recovery_room, settings)
-    recovery_by_device = {
-        (row["dev_type"], row["dev_name"]): row
-        for row in recovery_plan["rows"]
-    }
-    for key, recovery in recovery_by_device.items():
-        unknown_target_by_device[key] = finite(recovery.get("setpointKw"))
-    unknown_target_total = sum(unknown_target_by_device.values())
-    renewable_target = fixed_renewable + known_target + unknown_target_total
-
-    renewable_delta = renewable_target - renewable_current
-    desired_storage_target = storage_current_for_control + diesel_down_margin - renewable_delta
-    storage_target = _clamp(desired_storage_target, storage_min_target, storage_max_target)
-    diesel_target = max(
-        0.0,
-        diesel_current_for_control
-        - renewable_delta
-        - (storage_target - storage_current_for_control),
+    diesel_control_region = (
+        "high"
+        if diesel_current_for_control > diesel_min + diesel_deadband_kw
+        else "low"
+        if diesel_current_for_control < diesel_min - diesel_deadband_kw
+        else "deadband"
     )
+    high_soc_guard = storage_soc_region in {"high_guard", "above_upper"}
+    storage_control_action = "hold"
+    desired_storage_target = storage_current_for_control
+    storage_has_discharge_capability = (
+        storage_soc_region in {"normal", "high_guard", "above_upper"}
+        and total_discharge > EPSILON
+    )
+    if soc_above_upper_deadband:
+        desired_storage_target = storage_max_target
+        storage_control_action = "increase_discharge_above_soc_upper_deadband"
+    elif soc_below_lower_deadband:
+        if diesel_up_margin > EPSILON:
+            desired_storage_target = max(storage_min_target, storage_current_for_control - diesel_up_margin)
+            storage_control_action = "increase_charge_below_soc_lower_deadband"
+        else:
+            desired_storage_target = 0.0
+            storage_control_action = "extreme_soc_charge_blocked_no_diesel_headroom"
+    elif high_soc_guard and storage_current_for_control < -EPSILON:
+        desired_storage_target = 0.0
+        storage_control_action = "reduce_charge_high_soc"
+    elif diesel_control_region == "high":
+        if storage_has_discharge_capability:
+            discharge_need = max(0.0, diesel_current_for_control - diesel_min - diesel_deadband_kw)
+            desired_storage_target = storage_current_for_control + discharge_need
+            storage_control_action = "increase_discharge"
+        elif storage_current_for_control > EPSILON:
+            desired_storage_target = 0.0
+            storage_control_action = "reduce_discharge_low_soc"
+    elif diesel_control_region == "low":
+        if storage_current_for_control > EPSILON:
+            desired_storage_target = 0.0
+            storage_control_action = "reduce_discharge_low_diesel"
+    elif storage_soc_region in {"low_guard", "below_lower"} and storage_current_for_control > EPSILON:
+        desired_storage_target = 0.0
+        storage_control_action = "reduce_discharge_low_soc"
+
+    emergency_charge_requested = (
+        storage_soc_region == "below_lower"
+        and not soc_below_lower_deadband
+        and diesel_control_region != "low"
+        and storage_current_for_control <= EPSILON
+    )
+    diesel_emergency_charge_allowed = (
+        (emergency_charge_requested or soc_below_lower_deadband)
+        and diesel_up_margin > EPSILON
+    )
+    if emergency_charge_requested:
+        if diesel_emergency_charge_allowed:
+            desired_storage_target = max(storage_min_target, storage_current_for_control - diesel_up_margin)
+            storage_control_action = "emergency_diesel_charge"
+        else:
+            desired_storage_target = 0.0
+            storage_control_action = "emergency_charge_blocked_no_diesel_headroom"
+
+    storage_candidate_target = _clamp(desired_storage_target, storage_min_target, storage_max_target)
+    storage_deadband_action = storage_control_action
+
+    converter_target_unclamped = (
+        converter_current_for_control - (storage_candidate_target - storage_current_for_control)
+        if converter_rows
+        else 0.0
+    )
+    converter_desired_target = converter_target_unclamped
+    if math.isfinite(converter_limit):
+        converter_desired_target = _clamp(converter_desired_target, -converter_limit, converter_limit)
+    if abs(converter_desired_target - converter_target_unclamped) > 0.001:
+        quality.add("储能候选目标超出交直流变流器并联容量边界", blocked=True)
+    converter_target = (
+        _move_toward(converter_current_for_control, converter_desired_target, converter_step_kw)
+        if converter_rows
+        else 0.0
+    )
+    converter_step_limited = abs(converter_target - converter_desired_target) > 0.001
+    storage_target = (
+        storage_current_for_control + converter_current_for_control - converter_target
+        if converter_rows
+        else storage_current_for_control
+    )
+
+    renewable_control_action = "hold"
+    if diesel_control_region == "low":
+        renewable_control_action = "hold_low_diesel" if storage_current_for_control > EPSILON else "curtail_low_diesel"
+    elif high_soc_guard:
+        renewable_control_action = "curtail_one_step" if storage_current_for_control < -EPSILON else "hold_high_soc"
+    else:
+        renewable_control_action = "recover_one_step"
+
+    renewable_target_by_device: Dict[Tuple[str, str], Optional[float]] = {}
+    for row in online_renewable:
+        key = (row["dev_type"], row["dev_name"])
+        if row.get("planningCurrentKw") is None:
+            renewable_target_by_device[key] = None
+            continue
+        current_kw = finite(row.get("planningCurrentKw"))
+        capacity_kw = max(0.0, finite(row.get("capacityKw")))
+        step_kw = settings.step_coefficient * capacity_kw
+        if not row.get("commandable"):
+            target_kw = current_kw
+        elif renewable_control_action in {"curtail_one_step", "curtail_low_diesel"}:
+            target_kw = max(0.0, current_kw - step_kw)
+        elif renewable_control_action == "recover_one_step":
+            target_kw = min(capacity_kw, current_kw + step_kw)
+        else:
+            target_kw = current_kw
+        renewable_target_by_device[key] = _clamp(target_kw, 0.0, capacity_kw) if capacity_kw > EPSILON else 0.0
+
+    renewable_target = sum(finite(value) for value in renewable_target_by_device.values())
+    renewable_delta = renewable_target - renewable_current
+    storage_delta = storage_target - storage_current_for_control
+
+    # When the diesel is currently inside its hard boundaries, trim a one-step
+    # renewable candidate rather than rejecting the whole round merely because
+    # the combined renewable/storage change would cross a diesel boundary.
+    current_diesel_violation = _diesel_boundary_violation(
+        diesel_current_for_control,
+        diesel_min,
+        diesel_capacity,
+    )
+    candidate_effect = renewable_delta + storage_delta
+    predicted_diesel = diesel_current_for_control - candidate_effect
+    if current_diesel_violation <= 0.001:
+        minimum_effect = diesel_current_for_control - diesel_capacity if diesel_capacity > EPSILON else -math.inf
+        maximum_effect = diesel_current_for_control - diesel_min
+        constrained_effect = _clamp(candidate_effect, minimum_effect, maximum_effect)
+        required_renewable_delta = constrained_effect - storage_delta
+        can_scale_renewable = (
+            abs(renewable_delta) > EPSILON
+            and renewable_delta * required_renewable_delta >= -EPSILON
+            and abs(required_renewable_delta) <= abs(renewable_delta) + EPSILON
+        )
+        if abs(constrained_effect - candidate_effect) > 0.001 and can_scale_renewable:
+            scale = _clamp(required_renewable_delta / renewable_delta, 0.0, 1.0)
+            for row in online_renewable:
+                key = (row["dev_type"], row["dev_name"])
+                candidate_kw = renewable_target_by_device.get(key)
+                if candidate_kw is None or not row.get("commandable"):
+                    continue
+                current_kw = finite(row.get("currentKw"))
+                capacity_kw = max(0.0, finite(row.get("capacityKw")))
+                renewable_target_by_device[key] = _clamp(
+                    current_kw + (finite(candidate_kw) - current_kw) * scale,
+                    0.0,
+                    capacity_kw,
+                )
+            renewable_target = sum(finite(value) for value in renewable_target_by_device.values())
+            renewable_delta = renewable_target - renewable_current
+            candidate_effect = renewable_delta + storage_delta
+            predicted_diesel = diesel_current_for_control - candidate_effect
+
+    diesel_target = max(0.0, predicted_diesel)
     diesel_residual = diesel_target
     diesel_boundary_error = diesel_target - diesel_min
-    if diesel_target < diesel_min - 0.001:
-        quality.add("控制目标会使柴油发电低于下限，已禁止闭环下发", blocked=True)
-    if diesel_capacity > 0 and diesel_target > diesel_capacity + 0.001:
-        quality.add("按当前新能源与储能边界预测，柴油发电目标会超过额定容量")
+    predicted_diesel_violation = _diesel_boundary_violation(diesel_target, diesel_min, diesel_capacity)
+    diesel_violation_improved = (
+        predicted_diesel_violation + 0.001 < current_diesel_violation
+        if current_diesel_violation > 0.001
+        else predicted_diesel_violation <= 0.001
+    )
+    if current_diesel_violation > 0.001 and not diesel_violation_improved:
+        quality.add("本轮候选目标未缩小柴发边界偏差，已禁止闭环下发", dispatch_forbidden=True)
+        diesel_validation_status = "not_improved"
+    elif current_diesel_violation > 0.001:
+        diesel_validation_status = "improved"
+    elif predicted_diesel_violation > 0.001:
+        quality.add("本轮候选目标会使柴发越过运行边界，已禁止闭环下发", blocked=True)
+        diesel_validation_status = "out_of_bounds"
+    else:
+        diesel_validation_status = "within_bounds"
     unserved_kw = 0.0
     surplus_kw = 0.0
 
@@ -1122,13 +1335,6 @@ def calculate_renewable_control_plan(
         for index, row in enumerate(diesel_dispatch)
     }
 
-    converter_target = (
-        converter_current_for_control - (storage_target - storage_current_for_control)
-        if converter_rows
-        else 0.0
-    )
-    if math.isfinite(converter_limit):
-        converter_target = _clamp(converter_target, -converter_limit, converter_limit)
     converter_direction = 1.0 if converter_target > 0 else -1.0 if converter_target < 0 else 0.0
     converter_allocations = [
         value * converter_direction
@@ -1139,7 +1345,6 @@ def calculate_renewable_control_plan(
     command_rows: List[Dict[str, Any]] = []
     for row in renewable_rows:
         key = (row["dev_type"], row["dev_name"])
-        recovery = recovery_by_device.get(key)
         strategy_command = (
             row["commandable"] and row["capabilityKnown"]
             if row["environmentKnown"]
@@ -1148,16 +1353,19 @@ def calculate_renewable_control_plan(
         command_rows.append(
             {
                 **row,
-                "recoveryKw": finite(recovery.get("recoveryKw")) if recovery else 0.0,
+                "recoveryKw": max(
+                    0.0,
+                    finite(renewable_target_by_device.get(key)) - finite(row.get("currentKw")),
+                ),
                 "strategyCommand": strategy_command,
                 "commandKw": (
-                    known_by_device.get(key, finite(row.get("planningCurrentKw")))
-                    if row["environmentKnown"] and row.get("capabilityKnown") and row.get("commandable")
+                    renewable_target_by_device.get(key)
+                    if row.get("online") and key in renewable_target_by_device
                     else finite(row.get("planningCurrentKw"))
-                    if row["environmentKnown"] and row.get("capabilityKnown")
+                    if row.get("online") and row.get("planningCurrentKw") is not None
                     else None
-                    if row["environmentKnown"]
-                    else unknown_target_by_device.get(key)
+                    if row.get("online")
+                    else 0.0
                 ),
             }
         )
@@ -1217,28 +1425,22 @@ def calculate_renewable_control_plan(
     warnings.extend(issue for issue in quality.issues if issue not in warnings)
 
     wind_available = sum(
-        finite(row.get("availableKw"))
-        if row["environmentKnown"] and row.get("capabilityKnown")
-        else finite(row.get("planningCurrentKw"))
+        max(0.0, finite(row.get("capacityKw")))
         for row in renewable_rows
-        if row["category"] == "风电"
+        if row["category"] == "风电" and row.get("online")
     )
     pv_available = sum(
-        finite(row.get("availableKw"))
-        if row["environmentKnown"] and row.get("capabilityKnown")
-        else finite(row.get("planningCurrentKw"))
+        max(0.0, finite(row.get("capacityKw")))
         for row in renewable_rows
-        if row["category"] == "光伏"
+        if row["category"] == "光伏" and row.get("online")
     )
-    unknown_available_baseline = unknown_fixed_kw + unknown_dispatchable_baseline
-    available_renewable = (
-        sum(finite(row.get("availableKw")) for row in known_rows)
-        + unknown_available_baseline
-        + unresolved_fixed_kw
-    )
-    curtail_kw = max(0.0, known_available_dispatchable - known_target) + max(
-        0.0,
-        unknown_dispatchable_baseline - unknown_target_total,
+    available_renewable = wind_available + pv_available
+    curtail_kw = max(0.0, available_renewable - renewable_target)
+    recovery_kw = max(0.0, renewable_delta)
+    recovery_candidate_count = sum(
+        1
+        for row in online_renewable
+        if row.get("commandable") and finite(row.get("capacityKw")) > finite(row.get("currentKw")) + EPSILON
     )
     clock = snapshot.get("clock") if isinstance(snapshot.get("clock"), Mapping) else {}
     time_text = str(clock.get("time", "--"))
@@ -1255,54 +1457,100 @@ def calculate_renewable_control_plan(
         "storageDischargeAvailable": total_discharge,
         "storageCurrentKw": storage_current,
         "storageSoc": storage_soc,
+        "storageSocLowerLimit": storage_soc_lower_limit,
+        "storageSocUpperLimit": storage_soc_upper_limit,
+        "storageSocRegion": storage_soc_region,
+        "socDeadband": settings.soc_deadband,
+        "socAboveUpperDeadband": soc_above_upper_deadband,
+        "socBelowLowerDeadband": soc_below_lower_deadband,
+        "socUpperDeadbandThreshold": (
+            storage_soc_upper_limit + settings.soc_deadband
+            if storage_soc_upper_limit is not None
+            else None
+        ),
+        "socLowerDeadbandThreshold": (
+            storage_soc_lower_limit - settings.soc_deadband
+            if storage_soc_lower_limit is not None
+            else None
+        ),
+        "storageAboveUpperCount": len(storage_above_upper),
+        "storageBelowLowerCount": len(storage_below_lower),
         "absorptionLimitKw": renewable_balance_limit,
         "renewableBalanceLimitKw": renewable_balance_limit,
         "renewableDeltaKw": renewable_delta,
+        "renewableBalancingDeltaKw": renewable_delta,
         "renewableTarget": renewable_target,
         "storageMinTargetKw": storage_min_target,
         "storageMaxTargetKw": storage_max_target,
+        "dieselEmergencyChargeAllowed": diesel_emergency_charge_allowed,
+        "emergencyChargeRequested": emergency_charge_requested,
+        "extremeSocChargeRequested": soc_below_lower_deadband,
         "storageTarget": storage_target,
+        "storageDesiredTargetKw": desired_storage_target,
+        "storageCandidateTargetKw": storage_candidate_target,
+        "storagePowerCapacityKw": storage_power_capacity,
+        "storageControlAction": storage_control_action,
+        "storageSwitchDeadbandKw": settings.storage_switch_deadband_kw,
+        "storageSwitchDeadbandAction": storage_deadband_action,
         "acdcCurrentKw": converter_current,
+        "acdcDesiredTargetKw": converter_desired_target,
         "acdcTargetKw": converter_target,
         "acdcAdjustmentKw": converter_target - converter_current if converter_current is not None else None,
+        "converterStepRatio": settings.converter_step_ratio,
+        "converterStepKw": converter_step_kw,
+        "converterStepLimited": converter_step_limited,
         "dieselResidual": diesel_residual,
         "dieselCurrentKw": diesel_current,
         "dieselMinKw": diesel_min,
         "dieselDownMarginKw": diesel_down_margin,
+        "dieselUpMarginKw": diesel_up_margin,
+        "dieselDeadbandRatio": settings.diesel_deadband_ratio,
+        "dieselDeadbandKw": diesel_deadband_kw,
+        "dieselControlRegion": diesel_control_region,
         "dieselTargetKw": diesel_target,
         "dieselBoundaryErrorKw": diesel_boundary_error,
         "dieselCapacityKw": diesel_capacity,
+        "dieselCurrentViolationKw": current_diesel_violation,
+        "dieselPredictedViolationKw": predicted_diesel_violation,
+        "dieselViolationImproved": diesel_violation_improved,
+        "dieselValidationStatus": diesel_validation_status,
+        "candidatePowerEffectKw": candidate_effect,
         "curtailKw": curtail_kw,
         "loadKw": load_kw,
         "unservedKw": unserved_kw,
         "surplusKw": surplus_kw,
         "windSpeedKnown": wind_speed is not None,
         "solarIrradianceKnown": irradiance is not None,
-        "recoveryMode": recovery_plan["mode"] if recovery_plan["recoverableKw"] > 0 else "none",
-        "recoveryRequestedKw": recovery_plan["requestedKw"],
-        "recoveryKw": recovery_plan["recoverableKw"],
-        "recoveryCandidateCount": len(recovery_candidates),
+        "recoveryMode": "capacity-step" if recovery_kw > EPSILON else "none",
+        "renewableControlAction": renewable_control_action,
+        "renewableCapacityKw": renewable_capacity,
+        "renewableStepRatio": settings.step_coefficient,
+        "recoveryRequestedKw": recovery_kw,
+        "recoveryKw": recovery_kw,
+        "recoveryCandidateCount": recovery_candidate_count,
         "largeStepThresholdKw": settings.large_step_threshold_kw,
         "stepCoefficient": settings.step_coefficient,
         "storageConverterCount": len(converter_rows),
     }
-    recovery_label = {
-        "equal-margin": "等裕度大步长",
-        "capacity-step": "容量系数小步长",
-        "none": "无恢复动作",
-    }.get(metrics["recoveryMode"], str(metrics["recoveryMode"]))
     decision_detail = [
         f"数据来源：{_source_label(data_source)}，质量 {quality_payload['status']}，闭环下发{'允许' if quality_payload['dispatchAllowed'] else '禁止'}",
         f"控制基准：时刻 {time_text}，新能源当前 {renewable_current:.2f} kW，柴发当前 {diesel_current_for_control:.2f} kW、下限 {diesel_min:.2f} kW",
+        f"柴发分区：死区比例 {settings.diesel_deadband_ratio * 100:.2f}%（±{diesel_deadband_kw:.2f} kW），当前位于 {diesel_control_region} 区",
         f"储能边界：当前 {storage_current_for_control:.2f} kW，允许目标 [{storage_min_target:.2f}, {storage_max_target:.2f}] kW，SOC {storage_soc * 100 if storage_soc is not None else '--'}%",
-        f"变流边界：当前 {converter_current if converter_current is not None else '--'} kW，可控并联 {len(converter_rows)} 台，汇总限值 {converter_limit if math.isfinite(converter_limit) else '--'} kW",
+        f"SOC分区：下限 {storage_soc_lower_limit * 100 if storage_soc_lower_limit is not None else '--'}%，上限 {storage_soc_upper_limit * 100 if storage_soc_upper_limit is not None else '--'}%，死区 {settings.soc_deadband * 100:.2f}%，当前 {storage_soc_region}",
+        f"SOC运行约束：以model.e定义为准，达到上限 {len(storage_above_upper)} 台（禁止充电），达到下限 {len(storage_below_lower)} 台（禁止放电）",
+        f"变流边界：当前 {converter_current if converter_current is not None else '--'} kW，可控并联 {len(converter_rows)} 台，汇总限值 {converter_limit if math.isfinite(converter_limit) else '--'} kW，步长比例 {settings.converter_step_ratio * 100:.2f}%（{converter_step_kw:.2f} kW）",
+        f"应急充电校核：柴发上调裕度 {diesel_up_margin:.2f} kW，请求 {'是' if emergency_charge_requested or soc_below_lower_deadband else '否'}，允许 {'是' if diesel_emergency_charge_allowed else '否'}",
         f"环境策略：风速 {observed_wind_speed if observed_wind_speed is not None else '--'}、太阳辐照度 {observed_irradiance if observed_irradiance is not None else '--'}、温度 {observed_air_temperature if observed_air_temperature is not None else '--'}，均按默认策略忽略",
         f"新能源上调边界：当前 {renewable_current:.2f} + 柴发可下调裕度 {diesel_down_margin:.2f} + 储能可增加吸收裕度 {storage_current_for_control - storage_min_target:.2f} = {renewable_balance_limit:.2f} kW",
-        f"增量平衡：柴发目标 = 柴发当前 - 新能源变化量 {renewable_delta:.2f} - 储能变化量 {storage_target - storage_current_for_control:.2f} = {diesel_target:.2f} kW",
+        f"增量平衡：柴发目标 = 柴发当前 - 新能源候选变化量 {renewable_delta:.2f} - 储能候选变化量 {storage_delta:.2f} = {diesel_target:.2f} kW",
         f"负荷功率仅用于展示：当前 {load_kw:.2f} kW，不参与新能源、储能、变流器或柴发目标计算",
-        f"恢复策略：恢复 {recovery_plan['recoverableKw']:.2f} kW，方式 {recovery_label}，候选机组 {len(recovery_candidates)} 台",
+        f"新能源策略：{renewable_control_action}，单步比例 {settings.step_coefficient * 100:.2f}%，目标 {renewable_target:.2f} kW",
+        f"恢复策略：新能源恢复或弃电均按单机容量步长执行，本轮动作 {renewable_control_action}",
+        f"储能状态机：储能本体无控制步长，当前 {storage_current_for_control:.2f} kW，动作 {storage_control_action}，候选 {storage_candidate_target:.2f} kW，变流执行后目标 {storage_target:.2f} kW",
         f"储能协调：当前值 {storage_current if storage_current is not None else '--'} kW，SOC {storage_soc * 100 if storage_soc is not None else '--'}%，目标 {storage_target:.2f} kW",
-        f"ACDC变流：目标 = 当前 {converter_current_for_control:.2f} - 储能变化量 {storage_target - storage_current_for_control:.2f} = {converter_target:.2f} kW，并联运行 {len(converter_rows)} 台",
+        f"ACDC变流：候选 {converter_desired_target:.2f} kW，从当前 {converter_current_for_control:.2f} kW 按单步 {converter_step_kw:.2f} kW 调整至 {converter_target:.2f} kW，并联运行 {len(converter_rows)} 台",
+        f"统一候选校核：容量/SOC/变流器边界已限幅，柴发当前偏差 {current_diesel_violation:.2f} kW、预测偏差 {predicted_diesel_violation:.2f} kW，结果 {diesel_validation_status}",
         f"预期结果：新能源目标 {renewable_target:.2f} kW，柴油目标 {diesel_target:.2f} kW，弃风弃光 {curtail_kw:.2f} kW",
         *[f"数据告警：{issue}" for issue in quality_payload["issues"]],
     ]

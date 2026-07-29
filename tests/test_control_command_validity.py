@@ -88,6 +88,29 @@ class ControlCommandValidityTest(unittest.TestCase):
         service.step()
         self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "10")
 
+    def test_automatic_control_command_defaults_to_two_hour_validity(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        result = service.apply_student_commands(
+            {
+                "strategy": {"name": "renewable_priority"},
+                "set_values": [
+                    {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 20}
+                ],
+            },
+            source="trainee-renewable-priority",
+        )
+
+        self.assertEqual(result["set_values"], 1)
+        self.assertEqual(service.command_history[-1]["valid_for_minutes"], 120.0)
+        self.assertEqual(service.command_history[-1]["expires_at_absolute_minute"], 120.0)
+        for _ in range(120):
+            service.step()
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
+        service.step()
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "10")
+
     def test_strategy_control_command_can_remain_active_until_absolute_expiry(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)

@@ -13,14 +13,16 @@ class TraineeRenewableTrendChartUiTest(unittest.TestCase):
         cls.backend = (ROOT / "simu/renewable_control.py").read_text(encoding="utf-8")
         cls.styles = (ROOT / "simu/web/trainee/styles.css").read_text(encoding="utf-8")
 
-    def test_page_uses_top_chart_bottom_structure_with_two_splitters(self):
+    def test_page_uses_strategy_plus_curve_log_tabs_with_one_splitter(self):
         strategy_pos = self.html.index('<h2>控制策略</h2>')
         chart_pos = self.html.index('<h2>综合功率趋势</h2>')
         logs_pos = self.html.index('<h2>控制日志</h2>')
         self.assertLess(strategy_pos, chart_pos)
         self.assertLess(chart_pos, logs_pos)
         self.assertIn('data-vertical-split="trainee-renewable"', self.html)
-        self.assertIn('data-vertical-split="trainee-renewable-lower"', self.html)
+        self.assertNotIn('data-vertical-split="trainee-renewable-lower"', self.html)
+        self.assertIn('data-renewable-detail-tab="trend"', self.html)
+        self.assertIn('data-renewable-detail-tab="logs"', self.html)
 
     def test_middle_chart_has_time_window_and_all_requested_series(self):
         self.assertIn('id="renewableTrendWindow"', self.html)
@@ -70,26 +72,25 @@ class TraineeRenewableTrendChartUiTest(unittest.TestCase):
         self.assertIn("drawChartCursor", draw_block)
         self.assertIn("pixelPoints.length === 1", draw_block)
 
-    def test_chart_reuses_legend_cursor_and_splitter_redraw_systems(self):
+    def test_chart_reuses_legend_cursor_and_active_tab_redraw_systems(self):
         self.assertIn(
             'initTraceChartInteractions("renewableTrend", "renewableTrendChart", drawRenewableTrendChart)',
             self.script,
         )
         self.assertIn('chartKey === "renewableTrend" ? drawRenewableTrendChart', self.script)
-        self.assertIn('"trainee-renewable-lower"', self.script)
-        self.assertIn("drawRenewableTrendChart()", self.script)
-        self.assertIn(".renewable-lower-layout.vertical-split-workspace", self.styles)
+        self.assertNotIn('"trainee-renewable-lower"', self.script)
+        self.assertIn("requestAnimationFrame(drawRenewableTrendChart)", self.script)
+        self.assertIn(".renewable-detail-tabs", self.styles)
 
     def test_active_renewable_page_redraws_the_shared_trend(self):
         render_block = self.script.split("function renderRenewableControl", 1)[1].split(
             "async function toggleRenewableAuto",
             1,
         )[0]
-        self.assertIn("drawRenewableTrendChart();", render_block)
+        self.assertIn("renderRenewableDetailTabs();", render_block)
 
     def test_middle_chart_reserves_space_for_axes_and_legend_without_panel_overlap(self):
-        self.assertIn('data-vertical-split-min-top="200"', self.html)
-        self.assertIn('data-vertical-split-min-bottom="90"', self.html)
+        self.assertIn('data-renewable-detail-pane="trend"', self.html)
         trend_panel_block = self.styles.split(".renewable-trend-panel {", 1)[1].split("}", 1)[0]
         legend_block = self.styles.split(
             ".measurement-trace-legend.renewable-trend-legend {",

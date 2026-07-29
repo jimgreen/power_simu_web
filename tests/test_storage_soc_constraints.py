@@ -216,7 +216,7 @@ class StorageSocConstraintTest(unittest.TestCase):
         self.assertAlmostEqual(executed_power, 0.0)
         self.assertAlmostEqual(next_soc, 0.0)
 
-    def test_soc_integration_does_not_clamp_to_storage_limits(self):
+    def test_soc_integration_preserves_unbounded_value_to_expose_control_errors(self):
         import simu_loop
 
         workspace = tempfile.TemporaryDirectory()

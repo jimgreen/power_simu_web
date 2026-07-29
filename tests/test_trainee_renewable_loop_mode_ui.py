@@ -57,6 +57,61 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         self.assertIn("Math.max(1", settings_block)
         self.assertIn("interval_seconds=max(1.0", self.backend)
 
+    def test_strategy_steps_and_deadbands_are_editable_capacity_ratios(self):
+        for field_id in (
+            "renewableStepRatio",
+            "converterStepRatio",
+            "dieselDeadbandRatio",
+            "socDeadband",
+        ):
+            self.assertIn(f'id="{field_id}"', self.html)
+            self.assertIn(field_id, self.script)
+        for setting_name in (
+            "diesel_deadband_ratio",
+            "soc_deadband",
+            "converter_step_ratio",
+        ):
+            self.assertIn(setting_name, self.backend)
+        self.assertIn("settings.converter_step_ratio * converter_limit", self.backend)
+        self.assertIn("settings.diesel_deadband_ratio * diesel_capacity", self.backend)
+        for removed in (
+            "storageStepRatio",
+            "storage_step_ratio",
+            "储能步长",
+            "renewableNearZeroRatio",
+            "renewableChargeReserveRatio",
+            "renewable_near_zero_ratio",
+            "renewable_charge_reserve_ratio",
+            "新能源近零",
+            "充电保留量",
+        ):
+            self.assertNotIn(removed, self.html)
+            self.assertNotIn(removed, self.script)
+            self.assertNotIn(removed, self.backend)
+
+    def test_backend_does_not_use_dwell_or_pending_feedback_state(self):
+        self.assertNotIn("def _stabilize_region", self.backend)
+        self.assertNotIn("def _feedback_status", self.backend)
+        self.assertNotIn("control_state:", self.backend)
+        self.assertNotIn("candidateSince", self.backend)
+        self.assertNotIn("feedbackState", self.backend)
+
+    def test_soc_operational_limits_come_from_model_and_are_not_editable_in_ui(self):
+        self.assertNotIn('id="renewableSocMin"', self.html)
+        self.assertNotIn('id="renewableSocMax"', self.html)
+        self.assertNotIn("SOC下限", self.html)
+        self.assertNotIn("SOC上限", self.html)
+        settings_block = self.script.split("async function updateRenewableSettings", 1)[1].split(
+            "function renderClock",
+            1,
+        )[0]
+        self.assertNotIn("socMin", settings_block)
+        self.assertNotIn("socMax", settings_block)
+        self.assertNotIn('$("renewableSocMin")', self.script)
+        self.assertNotIn('$("renewableSocMax")', self.script)
+        self.assertIn("defined_min if defined_min is not None else settings.soc_min", self.backend)
+        self.assertIn("defined_max if defined_max is not None else settings.soc_max", self.backend)
+
     def test_backend_owns_environment_recovery_and_converter_dispatch(self):
         self.assertIn("def _plan_recovery", self.backend)
         self.assertIn('"equal-margin"', self.backend)
@@ -64,7 +119,14 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         self.assertIn("风速量测默认不参与新能源控制", self.backend)
         self.assertIn("太阳辐照度量测默认不参与新能源控制", self.backend)
         self.assertIn("ignored_by_control_policy", self.backend)
-        self.assertIn("converter_current_for_control - (storage_target - storage_current_for_control)", self.backend)
+        self.assertIn(
+            "converter_current_for_control - (storage_candidate_target - storage_current_for_control)",
+            self.backend,
+        )
+        self.assertIn(
+            "_move_toward(converter_current_for_control, converter_desired_target, converter_step_kw)",
+            self.backend,
+        )
         self.assertIn('"commandKw": converter_allocations[index]', self.backend)
         self.assertIn('"commandable": False', self.backend)
 

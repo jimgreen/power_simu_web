@@ -477,11 +477,17 @@
                         <option value="10">10秒</option>
                       </select>
                     </label>
-                    <label>SOC下限
-                      <input id="renewableSocMin" type="number" min="0" max="1" step="0.01" value="0.30" />
+                    <label>新能源步长(%)
+                      <input id="renewableStepRatio" type="number" min="0" max="100" step="0.1" value="3" />
                     </label>
-                    <label>SOC上限
-                      <input id="renewableSocMax" type="number" min="0" max="1" step="0.01" value="0.90" />
+                    <label>变流器步长(%)
+                      <input id="converterStepRatio" type="number" min="0" max="100" step="0.1" value="3" />
+                    </label>
+                    <label>柴发死区(%)
+                      <input id="dieselDeadbandRatio" type="number" min="0" max="100" step="0.1" value="3" />
+                    </label>
+                    <label>SOC死区(%)
+                      <input id="socDeadband" type="number" min="0" max="100" step="0.1" value="5" />
                     </label>
                   </div>
                 </div>
@@ -541,13 +547,13 @@
                 tabindex="0"
               ></div>
 
-              <div
-                class="renewable-lower-layout vertical-split-workspace"
-                data-vertical-split="trainee-renewable-lower"
-                data-vertical-split-min-top="200"
-                data-vertical-split-min-bottom="90"
-              >
-                <section class="panel renewable-trend-panel">
+              <section class="panel renewable-detail-panel">
+                <div id="renewableDetailTabs" class="renewable-detail-tabs" role="tablist" aria-label="新能源控制曲线与日志">
+                  <button type="button" class="is-active" role="tab" data-renewable-detail-tab="trend" aria-selected="true">曲线</button>
+                  <button type="button" role="tab" data-renewable-detail-tab="logs" aria-selected="false">日志</button>
+                </div>
+                <div class="renewable-detail-body">
+                  <section class="renewable-detail-pane renewable-trend-panel is-active" data-renewable-detail-pane="trend" role="tabpanel">
                   <div class="panel-head compact-panel-head">
                     <h2>综合功率趋势</h2>
                     <div class="renewable-trend-head-meta">
@@ -576,26 +582,18 @@
                     <button type="button" class="chart-legend-item" data-chart-toggle="renewableTrend" data-chart-series="acdcCurrent" aria-pressed="true"><i class="renewable-trend-acdc-current"></i>变流器当前值</button>
                     <button type="button" class="chart-legend-item" data-chart-toggle="renewableTrend" data-chart-series="acdcTarget" aria-pressed="true"><i class="renewable-trend-acdc-target"></i>变流器目标值</button>
                   </div>
-                </section>
+                  </section>
 
-                <div
-                  class="vertical-stack-splitter"
-                  data-vertical-splitter="trainee-renewable-lower"
-                  role="separator"
-                  aria-orientation="horizontal"
-                  aria-label="调整综合趋势和控制日志高度"
-                  tabindex="0"
-                ></div>
-
-                <section class="panel renewable-control-log-panel">
+                  <section class="renewable-detail-pane renewable-control-log-panel" data-renewable-detail-pane="logs" role="tabpanel" hidden>
                   <div class="panel-head">
                     <h2>控制日志</h2>
                     <span id="renewableControlLogSummary">0 条</span>
                   </div>
                   <div id="renewableControlLogTable" class="runtime-log-wrap renewable-control-log-wrap"></div>
                   <div id="renewableControlLogPager" class="runtime-log-pager" aria-label="控制日志分页"></div>
-                </section>
-              </div>
+                  </section>
+                </div>
+              </section>
             </div>
           </div>
         </section>

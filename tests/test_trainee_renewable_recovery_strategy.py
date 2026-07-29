@@ -1,6 +1,6 @@
 import unittest
 
-from simu.renewable_control import RenewableControlSettings, _plan_recovery
+from simu.renewable_control import RenewableControlSettings, _apply_storage_switch_deadband, _plan_recovery
 
 
 def run_strategy(rows, system_room_kw, **options):
@@ -19,6 +19,18 @@ def run_strategy(rows, system_room_kw, **options):
 
 
 class TraineeRenewableRecoveryStrategyTest(unittest.TestCase):
+    def test_storage_switch_deadband_blocks_small_charge_discharge_reversals(self):
+        self.assertEqual(_apply_storage_switch_deadband(3.0, -2.0, 5.0), (0.0, "discharge_to_charge_blocked"))
+        self.assertEqual(_apply_storage_switch_deadband(-3.0, 2.0, 5.0), (0.0, "charge_to_discharge_blocked"))
+        self.assertEqual(_apply_storage_switch_deadband(0.0, 4.0, 5.0), (0.0, "idle_deadband"))
+        self.assertEqual(_apply_storage_switch_deadband(0.0, -4.0, 5.0), (0.0, "idle_deadband"))
+
+    def test_storage_switch_deadband_allows_material_or_same_direction_adjustments(self):
+        self.assertEqual(_apply_storage_switch_deadband(3.0, -6.0, 5.0), (-6.0, "direction_switch_allowed"))
+        self.assertEqual(_apply_storage_switch_deadband(-3.0, 6.0, 5.0), (6.0, "direction_switch_allowed"))
+        self.assertEqual(_apply_storage_switch_deadband(3.0, 2.0, 5.0), (2.0, "same_direction"))
+        self.assertEqual(_apply_storage_switch_deadband(-3.0, -2.0, 5.0), (-2.0, "same_direction"))
+
     def test_large_recovery_uses_equal_margin_distribution(self):
         result = run_strategy(
             [

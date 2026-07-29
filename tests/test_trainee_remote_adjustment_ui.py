@@ -59,18 +59,20 @@ class TraineeRemoteAdjustmentUiTest(unittest.TestCase):
         self.assertIn("function manualCommandHoldPayload", self.script)
         remote_control_block = self.script.split("async function sendRemoteControlCommand()", 1)[1].split("function findRemoteAdjustmentByKey", 1)[0]
         remote_adjustment_block = self.script.split("async function sendRemoteAdjustmentCommand()", 1)[1].split("function handleTreeClick", 1)[0]
-        renewable_block = self.script.split("async function sendRenewableControlPlan", 1)[1].split("function maybeRunRenewableControl", 1)[0]
 
         self.assertIn("...manualCommandHoldPayload()", remote_control_block)
         self.assertIn("...manualCommandHoldPayload()", remote_adjustment_block)
         self.assertIn("withCommandSendTime({", remote_control_block)
         self.assertIn("withCommandSendTime({", remote_adjustment_block)
-        self.assertIn("withCommandSendTime({", renewable_block)
         self.assertNotIn("expires_at_absolute_minute", remote_control_block)
         self.assertNotIn("expires_at_absolute_minute", remote_adjustment_block)
         self.assertNotIn("valid_for_minutes: CONTROL_COMMAND_VALID_MINUTES", remote_control_block)
         self.assertNotIn("valid_for_minutes: CONTROL_COMMAND_VALID_MINUTES", remote_adjustment_block)
-        self.assertIn("valid_for_minutes: RENEWABLE_COMMAND_VALID_MINUTES", renewable_block)
+        self.assertNotIn("calculateRenewableControlPlan", self.script)
+
+        backend = (ROOT / "simu/renewable_control.py").read_text(encoding="utf-8")
+        self.assertIn('"valid_for_minutes": state.settings.command_valid_minutes', backend)
+        self.assertNotIn("manual_hold", backend)
 
     def test_displayed_command_times_use_shared_active_command_filter(self):
         self.assertIn("function activeCommandHistory", self.script)

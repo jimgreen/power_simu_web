@@ -450,56 +450,153 @@
 
         <section class="page-section" data-page="renewable">
           <div class="renewable-page-layout">
-            <section class="panel renewable-control-panel">
-              <div class="panel-head">
-                <h2>新能源优先</h2>
-                <span id="renewableControlState">待命</span>
-              </div>
-              <div class="renewable-actions">
-                <button id="renewableAutoToggle" class="renewable-auto-button" type="button">启动实时控制</button>
-                <button id="renewableSendOnce" type="button">单次计算</button>
-              </div>
-              <div class="renewable-settings">
-                <div class="renewable-setting-row">
-                  <span>控制方式</span>
-                  <div id="renewableLoopMode" class="segmented-control renewable-loop-mode" role="group" aria-label="新能源控制方式">
-                    <button type="button" class="is-active" data-renewable-loop-mode="open" aria-pressed="true">开环</button>
-                    <button type="button" data-renewable-loop-mode="closed" aria-pressed="false">闭环</button>
+            <aside class="renewable-side-column">
+              <section class="panel renewable-control-panel">
+                <div class="panel-head">
+                  <h2>参数配置</h2>
+                  <span id="renewableControlState">待命</span>
+                </div>
+                <div class="renewable-control-toolbar">
+                  <div class="renewable-actions">
+                    <button id="renewableAutoToggle" class="renewable-auto-button" type="button">启动实时控制</button>
+                    <button id="renewableSendOnce" type="button">单次计算</button>
+                  </div>
+                  <div class="renewable-settings">
+                    <div class="renewable-setting-row">
+                      <span>控制方式</span>
+                      <div id="renewableLoopMode" class="segmented-control renewable-loop-mode" role="group" aria-label="新能源控制方式">
+                        <button type="button" class="is-active" data-renewable-loop-mode="open" aria-pressed="true">开环</button>
+                        <button type="button" data-renewable-loop-mode="closed" aria-pressed="false">闭环</button>
+                      </div>
+                    </div>
+                    <label>控制周期
+                      <select id="renewableControlPeriod">
+                        <option value="1">1秒</option>
+                        <option value="2" selected>2秒</option>
+                        <option value="5">5秒</option>
+                        <option value="10">10秒</option>
+                      </select>
+                    </label>
+                    <label>SOC下限
+                      <input id="renewableSocMin" type="number" min="0" max="1" step="0.01" value="0.30" />
+                    </label>
+                    <label>SOC上限
+                      <input id="renewableSocMax" type="number" min="0" max="1" step="0.01" value="0.90" />
+                    </label>
                   </div>
                 </div>
-                <label>周期
-                  <select id="renewableControlPeriod">
-                    <option value="1">1秒</option>
-                    <option value="2" selected>2秒</option>
-                    <option value="5">5秒</option>
-                    <option value="10">10秒</option>
-                  </select>
-                </label>
-                <label>SOC下限
-                  <input id="renewableSocMin" type="number" min="0" max="1" step="0.01" value="0.30" />
-                </label>
-                <label>SOC上限
-                  <input id="renewableSocMax" type="number" min="0" max="1" step="0.01" value="0.90" />
-                </label>
-              </div>
-              <dl class="renewable-metric-grid">
-                <div><dt>可用新能源</dt><dd id="renewableAvailableKw">--</dd></div>
-                <div><dt>计划消纳</dt><dd id="renewableUsedKw">--</dd></div>
-                <div><dt>储能功率</dt><dd id="renewableStorageKw">--</dd></div>
-                <div><dt>柴油缺额</dt><dd id="renewableDieselKw">--</dd></div>
-                <div><dt>弃风弃光</dt><dd id="renewableCurtailKw">--</dd></div>
-                <div><dt id="renewableLastActionLabel">最近计算</dt><dd id="renewableLastSent">--</dd></div>
-              </dl>
-              <p id="renewableControlStatus" class="renewable-status">请先启动接收模式，再启动实时控制。</p>
-            </section>
+                <p id="renewableControlStatus" class="renewable-status">请选择单次计算或启动实时控制。</p>
+              </section>
 
-            <section class="panel renewable-plan-panel">
+              <section class="panel renewable-metrics-panel">
+                <div class="panel-head">
+                  <h2>统计指标</h2>
+                  <span>实时值</span>
+                </div>
+                <dl class="renewable-metric-grid renewable-metric-strip">
+                  <div><dt>新能源当前值</dt><dd id="renewableCurrentKw">--</dd></div>
+                  <div><dt>新能源目标值</dt><dd id="renewableTargetKw">--</dd></div>
+                  <div><dt>柴油发电当前值</dt><dd id="renewableDieselCurrentKw">--</dd></div>
+                  <div><dt>柴油发电下限值</dt><dd id="renewableDieselMinKw">--</dd></div>
+                  <div><dt>柴油发电目标值</dt><dd id="renewableDieselTargetKw">--</dd></div>
+                  <div><dt>储能当前值</dt><dd id="renewableStorageCurrentKw">--</dd></div>
+                  <div><dt>储能SOC值</dt><dd id="renewableStorageSoc">--</dd></div>
+                  <div><dt>ACDC变流当前值</dt><dd id="renewableAcdcCurrentKw">--</dd></div>
+                  <div><dt>ACDC变流目标值</dt><dd id="renewableAcdcTargetKw">--</dd></div>
+                  <div><dt>弃风弃光</dt><dd id="renewableCurtailKw">--</dd></div>
+                  <div><dt id="renewableLastActionLabel">最近计算</dt><dd id="renewableLastSent">--</dd></div>
+                </dl>
+              </section>
+            </aside>
+
+            <div
+              class="renewable-right-layout vertical-split-workspace"
+              data-vertical-split="trainee-renewable"
+              data-vertical-split-min-top="210"
+              data-vertical-split-min-bottom="300"
+            >
+              <section class="panel renewable-plan-panel">
               <div class="panel-head">
-                <h2>功率指令预览</h2>
-                <span id="renewableCommandSummary">0 条</span>
+                <h2>控制策略</h2>
+                <div class="renewable-plan-summary">
+                  <span id="renewableCommandSummary">0 条</span>
+                </div>
               </div>
-              <div id="renewableCommandTable" class="runtime-device-wrap"></div>
-            </section>
+                <div id="renewableStrategyTabs" class="renewable-strategy-tabs" role="tablist" aria-label="控制策略设备分类">
+                  <button type="button" class="is-active" role="tab" data-renewable-strategy-tab="wind" aria-selected="true">风电</button>
+                  <button type="button" role="tab" data-renewable-strategy-tab="pv" aria-selected="false">光伏</button>
+                  <button type="button" role="tab" data-renewable-strategy-tab="storage" aria-selected="false">储能</button>
+                  <button type="button" role="tab" data-renewable-strategy-tab="diesel" aria-selected="false">柴发</button>
+                  <button type="button" role="tab" data-renewable-strategy-tab="converter" aria-selected="false">变流</button>
+                </div>
+                <div id="renewableCommandTable" class="runtime-device-wrap"></div>
+              </section>
+
+              <div
+                class="vertical-stack-splitter"
+                data-vertical-splitter="trainee-renewable"
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="调整控制策略和下方区域高度"
+                tabindex="0"
+              ></div>
+
+              <div
+                class="renewable-lower-layout vertical-split-workspace"
+                data-vertical-split="trainee-renewable-lower"
+                data-vertical-split-min-top="200"
+                data-vertical-split-min-bottom="90"
+              >
+                <section class="panel renewable-trend-panel">
+                  <div class="panel-head compact-panel-head">
+                    <h2>综合功率趋势</h2>
+                    <div class="renewable-trend-head-meta">
+                      <strong id="renewableTrendSummary">0 点 · 左轴功率 / 右轴SOC</strong>
+                      <label class="compact-field">窗口
+                        <select id="renewableTrendWindow">
+                          <option value="15">15分钟</option>
+                          <option value="60" selected>1小时</option>
+                          <option value="120">2小时</option>
+                          <option value="360">6小时</option>
+                          <option value="1440">1日</option>
+                          <option value="10080">1周</option>
+                          <option value="43200">1月</option>
+                          <option value="525600">1年</option>
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+                  <canvas id="renewableTrendChart" width="1500" height="320" aria-label="新能源控制综合功率与储能SOC趋势"></canvas>
+                  <div class="measurement-trace-legend renewable-trend-legend">
+                    <button type="button" class="chart-legend-item" data-chart-toggle="renewableTrend" data-chart-series="load" aria-pressed="true"><i class="renewable-trend-load"></i>负荷功率</button>
+                    <button type="button" class="chart-legend-item" data-chart-toggle="renewableTrend" data-chart-series="diesel" aria-pressed="true"><i class="renewable-trend-diesel"></i>柴发功率</button>
+                    <button type="button" class="chart-legend-item" data-chart-toggle="renewableTrend" data-chart-series="storage" aria-pressed="true"><i class="renewable-trend-storage"></i>储能功率</button>
+                    <button type="button" class="chart-legend-item" data-chart-toggle="renewableTrend" data-chart-series="storageSoc" aria-pressed="true"><i class="renewable-trend-soc"></i>储能SOC</button>
+                    <button type="button" class="chart-legend-item" data-chart-toggle="renewableTrend" data-chart-series="renewable" aria-pressed="true"><i class="renewable-trend-renewable"></i>新能源功率</button>
+                    <button type="button" class="chart-legend-item" data-chart-toggle="renewableTrend" data-chart-series="acdcCurrent" aria-pressed="true"><i class="renewable-trend-acdc-current"></i>变流器当前值</button>
+                    <button type="button" class="chart-legend-item" data-chart-toggle="renewableTrend" data-chart-series="acdcTarget" aria-pressed="true"><i class="renewable-trend-acdc-target"></i>变流器目标值</button>
+                  </div>
+                </section>
+
+                <div
+                  class="vertical-stack-splitter"
+                  data-vertical-splitter="trainee-renewable-lower"
+                  role="separator"
+                  aria-orientation="horizontal"
+                  aria-label="调整综合趋势和控制日志高度"
+                  tabindex="0"
+                ></div>
+
+                <section class="panel renewable-control-log-panel">
+                  <div class="panel-head">
+                    <h2>控制日志</h2>
+                    <span id="renewableControlLogSummary">0 条</span>
+                  </div>
+                  <div id="renewableControlLogTable" class="runtime-log-wrap renewable-control-log-wrap"></div>
+                  <div id="renewableControlLogPager" class="runtime-log-pager" aria-label="控制日志分页"></div>
+                </section>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -745,7 +842,6 @@
         </div>
       </form>
     </dialog>
-    <script src="/renewable_recovery.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

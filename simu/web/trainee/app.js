@@ -12,6 +12,8 @@ const VERTICAL_SPLIT_DEFAULTS = {
   "trainee-curves": 60,
   "trainee-measurements": 52,
   "trainee-commands": 56,
+  "trainee-renewable": 44,
+  "trainee-renewable-lower": 55,
 };
 const VERTICAL_SPLIT_DEFAULT_RATIO = 55;
 const VERTICAL_SPLIT_MIN_TOP_PX = 120;
@@ -122,8 +124,11 @@ const state = {
   selectedMeasurementKey: "",
   measurementTraceHistory: [],
   measurementTraceWindowMinutes: 60,
+  renewableTrendHistory: [],
+  renewableTrendWindowMinutes: 60,
   traceRunId: null,
   renewableControl: {
+    modelId: "",
     enabled: false,
     loopMode: "open",
     intervalSeconds: 2,
@@ -132,12 +137,17 @@ const state = {
     largeStepThresholdKw: 10,
     stepCoefficient: 0.03,
     sending: false,
-    lastClockKey: "",
-    lastAutoAtMs: 0,
+    requestActive: false,
+    actionActive: false,
+    revision: -1,
     lastPlan: null,
     lastCalculatedAt: "",
     lastSentAt: "",
-    lastStatus: "请先启动接收模式，再启动实时控制。",
+    lastStatus: "请选择单次计算或启动实时控制。",
+    logs: [],
+    strategyTab: "wind",
+    logPage: 1,
+    lastControlLogRenderKey: "",
   },
   overviewBottomHeight: overviewInitialBottomHeight(),
   overviewBottomSplitDrag: null,
@@ -153,7 +163,14 @@ const pending = { run_status: new Map(), set_values: new Map() };
 let pendingImportDefinitionFile = null;
 let pendingNewModelFile = null;
 let pendingUpdateModelFile = null;
-const RENEWABLE_COMMAND_VALID_MINUTES = 5;
+const RENEWABLE_CONTROL_LOG_PAGE_SIZE = 8;
+const RENEWABLE_STRATEGY_TABS = {
+  wind: { label: "风电", categories: new Set(["风电"]) },
+  pv: { label: "光伏", categories: new Set(["光伏"]) },
+  storage: { label: "储能", categories: new Set(["储能平衡源"]) },
+  diesel: { label: "柴发", categories: new Set(["柴油发电"]) },
+  converter: { label: "变流", categories: new Set(["交直流变流器"]) },
+};
 const TRACE_HISTORY_LIMIT = 45000;
 const TRACE_HIGH_RES_WINDOW_MINUTES = 24 * 60;
 const VIRTUAL_TABLE_ROW_HEIGHT = 34;
@@ -216,6 +233,7 @@ function defaultModelContext(modelId = state.activeModelId) {
     snapshot: null,
     measurementTraceHistory: [],
     commandTraceHistory: [],
+    renewableTrendHistory: [],
   };
 }
 
@@ -269,6 +287,7 @@ function captureActiveModelContext(overrides = {}) {
     snapshot: state.snapshot,
     measurementTraceHistory: state.measurementTraceHistory,
     commandTraceHistory: state.commandTraceHistory,
+    renewableTrendHistory: state.renewableTrendHistory,
     ...overrides,
   };
 }
@@ -300,6 +319,7 @@ function restoreModelContext(modelId = state.activeModelId) {
   state.snapshot = context.snapshot || null;
   state.measurementTraceHistory = Array.isArray(context.measurementTraceHistory) ? context.measurementTraceHistory : [];
   state.commandTraceHistory = Array.isArray(context.commandTraceHistory) ? context.commandTraceHistory : [];
+  state.renewableTrendHistory = Array.isArray(context.renewableTrendHistory) ? context.renewableTrendHistory : [];
 }
 
 function receiveContextFromBackend(payload = {}) {
@@ -681,6 +701,7 @@ function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) 
   const mainPoint = samples.find((item) => item.series.key === selectedKey)?.point || samples[0].point;
   const timeLabel = options.timeLabel ? options.timeLabel(mainPoint) : (mainPoint.time || "");
   const valueFormatter = options.valueFormatter || formatNumber;
+  const maxSeries = Math.max(1, Number(options.maxSeries) || 6);
 
   ctx.save();
   ctx.strokeStyle = "rgba(29, 57, 66, 0.58)";
@@ -707,8 +728,8 @@ function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) 
   ctx.font = `${12 * ratio}px Microsoft YaHei, Arial`;
   const lines = [
     timeLabel ? `时刻: ${timeLabel}` : "",
-    ...samples.slice(0, 6).map(({ series, point }) => `${series.label}: ${valueFormatter(point.value)}${series.unit ? ` ${series.unit}` : ""}`),
-    samples.length > 6 ? `另有 ${samples.length - 6} 条曲线` : "",
+    ...samples.slice(0, maxSeries).map(({ series, point }) => `${series.label}: ${valueFormatter(point.value)}${series.unit ? ` ${series.unit}` : ""}`),
+    samples.length > maxSeries ? `另有 ${samples.length - maxSeries} 条曲线` : "",
   ].filter(Boolean);
   const tooltipWidth = Math.max(150 * ratio, ...lines.map((line) => ctx.measureText(line).width + 24 * ratio));
   const tooltipHeight = 14 * ratio + lines.length * 18 * ratio;
@@ -823,6 +844,7 @@ function showPage(page, updateHash = true) {
   }
   requestAnimationFrame(() => {
     renderActiveTraineePage(state.snapshot || {}, true);
+    if (target === "renewable") refreshRenewableControlState({ preview: true });
   });
 }
 
@@ -1830,7 +1852,7 @@ function stopReceiveAfterPersistentIssue(result, detail = [], simTime = "") {
     true,
     simTime,
   );
-  stopRenewableControl("连续接收异常，新能源优先策略已暂停。", true);
+  noteRenewableReceiveInterruption("连续接收异常，新能源优先策略保持运行，继续使用最近一次有效数据。");
   renderReceiveMode(result || "接收异常");
   openReceiveWarningDialog(
     `${result || "接收异常"}，已停止接收`,
@@ -2147,7 +2169,7 @@ function activeCommandHistory(snapshot = state.snapshot || {}) {
   });
 }
 
-function addRuntimeLog(type, target, result, detail = "", level = "info", renderNow = true, simuTime = "") {
+function addRuntimeLog(type, target, result, detail = "", level = "info", renderNow = true, simuTime = "", scope = "") {
   state.runtimeLogSeq += 1;
   state.runtimeLogs.unshift({
     seq: state.runtimeLogSeq,
@@ -2158,6 +2180,7 @@ function addRuntimeLog(type, target, result, detail = "", level = "info", render
     result,
     detail,
     level,
+    scope,
   });
   state.runtimeLogs = state.runtimeLogs.slice(0, 300);
   if (renderNow) renderHistoryIfMounted();
@@ -3113,7 +3136,7 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.controlFilter = { dev_type: "all", dev_name: "" };
   state.activeControlTab = "remote-control";
   state.deviceTreeSelectionAnchors = {};
-  if (shouldRefresh) stopRenewableControl("模型已切换，当前页面策略已停止。", true);
+  resetRenewableControlView(nextId);
   renderModelSelector();
   if ($("modelManagementDialog")?.open) renderModelManagementList();
   updatePendingCount();
@@ -3145,10 +3168,12 @@ async function refresh() {
   await syncActiveReceiveStateBeforeRefresh();
   if (state.receiveMode) {
     await refreshFromTeacher(state.receiveEpoch);
+    if (currentPageName() === "renewable") await refreshRenewableControlState({ preview: true });
     return;
   }
   if (state.frozen) {
     renderReceiveMode();
+    if (currentPageName() === "renewable") await refreshRenewableControlState({ preview: true });
     return;
   }
   if (state.refreshRequestActive) return;
@@ -3175,6 +3200,7 @@ async function refresh() {
     $("connectionText").textContent = "离线";
   } finally {
     state.refreshRequestActive = false;
+    if (currentPageName() === "renewable") await refreshRenewableControlState({ preview: true });
   }
 }
 
@@ -3235,7 +3261,6 @@ function renderSnapshot(snapshot) {
   syncCommandHistoryLogs(snapshot.commands?.history || []);
   updatePendingCount();
   renderActiveTraineePage(snapshot);
-  maybeRunRenewableControl(snapshot);
   persistActiveModelContext();
 }
 
@@ -3414,7 +3439,8 @@ function parsePowerFlowOverview(snapshot) {
   const log = latestRuntimeLog(snapshot, "潮流计算");
   const text = logDetailText(log);
   const controlText = logDetailText(latestRuntimeLog(snapshot, "控制响应"));
-  const soc = storageSocPercentFromText(text);
+  const liveSoc = averageStorageSocRatio(snapshot);
+  const logSoc = storageSocPercentFromText(text);
   return {
     log,
     wind: matchedNumber(text, /风力发电总功率\s*([-+\d.]+)/),
@@ -3423,7 +3449,11 @@ function parsePowerFlowOverview(snapshot) {
     load: matchedNumber(text, /负荷用电总功率\s*([-+\d.]+)/),
     storageDischarge: matchedNumber(text, /储能发电总功率\s*([-+\d.]+)/),
     storageCharge: matchedNumber(text, /储能充电总功率\s*([-+\d.]+)/),
-    soc: Number.isFinite(soc) ? soc : storageSocPercentFromText(controlText),
+    soc: Number.isFinite(liveSoc)
+      ? liveSoc * 100
+      : Number.isFinite(logSoc)
+        ? logSoc
+        : storageSocPercentFromText(controlText),
     generation: matchedNumber(text, /电源发电总功率\s*([-+\d.]+)/),
     consumption: matchedNumber(text, /用电及充电总功率\s*([-+\d.]+)/),
     balance: matchedNumber(text, /功率差额\s*([-+\d.]+)/),
@@ -3826,6 +3856,7 @@ function redrawVerticalSplitContent(splitId) {
     if (splitId === "trainee-curves") drawCurveDisplay(state.snapshot || {});
     if (splitId === "trainee-measurements") drawMeasurementTraceChart();
     if (splitId === "trainee-commands") drawCommandTraceChart();
+    if (splitId === "trainee-renewable" || splitId === "trainee-renewable-lower") drawRenewableTrendChart();
   });
 }
 
@@ -4725,10 +4756,6 @@ function estimateLoadFromDevices(devices) {
   }, 0);
 }
 
-function deviceMap(snapshot = state.snapshot || {}) {
-  return new Map((snapshot.devices || []).map((dev) => [deviceKey(dev), dev]));
-}
-
 function isDeviceOnline(dev) {
   if (!dev) return false;
   return Number(dev.run_stat ?? 1) === 1 && Number(dev.status ?? 1) !== 0;
@@ -4754,18 +4781,10 @@ function parameterNumber(value, defaultValue = null) {
   return Number.isFinite(parsed) ? parsed : defaultValue;
 }
 
-function firstPositiveParameter(values, defaultValue = 0) {
-  for (const value of values || []) {
-    const number = parameterNumber(value, null);
-    if (number !== null && number > 0) return number;
-  }
-  return defaultValue;
-}
-
-function normalizedRatio(value, defaultValue) {
+function liveStorageSocRatio(value, defaultValue) {
   const number = parameterNumber(value, null);
   if (number === null) return defaultValue;
-  return clamp(number > 1 ? number / 100 : number, 0, 1);
+  return typeof value === "string" && value.includes("%") ? number / 100 : number;
 }
 
 function indexedDevice(snapshot, devType, index) {
@@ -4776,523 +4795,179 @@ function indexedDevice(snapshot, devType, index) {
   )) || null;
 }
 
-function renewableRatedCapacity(row, device, category) {
-  const direct = firstPositiveParameter([
-    row.rated_power,
-    row.rated_capacity,
-    row.p_max,
-    device?.raw?.rated_capacity,
-    device?.raw?.rated_power,
-    device?.raw?.p_max,
-  ], 0);
-  if (direct > 0 || category !== "光伏") return direct;
-  const efficiency = normalizedRatio(row.module_efficiency ?? row.conversion_efficiency, null);
-  const area = firstPositiveParameter([row.array_area, row.area], 0);
-  const referenceIrradiance = firstPositiveParameter([row.reference_irradiance], 1000);
-  return efficiency !== null && area > 0 ? referenceIrradiance * area * efficiency / 1000 : 0;
-}
-
-function renewablePowerMeasurements(snapshot) {
+function measurementValuesByDevice(snapshot, measurementTypes) {
   const values = new Map();
   const measurements = snapshot.measurements || {};
-  for (const channel of [measurements.scada || [], measurements.real || []]) {
-    channel.forEach((row) => {
-      const measType = String(row.meas_type || "").toUpperCase();
-      if (!(measType === "P" || measType.startsWith("P_")) || Number(row.valid ?? 1) !== 1) return;
-      const value = optionalNumber(row.value);
-      if (!Number.isFinite(value)) return;
-      const key = `${row.dev_type || ""}|${row.dev_name || ""}`;
-      if (!values.has(key)) values.set(key, Math.max(0, value));
+  const channels = [measurements.scada || [], measurements.real || []];
+  (measurementTypes || []).map((type) => String(type || "").toUpperCase()).forEach((measurementType) => {
+    channels.forEach((channel) => {
+      channel.forEach((row) => {
+        if (String(row.meas_type || "").toUpperCase() !== measurementType || Number(row.valid ?? 1) !== 1) return;
+        const value = optionalNumber(row.value);
+        if (!Number.isFinite(value)) return;
+        const key = `${row.dev_type || ""}|${row.dev_name || ""}`;
+        if (!values.has(key)) values.set(key, value);
+      });
     });
-  }
+  });
   return values;
 }
 
-function preferredControlSetType(snapshot, dev, candidates) {
-  if (!dev) return "";
-  const rows = snapshot.definitions?.control?.SetValue?.rows || [];
-  const defined = new Set(rows
-    .filter((row) => row.dev_type === deviceType(dev) && row.dev_name === deviceName(dev))
-    .map((row) => String(row.set_type || "")));
-  const fromDefinition = candidates.find((setType) => defined.has(setType));
-  if (fromDefinition) return fromDefinition;
-  if (rows.length) return "";
-  const deviceSetTypes = new Set(dev.set_types || []);
-  return candidates.find((setType) => deviceSetTypes.has(setType)) || "";
-}
-
-function availableWithBounds(value, parameterRow = {}, device = null) {
-  if (!Number.isFinite(value)) return null;
-  const pMin = Math.max(0, parameterNumber(parameterRow.p_min ?? device?.raw?.p_min, 0));
-  const rawPMax = parameterNumber(parameterRow.p_max ?? device?.raw?.p_max, null);
-  const pMax = rawPMax === null ? Math.max(pMin, value) : Math.max(pMin, rawPMax);
-  return clamp(Math.max(0, value), pMin, pMax);
-}
-
-function windAvailablePower(row, device, weather) {
-  if (!Number.isFinite(weather.windSpeed)) return null;
-  const ratedPower = renewableRatedCapacity(row, device, "风电");
-  const cutIn = parameterNumber(row.cut_in_wind_speed ?? row.cut_in_speed, null);
-  const ratedSpeed = parameterNumber(row.rated_wind_speed, null);
-  const cutOut = parameterNumber(row.cut_out_wind_speed ?? row.cut_out_speed, null);
-  if (ratedPower <= 0 || cutIn === null || ratedSpeed === null || cutOut === null) return null;
-  const speed = Math.max(0, weather.windSpeed);
-  const effectiveRatedSpeed = Math.max(ratedSpeed, cutIn + 1e-9);
-  const effectiveCutOut = Math.max(cutOut, effectiveRatedSpeed + 1e-9);
-  if (speed < cutIn || speed >= effectiveCutOut) return 0;
-  const available = speed >= effectiveRatedSpeed
-    ? ratedPower
-    : ratedPower * ((speed - cutIn) / (effectiveRatedSpeed - cutIn)) ** 3;
-  return availableWithBounds(available, row, device);
-}
-
-function pvAvailablePower(row, device, weather) {
-  if (!Number.isFinite(weather.solarIrradiance)) return null;
-  const ratedPower = renewableRatedCapacity(row, device, "光伏");
-  const efficiency = normalizedRatio(row.module_efficiency ?? row.conversion_efficiency, null);
-  const arrayArea = firstPositiveParameter([row.array_area, row.area], 0);
-  const refIrradiance = Math.max(1e-9, parameterNumber(row.reference_irradiance, 1000));
-  const refTemp = parameterNumber(row.reference_temperature, 25);
-  const tempCoef = parameterNumber(row.temp_coefficient, 0);
-  const irradiance = Math.max(0, weather.solarIrradiance);
-  let available = efficiency !== null && arrayArea > 0
-    ? irradiance * arrayArea * efficiency / 1000
-    : ratedPower * irradiance / refIrradiance;
-  if (ratedPower > 0) available = Math.min(available, ratedPower);
-  if (Number.isFinite(weather.airTemp)) {
-    available *= Math.max(0, 1 + tempCoef * (weather.airTemp - refTemp));
-  }
-  return availableWithBounds(available, row, device);
-}
-
-function renewableDeviceRows(snapshot, weather) {
-  const rows = [];
-  const currentPowerByDevice = renewablePowerMeasurements(snapshot);
-  const windParams = parameterRows(snapshot, "ACWindGen");
-  windParams.forEach((param, index) => {
-    const dev = indexedDevice(snapshot, "ACGenerator", param.idx_acgenerator);
-    const name = deviceName(dev) || parameterName(param) || `ACGenerator_${param.idx_acgenerator ?? index + 1}`;
-    const online = isDeviceOnline(dev);
-    const capacityKw = renewableRatedCapacity(param, dev, "风电");
-    const currentKw = online ? currentPowerByDevice.get(`ACGenerator|${name}`) ?? null : 0;
-    const availableKw = online ? windAvailablePower(param, dev, weather) : 0;
-    const setType = preferredControlSetType(snapshot, dev, ["p_set", "p_ac_set"]);
-    const capabilityKnown = Number.isFinite(availableKw);
-    const environmentKnown = weather.windSpeedKnown;
-    const recoveryReady = Number.isFinite(currentKw) && capacityKw > 0;
-    rows.push({
-      category: "风电",
-      dev_type: "ACGenerator",
-      dev_name: name,
-      online,
-      capabilityKnown,
-      environmentKnown,
-      capacityKw,
-      currentKw,
-      headroomKw: recoveryReady ? Math.max(0, capacityKw - currentKw) : 0,
-      commandable: online && Boolean(setType) && (capabilityKnown || recoveryReady),
-      availableKw,
-      set_type: setType,
-      statusLabel: !online
-        ? "停用"
-        : !setType
-          ? "无遥调点"
-          : capabilityKnown
-            ? "可控"
-            : recoveryReady
-              ? "风速未知·渐进恢复"
-              : "风速/实时值未知",
-    });
-  });
-
-  const pvParams = parameterRows(snapshot, "DCPVGen");
-  pvParams.forEach((param, index) => {
-    const dev = indexedDevice(snapshot, "DCGenerator", param.idx_dcgenerator);
-    const name = deviceName(dev) || parameterName(param) || `DCGenerator_${param.idx_dcgenerator ?? index + 1}`;
-    const online = isDeviceOnline(dev);
-    const capacityKw = renewableRatedCapacity(param, dev, "光伏");
-    const currentKw = online ? currentPowerByDevice.get(`DCGenerator|${name}`) ?? null : 0;
-    const availableKw = online ? pvAvailablePower(param, dev, weather) : 0;
-    const setType = preferredControlSetType(snapshot, dev, ["p_set"]);
-    const capabilityKnown = Number.isFinite(availableKw);
-    const environmentKnown = weather.solarIrradianceKnown;
-    const recoveryReady = Number.isFinite(currentKw) && capacityKw > 0;
-    rows.push({
-      category: "光伏",
-      dev_type: "DCGenerator",
-      dev_name: name,
-      online,
-      capabilityKnown,
-      environmentKnown,
-      capacityKw,
-      currentKw,
-      headroomKw: recoveryReady ? Math.max(0, capacityKw - currentKw) : 0,
-      commandable: online && Boolean(setType) && (capabilityKnown || recoveryReady),
-      availableKw,
-      set_type: setType,
-      statusLabel: !online
-        ? "停用"
-        : !setType
-          ? "无遥调点"
-          : capabilityKnown
-            ? "可控"
-            : recoveryReady
-              ? "辐照未知·渐进恢复"
-              : "辐照/实时值未知",
-    });
-  });
-
-  if (rows.length) return rows;
-  const map = deviceMap(snapshot);
-  parameterRows(snapshot, "wind_generator").forEach((param) => {
-    const dev = map.get(`ACGenerator|${parameterName(param)}`);
-    const capacityKw = renewableRatedCapacity(param, dev, "风电");
-    const currentKw = dev ? currentPowerByDevice.get(deviceKey(dev)) ?? null : null;
-    const availableKw = isDeviceOnline(dev) ? windAvailablePower(param, dev, weather) : 0;
-    const setType = preferredControlSetType(snapshot, dev, ["p_set", "p_ac_set"]);
-    rows.push({ category: "风电", dev_type: "ACGenerator", dev_name: deviceName(dev), online: isDeviceOnline(dev), environmentKnown: weather.windSpeedKnown, capabilityKnown: Number.isFinite(availableKw), capacityKw, currentKw, headroomKw: Number.isFinite(currentKw) ? Math.max(0, capacityKw - currentKw) : 0, commandable: isDeviceOnline(dev) && Boolean(setType) && (Number.isFinite(availableKw) || (Number.isFinite(currentKw) && capacityKw > 0)), availableKw, set_type: setType });
-  });
-  parameterRows(snapshot, "pv_generator").forEach((param) => {
-    const dev = map.get(`DCGenerator|${parameterName(param)}`);
-    const capacityKw = renewableRatedCapacity(param, dev, "光伏");
-    const currentKw = dev ? currentPowerByDevice.get(deviceKey(dev)) ?? null : null;
-    const availableKw = isDeviceOnline(dev) ? pvAvailablePower(param, dev, weather) : 0;
-    const setType = preferredControlSetType(snapshot, dev, ["p_set"]);
-    rows.push({ category: "光伏", dev_type: "DCGenerator", dev_name: deviceName(dev), online: isDeviceOnline(dev), environmentKnown: weather.solarIrradianceKnown, capabilityKnown: Number.isFinite(availableKw), capacityKw, currentKw, headroomKw: Number.isFinite(currentKw) ? Math.max(0, capacityKw - currentKw) : 0, commandable: isDeviceOnline(dev) && Boolean(setType) && (Number.isFinite(availableKw) || (Number.isFinite(currentKw) && capacityKw > 0)), availableKw, set_type: setType });
-  });
-  return rows;
-}
-
-function storageDeviceRows(snapshot) {
-  const stepHours = Math.max(1 / 3600, toNumber(snapshot.clock?.step_minutes, 1) / 60);
-  const configuredMin = clamp(toNumber(state.renewableControl.socMin, 0.3), 0, 1);
-  const configuredMax = clamp(toNumber(state.renewableControl.socMax, 0.9), configuredMin, 1);
-  const params = parameterRows(snapshot, "DCStorageGen");
-  if (params.length) {
-    return params.map((param, index) => {
+function storageSocRatiosByDevice(snapshot) {
+  const measured = measurementValuesByDevice(snapshot, ["SOC"]);
+  const ratios = new Map();
+  const storageParams = parameterRows(snapshot, "DCStorageGen");
+  if (storageParams.length) {
+    storageParams.forEach((param, index) => {
       const dev = indexedDevice(snapshot, "DCGenerator", param.idx_dcgenerator);
       const name = deviceName(dev) || `DCGenerator_${param.idx_dcgenerator ?? index + 1}`;
-      const liveSoc = optionalNumber(dev?.soc_curr ?? dev?.raw?.soc_curr);
-      const soc = liveSoc === null
-        ? normalizedRatio(param.state_of_charge ?? param.soc_curr ?? param.soc_cur, 0.5)
-        : clamp(liveSoc, 0, 1);
-      const capacityKwh = Math.max(1e-9, firstPositiveParameter([
-        param.energy_capacity,
-        param.capacity_kwh,
-        param.emva,
-        dev?.raw?.rated_capacity,
-      ], 1));
-      const definedMin = normalizedRatio(param.soc_lower_limit ?? param.soc_min, 0);
-      const definedMax = normalizedRatio(param.soc_upper_limit ?? param.soc_max, 1);
-      const socMin = clamp(Math.max(definedMin, configuredMin), 0, 1);
-      const socMax = clamp(Math.min(definedMax, configuredMax), socMin, 1);
-      const efficiency = Math.max(1e-9, normalizedRatio(param.charge_discharge_efficiency, 1));
-      const chargeMax = Math.max(0, parameterNumber(param.max_charge_power ?? param.charge_p_max, 0));
-      const dischargeMax = Math.max(0, parameterNumber(param.max_discharge_power ?? param.dis_charge_p_max ?? param.discharge_p_max, 0));
-      const chargeByEnergy = Math.max(0, ((socMax - soc) * capacityKwh) / (efficiency * stepHours));
-      const dischargeByEnergy = Math.max(0, ((soc - socMin) * capacityKwh * efficiency) / stepHours);
-      const chargePower = Math.min(chargeMax, chargeByEnergy);
-      const dischargePower = Math.min(dischargeMax, dischargeByEnergy);
-      return {
-        category: "储能平衡源",
-        dev_type: "DCGenerator",
-        dev_name: name,
-        source_name: name,
-        online: isDeviceOnline(dev),
-        commandable: false,
-        soc,
-        socMin,
-        socMax,
-        chargePower,
-        dischargePower,
-        efficiency,
-        set_type: "",
-        statusLabel: isDeviceOnline(dev) ? "随网平衡" : "停用",
-      };
+      const key = `DCGenerator|${name}`;
+      const soc = liveStorageSocRatio(
+        measured.get(key) ?? dev?.soc_curr ?? dev?.raw?.soc_curr,
+        null,
+      );
+      if (Number.isFinite(soc)) ratios.set(key, soc);
     });
+    return ratios;
   }
 
-  const legacyParams = parameterRows(snapshot, "estorage");
   const legacyDevices = new Map((snapshot.devices || [])
     .filter((dev) => deviceType(dev) === "ESS")
     .map((dev) => [deviceName(dev), dev]));
-  return legacyParams.map((param) => {
-    const dev = legacyDevices.get(parameterName(param));
-    const soc = clamp(toNumber(dev?.soc_curr ?? param.soc_cur ?? param.soc_curr, 0.5), 0, 1);
-    const capacityKwh = Math.max(1e-9, toNumber(param.emva ?? param.capacity_kwh, 50));
-    const socMin = clamp(Math.max(normalizedRatio(param.soc_min, 0), configuredMin), 0, 1);
-    const socMax = clamp(Math.min(normalizedRatio(param.soc_max, 1), configuredMax), socMin, 1);
-    return {
-      category: "储能平衡源",
-      dev_type: "ESS",
-      dev_name: parameterName(param),
-      online: isDeviceOnline(dev),
-      commandable: false,
-      soc,
-      socMin,
-      socMax,
-      chargePower: Math.max(0, Math.min(toNumber(param.charge_p_max, 20), ((socMax - soc) * capacityKwh) / stepHours)),
-      dischargePower: Math.max(0, Math.min(toNumber(param.dis_charge_p_max ?? param.discharge_p_max, 20), ((soc - socMin) * capacityKwh) / stepHours)),
-      set_type: "",
-      statusLabel: isDeviceOnline(dev) ? "随网平衡" : "停用",
-    };
+  parameterRows(snapshot, "estorage").forEach((param) => {
+    const name = parameterName(param);
+    const dev = legacyDevices.get(name);
+    const key = `ESS|${name}`;
+    const soc = liveStorageSocRatio(
+      measured.get(key) ?? dev?.soc_curr ?? dev?.raw?.soc_curr,
+      null,
+    );
+    if (Number.isFinite(soc)) ratios.set(key, soc);
   });
+  return ratios;
 }
 
-function allocateByCapacity(items, total, capacityKey) {
-  const target = Math.max(0, total);
-  const totalCapacity = items.reduce((sum, item) => sum + Math.max(0, toNumber(item[capacityKey], 0)), 0);
-  if (target <= 0 || totalCapacity <= 0) return items.map(() => 0);
-  return items.map((item) => Math.min(toNumber(item[capacityKey], 0), target * toNumber(item[capacityKey], 0) / totalCapacity));
+function averageStorageSocRatio(snapshot) {
+  const values = [...storageSocRatiosByDevice(snapshot).values()]
+    .filter((value) => Number.isFinite(value));
+  return values.length
+    ? values.reduce((sum, value) => sum + value, 0) / values.length
+    : null;
 }
-
-const POWER_CONTROL_MODES = new Set(["P", "PQ", "PV", "ACP"]);
-
-function deviceRuntimeMode(snapshot, dev) {
-  const override = (snapshot.settings?.modes || []).find((row) => (
-    row.dev_type === deviceType(dev) && row.dev_name === deviceName(dev)
-  ));
-  return String(
-    override?.mode
-    || override?.control_type
-    || dev?.mode
-    || dev?.raw?.ac_control_type
-    || dev?.raw?.control_type
-    || dev?.raw?.dc_control_type
-    || "",
-  ).trim().toUpperCase();
-}
-
-function gridParallelConverterRows(snapshot) {
-  return (snapshot.devices || [])
-    .filter((dev) => deviceType(dev) === "DCACConverter")
-    .map((dev) => {
-      const mode = deviceRuntimeMode(snapshot, dev);
-      const setType = preferredControlSetType(snapshot, dev, ["p_ac_set", "p_set"]);
-      const online = isDeviceOnline(dev);
-      const commandable = online && POWER_CONTROL_MODES.has(mode) && Boolean(setType);
-      return {
-        category: "交直流变流器",
-        dev_type: "DCACConverter",
-        dev_name: deviceName(dev),
-        online,
-        commandable,
-        mode,
-        set_type: setType,
-        transferCapacityKw: firstPositiveParameter([
-          dev.raw?.rated_capacity,
-          dev.raw?.p_max,
-          dev.raw?.max_power,
-          dev.raw?.rated_power,
-        ], 0),
-        statusLabel: !online ? "停用" : !POWER_CONTROL_MODES.has(mode) ? `模式 ${mode || "未知"}` : setType ? `并联 ${mode}` : "无遥调点",
-      };
-    })
-    .filter((row) => row.commandable);
-}
-
-function parallelConverterLimit(rows) {
-  if (!rows.length) return 0;
-  const capacities = rows.map((row) => Math.max(0, toNumber(row.transferCapacityKw, 0)));
-  return capacities.every((capacity) => capacity > 0)
-    ? capacities.reduce((sum, capacity) => sum + capacity, 0)
-    : Number.POSITIVE_INFINITY;
-}
-
-function allocateParallelConverters(rows, total) {
-  const target = Math.max(0, total);
-  if (!rows.length || target <= 0) return rows.map(() => 0);
-  if (rows.every((row) => toNumber(row.transferCapacityKw, 0) > 0)) {
-    return allocateByCapacity(rows, target, "transferCapacityKw");
-  }
-  return rows.map(() => target / rows.length);
-}
-
 function renewableClockKey(snapshot) {
   const clock = snapshot.clock || {};
   return `${clock.absolute_minute ?? clock.minute ?? ""}|${clock.time || ""}`;
 }
 
-function calculateRenewableControlPlan(snapshot = state.snapshot || {}) {
-  const weather = currentWeatherLoad(snapshot);
-  const renewableRows = renewableDeviceRows(snapshot, weather);
-  const storageRows = storageDeviceRows(snapshot);
-  const converterRows = gridParallelConverterRows(snapshot);
-  const finitePower = (value) => Number.isFinite(value) ? value : 0;
-  const onlineStorage = storageRows.filter((row) => row.online);
-  const rawChargePower = onlineStorage.reduce((sum, row) => sum + row.chargePower, 0);
-  const rawDischargePower = onlineStorage.reduce((sum, row) => sum + row.dischargePower, 0);
-  const converterLimit = parallelConverterLimit(converterRows);
-  const totalChargePower = converterRows.length ? Math.min(rawChargePower, converterLimit) : 0;
-  const totalDischargePower = converterRows.length ? Math.min(rawDischargePower, converterLimit) : 0;
-  const loadKw = Math.max(0, weather.loadKw);
-  const absorptionLimitKw = loadKw + totalChargePower;
-  const knownRows = renewableRows.filter((row) => row.online && row.environmentKnown && row.capabilityKnown);
-  const knownDispatchable = knownRows.filter((row) => row.commandable !== false);
-  const knownFixed = knownRows.filter((row) => row.commandable === false);
-  const unknownRows = renewableRows.filter((row) => row.online && !row.environmentKnown);
-  const unknownBaselineKw = unknownRows.reduce((sum, row) => (
-    sum + (Number.isFinite(row.currentKw) ? row.currentKw : finitePower(row.capacityKw))
-  ), 0);
-  const knownFixedKw = knownFixed.reduce((sum, row) => sum + finitePower(row.availableKw), 0);
-  const fixedRenewableKw = unknownBaselineKw + knownFixedKw;
-  const knownAvailableDispatchableKw = knownDispatchable.reduce((sum, row) => sum + finitePower(row.availableKw), 0);
-  const knownTargetKw = Math.min(
-    knownAvailableDispatchableKw,
-    Math.max(0, absorptionLimitKw - fixedRenewableKw),
-  );
-  const knownAllocations = allocateByCapacity(knownDispatchable, knownTargetKw, "availableKw");
-  const knownByDevice = new Map(knownDispatchable.map((row, index) => [
-    `${row.dev_type}|${row.dev_name}`,
-    knownAllocations[index] || 0,
-  ]));
-  const recoveryCandidates = unknownRows.filter((row) => (
-    row.commandable !== false && Number.isFinite(row.currentKw) && finitePower(row.capacityKw) > 0
-  ));
-  const recoveryRoomKw = Math.max(0, absorptionLimitKw - fixedRenewableKw - knownTargetKw);
-  const recoveryPlan = RenewableRecovery.planRecovery(recoveryCandidates, recoveryRoomKw, {
-    largeStepThresholdKw: state.renewableControl.largeStepThresholdKw,
-    stepCoefficient: state.renewableControl.stepCoefficient,
+function renewableControlApiPath(preview = false) {
+  return preview ? "/api/trainee/renewable-control?refresh=1" : "/api/trainee/renewable-control";
+}
+
+function resetRenewableControlView(modelId = state.activeModelId) {
+  const control = state.renewableControl;
+  Object.assign(control, {
+    modelId: modelId || "",
+    enabled: false,
+    loopMode: "open",
+    sending: false,
+    requestActive: false,
+    actionActive: false,
+    revision: -1,
+    lastPlan: null,
+    lastCalculatedAt: "",
+    lastSentAt: "",
+    lastStatus: "正在读取学员台后台控制状态。",
+    logs: [],
+    logPage: 1,
+    lastControlLogRenderKey: "",
   });
-  const recoveryByDevice = new Map(recoveryPlan.rows.map((row) => [
-    `${row.dev_type}|${row.dev_name}`,
-    row,
-  ]));
-  const renewableTarget = fixedRenewableKw + knownTargetKw + recoveryPlan.recoverableKw;
-  const storageTarget = renewableTarget >= loadKw
-    ? -Math.min(totalChargePower, Math.max(0, renewableTarget - loadKw))
-    : Math.min(totalDischargePower, loadKw - renewableTarget);
-  const dieselResidual = Math.max(0, loadKw - renewableTarget - Math.max(0, storageTarget));
-  const curtailKw = Math.max(0, knownAvailableDispatchableKw - knownTargetKw);
-  const availableRenewable = knownRows.reduce((sum, row) => sum + finitePower(row.availableKw), 0) + unknownBaselineKw;
-  const windAvailable = renewableRows
-    .filter((row) => row.category === "风电")
-    .reduce((sum, row) => sum + (row.environmentKnown ? finitePower(row.availableKw) : finitePower(row.currentKw)), 0);
-  const pvAvailable = renewableRows
-    .filter((row) => row.category === "光伏")
-    .reduce((sum, row) => sum + (row.environmentKnown ? finitePower(row.availableKw) : finitePower(row.currentKw)), 0);
-  const storageAllocations = storageTarget < 0
-    ? allocateByCapacity(onlineStorage, -storageTarget, "chargePower").map((value) => -value)
-    : allocateByCapacity(onlineStorage, storageTarget, "dischargePower");
-  const storageByName = new Map(onlineStorage.map((row, index) => [row.dev_name, storageAllocations[index] || 0]));
-  const converterDirection = storageTarget < 0 ? -1 : storageTarget > 0 ? 1 : 0;
-  const converterAllocations = allocateParallelConverters(converterRows, Math.abs(storageTarget))
-    .map((value) => value * converterDirection);
-
-  const commandRows = [
-    ...renewableRows.map((row) => {
-      const key = `${row.dev_type}|${row.dev_name}`;
-      const recoveryResult = recoveryByDevice.get(key);
-      const recoveryKw = recoveryResult?.recoveryKw || 0;
-      const strategyCommand = row.environmentKnown
-        ? row.commandable !== false && row.capabilityKnown
-        : row.commandable !== false && Number.isFinite(row.currentKw) && finitePower(row.capacityKw) > 0;
-      return {
-        ...row,
-        recoveryKw,
-        strategyCommand,
-        commandKw: row.environmentKnown
-          ? knownByDevice.get(key) ?? finitePower(row.availableKw)
-          : Number.isFinite(recoveryResult?.setpointKw)
-            ? recoveryResult.setpointKw
-            : null,
-      };
-    }),
-    ...storageRows.map((row) => ({
-      ...row,
-      commandable: false,
-      strategyCommand: false,
-      availableKw: row.online ? Math.max(row.chargePower, row.dischargePower) : 0,
-      commandKw: storageByName.get(row.dev_name) || 0,
-    })),
-    ...converterRows.map((row, index) => ({
-      ...row,
-      availableKw: row.transferCapacityKw > 0
-        ? row.transferCapacityKw
-        : Math.max(totalChargePower, totalDischargePower) / Math.max(1, converterRows.length),
-      strategyCommand: true,
-      commandKw: -converterAllocations[index],
-    })),
-  ];
-  const commands = commandRows
-    .filter((row) => row.online && row.commandable !== false && row.strategyCommand !== false && row.set_type && Number.isFinite(row.commandKw))
-    .map((row) => ({
-      dev_type: row.dev_type,
-      dev_name: row.dev_name,
-      set_type: row.set_type,
-      set_value: commandNumber(row.commandKw),
-    }));
-  const warnings = [];
-  if (renewableRows.some((row) => row.category === "风电") && !weather.windSpeedKnown) {
-    warnings.push("风速未知，风电不采用假定风速，按当前出力与容量执行渐进恢复");
-  }
-  if (renewableRows.some((row) => row.category === "光伏") && !weather.solarIrradianceKnown) {
-    warnings.push("太阳辐照度未知，光伏不采用假定辐照度，按当前出力与容量执行渐进恢复");
-  }
-  if (unknownRows.some((row) => !Number.isFinite(row.currentKw) || finitePower(row.capacityKw) <= 0)) {
-    warnings.push("部分新能源机组缺少有效实时有功或额定容量，相关机组本轮不执行恢复");
-  }
-  if (onlineStorage.length && !converterRows.length) {
-    warnings.push("无在线功率控制型交直流变流器，储能不参与充放电调节");
-  }
-  return {
-    clockKey: renewableClockKey(snapshot),
-    time: snapshot.clock?.time || "--",
-    weather,
-    commandRows,
-    commands,
-    warnings,
-    metrics: {
-      availableRenewable,
-      windAvailable,
-      pvAvailable,
-      storageChargeAvailable: totalChargePower,
-      storageDischargeAvailable: totalDischargePower,
-      renewableTarget,
-      storageTarget,
-      dieselResidual,
-      curtailKw,
-      loadKw,
-      windSpeedKnown: weather.windSpeedKnown,
-      solarIrradianceKnown: weather.solarIrradianceKnown,
-      recoveryMode: recoveryPlan.recoverableKw > 0 ? recoveryPlan.mode : "none",
-      recoveryRequestedKw: recoveryPlan.requestedKw,
-      recoveryKw: recoveryPlan.recoverableKw,
-      recoveryCandidateCount: recoveryCandidates.length,
-      largeStepThresholdKw: state.renewableControl.largeStepThresholdKw,
-      stepCoefficient: state.renewableControl.stepCoefficient,
-      storageConverterCount: converterRows.length,
-    },
-  };
+  state.renewableTrendHistory = [];
 }
 
-function renewableDecisionDetail(plan) {
-  const metrics = plan?.metrics || {};
-  const recoveryModeLabel = {
-    "equal-margin": "等裕度大步长",
-    "capacity-step": "容量系数小步长",
-    none: "无恢复动作",
-  }[metrics.recoveryMode] || metrics.recoveryMode || "无恢复动作";
-  return [
-    `时刻 ${plan?.time || "--"}`,
-    `负荷 ${formatNumber(metrics.loadKw)} kW`,
-    metrics.windSpeedKnown
-      ? `风电可用 ${formatNumber(metrics.windAvailable)} kW`
-      : `风速未知，风电当前出力 ${formatNumber(metrics.windAvailable)} kW，采用渐进恢复`,
-    metrics.solarIrradianceKnown
-      ? `光伏可用 ${formatNumber(metrics.pvAvailable)} kW`
-      : `辐照未知，光伏当前出力 ${formatNumber(metrics.pvAvailable)} kW，采用渐进恢复`,
-    `新能源恢复 ${formatNumber(metrics.recoveryKw)} kW，方式 ${recoveryModeLabel}，候选机组 ${metrics.recoveryCandidateCount || 0} 台，大步长门槛 ${formatNumber(metrics.largeStepThresholdKw)} kW，步长系数 ${formatNumber(metrics.stepCoefficient)}`,
-    `储能可充 ${formatNumber(metrics.storageChargeAvailable)} kW`,
-    `储能可放 ${formatNumber(metrics.storageDischargeAvailable)} kW`,
-    `计划消纳 ${formatNumber(metrics.renewableTarget)} kW`,
-    `储能平衡目标 ${formatNumber(metrics.storageTarget)} kW，交直流变流器 ${metrics.storageConverterCount || 0} 台`,
-    `柴油缺额 ${formatNumber(metrics.dieselResidual)} kW`,
-    `弃风弃光 ${formatNumber(metrics.curtailKw)} kW`,
-    ...(plan?.warnings || []).map((warning) => `边界告警 ${warning}`),
-  ];
+function applyRenewableControlState(payload = {}) {
+  if (!payload || typeof payload !== "object") return false;
+  const control = state.renewableControl;
+  const incomingRevision = Number(payload.revision);
+  if (
+    payload.modelId
+    && control.modelId === payload.modelId
+    && Number.isFinite(incomingRevision)
+    && incomingRevision < Number(control.revision ?? -1)
+  ) {
+    return false;
+  }
+  const settings = payload.settings && typeof payload.settings === "object" ? payload.settings : {};
+  Object.assign(control, {
+    modelId: String(payload.modelId || state.activeModelId || ""),
+    enabled: Boolean(payload.enabled),
+    loopMode: payload.loopMode === "closed" ? "closed" : "open",
+    sending: Boolean(payload.sending),
+    intervalSeconds: Math.max(1, toNumber(settings.intervalSeconds, control.intervalSeconds || 2)),
+    socMin: clamp(toNumber(settings.socMin, control.socMin ?? 0.3), 0, 1),
+    socMax: clamp(toNumber(settings.socMax, control.socMax ?? 0.9), 0, 1),
+    largeStepThresholdKw: Math.max(0, toNumber(settings.largeStepThresholdKw, control.largeStepThresholdKw || 10)),
+    stepCoefficient: Math.max(0, toNumber(settings.stepCoefficient, control.stepCoefficient || 0.03)),
+    lastPlan: payload.lastPlan || null,
+    lastCalculatedAt: payload.lastCalculatedAt || "",
+    lastSentAt: payload.lastSentAt || "",
+    lastStatus: payload.status || "学员台后台控制状态已同步。",
+    revision: Number.isFinite(incomingRevision) ? incomingRevision : control.revision,
+    logs: Array.isArray(payload.logs) ? payload.logs : [],
+  });
+  control.socMax = Math.max(control.socMin, control.socMax);
+  state.renewableTrendHistory = Array.isArray(payload.trend) ? payload.trend : [];
+  return true;
 }
 
+async function refreshRenewableControlState({ preview = false, render = true } = {}) {
+  const control = state.renewableControl;
+  if (!state.activeModelId || control.requestActive) return null;
+  const requestedModelId = state.activeModelId;
+  control.requestActive = true;
+  try {
+    const payload = await api(renewableControlApiPath(preview));
+    if (requestedModelId !== state.activeModelId) return null;
+    applyRenewableControlState(payload);
+    return payload;
+  } catch (error) {
+    if (requestedModelId === state.activeModelId) {
+      control.lastStatus = `学员台后台控制状态获取失败：${apiErrorText(error)}`;
+    }
+    return null;
+  } finally {
+    if (requestedModelId === state.activeModelId) {
+      control.requestActive = false;
+      if (render && currentPageName() === "renewable") renderRenewableControl(state.snapshot || {});
+    }
+  }
+}
+
+async function runRenewableControlAction(action, payload = {}) {
+  const control = state.renewableControl;
+  if (!state.activeModelId || control.actionActive) return null;
+  const requestedModelId = state.activeModelId;
+  control.actionActive = true;
+  renderRenewableControl(state.snapshot || {});
+  try {
+    const response = await api("/api/trainee/renewable-control", {
+      method: "POST",
+      body: JSON.stringify({ action, ...payload }),
+    });
+    if (requestedModelId !== state.activeModelId) return null;
+    applyRenewableControlState(response);
+    return response;
+  } catch (error) {
+    if (requestedModelId === state.activeModelId) {
+      control.lastStatus = `后台控制操作失败：${apiErrorText(error)}`;
+    }
+    return null;
+  } finally {
+    if (requestedModelId === state.activeModelId) {
+      control.actionActive = false;
+      renderRenewableControl(state.snapshot || {});
+    }
+  }
+}
 function renewableLoopMode(control = state.renewableControl) {
   return control?.loopMode === "closed" ? "closed" : "open";
 }
@@ -5301,48 +4976,318 @@ function renewableLoopModeLabel(mode = renewableLoopMode()) {
   return mode === "closed" ? "闭环" : "开环";
 }
 
+function noteRenewableReceiveInterruption(message) {
+  if (!state.renewableControl.enabled || currentPageName() !== "renewable") return;
+  refreshRenewableControlState({ preview: false });
+}
+
+function renderRenewablePager(kind, totalCount) {
+  if (kind !== "logs") return;
+  const pageSize = RENEWABLE_CONTROL_LOG_PAGE_SIZE;
+  const pager = $("renewableControlLogPager");
+  if (!pager) return;
+  const total = Math.max(0, Number(totalCount) || 0);
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(Math.max(1, Number(state.renewableControl.logPage) || 1), pageCount);
+  state.renewableControl.logPage = page;
+  if (!total) {
+    pager.innerHTML = "";
+    return;
+  }
+  const start = (page - 1) * pageSize + 1;
+  const end = Math.min(total, page * pageSize);
+  pager.innerHTML = `
+    <span>${start}-${end} / ${total} 条</span>
+    <button type="button" data-renewable-pager="logs" data-renewable-page-action="prev" ${page <= 1 ? "disabled" : ""}>上一页</button>
+    <strong>第 ${page} / ${pageCount} 页</strong>
+    <button type="button" data-renewable-pager="logs" data-renewable-page-action="next" ${page >= pageCount ? "disabled" : ""}>下一页</button>
+  `;
+}
+
+function renewableRemoteAdjustmentPointName(row = {}) {
+  if (!row.dev_type || !row.dev_name || !row.set_type) return "--";
+  return `${row.dev_type}.${row.dev_name}.${row.set_type}`;
+}
+
+function renewableStrategyRows(plan, tabKey = state.renewableControl.strategyTab) {
+  const normalizedTab = RENEWABLE_STRATEGY_TABS[tabKey] ? tabKey : "wind";
+  const categories = RENEWABLE_STRATEGY_TABS[normalizedTab].categories;
+  return (plan?.commandRows || []).filter((row) => categories.has(row.category));
+}
+
+function renderRenewableStrategyTabs(plan) {
+  const requestedTab = state.renewableControl.strategyTab;
+  const activeTab = RENEWABLE_STRATEGY_TABS[requestedTab] ? requestedTab : "wind";
+  state.renewableControl.strategyTab = activeTab;
+  document.querySelectorAll("[data-renewable-strategy-tab]").forEach((button) => {
+    const tabKey = button.dataset.renewableStrategyTab || "";
+    const tab = RENEWABLE_STRATEGY_TABS[tabKey];
+    if (!tab) return;
+    const active = tabKey === activeTab;
+    const count = renewableStrategyRows(plan, tabKey).length;
+    button.textContent = `${tab.label} ${count}`;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+}
+
+function renewableControlLogs() {
+  return Array.isArray(state.renewableControl.logs) ? state.renewableControl.logs : [];
+}
+
+function renderRenewableControlLogs() {
+  const table = $("renewableControlLogTable");
+  const summary = $("renewableControlLogSummary");
+  if (!table || !summary) return;
+  const logs = renewableControlLogs();
+  summary.textContent = `${logs.length} 条`;
+  renderRenewablePager("logs", logs.length);
+  const page = state.renewableControl.logPage;
+  const start = (page - 1) * RENEWABLE_CONTROL_LOG_PAGE_SIZE;
+  const pageLogs = logs.slice(start, start + RENEWABLE_CONTROL_LOG_PAGE_SIZE);
+  const renderKey = `${page}|${logs.length}|${pageLogs.map((item) => item.seq).join(",")}`;
+  if (renderKey === state.renewableControl.lastControlLogRenderKey) return;
+  state.renewableControl.lastControlLogRenderKey = renderKey;
+  if (!pageLogs.length) {
+    table.innerHTML = '<div class="empty-state compact">暂无新能源控制日志</div>';
+    return;
+  }
+  table.innerHTML = `
+    <table class="runtime-log-table renewable-control-log-table">
+      <thead><tr><th>本机时刻</th><th>仿真时刻</th><th>类型</th><th>结果</th><th>决策过程</th></tr></thead>
+      <tbody>
+        ${pageLogs.map((item) => `
+          <tr class="runtime-log-row is-${escapeHtml(item.level || "info")}">
+            <td>${escapeHtml(runtimeLogWallTimeText(item.wall_time))}</td>
+            <td class="mono-cell">${escapeHtml(item.simu_time || "--")}</td>
+            <td>${escapeHtml(item.type || "")}</td>
+            <td>${escapeHtml(item.result || "")}</td>
+            <td class="runtime-log-detail">${escapeHtml(runtimeLogDetailText(item.detail))}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>`;
+}
+
+function renewableTrendWindowRange() {
+  const history = state.renewableTrendHistory || [];
+  const windowMinutes = Math.max(1, Number(state.renewableTrendWindowMinutes) || 60);
+  const fallbackMinute = Number(state.snapshot?.clock?.absolute_minute ?? state.snapshot?.clock?.minute ?? 0) || 0;
+  return alignedTraceWindowRange(history, windowMinutes, fallbackMinute);
+}
+
+function renewableTrendWindowPoints() {
+  const range = renewableTrendWindowRange();
+  return (state.renewableTrendHistory || []).filter((point) => (
+    point.minute >= range.startMinute && point.minute <= range.endMinute
+  ));
+}
+
+function drawRenewableTrendChart() {
+  const canvas = $("renewableTrendChart");
+  if (!canvas) return;
+  const chartKey = "renewableTrend";
+  const ctx = canvas.getContext("2d");
+  const { width, height, ratio } = resizeCanvas(canvas);
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#fcfeff";
+  ctx.fillRect(0, 0, width, height);
+
+  const left = 72 * ratio;
+  const right = 70 * ratio;
+  const top = 30 * ratio;
+  const bottom = 38 * ratio;
+  const plotWidth = Math.max(1, width - left - right);
+  const plotHeight = Math.max(1, height - top - bottom);
+  const plot = { left, right, top, bottom };
+  state.chartPlotInfo = { ...(state.chartPlotInfo || {}), [chartKey]: plot };
+
+  const range = renewableTrendWindowRange();
+  const points = renewableTrendWindowPoints();
+  const seriesDefs = [
+    { key: "load", field: "loadKw", label: "负荷功率", color: "#c93a3a", axis: "left", unit: "kW" },
+    { key: "diesel", field: "dieselKw", label: "柴发功率", color: "#b87500", axis: "left", unit: "kW" },
+    { key: "storage", field: "storageKw", label: "储能功率", color: "#4369b2", axis: "left", unit: "kW" },
+    { key: "storageSoc", field: "storageSocPercent", label: "储能SOC", color: "#7a4fb3", axis: "right", unit: "%" },
+    { key: "renewable", field: "renewableKw", label: "新能源功率", color: "#23854a", axis: "left", unit: "kW" },
+    { key: "acdcCurrent", field: "acdcCurrentKw", label: "变流器当前值", color: "#0a8b8b", axis: "left", unit: "kW" },
+    { key: "acdcTarget", field: "acdcTargetKw", label: "变流器目标值", color: "#d24f93", axis: "left", unit: "kW", dashed: true },
+  ];
+  const visibleSeries = visibleChartSeries(chartKey, seriesDefs);
+  const visiblePowerSeries = visibleSeries.filter((series) => series.axis !== "right");
+  const powerValues = points.flatMap((point) => visiblePowerSeries.map((series) => point[series.field]))
+    .filter((value) => Number.isFinite(value));
+  let powerMin = powerValues.length ? Math.min(0, ...powerValues) : -1;
+  let powerMax = powerValues.length ? Math.max(0, ...powerValues) : 1;
+  if (Math.abs(powerMax - powerMin) < 1e-9) {
+    powerMin -= 1;
+    powerMax += 1;
+  }
+  const powerPadding = Math.max(1, (powerMax - powerMin) * 0.08);
+  powerMin -= powerPadding;
+  powerMax += powerPadding;
+
+  ctx.font = `${11 * ratio}px Consolas, Microsoft YaHei, Arial`;
+  for (let index = 0; index <= 4; index += 1) {
+    const fraction = index / 4;
+    const y = top + plotHeight * fraction;
+    ctx.strokeStyle = index === 4 ? "#c9d6dc" : "#e2eaee";
+    ctx.lineWidth = 1 * ratio;
+    ctx.beginPath();
+    ctx.moveTo(left, y);
+    ctx.lineTo(width - right, y);
+    ctx.stroke();
+    ctx.fillStyle = "#63717a";
+    ctx.textAlign = "right";
+    ctx.fillText(formatNumber(powerMax - (powerMax - powerMin) * fraction), left - 8 * ratio, y + 4 * ratio);
+    ctx.fillStyle = "#76549b";
+    ctx.textAlign = "left";
+    ctx.fillText(`${formatNumber(100 - fraction * 100)}%`, width - right + 8 * ratio, y + 4 * ratio);
+  }
+  ctx.fillStyle = "#63717a";
+  ctx.textAlign = "left";
+  ctx.fillText("功率/kW", 8 * ratio, 16 * ratio);
+  ctx.fillStyle = "#76549b";
+  ctx.textAlign = "right";
+  ctx.fillText("SOC/%", width - 8 * ratio, 16 * ratio);
+
+  const xTicks = measurementTraceAxisTicks(range, width / ratio);
+  xTicks.forEach((minute, tickIndex) => {
+    const x = left + ((minute - range.startMinute) / range.windowMinutes) * plotWidth;
+    ctx.strokeStyle = tickIndex === xTicks.length - 1 ? "#c9d6dc" : "#edf2f4";
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, top + plotHeight);
+    ctx.stroke();
+    ctx.fillStyle = "#63717a";
+    ctx.font = `${11 * ratio}px Consolas, Microsoft YaHei, Arial`;
+    ctx.textAlign = tickIndex === xTicks.length - 1 ? "right" : "left";
+    const textOffset = tickIndex === 0 || tickIndex === xTicks.length - 1 ? 0 : 4 * ratio;
+    ctx.fillText(
+      measurementTraceTimeLabel(minute, range, tickIndex, xTicks.length - 1),
+      x + textOffset,
+      height - 11 * ratio,
+    );
+  });
+
+  const summary = $("renewableTrendSummary");
+  if (summary) summary.textContent = `${points.length} 点 · 左轴功率 / 右轴SOC`;
+  if (!points.length || !visibleSeries.length) {
+    state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: [] };
+    syncChartLegendButtons(chartKey);
+    ctx.fillStyle = "#63717a";
+    ctx.font = `${13 * ratio}px Microsoft YaHei, Arial`;
+    ctx.textAlign = "center";
+    ctx.fillText(!visibleSeries.length ? "所有曲线已隐藏" : "暂无综合趋势数据", width / 2, height / 2);
+    return;
+  }
+
+  const xForMinute = (minute) => left + ((minute - range.startMinute) / range.windowMinutes) * plotWidth;
+  const powerY = (value) => top + plotHeight - ((value - powerMin) / (powerMax - powerMin)) * plotHeight;
+  const socY = (value) => top + plotHeight - (clamp(value, 0, 100) / 100) * plotHeight;
+  const selectedSeries = selectedChartSeriesKey(chartKey, visibleSeries[0]?.key || "");
+  const hitData = [];
+  visibleSeries.forEach((series) => {
+    const sampled = sampleCurvePointsForCanvas(
+      points.map((point) => Number.isFinite(point[series.field]) ? point[series.field] : Number.NaN),
+      plotWidth / ratio,
+      1.4,
+    );
+    const pixelPoints = [];
+    ctx.strokeStyle = series.color;
+    ctx.lineWidth = (series.key === selectedSeries ? 3.2 : 2.2) * ratio;
+    ctx.setLineDash(series.dashed ? [7 * ratio, 5 * ratio] : []);
+    ctx.beginPath();
+    let started = false;
+    sampled.forEach(({ index, value }) => {
+      if (!Number.isFinite(value)) return;
+      const point = points[index];
+      if (!point) return;
+      const x = xForMinute(point.minute);
+      const y = series.axis === "right" ? socY(value) : powerY(value);
+      pixelPoints.push({ x, y, minute: point.minute, time: point.time, value });
+      if (!started) {
+        ctx.moveTo(x, y);
+        started = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
+    });
+    if (started) ctx.stroke();
+    ctx.setLineDash([]);
+    if (pixelPoints.length === 1) {
+      ctx.fillStyle = series.color;
+      ctx.beginPath();
+      ctx.arc(pixelPoints[0].x, pixelPoints[0].y, 3.5 * ratio, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    hitData.push({ ...series, points: pixelPoints });
+  });
+  state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: hitData };
+  syncChartLegendButtons(chartKey);
+  drawChartCursor(ctx, chartKey, canvas, plot, hitData, {
+    ratio,
+    maxSeries: 8,
+    timeLabel: (point) => measurementTraceTimeLabel(point.minute, range, 0, 1),
+    valueFormatter: formatNumber,
+  });
+}
+
 function renderRenewableControl(snapshot = state.snapshot || {}) {
   const control = state.renewableControl;
   const loopMode = renewableLoopMode(control);
   const loopModeLabel = renewableLoopModeLabel(loopMode);
-  const plan = snapshot ? calculateRenewableControlPlan(snapshot) : control.lastPlan;
-  control.lastPlan = plan;
+  const plan = control.lastPlan;
   const button = $("renewableAutoToggle");
   if (!button) return;
   const sendOnce = $("renewableSendOnce");
   const stateNode = $("renewableControlState");
   const summary = $("renewableCommandSummary");
   const lastActionLabel = $("renewableLastActionLabel");
-  const hasTeacherSnapshot = state.receiveMode && state.snapshotSource === "teacher";
+  const hasDecisionSnapshot = Boolean(plan);
   button.textContent = control.enabled ? "停止实时控制" : "启动实时控制";
   button.classList.toggle("is-running", control.enabled);
-  button.disabled = control.sending;
+  button.disabled = control.sending || control.actionActive;
   if (sendOnce) {
-    sendOnce.disabled = control.sending || !hasTeacherSnapshot;
+    sendOnce.disabled = control.sending || control.actionActive;
     sendOnce.textContent = loopMode === "closed" ? "单次计算下发" : "单次计算";
   }
   document.querySelectorAll("[data-renewable-loop-mode]").forEach((modeButton) => {
     const active = modeButton.dataset.renewableLoopMode === loopMode;
     modeButton.classList.toggle("is-active", active);
     modeButton.setAttribute("aria-pressed", String(active));
-    modeButton.disabled = control.sending;
+    modeButton.disabled = control.sending || control.actionActive;
+  });
+  const periodInput = $("renewableControlPeriod");
+  const socMinInput = $("renewableSocMin");
+  const socMaxInput = $("renewableSocMax");
+  if (periodInput && document.activeElement !== periodInput) periodInput.value = String(control.intervalSeconds || 2);
+  if (socMinInput && document.activeElement !== socMinInput) socMinInput.value = Number(control.socMin ?? 0.3).toFixed(2);
+  if (socMaxInput && document.activeElement !== socMaxInput) socMaxInput.value = Number(control.socMax ?? 0.9).toFixed(2);
+  [periodInput, socMinInput, socMaxInput].forEach((input) => {
+    if (input) input.disabled = control.actionActive;
   });
   if (lastActionLabel) lastActionLabel.textContent = loopMode === "closed" ? "最近下发" : "最近计算";
   if (stateNode) {
     stateNode.textContent = control.enabled
       ? `${loopModeLabel}运行`
-      : !state.receiveMode
-        ? "未接收"
-        : hasTeacherSnapshot
-          ? `${loopModeLabel}待命`
-          : "等待数据";
+      : hasDecisionSnapshot
+        ? `${loopModeLabel}待命`
+        : "等待数据";
   }
   const metrics = plan?.metrics || {};
+  const metricPowerText = (value) => Number.isFinite(value) ? `${formatNumber(value)} kW` : "--";
   const metricText = {
-    renewableAvailableKw: `${formatNumber(metrics.availableRenewable)} kW`,
-    renewableUsedKw: `${formatNumber(metrics.renewableTarget)} kW`,
-    renewableStorageKw: `${formatNumber(metrics.storageTarget)} kW`,
-    renewableDieselKw: `${formatNumber(metrics.dieselResidual)} kW`,
+    renewableCurrentKw: `${formatNumber(metrics.renewableCurrentKw)} kW`,
+    renewableTargetKw: `${formatNumber(metrics.renewableTarget)} kW`,
+    renewableDieselCurrentKw: metricPowerText(metrics.dieselCurrentKw),
+    renewableDieselMinKw: metricPowerText(metrics.dieselMinKw),
+    renewableDieselTargetKw: metricPowerText(metrics.dieselTargetKw),
+    renewableStorageCurrentKw: metricPowerText(metrics.storageCurrentKw),
+    renewableStorageSoc: Number.isFinite(metrics.storageSoc) ? `${formatOverviewNumber(metrics.storageSoc * 100)}%` : "--",
+    renewableAcdcCurrentKw: metricPowerText(metrics.acdcCurrentKw),
+    renewableAcdcTargetKw: metricPowerText(metrics.acdcTargetKw),
     renewableCurtailKw: `${formatNumber(metrics.curtailKw)} kW`,
     renewableLastSent: loopMode === "closed" ? control.lastSentAt || "--" : control.lastCalculatedAt || "--",
   };
@@ -5352,29 +5297,41 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   });
   const status = $("renewableControlStatus");
   if (status) {
-    status.textContent = control.sending ? "正在向模拟台下发遥调指令..." : control.lastStatus;
+    status.textContent = control.sending || control.actionActive ? "学员台后台正在执行控制操作..." : control.lastStatus;
     status.classList.toggle("is-ok", control.enabled || Boolean(control.lastCalculatedAt) || Boolean(control.lastSentAt));
-    status.classList.toggle("is-error", !state.receiveMode && control.enabled);
+    status.classList.toggle("is-error", !hasDecisionSnapshot && control.enabled);
   }
   if (summary) summary.textContent = `${plan?.commands?.length || 0} 条 · ${plan?.time || "--"} · ${loopModeLabel}`;
+  renderRenewableControlLogs();
+  renderRenewableStrategyTabs(plan);
+  drawRenewableTrendChart();
   const table = $("renewableCommandTable");
   if (!table) return;
-  const rows = plan?.commandRows || [];
+  const rows = renewableStrategyRows(plan);
   if (!rows.length) {
-    table.innerHTML = '<div class="empty-state">暂无可控新能源或储能设备</div>';
+    const tabLabel = RENEWABLE_STRATEGY_TABS[control.strategyTab]?.label || "当前分类";
+    table.innerHTML = `<div class="empty-state compact">暂无${escapeHtml(tabLabel)}设备</div>`;
     return;
   }
   table.innerHTML = `
     <table class="runtime-device-table renewable-command-table">
-      <thead><tr><th>类别</th><th>设备名称</th><th>状态</th><th>当前出力</th><th>可用/容量</th><th>计划指令</th><th>SOC</th></tr></thead>
+      <thead><tr><th>设备名称</th><th>遥调点名称</th><th>状态</th><th>当前值</th><th>可用边界</th><th>目标值</th><th>SOC</th></tr></thead>
       <tbody>
         ${rows.map((row) => `
           <tr class="${row.online ? "" : "is-muted"}">
-            <td>${escapeHtml(row.category)}</td>
             <td>${escapeHtml(row.dev_name)}</td>
+            <td class="renewable-control-point" title="${escapeHtml(renewableRemoteAdjustmentPointName(row))}">${escapeHtml(renewableRemoteAdjustmentPointName(row))}</td>
             <td><span class="status-pill ${row.online ? "is-ok" : "is-off"}">${escapeHtml(row.statusLabel || (row.online ? "可控" : "停用"))}</span></td>
             <td class="numeric-cell">${Number.isFinite(row.currentKw) ? `${formatNumber(row.currentKw)} kW` : "--"}</td>
-            <td class="numeric-cell">${Number.isFinite(row.availableKw) ? `${formatNumber(row.availableKw)} kW` : Number.isFinite(row.capacityKw) ? `${formatNumber(row.capacityKw)} kW` : "--"}</td>
+            <td class="numeric-cell">${row.category === "柴油发电"
+              ? `下限 ${formatNumber(row.minKw)} / 容量 ${formatNumber(row.capacityKw)}`
+              : row.category === "储能平衡源"
+                ? `充 ${formatNumber(row.chargePower)} / 放 ${formatNumber(row.dischargePower)}`
+                : Number.isFinite(row.availableKw)
+                  ? `${formatNumber(row.availableKw)} kW`
+                  : Number.isFinite(row.capacityKw)
+                    ? `${formatNumber(row.capacityKw)} kW`
+                    : "--"}</td>
             <td class="numeric-cell">${Number.isFinite(row.commandKw) ? `${formatNumber(row.commandKw)} kW` : "--"}</td>
             <td>${row.soc === undefined ? "--" : formatNumber(row.soc)}</td>
           </tr>
@@ -5383,177 +5340,38 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     </table>`;
 }
 
-function stopRenewableControl(message = "实时控制已停止。", logEvent = false) {
-  const wasEnabled = state.renewableControl.enabled;
-  state.renewableControl.enabled = false;
-  state.renewableControl.sending = false;
-  state.renewableControl.lastClockKey = "";
-  state.renewableControl.lastAutoAtMs = 0;
-  state.renewableControl.lastStatus = message;
-  if (logEvent && wasEnabled) addRuntimeLog("策略控制", "新能源优先", "停止", message, "warn");
-  renderRenewableControl(state.snapshot || {});
+async function toggleRenewableAuto() {
+  const action = state.renewableControl.enabled ? "stop" : "start";
+  await runRenewableControlAction(action);
 }
 
-async function sendRenewableControlPlan(plan, trigger = "manual") {
-  const control = state.renewableControl;
-  const loopMode = renewableLoopMode(control);
-  const loopModeLabel = renewableLoopModeLabel(loopMode);
-  if (!state.receiveMode) {
-    control.lastStatus = "请先启动接收模式，新能源策略计算需要模拟台实时数据。";
-    addRuntimeLog("策略决策", "新能源优先", "等待接收", control.lastStatus, "warn");
-    renderRenewableControl(state.snapshot || {});
-    return;
-  }
-  if (state.snapshotSource !== "teacher") {
-    control.lastStatus = "等待教员台实时数据，收到第一帧后再计算新能源策略。";
-    addRuntimeLog("策略决策", "新能源优先", "等待数据", control.lastStatus, "warn");
-    renderRenewableControl(state.snapshot || {});
-    return;
-  }
-  control.lastPlan = plan;
-  control.lastCalculatedAt = new Date().toLocaleTimeString();
-  addRuntimeLog(
-    "策略决策",
-    "新能源优先",
-    "计算完成",
-    [`控制方式 ${loopModeLabel}`, ...renewableDecisionDetail(plan)],
-    "info",
-  );
-  if (!plan?.commands?.length) {
-    control.lastClockKey = plan?.clockKey || "";
-    control.lastStatus = "当前没有可生成的新能源或储能遥调策略。";
-    addRuntimeLog("策略决策", "新能源优先", "无可用策略", control.lastStatus, "warn");
-    renderRenewableControl(state.snapshot || {});
-    return;
-  }
-
-  if (loopMode === "open") {
-    control.lastClockKey = plan.clockKey;
-    control.lastStatus = `开环计算完成，生成 ${plan.commands.length} 条遥调策略，仅记录日志，未向模拟台下发。`;
-    addRuntimeLog(
-      "策略控制",
-      "新能源优先",
-      "开环未下发",
-      `触发 ${trigger}；生成遥调策略 ${plan.commands.length} 条；计划柴油缺额 ${formatNumber(plan.metrics.dieselResidual)} kW`,
-      "ok",
-    );
-    renderRenewableControl(state.snapshot || {});
-    return;
-  }
-
-  control.sending = true;
-  const targetName = teacherCommandTargetName();
-  addRuntimeLog(
-    "实时控制",
-    targetName,
-    "下发请求",
-    `触发 ${trigger}；遥调指令 ${plan.commands.length} 条；目标柴油缺额 ${formatNumber(plan.metrics.dieselResidual)} kW`,
-    "info",
-  );
-  renderRenewableControl(state.snapshot || {});
-  try {
-    const payload = withCommandSendTime({
-      source: "trainee-renewable-priority",
-      valid_for_minutes: RENEWABLE_COMMAND_VALID_MINUTES,
-      set_values: plan.commands,
-      strategy: {
-        name: "renewable_priority",
-        loop_mode: loopMode,
-        trigger,
-        time: plan.time,
-        load_kw: commandNumber(plan.metrics.loadKw),
-        renewable_available_kw: commandNumber(plan.metrics.availableRenewable),
-        renewable_used_kw: commandNumber(plan.metrics.renewableTarget),
-        storage_kw: commandNumber(plan.metrics.storageTarget),
-        diesel_residual_kw: commandNumber(plan.metrics.dieselResidual),
-        curtail_kw: commandNumber(plan.metrics.curtailKw),
-      },
-    });
-    const result = await teacherCommandApi({ method: "POST", body: JSON.stringify(payload) });
-    control.lastSentAt = new Date().toLocaleTimeString();
-    control.lastClockKey = plan.clockKey;
-    control.lastStatus = `已下发 ${result.set_values || plan.commands.length} 条遥调指令，计划柴油缺额 ${formatNumber(plan.metrics.dieselResidual)} kW。`;
-    addRuntimeLog(
-      "模拟台响应",
-      targetName,
-      "下发成功",
-      `模拟台接受遥调指令 ${result.set_values || 0} 条；策略时刻 ${plan.time}；柴油缺额 ${formatNumber(plan.metrics.dieselResidual)} kW`,
-      "ok",
-    );
-  } catch (error) {
-    control.lastStatus = apiErrorText(error);
-    addRuntimeLog("模拟台响应", targetName, "下发失败", apiErrorText(error), "error");
-  } finally {
-    control.sending = false;
-    renderRenewableControl(state.snapshot || {});
-  }
+async function runRenewableControlOnce() {
+  await runRenewableControlAction("run_once");
 }
 
-function maybeRunRenewableControl(snapshot = state.snapshot || {}) {
-  const control = state.renewableControl;
-  if (!control.enabled || control.sending || !state.receiveMode) return;
-  if (state.snapshotSource !== "teacher") return;
-  const now = Date.now();
-  if (now - control.lastAutoAtMs < Math.max(1, control.intervalSeconds) * 1000) return;
-  const plan = calculateRenewableControlPlan(snapshot);
-  if (plan.clockKey && plan.clockKey === control.lastClockKey) return;
-  control.lastAutoAtMs = now;
-  sendRenewableControlPlan(plan, "auto");
-}
-
-function toggleRenewableAuto() {
-  if (state.renewableControl.enabled) {
-    stopRenewableControl("实时控制已停止。", true);
-    return;
-  }
-  if (!state.receiveMode) {
-    state.renewableControl.lastStatus = "请先点击顶部“启动接收”，再启动新能源优先实时控制。";
-    addRuntimeLog("策略控制", "新能源优先", "启动失败", state.renewableControl.lastStatus, "warn");
-    renderRenewableControl(state.snapshot || {});
-    return;
-  }
-  state.renewableControl.enabled = true;
-  state.renewableControl.lastClockKey = "";
-  state.renewableControl.lastAutoAtMs = 0;
-  const loopModeLabel = renewableLoopModeLabel();
-  state.renewableControl.lastStatus = state.snapshotSource === "teacher"
-    ? `${loopModeLabel}实时控制已启动，正在按教员台实时数据计算。`
-    : `${loopModeLabel}实时控制已启动，等待第一帧教员台数据。`;
-  addRuntimeLog("策略控制", "新能源优先", `${loopModeLabel}启动`, state.renewableControl.lastStatus, "ok");
-  renderRenewableControl(state.snapshot || {});
-  maybeRunRenewableControl(state.snapshot || {});
-}
-
-function setRenewableLoopMode(mode) {
-  const control = state.renewableControl;
+async function setRenewableLoopMode(mode) {
   const nextMode = mode === "closed" ? "closed" : "open";
-  if (renewableLoopMode(control) === nextMode) {
+  if (renewableLoopMode() === nextMode) {
     renderRenewableControl(state.snapshot || {});
     return;
   }
-  const previousLabel = renewableLoopModeLabel(renewableLoopMode(control));
-  const nextLabel = renewableLoopModeLabel(nextMode);
-  control.loopMode = nextMode;
-  control.lastClockKey = "";
-  control.lastAutoAtMs = 0;
-  control.lastStatus = nextMode === "closed"
-    ? "闭环模式已启用，后续策略将作为遥调指令下发执行。"
-    : "开环模式已启用，后续策略只计算并记录日志，不向模拟台下发。";
-  addRuntimeLog("策略控制", "新能源优先", "方式切换", `${previousLabel} → ${nextLabel}；${control.lastStatus}`, "info");
-  renderRenewableControl(state.snapshot || {});
+  await runRenewableControlAction("set_loop_mode", { loop_mode: nextMode });
 }
 
-function updateRenewableSettings() {
+async function updateRenewableSettings() {
   const minValue = clamp(toNumber($("renewableSocMin")?.value, 0.3), 0, 1);
   const maxValue = clamp(toNumber($("renewableSocMax")?.value, 0.9), minValue, 1);
-  state.renewableControl.intervalSeconds = Math.max(1, toNumber($("renewableControlPeriod")?.value, 2));
-  state.renewableControl.socMin = minValue;
-  state.renewableControl.socMax = maxValue;
-  if ($("renewableSocMin")) $("renewableSocMin").value = minValue.toFixed(2);
-  if ($("renewableSocMax")) $("renewableSocMax").value = maxValue.toFixed(2);
-  renderRenewableControl(state.snapshot || {});
+  const intervalSeconds = Math.max(1, toNumber($("renewableControlPeriod")?.value, 2));
+  await runRenewableControlAction("update_settings", {
+    settings: {
+      intervalSeconds,
+      socMin: minValue,
+      socMax: maxValue,
+      largeStepThresholdKw: state.renewableControl.largeStepThresholdKw,
+      stepCoefficient: state.renewableControl.stepCoefficient,
+    },
+  });
 }
-
 function renderClock(clock) {
   $("simTime").textContent = clock.time || "00:00:00";
   $("simState").textContent = clock.state || "stopped";
@@ -7090,6 +6908,7 @@ function remoteControlCommandRows(devices, snapshot = state.snapshot || {}) {
       active: Boolean(cancelName),
     };
   });
+  drawRenewableTrendChart();
 }
 
 function commandTableTypeLabel(row) {
@@ -7662,7 +7481,10 @@ function clearTraineeRuntimeLogs() {
   state.runtimeLogSeq = 0;
   state.runtimeLogPage = 1;
   state.runtimeLogTypeFilter = "all";
+  state.renewableControl.logPage = 1;
+  state.renewableControl.lastControlLogRenderKey = "";
   renderHistoryIfMounted();
+  renderRenewableControlLogs();
 }
 
 function activeCommandPreviewRows(snapshot = state.snapshot || {}) {
@@ -8005,7 +7827,8 @@ document.addEventListener("click", (event) => {
     const seriesKey = chartToggle.dataset.chartSeries || "";
     const drawFn = chartKey === "measurementTrace" ? drawMeasurementTraceChart
       : chartKey === "commandTrace" ? drawCommandTraceChart
-        : null;
+        : chartKey === "renewableTrend" ? drawRenewableTrendChart
+          : null;
     toggleChartSeriesVisibility(chartKey, seriesKey, drawFn);
     return;
   }
@@ -8128,7 +7951,7 @@ async function toggleReceiveMode() {
     state.receiveRequestActive = false;
     persistActiveModelContext({ receiveMode: false, frozen: true });
     addRuntimeLog("接收模式", "模拟台实时数据", "停止接收", `冻结于 ${state.lastReceiveAt || "--"}`, "warn");
-    stopRenewableControl("接收已停止，新能源优先策略已暂停。", true);
+    noteRenewableReceiveInterruption("连续接收已停止，新能源优先策略保持运行，继续使用最近一次有效数据。");
     try {
       await saveTraineeReceiveState(state.activeModelId, { active: false, frozen: true });
     } catch (error) {
@@ -8229,13 +8052,33 @@ $("remoteAdjustmentDialog").addEventListener("click", (event) => {
   if (event.target === $("remoteAdjustmentDialog")) closeRemoteAdjustmentDialog();
 });
 $("renewableAutoToggle").addEventListener("click", toggleRenewableAuto);
-$("renewableSendOnce").addEventListener("click", () => sendRenewableControlPlan(calculateRenewableControlPlan(state.snapshot || {}), "manual"));
+$("renewableSendOnce").addEventListener("click", runRenewableControlOnce);
 document.querySelectorAll("[data-renewable-loop-mode]").forEach((button) => {
   button.addEventListener("click", () => setRenewableLoopMode(button.dataset.renewableLoopMode));
 });
 $("renewableControlPeriod").addEventListener("change", updateRenewableSettings);
 $("renewableSocMin").addEventListener("change", updateRenewableSettings);
 $("renewableSocMax").addEventListener("change", updateRenewableSettings);
+document.querySelectorAll("[data-renewable-strategy-tab]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const tabKey = button.dataset.renewableStrategyTab || "wind";
+    if (!RENEWABLE_STRATEGY_TABS[tabKey]) return;
+    state.renewableControl.strategyTab = tabKey;
+    renderRenewableControl(state.snapshot || {});
+  });
+});
+$("renewableControlLogPager")?.addEventListener("click", (event) => {
+  const button = event.target instanceof Element ? event.target.closest("[data-renewable-pager=\"logs\"]") : null;
+  if (!button) return;
+  const total = renewableControlLogs().length;
+  const pageCount = Math.max(1, Math.ceil(total / RENEWABLE_CONTROL_LOG_PAGE_SIZE));
+  const direction = button.dataset.renewablePageAction;
+  state.renewableControl.logPage = direction === "prev"
+    ? Math.max(1, state.renewableControl.logPage - 1)
+    : Math.min(pageCount, state.renewableControl.logPage + 1);
+  state.renewableControl.lastControlLogRenderKey = "";
+  renderRenewableControlLogs();
+});
 $("clearRuntimeLogs").addEventListener("click", clearTraineeRuntimeLogs);
 $("traineeRuntimeLogTypeFilter").addEventListener("change", (event) => {
   state.runtimeLogTypeFilter = event.target.value || "all";
@@ -8267,8 +8110,16 @@ if (commandTraceWindow) {
     drawCommandTraceChart();
   });
 }
+const renewableTrendWindow = $("renewableTrendWindow");
+if (renewableTrendWindow) {
+  renewableTrendWindow.addEventListener("change", (event) => {
+    state.renewableTrendWindowMinutes = Number(event.target.value) || 60;
+    drawRenewableTrendChart();
+  });
+}
 initTraceChartInteractions("measurementTrace", "measurementTraceChart", drawMeasurementTraceChart);
 initTraceChartInteractions("commandTrace", "commandTraceChart", drawCommandTraceChart);
+initTraceChartInteractions("renewableTrend", "renewableTrendChart", drawRenewableTrendChart);
 const curveDisplayChart = $("curveDisplayChart");
 if (curveDisplayChart) {
   let lastCurveDisplayPointerDownAt = 0;
@@ -8314,6 +8165,7 @@ if (curveDisplayChart) {
 window.addEventListener("resize", () => {
   drawMeasurementTraceChart();
   drawCommandTraceChart();
+  drawRenewableTrendChart();
   drawCurveDisplay(state.snapshot || {});
 });
 

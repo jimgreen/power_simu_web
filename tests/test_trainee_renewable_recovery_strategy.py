@@ -1,36 +1,21 @@
-import json
-import subprocess
 import unittest
-from pathlib import Path
 
-
-ROOT = Path(__file__).resolve().parents[1]
-STRATEGY_FILE = ROOT / "simu/web/trainee/renewable_recovery.js"
+from simu.renewable_control import RenewableControlSettings, _plan_recovery
 
 
 def run_strategy(rows, system_room_kw, **options):
-    script = (
-        "const strategy = require(process.argv[1]);"
-        "const rows = JSON.parse(process.argv[2]);"
-        "const options = JSON.parse(process.argv[3]);"
-        "process.stdout.write(JSON.stringify(strategy.planRecovery(rows, Number(process.argv[4]), options)));"
+    settings = RenewableControlSettings(
+        large_step_threshold_kw=options.get("largeStepThresholdKw", 10),
+        step_coefficient=options.get("stepCoefficient", 0.03),
     )
-    completed = subprocess.run(
-        [
-            "node",
-            "-e",
-            script,
-            str(STRATEGY_FILE),
-            json.dumps(rows),
-            json.dumps(options),
-            str(system_room_kw),
-        ],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return json.loads(completed.stdout)
+    normalized = [
+        {
+            **row,
+            "planningCurrentKw": row.get("planningCurrentKw", row.get("currentKw")),
+        }
+        for row in rows
+    ]
+    return _plan_recovery(normalized, system_room_kw, settings)
 
 
 class TraineeRenewableRecoveryStrategyTest(unittest.TestCase):
@@ -92,7 +77,7 @@ class TraineeRenewableRecoveryStrategyTest(unittest.TestCase):
             stepCoefficient=0.03,
         )
 
-        self.assertAlmostEqual(result["rows"][0]["currentKw"], 10.0)
+        self.assertAlmostEqual(result["rows"][0]["planningCurrentKw"], 10.0)
         self.assertAlmostEqual(result["rows"][0]["headroomKw"], 0.0)
         self.assertAlmostEqual(result["rows"][0]["recoveryKw"], 0.0)
         self.assertAlmostEqual(result["rows"][0]["setpointKw"], 10.0)

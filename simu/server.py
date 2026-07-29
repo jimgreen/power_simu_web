@@ -53,6 +53,7 @@ try:
         PolarMicrogridSimulator,
         _to_float,
     )
+    from .renewable_control import TraineeRenewableControlManager
 except ImportError:  # pragma: no cover - legacy package compatibility.
     from hybrid_power_system_analysis.polar_microgrid_sim.service import (
         DEFAULT_WEATHER,
@@ -67,6 +68,7 @@ except ImportError:  # pragma: no cover - legacy package compatibility.
         PolarMicrogridSimulator,
         _to_float,
     )
+    from renewable_control import TraineeRenewableControlManager
 
 try:
     import simu_loop  # type: ignore
@@ -973,12 +975,17 @@ def make_http_server(
     role: str = "simulator",
     static_root: Optional[str | Path] = None,
     sim_url: Optional[str] = None,
+    renewable_control_manager: Optional[TraineeRenewableControlManager] = None,
 ) -> ThreadingHTTPServer:
     role = role.lower()
     if static_root is None:
         static_root = WEB_DIR / ("trainee" if role == "trainee" else "simulator")
     static_root = Path(static_root).resolve()
     sim_url = sim_url.rstrip("/") if sim_url else None
+    renewable_manager = renewable_control_manager
+    if role == "trainee" and renewable_manager is None:
+        renewable_manager = TraineeRenewableControlManager(service)
+    renewable_control_path = "/api/trainee/renewable-control"
 
     class PolarMicrogridHandler(BaseHTTPRequestHandler):
         server_version = "PolarMicrogridHTTP/0.1"
@@ -993,6 +1000,10 @@ def make_http_server(
 
         def do_GET(self) -> None:
             try:
+                path = urlparse(self.path).path
+                if path == renewable_control_path and role == "trainee":
+                    self._handle_api_get()
+                    return
                 if self.path.startswith("/api/") and role == "trainee" and sim_url:
                     self._proxy_to_simulator("GET", sim_url)
                     return
@@ -1007,6 +1018,10 @@ def make_http_server(
 
         def do_POST(self) -> None:
             try:
+                path = urlparse(self.path).path
+                if path == renewable_control_path and role == "trainee":
+                    self._handle_api_post()
+                    return
                 if self.path.startswith("/api/") and role == "trainee" and sim_url:
                     self._proxy_to_simulator("POST", sim_url)
                     return
@@ -1282,6 +1297,15 @@ def make_http_server(
             target = self._target_service()
             if path == "/api/health":
                 self._send_json({"ok": True, "role": role})
+            elif path == renewable_control_path:
+                if role != "trainee" or renewable_manager is None:
+                    raise JsonApiError(404, f"Unknown API route: {path}")
+                self._send_json(
+                    renewable_manager.state(
+                        self._request_model_id(),
+                        refresh=self._truthy_query("refresh"),
+                    )
+                )
             elif path == "/api/models":
                 self._send_json(self._model_catalog())
             elif path == "/api/snapshot":
@@ -1387,6 +1411,11 @@ def make_http_server(
         def _handle_api_post(self) -> None:
             path = urlparse(self.path).path
             payload = self._read_json_body()
+            if path == renewable_control_path:
+                if role != "trainee" or renewable_manager is None:
+                    raise JsonApiError(404, f"Unknown API route: {path}")
+                self._send_json(renewable_manager.apply_action(self._request_model_id(payload), payload))
+                return
             if path == "/api/models/create":
                 if not hasattr(service, "validate_new_model_name") or not hasattr(service, "models_root"):
                     raise JsonApiError(400, "Current simulator does not support multiple model folders")
@@ -1641,8 +1670,18 @@ def make_http_server(
             self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
             self.send_header("Cache-Control", "no-store")
 
-    server = ThreadingHTTPServer(server_address, PolarMicrogridHandler)
+    class ManagedThreadingHTTPServer(ThreadingHTTPServer):
+        _renewable_manager_closed = False
+
+        def server_close(self) -> None:
+            if renewable_manager is not None and not self._renewable_manager_closed:
+                self._renewable_manager_closed = True
+                renewable_manager.close()
+            super().server_close()
+
+    server = ManagedThreadingHTTPServer(server_address, PolarMicrogridHandler)
     server.service = service  # type: ignore[attr-defined]
+    server.renewable_control_manager = renewable_manager  # type: ignore[attr-defined]
     return server
 
 

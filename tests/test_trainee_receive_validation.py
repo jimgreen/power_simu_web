@@ -143,8 +143,10 @@ def test_trainee_commands_are_sent_through_interaction_link_command_path():
     assert "function teacherCommandPath()" in script
     assert "async function teacherCommandApi" in script
     assert 'api("/api/trainee/commands", options)' in script
-    assert "await teacherCommandApi({ method: \"POST\", body: JSON.stringify(payload) })" in script
     assert "await teacherCommandApi({ method: \"POST\", body: JSON.stringify(body) })" in script
+    backend = (ROOT / "simu/renewable_control.py").read_text(encoding="utf-8")
+    assert 'connection["command_path"]' in backend
+    assert 'self.request_json(command_url, method="POST", payload=payload)' in backend
 
 
 def test_manual_telecontrol_and_teleadjust_commands_require_teacher_link():

@@ -410,27 +410,6 @@ def _pv_available(
     return _bounded_available(available, row, device)
 
 
-def _valid_environment(
-    measurements: Mapping[Tuple[str, str, str], MeasurementValue],
-    meas_type: str,
-    minimum: float,
-    maximum: float,
-    quality: _Quality,
-    input_name: str,
-) -> Optional[float]:
-    measured = _measured(measurements, "Environment", "weather", (meas_type,))
-    if measured is None:
-        quality.input(input_name, None, "missing", False)
-        quality.add(f"无有效{input_name}量测，按未知环境量处理")
-        return None
-    if measured.value < minimum or measured.value > maximum:
-        quality.input(input_name, measured.value, measured.source, False)
-        quality.add(f"{input_name}量测 {measured.value:g} 超出合理范围，按未知环境量处理")
-        return None
-    quality.input(input_name, measured.value, measured.source, True)
-    return measured.value
-
-
 def _load_boundary(
     snapshot: Mapping[str, Any],
     measurements: Mapping[Tuple[str, str, str], MeasurementValue],
@@ -890,16 +869,18 @@ def calculate_renewable_control_plan(
     quality = _Quality(data_source, snapshot_age_seconds)
     measurements = _measurement_index(snapshot)
     load_kw = _load_boundary(snapshot, measurements, quality)
-    wind_speed = _valid_environment(measurements, "WIND_SPEED", 0.0, 75.0, quality, "windSpeed")
-    irradiance = _valid_environment(measurements, "SOLAR_IRRADIANCE", 0.0, 1600.0, quality, "solarIrradiance")
+    wind_measurement = _measured(measurements, "Environment", "weather", ("WIND_SPEED",))
+    irradiance_measurement = _measured(measurements, "Environment", "weather", ("SOLAR_IRRADIANCE",))
     temperature_measurement = _measured(measurements, "Environment", "weather", ("AIR_TEMP",))
-    air_temperature = temperature_measurement.value if temperature_measurement and -100 <= temperature_measurement.value <= 100 else None
-    quality.input(
-        "airTemperature",
-        air_temperature,
-        temperature_measurement.source if air_temperature is not None and temperature_measurement else "reference_default",
-        air_temperature is not None,
-    )
+    observed_wind_speed = wind_measurement.value if wind_measurement else None
+    observed_irradiance = irradiance_measurement.value if irradiance_measurement else None
+    observed_air_temperature = temperature_measurement.value if temperature_measurement else None
+    wind_speed = None
+    irradiance = None
+    air_temperature = None
+    quality.input("windSpeed", observed_wind_speed, "ignored_by_control_policy", False)
+    quality.input("solarIrradiance", observed_irradiance, "ignored_by_control_policy", False)
+    quality.input("airTemperature", observed_air_temperature, "ignored_by_control_policy", False)
 
     renewable_rows = _renewable_rows(
         snapshot,
@@ -1196,9 +1177,9 @@ def calculate_renewable_control_plan(
 
     warnings: List[str] = []
     if any(row["category"] == "风电" for row in renewable_rows) and wind_speed is None:
-        warnings.append("风速未知，风电不采用曲线或假定风速，按当前出力与容量执行渐进恢复")
+        warnings.append("风速量测默认不参与新能源控制，风电按当前出力与容量执行渐进恢复")
     if any(row["category"] == "光伏" for row in renewable_rows) and irradiance is None:
-        warnings.append("太阳辐照度未知，光伏不采用曲线或假定辐照度，按当前出力与容量执行渐进恢复")
+        warnings.append("太阳辐照度量测默认不参与新能源控制，光伏按当前出力与容量执行渐进恢复")
     warnings.extend(issue for issue in quality.issues if issue not in warnings)
 
     wind_available = sum(
@@ -1281,7 +1262,7 @@ def calculate_renewable_control_plan(
         f"控制基准：时刻 {time_text}，新能源当前 {renewable_current:.2f} kW，柴发当前 {diesel_current_for_control:.2f} kW、下限 {diesel_min:.2f} kW",
         f"储能边界：当前 {storage_current_for_control:.2f} kW，允许目标 [{storage_min_target:.2f}, {storage_max_target:.2f}] kW，SOC {storage_soc * 100 if storage_soc is not None else '--'}%",
         f"变流边界：当前 {converter_current if converter_current is not None else '--'} kW，可控并联 {len(converter_rows)} 台，汇总限值 {converter_limit if math.isfinite(converter_limit) else '--'} kW",
-        f"环境判断：风速{'有效' if wind_speed is not None else '未知'}，太阳辐照度{'有效' if irradiance is not None else '未知'}",
+        f"环境策略：风速 {observed_wind_speed if observed_wind_speed is not None else '--'}、太阳辐照度 {observed_irradiance if observed_irradiance is not None else '--'}、温度 {observed_air_temperature if observed_air_temperature is not None else '--'}，均按默认策略忽略",
         f"新能源上调边界：当前 {renewable_current:.2f} + 柴发可下调裕度 {diesel_down_margin:.2f} + 储能可增加吸收裕度 {storage_current_for_control - storage_min_target:.2f} = {renewable_balance_limit:.2f} kW",
         f"增量平衡：柴发目标 = 柴发当前 - 新能源变化量 {renewable_delta:.2f} - 储能变化量 {storage_target - storage_current_for_control:.2f} = {diesel_target:.2f} kW",
         f"负荷功率仅用于展示：当前 {load_kw:.2f} kW，不参与新能源、储能、变流器或柴发目标计算",
@@ -1301,6 +1282,9 @@ def calculate_renewable_control_plan(
             "solarIrradiance": irradiance,
             "solarIrradianceKnown": irradiance is not None,
             "airTemp": air_temperature,
+            "observedWindSpeed": observed_wind_speed,
+            "observedSolarIrradiance": observed_irradiance,
+            "observedAirTemp": observed_air_temperature,
             "loadKw": load_kw,
         },
         "commandRows": command_rows,

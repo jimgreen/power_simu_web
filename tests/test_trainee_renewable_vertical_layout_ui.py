@@ -84,7 +84,7 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
         self.assertIn("state.renewableControl.logs", self.script)
         for label in (
             "控制基准",
-            "环境判断",
+            "环境策略",
             "新能源上调边界",
             "增量平衡",
             "负荷功率仅用于展示",

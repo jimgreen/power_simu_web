@@ -174,34 +174,50 @@ def renewable_snapshot() -> dict:
 
 
 class RenewableControlPlannerDataQualityTest(unittest.TestCase):
-    def test_valid_scada_load_is_display_only_and_weather_drives_capability(self):
+    def test_environment_measurements_are_ignored_by_default_control_policy(self):
         plan = calculate_renewable_control_plan(renewable_snapshot())
 
         self.assertEqual(plan["metrics"]["loadKw"], 100)
-        self.assertEqual(plan["weather"]["windSpeed"], 8)
-        self.assertEqual(plan["weather"]["solarIrradiance"], 500)
+        self.assertIsNone(plan["weather"]["windSpeed"])
+        self.assertIsNone(plan["weather"]["solarIrradiance"])
+        self.assertIsNone(plan["weather"]["airTemp"])
+        self.assertEqual(plan["weather"]["observedWindSpeed"], 8)
+        self.assertEqual(plan["weather"]["observedSolarIrradiance"], 500)
+        self.assertEqual(plan["weather"]["observedAirTemp"], 25)
         self.assertEqual(plan["dataQuality"]["inputs"]["load"]["source"], "scada")
-        self.assertEqual(plan["dataQuality"]["inputs"]["windSpeed"]["source"], "scada")
+        self.assertEqual(
+            plan["dataQuality"]["inputs"]["windSpeed"]["source"],
+            "ignored_by_control_policy",
+        )
+        self.assertFalse(plan["dataQuality"]["inputs"]["windSpeed"]["valid"])
+        self.assertGreater(plan["metrics"]["recoveryKw"], 0)
         self.assertEqual(plan["dataQuality"]["status"], "ok")
         self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
 
-    def test_missing_weather_stays_unknown_and_never_uses_curve_weather(self):
+    def test_environment_presence_or_value_does_not_change_control_targets(self):
+        baseline = calculate_renewable_control_plan(renewable_snapshot())
         snapshot = renewable_snapshot()
         snapshot["measurements"]["scada"] = [
             row
             for row in snapshot["measurements"]["scada"]
-            if row["meas_type"] not in {"WIND_SPEED", "SOLAR_IRRADIANCE"}
+            if row["meas_type"] not in {"WIND_SPEED", "SOLAR_IRRADIANCE", "AIR_TEMP"}
         ]
 
-        plan = calculate_renewable_control_plan(snapshot)
+        without_environment = calculate_renewable_control_plan(snapshot)
+        changed_snapshot = renewable_snapshot()
+        for row in changed_snapshot["measurements"]["scada"]:
+            if row["meas_type"] == "WIND_SPEED":
+                row["value"] = 70
+            elif row["meas_type"] == "SOLAR_IRRADIANCE":
+                row["value"] = 1500
+            elif row["meas_type"] == "AIR_TEMP":
+                row["value"] = 90
+        changed_environment = calculate_renewable_control_plan(changed_snapshot)
 
-        self.assertFalse(plan["weather"]["windSpeedKnown"])
-        self.assertFalse(plan["weather"]["solarIrradianceKnown"])
-        self.assertIsNone(plan["weather"]["windSpeed"])
-        self.assertIsNone(plan["weather"]["solarIrradiance"])
-        self.assertGreater(plan["metrics"]["recoveryKw"], 0)
-        self.assertTrue(any("风速未知" in warning for warning in plan["warnings"]))
-        self.assertTrue(any("太阳辐照度未知" in warning for warning in plan["warnings"]))
+        for metric in ("renewableTarget", "storageTarget", "acdcTargetKw", "dieselTargetKw"):
+            self.assertAlmostEqual(without_environment["metrics"][metric], baseline["metrics"][metric])
+            self.assertAlmostEqual(changed_environment["metrics"][metric], baseline["metrics"][metric])
+        self.assertTrue(any("默认不参与新能源控制" in warning for warning in baseline["warnings"]))
 
     def test_live_soc_ratio_above_one_is_preserved_and_blocks_charging(self):
         snapshot = renewable_snapshot()
@@ -262,17 +278,17 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         renewable_rows = [row for row in plan["commandRows"] if row["category"] in {"风电", "光伏"}]
         self.assertTrue(all(row["commandable"] is False for row in renewable_rows))
 
-    def test_known_weather_with_missing_capability_parameters_blocks_dispatch(self):
+    def test_environment_curve_parameters_do_not_block_default_recovery_strategy(self):
         snapshot = renewable_snapshot()
         snapshot["device_parameters"]["ACWindGen"][0].pop("cut_in_wind_speed")
 
         plan = calculate_renewable_control_plan(snapshot)
 
-        self.assertEqual(plan["dataQuality"]["status"], "blocked")
-        self.assertFalse(plan["dataQuality"]["dispatchAllowed"])
+        self.assertEqual(plan["dataQuality"]["status"], "ok")
+        self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
         wind = next(row for row in plan["commandRows"] if row["dev_name"] == "wind-1")
-        self.assertIsNone(wind["commandKw"])
-        self.assertTrue(any("风电wind-1" in issue and "最大可发" in issue for issue in plan["dataQuality"]["issues"]))
+        self.assertIsNotNone(wind["commandKw"])
+        self.assertFalse(any("风电wind-1" in issue and "最大可发" in issue for issue in plan["dataQuality"]["issues"]))
 
     def test_missing_converter_capacity_or_live_power_forbids_closed_loop_dispatch(self):
         missing_capacity = renewable_snapshot()

@@ -290,17 +290,52 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertIsNotNone(wind["commandKw"])
         self.assertFalse(any("风电wind-1" in issue and "最大可发" in issue for issue in plan["dataQuality"]["issues"]))
 
-    def test_missing_converter_capacity_or_live_power_forbids_closed_loop_dispatch(self):
+    def test_missing_converter_capacity_is_inferred_from_storage_power_boundary(self):
         missing_capacity = renewable_snapshot()
         converter = next(row for row in missing_capacity["devices"] if row["dev_type"] == "DCACConverter")
         converter["raw"].pop("rated_capacity")
 
         capacity_plan = calculate_renewable_control_plan(missing_capacity)
+        converter_row = next(
+            row for row in capacity_plan["commandRows"] if row["dev_type"] == "DCACConverter"
+        )
 
-        self.assertFalse(capacity_plan["dataQuality"]["dispatchAllowed"])
-        self.assertTrue(any("变流器" in issue and "容量" in issue for issue in capacity_plan["dataQuality"]["issues"]))
+        self.assertTrue(capacity_plan["dataQuality"]["dispatchAllowed"])
+        self.assertEqual(capacity_plan["dataQuality"]["status"], "ok")
+        self.assertAlmostEqual(converter_row["transferCapacityKw"], 40.0)
+        self.assertEqual(converter_row["capacitySource"], "storage_boundary")
+        self.assertFalse(any("变流器" in issue and "容量" in issue for issue in capacity_plan["dataQuality"]["issues"]))
 
+    def test_parallel_converters_share_inferred_storage_power_boundary(self):
+        snapshot = renewable_snapshot()
+        first_converter = next(row for row in snapshot["devices"] if row["dev_type"] == "DCACConverter")
+        first_converter["raw"].pop("rated_capacity")
+        snapshot["devices"].append(
+            {
+                **first_converter,
+                "dev_name": "grid-converter-2",
+                "raw": {"idx": "2", "ac_control_type": "PQ"},
+            }
+        )
+        snapshot["measurements"]["scada"].append(
+            measurement("converter-2.p", "DCACConverter", "grid-converter-2", "P_AC", 0)
+        )
+        snapshot["definitions"]["control"]["SetValue"]["rows"].append(
+            {"dev_type": "DCACConverter", "dev_name": "grid-converter-2", "set_type": "p_ac_set"}
+        )
+
+        plan = calculate_renewable_control_plan(snapshot)
+        converter_rows = [row for row in plan["commandRows"] if row["dev_type"] == "DCACConverter"]
+
+        self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
+        self.assertEqual(len(converter_rows), 2)
+        self.assertTrue(all(row["capacitySource"] == "storage_boundary" for row in converter_rows))
+        self.assertTrue(all(abs(row["transferCapacityKw"] - 20.0) < 1e-9 for row in converter_rows))
+        self.assertAlmostEqual(sum(row["commandKw"] for row in converter_rows), plan["metrics"]["acdcTargetKw"])
+
+    def test_missing_converter_live_power_forbids_closed_loop_dispatch(self):
         missing_power = renewable_snapshot()
+
         missing_power["measurements"]["scada"] = [
             row
             for row in missing_power["measurements"]["scada"]
@@ -311,6 +346,47 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
         self.assertFalse(power_plan["dataQuality"]["dispatchAllowed"])
         self.assertTrue(any("变流器" in issue and "实时有功" in issue for issue in power_plan["dataQuality"]["issues"]))
+
+    def test_scada_noise_near_rated_capacity_is_clamped_without_quality_warning(self):
+        snapshot = renewable_snapshot()
+        wind_device = next(row for row in snapshot["devices"] if row["dev_name"] == "wind-1")
+        wind_device["raw"]["rated_capacity"] = "10.1"
+        snapshot["device_parameters"]["ACWindGen"][0]["rated_power"] = 10.1
+        wind_power = next(
+            row
+            for row in snapshot["measurements"]["scada"]
+            if row["dev_name"] == "wind-1" and row["meas_type"] == "P_GEN"
+        )
+        wind_power["value"] = 10.12
+        wind_power["weight"] = 10000
+
+        plan = calculate_renewable_control_plan(snapshot)
+        wind_row = next(row for row in plan["commandRows"] if row["dev_name"] == "wind-1")
+
+        self.assertAlmostEqual(wind_row["currentKw"], 10.12)
+        self.assertAlmostEqual(wind_row["planningCurrentKw"], 10.1)
+        self.assertEqual(plan["dataQuality"]["status"], "ok")
+        self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
+        self.assertFalse(any("风电wind-1" in issue and "额定容量" in issue for issue in plan["dataQuality"]["issues"]))
+
+    def test_material_generation_overcapacity_remains_quality_warning(self):
+        snapshot = renewable_snapshot()
+        wind_device = next(row for row in snapshot["devices"] if row["dev_name"] == "wind-1")
+        wind_device["raw"]["rated_capacity"] = "10.1"
+        snapshot["device_parameters"]["ACWindGen"][0]["rated_power"] = 10.1
+        wind_power = next(
+            row
+            for row in snapshot["measurements"]["scada"]
+            if row["dev_name"] == "wind-1" and row["meas_type"] == "P_GEN"
+        )
+        wind_power["value"] = 10.5
+        wind_power["weight"] = 10000
+
+        plan = calculate_renewable_control_plan(snapshot)
+
+        self.assertEqual(plan["dataQuality"]["status"], "degraded")
+        self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
+        self.assertTrue(any("风电wind-1" in issue and "额定容量" in issue for issue in plan["dataQuality"]["issues"]))
 
     def test_unknown_environment_and_missing_live_power_blocks_dispatch(self):
         snapshot = renewable_snapshot()

@@ -22,6 +22,9 @@ from urllib.request import Request, urlopen
 
 
 EPSILON = 1e-9
+GENERATION_CAPACITY_TOLERANCE_RATIO = 0.001
+GENERATION_CAPACITY_TOLERANCE_CAP_RATIO = 0.01
+MEASUREMENT_NOISE_SIGMA_MULTIPLIER = 5.0
 POWER_CONTROL_MODES = {"P", "PQ", "PV", "ACP"}
 REMOTE_SNAPSHOT_STATIC_FIELDS = ("definitions", "settings", "device_parameters")
 
@@ -476,9 +479,19 @@ def _normalized_generation_current(
         return None, None
     current = max(0.0, measured.value)
     planning = current
-    if capacity_kw > 0 and current > capacity_kw + EPSILON:
+    if capacity_kw > 0 and current > capacity_kw:
         planning = capacity_kw
-        quality.add(f"{label}实时有功 {current:g} kW 超过额定容量 {capacity_kw:g} kW，规划值按额定容量限幅")
+        weight = _number(measured.row.get("weight"), 0.0) or 0.0
+        noise_margin = MEASUREMENT_NOISE_SIGMA_MULTIPLIER / math.sqrt(weight) if weight > 0 else 0.0
+        warning_tolerance = max(
+            EPSILON,
+            min(
+                capacity_kw * GENERATION_CAPACITY_TOLERANCE_CAP_RATIO,
+                max(capacity_kw * GENERATION_CAPACITY_TOLERANCE_RATIO, noise_margin),
+            ),
+        )
+        if current > capacity_kw + warning_tolerance:
+            quality.add(f"{label}实时有功 {current:g} kW 超过额定容量 {capacity_kw:g} kW，规划值按额定容量限幅")
     return current, planning
 
 
@@ -752,6 +765,9 @@ def _converter_rows(
             continue
         measured = _measured(measurements, "DCACConverter", _device_name(device), ("P_AC", "P_DC", "P"))
         raw = device.get("raw") if isinstance(device.get("raw"), Mapping) else {}
+        transfer_capacity = _positive(
+            (raw.get("rated_capacity"), raw.get("p_max"), raw.get("max_power"), raw.get("rated_power"))
+        )
         rows.append(
             {
                 "category": "交直流变流器",
@@ -762,13 +778,30 @@ def _converter_rows(
                 "mode": mode,
                 "set_type": set_type,
                 "currentKw": measured.value if measured else None,
-                "transferCapacityKw": _positive(
-                    (raw.get("rated_capacity"), raw.get("p_max"), raw.get("max_power"), raw.get("rated_power"))
-                ),
+                "transferCapacityKw": transfer_capacity,
+                "capacitySource": "model" if transfer_capacity > 0 else "missing",
                 "statusLabel": f"并联 {mode}",
             }
         )
     return rows
+
+
+def _resolve_converter_capacities(
+    rows: Sequence[Mapping[str, Any]],
+    storage_transfer_capacity_kw: float,
+) -> List[Dict[str, Any]]:
+    if not rows:
+        return []
+    fallback_capacity = max(0.0, storage_transfer_capacity_kw) / len(rows)
+    resolved: List[Dict[str, Any]] = []
+    for source in rows:
+        row = dict(source)
+        capacity = max(0.0, _number(row.get("transferCapacityKw"), 0.0) or 0.0)
+        if capacity <= 0 and fallback_capacity > EPSILON:
+            row["transferCapacityKw"] = fallback_capacity
+            row["capacitySource"] = "storage_boundary"
+        resolved.append(row)
+    return resolved
 
 
 def _allocate(items: Sequence[Mapping[str, Any]], total: float, capacity_key: str) -> List[float]:
@@ -927,6 +960,9 @@ def calculate_renewable_control_plan(
     storage_current = sum(finite(row.get("currentKw")) for row in measured_storage) if measured_storage else None
     known_soc = [finite(row.get("soc")) for row in online_storage if row.get("socKnown") and row.get("soc") is not None]
     storage_soc = sum(known_soc) / len(known_soc) if known_soc else None
+    raw_charge = sum(max(0.0, finite(row.get("chargePower"))) for row in online_storage)
+    raw_discharge = sum(max(0.0, finite(row.get("dischargePower"))) for row in online_storage)
+    converter_rows = _resolve_converter_capacities(converter_rows, max(raw_charge, raw_discharge))
 
     measured_converters = [row for row in converter_rows if row.get("currentKw") is not None]
     converter_current = sum(finite(row.get("currentKw")) for row in measured_converters) if measured_converters else None
@@ -934,8 +970,6 @@ def calculate_renewable_control_plan(
         quality.add("部分在线功率控制型交直流变流器缺少有效实时有功", dispatch_forbidden=True)
     if any(finite(row.get("transferCapacityKw")) <= 0 for row in converter_rows):
         quality.add("部分在线功率控制型交直流变流器缺少有效容量边界", dispatch_forbidden=True)
-    raw_charge = sum(max(0.0, finite(row.get("chargePower"))) for row in online_storage)
-    raw_discharge = sum(max(0.0, finite(row.get("dischargePower"))) for row in online_storage)
     converter_limit = _parallel_converter_limit(converter_rows)
     if online_storage and not converter_rows:
         quality.add(

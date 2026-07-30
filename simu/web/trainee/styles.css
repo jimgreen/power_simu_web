@@ -1739,6 +1739,11 @@ body.is-vertical-splitter-dragging {
   flex: 1 1 50%;
   padding: 0 8px;
 }
+.renewable-soc-limit-entry button {
+  width: 100%;
+  color: var(--teal-dark);
+  border-color: rgba(0, 140, 140, 0.34);
+}
 .renewable-metric-grid {
   flex: 1 1 auto;
   min-height: 0;
@@ -2646,6 +2651,77 @@ th {
 .receive-warning-dialog {
   width: min(680px, calc(100vw - 28px));
 }
+.converter-soc-limit-dialog {
+  width: min(620px, calc(100vw - 28px));
+  max-height: min(88vh, 760px);
+}
+.converter-soc-limit-form {
+  max-height: min(88vh, 760px);
+  display: flex;
+  flex-direction: column;
+}
+.converter-soc-limit-table {
+  min-height: 0;
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.converter-soc-limit-header,
+.converter-soc-limit-row {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(150px, 190px);
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+}
+.converter-soc-limit-header {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--line);
+  background: #f3f7f8;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.converter-soc-limit-header span:last-child {
+  text-align: right;
+}
+.converter-soc-limit-rows {
+  min-height: 0;
+  max-height: min(52vh, 440px);
+  overflow-y: auto;
+}
+.converter-soc-limit-row {
+  border-bottom: 1px solid #e8eef0;
+}
+.converter-soc-limit-row:last-child {
+  border-bottom: 0;
+}
+.converter-soc-limit-row span {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+.converter-soc-limit-row select {
+  width: 100%;
+  height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.converter-soc-limit-row.is-invalid {
+  background: #fff6f6;
+}
+.converter-soc-limit-row.is-invalid select {
+  border-color: var(--red);
+}
 .remote-control-dialog::backdrop { background: rgba(23, 42, 51, 0.42); }
 .remote-control-form { padding: 20px; }
 .remote-control-head {
@@ -3187,6 +3263,12 @@ canvas {
   }
   .renewable-actions button {
     min-width: 0;
+  }
+  .converter-soc-limit-header,
+  .converter-soc-limit-row {
+    grid-template-columns: minmax(112px, 1fr) minmax(118px, 150px);
+    gap: 8px;
+    padding-inline: 10px;
   }
   .renewable-metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

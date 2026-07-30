@@ -495,6 +495,10 @@
                     <label>SOC死区(%)
                       <input id="socDeadband" type="number" min="0" max="100" step="0.1" value="5" />
                     </label>
+                    <div class="renewable-setting-row renewable-soc-limit-entry">
+                      <span>SOC分档限额</span>
+                      <button id="converterSocLimitButton" type="button">变流器 SOC 限额</button>
+                    </div>
                   </div>
                 </div>
                 <p id="renewableControlStatus" class="renewable-status">请选择单次计算或启动实时控制。</p>
@@ -624,6 +628,31 @@
         </section>
       </main>
     </div>
+
+    <dialog id="converterSocLimitDialog" class="remote-control-dialog converter-soc-limit-dialog" aria-labelledby="converterSocLimitTitle">
+      <section class="remote-control-form converter-soc-limit-form">
+        <div class="remote-control-head">
+          <div>
+            <h2 id="converterSocLimitTitle">变流器 SOC 限额</h2>
+            <p>按储能 SOC 分段设置变流器送电功率上限</p>
+          </div>
+          <button id="converterSocLimitClose" class="dialog-close-button" type="button" aria-label="关闭变流器SOC限额窗口">×</button>
+        </div>
+        <div class="converter-soc-limit-table" role="table" aria-label="变流器SOC分段功率限额">
+          <div class="converter-soc-limit-header" role="row">
+            <span role="columnheader">SOC 范围</span>
+            <span role="columnheader">功率上限</span>
+          </div>
+          <div id="converterSocLimitRows" class="converter-soc-limit-rows" role="rowgroup"></div>
+        </div>
+        <p class="remote-control-hint">功率上限按变流器原容量计算，只能选择 10% 档位，并且必须随 SOC 单调不下降。</p>
+        <p id="converterSocLimitMessage" class="model-management-message" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button id="converterSocLimitCancel" type="button">取消</button>
+          <button id="converterSocLimitSave" class="primary" type="button">保存</button>
+        </div>
+      </section>
+    </dialog>
 
     <dialog id="modelManagementDialog" class="remote-control-dialog model-management-dialog" aria-labelledby="modelManagementTitle">
       <section class="remote-control-form">

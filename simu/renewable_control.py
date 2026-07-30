@@ -1019,6 +1019,14 @@ def calculate_renewable_control_plan(
         )
     renewable_current = sum(max(0.0, finite(row.get("currentKw"))) for row in online_renewable)
     renewable_capacity = sum(max(0.0, finite(row.get("capacityKw"))) for row in online_renewable)
+    renewable_recovery_step_request_kw = sum(
+        min(
+            max(0.0, finite(row.get("capacityKw")) - finite(row.get("planningCurrentKw"))),
+            settings.step_coefficient * max(0.0, finite(row.get("capacityKw"))),
+        )
+        for row in online_renewable
+        if row.get("commandable") and row.get("planningCurrentKw") is not None
+    )
     wind_current = sum(max(0.0, finite(row.get("currentKw"))) for row in online_renewable if row["category"] == "风电")
     pv_current = sum(max(0.0, finite(row.get("currentKw"))) for row in online_renewable if row["category"] == "光伏")
 
@@ -1197,6 +1205,49 @@ def calculate_renewable_control_plan(
         else:
             desired_storage_target = 0.0
             storage_control_action = "emergency_charge_blocked_no_diesel_headroom"
+
+    renewable_discharge_replacement_kw = 0.0
+    renewable_absorption_required_kw = 0.0
+    storage_renewable_coordination_kw = 0.0
+    renewable_storage_coordination_active = (
+        bool(converter_rows)
+        and renewable_recovery_step_request_kw > EPSILON
+        and diesel_control_region != "low"
+        and not high_soc_guard
+        and storage_soc_region != "unknown"
+    )
+    if renewable_storage_coordination_active:
+        renewable_discharge_replacement_kw = min(
+            max(0.0, storage_current_for_control),
+            renewable_recovery_step_request_kw,
+        )
+        renewable_absorption_required_kw = max(
+            0.0,
+            renewable_recovery_step_request_kw - max(0.0, diesel_down_margin),
+        )
+        requested_coordination_kw = max(
+            renewable_discharge_replacement_kw,
+            renewable_absorption_required_kw,
+        )
+        coordinated_storage_target = max(
+            storage_min_target,
+            storage_current_for_control - requested_coordination_kw,
+        )
+        if (
+            requested_coordination_kw > EPSILON
+            and desired_storage_target > coordinated_storage_target + EPSILON
+        ):
+            desired_storage_target = coordinated_storage_target
+            storage_renewable_coordination_kw = max(
+                0.0,
+                storage_current_for_control - coordinated_storage_target,
+            )
+            if storage_renewable_coordination_kw <= EPSILON:
+                storage_control_action = "hold_for_renewable_recovery"
+            elif storage_current_for_control > EPSILON:
+                storage_control_action = "reduce_discharge_for_renewable_recovery"
+            else:
+                storage_control_action = "increase_charge_for_renewable_recovery"
 
     storage_candidate_target = _clamp(desired_storage_target, storage_min_target, storage_max_target)
     storage_deadband_action = storage_control_action
@@ -1477,6 +1528,11 @@ def calculate_renewable_control_plan(
         "storageBelowLowerCount": len(storage_below_lower),
         "absorptionLimitKw": renewable_balance_limit,
         "renewableBalanceLimitKw": renewable_balance_limit,
+        "renewableRecoveryStepRequestKw": renewable_recovery_step_request_kw,
+        "renewableStorageCoordinationActive": renewable_storage_coordination_active,
+        "renewableDischargeReplacementKw": renewable_discharge_replacement_kw,
+        "renewableAbsorptionRequiredKw": renewable_absorption_required_kw,
+        "storageRenewableCoordinationKw": storage_renewable_coordination_kw,
         "renewableDeltaKw": renewable_delta,
         "renewableBalancingDeltaKw": renewable_delta,
         "renewableTarget": renewable_target,
@@ -1543,6 +1599,7 @@ def calculate_renewable_control_plan(
         f"应急充电校核：柴发上调裕度 {diesel_up_margin:.2f} kW，请求 {'是' if emergency_charge_requested or soc_below_lower_deadband else '否'}，允许 {'是' if diesel_emergency_charge_allowed else '否'}",
         f"环境策略：风速 {observed_wind_speed if observed_wind_speed is not None else '--'}、太阳辐照度 {observed_irradiance if observed_irradiance is not None else '--'}、温度 {observed_air_temperature if observed_air_temperature is not None else '--'}，均按默认策略忽略",
         f"新能源上调边界：当前 {renewable_current:.2f} + 柴发可下调裕度 {diesel_down_margin:.2f} + 储能可增加吸收裕度 {storage_current_for_control - storage_min_target:.2f} = {renewable_balance_limit:.2f} kW",
+        f"新能源储能协调：单步恢复请求 {renewable_recovery_step_request_kw:.2f} kW，替代储能放电 {renewable_discharge_replacement_kw:.2f} kW，柴发裕度不足需增加吸收 {renewable_absorption_required_kw:.2f} kW，协调目标变化 {storage_renewable_coordination_kw:.2f} kW",
         f"增量平衡：柴发目标 = 柴发当前 - 新能源候选变化量 {renewable_delta:.2f} - 储能候选变化量 {storage_delta:.2f} = {diesel_target:.2f} kW",
         f"负荷功率仅用于展示：当前 {load_kw:.2f} kW，不参与新能源、储能、变流器或柴发目标计算",
         f"新能源策略：{renewable_control_action}，单步比例 {settings.step_coefficient * 100:.2f}%，目标 {renewable_target:.2f} kW",

@@ -47,6 +47,16 @@ class TraineeRenewableDieselMetricsUiTest(unittest.TestCase):
         self.assertIn("renewableDieselMinKw", render_block)
         self.assertIn("renewableDieselTargetKw", render_block)
 
+    def test_metric_strip_shows_load_power_instead_of_renewable_curtailment(self):
+        self.assertIn('<dt>负荷功率</dt><dd id="renewableLoadKw">--</dd>', self.html)
+        self.assertNotIn('<dt>弃风弃光</dt>', self.html)
+        render_block = self.script.split("function renderRenewableControl", 1)[1].split(
+            "async function toggleRenewableAuto",
+            1,
+        )[0]
+        self.assertIn("renewableLoadKw: metricPowerText(metrics.loadKw)", render_block)
+        self.assertNotIn("renewableCurtailKw", render_block)
+
     def test_sidebar_summary_metrics_use_a_compact_two_column_layout(self):
         metric_block = self.styles.split(".renewable-metric-grid {", 1)[1].split("}", 1)[0]
         self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", metric_block)

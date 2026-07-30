@@ -5316,7 +5316,7 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     renewableStorageSoc: Number.isFinite(metrics.storageSoc) ? `${formatOverviewNumber(metrics.storageSoc * 100)}%` : "--",
     renewableAcdcCurrentKw: metricPowerText(metrics.acdcCurrentKw),
     renewableAcdcTargetKw: metricPowerText(metrics.acdcTargetKw),
-    renewableCurtailKw: `${formatNumber(metrics.curtailKw)} kW`,
+    renewableLoadKw: metricPowerText(metrics.loadKw),
     renewableLastSent: loopMode === "closed" ? control.lastSentAt || "--" : control.lastCalculatedAt || "--",
   };
   Object.entries(metricText).forEach(([id, text]) => {

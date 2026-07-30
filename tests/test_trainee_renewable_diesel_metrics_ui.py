@@ -28,12 +28,14 @@ class TraineeRenewableDieselMetricsUiTest(unittest.TestCase):
         for metric in ("dieselCurrentKw", "dieselMinKw", "dieselTargetKw", "dieselDownMarginKw"):
             self.assertIn(f'"{metric}"', planner_block)
 
-    def test_incremental_balance_uses_diesel_current_and_lower_limit_not_load(self):
+    def test_acdc_feedback_uses_diesel_current_and_lower_limit_not_load(self):
         planner_block = self.backend.split("def calculate_renewable_control_plan", 1)[1].split("def _request_json", 1)[0]
         self.assertIn("diesel_down_margin = diesel_current_for_control - diesel_min", planner_block)
-        self.assertIn("candidate_effect = renewable_delta + storage_delta", planner_block)
+        self.assertIn("candidate_effect = storage_delta", planner_block)
+        self.assertNotIn("candidate_effect = renewable_delta + storage_delta", planner_block)
         self.assertIn("predicted_diesel = diesel_current_for_control - candidate_effect", planner_block)
         self.assertIn("_diesel_boundary_violation", planner_block)
+        self.assertIn("ACDC与新能源两条策略相互独立", planner_block)
         self.assertIn("负荷功率仅用于展示", planner_block)
         self.assertNotIn("load_kw + total_charge", planner_block)
 

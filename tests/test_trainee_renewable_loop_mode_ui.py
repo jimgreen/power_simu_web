@@ -119,14 +119,14 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         self.assertIn("风速量测默认不参与新能源控制", self.backend)
         self.assertIn("太阳辐照度量测默认不参与新能源控制", self.backend)
         self.assertIn("ignored_by_control_policy", self.backend)
-        self.assertIn(
-            "converter_current_for_control - (storage_candidate_target - storage_current_for_control)",
-            self.backend,
-        )
+        self.assertIn("raw_converter_desired_target = converter_current_for_control", self.backend)
         self.assertIn(
             "_move_toward(converter_current_for_control, converter_desired_target, converter_step_kw)",
             self.backend,
         )
+        self.assertIn("candidate_effect = storage_delta", self.backend)
+        self.assertNotIn("candidate_effect = renewable_delta + storage_delta", self.backend)
+        self.assertIn("renewable_storage_coordination_active = False", self.backend)
         self.assertIn('"commandKw": converter_allocations[index]', self.backend)
         self.assertIn('"commandable": False', self.backend)
 

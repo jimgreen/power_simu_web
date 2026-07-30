@@ -1149,10 +1149,7 @@ def calculate_renewable_control_plan(
         storage_max_target = fallback_storage_target
     total_charge = max(0.0, -storage_min_target) if converter_rows else 0.0
     total_discharge = max(0.0, storage_max_target) if converter_rows else 0.0
-    renewable_balance_limit = max(
-        0.0,
-        renewable_current + diesel_down_margin + (storage_current_for_control - storage_min_target),
-    )
+    renewable_balance_limit = 0.0
     diesel_control_region = (
         "high"
         if diesel_current_for_control > diesel_min + diesel_deadband_kw
@@ -1161,158 +1158,124 @@ def calculate_renewable_control_plan(
         else "deadband"
     )
     high_soc_guard = storage_soc_region in {"high_guard", "above_upper"}
-    storage_control_action = "hold"
-    desired_storage_target = storage_current_for_control
-    storage_has_discharge_capability = (
-        storage_soc_region in {"normal", "high_guard", "above_upper"}
-        and total_discharge > EPSILON
+    soc_at_or_above_upper = (
+        storage_soc is not None
+        and storage_soc_upper_limit is not None
+        and storage_soc >= storage_soc_upper_limit - EPSILON
     )
-    if soc_above_upper_deadband:
-        desired_storage_target = storage_max_target
+    soc_at_or_below_lower = (
+        storage_soc is not None
+        and storage_soc_lower_limit is not None
+        and storage_soc <= storage_soc_lower_limit + EPSILON
+    )
+    storage_control_action = "hold"
+    converter_lower_target = -converter_limit if math.isfinite(converter_limit) else converter_current_for_control
+    converter_upper_target = converter_limit if math.isfinite(converter_limit) else converter_current_for_control
+    raw_converter_desired_target = converter_current_for_control
+    emergency_charge_requested = bool(soc_below_lower_deadband)
+    diesel_emergency_charge_allowed = (
+        emergency_charge_requested and diesel_up_margin > EPSILON
+    )
+    if not converter_rows or storage_soc is None:
+        storage_control_action = "hold"
+    elif soc_above_upper_deadband:
+        raw_converter_desired_target = converter_lower_target
         storage_control_action = "increase_discharge_above_soc_upper_deadband"
     elif soc_below_lower_deadband:
-        if diesel_up_margin > EPSILON:
-            desired_storage_target = max(storage_min_target, storage_current_for_control - diesel_up_margin)
+        if diesel_emergency_charge_allowed:
+            raw_converter_desired_target = min(
+                converter_upper_target,
+                converter_current_for_control + diesel_up_margin,
+            )
             storage_control_action = "increase_charge_below_soc_lower_deadband"
         else:
-            desired_storage_target = 0.0
             storage_control_action = "extreme_soc_charge_blocked_no_diesel_headroom"
-    elif high_soc_guard and storage_current_for_control < -EPSILON:
-        desired_storage_target = 0.0
-        storage_control_action = "reduce_charge_high_soc"
-    elif diesel_control_region == "high":
-        if storage_has_discharge_capability:
-            discharge_need = max(0.0, diesel_current_for_control - diesel_min - diesel_deadband_kw)
-            desired_storage_target = storage_current_for_control + discharge_need
-            storage_control_action = "increase_discharge"
-        elif storage_current_for_control > EPSILON:
-            desired_storage_target = 0.0
-            storage_control_action = "reduce_discharge_low_soc"
-    elif diesel_control_region == "low":
-        if storage_current_for_control > EPSILON:
-            desired_storage_target = 0.0
-            storage_control_action = "reduce_discharge_low_diesel"
-    elif storage_soc_region in {"low_guard", "below_lower"} and storage_current_for_control > EPSILON:
-        desired_storage_target = 0.0
-        storage_control_action = "reduce_discharge_low_soc"
-
-    emergency_charge_requested = (
-        storage_soc_region == "below_lower"
-        and not soc_below_lower_deadband
-        and diesel_control_region != "low"
-        and storage_current_for_control <= EPSILON
-    )
-    diesel_emergency_charge_allowed = (
-        (emergency_charge_requested or soc_below_lower_deadband)
-        and diesel_up_margin > EPSILON
-    )
-    if emergency_charge_requested:
-        if diesel_emergency_charge_allowed:
-            desired_storage_target = max(storage_min_target, storage_current_for_control - diesel_up_margin)
-            storage_control_action = "emergency_diesel_charge"
-        else:
-            desired_storage_target = 0.0
-            storage_control_action = "emergency_charge_blocked_no_diesel_headroom"
-
-    renewable_discharge_replacement_kw = 0.0
-    renewable_absorption_required_kw = 0.0
-    storage_renewable_coordination_kw = 0.0
-    renewable_storage_coordination_active = (
-        bool(converter_rows)
-        and renewable_recovery_step_request_kw > EPSILON
-        and diesel_control_region != "low"
-        and not high_soc_guard
-        and storage_soc_region != "unknown"
-    )
-    if renewable_storage_coordination_active:
-        renewable_discharge_replacement_kw = min(
-            max(0.0, storage_current_for_control),
-            renewable_recovery_step_request_kw,
-        )
-        renewable_absorption_required_kw = max(
-            0.0,
-            renewable_recovery_step_request_kw - max(0.0, diesel_down_margin),
-        )
-        requested_coordination_kw = max(
-            renewable_discharge_replacement_kw,
-            renewable_absorption_required_kw,
-        )
-        coordinated_storage_target = max(
-            storage_min_target,
-            storage_current_for_control - requested_coordination_kw,
-        )
-        if (
-            requested_coordination_kw > EPSILON
-            and desired_storage_target > coordinated_storage_target + EPSILON
-        ):
-            desired_storage_target = coordinated_storage_target
-            storage_renewable_coordination_kw = max(
-                0.0,
-                storage_current_for_control - coordinated_storage_target,
+    elif soc_at_or_above_upper:
+        if converter_current_for_control > EPSILON:
+            raw_converter_desired_target = 0.0
+            storage_control_action = "stop_charge_at_soc_upper"
+        elif diesel_control_region == "high":
+            raw_converter_desired_target = max(
+                converter_lower_target,
+                converter_current_for_control - max(0.0, diesel_down_margin),
             )
-            if storage_renewable_coordination_kw <= EPSILON:
-                storage_control_action = "hold_for_renewable_recovery"
-            elif storage_current_for_control > EPSILON:
-                storage_control_action = "reduce_discharge_for_renewable_recovery"
-            else:
-                storage_control_action = "increase_charge_for_renewable_recovery"
+            storage_control_action = "increase_discharge"
+        elif diesel_control_region == "low" and converter_current_for_control < -EPSILON:
+            raw_converter_desired_target = 0.0
+            storage_control_action = "reduce_discharge_low_diesel"
+    elif soc_at_or_below_lower:
+        if converter_current_for_control < -EPSILON:
+            raw_converter_desired_target = 0.0
+            storage_control_action = "stop_discharge_at_soc_lower"
+        elif diesel_control_region == "low":
+            raw_converter_desired_target = min(
+                converter_upper_target,
+                converter_current_for_control + diesel_up_margin,
+            )
+            storage_control_action = "increase_charge_low_diesel"
+    elif diesel_control_region == "high":
+        raw_converter_desired_target = max(
+            converter_lower_target,
+            converter_current_for_control - max(0.0, diesel_down_margin),
+        )
+        storage_control_action = "increase_discharge"
+    elif diesel_control_region == "low":
+        raw_converter_desired_target = min(
+            converter_upper_target,
+            converter_current_for_control + diesel_up_margin,
+        )
+        storage_control_action = "increase_charge_low_diesel"
 
-    storage_candidate_target = _clamp(desired_storage_target, storage_min_target, storage_max_target)
-    storage_deadband_action = storage_control_action
-
-    converter_target_unclamped = (
-        converter_current_for_control - (storage_candidate_target - storage_current_for_control)
+    raw_desired_storage_target = (
+        storage_current_for_control
+        + converter_current_for_control
+        - raw_converter_desired_target
+        if converter_rows
+        else storage_current_for_control
+    )
+    desired_storage_target = _clamp(
+        raw_desired_storage_target,
+        storage_min_target,
+        storage_max_target,
+    )
+    converter_desired_target = (
+        storage_current_for_control
+        + converter_current_for_control
+        - desired_storage_target
         if converter_rows
         else 0.0
     )
-    converter_desired_target = converter_target_unclamped
-    if math.isfinite(converter_limit):
-        converter_desired_target = _clamp(converter_desired_target, -converter_limit, converter_limit)
-    if abs(converter_desired_target - converter_target_unclamped) > 0.001:
-        quality.add("储能候选目标超出交直流变流器并联容量边界", blocked=True)
     converter_target = (
         _move_toward(converter_current_for_control, converter_desired_target, converter_step_kw)
         if converter_rows
         else 0.0
     )
-    converter_step_limited = abs(converter_target - converter_desired_target) > 0.001
     storage_target = (
         storage_current_for_control + converter_current_for_control - converter_target
         if converter_rows
         else storage_current_for_control
     )
+    storage_candidate_target = desired_storage_target
+    storage_deadband_action = storage_control_action
+    converter_step_limited = abs(converter_target - converter_desired_target) > 0.001
 
+    # The ACDC and renewable controllers are independent feedback loops. Keep
+    # the legacy metrics at zero for API compatibility, but do not use them to
+    # replace, absorb, scale, or otherwise combine the two strategies.
+    renewable_discharge_replacement_kw = 0.0
+    renewable_absorption_required_kw = 0.0
+    storage_renewable_coordination_kw = 0.0
+    renewable_storage_coordination_active = False
     high_soc_storage_balance_limit_kw = 0.0
     high_soc_storage_balance_limited = False
-    if (
-        high_soc_guard
-        and diesel_control_region == "deadband"
-        and storage_target > storage_current_for_control + EPSILON
-    ):
-        high_soc_storage_balance_limit_kw = max(
-            0.0,
-            renewable_curtail_step_request_kw + diesel_down_margin,
-        )
-        balanced_storage_target = min(
-            storage_target,
-            storage_current_for_control + high_soc_storage_balance_limit_kw,
-        )
-        if balanced_storage_target < storage_target - EPSILON:
-            storage_target = balanced_storage_target
-            converter_target = (
-                storage_current_for_control + converter_current_for_control - storage_target
-            )
-            high_soc_storage_balance_limited = True
+    high_soc_required_curtail_kw = 0.0
 
-    renewable_control_action = "hold"
-    if diesel_control_region == "low":
-        renewable_control_action = "hold_low_diesel" if storage_current_for_control > EPSILON else "curtail_low_diesel"
-    elif high_soc_guard and diesel_control_region != "high":
-        renewable_control_action = (
-            "curtail_one_step"
-            if storage_target > storage_current_for_control + EPSILON
-            else "hold_high_soc"
-        )
+    if storage_soc is None or storage_soc_upper_limit is None:
+        renewable_control_action = "hold_unknown_soc"
+    elif storage_soc < storage_soc_upper_limit - EPSILON:
+        renewable_control_action = "recover_one_step"
+    elif diesel_current_for_control <= diesel_min + diesel_deadband_kw + EPSILON:
+        renewable_control_action = "curtail_one_step_full_soc"
     else:
         renewable_control_action = "recover_one_step"
 
@@ -1327,7 +1290,7 @@ def calculate_renewable_control_plan(
         step_kw = settings.step_coefficient * capacity_kw
         if not row.get("commandable"):
             target_kw = current_kw
-        elif renewable_control_action in {"curtail_one_step", "curtail_low_diesel"}:
+        elif renewable_control_action == "curtail_one_step_full_soc":
             target_kw = max(0.0, current_kw - step_kw)
         elif renewable_control_action == "recover_one_step":
             target_kw = min(capacity_kw, current_kw + step_kw)
@@ -1338,82 +1301,13 @@ def calculate_renewable_control_plan(
     renewable_target = sum(finite(value) for value in renewable_target_by_device.values())
     renewable_delta = renewable_target - renewable_current
     storage_delta = storage_target - storage_current_for_control
-
-    high_soc_required_curtail_kw = 0.0
-    if (
-        high_soc_guard
-        and diesel_control_region == "deadband"
-        and storage_delta > EPSILON
-        and renewable_control_action == "curtail_one_step"
-    ):
-        high_soc_required_curtail_kw = max(0.0, storage_delta - diesel_down_margin)
-        proposed_curtail_kw = max(0.0, -renewable_delta)
-        if proposed_curtail_kw > EPSILON:
-            curtail_scale = _clamp(
-                high_soc_required_curtail_kw / proposed_curtail_kw,
-                0.0,
-                1.0,
-            )
-            if curtail_scale < 1.0 - EPSILON:
-                for row in online_renewable:
-                    key = (row["dev_type"], row["dev_name"])
-                    candidate_kw = renewable_target_by_device.get(key)
-                    if candidate_kw is None or not row.get("commandable"):
-                        continue
-                    current_kw = finite(row.get("currentKw"))
-                    capacity_kw = max(0.0, finite(row.get("capacityKw")))
-                    renewable_target_by_device[key] = _clamp(
-                        current_kw + (finite(candidate_kw) - current_kw) * curtail_scale,
-                        0.0,
-                        capacity_kw,
-                    )
-                renewable_target = sum(finite(value) for value in renewable_target_by_device.values())
-                renewable_delta = renewable_target - renewable_current
-        renewable_control_action = (
-            "hold_high_soc_diesel_deadband"
-            if high_soc_required_curtail_kw <= EPSILON
-            else "curtail_to_diesel_floor"
-        )
-
-    # When the diesel is currently inside its hard boundaries, trim a one-step
-    # renewable candidate rather than rejecting the whole round merely because
-    # the combined renewable/storage change would cross a diesel boundary.
     current_diesel_violation = _diesel_boundary_violation(
         diesel_current_for_control,
         diesel_min,
         diesel_capacity,
     )
-    candidate_effect = renewable_delta + storage_delta
+    candidate_effect = storage_delta
     predicted_diesel = diesel_current_for_control - candidate_effect
-    if current_diesel_violation <= 0.001:
-        minimum_effect = diesel_current_for_control - diesel_capacity if diesel_capacity > EPSILON else -math.inf
-        maximum_effect = diesel_current_for_control - diesel_min
-        constrained_effect = _clamp(candidate_effect, minimum_effect, maximum_effect)
-        required_renewable_delta = constrained_effect - storage_delta
-        can_scale_renewable = (
-            abs(renewable_delta) > EPSILON
-            and renewable_delta * required_renewable_delta >= -EPSILON
-            and abs(required_renewable_delta) <= abs(renewable_delta) + EPSILON
-        )
-        if abs(constrained_effect - candidate_effect) > 0.001 and can_scale_renewable:
-            scale = _clamp(required_renewable_delta / renewable_delta, 0.0, 1.0)
-            for row in online_renewable:
-                key = (row["dev_type"], row["dev_name"])
-                candidate_kw = renewable_target_by_device.get(key)
-                if candidate_kw is None or not row.get("commandable"):
-                    continue
-                current_kw = finite(row.get("currentKw"))
-                capacity_kw = max(0.0, finite(row.get("capacityKw")))
-                renewable_target_by_device[key] = _clamp(
-                    current_kw + (finite(candidate_kw) - current_kw) * scale,
-                    0.0,
-                    capacity_kw,
-                )
-            renewable_target = sum(finite(value) for value in renewable_target_by_device.values())
-            renewable_delta = renewable_target - renewable_current
-            candidate_effect = renewable_delta + storage_delta
-            predicted_diesel = diesel_current_for_control - candidate_effect
-
     diesel_target = max(0.0, predicted_diesel)
     diesel_residual = diesel_target
     diesel_boundary_error = diesel_target - diesel_min
@@ -1423,16 +1317,12 @@ def calculate_renewable_control_plan(
         if current_diesel_violation > 0.001
         else predicted_diesel_violation <= 0.001
     )
-    if current_diesel_violation > 0.001 and not diesel_violation_improved:
-        quality.add("本轮候选目标未缩小柴发边界偏差，已禁止闭环下发", dispatch_forbidden=True)
-        diesel_validation_status = "not_improved"
-    elif current_diesel_violation > 0.001:
-        diesel_validation_status = "improved"
-    elif predicted_diesel_violation > 0.001:
-        quality.add("本轮候选目标会使柴发越过运行边界，已禁止闭环下发", blocked=True)
-        diesel_validation_status = "out_of_bounds"
-    else:
+    if predicted_diesel_violation <= 0.001:
         diesel_validation_status = "within_bounds"
+    elif current_diesel_violation > 0.001 and diesel_violation_improved:
+        diesel_validation_status = "improved"
+    else:
+        diesel_validation_status = "feedback_pending"
     unserved_kw = 0.0
     surplus_kw = 0.0
 
@@ -1620,6 +1510,7 @@ def calculate_renewable_control_plan(
         "storageCandidateTargetKw": storage_candidate_target,
         "storagePowerCapacityKw": storage_power_capacity,
         "storageControlAction": storage_control_action,
+        "acdcControlAction": storage_control_action,
         "storageSwitchDeadbandKw": settings.storage_switch_deadband_kw,
         "storageSwitchDeadbandAction": storage_deadband_action,
         "acdcCurrentKw": converter_current,
@@ -1664,27 +1555,19 @@ def calculate_renewable_control_plan(
     }
     decision_detail = [
         f"数据来源：{_source_label(data_source)}，质量 {quality_payload['status']}，闭环下发{'允许' if quality_payload['dispatchAllowed'] else '禁止'}",
-        "控制优先级：先满足容量与SOC硬约束，再考虑柴发死区和控制步长压低柴发，并优先消纳新能源；仅在柴发无下调空间且储能需要退出充电时弃电",
+        "控制架构：ACDC与新能源两条策略相互独立，分别生成目标，不做功率增量相加、替代、吸收或联合预测",
         f"控制基准：时刻 {time_text}，新能源当前 {renewable_current:.2f} kW，柴发当前 {diesel_current_for_control:.2f} kW、下限 {diesel_min:.2f} kW",
         f"柴发分区：死区比例 {settings.diesel_deadband_ratio * 100:.2f}%（±{diesel_deadband_kw:.2f} kW），当前位于 {diesel_control_region} 区",
-        f"储能边界：当前 {storage_current_for_control:.2f} kW，允许目标 [{storage_min_target:.2f}, {storage_max_target:.2f}] kW，SOC {storage_soc * 100 if storage_soc is not None else '--'}%",
+        f"储能状态：当前 {storage_current_for_control:.2f} kW，SOC {storage_soc * 100 if storage_soc is not None else '--'}%，运行边界 [{storage_soc_lower_limit * 100 if storage_soc_lower_limit is not None else '--'}%, {storage_soc_upper_limit * 100 if storage_soc_upper_limit is not None else '--'}%]",
         f"SOC分区：下限 {storage_soc_lower_limit * 100 if storage_soc_lower_limit is not None else '--'}%，上限 {storage_soc_upper_limit * 100 if storage_soc_upper_limit is not None else '--'}%，死区 {settings.soc_deadband * 100:.2f}%，当前 {storage_soc_region}",
-        f"SOC运行约束：以model.e定义为准，达到上限 {len(storage_above_upper)} 台（禁止充电），达到下限 {len(storage_below_lower)} 台（禁止放电）",
-        f"变流边界：当前 {converter_current if converter_current is not None else '--'} kW，可控并联 {len(converter_rows)} 台，汇总限值 {converter_limit if math.isfinite(converter_limit) else '--'} kW，步长比例 {settings.converter_step_ratio * 100:.2f}%（{converter_step_kw:.2f} kW）",
-        f"应急充电校核：柴发上调裕度 {diesel_up_margin:.2f} kW，请求 {'是' if emergency_charge_requested or soc_below_lower_deadband else '否'}，允许 {'是' if diesel_emergency_charge_allowed else '否'}",
+        f"SOC运行约束：达到上限禁止充电，超过上限加死区后主动增加放电；达到下限禁止放电，低于下限减死区后主动增加充电",
         f"环境策略：风速 {observed_wind_speed if observed_wind_speed is not None else '--'}、太阳辐照度 {observed_irradiance if observed_irradiance is not None else '--'}、温度 {observed_air_temperature if observed_air_temperature is not None else '--'}，均按默认策略忽略",
-        f"新能源上调边界：当前 {renewable_current:.2f} + 柴发可下调裕度 {diesel_down_margin:.2f} + 储能可增加吸收裕度 {storage_current_for_control - storage_min_target:.2f} = {renewable_balance_limit:.2f} kW",
-        f"新能源储能协调：单步恢复请求 {renewable_recovery_step_request_kw:.2f} kW，替代储能放电 {renewable_discharge_replacement_kw:.2f} kW，柴发裕度不足需增加吸收 {renewable_absorption_required_kw:.2f} kW，协调目标变化 {storage_renewable_coordination_kw:.2f} kW",
-        f"高SOC协调：新能源单步最大弃电 {renewable_curtail_step_request_kw:.2f} kW，储能增出力平衡上限 {high_soc_storage_balance_limit_kw:.2f} kW，实际必要弃电 {high_soc_required_curtail_kw:.2f} kW，平衡限幅 {'是' if high_soc_storage_balance_limited else '否'}",
-        f"增量平衡：柴发目标 = 柴发当前 - 新能源候选变化量 {renewable_delta:.2f} - 储能候选变化量 {storage_delta:.2f} = {diesel_target:.2f} kW",
+        f"ACDC策略：只读取柴发分区与SOC分区，动作 {storage_control_action}；当前 {converter_current_for_control:.2f} kW，按步长 {converter_step_kw:.2f} kW 调整至 {converter_target:.2f} kW",
+        f"ACDC独立预估：对应储能平衡功率由 {storage_current_for_control:.2f} kW 变为 {storage_target:.2f} kW，柴发反馈参考值 {diesel_target:.2f} kW；该值不叠加新能源动作",
+        f"新能源策略：只按SOC决定恢复，电池未满时按单机容量步长恢复；仅在SOC达到上限且柴发进入下限死区时弃电，本轮动作 {renewable_control_action}",
+        f"新能源目标：当前 {renewable_current:.2f} kW，单步比例 {settings.step_coefficient * 100:.2f}%，目标 {renewable_target:.2f} kW",
         f"负荷功率仅用于展示：当前 {load_kw:.2f} kW，不参与新能源、储能、变流器或柴发目标计算",
-        f"新能源策略：{renewable_control_action}，单步比例 {settings.step_coefficient * 100:.2f}%，目标 {renewable_target:.2f} kW",
-        f"恢复策略：新能源恢复或弃电均按单机容量步长执行，本轮动作 {renewable_control_action}",
-        f"储能状态机：储能本体无控制步长，当前 {storage_current_for_control:.2f} kW，动作 {storage_control_action}，候选 {storage_candidate_target:.2f} kW，变流执行后目标 {storage_target:.2f} kW",
-        f"储能协调：当前值 {storage_current if storage_current is not None else '--'} kW，SOC {storage_soc * 100 if storage_soc is not None else '--'}%，目标 {storage_target:.2f} kW",
-        f"ACDC变流：候选 {converter_desired_target:.2f} kW，从当前 {converter_current_for_control:.2f} kW 按单步 {converter_step_kw:.2f} kW 调整至 {converter_target:.2f} kW，并联运行 {len(converter_rows)} 台",
-        f"统一候选校核：容量/SOC/变流器边界已限幅，柴发当前偏差 {current_diesel_violation:.2f} kW、预测偏差 {predicted_diesel_violation:.2f} kW，结果 {diesel_validation_status}",
-        f"预期结果：新能源目标 {renewable_target:.2f} kW，柴油目标 {diesel_target:.2f} kW，弃风弃光 {curtail_kw:.2f} kW",
+        f"独立边界检查：ACDC目标已按并联容量、SOC充放电方向和变流器步长限幅；新能源目标仅按设备容量和新能源步长限幅",
         *[f"数据告警：{issue}" for issue in quality_payload["issues"]],
     ]
     return {

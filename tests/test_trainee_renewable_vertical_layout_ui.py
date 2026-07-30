@@ -83,15 +83,21 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
         self.assertIn("function renderRenewableControlLogs", self.script)
         self.assertIn("state.renewableControl.logs", self.script)
         for label in (
+            "控制架构",
             "控制基准",
+            "柴发分区",
+            "SOC分区",
+            "SOC运行约束",
             "环境策略",
-            "新能源上调边界",
-            "增量平衡",
+            "ACDC策略",
+            "ACDC独立预估",
+            "新能源策略",
+            "新能源目标",
             "负荷功率仅用于展示",
-            "恢复策略",
-            "预期结果",
+            "独立边界检查",
         ):
             self.assertIn(label, backend)
+        self.assertNotIn("增量平衡", backend)
 
     def test_strategy_and_tabbed_detail_area_reuse_the_persisted_split_ratio_system(self):
         self.assertIn('"trainee-renewable": 44', self.script)

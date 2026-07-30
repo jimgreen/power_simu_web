@@ -86,11 +86,11 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("function renderActiveCommandPreview", self.script)
         self.assertIn("activeCommandHistory(snapshot)", self.script)
         self.assertIn("遥控 · ${remoteControlLabel(commandType)}", self.script)
-        self.assertIn("遥调 · ${remoteAdjustmentTypeLabel(item.set_type || \"\")}", self.script)
+        self.assertIn("遥调 · ${remoteAdjustmentTypeLabel(setType)}", self.script)
         self.assertIn("actual_value", self.script)
         self.assertIn('wall_time: timeInfo.wall_time || "--"', self.script)
-        self.assertIn("snapshotDevice(item.dev_type || \"\", item.dev_name || \"\", snapshot)", self.script)
-        self.assertIn("remoteAdjustmentMeasurement(liveDev, item.set_type || \"\", snapshot)", self.script)
+        self.assertIn("snapshotDevice(devType, devName, snapshot)", self.script)
+        self.assertIn("remoteAdjustmentMeasurement(liveDev, setType, snapshot)", self.script)
         self.assertIn('class="active-command-preview-wrap"', self.html)
         self.assertIn('class="active-command-preview-table"', self.script)
         for column in ("下发本机时刻", "设备", "指令", "指令值", "实时值", "仿真时刻"):
@@ -103,6 +103,25 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertNotIn('<div class="log-item">\\n      <strong>${escapeHtml(item.name)}</strong>', self.script)
         self.assertIn("暂无当前有效指令", self.script)
         self.assertIn("renderActiveCommandPreview();", self.script)
+
+    def test_trainee_home_only_shows_latest_value_for_each_active_command_point(self):
+        row_builder = self.script.split("function activeCommandPreviewRows", 1)[1].split(
+            "function renderActiveCommandPreview",
+            1,
+        )[0]
+        renderer = self.script.split("function renderActiveCommandPreview", 1)[1].split(
+            "function updatePendingCount",
+            1,
+        )[0]
+
+        self.assertIn("const seenCommandKeys = new Set();", row_builder)
+        self.assertIn("[...activeCommandHistory(snapshot)].reverse()", row_builder)
+        self.assertIn('["remote_control", devType, devName, commandType].join("|")', row_builder)
+        self.assertIn('["remote_adjustment", devType, devName, setType].join("|")', row_builder)
+        self.assertIn("seenCommandKeys.has(commandKey)", row_builder)
+        self.assertIn("seenCommandKeys.add(commandKey)", row_builder)
+        self.assertNotIn("rows.slice(0, 12)", renderer)
+        self.assertIn("${rows.map((item) => `", renderer)
 
     def test_trainee_home_renders_received_power_flow_and_status(self):
         for helper in (

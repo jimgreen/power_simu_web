@@ -7548,6 +7548,7 @@ function clearTraineeRuntimeLogs() {
 
 function activeCommandPreviewRows(snapshot = state.snapshot || {}) {
   const rows = [];
+  const seenCommandKeys = new Set();
   [...activeCommandHistory(snapshot)].reverse().forEach((entry) => {
     const timeInfo = commandSentTimeInfo(entry, snapshot);
     const normalized = entry.normalized || {};
@@ -7559,11 +7560,17 @@ function activeCommandPreviewRows(snapshot = state.snapshot || {}) {
       const commandType = isStatus ? "status" : "run_stat";
       const value = isStatus ? item.status : item.run_stat;
       if (value === undefined || value === "") return;
-      const liveDev = snapshotDevice(item.dev_type || "", item.dev_name || "", snapshot) || {};
+      const devType = String(item.dev_type || "").trim();
+      const devName = String(item.dev_name || item.name || "").trim();
+      if (!devType || !devName) return;
+      const commandKey = ["remote_control", devType, devName, commandType].join("|");
+      if (seenCommandKeys.has(commandKey)) return;
+      seenCommandKeys.add(commandKey);
+      const liveDev = snapshotDevice(devType, devName, snapshot) || {};
       const actualValue = isStatus ? liveDev.status : liveDev.run_stat;
       rows.push({
         type: `遥控 · ${remoteControlLabel(commandType)}`,
-        name: item.dev_name || item.name || "--",
+        name: devName,
         value: remoteControlValueText(commandType, value),
         actual_value: actualValue === undefined || actualValue === ""
           ? "--"
@@ -7574,12 +7581,19 @@ function activeCommandPreviewRows(snapshot = state.snapshot || {}) {
     });
     setItems.forEach((item) => {
       if (!item || typeof item !== "object") return;
-      const liveDev = snapshotDevice(item.dev_type || "", item.dev_name || "", snapshot)
-        || { dev_type: item.dev_type || "", dev_name: item.dev_name || "" };
-      const actualValue = remoteAdjustmentMeasurement(liveDev, item.set_type || "", snapshot);
+      const devType = String(item.dev_type || "").trim();
+      const devName = String(item.dev_name || item.name || "").trim();
+      const setType = String(item.set_type || "").trim();
+      if (!devType || !devName || !setType || item.set_value === undefined || item.set_value === "") return;
+      const commandKey = ["remote_adjustment", devType, devName, setType].join("|");
+      if (seenCommandKeys.has(commandKey)) return;
+      seenCommandKeys.add(commandKey);
+      const liveDev = snapshotDevice(devType, devName, snapshot)
+        || { dev_type: devType, dev_name: devName };
+      const actualValue = remoteAdjustmentMeasurement(liveDev, setType, snapshot);
       rows.push({
-        type: `遥调 · ${remoteAdjustmentTypeLabel(item.set_type || "")}`,
-        name: item.dev_name || item.name || "--",
+        type: `遥调 · ${remoteAdjustmentTypeLabel(setType)}`,
+        name: devName,
         value: formatNumber(item.set_value),
         actual_value: formatRemoteAdjustmentValue(actualValue),
         wall_time: timeInfo.wall_time || "--",
@@ -7609,7 +7623,7 @@ function renderActiveCommandPreview(snapshot = state.snapshot || {}) {
         </tr>
       </thead>
       <tbody>
-        ${rows.slice(0, 12).map((item) => `
+        ${rows.map((item) => `
           <tr>
             <td title="${escapeHtml(item.wall_time)}">${escapeHtml(item.wall_time)}</td>
             <td title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</td>

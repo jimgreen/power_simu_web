@@ -120,6 +120,28 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
             self.assertIn(f'id="{element_id}"', self.html)
         self.assertIn("renderTraineeOverviewDashboard(snapshot);", self.script)
 
+    def test_trainee_home_prefers_signed_structured_realtime_power_summary(self):
+        parser = self.script.split("function parsePowerFlowOverview(snapshot) {", 1)[1].split(
+            "function formatOverviewNumber",
+            1,
+        )[0]
+
+        self.assertIn("snapshot.power_summary", parser)
+        self.assertIn("powerSummaryNumber", parser)
+        self.assertIn('source: String(summary.source || "")', parser)
+        self.assertIn('wind: powerSummaryNumber(summary.wind)', parser)
+        self.assertIn('storage: powerSummaryNumber(summary.storage)', parser)
+        self.assertIn('const log = latestRuntimeLog(snapshot, "潮流计算")', parser)
+        self.assertNotIn("Math.abs", parser)
+        self.assertNotIn("Math.max", parser)
+        self.assertNotIn("Math.min", parser)
+
+        renderer = self.script.split("function renderTraineeOverviewDashboard(snapshot) {", 1)[1].split(
+            "function renderActiveTraineePage",
+            1,
+        )[0]
+        self.assertIn("Number.isFinite(power.storage)", renderer)
+
     def test_trainee_home_status_strip_hides_redundant_model_refresh_and_solver_items(self):
         status_strip = self.html.split('<dl class="overview-status-metrics trainee-status-metrics">', 1)[1].split("</dl>", 1)[0]
 

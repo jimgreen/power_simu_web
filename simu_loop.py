@@ -2001,7 +2001,7 @@ def _measurement_value(
             value = snapshot.value(dev_type, dev_name, terminal_meas_type)
             number = _safe_float(value, None)
             if number is not None:
-                return abs(number)
+                return number
         return None
     if dev_type in ("ESS", "Storage"):
         if meas_type == "SOC":

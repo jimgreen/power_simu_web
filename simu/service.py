@@ -2467,12 +2467,12 @@ class PolarMicrogridSimulator:
                 return values[meas_type]
         return None
 
-    def _power_flow_summary_lines(self, real_measurements: Sequence[Mapping[str, Any]]) -> List[str]:
+    def _power_flow_summary(self, realtime_measurements: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
         category_names = self._device_category_names()
         power_by_device: Dict[Tuple[str, str], Dict[str, float]] = {}
         soc_by_storage: Dict[str, float] = {}
 
-        for item in real_measurements:
+        for item in realtime_measurements:
             if int(_to_float(item.get("valid"), 1) or 0) != 1:
                 continue
             dev_type = str(item.get("dev_type", ""))
@@ -2496,38 +2496,94 @@ class PolarMicrogridSimulator:
         counts = {"wind": 0, "pv": 0, "diesel": 0, "load": 0, "storage": 0}
         storage_generation = 0.0
         storage_charge = 0.0
+        storage_total = 0.0
         for (category, _dev_name), values in power_by_device.items():
             power = self._preferred_power_value(category, values)
             if power is None:
                 continue
             counts[category] += 1
             if category == "storage":
+                storage_total += power
                 if power >= 0.0:
                     storage_generation += power
                 else:
                     storage_charge += -power
             else:
-                totals[category] += abs(power)
+                totals[category] += power
 
         soc_values = list(soc_by_storage.values())
         soc_average = sum(soc_values) / len(soc_values) if soc_values else None
         soc_total = sum(soc_values)
-        soc_text = (
-            f"储能SOC 平均 {format_number(soc_average * 100.0)}%，储能总SOC {format_number(soc_total)}，台数 {len(soc_values)}"
-            if soc_average is not None
-            else "储能SOC 平均 --，储能总SOC --，台数 0"
-        )
+        has_power = any(counts.values())
         generation_total = totals["wind"] + totals["pv"] + totals["diesel"] + storage_generation
         consumption_total = totals["load"] + storage_charge
         power_difference = generation_total - consumption_total
+        return {
+            "wind": totals["wind"] if counts["wind"] else None,
+            "solar": totals["pv"] if counts["pv"] else None,
+            "diesel": totals["diesel"] if counts["diesel"] else None,
+            "load": totals["load"] if counts["load"] else None,
+            "storage": storage_total if counts["storage"] else None,
+            "storageDischarge": storage_generation if counts["storage"] else None,
+            "storageCharge": storage_charge if counts["storage"] else None,
+            "soc": soc_average * 100.0 if soc_average is not None else None,
+            "socTotal": soc_total if soc_values else None,
+            "generation": generation_total if has_power else None,
+            "consumption": consumption_total if has_power else None,
+            "balance": power_difference if has_power else None,
+            "counts": {
+                "wind": counts["wind"],
+                "solar": counts["pv"],
+                "diesel": counts["diesel"],
+                "load": counts["load"],
+                "storage": counts["storage"],
+                "soc": len(soc_values),
+            },
+        }
+
+    def _latest_power_summary(
+        self,
+        measurements: Mapping[str, Sequence[Mapping[str, Any]]],
+    ) -> Dict[str, Any]:
+        empty_summary = self._power_flow_summary([])
+        for source in ("scada", "real"):
+            rows = measurements.get(source, [])
+            if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+                continue
+            summary = self._power_flow_summary(rows)
+            if any(summary["counts"].values()):
+                return {"source": source, **summary}
+        return {"source": "", **empty_summary}
+
+    def _power_flow_summary_lines(self, real_measurements: Sequence[Mapping[str, Any]]) -> List[str]:
+        summary = self._power_flow_summary(real_measurements)
+        counts = summary["counts"]
+        wind = summary["wind"] if summary["wind"] is not None else 0.0
+        solar = summary["solar"] if summary["solar"] is not None else 0.0
+        diesel = summary["diesel"] if summary["diesel"] is not None else 0.0
+        load = summary["load"] if summary["load"] is not None else 0.0
+        storage_generation = (
+            summary["storageDischarge"] if summary["storageDischarge"] is not None else 0.0
+        )
+        storage_charge = summary["storageCharge"] if summary["storageCharge"] is not None else 0.0
+        soc_average = summary["soc"]
+        soc_total = summary["socTotal"]
+        soc_text = (
+            f"储能SOC 平均 {format_number(soc_average)}%，储能总SOC {format_number(soc_total)}，台数 {counts['soc']}"
+            if soc_average is not None
+            else "储能SOC 平均 --，储能总SOC --，台数 0"
+        )
+        generation_total = summary["generation"] if summary["generation"] is not None else 0.0
+        consumption_total = summary["consumption"] if summary["consumption"] is not None else 0.0
+        power_difference = summary["balance"] if summary["balance"] is not None else 0.0
         return [
             (
-                f"分类统计 风力发电总功率 {format_number(totals['wind'])} kW（{counts['wind']} 台），"
-                f"光伏发电总功率 {format_number(totals['pv'])} kW（{counts['pv']} 台）"
+                f"分类统计 风力发电总功率 {format_number(wind)} kW（{counts['wind']} 台），"
+                f"光伏发电总功率 {format_number(solar)} kW（{counts['solar']} 台）"
             ),
             (
-                f"分类统计 柴油发电总功率 {format_number(totals['diesel'])} kW（{counts['diesel']} 台），"
-                f"负荷用电总功率 {format_number(totals['load'])} kW（{counts['load']} 个）"
+                f"分类统计 柴油发电总功率 {format_number(diesel)} kW（{counts['diesel']} 台），"
+                f"负荷用电总功率 {format_number(load)} kW（{counts['load']} 个）"
             ),
             (
                 f"分类统计 储能发电总功率 {format_number(storage_generation)} kW，"
@@ -4439,6 +4495,7 @@ class PolarMicrogridSimulator:
             "curve_boundary": self.curve_boundary(),
             "result": self.latest_result,
             "summary": self._summary(summary_measurements),
+            "power_summary": self._latest_power_summary(summary_measurements),
         }
         if include_commands:
             snapshot["commands"] = {"history": self.command_history[-50:]}

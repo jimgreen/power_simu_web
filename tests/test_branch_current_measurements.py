@@ -12,10 +12,10 @@ class BranchCurrentMeasurementsTest(unittest.TestCase):
             dc_devices = {"DCBreak": {"dc_break": object()}}
 
             values = {
-                ("ACBranch", "ac_line", "I_FROM"): 12.34,
-                ("ACBreak", "ac_break", "I_FROM"): 5.67,
-                ("DCBranch", "dc_line", "I_FROM"): 8.9,
-                ("DCBreak", "dc_break", "I_FROM"): 1.23,
+                ("ACBranch", "ac_line", "I_FROM"): -12.34,
+                ("ACBreak", "ac_break", "I_FROM"): -5.67,
+                ("DCBranch", "dc_line", "I_FROM"): -8.9,
+                ("DCBreak", "dc_break", "I_FROM"): -1.23,
             }
 
             def value(self, dev_type, dev_name, meas_type):
@@ -41,7 +41,7 @@ class BranchCurrentMeasurementsTest(unittest.TestCase):
 
         self.assertEqual(updated, 4)
         self.assertEqual(missing, 0)
-        self.assertEqual([float(row[7]) for row in rows], [12.34, 5.67, 8.9, 1.23])
+        self.assertEqual([float(row[7]) for row in rows], [-12.34, -5.67, -8.9, -1.23])
 
 
 if __name__ == "__main__":

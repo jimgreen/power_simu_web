@@ -224,6 +224,44 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertEqual(plan["dataQuality"]["status"], "ok")
         self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
 
+    def test_signed_realtime_power_values_are_preserved_for_every_control_category(self):
+        snapshot = renewable_snapshot()
+        signed_values = {
+            ("wind-1", "P_GEN"): -3.0,
+            ("pv-1", "P_GEN"): -4.0,
+            ("storage-1", "P_GEN"): -5.0,
+            ("diesel-1", "P_GEN"): -6.0,
+            ("grid-converter-1", "P_AC"): -8.0,
+            ("load-1", "P_LOAD"): -7.0,
+        }
+        for row in snapshot["measurements"]["scada"]:
+            key = (row["dev_name"], row["meas_type"])
+            if key in signed_values:
+                row["value"] = signed_values[key]
+
+        plan = calculate_renewable_control_plan(snapshot)
+        metrics = plan["metrics"]
+
+        self.assertAlmostEqual(metrics["windCurrentKw"], -3.0)
+        self.assertAlmostEqual(metrics["pvCurrentKw"], -4.0)
+        self.assertAlmostEqual(metrics["renewableCurrentKw"], -7.0)
+        self.assertAlmostEqual(metrics["dieselCurrentKw"], -6.0)
+        self.assertAlmostEqual(metrics["storageCurrentKw"], -5.0)
+        self.assertAlmostEqual(metrics["acdcCurrentKw"], -8.0)
+        self.assertAlmostEqual(metrics["loadKw"], -7.0)
+        self.assertLess(metrics["dieselTargetKw"], 0.0)
+
+        current_by_category = {
+            row["category"]: row.get("currentKw")
+            for row in plan["commandRows"]
+            if row.get("category") in {"风电", "光伏", "储能平衡源", "柴油发电", "交直流变流器"}
+        }
+        self.assertAlmostEqual(current_by_category["风电"], -3.0)
+        self.assertAlmostEqual(current_by_category["光伏"], -4.0)
+        self.assertAlmostEqual(current_by_category["储能平衡源"], -5.0)
+        self.assertAlmostEqual(current_by_category["柴油发电"], -6.0)
+        self.assertAlmostEqual(current_by_category["交直流变流器"], -8.0)
+
     def test_environment_presence_or_value_does_not_change_control_targets(self):
         baseline = calculate_renewable_control_plan(renewable_snapshot())
         snapshot = renewable_snapshot()
@@ -993,6 +1031,65 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
 
 class RenewableControlBackendApiTest(unittest.TestCase):
+    def test_control_parameters_and_loop_mode_reload_from_model_runtime(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root = root / "source"
+            model_root = source_root / "shared"
+            model_root.mkdir(parents=True)
+            for source in SIMPLE_MODEL_SOURCE.iterdir():
+                if source.is_file():
+                    (model_root / source.name).write_bytes(source.read_bytes())
+            spec = SimulationModelSpec("shared", model_root, "Shared")
+            runtime_root = root / "runtime"
+
+            services = MultiModelSimulator(
+                [spec],
+                runtime_dir=runtime_root,
+                models_root=source_root,
+                kernel=lambda _config: None,
+            )
+            manager = TraineeRenewableControlManager(services, start_worker=False)
+            try:
+                manager.apply_action(
+                    "shared",
+                    {
+                        "action": "update_settings",
+                        "settings": {
+                            "intervalSeconds": 1,
+                            "renewableStepRatio": 0.10,
+                            "converterStepRatio": 0.05,
+                            "dieselDeadbandRatio": 0.04,
+                            "socDeadband": 0.05,
+                        },
+                    },
+                )
+                manager.apply_action("shared", {"action": "set_loop_mode", "loop_mode": "closed"})
+                persistence_file = services.service_for("shared").runtime_dir / "renewable_control.json"
+                self.assertTrue(persistence_file.exists())
+            finally:
+                manager.close()
+
+            reloaded_services = MultiModelSimulator(
+                [spec],
+                runtime_dir=runtime_root,
+                models_root=source_root,
+                kernel=lambda _config: None,
+            )
+            reloaded_manager = TraineeRenewableControlManager(reloaded_services, start_worker=False)
+            try:
+                state = reloaded_manager.state("shared")
+            finally:
+                reloaded_manager.close()
+
+        self.assertFalse(state["enabled"])
+        self.assertEqual(state["loopMode"], "closed")
+        self.assertEqual(state["settings"]["intervalSeconds"], 1.0)
+        self.assertEqual(state["settings"]["renewableStepRatio"], 0.10)
+        self.assertEqual(state["settings"]["converterStepRatio"], 0.05)
+        self.assertEqual(state["settings"]["dieselDeadbandRatio"], 0.04)
+        self.assertEqual(state["settings"]["socDeadband"], 0.05)
+
     def test_two_web_clients_read_and_operate_one_shared_backend_controller(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -109,6 +109,29 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("renderOverviewDashboard", app_js)
         self.assertIn("parsePowerFlowOverview", app_js)
 
+    def test_overview_prefers_signed_structured_realtime_power_summary(self):
+        app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        parser = app_js.split("function parsePowerFlowOverview(snapshot) {", 1)[1].split(
+            "function overviewCurveBoundary",
+            1,
+        )[0]
+
+        self.assertIn("snapshot.power_summary", parser)
+        self.assertIn("powerSummaryNumber", parser)
+        self.assertIn('source: String(summary.source || "")', parser)
+        self.assertIn('wind: powerSummaryNumber(summary.wind)', parser)
+        self.assertIn('storage: powerSummaryNumber(summary.storage)', parser)
+        self.assertIn('const log = latestRuntimeLog(snapshot, "潮流计算")', parser)
+        self.assertNotIn("Math.abs", parser)
+        self.assertNotIn("Math.max", parser)
+        self.assertNotIn("Math.min", parser)
+
+        renderer = app_js.split("function renderOverviewDashboard(snapshot) {", 1)[1].split(
+            "function renderActiveSimulatorPage",
+            1,
+        )[0]
+        self.assertIn("Number.isFinite(power.storage)", renderer)
+
     def test_overview_active_command_table_keeps_command_item_text_visible(self):
         styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
         app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")

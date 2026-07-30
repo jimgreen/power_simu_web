@@ -15,6 +15,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
@@ -27,6 +28,7 @@ GENERATION_CAPACITY_TOLERANCE_CAP_RATIO = 0.01
 MEASUREMENT_NOISE_SIGMA_MULTIPLIER = 5.0
 POWER_CONTROL_MODES = {"P", "PQ", "PV", "ACP"}
 REMOTE_SNAPSHOT_STATIC_FIELDS = ("definitions", "settings", "device_parameters")
+RENEWABLE_CONTROL_STATE_FILE = "renewable_control.json"
 
 
 def _now_text() -> str:
@@ -449,9 +451,9 @@ def _load_boundary(
             _device_name(device),
             ("P_LOAD", "P", "P_AC", "P_DC"),
         )
-        if measured is None or measured.value < -EPSILON:
+        if measured is None:
             continue
-        total += max(0.0, measured.value)
+        total += measured.value
         measured_count += 1
         sources.add(measured.source)
     if measured_count:
@@ -494,10 +496,9 @@ def _normalized_generation_current(
 ) -> Tuple[Optional[float], Optional[float]]:
     if measured is None:
         return None, None
-    current = max(0.0, measured.value)
-    planning = current
+    current = measured.value
+    planning = _clamp(current, 0.0, capacity_kw) if capacity_kw > 0 else current
     if capacity_kw > 0 and current > capacity_kw:
-        planning = capacity_kw
         weight = _number(measured.row.get("weight"), 0.0) or 0.0
         noise_margin = MEASUREMENT_NOISE_SIGMA_MULTIPLIER / math.sqrt(weight) if weight > 0 else 0.0
         warning_tolerance = max(
@@ -660,7 +661,7 @@ def _diesel_rows(
         )
         minimum = min(defined_min, capacity) if online and capacity > 0 else defined_min if online else 0.0
         measured = _measured(measurements, "ACGenerator", name, ("P_GEN", "P")) if online else None
-        current = max(0.0, measured.value) if measured else None
+        current = measured.value if measured else None
         set_type = _preferred_set_type(snapshot, device, ("p_set", "p_ac_set"))
         rows.append(
             {
@@ -1017,7 +1018,7 @@ def calculate_renewable_control_plan(
             f"{row['category']}{row['dev_name']}缺少计算最大可发所需的有效模型参数",
             blocked=True,
         )
-    renewable_current = sum(max(0.0, finite(row.get("currentKw"))) for row in online_renewable)
+    renewable_current = sum(finite(row.get("currentKw")) for row in online_renewable)
     renewable_capacity = sum(max(0.0, finite(row.get("capacityKw"))) for row in online_renewable)
     renewable_recovery_step_request_kw = sum(
         min(
@@ -1035,12 +1036,12 @@ def calculate_renewable_control_plan(
         for row in online_renewable
         if row.get("commandable") and row.get("planningCurrentKw") is not None
     )
-    wind_current = sum(max(0.0, finite(row.get("currentKw"))) for row in online_renewable if row["category"] == "风电")
-    pv_current = sum(max(0.0, finite(row.get("currentKw"))) for row in online_renewable if row["category"] == "光伏")
+    wind_current = sum(finite(row.get("currentKw")) for row in online_renewable if row["category"] == "风电")
+    pv_current = sum(finite(row.get("currentKw")) for row in online_renewable if row["category"] == "光伏")
 
     online_diesel = [row for row in diesel_rows if row["online"]]
     measured_diesel = [row for row in online_diesel if row.get("currentKw") is not None]
-    diesel_current = sum(max(0.0, finite(row.get("currentKw"))) for row in measured_diesel) if measured_diesel else None
+    diesel_current = sum(finite(row.get("currentKw")) for row in measured_diesel) if measured_diesel else None
     diesel_min = sum(max(0.0, finite(row.get("minKw"))) for row in online_diesel)
     diesel_capacity = sum(max(0.0, finite(row.get("capacityKw"))) for row in online_diesel)
     diesel_deadband_kw = settings.diesel_deadband_ratio * diesel_capacity
@@ -1308,7 +1309,7 @@ def calculate_renewable_control_plan(
     )
     candidate_effect = storage_delta
     predicted_diesel = diesel_current_for_control - candidate_effect
-    diesel_target = max(0.0, predicted_diesel)
+    diesel_target = predicted_diesel
     diesel_residual = diesel_target
     diesel_boundary_error = diesel_target - diesel_min
     predicted_diesel_violation = _diesel_boundary_violation(diesel_target, diesel_min, diesel_capacity)
@@ -1700,10 +1701,64 @@ class TraineeRenewableControlManager:
         service = self._service_for(model_id)
         return str(getattr(service, "model_id", model_id or "default"))
 
+    def _persistence_path(self, model_id: Optional[str]) -> Optional[Path]:
+        target = self._service_for(model_id)
+        runtime_dir = getattr(target, "runtime_dir", None)
+        return Path(runtime_dir) / RENEWABLE_CONTROL_STATE_FILE if runtime_dir else None
+
+    def _load_configuration(self, model_id: Optional[str]) -> Tuple[RenewableControlSettings, str]:
+        path = self._persistence_path(model_id)
+        if path is None or not path.exists():
+            return RenewableControlSettings(), "open"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return RenewableControlSettings(), "open"
+        if not isinstance(payload, Mapping):
+            return RenewableControlSettings(), "open"
+        settings_payload = payload.get("settings")
+        settings = RenewableControlSettings().updated(
+            settings_payload if isinstance(settings_payload, Mapping) else payload
+        )
+        loop_mode = "closed" if str(payload.get("loopMode", payload.get("loop_mode", "open"))).lower() == "closed" else "open"
+        return settings, loop_mode
+
+    def _persist_configuration(
+        self,
+        model_id: Optional[str],
+        settings: RenewableControlSettings,
+        loop_mode: str,
+    ) -> None:
+        path = self._persistence_path(model_id)
+        if path is None:
+            raise RuntimeError("当前模型没有可用的运行目录，无法持久化新能源控制参数")
+        payload = {
+            "version": 1,
+            "modelId": self._model_id(model_id),
+            "loopMode": "closed" if loop_mode == "closed" else "open",
+            "settings": settings.payload(),
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        try:
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(path)
+        except OSError as exc:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise RuntimeError(f"新能源控制参数持久化失败：{exc}") from exc
+
     def _state_for(self, model_id: Optional[str]) -> _ControllerState:
         normalized = self._model_id(model_id)
         with self._states_lock:
-            return self._states.setdefault(normalized, _ControllerState(normalized))
+            state = self._states.get(normalized)
+            if state is None:
+                settings, loop_mode = self._load_configuration(normalized)
+                state = _ControllerState(normalized, settings=settings, loop_mode=loop_mode)
+                self._states[normalized] = state
+            return state
 
     @staticmethod
     def _connection(target: Any) -> Optional[Dict[str, str]]:
@@ -2033,14 +2088,17 @@ class TraineeRenewableControlManager:
         settings_payload = payload.get("settings") if isinstance(payload.get("settings"), Mapping) else payload
         if action in {"update_settings", "settings"}:
             with state.lock:
-                state.settings = state.settings.updated(settings_payload)
-                state.status = "新能源实时控制参数已由后台统一更新。"
+                next_settings = state.settings.updated(settings_payload)
+                self._persist_configuration(state.model_id, next_settings, state.loop_mode)
+                state.settings = next_settings
+                state.status = "新能源实时控制参数已更新并持久化。"
                 state.revision += 1
             return self._serialize(state)
         if action in {"set_loop_mode", "loop_mode"}:
             next_mode = "closed" if str(payload.get("loop_mode", payload.get("loopMode", "open"))).lower() == "closed" else "open"
             with state.lock:
                 previous = state.loop_mode
+                self._persist_configuration(state.model_id, state.settings, next_mode)
                 state.loop_mode = next_mode
                 state.status = "闭环模式已启用，后续策略由后台下发执行。" if next_mode == "closed" else "开环模式已启用，后台只计算并记录日志。"
                 self._append_log(state, "策略控制", "方式切换", f"{previous} -> {next_mode}；{state.status}", simu_time=state.last_plan.get("time", "--") if state.last_plan else "--")

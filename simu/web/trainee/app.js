@@ -3436,7 +3436,30 @@ function storageSocPercentFromText(text) {
   return average <= 1 ? average * 100 : average;
 }
 
+function powerSummaryNumber(value) {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function parsePowerFlowOverview(snapshot) {
+  const summary = snapshot.power_summary && typeof snapshot.power_summary === "object"
+    ? snapshot.power_summary
+    : {};
+  const structured = {
+    source: String(summary.source || ""),
+    wind: powerSummaryNumber(summary.wind),
+    solar: powerSummaryNumber(summary.solar),
+    diesel: powerSummaryNumber(summary.diesel),
+    load: powerSummaryNumber(summary.load),
+    storage: powerSummaryNumber(summary.storage),
+    storageDischarge: powerSummaryNumber(summary.storageDischarge),
+    storageCharge: powerSummaryNumber(summary.storageCharge),
+    soc: powerSummaryNumber(summary.soc),
+    generation: powerSummaryNumber(summary.generation),
+    consumption: powerSummaryNumber(summary.consumption),
+    balance: powerSummaryNumber(summary.balance),
+  };
   const log = latestRuntimeLog(snapshot, "潮流计算");
   const text = logDetailText(log);
   const controlText = logDetailText(latestRuntimeLog(snapshot, "控制响应"));
@@ -3444,20 +3467,23 @@ function parsePowerFlowOverview(snapshot) {
   const logSoc = storageSocPercentFromText(text);
   return {
     log,
-    wind: matchedNumber(text, /风力发电总功率\s*([-+\d.]+)/),
-    solar: matchedNumber(text, /光伏发电总功率\s*([-+\d.]+)/),
-    diesel: matchedNumber(text, /柴油发电总功率\s*([-+\d.]+)/),
-    load: matchedNumber(text, /负荷用电总功率\s*([-+\d.]+)/),
-    storageDischarge: matchedNumber(text, /储能发电总功率\s*([-+\d.]+)/),
-    storageCharge: matchedNumber(text, /储能充电总功率\s*([-+\d.]+)/),
-    soc: Number.isFinite(liveSoc)
-      ? liveSoc * 100
-      : Number.isFinite(logSoc)
-        ? logSoc
-        : storageSocPercentFromText(controlText),
-    generation: matchedNumber(text, /电源发电总功率\s*([-+\d.]+)/),
-    consumption: matchedNumber(text, /用电及充电总功率\s*([-+\d.]+)/),
-    balance: matchedNumber(text, /功率差额\s*([-+\d.]+)/),
+    source: structured.source,
+    wind: structured.wind ?? matchedNumber(text, /风力发电总功率\s*([-+\d.]+)/),
+    solar: structured.solar ?? matchedNumber(text, /光伏发电总功率\s*([-+\d.]+)/),
+    diesel: structured.diesel ?? matchedNumber(text, /柴油发电总功率\s*([-+\d.]+)/),
+    load: structured.load ?? matchedNumber(text, /负荷用电总功率\s*([-+\d.]+)/),
+    storage: structured.storage,
+    storageDischarge: structured.storageDischarge ?? matchedNumber(text, /储能发电总功率\s*([-+\d.]+)/),
+    storageCharge: structured.storageCharge ?? matchedNumber(text, /储能充电总功率\s*([-+\d.]+)/),
+    soc: structured.soc
+      ?? (Number.isFinite(liveSoc)
+        ? liveSoc * 100
+        : Number.isFinite(logSoc)
+          ? logSoc
+          : storageSocPercentFromText(controlText)),
+    generation: structured.generation ?? matchedNumber(text, /电源发电总功率\s*([-+\d.]+)/),
+    consumption: structured.consumption ?? matchedNumber(text, /用电及充电总功率\s*([-+\d.]+)/),
+    balance: structured.balance ?? matchedNumber(text, /功率差额\s*([-+\d.]+)/),
   };
 }
 
@@ -4005,9 +4031,11 @@ function renderTraineeOverviewDashboard(snapshot) {
   setOverviewText("teacherLoad", overviewPowerText(weather.loadKw));
   setOverviewText("teacherWeatherTime", overviewClockText(snapshot));
 
-  const storagePower = Number.isFinite(power.storageDischarge) && Number.isFinite(power.storageCharge)
-    ? power.storageDischarge - power.storageCharge
-    : null;
+  const storagePower = Number.isFinite(power.storage)
+    ? power.storage
+    : Number.isFinite(power.storageDischarge) && Number.isFinite(power.storageCharge)
+      ? power.storageDischarge - power.storageCharge
+      : null;
   const storageFlow = storagePower === null ? "idle" : storagePower > 0 ? "discharge" : storagePower < 0 ? "charge" : "idle";
   const storageNode = $("overviewStorageFlowNode");
   if (storageNode) storageNode.dataset.storageFlow = storageFlow;

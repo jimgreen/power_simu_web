@@ -5,6 +5,9 @@ import unittest
 from pathlib import Path
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 class PowerFlowLogSummaryTest(unittest.TestCase):
     def _make_service(self):
         from simu.generate_simple_model import write_model_dir
@@ -74,6 +77,96 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertIn("风力发电总功率 8 kW（1 台）", text)
         self.assertNotIn("风力发电总功率 16 kW", text)
         self.assertIn("新能源限值", control_text)
+
+    def test_power_flow_summary_preserves_signed_realtime_measurements(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        lines = service._power_flow_summary_lines(
+            [
+                {"dev_type": "ACGenerator", "dev_name": "wt01_10kw", "meas_type": "P_GEN", "value": -8.0},
+                {"dev_type": "DCGenerator", "dev_name": "pv01_vsrc", "meas_type": "P_GEN", "value": -20.0},
+                {"dev_type": "ACGenerator", "dev_name": "diesel_300kw", "meas_type": "P_GEN", "value": -30.0},
+                {"dev_type": "ACLoad", "dev_name": "load_ac_1", "meas_type": "P_LOAD", "value": -90.0},
+                {"dev_type": "ESS", "dev_name": "ess01", "meas_type": "P", "value": -5.0},
+            ]
+        )
+        text = "\n".join(lines)
+
+        self.assertIn("风力发电总功率 -8 kW", text)
+        self.assertIn("光伏发电总功率 -20 kW", text)
+        self.assertIn("柴油发电总功率 -30 kW", text)
+        self.assertIn("负荷用电总功率 -90 kW", text)
+        self.assertIn("储能充电总功率 5 kW", text)
+
+    def test_snapshot_power_summary_prefers_signed_scada_without_measurement_payload(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        service.latest_measurements = {
+            "definitions": [],
+            "real": [
+                {"dev_type": "ACGenerator", "dev_name": "wt01_10kw", "meas_type": "P_GEN", "value": 18.0},
+                {"dev_type": "DCGenerator", "dev_name": "pv01_vsrc", "meas_type": "P_GEN", "value": 20.0},
+                {"dev_type": "ACGenerator", "dev_name": "diesel_300kw", "meas_type": "P_GEN", "value": 30.0},
+                {"dev_type": "ACLoad", "dev_name": "load_ac_1", "meas_type": "P_LOAD", "value": 90.0},
+                {"dev_type": "ESS", "dev_name": "ess01", "meas_type": "P", "value": 5.0},
+                {"dev_type": "ESS", "dev_name": "ess01", "meas_type": "SOC", "value": 0.55},
+            ],
+            "scada": [
+                {"dev_type": "ACGenerator", "dev_name": "wt01_10kw", "meas_type": "P_GEN", "value": -8.0},
+                {"dev_type": "DCGenerator", "dev_name": "pv01_vsrc", "meas_type": "P_GEN", "value": -20.0},
+                {"dev_type": "ACGenerator", "dev_name": "diesel_300kw", "meas_type": "P_GEN", "value": -30.0},
+                {"dev_type": "ACLoad", "dev_name": "load_ac_1", "meas_type": "P_LOAD", "value": -90.0},
+                {"dev_type": "ESS", "dev_name": "ess01", "meas_type": "P", "value": -5.0},
+                {"dev_type": "ESS", "dev_name": "ess01", "meas_type": "SOC", "value": 1.05},
+            ],
+        }
+
+        snapshot = service.snapshot(
+            include_static=False,
+            include_runtime_logs=False,
+            include_measurements=False,
+            include_devices=False,
+            include_commands=False,
+        )
+
+        self.assertNotIn("measurements", snapshot)
+        self.assertEqual(snapshot["power_summary"]["source"], "scada")
+        self.assertEqual(snapshot["power_summary"]["wind"], -8.0)
+        self.assertEqual(snapshot["power_summary"]["solar"], -20.0)
+        self.assertEqual(snapshot["power_summary"]["diesel"], -30.0)
+        self.assertEqual(snapshot["power_summary"]["load"], -90.0)
+        self.assertEqual(snapshot["power_summary"]["storage"], -5.0)
+        self.assertEqual(snapshot["power_summary"]["soc"], 105.0)
+
+    def test_power_summary_classifies_indexed_chinese_wind_pv_storage_and_load_devices(self):
+        from simu.service import PolarMicrogridSimulator
+
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        service = PolarMicrogridSimulator(
+            ROOT / "models" / "simulator" / "source" / "秦岭站",
+            Path(workspace.name) / "runtime",
+            kernel=lambda _config: None,
+        )
+
+        summary = service._power_flow_summary(
+            [
+                {"dev_type": "ACGenerator", "dev_name": "交流风电-1", "meas_type": "P_GEN", "value": -3.0},
+                {"dev_type": "DCGenerator", "dev_name": "直流光伏-1", "meas_type": "P_GEN", "value": -4.0},
+                {"dev_type": "ACGenerator", "dev_name": "柴油发电机-1", "meas_type": "P_GEN", "value": -6.0},
+                {"dev_type": "ACLoad", "dev_name": "交流负荷-1", "meas_type": "P_LOAD", "value": -7.0},
+                {"dev_type": "DCGenerator", "dev_name": "电化学储能-1", "meas_type": "P_GEN", "value": -5.0},
+                {"dev_type": "DCGenerator", "dev_name": "电化学储能-1", "meas_type": "SOC", "value": 1.05},
+            ]
+        )
+
+        self.assertEqual(summary["wind"], -3.0)
+        self.assertEqual(summary["solar"], -4.0)
+        self.assertEqual(summary["diesel"], -6.0)
+        self.assertEqual(summary["load"], -7.0)
+        self.assertEqual(summary["storage"], -5.0)
+        self.assertEqual(summary["soc"], 105.0)
 
 
 if __name__ == "__main__":

@@ -1027,6 +1027,14 @@ def calculate_renewable_control_plan(
         for row in online_renewable
         if row.get("commandable") and row.get("planningCurrentKw") is not None
     )
+    renewable_curtail_step_request_kw = sum(
+        min(
+            max(0.0, finite(row.get("planningCurrentKw"))),
+            settings.step_coefficient * max(0.0, finite(row.get("capacityKw"))),
+        )
+        for row in online_renewable
+        if row.get("commandable") and row.get("planningCurrentKw") is not None
+    )
     wind_current = sum(max(0.0, finite(row.get("currentKw"))) for row in online_renewable if row["category"] == "风电")
     pv_current = sum(max(0.0, finite(row.get("currentKw"))) for row in online_renewable if row["category"] == "光伏")
 
@@ -1274,11 +1282,37 @@ def calculate_renewable_control_plan(
         else storage_current_for_control
     )
 
+    high_soc_storage_balance_limit_kw = 0.0
+    high_soc_storage_balance_limited = False
+    if (
+        high_soc_guard
+        and diesel_control_region == "deadband"
+        and storage_target > storage_current_for_control + EPSILON
+    ):
+        high_soc_storage_balance_limit_kw = max(
+            0.0,
+            renewable_curtail_step_request_kw + diesel_down_margin,
+        )
+        balanced_storage_target = min(
+            storage_target,
+            storage_current_for_control + high_soc_storage_balance_limit_kw,
+        )
+        if balanced_storage_target < storage_target - EPSILON:
+            storage_target = balanced_storage_target
+            converter_target = (
+                storage_current_for_control + converter_current_for_control - storage_target
+            )
+            high_soc_storage_balance_limited = True
+
     renewable_control_action = "hold"
     if diesel_control_region == "low":
         renewable_control_action = "hold_low_diesel" if storage_current_for_control > EPSILON else "curtail_low_diesel"
-    elif high_soc_guard:
-        renewable_control_action = "curtail_one_step" if storage_current_for_control < -EPSILON else "hold_high_soc"
+    elif high_soc_guard and diesel_control_region != "high":
+        renewable_control_action = (
+            "curtail_one_step"
+            if storage_target > storage_current_for_control + EPSILON
+            else "hold_high_soc"
+        )
     else:
         renewable_control_action = "recover_one_step"
 
@@ -1304,6 +1338,42 @@ def calculate_renewable_control_plan(
     renewable_target = sum(finite(value) for value in renewable_target_by_device.values())
     renewable_delta = renewable_target - renewable_current
     storage_delta = storage_target - storage_current_for_control
+
+    high_soc_required_curtail_kw = 0.0
+    if (
+        high_soc_guard
+        and diesel_control_region == "deadband"
+        and storage_delta > EPSILON
+        and renewable_control_action == "curtail_one_step"
+    ):
+        high_soc_required_curtail_kw = max(0.0, storage_delta - diesel_down_margin)
+        proposed_curtail_kw = max(0.0, -renewable_delta)
+        if proposed_curtail_kw > EPSILON:
+            curtail_scale = _clamp(
+                high_soc_required_curtail_kw / proposed_curtail_kw,
+                0.0,
+                1.0,
+            )
+            if curtail_scale < 1.0 - EPSILON:
+                for row in online_renewable:
+                    key = (row["dev_type"], row["dev_name"])
+                    candidate_kw = renewable_target_by_device.get(key)
+                    if candidate_kw is None or not row.get("commandable"):
+                        continue
+                    current_kw = finite(row.get("currentKw"))
+                    capacity_kw = max(0.0, finite(row.get("capacityKw")))
+                    renewable_target_by_device[key] = _clamp(
+                        current_kw + (finite(candidate_kw) - current_kw) * curtail_scale,
+                        0.0,
+                        capacity_kw,
+                    )
+                renewable_target = sum(finite(value) for value in renewable_target_by_device.values())
+                renewable_delta = renewable_target - renewable_current
+        renewable_control_action = (
+            "hold_high_soc_diesel_deadband"
+            if high_soc_required_curtail_kw <= EPSILON
+            else "curtail_to_diesel_floor"
+        )
 
     # When the diesel is currently inside its hard boundaries, trim a one-step
     # renewable candidate rather than rejecting the whole round merely because
@@ -1529,10 +1599,14 @@ def calculate_renewable_control_plan(
         "absorptionLimitKw": renewable_balance_limit,
         "renewableBalanceLimitKw": renewable_balance_limit,
         "renewableRecoveryStepRequestKw": renewable_recovery_step_request_kw,
+        "renewableCurtailStepRequestKw": renewable_curtail_step_request_kw,
         "renewableStorageCoordinationActive": renewable_storage_coordination_active,
         "renewableDischargeReplacementKw": renewable_discharge_replacement_kw,
         "renewableAbsorptionRequiredKw": renewable_absorption_required_kw,
         "storageRenewableCoordinationKw": storage_renewable_coordination_kw,
+        "highSocStorageBalanceLimitKw": high_soc_storage_balance_limit_kw,
+        "highSocStorageBalanceLimited": high_soc_storage_balance_limited,
+        "highSocRequiredCurtailKw": high_soc_required_curtail_kw,
         "renewableDeltaKw": renewable_delta,
         "renewableBalancingDeltaKw": renewable_delta,
         "renewableTarget": renewable_target,
@@ -1590,6 +1664,7 @@ def calculate_renewable_control_plan(
     }
     decision_detail = [
         f"数据来源：{_source_label(data_source)}，质量 {quality_payload['status']}，闭环下发{'允许' if quality_payload['dispatchAllowed'] else '禁止'}",
+        "控制优先级：先满足容量与SOC硬约束，再考虑柴发死区和控制步长压低柴发，并优先消纳新能源；仅在柴发无下调空间且储能需要退出充电时弃电",
         f"控制基准：时刻 {time_text}，新能源当前 {renewable_current:.2f} kW，柴发当前 {diesel_current_for_control:.2f} kW、下限 {diesel_min:.2f} kW",
         f"柴发分区：死区比例 {settings.diesel_deadband_ratio * 100:.2f}%（±{diesel_deadband_kw:.2f} kW），当前位于 {diesel_control_region} 区",
         f"储能边界：当前 {storage_current_for_control:.2f} kW，允许目标 [{storage_min_target:.2f}, {storage_max_target:.2f}] kW，SOC {storage_soc * 100 if storage_soc is not None else '--'}%",
@@ -1600,6 +1675,7 @@ def calculate_renewable_control_plan(
         f"环境策略：风速 {observed_wind_speed if observed_wind_speed is not None else '--'}、太阳辐照度 {observed_irradiance if observed_irradiance is not None else '--'}、温度 {observed_air_temperature if observed_air_temperature is not None else '--'}，均按默认策略忽略",
         f"新能源上调边界：当前 {renewable_current:.2f} + 柴发可下调裕度 {diesel_down_margin:.2f} + 储能可增加吸收裕度 {storage_current_for_control - storage_min_target:.2f} = {renewable_balance_limit:.2f} kW",
         f"新能源储能协调：单步恢复请求 {renewable_recovery_step_request_kw:.2f} kW，替代储能放电 {renewable_discharge_replacement_kw:.2f} kW，柴发裕度不足需增加吸收 {renewable_absorption_required_kw:.2f} kW，协调目标变化 {storage_renewable_coordination_kw:.2f} kW",
+        f"高SOC协调：新能源单步最大弃电 {renewable_curtail_step_request_kw:.2f} kW，储能增出力平衡上限 {high_soc_storage_balance_limit_kw:.2f} kW，实际必要弃电 {high_soc_required_curtail_kw:.2f} kW，平衡限幅 {'是' if high_soc_storage_balance_limited else '否'}",
         f"增量平衡：柴发目标 = 柴发当前 - 新能源候选变化量 {renewable_delta:.2f} - 储能候选变化量 {storage_delta:.2f} = {diesel_target:.2f} kW",
         f"负荷功率仅用于展示：当前 {load_kw:.2f} kW，不参与新能源、储能、变流器或柴发目标计算",
         f"新能源策略：{renewable_control_action}，单步比例 {settings.step_coefficient * 100:.2f}%，目标 {renewable_target:.2f} kW",

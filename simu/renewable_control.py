@@ -29,6 +29,7 @@ MEASUREMENT_NOISE_SIGMA_MULTIPLIER = 5.0
 POWER_CONTROL_MODES = {"P", "PQ", "PV", "ACP"}
 REMOTE_SNAPSHOT_STATIC_FIELDS = ("definitions", "settings", "device_parameters")
 RENEWABLE_CONTROL_STATE_FILE = "renewable_control.json"
+DEADBAND_STEP_SCALE = 0.20
 
 
 def _now_text() -> str:
@@ -1020,22 +1021,6 @@ def calculate_renewable_control_plan(
         )
     renewable_current = sum(finite(row.get("currentKw")) for row in online_renewable)
     renewable_capacity = sum(max(0.0, finite(row.get("capacityKw"))) for row in online_renewable)
-    renewable_recovery_step_request_kw = sum(
-        min(
-            max(0.0, finite(row.get("capacityKw")) - finite(row.get("planningCurrentKw"))),
-            settings.step_coefficient * max(0.0, finite(row.get("capacityKw"))),
-        )
-        for row in online_renewable
-        if row.get("commandable") and row.get("planningCurrentKw") is not None
-    )
-    renewable_curtail_step_request_kw = sum(
-        min(
-            max(0.0, finite(row.get("planningCurrentKw"))),
-            settings.step_coefficient * max(0.0, finite(row.get("capacityKw"))),
-        )
-        for row in online_renewable
-        if row.get("commandable") and row.get("planningCurrentKw") is not None
-    )
     wind_current = sum(finite(row.get("currentKw")) for row in online_renewable if row["category"] == "风电")
     pv_current = sum(finite(row.get("currentKw")) for row in online_renewable if row["category"] == "光伏")
 
@@ -1101,7 +1086,7 @@ def calculate_renewable_control_plan(
     storage_power_capacity = max(raw_charge, raw_discharge)
     if converter_rows and math.isfinite(converter_limit) and converter_limit > EPSILON:
         storage_power_capacity = min(storage_power_capacity, converter_limit) if storage_power_capacity > EPSILON else converter_limit
-    converter_step_kw = (
+    converter_base_step_kw = (
         settings.converter_step_ratio * converter_limit
         if converter_rows and math.isfinite(converter_limit)
         else 0.0
@@ -1157,6 +1142,45 @@ def calculate_renewable_control_plan(
         else "low"
         if diesel_current_for_control < diesel_min - diesel_deadband_kw
         else "deadband"
+    )
+    lower_soc_deadband_active = (
+        storage_soc is not None
+        and storage_soc_lower_limit is not None
+        and storage_soc_lower_limit - settings.soc_deadband - EPSILON
+        <= storage_soc
+        <= storage_soc_lower_limit + settings.soc_deadband + EPSILON
+    )
+    upper_soc_deadband_active = (
+        storage_soc is not None
+        and storage_soc_upper_limit is not None
+        and storage_soc_upper_limit - settings.soc_deadband - EPSILON
+        <= storage_soc
+        <= storage_soc_upper_limit + settings.soc_deadband + EPSILON
+    )
+    diesel_deadband_active = diesel_control_region == "deadband"
+    converter_step_scale = (
+        DEADBAND_STEP_SCALE
+        if lower_soc_deadband_active or diesel_deadband_active
+        else 1.0
+    )
+    renewable_step_scale = DEADBAND_STEP_SCALE if upper_soc_deadband_active else 1.0
+    converter_step_kw = converter_base_step_kw * converter_step_scale
+    renewable_effective_step_ratio = settings.step_coefficient * renewable_step_scale
+    renewable_recovery_step_request_kw = sum(
+        min(
+            max(0.0, finite(row.get("capacityKw")) - finite(row.get("planningCurrentKw"))),
+            renewable_effective_step_ratio * max(0.0, finite(row.get("capacityKw"))),
+        )
+        for row in online_renewable
+        if row.get("commandable") and row.get("planningCurrentKw") is not None
+    )
+    renewable_curtail_step_request_kw = sum(
+        min(
+            max(0.0, finite(row.get("planningCurrentKw"))),
+            renewable_effective_step_ratio * max(0.0, finite(row.get("capacityKw"))),
+        )
+        for row in online_renewable
+        if row.get("commandable") and row.get("planningCurrentKw") is not None
     )
     high_soc_guard = storage_soc_region in {"high_guard", "above_upper"}
     soc_at_or_above_upper = (
@@ -1288,7 +1312,7 @@ def calculate_renewable_control_plan(
             continue
         current_kw = finite(row.get("planningCurrentKw"))
         capacity_kw = max(0.0, finite(row.get("capacityKw")))
-        step_kw = settings.step_coefficient * capacity_kw
+        step_kw = renewable_effective_step_ratio * capacity_kw
         if not row.get("commandable"):
             target_kw = current_kw
         elif renewable_control_action == "curtail_one_step_full_soc":
@@ -1456,7 +1480,8 @@ def calculate_renewable_control_plan(
     )
     clock = snapshot.get("clock") if isinstance(snapshot.get("clock"), Mapping) else {}
     time_text = str(clock.get("time", "--"))
-    clock_key = f"{clock.get('absolute_minute', clock.get('minute', ''))}|{time_text}"
+    run_id = int(_number(clock.get("run_id"), 0.0) or 0)
+    clock_key = f"{run_id}|{clock.get('absolute_minute', clock.get('minute', ''))}|{time_text}"
     quality_payload = quality.payload()
     metrics = {
         "availableRenewable": available_renewable,
@@ -1473,6 +1498,8 @@ def calculate_renewable_control_plan(
         "storageSocUpperLimit": storage_soc_upper_limit,
         "storageSocRegion": storage_soc_region,
         "socDeadband": settings.soc_deadband,
+        "lowerSocDeadbandActive": lower_soc_deadband_active,
+        "upperSocDeadbandActive": upper_soc_deadband_active,
         "socAboveUpperDeadband": soc_above_upper_deadband,
         "socBelowLowerDeadband": soc_below_lower_deadband,
         "socUpperDeadbandThreshold": (
@@ -1519,6 +1546,8 @@ def calculate_renewable_control_plan(
         "acdcTargetKw": converter_target,
         "acdcAdjustmentKw": converter_target - converter_current if converter_current is not None else None,
         "converterStepRatio": settings.converter_step_ratio,
+        "converterBaseStepKw": converter_base_step_kw,
+        "converterStepScale": converter_step_scale,
         "converterStepKw": converter_step_kw,
         "converterStepLimited": converter_step_limited,
         "dieselResidual": diesel_residual,
@@ -1528,6 +1557,7 @@ def calculate_renewable_control_plan(
         "dieselUpMarginKw": diesel_up_margin,
         "dieselDeadbandRatio": settings.diesel_deadband_ratio,
         "dieselDeadbandKw": diesel_deadband_kw,
+        "dieselDeadbandActive": diesel_deadband_active,
         "dieselControlRegion": diesel_control_region,
         "dieselTargetKw": diesel_target,
         "dieselBoundaryErrorKw": diesel_boundary_error,
@@ -1547,6 +1577,8 @@ def calculate_renewable_control_plan(
         "renewableControlAction": renewable_control_action,
         "renewableCapacityKw": renewable_capacity,
         "renewableStepRatio": settings.step_coefficient,
+        "renewableStepScale": renewable_step_scale,
+        "renewableEffectiveStepRatio": renewable_effective_step_ratio,
         "recoveryRequestedKw": recovery_kw,
         "recoveryKw": recovery_kw,
         "recoveryCandidateCount": recovery_candidate_count,
@@ -1554,6 +1586,13 @@ def calculate_renewable_control_plan(
         "stepCoefficient": settings.step_coefficient,
         "storageConverterCount": len(converter_rows),
     }
+    converter_step_reasons = []
+    if lower_soc_deadband_active:
+        converter_step_reasons.append("SOC下限死区")
+    if diesel_deadband_active:
+        converter_step_reasons.append("柴发下限死区")
+    converter_step_reason_text = "、".join(converter_step_reasons) if converter_step_reasons else "无死区缩放"
+    renewable_step_reason_text = "SOC上限死区" if upper_soc_deadband_active else "无死区缩放"
     decision_detail = [
         f"数据来源：{_source_label(data_source)}，质量 {quality_payload['status']}，闭环下发{'允许' if quality_payload['dispatchAllowed'] else '禁止'}",
         "控制架构：ACDC与新能源两条策略相互独立，分别生成目标，不做功率增量相加、替代、吸收或联合预测",
@@ -1563,10 +1602,10 @@ def calculate_renewable_control_plan(
         f"SOC分区：下限 {storage_soc_lower_limit * 100 if storage_soc_lower_limit is not None else '--'}%，上限 {storage_soc_upper_limit * 100 if storage_soc_upper_limit is not None else '--'}%，死区 {settings.soc_deadband * 100:.2f}%，当前 {storage_soc_region}",
         f"SOC运行约束：达到上限禁止充电，超过上限加死区后主动增加放电；达到下限禁止放电，低于下限减死区后主动增加充电",
         f"环境策略：风速 {observed_wind_speed if observed_wind_speed is not None else '--'}、太阳辐照度 {observed_irradiance if observed_irradiance is not None else '--'}、温度 {observed_air_temperature if observed_air_temperature is not None else '--'}，均按默认策略忽略",
-        f"ACDC策略：只读取柴发分区与SOC分区，动作 {storage_control_action}；当前 {converter_current_for_control:.2f} kW，按步长 {converter_step_kw:.2f} kW 调整至 {converter_target:.2f} kW",
+        f"ACDC策略：只读取柴发分区与SOC分区，动作 {storage_control_action}；当前 {converter_current_for_control:.2f} kW，基础步长 {converter_base_step_kw:.2f} kW，{converter_step_reason_text}按 {converter_step_scale * 100:.0f}% 生效，实际步长 {converter_step_kw:.2f} kW，目标 {converter_target:.2f} kW",
         f"ACDC独立预估：对应储能平衡功率由 {storage_current_for_control:.2f} kW 变为 {storage_target:.2f} kW，柴发反馈参考值 {diesel_target:.2f} kW；该值不叠加新能源动作",
         f"新能源策略：只按SOC决定恢复，电池未满时按单机容量步长恢复；仅在SOC达到上限且柴发进入下限死区时弃电，本轮动作 {renewable_control_action}",
-        f"新能源目标：当前 {renewable_current:.2f} kW，单步比例 {settings.step_coefficient * 100:.2f}%，目标 {renewable_target:.2f} kW",
+        f"新能源目标：当前 {renewable_current:.2f} kW，基础单步比例 {settings.step_coefficient * 100:.2f}%，{renewable_step_reason_text}按 {renewable_step_scale * 100:.0f}% 生效，实际单步比例 {renewable_effective_step_ratio * 100:.2f}%，目标 {renewable_target:.2f} kW",
         f"负荷功率仅用于展示：当前 {load_kw:.2f} kW，不参与新能源、储能、变流器或柴发目标计算",
         f"独立边界检查：ACDC目标已按并联容量、SOC充放电方向和变流器步长限幅；新能源目标仅按设备容量和新能源步长限幅",
         *[f"数据告警：{issue}" for issue in quality_payload["issues"]],
@@ -1652,6 +1691,7 @@ class _ControllerState:
     last_calculated_at: str = ""
     last_sent_at: str = ""
     last_clock_key: str = ""
+    last_dispatched_clock_key: str = ""
     last_auto_started: float = 0.0
     last_preview_started: float = 0.0
     revision: int = 0
@@ -2008,27 +2048,49 @@ class TraineeRenewableControlManager:
                 else:
                     command_url = urljoin(connection["base"] + "/", connection["command_path"].lstrip("/"))
                     payload = self._command_payload(state, plan, snapshot, trigger)
-                    try:
-                        result = self.request_json(command_url, method="POST", payload=payload)
-                    except Exception as exc:
-                        with state.lock:
-                            state.status = f"遥调指令下发失败：{exc}"
-                            if record_log:
-                                self._append_log(state, "模拟台响应", "下发失败", state.status, level="error", simu_time=str(plan.get("time", "--")))
-                    else:
-                        accepted = int(_number(result.get("set_values"), len(commands)) or 0) if isinstance(result, Mapping) else len(commands)
-                        with state.lock:
-                            state.last_sent_at = _now_text()
-                            state.status = f"已由学员台后台下发 {accepted} 条遥调指令。"
+                    dispatch_clock_key = str(plan.get("clockKey", "")).strip()
+                    with state.lock:
+                        duplicate_dispatch = bool(
+                            dispatch_clock_key
+                            and state.last_dispatched_clock_key == dispatch_clock_key
+                        )
+                        if duplicate_dispatch:
+                            state.status = "当前仿真时刻已下发控制策略，已跳过重复下发。"
                             if record_log:
                                 self._append_log(
                                     state,
-                                    "模拟台响应",
-                                    "下发成功",
-                                    f"模拟台接受遥调指令 {accepted} 条；策略时刻 {plan.get('time', '--')}",
-                                    level="ok",
+                                    "策略控制",
+                                    "重复抑制",
+                                    state.status,
+                                    level="info",
                                     simu_time=str(plan.get("time", "--")),
                                 )
+                        elif dispatch_clock_key:
+                            # Claim the simulation instant before the HTTP call. A timeout may
+                            # be ambiguous, so retrying the same instant could duplicate control.
+                            state.last_dispatched_clock_key = dispatch_clock_key
+                    if not duplicate_dispatch:
+                        try:
+                            result = self.request_json(command_url, method="POST", payload=payload)
+                        except Exception as exc:
+                            with state.lock:
+                                state.status = f"遥调指令下发失败：{exc}；当前仿真时刻不再重复下发。"
+                                if record_log:
+                                    self._append_log(state, "模拟台响应", "下发失败", state.status, level="error", simu_time=str(plan.get("time", "--")))
+                        else:
+                            accepted = int(_number(result.get("set_values"), len(commands)) or 0) if isinstance(result, Mapping) else len(commands)
+                            with state.lock:
+                                state.last_sent_at = _now_text()
+                                state.status = f"已由学员台后台下发 {accepted} 条遥调指令。"
+                                if record_log:
+                                    self._append_log(
+                                        state,
+                                        "模拟台响应",
+                                        "下发成功",
+                                        f"模拟台接受遥调指令 {accepted} 条；策略时刻 {plan.get('time', '--')}",
+                                        level="ok",
+                                        simu_time=str(plan.get("time", "--")),
+                                    )
             else:
                 with state.lock:
                     if not commands:
@@ -2068,6 +2130,7 @@ class TraineeRenewableControlManager:
                 "lastPlan": copy.deepcopy(state.last_plan),
                 "lastCalculatedAt": state.last_calculated_at,
                 "lastSentAt": state.last_sent_at,
+                "lastDispatchedClockKey": state.last_dispatched_clock_key,
                 "revision": state.revision,
                 "logs": copy.deepcopy(state.logs),
                 "trend": copy.deepcopy(state.trend),

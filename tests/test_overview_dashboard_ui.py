@@ -81,9 +81,15 @@ class OverviewDashboardUiTest(unittest.TestCase):
             "overviewFlowLoadPower",
             "overviewFlowSoc",
             "overviewFlowGreenShare",
+            "overviewFlowGreenPower",
         ):
             self.assertIn(f'id="{element_id}"', html)
             self.assertIn(f'"{element_id}"', app_js)
+        green_card = html.split('<article class="energy-green-share"', 1)[1].split("</article>", 1)[0]
+        self.assertIn("实时绿电占比", green_card)
+        self.assertIn("绿电功率", green_card)
+        self.assertIn('id="overviewFlowGreenShare"', green_card)
+        self.assertIn('id="overviewFlowGreenPower"', green_card)
         for removed_id in ("overviewFlowBalance", "overviewFlowResultTime"):
             self.assertNotIn(f'id="{removed_id}"', html)
             self.assertNotIn(f'"{removed_id}"', app_js)
@@ -121,6 +127,7 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn('source: String(summary.source || "")', parser)
         self.assertIn('wind: powerSummaryNumber(summary.wind)', parser)
         self.assertIn('storage: powerSummaryNumber(summary.storage)', parser)
+        self.assertIn('greenPower: powerSummaryNumber(summary.greenPower)', parser)
         self.assertIn('const log = latestRuntimeLog(snapshot, "潮流计算")', parser)
         self.assertNotIn("Math.abs", parser)
         self.assertNotIn("Math.max", parser)
@@ -131,6 +138,8 @@ class OverviewDashboardUiTest(unittest.TestCase):
             1,
         )[0]
         self.assertIn("Number.isFinite(power.storage)", renderer)
+        self.assertIn("const greenPower = Number.isFinite(power.greenPower) ? -power.greenPower : null", renderer)
+        self.assertIn('setOverviewText("overviewFlowGreenPower", overviewPowerText(greenPower))', renderer)
 
     def test_overview_active_command_table_keeps_command_item_text_visible(self):
         styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")

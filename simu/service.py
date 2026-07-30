@@ -747,6 +747,7 @@ class PolarMicrogridSimulator:
         self.latest_scada_rows: List[List[str]] = []
         self._fault_restore: Dict[Tuple[str, str, str], str] = {}
         self._last_scada_values: Dict[str, float] = {}
+        self._wind_converter_names_cache: Optional[set[str]] = None
 
         self.work_dir = self.runtime_dir / ".simu_loop_work"
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -837,6 +838,7 @@ class PolarMicrogridSimulator:
     def reload_definition_state(self) -> None:
         """Load source definition E files into the live calculation state."""
         self.source_model_book = _load_book(self.source_files["model"])
+        self._wind_converter_names_cache = None
         self.source_stat_book = _load_book(self.source_files["stat"])
         self.control_book = _load_book(
             self.source_files["control"] if self.source_files["control"].exists() else self.source_files["stat"]
@@ -2413,6 +2415,54 @@ class PolarMicrogridSimulator:
                 categories["load"].add(name)
         return categories
 
+    def _wind_converter_names(self) -> set[str]:
+        cached = self._wind_converter_names_cache
+        if cached is not None:
+            return cached
+
+        model_book = self.source_model_book
+        ac_generators = {
+            str(row.get("idx", "")): row
+            for row in getattr(model_book.data.get("ACGenerator"), "data", [])
+            if str(row.get("idx", ""))
+        }
+        wind_nodes = {
+            str(source.get("node", ""))
+            for row in getattr(model_book.data.get("ACWindGen"), "data", [])
+            if (source := ac_generators.get(str(row.get("idx_acgenerator", "")))) is not None
+            and str(source.get("node", ""))
+        }
+        adjacent_wind_nodes = set(wind_nodes)
+        for block_name in ("ACBranch", "ACZeroBranch"):
+            for row in getattr(model_book.data.get(block_name), "data", []):
+                i_node = str(row.get("i_node", ""))
+                j_node = str(row.get("j_node", ""))
+                if i_node in wind_nodes and j_node:
+                    adjacent_wind_nodes.add(j_node)
+                if j_node in wind_nodes and i_node:
+                    adjacent_wind_nodes.add(i_node)
+
+        names: set[str] = set()
+        for row in getattr(model_book.data.get("DCACConverter"), "data", []):
+            name = str(row.get("name", "")).strip()
+            if not name:
+                continue
+            lower_name = name.casefold()
+            lower_type = str(row.get("dev_type", "")).casefold()
+            topology_match = str(row.get("ac_node", "")) in adjacent_wind_nodes
+            explicit_match = (
+                "风机" in name
+                or "风电" in name
+                or "wind" in lower_name
+                or lower_name.startswith("wt")
+                or "wind" in lower_type
+            )
+            if topology_match or explicit_match:
+                names.add(name)
+
+        self._wind_converter_names_cache = names
+        return names
+
     def _measurement_power_category(
         self,
         dev_type: str,
@@ -2469,8 +2519,10 @@ class PolarMicrogridSimulator:
 
     def _power_flow_summary(self, realtime_measurements: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
         category_names = self._device_category_names()
+        wind_converter_names = self._wind_converter_names()
         power_by_device: Dict[Tuple[str, str], Dict[str, float]] = {}
         soc_by_storage: Dict[str, float] = {}
+        green_power_by_converter: Dict[str, float] = {}
 
         for item in realtime_measurements:
             if int(_to_float(item.get("valid"), 1) or 0) != 1:
@@ -2480,6 +2532,10 @@ class PolarMicrogridSimulator:
             meas_type = str(item.get("meas_type", "")).upper()
             value = _to_float(item.get("value"), None)
             if not dev_type or not dev_name or meas_type == "" or value is None:
+                continue
+            if dev_type == "DCACConverter" and meas_type == "P_AC":
+                if dev_name not in wind_converter_names:
+                    green_power_by_converter[dev_name] = value
                 continue
             category = self._measurement_power_category(dev_type, dev_name, category_names)
             if category == "storage" and meas_type == "SOC":
@@ -2493,7 +2549,14 @@ class PolarMicrogridSimulator:
             power_by_device.setdefault(device_key, {})[meas_type] = value
 
         totals = {"wind": 0.0, "pv": 0.0, "diesel": 0.0, "load": 0.0}
-        counts = {"wind": 0, "pv": 0, "diesel": 0, "load": 0, "storage": 0}
+        counts = {
+            "wind": 0,
+            "pv": 0,
+            "diesel": 0,
+            "load": 0,
+            "storage": 0,
+            "greenPowerConverter": len(green_power_by_converter),
+        }
         storage_generation = 0.0
         storage_charge = 0.0
         storage_total = 0.0
@@ -2514,7 +2577,8 @@ class PolarMicrogridSimulator:
         soc_values = list(soc_by_storage.values())
         soc_average = sum(soc_values) / len(soc_values) if soc_values else None
         soc_total = sum(soc_values)
-        has_power = any(counts.values())
+        has_power = any(counts[key] for key in ("wind", "pv", "diesel", "load", "storage"))
+        green_power = sum(green_power_by_converter.values())
         generation_total = totals["wind"] + totals["pv"] + totals["diesel"] + storage_generation
         consumption_total = totals["load"] + storage_charge
         power_difference = generation_total - consumption_total
@@ -2526,6 +2590,7 @@ class PolarMicrogridSimulator:
             "storage": storage_total if counts["storage"] else None,
             "storageDischarge": storage_generation if counts["storage"] else None,
             "storageCharge": storage_charge if counts["storage"] else None,
+            "greenPower": green_power if counts["greenPowerConverter"] else None,
             "soc": soc_average * 100.0 if soc_average is not None else None,
             "socTotal": soc_total if soc_values else None,
             "generation": generation_total if has_power else None,
@@ -2537,6 +2602,7 @@ class PolarMicrogridSimulator:
                 "diesel": counts["diesel"],
                 "load": counts["load"],
                 "storage": counts["storage"],
+                "greenPowerConverter": counts["greenPowerConverter"],
                 "soc": len(soc_values),
             },
         }

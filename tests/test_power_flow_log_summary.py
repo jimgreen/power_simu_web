@@ -99,6 +99,57 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertIn("负荷用电总功率 -90 kW", text)
         self.assertIn("储能充电总功率 5 kW", text)
 
+    def test_green_power_sums_signed_p_ac_and_excludes_wind_converters(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        wind_converter = service.source_model_book.data["DCACConverter"].data[0]
+        wind_converter["name"] = "rectifier_a"
+        service._wind_converter_names_cache = None
+
+        summary = service._power_flow_summary(
+            [
+                {
+                    "dev_type": "DCACConverter",
+                    "dev_name": "rectifier_a",
+                    "meas_type": "P_AC",
+                    "value": 8.0,
+                    "valid": 1,
+                },
+                {
+                    "dev_type": "DCACConverter",
+                    "dev_name": "grid_inv_acp",
+                    "meas_type": "P_AC",
+                    "value": -12.5,
+                    "valid": 1,
+                },
+                {
+                    "dev_type": "DCACConverter",
+                    "dev_name": "grid_inv_aux",
+                    "meas_type": "P_AC",
+                    "value": 4.0,
+                    "valid": 1,
+                },
+                {
+                    "dev_type": "DCACConverter",
+                    "dev_name": "grid_inv_acp",
+                    "meas_type": "P_DC",
+                    "value": 99.0,
+                    "valid": 1,
+                },
+                {
+                    "dev_type": "DCACConverter",
+                    "dev_name": "grid_inv_invalid",
+                    "meas_type": "P_AC",
+                    "value": 100.0,
+                    "valid": 0,
+                },
+            ]
+        )
+
+        self.assertEqual(summary["greenPower"], -8.5)
+        self.assertEqual(summary["counts"]["greenPowerConverter"], 2)
+
     def test_snapshot_power_summary_prefers_signed_scada_without_measurement_payload(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)

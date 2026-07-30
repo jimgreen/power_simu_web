@@ -1158,18 +1158,14 @@ def calculate_renewable_control_plan(
         <= storage_soc_upper_limit + settings.soc_deadband + EPSILON
     )
     diesel_deadband_active = diesel_control_region == "deadband"
-    converter_step_scale = (
-        DEADBAND_STEP_SCALE
-        if lower_soc_deadband_active or diesel_deadband_active
-        else 1.0
-    )
-    renewable_step_scale = DEADBAND_STEP_SCALE if upper_soc_deadband_active else 1.0
-    converter_step_kw = converter_base_step_kw * converter_step_scale
-    renewable_effective_step_ratio = settings.step_coefficient * renewable_step_scale
+    renewable_recovery_step_scale = DEADBAND_STEP_SCALE if upper_soc_deadband_active else 1.0
+    renewable_curtail_step_scale = 1.0
+    renewable_recovery_effective_step_ratio = settings.step_coefficient * renewable_recovery_step_scale
+    renewable_curtail_effective_step_ratio = settings.step_coefficient * renewable_curtail_step_scale
     renewable_recovery_step_request_kw = sum(
         min(
             max(0.0, finite(row.get("capacityKw")) - finite(row.get("planningCurrentKw"))),
-            renewable_effective_step_ratio * max(0.0, finite(row.get("capacityKw"))),
+            renewable_recovery_effective_step_ratio * max(0.0, finite(row.get("capacityKw"))),
         )
         for row in online_renewable
         if row.get("commandable") and row.get("planningCurrentKw") is not None
@@ -1177,7 +1173,7 @@ def calculate_renewable_control_plan(
     renewable_curtail_step_request_kw = sum(
         min(
             max(0.0, finite(row.get("planningCurrentKw"))),
-            renewable_effective_step_ratio * max(0.0, finite(row.get("capacityKw"))),
+            renewable_curtail_effective_step_ratio * max(0.0, finite(row.get("capacityKw"))),
         )
         for row in online_renewable
         if row.get("commandable") and row.get("planningCurrentKw") is not None
@@ -1270,6 +1266,19 @@ def calculate_renewable_control_plan(
         if converter_rows
         else 0.0
     )
+    converter_step_direction = (
+        "increase"
+        if converter_desired_target > converter_current_for_control + EPSILON
+        else "decrease"
+        if converter_desired_target < converter_current_for_control - EPSILON
+        else "hold"
+    )
+    converter_slow_increase = (
+        converter_step_direction == "increase"
+        and (lower_soc_deadband_active or diesel_deadband_active)
+    )
+    converter_step_scale = DEADBAND_STEP_SCALE if converter_slow_increase else 1.0
+    converter_step_kw = converter_base_step_kw * converter_step_scale
     converter_target = (
         _move_toward(converter_current_for_control, converter_desired_target, converter_step_kw)
         if converter_rows
@@ -1304,6 +1313,19 @@ def calculate_renewable_control_plan(
     else:
         renewable_control_action = "recover_one_step"
 
+    renewable_step_direction = (
+        "increase"
+        if renewable_control_action == "recover_one_step"
+        else "decrease"
+        if renewable_control_action == "curtail_one_step_full_soc"
+        else "hold"
+    )
+    renewable_step_scale = (
+        renewable_recovery_step_scale
+        if renewable_step_direction == "increase"
+        else renewable_curtail_step_scale
+    )
+    renewable_effective_step_ratio = settings.step_coefficient * renewable_step_scale
     renewable_target_by_device: Dict[Tuple[str, str], Optional[float]] = {}
     for row in online_renewable:
         key = (row["dev_type"], row["dev_name"])
@@ -1547,6 +1569,8 @@ def calculate_renewable_control_plan(
         "acdcAdjustmentKw": converter_target - converter_current if converter_current is not None else None,
         "converterStepRatio": settings.converter_step_ratio,
         "converterBaseStepKw": converter_base_step_kw,
+        "converterStepDirection": converter_step_direction,
+        "converterSlowIncrease": converter_slow_increase,
         "converterStepScale": converter_step_scale,
         "converterStepKw": converter_step_kw,
         "converterStepLimited": converter_step_limited,
@@ -1577,6 +1601,9 @@ def calculate_renewable_control_plan(
         "renewableControlAction": renewable_control_action,
         "renewableCapacityKw": renewable_capacity,
         "renewableStepRatio": settings.step_coefficient,
+        "renewableStepDirection": renewable_step_direction,
+        "renewableRecoveryStepScale": renewable_recovery_step_scale,
+        "renewableCurtailStepScale": renewable_curtail_step_scale,
         "renewableStepScale": renewable_step_scale,
         "renewableEffectiveStepRatio": renewable_effective_step_ratio,
         "recoveryRequestedKw": recovery_kw,
@@ -1591,8 +1618,27 @@ def calculate_renewable_control_plan(
         converter_step_reasons.append("SOC下限死区")
     if diesel_deadband_active:
         converter_step_reasons.append("柴发下限死区")
-    converter_step_reason_text = "、".join(converter_step_reasons) if converter_step_reasons else "无死区缩放"
-    renewable_step_reason_text = "SOC上限死区" if upper_soc_deadband_active else "无死区缩放"
+    converter_step_region_text = "、".join(converter_step_reasons)
+    if not converter_step_reasons:
+        converter_step_reason_text = "不在缩放死区，保持原步长"
+    elif converter_step_direction == "increase":
+        converter_step_reason_text = (
+            f"{converter_step_region_text}内升功率，采用{DEADBAND_STEP_SCALE * 100:.0f}%步长"
+        )
+    elif converter_step_direction == "decrease":
+        converter_step_reason_text = f"{converter_step_region_text}内降功率，保持原步长"
+    else:
+        converter_step_reason_text = f"{converter_step_region_text}内无功率调整，保持原步长"
+    if not upper_soc_deadband_active:
+        renewable_step_reason_text = "不在SOC上限死区，保持原步长"
+    elif renewable_step_direction == "increase":
+        renewable_step_reason_text = (
+            f"SOC上限死区内升功率，采用{DEADBAND_STEP_SCALE * 100:.0f}%步长"
+        )
+    elif renewable_step_direction == "decrease":
+        renewable_step_reason_text = "SOC上限死区内降功率，保持原步长"
+    else:
+        renewable_step_reason_text = "SOC上限死区内无功率调整，保持原步长"
     decision_detail = [
         f"数据来源：{_source_label(data_source)}，质量 {quality_payload['status']}，闭环下发{'允许' if quality_payload['dispatchAllowed'] else '禁止'}",
         "控制架构：ACDC与新能源两条策略相互独立，分别生成目标，不做功率增量相加、替代、吸收或联合预测",
@@ -1602,10 +1648,10 @@ def calculate_renewable_control_plan(
         f"SOC分区：下限 {storage_soc_lower_limit * 100 if storage_soc_lower_limit is not None else '--'}%，上限 {storage_soc_upper_limit * 100 if storage_soc_upper_limit is not None else '--'}%，死区 {settings.soc_deadband * 100:.2f}%，当前 {storage_soc_region}",
         f"SOC运行约束：达到上限禁止充电，超过上限加死区后主动增加放电；达到下限禁止放电，低于下限减死区后主动增加充电",
         f"环境策略：风速 {observed_wind_speed if observed_wind_speed is not None else '--'}、太阳辐照度 {observed_irradiance if observed_irradiance is not None else '--'}、温度 {observed_air_temperature if observed_air_temperature is not None else '--'}，均按默认策略忽略",
-        f"ACDC策略：只读取柴发分区与SOC分区，动作 {storage_control_action}；当前 {converter_current_for_control:.2f} kW，基础步长 {converter_base_step_kw:.2f} kW，{converter_step_reason_text}按 {converter_step_scale * 100:.0f}% 生效，实际步长 {converter_step_kw:.2f} kW，目标 {converter_target:.2f} kW",
+        f"ACDC策略：只读取柴发分区与SOC分区，动作 {storage_control_action}；当前 {converter_current_for_control:.2f} kW，基础步长 {converter_base_step_kw:.2f} kW，{converter_step_reason_text}，实际按 {converter_step_scale * 100:.0f}% 即 {converter_step_kw:.2f} kW 调节，目标 {converter_target:.2f} kW",
         f"ACDC独立预估：对应储能平衡功率由 {storage_current_for_control:.2f} kW 变为 {storage_target:.2f} kW，柴发反馈参考值 {diesel_target:.2f} kW；该值不叠加新能源动作",
         f"新能源策略：只按SOC决定恢复，电池未满时按单机容量步长恢复；仅在SOC达到上限且柴发进入下限死区时弃电，本轮动作 {renewable_control_action}",
-        f"新能源目标：当前 {renewable_current:.2f} kW，基础单步比例 {settings.step_coefficient * 100:.2f}%，{renewable_step_reason_text}按 {renewable_step_scale * 100:.0f}% 生效，实际单步比例 {renewable_effective_step_ratio * 100:.2f}%，目标 {renewable_target:.2f} kW",
+        f"新能源目标：当前 {renewable_current:.2f} kW，基础单步比例 {settings.step_coefficient * 100:.2f}%，{renewable_step_reason_text}，实际按 {renewable_step_scale * 100:.0f}% 即 {renewable_effective_step_ratio * 100:.2f}% 调节，目标 {renewable_target:.2f} kW",
         f"负荷功率仅用于展示：当前 {load_kw:.2f} kW，不参与新能源、储能、变流器或柴发目标计算",
         f"独立边界检查：ACDC目标已按并联容量、SOC充放电方向和变流器步长限幅；新能源目标仅按设备容量和新能源步长限幅",
         *[f"数据告警：{issue}" for issue in quality_payload["issues"]],

@@ -3455,6 +3455,7 @@ function parsePowerFlowOverview(snapshot) {
     storage: powerSummaryNumber(summary.storage),
     storageDischarge: powerSummaryNumber(summary.storageDischarge),
     storageCharge: powerSummaryNumber(summary.storageCharge),
+    greenPower: powerSummaryNumber(summary.greenPower),
     soc: powerSummaryNumber(summary.soc),
     generation: powerSummaryNumber(summary.generation),
     consumption: powerSummaryNumber(summary.consumption),
@@ -3475,6 +3476,7 @@ function parsePowerFlowOverview(snapshot) {
     storage: structured.storage,
     storageDischarge: structured.storageDischarge ?? matchedNumber(text, /储能发电总功率\s*([-+\d.]+)/),
     storageCharge: structured.storageCharge ?? matchedNumber(text, /储能充电总功率\s*([-+\d.]+)/),
+    greenPower: structured.greenPower,
     soc: structured.soc
       ?? (Number.isFinite(liveSoc)
         ? liveSoc * 100
@@ -4054,6 +4056,8 @@ function renderTraineeOverviewDashboard(snapshot) {
   const greenPowerShare = Number.isFinite(power.diesel) && Number.isFinite(power.load) && Math.abs(power.load) > 1e-9
     ? (1.0 - power.diesel / power.load) * 100.0
     : null;
+  const greenPower = Number.isFinite(power.greenPower) ? -power.greenPower : null;
+  setOverviewText("overviewFlowGreenPower", overviewPowerText(greenPower));
   setOverviewText("overviewFlowGreenShare", overviewPercentText(greenPowerShare));
   renderEnergyFlowVisuals(power, storagePower, greenPowerShare);
   renderTraineeOverviewEvents();

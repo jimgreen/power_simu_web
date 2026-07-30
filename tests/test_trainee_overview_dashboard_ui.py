@@ -32,7 +32,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertNotIn("overflow: hidden;", event_list_block)
 
     def test_trainee_home_uses_simulator_style_energy_flow(self):
-        for text in ("实时绿电占比", "教员数据", "最新交互事件", "当前有效指令"):
+        for text in ("实时绿电占比", "绿电功率", "教员数据", "最新交互事件", "当前有效指令"):
             self.assertIn(text, self.html)
         self.assertNotIn("电气能量流", self.html)
         self.assertNotIn("尚无接收结果", self.html)
@@ -48,10 +48,14 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
             "overviewFlowLoadPower",
             "overviewFlowSoc",
             "overviewFlowGreenShare",
+            "overviewFlowGreenPower",
             "overviewReceiveDot",
         ):
             self.assertIn(f'id="{element_id}"', self.html)
             self.assertIn(f'"{element_id}"', self.script)
+        green_card = self.html.split('<article class="energy-green-share"', 1)[1].split("</article>", 1)[0]
+        self.assertIn('id="overviewFlowGreenShare"', green_card)
+        self.assertIn('id="overviewFlowGreenPower"', green_card)
         for removed_id in ("overviewFlowBalance", "overviewFlowResultTime"):
             self.assertNotIn(f'id="{removed_id}"', self.html)
             self.assertNotIn(f'"{removed_id}"', self.script)
@@ -131,6 +135,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn('source: String(summary.source || "")', parser)
         self.assertIn('wind: powerSummaryNumber(summary.wind)', parser)
         self.assertIn('storage: powerSummaryNumber(summary.storage)', parser)
+        self.assertIn('greenPower: powerSummaryNumber(summary.greenPower)', parser)
         self.assertIn('const log = latestRuntimeLog(snapshot, "潮流计算")', parser)
         self.assertNotIn("Math.abs", parser)
         self.assertNotIn("Math.max", parser)
@@ -141,6 +146,8 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
             1,
         )[0]
         self.assertIn("Number.isFinite(power.storage)", renderer)
+        self.assertIn("const greenPower = Number.isFinite(power.greenPower) ? -power.greenPower : null", renderer)
+        self.assertIn('setOverviewText("overviewFlowGreenPower", overviewPowerText(greenPower))', renderer)
 
     def test_trainee_home_status_strip_hides_redundant_model_refresh_and_solver_items(self):
         status_strip = self.html.split('<dl class="overview-status-metrics trainee-status-metrics">', 1)[1].split("</dl>", 1)[0]

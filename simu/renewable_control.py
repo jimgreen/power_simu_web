@@ -811,13 +811,31 @@ def _effective_step_minutes(snapshot: Mapping[str, Any]) -> float:
     return step * speed
 
 
+def _storage_control_horizon_minutes(
+    snapshot: Mapping[str, Any],
+    settings: RenewableControlSettings,
+) -> float:
+    effective_step = _effective_step_minutes(snapshot)
+    parameters = snapshot.get("system_parameters")
+    compute_interval = (
+        _number(parameters.get("compute_interval_seconds"))
+        if isinstance(parameters, Mapping)
+        else None
+    )
+    if compute_interval is None or compute_interval <= 0:
+        return effective_step
+    simulator_steps = max(1, int(math.ceil(settings.interval_seconds / compute_interval)))
+    return effective_step * simulator_steps
+
+
 def _storage_rows(
     snapshot: Mapping[str, Any],
     measurements: Mapping[Tuple[str, str, str], MeasurementValue],
     settings: RenewableControlSettings,
     quality: _Quality,
 ) -> List[Dict[str, Any]]:
-    step_hours = max(1.0 / 3600.0, _effective_step_minutes(snapshot) / 60.0)
+    control_horizon_minutes = _storage_control_horizon_minutes(snapshot, settings)
+    step_hours = max(1.0 / 3600.0, control_horizon_minutes / 60.0)
     rows: List[Dict[str, Any]] = []
     for index, parameter in enumerate(_parameter_rows(snapshot, "DCStorageGen"), start=1):
         device = _indexed_device(snapshot, "DCGenerator", parameter.get("idx_dcgenerator"))
@@ -933,6 +951,7 @@ def _storage_rows(
                 "chargePower": charge_power,
                 "dischargePower": discharge_power,
                 "efficiency": efficiency,
+                "controlHorizonMinutes": control_horizon_minutes,
                 "set_type": "",
                 "statusLabel": status_label,
             }
@@ -1189,6 +1208,10 @@ def calculate_renewable_control_plan(
     online_storage = [row for row in storage_rows if row["online"]]
     measured_storage = [row for row in online_storage if row.get("currentKw") is not None]
     storage_current = sum(finite(row.get("currentKw")) for row in measured_storage) if measured_storage else None
+    storage_control_horizon_minutes = max(
+        (finite(row.get("controlHorizonMinutes")) for row in online_storage),
+        default=_storage_control_horizon_minutes(snapshot, settings),
+    )
     known_soc = [finite(row.get("soc")) for row in online_storage if row.get("socKnown") and row.get("soc") is not None]
     storage_soc = sum(known_soc) / len(known_soc) if known_soc else None
     known_soc_rows = [row for row in online_storage if row.get("socKnown") and row.get("soc") is not None]
@@ -1488,6 +1511,15 @@ def calculate_renewable_control_plan(
         for row in online_renewable
         if row.get("commandable") and row.get("planningCurrentKw") is not None
     }
+    renewable_commandable_rows = [
+        row
+        for row in online_renewable
+        if row.get("commandable") and row.get("planningCurrentKw") is not None
+    ]
+    renewable_commandable_current_kw = sum(
+        max(0.0, finite(row.get("planningCurrentKw")))
+        for row in renewable_commandable_rows
+    )
     renewable_curtail_capacity_step_kw = sum(renewable_curtail_base_steps.values())
     renewable_curtail_step_request_kw = min(
         renewable_curtail_capacity_step_kw,
@@ -1655,12 +1687,24 @@ def calculate_renewable_control_plan(
             )
         )
     )
+    converter_charge_safety_target = _clamp(
+        storage_current_for_control + converter_current_for_control + raw_charge,
+        converter_lower_target,
+        converter_upper_target,
+    )
+    converter_charge_safety_storage_kw = (
+        storage_current_for_control
+        + converter_current_for_control
+        - converter_charge_safety_target
+    )
     storage_charge_derating_acdc_request_kw = max(
         0.0,
-        converter_current_for_control - storage_constrained_converter_target,
+        converter_current_for_control - converter_charge_safety_target,
     )
     storage_charge_derating_acdc_allowed = bool(
-        storage_charge_derating_acdc_request_kw <= diesel_down_margin + EPSILON
+        storage_charge_derating_acdc_request_kw > EPSILON
+        and storage_charge_derating_acdc_request_kw <= diesel_down_margin + EPSILON
+        and converter_charge_safety_storage_kw >= -raw_charge - EPSILON
     )
     storage_derating_constraint_override = False
     storage_charge_derating_actuator = "none"
@@ -1728,12 +1772,22 @@ def calculate_renewable_control_plan(
         else 1.0
     )
     converter_step_kw = converter_base_step_kw * converter_step_scale
-    stepped_converter_target = (
+    normal_stepped_converter_target = (
         converter_desired_target
         if converter_emergency_stop_active
         else _move_toward(converter_current_for_control, converter_desired_target, converter_step_kw)
         if converter_rows
         else 0.0
+    )
+    converter_charge_derating_safety_override = bool(
+        storage_charge_derating_excess_kw > EPSILON
+        and storage_charge_derating_acdc_allowed
+        and normal_stepped_converter_target > converter_charge_safety_target + EPSILON
+    )
+    stepped_converter_target = (
+        converter_charge_safety_target
+        if converter_charge_derating_safety_override
+        else normal_stepped_converter_target
     )
     converter_target = _clamp(
         stepped_converter_target,
@@ -1748,6 +1802,48 @@ def calculate_renewable_control_plan(
         storage_current_for_control + converter_current_for_control - converter_target
         if converter_rows
         else storage_current_for_control
+    )
+    storage_predicted_charge_after_acdc_kw = max(0.0, -storage_target)
+    storage_charge_derating_residual_kw = max(
+        0.0,
+        storage_predicted_charge_after_acdc_kw - raw_charge,
+    )
+    storage_high_soc_discharge_request_kw = (
+        min(
+            renewable_curtail_capacity_step_kw,
+            max(
+                0.0,
+                renewable_commandable_current_kw - storage_charge_derating_residual_kw,
+            ),
+        )
+        if soc_above_upper_deadband and storage_target <= EPSILON
+        else 0.0
+    )
+    renewable_charge_safety_curtail_required_kw = (
+        storage_charge_derating_residual_kw + storage_high_soc_discharge_request_kw
+    )
+    renewable_charge_safety_curtail_request_kw = min(
+        renewable_commandable_current_kw,
+        renewable_charge_safety_curtail_required_kw,
+    )
+    renewable_charge_safety_allocations = _allocate(
+        renewable_commandable_rows,
+        renewable_charge_safety_curtail_request_kw,
+        "planningCurrentKw",
+    )
+    renewable_charge_safety_by_device = {
+        (row["dev_type"], row["dev_name"]): amount
+        for row, amount in zip(renewable_commandable_rows, renewable_charge_safety_allocations)
+    }
+    renewable_charge_safety_curtail_delivered_kw = sum(renewable_charge_safety_allocations)
+    renewable_charge_safety_curtail_shortfall_kw = max(
+        0.0,
+        renewable_charge_safety_curtail_required_kw
+        - renewable_charge_safety_curtail_delivered_kw,
+    )
+    storage_charge_derating_safety_override = bool(
+        renewable_charge_safety_curtail_required_kw > EPSILON
+        or converter_charge_derating_safety_override
     )
     if storage_charge_derating_excess_kw > EPSILON and storage_charge_derating_actuator == "none":
         storage_charge_derating_actuator = (
@@ -1778,10 +1874,14 @@ def calculate_renewable_control_plan(
         renewable_control_action = "recover_one_step_below_soc_lower_deadband"
     elif soc_above_upper_deadband:
         renewable_control_action = (
-            "hold_above_soc_upper_deadband_while_acdc_discharges"
-            if converter_target < converter_current_for_control - EPSILON
+            "curtail_charge_safety"
+            if renewable_charge_safety_curtail_required_kw > EPSILON
+            else "hold_above_soc_upper_deadband_while_acdc_discharges"
+            if storage_target > EPSILON
             else "curtail_one_step_above_soc_upper_deadband"
         )
+    elif storage_charge_derating_residual_kw > EPSILON:
+        renewable_control_action = "curtail_charge_safety"
     elif (
         storage_charge_derating_excess_kw > EPSILON
         and storage_charge_derating_actuator == "renewable"
@@ -1821,6 +1921,7 @@ def calculate_renewable_control_plan(
             "curtail_one_step_full_soc",
             "curtail_one_step_above_soc_upper_deadband",
             "curtail_one_step_charge_derating",
+            "curtail_charge_safety",
         }
         else "hold"
     )
@@ -1836,6 +1937,12 @@ def calculate_renewable_control_plan(
         if renewable_control_action == "curtail_one_step_full_soc"
         else renewable_derating_curtail_step_scale
         if renewable_control_action == "curtail_one_step_charge_derating"
+        else (
+            renewable_charge_safety_curtail_delivered_kw
+            / renewable_curtail_capacity_step_kw
+        )
+        if renewable_control_action == "curtail_charge_safety"
+        and renewable_curtail_capacity_step_kw > EPSILON
         else 0.0
     )
     renewable_effective_step_ratio = settings.step_coefficient * renewable_step_scale
@@ -1850,6 +1957,11 @@ def calculate_renewable_control_plan(
         step_kw = renewable_effective_step_ratio * capacity_kw
         if not row.get("commandable"):
             target_kw = current_kw
+        elif renewable_control_action == "curtail_charge_safety":
+            target_kw = max(
+                0.0,
+                current_kw - renewable_charge_safety_by_device.get(key, 0.0),
+            )
         elif renewable_control_action == "curtail_one_step_above_soc_upper_deadband":
             target_kw = max(0.0, current_kw - step_kw)
         elif renewable_control_action == "curtail_one_step_full_soc":
@@ -2012,6 +2124,10 @@ def calculate_renewable_control_plan(
         warnings.append("风速量测默认不参与新能源控制，风电按当前出力与容量执行渐进恢复")
     if any(row["category"] == "光伏" for row in renewable_rows) and irradiance is None:
         warnings.append("太阳辐照度量测默认不参与新能源控制，光伏按当前出力与容量执行渐进恢复")
+    if renewable_charge_safety_curtail_shortfall_kw > EPSILON:
+        warnings.append(
+            f"储能充电保护仍缺少 {renewable_charge_safety_curtail_shortfall_kw:.2f} kW 可调节新能源，已下发当前可实现的最大校正"
+        )
     warnings.extend(issue for issue in quality.issues if issue not in warnings)
 
     wind_available = sum(
@@ -2058,6 +2174,11 @@ def calculate_renewable_control_plan(
         "storageDischargeDeratingExcessKw": storage_discharge_derating_excess_kw,
         "storageChargeDeratingHeadroomKw": storage_charge_derating_headroom_kw,
         "storageDischargeDeratingHeadroomKw": storage_discharge_derating_headroom_kw,
+        "storageControlHorizonMinutes": storage_control_horizon_minutes,
+        "storagePredictedChargeAfterAcdcKw": storage_predicted_charge_after_acdc_kw,
+        "storageChargeDeratingResidualKw": storage_charge_derating_residual_kw,
+        "storageHighSocDischargeRequestKw": storage_high_soc_discharge_request_kw,
+        "storageChargeDeratingSafetyOverride": storage_charge_derating_safety_override,
         "storageChargeDeratingCurve": _derating_curve_payload(settings.storage_charge_derating_curve),
         "storageDischargeDeratingCurve": _derating_curve_payload(settings.storage_discharge_derating_curve),
         "storageChargeDeratingActuator": storage_charge_derating_actuator,
@@ -2092,6 +2213,10 @@ def calculate_renewable_control_plan(
         "renewableRecoveryStepRequestKw": renewable_recovery_step_request_kw,
         "renewableCurtailStepRequestKw": renewable_curtail_step_request_kw,
         "renewableCurtailCapacityStepKw": renewable_curtail_capacity_step_kw,
+        "renewableChargeSafetyCurtailRequiredKw": renewable_charge_safety_curtail_required_kw,
+        "renewableChargeSafetyCurtailRequestKw": renewable_charge_safety_curtail_request_kw,
+        "renewableChargeSafetyCurtailDeliveredKw": renewable_charge_safety_curtail_delivered_kw,
+        "renewableChargeSafetyCurtailShortfallKw": renewable_charge_safety_curtail_shortfall_kw,
         "renewableCurtailLimitedByStorageCharge": (
             renewable_curtail_step_request_kw + EPSILON < renewable_curtail_capacity_step_kw
         ),
@@ -2132,6 +2257,8 @@ def calculate_renewable_control_plan(
         "converterTargetUpperLimitKw": converter_upper_target,
         "converterHardLimitApplied": converter_hard_limit_applied,
         "converterStorageConstraintTargetKw": storage_constrained_converter_target,
+        "converterChargeSafetyTargetKw": converter_charge_safety_target,
+        "converterChargeSafetyStorageKw": converter_charge_safety_storage_kw,
         "converterStorageConstraintConflict": converter_storage_constraint_conflict,
         "converterStepRatio": settings.converter_step_ratio,
         "converterBaseStepKw": converter_base_step_kw,
@@ -2140,6 +2267,7 @@ def calculate_renewable_control_plan(
         "converterSlowIncrease": converter_slow_export_increase,
         "converterSlowExportIncrease": converter_slow_export_increase,
         "converterEmergencyStopActive": converter_emergency_stop_active,
+        "converterChargeDeratingSafetyOverride": converter_charge_derating_safety_override,
         "converterStepScale": converter_step_scale,
         "converterStepKw": converter_step_kw,
         "converterAppliedStepKw": converter_applied_step_kw,
@@ -2205,6 +2333,10 @@ def calculate_renewable_control_plan(
         converter_step_reason_text = (
             "SOC低于下限-死区，跳过常规步长限制，ACDC送出直接回退到校核后安全目标"
         )
+    elif converter_charge_derating_safety_override:
+        converter_step_reason_text = (
+            "实时充电超过线性降额边界，跳过常规步长限制，ACDC直接调至充电保护目标"
+        )
     elif diesel_boundary_approach_active:
         converter_step_reason_text = (
             f"接近柴发控制分区切换边界（距离 {diesel_boundary_distance_kw:.2f} kW，"
@@ -2222,8 +2354,8 @@ def calculate_renewable_control_plan(
     else:
         converter_step_reason_text = f"{converter_step_region_text}内无功率调整，保持原步长"
     converter_step_application_text = (
-        f"紧急实际变化 {converter_applied_step_kw:.2f} kW"
-        if converter_emergency_stop_active
+        f"保护校核实际变化 {converter_applied_step_kw:.2f} kW"
+        if converter_emergency_stop_active or converter_charge_derating_safety_override
         else (
             f"实际按 {converter_step_scale * 100:.0f}% 即最大 {converter_step_kw:.2f} kW 调节，"
             f"本轮变化 {converter_applied_step_kw:.2f} kW"
@@ -2251,6 +2383,17 @@ def calculate_renewable_control_plan(
         renewable_step_reason_text = "储能已不再充电，停止继续弃电并保持当前出力"
     elif renewable_control_action == "hold_full_soc_high_diesel_charging":
         renewable_step_reason_text = "SOC已到上限但柴发仍高，暂停新能源动作并等待ACDC回路降低储能充电"
+    elif renewable_control_action == "curtail_charge_safety":
+        renewable_step_reason_text = (
+            f"ACDC目标作用后预计仍充电 {storage_predicted_charge_after_acdc_kw:.2f} kW，"
+            f"超过线性降额上限 {raw_charge:.2f} kW；新能源本轮直接消除剩余超限 "
+            f"{storage_charge_derating_residual_kw:.2f} kW"
+            + (
+                f"，并额外降低 {storage_high_soc_discharge_request_kw:.2f} kW 以推动SOC回落"
+                if storage_high_soc_discharge_request_kw > EPSILON
+                else ""
+            )
+        )
     elif renewable_control_action == "curtail_one_step_charge_derating":
         renewable_step_reason_text = (
             f"储能充电 {storage_charge_current_kw:.2f} kW 超过线性降额上限 "
@@ -2293,7 +2436,14 @@ def calculate_renewable_control_plan(
     )
     if soc_above_upper_deadband:
         upper_threshold_percent = soc_upper_deadband_threshold * 100.0
-        if converter_target < converter_current_for_control - EPSILON:
+        if renewable_control_action == "curtail_charge_safety":
+            soc_correction_detail = (
+                f"SOC越界校正：当前SOC {storage_soc * 100:.2f}% 高于上限+死区阈值 "
+                f"{upper_threshold_percent:.2f}%；ACDC目标作用后储能预计为 {storage_target:.2f} kW，"
+                f"新能源再由 {renewable_current:.2f} kW 降至 {renewable_target:.2f} kW，"
+                "先消除充电，再建立小幅放电，使SOC持续回落"
+            )
+        elif storage_target > EPSILON:
             soc_correction_detail = (
                 f"SOC越界校正：当前SOC {storage_soc * 100:.2f}% 高于上限+死区阈值 "
                 f"{upper_threshold_percent:.2f}%，利用柴发下调余量将ACDC目标由 "
@@ -2336,13 +2486,13 @@ def calculate_renewable_control_plan(
     )
     decision_detail = [
         f"数据来源：{_source_label(data_source)}，质量 {quality_payload['status']}，闭环下发{'允许' if quality_payload['dispatchAllowed'] else '禁止'}",
-        "控制架构：ACDC与新能源两条策略相互独立，分别生成目标，不做功率增量相加、替代、吸收或联合预测",
+        "控制架构：ACDC与新能源两条策略相互独立生成候选目标，再统一执行SOC、功率和柴油边界校核；不把两条策略增量直接相加",
         f"控制基准：时刻 {time_text}，新能源当前 {renewable_current:.2f} kW，柴发当前 {diesel_current_for_control:.2f} kW、下限 {diesel_min:.2f} kW",
         f"柴发分区：下限 {diesel_deadband_lower_kw:.2f} kW，单边死区上界 {diesel_deadband_upper_kw:.2f} kW（容量比例 {settings.diesel_deadband_ratio * 100:.2f}%）；低于下限逐步降低ACDC送出，区间内保持，高于上界才允许增加ACDC送出；当前位于 {diesel_control_region} 区",
         f"储能状态：当前 {storage_current_for_control:.2f} kW，SOC {storage_soc * 100 if storage_soc is not None else '--'}%，运行边界 [{storage_soc_lower_limit * 100 if storage_soc_lower_limit is not None else '--'}%, {storage_soc_upper_limit * 100 if storage_soc_upper_limit is not None else '--'}%]",
         f"SOC分区：下限 {storage_soc_lower_limit * 100 if storage_soc_lower_limit is not None else '--'}%，上限 {storage_soc_upper_limit * 100 if storage_soc_upper_limit is not None else '--'}%，死区 {settings.soc_deadband * 100:.2f}%，当前 {storage_soc_region}",
         f"SOC运行约束：达到上限禁止充电；超过上限+死区后优先增加ACDC送出，受柴发下限约束时降低新能源；达到下限禁止放电，低于下限-死区后ACDC向零回退并恢复新能源",
-        f"充电线性降额：配置节点 {_derating_curve_text(settings.storage_charge_derating_curve)}；当前因子 {storage_charge_derating_factor * 100:.2f}%，降额前 {raw_charge_before_derating:.2f} kW、允许 {raw_charge:.2f} kW、实时充电 {storage_charge_current_kw:.2f} kW、超限 {storage_charge_derating_excess_kw:.2f} kW，线性插值后由 {charge_derating_actuator_text} 处理",
+        f"充电线性降额：配置节点 {_derating_curve_text(settings.storage_charge_derating_curve)}；能量校核时域 {storage_control_horizon_minutes:.2f} min；当前因子 {storage_charge_derating_factor * 100:.2f}%，降额前 {raw_charge_before_derating:.2f} kW、允许 {raw_charge:.2f} kW、实时充电 {storage_charge_current_kw:.2f} kW、超限 {storage_charge_derating_excess_kw:.2f} kW；ACDC候选目标作用后预计充电 {storage_predicted_charge_after_acdc_kw:.2f} kW、剩余超限 {storage_charge_derating_residual_kw:.2f} kW，线性插值后由 {charge_derating_actuator_text} 及统一保护校核处理",
         f"放电线性降额：配置节点 {_derating_curve_text(settings.storage_discharge_derating_curve)}；当前因子 {storage_discharge_derating_factor * 100:.2f}%，降额前 {raw_discharge_before_derating:.2f} kW、允许 {raw_discharge:.2f} kW、实时放电 {storage_discharge_current_kw:.2f} kW、超限 {storage_discharge_derating_excess_kw:.2f} kW，线性插值后由 {discharge_derating_actuator_text} 处理",
         soc_correction_detail,
         f"环境策略：风速 {observed_wind_speed if observed_wind_speed is not None else '--'}、太阳辐照度 {observed_irradiance if observed_irradiance is not None else '--'}、温度 {observed_air_temperature if observed_air_temperature is not None else '--'}，均按默认策略忽略",
@@ -2351,10 +2501,10 @@ def calculate_renewable_control_plan(
         f"ACDC后置校核：储能运行边界与充放电线性降额折算目标 {storage_constrained_converter_target:.2f} kW，{converter_storage_validation_text}",
         f"ACDC策略：只读取柴发分区与SOC分区，动作 {storage_control_action}；实时 {converter_current if converter_current is not None else '--'} kW，控制基准 {converter_current_for_control:.2f} kW，基础步长 {converter_base_step_kw:.2f} kW，{converter_step_reason_text}，{converter_step_application_text}，目标 {converter_target:.2f} kW",
         f"ACDC独立预估：对应储能平衡功率由 {storage_current_for_control:.2f} kW 变为 {storage_target:.2f} kW，柴发反馈参考值 {diesel_target:.2f} kW；该值不叠加新能源动作",
-        f"新能源策略：以SOC为主；低于下限-死区时按原步长恢复；高于上限+死区时，若ACDC可增加送出则保持新能源，否则按原步长降低新能源；普通上限附近仍按储能充电反馈防止积分饱和；本轮动作 {renewable_control_action}",
+        f"新能源策略：以SOC为主；低于下限-死区时按原步长恢复；高于上限+死区时，仅当ACDC候选目标已经形成有效放电才保持新能源，否则先一次消除剩余充电超限，再按正常步长建立放电；普通上限附近按线性充电边界校核；本轮动作 {renewable_control_action}",
         f"新能源目标：当前 {renewable_current:.2f} kW，储能当前 {storage_current_for_control:.2f} kW、充电死区 {settings.storage_switch_deadband_kw:.2f} kW、超出死区 {renewable_storage_charge_excess_kw:.2f} kW；基础单步比例 {settings.step_coefficient * 100:.2f}%，{renewable_step_reason_text}，实际按 {renewable_step_scale * 100:.1f}% 即 {renewable_effective_step_ratio * 100:.2f}% 调节，目标 {renewable_target:.2f} kW",
         f"负荷功率仅用于展示：当前 {load_kw:.2f} kW，不参与新能源、储能、变流器或柴发目标计算",
-        f"独立边界检查：ACDC目标已按并联容量、禁止倒送、model.e中的SOC运行边界、储能剩余能量、分段线性充放电降额和变流器步长限幅；新能源恢复量同时受充电降额剩余空间约束",
+        f"独立边界检查与统一保护校核：ACDC目标已按并联容量、禁止倒送、model.e中的SOC运行边界、储能剩余能量和分段线性充放电降额校核；常规动作遵守步长，充电超限时保护校核可直接消除超限；新能源恢复量同时受充电降额剩余空间约束",
         *[f"数据告警：{issue}" for issue in quality_payload["issues"]],
     ]
     return {

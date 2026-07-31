@@ -20,7 +20,7 @@ def _efile_block(name: str, header: tuple[str, ...], rows: list[dict[str, object
 
 
 class StorageSocConstraintTest(unittest.TestCase):
-    def test_scada_soc_noise_is_clamped_to_physical_bounds(self):
+    def test_scada_soc_noise_preserves_out_of_range_values(self):
         import simu_loop
 
         class FixedNoise:
@@ -36,8 +36,8 @@ class StorageSocConstraintTest(unittest.TestCase):
         lower_row[7] = "0.0"
         lower = simu_loop.add_noise_to_rows([lower_row], 0.1, FixedNoise(-0.2))
 
-        self.assertAlmostEqual(float(upper[0][7]), 1.0)
-        self.assertAlmostEqual(float(lower[0][7]), 0.0)
+        self.assertAlmostEqual(float(upper[0][7]), 1.2)
+        self.assertAlmostEqual(float(lower[0][7]), -0.2)
 
     def test_limits_storage_from_model_embedded_device_block_without_device_file(self):
         import simu_loop
@@ -318,20 +318,20 @@ class StorageSocConstraintTest(unittest.TestCase):
 
         self.assertAlmostEqual(next_soc, 0.945)
 
-    def test_soc_integration_clamps_to_physical_upper_bound(self):
+    def test_soc_integration_preserves_value_above_physical_upper_bound(self):
         next_soc = self._integrate_storage_soc(soc=0.9, actual_power=-20.0)
 
-        self.assertAlmostEqual(next_soc, 1.0)
+        self.assertAlmostEqual(next_soc, 1.08)
 
-    def test_soc_integration_clamps_to_physical_lower_bound(self):
+    def test_soc_integration_preserves_value_below_physical_lower_bound(self):
         next_soc = self._integrate_storage_soc(soc=0.1, actual_power=20.0)
 
-        self.assertAlmostEqual(next_soc, 0.0)
+        self.assertAlmostEqual(next_soc, -0.1222222222)
 
-    def test_soc_integration_repairs_existing_overbound_before_next_step(self):
+    def test_soc_integration_continues_from_existing_overbound_value(self):
         next_soc = self._integrate_storage_soc(soc=1.08, actual_power=20.0)
 
-        self.assertAlmostEqual(next_soc, 0.7777777778)
+        self.assertAlmostEqual(next_soc, 0.8577777778)
 
     def test_integrates_soc_from_actual_solved_storage_power_with_charge_efficiency_when_setpoint_is_zero(self):
         import simu_loop

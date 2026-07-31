@@ -1440,6 +1440,15 @@ def calculate_renewable_control_plan(
         if converter_desired_target < converter_current_for_control - EPSILON
         else "hold"
     )
+    # ACDC P_AC is negative for DC-to-AC export, so physical export direction is
+    # the inverse of the signed numeric direction used by the legacy metric.
+    converter_export_step_direction = (
+        "increase_export"
+        if converter_desired_target < converter_current_for_control - EPSILON
+        else "decrease_export"
+        if converter_desired_target > converter_current_for_control + EPSILON
+        else "hold"
+    )
     diesel_boundary_action_toward_hold = (
         diesel_control_region == "low"
         and storage_control_action == "reduce_discharge_low_diesel"
@@ -1454,19 +1463,26 @@ def calculate_renewable_control_plan(
         and converter_base_step_kw > EPSILON
         and diesel_boundary_distance_kw <= converter_base_step_kw + EPSILON
     )
-    converter_slow_increase = (
-        converter_step_direction == "increase"
+    converter_slow_export_increase = (
+        converter_export_step_direction == "increase_export"
         and not soc_below_lower_deadband
+        and not soc_above_upper_deadband
         and (lower_soc_deadband_active or diesel_deadband_active)
+    )
+    converter_emergency_stop_active = bool(
+        soc_below_lower_deadband
+        and converter_export_step_direction == "decrease_export"
     )
     converter_step_scale = (
         DEADBAND_STEP_SCALE
-        if converter_slow_increase or diesel_boundary_approach_active
+        if converter_slow_export_increase or diesel_boundary_approach_active
         else 1.0
     )
     converter_step_kw = converter_base_step_kw * converter_step_scale
     stepped_converter_target = (
-        _move_toward(converter_current_for_control, converter_desired_target, converter_step_kw)
+        converter_desired_target
+        if converter_emergency_stop_active
+        else _move_toward(converter_current_for_control, converter_desired_target, converter_step_kw)
         if converter_rows
         else 0.0
     )
@@ -1478,6 +1494,7 @@ def calculate_renewable_control_plan(
     converter_hard_limit_applied = converter_hard_limit_applied or (
         abs(converter_target - stepped_converter_target) > 0.001
     )
+    converter_applied_step_kw = abs(converter_target - converter_current_for_control)
     storage_target = (
         storage_current_for_control + converter_current_for_control - converter_target
         if converter_rows
@@ -1822,9 +1839,13 @@ def calculate_renewable_control_plan(
         "converterStepRatio": settings.converter_step_ratio,
         "converterBaseStepKw": converter_base_step_kw,
         "converterStepDirection": converter_step_direction,
-        "converterSlowIncrease": converter_slow_increase,
+        "converterExportStepDirection": converter_export_step_direction,
+        "converterSlowIncrease": converter_slow_export_increase,
+        "converterSlowExportIncrease": converter_slow_export_increase,
+        "converterEmergencyStopActive": converter_emergency_stop_active,
         "converterStepScale": converter_step_scale,
         "converterStepKw": converter_step_kw,
+        "converterAppliedStepKw": converter_applied_step_kw,
         "converterStepLimited": converter_step_limited,
         "dieselResidual": diesel_residual,
         "dieselCurrentKw": diesel_current,
@@ -1878,8 +1899,10 @@ def calculate_renewable_control_plan(
     if diesel_deadband_active:
         converter_step_reasons.append("柴发下限死区")
     converter_step_region_text = "、".join(converter_step_reasons)
-    if soc_below_lower_deadband and converter_step_direction == "increase":
-        converter_step_reason_text = "SOC低于下限-死区，停止过放优先，保持原步长"
+    if converter_emergency_stop_active:
+        converter_step_reason_text = (
+            "SOC低于下限-死区，跳过常规步长限制，ACDC送出直接回退到校核后安全目标"
+        )
     elif diesel_boundary_approach_active:
         converter_step_reason_text = (
             f"接近柴发控制分区切换边界（距离 {diesel_boundary_distance_kw:.2f} kW，"
@@ -1888,14 +1911,22 @@ def calculate_renewable_control_plan(
         )
     elif not converter_step_reasons:
         converter_step_reason_text = "不在缩放死区，保持原步长"
-    elif converter_step_direction == "increase":
+    elif converter_export_step_direction == "increase_export":
         converter_step_reason_text = (
-            f"{converter_step_region_text}内升功率，采用{DEADBAND_STEP_SCALE * 100:.0f}%步长"
+            f"{converter_step_region_text}内增加ACDC送出，采用{DEADBAND_STEP_SCALE * 100:.0f}%步长"
         )
-    elif converter_step_direction == "decrease":
-        converter_step_reason_text = f"{converter_step_region_text}内降功率，保持原步长"
+    elif converter_export_step_direction == "decrease_export":
+        converter_step_reason_text = f"{converter_step_region_text}内降低ACDC送出，保持原步长"
     else:
         converter_step_reason_text = f"{converter_step_region_text}内无功率调整，保持原步长"
+    converter_step_application_text = (
+        f"紧急实际变化 {converter_applied_step_kw:.2f} kW"
+        if converter_emergency_stop_active
+        else (
+            f"实际按 {converter_step_scale * 100:.0f}% 即最大 {converter_step_kw:.2f} kW 调节，"
+            f"本轮变化 {converter_applied_step_kw:.2f} kW"
+        )
+    )
     if renewable_control_action == "recover_one_step_below_soc_lower_deadband":
         renewable_step_reason_text = (
             "SOC低于下限-死区，新能源按原步长恢复，为储能补能创造直流侧功率余量"
@@ -1979,7 +2010,7 @@ def calculate_renewable_control_plan(
         f"ACDC容量边界：自动控制使用原始并联容量 {converter_rated_capacity_text} kW",
         f"ACDC方向约束：禁止交流侧向直流侧倒送，自动控制目标范围 [{converter_lower_target:.2f}, {converter_upper_target:.2f}] kW",
         f"ACDC后置校核：储能运行边界折算目标 {storage_constrained_converter_target:.2f} kW，{'与状态机保持/调节方向冲突，已禁止反向覆盖' if converter_storage_constraint_conflict else '与状态机调节方向一致'}",
-        f"ACDC策略：只读取柴发分区与SOC分区，动作 {storage_control_action}；实时 {converter_current if converter_current is not None else '--'} kW，控制基准 {converter_current_for_control:.2f} kW，基础步长 {converter_base_step_kw:.2f} kW，{converter_step_reason_text}，实际按 {converter_step_scale * 100:.0f}% 即 {converter_step_kw:.2f} kW 调节，目标 {converter_target:.2f} kW",
+        f"ACDC策略：只读取柴发分区与SOC分区，动作 {storage_control_action}；实时 {converter_current if converter_current is not None else '--'} kW，控制基准 {converter_current_for_control:.2f} kW，基础步长 {converter_base_step_kw:.2f} kW，{converter_step_reason_text}，{converter_step_application_text}，目标 {converter_target:.2f} kW",
         f"ACDC独立预估：对应储能平衡功率由 {storage_current_for_control:.2f} kW 变为 {storage_target:.2f} kW，柴发反馈参考值 {diesel_target:.2f} kW；该值不叠加新能源动作",
         f"新能源策略：以SOC为主；低于下限-死区时按原步长恢复；高于上限+死区时，若ACDC可增加送出则保持新能源，否则按原步长降低新能源；普通上限附近仍按储能充电反馈防止积分饱和；本轮动作 {renewable_control_action}",
         f"新能源目标：当前 {renewable_current:.2f} kW，储能当前 {storage_current_for_control:.2f} kW、充电死区 {settings.storage_switch_deadband_kw:.2f} kW、超出死区 {renewable_storage_charge_excess_kw:.2f} kW；基础单步比例 {settings.step_coefficient * 100:.2f}%，{renewable_step_reason_text}，实际按 {renewable_step_scale * 100:.1f}% 即 {renewable_effective_step_ratio * 100:.2f}% 调节，目标 {renewable_target:.2f} kW",

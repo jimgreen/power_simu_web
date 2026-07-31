@@ -1667,7 +1667,7 @@ def update_storage_soc_book(
         if source is None:
             continue
         try:
-            soc = float(row.get("soc_curr", 0.5))
+            soc = _clamp(float(row.get("soc_curr", 0.5)), 0.0, 1.0)
         except (TypeError, ValueError):
             continue
         source_name = str(source.get("name", ""))
@@ -1681,7 +1681,11 @@ def update_storage_soc_book(
         capacity = _safe_float((define or {}).get("emva", DEFAULT_STORAGE_CAPACITY_KWH), DEFAULT_STORAGE_CAPACITY_KWH) or DEFAULT_STORAGE_CAPACITY_KWH
         charge_efficiency, discharge_efficiency = _storage_efficiencies(define)
         soc_power = _storage_internal_power_for_soc(actual_power, charge_efficiency, discharge_efficiency)
-        next_soc = soc - soc_power * float(period_seconds) / 3600.0 / max(capacity, 1e-9)
+        next_soc = _clamp(
+            soc - soc_power * float(period_seconds) / 3600.0 / max(capacity, 1e-9),
+            0.0,
+            1.0,
+        )
         changed += _set_row_value(row, "soc_curr", format_number(next_soc))
     return changed
 
@@ -2098,14 +2102,20 @@ def add_noise_to_rows(rows: Sequence[Sequence[str]], noise_std: Optional[float],
     noisy_rows: List[List[str]] = []
     for source_row in rows:
         row = list(source_row)
-        if len(row) > 4 and str(row[4]).upper() in SIGNAL_MEASUREMENT_TYPES:
+        meas_type = str(row[4]).upper() if len(row) > 4 else ""
+        if meas_type in SIGNAL_MEASUREMENT_TYPES:
             noisy_rows.append(row)
             continue
         sigma = _row_noise_sigma(row, noise_std)
-        if sigma > 0.0:
+        if sigma > 0.0 or meas_type == "SOC":
             try:
-                row[7] = format_number(float(row[7]) + rng.gauss(0.0, sigma))
-            except (TypeError, ValueError):
+                value = float(row[7])
+                if sigma > 0.0:
+                    value += rng.gauss(0.0, sigma)
+                if meas_type == "SOC":
+                    value = _clamp(value, 0.0, 1.0)
+                row[7] = format_number(value)
+            except (IndexError, TypeError, ValueError):
                 pass
         noisy_rows.append(row)
     return noisy_rows

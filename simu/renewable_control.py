@@ -30,18 +30,6 @@ POWER_CONTROL_MODES = {"P", "PQ", "PV", "ACP"}
 REMOTE_SNAPSHOT_STATIC_FIELDS = ("definitions", "settings", "device_parameters")
 RENEWABLE_CONTROL_STATE_FILE = "renewable_control.json"
 DEADBAND_STEP_SCALE = 0.20
-DEFAULT_CONVERTER_SOC_POWER_LIMITS = (
-    0.0,
-    0.0,
-    0.2,
-    0.4,
-    0.4,
-    0.5,
-    0.6,
-    0.8,
-    0.8,
-    1.0,
-)
 
 
 def _now_text() -> str:
@@ -83,28 +71,6 @@ def _ratio(value: Any, default: Optional[float]) -> Optional[float]:
     if number > 1:
         number /= 100.0
     return _clamp(number, 0.0, 1.0)
-
-
-def _normalize_converter_soc_power_limits(values: Any) -> Tuple[float, ...]:
-    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
-        raise ValueError("变流器SOC功率限额必须包含10个分段值")
-    if len(values) != 10:
-        raise ValueError("变流器SOC功率限额必须包含10个分段值")
-    normalized: List[float] = []
-    for index, value in enumerate(values):
-        number = _number(value)
-        if number is None or number < 0.0 or number > 1.0:
-            raise ValueError(f"第{index + 1}个变流器SOC功率限额必须位于0%至100%之间")
-        rounded_tenth = round(number * 10.0)
-        if abs(number * 10.0 - rounded_tenth) > 1e-7:
-            raise ValueError(f"第{index + 1}个变流器SOC功率限额必须采用10%档位")
-        normalized.append(rounded_tenth / 10.0)
-    for index in range(1, len(normalized)):
-        if normalized[index] + EPSILON < normalized[index - 1]:
-            raise ValueError(
-                f"变流器SOC功率限额必须单调不下降：第{index + 1}档不能低于第{index}档"
-            )
-    return tuple(normalized)
 
 
 def _live_soc_ratio(value: Any, default: Optional[float] = None) -> Optional[float]:
@@ -293,7 +259,6 @@ class RenewableControlSettings:
     diesel_deadband_ratio: float = 0.03
     soc_deadband: float = 0.05
     converter_step_ratio: float = 0.03
-    converter_soc_power_limits: Tuple[float, ...] = DEFAULT_CONVERTER_SOC_POWER_LIMITS
     command_valid_minutes: float = 120.0
 
     def normalized(self) -> "RenewableControlSettings":
@@ -310,9 +275,6 @@ class RenewableControlSettings:
             diesel_deadband_ratio=max(0.0, float(self.diesel_deadband_ratio)),
             soc_deadband=_clamp(float(self.soc_deadband), 0.0, 1.0),
             converter_step_ratio=max(0.0, float(self.converter_step_ratio)),
-            converter_soc_power_limits=_normalize_converter_soc_power_limits(
-                self.converter_soc_power_limits
-            ),
             command_valid_minutes=max(0.1, float(self.command_valid_minutes)),
         )
 
@@ -337,12 +299,6 @@ class RenewableControlSettings:
                     if parsed is not None:
                         values[field_name] = parsed
                     break
-        for name in ("converter_soc_power_limits", "converterSocPowerLimits"):
-            if name in payload:
-                values["converter_soc_power_limits"] = _normalize_converter_soc_power_limits(
-                    payload.get(name)
-                )
-                break
         return replace(self, **values).normalized()
 
     def payload(self) -> Dict[str, Any]:
@@ -357,7 +313,6 @@ class RenewableControlSettings:
             "dieselDeadbandRatio": self.diesel_deadband_ratio,
             "socDeadband": self.soc_deadband,
             "converterStepRatio": self.converter_step_ratio,
-            "converterSocPowerLimits": list(self.converter_soc_power_limits),
             "commandValidMinutes": self.command_valid_minutes,
         }
 
@@ -1000,46 +955,6 @@ def _parallel_converter_limit(rows: Sequence[Mapping[str, Any]]) -> float:
     return sum(capacities) if all(capacity > 0 for capacity in capacities) else math.inf
 
 
-def _converter_soc_limit_ratio(
-    soc: Optional[float],
-    limits: Sequence[float],
-) -> Tuple[float, Optional[int]]:
-    if soc is None or not math.isfinite(soc):
-        return 1.0, None
-    band_index = min(9, max(0, math.floor(soc * 10.0 + EPSILON)))
-    return float(limits[band_index]), band_index
-
-
-def _converter_soc_release_ratio(
-    soc: Optional[float],
-    limits: Sequence[float],
-    band_index: Optional[int],
-    *,
-    soc_noise_margin: float,
-    converter_step_ratio: float,
-) -> Tuple[float, float, float]:
-    if soc is None or band_index is None:
-        return 1.0, 0.0, 1.0
-    configured_ratio = float(limits[band_index])
-    if band_index <= 0:
-        return configured_ratio, 0.0, 1.0
-    previous_ratio = float(limits[band_index - 1])
-    ratio_increase = configured_ratio - previous_ratio
-    if ratio_increase <= EPSILON or converter_step_ratio <= EPSILON:
-        return configured_ratio, 0.0, 1.0
-
-    expected_soc_variation = max(0.0, soc_noise_margin)
-    if expected_soc_variation <= EPSILON:
-        return configured_ratio, 0.0, 1.0
-
-    release_steps = max(1, math.ceil(ratio_increase / converter_step_ratio - EPSILON))
-    transition_width = min(0.1, expected_soc_variation * release_steps)
-    lower_boundary = band_index / 10.0
-    progress = _clamp((soc - lower_boundary) / transition_width, 0.0, 1.0)
-    release_ratio = previous_ratio + ratio_increase * progress
-    return release_ratio, transition_width, progress
-
-
 def _allocate_converters(rows: Sequence[Mapping[str, Any]], total: float) -> List[float]:
     target = max(0.0, total)
     if not rows or target <= 0:
@@ -1161,15 +1076,37 @@ def calculate_renewable_control_plan(
         if storage_soc > storage_soc_upper_limit - settings.soc_deadband
         else "normal"
     )
-    soc_above_upper_deadband = (
-        storage_soc is not None
-        and storage_soc_upper_limit is not None
-        and storage_soc > storage_soc_upper_limit + settings.soc_deadband + EPSILON
+    soc_upper_deadband_threshold = (
+        min(1.0, storage_soc_upper_limit + settings.soc_deadband)
+        if storage_soc_upper_limit is not None
+        else None
     )
-    soc_below_lower_deadband = (
+    soc_lower_deadband_threshold = (
+        max(0.0, storage_soc_lower_limit - settings.soc_deadband)
+        if storage_soc_lower_limit is not None
+        else None
+    )
+    soc_above_upper_deadband = bool(
         storage_soc is not None
-        and storage_soc_lower_limit is not None
-        and storage_soc < storage_soc_lower_limit - settings.soc_deadband - EPSILON
+        and soc_upper_deadband_threshold is not None
+        and (
+            storage_soc > soc_upper_deadband_threshold + EPSILON
+            or (
+                soc_upper_deadband_threshold >= 1.0 - EPSILON
+                and storage_soc >= 1.0 - EPSILON
+            )
+        )
+    )
+    soc_below_lower_deadband = bool(
+        storage_soc is not None
+        and soc_lower_deadband_threshold is not None
+        and (
+            storage_soc < soc_lower_deadband_threshold - EPSILON
+            or (
+                soc_lower_deadband_threshold <= EPSILON
+                and storage_soc <= EPSILON
+            )
+        )
     )
     storage_above_upper = [row for row in online_storage if row.get("socConstraint") == "above_upper"]
     storage_below_lower = [row for row in online_storage if row.get("socConstraint") == "below_lower"]
@@ -1184,48 +1121,12 @@ def calculate_renewable_control_plan(
     if any(finite(row.get("transferCapacityKw")) <= 0 for row in converter_rows):
         quality.add("部分在线功率控制型交直流变流器缺少有效容量边界", dispatch_forbidden=True)
     converter_limit = _parallel_converter_limit(converter_rows)
-    converter_soc_limit_ratio, converter_soc_band_index = _converter_soc_limit_ratio(
-        storage_soc,
-        settings.converter_soc_power_limits,
-    )
-    (
-        converter_soc_release_ratio,
-        converter_soc_transition_width,
-        converter_soc_transition_progress,
-    ) = _converter_soc_release_ratio(
-        storage_soc,
-        settings.converter_soc_power_limits,
-        converter_soc_band_index,
-        soc_noise_margin=storage_soc_noise_margin,
-        converter_step_ratio=settings.converter_step_ratio,
-    )
-    converter_soc_band_lower_percent = (
-        converter_soc_band_index * 10 if converter_soc_band_index is not None else None
-    )
-    converter_soc_band_upper_percent = (
-        min(100, (converter_soc_band_index + 1) * 10)
-        if converter_soc_band_index is not None
-        else None
-    )
-    converter_soc_configured_limit = (
-        converter_limit * converter_soc_limit_ratio
-        if math.isfinite(converter_limit)
-        else converter_limit
-    )
-    converter_soc_release_limit = (
-        converter_limit * converter_soc_release_ratio
-        if math.isfinite(converter_limit)
-        else converter_limit
-    )
-    converter_soc_transition_active = (
-        converter_soc_release_ratio + EPSILON < converter_soc_limit_ratio
-    )
     storage_power_capacity = max(raw_charge, raw_discharge)
-    if converter_rows and math.isfinite(converter_soc_release_limit):
+    if converter_rows and math.isfinite(converter_limit):
         storage_power_capacity = (
-            min(storage_power_capacity, converter_soc_release_limit)
+            min(storage_power_capacity, converter_limit)
             if storage_power_capacity > EPSILON
-            else converter_soc_release_limit
+            else converter_limit
         )
     converter_base_step_kw = (
         settings.converter_step_ratio * converter_limit
@@ -1281,14 +1182,14 @@ def calculate_renewable_control_plan(
     storage_min_target = -raw_charge if converter_rows else storage_current_for_control
     storage_max_target = raw_discharge if converter_rows else storage_current_for_control
     converter_lower_target = (
-        -converter_soc_release_limit
-        if converter_rows and math.isfinite(converter_soc_release_limit)
+        -converter_limit
+        if converter_rows and math.isfinite(converter_limit)
         else min(0.0, converter_current_for_control)
         if converter_rows
         else 0.0
     )
     converter_upper_target = 0.0
-    if converter_rows and math.isfinite(converter_soc_release_limit):
+    if converter_rows and math.isfinite(converter_limit):
         converter_storage_baseline = storage_current_for_control + converter_current_for_control
         converter_storage_min = converter_storage_baseline - converter_upper_target
         converter_storage_max = converter_storage_baseline - converter_lower_target
@@ -1421,6 +1322,17 @@ def calculate_renewable_control_plan(
             if converter_current_for_control > EPSILON
             else "hold_at_soc_lower"
         )
+    elif soc_above_upper_deadband and diesel_control_region != "low":
+        high_soc_diesel_margin_kw = max(0.0, diesel_down_margin)
+        raw_converter_desired_target = max(
+            converter_lower_target,
+            converter_current_for_control - high_soc_diesel_margin_kw,
+        )
+        storage_control_action = (
+            "increase_discharge_above_soc_upper_deadband"
+            if raw_converter_desired_target < converter_current_for_control - EPSILON
+            else "hold_at_diesel_floor_above_soc_upper_deadband"
+        )
     elif diesel_control_region == "low":
         raw_converter_desired_target = min(
             0.0,
@@ -1436,9 +1348,6 @@ def calculate_renewable_control_plan(
     elif diesel_control_region == "deadband":
         raw_converter_desired_target = converter_current_for_control
         storage_control_action = "hold"
-    elif soc_above_upper_deadband:
-        raw_converter_desired_target = converter_lower_target
-        storage_control_action = "increase_discharge_above_soc_upper_deadband"
     elif soc_at_or_above_upper:
         if converter_current_for_control > EPSILON:
             raw_converter_desired_target = 0.0
@@ -1547,6 +1456,7 @@ def calculate_renewable_control_plan(
     )
     converter_slow_increase = (
         converter_step_direction == "increase"
+        and not soc_below_lower_deadband
         and (lower_soc_deadband_active or diesel_deadband_active)
     )
     converter_step_scale = (
@@ -1590,6 +1500,14 @@ def calculate_renewable_control_plan(
 
     if storage_soc is None or storage_soc_upper_limit is None:
         renewable_control_action = "hold_unknown_soc"
+    elif soc_below_lower_deadband:
+        renewable_control_action = "recover_one_step_below_soc_lower_deadband"
+    elif soc_above_upper_deadband:
+        renewable_control_action = (
+            "hold_above_soc_upper_deadband_while_acdc_discharges"
+            if converter_target < converter_current_for_control - EPSILON
+            else "curtail_one_step_above_soc_upper_deadband"
+        )
     elif storage_soc < storage_soc_upper_limit - EPSILON:
         renewable_control_action = (
             "hold_near_upper_while_charging"
@@ -1610,16 +1528,27 @@ def calculate_renewable_control_plan(
 
     renewable_step_direction = (
         "increase"
-        if renewable_control_action == "recover_one_step"
+        if renewable_control_action in {
+            "recover_one_step",
+            "recover_one_step_below_soc_lower_deadband",
+        }
         else "decrease"
-        if renewable_control_action == "curtail_one_step_full_soc"
+        if renewable_control_action in {
+            "curtail_one_step_full_soc",
+            "curtail_one_step_above_soc_upper_deadband",
+        }
         else "hold"
     )
     renewable_step_scale = (
-        renewable_recovery_step_scale
-        if renewable_step_direction == "increase"
+        1.0
+        if renewable_control_action in {
+            "recover_one_step_below_soc_lower_deadband",
+            "curtail_one_step_above_soc_upper_deadband",
+        }
+        else renewable_recovery_step_scale
+        if renewable_control_action == "recover_one_step"
         else renewable_curtail_step_scale
-        if renewable_step_direction == "decrease"
+        if renewable_control_action == "curtail_one_step_full_soc"
         else 0.0
     )
     renewable_effective_step_ratio = settings.step_coefficient * renewable_step_scale
@@ -1634,13 +1563,18 @@ def calculate_renewable_control_plan(
         step_kw = renewable_effective_step_ratio * capacity_kw
         if not row.get("commandable"):
             target_kw = current_kw
+        elif renewable_control_action == "curtail_one_step_above_soc_upper_deadband":
+            target_kw = max(0.0, current_kw - step_kw)
         elif renewable_control_action == "curtail_one_step_full_soc":
             target_kw = max(
                 0.0,
                 current_kw
                 - renewable_curtail_base_steps.get(key, 0.0) * renewable_curtail_step_scale,
             )
-        elif renewable_control_action == "recover_one_step":
+        elif renewable_control_action in {
+            "recover_one_step",
+            "recover_one_step_below_soc_lower_deadband",
+        }:
             target_kw = min(capacity_kw, current_kw + step_kw)
         else:
             target_kw = current_kw
@@ -1754,22 +1688,9 @@ def calculate_renewable_control_plan(
             "ratedAvailableKw": row["transferCapacityKw"]
             if row["transferCapacityKw"] > 0
             else max(total_charge, total_discharge) / max(1, len(converter_rows)),
-            "configuredAvailableKw": row["transferCapacityKw"] * converter_soc_limit_ratio
+            "availableKw": row["transferCapacityKw"]
             if row["transferCapacityKw"] > 0
-            else (
-                max(total_charge, total_discharge)
-                * converter_soc_limit_ratio
-                / max(1, len(converter_rows))
-            ),
-            "availableKw": row["transferCapacityKw"] * converter_soc_release_ratio
-            if row["transferCapacityKw"] > 0
-            else (
-                max(total_charge, total_discharge)
-                * converter_soc_release_ratio
-                / max(1, len(converter_rows))
-            ),
-            "socLimitRatio": converter_soc_limit_ratio,
-            "socReleaseRatio": converter_soc_release_ratio,
+            else max(total_charge, total_discharge) / max(1, len(converter_rows)),
             "strategyCommand": True,
             "commandKw": converter_allocations[index],
         }
@@ -1848,16 +1769,8 @@ def calculate_renewable_control_plan(
         "renewableStorageChargeExcessKw": renewable_storage_charge_excess_kw,
         "socAboveUpperDeadband": soc_above_upper_deadband,
         "socBelowLowerDeadband": soc_below_lower_deadband,
-        "socUpperDeadbandThreshold": (
-            storage_soc_upper_limit + settings.soc_deadband
-            if storage_soc_upper_limit is not None
-            else None
-        ),
-        "socLowerDeadbandThreshold": (
-            storage_soc_lower_limit - settings.soc_deadband
-            if storage_soc_lower_limit is not None
-            else None
-        ),
+        "socUpperDeadbandThreshold": soc_upper_deadband_threshold,
+        "socLowerDeadbandThreshold": soc_lower_deadband_threshold,
         "storageAboveUpperCount": len(storage_above_upper),
         "storageBelowLowerCount": len(storage_below_lower),
         "absorptionLimitKw": renewable_balance_limit,
@@ -1897,21 +1810,6 @@ def calculate_renewable_control_plan(
         "acdcTargetKw": converter_target,
         "acdcAdjustmentKw": converter_target - converter_current if converter_current is not None else None,
         "converterRatedCapacityKw": converter_limit if math.isfinite(converter_limit) else None,
-        "converterSocLimitRatio": converter_soc_limit_ratio,
-        "converterSocLimitKw": converter_soc_configured_limit
-        if math.isfinite(converter_soc_configured_limit)
-        else None,
-        "converterSocReleaseRatio": converter_soc_release_ratio,
-        "converterSocReleaseLimitKw": converter_soc_release_limit
-        if math.isfinite(converter_soc_release_limit)
-        else None,
-        "converterSocBandIndex": converter_soc_band_index,
-        "converterSocBandLowerPercent": converter_soc_band_lower_percent,
-        "converterSocBandUpperPercent": converter_soc_band_upper_percent,
-        "converterSocLimitApplied": converter_soc_limit_ratio < 1.0 - EPSILON,
-        "converterSocTransitionActive": converter_soc_transition_active,
-        "converterSocTransitionWidthPercent": converter_soc_transition_width * 100.0,
-        "converterSocTransitionProgress": converter_soc_transition_progress,
         "storageSocNoiseSigma": storage_soc_noise_sigma,
         "storageSocNoiseMargin": storage_soc_noise_margin,
         "converterReversePowerForbidden": True,
@@ -1980,7 +1878,9 @@ def calculate_renewable_control_plan(
     if diesel_deadband_active:
         converter_step_reasons.append("柴发下限死区")
     converter_step_region_text = "、".join(converter_step_reasons)
-    if diesel_boundary_approach_active:
+    if soc_below_lower_deadband and converter_step_direction == "increase":
+        converter_step_reason_text = "SOC低于下限-死区，停止过放优先，保持原步长"
+    elif diesel_boundary_approach_active:
         converter_step_reason_text = (
             f"接近柴发控制分区切换边界（距离 {diesel_boundary_distance_kw:.2f} kW，"
             f"不超过基础步长 {converter_base_step_kw:.2f} kW），采用"
@@ -1996,7 +1896,20 @@ def calculate_renewable_control_plan(
         converter_step_reason_text = f"{converter_step_region_text}内降功率，保持原步长"
     else:
         converter_step_reason_text = f"{converter_step_region_text}内无功率调整，保持原步长"
-    if renewable_control_action == "hold_near_upper_while_charging":
+    if renewable_control_action == "recover_one_step_below_soc_lower_deadband":
+        renewable_step_reason_text = (
+            "SOC低于下限-死区，新能源按原步长恢复，为储能补能创造直流侧功率余量"
+        )
+    elif renewable_control_action == "curtail_one_step_above_soc_upper_deadband":
+        renewable_step_reason_text = (
+            "SOC高于上限+死区且ACDC不能继续增加送出，新能源按原步长降低功率，"
+            "促使储能减少充电或转为放电"
+        )
+    elif renewable_control_action == "hold_above_soc_upper_deadband_while_acdc_discharges":
+        renewable_step_reason_text = (
+            "SOC高于上限+死区，ACDC已增加送出以降低SOC，新能源保持当前出力避免抵消校正"
+        )
+    elif renewable_control_action == "hold_near_upper_while_charging":
         renewable_step_reason_text = (
             f"接近SOC上限且储能充电超过 {settings.storage_switch_deadband_kw:.2f} kW 死区，"
             "暂停继续恢复"
@@ -2027,21 +1940,32 @@ def calculate_renewable_control_plan(
         if math.isfinite(converter_limit)
         else "--"
     )
-    converter_soc_configured_limit_text = (
-        f"{converter_soc_configured_limit:.2f}"
-        if math.isfinite(converter_soc_configured_limit)
-        else "--"
-    )
-    converter_soc_release_limit_text = (
-        f"{converter_soc_release_limit:.2f}"
-        if math.isfinite(converter_soc_release_limit)
-        else "--"
-    )
-    converter_soc_band_text = (
-        f"{converter_soc_band_lower_percent}%-{converter_soc_band_upper_percent}%"
-        if converter_soc_band_index is not None
-        else "未知SOC"
-    )
+    if soc_above_upper_deadband:
+        upper_threshold_percent = soc_upper_deadband_threshold * 100.0
+        if converter_target < converter_current_for_control - EPSILON:
+            soc_correction_detail = (
+                f"SOC越界校正：当前SOC {storage_soc * 100:.2f}% 高于上限+死区阈值 "
+                f"{upper_threshold_percent:.2f}%，利用柴发下调余量将ACDC目标由 "
+                f"{converter_current_for_control:.2f} kW 调至 {converter_target:.2f} kW，"
+                "新能源保持，持续增加储能放电直至SOC回到阈值以下"
+            )
+        else:
+            soc_correction_detail = (
+                f"SOC越界校正：当前SOC {storage_soc * 100:.2f}% 高于上限+死区阈值 "
+                f"{upper_threshold_percent:.2f}%，ACDC受柴发下限或容量边界约束不能继续增送，"
+                f"新能源目标由 {renewable_current:.2f} kW 降至 {renewable_target:.2f} kW，"
+                "促使储能减少充电或转为放电"
+            )
+    elif soc_below_lower_deadband:
+        lower_threshold_percent = soc_lower_deadband_threshold * 100.0
+        soc_correction_detail = (
+            f"SOC越界校正：当前SOC {storage_soc * 100:.2f}% 低于下限-死区阈值 "
+            f"{lower_threshold_percent:.2f}%，ACDC目标由 {converter_current_for_control:.2f} kW "
+            f"向零调整至 {converter_target:.2f} kW，新能源由 {renewable_current:.2f} kW "
+            f"恢复至 {renewable_target:.2f} kW，在禁止AC侧倒送的前提下促使储能补能"
+        )
+    else:
+        soc_correction_detail = "SOC越界校正：未触发上限+死区或下限-死区强制校正"
     decision_detail = [
         f"数据来源：{_source_label(data_source)}，质量 {quality_payload['status']}，闭环下发{'允许' if quality_payload['dispatchAllowed'] else '禁止'}",
         "控制架构：ACDC与新能源两条策略相互独立，分别生成目标，不做功率增量相加、替代、吸收或联合预测",
@@ -2049,18 +1973,18 @@ def calculate_renewable_control_plan(
         f"柴发分区：下限 {diesel_deadband_lower_kw:.2f} kW，单边死区上界 {diesel_deadband_upper_kw:.2f} kW（容量比例 {settings.diesel_deadband_ratio * 100:.2f}%）；低于下限逐步降低ACDC送出，区间内保持，高于上界才允许增加ACDC送出；当前位于 {diesel_control_region} 区",
         f"储能状态：当前 {storage_current_for_control:.2f} kW，SOC {storage_soc * 100 if storage_soc is not None else '--'}%，运行边界 [{storage_soc_lower_limit * 100 if storage_soc_lower_limit is not None else '--'}%, {storage_soc_upper_limit * 100 if storage_soc_upper_limit is not None else '--'}%]",
         f"SOC分区：下限 {storage_soc_lower_limit * 100 if storage_soc_lower_limit is not None else '--'}%，上限 {storage_soc_upper_limit * 100 if storage_soc_upper_limit is not None else '--'}%，死区 {settings.soc_deadband * 100:.2f}%，当前 {storage_soc_region}",
-        f"SOC运行约束：达到上限禁止充电，超过上限加死区后主动增加放电；达到下限禁止放电，低于下限减死区后变流器归零",
+        f"SOC运行约束：达到上限禁止充电；超过上限+死区后优先增加ACDC送出，受柴发下限约束时降低新能源；达到下限禁止放电，低于下限-死区后ACDC向零回退并恢复新能源",
+        soc_correction_detail,
         f"环境策略：风速 {observed_wind_speed if observed_wind_speed is not None else '--'}、太阳辐照度 {observed_irradiance if observed_irradiance is not None else '--'}、温度 {observed_air_temperature if observed_air_temperature is not None else '--'}，均按默认策略忽略",
-        f"ACDC SOC限额：原始并联容量 {converter_rated_capacity_text} kW，当前SOC命中 {converter_soc_band_text} 区间，配置上限 {converter_soc_limit_ratio * 100:.0f}% 即 {converter_soc_configured_limit_text} kW",
-        f"ACDC分档防振：SOC综合噪声裕度 {storage_soc_noise_margin * 100:.2f}%，边界过渡宽度 {converter_soc_transition_width * 100:.2f}%，释放进度 {converter_soc_transition_progress * 100:.1f}%，当前实际释放 {converter_soc_release_ratio * 100:.2f}% 即 {converter_soc_release_limit_text} kW{'，正在抑制分档边界跳变' if converter_soc_transition_active else ''}",
+        f"ACDC容量边界：自动控制使用原始并联容量 {converter_rated_capacity_text} kW",
         f"ACDC方向约束：禁止交流侧向直流侧倒送，自动控制目标范围 [{converter_lower_target:.2f}, {converter_upper_target:.2f}] kW",
-        f"ACDC后置校核：储能SOC功率边界折算目标 {storage_constrained_converter_target:.2f} kW，{'与状态机保持/调节方向冲突，已禁止反向覆盖' if converter_storage_constraint_conflict else '与状态机调节方向一致'}",
+        f"ACDC后置校核：储能运行边界折算目标 {storage_constrained_converter_target:.2f} kW，{'与状态机保持/调节方向冲突，已禁止反向覆盖' if converter_storage_constraint_conflict else '与状态机调节方向一致'}",
         f"ACDC策略：只读取柴发分区与SOC分区，动作 {storage_control_action}；实时 {converter_current if converter_current is not None else '--'} kW，控制基准 {converter_current_for_control:.2f} kW，基础步长 {converter_base_step_kw:.2f} kW，{converter_step_reason_text}，实际按 {converter_step_scale * 100:.0f}% 即 {converter_step_kw:.2f} kW 调节，目标 {converter_target:.2f} kW",
         f"ACDC独立预估：对应储能平衡功率由 {storage_current_for_control:.2f} kW 变为 {storage_target:.2f} kW，柴发反馈参考值 {diesel_target:.2f} kW；该值不叠加新能源动作",
-        f"新能源策略：以SOC为主；上限附近仅用储能充电状态做防积分饱和，已在充电时暂停恢复；达到上限后仅在柴发位于下限死区且储能仍在充电时弃电，储能充电消除后立即保持；本轮动作 {renewable_control_action}",
+        f"新能源策略：以SOC为主；低于下限-死区时按原步长恢复；高于上限+死区时，若ACDC可增加送出则保持新能源，否则按原步长降低新能源；普通上限附近仍按储能充电反馈防止积分饱和；本轮动作 {renewable_control_action}",
         f"新能源目标：当前 {renewable_current:.2f} kW，储能当前 {storage_current_for_control:.2f} kW、充电死区 {settings.storage_switch_deadband_kw:.2f} kW、超出死区 {renewable_storage_charge_excess_kw:.2f} kW；基础单步比例 {settings.step_coefficient * 100:.2f}%，{renewable_step_reason_text}，实际按 {renewable_step_scale * 100:.1f}% 即 {renewable_effective_step_ratio * 100:.2f}% 调节，目标 {renewable_target:.2f} kW",
         f"负荷功率仅用于展示：当前 {load_kw:.2f} kW，不参与新能源、储能、变流器或柴发目标计算",
-        f"独立边界检查：ACDC目标已按并联容量、SOC分档功率上限、分档边界渐进释放、禁止倒送、SOC充放电方向和变流器步长限幅；新能源目标仅按设备容量和新能源步长限幅",
+        f"独立边界检查：ACDC目标已按并联容量、禁止倒送、model.e中的SOC运行边界、储能剩余能量和变流器步长限幅；新能源目标仅按设备容量和新能源步长限幅",
         *[f"数据告警：{issue}" for issue in quality_payload["issues"]],
     ]
     return {

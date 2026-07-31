@@ -20,6 +20,25 @@ def _efile_block(name: str, header: tuple[str, ...], rows: list[dict[str, object
 
 
 class StorageSocConstraintTest(unittest.TestCase):
+    def test_scada_soc_noise_is_clamped_to_physical_bounds(self):
+        import simu_loop
+
+        class FixedNoise:
+            def __init__(self, value: float) -> None:
+                self.value = value
+
+            def gauss(self, _mean: float, _sigma: float) -> float:
+                return self.value
+
+        soc_row = ["1", "storage.soc", "DCGenerator", "storage-1", "SOC", "10000", "1", "1.0"]
+        upper = simu_loop.add_noise_to_rows([soc_row], 0.1, FixedNoise(0.2))
+        lower_row = [*soc_row]
+        lower_row[7] = "0.0"
+        lower = simu_loop.add_noise_to_rows([lower_row], 0.1, FixedNoise(-0.2))
+
+        self.assertAlmostEqual(float(upper[0][7]), 1.0)
+        self.assertAlmostEqual(float(lower[0][7]), 0.0)
+
     def test_limits_storage_from_model_embedded_device_block_without_device_file(self):
         import simu_loop
 
@@ -216,7 +235,13 @@ class StorageSocConstraintTest(unittest.TestCase):
         self.assertAlmostEqual(executed_power, 0.0)
         self.assertAlmostEqual(next_soc, 0.0)
 
-    def test_soc_integration_preserves_unbounded_value_to_expose_control_errors(self):
+    def _integrate_storage_soc(
+        self,
+        *,
+        soc: float,
+        actual_power: float,
+        period_seconds: float = 3600.0,
+    ) -> float:
         import simu_loop
 
         workspace = tempfile.TemporaryDirectory()
@@ -230,7 +255,7 @@ class StorageSocConstraintTest(unittest.TestCase):
             _efile_block(
                 "StorageSoc",
                 ("dev_type", "idx", "name", "soc_curr"),
-                [{"dev_type": "ESS", "idx": 1, "name": "ess01", "soc_curr": 0.9}],
+                [{"dev_type": "ESS", "idx": 1, "name": "ess01", "soc_curr": soc}],
             ),
             encoding="utf-8",
         )
@@ -280,13 +305,33 @@ class StorageSocConstraintTest(unittest.TestCase):
         changed = simu_loop.update_storage_soc_book(
             stat_book,
             model_book,
-            period_seconds=3600.0,
+            period_seconds=period_seconds,
             dev_define=dev_define,
-            storage_power_by_name={"ess01_vsrc": -20.0},
+            storage_power_by_name={"ess01_vsrc": actual_power},
         )
 
         self.assertEqual(changed, 1)
-        self.assertAlmostEqual(float(stat_book.data["StorageSoc"].data[0]["soc_curr"]), 1.08)
+        return float(stat_book.data["StorageSoc"].data[0]["soc_curr"])
+
+    def test_soc_integration_preserves_operational_limit_violation_below_physical_full(self):
+        next_soc = self._integrate_storage_soc(soc=0.9, actual_power=-5.0)
+
+        self.assertAlmostEqual(next_soc, 0.945)
+
+    def test_soc_integration_clamps_to_physical_upper_bound(self):
+        next_soc = self._integrate_storage_soc(soc=0.9, actual_power=-20.0)
+
+        self.assertAlmostEqual(next_soc, 1.0)
+
+    def test_soc_integration_clamps_to_physical_lower_bound(self):
+        next_soc = self._integrate_storage_soc(soc=0.1, actual_power=20.0)
+
+        self.assertAlmostEqual(next_soc, 0.0)
+
+    def test_soc_integration_repairs_existing_overbound_before_next_step(self):
+        next_soc = self._integrate_storage_soc(soc=1.08, actual_power=20.0)
+
+        self.assertAlmostEqual(next_soc, 0.7777777778)
 
     def test_integrates_soc_from_actual_solved_storage_power_with_charge_efficiency_when_setpoint_is_zero(self):
         import simu_loop

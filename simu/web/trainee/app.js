@@ -20,9 +20,6 @@ const VERTICAL_SPLIT_MIN_BOTTOM_PX = 120;
 const STATIC_CACHE_STORAGE_KEY = "polarTraineeStaticCacheV1";
 const STATIC_CACHE_MODEL_LIMIT = 4;
 const API_REQUEST_TIMEOUT_MS = 30000;
-const DEFAULT_CONVERTER_SOC_POWER_LIMITS = Object.freeze([
-  0.0, 0.0, 0.2, 0.4, 0.4, 0.5, 0.6, 0.8, 0.8, 1.0,
-]);
 
 function readStoredModelContexts() {
   let contexts = {};
@@ -139,7 +136,6 @@ const state = {
     converterStepRatio: 0.03,
     dieselDeadbandRatio: 0.03,
     socDeadband: 0.05,
-    converterSocPowerLimits: [...DEFAULT_CONVERTER_SOC_POWER_LIMITS],
     sending: false,
     requestActive: false,
     actionActive: false,
@@ -4896,23 +4892,6 @@ function renewableClockKey(snapshot) {
   return `${clock.absolute_minute ?? clock.minute ?? ""}|${clock.time || ""}`;
 }
 
-function normalizeConverterSocPowerLimits(values, fallback = DEFAULT_CONVERTER_SOC_POWER_LIMITS) {
-  const fallbackValues = Array.isArray(fallback) && fallback.length === 10
-    ? fallback
-    : DEFAULT_CONVERTER_SOC_POWER_LIMITS;
-  if (!Array.isArray(values) || values.length !== 10) return [...fallbackValues];
-  const normalized = values.map((value) => Number(value));
-  for (let index = 0; index < normalized.length; index += 1) {
-    const value = normalized[index];
-    if (!Number.isFinite(value) || value < 0 || value > 1) return [...fallbackValues];
-    const tenth = Math.round(value * 10);
-    if (Math.abs(value * 10 - tenth) > 1e-7) return [...fallbackValues];
-    normalized[index] = tenth / 10;
-    if (index > 0 && normalized[index] < normalized[index - 1]) return [...fallbackValues];
-  }
-  return normalized;
-}
-
 function renewableControlApiPath(preview = false) {
   return preview ? "/api/trainee/renewable-control?refresh=1" : "/api/trainee/renewable-control";
 }
@@ -4932,12 +4911,10 @@ function resetRenewableControlView(modelId = state.activeModelId) {
     lastSentAt: "",
     lastStatus: "正在读取学员台后台控制状态。",
     logs: [],
-    converterSocPowerLimits: [...DEFAULT_CONVERTER_SOC_POWER_LIMITS],
     logPage: 1,
     lastControlLogRenderKey: "",
   });
   state.renewableTrendHistory = [];
-  closeConverterSocLimitDialog();
 }
 
 function applyRenewableControlState(payload = {}) {
@@ -4953,10 +4930,6 @@ function applyRenewableControlState(payload = {}) {
     return false;
   }
   const settings = payload.settings && typeof payload.settings === "object" ? payload.settings : {};
-  const converterSocPowerLimits = normalizeConverterSocPowerLimits(
-    settings.converterSocPowerLimits,
-    control.converterSocPowerLimits,
-  );
   Object.assign(control, {
     modelId: String(payload.modelId || state.activeModelId || ""),
     enabled: Boolean(payload.enabled),
@@ -4968,7 +4941,6 @@ function applyRenewableControlState(payload = {}) {
     converterStepRatio: Math.max(0, toNumber(settings.converterStepRatio, control.converterStepRatio || 0.03)),
     dieselDeadbandRatio: Math.max(0, toNumber(settings.dieselDeadbandRatio, control.dieselDeadbandRatio || 0.03)),
     socDeadband: Math.max(0, toNumber(settings.socDeadband, control.socDeadband || 0.05)),
-    converterSocPowerLimits,
     lastPlan: payload.lastPlan || null,
     lastCalculatedAt: payload.lastCalculatedAt || "",
     lastSentAt: payload.lastSentAt || "",
@@ -5356,16 +5328,6 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   [periodInput, ...Object.keys(ratioInputs).map((id) => $(id))].forEach((input) => {
     if (input) input.disabled = control.actionActive;
   });
-  const socLimitButton = $("converterSocLimitButton");
-  if (socLimitButton) socLimitButton.disabled = control.actionActive;
-  const socLimitDialog = $("converterSocLimitDialog");
-  if (socLimitDialog?.open) {
-    const saveButton = $("converterSocLimitSave");
-    if (saveButton) saveButton.disabled = control.actionActive;
-    socLimitDialog.querySelectorAll("select[data-converter-soc-limit-index]").forEach((select) => {
-      select.disabled = control.actionActive;
-    });
-  }
   if (lastActionLabel) lastActionLabel.textContent = loopMode === "closed" ? "最近下发" : "最近计算";
   if (stateNode) {
     stateNode.textContent = control.enabled
@@ -5468,95 +5430,6 @@ async function updateRenewableSettings() {
       socDeadband: ratio("socDeadband", 5),
     },
   });
-}
-
-function setConverterSocLimitMessage(message = "", level = "") {
-  const node = $("converterSocLimitMessage");
-  if (!node) return;
-  node.textContent = message;
-  node.className = "model-management-message";
-  if (level === "error") node.classList.add("is-error");
-  if (level === "ok") node.classList.add("is-ok");
-}
-
-function renderConverterSocLimitRows(limits = state.renewableControl.converterSocPowerLimits) {
-  const rows = $("converterSocLimitRows");
-  if (!rows) return;
-  const normalized = normalizeConverterSocPowerLimits(limits);
-  const options = Array.from({ length: 11 }, (_value, optionIndex) => optionIndex * 10);
-  rows.innerHTML = Array.from({ length: 10 }, (_value, index) => {
-    const lower = index * 10;
-    const upper = (index + 1) * 10;
-    const selectedPercent = Math.round(normalized[index] * 100);
-    return `
-      <label class="converter-soc-limit-row" role="row" data-converter-soc-limit-row="${index}">
-        <span role="cell">${lower}%-${upper}%</span>
-        <select role="cell" data-converter-soc-limit-index="${index}" aria-label="SOC ${lower}%至${upper}%变流器功率上限">
-          ${options.map((percent) => `<option value="${percent}"${percent === selectedPercent ? " selected" : ""}>${percent}%</option>`).join("")}
-        </select>
-      </label>`;
-  }).join("");
-}
-
-function readConverterSocLimitDraft() {
-  const rows = $("converterSocLimitRows");
-  const selects = Array.from(rows?.querySelectorAll("select[data-converter-soc-limit-index]") || []);
-  rows?.querySelectorAll("[data-converter-soc-limit-row]").forEach((row) => row.classList.remove("is-invalid"));
-  if (selects.length !== 10) {
-    return { limits: null, message: "SOC分段配置不完整，请重新打开设置窗口。" };
-  }
-  const limits = selects.map((select) => Number(select.value) / 100);
-  for (let index = 0; index < limits.length; index += 1) {
-    const percent = limits[index] * 100;
-    if (!Number.isFinite(limits[index]) || percent < 0 || percent > 100 || Math.round(percent) % 10 !== 0) {
-      rows?.querySelector(`[data-converter-soc-limit-row="${index}"]`)?.classList.add("is-invalid");
-      return { limits: null, message: `SOC ${index * 10}%-${(index + 1) * 10}% 的功率上限不是有效的10%档位。` };
-    }
-    if (index > 0 && limits[index] < limits[index - 1]) {
-      rows?.querySelector(`[data-converter-soc-limit-row="${index}"]`)?.classList.add("is-invalid");
-      return {
-        limits: null,
-        message: `SOC ${index * 10}%-${(index + 1) * 10}% 的功率上限不能低于前一档。`,
-      };
-    }
-  }
-  return { limits, message: "" };
-}
-
-function openConverterSocLimitDialog() {
-  const dialog = $("converterSocLimitDialog");
-  if (!dialog) return;
-  renderConverterSocLimitRows(state.renewableControl.converterSocPowerLimits);
-  setConverterSocLimitMessage("");
-  $("converterSocLimitSave").disabled = Boolean(state.renewableControl.actionActive);
-  if (!dialog.open) dialog.showModal();
-  dialog.querySelector("select[data-converter-soc-limit-index]")?.focus();
-}
-
-function closeConverterSocLimitDialog() {
-  const dialog = $("converterSocLimitDialog");
-  if (dialog?.open) dialog.close();
-}
-
-async function saveConverterSocLimits() {
-  if (state.renewableControl.actionActive) return;
-  const { limits, message } = readConverterSocLimitDraft();
-  if (!limits) {
-    setConverterSocLimitMessage(message, "error");
-    return;
-  }
-  const saveButton = $("converterSocLimitSave");
-  if (saveButton) saveButton.disabled = true;
-  setConverterSocLimitMessage("正在保存变流器SOC分段功率限额...");
-  const response = await runRenewableControlAction("update_settings", {
-    settings: { converterSocPowerLimits: limits },
-  });
-  if (response) {
-    closeConverterSocLimitDialog();
-    return;
-  }
-  if (saveButton) saveButton.disabled = false;
-  setConverterSocLimitMessage(state.renewableControl.lastStatus || "保存失败。", "error");
 }
 
 function renderClock(clock) {
@@ -8254,13 +8127,6 @@ $("remoteAdjustmentDialog").addEventListener("click", (event) => {
 });
 $("renewableAutoToggle").addEventListener("click", toggleRenewableAuto);
 $("renewableSendOnce").addEventListener("click", runRenewableControlOnce);
-$("converterSocLimitButton").addEventListener("click", openConverterSocLimitDialog);
-$("converterSocLimitClose").addEventListener("click", closeConverterSocLimitDialog);
-$("converterSocLimitCancel").addEventListener("click", closeConverterSocLimitDialog);
-$("converterSocLimitSave").addEventListener("click", saveConverterSocLimits);
-$("converterSocLimitDialog").addEventListener("click", (event) => {
-  if (event.target === $("converterSocLimitDialog")) closeConverterSocLimitDialog();
-});
 document.querySelectorAll("[data-renewable-loop-mode]").forEach((button) => {
   button.addEventListener("click", () => setRenewableLoopMode(button.dataset.renewableLoopMode));
 });

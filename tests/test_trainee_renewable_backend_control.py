@@ -191,174 +191,60 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertFalse(hasattr(settings, "storage_step_ratio"))
         self.assertNotIn("storageStepRatio", settings.payload())
 
-    def test_converter_soc_power_limits_default_and_payload(self):
-        expected = [0.0, 0.0, 0.2, 0.4, 0.4, 0.5, 0.6, 0.8, 0.8, 1.0]
-
-        settings = RenewableControlSettings()
-
-        self.assertEqual(list(settings.converter_soc_power_limits), expected)
-        self.assertEqual(settings.payload()["converterSocPowerLimits"], expected)
-
-    def test_converter_soc_power_limits_reject_invalid_configurations(self):
-        valid = [0.0, 0.0, 0.2, 0.4, 0.4, 0.5, 0.6, 0.8, 0.8, 1.0]
-        invalid_cases = (
-            valid[:-1],
-            [*valid[:4], 0.25, *valid[5:]],
-            [-0.1, *valid[1:]],
-            [0.0, 0.2, 0.1, *valid[3:]],
-        )
-
-        for limits in invalid_cases:
-            with self.subTest(limits=limits):
-                with self.assertRaises(ValueError):
-                    RenewableControlSettings().updated(
-                        {"converterSocPowerLimits": limits}
-                    )
-
-    def test_converter_forward_power_limit_uses_soc_piecewise_ratio_of_original_capacity(self):
-        cases = (
-            (-0.100, 0.00),
-            (0.050, 0.00),
-            (0.199, 0.00),
-            (0.200, 0.20),
-            (0.299, 0.20),
-            (0.300, 0.40),
-            (0.499, 0.40),
-            (0.500, 0.50),
-            (0.599, 0.50),
-            (0.600, 0.60),
-            (0.699, 0.60),
-            (0.700, 0.80),
-            (0.899, 0.80),
-            (0.900, 1.00),
-            (1.000, 1.00),
-            (1.200, 1.00),
-        )
-        for soc, expected_ratio in cases:
-            with self.subTest(soc=soc):
-                snapshot = renewable_snapshot()
-                storage_parameter = snapshot["device_parameters"]["DCStorageGen"][0]
-                storage_parameter["soc_lower_limit"] = 0
-                storage_parameter["soc_upper_limit"] = 100
-                storage_parameter["max_charge_power"] = 100
-                storage_parameter["max_discharge_power"] = 100
-                for row in snapshot["measurements"]["scada"]:
-                    if row["meas_type"] == "SOC":
-                        row["value"] = soc
-                    elif row["dev_name"] == "storage-1" and row["meas_type"] == "P_GEN":
-                        row["value"] = 0.0
-                    elif row["dev_name"] == "diesel-1" and row["meas_type"] == "P_GEN":
-                        row["value"] = 200.0
-                    elif row["dev_type"] == "DCACConverter" and row["meas_type"] == "P_AC":
-                        row["value"] = 0.0
-
-                plan = calculate_renewable_control_plan(
-                    snapshot,
-                    RenewableControlSettings(converter_step_ratio=1.0),
-                )
-                metrics = plan["metrics"]
-                converter = next(row for row in plan["commandRows"] if row["category"] == "交直流变流器")
-                expected_limit = 50.0 * expected_ratio
-
-                self.assertAlmostEqual(metrics["converterRatedCapacityKw"], 50.0)
-                self.assertAlmostEqual(metrics["converterSocLimitRatio"], expected_ratio)
-                self.assertAlmostEqual(metrics["converterSocLimitKw"], expected_limit)
-                self.assertAlmostEqual(metrics["converterTargetLowerLimitKw"], -expected_limit)
-                self.assertAlmostEqual(metrics["converterTargetUpperLimitKw"], 0.0)
-                self.assertAlmostEqual(metrics["acdcTargetKw"], -expected_limit)
-                self.assertAlmostEqual(converter["availableKw"], expected_limit)
-                self.assertAlmostEqual(converter["commandKw"], -expected_limit)
-
-    def test_converter_forward_power_limit_uses_configured_soc_schedule(self):
-        snapshot = renewable_snapshot()
-        storage_parameter = snapshot["device_parameters"]["DCStorageGen"][0]
-        storage_parameter["soc_lower_limit"] = 0
-        storage_parameter["soc_upper_limit"] = 100
-        storage_parameter["max_charge_power"] = 100
-        storage_parameter["max_discharge_power"] = 100
-        for row in snapshot["measurements"]["scada"]:
-            if row["meas_type"] == "SOC":
-                row["value"] = 0.35
-            elif row["dev_name"] == "storage-1" and row["meas_type"] == "P_GEN":
-                row["value"] = 0.0
-            elif row["dev_name"] == "diesel-1" and row["meas_type"] == "P_GEN":
-                row["value"] = 200.0
-            elif row["dev_type"] == "DCACConverter" and row["meas_type"] == "P_AC":
-                row["value"] = 0.0
-
-        plan = calculate_renewable_control_plan(
-            snapshot,
-            RenewableControlSettings(
-                converter_step_ratio=1.0,
-                converter_soc_power_limits=(
+    def test_settings_ignore_legacy_converter_soc_power_limits(self):
+        settings = RenewableControlSettings().updated(
+            {
+                "converterSocPowerLimits": [
                     0.0,
-                    0.1,
+                    0.0,
                     0.2,
-                    0.3,
+                    0.4,
                     0.4,
                     0.5,
                     0.6,
-                    0.7,
                     0.8,
-                    0.9,
-                ),
-            ),
+                    0.8,
+                    1.0,
+                ]
+            }
         )
 
-        self.assertAlmostEqual(plan["metrics"]["converterSocLimitRatio"], 0.3)
-        self.assertAlmostEqual(plan["metrics"]["converterSocLimitKw"], 15.0)
-        self.assertEqual(plan["metrics"]["converterSocBandIndex"], 3)
-        self.assertEqual(plan["metrics"]["converterSocBandLowerPercent"], 30)
-        self.assertEqual(plan["metrics"]["converterSocBandUpperPercent"], 40)
-        self.assertAlmostEqual(plan["metrics"]["converterTargetLowerLimitKw"], -15.0)
-        self.assertAlmostEqual(plan["metrics"]["converterTargetUpperLimitKw"], 0.0)
-        self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], -15.0)
-        self.assertTrue(
-            any("当前SOC命中 30%-40% 区间" in line for line in plan["decisionDetail"])
-        )
+        self.assertFalse(hasattr(settings, "converter_soc_power_limits"))
+        self.assertNotIn("converterSocPowerLimits", settings.payload())
 
-    def test_converter_soc_band_does_not_release_a_full_step_immediately_above_boundary(self):
+    def test_low_soc_uses_physical_converter_and_storage_limits_without_segmented_derating(self):
         snapshot = renewable_snapshot()
         storage_parameter = snapshot["device_parameters"]["DCStorageGen"][0]
-        storage_parameter["energy_capacity"] = 360
         storage_parameter["soc_lower_limit"] = 0
         storage_parameter["soc_upper_limit"] = 100
-        storage_parameter["max_charge_power"] = 360
-        storage_parameter["max_discharge_power"] = 360
-        converter = next(
-            row for row in snapshot["devices"] if row["dev_type"] == "DCACConverter"
-        )
-        converter["raw"]["rated_capacity"] = "360"
         for row in snapshot["measurements"]["scada"]:
             if row["meas_type"] == "SOC":
-                row["value"] = 0.304
-                row["weight"] = 60000.0
+                row["value"] = 0.25
             elif row["dev_name"] == "storage-1" and row["meas_type"] == "P_GEN":
                 row["value"] = 0.0
             elif row["dev_name"] == "diesel-1" and row["meas_type"] == "P_GEN":
                 row["value"] = 200.0
             elif row["dev_type"] == "DCACConverter" and row["meas_type"] == "P_AC":
-                row["value"] = -72.0
+                row["value"] = 0.0
 
         plan = calculate_renewable_control_plan(
             snapshot,
-            RenewableControlSettings(
-                converter_step_ratio=0.05,
-                soc_deadband=0.10,
-            ),
+            RenewableControlSettings(converter_step_ratio=1.0),
+        )
+        metrics = plan["metrics"]
+        converter = next(
+            row for row in plan["commandRows"] if row["category"] == "交直流变流器"
         )
 
-        self.assertEqual(plan["metrics"]["converterSocBandIndex"], 3)
-        self.assertAlmostEqual(plan["metrics"]["converterSocLimitRatio"], 0.4)
-        self.assertTrue(plan["metrics"]["converterSocTransitionActive"])
-        self.assertGreater(plan["metrics"]["converterSocReleaseRatio"], 0.2)
-        self.assertLess(plan["metrics"]["converterSocReleaseRatio"], 0.4)
-        self.assertGreater(plan["metrics"]["acdcTargetKw"], -90.0)
-        self.assertLess(plan["metrics"]["acdcTargetKw"], -72.0)
-        self.assertLess(
-            abs(plan["metrics"]["acdcAdjustmentKw"]),
-            plan["metrics"]["converterStepKw"],
-        )
+        self.assertAlmostEqual(metrics["converterRatedCapacityKw"], 50.0)
+        self.assertAlmostEqual(metrics["converterTargetLowerLimitKw"], -50.0)
+        self.assertAlmostEqual(metrics["converterTargetUpperLimitKw"], 0.0)
+        self.assertAlmostEqual(metrics["storageDischargeAvailable"], 40.0)
+        self.assertAlmostEqual(metrics["acdcTargetKw"], -40.0)
+        self.assertAlmostEqual(converter["availableKw"], 50.0)
+        self.assertAlmostEqual(converter["commandKw"], -40.0)
+        self.assertFalse(any(key.startswith("converterSoc") for key in metrics))
+        self.assertFalse(any("SOC限额" in line or "分档" in line for line in plan["decisionDetail"]))
 
     def test_converter_automatic_target_never_requests_reverse_power(self):
         cases = (
@@ -485,7 +371,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
                 )
                 self.assertIn(expected_text, detail)
 
-    def test_diesel_deadband_holds_converter_but_allows_hard_soc_reduction(self):
+    def test_diesel_deadband_holds_normal_actions_but_extreme_low_soc_uses_full_step(self):
         settings = RenewableControlSettings(
             converter_step_ratio=0.10,
             diesel_deadband_ratio=0.10,
@@ -505,9 +391,9 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
                 0.20,
                 -5.0,
                 40.0,
-                0.20,
                 1.0,
-                "柴发下限死区内升功率，采用20%步长",
+                5.0,
+                "SOC低于下限-死区，停止过放优先，保持原步长",
             ),
         )
         for (
@@ -687,7 +573,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
             self.assertTrue(all(isinstance(row.get("commandKw"), (int, float)) for row in rows))
         self.assertTrue(any("SOC运行约束" in line and "禁止充电" in line for line in plan["decisionDetail"]))
 
-    def test_soc_above_upper_plus_deadband_holds_acdc_in_diesel_deadband(self):
+    def test_soc_above_upper_plus_deadband_uses_available_diesel_margin_in_deadband(self):
         snapshot = renewable_snapshot()
         for row in snapshot["measurements"]["scada"]:
             if row["meas_type"] == "SOC":
@@ -703,17 +589,30 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
         self.assertEqual(plan["metrics"]["dieselControlRegion"], "deadband")
         self.assertTrue(plan["metrics"]["socAboveUpperDeadband"])
-        self.assertEqual(plan["metrics"]["storageControlAction"], "hold")
+        self.assertEqual(
+            plan["metrics"]["storageControlAction"],
+            "increase_discharge_above_soc_upper_deadband",
+        )
         self.assertTrue(plan["metrics"]["dieselDeadbandActive"])
         self.assertAlmostEqual(plan["metrics"]["dieselFloorCorrectionRequestKw"], 0.0)
-        self.assertEqual(plan["metrics"]["converterStepDirection"], "hold")
+        self.assertEqual(plan["metrics"]["converterStepDirection"], "decrease")
         self.assertAlmostEqual(plan["metrics"]["converterStepScale"], 1.0)
         self.assertAlmostEqual(plan["metrics"]["converterStepKw"], 1.5)
-        self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], -5.0)
-        self.assertAlmostEqual(plan["metrics"]["storageTarget"], 0.0)
-        self.assertEqual(plan["metrics"]["renewableControlAction"], "hold_full_soc_no_charge")
+        self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], -6.5)
+        self.assertAlmostEqual(plan["metrics"]["storageTarget"], 1.5)
+        self.assertEqual(
+            plan["metrics"]["renewableControlAction"],
+            "hold_above_soc_upper_deadband_while_acdc_discharges",
+        )
+        self.assertAlmostEqual(plan["metrics"]["renewableTarget"], 50.0)
+        self.assertTrue(
+            any(
+                "SOC越界校正" in line and "高于上限+死区" in line and "ACDC" in line
+                for line in plan["decisionDetail"]
+            )
+        )
 
-    def test_soc_above_upper_plus_deadband_increases_discharge_only_above_diesel_deadband(self):
+    def test_soc_above_upper_plus_deadband_increases_discharge_above_diesel_deadband(self):
         snapshot = renewable_snapshot()
         for row in snapshot["measurements"]["scada"]:
             if row["meas_type"] == "SOC":
@@ -735,6 +634,58 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertEqual(plan["metrics"]["converterStepDirection"], "decrease")
         self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], -6.5)
         self.assertAlmostEqual(plan["metrics"]["storageTarget"], 1.5)
+
+    def test_soc_above_upper_plus_deadband_curtails_renewable_at_diesel_floor(self):
+        snapshot = renewable_snapshot()
+        for row in snapshot["measurements"]["scada"]:
+            if row["meas_type"] == "SOC":
+                row["value"] = 0.96
+            elif row["dev_name"] == "storage-1" and row["meas_type"] == "P_GEN":
+                row["value"] = 0
+            elif row["dev_name"] == "diesel-1" and row["meas_type"] == "P_GEN":
+                row["value"] = 20
+            elif row["dev_type"] == "DCACConverter" and row["meas_type"] == "P_AC":
+                row["value"] = -5
+
+        plan = calculate_renewable_control_plan(snapshot)
+
+        self.assertTrue(plan["metrics"]["socAboveUpperDeadband"])
+        self.assertEqual(
+            plan["metrics"]["storageControlAction"],
+            "hold_at_diesel_floor_above_soc_upper_deadband",
+        )
+        self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], -5.0)
+        self.assertEqual(
+            plan["metrics"]["renewableControlAction"],
+            "curtail_one_step_above_soc_upper_deadband",
+        )
+        self.assertAlmostEqual(plan["metrics"]["renewableStepScale"], 1.0)
+        self.assertAlmostEqual(plan["metrics"]["renewableTarget"], 44.6)
+
+    def test_physical_full_triggers_upper_correction_when_threshold_reaches_one(self):
+        snapshot = renewable_snapshot()
+        for row in snapshot["measurements"]["scada"]:
+            if row["meas_type"] == "SOC":
+                row["value"] = 1.0
+            elif row["dev_name"] == "storage-1" and row["meas_type"] == "P_GEN":
+                row["value"] = 0
+            elif row["dev_name"] == "diesel-1" and row["meas_type"] == "P_GEN":
+                row["value"] = 25
+            elif row["dev_type"] == "DCACConverter" and row["meas_type"] == "P_AC":
+                row["value"] = -5
+
+        plan = calculate_renewable_control_plan(
+            snapshot,
+            RenewableControlSettings(soc_deadband=0.10),
+        )
+
+        self.assertTrue(plan["metrics"]["socAboveUpperDeadband"])
+        self.assertAlmostEqual(plan["metrics"]["socUpperDeadbandThreshold"], 1.0)
+        self.assertEqual(
+            plan["metrics"]["storageControlAction"],
+            "increase_discharge_above_soc_upper_deadband",
+        )
+        self.assertLess(plan["metrics"]["acdcTargetKw"], plan["metrics"]["acdcCurrentForControlKw"])
 
     def test_soc_at_upper_immediately_stops_reverse_converter_power(self):
         snapshot = renewable_snapshot()
@@ -897,8 +848,6 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertEqual(plan["metrics"]["storageSocRegion"], "below_lower")
         self.assertFalse(plan["metrics"]["dieselEmergencyChargeAllowed"])
         self.assertEqual(plan["metrics"]["storageControlAction"], "hold_at_soc_lower")
-        self.assertAlmostEqual(plan["metrics"]["converterSocLimitRatio"], 0.0)
-        self.assertAlmostEqual(plan["metrics"]["converterSocLimitKw"], 0.0)
         self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], 0.0)
         self.assertAlmostEqual(plan["metrics"]["storageTarget"], 0.0)
 
@@ -919,11 +868,66 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
             plan["metrics"]["storageControlAction"],
             "stop_discharge_below_soc_lower_deadband",
         )
-        self.assertAlmostEqual(plan["metrics"]["converterSocLimitRatio"], 0.0)
         self.assertAlmostEqual(plan["metrics"]["acdcCurrentKw"], -0.5)
         self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], 0.0)
         self.assertAlmostEqual(plan["metrics"]["acdcAdjustmentKw"], 0.5)
         self.assertAlmostEqual(plan["metrics"]["storageTarget"], 0.0)
+        self.assertEqual(
+            plan["metrics"]["renewableControlAction"],
+            "recover_one_step_below_soc_lower_deadband",
+        )
+        self.assertGreater(plan["metrics"]["renewableTarget"], plan["metrics"]["renewableCurrentKw"])
+        self.assertTrue(
+            any(
+                "SOC越界校正" in line and "低于下限-死区" in line and "新能源" in line
+                for line in plan["decisionDetail"]
+            )
+        )
+
+    def test_soc_below_lower_minus_deadband_uses_full_converter_step_in_diesel_deadband(self):
+        snapshot = renewable_snapshot()
+        for row in snapshot["measurements"]["scada"]:
+            if row["meas_type"] == "SOC":
+                row["value"] = 0.10
+            elif row["dev_name"] == "storage-1" and row["meas_type"] == "P_GEN":
+                row["value"] = 5
+            elif row["dev_name"] == "diesel-1" and row["meas_type"] == "P_GEN":
+                row["value"] = 23
+            elif row["dev_type"] == "DCACConverter" and row["meas_type"] == "P_AC":
+                row["value"] = -5
+
+        plan = calculate_renewable_control_plan(snapshot)
+
+        self.assertTrue(plan["metrics"]["socBelowLowerDeadband"])
+        self.assertEqual(plan["metrics"]["dieselControlRegion"], "deadband")
+        self.assertEqual(plan["metrics"]["converterStepDirection"], "increase")
+        self.assertAlmostEqual(plan["metrics"]["converterStepScale"], 1.0)
+        self.assertAlmostEqual(plan["metrics"]["converterStepKw"], 1.5)
+        self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], -3.5)
+        self.assertAlmostEqual(plan["metrics"]["storageTarget"], 3.5)
+
+    def test_physical_empty_triggers_lower_correction_when_threshold_reaches_zero(self):
+        snapshot = renewable_snapshot()
+        for row in snapshot["measurements"]["scada"]:
+            if row["meas_type"] == "SOC":
+                row["value"] = 0.0
+            elif row["dev_name"] == "storage-1" and row["meas_type"] == "P_GEN":
+                row["value"] = 5
+            elif row["dev_type"] == "DCACConverter" and row["meas_type"] == "P_AC":
+                row["value"] = -5
+
+        plan = calculate_renewable_control_plan(
+            snapshot,
+            RenewableControlSettings(soc_deadband=0.20),
+        )
+
+        self.assertTrue(plan["metrics"]["socBelowLowerDeadband"])
+        self.assertAlmostEqual(plan["metrics"]["socLowerDeadbandThreshold"], 0.0)
+        self.assertEqual(
+            plan["metrics"]["renewableControlAction"],
+            "recover_one_step_below_soc_lower_deadband",
+        )
+        self.assertGreater(plan["metrics"]["acdcTargetKw"], plan["metrics"]["acdcCurrentForControlKw"])
 
     def test_diesel_deadband_holds_acdc_while_renewable_recovers(self):
         snapshot = renewable_snapshot()
@@ -1443,7 +1447,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertFalse(plan["metrics"]["dieselEmergencyChargeAllowed"])
         self.assertEqual(plan["metrics"]["storageControlAction"], "reverse_power_forbidden_below_soc_lower_deadband")
 
-    def test_extreme_low_soc_reports_zero_converter_capacity_limit(self):
+    def test_extreme_low_soc_stops_discharge_without_reducing_physical_converter_capacity(self):
         snapshot = renewable_snapshot()
         for row in snapshot["measurements"]["scada"]:
             if row["meas_type"] == "SOC":
@@ -1456,10 +1460,9 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         plan = calculate_renewable_control_plan(snapshot)
 
         self.assertAlmostEqual(plan["metrics"]["storageTarget"], 0.0)
-        self.assertAlmostEqual(plan["metrics"]["converterSocLimitRatio"], 0.0)
-        self.assertAlmostEqual(plan["metrics"]["converterSocLimitKw"], 0.0)
-        self.assertAlmostEqual(plan["metrics"]["converterTargetLowerLimitKw"], 0.0)
+        self.assertAlmostEqual(plan["metrics"]["converterTargetLowerLimitKw"], -50.0)
         self.assertAlmostEqual(plan["metrics"]["converterTargetUpperLimitKw"], 0.0)
+        self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], 0.0)
 
     def test_extreme_low_soc_keeps_storage_feedback_without_direct_storage_control(self):
         snapshot = renewable_snapshot()
@@ -1899,18 +1902,6 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                             "converterStepRatio": 0.05,
                             "dieselDeadbandRatio": 0.04,
                             "socDeadband": 0.05,
-                            "converterSocPowerLimits": [
-                                0.0,
-                                0.1,
-                                0.2,
-                                0.3,
-                                0.4,
-                                0.5,
-                                0.6,
-                                0.7,
-                                0.8,
-                                0.9,
-                            ],
                         },
                     },
                 )
@@ -1939,12 +1930,9 @@ class RenewableControlBackendApiTest(unittest.TestCase):
         self.assertEqual(state["settings"]["converterStepRatio"], 0.05)
         self.assertEqual(state["settings"]["dieselDeadbandRatio"], 0.04)
         self.assertEqual(state["settings"]["socDeadband"], 0.05)
-        self.assertEqual(
-            state["settings"]["converterSocPowerLimits"],
-            [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
-        )
+        self.assertNotIn("converterSocPowerLimits", state["settings"])
 
-    def test_invalid_converter_soc_limits_do_not_replace_persisted_settings(self):
+    def test_legacy_persisted_converter_soc_limits_are_ignored_on_reload(self):
         with tempfile.TemporaryDirectory() as temporary:
             target = type(
                 "TargetService",
@@ -1963,99 +1951,42 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                     "iter_services": lambda self: [target],
                 },
             )()
-            manager = TraineeRenewableControlManager(services, start_worker=False)
-            valid = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-            try:
-                manager.apply_action(
-                    "shared",
+            persisted_path = Path(temporary) / "renewable_control.json"
+            persisted_path.write_text(
+                json.dumps(
                     {
-                        "action": "update_settings",
-                        "settings": {"converterSocPowerLimits": valid},
-                    },
-                )
-                persisted_path = Path(temporary) / "renewable_control.json"
-                persisted_before = persisted_path.read_text(encoding="utf-8")
-
-                with self.assertRaises(ValueError):
-                    manager.apply_action(
-                        "shared",
-                        {
-                            "action": "update_settings",
-                            "settings": {
-                                "converterSocPowerLimits": [
-                                    0.0,
-                                    0.2,
-                                    0.1,
-                                    0.3,
-                                    0.4,
-                                    0.5,
-                                    0.6,
-                                    0.7,
-                                    0.8,
-                                    0.9,
-                                ]
-                            },
+                        "version": 1,
+                        "modelId": "shared",
+                        "loopMode": "closed",
+                        "settings": {
+                            "renewableStepRatio": 0.07,
+                            "converterSocPowerLimits": [
+                                0.0,
+                                0.0,
+                                0.2,
+                                0.4,
+                                0.4,
+                                0.5,
+                                0.6,
+                                0.8,
+                                0.8,
+                                1.0,
+                            ],
                         },
-                    )
-
-                state = manager.state("shared")
-                persisted_after = persisted_path.read_text(encoding="utf-8")
-            finally:
-                manager.close()
-
-        self.assertEqual(state["settings"]["converterSocPowerLimits"], valid)
-        self.assertEqual(persisted_after, persisted_before)
-
-    def test_converter_soc_limits_are_isolated_between_models(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            targets = {}
-            for model_id in ("first", "second"):
-                runtime_dir = root / model_id
-                runtime_dir.mkdir()
-                targets[model_id] = type(
-                    f"{model_id.title()}TargetService",
-                    (),
-                    {
-                        "model_id": model_id,
-                        "runtime_dir": runtime_dir,
-                        "trainee_receive_state": lambda self: {},
                     },
-                )()
-
-            services = type(
-                "Services",
-                (),
-                {
-                    "service_for": lambda self, model_id: targets[str(model_id)],
-                    "iter_services": lambda self: list(targets.values()),
-                },
-            )()
-            first_limits = [0.0, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0]
-            second_limits = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
             manager = TraineeRenewableControlManager(services, start_worker=False)
             try:
-                manager.apply_action(
-                    "first",
-                    {
-                        "action": "update_settings",
-                        "settings": {"converterSocPowerLimits": first_limits},
-                    },
-                )
-                manager.apply_action(
-                    "second",
-                    {
-                        "action": "update_settings",
-                        "settings": {"converterSocPowerLimits": second_limits},
-                    },
-                )
-                first_state = manager.state("first")
-                second_state = manager.state("second")
+                state = manager.state("shared")
             finally:
                 manager.close()
 
-        self.assertEqual(first_state["settings"]["converterSocPowerLimits"], first_limits)
-        self.assertEqual(second_state["settings"]["converterSocPowerLimits"], second_limits)
+        self.assertEqual(state["loopMode"], "closed")
+        self.assertEqual(state["settings"]["renewableStepRatio"], 0.07)
+        self.assertNotIn("converterSocPowerLimits", state["settings"])
 
     def test_two_web_clients_read_and_operate_one_shared_backend_controller(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -2091,13 +2022,12 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                 )
                 with urlopen(request, timeout=5) as response:
                     first_client = json.loads(response.read().decode("utf-8"))
-                limits = [0.0, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0]
                 settings_request = Request(
                     f"{base}/api/trainee/renewable-control?model_id=shared",
                     data=json.dumps(
                         {
                             "action": "update_settings",
-                            "settings": {"converterSocPowerLimits": limits},
+                            "settings": {"renewableStepRatio": 0.08},
                         }
                     ).encode("utf-8"),
                     method="POST",
@@ -2119,8 +2049,10 @@ class RenewableControlBackendApiTest(unittest.TestCase):
         self.assertEqual(first_client["loopMode"], "closed")
         self.assertEqual(second_client["loopMode"], "closed")
         self.assertEqual(updated_client["revision"], second_client["revision"])
-        self.assertEqual(updated_client["settings"]["converterSocPowerLimits"], limits)
-        self.assertEqual(second_client["settings"]["converterSocPowerLimits"], limits)
+        self.assertEqual(updated_client["settings"]["renewableStepRatio"], 0.08)
+        self.assertEqual(second_client["settings"]["renewableStepRatio"], 0.08)
+        self.assertNotIn("converterSocPowerLimits", updated_client["settings"])
+        self.assertNotIn("converterSocPowerLimits", second_client["settings"])
         self.assertEqual(first_client["modelId"], "shared")
         self.assertTrue(any(item.get("result") == "方式切换" for item in runtime_logs))
 

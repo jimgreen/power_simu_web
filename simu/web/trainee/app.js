@@ -20,6 +20,20 @@ const VERTICAL_SPLIT_MIN_BOTTOM_PX = 120;
 const STATIC_CACHE_STORAGE_KEY = "polarTraineeStaticCacheV1";
 const STATIC_CACHE_MODEL_LIMIT = 4;
 const API_REQUEST_TIMEOUT_MS = 30000;
+const DEFAULT_STORAGE_CHARGE_DERATING_CURVE = Object.freeze([
+  { soc: 0.60, powerRatio: 1.00 },
+  { soc: 0.70, powerRatio: 0.50 },
+  { soc: 0.80, powerRatio: 0.30 },
+  { soc: 0.85, powerRatio: 0.15 },
+  { soc: 0.90, powerRatio: 0.00 },
+]);
+const DEFAULT_STORAGE_DISCHARGE_DERATING_CURVE = Object.freeze([
+  { soc: 0.10, powerRatio: 0.00 },
+  { soc: 0.15, powerRatio: 0.15 },
+  { soc: 0.20, powerRatio: 0.30 },
+  { soc: 0.30, powerRatio: 0.50 },
+  { soc: 0.40, powerRatio: 1.00 },
+]);
 
 function readStoredModelContexts() {
   let contexts = {};
@@ -136,6 +150,8 @@ const state = {
     converterStepRatio: 0.03,
     dieselDeadbandRatio: 0.03,
     socDeadband: 0.05,
+    storageChargeDeratingCurve: DEFAULT_STORAGE_CHARGE_DERATING_CURVE.map((point) => ({ ...point })),
+    storageDischargeDeratingCurve: DEFAULT_STORAGE_DISCHARGE_DERATING_CURVE.map((point) => ({ ...point })),
     sending: false,
     requestActive: false,
     actionActive: false,
@@ -4896,6 +4912,39 @@ function renewableControlApiPath(preview = false) {
   return preview ? "/api/trainee/renewable-control?refresh=1" : "/api/trainee/renewable-control";
 }
 
+function storageDeratingRatio(value) {
+  const number = toNumber(value, Number.NaN);
+  if (!Number.isFinite(number)) return null;
+  return clamp(number > 1 ? number / 100 : number, 0, 1);
+}
+
+function normalizeStorageDeratingCurve(points, fallback, direction) {
+  const source = Array.isArray(points) && points.length >= 2 ? points : fallback;
+  const parsed = source
+    .map((point) => ({
+      soc: storageDeratingRatio(point?.soc ?? point?.socRatio),
+      powerRatio: storageDeratingRatio(point?.powerRatio ?? point?.power_ratio ?? point?.ratio),
+    }))
+    .filter((point) => Number.isFinite(point.soc) && Number.isFinite(point.powerRatio))
+    .sort((left, right) => left.soc - right.soc);
+  if (parsed.length < 2) return fallback.map((point) => ({ ...point }));
+  const unique = [];
+  parsed.forEach((point) => {
+    const previous = unique[unique.length - 1];
+    if (previous && Math.abs(previous.soc - point.soc) < 1e-9) previous.powerRatio = point.powerRatio;
+    else unique.push({ ...point });
+  });
+  if (unique.length < 2) return fallback.map((point) => ({ ...point }));
+  let previousRatio = direction === "discharge" ? 0 : 1;
+  return unique.map((point) => {
+    const powerRatio = direction === "discharge"
+      ? Math.max(previousRatio, point.powerRatio)
+      : Math.min(previousRatio, point.powerRatio);
+    previousRatio = powerRatio;
+    return { soc: point.soc, powerRatio };
+  });
+}
+
 function resetRenewableControlView(modelId = state.activeModelId) {
   const control = state.renewableControl;
   Object.assign(control, {
@@ -4941,6 +4990,16 @@ function applyRenewableControlState(payload = {}) {
     converterStepRatio: Math.max(0, toNumber(settings.converterStepRatio, control.converterStepRatio || 0.03)),
     dieselDeadbandRatio: Math.max(0, toNumber(settings.dieselDeadbandRatio, control.dieselDeadbandRatio || 0.03)),
     socDeadband: Math.max(0, toNumber(settings.socDeadband, control.socDeadband || 0.05)),
+    storageChargeDeratingCurve: normalizeStorageDeratingCurve(
+      settings.storageChargeDeratingCurve,
+      control.storageChargeDeratingCurve || DEFAULT_STORAGE_CHARGE_DERATING_CURVE,
+      "charge",
+    ),
+    storageDischargeDeratingCurve: normalizeStorageDeratingCurve(
+      settings.storageDischargeDeratingCurve,
+      control.storageDischargeDeratingCurve || DEFAULT_STORAGE_DISCHARGE_DERATING_CURVE,
+      "discharge",
+    ),
     lastPlan: payload.lastPlan || null,
     lastCalculatedAt: payload.lastCalculatedAt || "",
     lastSentAt: payload.lastSentAt || "",
@@ -5328,6 +5387,8 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   [periodInput, ...Object.keys(ratioInputs).map((id) => $(id))].forEach((input) => {
     if (input) input.disabled = control.actionActive;
   });
+  const storagePowerDeratingButton = $("storagePowerDeratingButton");
+  if (storagePowerDeratingButton) storagePowerDeratingButton.disabled = control.actionActive;
   if (lastActionLabel) lastActionLabel.textContent = loopMode === "closed" ? "最近下发" : "最近计算";
   if (stateNode) {
     stateNode.textContent = control.enabled
@@ -5428,8 +5489,124 @@ async function updateRenewableSettings() {
       converterStepRatio: ratio("converterStepRatio", 3),
       dieselDeadbandRatio: ratio("dieselDeadbandRatio", 3),
       socDeadband: ratio("socDeadband", 5),
+      storageChargeDeratingCurve: state.renewableControl.storageChargeDeratingCurve,
+      storageDischargeDeratingCurve: state.renewableControl.storageDischargeDeratingCurve,
     },
   });
+}
+
+function storagePowerDeratingRowHtml(direction, point, index) {
+  const directionLabel = direction === "charge" ? "充电" : "放电";
+  return `
+    <div class="storage-power-derating-row" data-derating-direction="${direction}" data-derating-index="${index}">
+      <label>${directionLabel} SOC
+        <span><input type="number" min="0" max="100" step="0.1" value="${formatNumber(point.soc * 100)}" data-derating-field="soc" /><i>%</i></span>
+      </label>
+      <label>功率上限
+        <span><input type="number" min="0" max="100" step="0.1" value="${formatNumber(point.powerRatio * 100)}" data-derating-field="powerRatio" /><i>%</i></span>
+      </label>
+    </div>`;
+}
+
+function renderStoragePowerDeratingRows(
+  chargeCurve = state.renewableControl.storageChargeDeratingCurve,
+  dischargeCurve = state.renewableControl.storageDischargeDeratingCurve,
+) {
+  const chargeRows = $("storageChargeDeratingRows");
+  const dischargeRows = $("storageDischargeDeratingRows");
+  if (chargeRows) {
+    chargeRows.innerHTML = normalizeStorageDeratingCurve(
+      chargeCurve,
+      DEFAULT_STORAGE_CHARGE_DERATING_CURVE,
+      "charge",
+    ).map((point, index) => storagePowerDeratingRowHtml("charge", point, index)).join("");
+  }
+  if (dischargeRows) {
+    dischargeRows.innerHTML = normalizeStorageDeratingCurve(
+      dischargeCurve,
+      DEFAULT_STORAGE_DISCHARGE_DERATING_CURVE,
+      "discharge",
+    ).map((point, index) => storagePowerDeratingRowHtml("discharge", point, index)).join("");
+  }
+}
+
+function readStoragePowerDeratingCurve(direction) {
+  return Array.from(document.querySelectorAll(`[data-derating-direction="${direction}"]`)).map((row) => ({
+    soc: Math.max(0, toNumber(row.querySelector('[data-derating-field="soc"]')?.value, 0)) / 100,
+    powerRatio: Math.max(0, toNumber(row.querySelector('[data-derating-field="powerRatio"]')?.value, 0)) / 100,
+  }));
+}
+
+function validateStoragePowerDeratingCurve(points, direction) {
+  if (!Array.isArray(points) || points.length < 2) return "每条降额曲线至少需要两个节点。";
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    if (!Number.isFinite(point.soc) || point.soc < 0 || point.soc > 1) return "SOC 必须位于 0% 到 100% 之间。";
+    if (!Number.isFinite(point.powerRatio) || point.powerRatio < 0 || point.powerRatio > 1) return "功率上限必须位于 0% 到 100% 之间。";
+    if (index > 0 && point.soc <= points[index - 1].soc) return "SOC 节点必须严格递增，不能重复。";
+    if (index > 0 && direction === "charge" && point.powerRatio > points[index - 1].powerRatio) {
+      return "充电功率上限必须随 SOC 升高保持不变或下降。";
+    }
+    if (index > 0 && direction === "discharge" && point.powerRatio < points[index - 1].powerRatio) {
+      return "放电功率上限必须随 SOC 升高保持不变或上升。";
+    }
+  }
+  return "";
+}
+
+function validateStoragePowerDeratingCurves(chargeCurve, dischargeCurve) {
+  return validateStoragePowerDeratingCurve(chargeCurve, "charge")
+    || validateStoragePowerDeratingCurve(dischargeCurve, "discharge");
+}
+
+function setStoragePowerDeratingMessage(message = "", level = "") {
+  const node = $("storagePowerDeratingMessage");
+  if (!node) return;
+  node.textContent = message;
+  node.classList.toggle("is-error", level === "error");
+  node.classList.toggle("is-ok", level === "ok");
+}
+
+function openStoragePowerDeratingDialog() {
+  renderStoragePowerDeratingRows();
+  setStoragePowerDeratingMessage("相邻 SOC 节点之间自动进行线性插值。", "");
+  const dialog = $("storagePowerDeratingDialog");
+  if (dialog && !dialog.open) dialog.showModal();
+}
+
+function closeStoragePowerDeratingDialog() {
+  const dialog = $("storagePowerDeratingDialog");
+  if (dialog?.open) dialog.close();
+}
+
+function resetStoragePowerDeratingCurves() {
+  renderStoragePowerDeratingRows(
+    DEFAULT_STORAGE_CHARGE_DERATING_CURVE,
+    DEFAULT_STORAGE_DISCHARGE_DERATING_CURVE,
+  );
+  setStoragePowerDeratingMessage("已恢复默认节点，点击保存后生效。", "ok");
+}
+
+async function saveStoragePowerDeratingCurves() {
+  const chargeCurve = readStoragePowerDeratingCurve("charge");
+  const dischargeCurve = readStoragePowerDeratingCurve("discharge");
+  const validationMessage = validateStoragePowerDeratingCurves(chargeCurve, dischargeCurve);
+  if (validationMessage) {
+    setStoragePowerDeratingMessage(validationMessage, "error");
+    return;
+  }
+  setStoragePowerDeratingMessage("正在保存降额曲线...", "");
+  const response = await runRenewableControlAction("update_settings", {
+    settings: {
+      storageChargeDeratingCurve: chargeCurve,
+      storageDischargeDeratingCurve: dischargeCurve,
+    },
+  });
+  if (!response) {
+    setStoragePowerDeratingMessage(state.renewableControl.lastStatus || "降额曲线保存失败。", "error");
+    return;
+  }
+  closeStoragePowerDeratingDialog();
 }
 
 function renderClock(clock) {
@@ -8127,6 +8304,17 @@ $("remoteAdjustmentDialog").addEventListener("click", (event) => {
 });
 $("renewableAutoToggle").addEventListener("click", toggleRenewableAuto);
 $("renewableSendOnce").addEventListener("click", runRenewableControlOnce);
+$("storagePowerDeratingButton")?.addEventListener("click", openStoragePowerDeratingDialog);
+$("closeStoragePowerDeratingDialog")?.addEventListener("click", closeStoragePowerDeratingDialog);
+$("cancelStoragePowerDerating")?.addEventListener("click", closeStoragePowerDeratingDialog);
+$("resetStoragePowerDerating")?.addEventListener("click", resetStoragePowerDeratingCurves);
+$("saveStoragePowerDerating")?.addEventListener("click", saveStoragePowerDeratingCurves);
+$("storagePowerDeratingDialog")?.addEventListener("click", (event) => {
+  if (event.target === $("storagePowerDeratingDialog")) closeStoragePowerDeratingDialog();
+});
+$("storagePowerDeratingDialog")?.addEventListener("input", () => {
+  setStoragePowerDeratingMessage("相邻 SOC 节点之间自动进行线性插值。", "");
+});
 document.querySelectorAll("[data-renewable-loop-mode]").forEach((button) => {
   button.addEventListener("click", () => setRenewableLoopMode(button.dataset.renewableLoopMode));
 });

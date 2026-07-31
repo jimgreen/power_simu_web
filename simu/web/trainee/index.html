@@ -495,6 +495,10 @@
                     <label>SOC死区(%)
                       <input id="socDeadband" type="number" min="0" max="100" step="0.1" value="5" />
                     </label>
+                    <div class="renewable-setting-row">
+                      <span>储能功率降额</span>
+                      <button id="storagePowerDeratingButton" type="button">配置曲线</button>
+                    </div>
                   </div>
                 </div>
                 <p id="renewableControlStatus" class="renewable-status">请选择单次计算或启动实时控制。</p>
@@ -750,6 +754,41 @@
           <button id="confirmCloneModel" class="primary" type="submit">复制</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="storagePowerDeratingDialog" class="remote-control-dialog storage-power-derating-dialog" aria-labelledby="storagePowerDeratingTitle">
+      <section class="remote-control-form">
+        <div class="remote-control-head">
+          <div>
+            <h2 id="storagePowerDeratingTitle">储能充放电降额</h2>
+            <p>按 SOC 分段线性限制最大充放电功率</p>
+          </div>
+          <button id="closeStoragePowerDeratingDialog" class="dialog-close-button" type="button" aria-label="关闭储能降额配置">×</button>
+        </div>
+        <div class="storage-power-derating-grid">
+          <section>
+            <div class="storage-power-derating-head">
+              <h3>充电功率上限</h3>
+              <span>SOC 越高，上限不升高</span>
+            </div>
+            <div id="storageChargeDeratingRows" class="storage-power-derating-rows"></div>
+          </section>
+          <section>
+            <div class="storage-power-derating-head">
+              <h3>放电功率上限</h3>
+              <span>SOC 越高，上限不降低</span>
+            </div>
+            <div id="storageDischargeDeratingRows" class="storage-power-derating-rows"></div>
+          </section>
+        </div>
+        <p id="storagePowerDeratingMessage" class="remote-control-hint" aria-live="polite"></p>
+        <div class="dialog-actions storage-power-derating-actions">
+          <button id="resetStoragePowerDerating" type="button">恢复默认</button>
+          <span></span>
+          <button id="cancelStoragePowerDerating" type="button">取消</button>
+          <button id="saveStoragePowerDerating" class="primary" type="button">保存</button>
+        </div>
+      </section>
     </dialog>
 
     <dialog id="remoteControlDialog" class="remote-control-dialog" aria-labelledby="remoteControlTitle">

@@ -30,6 +30,20 @@ POWER_CONTROL_MODES = {"P", "PQ", "PV", "ACP"}
 REMOTE_SNAPSHOT_STATIC_FIELDS = ("definitions", "settings", "device_parameters")
 RENEWABLE_CONTROL_STATE_FILE = "renewable_control.json"
 DEADBAND_STEP_SCALE = 0.20
+DEFAULT_STORAGE_CHARGE_DERATING_CURVE: Tuple[Tuple[float, float], ...] = (
+    (0.60, 1.00),
+    (0.70, 0.50),
+    (0.80, 0.30),
+    (0.85, 0.15),
+    (0.90, 0.00),
+)
+DEFAULT_STORAGE_DISCHARGE_DERATING_CURVE: Tuple[Tuple[float, float], ...] = (
+    (0.10, 0.00),
+    (0.15, 0.15),
+    (0.20, 0.30),
+    (0.30, 0.50),
+    (0.40, 1.00),
+)
 
 
 def _now_text() -> str:
@@ -80,6 +94,76 @@ def _live_soc_ratio(value: Any, default: Optional[float] = None) -> Optional[flo
     if isinstance(value, str) and "%" in value:
         return number / 100.0
     return number
+
+
+def _derating_curve_point(value: Any) -> Optional[Tuple[float, float]]:
+    if isinstance(value, Mapping):
+        soc_value = value.get("soc", value.get("socRatio", value.get("soc_ratio")))
+        power_value = value.get(
+            "powerRatio",
+            value.get("power_ratio", value.get("ratio", value.get("power"))),
+        )
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) >= 2:
+        soc_value, power_value = value[0], value[1]
+    else:
+        return None
+    soc = _ratio(soc_value, None)
+    power_ratio = _ratio(power_value, None)
+    if soc is None or power_ratio is None:
+        return None
+    return soc, power_ratio
+
+
+def _normalized_derating_curve(
+    value: Any,
+    fallback: Tuple[Tuple[float, float], ...],
+    *,
+    increasing: bool,
+) -> Tuple[Tuple[float, float], ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return fallback
+    parsed = [point for item in value if (point := _derating_curve_point(item)) is not None]
+    if len(parsed) < 2:
+        return fallback
+    deduplicated: Dict[float, float] = {}
+    for soc, power_ratio in parsed:
+        deduplicated[soc] = power_ratio
+    ordered = sorted(deduplicated.items())
+    if len(ordered) < 2:
+        return fallback
+    normalized: List[Tuple[float, float]] = []
+    previous = 0.0 if increasing else 1.0
+    for soc, power_ratio in ordered:
+        monotonic_ratio = max(previous, power_ratio) if increasing else min(previous, power_ratio)
+        normalized.append((soc, monotonic_ratio))
+        previous = monotonic_ratio
+    return tuple(normalized)
+
+
+def _derating_factor(soc: float, curve: Sequence[Tuple[float, float]]) -> float:
+    if not curve:
+        return 1.0
+    if soc <= curve[0][0] + EPSILON:
+        return _clamp(float(curve[0][1]), 0.0, 1.0)
+    if soc >= curve[-1][0] - EPSILON:
+        return _clamp(float(curve[-1][1]), 0.0, 1.0)
+    for (lower_soc, lower_ratio), (upper_soc, upper_ratio) in zip(curve, curve[1:]):
+        if soc > upper_soc + EPSILON:
+            continue
+        width = upper_soc - lower_soc
+        if width <= EPSILON:
+            return _clamp(float(upper_ratio), 0.0, 1.0)
+        fraction = _clamp((soc - lower_soc) / width, 0.0, 1.0)
+        return _clamp(lower_ratio + (upper_ratio - lower_ratio) * fraction, 0.0, 1.0)
+    return _clamp(float(curve[-1][1]), 0.0, 1.0)
+
+
+def _derating_curve_payload(curve: Sequence[Tuple[float, float]]) -> List[Dict[str, float]]:
+    return [{"soc": soc, "powerRatio": power_ratio} for soc, power_ratio in curve]
+
+
+def _derating_curve_text(curve: Sequence[Tuple[float, float]]) -> str:
+    return "、".join(f"{soc * 100:.1f}%:{power_ratio * 100:.1f}%" for soc, power_ratio in curve)
 
 
 def _command_number(value: float) -> float:
@@ -259,6 +343,8 @@ class RenewableControlSettings:
     diesel_deadband_ratio: float = 0.03
     soc_deadband: float = 0.05
     converter_step_ratio: float = 0.03
+    storage_charge_derating_curve: Tuple[Tuple[float, float], ...] = DEFAULT_STORAGE_CHARGE_DERATING_CURVE
+    storage_discharge_derating_curve: Tuple[Tuple[float, float], ...] = DEFAULT_STORAGE_DISCHARGE_DERATING_CURVE
     command_valid_minutes: float = 120.0
 
     def normalized(self) -> "RenewableControlSettings":
@@ -275,6 +361,16 @@ class RenewableControlSettings:
             diesel_deadband_ratio=max(0.0, float(self.diesel_deadband_ratio)),
             soc_deadband=_clamp(float(self.soc_deadband), 0.0, 1.0),
             converter_step_ratio=max(0.0, float(self.converter_step_ratio)),
+            storage_charge_derating_curve=_normalized_derating_curve(
+                self.storage_charge_derating_curve,
+                DEFAULT_STORAGE_CHARGE_DERATING_CURVE,
+                increasing=False,
+            ),
+            storage_discharge_derating_curve=_normalized_derating_curve(
+                self.storage_discharge_derating_curve,
+                DEFAULT_STORAGE_DISCHARGE_DERATING_CURVE,
+                increasing=True,
+            ),
             command_valid_minutes=max(0.1, float(self.command_valid_minutes)),
         )
 
@@ -299,6 +395,26 @@ class RenewableControlSettings:
                     if parsed is not None:
                         values[field_name] = parsed
                     break
+        charge_curve = payload.get(
+            "storage_charge_derating_curve",
+            payload.get("storageChargeDeratingCurve"),
+        )
+        discharge_curve = payload.get(
+            "storage_discharge_derating_curve",
+            payload.get("storageDischargeDeratingCurve"),
+        )
+        if charge_curve is not None:
+            values["storage_charge_derating_curve"] = _normalized_derating_curve(
+                charge_curve,
+                self.storage_charge_derating_curve,
+                increasing=False,
+            )
+        if discharge_curve is not None:
+            values["storage_discharge_derating_curve"] = _normalized_derating_curve(
+                discharge_curve,
+                self.storage_discharge_derating_curve,
+                increasing=True,
+            )
         return replace(self, **values).normalized()
 
     def payload(self) -> Dict[str, Any]:
@@ -313,6 +429,8 @@ class RenewableControlSettings:
             "dieselDeadbandRatio": self.diesel_deadband_ratio,
             "socDeadband": self.soc_deadband,
             "converterStepRatio": self.converter_step_ratio,
+            "storageChargeDeratingCurve": _derating_curve_payload(self.storage_charge_derating_curve),
+            "storageDischargeDeratingCurve": _derating_curve_payload(self.storage_discharge_derating_curve),
             "commandValidMinutes": self.command_valid_minutes,
         }
 
@@ -746,6 +864,22 @@ def _storage_rows(
         )
         charge_by_energy = max(0.0, ((soc_max - (soc or 0.0)) * capacity) / (efficiency * step_hours)) if soc_known else 0.0
         discharge_by_energy = max(0.0, (((soc or 0.0) - soc_min) * capacity * efficiency) / step_hours) if soc_known else 0.0
+        charge_before_derating = min(charge_max, charge_by_energy)
+        discharge_before_derating = min(discharge_max, discharge_by_energy)
+        charge_derating_factor = (
+            0.0
+            if not soc_known or (soc or 0.0) >= soc_max - EPSILON
+            else _derating_factor(float(soc), settings.storage_charge_derating_curve)
+        )
+        discharge_derating_factor = (
+            0.0
+            if not soc_known or (soc or 0.0) <= soc_min + EPSILON
+            else _derating_factor(float(soc), settings.storage_discharge_derating_curve)
+        )
+        charge_curve_limit = charge_max * charge_derating_factor
+        discharge_curve_limit = discharge_max * discharge_derating_factor
+        charge_power = min(charge_before_derating, charge_curve_limit)
+        discharge_power = min(discharge_before_derating, discharge_curve_limit)
         soc_constraint = (
             "offline"
             if not online
@@ -762,7 +896,13 @@ def _storage_rows(
             "unknown": "SOC未知",
             "above_upper": "SOC达到上限·禁止充电",
             "below_lower": "SOC达到下限·禁止放电",
-            "normal": "随网平衡",
+            "normal": (
+                f"充电降额 {charge_derating_factor * 100:.0f}%"
+                if charge_derating_factor < 1.0 - EPSILON
+                else f"放电降额 {discharge_derating_factor * 100:.0f}%"
+                if discharge_derating_factor < 1.0 - EPSILON
+                else "随网平衡"
+            ),
         }[soc_constraint]
         rows.append(
             {
@@ -780,8 +920,18 @@ def _storage_rows(
                 "socMax": soc_max,
                 "socConstraint": soc_constraint,
                 "capacityKwh": capacity,
-                "chargePower": min(charge_max, charge_by_energy),
-                "dischargePower": min(discharge_max, discharge_by_energy),
+                "maxChargePowerKw": charge_max,
+                "maxDischargePowerKw": discharge_max,
+                "chargePowerBeforeDerating": charge_before_derating,
+                "dischargePowerBeforeDerating": discharge_before_derating,
+                "chargeDeratingFactor": charge_derating_factor,
+                "dischargeDeratingFactor": discharge_derating_factor,
+                "chargeDeratingCurveLimitKw": charge_curve_limit,
+                "dischargeDeratingCurveLimitKw": discharge_curve_limit,
+                "chargeDeratingActive": charge_max > EPSILON and charge_derating_factor < 1.0 - EPSILON,
+                "dischargeDeratingActive": discharge_max > EPSILON and discharge_derating_factor < 1.0 - EPSILON,
+                "chargePower": charge_power,
+                "dischargePower": discharge_power,
                 "efficiency": efficiency,
                 "set_type": "",
                 "statusLabel": status_label,
@@ -1110,8 +1260,42 @@ def calculate_renewable_control_plan(
     )
     storage_above_upper = [row for row in online_storage if row.get("socConstraint") == "above_upper"]
     storage_below_lower = [row for row in online_storage if row.get("socConstraint") == "below_lower"]
+    raw_charge_before_derating = sum(
+        max(0.0, finite(row.get("chargePowerBeforeDerating"))) for row in online_storage
+    )
+    raw_discharge_before_derating = sum(
+        max(0.0, finite(row.get("dischargePowerBeforeDerating"))) for row in online_storage
+    )
     raw_charge = sum(max(0.0, finite(row.get("chargePower"))) for row in online_storage)
     raw_discharge = sum(max(0.0, finite(row.get("dischargePower"))) for row in online_storage)
+    charge_derating_capacity = sum(
+        max(0.0, finite(row.get("maxChargePowerKw"))) for row in online_storage
+    )
+    discharge_derating_capacity = sum(
+        max(0.0, finite(row.get("maxDischargePowerKw"))) for row in online_storage
+    )
+    storage_charge_derating_factor = (
+        sum(
+            max(0.0, finite(row.get("maxChargePowerKw")))
+            * _clamp(finite(row.get("chargeDeratingFactor")), 0.0, 1.0)
+            for row in online_storage
+        )
+        / charge_derating_capacity
+        if charge_derating_capacity > EPSILON
+        else 1.0
+    )
+    storage_discharge_derating_factor = (
+        sum(
+            max(0.0, finite(row.get("maxDischargePowerKw")))
+            * _clamp(finite(row.get("dischargeDeratingFactor")), 0.0, 1.0)
+            for row in online_storage
+        )
+        / discharge_derating_capacity
+        if discharge_derating_capacity > EPSILON
+        else 1.0
+    )
+    storage_charge_derating_active = any(row.get("chargeDeratingActive") for row in online_storage)
+    storage_discharge_derating_active = any(row.get("dischargeDeratingActive") for row in online_storage)
     converter_rows = _resolve_converter_capacities(converter_rows, max(raw_charge, raw_discharge))
 
     measured_converters = [row for row in converter_rows if row.get("currentKw") is not None]
@@ -1152,6 +1336,12 @@ def calculate_renewable_control_plan(
         if converter_current is not None
         else 0.0
     )
+    storage_charge_current_kw = max(0.0, -storage_current_for_control)
+    storage_discharge_current_kw = max(0.0, storage_current_for_control)
+    storage_charge_derating_excess_kw = max(0.0, storage_charge_current_kw - raw_charge)
+    storage_discharge_derating_excess_kw = max(0.0, storage_discharge_current_kw - raw_discharge)
+    storage_charge_derating_headroom_kw = max(0.0, raw_charge - storage_charge_current_kw)
+    storage_discharge_derating_headroom_kw = max(0.0, raw_discharge - storage_discharge_current_kw)
     converter_current_for_control = (
         min(0.0, converter_current)
         if converter_rows and converter_current is not None and len(measured_converters) == len(converter_rows)
@@ -1260,7 +1450,27 @@ def calculate_renewable_control_plan(
         -storage_current_for_control - settings.storage_switch_deadband_kw,
     )
     renewable_storage_charging_active = renewable_storage_charge_excess_kw > EPSILON
-    renewable_recovery_step_scale = DEADBAND_STEP_SCALE if upper_soc_deadband_active else 1.0
+    renewable_recovery_boundary_scale = DEADBAND_STEP_SCALE if upper_soc_deadband_active else 1.0
+    renewable_recovery_capacity_step_kw = sum(
+        min(
+            max(0.0, finite(row.get("capacityKw")) - finite(row.get("planningCurrentKw"))),
+            settings.step_coefficient * max(0.0, finite(row.get("capacityKw"))),
+        )
+        for row in online_renewable
+        if row.get("commandable") and row.get("planningCurrentKw") is not None
+    )
+    renewable_recovery_derating_scale = (
+        min(
+            1.0,
+            storage_charge_derating_headroom_kw / renewable_recovery_capacity_step_kw,
+        )
+        if storage_charge_derating_active and renewable_recovery_capacity_step_kw > EPSILON
+        else 1.0
+    )
+    renewable_recovery_step_scale = min(
+        renewable_recovery_boundary_scale,
+        renewable_recovery_derating_scale,
+    )
     renewable_recovery_effective_step_ratio = settings.step_coefficient * renewable_recovery_step_scale
     renewable_recovery_step_request_kw = sum(
         min(
@@ -1289,6 +1499,15 @@ def calculate_renewable_control_plan(
         else 0.0
     )
     renewable_curtail_effective_step_ratio = settings.step_coefficient * renewable_curtail_step_scale
+    renewable_derating_curtail_step_request_kw = min(
+        renewable_curtail_capacity_step_kw,
+        storage_charge_derating_excess_kw,
+    )
+    renewable_derating_curtail_step_scale = (
+        renewable_derating_curtail_step_request_kw / renewable_curtail_capacity_step_kw
+        if renewable_curtail_capacity_step_kw > EPSILON
+        else 0.0
+    )
     high_soc_guard = storage_soc_region in {"high_guard", "above_upper"}
     soc_at_or_above_upper = (
         storage_soc is not None
@@ -1414,6 +1633,14 @@ def calculate_renewable_control_plan(
     storage_constrained_converter_delta = (
         storage_constrained_converter_target - converter_current_for_control
     )
+    storage_charge_derating_candidate_limited = bool(
+        storage_charge_derating_active
+        and raw_desired_storage_target < storage_min_target - EPSILON
+    )
+    storage_discharge_derating_candidate_limited = bool(
+        storage_discharge_derating_active
+        and raw_desired_storage_target > storage_max_target + EPSILON
+    )
     converter_storage_constraint_conflict = bool(
         abs(storage_constrained_converter_delta) > EPSILON
         and (
@@ -1428,11 +1655,33 @@ def calculate_renewable_control_plan(
             )
         )
     )
-    converter_desired_target = (
-        bounded_raw_converter_desired_target
-        if converter_storage_constraint_conflict
-        else storage_constrained_converter_target
+    storage_charge_derating_acdc_request_kw = max(
+        0.0,
+        converter_current_for_control - storage_constrained_converter_target,
     )
+    storage_charge_derating_acdc_allowed = bool(
+        storage_charge_derating_acdc_request_kw <= diesel_down_margin + EPSILON
+    )
+    storage_derating_constraint_override = False
+    storage_charge_derating_actuator = "none"
+    storage_discharge_derating_actuator = "none"
+    if storage_discharge_derating_candidate_limited:
+        converter_desired_target = storage_constrained_converter_target
+        storage_derating_constraint_override = converter_storage_constraint_conflict
+        storage_discharge_derating_actuator = "acdc"
+    elif storage_charge_derating_candidate_limited and storage_charge_derating_acdc_allowed:
+        converter_desired_target = storage_constrained_converter_target
+        storage_derating_constraint_override = converter_storage_constraint_conflict
+        storage_charge_derating_actuator = "acdc"
+    elif storage_charge_derating_candidate_limited:
+        converter_desired_target = bounded_raw_converter_desired_target
+        storage_charge_derating_actuator = "renewable"
+    else:
+        converter_desired_target = (
+            bounded_raw_converter_desired_target
+            if converter_storage_constraint_conflict
+            else storage_constrained_converter_target
+        )
     converter_step_direction = (
         "increase"
         if converter_desired_target > converter_current_for_control + EPSILON
@@ -1500,6 +1749,14 @@ def calculate_renewable_control_plan(
         if converter_rows
         else storage_current_for_control
     )
+    if storage_charge_derating_excess_kw > EPSILON and storage_charge_derating_actuator == "none":
+        storage_charge_derating_actuator = (
+            "acdc"
+            if converter_target < converter_current_for_control - EPSILON
+            else "renewable"
+        )
+    if storage_discharge_derating_excess_kw > EPSILON and storage_discharge_derating_actuator == "none":
+        storage_discharge_derating_actuator = "acdc"
     storage_candidate_target = desired_storage_target
     storage_deadband_action = storage_control_action
     converter_step_limited = abs(converter_target - converter_desired_target) > 0.001
@@ -1525,6 +1782,16 @@ def calculate_renewable_control_plan(
             if converter_target < converter_current_for_control - EPSILON
             else "curtail_one_step_above_soc_upper_deadband"
         )
+    elif (
+        storage_charge_derating_excess_kw > EPSILON
+        and storage_charge_derating_actuator == "renewable"
+    ):
+        renewable_control_action = "curtail_one_step_charge_derating"
+    elif (
+        storage_charge_derating_excess_kw > EPSILON
+        and storage_charge_derating_actuator == "acdc"
+    ):
+        renewable_control_action = "hold_charge_derating_while_acdc_corrects"
     elif storage_soc < storage_soc_upper_limit - EPSILON:
         renewable_control_action = (
             "hold_near_upper_while_charging"
@@ -1553,6 +1820,7 @@ def calculate_renewable_control_plan(
         if renewable_control_action in {
             "curtail_one_step_full_soc",
             "curtail_one_step_above_soc_upper_deadband",
+            "curtail_one_step_charge_derating",
         }
         else "hold"
     )
@@ -1566,6 +1834,8 @@ def calculate_renewable_control_plan(
         if renewable_control_action == "recover_one_step"
         else renewable_curtail_step_scale
         if renewable_control_action == "curtail_one_step_full_soc"
+        else renewable_derating_curtail_step_scale
+        if renewable_control_action == "curtail_one_step_charge_derating"
         else 0.0
     )
     renewable_effective_step_ratio = settings.step_coefficient * renewable_step_scale
@@ -1587,6 +1857,13 @@ def calculate_renewable_control_plan(
                 0.0,
                 current_kw
                 - renewable_curtail_base_steps.get(key, 0.0) * renewable_curtail_step_scale,
+            )
+        elif renewable_control_action == "curtail_one_step_charge_derating":
+            target_kw = max(
+                0.0,
+                current_kw
+                - renewable_curtail_base_steps.get(key, 0.0)
+                * renewable_derating_curtail_step_scale,
             )
         elif renewable_control_action in {
             "recover_one_step",
@@ -1769,6 +2046,26 @@ def calculate_renewable_control_plan(
         "pvAvailable": pv_available,
         "storageChargeAvailable": total_charge,
         "storageDischargeAvailable": total_discharge,
+        "storageChargeBeforeDeratingKw": raw_charge_before_derating,
+        "storageDischargeBeforeDeratingKw": raw_discharge_before_derating,
+        "storageChargeDeratingActive": storage_charge_derating_active,
+        "storageDischargeDeratingActive": storage_discharge_derating_active,
+        "storageChargeDeratingFactor": storage_charge_derating_factor,
+        "storageDischargeDeratingFactor": storage_discharge_derating_factor,
+        "storageChargeDeratingLimitKw": raw_charge,
+        "storageDischargeDeratingLimitKw": raw_discharge,
+        "storageChargeDeratingExcessKw": storage_charge_derating_excess_kw,
+        "storageDischargeDeratingExcessKw": storage_discharge_derating_excess_kw,
+        "storageChargeDeratingHeadroomKw": storage_charge_derating_headroom_kw,
+        "storageDischargeDeratingHeadroomKw": storage_discharge_derating_headroom_kw,
+        "storageChargeDeratingCurve": _derating_curve_payload(settings.storage_charge_derating_curve),
+        "storageDischargeDeratingCurve": _derating_curve_payload(settings.storage_discharge_derating_curve),
+        "storageChargeDeratingActuator": storage_charge_derating_actuator,
+        "storageDischargeDeratingActuator": storage_discharge_derating_actuator,
+        "storageChargeDeratingCandidateLimited": storage_charge_derating_candidate_limited,
+        "storageDischargeDeratingCandidateLimited": storage_discharge_derating_candidate_limited,
+        "storageChargeDeratingAcdcAllowed": storage_charge_derating_acdc_allowed,
+        "storageDeratingConstraintOverride": storage_derating_constraint_override,
         "storageCurrentKw": storage_current,
         "storageSoc": storage_soc,
         "storageSocLowerLimit": storage_soc_lower_limit,
@@ -1883,7 +2180,12 @@ def calculate_renewable_control_plan(
         "renewableStepRatio": settings.step_coefficient,
         "renewableStepDirection": renewable_step_direction,
         "renewableRecoveryStepScale": renewable_recovery_step_scale,
+        "renewableRecoveryBoundaryScale": renewable_recovery_boundary_scale,
+        "renewableRecoveryDeratingScale": renewable_recovery_derating_scale,
+        "renewableRecoveryCapacityStepKw": renewable_recovery_capacity_step_kw,
         "renewableCurtailStepScale": renewable_curtail_step_scale,
+        "renewableDeratingCurtailStepScale": renewable_derating_curtail_step_scale,
+        "renewableDeratingCurtailStepRequestKw": renewable_derating_curtail_step_request_kw,
         "renewableStepScale": renewable_step_scale,
         "renewableEffectiveStepRatio": renewable_effective_step_ratio,
         "recoveryRequestedKw": recovery_kw,
@@ -1949,6 +2251,24 @@ def calculate_renewable_control_plan(
         renewable_step_reason_text = "储能已不再充电，停止继续弃电并保持当前出力"
     elif renewable_control_action == "hold_full_soc_high_diesel_charging":
         renewable_step_reason_text = "SOC已到上限但柴发仍高，暂停新能源动作并等待ACDC回路降低储能充电"
+    elif renewable_control_action == "curtail_one_step_charge_derating":
+        renewable_step_reason_text = (
+            f"储能充电 {storage_charge_current_kw:.2f} kW 超过线性降额上限 "
+            f"{raw_charge:.2f} kW，且ACDC校正会触发柴发下限，新能源按充电超限量 "
+            f"{renewable_derating_curtail_step_request_kw:.2f} kW 渐进降低"
+        )
+    elif renewable_control_action == "hold_charge_derating_while_acdc_corrects":
+        renewable_step_reason_text = (
+            f"储能充电超过线性降额上限，ACDC正在承担校正，本轮新能源保持，避免抵消校正"
+        )
+    elif (
+        renewable_control_action == "recover_one_step"
+        and renewable_recovery_derating_scale < renewable_recovery_boundary_scale - EPSILON
+    ):
+        renewable_step_reason_text = (
+            f"充电线性降额仅剩 {storage_charge_derating_headroom_kw:.2f} kW 空间，"
+            f"新能源恢复步长缩小到基础步长的 {renewable_recovery_step_scale * 100:.1f}%"
+        )
     elif not upper_soc_deadband_active:
         renewable_step_reason_text = "不在SOC上限死区，保持原步长"
     elif renewable_step_direction == "increase":
@@ -1997,6 +2317,23 @@ def calculate_renewable_control_plan(
         )
     else:
         soc_correction_detail = "SOC越界校正：未触发上限+死区或下限-死区强制校正"
+    charge_derating_actuator_text = {
+        "acdc": "ACDC调节",
+        "renewable": "新能源降功率",
+        "none": "无需校正",
+    }.get(storage_charge_derating_actuator, storage_charge_derating_actuator)
+    discharge_derating_actuator_text = {
+        "acdc": "ACDC调节",
+        "renewable": "新能源调节",
+        "none": "无需校正",
+    }.get(storage_discharge_derating_actuator, storage_discharge_derating_actuator)
+    converter_storage_validation_text = (
+        "与状态机方向冲突，但线性降额属于储能保护边界，已由降额目标覆盖"
+        if storage_derating_constraint_override
+        else "与状态机保持/调节方向冲突，已禁止反向覆盖"
+        if converter_storage_constraint_conflict
+        else "与状态机调节方向一致"
+    )
     decision_detail = [
         f"数据来源：{_source_label(data_source)}，质量 {quality_payload['status']}，闭环下发{'允许' if quality_payload['dispatchAllowed'] else '禁止'}",
         "控制架构：ACDC与新能源两条策略相互独立，分别生成目标，不做功率增量相加、替代、吸收或联合预测",
@@ -2005,17 +2342,19 @@ def calculate_renewable_control_plan(
         f"储能状态：当前 {storage_current_for_control:.2f} kW，SOC {storage_soc * 100 if storage_soc is not None else '--'}%，运行边界 [{storage_soc_lower_limit * 100 if storage_soc_lower_limit is not None else '--'}%, {storage_soc_upper_limit * 100 if storage_soc_upper_limit is not None else '--'}%]",
         f"SOC分区：下限 {storage_soc_lower_limit * 100 if storage_soc_lower_limit is not None else '--'}%，上限 {storage_soc_upper_limit * 100 if storage_soc_upper_limit is not None else '--'}%，死区 {settings.soc_deadband * 100:.2f}%，当前 {storage_soc_region}",
         f"SOC运行约束：达到上限禁止充电；超过上限+死区后优先增加ACDC送出，受柴发下限约束时降低新能源；达到下限禁止放电，低于下限-死区后ACDC向零回退并恢复新能源",
+        f"充电线性降额：配置节点 {_derating_curve_text(settings.storage_charge_derating_curve)}；当前因子 {storage_charge_derating_factor * 100:.2f}%，降额前 {raw_charge_before_derating:.2f} kW、允许 {raw_charge:.2f} kW、实时充电 {storage_charge_current_kw:.2f} kW、超限 {storage_charge_derating_excess_kw:.2f} kW，线性插值后由 {charge_derating_actuator_text} 处理",
+        f"放电线性降额：配置节点 {_derating_curve_text(settings.storage_discharge_derating_curve)}；当前因子 {storage_discharge_derating_factor * 100:.2f}%，降额前 {raw_discharge_before_derating:.2f} kW、允许 {raw_discharge:.2f} kW、实时放电 {storage_discharge_current_kw:.2f} kW、超限 {storage_discharge_derating_excess_kw:.2f} kW，线性插值后由 {discharge_derating_actuator_text} 处理",
         soc_correction_detail,
         f"环境策略：风速 {observed_wind_speed if observed_wind_speed is not None else '--'}、太阳辐照度 {observed_irradiance if observed_irradiance is not None else '--'}、温度 {observed_air_temperature if observed_air_temperature is not None else '--'}，均按默认策略忽略",
         f"ACDC容量边界：自动控制使用原始并联容量 {converter_rated_capacity_text} kW",
         f"ACDC方向约束：禁止交流侧向直流侧倒送，自动控制目标范围 [{converter_lower_target:.2f}, {converter_upper_target:.2f}] kW",
-        f"ACDC后置校核：储能运行边界折算目标 {storage_constrained_converter_target:.2f} kW，{'与状态机保持/调节方向冲突，已禁止反向覆盖' if converter_storage_constraint_conflict else '与状态机调节方向一致'}",
+        f"ACDC后置校核：储能运行边界与充放电线性降额折算目标 {storage_constrained_converter_target:.2f} kW，{converter_storage_validation_text}",
         f"ACDC策略：只读取柴发分区与SOC分区，动作 {storage_control_action}；实时 {converter_current if converter_current is not None else '--'} kW，控制基准 {converter_current_for_control:.2f} kW，基础步长 {converter_base_step_kw:.2f} kW，{converter_step_reason_text}，{converter_step_application_text}，目标 {converter_target:.2f} kW",
         f"ACDC独立预估：对应储能平衡功率由 {storage_current_for_control:.2f} kW 变为 {storage_target:.2f} kW，柴发反馈参考值 {diesel_target:.2f} kW；该值不叠加新能源动作",
         f"新能源策略：以SOC为主；低于下限-死区时按原步长恢复；高于上限+死区时，若ACDC可增加送出则保持新能源，否则按原步长降低新能源；普通上限附近仍按储能充电反馈防止积分饱和；本轮动作 {renewable_control_action}",
         f"新能源目标：当前 {renewable_current:.2f} kW，储能当前 {storage_current_for_control:.2f} kW、充电死区 {settings.storage_switch_deadband_kw:.2f} kW、超出死区 {renewable_storage_charge_excess_kw:.2f} kW；基础单步比例 {settings.step_coefficient * 100:.2f}%，{renewable_step_reason_text}，实际按 {renewable_step_scale * 100:.1f}% 即 {renewable_effective_step_ratio * 100:.2f}% 调节，目标 {renewable_target:.2f} kW",
         f"负荷功率仅用于展示：当前 {load_kw:.2f} kW，不参与新能源、储能、变流器或柴发目标计算",
-        f"独立边界检查：ACDC目标已按并联容量、禁止倒送、model.e中的SOC运行边界、储能剩余能量和变流器步长限幅；新能源目标仅按设备容量和新能源步长限幅",
+        f"独立边界检查：ACDC目标已按并联容量、禁止倒送、model.e中的SOC运行边界、储能剩余能量、分段线性充放电降额和变流器步长限幅；新能源恢复量同时受充电降额剩余空间约束",
         *[f"数据告警：{issue}" for issue in quality_payload["issues"]],
     ]
     return {

@@ -1311,6 +1311,13 @@ def calculate_renewable_control_plan(
         if diesel_current_for_control < diesel_deadband_lower_kw - EPSILON
         else "deadband"
     )
+    diesel_boundary_distance_kw = (
+        diesel_floor_deficit_kw
+        if diesel_control_region == "low"
+        else max(0.0, diesel_current_for_control - diesel_deadband_upper_kw)
+        if diesel_control_region == "high"
+        else 0.0
+    )
     lower_soc_deadband_active = (
         storage_soc is not None
         and storage_soc_lower_limit is not None
@@ -1326,8 +1333,27 @@ def calculate_renewable_control_plan(
         <= storage_soc_upper_limit + settings.soc_deadband + EPSILON
     )
     diesel_deadband_active = diesel_control_region == "deadband"
+    renewable_upper_boundary_width = max(
+        storage_soc_noise_margin,
+        settings.soc_deadband * DEADBAND_STEP_SCALE,
+    )
+    renewable_upper_boundary_distance = (
+        max(0.0, storage_soc - storage_soc_upper_limit)
+        if storage_soc is not None and storage_soc_upper_limit is not None
+        else 0.0
+    )
+    renewable_upper_boundary_approach_active = bool(
+        storage_soc is not None
+        and storage_soc_upper_limit is not None
+        and storage_soc >= storage_soc_upper_limit - EPSILON
+        and renewable_upper_boundary_distance <= renewable_upper_boundary_width + EPSILON
+    )
     renewable_recovery_step_scale = DEADBAND_STEP_SCALE if upper_soc_deadband_active else 1.0
-    renewable_curtail_step_scale = 1.0
+    renewable_curtail_step_scale = (
+        DEADBAND_STEP_SCALE
+        if renewable_upper_boundary_approach_active
+        else 1.0
+    )
     renewable_recovery_effective_step_ratio = settings.step_coefficient * renewable_recovery_step_scale
     renewable_curtail_effective_step_ratio = settings.step_coefficient * renewable_curtail_step_scale
     renewable_recovery_step_request_kw = sum(
@@ -1438,20 +1464,49 @@ def calculate_renewable_control_plan(
         storage_min_target,
         storage_max_target,
     )
-    unbounded_converter_desired_target = (
+    unbounded_storage_constrained_converter_target = (
         storage_current_for_control
         + converter_current_for_control
         - desired_storage_target
         if converter_rows
         else 0.0
     )
-    converter_desired_target = _clamp(
-        unbounded_converter_desired_target,
+    storage_constrained_converter_target = _clamp(
+        unbounded_storage_constrained_converter_target,
         converter_lower_target,
         converter_upper_target,
     )
     converter_hard_limit_applied = converter_hard_limit_applied or (
-        abs(converter_desired_target - unbounded_converter_desired_target) > 0.001
+        abs(
+            storage_constrained_converter_target
+            - unbounded_storage_constrained_converter_target
+        )
+        > 0.001
+    )
+    strategy_converter_delta = (
+        bounded_raw_converter_desired_target - converter_current_for_control
+    )
+    storage_constrained_converter_delta = (
+        storage_constrained_converter_target - converter_current_for_control
+    )
+    converter_storage_constraint_conflict = bool(
+        abs(storage_constrained_converter_delta) > EPSILON
+        and (
+            abs(strategy_converter_delta) <= EPSILON
+            or (
+                strategy_converter_delta > EPSILON
+                and storage_constrained_converter_delta < -EPSILON
+            )
+            or (
+                strategy_converter_delta < -EPSILON
+                and storage_constrained_converter_delta > EPSILON
+            )
+        )
+    )
+    converter_desired_target = (
+        bounded_raw_converter_desired_target
+        if converter_storage_constraint_conflict
+        else storage_constrained_converter_target
     )
     converter_step_direction = (
         "increase"
@@ -1460,11 +1515,29 @@ def calculate_renewable_control_plan(
         if converter_desired_target < converter_current_for_control - EPSILON
         else "hold"
     )
+    diesel_boundary_action_toward_hold = (
+        diesel_control_region == "low"
+        and storage_control_action == "reduce_discharge_low_diesel"
+        and converter_step_direction == "increase"
+    ) or (
+        diesel_control_region == "high"
+        and storage_control_action == "increase_discharge"
+        and converter_step_direction == "decrease"
+    )
+    diesel_boundary_approach_active = bool(
+        diesel_boundary_action_toward_hold
+        and converter_base_step_kw > EPSILON
+        and diesel_boundary_distance_kw <= converter_base_step_kw + EPSILON
+    )
     converter_slow_increase = (
         converter_step_direction == "increase"
         and (lower_soc_deadband_active or diesel_deadband_active)
     )
-    converter_step_scale = DEADBAND_STEP_SCALE if converter_slow_increase else 1.0
+    converter_step_scale = (
+        DEADBAND_STEP_SCALE
+        if converter_slow_increase or diesel_boundary_approach_active
+        else 1.0
+    )
     converter_step_kw = converter_base_step_kw * converter_step_scale
     stepped_converter_target = (
         _move_toward(converter_current_for_control, converter_desired_target, converter_step_kw)
@@ -1733,6 +1806,9 @@ def calculate_renewable_control_plan(
         "socDeadband": settings.soc_deadband,
         "lowerSocDeadbandActive": lower_soc_deadband_active,
         "upperSocDeadbandActive": upper_soc_deadband_active,
+        "renewableUpperBoundaryApproachActive": renewable_upper_boundary_approach_active,
+        "renewableUpperBoundaryDistance": renewable_upper_boundary_distance,
+        "renewableUpperBoundaryWidth": renewable_upper_boundary_width,
         "socAboveUpperDeadband": soc_above_upper_deadband,
         "socBelowLowerDeadband": soc_below_lower_deadband,
         "socUpperDeadbandThreshold": (
@@ -1802,6 +1878,8 @@ def calculate_renewable_control_plan(
         "converterTargetLowerLimitKw": converter_lower_target,
         "converterTargetUpperLimitKw": converter_upper_target,
         "converterHardLimitApplied": converter_hard_limit_applied,
+        "converterStorageConstraintTargetKw": storage_constrained_converter_target,
+        "converterStorageConstraintConflict": converter_storage_constraint_conflict,
         "converterStepRatio": settings.converter_step_ratio,
         "converterBaseStepKw": converter_base_step_kw,
         "converterStepDirection": converter_step_direction,
@@ -1823,6 +1901,8 @@ def calculate_renewable_control_plan(
         "dieselFloorDeficitKw": diesel_floor_deficit_kw,
         "dieselDeadbandEntryGapKw": diesel_deadband_entry_gap_kw,
         "dieselFloorCorrectionRequestKw": diesel_floor_correction_request_kw,
+        "dieselBoundaryApproachActive": diesel_boundary_approach_active,
+        "dieselBoundaryDistanceKw": diesel_boundary_distance_kw,
         "dieselTargetKw": diesel_target,
         "dieselBoundaryErrorKw": diesel_boundary_error,
         "dieselCapacityKw": diesel_capacity,
@@ -1859,7 +1939,13 @@ def calculate_renewable_control_plan(
     if diesel_deadband_active:
         converter_step_reasons.append("柴发下限死区")
     converter_step_region_text = "、".join(converter_step_reasons)
-    if not converter_step_reasons:
+    if diesel_boundary_approach_active:
+        converter_step_reason_text = (
+            f"接近柴发控制分区切换边界（距离 {diesel_boundary_distance_kw:.2f} kW，"
+            f"不超过基础步长 {converter_base_step_kw:.2f} kW），采用"
+            f"{DEADBAND_STEP_SCALE * 100:.0f}%步长"
+        )
+    elif not converter_step_reasons:
         converter_step_reason_text = "不在缩放死区，保持原步长"
     elif converter_step_direction == "increase":
         converter_step_reason_text = (
@@ -1875,8 +1961,14 @@ def calculate_renewable_control_plan(
         renewable_step_reason_text = (
             f"SOC上限死区内升功率，采用{DEADBAND_STEP_SCALE * 100:.0f}%步长"
         )
+    elif renewable_step_direction == "decrease" and renewable_upper_boundary_approach_active:
+        renewable_step_reason_text = (
+            f"接近SOC上限策略切换边界（越界 {renewable_upper_boundary_distance * 100:.2f}%，"
+            f"缓调宽度 {renewable_upper_boundary_width * 100:.2f}%），采用"
+            f"{DEADBAND_STEP_SCALE * 100:.0f}%步长"
+        )
     elif renewable_step_direction == "decrease":
-        renewable_step_reason_text = "SOC上限死区内降功率，保持原步长"
+        renewable_step_reason_text = "已明显越过SOC上限策略切换边界，保持原步长"
     else:
         renewable_step_reason_text = "SOC上限死区内无功率调整，保持原步长"
     converter_rated_capacity_text = (
@@ -1911,6 +2003,7 @@ def calculate_renewable_control_plan(
         f"ACDC SOC限额：原始并联容量 {converter_rated_capacity_text} kW，当前SOC命中 {converter_soc_band_text} 区间，配置上限 {converter_soc_limit_ratio * 100:.0f}% 即 {converter_soc_configured_limit_text} kW",
         f"ACDC分档防振：SOC综合噪声裕度 {storage_soc_noise_margin * 100:.2f}%，边界过渡宽度 {converter_soc_transition_width * 100:.2f}%，释放进度 {converter_soc_transition_progress * 100:.1f}%，当前实际释放 {converter_soc_release_ratio * 100:.2f}% 即 {converter_soc_release_limit_text} kW{'，正在抑制分档边界跳变' if converter_soc_transition_active else ''}",
         f"ACDC方向约束：禁止交流侧向直流侧倒送，自动控制目标范围 [{converter_lower_target:.2f}, {converter_upper_target:.2f}] kW",
+        f"ACDC后置校核：储能SOC功率边界折算目标 {storage_constrained_converter_target:.2f} kW，{'与状态机保持/调节方向冲突，已禁止反向覆盖' if converter_storage_constraint_conflict else '与状态机调节方向一致'}",
         f"ACDC策略：只读取柴发分区与SOC分区，动作 {storage_control_action}；实时 {converter_current if converter_current is not None else '--'} kW，控制基准 {converter_current_for_control:.2f} kW，基础步长 {converter_base_step_kw:.2f} kW，{converter_step_reason_text}，实际按 {converter_step_scale * 100:.0f}% 即 {converter_step_kw:.2f} kW 调节，目标 {converter_target:.2f} kW",
         f"ACDC独立预估：对应储能平衡功率由 {storage_current_for_control:.2f} kW 变为 {storage_target:.2f} kW，柴发反馈参考值 {diesel_target:.2f} kW；该值不叠加新能源动作",
         f"新能源策略：只按SOC决定恢复，电池未满时按单机容量步长恢复；仅在SOC达到上限且柴发不高于下限加死区上界时弃电，本轮动作 {renewable_control_action}",

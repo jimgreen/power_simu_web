@@ -4,6 +4,7 @@ import json
 import inspect
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -2153,6 +2154,101 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
 
 class RenewableControlBackendApiTest(unittest.TestCase):
+    def test_trend_history_keeps_only_the_latest_monotonic_clock_segment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            target = type(
+                "TargetService",
+                (),
+                {
+                    "model_id": "shared",
+                    "runtime_dir": Path(temporary),
+                    "trainee_receive_state": lambda self: {},
+                },
+            )()
+            services = type(
+                "Services",
+                (),
+                {
+                    "service_for": lambda self, _model_id: target,
+                    "iter_services": lambda self: [target],
+                },
+            )()
+            manager = TraineeRenewableControlManager(services, start_worker=False)
+            state = manager._state_for("shared")
+            plan = {"metrics": {}}
+
+            def trend_snapshot(minute, step_count):
+                snapshot = renewable_snapshot()
+                snapshot["clock"].update(
+                    {
+                        "run_id": 1,
+                        "absolute_minute": minute,
+                        "minute": minute,
+                        "time": f"00:{minute:02d}:00",
+                        "step_count": step_count,
+                    }
+                )
+                return snapshot
+
+            try:
+                state.trend = [
+                    manager._trend_point(plan, trend_snapshot(50, 10)),
+                    manager._trend_point(plan, trend_snapshot(55, 11)),
+                    manager._trend_point(plan, trend_snapshot(0, 0)),
+                    manager._trend_point(plan, trend_snapshot(1, 1)),
+                ]
+                manager._update_trend(state, plan, trend_snapshot(2, 2))
+                trend = manager.state("shared")["trend"]
+            finally:
+                manager.close()
+
+        self.assertEqual([point["minute"] for point in trend], [0, 1, 2])
+        self.assertEqual([point["stepCount"] for point in trend], [0, 1, 2])
+
+    def test_disabled_controller_still_collects_background_trend_samples(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            target = type(
+                "TargetService",
+                (),
+                {
+                    "model_id": "shared",
+                    "runtime_dir": Path(temporary),
+                    "trainee_receive_state": lambda self: {},
+                },
+            )()
+            services = type(
+                "Services",
+                (),
+                {
+                    "service_for": lambda self, _model_id: target,
+                    "iter_services": lambda self: [target],
+                },
+            )()
+            manager = TraineeRenewableControlManager(services, start_worker=False)
+            manager._snapshot_for_calculation = lambda _model_id: (
+                renewable_snapshot(),
+                "local",
+                0.0,
+                None,
+            )
+            manager._worker = threading.Thread(
+                target=manager._worker_loop,
+                name="test-renewable-monitor",
+                daemon=True,
+            )
+            manager._worker.start()
+            deadline = time.monotonic() + 1.5
+            try:
+                while time.monotonic() < deadline and not manager.state("shared")["trend"]:
+                    time.sleep(0.05)
+                controller_state = manager.state("shared")
+            finally:
+                manager.close()
+
+        self.assertFalse(controller_state["enabled"])
+        self.assertEqual(len(controller_state["trend"]), 1)
+        self.assertEqual(controller_state["logs"], [])
+
     def test_same_simulation_time_dispatches_control_strategy_at_most_once(self):
         with tempfile.TemporaryDirectory() as temporary:
             target = type(

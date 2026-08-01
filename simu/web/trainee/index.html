@@ -791,6 +791,27 @@
       </section>
     </dialog>
 
+    <dialog id="diagramDeviceCommandDialog" class="remote-control-dialog diagram-device-command-dialog" aria-labelledby="diagramDeviceCommandTitle">
+      <section class="remote-control-form">
+        <div class="remote-control-head">
+          <div>
+            <h2 id="diagramDeviceCommandTitle">设备人工操作</h2>
+            <p id="diagramDeviceCommandDevice">--</p>
+          </div>
+          <button id="diagramDeviceCommandClose" class="dialog-close-button" type="button" aria-label="关闭设备人工操作窗口">×</button>
+        </div>
+        <dl class="remote-control-summary">
+          <div><dt>设备类型</dt><dd id="diagramDeviceCommandType">--</dd></div>
+          <div><dt>可用操作</dt><dd>遥控 / 遥调</dd></div>
+        </dl>
+        <div id="diagramDeviceCommandList" class="diagram-device-command-list" aria-label="设备可用人工操作"></div>
+        <p id="diagramDeviceCommandHint" class="remote-control-hint">请选择要执行的人工遥控或遥调操作。</p>
+        <div class="dialog-actions">
+          <button id="diagramDeviceCommandCancel" type="button">取消</button>
+        </div>
+      </section>
+    </dialog>
+
     <dialog id="remoteControlDialog" class="remote-control-dialog" aria-labelledby="remoteControlTitle">
       <form method="dialog" class="remote-control-form">
         <div class="remote-control-head">

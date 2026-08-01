@@ -2595,6 +2595,7 @@ class _ControllerState:
     log_seq: int = 0
     logs: List[Dict[str, Any]] = field(default_factory=list)
     trend: List[Dict[str, Any]] = field(default_factory=list)
+    trend_normalized: bool = False
     cached_snapshot: Optional[Dict[str, Any]] = None
     cached_snapshot_at: float = 0.0
     cached_static_signature: str = ""
@@ -2838,10 +2839,12 @@ class TraineeRenewableControlManager:
         metrics = plan.get("metrics") if isinstance(plan.get("metrics"), Mapping) else {}
         clock = snapshot.get("clock") if isinstance(snapshot.get("clock"), Mapping) else {}
         run_id = int(_number(clock.get("run_id"), 0.0) or 0)
+        step_count = int(_number(clock.get("step_count"), 0.0) or 0)
         minute = _number(clock.get("absolute_minute", clock.get("minute")), 0.0) or 0.0
         return {
             "sampleKey": f"{run_id}|{minute}|{clock.get('time', '')}",
             "runId": run_id,
+            "stepCount": step_count,
             "minute": minute,
             "time": str(clock.get("time", "--")),
             "loadKw": metrics.get("loadKw"),
@@ -2853,9 +2856,40 @@ class TraineeRenewableControlManager:
             "acdcTargetKw": metrics.get("acdcTargetKw"),
         }
 
+    @staticmethod
+    def _trend_lifecycle_changed(previous: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
+        previous_run_id = int(_number(previous.get("runId"), 0.0) or 0)
+        current_run_id = int(_number(current.get("runId"), 0.0) or 0)
+        if previous_run_id != current_run_id:
+            return True
+        previous_step = _number(previous.get("stepCount"))
+        current_step = _number(current.get("stepCount"))
+        if previous_step is not None and current_step is not None and current_step < previous_step:
+            return True
+        previous_minute = _number(previous.get("minute"))
+        current_minute = _number(current.get("minute"))
+        return (
+            previous_minute is not None
+            and current_minute is not None
+            and current_minute < previous_minute
+        )
+
+    @classmethod
+    def _latest_trend_segment(cls, points: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+        if not points:
+            return []
+        segment_start = 0
+        for index in range(1, len(points)):
+            if cls._trend_lifecycle_changed(points[index - 1], points[index]):
+                segment_start = index
+        return [dict(point) for point in points[segment_start:]]
+
     def _update_trend(self, state: _ControllerState, plan: Mapping[str, Any], snapshot: Mapping[str, Any]) -> None:
         point = self._trend_point(plan, snapshot)
-        if state.trend and state.trend[-1].get("runId") != point["runId"]:
+        if not state.trend_normalized:
+            state.trend = self._latest_trend_segment(state.trend)
+            state.trend_normalized = True
+        if state.trend and self._trend_lifecycle_changed(state.trend[-1], point):
             state.trend = []
         if state.trend and state.trend[-1].get("sampleKey") == point["sampleKey"]:
             state.trend[-1] = point
@@ -2893,6 +2927,24 @@ class TraineeRenewableControlManager:
                 "data_quality": plan.get("dataQuality"),
             },
         }
+
+    def collect_once(self, model_id: Optional[str]) -> Dict[str, Any]:
+        """Refresh the shared plan and trend without changing or dispatching control state."""
+        state = self._state_for(model_id)
+        if not state.run_lock.acquire(blocking=False):
+            return self.state(model_id)
+        try:
+            snapshot, source, age, _fetch_error = self._snapshot_for_calculation(model_id)
+            plan = calculate_renewable_control_plan(snapshot, state.settings, data_source=source, snapshot_age_seconds=age)
+            with state.lock:
+                state.last_plan = plan
+                state.last_calculated_at = _now_text()
+                state.last_clock_key = str(plan.get("clockKey", ""))
+                self._update_trend(state, plan, snapshot)
+                state.revision += 1
+        finally:
+            state.run_lock.release()
+        return self.state(model_id)
 
     def run_once(
         self,
@@ -3039,7 +3091,7 @@ class TraineeRenewableControlManager:
         if refresh and not state.enabled and now - state.last_preview_started >= 0.9:
             with state.lock:
                 state.last_preview_started = now
-            return self.run_once(model_id, trigger="preview", allow_dispatch=False, record_log=False)
+            return self.collect_once(model_id)
         return self._serialize(state)
 
     def apply_action(self, model_id: Optional[str], payload: Mapping[str, Any]) -> Dict[str, Any]:
@@ -3100,11 +3152,20 @@ class TraineeRenewableControlManager:
                 live_ids.add(model_id)
                 state = self._state_for(model_id)
                 with state.lock:
-                    due = state.enabled and not state.sending and now - state.last_auto_started >= state.settings.interval_seconds
-                    if due:
+                    control_due = state.enabled and not state.sending and now - state.last_auto_started >= state.settings.interval_seconds
+                    monitor_due = (
+                        not state.enabled
+                        and not state.sending
+                        and now - state.last_preview_started >= state.settings.interval_seconds
+                    )
+                    if control_due:
                         state.last_auto_started = now
-                if due:
+                    elif monitor_due:
+                        state.last_preview_started = now
+                if control_due:
                     self._executor.submit(self.run_once, model_id, trigger="auto", allow_dispatch=True, record_log=True)
+                elif monitor_due:
+                    self._executor.submit(self.collect_once, model_id)
             with self._states_lock:
                 for stale in set(self._states) - live_ids:
                     self._states.pop(stale, None)

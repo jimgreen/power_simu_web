@@ -732,6 +732,7 @@ class PolarMicrogridSimulator:
         self.latest_result: Dict[str, Any] = {}
         self.latest_measurements: Dict[str, Any] = {}
         self.latest_model_book: Optional[EBook] = None
+        self.latest_device_states: List[Dict[str, Any]] = []
         self.source_model_book = EBook({})
         self.source_stat_book = EBook({})
         self.control_book = EBook({})
@@ -827,6 +828,7 @@ class PolarMicrogridSimulator:
             self.latest_result = {}
             self.latest_measurements = {}
             self.latest_model_book = None
+            self.latest_device_states = []
             self.latest_real_rows = []
             self.latest_scada_rows = []
             self._fault_restore = {}
@@ -858,6 +860,7 @@ class PolarMicrogridSimulator:
         self.yt_ctrl_book = _make_book({"SetValue": (STAT_HEADERS["SetValue"], [])})
         self.mode_book = None
         self.latest_model_book = None
+        self.latest_device_states = []
         self.latest_real_rows = []
         self.latest_scada_rows = []
         self.latest_measurements = {
@@ -3149,6 +3152,11 @@ class PolarMicrogridSimulator:
                 self.clock.updated_at = time.time()
                 raise
             self.latest_model_book = getattr(kernel_result, "model_book", None)
+            self.latest_device_states = [
+                dict(item)
+                for item in (getattr(kernel_result, "device_states", None) or [])
+                if isinstance(item, Mapping)
+            ]
             self._store_kernel_measurement_rows(kernel_result)
             self._apply_measurement_faults(minute, absolute_minute)
             self.latest_measurements = self.measurements()
@@ -3825,6 +3833,64 @@ class PolarMicrogridSimulator:
                 }
             )
         return devices
+
+    def device_states(self) -> List[Dict[str, Any]]:
+        """Return the compact state needed by the live SVG diagram."""
+        states: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for item in self.latest_device_states:
+            dev_type = str(item.get("dev_type", "")).strip()
+            dev_name = str(item.get("dev_name", item.get("name", ""))).strip()
+            if not dev_type or not dev_name:
+                continue
+            states[(dev_type, dev_name)] = {
+                "dev_type": dev_type,
+                "dev_name": dev_name,
+                "run_stat": int(_to_float(item.get("run_stat"), 1) or 0),
+                "dead_island": bool(item.get("dead_island", False)),
+            }
+
+        run_stats, _cb_status, _set_values, _soc_values = self._stat_maps()
+        for dev_type, block in self.source_model_book.data.items():
+            if "name" not in block.header_list or "run_stat" not in block.header_list:
+                continue
+            for row in block.data:
+                dev_name = str(row.get("name", "")).strip()
+                if not dev_name:
+                    continue
+                key = (str(dev_type), dev_name)
+                run_stat = int(_to_float(run_stats.get(key, row.get("run_stat", 1)), 1) or 0)
+                state = states.setdefault(
+                    key,
+                    {
+                        "dev_type": key[0],
+                        "dev_name": key[1],
+                        "run_stat": run_stat,
+                        "dead_island": False,
+                    },
+                )
+                state["run_stat"] = run_stat
+                if run_stat == 0:
+                    state["dead_island"] = False
+
+        for key, value in run_stats.items():
+            dev_type, dev_name = str(key[0]).strip(), str(key[1]).strip()
+            if not dev_type or not dev_name:
+                continue
+            run_stat = int(_to_float(value, 1) or 0)
+            state = states.setdefault(
+                (dev_type, dev_name),
+                {
+                    "dev_type": dev_type,
+                    "dev_name": dev_name,
+                    "run_stat": run_stat,
+                    "dead_island": False,
+                },
+            )
+            state["run_stat"] = run_stat
+            if run_stat == 0:
+                state["dead_island"] = False
+
+        return [states[key] for key in sorted(states)]
 
     def _api_time_payload(self) -> Dict[str, Any]:
         return {
@@ -4539,6 +4605,7 @@ class PolarMicrogridSimulator:
         include_measurements: bool = True,
         static_fields: Optional[Sequence[str]] = None,
         include_devices: bool = True,
+        include_device_states: bool = True,
         include_commands: bool = True,
     ) -> Dict[str, Any]:
         measurements: Dict[str, Any] = {}
@@ -4567,6 +4634,8 @@ class PolarMicrogridSimulator:
             snapshot["commands"] = {"history": self.command_history[-50:]}
         if include_devices:
             snapshot["devices"] = self.devices()
+        if include_device_states:
+            snapshot["device_states"] = self.device_states()
         if include_runtime_logs:
             snapshot["runtime_logs"] = logs
         if include_measurements:
@@ -4979,6 +5048,7 @@ class MultiModelSimulator:
         include_measurements: bool = True,
         static_fields: Optional[Sequence[str]] = None,
         include_devices: bool = True,
+        include_device_states: bool = True,
         include_commands: bool = True,
     ) -> Dict[str, Any]:
         return self.service_for(model_id).snapshot(
@@ -4988,6 +5058,7 @@ class MultiModelSimulator:
             include_measurements=include_measurements,
             static_fields=static_fields,
             include_devices=include_devices,
+            include_device_states=include_device_states,
             include_commands=include_commands,
         )
 
@@ -5015,6 +5086,9 @@ class MultiModelSimulator:
 
     def devices(self, model_id: Optional[str] = None) -> List[Dict[str, Any]]:
         return self.service_for(model_id).devices()
+
+    def device_states(self, model_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        return self.service_for(model_id).device_states()
 
     def apply_student_commands(self, payload: Mapping[str, Any], source: str = "", model_id: Optional[str] = None) -> Dict[str, int]:
         return self.service_for(model_id).apply_student_commands(payload, source=source)

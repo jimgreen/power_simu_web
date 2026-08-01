@@ -111,6 +111,7 @@ const state = {
   remoteControlSending: false,
   remoteAdjustment: null,
   remoteAdjustmentSending: false,
+  diagramDeviceCommandContext: null,
   commandCancelSending: new Set(),
   measurementFilter: { dev_type: "all", dev_name: "" },
   measurementKeywordFilter: "",
@@ -1083,6 +1084,7 @@ function mergeSnapshot(previous, incoming) {
     }
     if (previous[key] !== undefined) merged[key] = previous[key];
   });
+  if (modelChanged && incoming.device_states === undefined) delete merged.device_states;
   if (incoming.runtime_logs === undefined) delete merged.runtime_logs;
   return merged;
 }
@@ -1096,11 +1098,15 @@ function snapshotLogLimit(page = currentPageName()) {
 }
 
 function pageNeedsDevices(page = currentPageName()) {
-  return ["overview", "model", "commands", "renewable"].includes(page);
+  return ["overview", "model", "diagram", "commands", "renewable"].includes(page);
+}
+
+function pageNeedsDeviceStates(page = currentPageName()) {
+  return page === "diagram";
 }
 
 function pageNeedsCommands(page = currentPageName()) {
-  return ["overview", "commands", "renewable"].includes(page);
+  return ["overview", "diagram", "commands", "renewable"].includes(page);
 }
 
 function snapshotPollPath(page = currentPageName(), forceStaticKeys = null) {
@@ -1119,6 +1125,7 @@ function snapshotPollPath(page = currentPageName(), forceStaticKeys = null) {
   const params = new URLSearchParams();
   params.set("measurements", "0");
   params.set("devices", pageNeedsDevices(page) ? "1" : "0");
+  params.set("device_states", pageNeedsDeviceStates(page) ? "1" : "0");
   params.set("commands", pageNeedsCommands(page) ? "1" : "0");
   if (pageNeedsRuntimeLogs(page)) params.set("log_limit", String(snapshotLogLimit(page)));
   else params.set("logs", "0");
@@ -1179,6 +1186,7 @@ function teacherSnapshotPollAddress(page = currentPageName(), forceStaticKeys = 
   const params = new URLSearchParams();
   params.set("measurements", "0");
   params.set("devices", pageNeedsDevices(page) ? "1" : "0");
+  params.set("device_states", pageNeedsDeviceStates(page) ? "1" : "0");
   params.set("commands", pageNeedsCommands(page) ? "1" : "0");
   if (pageNeedsRuntimeLogs(page)) params.set("log_limit", String(snapshotLogLimit(page)));
   else params.set("logs", "0");
@@ -1370,10 +1378,255 @@ function sanitizeDiagramSvg(svgText) {
       if ((name === "href" || name.endsWith(":href")) && value.startsWith("javascript:")) node.removeAttribute(attribute.name);
     });
   });
+  normalizeDiagramSvgBackground(svg);
   svg.classList.add("model-diagram-svg");
   svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
   return svg.outerHTML;
 }
+
+const DIAGRAM_TREND_WINDOWS = Object.freeze({ hour: 60, day: 24 * 60 });
+const DIAGRAM_MAX_ZOOM = 8;
+const DIAGRAM_PAN_THRESHOLD_PX = 5;
+const DIAGRAM_TOOLTIP_HIDE_DELAY_MS = 500;
+
+function diagramTooltipPointerMoveAction(currentHover, nextHover, tooltipHidden = false) {
+  if (currentHover && !tooltipHidden && nextHover?.kind !== currentHover.kind) return "schedule-hide";
+  if (!nextHover) return "hide";
+  if (tooltipHidden || nextHover.key !== currentHover?.key) return "refresh";
+  return "hold";
+}
+
+function diagramTooltipNeedsPosition(hover, positionedKey = "") {
+  if (!hover) return false;
+  const hoverKey = String(hover.key || "");
+  return !hoverKey || hoverKey !== String(positionedKey || "");
+}
+
+function diagramSvgDoubleClickAction(targetKind = "", insideSvg = false) {
+  if (!insideSvg) return "ignore";
+  const kind = String(targetKind || "").trim();
+  if (kind === "device") return "command";
+  return kind ? "ignore" : "fit";
+}
+
+function diagramViewBoxValue(value) {
+  const values = String(value || "")
+    .trim()
+    .split(/[\s,]+/)
+    .map(Number);
+  if (values.length !== 4 || values.some((item) => !Number.isFinite(item))) return null;
+  const [x, y, width, height] = values;
+  if (width <= 0 || height <= 0) return null;
+  return { x, y, width, height };
+}
+
+function normalizeDiagramSvgBackground(svg) {
+  const viewBox = diagramViewBoxValue(svg?.getAttribute("viewBox"));
+  if (!viewBox) return 0;
+  let normalized = 0;
+  svg.querySelectorAll("rect").forEach((rect) => {
+    const width = String(rect.getAttribute("width") || "").trim();
+    const height = String(rect.getAttribute("height") || "").trim();
+    if (width !== "100%" || height !== "100%") return;
+    if (rect.closest("defs, symbol, marker, pattern, clipPath, mask")) return;
+    rect.setAttribute("x", String(viewBox.x));
+    rect.setAttribute("y", String(viewBox.y));
+    rect.setAttribute("width", String(viewBox.width));
+    rect.setAttribute("height", String(viewBox.height));
+    rect.setAttribute("pointer-events", "none");
+    rect.classList.add("diagram-svg-background");
+    normalized += 1;
+  });
+  return normalized;
+}
+
+function diagramTrendWindowMinutes(period = "hour") {
+  return DIAGRAM_TREND_WINDOWS[period] || DIAGRAM_TREND_WINDOWS.hour;
+}
+
+function diagramTrendPeriodRange(period = "hour", endMinute = 0) {
+  const windowMinutes = diagramTrendWindowMinutes(period);
+  const latestMinute = Number.isFinite(Number(endMinute)) ? Number(endMinute) : 0;
+  const startMinute = Math.floor(latestMinute / windowMinutes) * windowMinutes;
+  return {
+    startMinute,
+    endMinute: startMinute + windowMinutes,
+    latestMinute,
+    windowMinutes,
+  };
+}
+
+function diagramTrendPeriodLabels(period = "hour", range = {}) {
+  if (period === "day") return { start: "00:00", end: "24:00" };
+  const startMinute = Number(range.startMinute) || 0;
+  const endMinute = Number(range.endMinute) || startMinute + DIAGRAM_TREND_WINDOWS.hour;
+  const dayStart = Math.floor(startMinute / DIAGRAM_TREND_WINDOWS.day) * DIAGRAM_TREND_WINDOWS.day;
+  const clockText = (minute) => {
+    const offset = Math.round(Number(minute) - dayStart);
+    if (offset === DIAGRAM_TREND_WINDOWS.day) return "24:00";
+    const normalized = ((offset % DIAGRAM_TREND_WINDOWS.day) + DIAGRAM_TREND_WINDOWS.day) % DIAGRAM_TREND_WINDOWS.day;
+    return `${String(Math.floor(normalized / 60)).padStart(2, "0")}:${String(normalized % 60).padStart(2, "0")}`;
+  };
+  return { start: clockText(startMinute), end: clockText(endMinute) };
+}
+
+function diagramTrendWindowPoints(points, period = "hour", endMinute = null) {
+  const valid = (points || []).filter((point) => (
+    Number.isFinite(Number(point?.minute)) && Number.isFinite(Number(point?.value))
+  ));
+  if (!valid.length) return [];
+  const explicitEndMinute = endMinute === null || endMinute === undefined || endMinute === ""
+    ? null
+    : Number(endMinute);
+  const latestMinute = Number.isFinite(explicitEndMinute)
+    ? explicitEndMinute
+    : Number(valid[valid.length - 1].minute);
+  const range = diagramTrendPeriodRange(period, latestMinute);
+  return valid.filter((point) => (
+    Number(point.minute) >= range.startMinute
+    && Number(point.minute) <= range.latestMinute
+    && Number(point.minute) < range.endMinute
+  ));
+}
+
+function diagramSampleTrendPoints(points, targetCount = 160) {
+  const source = Array.isArray(points) ? points : [];
+  const target = Math.max(4, Math.floor(Number(targetCount) || 160));
+  if (source.length <= target) return [...source];
+  const bucketCount = Math.max(1, Math.floor(target / 4));
+  const bucketSize = source.length / bucketCount;
+  const sampled = new Map();
+  for (let bucket = 0; bucket < bucketCount; bucket += 1) {
+    const start = Math.floor(bucket * bucketSize);
+    const end = Math.min(source.length, Math.max(start + 1, Math.ceil((bucket + 1) * bucketSize)));
+    let minIndex = start;
+    let maxIndex = start;
+    for (let index = start + 1; index < end; index += 1) {
+      if (Number(source[index]?.value) < Number(source[minIndex]?.value)) minIndex = index;
+      if (Number(source[index]?.value) > Number(source[maxIndex]?.value)) maxIndex = index;
+    }
+    [start, minIndex, maxIndex, end - 1].forEach((index) => sampled.set(index, source[index]));
+  }
+  sampled.set(0, source[0]);
+  sampled.set(source.length - 1, source[source.length - 1]);
+  return Array.from(sampled.entries())
+    .sort((left, right) => left[0] - right[0])
+    .map(([, point]) => point);
+}
+
+function diagramZoomViewBox(current, original, focus, factor) {
+  const boxes = [current, original];
+  if (boxes.some((box) => !box || [box.x, box.y, box.width, box.height].some((value) => !Number.isFinite(Number(value))))) {
+    return current;
+  }
+  const originalWidth = Number(original.width);
+  const originalHeight = Number(original.height);
+  const currentWidth = Number(current.width);
+  const currentHeight = Number(current.height);
+  if (originalWidth <= 0 || originalHeight <= 0 || currentWidth <= 0 || currentHeight <= 0) return current;
+  const zoomFactor = Number(factor);
+  if (!Number.isFinite(zoomFactor) || zoomFactor <= 0) return current;
+  const nextWidth = Math.max(originalWidth / DIAGRAM_MAX_ZOOM, Math.min(originalWidth, currentWidth * zoomFactor));
+  const scale = nextWidth / currentWidth;
+  const nextHeight = Math.max(originalHeight / DIAGRAM_MAX_ZOOM, Math.min(originalHeight, currentHeight * scale));
+  const focusX = Number.isFinite(Number(focus?.x)) ? Number(focus.x) : Number(current.x) + currentWidth / 2;
+  const focusY = Number.isFinite(Number(focus?.y)) ? Number(focus.y) : Number(current.y) + currentHeight / 2;
+  const rawX = focusX - (focusX - Number(current.x)) * (nextWidth / currentWidth);
+  const rawY = focusY - (focusY - Number(current.y)) * (nextHeight / currentHeight);
+  const minX = Number(original.x);
+  const minY = Number(original.y);
+  const maxX = minX + originalWidth - nextWidth;
+  const maxY = minY + originalHeight - nextHeight;
+  return {
+    x: Math.max(minX, Math.min(maxX, rawX)),
+    y: Math.max(minY, Math.min(maxY, rawY)),
+    width: nextWidth,
+    height: nextHeight,
+  };
+}
+
+function diagramPanViewBox(current, original, delta) {
+  const boxes = [current, original];
+  if (boxes.some((box) => !box || [box.x, box.y, box.width, box.height].some((value) => !Number.isFinite(Number(value))))) {
+    return current;
+  }
+  const originalWidth = Number(original.width);
+  const originalHeight = Number(original.height);
+  const currentWidth = Number(current.width);
+  const currentHeight = Number(current.height);
+  if (originalWidth <= 0 || originalHeight <= 0 || currentWidth <= 0 || currentHeight <= 0) return current;
+  const deltaX = Number.isFinite(Number(delta?.x)) ? Number(delta.x) : 0;
+  const deltaY = Number.isFinite(Number(delta?.y)) ? Number(delta.y) : 0;
+  const minX = Number(original.x);
+  const minY = Number(original.y);
+  const maxX = minX + originalWidth - currentWidth;
+  const maxY = minY + originalHeight - currentHeight;
+  return {
+    x: Math.max(minX, Math.min(maxX, Number(current.x) - deltaX)),
+    y: Math.max(minY, Math.min(maxY, Number(current.y) - deltaY)),
+    width: currentWidth,
+    height: currentHeight,
+  };
+}
+
+function fitDiagramViewport(viewport) {
+  const original = viewport?.original;
+  const svg = viewport?.svg;
+  if (!original || !svg || typeof svg.setAttribute !== "function") return false;
+  const values = [original.x, original.y, original.width, original.height].map(Number);
+  if (values.some((value) => !Number.isFinite(value)) || values[2] <= 0 || values[3] <= 0) return false;
+  const [x, y, width, height] = values;
+  viewport.current = { x, y, width, height };
+  svg.setAttribute("viewBox", `${x} ${y} ${width} ${height}`);
+  return true;
+}
+
+const DIAGRAM_METRIC_MEASUREMENT_TYPES = Object.freeze({
+  activePower: Object.freeze({
+    ACGENERATOR: ["P_GEN"],
+    DCGENERATOR: ["P_GEN"],
+    ACLOAD: ["P_LOAD"],
+    DCACCONVERTER: ["P_AC", "P_DC"],
+    DCDCCONVERTER: ["P_TO", "P_FROM"],
+    ACBRANCH: ["P_FROM", "P_TO"],
+    DCBRANCH: ["P_FROM", "P_TO"],
+    ACBREAK: ["P_FROM", "P_TO"],
+    DCBREAK: ["P_FROM", "P_TO"],
+    ACZEROBRANCH: ["P_FROM", "P_TO"],
+    "*": ["P", "P_GEN", "P_LOAD", "P_AC", "P_DC", "P_TO", "P_FROM"],
+  }),
+  reactivePower: Object.freeze({
+    ACGENERATOR: ["Q_GEN"],
+    ACLOAD: ["Q_LOAD"],
+    DCACCONVERTER: ["Q_AC"],
+    ACBRANCH: ["Q_FROM", "Q_TO"],
+    ACBREAK: ["Q_FROM", "Q_TO"],
+    ACZEROBRANCH: ["Q_FROM", "Q_TO"],
+    "*": ["Q", "Q_GEN", "Q_LOAD", "Q_AC", "Q_FROM", "Q_TO"],
+  }),
+  voltage: Object.freeze({
+    ACGENERATOR: ["V_GEN"],
+    DCGENERATOR: ["V_GEN"],
+    ACLOAD: ["V_LOAD"],
+    DCACCONVERTER: ["V_AC", "V_DC"],
+    DCDCCONVERTER: ["V_TO", "V_FROM"],
+    "*": ["V", "V_GEN", "V_LOAD", "V_AC", "V_DC", "V_TO", "V_FROM"],
+  }),
+  current: Object.freeze({
+    ACGENERATOR: ["I_GEN"],
+    DCGENERATOR: ["I_GEN"],
+    ACLOAD: ["I_LOAD"],
+    DCACCONVERTER: ["I_AC", "I_DC"],
+    DCDCCONVERTER: ["I_TO", "I_FROM"],
+    "*": ["I", "I_GEN", "I_LOAD", "I_AC", "I_DC", "I_TO", "I_FROM"],
+  }),
+  status: Object.freeze({ "*": ["STATUS", "RUN_STAT"] }),
+  level: Object.freeze({ "*": ["SOC", "LEVEL"] }),
+  frequency: Object.freeze({ "*": ["FREQUENCY", "FREQ", "F"] }),
+  flow: Object.freeze({ "*": ["FLOW"] }),
+  pressure: Object.freeze({ "*": ["PRESSURE"] }),
+  temperature: Object.freeze({ "*": ["TEMPERATURE"] }),
+});
 
 function diagramNumberText(value) {
   const number = Number(value);
@@ -1398,13 +1651,183 @@ function addDiagramMeasurementAliases(map, row) {
   aliases.forEach((alias) => map.set(alias, row));
 }
 
+function normalizeDiagramMeasurementToken(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function diagramMetricMeasurementTypes(devType, metricType) {
+  const metricName = String(metricType || "").trim().toLowerCase();
+  const metricEntry = Object.entries(DIAGRAM_METRIC_MEASUREMENT_TYPES)
+    .find(([key]) => key.toLowerCase() === metricName)?.[1] || {};
+  const specific = metricEntry[normalizeDiagramMeasurementToken(devType)] || [];
+  return [...new Set([...specific, ...(metricEntry["*"] || [])])];
+}
+
+function diagramDeviceMeasurementKey(devType, devName, measType) {
+  return [
+    normalizeDiagramMeasurementToken(devType),
+    String(devName || "").trim(),
+    normalizeDiagramMeasurementToken(measType),
+  ].join("\u0000");
+}
+
+function addDiagramDeviceMeasurement(map, row) {
+  if (!row?.dev_type || !row?.dev_name || !row?.meas_type) return;
+  map.set(diagramDeviceMeasurementKey(row.dev_type, row.dev_name, row.meas_type), row);
+}
+
 function diagramMeasurementMaps(snapshot = state.snapshot || {}) {
   const measurements = snapshot.measurements || {};
   const scada = new Map();
   const real = new Map();
-  (measurements.scada || []).forEach((row) => addDiagramMeasurementAliases(scada, row));
-  (measurements.real || []).forEach((row) => addDiagramMeasurementAliases(real, row));
-  return { scada, real };
+  const scadaByDevice = new Map();
+  const realByDevice = new Map();
+  (measurements.scada || []).forEach((row) => {
+    addDiagramMeasurementAliases(scada, row);
+    addDiagramDeviceMeasurement(scadaByDevice, row);
+  });
+  (measurements.real || []).forEach((row) => {
+    addDiagramMeasurementAliases(real, row);
+    addDiagramDeviceMeasurement(realByDevice, row);
+  });
+  return { scada, real, scadaByDevice, realByDevice };
+}
+
+function diagramMetricBindingValue(binding, maps) {
+  const candidates = diagramMetricMeasurementTypes(binding?.devType, binding?.metricType);
+  for (const measType of candidates) {
+    const key = diagramDeviceMeasurementKey(binding.devType, binding.devName, measType);
+    if (maps.scadaByDevice?.has(key)) return maps.scadaByDevice.get(key);
+  }
+  for (const measType of candidates) {
+    const key = diagramDeviceMeasurementKey(binding.devType, binding.devName, measType);
+    if (maps.realByDevice?.has(key)) return maps.realByDevice.get(key);
+  }
+  return null;
+}
+
+function diagramDisplayRow(row, metricType = "") {
+  if (!row) return row;
+  if (
+    String(metricType || "").trim().toLowerCase() === "level"
+    && normalizeDiagramMeasurementToken(row.meas_type) === "SOC"
+    && Number.isFinite(Number(row.value))
+  ) {
+    return { ...row, value: Number(row.value) * 100 };
+  }
+  return row;
+}
+
+function diagramTrendDisplayValue(value, row, metricType = "") {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  const displayRow = diagramDisplayRow({ ...(row || {}), value: number }, metricType);
+  return Number.isFinite(Number(displayRow?.value)) ? Number(displayRow.value) : null;
+}
+
+function diagramDeviceStateKey(devType, devName) {
+  return `${normalizeDiagramMeasurementToken(devType)}\u0000${String(devName || "").trim()}`;
+}
+
+function diagramDeviceOperatingStateMaps(snapshot = {}) {
+  const exact = new Map();
+  const byName = new Map();
+  (snapshot.device_states || snapshot.devices || []).forEach((item) => {
+    const devType = String(item?.dev_type || "").trim();
+    const devName = String(item?.dev_name || item?.name || "").trim();
+    if (!devType || !devName) return;
+    exact.set(diagramDeviceStateKey(devType, devName), item);
+    if (!byName.has(devName)) {
+      byName.set(devName, item);
+      return;
+    }
+    const previous = byName.get(devName);
+    if (previous && normalizeDiagramMeasurementToken(previous.dev_type) !== normalizeDiagramMeasurementToken(devType)) {
+      byName.set(devName, null);
+    }
+  });
+  return { exact, byName };
+}
+
+function diagramDeviceOperatingState(device, maps) {
+  if (!device) return null;
+  return maps.exact.get(diagramDeviceStateKey(device.devType, device.devName))
+    || maps.byName.get(String(device.devName || "").trim())
+    || null;
+}
+
+function diagramDeviceIsOffline(deviceState) {
+  if (!deviceState) return false;
+  const deadIsland = deviceState.dead_island === true
+    || Number(deviceState.dead_island) === 1
+    || String(deviceState.dead_island).trim().toLowerCase() === "true";
+  return Number(deviceState.run_stat ?? deviceState.running ?? 1) === 0 || deadIsland;
+}
+
+function diagramSwitchState(value) {
+  if (typeof value === "boolean") return value ? "closed" : "open";
+  const text = String(value ?? "").trim();
+  if (!text || text === "--") return "unknown";
+  const number = Number(text);
+  if (Number.isFinite(number)) return number > 0.5 ? "closed" : "open";
+  const token = text.toLowerCase().replace(/\s+/g, "");
+  if (["closed", "close", "on", "合", "合闸", "闭合", "投入", "true"].includes(token)) return "closed";
+  if (["open", "off", "分", "分闸", "断开", "退出", "false"].includes(token)) return "open";
+  return "unknown";
+}
+
+function diagramSwitchStateHref(href, switchState) {
+  const value = String(href || "");
+  if (!value || !["open", "closed"].includes(switchState)) return value;
+  const stateValue = switchState === "closed" ? 1 : 0;
+  return value.replace(/_state_[01](?=(?:_\d+)?(?:$|[?#]))/, `_state_${stateValue}`);
+}
+
+function diagramSwitchMeasurementRow(device, maps) {
+  if (!device) return null;
+  const key = diagramDeviceMeasurementKey(device.devType, device.devName, "STATUS");
+  return maps.scadaByDevice?.get(key) || maps.realByDevice?.get(key) || null;
+}
+
+function setDiagramSwitchElementState(element, switchState) {
+  element.setAttribute("data-diagram-switch-state", switchState);
+  element.classList.toggle("is-diagram-switch-open", switchState === "open");
+  element.classList.toggle("is-diagram-switch-closed", switchState === "closed");
+}
+
+function updateDiagramSwitchVisualStates(container, maps) {
+  if (!container) return;
+  const elementsByDevice = new Map();
+  container.querySelectorAll("[dev-id], [dev]").forEach((element) => {
+    [element.getAttribute("dev-id"), element.getAttribute("dev")]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .forEach((devId) => {
+        if (!elementsByDevice.has(devId)) elementsByDevice.set(devId, []);
+        elementsByDevice.get(devId).push(element);
+      });
+  });
+  const devices = diagramDeviceIndex(container);
+  container.querySelectorAll("use[dev-id], use[id][name]").forEach((element) => {
+    const devId = String(element.getAttribute("dev-id") || element.getAttribute("id") || "").trim();
+    const device = devices.get(devId);
+    if (!devId || !device) return;
+    const currentHref = element.getAttribute("href") || element.getAttribute("xlink:href") || "";
+    const supportsStateSymbols = /_state_[01](?=(?:_\d+)?(?:$|[?#]))/.test(currentHref)
+      || element.hasAttribute("data-open-href")
+      || element.hasAttribute("data-closed-href");
+    if (!supportsStateSymbols) return;
+    const switchState = diagramSwitchState(diagramSwitchMeasurementRow(device, maps)?.value);
+    (elementsByDevice.get(devId) || [element]).forEach((related) => {
+      setDiagramSwitchElementState(related, switchState);
+    });
+    if (switchState === "unknown") return;
+    const explicitHref = element.getAttribute(switchState === "closed" ? "data-closed-href" : "data-open-href");
+    const nextHref = explicitHref || diagramSwitchStateHref(currentHref, switchState);
+    if (!nextHref || nextHref === currentHref) return;
+    element.setAttribute("href", nextHref);
+    if (element.hasAttribute("xlink:href")) element.setAttribute("xlink:href", nextHref);
+  });
 }
 
 function addDiagramControlAliases(map, aliases, value, updated) {
@@ -1449,22 +1872,799 @@ function diagramBindingValue(name, maps, channel = "scada") {
   return maps.scada.get(key) || maps.real.get(key) || null;
 }
 
-function setDiagramElementValue(element, row) {
-  const text = row?.value === undefined ? "--" : (row.unit !== undefined ? diagramRowText(row) : diagramNumberText(row.value));
+function setDiagramElementValue(element, row, metricType = "") {
+  const displayRow = diagramDisplayRow(row, metricType);
+  const missing = displayRow?.value === undefined || displayRow?.value === null;
+  const text = missing
+    ? "--"
+    : (displayRow.unit !== undefined ? diagramRowText(displayRow) : diagramNumberText(displayRow.value));
   const tag = String(element.tagName || "").toLowerCase();
   if (["text", "tspan", "title", "desc"].includes(tag) || element instanceof HTMLElement) {
     element.textContent = text;
   } else {
     element.setAttribute("data-current-value", text);
   }
-  element.classList.toggle("is-diagram-bound", row !== null && row !== undefined);
+  element.classList.toggle("is-diagram-bound", Boolean(displayRow) && !missing);
   element.setAttribute("data-bound-value", text);
-  if (row?.updated) element.setAttribute("data-bound-time", row.updated);
+  const updated = displayRow?.updated_simu_time || displayRow?.updated_wall_time || displayRow?.updated;
+  if (updated) element.setAttribute("data-bound-time", updated);
+  else element.removeAttribute("data-bound-time");
 }
+
+const diagramDeviceIndexCache = new WeakMap();
+const diagramMetricBindingCache = new WeakMap();
+const diagramInteractionCache = new WeakMap();
+const diagramViewportCache = new WeakMap();
+
+function compileDiagramDeviceIndex(container) {
+  const devices = new Map();
+  container.querySelectorAll("[dev-id][name], use[id][name]").forEach((element) => {
+    const devId = element.getAttribute("dev-id") || element.getAttribute("id") || "";
+    const devName = element.getAttribute("name") || "";
+    if (!devId || !devName || devices.has(devId)) return;
+    const layerType = element.closest("[device-type]")?.getAttribute("device-type") || "";
+    devices.set(devId, {
+      devId,
+      devType: layerType || devId.split("-", 1)[0],
+      devName,
+    });
+  });
+  return devices;
+}
+
+function diagramDeviceIndex(container) {
+  let devices = diagramDeviceIndexCache.get(container);
+  if (!devices) {
+    devices = compileDiagramDeviceIndex(container);
+    diagramDeviceIndexCache.set(container, devices);
+  }
+  return devices;
+}
+
+function compileDiagramMetricBindings(container) {
+  const devices = diagramDeviceIndex(container);
+  return [...container.querySelectorAll("[dev] [mt]")].map((element) => {
+    if (element.matches("[data-meas-name], [data-scada-name], [data-real-name], [data-control-name]")) {
+      return null;
+    }
+    const owner = element.closest("[dev]");
+    const device = devices.get(owner?.getAttribute("dev") || "");
+    const metricType = element.getAttribute("mt") || "";
+    if (!device || !metricType) return null;
+    return { element, ...device, metricType };
+  }).filter(Boolean);
+}
+
+function diagramMetricBindings(container) {
+  let bindings = diagramMetricBindingCache.get(container);
+  if (!bindings) {
+    bindings = compileDiagramMetricBindings(container);
+    diagramMetricBindingCache.set(container, bindings);
+  }
+  return bindings;
+}
+
+function diagramInteractionState(container) {
+  let interaction = diagramInteractionCache.get(container);
+  if (!interaction) {
+    interaction = {
+      initialized: false,
+      selectedDevId: "",
+      hover: null,
+      snapshot: null,
+      tooltip: null,
+      tooltipPositionKey: "",
+      trendPeriod: "hour",
+      pointer: { x: 0, y: 0 },
+      hideTimer: null,
+      drag: null,
+      suppressClick: false,
+      suppressClickTimer: null,
+    };
+    diagramInteractionCache.set(container, interaction);
+  }
+  return interaction;
+}
+
+function diagramDeviceRecord(container, devId) {
+  const key = String(devId || "").trim();
+  if (!key) return null;
+  const indexed = diagramDeviceIndex(container).get(key);
+  if (indexed) return indexed;
+  return {
+    devId: key,
+    devType: key.includes("-") ? key.split("-", 1)[0] : "",
+    devName: key,
+  };
+}
+
+const DIAGRAM_DEVICE_ELEMENT_SELECTOR = "[dev-id], [dev], use[id][name]";
+
+function diagramElementDeviceId(element) {
+  if (!element || typeof element.getAttribute !== "function") return "";
+  const explicit = element.getAttribute("dev-id") || element.getAttribute("dev");
+  if (explicit) return String(explicit).trim();
+  if (String(element.tagName || "").toLowerCase() !== "use" || !element.getAttribute("name")) return "";
+  return String(element.getAttribute("id") || "").trim();
+}
+
+function diagramTargetDeviceId(container, target) {
+  if (!(target instanceof Element) || !container.contains(target)) return "";
+  const metricElement = target.closest("[mt]");
+  if (metricElement && container.contains(metricElement)) {
+    const owner = metricElement.closest("[dev]");
+    if (owner && container.contains(owner)) return String(owner.getAttribute("dev") || "").trim();
+  }
+  const deviceElement = target.closest(DIAGRAM_DEVICE_ELEMENT_SELECTOR);
+  if (!deviceElement || !container.contains(deviceElement)) return "";
+  return diagramElementDeviceId(deviceElement);
+}
+
+function diagramHoverTarget(container, target) {
+  if (!(target instanceof Element) || !container.contains(target)) return null;
+  const metricElement = target.closest("[mt]");
+  if (metricElement && container.contains(metricElement)) {
+    const owner = metricElement.closest("[dev]");
+    const devId = String(owner?.getAttribute("dev") || "").trim();
+    const metricType = String(metricElement.getAttribute("mt") || "").trim();
+    if (devId && metricType) {
+      return {
+        kind: "metric",
+        key: `metric:${devId}:${metricType}`,
+        element: metricElement,
+        binding: { ...diagramDeviceRecord(container, devId), metricType },
+      };
+    }
+  }
+  const namedMetric = target.closest("[data-meas-name], [data-scada-name], [data-real-name]");
+  if (namedMetric && container.contains(namedMetric)) {
+    const channel = namedMetric.hasAttribute("data-real-name") ? "real" : "scada";
+    const name = namedMetric.getAttribute("data-meas-name")
+      || namedMetric.getAttribute("data-scada-name")
+      || namedMetric.getAttribute("data-real-name")
+      || "";
+    if (name) {
+      return {
+        kind: "metric",
+        key: `named-metric:${channel}:${name}`,
+        element: namedMetric,
+        channel,
+        name,
+        metricType: "",
+      };
+    }
+  }
+  const devId = diagramTargetDeviceId(container, target);
+  if (!devId) return null;
+  return {
+    kind: "device",
+    key: `device:${devId}`,
+    element: target.closest(DIAGRAM_DEVICE_ELEMENT_SELECTOR),
+    device: diagramDeviceRecord(container, devId),
+  };
+}
+
+function setDiagramSelectedDevice(container, devId = "") {
+  if (!container) return;
+  const interaction = diagramInteractionState(container);
+  const selectedDevId = String(devId || "").trim();
+  interaction.selectedDevId = selectedDevId;
+  container.querySelectorAll(".is-diagram-selected").forEach((element) => {
+    element.classList.remove("is-diagram-selected");
+  });
+  if (!selectedDevId) return;
+  container.querySelectorAll(DIAGRAM_DEVICE_ELEMENT_SELECTOR).forEach((element) => {
+    if (diagramElementDeviceId(element) === selectedDevId) element.classList.add("is-diagram-selected");
+  });
+}
+
+function updateDiagramDeviceVisualStates(container, snapshot = {}) {
+  if (!container) return;
+  const maps = diagramDeviceOperatingStateMaps(snapshot);
+  container.querySelectorAll("[dev-id], [dev]").forEach((element) => {
+    const devId = String(element.getAttribute("dev-id") || element.getAttribute("dev") || "").trim();
+    const deviceState = diagramDeviceOperatingState(diagramDeviceRecord(container, devId), maps);
+    const offline = diagramDeviceIsOffline(deviceState);
+    element.classList.toggle("is-diagram-offline", offline);
+    if (!deviceState) {
+      element.removeAttribute("data-diagram-operating-state");
+    } else if (Number(deviceState.run_stat ?? 1) === 0) {
+      element.setAttribute("data-diagram-operating-state", "retired");
+    } else if (diagramDeviceIsOffline(deviceState)) {
+      element.setAttribute("data-diagram-operating-state", "dead-island");
+    } else {
+      element.setAttribute("data-diagram-operating-state", "running");
+    }
+  });
+}
+
+function diagramTooltipValue(value) {
+  if (value === null || value === undefined || value === "") return "--";
+  if (Array.isArray(value)) return value.map((item) => diagramTooltipValue(item)).join(", ");
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch (_error) {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
+function diagramMeasurementUnit(measType) {
+  const type = normalizeDiagramMeasurementToken(measType);
+  if (type === "SOC" || type === "LEVEL") return "%";
+  if (type.startsWith("P")) return "kW";
+  if (type.startsWith("Q")) return "kvar";
+  if (type.startsWith("V")) return "V";
+  if (type.startsWith("I")) return "A";
+  if (type.includes("FREQ")) return "Hz";
+  if (type.includes("TEMP")) return "℃";
+  return "";
+}
+
+function diagramTooltipRows(rows = []) {
+  const content = rows
+    .filter((row) => row && row[0])
+    .map(([label, value]) => `
+      <div class="diagram-tooltip-row">
+        <dt>${escapeHtml(label)}</dt>
+        <dd>${escapeHtml(diagramTooltipValue(value))}</dd>
+      </div>`)
+    .join("");
+  return content ? `<dl class="diagram-tooltip-grid">${content}</dl>` : "";
+}
+
+function diagramDeviceData(container, device, snapshot = state.snapshot || {}) {
+  if (!device) return { definition: null, live: null, raw: {}, svgIdx: "" };
+  const type = normalizeDiagramMeasurementToken(device.devType);
+  const name = String(device.devName || "");
+  const definition = definedModelDevices(snapshot).find((item) => (
+    normalizeDiagramMeasurementToken(item.dev_type) === type
+    && String(item.dev_name || "") === name
+  )) || null;
+  const live = (snapshot.devices || []).find((item) => (
+    normalizeDiagramMeasurementToken(item.dev_type) === type
+    && String(item.dev_name || "") === name
+  )) || null;
+  const svgElement = [...container.querySelectorAll("[dev-id]")]
+    .find((element) => String(element.getAttribute("dev-id") || "") === device.devId);
+  return {
+    definition,
+    live,
+    raw: { ...(definition?.raw || {}), ...(live?.raw || {}) },
+    svgIdx: svgElement?.getAttribute("idx") || "",
+  };
+}
+
+function diagramDeviceMeasurements(device, snapshot = state.snapshot || {}) {
+  if (!device) return [];
+  const type = normalizeDiagramMeasurementToken(device.devType);
+  const name = String(device.devName || "");
+  const matches = (row) => (
+    normalizeDiagramMeasurementToken(row?.dev_type) === type
+    && String(row?.dev_name || "") === name
+    && Number(row?.valid ?? 1) === 1
+  );
+  const rows = new Map();
+  (snapshot.measurements?.scada || []).filter(matches).forEach((row) => rows.set(measurementKey(row), row));
+  (snapshot.measurements?.real || []).filter(matches).forEach((row) => {
+    const key = measurementKey(row);
+    if (!rows.has(key)) rows.set(key, row);
+  });
+  return [...rows.values()].sort((left, right) => (
+    String(left.meas_type || left.name || "").localeCompare(String(right.meas_type || right.name || ""), "zh-Hans-CN")
+  ));
+}
+
+function renderDiagramDeviceTooltip(container, hover, snapshot) {
+  const device = hover?.device || null;
+  if (!device) return "";
+  const { definition, live, raw, svgIdx } = diagramDeviceData(container, device, snapshot);
+  const idx = live?.raw?.idx ?? definition?.idx ?? raw.idx ?? svgIdx ?? "--";
+  const identityRows = [
+    ["设备类型", device.devType || "--"],
+    ["设备标识", device.devId || "--"],
+    ["idx", idx],
+  ];
+  const statusRows = [
+    ["运行状态", live?.run_stat ?? raw.run_stat],
+    ["开关状态", live?.status ?? raw.status],
+    ["控制模式", live?.mode ?? raw.control_type ?? raw.mode],
+  ];
+  const setRows = Object.entries(live?.set_values || {})
+    .map(([key, value]) => [key, value]);
+  const duplicateKeys = new Set([
+    "idx", "name", "dev_name", "dev_type", "run_stat", "status", "mode", "control_type",
+    ...Object.keys(live?.set_values || {}),
+  ]);
+  const rawRows = Object.entries(raw)
+    .filter(([key]) => !duplicateKeys.has(key))
+    .map(([key, value]) => [key, value]);
+  const measurementRows = diagramDeviceMeasurements(device, snapshot).map((row) => {
+    const metricType = normalizeDiagramMeasurementToken(row.meas_type) === "SOC" ? "level" : "";
+    const value = diagramTrendDisplayValue(row.value, row, metricType);
+    const unit = diagramMeasurementUnit(row.meas_type);
+    return [row.meas_type || row.name || "量测", value === null ? "--" : `${diagramNumberText(value)}${unit ? ` ${unit}` : ""}`];
+  });
+  return `
+    <div class="diagram-tooltip-head">
+      <strong>${escapeHtml(device.devName || device.devId || "设备")}</strong>
+      <span>设备参数</span>
+    </div>
+    <div class="diagram-tooltip-body">
+      ${diagramTooltipRows(identityRows)}
+      ${statusRows.some((row) => row[1] !== undefined && row[1] !== null && row[1] !== "") ? `<h4>运行信息</h4>${diagramTooltipRows(statusRows)}` : ""}
+      ${setRows.length ? `<h4>当前设定值</h4>${diagramTooltipRows(setRows)}` : ""}
+      ${rawRows.length ? `<h4>Model.e 参数</h4>${diagramTooltipRows(rawRows)}` : ""}
+      ${measurementRows.length ? `<h4>实时量测</h4>${diagramTooltipRows(measurementRows)}` : ""}
+    </div>`;
+}
+
+function diagramMetricCurrentRow(container, hover, snapshot) {
+  const maps = diagramMeasurementMaps(snapshot);
+  if (hover?.binding) return diagramMetricBindingValue(hover.binding, maps);
+  if (hover?.name) return diagramBindingValue(hover.name, maps, hover.channel || "scada");
+  return null;
+}
+
+function diagramTrendHistoryPoints(row, metricType = "") {
+  if (!row) return [];
+  const key = measurementKey(row);
+  return (state.measurementTraceHistory || []).map((point) => {
+    let measurement = point.measurements?.[key];
+    if (!measurement) {
+      measurement = Object.values(point.measurements || {}).find((item) => (
+        normalizeDiagramMeasurementToken(item?.dev_type) === normalizeDiagramMeasurementToken(row.dev_type)
+        && String(item?.dev_name || "") === String(row.dev_name || "")
+        && normalizeDiagramMeasurementToken(item?.meas_type) === normalizeDiagramMeasurementToken(row.meas_type)
+      ));
+    }
+    if (!measurement) return null;
+    const candidates = [measurement.scada, measurement.real, measurement.value];
+    const rawValue = candidates.find((value) => value !== null && value !== undefined && Number.isFinite(Number(value)));
+    const value = diagramTrendDisplayValue(rawValue, row, metricType);
+    if (value === null) return null;
+    return {
+      minute: Number(point.minute),
+      time: point.sim_time || point.time || "--",
+      value,
+    };
+  }).filter((point) => point && Number.isFinite(point.minute));
+}
+
+function diagramMetricLabel(metricType, row) {
+  const labels = {
+    activepower: "有功功率",
+    reactivepower: "无功功率",
+    voltage: "电压",
+    current: "电流",
+    status: "状态",
+    level: "SOC",
+    frequency: "频率",
+    flow: "流量",
+    pressure: "压力",
+    temperature: "温度",
+  };
+  return labels[String(metricType || "").trim().toLowerCase()]
+    || row?.meas_type
+    || row?.name
+    || "动态量测";
+}
+
+function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute = null) {
+  if (!points.length) return '<div class="diagram-trend-empty">当前分页暂无历史曲线</div>';
+  const targetCount = Math.max(32, Math.floor(Math.max(tooltipWidth, 320) * 0.75));
+  const sampled = diagramSampleTrendPoints(points, targetCount);
+  const values = sampled.map((point) => Number(point.value));
+  let minValue = Math.min(...values);
+  let maxValue = Math.max(...values);
+  if (Math.abs(maxValue - minValue) < 1e-9) {
+    const padding = Math.max(1, Math.abs(maxValue) * 0.05);
+    minValue -= padding;
+    maxValue += padding;
+  }
+  const width = 336;
+  const height = 132;
+  const plot = { left: 8, right: 8, top: 8, bottom: 8 };
+  const range = diagramTrendPeriodRange(
+    period,
+    currentMinute !== null && currentMinute !== undefined && currentMinute !== "" && Number.isFinite(Number(currentMinute))
+      ? Number(currentMinute)
+      : Number(points[points.length - 1].minute),
+  );
+  const labels = diagramTrendPeriodLabels(period, range);
+  const minuteSpan = Math.max(1, range.endMinute - range.startMinute);
+  const valueSpan = Math.max(1e-9, maxValue - minValue);
+  const polyline = sampled.map((point) => {
+    const x = plot.left + ((Number(point.minute) - range.startMinute) / minuteSpan) * (width - plot.left - plot.right);
+    const y = plot.top + ((maxValue - Number(point.value)) / valueSpan) * (height - plot.top - plot.bottom);
+    return `${x.toFixed(2)},${y.toFixed(2)}`;
+  }).join(" ");
+  const first = points[0];
+  const last = points[points.length - 1];
+  return `
+    <svg class="diagram-trend-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${period === "day" ? "日曲线" : "小时曲线"}">
+      <line x1="${plot.left}" y1="${height / 2}" x2="${width - plot.right}" y2="${height / 2}" class="diagram-trend-grid-line"></line>
+      <polyline points="${polyline}" fill="none" vector-effect="non-scaling-stroke"></polyline>
+    </svg>
+    <div class="diagram-trend-range"><span>${escapeHtml(labels.start)}</span><span>${escapeHtml(labels.end)}</span></div>
+    <div class="diagram-trend-stats">
+      <span>最小 <strong>${diagramNumberText(Math.min(...points.map((point) => point.value)))}</strong></span>
+      <span>最大 <strong>${diagramNumberText(Math.max(...points.map((point) => point.value)))}</strong></span>
+      <span>最新 <strong>${diagramNumberText(last.value)}</strong></span>
+    </div>`;
+}
+
+function renderDiagramMetricTooltip(container, hover, snapshot, interaction) {
+  const row = diagramMetricCurrentRow(container, hover, snapshot);
+  const metricType = hover?.binding?.metricType || hover?.metricType || "";
+  const displayValue = diagramTrendDisplayValue(row?.value, row, metricType);
+  const unit = row?.unit || diagramMeasurementUnit(row?.meas_type || metricType);
+  const period = interaction.trendPeriod === "day" ? "day" : "hour";
+  const history = diagramTrendHistoryPoints(row, metricType);
+  const endMinute = Number(snapshot?.clock?.absolute_minute ?? snapshot?.clock?.minute);
+  const windowPoints = diagramTrendWindowPoints(
+    history,
+    period,
+    Number.isFinite(endMinute) ? endMinute : null,
+  );
+  const deviceName = hover?.binding?.devName || row?.dev_name || row?.name || "动态量测";
+  const metricLabel = diagramMetricLabel(metricType, row);
+  const validText = row ? (Number(row.valid ?? 1) === 1 ? "有效" : "无效") : "缺失";
+  return `
+    <div class="diagram-tooltip-head">
+      <strong>${escapeHtml(deviceName)}</strong>
+      <span>${escapeHtml(metricLabel)}</span>
+    </div>
+    <div class="diagram-metric-current">
+      <strong>${displayValue === null ? "--" : escapeHtml(diagramNumberText(displayValue))}</strong>
+      <span>${escapeHtml(unit)}</span>
+      <small>${escapeHtml(validText)}</small>
+    </div>
+    <div class="diagram-trend-tabs" role="tablist" aria-label="量测趋势范围">
+      <button type="button" data-diagram-trend-period="hour" class="${period === "hour" ? "is-active" : ""}" aria-selected="${period === "hour"}">小时曲线</button>
+      <button type="button" data-diagram-trend-period="day" class="${period === "day" ? "is-active" : ""}" aria-selected="${period === "day"}">日曲线</button>
+    </div>
+    <div class="diagram-trend-content">
+      ${diagramTrendChartHtml(windowPoints, period, interaction.tooltip?.clientWidth || 360, endMinute)}
+    </div>`;
+}
+
+function positionDiagramTooltip(interaction) {
+  const tooltip = interaction?.tooltip;
+  if (!tooltip || tooltip.hidden) return;
+  if (!diagramTooltipNeedsPosition(interaction.hover, interaction.tooltipPositionKey)) return;
+  const gap = 14;
+  const padding = 10;
+  const rect = tooltip.getBoundingClientRect();
+  let left = interaction.pointer.x + gap;
+  let top = interaction.pointer.y + gap;
+  if (left + rect.width > window.innerWidth - padding) left = interaction.pointer.x - rect.width - gap;
+  if (top + rect.height > window.innerHeight - padding) top = interaction.pointer.y - rect.height - gap;
+  tooltip.style.left = `${Math.max(padding, Math.min(left, window.innerWidth - rect.width - padding))}px`;
+  tooltip.style.top = `${Math.max(padding, Math.min(top, window.innerHeight - rect.height - padding))}px`;
+  interaction.tooltipPositionKey = String(interaction.hover?.key || "");
+}
+
+function clearDiagramTooltipHide(interaction) {
+  if (!interaction?.hideTimer) return;
+  clearTimeout(interaction.hideTimer);
+  interaction.hideTimer = null;
+}
+
+function hideDiagramTooltip(container) {
+  if (!container) {
+    document.querySelectorAll(".diagram-tooltip").forEach((tooltip) => {
+      tooltip.hidden = true;
+      tooltip.classList.remove("is-visible");
+    });
+    return;
+  }
+  const interaction = diagramInteractionCache.get(container);
+  if (!interaction) return;
+  clearDiagramTooltipHide(interaction);
+  interaction.hover = null;
+  interaction.tooltipPositionKey = "";
+  if (interaction.tooltip) {
+    interaction.tooltip.hidden = true;
+    interaction.tooltip.classList.remove("is-visible");
+  }
+}
+
+function scheduleDiagramTooltipHide(container) {
+  const interaction = diagramInteractionCache.get(container);
+  if (!interaction) return;
+  clearDiagramTooltipHide(interaction);
+  interaction.hideTimer = setTimeout(() => hideDiagramTooltip(container), DIAGRAM_TOOLTIP_HIDE_DELAY_MS);
+}
+
+function refreshDiagramTooltip(container, snapshot = state.snapshot || {}) {
+  const interaction = diagramInteractionCache.get(container);
+  if (!interaction) return;
+  interaction.snapshot = snapshot;
+  if (!interaction.hover || !interaction.tooltip) return;
+  const html = interaction.hover.kind === "metric"
+    ? renderDiagramMetricTooltip(container, interaction.hover, snapshot, interaction)
+    : renderDiagramDeviceTooltip(container, interaction.hover, snapshot);
+  if (!html) {
+    hideDiagramTooltip(container);
+    return;
+  }
+  interaction.tooltip.dataset.kind = interaction.hover.kind;
+  interaction.tooltip.innerHTML = html;
+  interaction.tooltip.hidden = false;
+  interaction.tooltip.classList.add("is-visible");
+  positionDiagramTooltip(interaction);
+}
+
+function resetDiagramInteractions(container) {
+  if (!container) return;
+  const interaction = diagramInteractionCache.get(container);
+  if (interaction) {
+    clearDiagramTooltipHide(interaction);
+    if (interaction.suppressClickTimer) clearTimeout(interaction.suppressClickTimer);
+    interaction.selectedDevId = "";
+    interaction.hover = null;
+    interaction.snapshot = null;
+    interaction.tooltipPositionKey = "";
+    interaction.drag = null;
+    interaction.suppressClick = false;
+    interaction.suppressClickTimer = null;
+    if (interaction.tooltip) {
+      interaction.tooltip.hidden = true;
+      interaction.tooltip.classList.remove("is-visible");
+    }
+  }
+  container.classList.remove("is-diagram-panning");
+  container.querySelectorAll(".is-diagram-selected").forEach((element) => element.classList.remove("is-diagram-selected"));
+  diagramDeviceIndexCache.delete(container);
+  diagramMetricBindingCache.delete(container);
+  diagramViewportCache.delete(container);
+}
+
+function diagramViewBox(svg) {
+  const values = String(svg?.getAttribute("viewBox") || "")
+    .trim()
+    .split(/[\s,]+/)
+    .map(Number);
+  if (values.length !== 4 || values.some((value) => !Number.isFinite(value))) return null;
+  const [x, y, width, height] = values;
+  if (width <= 0 || height <= 0) return null;
+  return { x, y, width, height };
+}
+
+function diagramViewportState(container) {
+  const svg = container?.querySelector("svg.model-diagram-svg");
+  if (!svg) return null;
+  const cached = diagramViewportCache.get(container);
+  if (cached?.svg === svg) return cached;
+  const original = diagramViewBox(svg);
+  if (!original) return null;
+  const viewport = { svg, original: { ...original }, current: { ...original } };
+  diagramViewportCache.set(container, viewport);
+  return viewport;
+}
+
+function diagramPointerSvgPoint(svg, event, inverseMatrix = null) {
+  if (!svg || !event || typeof svg.createSVGPoint !== "function") return null;
+  try {
+    const inverse = inverseMatrix || svg.getScreenCTM?.()?.inverse?.();
+    if (!inverse) return null;
+    const point = svg.createSVGPoint();
+    point.x = event.clientX;
+    point.y = event.clientY;
+    return point.matrixTransform(inverse);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function beginDiagramPan(container, event) {
+  if (!event || event.button !== 0 || event.isPrimary === false) return false;
+  const viewport = diagramViewportState(container);
+  const interaction = diagramInteractionState(container);
+  if (!viewport || !(event.target instanceof Element) || event.target.closest("svg") !== viewport.svg) return false;
+  let inverseMatrix;
+  try {
+    inverseMatrix = viewport.svg.getScreenCTM?.()?.inverse?.();
+  } catch (_error) {
+    inverseMatrix = null;
+  }
+  const startPoint = diagramPointerSvgPoint(viewport.svg, event, inverseMatrix);
+  if (!startPoint || !inverseMatrix) return false;
+  if (interaction.suppressClickTimer) clearTimeout(interaction.suppressClickTimer);
+  interaction.suppressClick = false;
+  interaction.suppressClickTimer = null;
+  interaction.drag = {
+    pointerId: event.pointerId,
+    svg: viewport.svg,
+    inverseMatrix,
+    startPoint: { x: startPoint.x, y: startPoint.y },
+    startClient: { x: event.clientX, y: event.clientY },
+    startViewBox: { ...viewport.current },
+    moved: false,
+  };
+  try {
+    container.setPointerCapture?.(event.pointerId);
+  } catch (_error) {
+    // Pointer capture is optional; normal pointer events still support panning inside the canvas.
+  }
+  return true;
+}
+
+function moveDiagramPan(container, event) {
+  const interaction = diagramInteractionCache.get(container);
+  const drag = interaction?.drag;
+  if (!drag || event.pointerId !== drag.pointerId) return false;
+  const clientDistance = Math.hypot(event.clientX - drag.startClient.x, event.clientY - drag.startClient.y);
+  if (!drag.moved && clientDistance < DIAGRAM_PAN_THRESHOLD_PX) return false;
+  const viewport = diagramViewportState(container);
+  if (!viewport || viewport.svg !== drag.svg) return false;
+  const point = diagramPointerSvgPoint(viewport.svg, event, drag.inverseMatrix);
+  if (!point) return false;
+  if (!drag.moved) {
+    drag.moved = true;
+    container.classList.add("is-diagram-panning");
+    hideDiagramTooltip(container);
+  }
+  const next = diagramPanViewBox(drag.startViewBox, viewport.original, {
+    x: point.x - drag.startPoint.x,
+    y: point.y - drag.startPoint.y,
+  });
+  viewport.current = { ...next };
+  viewport.svg.setAttribute("viewBox", `${next.x} ${next.y} ${next.width} ${next.height}`);
+  event.preventDefault();
+  return true;
+}
+
+function finishDiagramPan(container, event) {
+  const interaction = diagramInteractionCache.get(container);
+  const drag = interaction?.drag;
+  if (!drag || event.pointerId !== drag.pointerId) return false;
+  const moved = Boolean(drag.moved);
+  interaction.drag = null;
+  container.classList.remove("is-diagram-panning");
+  try {
+    if (container.hasPointerCapture?.(event.pointerId)) container.releasePointerCapture?.(event.pointerId);
+  } catch (_error) {
+    // The pointer may already have been released by the browser.
+  }
+  if (moved) {
+    interaction.suppressClick = true;
+    interaction.suppressClickTimer = setTimeout(() => {
+      interaction.suppressClick = false;
+      interaction.suppressClickTimer = null;
+    }, 0);
+    event.preventDefault();
+  }
+  return moved;
+}
+
+function zoomDiagramAtPointer(container, event) {
+  const viewport = diagramViewportState(container);
+  if (!viewport || !event || !Number.isFinite(Number(event.deltaY)) || Number(event.deltaY) === 0) return false;
+  const { svg } = viewport;
+  if (!(event.target instanceof Element) || event.target.closest("svg") !== svg) return false;
+  const screenMatrix = svg.getScreenCTM?.();
+  if (!screenMatrix || typeof screenMatrix.inverse !== "function" || typeof svg.createSVGPoint !== "function") return false;
+  let focus;
+  try {
+    const point = svg.createSVGPoint();
+    point.x = event.clientX;
+    point.y = event.clientY;
+    focus = point.matrixTransform(screenMatrix.inverse());
+  } catch (_error) {
+    return false;
+  }
+  const factor = Number(event.deltaY) < 0 ? 0.88 : 1.12;
+  const next = diagramZoomViewBox(viewport.current, viewport.original, focus, factor);
+  const changed = ["x", "y", "width", "height"].some((key) => Math.abs(Number(next[key]) - Number(viewport.current[key])) > 1e-7);
+  if (!changed) return false;
+  viewport.current = { ...next };
+  svg.setAttribute("viewBox", `${next.x} ${next.y} ${next.width} ${next.height}`);
+  event.preventDefault();
+  return true;
+}
+
+function initDiagramInteractions(container) {
+  if (!container) return;
+  const interaction = diagramInteractionState(container);
+  if (interaction.initialized) return;
+  interaction.initialized = true;
+  const tooltip = document.createElement("div");
+  tooltip.className = "diagram-tooltip";
+  tooltip.hidden = true;
+  tooltip.setAttribute("role", "tooltip");
+  document.body.appendChild(tooltip);
+  interaction.tooltip = tooltip;
+
+  container.addEventListener("pointerdown", (event) => {
+    beginDiagramPan(container, event);
+  });
+  container.addEventListener("pointermove", (event) => {
+    interaction.pointer = { x: event.clientX, y: event.clientY };
+    if (moveDiagramPan(container, event)) return;
+    const nextHover = diagramHoverTarget(container, event.target);
+    const tooltipAction = diagramTooltipPointerMoveAction(
+      interaction.hover,
+      nextHover,
+      Boolean(interaction.tooltip?.hidden),
+    );
+    if (!nextHover) {
+      if (tooltipAction === "schedule-hide") scheduleDiagramTooltipHide(container);
+      else hideDiagramTooltip(container);
+      return;
+    }
+    clearDiagramTooltipHide(interaction);
+    interaction.hover = nextHover;
+    if (tooltipAction === "refresh") {
+      refreshDiagramTooltip(container, interaction.snapshot || state.snapshot || {});
+    } else if (tooltipAction === "position") {
+      positionDiagramTooltip(interaction);
+    }
+  });
+  container.addEventListener("pointerup", (event) => finishDiagramPan(container, event));
+  container.addEventListener("pointercancel", (event) => finishDiagramPan(container, event));
+  container.addEventListener("dblclick", (event) => {
+    const viewport = diagramViewportState(container);
+    const insideSvg = Boolean(
+      viewport
+      && event.target instanceof Element
+      && event.target.closest("svg") === viewport.svg,
+    );
+    const hover = insideSvg ? diagramHoverTarget(container, event.target) : null;
+    const action = diagramSvgDoubleClickAction(hover?.kind || "", insideSvg);
+    if (action === "ignore") return;
+    hideDiagramTooltip(container);
+    if (action === "command") {
+      const devId = diagramTargetDeviceId(container, event.target);
+      openDiagramDeviceCommandForSvgDevice(container, devId);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (!fitDiagramViewport(viewport)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  container.addEventListener("pointerleave", () => {
+    if (!interaction.drag) scheduleDiagramTooltipHide(container);
+  });
+  container.addEventListener("click", (event) => {
+    if (interaction.suppressClick) {
+      if (interaction.suppressClickTimer) clearTimeout(interaction.suppressClickTimer);
+      interaction.suppressClick = false;
+      interaction.suppressClickTimer = null;
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    const devId = diagramTargetDeviceId(container, event.target);
+    setDiagramSelectedDevice(container, devId);
+  });
+  container.addEventListener("wheel", (event) => {
+    zoomDiagramAtPointer(container, event);
+  }, { passive: false });
+  tooltip.addEventListener("pointerenter", () => clearDiagramTooltipHide(interaction));
+  tooltip.addEventListener("pointerleave", () => scheduleDiagramTooltipHide(container));
+  tooltip.addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("[data-diagram-trend-period]") : null;
+    if (!button) return;
+    const period = button.getAttribute("data-diagram-trend-period") === "day" ? "day" : "hour";
+    if (period === interaction.trendPeriod) return;
+    interaction.trendPeriod = period;
+    refreshDiagramTooltip(container, interaction.snapshot || state.snapshot || {});
+  });
+}
+
+
 
 function updateDiagramRealtimeBindings(container = $("modelDiagramCanvas"), snapshot = state.snapshot || {}) {
   if (!container) return;
+  updateDiagramDeviceVisualStates(container, snapshot);
   const measurementMaps = diagramMeasurementMaps(snapshot);
+  updateDiagramSwitchVisualStates(container, measurementMaps);
   const maps = { ...measurementMaps, controls: diagramControlMap(snapshot) };
   container.querySelectorAll("[data-meas-name], [data-scada-name]").forEach((element) => {
     const name = element.getAttribute("data-meas-name") || element.getAttribute("data-scada-name") || "";
@@ -1476,6 +2676,14 @@ function updateDiagramRealtimeBindings(container = $("modelDiagramCanvas"), snap
   container.querySelectorAll("[data-control-name]").forEach((element) => {
     setDiagramElementValue(element, diagramBindingValue(element.getAttribute("data-control-name"), maps, "control"));
   });
+  diagramMetricBindings(container).forEach((binding) => {
+    setDiagramElementValue(
+      binding.element,
+      diagramMetricBindingValue(binding, maps),
+      binding.metricType,
+    );
+  });
+  refreshDiagramTooltip(container, snapshot);
 }
 
 function renderModelDiagramPage(snapshot = state.snapshot || {}) {
@@ -1486,6 +2694,7 @@ function renderModelDiagramPage(snapshot = state.snapshot || {}) {
   const diagram = activeSnapshot.diagram || {};
   const modelName = activeSnapshot.model?.name || activeSnapshot.model?.id || "当前模型";
   if (!diagram.svg) {
+    resetDiagramInteractions(canvas);
     canvas.dataset.diagramKey = "";
     canvas.innerHTML = '<div class="empty-state">当前模型未配置接线图</div>';
     if (summary) summary.textContent = `${modelName} · 未配置`;
@@ -1494,11 +2703,13 @@ function renderModelDiagramPage(snapshot = state.snapshot || {}) {
   const key = `${activeSnapshot.model?.id || ""}|${diagram.updated_at || ""}|${diagram.size || ""}`;
   if (canvas.dataset.diagramKey !== key) {
     const sanitized = sanitizeDiagramSvg(diagram.svg);
+    resetDiagramInteractions(canvas);
     canvas.dataset.diagramKey = key;
     canvas.innerHTML = sanitized
       ? `<div class="model-diagram-svg-wrap">${sanitized}</div>`
       : '<div class="empty-state">接线图 SVG 无法解析</div>';
   }
+  initDiagramInteractions(canvas);
   if (summary) summary.textContent = `${modelName} · ${diagram.filename || "diagram.svg"}`;
   updateDiagramRealtimeBindings(canvas, activeSnapshot);
 }
@@ -3285,6 +4496,7 @@ function renderSnapshot(snapshot) {
   if (traceLifecycleChanged) {
     state.measurementTraceHistory = [];
     state.commandTraceHistory = [];
+    state.renewableTrendHistory = [];
     state.selectedMeasurementKey = "";
   }
   state.traceRunId = runId;
@@ -4098,6 +5310,9 @@ function renderTraineeOverviewDashboard(snapshot) {
 
 function renderActiveTraineePage(snapshot = state.snapshot || {}, force = false) {
   const activePage = currentPageName();
+  if (activePage !== "diagram") {
+    hideDiagramTooltip(state.pageSections?.diagram?.querySelector?.("#modelDiagramCanvas") || null);
+  }
   if (activePage === "overview") {
     renderTeacherWeather(snapshot);
     renderTraineeOverviewDashboard(snapshot);
@@ -4983,6 +6198,25 @@ function resetRenewableControlView(modelId = state.activeModelId) {
   state.renewableTrendHistory = [];
 }
 
+function renewableTrendLifecycleChanged(previous = {}, current = {}) {
+  if (Number(previous.runId ?? 0) !== Number(current.runId ?? 0)) return true;
+  const previousStep = Number(previous.stepCount);
+  const currentStep = Number(current.stepCount);
+  if (Number.isFinite(previousStep) && Number.isFinite(currentStep) && currentStep < previousStep) return true;
+  const previousMinute = Number(previous.minute);
+  const currentMinute = Number(current.minute);
+  return Number.isFinite(previousMinute) && Number.isFinite(currentMinute) && currentMinute < previousMinute;
+}
+
+function latestRenewableTrendSegment(points = []) {
+  const source = Array.isArray(points) ? points : [];
+  let segmentStart = 0;
+  for (let index = 1; index < source.length; index += 1) {
+    if (renewableTrendLifecycleChanged(source[index - 1], source[index])) segmentStart = index;
+  }
+  return source.slice(segmentStart);
+}
+
 function applyRenewableControlState(payload = {}) {
   if (!payload || typeof payload !== "object") return false;
   const control = state.renewableControl;
@@ -5024,7 +6258,7 @@ function applyRenewableControlState(payload = {}) {
     revision: Number.isFinite(incomingRevision) ? incomingRevision : control.revision,
     logs: Array.isArray(payload.logs) ? payload.logs : [],
   });
-  state.renewableTrendHistory = Array.isArray(payload.trend) ? payload.trend : [];
+  state.renewableTrendHistory = latestRenewableTrendSegment(payload.trend);
   return true;
 }
 
@@ -7863,6 +9097,93 @@ function findDeviceByKey(key) {
     || null;
 }
 
+function diagramDeviceCommandContext(container, devId, snapshot = state.snapshot || {}) {
+  const record = diagramDeviceRecord(container, devId);
+  if (!record) return null;
+  const dev = controlDefinitionDevices(snapshot).find((candidate) => (
+    deviceType(candidate) === record.devType
+    && deviceName(candidate) === record.devName
+  )) || null;
+  const remoteControls = dev ? remoteControlCommandRows([dev], snapshot) : [];
+  const adjustments = dev ? remoteAdjustmentRows([dev], snapshot) : [];
+  return {
+    container,
+    devId: record.devId,
+    record,
+    dev,
+    options: [
+      ...remoteControls.map((row) => ({ kind: "remote-control", row })),
+      ...adjustments.map((row) => ({ kind: "remote-adjustment", row })),
+    ],
+  };
+}
+
+function closeDiagramDeviceCommandDialog() {
+  const dialog = $("diagramDeviceCommandDialog");
+  if (dialog?.open) dialog.close();
+  state.diagramDeviceCommandContext = null;
+}
+
+function diagramDeviceCommandOptionMarkup(option, index) {
+  const row = option?.row || {};
+  const isRemoteControl = option?.kind === "remote-control";
+  const currentValue = isRemoteControl
+    ? remoteControlValueText(row.commandType, row.dev?.[row.valueKey])
+    : formatRemoteAdjustmentValue(row.controlValue);
+  const detail = isRemoteControl
+    ? `当前状态：${currentValue}`
+    : `当前控制值：${currentValue}；量测值：${formatRemoteAdjustmentValue(row.measurement)}`;
+  return `
+    <button class="diagram-device-command-option" type="button" data-diagram-device-command-index="${index}">
+      <span class="diagram-device-command-option-main">
+        <strong>${escapeHtml(row.name || "设备操作")}</strong>
+        <small>${escapeHtml(detail)}</small>
+      </span>
+      <span class="diagram-device-command-option-type">${isRemoteControl ? "遥控" : "遥调"}</span>
+    </button>
+  `;
+}
+
+function openDiagramDeviceCommandDialog(context) {
+  const dialog = $("diagramDeviceCommandDialog");
+  if (!dialog || !context) return;
+  state.diagramDeviceCommandContext = context;
+  $("diagramDeviceCommandTitle").textContent = "设备人工操作";
+  $("diagramDeviceCommandDevice").textContent = context.record.devName || context.record.devId || "--";
+  $("diagramDeviceCommandType").textContent = `${context.record.devType || "--"} / ${context.record.devId || "--"}`;
+  $("diagramDeviceCommandList").innerHTML = context.options
+    .map((option, index) => diagramDeviceCommandOptionMarkup(option, index))
+    .join("");
+  $("diagramDeviceCommandHint").textContent = context.options.length
+    ? "请选择要执行的人工遥控或遥调操作。"
+    : "当前设备未配置遥控或遥调点";
+  $("diagramDeviceCommandHint").className = context.options.length
+    ? "remote-control-hint"
+    : "remote-control-hint is-error";
+  dialog.showModal();
+}
+
+function activateDiagramDeviceCommandOption(option) {
+  if (!option?.row) return;
+  closeDiagramDeviceCommandDialog();
+  if (option.kind === "remote-control") {
+    openRemoteControlDialog(option.row.dev, option.row.commandType);
+    return;
+  }
+  if (option.kind === "remote-adjustment") openRemoteAdjustmentDialog(option.row);
+}
+
+function openDiagramDeviceCommandForSvgDevice(container, devId) {
+  const context = diagramDeviceCommandContext(container, devId, state.snapshot || {});
+  if (!context) return;
+  setDiagramSelectedDevice(container, context.devId);
+  if (context.options.length === 1) {
+    activateDiagramDeviceCommandOption(context.options[0]);
+    return;
+  }
+  openDiagramDeviceCommandDialog(context);
+}
+
 function closeRemoteControlDialog() {
   const dialog = $("remoteControlDialog");
   if (dialog?.open) dialog.close();
@@ -8313,6 +9634,23 @@ $("receiveWarningClose").addEventListener("click", closeReceiveWarningDialog);
 $("receiveWarningConfirm").addEventListener("click", closeReceiveWarningDialog);
 $("receiveWarningDialog").addEventListener("click", (event) => {
   if (event.target === $("receiveWarningDialog")) closeReceiveWarningDialog();
+});
+$("diagramDeviceCommandClose").addEventListener("click", closeDiagramDeviceCommandDialog);
+$("diagramDeviceCommandCancel").addEventListener("click", closeDiagramDeviceCommandDialog);
+$("diagramDeviceCommandDialog").addEventListener("click", (event) => {
+  if (event.target === $("diagramDeviceCommandDialog")) closeDiagramDeviceCommandDialog();
+});
+$("diagramDeviceCommandDialog").addEventListener("close", () => {
+  state.diagramDeviceCommandContext = null;
+});
+$("diagramDeviceCommandList").addEventListener("click", (event) => {
+  const button = event.target instanceof Element
+    ? event.target.closest("[data-diagram-device-command-index]")
+    : null;
+  if (!button) return;
+  const index = Number(button.dataset.diagramDeviceCommandIndex);
+  const option = state.diagramDeviceCommandContext?.options?.[index];
+  if (option) activateDiagramDeviceCommandOption(option);
 });
 $("remoteControlClose").addEventListener("click", closeRemoteControlDialog);
 $("remoteControlCancel").addEventListener("click", closeRemoteControlDialog);

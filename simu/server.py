@@ -1280,7 +1280,17 @@ def make_http_server(
 
         def _trainee_snapshot_query_overrides(self) -> Mapping[str, Any]:
             values = parse_qs(urlparse(self.path).query)
-            allowed = ("lite", "logs", "runtime_logs", "measurements", "log_limit", "devices", "commands", "static")
+            allowed = (
+                "lite",
+                "logs",
+                "runtime_logs",
+                "measurements",
+                "log_limit",
+                "devices",
+                "device_states",
+                "commands",
+                "static",
+            )
             return {key: values[key][0] for key in allowed if values.get(key)}
 
         def _handle_trainee_connect(self, payload: Mapping[str, Any]) -> None:
@@ -1322,6 +1332,7 @@ def make_http_server(
                         include_measurements=not self._falsey_query("measurements"),
                         static_fields=static_fields,
                         include_devices=not self._falsey_query("devices"),
+                        include_device_states=not self._falsey_query("device_states"),
                         include_commands=not self._falsey_query("commands"),
                     )
                 )
@@ -1348,6 +1359,8 @@ def make_http_server(
                 self._send_json(target.latest_control_values())
             elif path == "/api/devices":
                 self._send_json({"devices": target.devices()})
+            elif path == "/api/device-states":
+                self._send_json({"device_states": target.device_states()})
             elif path == "/api/curves":
                 self._send_json(target.curves)
             elif path == "/api/curves/summary":

@@ -128,6 +128,7 @@ class SimulationResult:
     measurement_definitions: Optional[List[List[str]]] = None
     real_rows: Optional[List[List[str]]] = None
     scada_rows: Optional[List[List[str]]] = None
+    device_states: Optional[List[Dict[str, Any]]] = None
 
 
 def default_config() -> SimulationConfig:
@@ -435,6 +436,190 @@ def _safe_int(value, default: int = 0) -> int:
         return int(float(value))
     except (TypeError, ValueError):
         return default
+
+
+def _topology_node_alive_by_idx(grid: object) -> Dict[int, bool]:
+    alive_by_idx: Dict[int, bool] = {}
+    ppc = getattr(grid, "ppc", None)
+    topology = ppc.get("_topology_arrays") if isinstance(ppc, Mapping) else None
+    raw_node_ids = getattr(topology, "node_ids", None)
+    raw_node_alive = getattr(topology, "node_alive_mask", None)
+    node_ids = list(raw_node_ids) if raw_node_ids is not None else []
+    node_alive = list(raw_node_alive) if raw_node_alive is not None else []
+    for pos, node_id in enumerate(node_ids):
+        if pos >= len(node_alive):
+            break
+        alive_by_idx[_safe_int(node_id)] = bool(node_alive[pos])
+
+    for node in list(getattr(grid, "nodes", []) or []):
+        idx = _safe_int(getattr(node, "idx", None), -1)
+        if idx < 0 or idx in alive_by_idx:
+            continue
+        alive = getattr(node, "is_alive", None)
+        if alive is None:
+            island = getattr(node, "isl_obj", None)
+            alive = getattr(island, "is_alive", None) if island is not None else None
+        if alive is None and _safe_int(getattr(node, "run_stat", 1), 1) == 0:
+            alive = False
+        if alive is not None:
+            alive_by_idx[idx] = bool(alive)
+    return alive_by_idx
+
+
+def _terminal_node_alive(node: object, alive_by_idx: Mapping[int, bool]) -> Optional[bool]:
+    if node is None:
+        return None
+    idx = _safe_int(getattr(node, "idx", None), -1)
+    if idx in alive_by_idx:
+        return bool(alive_by_idx[idx])
+    alive = getattr(node, "is_alive", None)
+    if alive is not None:
+        return bool(alive)
+    island = getattr(node, "isl_obj", None)
+    island_alive = getattr(island, "is_alive", None) if island is not None else None
+    if island_alive is not None:
+        return bool(island_alive) and _safe_int(getattr(node, "run_stat", 1), 1) == 1
+    if _safe_int(getattr(node, "run_stat", 1), 1) == 0:
+        return False
+    return None
+
+
+def _device_dead_island(
+    dev_type: str,
+    device: object,
+    ac_node_alive: Mapping[int, bool],
+    dc_node_alive: Mapping[int, bool],
+) -> bool:
+    if _safe_int(getattr(device, "run_stat", 1), 1) != 1:
+        return False
+    if dev_type in {"ACNode", "DCNode"}:
+        node_alive_map = dc_node_alive if dev_type.startswith("DC") else ac_node_alive
+        return _terminal_node_alive(device, node_alive_map) is False
+    terminal_specs = (
+        ("node_obj", dc_node_alive if str(dev_type).startswith("DC") else ac_node_alive),
+        ("i_node_obj", dc_node_alive if str(dev_type).startswith("DC") else ac_node_alive),
+        ("j_node_obj", dc_node_alive if str(dev_type).startswith("DC") else ac_node_alive),
+        ("k_node_obj", dc_node_alive if str(dev_type).startswith("DC") else ac_node_alive),
+        ("ac_node_obj", ac_node_alive),
+        ("dc_node_obj", dc_node_alive),
+    )
+    terminal_alive = [
+        alive
+        for attr, alive_map in terminal_specs
+        if (alive := _terminal_node_alive(getattr(device, attr, None), alive_map)) is not None
+    ]
+    if terminal_alive:
+        # An open boundary switch may have one energized and one dead side. It is
+        # not itself a dead-island device unless none of its terminals is energized.
+        return not any(terminal_alive)
+    if dev_type in {"ACSwitch", "ACBreak", "DCSwitch", "DCBreak"}:
+        return False
+    alive = getattr(device, "is_alive", None)
+    return alive is False
+
+
+def collect_device_operating_states(
+    snapshot: object,
+    model_book: Optional[EBook] = None,
+) -> List[Dict[str, Any]]:
+    """Return compact run/dead-island states from one solved topology."""
+    ac_grid = getattr(snapshot, "ac", None)
+    dc_grid = getattr(snapshot, "dc", None)
+    ac_node_alive = _topology_node_alive_by_idx(ac_grid) if ac_grid is not None else {}
+    dc_node_alive = _topology_node_alive_by_idx(dc_grid) if dc_grid is not None else {}
+    states: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+    def add_device(dev_type: str, device: object, fallback_name: str = "") -> None:
+        name = str(getattr(device, "name", fallback_name) or fallback_name).strip()
+        if not dev_type or not name:
+            return
+        states[(dev_type, name)] = {
+            "dev_type": dev_type,
+            "dev_name": name,
+            "run_stat": _safe_int(getattr(device, "run_stat", 1), 1),
+            "dead_island": _device_dead_island(
+                dev_type,
+                device,
+                ac_node_alive,
+                dc_node_alive,
+            ),
+        }
+
+    ac_specs = (
+        ("ACNode", "nodes"),
+        ("ACBranch", "branches"),
+        ("ACTransformer", "transformers"),
+        ("ACThreeWindingTransformer", "three_winding_transformers"),
+        ("ACGenerator", "generators"),
+        ("ACLoad", "loads"),
+        ("ACShuntCompensator", "shunt_compensators"),
+        ("ACZeroBranch", "zero_branches"),
+        ("ACSwitch", "switches"),
+        ("ACBreak", "breakers"),
+    )
+    dc_specs = (
+        ("DCNode", "nodes"),
+        ("DCBranch", "branches"),
+        ("DCGenerator", "generators"),
+        ("DCLoad", "loads"),
+        ("DCZeroBranch", "zero_branches"),
+        ("DCSwitch", "switches"),
+        ("DCBreak", "breakers"),
+        ("DCDCConverter", "dcdc_converters"),
+    )
+    for dev_type, attr in ac_specs:
+        for device in list(getattr(ac_grid, attr, []) or []):
+            add_device(dev_type, device)
+    for dev_type, attr in dc_specs:
+        for device in list(getattr(dc_grid, attr, []) or []):
+            add_device(dev_type, device)
+
+    for dev_type, devices in getattr(snapshot, "ac_devices", {}).items():
+        for name, device in devices.items():
+            add_device(str(dev_type), device, str(name))
+    for dev_type, devices in getattr(snapshot, "dc_devices", {}).items():
+        for name, device in devices.items():
+            add_device(str(dev_type), device, str(name))
+    for device in list(getattr(snapshot, "dcac_converters", []) or []):
+        add_device("DCACConverter", device)
+    for device in list(getattr(snapshot, "acac_converters", []) or []):
+        add_device("ACACConverter", device)
+
+    if model_book is not None:
+        for dev_type, block in model_book.data.items():
+            if "name" not in block.header_list or "run_stat" not in block.header_list:
+                continue
+            if str(dev_type).startswith("DC"):
+                node_alive_map = dc_node_alive
+            elif str(dev_type).startswith("AC"):
+                node_alive_map = ac_node_alive
+            else:
+                node_alive_map = {}
+            for row in block.data:
+                name = str(row.get("name", "")).strip()
+                if not name:
+                    continue
+                run_stat = _safe_int(row.get("run_stat", 1), 1)
+                key = (str(dev_type), name)
+                state = states.get(key, {
+                    "dev_type": str(dev_type),
+                    "dev_name": name,
+                    "run_stat": run_stat,
+                    "dead_island": False,
+                })
+                state["run_stat"] = run_stat
+                if run_stat == 0:
+                    state["dead_island"] = False
+                elif key not in states:
+                    terminal_alive = [
+                        node_alive_map[node_idx]
+                        for field in ("node", "i_node", "j_node", "k_node")
+                        if (node_idx := _safe_int(row.get(field), -1)) in node_alive_map
+                    ]
+                    state["dead_island"] = bool(terminal_alive) and not any(terminal_alive)
+                states[key] = state
+
+    return [states[key] for key in sorted(states)]
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
@@ -2233,6 +2418,7 @@ def run_once(
             measurement_definitions=[list(row) for row in meas_rows],
             real_rows=real_rows,
             scada_rows=scada_rows,
+            device_states=collect_device_operating_states(snapshot, model_book),
         )
 
     work_dir = config.real_file.parent / ".simu_loop_work"
@@ -2270,6 +2456,7 @@ def run_once(
         measurement_definitions=[list(row) for row in real_rows],
         real_rows=real_rows,
         scada_rows=scada_rows,
+        device_states=collect_device_operating_states(snapshot, model_book),
     )
 
 

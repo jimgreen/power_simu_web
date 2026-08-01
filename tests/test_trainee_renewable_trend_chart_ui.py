@@ -1,3 +1,5 @@
+import json
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -51,6 +53,38 @@ class TraineeRenewableTrendChartUiTest(unittest.TestCase):
         self.assertIn("payload.trend", apply_block)
         self.assertIn("state.renewableTrendHistory", apply_block)
         self.assertNotIn("function appendRenewableTrend", self.script)
+
+    def test_browser_discards_mirrored_trend_when_simulation_lifecycle_restarts(self):
+        render_block = self.script.split("function renderSnapshot", 1)[1].split(
+            "function renderReceiveMode",
+            1,
+        )[0]
+        lifecycle_block = render_block.split("if (traceLifecycleChanged)", 1)[1].split("}", 1)[0]
+        self.assertIn("state.renewableTrendHistory = [];", lifecycle_block)
+
+    def test_browser_keeps_only_latest_monotonic_backend_trend_segment(self):
+        if "function renewableTrendLifecycleChanged" not in self.script:
+            self.fail("renewable trend lifecycle normalization helper is missing")
+        helpers = "function renewableTrendLifecycleChanged" + self.script.split(
+            "function renewableTrendLifecycleChanged",
+            1,
+        )[1].split("function applyRenewableControlState", 1)[0]
+        body = """
+const points = [
+  { runId: 1, stepCount: 10, minute: 50 },
+  { runId: 1, stepCount: 11, minute: 55 },
+  { runId: 1, stepCount: 0, minute: 0 },
+  { runId: 1, stepCount: 1, minute: 1 },
+];
+process.stdout.write(JSON.stringify(latestRenewableTrendSegment(points).map((point) => point.minute)));
+"""
+        result = subprocess.run(
+            ["node", "-e", f"{helpers}\n{body}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(json.loads(result.stdout), [0, 1])
 
     def test_chart_uses_left_power_axis_and_right_soc_axis(self):
         draw_block = self.script.split("function drawRenewableTrendChart", 1)[1].split(

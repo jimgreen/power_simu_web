@@ -65,6 +65,7 @@ process.stdout.write(JSON.stringify({
             'container.addEventListener("dblclick"',
             1,
         )[1].split('container.addEventListener("pointerleave"', 1)[0]
+        self.assertIn("diagramInteractionEventTarget", dblclick_block)
         self.assertIn("diagramHoverTarget", dblclick_block)
         self.assertIn("diagramSvgDoubleClickAction", dblclick_block)
         self.assertIn("openDiagramDeviceCommandForSvgDevice", dblclick_block)

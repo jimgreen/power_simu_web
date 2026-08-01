@@ -2855,9 +2855,33 @@ function diagramTooltipNeedsPosition(hover, positionedKey = "") {
   return !hoverKey || hoverKey !== String(positionedKey || "");
 }
 
-function diagramSvgDoubleClickAction(targetKind = "", insideSvg = false) {
-  if (!insideSvg) return "ignore";
+function diagramSvgDoubleClickAction(targetKind = "", insideCanvas = false) {
+  if (!insideCanvas) return "ignore";
   return String(targetKind || "").trim() ? "ignore" : "fit";
+}
+
+function diagramInteractionEventTarget(container, viewport, event) {
+  const svg = viewport?.svg;
+  const directTarget = event?.target;
+  if (!container || !svg || !(directTarget instanceof Element)) return null;
+  if (directTarget !== container && !container.contains(directTarget)) return null;
+  if (directTarget.closest("svg") === svg) return directTarget;
+  const clientX = Number(event?.clientX);
+  const clientY = Number(event?.clientY);
+  const pointTarget = Number.isFinite(clientX)
+    && Number.isFinite(clientY)
+    && typeof document !== "undefined"
+    && typeof document.elementFromPoint === "function"
+    ? document.elementFromPoint(clientX, clientY)
+    : null;
+  if (
+    pointTarget instanceof Element
+    && container.contains(pointTarget)
+    && pointTarget.closest("svg") === svg
+  ) {
+    return pointTarget;
+  }
+  return svg;
 }
 
 function diagramViewBoxValue(value) {
@@ -4059,13 +4083,9 @@ function initDiagramInteractions(container) {
   container.addEventListener("pointercancel", (event) => finishDiagramPan(container, event));
   container.addEventListener("dblclick", (event) => {
     const viewport = diagramViewportState(container);
-    const insideSvg = Boolean(
-      viewport
-      && event.target instanceof Element
-      && event.target.closest("svg") === viewport.svg,
-    );
-    const hover = insideSvg ? diagramHoverTarget(container, event.target) : null;
-    const action = diagramSvgDoubleClickAction(hover?.kind || "", insideSvg);
+    const target = diagramInteractionEventTarget(container, viewport, event);
+    const hover = target ? diagramHoverTarget(container, target) : null;
+    const action = diagramSvgDoubleClickAction(hover?.kind || "", Boolean(target));
     if (action !== "fit") return;
     if (!fitDiagramViewport(viewport)) return;
     hideDiagramTooltip(container);
@@ -4084,7 +4104,9 @@ function initDiagramInteractions(container) {
       event.stopPropagation();
       return;
     }
-    const devId = diagramTargetDeviceId(container, event.target);
+    const viewport = diagramViewportState(container);
+    const target = diagramInteractionEventTarget(container, viewport, event);
+    const devId = target ? diagramTargetDeviceId(container, target) : "";
     setDiagramSelectedDevice(container, devId);
   });
   container.addEventListener("wheel", (event) => {

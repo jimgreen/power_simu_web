@@ -225,6 +225,65 @@ process.stdout.write(JSON.stringify(actions));
                     expected[path.parent.name],
                 )
 
+    def test_double_click_resolves_pointer_capture_and_canvas_blank_targets(self):
+        body = """
+class FakeElement {
+  constructor(name, svg = null) {
+    this.name = name;
+    this.svg = svg;
+  }
+  closest(selector) {
+    return selector === "svg" ? this.svg : null;
+  }
+}
+global.Element = FakeElement;
+const svg = new FakeElement("svg");
+svg.svg = svg;
+const svgChild = new FakeElement("svg-child", svg);
+const canvasTarget = new FakeElement("canvas-target");
+const deviceAtPoint = new FakeElement("device-at-point", svg);
+const outside = new FakeElement("outside");
+const container = {
+  contains(element) { return element !== outside; },
+};
+const viewport = { svg };
+let pointTarget = canvasTarget;
+global.document = {
+  elementFromPoint() { return pointTarget; },
+};
+const direct = typeof diagramInteractionEventTarget === "function"
+  ? diagramInteractionEventTarget(container, viewport, { target: svgChild, clientX: 10, clientY: 20 })
+  : null;
+const canvasBlank = typeof diagramInteractionEventTarget === "function"
+  ? diagramInteractionEventTarget(container, viewport, { target: canvasTarget, clientX: 10, clientY: 20 })
+  : null;
+pointTarget = deviceAtPoint;
+const capturedDevice = typeof diagramInteractionEventTarget === "function"
+  ? diagramInteractionEventTarget(container, viewport, { target: canvasTarget, clientX: 10, clientY: 20 })
+  : null;
+const outsideTarget = typeof diagramInteractionEventTarget === "function"
+  ? diagramInteractionEventTarget(container, viewport, { target: outside, clientX: 10, clientY: 20 })
+  : null;
+process.stdout.write(JSON.stringify({
+  direct: direct?.name || null,
+  canvasBlank: canvasBlank?.name || null,
+  capturedDevice: capturedDevice?.name || null,
+  outside: outsideTarget?.name || null,
+}));
+"""
+        expected = {
+            "direct": "svg-child",
+            "canvasBlank": "svg",
+            "capturedDevice": "device-at-point",
+            "outside": None,
+        }
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                self.assertEqual(
+                    self._run_helpers(path.read_text(encoding="utf-8"), body),
+                    expected,
+                )
+
     def test_double_click_handlers_classify_svg_targets_before_acting(self):
         for path in self._scripts():
             with self.subTest(app=path.parent.name):
@@ -233,9 +292,24 @@ process.stdout.write(JSON.stringify(actions));
                     'container.addEventListener("dblclick"',
                     1,
                 )[1].split('container.addEventListener("pointerleave"', 1)[0]
+                self.assertIn("diagramInteractionEventTarget", handler)
                 self.assertIn("diagramHoverTarget", handler)
                 self.assertIn("diagramSvgDoubleClickAction", handler)
                 self.assertIn("fitDiagramViewport", handler)
+                self.assertNotIn('event.target.closest("svg")', handler)
+
+    def test_click_selection_resolves_pointer_capture_before_selecting(self):
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                script = path.read_text(encoding="utf-8")
+                handler = script.split(
+                    'container.addEventListener("click"',
+                    1,
+                )[1].split('container.addEventListener("wheel"', 1)[0]
+                self.assertIn("diagramViewportState", handler)
+                self.assertIn("diagramInteractionEventTarget", handler)
+                self.assertIn("diagramTargetDeviceId(container, target)", handler)
+                self.assertNotIn("diagramTargetDeviceId(container, event.target)", handler)
 
     def test_tooltips_hold_position_and_allow_pointer_entry(self):
         body = """

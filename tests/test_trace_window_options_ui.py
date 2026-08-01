@@ -33,6 +33,29 @@ class TraceWindowOptionsUiTest(unittest.TestCase):
         self.assertNotIn("const minMinute = points[0].minute", trainee_js)
         self.assertNotIn("maxMinute - minMinute", trainee_js)
 
+    def test_measurement_traces_reset_when_service_restart_reuses_the_same_run_id(self):
+        simulator_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        trainee_js = (ROOT / "simu" / "web" / "trainee" / "app.js").read_text(encoding="utf-8")
+
+        for script in (simulator_js, trainee_js):
+            self.assertIn("traceStepCount: null", script)
+            self.assertIn("stepCount < state.traceStepCount", script)
+            self.assertIn("state.traceStepCount = stepCount", script)
+
+    def test_measurement_traces_do_not_connect_duplicate_or_rewound_clock_points(self):
+        simulator_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        trainee_js = (ROOT / "simu" / "web" / "trainee" / "app.js").read_text(encoding="utf-8")
+
+        simulator_chart = simulator_js.split("function drawMeasurementTraceChart()", 1)[1].split(
+            "function measurementCompareDevices", 1
+        )[0]
+        trainee_chart = trainee_js.split("function drawMeasurementTraceChart()", 1)[1].split(
+            "function commandTraceRunKey", 1
+        )[0]
+
+        for chart in (simulator_chart, trainee_chart):
+            self.assertIn("point.minute <= previousMinute", chart)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -61,21 +61,21 @@
 # 2    交流电制氢-1_交流设备端交流电负荷  ac-electrolyzer  31    1         0      1.0  0.0  0.0  0      1.0  0.0  0.0
 </ACLoad>
 <ACGenerator>
-@ idx  name     dev_type        node  control_type  p_set  q_set  v_set  alpha  run_stat  rated_capacity  rated_voltage
-# 1    交流风电-1   ac-wind-source  1     PQ            3.0    0.5    380    0.5    1         10.1            380
-# 2    交流风电-2   ac-wind-source  2     PQ            3.0    0.5    380    0.5    1         10.1            380
-# 3    交流风电-3   ac-wind-source  3     PQ            3.0    0.5    380    0.5    1         10.1            380
-# 4    交流风电-4   ac-wind-source  4     PQ            3.0    0.5    380    0.5    1         10.1            380
-# 5    交流风电-5   ac-wind-source  5     PQ            3.0    0.5    380    0.5    1         10.1            380
-# 6    交流风电-6   ac-wind-source  6     PQ            3.0    0.5    380    0.5    1         10.1            380
-# 7    交流风电-7   ac-wind-source  7     PQ            3.0    0.5    380    0.5    1         10.1            380
-# 8    交流风电-8   ac-wind-source  8     PQ            3.0    0.5    380    0.5    1         10.1            380
-# 9    交流风电-9   ac-wind-source  9     PQ            3.0    0.5    380    0.5    1         10.1            380
-# 10   交流风电-10  ac-wind-source  10    PQ            3.0    0.5    380    0.5    1         10.1            380
-# 11   柴油发电机-1  ac-source       11    PH            0      0      380    1.0    1         300             380
-# 12   柴油发电机-2  ac-source       12    PH            0      0      380    1.0    1         300             380
-# 13   柴油发电机-3  ac-source       13    PH            0      0      380    1.0    1         300             380
-# 14   柴油发电机-4  ac-source       14    PH            0      0      380    1.0    1         300             380
+@ idx  name     dev_type        node  control_type  p_set  p_max  p_min  q_set  q_max  q_min  v_set  alpha  run_stat  rated_capacity  rated_voltage
+# 1    交流风电-1   ac-wind-source  1     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 2    交流风电-2   ac-wind-source  2     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 3    交流风电-3   ac-wind-source  3     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 4    交流风电-4   ac-wind-source  4     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 5    交流风电-5   ac-wind-source  5     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 6    交流风电-6   ac-wind-source  6     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 7    交流风电-7   ac-wind-source  7     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 8    交流风电-8   ac-wind-source  8     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 9    交流风电-9   ac-wind-source  9     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 10   交流风电-10  ac-wind-source  10    PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 11   柴油发电机-1  ac-source       11    PH            0      0      0      0      0      0      380    1.0    1         300             380
+# 12   柴油发电机-2  ac-source       12    PH            0      0      0      0      0      0      380    1.0    1         300             380
+# 13   柴油发电机-3  ac-source       13    PH            0      0      0      0      0      0      380    1.0    1         300             380
+# 14   柴油发电机-4  ac-source       14    PH            0      0      0      0      0      0      380    1.0    1         300             380
 </ACGenerator>
 <ACZeroBranch>
 @ idx  name            dev_type                 i_node  j_node  run_stat
@@ -145,17 +145,17 @@
 # 4    燃料电池直流线路-1  dc-routable-line  23      24      1         1.0
 </DCBranch>
 <DCGenerator>
-@ idx  name                dev_type      node  control_type  v_set  p_set  i_set  run_stat  rated_capacity  rated_voltage
-# 1    直流光伏-1              dc-pv-source  26    P             400    5.0    0.0    1         50              400
-# 2    直流光伏-2              dc-pv-source  27    P             400    5.0    0.0    1         50              400
-# 3    直流光伏-3              dc-pv-source  28    P             400    5.0    0.0    1         50              400
-# 4    电化学储能-1             dc-storage    29    V             500    0.0    0.0    1         60              500
-# 5    电化学储能-2             dc-storage    30    V             500    0.0    0.0    1         60              500
-# 6    电化学储能-3             dc-storage    31    V             500    0.0    0.0    1         60              500
-# 7    电化学储能-4             dc-storage    32    V             500    0.0    0.0    1         60              500
-# 8    电化学储能-5             dc-storage    33    V             500    0.0    0.0    1         60              500
-# 9    电化学储能-6             dc-storage    34    V             500    0.0    0.0    1         60              500
-# 10   直流燃料电池-1_直流设备端直流电源  dc-fuel-cell  25    P             750    0      0      1         0               0
+@ idx  name                dev_type      node  control_type  v_set  p_set  p_max  p_min  i_set  run_stat  rated_capacity  rated_voltage
+# 1    直流光伏-1              dc-pv-source  26    P             400    5.0    0      0      0.0    1         50              400
+# 2    直流光伏-2              dc-pv-source  27    P             400    5.0    0      0      0.0    1         50              400
+# 3    直流光伏-3              dc-pv-source  28    P             400    5.0    0      0      0.0    1         50              400
+# 4    电化学储能-1             dc-storage    29    V             500    0.0    0      0      0.0    1         60              500
+# 5    电化学储能-2             dc-storage    30    V             500    0.0    0      0      0.0    1         60              500
+# 6    电化学储能-3             dc-storage    31    V             500    0.0    0      0      0.0    1         60              500
+# 7    电化学储能-4             dc-storage    32    V             500    0.0    0      0      0.0    1         60              500
+# 8    电化学储能-5             dc-storage    33    V             500    0.0    0      0      0.0    1         60              500
+# 9    电化学储能-6             dc-storage    34    V             500    0.0    0      0      0.0    1         60              500
+# 10   直流燃料电池-1_直流设备端直流电源  dc-fuel-cell  25    P             750    0      0      0      0      1         0               0
 </DCGenerator>
 <DCBreak>
 @ idx  name      dev_type    i_node  j_node  status  run_stat

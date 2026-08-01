@@ -15,7 +15,7 @@ const VERTICAL_SPLIT_DEFAULTS = {
 const VERTICAL_SPLIT_DEFAULT_RATIO = 55;
 const VERTICAL_SPLIT_MIN_TOP_PX = 120;
 const VERTICAL_SPLIT_MIN_BOTTOM_PX = 120;
-const STATIC_CACHE_STORAGE_KEY = "polarSimulatorStaticCacheV1";
+const STATIC_CACHE_STORAGE_KEY = "polarSimulatorStaticCacheV2";
 const STATIC_CACHE_MODEL_LIMIT = 4;
 const API_REQUEST_TIMEOUT_MS = 30000;
 const CURVE_REQUEST_TIMEOUT_MS = 8000;
@@ -96,6 +96,7 @@ const state = {
   measurementTraceWindowMinutes: 60,
   lastMeasurementTraceKey: "",
   traceRunId: null,
+  traceStepCount: null,
   selectedManagementModelId: "",
   updateTargetModelId: "",
   cloneSourceModelId: "",
@@ -2181,18 +2182,23 @@ function pageNeedsCommands(page = currentPageName()) {
 function mergeSnapshot(previous, incoming) {
   if (!previous || !incoming) return incoming;
   const merged = { ...previous, ...incoming };
+  const previousModelId = String(previous.model?.id || "");
+  const incomingModelId = String(incoming.model?.id || "");
+  const modelChanged = Boolean(previousModelId && incomingModelId && previousModelId !== incomingModelId);
   STATIC_SNAPSHOT_KEYS.forEach((key) => {
-    if (
-      incoming[key] === undefined
-      && previous[key] !== undefined
-      && (
-        !incoming.static_meta?.[key]
-        || !previous.static_meta?.[key]
-        || staticMetaMatches(incoming.static_meta[key], previous.static_meta[key])
-      )
-    ) {
-      merged[key] = previous[key];
+    if (incoming[key] !== undefined) return;
+    const incomingMeta = incoming.static_meta?.[key];
+    const previousMeta = previous.static_meta?.[key];
+    const revisionChanged = Boolean(
+      incomingMeta
+      && previousMeta
+      && !staticMetaMatches(incomingMeta, previousMeta)
+    );
+    if (modelChanged || revisionChanged) {
+      delete merged[key];
+      return;
     }
+    if (previous[key] !== undefined) merged[key] = previous[key];
   });
   if (incoming.runtime_logs === undefined) delete merged.runtime_logs;
   return merged;
@@ -2744,6 +2750,7 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.measurementTraceHistory = [];
   state.lastMeasurementTraceKey = "";
   state.traceRunId = null;
+  state.traceStepCount = null;
   state.selectedMeasurementKey = "";
   state.modeFilter = { dev_type: "all", dev_name: "" };
   state.faultDeviceFilter = { dev_type: "all", dev_name: "" };
@@ -5280,13 +5287,19 @@ function renderSnapshot(snapshot) {
   renderClock(snapshot.clock);
   state.systemParameters = snapshotSystemParameters(snapshot || {});
   const runId = Number(snapshot.clock?.run_id ?? 0);
-  if (state.traceRunId !== null && runId !== state.traceRunId) {
+  const stepCount = Number(snapshot.clock?.step_count ?? 0);
+  const traceLifecycleChanged = state.traceRunId !== null && (
+    runId !== state.traceRunId
+    || (state.traceStepCount !== null && stepCount < state.traceStepCount)
+  );
+  if (traceLifecycleChanged) {
     state.runtimeTraceHistory = [];
     state.lastRuntimeTraceKey = "";
     state.measurementTraceHistory = [];
     state.lastMeasurementTraceKey = "";
   }
   state.traceRunId = runId;
+  state.traceStepCount = stepCount;
   if (snapshot.curves && state.curvesLoadedModelId !== state.activeModelId) {
     loadCurvesFromSnapshot(snapshot.curves, state.activeModelId);
   } else if (snapshot.curve_boundary?.mode) {
@@ -7236,18 +7249,25 @@ function drawMeasurementTraceChart() {
     ctx.lineWidth = series.key === selectedSeries ? widthScale + 1.2 : widthScale;
     ctx.beginPath();
     let started = false;
+    let previousMinute = null;
     points.forEach((point) => {
       const value = numberOrNull(point[series.field]);
       if (value === null) return;
       const x = xForMinute(point.minute);
       const y = yForValue(value);
       pixelPoints.push({ x, y, minute: point.minute, time: point.time, value });
-      if (!started) {
+      const restartPath = started && previousMinute !== null && point.minute <= previousMinute;
+      if (restartPath) {
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+      } else if (!started) {
         ctx.moveTo(x, y);
         started = true;
       } else {
         ctx.lineTo(x, y);
       }
+      previousMinute = point.minute;
     });
     if (started) ctx.stroke();
     hitData.push({ ...series, unit, points: pixelPoints });

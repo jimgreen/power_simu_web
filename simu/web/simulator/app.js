@@ -3488,6 +3488,7 @@ function diagramInteractionState(container) {
       tooltip: null,
       tooltipPositionKey: "",
       trendPeriod: "hour",
+      trendChart: null,
       pointer: { x: 0, y: 0 },
       hideTimer: null,
       drag: null,
@@ -3785,21 +3786,18 @@ function diagramMetricLabel(metricType, row) {
     || "动态量测";
 }
 
-function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute = null) {
-  if (!points.length) return '<div class="diagram-trend-empty">当前分页暂无历史曲线</div>';
+function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute = null, unit = "", interaction = null) {
+  if (!points.length) {
+    if (interaction) interaction.trendChart = null;
+    return '<div class="diagram-trend-empty">当前分页暂无历史曲线</div>';
+  }
   const targetCount = Math.max(32, Math.floor(Math.max(tooltipWidth, 320) * 0.75));
   const sampled = diagramSampleTrendPoints(points, targetCount);
   const values = sampled.map((point) => Number(point.value));
-  let minValue = Math.min(...values);
-  let maxValue = Math.max(...values);
-  if (Math.abs(maxValue - minValue) < 1e-9) {
-    const padding = Math.max(1, Math.abs(maxValue) * 0.05);
-    minValue -= padding;
-    maxValue += padding;
-  }
+  const axis = diagramTrendAxisScale(values, 4);
   const width = 336;
-  const height = 132;
-  const plot = { left: 8, right: 8, top: 8, bottom: 8 };
+  const height = 148;
+  const plot = { left: 52, right: 10, top: 20, bottom: 10 };
   const range = diagramTrendPeriodRange(
     period,
     currentMinute !== null && currentMinute !== undefined && currentMinute !== "" && Number.isFinite(Number(currentMinute))
@@ -3808,18 +3806,47 @@ function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute
   );
   const labels = diagramTrendPeriodLabels(period, range);
   const minuteSpan = Math.max(1, range.endMinute - range.startMinute);
-  const valueSpan = Math.max(1e-9, maxValue - minValue);
-  const polyline = sampled.map((point) => {
+  const valueSpan = Math.max(1e-9, axis.max - axis.min);
+  const plotWidth = width - plot.left - plot.right;
+  const plotHeight = height - plot.top - plot.bottom;
+  const renderedPoints = sampled.map((point) => {
     const x = plot.left + ((Number(point.minute) - range.startMinute) / minuteSpan) * (width - plot.left - plot.right);
-    const y = plot.top + ((maxValue - Number(point.value)) / valueSpan) * (height - plot.top - plot.bottom);
-    return `${x.toFixed(2)},${y.toFixed(2)}`;
-  }).join(" ");
-  const first = points[0];
+    const y = plot.top + ((axis.max - Number(point.value)) / valueSpan) * plotHeight;
+    return { ...point, x, y };
+  });
+  if (interaction) {
+    interaction.trendChart = {
+      width,
+      height,
+      plot,
+      range,
+      points: renderedPoints,
+      unit: String(unit || ""),
+    };
+  }
+  const polyline = renderedPoints.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ");
+  const axisTicks = axis.ticks.map((value) => {
+    const y = plot.top + ((axis.max - Number(value)) / valueSpan) * plotHeight;
+    return `
+      <g class="diagram-trend-y-tick">
+        <line x1="${plot.left}" y1="${y.toFixed(2)}" x2="${width - plot.right}" y2="${y.toFixed(2)}" class="diagram-trend-grid-line"></line>
+        <text x="${plot.left - 7}" y="${(y + 3.5).toFixed(2)}">${escapeHtml(diagramNumberText(value))}</text>
+      </g>`;
+  }).join("");
   const last = points[points.length - 1];
   return `
     <svg class="diagram-trend-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${period === "day" ? "日曲线" : "小时曲线"}">
-      <line x1="${plot.left}" y1="${height / 2}" x2="${width - plot.right}" y2="${height / 2}" class="diagram-trend-grid-line"></line>
-      <polyline points="${polyline}" fill="none" vector-effect="non-scaling-stroke"></polyline>
+      <text x="${plot.left}" y="12" class="diagram-trend-axis-unit">${escapeHtml(unit)}</text>
+      ${axisTicks}
+      <line x1="${plot.left}" y1="${plot.top}" x2="${plot.left}" y2="${height - plot.bottom}" class="diagram-trend-y-axis"></line>
+      <polyline class="diagram-trend-series" points="${polyline}" fill="none" vector-effect="non-scaling-stroke"></polyline>
+      <line x1="0" y1="${plot.top}" x2="0" y2="${height - plot.bottom}" class="diagram-trend-cursor diagram-trend-cursor-line" data-diagram-trend-cursor data-diagram-trend-cursor-line visibility="hidden"></line>
+      <circle cx="0" cy="0" r="3.5" class="diagram-trend-cursor diagram-trend-cursor-point" data-diagram-trend-cursor data-diagram-trend-cursor-point visibility="hidden"></circle>
+      <g class="diagram-trend-cursor diagram-trend-cursor-label" data-diagram-trend-cursor data-diagram-trend-cursor-label visibility="hidden">
+        <rect width="112" height="34" rx="4" ry="4"></rect>
+        <text x="7" y="13" data-diagram-trend-cursor-time>--</text>
+        <text x="7" y="27" data-diagram-trend-cursor-value>--</text>
+      </g>
     </svg>
     <div class="diagram-trend-range"><span>${escapeHtml(labels.start)}</span><span>${escapeHtml(labels.end)}</span></div>
     <div class="diagram-trend-stats">
@@ -3827,6 +3854,61 @@ function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute
       <span>最大 <strong>${diagramNumberText(Math.max(...points.map((point) => point.value)))}</strong></span>
       <span>最新 <strong>${diagramNumberText(last.value)}</strong></span>
     </div>`;
+}
+
+function hideDiagramTrendCursor(interaction) {
+  interaction?.tooltip?.querySelectorAll("[data-diagram-trend-cursor]").forEach((element) => {
+    element.setAttribute("visibility", "hidden");
+  });
+}
+
+function updateDiagramTrendCursor(interaction, chart, event) {
+  const model = interaction?.trendChart;
+  const rect = chart?.getBoundingClientRect?.();
+  if (!model?.points?.length || !rect?.width || !Number.isFinite(Number(event?.clientX))) {
+    hideDiagramTrendCursor(interaction);
+    return;
+  }
+  const viewX = ((Number(event.clientX) - rect.left) / rect.width) * model.width;
+  const plotWidth = model.width - model.plot.left - model.plot.right;
+  if (viewX < model.plot.left || viewX > model.width - model.plot.right || plotWidth <= 0) {
+    hideDiagramTrendCursor(interaction);
+    return;
+  }
+  const targetMinute = model.range.startMinute
+    + ((viewX - model.plot.left) / plotWidth) * (model.range.endMinute - model.range.startMinute);
+  const point = diagramNearestTrendPoint(model.points, targetMinute);
+  const line = chart.querySelector("[data-diagram-trend-cursor-line]");
+  const marker = chart.querySelector("[data-diagram-trend-cursor-point]");
+  const label = chart.querySelector("[data-diagram-trend-cursor-label]");
+  const timeText = chart.querySelector("[data-diagram-trend-cursor-time]");
+  const valueText = chart.querySelector("[data-diagram-trend-cursor-value]");
+  if (!point || !line || !marker || !label || !timeText || !valueText) {
+    hideDiagramTrendCursor(interaction);
+    return;
+  }
+  line.setAttribute("x1", point.x.toFixed(2));
+  line.setAttribute("x2", point.x.toFixed(2));
+  marker.setAttribute("cx", point.x.toFixed(2));
+  marker.setAttribute("cy", point.y.toFixed(2));
+  const labelWidth = 112;
+  const labelHeight = 34;
+  const labelGap = 8;
+  const maxLabelX = model.width - model.plot.right - labelWidth - 2;
+  const labelX = Math.max(model.plot.left + 2, Math.min(point.x + labelGap, maxLabelX));
+  const preferredY = point.y - labelHeight - labelGap;
+  const fallbackY = point.y + labelGap;
+  const labelY = Math.max(
+    model.plot.top + 2,
+    Math.min(preferredY >= model.plot.top ? preferredY : fallbackY, model.height - model.plot.bottom - labelHeight - 2),
+  );
+  label.setAttribute("transform", `translate(${labelX.toFixed(2)} ${labelY.toFixed(2)})`);
+  timeText.textContent = point.time || "--";
+  const value = diagramNumberText(point.value);
+  valueText.textContent = model.unit ? `${value} ${model.unit}` : value;
+  chart.querySelectorAll("[data-diagram-trend-cursor]").forEach((element) => {
+    element.setAttribute("visibility", "visible");
+  });
 }
 
 function renderDiagramMetricTooltip(container, hover, snapshot, interaction) {
@@ -3860,7 +3942,7 @@ function renderDiagramMetricTooltip(container, hover, snapshot, interaction) {
       <button type="button" data-diagram-trend-period="day" class="${period === "day" ? "is-active" : ""}" aria-selected="${period === "day"}">日曲线</button>
     </div>
     <div class="diagram-trend-content">
-      ${diagramTrendChartHtml(windowPoints, period, interaction.tooltip?.clientWidth || 360, endMinute)}
+      ${diagramTrendChartHtml(windowPoints, period, interaction.tooltip?.clientWidth || 360, endMinute, unit, interaction)}
     </div>`;
 }
 
@@ -3899,6 +3981,8 @@ function hideDiagramTooltip(container) {
   clearDiagramTooltipHide(interaction);
   interaction.hover = null;
   interaction.tooltipPositionKey = "";
+  hideDiagramTrendCursor(interaction);
+  interaction.trendChart = null;
   if (interaction.tooltip) {
     interaction.tooltip.hidden = true;
     interaction.tooltip.classList.remove("is-visible");
@@ -3917,6 +4001,8 @@ function refreshDiagramTooltip(container, snapshot = state.snapshot || {}) {
   if (!interaction) return;
   interaction.snapshot = snapshot;
   if (!interaction.hover || !interaction.tooltip) return;
+  hideDiagramTrendCursor(interaction);
+  interaction.trendChart = null;
   const html = interaction.hover.kind === "metric"
     ? renderDiagramMetricTooltip(container, interaction.hover, snapshot, interaction)
     : renderDiagramDeviceTooltip(container, interaction.hover, snapshot);
@@ -3941,6 +4027,8 @@ function resetDiagramInteractions(container) {
     interaction.hover = null;
     interaction.snapshot = null;
     interaction.tooltipPositionKey = "";
+    hideDiagramTrendCursor(interaction);
+    interaction.trendChart = null;
     interaction.drag = null;
     interaction.suppressClick = false;
     interaction.suppressClickTimer = null;
@@ -4171,7 +4259,24 @@ function initDiagramInteractions(container) {
     zoomDiagramAtPointer(container, event);
   }, { passive: false });
   tooltip.addEventListener("pointerenter", () => clearDiagramTooltipHide(interaction));
-  tooltip.addEventListener("pointerleave", () => scheduleDiagramTooltipHide(container));
+  tooltip.addEventListener("pointermove", (event) => {
+    const chart = event.target instanceof Element ? event.target.closest(".diagram-trend-chart") : null;
+    if (!chart || !tooltip.contains(chart)) {
+      hideDiagramTrendCursor(interaction);
+      return;
+    }
+    updateDiagramTrendCursor(interaction, chart, event);
+  });
+  tooltip.addEventListener("pointerout", (event) => {
+    const chart = event.target instanceof Element ? event.target.closest(".diagram-trend-chart") : null;
+    if (!chart) return;
+    if (event.relatedTarget instanceof Element && chart.contains(event.relatedTarget)) return;
+    hideDiagramTrendCursor(interaction);
+  });
+  tooltip.addEventListener("pointerleave", () => {
+    hideDiagramTrendCursor(interaction);
+    scheduleDiagramTooltipHide(container);
+  });
   tooltip.addEventListener("click", (event) => {
     const button = event.target instanceof Element ? event.target.closest("[data-diagram-trend-period]") : null;
     if (!button) return;

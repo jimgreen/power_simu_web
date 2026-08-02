@@ -619,6 +619,35 @@ process.stdout.write(JSON.stringify(payload));
                 self.assertIn("\nfunction diagramInteractionState(container)", script)
                 self.assertNotIn("\n+function diagramInteractionState(container)", script)
 
+    def test_trend_chart_renders_axis_unit_and_cursor_layers(self):
+        required = (
+            "diagramTrendAxisScale(values, 4)",
+            'class="diagram-trend-y-axis"',
+            'class="diagram-trend-axis-unit"',
+            "data-diagram-trend-cursor-line",
+            "data-diagram-trend-cursor-point",
+            "data-diagram-trend-cursor-label",
+            "function updateDiagramTrendCursor",
+            "function hideDiagramTrendCursor",
+        )
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                script = path.read_text(encoding="utf-8")
+                for token in required:
+                    self.assertIn(token, script)
+
+    def test_tooltip_delegates_pointer_motion_to_trend_cursor(self):
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                script = path.read_text(encoding="utf-8")
+                tooltip_block = script.split(
+                    'tooltip.addEventListener("pointerenter"',
+                    1,
+                )[1].split("function updateDiagramRealtimeBindings", 1)[0]
+                self.assertIn('tooltip.addEventListener("pointermove"', tooltip_block)
+                self.assertIn("updateDiagramTrendCursor", tooltip_block)
+                self.assertIn("hideDiagramTrendCursor", tooltip_block)
+
     def test_scripts_wire_tooltip_selection_tabs_and_wheel_zoom(self):
         required = (
             "function compileDiagramDeviceIndex",
@@ -655,6 +684,10 @@ process.stdout.write(JSON.stringify(payload));
             ".diagram-tooltip",
             ".diagram-trend-tabs",
             ".diagram-trend-chart",
+            ".diagram-trend-y-axis",
+            ".diagram-trend-axis-unit",
+            ".diagram-trend-cursor",
+            ".diagram-trend-cursor-label",
             ".is-diagram-selected",
             "use[id][name].is-diagram-selected",
             ".is-diagram-panning",

@@ -2418,20 +2418,63 @@ canvas {
 }
 .diagram-trend-chart {
   width: 100%;
-  height: 132px;
+  height: 148px;
   display: block;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #fbfdfd;
+  cursor: crosshair;
 }
-.diagram-trend-chart polyline {
+.diagram-trend-chart .diagram-trend-series {
   stroke: var(--teal);
   stroke-width: 2;
 }
 .diagram-trend-grid-line {
   stroke: #dbe5e8;
   stroke-width: 1;
-  stroke-dasharray: 4 4;
+}
+.diagram-trend-y-axis {
+  stroke: #7f949b;
+  stroke-width: 1;
+}
+.diagram-trend-y-tick text,
+.diagram-trend-axis-unit {
+  fill: var(--muted);
+  font-family: Consolas, "Microsoft YaHei", monospace;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+.diagram-trend-y-tick text {
+  text-anchor: end;
+}
+.diagram-trend-axis-unit {
+  font-weight: 700;
+}
+.diagram-trend-cursor {
+  pointer-events: none;
+}
+.diagram-trend-cursor-line {
+  stroke: #b24631;
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+}
+.diagram-trend-cursor-point {
+  fill: #fff;
+  stroke: #b24631;
+  stroke-width: 2;
+}
+.diagram-trend-cursor-label rect {
+  fill: rgba(28, 45, 52, 0.94);
+  stroke: rgba(255, 255, 255, 0.72);
+  stroke-width: 0.8;
+}
+.diagram-trend-cursor-label text {
+  fill: #fff;
+  font-family: Consolas, "Microsoft YaHei", monospace;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
 }
 .diagram-trend-range,
 .diagram-trend-stats {

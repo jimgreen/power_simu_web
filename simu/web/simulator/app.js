@@ -3566,10 +3566,16 @@ function diagramDisplaySvg(container) {
   return container.querySelector?.("svg.model-diagram-svg") || null;
 }
 
+function removeDiagramRuntimeLabels(container) {
+  container
+    ?.querySelectorAll?.(".diagram-device-label-id[data-diagram-runtime-label]")
+    .forEach((element) => element.remove());
+}
+
 function prepareDiagramDisplayLayers(container) {
   const svg = diagramDisplaySvg(container);
   if (!svg) return { measurements: 0, labels: 0 };
-  svg.querySelectorAll(".diagram-device-label-id[data-diagram-runtime-label]").forEach((element) => element.remove());
+  removeDiagramRuntimeLabels(svg);
   const measurementLayers = new Set();
   svg.querySelectorAll("[dev] [mt]").forEach((element) => {
     const owner = element.closest("[dev]");
@@ -4439,6 +4445,7 @@ function resetDiagramInteractions(container) {
       interaction.tooltip.classList.remove("is-visible");
     }
   }
+  removeDiagramRuntimeLabels(container);
   removeDiagramFlowArrows(container);
   container.classList.remove("is-diagram-panning");
   container.querySelectorAll(".is-diagram-selected").forEach((element) => element.classList.remove("is-diagram-selected"));

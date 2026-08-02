@@ -353,6 +353,56 @@ process.stdout.write(JSON.stringify(available ? {
                 for token in required:
                     self.assertIn(token, styles)
 
+    def test_reset_clears_svg_runtime_layers_but_preserves_preferences(self):
+        required = (
+            "closeDiagramContextMenu(interaction)",
+            "hideDiagramTrendCursor(interaction)",
+            "removeDiagramRuntimeLabels(container)",
+            "removeDiagramFlowArrows(container)",
+        )
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                script = path.read_text(encoding="utf-8")
+                self.assertIn("function removeDiagramRuntimeLabels", script)
+                reset_block = script.split("function resetDiagramInteractions", 1)[1].split(
+                    "function diagramViewBox",
+                    1,
+                )[0]
+                for token in required:
+                    self.assertIn(token, reset_block)
+                self.assertNotIn("diagramDisplayPreferences =", reset_block)
+
+    def test_render_prepares_runtime_layers_only_when_diagram_key_changes(self):
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                script = path.read_text(encoding="utf-8")
+                render_block = script.split("function renderModelDiagramPage", 1)[1].split(
+                    'window.addEventListener("storage"',
+                    1,
+                )[0]
+                key_block = render_block.split(
+                    "if (canvas.dataset.diagramKey !== key)",
+                    1,
+                )[1].split("initDiagramInteractions(canvas)", 1)[0]
+                self.assertEqual(key_block.count("prepareDiagramDisplayLayers(canvas)"), 1)
+                self.assertEqual(key_block.count("compileDiagramFlowArrows(canvas)"), 1)
+                self.assertNotIn("applyDiagramDisplayPreferences", key_block)
+                self.assertIn("applyDiagramDisplayPreferences(canvas, diagramDisplayPreferences)", render_block)
+
+    def test_realtime_updates_reuse_existing_svg_runtime_layers(self):
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                script = path.read_text(encoding="utf-8")
+                update_block = script.split("function updateDiagramRealtimeBindings", 1)[1].split(
+                    "function renderModelDiagramPage",
+                    1,
+                )[0]
+                self.assertIn("updateDiagramFlowArrows(container, snapshot, measurementMaps)", update_block)
+                self.assertNotIn("prepareDiagramDisplayLayers", update_block)
+                self.assertNotIn("compileDiagramFlowArrows", update_block)
+                self.assertNotIn("sanitizeDiagramSvg", update_block)
+                self.assertNotIn("innerHTML", update_block)
+
     def test_trend_value_converts_soc_without_clamping(self):
         body = """
 process.stdout.write(JSON.stringify([

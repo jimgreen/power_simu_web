@@ -2363,6 +2363,7 @@ function compileDiagramFlowArrows(container) {
         ...arrow,
         kind: "endpoint",
         device: endpoint.device,
+        pathDevices: [sourceDevice, targetDevice].filter(Boolean),
         orientation,
       });
     }
@@ -2397,7 +2398,10 @@ function updateDiagramFlowArrows(container, snapshot = state.snapshot || {}, mea
     const power = Number(row?.value);
     const valid = Boolean(row) && Number(row.valid ?? 1) === 1 && Number.isFinite(power);
     const deviceState = diagramDeviceOperatingState(record.device, operatingMaps);
-    const offline = diagramDeviceIsOffline(deviceState);
+    const pathOffline = record.pathDevices?.some((device) => (
+      diagramDeviceIsOffline(diagramDeviceOperatingState(device, operatingMaps))
+    ));
+    const offline = diagramDeviceIsOffline(deviceState) || Boolean(pathOffline);
     const referencePower = diagramFlowReferencePower(container, record.device, snapshot, interaction, power);
     const visible = diagramFlowArrowVisibility({ power, referencePower, valid, offline });
     record.root.toggleAttribute("hidden", !visible);

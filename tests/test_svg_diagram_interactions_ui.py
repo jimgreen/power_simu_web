@@ -327,6 +327,7 @@ process.stdout.write(JSON.stringify(available ? {
             "repeatCount",
             "diagramFlowReferencePower",
             'record.root.toggleAttribute("hidden", !visible)',
+            "record.pathDevices?.some",
         )
         for path in self._scripts():
             with self.subTest(app=path.parent.name):

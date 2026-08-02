@@ -127,6 +127,46 @@ process.stdout.write(JSON.stringify(
                 self.assertIn(12, sampled)
                 self.assertIn(-8, sampled)
 
+    def test_trend_axis_uses_readable_ticks_and_expands_flat_values(self):
+        body = """
+const normal = diagramTrendAxisScale([-2.2, 7.6], 4);
+const flat = diagramTrendAxisScale([5, 5, 5], 4);
+process.stdout.write(JSON.stringify({ normal, flat }));
+"""
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                payload = self._run_helpers(path.read_text(encoding="utf-8"), body)
+                self.assertLessEqual(payload["normal"]["min"], -2.2)
+                self.assertGreaterEqual(payload["normal"]["max"], 7.6)
+                self.assertGreaterEqual(len(payload["normal"]["ticks"]), 3)
+                self.assertLess(payload["flat"]["min"], 5)
+                self.assertGreater(payload["flat"]["max"], 5)
+
+    def test_trend_cursor_snaps_to_nearest_sampled_point(self):
+        body = """
+const points = [
+  { minute: 10, time: "00:10", value: -2 },
+  { minute: 20, time: "00:20", value: 4 },
+  { minute: 35, time: "00:35", value: 9 },
+];
+process.stdout.write(JSON.stringify({
+  before: diagramNearestTrendPoint(points, 0),
+  middle: diagramNearestTrendPoint(points, 27),
+  after: diagramNearestTrendPoint(points, 50),
+  data: diagramTrendCursorData(points, 19, "kW"),
+}));
+"""
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                payload = self._run_helpers(path.read_text(encoding="utf-8"), body)
+                self.assertEqual(payload["before"]["minute"], 10)
+                self.assertEqual(payload["middle"]["minute"], 20)
+                self.assertEqual(payload["after"]["minute"], 35)
+                self.assertEqual(
+                    payload["data"],
+                    {"minute": 20, "time": "00:20", "value": 4, "unit": "kW"},
+                )
+
     def test_trend_value_converts_soc_without_clamping(self):
         body = """
 process.stdout.write(JSON.stringify([

@@ -2989,6 +2989,64 @@ function diagramSampleTrendPoints(points, targetCount = 160) {
     .map(([, point]) => point);
 }
 
+function diagramNiceStep(value) {
+  const raw = Math.abs(Number(value));
+  if (!Number.isFinite(raw) || raw <= 0) return 1;
+  const power = 10 ** Math.floor(Math.log10(raw));
+  const fraction = raw / power;
+  const nice = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 2.5 ? 2.5 : fraction <= 5 ? 5 : 10;
+  return nice * power;
+}
+
+function diagramTrendAxisScale(values, targetTickCount = 4) {
+  const valid = (values || []).map(Number).filter(Number.isFinite);
+  if (!valid.length) return { min: 0, max: 1, ticks: [0, 0.5, 1] };
+  let dataMin = Math.min(...valid);
+  let dataMax = Math.max(...valid);
+  if (Math.abs(dataMax - dataMin) < 1e-9) {
+    const padding = Math.max(1, Math.abs(dataMax) * 0.05);
+    dataMin -= padding;
+    dataMax += padding;
+  }
+  const step = diagramNiceStep((dataMax - dataMin) / Math.max(2, Number(targetTickCount) - 1));
+  const min = Math.floor(dataMin / step) * step;
+  const max = Math.ceil(dataMax / step) * step;
+  const ticks = [];
+  for (let value = min, guard = 0; value <= max + step * 1e-7 && guard < 12; value += step, guard += 1) {
+    ticks.push(Number(value.toPrecision(12)));
+  }
+  return { min, max: max > min ? max : min + step, ticks };
+}
+
+function diagramNearestTrendPoint(points, targetMinute) {
+  const source = (points || []).filter((point) => Number.isFinite(Number(point?.minute)));
+  if (!source.length) return null;
+  const target = Number(targetMinute);
+  if (!Number.isFinite(target) || target <= Number(source[0].minute)) return source[0];
+  if (target >= Number(source[source.length - 1].minute)) return source[source.length - 1];
+  let low = 0;
+  let high = source.length - 1;
+  while (low + 1 < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (Number(source[middle].minute) <= target) low = middle;
+    else high = middle;
+  }
+  return target - Number(source[low].minute) <= Number(source[high].minute) - target
+    ? source[low]
+    : source[high];
+}
+
+function diagramTrendCursorData(points, targetMinute, unit = "") {
+  const point = diagramNearestTrendPoint(points, targetMinute);
+  if (!point) return null;
+  return {
+    minute: Number(point.minute),
+    time: point.time || "--",
+    value: Number(point.value),
+    unit: String(unit || ""),
+  };
+}
+
 function diagramZoomViewBox(current, original, focus, factor) {
   const boxes = [current, original];
   if (boxes.some((box) => !box || [box.x, box.y, box.width, box.height].some((value) => !Number.isFinite(Number(value))))) {

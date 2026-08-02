@@ -75,7 +75,7 @@ class SimulationClockModesTest(unittest.TestCase):
             self.assertAlmostEqual(clock["absolute_second"], 60, places=6, msg=mode)
             self.assertAlmostEqual(clock["effective_step_seconds"], 60, places=6, msg=mode)
 
-    def test_worker_preserves_ratio_when_compute_interval_is_not_one_second(self):
+    def test_worker_uses_compute_interval_only_as_the_wall_clock_trigger(self):
         from simu.server import _advance_clock_if_due
 
         service = self.create_service()
@@ -86,8 +86,8 @@ class SimulationClockModesTest(unittest.TestCase):
         _advance_clock_if_due(service, time.monotonic() - 1)
 
         clock = service.snapshot()["clock"]
-        self.assertAlmostEqual(clock["absolute_second"], 2.5, places=6)
-        self.assertAlmostEqual(clock["effective_step_seconds"], 2.5, places=6)
+        self.assertAlmostEqual(clock["absolute_second"], 5, places=6)
+        self.assertAlmostEqual(clock["effective_step_seconds"], 5, places=6)
 
     def test_clock_speed_controls_cover_all_confirmed_ratios(self):
         service = self.create_service()

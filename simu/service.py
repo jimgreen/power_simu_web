@@ -877,7 +877,6 @@ class PolarMicrogridSimulator:
         with self.curves_lock:
             self.curves = self._read_curves()
             curve_mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
-        self.clock.step_minutes = self.compute_interval_seconds / 60.0
         self.clock.speed = _simulation_mode_default_clock_speed(curve_mode)
         self.local_settings = self._read_local_settings()
         self._apply_stored_system_parameters()
@@ -1277,6 +1276,7 @@ class PolarMicrogridSimulator:
         params = self.local_settings.get("system_parameters", {})
         if not isinstance(params, Mapping):
             return
+        self.clock.step_minutes = 1.0 / 60.0
         if "clock_speed" in params or "speed" in params:
             self.clock.speed = _nearest_clock_speed(params.get("clock_speed", params.get("speed")))
         if "compute_interval_seconds" in params or "calculation_period_seconds" in params:
@@ -1284,7 +1284,6 @@ class PolarMicrogridSimulator:
                 params.get("compute_interval_seconds", params.get("calculation_period_seconds")),
                 self.compute_interval_seconds,
             )
-            self.clock.step_minutes = self.compute_interval_seconds / 60.0
         if "storage_initial_soc" in params or "initial_storage_soc" in params:
             self.storage_initial_soc = _storage_initial_soc(
                 params.get("storage_initial_soc", params.get("initial_storage_soc")),
@@ -1292,6 +1291,7 @@ class PolarMicrogridSimulator:
             )
 
     def _apply_mode_default_clock_speed(self, mode: str, *, persist: bool) -> None:
+        self.clock.step_minutes = 1.0 / 60.0
         self.clock.speed = _simulation_mode_default_clock_speed(mode)
         if not persist:
             return
@@ -1315,6 +1315,15 @@ class PolarMicrogridSimulator:
 
     def set_system_parameters(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
         with self.lock:
+            timing_keys = {
+                "clock_speed",
+                "speed",
+                "simulation_speed",
+                "compute_interval_seconds",
+                "calculation_period_seconds",
+            }
+            if timing_keys.intersection(payload):
+                self.clock.step_minutes = 1.0 / 60.0
             if "clock_speed" in payload or "speed" in payload or "simulation_speed" in payload:
                 self.clock.speed = _nearest_clock_speed(
                     payload.get("clock_speed", payload.get("speed", payload.get("simulation_speed")))
@@ -1324,7 +1333,6 @@ class PolarMicrogridSimulator:
                     payload.get("compute_interval_seconds", payload.get("calculation_period_seconds")),
                     self.compute_interval_seconds,
                 )
-                self.clock.step_minutes = self.compute_interval_seconds / 60.0
             if "storage_initial_soc" in payload or "initial_storage_soc" in payload:
                 self.storage_initial_soc = _storage_initial_soc(
                     payload.get("storage_initial_soc", payload.get("initial_storage_soc")),
@@ -1625,6 +1633,39 @@ class PolarMicrogridSimulator:
         active.sort(key=lambda pair: (1 if _manual_command_holds_across_clock_lifecycle(pair[1]) else 0, pair[0]))
         return [item for _index, item in active]
 
+    def _effective_active_control_command_entries(self, absolute_minute: int | float) -> List[Mapping[str, Any]]:
+        active_entries = self._active_control_command_entries(absolute_minute)
+        effective_by_control: Dict[Tuple[str, str, str, str], Mapping[str, Any]] = {}
+        for entry in active_entries:
+            normalized = entry.get("normalized", {})
+            if not isinstance(normalized, Mapping):
+                continue
+            run_items = normalized.get("run_status", [])
+            if isinstance(run_items, Sequence) and not isinstance(run_items, (str, bytes)):
+                for item in run_items:
+                    if not isinstance(item, Mapping):
+                        continue
+                    dev_type = str(item.get("dev_type", "")).strip()
+                    dev_name = str(item.get("dev_name", "")).strip()
+                    if not dev_type or not dev_name:
+                        continue
+                    if item.get("run_stat", "") != "":
+                        effective_by_control[("remote_control", dev_type, dev_name, "run_stat")] = entry
+                    if item.get("status", "") != "":
+                        effective_by_control[("remote_control", dev_type, dev_name, "status")] = entry
+            set_items = normalized.get("set_values", [])
+            if isinstance(set_items, Sequence) and not isinstance(set_items, (str, bytes)):
+                for item in set_items:
+                    if not isinstance(item, Mapping):
+                        continue
+                    dev_type = str(item.get("dev_type", "")).strip()
+                    dev_name = str(item.get("dev_name", "")).strip()
+                    set_type = str(item.get("set_type", "")).strip()
+                    if dev_type and dev_name and set_type:
+                        effective_by_control[("remote_adjustment", dev_type, dev_name, set_type)] = entry
+        effective_ids = {id(entry) for entry in effective_by_control.values()}
+        return [entry for entry in active_entries if id(entry) in effective_ids]
+
     def _defined_run_control_fields(self) -> Dict[Tuple[str, str], set[str]]:
         fields: Dict[Tuple[str, str], set[str]] = {}
         for row in self._control_definition_rows("RunStat"):
@@ -1726,6 +1767,7 @@ class PolarMicrogridSimulator:
                             cb_row = {"dev_type": dev_type, "dev_name": dev_name, "status": ""}
                             cb_block.data.append(cb_row)
                         cb_row["status"] = _number_text(item.get("status"))
+                        applied_run += 1
             if isinstance(set_items, Sequence) and not isinstance(set_items, (str, bytes)):
                 for item in set_items:
                     if not isinstance(item, Mapping):
@@ -2213,11 +2255,18 @@ class PolarMicrogridSimulator:
                 continue
             dev_type = str(item.get("dev_type", item.get("type", "")))
             dev_name = str(item.get("dev_name", item.get("name", "")))
-            run_stat = item.get("run_stat", item.get("running", item.get("value", "")))
-            if isinstance(run_stat, bool):
-                run_stat = 1 if run_stat else 0
-            if dev_type and dev_name:
-                run_preview.append(f"{dev_type}.{dev_name}={_number_text(run_stat)}")
+            if not dev_type or not dev_name:
+                continue
+            if item.get("run_stat", "") != "" or "running" in item:
+                run_stat = item.get("run_stat", item.get("running", item.get("value", "")))
+                if isinstance(run_stat, bool):
+                    run_stat = 1 if run_stat else 0
+                run_preview.append(f"{dev_type}.{dev_name}.run_stat={_number_text(run_stat)}")
+            if "status" in item:
+                status = item.get("status")
+                if isinstance(status, bool):
+                    status = 1 if status else 0
+                run_preview.append(f"{dev_type}.{dev_name}.status={_number_text(status)}")
         if run_preview:
             lines.append("投退明细 " + "，".join(run_preview[:6]) + (" ..." if len(run_preview) > 6 else ""))
         set_preview = [
@@ -4770,7 +4819,13 @@ class PolarMicrogridSimulator:
             "power_summary": self._latest_power_summary(summary_measurements),
         }
         if include_commands:
-            snapshot["commands"] = {"history": self.command_history[-50:]}
+            recent_commands = self.command_history[-50:]
+            recent_ids = {id(entry) for entry in recent_commands}
+            effective_commands = self._effective_active_control_command_entries(self.clock.absolute_minute)
+            snapshot["commands"] = {
+                "history": [entry for entry in effective_commands if id(entry) not in recent_ids] + recent_commands,
+                "effective": effective_commands,
+            }
         if include_devices:
             snapshot["devices"] = self.devices()
         if include_device_states:

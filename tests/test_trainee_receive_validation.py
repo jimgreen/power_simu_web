@@ -1,3 +1,5 @@
+import json
+import subprocess
 from pathlib import Path
 
 
@@ -47,6 +49,61 @@ def test_trainee_receive_uses_initialized_local_definition_baseline():
     assert "STATIC_SNAPSHOT_KEYS.forEach" in script
     assert "merged[key] = localDefinitions[key]" in script
     assert "merged.model = localDefinitions.model" in script
+
+
+def test_trainee_receive_keeps_local_device_definitions_but_applies_teacher_runtime_state():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+
+    assert "function mergeTeacherRuntimeDevices" in script
+    helper = "function mergeTeacherRuntimeDevices" + script.split(
+        "function mergeTeacherRuntimeDevices",
+        1,
+    )[1].split("function mergeTeacherSnapshotWithLocalDefinitions", 1)[0]
+    body = """
+const localDevices = [
+  {
+    dev_type: "ACBreak",
+    dev_name: "盒型开关-4",
+    status: 1,
+    run_stat: 1,
+    set_values: {},
+    raw: { idx: "4", status: "1", definition_only: "local" },
+  },
+  { dev_type: "ACBreak", dev_name: "仅本地开关", status: 1, run_stat: 1 },
+];
+const remoteDevices = [
+  {
+    dev_type: "ACBreak",
+    dev_name: "盒型开关-4",
+    status: 0,
+    run_stat: 1,
+    set_values: { p_set: 12.5 },
+    raw: { idx: "4", status: "1", remote_only: "ignored" },
+  },
+  { dev_type: "ACBreak", dev_name: "仅远端开关", status: 0, run_stat: 1 },
+];
+process.stdout.write(JSON.stringify(mergeTeacherRuntimeDevices(localDevices, remoteDevices)));
+"""
+    result = subprocess.run(
+        ["node", "-e", f"{helper}\n{body}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    merged = json.loads(result.stdout)
+    assert len(merged) == 2
+    assert merged[0]["status"] == 0
+    assert merged[0]["run_stat"] == 1
+    assert merged[0]["set_values"] == {"p_set": 12.5}
+    assert merged[0]["raw"] == {"idx": "4", "status": "1", "definition_only": "local"}
+    assert merged[1]["dev_name"] == "仅本地开关"
+    assert all(device["dev_name"] != "仅远端开关" for device in merged)
+
+    merge_block = script.split("function mergeTeacherSnapshotWithLocalDefinitions", 1)[1].split(
+        "function applyTeacherConnection",
+        1,
+    )[0]
+    assert "mergeTeacherRuntimeDevices(localDefinitions.devices, merged.devices)" in merge_block
 
 
 def test_trainee_receive_start_uses_saved_backend_link_without_resolving_or_importing_again():

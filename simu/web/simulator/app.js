@@ -8479,16 +8479,42 @@ function runtimeMetaFromSetKey(key, value) {
   return { key, label: key, kind: "P", unit: "kW", value };
 }
 
-function runtimeMeasTypeMatchesSetKey(measType, setKey) {
+function runtimeMeasurementTypeCandidates(dev, setKey) {
+  const key = String(setKey || "").trim().toLowerCase();
+  if (!key) return [];
+  const measurementKey = key.endsWith("_set") ? key.slice(0, -4) : key;
+  const exactType = measurementKey.toUpperCase();
+  const quantity = measurementKey.split("_", 1)[0].toUpperCase();
+  const devType = String(dev?.dev_type || "").trim().toUpperCase();
+  const candidates = [];
+  const add = (...types) => types.forEach((type) => {
+    const normalized = String(type || "").trim().toUpperCase();
+    if (normalized && !candidates.includes(normalized)) candidates.push(normalized);
+  });
+
+  if (measurementKey.includes("_")) add(exactType);
+  if (measurementKey.includes("soc")) add("SOC");
+  if (devType.endsWith("GENERATOR")) {
+    add(`${quantity}_GEN`);
+  } else if (devType.endsWith("LOAD")) {
+    add(`${quantity}_LOAD`);
+  } else if (devType === "DCACCONVERTER") {
+    add(`${quantity}_AC`, `${quantity}_DC`);
+  } else if (devType === "DCDCCONVERTER" || devType === "ACACCONVERTER") {
+    add(`${quantity}_FROM`, `${quantity}_TO`);
+  } else if (devType === "ESS" || devType === "STORAGE") {
+    add(quantity, `${quantity}_GEN`, `${quantity}_FROM`, `${quantity}_TO`);
+  }
+  add(exactType, quantity);
+  return candidates;
+}
+
+function runtimeMeasTypeMatchesSetKey(measType, setKey, dev = null) {
   const type = String(measType || "").toUpperCase();
-  const key = String(setKey || "").toLowerCase();
-  if (!type || !key) return false;
-  if (key.startsWith("p") || key.includes("_p")) return type === "P" || type.startsWith("P_");
-  if (key.startsWith("q") || key.includes("_q")) return type === "Q" || type.startsWith("Q_");
-  if (key.startsWith("v") || key.includes("_v")) return type === "V" || type.startsWith("V_");
-  if (key.startsWith("i") || key.includes("_i")) return type === "I" || type.startsWith("I_");
-  if (key.includes("soc")) return type === "SOC";
-  return type === key.toUpperCase();
+  const normalizedSetKey = String(setKey || "").trim().toUpperCase();
+  if (!type || !normalizedSetKey) return false;
+  if (!normalizedSetKey.endsWith("_SET")) return type === normalizedSetKey;
+  return runtimeMeasurementTypeCandidates(dev, setKey).includes(type);
 }
 
 function groupRuntimeMeasurementRowsByDevice(rows = []) {
@@ -8510,7 +8536,11 @@ function runtimeMeasurementPair(dev, meta, measurements = state.snapshot?.measur
   const measurementRowsByDevice = context?.measurementRowsByDevice
     || groupRuntimeMeasurementRowsByDevice(measurementCompareRows(measurements));
   const rows = measurementRowsByDevice.get(`${dev.dev_type || ""}|${dev.dev_name || ""}`) || [];
-  const best = rows.find((row) => runtimeMeasTypeMatchesSetKey(row.meas_type, meta.key || meta.kind)) || {};
+  let best = {};
+  for (const candidate of runtimeMeasurementTypeCandidates(dev, meta.key || meta.kind)) {
+    best = rows.find((row) => runtimeMeasTypeMatchesSetKey(row.meas_type, candidate)) || {};
+    if (best.meas_type) break;
+  }
   return {
     name: best.name || "",
     meas_type: best.meas_type || "",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -116,6 +118,49 @@ class RuntimeCommandRowsUiTest(unittest.TestCase):
         self.assertIn('real_text: formatRuntimeRemoteSignal(statusPair.real ?? value, "status")', remote_control_block)
         self.assertIn('scada_text: formatRuntimeRemoteSignal(statusPair.scada, "status")', remote_control_block)
         self.assertNotIn('scada_text: "--"', remote_control_block)
+
+    def test_remote_adjustment_rows_match_the_exact_converter_side(self):
+        app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("function runtimeMeasurementTypeCandidates", app_js)
+        helper = "function runtimeMeasurementTypeCandidates" + app_js.split(
+            "function runtimeMeasurementTypeCandidates",
+            1,
+        )[1].split("function runtimeSignalMeasurementPair", 1)[0]
+        body = r"""
+const state = { snapshot: {} };
+function numberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+function measurementCompareRows() {
+  return [
+    { dev_type: "DCACConverter", dev_name: "ACDC变流器-1", meas_type: "V", real_value: 111, scada_value: 112 },
+    { dev_type: "DCACConverter", dev_name: "ACDC变流器-1", meas_type: "V_AC", real_value: 380, scada_value: 381 },
+    { dev_type: "DCACConverter", dev_name: "ACDC变流器-1", meas_type: "V_DC", real_value: 750, scada_value: 751 },
+    { dev_type: "DCACConverter", dev_name: "ACDC变流器-1", meas_type: "P", real_value: 123, scada_value: 124 },
+    { dev_type: "DCACConverter", dev_name: "ACDC变流器-1", meas_type: "P_AC", real_value: -42.5, scada_value: -42 },
+  ];
+}
+const dev = { dev_type: "DCACConverter", dev_name: "ACDC变流器-1" };
+process.stdout.write(JSON.stringify({
+  acVoltage: runtimeMeasurementPair(dev, { key: "v_ac_set" }),
+  dcVoltage: runtimeMeasurementPair(dev, { key: "v_dc_set" }),
+  acPower: runtimeMeasurementPair(dev, { key: "p_ac_set" }),
+  generatorCandidates: runtimeMeasurementTypeCandidates({ dev_type: "ACGenerator" }, "p_set"),
+}));
+"""
+        result = subprocess.run(
+            ["node", "-e", f"{helper}\n{body}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["acVoltage"]["meas_type"], "V_AC")
+        self.assertEqual(payload["dcVoltage"]["meas_type"], "V_DC")
+        self.assertEqual(payload["acPower"]["real"], -42.5)
+        self.assertEqual(payload["generatorCandidates"][0], "P_GEN")
 
 
 if __name__ == "__main__":

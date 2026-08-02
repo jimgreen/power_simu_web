@@ -1839,7 +1839,7 @@ def _advance_clock_if_due(service: PolarMicrogridSimulator, last_step: float) ->
         return last_step
     # Do not catch up by elapsed wall time: one completed solve advances one logical simulation step.
     speed = max(1.0, float(clock.get("speed", 1) or 1))
-    advance_seconds = speed * interval_seconds
+    advance_seconds = max(1e-9, float(clock.get("effective_step_seconds", speed) or speed))
     try:
         service.step(advance_seconds=advance_seconds)
     except Exception:

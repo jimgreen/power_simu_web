@@ -24,6 +24,27 @@ class ControlCommandValidityTest(unittest.TestCase):
         service = PolarMicrogridSimulator(source, runtime, kernel=lambda _config: None)
         return workspace, service
 
+    def _make_service_with_breaker_control(self):
+        from simu.generate_simple_model import write_model_dir
+        from simu.service import PolarMicrogridSimulator
+
+        workspace = tempfile.TemporaryDirectory()
+        root = Path(workspace.name)
+        source = root / "source"
+        runtime = root / "runtime"
+        write_model_dir(source)
+        breaker_control = (
+            "<CbOpenStat>\n"
+            "@ dev_type dev_name status\n"
+            "# ACBreak br1 1\n"
+            "</CbOpenStat>\n"
+        )
+        for file_name in ("stat.e", "control.e"):
+            path = source / file_name
+            path.write_text(path.read_text(encoding="utf-8") + breaker_control, encoding="utf-8")
+        service = PolarMicrogridSimulator(source, runtime, kernel=lambda _config: None)
+        return workspace, service
+
     @staticmethod
     def _set_value(service, dev_type: str, dev_name: str, set_type: str) -> str:
         return str(service.latest_control_values()["values"].get(f"{dev_type}.{dev_name}.{set_type}", ""))
@@ -154,6 +175,40 @@ class ControlCommandValidityTest(unittest.TestCase):
             service.step()
         self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
 
+    def test_breaker_status_command_is_counted_as_materialized_remote_control(self):
+        workspace, service = self._make_service_with_breaker_control()
+        self.addCleanup(workspace.cleanup)
+
+        result = service.apply_student_commands(
+            {
+                "run_status": [
+                    {"dev_type": "ACBreak", "dev_name": "br1", "status": 0}
+                ],
+            },
+            source="trainee-ui",
+        )
+        materialized = service._materialize_active_control_commands(service.clock.absolute_minute)
+
+        self.assertEqual(result["run_status"], 1)
+        self.assertEqual(materialized["run_status"], 1)
+        self.assertEqual(service.latest_control_values()["values"]["ACBreak.br1.status"], 0)
+
+    def test_breaker_status_command_log_records_field_and_target_value(self):
+        workspace, service = self._make_service_with_breaker_control()
+        self.addCleanup(workspace.cleanup)
+
+        service.apply_student_commands(
+            {
+                "run_status": [
+                    {"dev_type": "ACBreak", "dev_name": "br1", "status": 0}
+                ],
+            },
+            source="trainee-ui",
+        )
+
+        detail = "\n".join(str(item) for item in service.runtime_logs[-1]["detail"])
+        self.assertIn("ACBreak.br1.status=0", detail)
+
     def test_manual_control_commands_override_later_strategy_commands(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
@@ -212,6 +267,45 @@ class ControlCommandValidityTest(unittest.TestCase):
         restarted = PolarMicrogridSimulator(service.sim_dir, service.runtime_dir, kernel=lambda _config: None)
         restarted.control_clock({"action": "start", "minute": 0})
         self.assertEqual(self._set_value(restarted, "ESS", "ess01", "p_set"), "20")
+
+    def test_snapshot_keeps_effective_manual_command_outside_recent_history_window(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        service.apply_student_commands(
+            {
+                "set_values": [
+                    {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 20}
+                ],
+            },
+            source="trainee-ui",
+        )
+        manual_entry = service.command_history[-1]
+        for index in range(60):
+            service.apply_student_commands(
+                {
+                    "valid_for_minutes": 120,
+                    "strategy": {"name": "renewable_priority", "seq": index},
+                    "set_values": [
+                        {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 5}
+                    ],
+                },
+                source="trainee-renewable-priority",
+            )
+
+        self.assertNotIn(manual_entry, service.command_history[-50:])
+        commands = service.snapshot(
+            include_static=False,
+            include_runtime_logs=False,
+            include_measurements=False,
+            include_devices=False,
+            include_device_states=False,
+        )["commands"]
+        history = commands["history"]
+
+        self.assertIn(manual_entry, history)
+        self.assertLessEqual(len(history), 51)
+        self.assertEqual(commands["effective"], [manual_entry])
 
     def test_manual_acdc_active_power_command_with_stale_trainee_expiry_survives_next_step(self):
         from simu.service import PolarMicrogridSimulator

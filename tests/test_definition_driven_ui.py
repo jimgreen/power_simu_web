@@ -98,24 +98,26 @@ class DefinitionDrivenUiTest(unittest.TestCase):
         self.assertIn('data-run-key="${escapeHtml(key)}"', trainee_control_cell_block)
         self.assertNotIn("commandKey", trainee_render_control_block)
 
-    def test_remote_adjustment_measurement_uses_meas_e_rows_without_hardcoded_candidates(self):
-        simulator_measurement_block = self.simulator_js.split("function runtimeMeasurementPair", 1)[1].split(
+    def test_remote_adjustment_measurement_uses_meas_e_rows_with_device_side_mapping(self):
+        simulator_measurement_block = self.simulator_js.split("function runtimeMeasurementTypeCandidates", 1)[1].split(
             "function runtimeDeviceTraceSignal",
             1,
         )[0]
-        trainee_measurement_block = self.trainee_js.split("function remoteAdjustmentMeasurement", 1)[1].split(
+        trainee_measurement_block = self.trainee_js.split("function remoteAdjustmentMeasurementTypeCandidates", 1)[1].split(
             "function remoteAdjustmentIssuedAt",
             1,
         )[0]
 
         self.assertIn("measurementCompareRows(measurements)", simulator_measurement_block)
+        self.assertIn("runtimeMeasurementTypeCandidates", simulator_measurement_block)
         self.assertIn("runtimeMeasTypeMatchesSetKey", simulator_measurement_block)
         self.assertNotIn("runtimeMeasurementHints", simulator_measurement_block)
         self.assertNotIn("P_GEN", simulator_measurement_block)
         self.assertNotIn("P_LOAD", simulator_measurement_block)
-        self.assertIn("measurementDisplayRows(snapshot)", trainee_measurement_block)
+        self.assertIn("snapshot.measurements", trainee_measurement_block)
+        self.assertIn("remoteAdjustmentMeasurementTypeCandidates", trainee_measurement_block)
         self.assertIn("remoteAdjustmentMeasTypeMatchesSetType", trainee_measurement_block)
-        self.assertNotIn("const priorities", trainee_measurement_block)
+        self.assertIn("remoteAdjustmentMeasurementRowIsValid", trainee_measurement_block)
         self.assertNotIn("P_GEN", trainee_measurement_block)
         self.assertNotIn("P_LOAD", trainee_measurement_block)
 

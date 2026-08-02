@@ -3147,6 +3147,7 @@ th {
 }
 .remote-control-hint { min-height: 20px; margin: 14px 0 0; color: var(--muted); font-size: 12px; }
 .remote-control-hint.is-error { color: var(--red); }
+.remote-control-hint.is-warn { color: #a35b00; }
 .remote-control-hint.is-ok { color: var(--green); }
 .storage-power-derating-grid {
   margin-top: 14px;

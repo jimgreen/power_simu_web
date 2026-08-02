@@ -24,6 +24,8 @@ class SimulatorSystemParametersTest(unittest.TestCase):
         self.assertEqual(result["clock"]["speed"], 5.0)
         self.assertEqual(result["system_parameters"]["clock_speed"], 5.0)
         self.assertEqual(result["system_parameters"]["compute_interval_seconds"], 0.5)
+        self.assertEqual(result["system_parameters"]["clock_step_seconds"], 1.0)
+        self.assertEqual(result["system_parameters"]["effective_step_seconds"], 5.0)
         self.assertEqual(service.snapshot()["system_parameters"]["compute_interval_seconds"], 0.5)
         self.assertEqual(service.local_settings["system_parameters"]["clock_speed"], 5.0)
 
@@ -33,6 +35,8 @@ class SimulatorSystemParametersTest(unittest.TestCase):
         restored = PolarMicrogridSimulator(source, runtime, kernel=lambda _config: None)
         self.assertEqual(restored.snapshot()["system_parameters"]["clock_speed"], 5.0)
         self.assertEqual(restored.snapshot()["system_parameters"]["compute_interval_seconds"], 0.5)
+        self.assertEqual(restored.snapshot()["system_parameters"]["clock_step_seconds"], 1.0)
+        self.assertEqual(restored.snapshot()["system_parameters"]["effective_step_seconds"], 5.0)
 
     def test_storage_initial_soc_defaults_persists_and_resets_on_stop_start(self):
         from simu.generate_simple_model import write_model_dir

@@ -19,7 +19,9 @@ class SimulatorParameterPageUiTest(unittest.TestCase):
         self.assertIn('id="parameterComputeInterval"', html)
         self.assertIn('id="parameterStorageInitialSoc"', html)
         self.assertIn("时钟倍率", html)
+        self.assertIn("每次触发推进量", html)
         self.assertIn("仿真周期", html)
+        self.assertIn("后台计算触发间隔", html)
         self.assertIn("储能SOC初始值", html)
         for speed in (1, 5, 15, 30, 60, 300, 900, 1800, 3600):
             self.assertIn(f'<option value="{speed}">{speed}:1</option>', html)

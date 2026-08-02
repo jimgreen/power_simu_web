@@ -4142,6 +4142,24 @@ async function ensureLocalDefinitionSnapshot(modelId = state.activeModelId) {
   return local;
 }
 
+function mergeTeacherRuntimeDevices(localDevices = [], remoteDevices = []) {
+  const remoteByKey = new Map((remoteDevices || []).map((device) => ([
+    `${String(device?.dev_type || "").trim()}\u0000${String(device?.dev_name || device?.name || "").trim()}`,
+    device,
+  ])));
+  const runtimeFields = ["run_stat", "status", "mode", "set_values", "soc_curr"];
+  return (localDevices || []).map((localDevice) => {
+    const key = `${String(localDevice?.dev_type || "").trim()}\u0000${String(localDevice?.dev_name || localDevice?.name || "").trim()}`;
+    const remoteDevice = remoteByKey.get(key);
+    if (!remoteDevice) return localDevice;
+    const mergedDevice = { ...localDevice };
+    runtimeFields.forEach((field) => {
+      if (remoteDevice[field] !== undefined) mergedDevice[field] = remoteDevice[field];
+    });
+    return mergedDevice;
+  });
+}
+
 function mergeTeacherSnapshotWithLocalDefinitions(previousSnapshot, remoteSnapshot) {
   const localDefinitions = state.localDefinitionSnapshot || {};
   const merged = mergeSnapshot(previousSnapshot || localDefinitions, remoteSnapshot || {});
@@ -4149,7 +4167,9 @@ function mergeTeacherSnapshotWithLocalDefinitions(previousSnapshot, remoteSnapsh
     if (localDefinitions[key] !== undefined) merged[key] = localDefinitions[key];
   });
   if (localDefinitions.model) merged.model = localDefinitions.model;
-  if (localDefinitions.devices) merged.devices = localDefinitions.devices;
+  if (localDefinitions.devices) {
+    merged.devices = mergeTeacherRuntimeDevices(localDefinitions.devices, merged.devices);
+  }
   if (localDefinitions.static_meta) merged.static_meta = localDefinitions.static_meta;
   return merged;
 }
@@ -4694,7 +4714,10 @@ function manualCommandHoldsAcrossClockLifecycle(entry = {}) {
 function activeCommandHistory(snapshot = state.snapshot || {}) {
   const currentMinute = Number(snapshot.clock?.absolute_minute ?? snapshot.clock?.minute ?? 0) || 0;
   const currentRunId = Number(snapshot.clock?.run_id ?? 0) || 0;
-  return [...(snapshot.commands?.history || [])].filter((entry) => {
+  const commandEntries = Array.isArray(snapshot.commands?.effective)
+    ? snapshot.commands.effective
+    : (snapshot.commands?.history || []);
+  return [...commandEntries].filter((entry) => {
     if (!entry?.eligible_source) return false;
     if (entry.cancelled) return false;
     const manualHold = manualCommandHoldsAcrossClockLifecycle(entry);
@@ -5495,6 +5518,9 @@ function renderSnapshot(snapshot) {
   syncCommandHistoryLogs(snapshot.commands?.history || []);
   updatePendingCount();
   renderActiveTraineePage(snapshot);
+  refreshDiagramDeviceCommandDialog(snapshot);
+  refreshRemoteControlDialog(snapshot);
+  refreshRemoteAdjustmentDialog(snapshot);
   persistActiveModelContext();
 }
 
@@ -9355,15 +9381,55 @@ function snapshotDevice(devType, devName, snapshot = state.snapshot || {}) {
   return (snapshot.devices || []).find((dev) => deviceType(dev) === devType && deviceName(dev) === devName) || null;
 }
 
+function remoteControlMeasuredValue(devType, devName, commandType, snapshot = state.snapshot || {}) {
+  const targetType = String(devType || "").trim().toUpperCase();
+  const targetName = String(devName || "").trim();
+  const measurementType = commandType === "status" ? "STATUS" : "RUN_STAT";
+  const measurements = snapshot.measurements || {};
+  for (const rows of [measurements.scada || [], measurements.real || []]) {
+    const row = rows.find((item) => (
+      String(item?.dev_type || "").trim().toUpperCase() === targetType
+      && String(item?.dev_name || "").trim() === targetName
+      && String(item?.meas_type || "").trim().toUpperCase() === measurementType
+    ));
+    if (!row) continue;
+    if (row.valid !== undefined && row.valid !== null && row.valid !== "" && Number(row.valid) === 0) continue;
+    const value = Number(row.value);
+    if (Number.isFinite(value)) return value > 0.5 ? 1 : 0;
+  }
+  return null;
+}
+
+function remoteControlFeedbackValue(dev, commandType, snapshot = state.snapshot || {}) {
+  if (!dev) return null;
+  const devType = deviceType(dev);
+  const devName = deviceName(dev);
+  const measured = remoteControlMeasuredValue(devType, devName, commandType, snapshot);
+  if (measured !== null) return measured;
+  const fieldName = commandType === "status" ? "status" : "run_stat";
+  const live = snapshotDevice(devType, devName, snapshot) || {};
+  const rawValue = live[fieldName] ?? live.raw?.[fieldName] ?? dev[fieldName] ?? dev.raw?.[fieldName];
+  if (rawValue === undefined || rawValue === null || rawValue === "") return null;
+  const value = Number(rawValue);
+  return Number.isFinite(value) ? (value > 0.5 ? 1 : 0) : null;
+}
+
+function remoteControlTargetAlreadyReached(dev, commandType, targetValue, snapshot = state.snapshot || {}) {
+  const currentValue = remoteControlFeedbackValue(dev, commandType, snapshot);
+  return currentValue !== null && currentValue === (Number(targetValue) ? 1 : 0);
+}
+
 function controlDeviceFromRow(row, snapshot = state.snapshot || {}) {
   const live = snapshotDevice(row.dev_type, row.dev_name, snapshot) || {};
+  const measuredRunStat = remoteControlMeasuredValue(row.dev_type, row.dev_name, "run_stat", snapshot);
+  const measuredStatus = remoteControlMeasuredValue(row.dev_type, row.dev_name, "status", snapshot);
   return {
     ...live,
     dev_type: row.dev_type,
     dev_name: row.dev_name,
     idx: live.idx ?? live.raw?.idx ?? row.idx ?? "",
-    run_stat: live.run_stat ?? row.run_stat ?? 1,
-    status: live.status ?? row.status ?? 1,
+    run_stat: measuredRunStat ?? live.run_stat ?? row.run_stat ?? 1,
+    status: measuredStatus ?? live.status ?? row.status ?? 1,
     mode: live.mode ?? live.raw?.control_type ?? live.raw?.ctrl_mode ?? "",
     set_values: live.set_values || {},
     raw: live.raw || {},
@@ -9776,25 +9842,72 @@ function remoteAdjustmentName(dev, setType) {
   return `${deviceName(dev)}.${remoteAdjustmentTypeLabel(setType)}`;
 }
 
-function remoteAdjustmentMeasTypeMatchesSetType(measType, setType) {
+function remoteAdjustmentMeasurementTypeCandidates(dev, setType) {
+  const setKey = String(setType || "").trim().toLowerCase();
+  if (!setKey) return [];
+  const measurementKey = setKey.endsWith("_set") ? setKey.slice(0, -4) : setKey;
+  const exactType = measurementKey.toUpperCase();
+  const quantity = measurementKey.split("_", 1)[0].toUpperCase();
+  const devType = String(dev ? deviceType(dev) : "").trim().toUpperCase();
+  const candidates = [];
+  const add = (...types) => types.forEach((type) => {
+    const normalized = String(type || "").trim().toUpperCase();
+    if (normalized && !candidates.includes(normalized)) candidates.push(normalized);
+  });
+
+  if (measurementKey.includes("_")) add(exactType);
+  if (measurementKey.includes("soc")) add("SOC");
+  if (devType.endsWith("GENERATOR")) {
+    add(`${quantity}_GEN`);
+  } else if (devType.endsWith("LOAD")) {
+    add(`${quantity}_LOAD`);
+  } else if (devType === "DCACCONVERTER") {
+    add(`${quantity}_AC`, `${quantity}_DC`);
+  } else if (devType === "DCDCCONVERTER" || devType === "ACACCONVERTER") {
+    add(`${quantity}_FROM`, `${quantity}_TO`);
+  } else if (devType === "ESS" || devType === "STORAGE") {
+    add(quantity, `${quantity}_GEN`, `${quantity}_FROM`, `${quantity}_TO`);
+  }
+  add(exactType, quantity);
+  return candidates;
+}
+
+function remoteAdjustmentMeasTypeMatchesSetType(measType, setType, dev = null) {
   const type = String(measType || "").toUpperCase();
-  const setKey = String(setType || "").toLowerCase();
+  const setKey = String(setType || "").trim().toUpperCase();
   if (!type || !setKey) return false;
-  if (setKey.startsWith("p") || setKey.includes("_p")) return type === "P" || type.startsWith("P_");
-  if (setKey.startsWith("q") || setKey.includes("_q")) return type === "Q" || type.startsWith("Q_");
-  if (setKey.startsWith("v") || setKey.includes("_v")) return type === "V" || type.startsWith("V_");
-  if (setKey.startsWith("i") || setKey.includes("_i")) return type === "I" || type.startsWith("I_");
-  if (setKey.includes("soc")) return type === "SOC";
-  return type === setKey.toUpperCase();
+  if (!setKey.endsWith("_SET")) return type === setKey;
+  return remoteAdjustmentMeasurementTypeCandidates(dev, setType).includes(type);
+}
+
+function remoteAdjustmentMeasurementRowIsValid(row) {
+  const valid = row?.valid;
+  if (valid === undefined || valid === null || valid === "") return true;
+  const numeric = Number(valid);
+  return !Number.isFinite(numeric) || numeric !== 0;
 }
 
 function remoteAdjustmentMeasurement(dev, setType, snapshot = state.snapshot || {}) {
-  const match = measurementDisplayRows(snapshot).find((row) => (
-    row.dev_type === deviceType(dev)
-    && row.dev_name === deviceName(dev)
-    && remoteAdjustmentMeasTypeMatchesSetType(row.meas_type, setType)
-  ));
-  return match?.value ?? null;
+  const targetType = String(deviceType(dev) || "").trim().toUpperCase();
+  const targetName = String(deviceName(dev) || "").trim();
+  const measurements = snapshot.measurements || {};
+  const candidates = remoteAdjustmentMeasurementTypeCandidates(dev, setType);
+  for (const candidate of candidates) {
+    for (const rows of [measurements.scada || [], measurements.real || []]) {
+      const match = rows.find((row) => (
+        String(row?.dev_type || "").trim().toUpperCase() === targetType
+        && String(row?.dev_name || "").trim() === targetName
+        && remoteAdjustmentMeasTypeMatchesSetType(row?.meas_type, candidate)
+        && remoteAdjustmentMeasurementRowIsValid(row)
+        && row?.value !== undefined
+        && row?.value !== null
+        && String(row.value).trim() !== ""
+        && Number.isFinite(Number(row.value))
+      ));
+      if (match) return Number(match.value);
+    }
+  }
+  return null;
 }
 
 function remoteAdjustmentIssuedTimeInfo(dev, setType, snapshot = state.snapshot || {}) {
@@ -10102,7 +10215,8 @@ function activeCommandPreviewRows(snapshot = state.snapshot || {}) {
       if (seenCommandKeys.has(commandKey)) return;
       seenCommandKeys.add(commandKey);
       const liveDev = snapshotDevice(devType, devName, snapshot) || {};
-      const actualValue = isStatus ? liveDev.status : liveDev.run_stat;
+      const measuredActualValue = remoteControlMeasuredValue(devType, devName, commandType, snapshot);
+      const actualValue = measuredActualValue ?? (isStatus ? liveDev.status : liveDev.run_stat);
       rows.push({
         type: `遥控 · ${remoteControlLabel(commandType)}`,
         name: devName,
@@ -10259,12 +10373,23 @@ function openDiagramDeviceCommandDialog(context) {
   $("diagramDeviceCommandHint").className = context.options.length
     ? "remote-control-hint"
     : "remote-control-hint is-error";
-  dialog.showModal();
+  if (!dialog.open) dialog.showModal();
+}
+
+function refreshDiagramDeviceCommandDialog(snapshot = state.snapshot || {}) {
+  const dialog = $("diagramDeviceCommandDialog");
+  const context = state.diagramDeviceCommandContext;
+  if (!dialog?.open || !context) return;
+  const refreshedContext = diagramDeviceCommandContext(context.container, context.devId, snapshot);
+  if (!refreshedContext) {
+    closeDiagramDeviceCommandDialog();
+    return;
+  }
+  openDiagramDeviceCommandDialog(refreshedContext);
 }
 
 function activateDiagramDeviceCommandOption(option) {
   if (!option?.row) return;
-  closeDiagramDeviceCommandDialog();
   if (option.kind === "remote-control") {
     openRemoteControlDialog(option.row.dev, option.row.commandType);
     return;
@@ -10290,16 +10415,37 @@ function closeRemoteControlDialog() {
   state.remoteControlSending = false;
 }
 
-function openRemoteControlDialog(dev, commandType = dev?.__command_type || "run_stat") {
-  const dialog = $("remoteControlDialog");
-  if (!dialog || !dev) return;
+function updateRemoteControlDialogSummary(dev, commandType = dev?.__command_type || "run_stat") {
+  if (!dev) return 0;
   state.remoteControlDevice = { ...dev, __command_type: commandType };
-  state.remoteControlSending = false;
   const valueKey = commandType === "status" ? "status" : "run_stat";
   const currentRun = Number(dev[valueKey]) ? 1 : 0;
   $("remoteControlDevice").textContent = deviceName(dev);
   $("remoteControlType").textContent = `${deviceType(dev)} / ${remoteControlLabel(commandType)}`;
   $("remoteControlCurrent").innerHTML = `<span class="status-pill ${currentRun ? "is-ok" : "is-off"}">${remoteControlValueText(commandType, currentRun)}</span>`;
+  return currentRun;
+}
+
+function refreshRemoteControlDialog(snapshot = state.snapshot || {}) {
+  const dialog = $("remoteControlDialog");
+  const current = state.remoteControlDevice;
+  if (!dialog?.open || !current) return;
+  const commandType = current.__command_type === "status" ? "status" : "run_stat";
+  const key = `${deviceKey(current)}|${commandType}`;
+  const refreshed = remoteControlCommandRows(controlDefinitionDevices(snapshot), snapshot)
+    .find((row) => row.key === key);
+  if (!refreshed) {
+    closeRemoteControlDialog();
+    return;
+  }
+  updateRemoteControlDialogSummary(refreshed.dev, commandType);
+}
+
+function openRemoteControlDialog(dev, commandType = dev?.__command_type || "run_stat") {
+  const dialog = $("remoteControlDialog");
+  if (!dialog || !dev) return;
+  state.remoteControlSending = false;
+  const currentRun = updateRemoteControlDialogSummary(dev, commandType);
   $("remoteControlHint").textContent = "确认后将立即向模拟台下发遥控指令。";
   $("remoteControlHint").className = "remote-control-hint";
   document.querySelectorAll('input[name="remoteControlState"]').forEach((input) => {
@@ -10314,7 +10460,45 @@ function openRemoteControlDialog(dev, commandType = dev?.__command_type || "run_
   });
   $("remoteControlConfirm").disabled = false;
   $("remoteControlConfirm").textContent = "确认下发";
-  dialog.showModal();
+  if (!dialog.open) dialog.showModal();
+}
+
+function remoteControlCommandAcceptance(result = {}) {
+  const wrapped = result?.accepted && typeof result.accepted === "object" ? result.accepted : {};
+  const acceptedValue = result?.run_status ?? wrapped.run_status ?? wrapped.remote_controls ?? 0;
+  const ignoredValue = result?.ignored ?? wrapped.ignored ?? 0;
+  const accepted = Number.isFinite(Number(acceptedValue)) ? Math.max(0, Number(acceptedValue)) : 0;
+  const ignored = Number.isFinite(Number(ignoredValue)) ? Math.max(0, Number(ignoredValue)) : 0;
+  return { accepted, ignored, ok: accepted > 0 && ignored === 0 };
+}
+
+function remoteControlFeedbackSnapshotPath() {
+  const params = new URLSearchParams({
+    lite: "1",
+    static: "0",
+    logs: "0",
+    measurements: "0",
+    devices: "1",
+    device_states: "0",
+    commands: "0",
+  });
+  return `/api/trainee/snapshot?${params.toString()}`;
+}
+
+async function waitForRemoteControlFeedback(dev, commandType, targetValue, attempts = 4) {
+  let latestSnapshot = null;
+  let currentValue = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    latestSnapshot = await api(remoteControlFeedbackSnapshotPath());
+    currentValue = remoteControlFeedbackValue(dev, commandType, latestSnapshot);
+    if (currentValue === (Number(targetValue) ? 1 : 0)) {
+      return { confirmed: true, value: currentValue, snapshot: latestSnapshot };
+    }
+    if (attempt + 1 < attempts) {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    }
+  }
+  return { confirmed: false, value: currentValue, snapshot: latestSnapshot };
 }
 
 async function sendRemoteControlCommand() {
@@ -10328,6 +10512,7 @@ async function sendRemoteControlCommand() {
     dev_name: deviceName(dev),
   };
   command[commandType] = Number(selected.value) ? 1 : 0;
+  const requestedText = remoteControlValueText(commandType, command[commandType]);
   const body = withCommandSendTime({
     source: "trainee-ui",
     ...manualCommandHoldPayload(),
@@ -10336,24 +10521,60 @@ async function sendRemoteControlCommand() {
   });
   const useInteractionLink = hasTeacherCommandConnection();
   const targetName = useInteractionLink ? teacherCommandTargetName() : "模拟台交互链接";
+  if (remoteControlTargetAlreadyReached(dev, commandType, command[commandType], state.snapshot || {})) {
+    $("remoteControlConfirm").disabled = false;
+    $("remoteControlConfirm").textContent = "重新选择";
+    $("remoteControlHint").textContent = `${deviceName(dev)} 当前已经是${requestedText}，未重复下发。`;
+    $("remoteControlHint").className = "remote-control-hint is-warn";
+    addRuntimeLog(
+      "人工遥控",
+      targetName,
+      "未下发",
+      `${deviceName(dev)} 当前已经是${requestedText}，目标状态没有变化`,
+      "warn",
+    );
+    return;
+  }
   state.remoteControlSending = true;
   $("remoteControlConfirm").disabled = true;
   $("remoteControlConfirm").textContent = "下发中";
-  $("remoteControlHint").textContent = `${deviceName(dev)}：${remoteControlValueText(commandType, command[commandType])}`;
-  addRuntimeLog("人工遥控", targetName, "下发请求", `${deviceName(dev)} → ${remoteControlValueText(commandType, command[commandType])}`);
+  $("remoteControlHint").textContent = `${deviceName(dev)}：${requestedText}`;
+  addRuntimeLog("人工遥控", targetName, "下发请求", `${deviceName(dev)} → ${requestedText}`);
   try {
     const result = await postTeacherCommand(body);
+    const acceptance = remoteControlCommandAcceptance(result);
+    if (!acceptance.ok) {
+      throw new Error(`模拟台未接受遥控指令：接受 ${acceptance.accepted} 条，忽略 ${acceptance.ignored} 条`);
+    }
+    const feedback = await waitForRemoteControlFeedback(dev, commandType, command[commandType]);
+    if (feedback.snapshot) {
+      state.snapshot = mergeTeacherSnapshotWithLocalDefinitions(state.snapshot, feedback.snapshot);
+      renderSnapshot(state.snapshot);
+    }
+    pending.run_status.delete(`${deviceKey(dev)}|${commandType}`);
+    updatePendingCount();
+    await refresh();
+    state.remoteControlSending = false;
     addRuntimeLog(
       "模拟台响应",
       targetName,
-      "遥控成功",
-      `${deviceName(dev)} → ${remoteControlValueText(commandType, command[commandType])}；接受 ${result.run_status || 0} 条`,
-      "ok",
+      feedback.confirmed ? "遥控完成" : "已接受待反馈",
+      feedback.confirmed
+        ? `${deviceName(dev)} → ${requestedText}；模拟台状态反馈已一致`
+        : `${deviceName(dev)} → ${requestedText}；接受 ${acceptance.accepted} 条，但状态反馈尚未到位`,
+      feedback.confirmed ? "ok" : "warn",
     );
-    pending.run_status.delete(`${deviceKey(dev)}|${commandType}`);
-    closeRemoteControlDialog();
-    updatePendingCount();
-    await refresh();
+    if ($("remoteControlDialog")?.open) {
+      $("remoteControlConfirm").disabled = false;
+      $("remoteControlConfirm").textContent = feedback.confirmed ? "继续下发" : "检查后重试";
+      $("remoteControlHint").textContent = feedback.confirmed
+        ? `${deviceName(dev)} 已执行为${requestedText}，反馈确认完成。`
+        : `${deviceName(dev)} 指令已接受，但尚未收到${requestedText}状态反馈。`;
+      $("remoteControlHint").className = feedback.confirmed
+        ? "remote-control-hint is-ok"
+        : "remote-control-hint is-warn";
+    }
+    refreshDiagramDeviceCommandDialog();
   } catch (error) {
     state.remoteControlSending = false;
     $("remoteControlConfirm").disabled = false;
@@ -10364,8 +10585,8 @@ async function sendRemoteControlCommand() {
   }
 }
 
-function findRemoteAdjustmentByKey(key) {
-  return remoteAdjustmentRows(controlDefinitionDevices()).find((row) => row.key === key) || null;
+function findRemoteAdjustmentByKey(key, snapshot = state.snapshot || {}) {
+  return remoteAdjustmentRows(controlDefinitionDevices(snapshot), snapshot).find((row) => row.key === key) || null;
 }
 
 function closeRemoteAdjustmentDialog() {
@@ -10375,17 +10596,36 @@ function closeRemoteAdjustmentDialog() {
   state.remoteAdjustmentSending = false;
 }
 
-function openRemoteAdjustmentDialog(row) {
-  const dialog = $("remoteAdjustmentDialog");
-  if (!dialog || !row) return;
+function updateRemoteAdjustmentDialogSummary(row) {
+  if (!row) return;
   state.remoteAdjustment = row;
-  state.remoteAdjustmentSending = false;
   $("remoteAdjustmentName").textContent = row.name;
   $("remoteAdjustmentDevice").textContent = `${deviceType(row.dev)} / ${deviceName(row.dev)}`;
   $("remoteAdjustmentMeasurement").textContent = formatRemoteAdjustmentValue(row.measurement);
   $("remoteAdjustmentCurrent").textContent = formatRemoteAdjustmentValue(row.controlValue);
   $("remoteAdjustmentIssuedAt").textContent = row.issuedTime?.wall_time || row.issuedAt || "--";
-  if ($("remoteAdjustmentIssuedSimAt")) $("remoteAdjustmentIssuedSimAt").textContent = row.issuedTime?.simu_time || "--";
+  if ($("remoteAdjustmentIssuedSimAt")) {
+    $("remoteAdjustmentIssuedSimAt").textContent = row.issuedTime?.simu_time || "--";
+  }
+}
+
+function refreshRemoteAdjustmentDialog(snapshot = state.snapshot || {}) {
+  const dialog = $("remoteAdjustmentDialog");
+  const current = state.remoteAdjustment;
+  if (!dialog?.open || !current) return;
+  const refreshed = findRemoteAdjustmentByKey(current.key, snapshot);
+  if (!refreshed) {
+    closeRemoteAdjustmentDialog();
+    return;
+  }
+  updateRemoteAdjustmentDialogSummary(refreshed);
+}
+
+function openRemoteAdjustmentDialog(row) {
+  const dialog = $("remoteAdjustmentDialog");
+  if (!dialog || !row) return;
+  state.remoteAdjustmentSending = false;
+  updateRemoteAdjustmentDialogSummary(row);
   $("remoteAdjustmentValue").value = row.controlValue === null || row.controlValue === undefined ? "" : row.controlValue;
   $("remoteAdjustmentHint").textContent = "确认后将立即向模拟台下发一条遥调指令。";
   $("remoteAdjustmentHint").className = "remote-control-hint";
@@ -10434,9 +10674,16 @@ async function sendRemoteAdjustmentCommand() {
       "ok",
     );
     pending.set_values.delete(row.key);
-    closeRemoteAdjustmentDialog();
     updatePendingCount();
     await refresh();
+    state.remoteAdjustmentSending = false;
+    if ($("remoteAdjustmentDialog")?.open) {
+      $("remoteAdjustmentConfirm").disabled = false;
+      $("remoteAdjustmentConfirm").textContent = "继续下发";
+      $("remoteAdjustmentHint").textContent = `${row.name} 已下发，可继续修改控制值。`;
+      $("remoteAdjustmentHint").className = "remote-control-hint";
+    }
+    refreshDiagramDeviceCommandDialog();
   } catch (error) {
     state.remoteAdjustmentSending = false;
     $("remoteAdjustmentConfirm").disabled = false;

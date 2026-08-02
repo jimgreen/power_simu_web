@@ -1737,6 +1737,54 @@ body.is-vertical-splitter-dragging {
 .model-diagram-svg [dev].is-diagram-offline.is-diagram-selected tspan {
   fill: #778287 !important;
 }
+.model-diagram-svg.is-diagram-measurements-hidden .diagram-measurement-layer,
+.model-diagram-svg.is-diagram-labels-hidden .diagram-device-label-name,
+.model-diagram-svg.is-diagram-labels-hidden .diagram-device-label-id,
+.model-diagram-svg.is-diagram-flow-arrows-hidden .diagram-flow-arrow {
+  display: none !important;
+}
+.diagram-device-label-id {
+  fill: #687980;
+  font-family: Consolas, "Microsoft YaHei", monospace;
+  font-weight: 500;
+  letter-spacing: 0;
+  paint-order: stroke;
+  stroke: rgba(255, 255, 255, 0.86);
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+.diagram-context-menu {
+  position: fixed;
+  z-index: 3200;
+  min-width: 172px;
+  padding: 4px;
+  display: grid;
+  gap: 2px;
+  border: 1px solid rgba(99, 121, 129, 0.42);
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 12px 28px rgba(23, 42, 51, 0.2);
+}
+.diagram-context-menu[hidden] {
+  display: none;
+}
+.diagram-context-menu-item {
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+  text-align: left;
+}
+.diagram-context-menu-item:hover,
+.diagram-context-menu-item:focus-visible {
+  background: #eaf3f4;
+  color: var(--teal-dark);
+  outline: 0;
+}
 .diagram-tooltip {
   position: fixed;
   z-index: 3000;

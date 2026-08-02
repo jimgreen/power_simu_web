@@ -197,6 +197,87 @@ process.stdout.write(JSON.stringify({
                     ["显示量测", "不显示标识", "显示流动箭头"],
                 )
 
+    def test_svg_context_menu_only_opens_on_blank_and_clamps_to_viewport(self):
+        body = """
+process.stdout.write(JSON.stringify({
+  actions: typeof diagramContextMenuAction === "function" ? {
+    blank: diagramContextMenuAction("", true),
+    device: diagramContextMenuAction("device", true),
+    metric: diagramContextMenuAction("metric", true),
+    outside: diagramContextMenuAction("", false),
+  } : null,
+  bottomRight: typeof diagramFloatingPosition === "function" ? diagramFloatingPosition(
+    { x: 790, y: 590 },
+    { width: 180, height: 140 },
+    { width: 800, height: 600 },
+    8,
+  ) : null,
+  topLeft: typeof diagramFloatingPosition === "function" ? diagramFloatingPosition(
+    { x: -20, y: -10 },
+    { width: 180, height: 140 },
+    { width: 800, height: 600 },
+    8,
+  ) : null,
+}));
+"""
+        expected = {
+            "actions": {
+                "blank": "open",
+                "device": "ignore",
+                "metric": "ignore",
+                "outside": "ignore",
+            },
+            "bottomRight": {"left": 612, "top": 452},
+            "topLeft": {"left": 8, "top": 8},
+        }
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                self.assertEqual(
+                    self._run_helpers(path.read_text(encoding="utf-8"), body),
+                    expected,
+                )
+
+    def test_scripts_wire_context_menu_display_layers_and_storage_sync(self):
+        required = (
+            "function prepareDiagramDisplayLayers",
+            "function applyDiagramDisplayPreferences",
+            ".diagram-device-label-id",
+            "data-diagram-runtime-label",
+            "data-diagram-display-toggle",
+            'container.addEventListener("contextmenu"',
+            "diagramInteractionEventTarget",
+            "diagramContextMenuAction",
+            'window.addEventListener("storage"',
+            "DIAGRAM_DISPLAY_PREFERENCES_KEY",
+        )
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                script = path.read_text(encoding="utf-8")
+                for token in required:
+                    self.assertIn(token, script)
+                render_block = script.split("function renderModelDiagramPage", 1)[1].split(
+                    "function ",
+                    1,
+                )[0]
+                self.assertIn("prepareDiagramDisplayLayers(canvas)", render_block)
+                self.assertIn("applyDiagramDisplayPreferences(canvas", render_block)
+
+    def test_styles_include_svg_display_layers_and_context_menu(self):
+        required = (
+            ".diagram-context-menu",
+            ".diagram-context-menu-item",
+            ".diagram-device-label-id",
+            ".is-diagram-measurements-hidden .diagram-measurement-layer",
+            ".is-diagram-labels-hidden .diagram-device-label-name",
+            ".is-diagram-labels-hidden .diagram-device-label-id",
+            ".is-diagram-flow-arrows-hidden .diagram-flow-arrow",
+        )
+        for path in self._styles():
+            with self.subTest(app=path.parent.name):
+                styles = path.read_text(encoding="utf-8")
+                for token in required:
+                    self.assertIn(token, styles)
+
     def test_trend_value_converts_soc_without_clamping(self):
         body = """
 process.stdout.write(JSON.stringify([

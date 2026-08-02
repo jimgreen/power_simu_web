@@ -1433,6 +1433,24 @@ function saveDiagramDisplayPreferences(preferences, storage = typeof localStorag
 
 let diagramDisplayPreferences = loadDiagramDisplayPreferences();
 
+function diagramContextMenuAction(targetKind = "", insideCanvas = false) {
+  return insideCanvas && !String(targetKind || "").trim() ? "open" : "ignore";
+}
+
+function diagramFloatingPosition(anchor, size, viewport, padding = 8) {
+  const inset = Math.max(0, Number(padding) || 0);
+  const viewportWidth = Math.max(0, Number(viewport?.width) || 0);
+  const viewportHeight = Math.max(0, Number(viewport?.height) || 0);
+  const width = Math.max(0, Number(size?.width) || 0);
+  const height = Math.max(0, Number(size?.height) || 0);
+  const anchorX = Number.isFinite(Number(anchor?.x)) ? Number(anchor.x) : inset;
+  const anchorY = Number.isFinite(Number(anchor?.y)) ? Number(anchor.y) : inset;
+  return {
+    left: Math.max(inset, Math.min(anchorX, Math.max(inset, viewportWidth - width - inset))),
+    top: Math.max(inset, Math.min(anchorY, Math.max(inset, viewportHeight - height - inset))),
+  };
+}
+
 function diagramTooltipPointerMoveAction(currentHover, nextHover, tooltipHidden = false) {
   if (currentHover && !tooltipHidden && nextHover?.kind !== currentHover.kind) return "schedule-hide";
   if (!nextHover) return "hide";
@@ -2070,6 +2088,98 @@ function diagramMetricBindings(container) {
   return bindings;
 }
 
+function diagramDisplaySvg(container) {
+  if (!container) return null;
+  if (container.matches?.("svg.model-diagram-svg")) return container;
+  return container.querySelector?.("svg.model-diagram-svg") || null;
+}
+
+function prepareDiagramDisplayLayers(container) {
+  const svg = diagramDisplaySvg(container);
+  if (!svg) return { measurements: 0, labels: 0 };
+  svg.querySelectorAll(".diagram-device-label-id[data-diagram-runtime-label]").forEach((element) => element.remove());
+  const measurementLayers = new Set();
+  svg.querySelectorAll("[dev] [mt]").forEach((element) => {
+    const owner = element.closest("[dev]");
+    if (owner) measurementLayers.add(owner);
+  });
+  svg.querySelectorAll("[data-meas-name], [data-scada-name], [data-real-name], [data-control-name]").forEach((element) => {
+    measurementLayers.add(element.closest("text") || element);
+  });
+  measurementLayers.forEach((element) => element.classList.add("diagram-measurement-layer"));
+
+  let labelCount = 0;
+  svg.querySelectorAll('text[id^="label_"][dev-id]').forEach((nameLabel) => {
+    const devId = String(nameLabel.getAttribute("dev-id") || "").trim();
+    if (!devId || !nameLabel.parentNode) return;
+    nameLabel.classList.add("diagram-device-label-name");
+    const idLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    ["x", "text-anchor", "transform", "dominant-baseline", "font-family", "font-weight", "font-style"].forEach((attribute) => {
+      const value = nameLabel.getAttribute(attribute);
+      if (value !== null && value !== "") idLabel.setAttribute(attribute, value);
+    });
+    const fontSize = Math.max(8, Number.parseFloat(nameLabel.getAttribute("font-size")) || 14);
+    const sourceY = String(nameLabel.getAttribute("y") || "").trim();
+    const numericY = Number(sourceY);
+    if (sourceY && Number.isFinite(numericY)) idLabel.setAttribute("y", String(numericY + fontSize * 1.15));
+    else {
+      if (sourceY) idLabel.setAttribute("y", sourceY);
+      idLabel.setAttribute("dy", String(fontSize * 1.15));
+    }
+    idLabel.setAttribute("font-size", String(Math.max(8, fontSize * 0.72)));
+    idLabel.setAttribute("dev-id", devId);
+    idLabel.setAttribute("data-diagram-runtime-label", "device-id");
+    idLabel.setAttribute("aria-label", `设备编号 ${devId}`);
+    idLabel.classList.add("diagram-device-label-id");
+    idLabel.textContent = devId;
+    nameLabel.parentNode.insertBefore(idLabel, nameLabel.nextSibling);
+    labelCount += 1;
+  });
+  return { measurements: measurementLayers.size, labels: labelCount };
+}
+
+function applyDiagramDisplayPreferences(container, preferences = diagramDisplayPreferences) {
+  const svg = diagramDisplaySvg(container);
+  if (!svg) return null;
+  const value = normalizeDiagramDisplayPreferences(preferences);
+  svg.classList.toggle("is-diagram-measurements-hidden", !value.measurements);
+  svg.classList.toggle("is-diagram-labels-hidden", !value.labels);
+  svg.classList.toggle("is-diagram-flow-arrows-hidden", !value.flowArrows);
+  return value;
+}
+
+function renderDiagramContextMenu(interaction) {
+  const menu = interaction?.contextMenu;
+  if (!menu) return;
+  menu.innerHTML = diagramDisplayPreferenceMenuItems(diagramDisplayPreferences).map((item) => `
+    <button type="button" class="diagram-context-menu-item" data-diagram-display-toggle="${item.key}">
+      ${escapeHtml(item.label)}
+    </button>`).join("");
+}
+
+function closeDiagramContextMenu(interaction) {
+  if (!interaction?.contextMenu) return;
+  interaction.contextMenu.hidden = true;
+}
+
+function openDiagramContextMenu(interaction, event) {
+  const menu = interaction?.contextMenu;
+  if (!menu) return;
+  renderDiagramContextMenu(interaction);
+  menu.hidden = false;
+  menu.style.left = "0px";
+  menu.style.top = "0px";
+  const rect = menu.getBoundingClientRect();
+  const position = diagramFloatingPosition(
+    { x: event.clientX, y: event.clientY },
+    { width: rect.width, height: rect.height },
+    { width: window.innerWidth, height: window.innerHeight },
+    8,
+  );
+  menu.style.left = `${position.left}px`;
+  menu.style.top = `${position.top}px`;
+}
+
 function diagramInteractionState(container) {
   let interaction = diagramInteractionCache.get(container);
   if (!interaction) {
@@ -2082,6 +2192,7 @@ function diagramInteractionState(container) {
       tooltipPositionKey: "",
       trendPeriod: "hour",
       trendChart: null,
+      contextMenu: null,
       pointer: { x: 0, y: 0 },
       hideTimer: null,
       drag: null,
@@ -2615,6 +2726,7 @@ function resetDiagramInteractions(container) {
   const interaction = diagramInteractionCache.get(container);
   if (interaction) {
     clearDiagramTooltipHide(interaction);
+    closeDiagramContextMenu(interaction);
     if (interaction.suppressClickTimer) clearTimeout(interaction.suppressClickTimer);
     interaction.selectedDevId = "";
     interaction.hover = null;
@@ -2792,8 +2904,17 @@ function initDiagramInteractions(container) {
   tooltip.setAttribute("role", "tooltip");
   document.body.appendChild(tooltip);
   interaction.tooltip = tooltip;
+  const contextMenu = document.createElement("div");
+  contextMenu.className = "diagram-context-menu";
+  contextMenu.hidden = true;
+  contextMenu.setAttribute("role", "menu");
+  contextMenu.setAttribute("aria-label", "接线图显示选项");
+  document.body.appendChild(contextMenu);
+  interaction.contextMenu = contextMenu;
+  renderDiagramContextMenu(interaction);
 
   container.addEventListener("pointerdown", (event) => {
+    closeDiagramContextMenu(interaction);
     beginDiagramPan(container, event);
   });
   container.addEventListener("pointermove", (event) => {
@@ -2820,6 +2941,19 @@ function initDiagramInteractions(container) {
   });
   container.addEventListener("pointerup", (event) => finishDiagramPan(container, event));
   container.addEventListener("pointercancel", (event) => finishDiagramPan(container, event));
+  container.addEventListener("contextmenu", (event) => {
+    const viewport = diagramViewportState(container);
+    const target = diagramInteractionEventTarget(container, viewport, event);
+    const hover = target ? diagramHoverTarget(container, target) : null;
+    const action = diagramContextMenuAction(hover?.kind || "", Boolean(target));
+    if (action !== "open") {
+      closeDiagramContextMenu(interaction);
+      return;
+    }
+    event.preventDefault();
+    hideDiagramTooltip(container);
+    openDiagramContextMenu(interaction, event);
+  });
   container.addEventListener("dblclick", (event) => {
     const viewport = diagramViewportState(container);
     const target = diagramInteractionEventTarget(container, viewport, event);
@@ -2885,6 +3019,26 @@ function initDiagramInteractions(container) {
     interaction.trendPeriod = period;
     refreshDiagramTooltip(container, interaction.snapshot || state.snapshot || {});
   });
+  contextMenu.addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("[data-diagram-display-toggle]") : null;
+    if (!button) return;
+    const key = button.getAttribute("data-diagram-display-toggle") || "";
+    if (!Object.prototype.hasOwnProperty.call(DIAGRAM_DISPLAY_PREFERENCES_DEFAULTS, key)) return;
+    diagramDisplayPreferences = saveDiagramDisplayPreferences({
+      ...diagramDisplayPreferences,
+      [key]: !diagramDisplayPreferences[key],
+    });
+    applyDiagramDisplayPreferences(container, diagramDisplayPreferences);
+    closeDiagramContextMenu(interaction);
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (contextMenu.hidden || contextMenu.contains(event.target)) return;
+    closeDiagramContextMenu(interaction);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeDiagramContextMenu(interaction);
+  });
+  window.addEventListener("resize", () => closeDiagramContextMenu(interaction));
 }
 
 
@@ -2937,11 +3091,26 @@ function renderModelDiagramPage(snapshot = state.snapshot || {}) {
     canvas.innerHTML = sanitized
       ? `<div class="model-diagram-svg-wrap">${sanitized}</div>`
       : '<div class="empty-state">接线图 SVG 无法解析</div>';
+    if (sanitized) prepareDiagramDisplayLayers(canvas);
   }
   initDiagramInteractions(canvas);
+  applyDiagramDisplayPreferences(canvas, diagramDisplayPreferences);
   if (summary) summary.textContent = `${modelName} · ${diagram.filename || "diagram.svg"}`;
   updateDiagramRealtimeBindings(canvas, activeSnapshot);
 }
+
+window.addEventListener("storage", (event) => {
+  if (event.key !== DIAGRAM_DISPLAY_PREFERENCES_KEY) return;
+  try {
+    diagramDisplayPreferences = normalizeDiagramDisplayPreferences(event.newValue ? JSON.parse(event.newValue) : null);
+  } catch (_error) {
+    diagramDisplayPreferences = normalizeDiagramDisplayPreferences(null);
+  }
+  const canvas = $("modelDiagramCanvas");
+  applyDiagramDisplayPreferences(canvas, diagramDisplayPreferences);
+  const interaction = canvas ? diagramInteractionCache.get(canvas) : null;
+  if (interaction?.contextMenu && !interaction.contextMenu.hidden) renderDiagramContextMenu(interaction);
+});
 
 function apiErrorText(error) {
   try {

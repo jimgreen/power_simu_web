@@ -9,7 +9,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class TraineeTopbarLayoutUiTest(unittest.TestCase):
-    def test_topbar_shows_model_management_selector_name_and_receive_toggle(self):
+    def test_overview_status_keeps_simulator_model_metric_on_one_desktop_row(self):
+        css = (ROOT / "simu" / "web" / "trainee" / "styles.css").read_text(encoding="utf-8")
+
+        metric_rule = css.split(".trainee-status-metrics {", 1)[1].split("}", 1)[0]
+        source_rule = css.split(".trainee-status-metrics div:first-child {", 1)[1].split("}", 1)[0]
+
+        self.assertIn("grid-template-columns: repeat(7, minmax(78px, 1fr))", metric_rule)
+        self.assertIn("grid-column: span 2", source_rule)
+
+    def test_topbar_shows_model_management_selector_initialization_and_receive_controls(self):
         html = (ROOT / "simu" / "web" / "trainee" / "index.html").read_text(encoding="utf-8")
         css = (ROOT / "simu" / "web" / "trainee" / "styles.css").read_text(encoding="utf-8")
         app_js = (ROOT / "simu" / "web" / "trainee" / "app.js").read_text(encoding="utf-8")
@@ -24,7 +33,10 @@ class TraineeTopbarLayoutUiTest(unittest.TestCase):
         self.assertNotIn('id="importDefinitionsButton"', toolbar)
         self.assertLess(toolbar.index('id="modelManagementButton"'), toolbar.index('id="modelSelector"'))
         self.assertLess(toolbar.index('id="modelSelector"'), toolbar.index('id="activeModelName"'))
-        self.assertLess(toolbar.index('id="activeModelName"'), toolbar.index('id="traineeRunToggle"'))
+        self.assertLess(toolbar.index('id="activeModelName"'), toolbar.index('id="modelInitializeButton"'))
+        self.assertLess(toolbar.index('id="modelInitializeButton"'), toolbar.index('id="traineeRunToggle"'))
+        self.assertIn('>模型初始化</button>', toolbar)
+        self.assertIn('>启动接收</button>', toolbar)
 
         topbar_rule = css.split(".topbar {", 1)[1].split("}", 1)[0]
         self.assertIn("justify-content: flex-start", topbar_rule)
@@ -51,8 +63,9 @@ class TraineeTopbarLayoutUiTest(unittest.TestCase):
         self.assertNotIn("selector.disabled = state.receiveMode || models.length <= 1;", app_js)
         self.assertIn("if (selector) {", app_js)
         self.assertIn('$("modelManagementButton").addEventListener("click", openModelManagementDialog);', app_js)
+        self.assertIn('$("modelInitializeButton").addEventListener("click", openReceiveLinkDialog);', app_js)
 
-    def test_model_management_dialog_supports_crud_actions(self):
+    def test_model_management_uses_name_only_model_slots_without_manual_definition_import(self):
         html = (ROOT / "simu" / "web" / "trainee" / "index.html").read_text(encoding="utf-8")
         app_js = (ROOT / "simu" / "web" / "trainee" / "app.js").read_text(encoding="utf-8")
 
@@ -60,23 +73,23 @@ class TraineeTopbarLayoutUiTest(unittest.TestCase):
         self.assertIn("<h2 id=\"modelManagementTitle\">模型管理</h2>", html)
         self.assertIn('id="modelManagementList"', html)
         self.assertIn('id="newModelButton"', html)
-        self.assertIn('id="importDefinitionsButton"', html)
+        self.assertNotIn('id="importDefinitionsButton"', html)
+        self.assertNotIn('id="definitionArchiveInput"', html)
         self.assertIn('data-model-context-action="export"', html)
         self.assertIn('data-model-context-action="clone"', html)
-        self.assertIn('data-model-context-action="update"', html)
+        self.assertNotIn('data-model-context-action="update"', html)
         self.assertIn('data-model-context-action="delete"', html)
         self.assertIn('id="newModelDialog"', html)
         self.assertIn("<h2 id=\"newModelTitle\">新建模型</h2>", html)
         self.assertIn('id="newModelName"', html)
-        self.assertIn('id="newModelFileInput"', html)
-        self.assertIn('accept=".zip,application/zip"', html)
+        self.assertNotIn('id="newModelFileInput"', html)
+        self.assertNotIn('id="selectNewModelFile"', html)
+        self.assertNotIn("选择定义包", html)
         self.assertNotIn('id="newModelSvgInput"', html)
-        self.assertIn('id="importModelDialog"', html)
-        self.assertIn('id="updateModelDialog"', html)
+        self.assertNotIn('id="importModelDialog"', html)
+        self.assertNotIn('id="updateModelDialog"', html)
         self.assertNotIn('id="updateModelSvgInput"', html)
-        self.assertIn("选择定义包", html)
-        self.assertIn("模拟台导出的定义压缩包", html)
-        self.assertNotIn("选择 E 文件", html)
+        self.assertIn("模型定义将在模型初始化时自动从模拟台获取", html)
         self.assertIn('id="cloneModelDialog"', html)
 
         self.assertIn("openModelManagementDialog", app_js)
@@ -84,16 +97,14 @@ class TraineeTopbarLayoutUiTest(unittest.TestCase):
         self.assertIn("handleModelContextMenuAction", app_js)
         self.assertIn("selectedManagementModelId", app_js)
         self.assertIn("openNewModelDialog", app_js)
-        self.assertIn("createNewModelFromArchive", app_js)
-        self.assertIn("openImportModelDialog", app_js)
-        self.assertIn("openUpdateModelDialog", app_js)
+        self.assertIn("createNewModelSlot", app_js)
+        self.assertIn('api("/api/trainee/models/create"', app_js)
+        self.assertNotIn("pendingNewModelFile", app_js)
+        self.assertNotIn("openImportModelDialog", app_js)
+        self.assertNotIn("openUpdateModelDialog", app_js)
         self.assertIn("cloneManagedModel", app_js)
         self.assertIn("deleteManagedModel", app_js)
-        self.assertNotIn('api("/api/models/create"', app_js)
-        self.assertNotIn('api("/api/models/update-definitions"', app_js)
-        self.assertNotIn("diagram_svg_base64", app_js)
-        self.assertIn('api("/api/models/import-definitions"', app_js)
-        self.assertIn("create_model: true", app_js)
+        self.assertNotIn('api("/api/models/import-definitions"', app_js)
         self.assertIn('api("/api/models/clone"', app_js)
         self.assertIn('api("/api/models/delete"', app_js)
         self.assertIn('api("/api/export-definitions?format=json', app_js)

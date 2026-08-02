@@ -85,14 +85,6 @@ ROLE_MODEL_DIRS = {
 }
 CONTROL_DEFINITION_BLOCKS = {"RunStat", "CbOpenStat", "SetValue", "StorageSoc"}
 
-
-def _clock_int_value(value: Any, default: int = 1) -> int:
-    try:
-        return max(1, int(round(float(value))))
-    except (TypeError, ValueError):
-        return default
-
-
 def _role_models_base_dir(sim_dir: Path, role: str) -> Path:
     parts = ROLE_MODEL_DIRS.get(role.lower(), ("models", role.lower()))
     return sim_dir.joinpath(*parts)
@@ -385,7 +377,7 @@ def _write_model_diagram(target_dir: Path, diagram_svg_text: Optional[str], *, r
         if remove_when_absent and path.exists() and path.is_file():
             path.unlink()
         return False
-    path.write_text(normalized, encoding="utf-8")
+    path.write_text(normalized, encoding="utf-8", newline="")
     return True
 
 
@@ -880,11 +872,11 @@ def import_definition_archive(service: PolarMicrogridSimulator, data: bytes) -> 
     written_files: list[str] = []
     root = Path(service.sim_dir)
     root.mkdir(parents=True, exist_ok=True)
-    (root / "model.e").write_text(model_text, encoding="utf-8")
+    (root / "model.e").write_text(model_text, encoding="utf-8", newline="")
     simu_loop.clear_model_book_cache(root / "model.e")
-    (root / "meas.e").write_text(meas_text, encoding="utf-8")
-    (root / "control.e").write_text(control_text, encoding="utf-8")
-    (root / "curves.e").write_text(curves_text, encoding="utf-8")
+    (root / "meas.e").write_text(meas_text, encoding="utf-8", newline="")
+    (root / "control.e").write_text(control_text, encoding="utf-8", newline="")
+    (root / "curves.e").write_text(curves_text, encoding="utf-8", newline="")
     diagram_written = _write_model_diagram(root, diagram_text, remove_when_absent=True)
     legacy_device = root / "device.e"
     if legacy_device.exists() and legacy_device.is_file():
@@ -1004,7 +996,12 @@ def make_http_server(
                 if path == renewable_control_path and role == "trainee":
                     self._handle_api_get()
                     return
-                if self.path.startswith("/api/") and role == "trainee" and sim_url:
+                if (
+                    self.path.startswith("/api/")
+                    and role == "trainee"
+                    and sim_url
+                    and not path.startswith("/api/trainee/")
+                ):
                     self._proxy_to_simulator("GET", sim_url)
                     return
                 if self.path.startswith("/api/"):
@@ -1022,7 +1019,12 @@ def make_http_server(
                 if path == renewable_control_path and role == "trainee":
                     self._handle_api_post()
                     return
-                if self.path.startswith("/api/") and role == "trainee" and sim_url:
+                if (
+                    self.path.startswith("/api/")
+                    and role == "trainee"
+                    and sim_url
+                    and not path.startswith("/api/trainee/")
+                ):
                     self._proxy_to_simulator("POST", sim_url)
                     return
                 self._handle_api_post()
@@ -1142,6 +1144,7 @@ def make_http_server(
                 "command_path": f"/api/student/commands?model_id={encoded_model_id}",
                 "runtime_logs_path": f"/api/runtime-logs?model_id={encoded_model_id}",
                 "measurement_delta_path": f"/api/measurements/delta?model_id={encoded_model_id}",
+                "definition_archive_path": f"/api/export-definitions?format=json&model_id={encoded_model_id}",
                 "telemetry_path": f"/api/external/telemetry?model_id={encoded_model_id}",
                 "selected_telemetry_path": f"/api/external/telemetry/query?model_id={encoded_model_id}",
                 "control_values_path": f"/api/external/controls?model_id={encoded_model_id}",
@@ -1196,6 +1199,7 @@ def make_http_server(
                 "snapshot_path": f"/api/snapshot?model_id={encoded_model_id}",
                 "command_path": f"/api/student/commands?model_id={encoded_model_id}",
                 "measurement_delta_path": f"/api/measurements/delta?model_id={encoded_model_id}",
+                "definition_archive_path": f"/api/export-definitions?format=json&model_id={encoded_model_id}",
             }
 
         def _resolve_trainee_connection(self, raw_link: str) -> Mapping[str, Any]:
@@ -1232,6 +1236,10 @@ def make_http_server(
                 "command_path": str(payload.get("command_path") or f"/api/student/commands?model_id={encoded_model_id}"),
                 "measurement_delta_path": str(
                     payload.get("measurement_delta_path") or self._measurement_delta_path_from_snapshot_path(snapshot_path)
+                ),
+                "definition_archive_path": str(
+                    payload.get("definition_archive_path")
+                    or f"/api/export-definitions?format=json&model_id={encoded_model_id}"
                 ),
             }
 
@@ -1301,6 +1309,105 @@ def make_http_server(
             )
             snapshot = self._json_request_to_url(snapshot_url)
             self._send_json({"connection": connection, "snapshot": snapshot})
+
+        @staticmethod
+        def _connection_url(connection: Mapping[str, Any], path_key: str) -> str:
+            base_url = str(connection.get("teacher_api_base") or "").rstrip("/")
+            remote_path = str(connection.get(path_key) or "")
+            if remote_path.startswith("http://") or remote_path.startswith("https://"):
+                return remote_path
+            return urljoin(base_url + "/", remote_path.lstrip("/"))
+
+        def _handle_trainee_model_initialize(self, payload: Mapping[str, Any]) -> None:
+            if role != "trainee":
+                raise JsonApiError(404, "Unknown API route: /api/trainee/model-initialize")
+            target = self._target_service(payload)
+            if target.trainee_receive_state().get("active"):
+                raise JsonApiError(409, "当前模型正在接收中，不能执行模型初始化。")
+
+            connection = self._resolve_trainee_connection(
+                str(payload.get("link", payload.get("interaction_link", "")))
+            )
+            archive_url = self._connection_url(connection, "definition_archive_path")
+            archive_payload = self._json_request_to_url(archive_url, timeout=30.0)
+            if not isinstance(archive_payload, Mapping):
+                raise JsonApiError(502, "模拟台定义下载接口返回内容不是对象")
+            data_base64 = str(archive_payload.get("data_base64") or "")
+            if not data_base64:
+                raise JsonApiError(502, "模拟台定义下载接口未返回定义压缩包")
+            try:
+                archive_data = base64.b64decode(data_base64, validate=True)
+            except (ValueError, TypeError) as exc:
+                raise JsonApiError(502, "模拟台返回的定义压缩包编码无效") from exc
+
+            try:
+                with target.lock:
+                    if target.trainee_receive_state().get("active"):
+                        raise JsonApiError(409, "当前模型正在接收中，不能执行模型初始化。")
+                    imported = import_definition_archive(target, archive_data)
+                    receive_state = target.set_trainee_receive_state(
+                        {
+                            "initialized": True,
+                            "initialized_at": datetime.now().isoformat(timespec="seconds"),
+                            "active": False,
+                            "frozen": False,
+                            "interaction_link": connection["link"],
+                            "teacher_api_base": connection["teacher_api_base"],
+                            "teacher_model_id": connection["model_id"],
+                            "teacher_model_name": connection["model_name"],
+                            "snapshot_path": connection["snapshot_path"],
+                            "command_path": connection["command_path"],
+                            "measurement_delta_path": connection["measurement_delta_path"],
+                            "definition_archive_path": connection["definition_archive_path"],
+                            "last_receive_at": "",
+                        }
+                    )
+            except JsonApiError:
+                raise
+            except (ValueError, OSError) as exc:
+                raise JsonApiError(400, str(exc)) from exc
+
+            self._send_json(
+                {
+                    "model": target.model_info(),
+                    "selected_model_id": target.model_id,
+                    "connection": connection,
+                    "receive_state": receive_state,
+                    "imported": imported,
+                    **self._model_catalog(),
+                }
+            )
+
+        def _handle_trainee_receive(self, payload: Mapping[str, Any]) -> None:
+            if role != "trainee":
+                raise JsonApiError(404, "Unknown API route: /api/trainee/receive")
+            target = self._target_service(payload)
+            raw_active = payload.get("active", True)
+            active = raw_active if isinstance(raw_active, bool) else str(raw_active).strip().lower() not in {
+                "",
+                "0",
+                "false",
+                "no",
+                "off",
+            }
+            with target.lock:
+                receive_state = target.trainee_receive_state()
+                if active:
+                    required = (
+                        receive_state.get("initialized"),
+                        receive_state.get("interaction_link"),
+                        receive_state.get("teacher_api_base"),
+                        receive_state.get("snapshot_path"),
+                    )
+                    if not all(required):
+                        raise JsonApiError(409, "请先完成当前本地模型的模型初始化，再启动接收。")
+                next_state = target.set_trainee_receive_state(
+                    {
+                        "active": active,
+                        "frozen": not active,
+                    }
+                )
+            self._send_json(next_state)
 
         def _handle_api_get(self) -> None:
             path = urlparse(self.path).path
@@ -1428,6 +1535,30 @@ def make_http_server(
                 if role != "trainee" or renewable_manager is None:
                     raise JsonApiError(404, f"Unknown API route: {path}")
                 self._send_json(renewable_manager.apply_action(self._request_model_id(payload), payload))
+                return
+            if path == "/api/trainee/model-initialize":
+                self._handle_trainee_model_initialize(payload)
+                return
+            if path == "/api/trainee/receive":
+                self._handle_trainee_receive(payload)
+                return
+            if path == "/api/trainee/models/create":
+                if role != "trainee" or not hasattr(service, "create_model_slot"):
+                    raise JsonApiError(404, f"Unknown API route: {path}")
+                model_name = str(payload.get("name", payload.get("model_name", ""))).strip()
+                if not model_name:
+                    raise JsonApiError(400, "请输入新模型名称")
+                try:
+                    model = service.create_model_slot(model_name)  # type: ignore[union-attr]
+                except (ValueError, OSError) as exc:
+                    raise JsonApiError(400, str(exc)) from exc
+                self._send_json(
+                    {
+                        "model": model,
+                        "selected_model_id": model["id"],
+                        **self._model_catalog(),
+                    }
+                )
                 return
             if path == "/api/models/create":
                 if not hasattr(service, "validate_new_model_name") or not hasattr(service, "models_root"):
@@ -1706,12 +1837,11 @@ def _advance_clock_if_due(service: PolarMicrogridSimulator, last_step: float) ->
     interval_seconds = max(0.1, float(getattr(service, "compute_interval_seconds", CLOCK_BASE_INTERVAL_SECONDS) or CLOCK_BASE_INTERVAL_SECONDS))
     if now - last_step < interval_seconds:
         return last_step
-    speed_minutes = _clock_int_value(clock.get("speed"), 1)
-    step_minutes = _clock_int_value(clock.get("step_minutes"), 1)
     # Do not catch up by elapsed wall time: one completed solve advances one logical simulation step.
-    advance_minutes = speed_minutes * step_minutes
+    speed = max(1.0, float(clock.get("speed", 1) or 1))
+    advance_seconds = speed * interval_seconds
     try:
-        service.step(advance_minutes=advance_minutes)
+        service.step(advance_seconds=advance_seconds)
     except Exception:
         service.control_clock({"action": "pause"})
     return time.monotonic()

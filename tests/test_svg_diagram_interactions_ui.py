@@ -32,7 +32,8 @@ class SvgDiagramInteractionsUiTest(unittest.TestCase):
 
     def _run_helpers(self, script: str, body: str):
         result = subprocess.run(
-            ["node", "-e", f"{self._helper_source(script)}\n{body}"],
+            ["node"],
+            input=f"{self._helper_source(script)}\n{body}",
             check=True,
             capture_output=True,
             text=True,
@@ -49,7 +50,8 @@ class SvgDiagramInteractionsUiTest(unittest.TestCase):
 
     def _run_selection_helpers(self, script: str, body: str):
         result = subprocess.run(
-            ["node", "-e", f"{self._selection_helper_source(script)}\n{body}"],
+            ["node"],
+            input=f"{self._selection_helper_source(script)}\n{body}",
             check=True,
             capture_output=True,
             text=True,
@@ -278,11 +280,13 @@ process.stdout.write(JSON.stringify({
                 for token in required:
                     self.assertIn(token, styles)
 
-    def test_flow_arrow_math_uses_signed_power_and_clamped_sqrt_size(self):
+    def test_flow_arrow_math_uses_signed_power_larger_markers_and_route_density(self):
         body = """
 const available = typeof diagramFlowArrowDirection === "function"
   && typeof diagramFlowArrowSize === "function"
-  && typeof diagramFlowArrowVisibility === "function";
+  && typeof diagramFlowArrowVisibility === "function"
+  && typeof diagramFlowArrowCount === "function"
+  && typeof diagramFlowMotionAttributes === "function";
 process.stdout.write(JSON.stringify(available ? {
   positive: diagramFlowArrowDirection(12, 1),
   negative: diagramFlowArrowDirection(-12, 1),
@@ -294,19 +298,29 @@ process.stdout.write(JSON.stringify(available ? {
   visible: diagramFlowArrowVisibility({ power: 10, referencePower: 100, valid: true, offline: false }),
   nearZero: diagramFlowArrowVisibility({ power: 0.05, referencePower: 100, valid: true, offline: false }),
   offline: diagramFlowArrowVisibility({ power: 10, referencePower: 100, valid: true, offline: true }),
+  shortCount: diagramFlowArrowCount(20),
+  standardCount: diagramFlowArrowCount(135),
+  longCount: diagramFlowArrowCount(480),
+  forwardMotion: diagramFlowMotionAttributes(1),
+  reverseMotion: diagramFlowMotionAttributes(-1),
 } : null));
 """
         expected = {
             "positive": 1,
             "negative": -1,
             "reversed": -1,
-            "zero": 6,
-            "quarter": 11,
-            "full": 16,
-            "over": 16,
+            "zero": 10,
+            "quarter": 17,
+            "full": 24,
+            "over": 24,
             "visible": True,
             "nearZero": False,
             "offline": False,
+            "shortCount": 2,
+            "standardCount": 3,
+            "longCount": 6,
+            "forwardMotion": {"keyPoints": "0;1", "rotate": "auto"},
+            "reverseMotion": {"keyPoints": "1;0", "rotate": "auto-reverse"},
         }
         for path in self._scripts():
             with self.subTest(app=path.parent.name):
@@ -325,9 +339,15 @@ process.stdout.write(JSON.stringify(available ? {
             "function updateDiagramFlowArrows",
             "animateMotion",
             "repeatCount",
+            "diagramFlowArrowCount",
+            "diagramFlowMotionAttributes",
             "diagramFlowReferencePower",
+            "getTotalLength",
+            "--diagram-flow-color",
+            "markers",
+            'animation.setAttribute("begin"',
             'record.root.toggleAttribute("hidden", !visible)',
-            "record.pathDevices?.some",
+            "relevantDevices.some",
         )
         for path in self._scripts():
             with self.subTest(app=path.parent.name):
@@ -340,6 +360,114 @@ process.stdout.write(JSON.stringify(available ? {
                 )[0]
                 self.assertNotIn("setInterval", flow_block)
                 self.assertNotIn("requestAnimationFrame", flow_block)
+                self.assertIn('rotate: reverse ? "auto-reverse" : "auto"', script)
+
+    def test_flow_topology_helpers_cover_switches_converters_and_bus_connectors(self):
+        body = """
+const available = typeof diagramFlowInlineDeviceKind === "function"
+  && typeof diagramFlowPowerMeasurementTypes === "function"
+  && typeof diagramFlowSeriesOrientation === "function"
+  && typeof diagramFlowEdgeTerminalOrientation === "function"
+  && typeof diagramFlowNodeKey === "function";
+process.stdout.write(JSON.stringify(available ? {
+  inline: {
+    branch: diagramFlowInlineDeviceKind("ACBranch"),
+    zeroBranch: diagramFlowInlineDeviceKind("ACZeroBranch"),
+    acBreak: diagramFlowInlineDeviceKind("ACBreak"),
+    dcBreak: diagramFlowInlineDeviceKind("DCBreak"),
+    dcac: diagramFlowInlineDeviceKind("DCACConverter"),
+    dcdc: diagramFlowInlineDeviceKind("DCDCConverter"),
+    transformer: diagramFlowInlineDeviceKind("ACTransformer"),
+    bus: diagramFlowInlineDeviceKind("ACRealBs"),
+    generator: diagramFlowInlineDeviceKind("ACGenerator"),
+  },
+  measurementTypes: {
+    dcdc: diagramFlowPowerMeasurementTypes("DCDCConverter"),
+    dcac: diagramFlowPowerMeasurementTypes("DCACConverter"),
+    break: diagramFlowPowerMeasurementTypes("DCBreak"),
+    transformer: diagramFlowPowerMeasurementTypes("ACTransformer"),
+  },
+  series: {
+    terminal1ToTerminal2: diagramFlowSeriesOrientation(1, "two-terminal", 2),
+    terminal2ToTerminal1: diagramFlowSeriesOrientation(2, "two-terminal", 1),
+    sameTerminal: diagramFlowSeriesOrientation(1, "two-terminal", 1),
+    generatorAtTerminal1: diagramFlowSeriesOrientation(1, "generator", 0),
+    generatorAtTerminal2: diagramFlowSeriesOrientation(2, "generator", 0),
+    loadAtTerminal1: diagramFlowSeriesOrientation(1, "load", 0),
+    loadAtTerminal2: diagramFlowSeriesOrientation(2, "load", 0),
+  },
+  connector: {
+    sourceTerminal1: diagramFlowEdgeTerminalOrientation("source", 1),
+    sourceTerminal2: diagramFlowEdgeTerminalOrientation("source", 2),
+    targetTerminal1: diagramFlowEdgeTerminalOrientation("target", 1),
+    targetTerminal2: diagramFlowEdgeTerminalOrientation("target", 2),
+  },
+  nodeKeys: {
+    ac: diagramFlowNodeKey("1", "ac"),
+    dc: diagramFlowNodeKey("1", "dc"),
+    distinct: diagramFlowNodeKey("1", "ac") !== diagramFlowNodeKey("1", "dc"),
+  },
+} : null));
+"""
+        expected = {
+            "inline": {
+                "branch": "branch",
+                "zeroBranch": "branch",
+                "acBreak": "device",
+                "dcBreak": "device",
+                "dcac": "device",
+                "dcdc": "device",
+                "transformer": "device",
+                "bus": "",
+                "generator": "",
+            },
+            "measurementTypes": {
+                "dcdc": ["P_FROM", "P_TO"],
+                "dcac": ["P_AC", "P_DC"],
+                "break": ["P_FROM", "P_TO"],
+                "transformer": ["P_FROM", "P_TO"],
+            },
+            "series": {
+                "terminal1ToTerminal2": 1,
+                "terminal2ToTerminal1": 1,
+                "sameTerminal": -1,
+                "generatorAtTerminal1": 1,
+                "generatorAtTerminal2": -1,
+                "loadAtTerminal1": -1,
+                "loadAtTerminal2": 1,
+            },
+            "connector": {
+                "sourceTerminal1": -1,
+                "sourceTerminal2": 1,
+                "targetTerminal1": 1,
+                "targetTerminal2": -1,
+            },
+            "nodeKeys": {
+                "ac": "AC:1",
+                "dc": "DC:1",
+                "distinct": True,
+            },
+        }
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                script = path.read_text(encoding="utf-8")
+                self.assertEqual(self._run_helpers(script, body), expected)
+                flow_block = script.split("function diagramFlowEndpointKind", 1)[1].split(
+                    "function updateDiagramRealtimeBindings",
+                    1,
+                )[0]
+                for token in (
+                    "function diagramFlowTopology",
+                    "function diagramFlowDeviceRoute",
+                    "function diagramFlowPowerBindings",
+                    "function diagramFlowEdgeBinding",
+                    "function diagramFlowResolvePower",
+                    'type.includes("TRANSFORMER")',
+                    'kind: "device"',
+                    'kind: "connector"',
+                    "powerBindings",
+                ):
+                    self.assertIn(token, flow_block)
 
     def test_styles_include_noninteractive_flow_arrow_layers(self):
         required = (
@@ -352,6 +480,12 @@ process.stdout.write(JSON.stringify(available ? {
                 styles = path.read_text(encoding="utf-8")
                 for token in required:
                     self.assertIn(token, styles)
+                flow_styles = styles.split(".diagram-flow-arrow", 1)[1].split(
+                    ".diagram-device-label-id",
+                    1,
+                )[0]
+                self.assertIn("var(--diagram-flow-color", flow_styles)
+                self.assertNotIn("fill: #b24631", flow_styles)
 
     def test_reset_clears_svg_runtime_layers_but_preserves_preferences(self):
         required = (
@@ -884,6 +1018,57 @@ process.stdout.write(JSON.stringify(payload));
                 self.assertIn("updateDiagramTrendCursor", tooltip_block)
                 self.assertIn("hideDiagramTrendCursor", tooltip_block)
 
+    def test_realtime_tooltip_refresh_updates_existing_dom(self):
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                script = path.read_text(encoding="utf-8")
+                refresh_block = script.split("function refreshDiagramTooltip", 1)[1].split(
+                    "function resetDiagramInteractions",
+                    1,
+                )[0]
+                self.assertIn("const hoverKey = String(interaction.hover.key || \"\")", refresh_block)
+                self.assertIn("renderActiveDiagramTooltip(container, snapshot, interaction)", refresh_block)
+                self.assertIn("updateDiagramMetricTooltip(container, interaction.hover, snapshot, interaction)", refresh_block)
+                self.assertIn("updateDiagramDeviceTooltip(container, interaction.hover, snapshot, interaction)", refresh_block)
+                self.assertNotIn("innerHTML", refresh_block)
+
+    def test_metric_tooltip_exposes_incremental_update_targets(self):
+        required = (
+            "function diagramMetricTooltipData",
+            "function updateDiagramMetricTooltip",
+            "function updateDiagramTrendChart",
+            "function syncDiagramTrendAxisTicks",
+            "data-diagram-tooltip-current-value",
+            "data-diagram-tooltip-current-unit",
+            "data-diagram-tooltip-validity",
+            "data-diagram-trend-axis-ticks",
+            "data-diagram-trend-series",
+            "data-diagram-trend-range-start",
+            "data-diagram-trend-range-end",
+            "data-diagram-trend-stat-latest",
+        )
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                script = path.read_text(encoding="utf-8")
+                for token in required:
+                    self.assertIn(token, script)
+
+    def test_device_tooltip_reconciles_keyed_rows(self):
+        required = (
+            "function diagramDeviceTooltipData",
+            "function syncDiagramTooltipSections",
+            "function updateDiagramDeviceTooltip",
+            "data-diagram-device-tooltip-body",
+            "data-diagram-tooltip-section",
+            "data-diagram-tooltip-row",
+            "data-diagram-tooltip-value",
+        )
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                script = path.read_text(encoding="utf-8")
+                for token in required:
+                    self.assertIn(token, script)
+
     def test_scripts_wire_tooltip_selection_tabs_and_wheel_zoom(self):
         required = (
             "function compileDiagramDeviceIndex",
@@ -894,7 +1079,7 @@ process.stdout.write(JSON.stringify(payload));
             "function diagramTrendPeriodRange",
             "function diagramTrendPeriodLabels",
             "function fitDiagramViewport",
-            "const DIAGRAM_TOOLTIP_HIDE_DELAY_MS = 500;",
+            "const DIAGRAM_TOOLTIP_HIDE_DELAY_MS = 150;",
             "function updateDiagramSwitchVisualStates",
             "data-diagram-trend-period",
             "data-diagram-switch-state",

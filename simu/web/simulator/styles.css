@@ -2301,7 +2301,6 @@ canvas {
   display: none !important;
 }
 .diagram-flow-arrow {
-  color: #b24631;
   pointer-events: none;
 }
 .diagram-flow-arrow[hidden] {
@@ -2317,9 +2316,10 @@ canvas {
   pointer-events: none;
 }
 .diagram-flow-arrow-marker polygon {
-  fill: #b24631;
-  stroke: rgba(255, 255, 255, 0.9);
-  stroke-width: 1;
+  fill: var(--diagram-flow-color, #2563eb);
+  stroke: rgba(255, 255, 255, 0.98);
+  stroke-width: 1.5;
+  paint-order: stroke fill;
   vector-effect: non-scaling-stroke;
 }
 .diagram-device-label-id {
@@ -2494,6 +2494,12 @@ canvas {
   border-radius: 6px;
   background: #fbfdfd;
   cursor: crosshair;
+}
+.diagram-trend-chart[hidden],
+.diagram-trend-range[hidden],
+.diagram-trend-stats[hidden],
+.diagram-trend-empty[hidden] {
+  display: none;
 }
 .diagram-trend-chart .diagram-trend-series {
   stroke: var(--teal);
@@ -3498,6 +3504,17 @@ th {
   .curve-toolbar {
     display: grid;
     grid-template-columns: 1fr 1fr;
+  }
+  .curve-toolbar > .curve-mode-control {
+    width: 100%;
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+  .curve-mode-control button {
+    min-width: 0;
+    padding: 0 4px;
+    white-space: nowrap;
   }
   .curve-toolbar > span {
     grid-column: 1 / -1;

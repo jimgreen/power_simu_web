@@ -25,6 +25,7 @@
             </select>
             <span id="activeModelName" class="active-model-name">默认模型</span>
           </label>
+          <button id="modelInitializeButton" class="receive-toggle-button" type="button">模型初始化</button>
           <button id="traineeRunToggle" class="receive-toggle-button" type="button">启动接收</button>
         </div>
 
@@ -58,6 +59,7 @@
               </div>
               <dl class="overview-status-metrics trainee-status-metrics">
                 <div><dt>数据源</dt><dd id="teacherSourceText">--</dd></div>
+                <div><dt>模拟台模型</dt><dd id="teacherModelDisplayName">--</dd></div>
                 <div><dt>量测</dt><dd id="measureCount">0</dd></div>
                 <div><dt>可用</dt><dd id="validCount">0</dd></div>
                 <div><dt>待发</dt><dd id="pendingCount">0</dd></div>
@@ -237,8 +239,11 @@
                 </div>
                 <div class="curve-toolbar">
                   <div class="segmented-control curve-mode-control" role="group" aria-label="仿真类型">
-                    <button type="button" data-curve-display-mode="year" disabled>年仿真</button>
+                    <button type="button" data-curve-display-mode="hour" disabled>时仿真</button>
                     <button type="button" data-curve-display-mode="day" disabled>日仿真</button>
+                    <button type="button" data-curve-display-mode="week" disabled>周仿真</button>
+                    <button type="button" data-curve-display-mode="month" disabled>月仿真</button>
+                    <button type="button" data-curve-display-mode="year" disabled>年仿真</button>
                   </div>
                   <span id="curveDisplayActiveLabel">风速</span>
                   <span class="readonly-badge">只读</span>
@@ -634,14 +639,12 @@
         <div class="remote-control-head">
           <div>
             <h2 id="modelManagementTitle">模型管理</h2>
-            <p>管理学员台本地模型定义</p>
+            <p>管理学员台本地模型槽位</p>
           </div>
           <button id="closeModelManagementDialog" class="dialog-close-button" type="button" aria-label="关闭模型管理">×</button>
         </div>
         <div class="model-management-actions">
           <button id="newModelButton" type="button" data-model-management-action="new">新建模型</button>
-          <button id="importDefinitionsButton" type="button" data-model-management-action="import">导入定义</button>
-          <input id="definitionArchiveInput" type="file" accept=".zip,application/zip" hidden />
         </div>
         <div class="model-management-list-wrap">
           <div id="modelManagementList" class="model-management-list" role="tree" aria-label="模型列表"></div>
@@ -649,7 +652,6 @@
         <div id="modelContextMenu" class="model-context-menu" role="menu" hidden>
           <button type="button" role="menuitem" data-model-context-action="export" title="请选择定义导出目录">导出</button>
           <button type="button" role="menuitem" data-model-context-action="clone">复制</button>
-          <button type="button" role="menuitem" data-model-context-action="update">修改</button>
           <button type="button" role="menuitem" data-model-context-action="delete">删除</button>
         </div>
         <p id="modelManagementMessage" class="model-management-message" aria-live="polite"></p>
@@ -664,74 +666,18 @@
         <div class="remote-control-head">
           <div>
             <h2 id="newModelTitle">新建模型</h2>
-            <p>导入模拟台导出的定义压缩包</p>
+            <p>创建一个待初始化的本地模型槽位</p>
           </div>
           <button id="closeNewModelDialog" class="dialog-close-button" type="button" aria-label="关闭新建窗口">×</button>
         </div>
         <label class="modal-field">模型名称
           <input id="newModelName" name="newModelName" type="text" autocomplete="off" required />
         </label>
-        <div class="new-model-file-row">
-          <button id="selectNewModelFile" type="button">选择定义包</button>
-          <input id="newModelFileInput" type="file" accept=".zip,application/zip" hidden />
-          <span id="newModelFilename">未选择文件</span>
-        </div>
-        <p class="remote-control-hint">请选择模拟台导出的定义压缩包，其中包含模型、量测、控制、曲线与 SVG 图形定义。</p>
+        <p class="remote-control-hint">模型定义将在模型初始化时自动从模拟台获取，无需人工准备定义文件。</p>
         <p id="newModelMessage" class="model-management-message" aria-live="polite"></p>
         <div class="dialog-actions">
           <button id="cancelNewModel" type="button">取消</button>
           <button id="confirmNewModel" class="primary" type="submit">新建</button>
-        </div>
-      </form>
-    </dialog>
-
-    <dialog id="importModelDialog" class="remote-control-dialog model-edit-dialog" aria-labelledby="importModelTitle">
-      <form id="importModelForm" method="dialog" class="remote-control-form">
-        <div class="remote-control-head">
-          <div>
-            <h2 id="importModelTitle">导入定义</h2>
-            <p>导入为新的本地模型</p>
-          </div>
-          <button id="closeImportModelDialog" class="dialog-close-button" type="button" aria-label="关闭导入窗口">×</button>
-        </div>
-        <dl class="import-file-summary">
-          <div><dt>定义包</dt><dd id="importModelFilename">--</dd></div>
-        </dl>
-        <label class="modal-field">新模型名称
-          <input id="importModelName" name="importModelName" type="text" autocomplete="off" required />
-        </label>
-        <p class="remote-control-hint">定义包将导入为独立模型文件夹，不会覆盖已有模型。</p>
-        <p id="importModelMessage" class="model-management-message" aria-live="polite"></p>
-        <div class="dialog-actions">
-          <button id="cancelImportModel" type="button">取消</button>
-          <button id="confirmImportModel" class="primary" type="submit">导入</button>
-        </div>
-      </form>
-    </dialog>
-
-    <dialog id="updateModelDialog" class="remote-control-dialog model-edit-dialog" aria-labelledby="updateModelTitle">
-      <form id="updateModelForm" method="dialog" class="remote-control-form">
-        <div class="remote-control-head">
-          <div>
-            <h2 id="updateModelTitle">修改模型</h2>
-            <p>导入修改后的模型与图形等定义数据</p>
-          </div>
-          <button id="closeUpdateModelDialog" class="dialog-close-button" type="button" aria-label="关闭修改窗口">×</button>
-        </div>
-        <dl class="import-file-summary">
-          <div><dt>目标模型</dt><dd id="updateModelTargetName">--</dd></div>
-          <div><dt>定义包</dt><dd id="updateModelFilename">未选择文件</dd></div>
-        </dl>
-        <div class="new-model-file-row">
-          <button id="selectUpdateModelFile" type="button">选择定义包</button>
-          <input id="updateModelFileInput" type="file" accept=".zip,application/zip" hidden />
-          <span>导入模拟台导出的定义压缩包，覆盖选中模型的本地定义。</span>
-        </div>
-        <p class="remote-control-hint">接收中的模型不能修改；修改后会重新同步本地模型定义。</p>
-        <p id="updateModelMessage" class="model-management-message" aria-live="polite"></p>
-        <div class="dialog-actions">
-          <button id="cancelUpdateModel" type="button">取消</button>
-          <button id="confirmUpdateModel" class="primary" type="submit">修改</button>
         </div>
       </form>
     </dialog>
@@ -862,10 +808,10 @@
       <form method="dialog" class="remote-control-form">
         <div class="remote-control-head">
           <div>
-            <h2 id="receiveLinkTitle">启动接收</h2>
-            <p>请输入模拟台生成的交互链接</p>
+            <h2 id="receiveLinkTitle">模型初始化</h2>
+            <p>下载模拟台模型、图形、量测与控制定义</p>
           </div>
-          <button id="receiveLinkClose" class="dialog-close-button" type="button" aria-label="关闭接收链接窗口">×</button>
+          <button id="receiveLinkClose" class="dialog-close-button" type="button" aria-label="关闭模型初始化窗口">×</button>
         </div>
         <label class="receive-link-field">交互链接
           <input id="receiveLinkInput" type="url" autocomplete="off" placeholder="http://127.0.0.1:8710/api/trainee-link?model_id=..." />
@@ -873,7 +819,7 @@
         <p id="receiveLinkMessage" class="remote-control-hint">一个链接可供多个学员台同时接入同一个模拟台模型。</p>
         <div class="dialog-actions">
           <button id="receiveLinkCancel" type="button">取消</button>
-          <button id="confirmReceiveLink" class="primary" type="button">启动接收</button>
+          <button id="confirmReceiveLink" class="primary" type="button">开始初始化</button>
         </div>
       </form>
     </dialog>

@@ -21,6 +21,14 @@ class FaultWindowBySimulationModeTest(unittest.TestCase):
         self.assertTrue(_active_window(fault, minute=60, absolute_minute=60, curve_mode="day"))
         self.assertFalse(_active_window(fault, minute=120, absolute_minute=120, curve_mode="day"))
 
+    def test_week_and_month_modes_use_cycle_day_windows(self):
+        fault = {"start_day": 2, "clear_day": 4}
+
+        self.assertFalse(_active_window(fault, minute=0, absolute_minute=0, curve_mode="week"))
+        self.assertTrue(_active_window(fault, minute=0, absolute_minute=1 * 1440, curve_mode="week"))
+        self.assertFalse(_active_window(fault, minute=0, absolute_minute=4 * 1440, curve_mode="week"))
+        self.assertTrue(_active_window(fault, minute=0, absolute_minute=(30 + 1) * 1440, curve_mode="month"))
+
 
 if __name__ == "__main__":
     unittest.main()

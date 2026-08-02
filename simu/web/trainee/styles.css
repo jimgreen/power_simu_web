@@ -798,7 +798,7 @@ h2 {
   grid-template-columns: repeat(5, minmax(92px, 1fr));
 }
 .trainee-status-metrics {
-  grid-template-columns: repeat(6, minmax(78px, 1fr));
+  grid-template-columns: repeat(7, minmax(78px, 1fr));
 }
 .trainee-status-metrics div:first-child {
   grid-column: span 2;
@@ -1744,7 +1744,6 @@ body.is-vertical-splitter-dragging {
   display: none !important;
 }
 .diagram-flow-arrow {
-  color: #b24631;
   pointer-events: none;
 }
 .diagram-flow-arrow[hidden] {
@@ -1760,9 +1759,10 @@ body.is-vertical-splitter-dragging {
   pointer-events: none;
 }
 .diagram-flow-arrow-marker polygon {
-  fill: #b24631;
-  stroke: rgba(255, 255, 255, 0.9);
-  stroke-width: 1;
+  fill: var(--diagram-flow-color, #2563eb);
+  stroke: rgba(255, 255, 255, 0.98);
+  stroke-width: 1.5;
+  paint-order: stroke fill;
   vector-effect: non-scaling-stroke;
 }
 .diagram-device-label-id {
@@ -1937,6 +1937,12 @@ body.is-vertical-splitter-dragging {
   border-radius: 6px;
   background: #fbfdfd;
   cursor: crosshair;
+}
+.diagram-trend-chart[hidden],
+.diagram-trend-range[hidden],
+.diagram-trend-stats[hidden],
+.diagram-trend-empty[hidden] {
+  display: none;
 }
 .diagram-trend-chart .diagram-trend-series {
   stroke: var(--teal);

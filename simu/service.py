@@ -101,7 +101,49 @@ SOURCE_DEFINITION_FILES = ("model.e", "meas.e", "stat.e", "control.e", "weather.
 LEGACY_RUNTIME_DEFINITION_FILES = SOURCE_DEFINITION_FILES + ("device.e",)
 DIAGRAM_FILE_NAME = "diagram.svg"
 CONTROL_DEFINITION_BLOCKS = ("RunStat", "CbOpenStat", "SetValue", "StorageSoc")
-CLOCK_SPEED_LEVELS = (1.0, 5.0, 15.0, 30.0, 60.0)
+CLOCK_SPEED_LEVELS = (1.0, 5.0, 15.0, 30.0, 60.0, 300.0, 900.0, 1800.0, 3600.0)
+SIMULATION_MODE_CONFIGS: Dict[str, Dict[str, float | int | str]] = {
+    "hour": {
+        "label": "时仿真",
+        "duration_minutes": 60.0,
+        "time_step_minutes": 1.0 / 60.0,
+        "point_count": 3600,
+        "default_clock_speed": 1.0,
+        "day_count": 1,
+    },
+    "day": {
+        "label": "日仿真",
+        "duration_minutes": 24.0 * 60.0,
+        "time_step_minutes": 1.0,
+        "point_count": 1440,
+        "default_clock_speed": 60.0,
+        "day_count": 1,
+    },
+    "week": {
+        "label": "周仿真",
+        "duration_minutes": 7.0 * 24.0 * 60.0,
+        "time_step_minutes": 1.0,
+        "point_count": 7 * 1440,
+        "default_clock_speed": 60.0,
+        "day_count": 7,
+    },
+    "month": {
+        "label": "月仿真",
+        "duration_minutes": 30.0 * 24.0 * 60.0,
+        "time_step_minutes": 60.0,
+        "point_count": 30 * 24,
+        "default_clock_speed": 3600.0,
+        "day_count": 30,
+    },
+    "year": {
+        "label": "年仿真",
+        "duration_minutes": 365.0 * 24.0 * 60.0,
+        "time_step_minutes": 60.0,
+        "point_count": 365 * 24,
+        "default_clock_speed": 3600.0,
+        "day_count": 365,
+    },
+}
 DEFAULT_CONTROL_VALID_MINUTES = 120.0
 COMMAND_HISTORY_RECENT_LIMIT = 200
 DEFAULT_COMPUTE_INTERVAL_SECONDS = 1.0
@@ -112,21 +154,31 @@ LOG_DECIMAL_PATTERN = re.compile(r"(?<![\w:])[-+]?\d+\.\d+(?:e[-+]?\d+)?(?![\w:]
 @dataclass
 class ClockState:
     state: str = "stopped"
-    minute: int = 0
-    absolute_minute: int = 0
+    minute: float = 0.0
+    absolute_minute: float = 0.0
     speed: float = 1.0
-    step_minutes: int = 1
+    step_minutes: float = 1.0 / 60.0
     run_id: int = 0
     step_count: int = 0
     updated_at: float = field(default_factory=time.time)
 
     def as_dict(self) -> Dict[str, Any]:
+        def clock_number(value: int | float) -> int | float:
+            rounded = round(float(value), 9)
+            return int(rounded) if rounded.is_integer() else rounded
+
+        effective_step_minutes = _effective_clock_step(self.step_minutes, self.speed)
         return {
             "state": self.state,
-            "minute": self.minute,
-            "absolute_minute": self.absolute_minute,
+            "minute": clock_number(self.minute),
+            "absolute_minute": clock_number(self.absolute_minute),
+            "second": clock_number(self.minute * 60.0),
+            "absolute_second": clock_number(self.absolute_minute * 60.0),
             "speed": self.speed,
-            "step_minutes": self.step_minutes,
+            "step_minutes": clock_number(self.step_minutes),
+            "step_seconds": clock_number(self.step_minutes * 60.0),
+            "effective_step_minutes": clock_number(effective_step_minutes),
+            "effective_step_seconds": clock_number(effective_step_minutes * 60.0),
             "run_id": self.run_id,
             "step_count": self.step_count,
             "time": minute_to_time(self.minute),
@@ -155,15 +207,42 @@ def minute_to_time(minute: int | float) -> str:
     return f"{hour:02d}:{minute_part:02d}:{second:02d}"
 
 
-def _align_minute_to_step(minute: int | float, step_minutes: int | float) -> int:
-    step = max(1, int(step_minutes))
-    value = max(0, int(minute))
-    remainder = value % step
-    return value if remainder == 0 else value + step - remainder
+def _align_minute_to_step(minute: int | float, step_minutes: int | float) -> float:
+    step = max(1e-9, float(step_minutes))
+    value = max(0.0, float(minute))
+    quotient = math.ceil((value - 1e-9) / step)
+    return round(max(0.0, quotient * step), 9)
 
 
-def _effective_clock_step(step_minutes: int | float, speed: int | float) -> int:
-    return max(1, int(round(float(step_minutes) * float(speed))))
+def _effective_clock_step(step_minutes: int | float, speed: int | float) -> float:
+    return max(1e-9, float(step_minutes) * float(speed))
+
+
+def _normalize_simulation_mode(value: Any, fallback: str = "day") -> str:
+    mode = str(value or fallback).strip().lower()
+    if mode in SIMULATION_MODE_CONFIGS:
+        return mode
+    return fallback if fallback in SIMULATION_MODE_CONFIGS else "day"
+
+
+def _simulation_mode_config(value: Any) -> Mapping[str, float | int | str]:
+    return SIMULATION_MODE_CONFIGS[_normalize_simulation_mode(value)]
+
+
+def _simulation_mode_duration_minutes(value: Any) -> float:
+    return float(_simulation_mode_config(value)["duration_minutes"])
+
+
+def _simulation_mode_curve_step_minutes(value: Any) -> float:
+    return float(_simulation_mode_config(value)["time_step_minutes"])
+
+
+def _simulation_mode_point_count(value: Any) -> int:
+    return int(_simulation_mode_config(value)["point_count"])
+
+
+def _simulation_mode_default_clock_speed(value: Any) -> float:
+    return float(_simulation_mode_config(value)["default_clock_speed"])
 
 
 def _now_text() -> str:
@@ -420,18 +499,20 @@ def _load_book(path: Path) -> EBook:
 
 def _active_window(
     item: Mapping[str, Any],
-    minute: int,
+    minute: int | float,
     absolute_minute: Optional[int | float] = None,
     curve_mode: str = "day",
 ) -> bool:
-    if str(curve_mode or "day").lower() == "year":
+    mode = _normalize_simulation_mode(curve_mode)
+    day_count = int(_simulation_mode_config(mode)["day_count"])
+    if mode in ("week", "month", "year"):
         absolute = float(minute if absolute_minute is None else absolute_minute)
-        current_day = int(absolute // 1440) % 365 + 1
-        start = min(365, max(1, int(_to_float(item.get("start_day", 1), 1) or 1)))
+        current_day = int(absolute // 1440) % day_count + 1
+        start = min(day_count, max(1, int(_to_float(item.get("start_day", 1), 1) or 1)))
         clear_value = item.get("clear_day", item.get("end_day"))
         if clear_value in (None, ""):
             return current_day >= start
-        clear = min(365, max(1, int(_to_float(clear_value, 365) or 365)))
+        clear = min(day_count, max(1, int(_to_float(clear_value, day_count) or day_count)))
         if start < clear:
             return start <= current_day <= clear
         if start > clear:
@@ -795,8 +876,9 @@ class PolarMicrogridSimulator:
         self.reload_definition_state()
         with self.curves_lock:
             self.curves = self._read_curves()
-            curve_step_minutes = self.curves.get("time_step_minutes")
-        self.clock.step_minutes = max(1, int(_to_float(curve_step_minutes, 1) or 1))
+            curve_mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
+        self.clock.step_minutes = self.compute_interval_seconds / 60.0
+        self.clock.speed = _simulation_mode_default_clock_speed(curve_mode)
         self.local_settings = self._read_local_settings()
         self._apply_stored_system_parameters()
         self.command_history = self._read_command_history()
@@ -937,6 +1019,8 @@ class PolarMicrogridSimulator:
         return {
             "model_id": self.model_id,
             "model_name": self.model_name,
+            "initialized": False,
+            "initialized_at": "",
             "active": False,
             "frozen": False,
             "interaction_link": "",
@@ -946,6 +1030,7 @@ class PolarMicrogridSimulator:
             "snapshot_path": "",
             "command_path": "",
             "measurement_delta_path": "",
+            "definition_archive_path": "",
             "last_receive_at": "",
             "updated_at": "",
         }
@@ -960,6 +1045,8 @@ class PolarMicrogridSimulator:
             }
         )
         aliases = {
+            "initialized": ("initialized", "model_initialized", "modelInitialized"),
+            "initialized_at": ("initialized_at", "initializedAt", "model_initialized_at"),
             "active": ("active", "receive_mode", "receiveMode"),
             "frozen": ("frozen",),
             "interaction_link": ("interaction_link", "interactionLink", "link"),
@@ -969,6 +1056,7 @@ class PolarMicrogridSimulator:
             "snapshot_path": ("snapshot_path", "snapshotPath"),
             "command_path": ("command_path", "commandPath"),
             "measurement_delta_path": ("measurement_delta_path", "measurementDeltaPath"),
+            "definition_archive_path": ("definition_archive_path", "definitionArchivePath"),
             "last_receive_at": ("last_receive_at", "lastReceiveAt"),
             "updated_at": ("updated_at", "updatedAt"),
         }
@@ -982,11 +1070,21 @@ class PolarMicrogridSimulator:
                 if name in payload:
                     value = payload.get(name)
                     break
-            if key in {"active", "frozen"}:
+            if key in {"initialized", "active", "frozen"}:
                 normalized[key] = bool(value)
                 continue
             normalized[key] = str(value or "").strip()
         normalized["teacher_api_base"] = normalized["teacher_api_base"].rstrip("/")
+        has_explicit_initialized = any(name in payload for name in aliases["initialized"])
+        has_saved_connection = bool(
+            normalized["interaction_link"]
+            or (
+                normalized["teacher_api_base"]
+                and (normalized["snapshot_path"] or normalized["command_path"])
+            )
+        )
+        if not has_explicit_initialized and has_saved_connection:
+            normalized["initialized"] = True
         if not normalized["teacher_model_id"] and normalized["active"]:
             normalized["teacher_model_id"] = self.model_id
         if not normalized["teacher_model_name"] and normalized["teacher_model_id"]:
@@ -1003,7 +1101,7 @@ class PolarMicrogridSimulator:
         with self.lock:
             existing = self.trainee_receive_state()
             merged = {**existing, **dict(payload)}
-            if "updated_at" not in merged and "updatedAt" not in merged:
+            if "updated_at" not in payload and "updatedAt" not in payload:
                 merged["updated_at"] = _now_text()
             normalized = self._normalize_trainee_receive_state(merged)
             _write_json(self.trainee_receive_file, normalized)
@@ -1186,19 +1284,33 @@ class PolarMicrogridSimulator:
                 params.get("compute_interval_seconds", params.get("calculation_period_seconds")),
                 self.compute_interval_seconds,
             )
+            self.clock.step_minutes = self.compute_interval_seconds / 60.0
         if "storage_initial_soc" in params or "initial_storage_soc" in params:
             self.storage_initial_soc = _storage_initial_soc(
                 params.get("storage_initial_soc", params.get("initial_storage_soc")),
                 self.storage_initial_soc,
             )
 
+    def _apply_mode_default_clock_speed(self, mode: str, *, persist: bool) -> None:
+        self.clock.speed = _simulation_mode_default_clock_speed(mode)
+        if not persist:
+            return
+        stored_params = self.local_settings.get("system_parameters", {})
+        params = dict(stored_params) if isinstance(stored_params, Mapping) else {}
+        params["clock_speed"] = self.clock.speed
+        self.local_settings["system_parameters"] = params
+        _write_json(self.settings_file, self.local_settings)
+
     def system_parameters(self) -> Dict[str, Any]:
+        effective_step_minutes = _effective_clock_step(self.clock.step_minutes, self.clock.speed)
         return {
             "clock_speed": _nearest_clock_speed(self.clock.speed),
             "compute_interval_seconds": self.compute_interval_seconds,
             "storage_initial_soc": self.storage_initial_soc,
-            "clock_step_minutes": max(1, int(self.clock.step_minutes)),
-            "effective_step_minutes": _effective_clock_step(self.clock.step_minutes, self.clock.speed),
+            "clock_step_seconds": self.clock.step_minutes * 60.0,
+            "clock_step_minutes": self.clock.step_minutes,
+            "effective_step_seconds": effective_step_minutes * 60.0,
+            "effective_step_minutes": effective_step_minutes,
         }
 
     def set_system_parameters(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
@@ -1212,6 +1324,7 @@ class PolarMicrogridSimulator:
                     payload.get("compute_interval_seconds", payload.get("calculation_period_seconds")),
                     self.compute_interval_seconds,
                 )
+                self.clock.step_minutes = self.compute_interval_seconds / 60.0
             if "storage_initial_soc" in payload or "initial_storage_soc" in payload:
                 self.storage_initial_soc = _storage_initial_soc(
                     payload.get("storage_initial_soc", payload.get("initial_storage_soc")),
@@ -1242,7 +1355,7 @@ class PolarMicrogridSimulator:
                     f"仿真步长/加速比 x{format_number(self.clock.speed)}",
                     f"仿真周期 {format_number(self.compute_interval_seconds)} s",
                     f"储能SOC初始值 {format_number(self.storage_initial_soc)}",
-                    f"有效推进步长 {effective_step} min",
+                    f"每次计算推进 {format_number(effective_step * 60.0)} s",
                 ],
                 level="ok",
                 simu_time=minute_to_time(self.clock.minute),
@@ -1318,16 +1431,15 @@ class PolarMicrogridSimulator:
         self._sync_latest_storage_soc_measurement_rows()
 
     def _simulation_cycle_minutes(self) -> int:
-        mode = str(self.curves.get("mode", "day") or "day").lower()
-        return 365 * 24 * 60 if mode == "year" else 24 * 60
+        return int(_simulation_mode_duration_minutes(self.curves.get("mode", "day")))
 
     def _crossed_simulation_cycle_start(self, start_minute: int | float, end_minute: int | float) -> bool:
-        cycle_minutes = self._simulation_cycle_minutes()
-        start = max(0, int(start_minute))
-        end = max(0, int(end_minute))
+        cycle_minutes = float(self._simulation_cycle_minutes())
+        start = max(0.0, float(start_minute))
+        end = max(0.0, float(end_minute))
         if end <= start:
             return False
-        return end // cycle_minutes > start // cycle_minutes
+        return math.floor((end + 1e-9) / cycle_minutes) > math.floor((start + 1e-9) / cycle_minutes)
 
     def _runtime_storage_soc_values(self) -> Dict[str, float]:
         storage_block = self.runtime_stat_book.data.get("StorageSoc") or self.runtime_stat_book.data.get("StorageStatus")
@@ -2200,12 +2312,12 @@ class PolarMicrogridSimulator:
                     best_index = idx
                     best_distance = distance
             return best_index + 1
-        step = max(1.0, _to_float(self.curves.get("time_step_minutes"), 1.0) or 1.0)
+        step = max(1e-9, _to_float(self.curves.get("time_step_minutes"), 1.0) or 1.0)
         return int((target_minute % period_minutes) // step) + 1
 
     def _append_environment_load_log(
         self,
-        minute: int,
+        minute: int | float,
         target_minute: float,
         period_minutes: float,
         row: Mapping[str, Any],
@@ -2336,9 +2448,9 @@ class PolarMicrogridSimulator:
 
     def _input_boundary_lines(
         self,
-        minute: int,
-        absolute_minute: int,
-        clock_advance: int,
+        minute: int | float,
+        absolute_minute: int | float,
+        clock_advance: int | float,
         period_seconds: float,
     ) -> List[str]:
         weather = self._weather_boundary_values()
@@ -2363,8 +2475,9 @@ class PolarMicrogridSimulator:
         )
         return [
             (
-                f"仿真边界 时刻 {minute_to_time(minute)}，日内分钟 {minute}，累计分钟 {absolute_minute}，"
-                f"本步推进 {clock_advance} min，等效计算周期 {format_number(period_seconds)} s"
+                f"仿真边界 时刻 {minute_to_time(minute)}，日内分钟 {format_number(minute)}，"
+                f"累计分钟 {format_number(absolute_minute)}，本步推进 {format_number(clock_advance * 60.0)} s，"
+                f"等效计算周期 {format_number(period_seconds)} s"
             ),
             f"输入边界 {weather_text}；投入设备 {run_on}/{len(run_rows)}，退出 {len(run_off)}，开关合位 {cb_one}/{len(cb_rows)}，分位 {len(cb_zero)}，设值 {len(set_rows)} 条，储能SOC {len(soc_rows)} 条",
             *self._renewable_limit_boundary_lines(),
@@ -2677,9 +2790,9 @@ class PolarMicrogridSimulator:
         self,
         result: Mapping[str, Any],
         measurements: Mapping[str, Sequence[Mapping[str, Any]]],
-        minute: int,
-        absolute_minute: int,
-        clock_advance: int,
+        minute: int | float,
+        absolute_minute: int | float,
+        clock_advance: int | float,
         period_seconds: float,
         command_response_lines: Sequence[str],
     ) -> None:
@@ -2733,16 +2846,17 @@ class PolarMicrogridSimulator:
     def _append_power_flow_failure_log(
         self,
         error: BaseException,
-        minute: int,
-        absolute_minute: int,
-        clock_advance: int,
+        minute: int | float,
+        absolute_minute: int | float,
+        clock_advance: int | float,
         period_seconds: float,
     ) -> None:
         simu_time = minute_to_time(minute)
         result = self._power_flow_failure_result(error)
         detail = [
             (
-                f"计算失败 时刻 {simu_time}，累计分钟 {absolute_minute}，推进 {clock_advance} min，"
+                f"计算失败 时刻 {simu_time}，累计分钟 {format_number(absolute_minute)}，"
+                f"推进 {format_number(clock_advance * 60.0)} s，"
                 f"仿真周期 {format_number(period_seconds)} s"
             ),
             f"失败类型 {result}，异常 {type(error).__name__}: {error}",
@@ -2856,15 +2970,16 @@ class PolarMicrogridSimulator:
 
     def set_curves(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
         with self.lock, self.curves_lock:
-            mode = str(payload.get("mode", self.curves.get("mode", "day")) or "day").lower()
-            if mode not in ("day", "year"):
-                mode = "day"
-            current_mode = str(self.curves.get("mode", "day") or "day").lower()
+            current_mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
+            mode = _normalize_simulation_mode(payload.get("mode", current_mode), current_mode)
             if mode != current_mode and self.clock.state != "stopped":
                 raise ValueError("仿真运行过程中不能切换仿真模式，请先停止仿真")
-            default_step = 60 if mode == "year" else 1
-            time_step_minutes = int(_to_float(payload.get("time_step_minutes"), default_step) or default_step)
-            point_count = int(_to_float(payload.get("point_count"), 8760 if mode == "year" else 1440) or 0)
+            default_step = _simulation_mode_curve_step_minutes(mode)
+            time_step_minutes = float(_to_float(payload.get("time_step_minutes"), default_step) or default_step)
+            if time_step_minutes <= 0:
+                time_step_minutes = default_step
+            default_point_count = _simulation_mode_point_count(mode)
+            point_count = int(_to_float(payload.get("point_count"), default_point_count) or 0)
             weather_points = _normalize_points(payload.get("weather"), WEATHER_HEADER[1:])
             loads_payload = payload.get("loads", {})
             loads: Dict[str, List[Dict[str, Any]]] = {}
@@ -2889,7 +3004,8 @@ class PolarMicrogridSimulator:
                 "weather": weather_points,
                 "loads": loads,
             }
-            self.clock.step_minutes = max(1, time_step_minutes)
+            if mode != current_mode:
+                self._apply_mode_default_clock_speed(mode, persist=True)
             self.clock.absolute_minute = _align_minute_to_step(
                 self.clock.absolute_minute,
                 _effective_clock_step(self.clock.step_minutes, self.clock.speed),
@@ -2901,10 +3017,9 @@ class PolarMicrogridSimulator:
 
     def curves_summary(self) -> Dict[str, Any]:
         with self.curves_lock:
-            mode = str(self.curves.get("mode", "day") or "day").lower()
-            if mode not in ("day", "year"):
-                mode = "day"
-            default_step = 60 if mode == "year" else 1
+            mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
+            default_step = _simulation_mode_curve_step_minutes(mode)
+            default_point_count = _simulation_mode_point_count(mode)
             weather = self.curves.get("weather", [])
             loads = self.curves.get("loads", {})
             point_count = int(_to_float(self.curves.get("point_count"), 0) or 0)
@@ -2912,8 +3027,8 @@ class PolarMicrogridSimulator:
                 point_count = len(weather) if isinstance(weather, Sequence) else 0
             return {
                 "mode": mode,
-                "time_step_minutes": int(_to_float(self.curves.get("time_step_minutes"), default_step) or default_step),
-                "point_count": point_count or (8760 if mode == "year" else 1440),
+                "time_step_minutes": float(_to_float(self.curves.get("time_step_minutes"), default_step) or default_step),
+                "point_count": point_count or default_point_count,
                 "environment": [
                     {
                         "key": key,
@@ -2952,11 +3067,10 @@ class PolarMicrogridSimulator:
 
     def curves_series(self, keys: Sequence[str]) -> Dict[str, Any]:
         with self.curves_lock:
-            mode = str(self.curves.get("mode", "day") or "day").lower()
-            if mode not in ("day", "year"):
-                mode = "day"
-            default_step = 60 if mode == "year" else 1
-            point_count = int(_to_float(self.curves.get("point_count"), 8760 if mode == "year" else 1440) or 0)
+            mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
+            default_step = _simulation_mode_curve_step_minutes(mode)
+            default_point_count = _simulation_mode_point_count(mode)
+            point_count = int(_to_float(self.curves.get("point_count"), default_point_count) or 0)
             requested = [str(key).strip() for key in keys if str(key).strip()]
             if not requested:
                 requested = ["wind_speed_mps"]
@@ -2967,8 +3081,8 @@ class PolarMicrogridSimulator:
                     series[key] = values
             return {
                 "mode": mode,
-                "time_step_minutes": int(_to_float(self.curves.get("time_step_minutes"), default_step) or default_step),
-                "point_count": point_count or (8760 if mode == "year" else 1440),
+                "time_step_minutes": float(_to_float(self.curves.get("time_step_minutes"), default_step) or default_step),
+                "point_count": point_count or default_point_count,
                 "series": series,
             }
 
@@ -3016,22 +3130,28 @@ class PolarMicrogridSimulator:
 
     def update_curve_series(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
         with self.lock, self.curves_lock:
-            current_mode = str(self.curves.get("mode", "day") or "day").lower()
-            mode = str(payload.get("mode", current_mode) or current_mode).lower()
-            if mode not in ("day", "year"):
-                mode = current_mode if current_mode in ("day", "year") else "day"
+            current_mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
+            mode = _normalize_simulation_mode(payload.get("mode", current_mode), current_mode)
             if mode != current_mode and self.clock.state != "stopped":
                 raise ValueError("仿真运行过程中不能切换仿真模式，请先停止仿真")
-            default_step = 60 if mode == "year" else 1
-            step_minutes = int(_to_float(payload.get("time_step_minutes"), self.curves.get("time_step_minutes", default_step)) or default_step)
-            point_count = int(_to_float(payload.get("point_count"), self.curves.get("point_count", 8760 if mode == "year" else 1440)) or 0)
+            default_step = _simulation_mode_curve_step_minutes(mode)
+            step_minutes = float(
+                _to_float(payload.get("time_step_minutes"), self.curves.get("time_step_minutes", default_step))
+                or default_step
+            )
+            if step_minutes <= 0:
+                step_minutes = default_step
+            default_point_count = _simulation_mode_point_count(mode)
+            point_count = int(
+                _to_float(payload.get("point_count"), self.curves.get("point_count", default_point_count)) or 0
+            )
             raw_series = payload.get("series", {})
             if not isinstance(raw_series, Mapping):
                 raw_series = {}
             for values in raw_series.values():
                 if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
                     point_count = max(point_count, len(values))
-            point_count = point_count or (8760 if mode == "year" else 1440)
+            point_count = point_count or default_point_count
             self.curves["mode"] = mode
             self.curves["time_step_minutes"] = step_minutes
             self.curves["point_count"] = point_count
@@ -3053,7 +3173,8 @@ class PolarMicrogridSimulator:
                     for index, value in enumerate(values[:point_count]):
                         points[index]["p_kw"] = _to_float(value, 0.0) or 0.0
                     updated.append(curve_key)
-            self.clock.step_minutes = max(1, step_minutes)
+            if mode != current_mode:
+                self._apply_mode_default_clock_speed(mode, persist=True)
             self.clock.absolute_minute = _align_minute_to_step(
                 self.clock.absolute_minute,
                 _effective_clock_step(self.clock.step_minutes, self.clock.speed),
@@ -3092,12 +3213,26 @@ class PolarMicrogridSimulator:
         with self.lock:
             action = str(payload.get("action", "")).lower()
             previous_state = self.clock.state
+            if "step_seconds" in payload:
+                step_seconds = float(_to_float(payload.get("step_seconds"), self.clock.step_minutes * 60.0) or 0.0)
+                self.clock.step_minutes = max(1e-9, step_seconds / 60.0)
             if "step_minutes" in payload:
-                self.clock.step_minutes = max(1, int(_to_float(payload.get("step_minutes"), 1) or 1))
-            if "minute" in payload:
-                minute = int(_to_float(payload.get("minute"), self.clock.minute) or 0)
+                self.clock.step_minutes = max(
+                    1e-9,
+                    float(_to_float(payload.get("step_minutes"), self.clock.step_minutes) or self.clock.step_minutes),
+                )
+            if "absolute_second" in payload or "second" in payload:
+                second = float(
+                    _to_float(payload.get("absolute_second", payload.get("second")), self.clock.absolute_minute * 60.0)
+                    or 0.0
+                )
+                minute = max(0.0, second / 60.0)
                 self.clock.absolute_minute = minute
-                self.clock.minute = minute % 1440
+                self.clock.minute = minute % 1440.0
+            elif "minute" in payload:
+                minute = float(_to_float(payload.get("minute"), self.clock.minute) or 0.0)
+                self.clock.absolute_minute = minute
+                self.clock.minute = minute % 1440.0
             if "speed" in payload:
                 self.clock.speed = _nearest_clock_speed(payload.get("speed"))
             should_reset_storage_soc = False
@@ -3110,8 +3245,8 @@ class PolarMicrogridSimulator:
                 self.clock.state = "paused"
             elif action == "stop":
                 self.clock.state = "stopped"
-                self.clock.absolute_minute = 0
-                self.clock.minute = 0
+                self.clock.absolute_minute = 0.0
+                self.clock.minute = 0.0
                 self.clock.step_count = 0
                 should_reset_storage_soc = True
             elif action in ("faster", "speed_up"):
@@ -3120,7 +3255,7 @@ class PolarMicrogridSimulator:
                 self.clock.speed = _previous_clock_speed(self.clock.speed)
             effective_step = _effective_clock_step(self.clock.step_minutes, self.clock.speed)
             self.clock.absolute_minute = _align_minute_to_step(self.clock.absolute_minute, effective_step)
-            self.clock.minute = self.clock.absolute_minute % 1440
+            self.clock.minute = self.clock.absolute_minute % 1440.0
             if should_reset_storage_soc:
                 self._reset_storage_soc_to_initial()
             if action in ("start", "stop"):
@@ -3130,13 +3265,22 @@ class PolarMicrogridSimulator:
             self.clock.updated_at = time.time()
             return self.clock.as_dict()
 
-    def step(self, advance_minutes: Optional[int] = None) -> Dict[str, Any]:
+    def step(
+        self,
+        advance_minutes: Optional[int | float] = None,
+        *,
+        advance_seconds: Optional[int | float] = None,
+    ) -> Dict[str, Any]:
         with self.lock:
-            step_minutes = max(1, int(self.clock.step_minutes))
-            clock_advance = step_minutes if advance_minutes is None else max(1, int(advance_minutes))
+            if advance_seconds is not None:
+                clock_advance = max(1e-9, float(advance_seconds) / 60.0)
+            elif advance_minutes is not None:
+                clock_advance = max(1e-9, float(advance_minutes))
+            else:
+                clock_advance = _effective_clock_step(self.clock.step_minutes, self.clock.speed)
             self.clock.absolute_minute = _align_minute_to_step(self.clock.absolute_minute, clock_advance)
-            self.clock.minute = self.clock.absolute_minute % 1440
-            period_seconds = self.period_seconds * clock_advance / step_minutes
+            self.clock.minute = self.clock.absolute_minute % 1440.0
+            period_seconds = clock_advance * 60.0
             minute = self.clock.minute
             absolute_minute = self.clock.absolute_minute
             self._prepare_runtime_inputs(minute, absolute_minute)
@@ -3174,8 +3318,8 @@ class PolarMicrogridSimulator:
             )
             next_absolute_minute = self.clock.absolute_minute + clock_advance
             crossed_cycle_start = self._crossed_simulation_cycle_start(self.clock.absolute_minute, next_absolute_minute)
-            self.clock.absolute_minute = next_absolute_minute
-            self.clock.minute = self.clock.absolute_minute % 1440
+            self.clock.absolute_minute = round(next_absolute_minute, 9)
+            self.clock.minute = self.clock.absolute_minute % 1440.0
             self.clock.step_count += 1
             if crossed_cycle_start:
                 self._reset_storage_soc_to_initial()
@@ -3192,16 +3336,16 @@ class PolarMicrogridSimulator:
         if scada_rows is not None:
             self.latest_scada_rows = [list(row) for row in scada_rows]
 
-    def _prepare_runtime_inputs(self, minute: int, absolute_minute: int) -> None:
+    def _prepare_runtime_inputs(self, minute: int | float, absolute_minute: int | float) -> None:
         self._write_current_weather(minute, absolute_minute)
         self._materialize_active_control_commands(absolute_minute)
         self._apply_device_faults(minute, absolute_minute)
         self._write_modes_file()
 
-    def _write_current_weather(self, minute: int, absolute_minute: int | float | None = None) -> None:
-        curve_mode = str(self.curves.get("mode", "day") or "day").lower()
-        period_minutes = 365.0 * 24.0 * 60.0 if curve_mode == "year" else 1440.0
-        target_minute = absolute_minute if curve_mode == "year" and absolute_minute is not None else minute
+    def _write_current_weather(self, minute: int | float, absolute_minute: int | float | None = None) -> None:
+        curve_mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
+        period_minutes = _simulation_mode_duration_minutes(curve_mode)
+        target_minute = absolute_minute if absolute_minute is not None else minute
         row = {"time": minute_to_time(minute)}
         for key, default in self.weather_defaults.items():
             row[key] = _number_text(
@@ -3236,7 +3380,7 @@ class PolarMicrogridSimulator:
         }
         self.weather_book = _make_book({"Weather": (WEATHER_HEADER, [clean])})
 
-    def _apply_device_faults(self, minute: int, absolute_minute: int) -> None:
+    def _apply_device_faults(self, minute: int | float, absolute_minute: int | float) -> None:
         book = self.runtime_stat_book
         run_block = _ensure_block(book, "RunStat", STAT_HEADERS["RunStat"])
         cb_block = _ensure_block(book, "CbOpenStat", STAT_HEADERS["CbOpenStat"])
@@ -3304,7 +3448,7 @@ class PolarMicrogridSimulator:
             return
         self.mode_book = _make_book({"ControlMode": (("dev_type", "dev_name", "mode"), rows)})
 
-    def _apply_measurement_faults(self, minute: int, absolute_minute: int) -> None:
+    def _apply_measurement_faults(self, minute: int | float, absolute_minute: int | float) -> None:
         faults = [fault for fault in self.local_settings.get("measurement_faults", []) if isinstance(fault, Mapping)]
         curve_mode = str(self.curves.get("mode", "day") or "day").lower()
         active_faults = [fault for fault in faults if _active_window(fault, minute, absolute_minute, curve_mode)]
@@ -4551,17 +4695,12 @@ class PolarMicrogridSimulator:
         }
 
     def curve_boundary(self) -> Dict[str, Any]:
-        curve_mode = str(self.curves.get("mode", "day") or "day").lower()
-        if curve_mode not in ("day", "year"):
-            curve_mode = "day"
-        default_step = 60 if curve_mode == "year" else 1
-        step_minutes = int(_to_float(self.curves.get("time_step_minutes"), default_step) or default_step)
-        period_minutes = 365.0 * 24.0 * 60.0 if curve_mode == "year" else 1440.0
-        target_minute = (
-            float(_to_float(self.clock.absolute_minute, 0.0) or 0.0)
-            if curve_mode == "year"
-            else float(_to_float(self.clock.minute, 0.0) or 0.0)
-        )
+        curve_mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
+        default_step = _simulation_mode_curve_step_minutes(curve_mode)
+        default_point_count = _simulation_mode_point_count(curve_mode)
+        step_minutes = float(_to_float(self.curves.get("time_step_minutes"), default_step) or default_step)
+        period_minutes = _simulation_mode_duration_minutes(curve_mode)
+        target_minute = float(_to_float(self.clock.absolute_minute, 0.0) or 0.0)
         weather = self.curves.get("weather", [])
         if not isinstance(weather, Sequence) or isinstance(weather, (str, bytes)):
             weather = []
@@ -4588,7 +4727,7 @@ class PolarMicrogridSimulator:
         return {
             "mode": curve_mode,
             "time_step_minutes": step_minutes,
-            "point_count": point_count or (8760 if curve_mode == "year" else 1440),
+            "point_count": point_count or default_point_count,
             "target_minute": target_minute,
             "index": index,
             "point": point,
@@ -4896,6 +5035,57 @@ class MultiModelSimulator:
                 SimulationModelSpec(target_id, target_dir, target_id).normalized(),
                 clear_runtime=True,
             )
+            self._services[target_id] = service
+            self._append_manifest_model(target_id, target_dir)
+            return service.model_info()
+
+    def create_model_slot(self, new_model_id: Any) -> Dict[str, Any]:
+        """Create an uninitialized trainee model slot without importing user files."""
+        with self.lock:
+            target_id = self.validate_new_model_name(new_model_id)
+            target_dir = (self.models_root / target_id).resolve()
+            runtime_dir = (self.runtime_dir / target_id).resolve()
+            try:
+                target_dir.relative_to(self.models_root.resolve())
+                runtime_dir.relative_to(self.runtime_dir.resolve())
+            except ValueError as exc:
+                raise ValueError(f"模型名称无效: {new_model_id}") from exc
+
+            target_dir.mkdir(parents=True, exist_ok=False)
+            try:
+                for file_name in ("model.e", "meas.e", "stat.e", "control.e", "weather.e", "curves.e"):
+                    (target_dir / file_name).write_text("", encoding="utf-8")
+                _write_json(
+                    target_dir / "curves.json",
+                    {
+                        "mode": "day",
+                        "time_step_minutes": 1,
+                        "point_count": 0,
+                        "weather": [],
+                        "loads": {},
+                    },
+                )
+                (target_dir / DIAGRAM_FILE_NAME).write_text(
+                    (
+                        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480">'
+                        '<rect width="800" height="480" fill="#f7fafb"/>'
+                        '<text x="400" y="240" text-anchor="middle" fill="#60727a" font-size="24">'
+                        "Model not initialized"
+                        "</text></svg>"
+                    ),
+                    encoding="utf-8",
+                )
+                service = self._make_service(
+                    SimulationModelSpec(target_id, target_dir, target_id).normalized(),
+                    clear_runtime=True,
+                )
+            except Exception:
+                if target_dir.exists():
+                    shutil.rmtree(target_dir)
+                if runtime_dir.exists():
+                    shutil.rmtree(runtime_dir)
+                raise
+
             self._services[target_id] = service
             self._append_manifest_model(target_id, target_dir)
             return service.model_info()

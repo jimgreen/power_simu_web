@@ -17,6 +17,7 @@ class SimulatorStartDialogUiTest(unittest.TestCase):
         self.assertIn('id="startSimulationForm"', html)
         self.assertIn('id="startSimulationDay"', html)
         self.assertIn('id="startSimulationTime"', html)
+        self.assertIn('type="time" step="1"', html)
         self.assertIn("启动仿真", html)
         self.assertIn("起始时刻", html)
 
@@ -24,8 +25,10 @@ class SimulatorStartDialogUiTest(unittest.TestCase):
         self.assertIn("function startSimulationFromDialog", script)
         self.assertIn("function handleClockAction", script)
         self.assertIn('action === "start" && currentState === "stopped"', script)
-        self.assertIn('controlClock("start", { minute })', script)
-        self.assertIn("minuteToTimeInput(absoluteMinute % 1440", script)
+        self.assertIn("function startSimulationDefaultAbsoluteSecond", script)
+        self.assertIn("function startSimulationSecondFromDialog", script)
+        self.assertIn('controlClock("start", { second })', script)
+        self.assertIn("secondToTimeInput(absoluteSecond % 86400", script)
 
         self.assertIn(".start-simulation-fields", styles)
         self.assertIn(".modal-field input", styles)

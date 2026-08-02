@@ -68,6 +68,8 @@ const state = {
   models: [],
   activeModelId: localStorage.getItem("polarTraineeModelId") || "",
   modelContexts: readStoredModelContexts(),
+  modelInitialized: false,
+  modelInitializedAt: "",
   receiveMode: false,
   frozen: false,
   receiveEpoch: 0,
@@ -81,6 +83,7 @@ const state = {
   teacherSnapshotPath: "",
   teacherCommandPath: "",
   teacherMeasurementDeltaPath: "",
+  teacherDefinitionArchivePath: "",
   localDefinitionSnapshot: null,
   localDefinitionModelId: "",
   receiveReconnectAttempts: 0,
@@ -97,7 +100,6 @@ const state = {
   seenCommandHistoryKeys: new Set(),
   selectedManagementModelId: "",
   cloneSourceModelId: "",
-  updateTargetModelId: "",
   modelFilter: { dev_type: "all", dev_name: "" },
   activeModelParamTab: "",
   activeCurveDisplayKey: "wind_speed_mps",
@@ -179,9 +181,6 @@ const state = {
   virtualTableScrollRaf: {},
 };
 const pending = { run_status: new Map(), set_values: new Map() };
-let pendingImportDefinitionFile = null;
-let pendingNewModelFile = null;
-let pendingUpdateModelFile = null;
 const RENEWABLE_CONTROL_LOG_PAGE_SIZE = 8;
 const RENEWABLE_STRATEGY_TABS = {
   wind: { label: "风电", categories: new Set(["风电"]) },
@@ -196,8 +195,11 @@ const VIRTUAL_TABLE_ROW_HEIGHT = 34;
 const VIRTUAL_TABLE_MIN_ROWS = 220;
 const VIRTUAL_TABLE_BUFFER_ROWS = 12;
 const CURVE_DISPLAY_MODES = {
-  year: { key: "year", label: "年仿真", pointCount: 8760, stepMinutes: 60, tableTitle: "年曲线数据表", tableSummary: "1小时间隔 · 只读" },
-  day: { key: "day", label: "日仿真", pointCount: 1440, stepMinutes: 1, tableTitle: "日曲线数据表", tableSummary: "1分钟间隔 · 只读" },
+  hour: { key: "hour", label: "时仿真", pointCount: 3600, stepMinutes: 1 / 60, durationMinutes: 60, tableTitle: "时曲线数据表", tableSummary: "1秒间隔 · 只读" },
+  day: { key: "day", label: "日仿真", pointCount: 1440, stepMinutes: 1, durationMinutes: 24 * 60, tableTitle: "日曲线数据表", tableSummary: "1分钟间隔 · 只读" },
+  week: { key: "week", label: "周仿真", pointCount: 10080, stepMinutes: 1, durationMinutes: 7 * 24 * 60, tableTitle: "周曲线数据表", tableSummary: "1分钟间隔 · 只读" },
+  month: { key: "month", label: "月仿真", pointCount: 720, stepMinutes: 60, durationMinutes: 30 * 24 * 60, tableTitle: "月曲线数据表", tableSummary: "1小时间隔 · 只读" },
+  year: { key: "year", label: "年仿真", pointCount: 8760, stepMinutes: 60, durationMinutes: 365 * 24 * 60, tableTitle: "年曲线数据表", tableSummary: "1小时间隔 · 只读" },
 };
 const CURVE_DISPLAY_ENV_KEYS = ["wind_speed_mps", "solar_irradiance_w_m2", "air_temp_c"];
 const CURVE_DISPLAY_META = [
@@ -233,6 +235,8 @@ function contextKey(modelId = state.activeModelId) {
 function defaultModelContext(modelId = state.activeModelId) {
   return {
     modelId: contextKey(modelId),
+    modelInitialized: false,
+    modelInitializedAt: "",
     receiveMode: false,
     frozen: false,
     interactionLink: "",
@@ -242,6 +246,7 @@ function defaultModelContext(modelId = state.activeModelId) {
     teacherSnapshotPath: "",
     teacherCommandPath: "",
     teacherMeasurementDeltaPath: "",
+    teacherDefinitionArchivePath: "",
     lastReceiveAt: "",
     snapshotSource: "",
     lastTeacherSnapshotLogKey: "",
@@ -258,13 +263,35 @@ function defaultModelContext(modelId = state.activeModelId) {
   };
 }
 
+function storedContextInitialized(context = {}) {
+  if (Object.prototype.hasOwnProperty.call(context, "modelInitialized")) {
+    return Boolean(context.modelInitialized);
+  }
+  return Boolean(
+    context.interactionLink
+    && (
+      context.teacherModelId
+      || context.teacherModelName
+      || context.teacherApiBase
+      || context.teacherSnapshotPath
+    )
+  );
+}
+
 function activeModelContext(modelId = state.activeModelId) {
   const key = contextKey(modelId);
-  return { ...defaultModelContext(modelId), ...(state.modelContexts[key] || {}) };
+  const stored = state.modelContexts[key] || {};
+  return {
+    ...defaultModelContext(modelId),
+    ...stored,
+    modelInitialized: storedContextInitialized(stored),
+  };
 }
 
 function serializableModelContext(context) {
   return {
+    modelInitialized: Boolean(context.modelInitialized),
+    modelInitializedAt: context.modelInitializedAt || "",
     receiveMode: Boolean(context.receiveMode),
     frozen: Boolean(context.frozen),
     interactionLink: context.interactionLink || "",
@@ -274,6 +301,7 @@ function serializableModelContext(context) {
     teacherSnapshotPath: context.teacherSnapshotPath || "",
     teacherCommandPath: context.teacherCommandPath || "",
     teacherMeasurementDeltaPath: context.teacherMeasurementDeltaPath || "",
+    teacherDefinitionArchivePath: context.teacherDefinitionArchivePath || "",
     lastReceiveAt: context.lastReceiveAt || "",
   };
 }
@@ -289,6 +317,8 @@ function persistModelContextsToStorage() {
 function captureActiveModelContext(overrides = {}) {
   return {
     ...activeModelContext(),
+    modelInitialized: state.modelInitialized,
+    modelInitializedAt: state.modelInitializedAt,
     receiveMode: state.receiveMode,
     frozen: state.frozen,
     interactionLink: state.interactionLink,
@@ -298,6 +328,7 @@ function captureActiveModelContext(overrides = {}) {
     teacherSnapshotPath: state.teacherSnapshotPath,
     teacherCommandPath: state.teacherCommandPath,
     teacherMeasurementDeltaPath: state.teacherMeasurementDeltaPath,
+    teacherDefinitionArchivePath: state.teacherDefinitionArchivePath,
     lastReceiveAt: state.lastReceiveAt,
     snapshotSource: state.snapshotSource,
     lastTeacherSnapshotLogKey: state.lastTeacherSnapshotLogKey,
@@ -323,6 +354,8 @@ function persistActiveModelContext(overrides = {}) {
 
 function restoreModelContext(modelId = state.activeModelId) {
   const context = activeModelContext(modelId);
+  state.modelInitialized = Boolean(context.modelInitialized);
+  state.modelInitializedAt = context.modelInitializedAt || "";
   state.receiveMode = Boolean(context.receiveMode);
   state.frozen = Boolean(context.frozen);
   state.interactionLink = context.interactionLink || "";
@@ -332,6 +365,7 @@ function restoreModelContext(modelId = state.activeModelId) {
   state.teacherSnapshotPath = context.teacherSnapshotPath || "";
   state.teacherCommandPath = context.teacherCommandPath || "";
   state.teacherMeasurementDeltaPath = context.teacherMeasurementDeltaPath || "";
+  state.teacherDefinitionArchivePath = context.teacherDefinitionArchivePath || "";
   state.lastReceiveAt = context.lastReceiveAt || "";
   state.snapshotSource = context.snapshotSource || "";
   state.lastTeacherSnapshotLogKey = context.lastTeacherSnapshotLogKey || "";
@@ -349,15 +383,18 @@ function restoreModelContext(modelId = state.activeModelId) {
 
 function receiveContextFromBackend(payload = {}) {
   return {
+    modelInitialized: Boolean(payload.initialized ?? payload.model_initialized ?? payload.modelInitialized),
+    modelInitializedAt: payload.initialized_at || payload.initializedAt || "",
     receiveMode: Boolean(payload.active ?? payload.receiveMode),
     frozen: Boolean(payload.frozen),
     interactionLink: payload.interaction_link || payload.interactionLink || "",
     teacherApiBase: (payload.teacher_api_base || payload.teacherApiBase || "").replace(/\/$/, ""),
     teacherModelId: payload.teacher_model_id || payload.teacherModelId || "",
-    teacherModelName: payload.teacher_model_name || payload.teacherModelName || payload.model_name || "",
+    teacherModelName: payload.teacher_model_name || payload.teacherModelName || "",
     teacherSnapshotPath: payload.snapshot_path || payload.snapshotPath || "",
     teacherCommandPath: payload.command_path || payload.commandPath || "",
     teacherMeasurementDeltaPath: payload.measurement_delta_path || payload.measurementDeltaPath || "",
+    teacherDefinitionArchivePath: payload.definition_archive_path || payload.definitionArchivePath || "",
     lastReceiveAt: payload.last_receive_at || payload.lastReceiveAt || "",
   };
 }
@@ -365,6 +402,8 @@ function receiveContextFromBackend(payload = {}) {
 function receiveStatePayloadFromContext(context, overrides = {}) {
   const merged = { ...context, ...overrides };
   return {
+    initialized: Boolean(merged.initialized ?? merged.modelInitialized),
+    initialized_at: merged.initializedAt || merged.modelInitializedAt || merged.initialized_at || "",
     active: Boolean(merged.active ?? merged.receiveMode),
     frozen: Boolean(merged.frozen),
     interaction_link: merged.interactionLink || merged.interaction_link || "",
@@ -374,6 +413,7 @@ function receiveStatePayloadFromContext(context, overrides = {}) {
     snapshot_path: merged.teacherSnapshotPath || merged.snapshot_path || "",
     command_path: merged.teacherCommandPath || merged.command_path || "",
     measurement_delta_path: merged.teacherMeasurementDeltaPath || merged.measurement_delta_path || "",
+    definition_archive_path: merged.teacherDefinitionArchivePath || merged.definition_archive_path || "",
     last_receive_at: merged.lastReceiveAt || merged.last_receive_at || "",
   };
 }
@@ -415,8 +455,20 @@ async function syncActiveReceiveStateBeforeRefresh(force = false) {
   state.lastReceiveStateSyncAtMs = Date.now();
   const previousReceiveMode = state.receiveMode;
   const previousLink = state.interactionLink;
+  const previousInitialized = state.modelInitialized;
+  const previousInitializedAt = state.modelInitializedAt;
   try {
     await syncActiveReceiveStateFromBackend(state.activeModelId);
+    if (
+      state.modelInitialized !== previousInitialized
+      || state.modelInitializedAt !== previousInitializedAt
+    ) {
+      state.localDefinitionSnapshot = null;
+      state.localDefinitionModelId = "";
+      state.snapshot = null;
+      state.measurementDeltaSeq = 0;
+      clearStaticSnapshotCacheForModel(state.activeModelId);
+    }
     if (state.receiveMode !== previousReceiveMode || state.interactionLink !== previousLink) {
       state.receiveEpoch += 1;
       state.receiveRequestActive = false;
@@ -965,6 +1017,13 @@ function hasStaticSnapshotPayload(snapshot, requiredKeys = STATIC_SNAPSHOT_KEYS)
   return Boolean(snapshot && requiredKeys.every((key) => snapshot[key] !== undefined));
 }
 
+function frozenSnapshotNeedsBootstrap(snapshot, page = currentPageName()) {
+  return Boolean(
+    state.frozen
+    && !hasStaticSnapshotPayload(snapshot, staticSnapshotKeysForPage(page))
+  );
+}
+
 function staticMetaSignature(meta) {
   return JSON.stringify(meta || null);
 }
@@ -974,16 +1033,8 @@ function staticMetaMatches(left, right) {
 }
 
 function staticCacheModelKey(snapshot = state.snapshot || {}) {
-  const modelId = String(snapshot?.model?.id || state.activeModelId || "");
+  const modelId = String(state.activeModelId || snapshot?.model?.id || "");
   if (!modelId) return "";
-  if (state.receiveMode || state.snapshotSource === "teacher" || state.teacherApiBase) {
-    return [
-      "teacher",
-      state.teacherApiBase || "",
-      state.teacherSnapshotPath || "",
-      state.teacherModelId || modelId,
-    ].join("|");
-  }
   return `local|${modelId}`;
 }
 
@@ -1004,6 +1055,15 @@ function writeStaticCacheStore(store) {
   } catch (_error) {
     return false;
   }
+}
+
+function clearStaticSnapshotCacheForModel(modelId = state.activeModelId) {
+  const key = `local|${String(modelId || "")}`;
+  if (key === "local|") return;
+  const store = readStaticCacheStore();
+  if (!(key in store)) return;
+  delete store[key];
+  writeStaticCacheStore(store);
 }
 
 function pruneStaticCacheStore(store) {
@@ -1170,28 +1230,16 @@ function teacherReceiveAddress() {
 }
 
 function teacherSnapshotPollAddress(page = currentPageName(), forceStaticKeys = null) {
-  if (!Array.isArray(forceStaticKeys) && state.snapshot?.static_meta) {
-    state.snapshot = restoreStaticSnapshotCache(state.snapshot, page);
-  }
-  const currentModelId = String(state.snapshot?.model?.id || "");
-  const expectedTeacherModelId = String(state.teacherModelId || "");
-  const modelChanged = currentModelId && expectedTeacherModelId && currentModelId !== expectedTeacherModelId;
-  const requiredStaticKeys = Array.isArray(forceStaticKeys)
-    ? forceStaticKeys
-    : (
-      state.snapshot?.static_meta && !modelChanged
-        ? staticSnapshotMissingKeys(state.snapshot, staticSnapshotKeysForPage(page))
-        : staticSnapshotKeysForPage(page)
-    );
+  void forceStaticKeys;
   const params = new URLSearchParams();
   params.set("measurements", "0");
-  params.set("devices", pageNeedsDevices(page) ? "1" : "0");
+  params.set("devices", "0");
   params.set("device_states", pageNeedsDeviceStates(page) ? "1" : "0");
   params.set("commands", pageNeedsCommands(page) ? "1" : "0");
   if (pageNeedsRuntimeLogs(page)) params.set("log_limit", String(snapshotLogLimit(page)));
   else params.set("logs", "0");
-  if (requiredStaticKeys.length) params.set("static", requiredStaticKeys.join(","));
-  else params.set("lite", "1");
+  params.set("static", "0");
+  params.set("lite", "1");
   return `/api/trainee/snapshot?${params.toString()}`;
 }
 
@@ -1318,12 +1366,12 @@ async function teacherCommandApi(options = {}) {
 }
 
 function hasTeacherCommandConnection() {
-  return Boolean(state.interactionLink && state.teacherCommandPath && state.teacherApiBase);
+  return Boolean(state.modelInitialized && state.interactionLink && state.teacherCommandPath && state.teacherApiBase);
 }
 
 async function postTeacherCommand(body) {
   if (!hasTeacherCommandConnection()) {
-    throw new Error("请先点击顶部“启动接收”，输入模拟台交互链接后再下发指令。");
+    throw new Error("请先完成顶部“模型初始化”并启动接收后再下发指令。");
   }
   return await teacherCommandApi({ method: "POST", body: JSON.stringify(body) });
 }
@@ -1334,7 +1382,7 @@ function commandCycleMinutes(snapshot = state.snapshot || {}) {
   const stepMinutes = Number(curves.time_step_minutes || CURVE_DISPLAY_MODES[curveDisplayMode(snapshot)].stepMinutes);
   const curvePeriod = pointCount * stepMinutes;
   if (Number.isFinite(curvePeriod) && curvePeriod > 0) return curvePeriod;
-  return curveDisplayMode(snapshot) === "year" ? 365 * 24 * 60 : 24 * 60;
+  return CURVE_DISPLAY_MODES[curveDisplayMode(snapshot)]?.durationMinutes || CURVE_DISPLAY_MODES.day.durationMinutes;
 }
 
 function manualCommandExpiresAtAbsoluteMinute(snapshot = state.snapshot || {}) {
@@ -1393,7 +1441,7 @@ const DIAGRAM_DISPLAY_PREFERENCES_DEFAULTS = Object.freeze({
 });
 const DIAGRAM_MAX_ZOOM = 8;
 const DIAGRAM_PAN_THRESHOLD_PX = 5;
-const DIAGRAM_TOOLTIP_HIDE_DELAY_MS = 500;
+const DIAGRAM_TOOLTIP_HIDE_DELAY_MS = 150;
 
 function normalizeDiagramDisplayPreferences(value) {
   const source = value && typeof value === "object" ? value : {};
@@ -1459,9 +1507,77 @@ function diagramFlowArrowDirection(power, orientation = 1) {
 function diagramFlowArrowSize(power, referencePower) {
   const reference = Math.abs(Number(referencePower));
   const magnitude = Math.abs(Number(power));
-  if (!Number.isFinite(magnitude) || magnitude <= 0) return 6;
+  if (!Number.isFinite(magnitude) || magnitude <= 0) return 10;
   const ratio = reference > 0 ? Math.max(0, Math.min(1, magnitude / reference)) : 1;
-  return 6 + 10 * Math.sqrt(ratio);
+  return 10 + 14 * Math.sqrt(ratio);
+}
+
+function diagramFlowArrowCount(routeLength) {
+  const length = Number(routeLength);
+  if (!Number.isFinite(length) || length <= 0) return 2;
+  return Math.max(2, Math.min(6, Math.ceil(length / 80) + 1));
+}
+
+function diagramFlowMotionAttributes(direction) {
+  const reverse = Number(direction) < 0;
+  return {
+    keyPoints: reverse ? "1;0" : "0;1",
+    rotate: reverse ? "auto-reverse" : "auto",
+  };
+}
+
+const DIAGRAM_FLOW_POWER_MEASUREMENT_TYPES = Object.freeze({
+  ACGENERATOR: Object.freeze(["P_GEN"]),
+  DCGENERATOR: Object.freeze(["P_GEN"]),
+  ACLOAD: Object.freeze(["P_LOAD"]),
+  DCLOAD: Object.freeze(["P_LOAD"]),
+  DCACCONVERTER: Object.freeze(["P_AC", "P_DC"]),
+  DCDCCONVERTER: Object.freeze(["P_FROM", "P_TO"]),
+  ACACCONVERTER: Object.freeze(["P_FROM", "P_TO"]),
+  ACTRANSFORMER: Object.freeze(["P_FROM", "P_TO"]),
+  ACBRANCH: Object.freeze(["P_FROM", "P_TO"]),
+  DCBRANCH: Object.freeze(["P_FROM", "P_TO"]),
+  ACZEROBRANCH: Object.freeze(["P_FROM", "P_TO"]),
+  DCZEROBRANCH: Object.freeze(["P_FROM", "P_TO"]),
+  ACBREAK: Object.freeze(["P_FROM", "P_TO"]),
+  DCBREAK: Object.freeze(["P_FROM", "P_TO"]),
+  ACSWITCH: Object.freeze(["P_FROM", "P_TO"]),
+  DCSWITCH: Object.freeze(["P_FROM", "P_TO"]),
+});
+
+function diagramFlowPowerMeasurementTypes(devType) {
+  const type = normalizeDiagramMeasurementToken(devType);
+  const specific = DIAGRAM_FLOW_POWER_MEASUREMENT_TYPES[type];
+  return specific ? [...specific] : diagramMetricMeasurementTypes(devType, "activePower");
+}
+
+function diagramFlowInlineDeviceKind(devType) {
+  const type = normalizeDiagramMeasurementToken(devType);
+  if (type.includes("BRANCH")) return "branch";
+  if (
+    type.includes("BREAK")
+    || type.includes("SWITCH")
+    || type.includes("CONVERTER")
+    || type.includes("TRANSFORMER")
+  ) return "device";
+  return "";
+}
+
+function diagramFlowSeriesOrientation(subjectTerminal, neighborKind, neighborTerminal = 0) {
+  const terminal = Number(subjectTerminal);
+  if (neighborKind === "generator") return terminal === 1 ? 1 : -1;
+  if (neighborKind === "load") return terminal === 2 ? 1 : -1;
+  return terminal !== Number(neighborTerminal) ? 1 : -1;
+}
+
+function diagramFlowEdgeTerminalOrientation(position, terminal) {
+  const terminalIndex = Number(terminal);
+  if (position === "source") return terminalIndex === 2 ? 1 : -1;
+  return terminalIndex === 1 ? 1 : -1;
+}
+
+function diagramFlowNodeKey(node, domain = "") {
+  return `${normalizeDiagramMeasurementToken(domain) || "NODE"}:${String(node || "").trim()}`;
 }
 
 function diagramFlowArrowVisibility({ power, referencePower, valid = true, offline = false } = {}) {
@@ -2217,6 +2333,33 @@ function diagramFlowRouteD(element) {
   return String(element.getAttribute?.("d") || "").trim();
 }
 
+function diagramFlowRouteLength(element) {
+  try {
+    const length = Number(element?.getTotalLength?.());
+    return Number.isFinite(length) && length > 0 ? length : 0;
+  } catch (_error) {
+    return 0;
+  }
+}
+
+function diagramFlowArrowColor(sourceElement) {
+  const computed = typeof window !== "undefined" && typeof window.getComputedStyle === "function"
+    ? window.getComputedStyle(sourceElement)
+    : null;
+  const values = [
+    sourceElement?.getAttribute?.("stroke"),
+    computed?.stroke,
+    sourceElement?.getAttribute?.("color"),
+    computed?.color,
+  ];
+  return values.find((value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    return normalized
+      && !["none", "transparent", "currentcolor", "inherit", "initial", "unset"].includes(normalized)
+      && normalized !== "rgba(0, 0, 0, 0)";
+  }) || "";
+}
+
 function diagramFlowSymbol(svg, useElement) {
   const href = String(useElement?.getAttribute("href") || useElement?.getAttribute("xlink:href") || "").trim();
   if (!href.startsWith("#")) return null;
@@ -2276,13 +2419,183 @@ function diagramFlowEndpointKind(device) {
   return "";
 }
 
-function createDiagramFlowArrow(sourceElement, routeD, transforms = []) {
+function diagramFlowPowerAnchorKind(device) {
+  const endpointKind = diagramFlowEndpointKind(device);
+  if (endpointKind) return endpointKind;
+  const type = normalizeDiagramMeasurementToken(device?.devType);
+  if (type.includes("BRANCH") || type.includes("CONVERTER") || type.includes("TRANSFORMER")) {
+    return "two-terminal";
+  }
+  return "";
+}
+
+function diagramFlowDeviceNodes(element) {
+  if (!element?.getAttribute) return [];
+  const node1 = String(element.getAttribute("node-1") || "").trim();
+  const node2 = String(element.getAttribute("node-2") || "").trim();
+  const baseDomain = String(element.getAttribute("voltage-type") || "").trim();
+  const fallbackType = normalizeDiagramMeasurementToken(element.parentElement?.getAttribute?.("device-type"));
+  const fallbackDomain = fallbackType.startsWith("AC") ? "ac" : fallbackType.startsWith("DC") ? "dc" : "";
+  const domain1 = String(element.getAttribute("voltage-type-1") || baseDomain || fallbackDomain).trim();
+  const domain2 = String(element.getAttribute("voltage-type-2") || baseDomain || fallbackDomain).trim();
+  const nodes = [];
+  if (node1) nodes.push({ node: node1, key: diagramFlowNodeKey(node1, domain1), terminal: 1 });
+  if (node2) nodes.push({ node: node2, key: diagramFlowNodeKey(node2, domain2), terminal: 2 });
+  if (!nodes.length) {
+    const node = String(element.getAttribute("node") || "").trim();
+    if (node) nodes.push({ node, key: diagramFlowNodeKey(node, baseDomain || fallbackDomain), terminal: 0 });
+  }
+  return nodes;
+}
+
+function diagramFlowTopology(svg, container) {
+  const entries = [];
+  const byId = new Map();
+  const byNode = new Map();
+  svg?.querySelectorAll?.("g[device-type] > use[dev-id]").forEach((element) => {
+    const devId = diagramElementDeviceId(element);
+    const device = diagramDeviceRecord(container, devId);
+    const entry = { devId, device, element, nodes: diagramFlowDeviceNodes(element) };
+    entries.push(entry);
+    byId.set(devId, entry);
+    entry.nodes.forEach(({ key }) => {
+      if (!byNode.has(key)) byNode.set(key, []);
+      byNode.get(key).push(entry);
+    });
+  });
+  return { entries, byId, byNode };
+}
+
+function diagramFlowDeviceRoute(symbol) {
+  const viewBox = diagramViewBoxValue(symbol?.getAttribute?.("viewBox"));
+  if (!viewBox) return null;
+  const y = viewBox.y + viewBox.height / 2;
+  const inset = viewBox.width * 0.08;
+  const x1 = viewBox.x + inset;
+  const x2 = viewBox.x + viewBox.width - inset;
+  const orientationGroup = [...(symbol.children || [])].find(
+    (element) => String(element.tagName || "").toLowerCase() === "g",
+  );
+  return {
+    routeD: `M ${x1} ${y} L ${x2} ${y}`,
+    routeLength: viewBox.width * 0.45,
+    transforms: [String(orientationGroup?.getAttribute?.("transform") || "").trim()].filter(Boolean),
+  };
+}
+
+function diagramFlowPowerBindings(device, element, topology) {
+  const own = { device, orientation: 1, priority: 1 };
+  const type = normalizeDiagramMeasurementToken(device?.devType);
+  if (!type.includes("BREAK") && !type.includes("SWITCH")) return [own];
+  const entry = topology?.byId?.get(String(device?.devId || ""));
+  if (!entry) return [own];
+  const fallbacks = [];
+  entry.nodes.filter(({ terminal }) => terminal > 0).forEach(({ key, terminal }) => {
+    (topology.byNode.get(key) || []).forEach((neighbor) => {
+      if (neighbor === entry) return;
+      const neighborKind = diagramFlowPowerAnchorKind(neighbor.device);
+      if (!neighborKind) return;
+      const neighborTerminal = neighbor.nodes.find((item) => item.key === key)?.terminal || 0;
+      fallbacks.push({
+        device: neighbor.device,
+        orientation: diagramFlowSeriesOrientation(terminal, neighborKind, neighborTerminal),
+        priority: 2,
+      });
+    });
+  });
+  const unique = new Map();
+  fallbacks.forEach((binding) => {
+    const key = `${binding.device?.devId || ""}|${binding.orientation}`;
+    if (!unique.has(key)) unique.set(key, binding);
+  });
+  return [...unique.values(), own];
+}
+
+function diagramFlowEdgeBinding(sourceEntry, targetEntry, topology) {
+  const endpoints = [
+    { position: "source", entry: sourceEntry, endpointKind: diagramFlowEndpointKind(sourceEntry?.device) },
+    { position: "target", entry: targetEntry, endpointKind: diagramFlowEndpointKind(targetEntry?.device) },
+  ];
+  const direct = endpoints.filter((item) => item.endpointKind);
+  if (direct.length === 1) {
+    const selected = direct[0];
+    const orientation = selected.endpointKind === "generator"
+      ? (selected.position === "source" ? 1 : -1)
+      : (selected.position === "target" ? 1 : -1);
+    return {
+      kind: "endpoint",
+      device: selected.entry.device,
+      orientation,
+      powerBindings: diagramFlowPowerBindings(selected.entry.device, selected.entry.element, topology),
+    };
+  }
+  if (direct.length > 1) return null;
+  const connectorCandidates = endpoints.map((item) => {
+    const inlineKind = diagramFlowInlineDeviceKind(item.entry?.device?.devType);
+    const type = normalizeDiagramMeasurementToken(item.entry?.device?.devType);
+    const priority = inlineKind === "branch" ? 3 : type.includes("CONVERTER") ? 2 : inlineKind ? 1 : 0;
+    return { ...item, priority };
+  }).filter((item) => item.priority > 0);
+  if (!connectorCandidates.length) return null;
+  const bestPriority = Math.max(...connectorCandidates.map((item) => item.priority));
+  const best = connectorCandidates.filter((item) => item.priority === bestPriority);
+  if (best.length !== 1) return null;
+  const selected = best[0];
+  const other = selected.position === "source" ? targetEntry : sourceEntry;
+  const terminal = selected.entry.nodes.find(
+    (item) => item.terminal > 0 && other?.nodes?.some((otherNode) => otherNode.key === item.key),
+  )?.terminal;
+  if (!terminal) return null;
+  return {
+    kind: "connector",
+    device: selected.entry.device,
+    orientation: diagramFlowEdgeTerminalOrientation(selected.position, terminal),
+    powerBindings: diagramFlowPowerBindings(selected.entry.device, selected.entry.element, topology),
+  };
+}
+
+function diagramFlowDevicePowerRow(device, measurementMaps) {
+  const types = diagramFlowPowerMeasurementTypes(device?.devType);
+  for (const map of [measurementMaps?.scadaByDevice, measurementMaps?.realByDevice]) {
+    for (const measType of types) {
+      const key = diagramDeviceMeasurementKey(device?.devType, device?.devName, measType);
+      if (map?.has(key)) return map.get(key);
+    }
+  }
+  return null;
+}
+
+function diagramFlowResolvePower(record, measurementMaps) {
+  const resolved = (record?.powerBindings || [{ device: record?.device, orientation: 1, priority: 1 }])
+    .map((binding) => {
+      const row = diagramFlowDevicePowerRow(binding.device, measurementMaps);
+      const rawPower = Number(row?.value);
+      return {
+        binding,
+        row,
+        valid: Boolean(row) && Number(row.valid ?? 1) === 1 && Number.isFinite(rawPower),
+        power: rawPower * (Number(binding.orientation) < 0 ? -1 : 1),
+      };
+    })
+    .filter((item) => item.valid);
+  if (!resolved.length) return { row: null, binding: null, power: Number.NaN, valid: false };
+  const priority = Math.max(...resolved.map((item) => Number(item.binding.priority) || 0));
+  const candidates = resolved.filter((item) => (Number(item.binding.priority) || 0) === priority);
+  const selected = candidates.reduce((best, item) => (
+    Math.abs(item.power) > Math.abs(best.power) ? item : best
+  ));
+  return { ...selected, valid: true };
+}
+
+function createDiagramFlowArrow(sourceElement, routeD, transforms = [], routeLength = 0) {
   if (!sourceElement?.parentNode || !routeD) return null;
   const createSvgElement = (tagName) => document.createElementNS("http://www.w3.org/2000/svg", tagName);
   const root = createSvgElement("g");
   root.classList.add("diagram-flow-arrow");
   root.setAttribute("data-diagram-runtime-flow", "true");
   root.setAttribute("hidden", "");
+  const color = diagramFlowArrowColor(sourceElement);
+  if (color) root.style.setProperty("--diagram-flow-color", color);
   let parent = root;
   transforms.filter(Boolean).forEach((transform) => {
     const group = createSvgElement("g");
@@ -2294,24 +2607,31 @@ function createDiagramFlowArrow(sourceElement, routeD, transforms = []) {
   guide.classList.add("diagram-flow-guide");
   guide.setAttribute("d", routeD);
   guide.setAttribute("fill", "none");
-  const marker = createSvgElement("g");
-  marker.classList.add("diagram-flow-arrow-marker");
-  const polygon = createSvgElement("polygon");
-  polygon.setAttribute("points", "-3,-2 3,0 -3,2");
-  const animation = createSvgElement("animateMotion");
-  animation.setAttribute("path", routeD);
-  animation.setAttribute("dur", "1.8s");
-  animation.setAttribute("repeatCount", "indefinite");
-  animation.setAttribute("calcMode", "linear");
-  animation.setAttribute("keyTimes", "0;1");
-  animation.setAttribute("keyPoints", "0;1");
-  animation.setAttribute("rotate", "auto");
-  marker.appendChild(polygon);
-  marker.appendChild(animation);
   parent.appendChild(guide);
-  parent.appendChild(marker);
+  const markerCount = diagramFlowArrowCount(routeLength);
+  const durationSeconds = 1.8;
+  const markers = Array.from({ length: markerCount }, (_value, index) => {
+    const marker = createSvgElement("g");
+    marker.classList.add("diagram-flow-arrow-marker");
+    marker.setAttribute("data-flow-marker-index", String(index));
+    const polygon = createSvgElement("polygon");
+    polygon.setAttribute("points", "-5,-3 5,0 -5,3");
+    const animation = createSvgElement("animateMotion");
+    animation.setAttribute("path", routeD);
+    animation.setAttribute("dur", `${durationSeconds}s`);
+    animation.setAttribute("begin", `${-(durationSeconds * index / markerCount).toFixed(3)}s`);
+    animation.setAttribute("repeatCount", "indefinite");
+    animation.setAttribute("calcMode", "linear");
+    animation.setAttribute("keyTimes", "0;1");
+    animation.setAttribute("keyPoints", "0;1");
+    animation.setAttribute("rotate", "auto");
+    marker.appendChild(polygon);
+    marker.appendChild(animation);
+    parent.appendChild(marker);
+    return { marker, polygon, animation };
+  });
   sourceElement.parentNode.insertBefore(root, sourceElement.nextSibling);
-  return { root, guide, marker, polygon, animation, direction: 0 };
+  return { root, guide, markers, direction: 0 };
 }
 
 function removeDiagramFlowArrows(container) {
@@ -2330,47 +2650,75 @@ function compileDiagramFlowArrows(container) {
   interaction.flowArrows = [];
   interaction.flowArrowPeakReferences = new Map();
   if (!svg) return interaction.flowArrows;
+  const topology = diagramFlowTopology(svg, container);
 
-  svg.querySelectorAll("use[dev-id], use[id][name]").forEach((useElement) => {
-    const device = diagramDeviceRecord(container, diagramElementDeviceId(useElement));
-    if (!normalizeDiagramMeasurementToken(device?.devType).includes("BRANCH")) return;
+  topology.entries.forEach(({ device, element: useElement }) => {
+    const inlineKind = diagramFlowInlineDeviceKind(device?.devType);
+    if (!inlineKind) return;
     const symbol = diagramFlowSymbol(svg, useElement);
-    const routePath = symbol?.querySelector(".routable-line-device-glyph path[d]");
-    const routeD = diagramFlowRouteD(routePath);
-    if (!routePath || !routeD) return;
-    const transforms = [
+    if (!symbol) return;
+    const baseTransforms = [
       String(useElement.getAttribute("transform") || "").trim(),
       diagramUseRouteTransform(useElement, symbol),
-      ...diagramFlowPathTransforms(routePath, symbol),
     ].filter(Boolean);
-    const arrow = createDiagramFlowArrow(useElement, routeD, transforms);
-    if (arrow) interaction.flowArrows.push({ ...arrow, kind: "branch", device, orientation: 1 });
+    const powerBindings = diagramFlowPowerBindings(device, useElement, topology);
+    if (inlineKind === "branch") {
+      const routePath = symbol.querySelector(".routable-line-device-glyph path[d]");
+      const routeD = diagramFlowRouteD(routePath);
+      if (!routePath || !routeD) return;
+      const transforms = [...baseTransforms, ...diagramFlowPathTransforms(routePath, symbol)];
+      const arrow = createDiagramFlowArrow(useElement, routeD, transforms, diagramFlowRouteLength(routePath));
+      if (!arrow) return;
+      arrow.root.setAttribute("data-flow-source-id", String(device?.devId || ""));
+      interaction.flowArrows.push({
+        ...arrow,
+        kind: "branch",
+        device,
+        pathDevices: [device],
+        powerBindings,
+        orientation: 1,
+      });
+      return;
+    }
+    const route = diagramFlowDeviceRoute(symbol);
+    if (!route?.routeD) return;
+    const arrow = createDiagramFlowArrow(
+      useElement,
+      route.routeD,
+      [...baseTransforms, ...(route.transforms || [])],
+      route.routeLength,
+    );
+    if (!arrow) return;
+    arrow.root.setAttribute("data-flow-source-id", String(device?.devId || ""));
+    interaction.flowArrows.push({
+      ...arrow,
+      kind: "device",
+      device,
+      pathDevices: [device],
+      powerBindings,
+      orientation: 1,
+    });
   });
 
   svg.querySelectorAll("path[source-dev-id][target-dev-id], line[source-dev-id][target-dev-id]").forEach((edge) => {
     if (edge.closest("defs, symbol, marker, pattern, clipPath, mask") || edge.hasAttribute("data-diagram-runtime-flow")) return;
-    const sourceDevice = diagramDeviceRecord(container, edge.getAttribute("source-dev-id"));
-    const targetDevice = diagramDeviceRecord(container, edge.getAttribute("target-dev-id"));
-    const candidates = [
-      { position: "source", device: sourceDevice, endpointKind: diagramFlowEndpointKind(sourceDevice) },
-      { position: "target", device: targetDevice, endpointKind: diagramFlowEndpointKind(targetDevice) },
-    ].filter((item) => item.endpointKind);
-    if (candidates.length !== 1) return;
-    const endpoint = candidates[0];
-    const orientation = endpoint.endpointKind === "generator"
-      ? (endpoint.position === "source" ? 1 : -1)
-      : (endpoint.position === "target" ? 1 : -1);
+    const sourceEntry = topology.byId.get(String(edge.getAttribute("source-dev-id") || ""));
+    const targetEntry = topology.byId.get(String(edge.getAttribute("target-dev-id") || ""));
+    const binding = diagramFlowEdgeBinding(sourceEntry, targetEntry, topology);
+    if (!binding) return;
     const routeD = diagramFlowRouteD(edge);
     if (!routeD) return;
     const transforms = [String(edge.getAttribute("transform") || "").trim()].filter(Boolean);
-    const arrow = createDiagramFlowArrow(edge, routeD, transforms);
+    const arrow = createDiagramFlowArrow(edge, routeD, transforms, diagramFlowRouteLength(edge));
     if (arrow) {
+      arrow.root.setAttribute("data-flow-source-id", String(binding.device?.devId || ""));
       interaction.flowArrows.push({
         ...arrow,
-        kind: "endpoint",
-        device: endpoint.device,
-        pathDevices: [sourceDevice, targetDevice].filter(Boolean),
-        orientation,
+        kind: binding.kind,
+        device: binding.device,
+        pathDevices: [sourceEntry?.device, targetEntry?.device].filter(Boolean),
+        powerBindings: binding.powerBindings,
+        orientation: binding.orientation,
       });
     }
   });
@@ -2400,33 +2748,43 @@ function updateDiagramFlowArrows(container, snapshot = state.snapshot || {}, mea
   if (!interaction?.flowArrows?.length) return;
   const operatingMaps = diagramDeviceOperatingStateMaps(snapshot);
   interaction.flowArrows.forEach((record) => {
-    const row = diagramMetricBindingValue({ ...record.device, metricType: "activePower" }, measurementMaps);
-    const power = Number(row?.value);
-    const valid = Boolean(row) && Number(row.valid ?? 1) === 1 && Number.isFinite(power);
-    const deviceState = diagramDeviceOperatingState(record.device, operatingMaps);
-    const pathOffline = record.pathDevices?.some((device) => (
+    const resolved = diagramFlowResolvePower(record, measurementMaps);
+    const power = Number(resolved.power);
+    const valid = Boolean(resolved.valid) && Number.isFinite(power);
+    const relevantDevices = [
+      record.device,
+      resolved.binding?.device,
+      ...(record.pathDevices || []),
+    ].filter(Boolean);
+    const offline = relevantDevices.some((device) => (
       diagramDeviceIsOffline(diagramDeviceOperatingState(device, operatingMaps))
     ));
-    const offline = diagramDeviceIsOffline(deviceState) || Boolean(pathOffline);
-    const referencePower = diagramFlowReferencePower(container, record.device, snapshot, interaction, power);
+    const referenceDevice = resolved.binding?.device || record.device;
+    const referencePower = diagramFlowReferencePower(container, referenceDevice, snapshot, interaction, power);
     const visible = diagramFlowArrowVisibility({ power, referencePower, valid, offline });
+    record.root.setAttribute("data-flow-power", valid ? String(power) : "");
+    record.root.setAttribute("data-flow-binding-id", String(resolved.binding?.device?.devId || ""));
     record.root.toggleAttribute("hidden", !visible);
     if (!visible) return;
     const size = diagramFlowArrowSize(power, referencePower);
     const halfLength = size / 2;
     const halfHeight = Math.max(2, size * 0.32);
-    record.polygon.setAttribute(
-      "points",
-      `${-halfLength},${-halfHeight} ${halfLength},0 ${-halfLength},${halfHeight}`,
-    );
+    record.markers.forEach(({ polygon }) => {
+      polygon.setAttribute(
+        "points",
+        `${-halfLength},${-halfHeight} ${halfLength},0 ${-halfLength},${halfHeight}`,
+      );
+    });
     const direction = diagramFlowArrowDirection(power, record.orientation);
     if (direction !== record.direction) {
       record.direction = direction;
-      record.animation.setAttribute("keyPoints", direction < 0 ? "1;0" : "0;1");
-      record.animation.setAttribute("rotate", direction < 0 ? "auto-reverse" : "auto");
+      const motion = diagramFlowMotionAttributes(direction);
+      record.markers.forEach(({ animation }) => {
+        animation.setAttribute("keyPoints", motion.keyPoints);
+        animation.setAttribute("rotate", motion.rotate);
+      });
     }
     record.root.setAttribute("data-flow-direction", direction < 0 ? "reverse" : "forward");
-    record.root.setAttribute("data-flow-power", String(power));
   });
 }
 
@@ -2442,6 +2800,7 @@ function diagramInteractionState(container) {
       tooltipPositionKey: "",
       trendPeriod: "hour",
       trendChart: null,
+      trendCursorClientX: null,
       contextMenu: null,
       flowArrows: [],
       flowArrowPeakReferences: new Map(),
@@ -2593,14 +2952,21 @@ function diagramMeasurementUnit(measType) {
   return "";
 }
 
-function diagramTooltipRows(rows = []) {
+function diagramTooltipRowKey(sectionKey, label, index = 0) {
+  return `${String(sectionKey || "section")}:${String(label || index)}`;
+}
+
+function diagramTooltipRows(rows = [], sectionKey = "") {
   const content = rows
     .filter((row) => row && row[0])
-    .map(([label, value]) => `
-      <div class="diagram-tooltip-row">
+    .map(([label, value, key], index) => {
+      const rowKey = String(key || diagramTooltipRowKey(sectionKey, label, index));
+      return `
+      <div class="diagram-tooltip-row" data-diagram-tooltip-row="${escapeHtml(rowKey)}">
         <dt>${escapeHtml(label)}</dt>
-        <dd>${escapeHtml(diagramTooltipValue(value))}</dd>
-      </div>`)
+        <dd data-diagram-tooltip-value="${escapeHtml(rowKey)}">${escapeHtml(diagramTooltipValue(value))}</dd>
+      </div>`;
+    })
     .join("");
   return content ? `<dl class="diagram-tooltip-grid">${content}</dl>` : "";
 }
@@ -2647,48 +3013,146 @@ function diagramDeviceMeasurements(device, snapshot = state.snapshot || {}) {
   ));
 }
 
-function renderDiagramDeviceTooltip(container, hover, snapshot) {
+function diagramDeviceTooltipData(container, hover, snapshot) {
   const device = hover?.device || null;
-  if (!device) return "";
+  if (!device) return null;
   const { definition, live, raw, svgIdx } = diagramDeviceData(container, device, snapshot);
   const idx = live?.raw?.idx ?? definition?.idx ?? raw.idx ?? svgIdx ?? "--";
   const identityRows = [
-    ["设备类型", device.devType || "--"],
-    ["设备标识", device.devId || "--"],
-    ["idx", idx],
+    ["设备类型", device.devType || "--", "identity:type"],
+    ["设备标识", device.devId || "--", "identity:id"],
+    ["idx", idx, "identity:idx"],
   ];
   const statusRows = [
-    ["运行状态", live?.run_stat ?? raw.run_stat],
-    ["开关状态", live?.status ?? raw.status],
-    ["控制模式", live?.mode ?? raw.control_type ?? raw.mode],
+    ["运行状态", live?.run_stat ?? raw.run_stat, "status:run_stat"],
+    ["开关状态", live?.status ?? raw.status, "status:status"],
+    ["控制模式", live?.mode ?? raw.control_type ?? raw.mode, "status:mode"],
   ];
   const setRows = Object.entries(live?.set_values || {})
-    .map(([key, value]) => [key, value]);
+    .map(([key, value]) => [key, value, `set:${key}`]);
   const duplicateKeys = new Set([
     "idx", "name", "dev_name", "dev_type", "run_stat", "status", "mode", "control_type",
     ...Object.keys(live?.set_values || {}),
   ]);
   const rawRows = Object.entries(raw)
     .filter(([key]) => !duplicateKeys.has(key))
-    .map(([key, value]) => [key, value]);
+    .map(([key, value]) => [key, value, `raw:${key}`]);
   const measurementRows = diagramDeviceMeasurements(device, snapshot).map((row) => {
     const metricType = normalizeDiagramMeasurementToken(row.meas_type) === "SOC" ? "level" : "";
     const value = diagramTrendDisplayValue(row.value, row, metricType);
     const unit = diagramMeasurementUnit(row.meas_type);
-    return [row.meas_type || row.name || "量测", value === null ? "--" : `${diagramNumberText(value)}${unit ? ` ${unit}` : ""}`];
+    return [
+      row.meas_type || row.name || "量测",
+      value === null ? "--" : `${diagramNumberText(value)}${unit ? ` ${unit}` : ""}`,
+      `measurement:${measurementKey(row)}`,
+    ];
   });
+  return {
+    title: device.devName || device.devId || "设备",
+    sections: [
+      { key: "identity", title: "", rows: identityRows },
+      { key: "status", title: "运行信息", rows: statusRows },
+      { key: "set", title: "当前设定值", rows: setRows },
+      { key: "raw", title: "Model.e 参数", rows: rawRows },
+      { key: "measurement", title: "实时量测", rows: measurementRows },
+    ].filter((section) => section.rows.length),
+  };
+}
+
+function diagramTooltipSectionsHtml(sections = []) {
+  return sections.map((section) => `
+    <section class="diagram-tooltip-section" data-diagram-tooltip-section="${escapeHtml(section.key)}">
+      ${section.title ? `<h4>${escapeHtml(section.title)}</h4>` : ""}
+      ${diagramTooltipRows(section.rows, section.key)}
+    </section>`).join("");
+}
+
+function renderDiagramDeviceTooltip(container, hover, snapshot) {
+  const data = diagramDeviceTooltipData(container, hover, snapshot);
+  if (!data) return "";
   return `
     <div class="diagram-tooltip-head">
-      <strong>${escapeHtml(device.devName || device.devId || "设备")}</strong>
+      <strong data-diagram-tooltip-device-name>${escapeHtml(data.title)}</strong>
       <span>设备参数</span>
     </div>
-    <div class="diagram-tooltip-body">
-      ${diagramTooltipRows(identityRows)}
-      ${statusRows.some((row) => row[1] !== undefined && row[1] !== null && row[1] !== "") ? `<h4>运行信息</h4>${diagramTooltipRows(statusRows)}` : ""}
-      ${setRows.length ? `<h4>当前设定值</h4>${diagramTooltipRows(setRows)}` : ""}
-      ${rawRows.length ? `<h4>Model.e 参数</h4>${diagramTooltipRows(rawRows)}` : ""}
-      ${measurementRows.length ? `<h4>实时量测</h4>${diagramTooltipRows(measurementRows)}` : ""}
+    <div class="diagram-tooltip-body" data-diagram-device-tooltip-body>
+      ${diagramTooltipSectionsHtml(data.sections)}
     </div>`;
+}
+
+function syncDiagramTooltipSections(body, sections = []) {
+  if (!body) return false;
+  const existingSections = new Map(Array.from(body.children)
+    .filter((element) => element.hasAttribute("data-diagram-tooltip-section"))
+    .map((element) => [element.getAttribute("data-diagram-tooltip-section") || "", element]));
+  const desiredSectionKeys = new Set();
+  sections.forEach((section) => {
+    const sectionKey = String(section.key || "");
+    desiredSectionKeys.add(sectionKey);
+    let sectionElement = existingSections.get(sectionKey);
+    if (!sectionElement) {
+      sectionElement = document.createElement("section");
+      sectionElement.className = "diagram-tooltip-section";
+      sectionElement.setAttribute("data-diagram-tooltip-section", sectionKey);
+    }
+    let heading = Array.from(sectionElement.children).find((element) => element.tagName === "H4") || null;
+    if (section.title) {
+      if (!heading) {
+        heading = document.createElement("h4");
+        sectionElement.prepend(heading);
+      }
+      heading.textContent = section.title;
+    } else if (heading) {
+      heading.remove();
+    }
+    let list = Array.from(sectionElement.children).find((element) => element.classList.contains("diagram-tooltip-grid")) || null;
+    if (!list) {
+      list = document.createElement("dl");
+      list.className = "diagram-tooltip-grid";
+      sectionElement.appendChild(list);
+    }
+    const existingRows = new Map(Array.from(list.children)
+      .filter((element) => element.hasAttribute("data-diagram-tooltip-row"))
+      .map((element) => [element.getAttribute("data-diagram-tooltip-row") || "", element]));
+    const desiredRowKeys = new Set();
+    section.rows.forEach(([label, value, key], index) => {
+      const rowKey = String(key || diagramTooltipRowKey(sectionKey, label, index));
+      desiredRowKeys.add(rowKey);
+      let rowElement = existingRows.get(rowKey);
+      if (!rowElement) {
+        rowElement = document.createElement("div");
+        rowElement.className = "diagram-tooltip-row";
+        rowElement.setAttribute("data-diagram-tooltip-row", rowKey);
+        const term = document.createElement("dt");
+        const description = document.createElement("dd");
+        description.setAttribute("data-diagram-tooltip-value", rowKey);
+        rowElement.append(term, description);
+      }
+      const term = rowElement.querySelector("dt");
+      const description = rowElement.querySelector("dd");
+      if (term) term.textContent = label;
+      if (description) description.textContent = diagramTooltipValue(value);
+      list.appendChild(rowElement);
+    });
+    existingRows.forEach((element, key) => {
+      if (!desiredRowKeys.has(key)) element.remove();
+    });
+    body.appendChild(sectionElement);
+  });
+  existingSections.forEach((element, key) => {
+    if (!desiredSectionKeys.has(key)) element.remove();
+  });
+  return true;
+}
+
+function updateDiagramDeviceTooltip(container, hover, snapshot, interaction) {
+  const tooltip = interaction?.tooltip;
+  const data = diagramDeviceTooltipData(container, hover, snapshot);
+  const body = tooltip?.querySelector("[data-diagram-device-tooltip-body]");
+  if (!tooltip || !data || !body) return false;
+  const title = tooltip.querySelector("[data-diagram-tooltip-device-name]");
+  if (title) title.textContent = data.title;
+  return syncDiagramTooltipSections(body, data.sections);
 }
 
 function diagramMetricCurrentRow(container, hover, snapshot) {
@@ -2742,23 +3206,22 @@ function diagramMetricLabel(metricType, row) {
     || "动态量测";
 }
 
-function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute = null, unit = "", interaction = null) {
-  if (!points.length) {
-    if (interaction) interaction.trendChart = null;
-    return '<div class="diagram-trend-empty">当前分页暂无历史曲线</div>';
-  }
+function diagramTrendChartModel(points, period, tooltipWidth = 360, currentMinute = null, unit = "") {
+  const sourcePoints = Array.isArray(points) ? points : [];
   const targetCount = Math.max(32, Math.floor(Math.max(tooltipWidth, 320) * 0.75));
-  const sampled = diagramSampleTrendPoints(points, targetCount);
+  const sampled = diagramSampleTrendPoints(sourcePoints, targetCount);
   const values = sampled.map((point) => Number(point.value));
   const axis = diagramTrendAxisScale(values, 4);
   const width = 336;
   const height = 148;
   const plot = { left: 52, right: 10, top: 20, bottom: 10 };
+  const lastSourcePoint = sourcePoints[sourcePoints.length - 1] || null;
+  const fallbackMinute = Number(lastSourcePoint?.minute);
   const range = diagramTrendPeriodRange(
     period,
     currentMinute !== null && currentMinute !== undefined && currentMinute !== "" && Number.isFinite(Number(currentMinute))
       ? Number(currentMinute)
-      : Number(points[points.length - 1].minute),
+      : (Number.isFinite(fallbackMinute) ? fallbackMinute : 0),
   );
   const labels = diagramTrendPeriodLabels(period, range);
   const minuteSpan = Math.max(1, range.endMinute - range.startMinute);
@@ -2770,33 +3233,62 @@ function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute
     const y = plot.top + ((axis.max - Number(point.value)) / valueSpan) * plotHeight;
     return { ...point, x, y };
   });
+  const numericValues = sourcePoints.map((point) => Number(point.value)).filter(Number.isFinite);
+  return {
+    empty: renderedPoints.length === 0,
+    period: period === "day" ? "day" : "hour",
+    unit: String(unit || ""),
+    width,
+    height,
+    plot,
+    range,
+    labels,
+    axis,
+    renderedPoints,
+    polyline: renderedPoints.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" "),
+    min: numericValues.length ? Math.min(...numericValues) : null,
+    max: numericValues.length ? Math.max(...numericValues) : null,
+    latest: numericValues.length ? numericValues[numericValues.length - 1] : null,
+  };
+}
+
+function setDiagramTrendChartModel(interaction, model) {
   if (interaction) {
-    interaction.trendChart = {
-      width,
-      height,
-      plot,
-      range,
-      points: renderedPoints,
-      unit: String(unit || ""),
+    interaction.trendChart = model.empty ? null : {
+      width: model.width,
+      height: model.height,
+      plot: model.plot,
+      range: model.range,
+      points: model.renderedPoints,
+      unit: model.unit,
     };
   }
-  const polyline = renderedPoints.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ");
-  const axisTicks = axis.ticks.map((value) => {
-    const y = plot.top + ((axis.max - Number(value)) / valueSpan) * plotHeight;
+}
+
+function diagramTrendAxisTicksHtml(model) {
+  const valueSpan = Math.max(1e-9, model.axis.max - model.axis.min);
+  const plotHeight = model.height - model.plot.top - model.plot.bottom;
+  return model.axis.ticks.map((value) => {
+    const y = model.plot.top + ((model.axis.max - Number(value)) / valueSpan) * plotHeight;
     return `
       <g class="diagram-trend-y-tick">
-        <line x1="${plot.left}" y1="${y.toFixed(2)}" x2="${width - plot.right}" y2="${y.toFixed(2)}" class="diagram-trend-grid-line"></line>
-        <text x="${plot.left - 7}" y="${(y + 3.5).toFixed(2)}">${escapeHtml(diagramNumberText(value))}</text>
+        <line x1="${model.plot.left}" y1="${y.toFixed(2)}" x2="${model.width - model.plot.right}" y2="${y.toFixed(2)}" class="diagram-trend-grid-line"></line>
+        <text x="${model.plot.left - 7}" y="${(y + 3.5).toFixed(2)}">${escapeHtml(diagramNumberText(value))}</text>
       </g>`;
   }).join("");
-  const last = points[points.length - 1];
+}
+
+function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute = null, unit = "", interaction = null) {
+  const model = diagramTrendChartModel(points, period, tooltipWidth, currentMinute, unit);
+  setDiagramTrendChartModel(interaction, model);
   return `
-    <svg class="diagram-trend-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${period === "day" ? "日曲线" : "小时曲线"}">
-      <text x="${plot.left}" y="12" class="diagram-trend-axis-unit">${escapeHtml(unit)}</text>
-      ${axisTicks}
-      <line x1="${plot.left}" y1="${plot.top}" x2="${plot.left}" y2="${height - plot.bottom}" class="diagram-trend-y-axis"></line>
-      <polyline class="diagram-trend-series" points="${polyline}" fill="none" vector-effect="non-scaling-stroke"></polyline>
-      <line x1="0" y1="${plot.top}" x2="0" y2="${height - plot.bottom}" class="diagram-trend-cursor diagram-trend-cursor-line" data-diagram-trend-cursor data-diagram-trend-cursor-line visibility="hidden"></line>
+    <div class="diagram-trend-empty" data-diagram-trend-empty${model.empty ? "" : " hidden"}>当前分页暂无历史曲线</div>
+    <svg class="diagram-trend-chart" data-diagram-trend-chart viewBox="0 0 ${model.width} ${model.height}" role="img" aria-label="${model.period === "day" ? "日曲线" : "小时曲线"}"${model.empty ? " hidden" : ""}>
+      <text x="${model.plot.left}" y="12" class="diagram-trend-axis-unit" data-diagram-trend-unit>${escapeHtml(model.unit)}</text>
+      <g data-diagram-trend-axis-ticks>${diagramTrendAxisTicksHtml(model)}</g>
+      <line x1="${model.plot.left}" y1="${model.plot.top}" x2="${model.plot.left}" y2="${model.height - model.plot.bottom}" class="diagram-trend-y-axis"></line>
+      <polyline class="diagram-trend-series" data-diagram-trend-series points="${model.polyline}" fill="none" vector-effect="non-scaling-stroke"></polyline>
+      <line x1="0" y1="${model.plot.top}" x2="0" y2="${model.height - model.plot.bottom}" class="diagram-trend-cursor diagram-trend-cursor-line" data-diagram-trend-cursor data-diagram-trend-cursor-line visibility="hidden"></line>
       <circle cx="0" cy="0" r="3.5" class="diagram-trend-cursor diagram-trend-cursor-point" data-diagram-trend-cursor data-diagram-trend-cursor-point visibility="hidden"></circle>
       <g class="diagram-trend-cursor diagram-trend-cursor-label" data-diagram-trend-cursor data-diagram-trend-cursor-label visibility="hidden">
         <rect width="112" height="34" rx="4" ry="4"></rect>
@@ -2804,18 +3296,90 @@ function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute
         <text x="7" y="27" data-diagram-trend-cursor-value>--</text>
       </g>
     </svg>
-    <div class="diagram-trend-range"><span>${escapeHtml(labels.start)}</span><span>${escapeHtml(labels.end)}</span></div>
-    <div class="diagram-trend-stats">
-      <span>最小 <strong>${diagramNumberText(Math.min(...points.map((point) => point.value)))}</strong></span>
-      <span>最大 <strong>${diagramNumberText(Math.max(...points.map((point) => point.value)))}</strong></span>
-      <span>最新 <strong>${diagramNumberText(last.value)}</strong></span>
+    <div class="diagram-trend-range" data-diagram-trend-range${model.empty ? " hidden" : ""}><span data-diagram-trend-range-start>${escapeHtml(model.labels.start)}</span><span data-diagram-trend-range-end>${escapeHtml(model.labels.end)}</span></div>
+    <div class="diagram-trend-stats" data-diagram-trend-stats${model.empty ? " hidden" : ""}>
+      <span>最小 <strong data-diagram-trend-stat-min>${model.min === null ? "--" : diagramNumberText(model.min)}</strong></span>
+      <span>最大 <strong data-diagram-trend-stat-max>${model.max === null ? "--" : diagramNumberText(model.max)}</strong></span>
+      <span>最新 <strong data-diagram-trend-stat-latest>${model.latest === null ? "--" : diagramNumberText(model.latest)}</strong></span>
     </div>`;
 }
 
 function hideDiagramTrendCursor(interaction) {
+  if (interaction) interaction.trendCursorClientX = null;
   interaction?.tooltip?.querySelectorAll("[data-diagram-trend-cursor]").forEach((element) => {
     element.setAttribute("visibility", "hidden");
   });
+}
+
+function syncDiagramTrendAxisTicks(group, model) {
+  if (!group || !model) return false;
+  const valueSpan = Math.max(1e-9, model.axis.max - model.axis.min);
+  const plotHeight = model.height - model.plot.top - model.plot.bottom;
+  const existing = Array.from(group.children);
+  model.axis.ticks.forEach((value, index) => {
+    let tick = existing[index];
+    if (!tick) {
+      tick = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      tick.classList.add("diagram-trend-y-tick");
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.classList.add("diagram-trend-grid-line");
+      const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      tick.append(line, text);
+    }
+    const y = model.plot.top + ((model.axis.max - Number(value)) / valueSpan) * plotHeight;
+    const line = tick.querySelector("line");
+    const text = tick.querySelector("text");
+    line?.setAttribute("x1", String(model.plot.left));
+    line?.setAttribute("y1", y.toFixed(2));
+    line?.setAttribute("x2", String(model.width - model.plot.right));
+    line?.setAttribute("y2", y.toFixed(2));
+    text?.setAttribute("x", String(model.plot.left - 7));
+    text?.setAttribute("y", (y + 3.5).toFixed(2));
+    if (text) text.textContent = diagramNumberText(value);
+    group.appendChild(tick);
+  });
+  existing.slice(model.axis.ticks.length).forEach((element) => element.remove());
+  return true;
+}
+
+function updateDiagramTrendChart(content, points, period, tooltipWidth, currentMinute, unit, interaction) {
+  if (!content) return false;
+  const model = diagramTrendChartModel(points, period, tooltipWidth, currentMinute, unit);
+  setDiagramTrendChartModel(interaction, model);
+  const empty = content.querySelector("[data-diagram-trend-empty]");
+  const chart = content.querySelector("[data-diagram-trend-chart]");
+  const tickGroup = content.querySelector("[data-diagram-trend-axis-ticks]");
+  const series = content.querySelector("[data-diagram-trend-series]");
+  const range = content.querySelector("[data-diagram-trend-range]");
+  const stats = content.querySelector("[data-diagram-trend-stats]");
+  if (!empty || !chart || !tickGroup || !series || !range || !stats) return false;
+  empty.hidden = !model.empty;
+  chart.toggleAttribute("hidden", model.empty);
+  range.hidden = model.empty;
+  stats.hidden = model.empty;
+  if (model.empty) {
+    hideDiagramTrendCursor(interaction);
+    return true;
+  }
+  chart.setAttribute("aria-label", model.period === "day" ? "日曲线" : "小时曲线");
+  const unitElement = chart.querySelector("[data-diagram-trend-unit]");
+  if (unitElement) unitElement.textContent = model.unit;
+  syncDiagramTrendAxisTicks(tickGroup, model);
+  series.setAttribute("points", model.polyline);
+  const rangeStart = range.querySelector("[data-diagram-trend-range-start]");
+  const rangeEnd = range.querySelector("[data-diagram-trend-range-end]");
+  const statMin = stats.querySelector("[data-diagram-trend-stat-min]");
+  const statMax = stats.querySelector("[data-diagram-trend-stat-max]");
+  const statLatest = stats.querySelector("[data-diagram-trend-stat-latest]");
+  if (rangeStart) rangeStart.textContent = model.labels.start;
+  if (rangeEnd) rangeEnd.textContent = model.labels.end;
+  if (statMin) statMin.textContent = model.min === null ? "--" : diagramNumberText(model.min);
+  if (statMax) statMax.textContent = model.max === null ? "--" : diagramNumberText(model.max);
+  if (statLatest) statLatest.textContent = model.latest === null ? "--" : diagramNumberText(model.latest);
+  if (Number.isFinite(interaction?.trendCursorClientX)) {
+    updateDiagramTrendCursor(interaction, chart, { clientX: interaction.trendCursorClientX });
+  }
+  return true;
 }
 
 function updateDiagramTrendCursor(interaction, chart, event) {
@@ -2831,6 +3395,7 @@ function updateDiagramTrendCursor(interaction, chart, event) {
     hideDiagramTrendCursor(interaction);
     return;
   }
+  interaction.trendCursorClientX = Number(event.clientX);
   const targetMinute = model.range.startMinute
     + ((viewX - model.plot.left) / plotWidth) * (model.range.endMinute - model.range.startMinute);
   const point = diagramNearestTrendPoint(model.points, targetMinute);
@@ -2867,7 +3432,7 @@ function updateDiagramTrendCursor(interaction, chart, event) {
   });
 }
 
-function renderDiagramMetricTooltip(container, hover, snapshot, interaction) {
+function diagramMetricTooltipData(container, hover, snapshot, interaction) {
   const row = diagramMetricCurrentRow(container, hover, snapshot);
   const metricType = hover?.binding?.metricType || hover?.metricType || "";
   const displayValue = diagramTrendDisplayValue(row?.value, row, metricType);
@@ -2883,23 +3448,69 @@ function renderDiagramMetricTooltip(container, hover, snapshot, interaction) {
   const deviceName = hover?.binding?.devName || row?.dev_name || row?.name || "动态量测";
   const metricLabel = diagramMetricLabel(metricType, row);
   const validText = row ? (Number(row.valid ?? 1) === 1 ? "有效" : "无效") : "缺失";
+  return {
+    deviceName,
+    metricLabel,
+    displayText: displayValue === null ? "--" : diagramNumberText(displayValue),
+    unit: String(unit || ""),
+    validText,
+    period,
+    endMinute: Number.isFinite(endMinute) ? endMinute : null,
+    windowPoints,
+  };
+}
+
+function renderDiagramMetricTooltip(container, hover, snapshot, interaction) {
+  const data = diagramMetricTooltipData(container, hover, snapshot, interaction);
   return `
     <div class="diagram-tooltip-head">
-      <strong>${escapeHtml(deviceName)}</strong>
-      <span>${escapeHtml(metricLabel)}</span>
+      <strong data-diagram-tooltip-device-name>${escapeHtml(data.deviceName)}</strong>
+      <span data-diagram-tooltip-metric-label>${escapeHtml(data.metricLabel)}</span>
     </div>
     <div class="diagram-metric-current">
-      <strong>${displayValue === null ? "--" : escapeHtml(diagramNumberText(displayValue))}</strong>
-      <span>${escapeHtml(unit)}</span>
-      <small>${escapeHtml(validText)}</small>
+      <strong data-diagram-tooltip-current-value>${escapeHtml(data.displayText)}</strong>
+      <span data-diagram-tooltip-current-unit>${escapeHtml(data.unit)}</span>
+      <small data-diagram-tooltip-validity>${escapeHtml(data.validText)}</small>
     </div>
     <div class="diagram-trend-tabs" role="tablist" aria-label="量测趋势范围">
-      <button type="button" data-diagram-trend-period="hour" class="${period === "hour" ? "is-active" : ""}" aria-selected="${period === "hour"}">小时曲线</button>
-      <button type="button" data-diagram-trend-period="day" class="${period === "day" ? "is-active" : ""}" aria-selected="${period === "day"}">日曲线</button>
+      <button type="button" data-diagram-trend-period="hour" class="${data.period === "hour" ? "is-active" : ""}" aria-selected="${data.period === "hour"}">小时曲线</button>
+      <button type="button" data-diagram-trend-period="day" class="${data.period === "day" ? "is-active" : ""}" aria-selected="${data.period === "day"}">日曲线</button>
     </div>
-    <div class="diagram-trend-content">
-      ${diagramTrendChartHtml(windowPoints, period, interaction.tooltip?.clientWidth || 360, endMinute, unit, interaction)}
+    <div class="diagram-trend-content" data-diagram-trend-content>
+      ${diagramTrendChartHtml(data.windowPoints, data.period, interaction.tooltip?.clientWidth || 360, data.endMinute, data.unit, interaction)}
     </div>`;
+}
+
+function updateDiagramMetricTooltip(container, hover, snapshot, interaction) {
+  const tooltip = interaction?.tooltip;
+  if (!tooltip) return false;
+  const data = diagramMetricTooltipData(container, hover, snapshot, interaction);
+  const value = tooltip.querySelector("[data-diagram-tooltip-current-value]");
+  const unit = tooltip.querySelector("[data-diagram-tooltip-current-unit]");
+  const validity = tooltip.querySelector("[data-diagram-tooltip-validity]");
+  const content = tooltip.querySelector("[data-diagram-trend-content]");
+  if (!value || !unit || !validity || !content) return false;
+  const deviceName = tooltip.querySelector("[data-diagram-tooltip-device-name]");
+  const metricLabel = tooltip.querySelector("[data-diagram-tooltip-metric-label]");
+  if (deviceName) deviceName.textContent = data.deviceName;
+  if (metricLabel) metricLabel.textContent = data.metricLabel;
+  value.textContent = data.displayText;
+  unit.textContent = data.unit;
+  validity.textContent = data.validText;
+  tooltip.querySelectorAll("[data-diagram-trend-period]").forEach((button) => {
+    const selected = button.getAttribute("data-diagram-trend-period") === data.period;
+    button.classList.toggle("is-active", selected);
+    button.setAttribute("aria-selected", String(selected));
+  });
+  return updateDiagramTrendChart(
+    content,
+    data.windowPoints,
+    data.period,
+    interaction.tooltip?.clientWidth || 360,
+    data.endMinute,
+    data.unit,
+    interaction,
+  );
 }
 
 function positionDiagramTooltip(interaction) {
@@ -2952,25 +3563,42 @@ function scheduleDiagramTooltipHide(container) {
   interaction.hideTimer = setTimeout(() => hideDiagramTooltip(container), DIAGRAM_TOOLTIP_HIDE_DELAY_MS);
 }
 
+function renderActiveDiagramTooltip(container, snapshot, interaction) {
+  const hover = interaction?.hover;
+  const tooltip = interaction?.tooltip;
+  if (!hover || !tooltip) return false;
+  hideDiagramTrendCursor(interaction);
+  interaction.trendChart = null;
+  const html = hover.kind === "metric"
+    ? renderDiagramMetricTooltip(container, hover, snapshot, interaction)
+    : renderDiagramDeviceTooltip(container, hover, snapshot);
+  if (!html) {
+    hideDiagramTooltip(container);
+    return false;
+  }
+  tooltip.dataset.kind = hover.kind;
+  tooltip.dataset.hoverKey = String(hover.key || "");
+  tooltip.innerHTML = html;
+  tooltip.hidden = false;
+  tooltip.classList.add("is-visible");
+  positionDiagramTooltip(interaction);
+  return true;
+}
+
 function refreshDiagramTooltip(container, snapshot = state.snapshot || {}) {
   const interaction = diagramInteractionCache.get(container);
   if (!interaction) return;
   interaction.snapshot = snapshot;
   if (!interaction.hover || !interaction.tooltip) return;
-  hideDiagramTrendCursor(interaction);
-  interaction.trendChart = null;
-  const html = interaction.hover.kind === "metric"
-    ? renderDiagramMetricTooltip(container, interaction.hover, snapshot, interaction)
-    : renderDiagramDeviceTooltip(container, interaction.hover, snapshot);
-  if (!html) {
-    hideDiagramTooltip(container);
+  const hoverKey = String(interaction.hover.key || "");
+  if (interaction.tooltip.hidden || interaction.tooltip.dataset.hoverKey !== hoverKey) {
+    renderActiveDiagramTooltip(container, snapshot, interaction);
     return;
   }
-  interaction.tooltip.dataset.kind = interaction.hover.kind;
-  interaction.tooltip.innerHTML = html;
-  interaction.tooltip.hidden = false;
-  interaction.tooltip.classList.add("is-visible");
-  positionDiagramTooltip(interaction);
+  const updated = interaction.hover.kind === "metric"
+    ? updateDiagramMetricTooltip(container, interaction.hover, snapshot, interaction)
+    : updateDiagramDeviceTooltip(container, interaction.hover, snapshot, interaction);
+  if (!updated) renderActiveDiagramTooltip(container, snapshot, interaction);
 }
 
 function resetDiagramInteractions(container) {
@@ -3387,11 +4015,12 @@ function setReceiveLinkMessage(text, kind = "") {
 }
 
 function openReceiveLinkDialog() {
+  if (state.receiveMode) return;
   const dialog = $("receiveLinkDialog");
   const input = $("receiveLinkInput");
   if (!dialog || !input) return;
   input.value = state.interactionLink || localStorage.getItem("polarTeacherInteractionLink") || "";
-  setReceiveLinkMessage("请输入模拟台针对当前模型生成的交互链接。");
+  setReceiveLinkMessage(`远端定义将覆盖当前本地模型：${state.activeModelId || "--"}。`);
   $("confirmReceiveLink").disabled = false;
   dialog.showModal();
   input.focus();
@@ -3450,21 +4079,18 @@ function legacyTeacherInteractionConnection(url) {
   };
 }
 
-async function resolveTeacherInteractionLink(rawLink) {
-  const url = normalizeConnectionUrl(rawLink);
-  const payload = await api("/api/trainee/connect", {
-    method: "POST",
-    modelScoped: false,
-    body: JSON.stringify({ link: url.href }),
-  });
-  const connection = payload.connection || {};
-  const modelId = connection.model_id || connection.modelId || url.searchParams.get("model_id") || "";
-  if (!modelId) throw new Error("交互链接缺少模型标识。");
+function teacherConnectionFromPayload(payload = {}, fallbackLink = "") {
+  const connection = payload.connection || payload.receive_state || payload;
+  const fallbackUrl = fallbackLink ? normalizeConnectionUrl(fallbackLink) : null;
+  const modelId = connection.model_id || connection.teacher_model_id || connection.modelId || connection.teacherModelId
+    || fallbackUrl?.searchParams.get("model_id") || "";
   return {
-    link: connection.link || url.href,
-    teacherApiBase: String(connection.teacher_api_base || connection.teacherApiBase || url.origin).replace(/\/$/, ""),
+    link: connection.link || connection.interaction_link || fallbackUrl?.href || "",
+    teacherApiBase: String(
+      connection.teacher_api_base || connection.teacherApiBase || fallbackUrl?.origin || "",
+    ).replace(/\/$/, ""),
     modelId: String(modelId),
-    modelName: String(connection.model_name || connection.modelName || modelId),
+    modelName: String(connection.model_name || connection.teacher_model_name || connection.modelName || modelId),
     snapshotPath: String(connection.snapshot_path || connection.snapshotPath || `/api/snapshot?model_id=${encodeURIComponent(modelId)}`),
     commandPath: String(connection.command_path || connection.commandPath || `/api/student/commands?model_id=${encodeURIComponent(modelId)}`),
     measurementDeltaPath: String(
@@ -3472,7 +4098,11 @@ async function resolveTeacherInteractionLink(rawLink) {
         connection.snapshot_path || connection.snapshotPath || `/api/snapshot?model_id=${encodeURIComponent(modelId)}`,
       ),
     ),
-    initialSnapshot: payload.snapshot || null,
+    definitionArchivePath: String(
+      connection.definition_archive_path
+      || connection.definitionArchivePath
+      || `/api/export-definitions?format=json&model_id=${encodeURIComponent(modelId)}`,
+    ),
   };
 }
 
@@ -3481,11 +4111,6 @@ function connectionApiUrl(connection, path) {
   if (/^https?:\/\//i.test(target)) return target;
   const normalized = target.startsWith("/") ? target : `/${target}`;
   return `${connection.teacherApiBase}${normalized}`;
-}
-
-async function fetchTeacherSnapshot(connection) {
-  if (connection?.initialSnapshot) return connection.initialSnapshot;
-  return teacherSnapshotApi();
 }
 
 function hasLocalDefinitionModel(modelId) {
@@ -3506,56 +4131,27 @@ async function fetchLocalDefinitionSnapshot(preferredModelId = "") {
   return { modelId, snapshot };
 }
 
-async function selectLocalDefinitionSnapshotForTeacher(connection, teacherSnapshot, preferredLocalModelId = state.activeModelId) {
-  const teacherModelId = String(connection?.modelId || "");
-  const localModelId = String(preferredLocalModelId || "");
-  if (teacherModelId && hasLocalDefinitionModel(teacherModelId)) {
-    return { ...(await fetchLocalDefinitionSnapshot(teacherModelId)), usingTeacherBaseline: false };
+async function ensureLocalDefinitionSnapshot(modelId = state.activeModelId) {
+  const targetModelId = String(modelId || "");
+  if (state.localDefinitionSnapshot && state.localDefinitionModelId === targetModelId) {
+    return { modelId: targetModelId, snapshot: state.localDefinitionSnapshot };
   }
-  if (!teacherModelId && hasLocalDefinitionModel(localModelId)) {
-    return { ...(await fetchLocalDefinitionSnapshot(localModelId)), usingTeacherBaseline: false };
-  }
-  if (teacherModelId) {
-    try {
-      const local = await fetchLocalDefinitionSnapshot();
-      return {
-        modelId: teacherModelId,
-        snapshot: teacherSnapshot,
-        usingTeacherBaseline: true,
-        fallbackModelId: local.modelId,
-        mismatchMessages: compareSnapshotDefinitions(local.snapshot, teacherSnapshot),
-      };
-    } catch (error) {
-      return {
-        modelId: teacherModelId,
-        snapshot: teacherSnapshot,
-        usingTeacherBaseline: true,
-        fallbackModelId: "",
-        mismatchMessages: [apiErrorText(error)],
-      };
-    }
-  }
+  const local = await fetchLocalDefinitionSnapshot(targetModelId);
+  state.localDefinitionSnapshot = local.snapshot;
+  state.localDefinitionModelId = local.modelId;
+  return local;
+}
 
-  try {
-    const local = await fetchLocalDefinitionSnapshot();
-    const messages = compareSnapshotDefinitions(local.snapshot, teacherSnapshot);
-    if (!messages.length) return { ...local, usingTeacherBaseline: false };
-    return {
-      modelId: teacherModelId || local.modelId,
-      snapshot: teacherSnapshot,
-      usingTeacherBaseline: true,
-      fallbackModelId: local.modelId,
-      mismatchMessages: messages,
-    };
-  } catch (error) {
-    return {
-      modelId: teacherModelId,
-      snapshot: teacherSnapshot,
-      usingTeacherBaseline: true,
-      fallbackModelId: "",
-      mismatchMessages: [apiErrorText(error)],
-    };
-  }
+function mergeTeacherSnapshotWithLocalDefinitions(previousSnapshot, remoteSnapshot) {
+  const localDefinitions = state.localDefinitionSnapshot || {};
+  const merged = mergeSnapshot(previousSnapshot || localDefinitions, remoteSnapshot || {});
+  STATIC_SNAPSHOT_KEYS.forEach((key) => {
+    if (localDefinitions[key] !== undefined) merged[key] = localDefinitions[key];
+  });
+  if (localDefinitions.model) merged.model = localDefinitions.model;
+  if (localDefinitions.devices) merged.devices = localDefinitions.devices;
+  if (localDefinitions.static_meta) merged.static_meta = localDefinitions.static_meta;
+  return merged;
 }
 
 function applyTeacherConnection(connection) {
@@ -3566,6 +4162,7 @@ function applyTeacherConnection(connection) {
   state.teacherSnapshotPath = connection.snapshotPath;
   state.teacherCommandPath = connection.commandPath;
   state.teacherMeasurementDeltaPath = connection.measurementDeltaPath;
+  state.teacherDefinitionArchivePath = connection.definitionArchivePath;
   state.measurementDeltaSeq = 0;
   persistActiveModelContext();
 }
@@ -3736,7 +4333,7 @@ function stopReceiveAfterPersistentIssue(result, detail = [], simTime = "") {
   state.receiveEpoch += 1;
   state.receiveRequestActive = false;
   persistActiveModelContext({ receiveMode: false, frozen: true });
-  saveTraineeReceiveState(state.activeModelId, { active: false, frozen: true }).catch((error) => {
+  setTraineeReceiveActive(state.activeModelId, false).catch((error) => {
     addRuntimeLog("接收模式", "学员台服务端", "保存保护状态失败", apiErrorText(error), "warn");
   });
   addRuntimeLog(
@@ -3799,7 +4396,6 @@ function validateTeacherSnapshotDefinitions(snapshot, result = "定义不一致"
 
 function acceptTeacherSnapshot(snapshot, epoch = state.receiveEpoch) {
   if (!state.receiveMode || epoch !== state.receiveEpoch) return false;
-  if (!validateTeacherSnapshotDefinitions(snapshot, "接收数据定义不一致")) return false;
   state.snapshotSource = "teacher";
   const clock = snapshot.clock || {};
   if (String(clock.state || "").toLowerCase() === "stopped") {
@@ -3845,12 +4441,14 @@ async function attemptTeacherReconnect(epoch) {
   const attempt = state.receiveReconnectAttempts;
   renderReceiveMode(`重连中 ${attempt}/${RECEIVE_MAX_RECONNECT_ATTEMPTS}`);
   try {
-    const connection = await resolveTeacherInteractionLink(state.interactionLink);
-    const snapshot = await fetchTeacherSnapshot(connection);
+    await ensureLocalDefinitionSnapshot(state.activeModelId);
+    const remoteSnapshot = await teacherSnapshotApi(currentPageName());
     if (!state.receiveMode || epoch !== state.receiveEpoch) return;
-    applyTeacherConnection(connection);
+    const snapshot = mergeTeacherSnapshotWithLocalDefinitions(state.snapshot, remoteSnapshot);
+    state.snapshot = snapshot;
+    await refreshMeasurementDelta(false);
     if (acceptTeacherSnapshot(snapshot, epoch)) {
-      addRuntimeLog("实时交互", "模拟台交互链接", "重连成功", `模型 ${connection.modelName}`, "ok");
+      addRuntimeLog("实时交互", "模拟台实时链路", "重连成功", `模型 ${state.teacherModelName}`, "ok");
     }
   } catch (error) {
     if (!state.receiveMode || epoch !== state.receiveEpoch) return;
@@ -3858,65 +4456,111 @@ async function attemptTeacherReconnect(epoch) {
   }
 }
 
-async function startReceiveModeFromLink() {
-  const input = $("receiveLinkInput");
-  const confirmButton = $("confirmReceiveLink");
-  if (!input || !confirmButton) return;
+async function setTraineeReceiveActive(modelId, active) {
+  const result = await api("/api/trainee/receive", {
+    method: "POST",
+    modelScoped: false,
+    body: JSON.stringify({ model_id: modelId, active }),
+  });
+  mergeBackendReceiveState(modelId, result, contextKey(modelId) === contextKey());
+  return result;
+}
+
+async function startReceiveMode() {
+  if (!state.modelInitialized) {
+    addRuntimeLog("接收模式", "当前本地模型", "启动接收失败", "请先完成模型初始化。", "warn");
+    renderReceiveMode("等待模型初始化");
+    return;
+  }
   const activeModelIdBeforeReceive = state.activeModelId;
-  confirmButton.disabled = true;
-  setReceiveLinkMessage("正在校验交互链接。");
   try {
-    const connection = await resolveTeacherInteractionLink(input.value);
-    setReceiveLinkMessage("链接可用，正在接收第一帧数据。", "ok");
-    const teacherSnapshot = await fetchTeacherSnapshot(connection);
-    const {
-      modelId: localModelId,
-      snapshot: definitionSnapshot,
-      usingTeacherBaseline,
-      fallbackModelId,
-      mismatchMessages,
-    } = await selectLocalDefinitionSnapshotForTeacher(connection, teacherSnapshot, activeModelIdBeforeReceive);
-    state.localDefinitionSnapshot = definitionSnapshot;
-    state.localDefinitionModelId = localModelId;
-    state.definitionMismatchLastKey = "";
-    applyTeacherConnection(connection);
+    const local = await ensureLocalDefinitionSnapshot(activeModelIdBeforeReceive);
+    state.snapshot = local.snapshot;
+    await setTraineeReceiveActive(activeModelIdBeforeReceive, true);
     state.receiveMode = true;
     state.frozen = false;
     state.receiveEpoch += 1;
     resetReceiveIssueStreak();
+    state.measurementDeltaSeq = 0;
     state.measurementTraceHistory = [];
     state.commandTraceHistory = [];
     state.lastReceiveAt = "";
     state.snapshotSource = "";
     state.lastTeacherSnapshotLogKey = "";
     persistActiveModelContext();
-    await saveTraineeReceiveState(activeModelIdBeforeReceive, { active: true, frozen: false });
-    closeReceiveLinkDialog();
     addRuntimeLog(
       "接收模式",
-      "模拟台交互链接",
+      "模拟台实时链路",
       "启动接收",
-      `模型 ${connection.modelName}；接收地址 ${teacherReceiveAddress()}`,
+      `模型 ${state.teacherModelName || state.teacherModelId}；接收地址 ${teacherReceiveAddress()}`,
       "ok",
     );
-    if (usingTeacherBaseline) {
-      addRuntimeLog(
-        "实时交互",
-        "定义一致性校验",
-        "使用远端定义基准",
-        [
-          `本地无同名模型 ${connection.modelName || connection.modelId}`,
-          fallbackModelId ? `原本地模型 ${fallbackModelId}` : "",
-          "已使用模拟台第一帧定义作为本次接收基准",
-          ...(mismatchMessages || []).slice(0, 3),
-        ],
-        "warn",
-      );
-    }
     renderReceiveMode();
-    acceptTeacherSnapshot(teacherSnapshot, state.receiveEpoch);
+    await refreshFromTeacher(state.receiveEpoch);
   } catch (error) {
-    addRuntimeLog("接收模式", "模拟台交互链接", "启动接收失败", apiErrorText(error), "warn");
+    addRuntimeLog("接收模式", "模拟台实时链路", "启动接收失败", apiErrorText(error), "warn");
+    renderReceiveMode(apiErrorText(error));
+  }
+}
+
+async function initializeModelFromLink() {
+  const input = $("receiveLinkInput");
+  const confirmButton = $("confirmReceiveLink");
+  if (!input || !confirmButton) return;
+  const activeModelIdBeforeInitialize = state.activeModelId;
+  confirmButton.disabled = true;
+  setReceiveLinkMessage("正在下载并覆盖当前本地模型定义。");
+  try {
+    const normalizedLink = normalizeConnectionUrl(input.value).href;
+    const result = await api("/api/trainee/model-initialize", {
+      method: "POST",
+      modelScoped: false,
+      body: JSON.stringify({
+        model_id: activeModelIdBeforeInitialize,
+        link: normalizedLink,
+      }),
+    });
+    state.models = normalizeModels(Array.isArray(result.models) ? result.models : state.models);
+    mergeBackendReceiveState(activeModelIdBeforeInitialize, result.receive_state || {}, true);
+    const connection = teacherConnectionFromPayload(result, normalizedLink);
+    applyTeacherConnection(connection);
+    state.activeModelId = activeModelIdBeforeInitialize;
+    localStorage.setItem("polarTraineeModelId", activeModelIdBeforeInitialize);
+    state.modelInitialized = true;
+    state.modelInitializedAt = result.receive_state?.initialized_at || state.modelInitializedAt;
+    state.receiveMode = false;
+    state.frozen = false;
+    state.receiveEpoch += 1;
+    resetReceiveIssueStreak();
+    state.measurementDeltaSeq = 0;
+    state.measurementTraceHistory = [];
+    state.commandTraceHistory = [];
+    state.renewableTrendHistory = [];
+    state.lastReceiveAt = "";
+    state.snapshot = null;
+    state.snapshotSource = "local";
+    state.localDefinitionSnapshot = null;
+    state.localDefinitionModelId = "";
+    state.lastTeacherSnapshotLogKey = "";
+    clearStaticSnapshotCacheForModel(activeModelIdBeforeInitialize);
+    persistActiveModelContext();
+    renderModelSelector();
+    if ($("modelManagementDialog")?.open) renderModelManagementList();
+    const localSnapshot = await refreshLocalSnapshotPayload(currentPageName());
+    state.snapshotSource = "local";
+    renderSnapshot(localSnapshot);
+    closeReceiveLinkDialog();
+    addRuntimeLog(
+      "模型初始化",
+      "模拟台定义下载",
+      "初始化成功",
+      `本地模型 ${activeModelIdBeforeInitialize} ← 远端模型 ${connection.modelName || connection.modelId}`,
+      "ok",
+    );
+    setImportStatus(`模型初始化完成：${activeModelIdBeforeInitialize}`, "ok");
+    renderReceiveMode();
+  } catch (error) {
+    addRuntimeLog("模型初始化", "模拟台定义下载", "初始化失败", apiErrorText(error), "warn");
     setReceiveLinkMessage(apiErrorText(error), "error");
   } finally {
     confirmButton.disabled = false;
@@ -3965,15 +4609,18 @@ function simulationClockTextFromMinute(minute, snapshot = state.snapshot || {}) 
   const numericMinute = Number(minute);
   if (!Number.isFinite(numericMinute)) return "--";
   const timeText = formatTraceClockMinute(numericMinute);
-  if (curveDisplayMode(snapshot) !== "year") return timeText;
-  let dayOfYear = Math.floor(Math.max(0, Math.round(numericMinute)) / 1440) % 365;
+  const mode = curveDisplayMode(snapshot);
+  const dayCount = curveDisplayModeDayCount(mode);
+  if (dayCount <= 1) return timeText;
+  let dayOfCycle = Math.floor(Math.max(0, numericMinute) / 1440) % dayCount;
+  if (mode !== "year") return `第${dayOfCycle + 1}天 ${timeText}`;
   const monthDays = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   let month = 0;
-  while (month < monthDays.length - 1 && dayOfYear >= monthDays[month]) {
-    dayOfYear -= monthDays[month];
+  while (month < monthDays.length - 1 && dayOfCycle >= monthDays[month]) {
+    dayOfCycle -= monthDays[month];
     month += 1;
   }
-  return `${String(month + 1).padStart(2, "0")}-${String(dayOfYear + 1).padStart(2, "0")} ${timeText}`;
+  return `${String(month + 1).padStart(2, "0")}-${String(dayOfCycle + 1).padStart(2, "0")} ${timeText}`;
 }
 
 function currentCommandSendTimeInfo(snapshot = state.snapshot || {}) {
@@ -4092,17 +4739,6 @@ function runtimeLogDetailText(detail) {
   return String(detail || "");
 }
 
-function arrayBufferToBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  const chunkSize = 32768;
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    const chunk = bytes.subarray(offset, offset + chunkSize);
-    binary += String.fromCharCode(...chunk);
-  }
-  return btoa(binary);
-}
-
 function setImportStatus(text, kind = "") {
   const target = $("importStatus");
   if (!target) return;
@@ -4140,6 +4776,7 @@ function modelManagementState(model) {
   const modelId = String(model?.id || "");
   const context = traineeReceiveStateForModel(modelId);
   if (context.receiveMode) return "receiving";
+  if (!context.modelInitialized) return "uninitialized";
   if (context.frozen) return "frozen";
   return String(model?.clock_state || "stopped");
 }
@@ -4147,6 +4784,7 @@ function modelManagementState(model) {
 function modelManagementStateText(value) {
   return {
     receiving: "接收中",
+    uninitialized: "未初始化",
     frozen: "已冻结",
     running: "运行中",
     paused: "暂停中",
@@ -4196,16 +4834,9 @@ function updateModelContextMenuActions() {
   const menu = $("modelContextMenu");
   const exportButton = menu?.querySelector('[data-model-context-action="export"]');
   const cloneButton = menu?.querySelector('[data-model-context-action="clone"]');
-  const updateButton = menu?.querySelector('[data-model-context-action="update"]');
   const deleteButton = menu?.querySelector('[data-model-context-action="delete"]');
   if (exportButton) exportButton.disabled = !hasSelected;
   if (cloneButton) cloneButton.disabled = !hasSelected;
-  if (updateButton) {
-    updateButton.disabled = !editable;
-    updateButton.title = !hasSelected
-      ? "请选择模型"
-      : (editable ? "导入修改后的模型与图形等定义数据" : "模型正在接收或运行中，不能修改");
-  }
   if (deleteButton) {
     const canDelete = hasSelected && models.length > 1 && editable;
     deleteButton.disabled = !canDelete;
@@ -4276,7 +4907,7 @@ async function openModelManagementDialog() {
     await loadModels();
     ensureSelectedManagementModelId();
     renderModelManagementList();
-    setModelManagementMessage("可新建模型或导入定义包；右键模型节点可导出、复制、修改或删除。", "ok");
+    setModelManagementMessage("可新建待初始化模型；右键模型节点可导出、复制或删除。", "ok");
   } catch (error) {
     renderModelManagementList();
     setModelManagementMessage(apiErrorText(error), "error");
@@ -4311,7 +4942,7 @@ function handleModelManagementAction(event) {
   const item = event.target instanceof Element ? event.target.closest(".model-management-item[data-model-id]") : null;
   if (!item) return;
   setSelectedManagementModel(item.dataset.modelId || "");
-  setModelManagementMessage("可新建模型或导入定义包；右键模型节点可导出、复制、修改或删除。", "ok");
+  setModelManagementMessage("可新建待初始化模型；右键模型节点可导出、复制或删除。", "ok");
 }
 
 function handleModelManagementKeydown(event) {
@@ -4334,14 +4965,6 @@ function openModelContextMenu(event) {
   positionModelContextMenu(menu, event.clientX, event.clientY);
 }
 
-function suggestedImportModelName(filename) {
-  return String(filename || "导入模型")
-    .replace(/\.zip$/i, "")
-    .replace(/_definitions_\d{8}_\d{6}$/i, "")
-    .replace(/_definitions$/i, "")
-    .trim() || "导入模型";
-}
-
 function setNewModelMessage(text, kind = "") {
   const message = $("newModelMessage");
   if (!message) return;
@@ -4354,14 +4977,12 @@ function setNewModelBusy(isBusy) {
   const confirm = $("confirmNewModel");
   const input = $("newModelName");
   const button = $("newModelButton");
-  const selectFile = $("selectNewModelFile");
   if (confirm) {
     confirm.disabled = isBusy;
     confirm.textContent = isBusy ? "新建中" : "新建";
   }
   if (input) input.disabled = isBusy;
   if (button) button.disabled = isBusy;
-  if (selectFile) selectFile.disabled = isBusy;
 }
 
 function uniqueNewModelName(baseName = "新模型") {
@@ -4372,16 +4993,6 @@ function uniqueNewModelName(baseName = "新模型") {
     if (!isModelNameTaken(candidate)) return candidate;
   }
   return `${base}_${Date.now()}`;
-}
-
-function suggestedNewModelName(filename) {
-  return uniqueNewModelName(
-    String(filename || "新模型")
-      .replace(/\.zip$/i, "")
-      .replace(/_definitions_\d{8}_\d{6}$/i, "")
-      .replace(/_definitions$/i, "")
-      .trim() || "新模型",
-  );
 }
 
 function validateNewModelForm(showBlank = false) {
@@ -4398,16 +5009,6 @@ function validateNewModelForm(showBlank = false) {
     setNewModelMessage(`模型已存在：${name}，请输入新的模型名称。`, "error");
     return false;
   }
-  if (!pendingNewModelFile) {
-    if (confirm) confirm.disabled = true;
-    setNewModelMessage(showBlank ? "请选择模拟台导出的定义压缩包。" : "", showBlank ? "error" : "");
-    return false;
-  }
-  if (!String(pendingNewModelFile.name || "").toLowerCase().endsWith(".zip")) {
-    if (confirm) confirm.disabled = true;
-    setNewModelMessage("请选择 .zip 格式的定义压缩包。", "error");
-    return false;
-  }
   if (confirm) confirm.disabled = false;
   setNewModelMessage("");
   return true;
@@ -4417,10 +5018,6 @@ function openNewModelDialog() {
   const dialog = $("newModelDialog");
   const input = $("newModelName");
   if (!dialog || !input) return;
-  pendingNewModelFile = null;
-  const fileInput = $("newModelFileInput");
-  if (fileInput) fileInput.value = "";
-  $("newModelFilename").textContent = "未选择文件";
   input.value = uniqueNewModelName("新模型");
   setNewModelMessage("");
   validateNewModelForm();
@@ -4434,305 +5031,46 @@ function openNewModelDialog() {
 function closeNewModelDialog() {
   const dialog = $("newModelDialog");
   if (dialog?.open) dialog.close();
-  pendingNewModelFile = null;
-  const fileInput = $("newModelFileInput");
-  if (fileInput) fileInput.value = "";
-  $("newModelFilename").textContent = "未选择文件";
   setNewModelMessage("");
   setNewModelBusy(false);
 }
 
-function handleNewModelFileSelected(event) {
-  const file = event.target.files?.[0] || null;
-  pendingNewModelFile = file;
-  $("newModelFilename").textContent = file?.name || "未选择文件";
-  const input = $("newModelName");
-  if (file && input && !String(input.value || "").trim()) {
-    input.value = suggestedNewModelName(file.name);
-  }
-  validateNewModelForm(Boolean(file));
-}
-
-async function createNewModelFromArchive() {
-  const file = pendingNewModelFile;
+async function createNewModelSlot() {
   const input = $("newModelName");
   const name = String(input?.value || "").trim();
-  if (!file || !validateNewModelForm(true)) {
+  if (!validateNewModelForm(true)) {
     input?.focus();
     return;
   }
   setNewModelBusy(true);
-  setNewModelMessage("正在导入模拟台定义压缩包并创建本地模型...");
-  addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "新建请求", `${name} ← ${file.name}`);
+  setNewModelMessage("正在创建待初始化的本地模型...");
+  addRuntimeLog("模型管理", "学员台 /api/trainee/models/create", "新建请求", name);
   try {
-    const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
-    const result = await api("/api/models/import-definitions", {
+    const result = await api("/api/trainee/models/create", {
       modelScoped: false,
       method: "POST",
-      body: JSON.stringify({
-        create_model: true,
-        name,
-        filename: file.name,
-        data_base64: dataBase64,
-      }),
+      body: JSON.stringify({ name }),
     });
     state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
-    const newModelId = result.model?.id || result.active_model_id || name;
+    const newModelId = result.model?.id || result.selected_model_id || name;
+    state.modelContexts[contextKey(newModelId)] = defaultModelContext(newModelId);
+    persistModelContextsToStorage();
     closeNewModelDialog();
     state.selectedManagementModelId = newModelId;
     renderModelSelector();
     renderModelManagementList();
-    setModelManagementMessage(`已新建模型：${name}`, "ok");
-    setImportStatus(`已新建模型：${name}`, "ok");
-    addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "新建成功", `模型 ${name}`, "ok");
+    setModelManagementMessage(`已新建待初始化模型：${name}`, "ok");
+    setImportStatus(`已新建待初始化模型：${name}`, "ok");
+    addRuntimeLog("模型管理", "学员台 /api/trainee/models/create", "新建成功", `模型 ${name}`, "ok");
   } catch (error) {
     const message = apiErrorText(error);
     if (message.includes("已存在")) await loadModels();
     setNewModelMessage(message.includes("已存在") ? `${message}，请输入新的模型名称。` : message, "error");
     setImportStatus(message, "error");
-    addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "新建失败", message, "error");
+    addRuntimeLog("模型管理", "学员台 /api/trainee/models/create", "新建失败", message, "error");
   } finally {
     setNewModelBusy(false);
     if ($("newModelDialog")?.open) validateNewModelForm();
-  }
-}
-
-function setImportModelMessage(text, kind = "") {
-  const message = $("importModelMessage");
-  if (!message) return;
-  message.textContent = text || "";
-  message.classList.toggle("is-error", kind === "error");
-  message.classList.toggle("is-ok", kind === "ok");
-}
-
-function validateImportModelName(showBlank = false) {
-  const input = $("importModelName");
-  const confirm = $("confirmImportModel");
-  const name = String(input?.value || "").trim();
-  if (!pendingImportDefinitionFile) {
-    if (confirm) confirm.disabled = true;
-    setImportModelMessage(showBlank ? "请选择定义包。" : "");
-    return false;
-  }
-  if (!name) {
-    if (confirm) confirm.disabled = true;
-    setImportModelMessage(showBlank ? "请输入新模型名称。" : "", showBlank ? "error" : "");
-    return false;
-  }
-  if (isModelNameTaken(name)) {
-    if (confirm) confirm.disabled = true;
-    setImportModelMessage(`模型已存在：${name}，请输入新的模型名称。`, "error");
-    return false;
-  }
-  if (confirm) confirm.disabled = false;
-  setImportModelMessage("");
-  return true;
-}
-
-function openImportModelDialog(file) {
-  const dialog = $("importModelDialog");
-  const input = $("importModelName");
-  if (!dialog || !input || !file) return;
-  pendingImportDefinitionFile = file;
-  $("importModelFilename").textContent = file.name;
-  input.value = suggestedImportModelName(file.name);
-  setImportModelMessage("");
-  validateImportModelName();
-  if (!dialog.open) dialog.showModal();
-  requestAnimationFrame(() => {
-    input.focus();
-    input.select();
-  });
-}
-
-function closeImportModelDialog() {
-  const dialog = $("importModelDialog");
-  if (dialog?.open) dialog.close();
-  pendingImportDefinitionFile = null;
-  const input = $("definitionArchiveInput");
-  if (input) input.value = "";
-  setImportModelMessage("");
-}
-
-function setImportModelBusy(isBusy) {
-  const confirm = $("confirmImportModel");
-  const input = $("importModelName");
-  const button = $("importDefinitionsButton");
-  if (confirm) {
-    confirm.disabled = isBusy;
-    confirm.textContent = isBusy ? "导入中" : "导入";
-  }
-  if (input) input.disabled = isBusy;
-  if (button) button.disabled = isBusy;
-}
-
-async function importDefinitionModel() {
-  const file = pendingImportDefinitionFile;
-  const input = $("importModelName");
-  const name = String(input?.value || "").trim();
-  if (!file || !validateImportModelName(true)) {
-    input?.focus();
-    return;
-  }
-  setImportModelBusy(true);
-  setImportModelMessage("正在创建模型文件夹并导入定义数据...");
-  setImportStatus(file.name);
-  addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "导入请求", `${name} ← ${file.name}`);
-  try {
-    const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
-    const result = await api("/api/models/import-definitions", {
-      modelScoped: false,
-      method: "POST",
-      body: JSON.stringify({
-        create_model: true,
-        name,
-        filename: file.name,
-        data_base64: dataBase64,
-      }),
-    });
-    state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
-    const newModelId = result.model?.id || result.active_model_id || name;
-    closeImportModelDialog();
-    state.selectedManagementModelId = newModelId;
-    renderModelSelector();
-    renderModelManagementList();
-    setModelManagementMessage(`已导入模型：${name}`, "ok");
-    setImportStatus(`已导入模型：${name}`, "ok");
-    addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "导入成功", `模型 ${name}`, "ok");
-  } catch (error) {
-    const message = apiErrorText(error);
-    if (message.includes("已存在")) await loadModels();
-    setImportModelMessage(message.includes("已存在") ? `${message}，请输入新的模型名称。` : message, "error");
-    setImportStatus(message, "error");
-    addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "导入失败", message, "error");
-  } finally {
-    setImportModelBusy(false);
-  }
-}
-
-function setUpdateModelMessage(text, kind = "") {
-  const message = $("updateModelMessage");
-  if (!message) return;
-  message.textContent = text || "";
-  message.classList.toggle("is-error", kind === "error");
-  message.classList.toggle("is-ok", kind === "ok");
-}
-
-function validateUpdateModelForm(showBlank = false) {
-  const confirm = $("confirmUpdateModel");
-  const target = modelById(state.updateTargetModelId);
-  if (!target) {
-    if (confirm) confirm.disabled = true;
-    setUpdateModelMessage("请选择要修改的模型。", "error");
-    return false;
-  }
-  if (!canEditManagedModel(target)) {
-    if (confirm) confirm.disabled = true;
-    setUpdateModelMessage("模型正在接收或运行中，不能修改。", "error");
-    return false;
-  }
-  if (!pendingUpdateModelFile) {
-    if (confirm) confirm.disabled = true;
-    setUpdateModelMessage(showBlank ? "请选择模拟台导出的定义压缩包。" : "");
-    return false;
-  }
-  if (!String(pendingUpdateModelFile.name || "").toLowerCase().endsWith(".zip")) {
-    if (confirm) confirm.disabled = true;
-    setUpdateModelMessage("请选择 .zip 格式的定义压缩包。", "error");
-    return false;
-  }
-  if (confirm) confirm.disabled = false;
-  setUpdateModelMessage("");
-  return true;
-}
-
-function openUpdateModelDialog(modelId = selectedManagementModelId()) {
-  const target = modelById(modelId);
-  if (!target) {
-    setModelManagementMessage("请选择要修改的模型。", "error");
-    return;
-  }
-  if (!canEditManagedModel(target)) {
-    setModelManagementMessage("模型正在接收或运行中，不能修改。", "error");
-    return;
-  }
-  state.updateTargetModelId = target.id;
-  pendingUpdateModelFile = null;
-  $("updateModelTargetName").textContent = target.name || target.id;
-  $("updateModelFilename").textContent = "未选择文件";
-  const input = $("updateModelFileInput");
-  if (input) input.value = "";
-  setUpdateModelMessage("");
-  validateUpdateModelForm();
-  const dialog = $("updateModelDialog");
-  if (!dialog?.open) dialog?.showModal();
-}
-
-function closeUpdateModelDialog() {
-  const dialog = $("updateModelDialog");
-  if (dialog?.open) dialog.close();
-  state.updateTargetModelId = "";
-  pendingUpdateModelFile = null;
-  const input = $("updateModelFileInput");
-  if (input) input.value = "";
-  setUpdateModelMessage("");
-}
-
-function handleUpdateModelFileSelected(event) {
-  const file = event.target.files?.[0] || null;
-  pendingUpdateModelFile = file;
-  $("updateModelFilename").textContent = file?.name || "未选择文件";
-  validateUpdateModelForm(Boolean(file));
-}
-
-async function updateModelFromArchive() {
-  const file = pendingUpdateModelFile;
-  const modelId = state.updateTargetModelId;
-  if (!file || !validateUpdateModelForm(true)) return;
-  const target = modelById(modelId) || {};
-  const modelName = target.name || target.id || modelId;
-  const updatedActiveModel = String(modelId || "") === String(state.activeModelId || "");
-  const confirm = $("confirmUpdateModel");
-  if (confirm) {
-    confirm.disabled = true;
-    confirm.textContent = "修改中";
-  }
-  setUpdateModelMessage("正在导入模拟台定义压缩包并覆盖本地模型定义...");
-  addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "修改请求", `${modelName} ← ${file.name}`);
-  try {
-    const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
-    const result = await api("/api/models/import-definitions", {
-      modelScoped: false,
-      method: "POST",
-      body: JSON.stringify({
-        model_id: modelId,
-        filename: file.name,
-        data_base64: dataBase64,
-      }),
-    });
-    state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
-    closeUpdateModelDialog();
-    state.selectedManagementModelId = modelId;
-    renderModelSelector();
-    renderModelManagementList();
-    setModelManagementMessage(`模型已修改：${modelName}`, "ok");
-    setImportStatus(`模型已修改：${modelName}`, "ok");
-    addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "修改成功", `模型 ${modelName}`, "ok");
-    if (updatedActiveModel) {
-      state.localDefinitionSnapshot = null;
-      state.localDefinitionModelId = "";
-      await refresh();
-    }
-  } catch (error) {
-    const message = apiErrorText(error);
-    setUpdateModelMessage(message, "error");
-    setModelManagementMessage(message, "error");
-    addRuntimeLog("模型管理", "学员台 /api/models/import-definitions", "修改失败", message, "error");
-  } finally {
-    if (confirm) {
-      confirm.textContent = "修改";
-      validateUpdateModelForm();
-    }
   }
 }
 
@@ -4964,9 +5302,6 @@ function handleModelContextMenuAction(event) {
     case "clone":
       openCloneModelDialog(selectedManagementModelId());
       break;
-    case "update":
-      openUpdateModelDialog(selectedManagementModelId());
-      break;
     case "delete":
       deleteManagedModel(selectedManagementModelId());
       break;
@@ -5059,6 +5394,20 @@ async function loadModels() {
   }
 }
 
+async function refreshLocalSnapshotPayload(page = currentPageName()) {
+  let snapshot = mergeSnapshot(state.snapshot, await api(snapshotPollPath(page)));
+  snapshot = restoreStaticSnapshotCache(snapshot, page);
+  let missingStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
+  if (missingStaticKeys.length) {
+    snapshot = mergeSnapshot(snapshot, await api(snapshotPollPath(page, missingStaticKeys)));
+    snapshot = restoreStaticSnapshotCache(snapshot, page);
+    missingStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
+  }
+  state.snapshot = snapshot;
+  if (!missingStaticKeys.length) persistStaticSnapshotCache(state.snapshot, page);
+  return snapshot;
+}
+
 async function refresh() {
   await syncActiveReceiveStateBeforeRefresh();
   if (state.receiveMode) {
@@ -5066,7 +5415,9 @@ async function refresh() {
     if (currentPageName() === "renewable") await refreshRenewableControlState({ preview: true });
     return;
   }
-  if (state.frozen) {
+  const page = currentPageName();
+  const bootstrapFrozenSnapshot = frozenSnapshotNeedsBootstrap(state.snapshot, page);
+  if (state.frozen && !bootstrapFrozenSnapshot) {
     renderReceiveMode();
     if (currentPageName() === "renewable") await refreshRenewableControlState({ preview: true });
     return;
@@ -5074,22 +5425,12 @@ async function refresh() {
   if (state.refreshRequestActive) return;
   state.refreshRequestActive = true;
   try {
-    const page = currentPageName();
-    let snapshot = mergeSnapshot(state.snapshot, await api(snapshotPollPath(page)));
-    snapshot = restoreStaticSnapshotCache(snapshot, page);
-    let missingStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
-    if (missingStaticKeys.length) {
-      snapshot = mergeSnapshot(snapshot, await api(snapshotPollPath(page, missingStaticKeys)));
-      snapshot = restoreStaticSnapshotCache(snapshot, page);
-      missingStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
-    }
-    state.snapshot = snapshot;
-    if (!missingStaticKeys.length) persistStaticSnapshotCache(state.snapshot, page);
-    await refreshMeasurementDelta(false);
+    const snapshot = await refreshLocalSnapshotPayload(page);
+    if (!bootstrapFrozenSnapshot) await refreshMeasurementDelta(false);
     $("connectionDot").className = "ok";
     $("connectionText").textContent = "在线";
     state.snapshotSource = "local";
-    renderSnapshot(state.snapshot);
+    renderSnapshot(snapshot);
   } catch (_error) {
     $("connectionDot").className = "off";
     $("connectionText").textContent = "离线";
@@ -5104,17 +5445,11 @@ async function refreshFromTeacher(epoch = state.receiveEpoch) {
   state.receiveRequestActive = true;
   try {
     const page = currentPageName();
-    let snapshot = mergeSnapshot(state.snapshot, await teacherSnapshotApi(page));
-    snapshot = restoreStaticSnapshotCache(snapshot, page);
-    let missingStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
-    if (missingStaticKeys.length) {
-      snapshot = mergeSnapshot(snapshot, await teacherSnapshotApi(page, missingStaticKeys));
-      snapshot = restoreStaticSnapshotCache(snapshot, page);
-      missingStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
-    }
+    await ensureLocalDefinitionSnapshot(state.activeModelId);
+    const remoteSnapshot = await teacherSnapshotApi(page);
+    const snapshot = mergeTeacherSnapshotWithLocalDefinitions(state.snapshot, remoteSnapshot);
     if (!state.receiveMode || epoch !== state.receiveEpoch) return;
     state.snapshot = snapshot;
-    if (!missingStaticKeys.length) persistStaticSnapshotCache(state.snapshot, page);
     await refreshMeasurementDelta(false);
     acceptTeacherSnapshot(state.snapshot, epoch);
   } catch (_error) {
@@ -5137,9 +5472,6 @@ function renderSnapshot(snapshot) {
   state.snapshot = snapshot;
   if (state.snapshotSource !== "teacher" && snapshot.model?.id && snapshot.model.id !== state.activeModelId) {
     state.activeModelId = snapshot.model.id;
-  }
-  if (state.snapshotSource === "teacher" && snapshot.model?.name) {
-    state.teacherModelName = snapshot.model.name;
   }
   renderModelSelector();
   renderClock(snapshot.clock || {});
@@ -5168,20 +5500,34 @@ function renderSnapshot(snapshot) {
 
 function renderReceiveMode(extraText = "") {
   const button = $("traineeRunToggle");
+  const initializeButton = $("modelInitializeButton");
   const stateText = $("receiveStateText");
   const sourceText = $("teacherSourceText");
+  const teacherModelDisplayName = $("teacherModelDisplayName");
   const connectionDot = $("connectionDot");
   const connectionText = $("connectionText");
   if (button) {
     button.textContent = state.receiveMode ? "停止接收" : "启动接收";
+    button.disabled = !state.receiveMode && !state.modelInitialized;
     button.classList.toggle("is-running", state.receiveMode);
+    button.title = !state.receiveMode && !state.modelInitialized ? "请先完成当前模型的模型初始化" : "";
+  }
+  if (initializeButton) {
+    initializeButton.disabled = state.receiveMode;
+    initializeButton.title = state.receiveMode ? "停止接收后才能重新初始化模型" : "";
   }
   if (connectionDot && connectionText) {
     connectionDot.className = extraText ? "off" : state.receiveMode ? "ok" : state.frozen ? "" : "ok";
     connectionText.textContent = extraText || (state.receiveMode ? "接收中" : state.frozen ? "已冻结" : "在线");
   }
   if (stateText) {
-    const label = state.receiveMode ? "运行接收" : state.frozen ? "已冻结" : "本地待命";
+    const label = state.receiveMode
+      ? "运行接收"
+      : state.frozen
+        ? "已冻结"
+        : state.modelInitialized
+          ? "已初始化"
+          : "待初始化";
     stateText.textContent = extraText || label;
   }
   if (sourceText) {
@@ -5190,15 +5536,16 @@ function renderReceiveMode(extraText = "") {
     sourceText.title = receiveAddress;
     sourceText.textContent = receiveAddressText || "--";
   }
+  if (teacherModelDisplayName) {
+    teacherModelDisplayName.textContent = state.teacherModelName || state.teacherModelId || "--";
+  }
 }
 
 function curveMinute(snapshot) {
-  const curves = snapshot.curves || {};
   const clock = snapshot.clock || {};
-  if (String(curves.mode || "").toLowerCase() === "year") {
-    return Number(clock.absolute_minute ?? clock.minute ?? 0) || 0;
-  }
-  return Number(clock.minute ?? 0) || 0;
+  const absoluteMinute = Number(clock.absolute_minute ?? clock.minute ?? 0) || 0;
+  const durationMinutes = curveDisplayConfig(snapshot).durationMinutes;
+  return durationMinutes > 0 ? ((absoluteMinute % durationMinutes) + durationMinutes) % durationMinutes : absoluteMinute;
 }
 
 function interpolateCurve(points, minute, key, defaultValue = 0) {
@@ -5888,9 +6235,19 @@ function initVerticalSplitters() {
 function overviewClockText(snapshot) {
   const clock = snapshot.clock || {};
   const timeText = clock.time || "--";
-  if (curveDisplayMode(snapshot) !== "year") return timeText;
-  const dayIndex = Math.floor((Number(clock.absolute_minute ?? clock.minute ?? 0) || 0) / 1440) + 1;
-  return `第${dayIndex}天 ${timeText}`;
+  const mode = curveDisplayMode(snapshot);
+  const dayCount = curveDisplayModeDayCount(mode);
+  if (dayCount <= 1) return timeText;
+  const dayIndex = Math.floor((Number(clock.absolute_minute ?? clock.minute ?? 0) || 0) / 1440) % dayCount;
+  if (mode !== "year") return `第${dayIndex + 1}天 ${timeText}`;
+  const monthDays = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  let month = 0;
+  let day = dayIndex;
+  while (month < monthDays.length - 1 && day >= monthDays[month]) {
+    day -= monthDays[month];
+    month += 1;
+  }
+  return `${String(month + 1).padStart(2, "0")}-${String(day + 1).padStart(2, "0")} ${timeText}`;
 }
 
 function renderTraineeOverviewEvents() {
@@ -5923,8 +6280,13 @@ function renderTraineeOverviewDashboard(snapshot) {
     receiveDot.classList.toggle("is-running", state.receiveMode);
     receiveDot.classList.toggle("is-paused", state.frozen && !state.receiveMode);
   }
-  setOverviewText("overviewMode", curveDisplayMode(snapshot) === "year" ? "年仿真" : "日仿真");
-  setOverviewText("overviewStep", `${formatOverviewNumber(clock.step_minutes || 1)} min`);
+  setOverviewText("overviewMode", curveDisplayModeLabel(snapshot));
+  const effectiveStepSeconds = Number(
+    clock.effective_step_seconds
+      ?? snapshot.system_parameters?.effective_step_seconds
+      ?? ((clock.step_seconds ?? 1) * (clock.speed ?? 1)),
+  );
+  setOverviewText("overviewStep", formatTraineeClockDuration(effectiveStepSeconds));
   setOverviewText("measureCount", `${totalMeasurements} 点`);
   setOverviewText("validCount", `${validCount} 可用`);
 
@@ -6011,7 +6373,29 @@ function curveDisplayMode(snapshot = state.snapshot || {}) {
   const rawMode = String(curves.mode || boundary.mode || "").toLowerCase();
   if (CURVE_DISPLAY_MODES[rawMode]) return rawMode;
   const pointCount = Number(curves.point_count || curves.weather?.length || boundary.point_count || 0);
-  return pointCount > 2000 ? "year" : "day";
+  if (pointCount === CURVE_DISPLAY_MODES.hour.pointCount) return "hour";
+  if (pointCount === CURVE_DISPLAY_MODES.week.pointCount) return "week";
+  if (pointCount === CURVE_DISPLAY_MODES.month.pointCount) return "month";
+  if (pointCount === CURVE_DISPLAY_MODES.year.pointCount) return "year";
+  return "day";
+}
+
+function curveDisplayModeDayCount(mode = curveDisplayMode()) {
+  if (mode === "week") return 7;
+  if (mode === "month") return 30;
+  if (mode === "year") return 365;
+  return 1;
+}
+
+function curveDisplayModeLabel(snapshot = state.snapshot || {}) {
+  return CURVE_DISPLAY_MODES[curveDisplayMode(snapshot)]?.label || CURVE_DISPLAY_MODES.day.label;
+}
+
+function formatTraineeClockDuration(seconds) {
+  const value = Math.max(0, Number(seconds) || 0);
+  if (value >= 3600 && value % 3600 === 0) return `${formatOverviewNumber(value / 3600)} h`;
+  if (value >= 60 && value % 60 === 0) return `${formatOverviewNumber(value / 60)} min`;
+  return `${formatOverviewNumber(value)} s`;
 }
 
 function curveDisplayConfig(snapshot = state.snapshot || {}) {
@@ -6027,7 +6411,8 @@ function curveDisplayConfig(snapshot = state.snapshot || {}) {
     1,
     Number(curves.point_count || 0) || Math.max(Array.isArray(curves.weather) ? curves.weather.length : 0, maxLoadCount, Number(boundary.point_count) || 0, defaults.pointCount),
   );
-  const stepMinutes = Math.max(1, Number(curves.time_step_minutes || boundary.time_step_minutes || defaults.stepMinutes) || defaults.stepMinutes);
+  const rawStepMinutes = Number(curves.time_step_minutes || boundary.time_step_minutes || defaults.stepMinutes);
+  const stepMinutes = Number.isFinite(rawStepMinutes) && rawStepMinutes > 0 ? rawStepMinutes : defaults.stepMinutes;
   return { ...defaults, pointCount, stepMinutes, durationMinutes: pointCount * stepMinutes };
 }
 
@@ -6293,7 +6678,14 @@ function renderCurveDisplayModeControls(snapshot = state.snapshot || {}) {
 }
 
 function formatCurveDisplayTableTime(minute, snapshot = state.snapshot || {}) {
-  if (curveDisplayMode(snapshot) === "year") {
+  const mode = curveDisplayMode(snapshot);
+  if (mode === "hour") {
+    const totalSeconds = Math.max(0, Math.round(Number(minute) * 60));
+    const minutePart = Math.floor(totalSeconds / 60);
+    const secondPart = totalSeconds % 60;
+    return `00:${String(minutePart).padStart(2, "0")}:${String(secondPart).padStart(2, "0")}`;
+  }
+  if (mode === "year") {
     const dayOfYear = Math.floor(minute / 1440);
     const hour = Math.floor((minute % 1440) / 60);
     const monthDays = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
@@ -6304,6 +6696,14 @@ function formatCurveDisplayTableTime(minute, snapshot = state.snapshot || {}) {
       month += 1;
     }
     return `${String(month + 1).padStart(2, "0")}-${String(day + 1).padStart(2, "0")} ${String(hour).padStart(2, "0")}:00`;
+  }
+  if (mode === "week" || mode === "month") {
+    const total = Math.max(0, Math.round(Number(minute)));
+    const day = Math.floor(total / 1440) + 1;
+    const minuteOfDay = total % 1440;
+    const hour = Math.floor(minuteOfDay / 60);
+    const minutePart = minuteOfDay % 60;
+    return `第${day}天 ${String(hour).padStart(2, "0")}:${String(minutePart).padStart(2, "0")}`;
   }
   const total = Math.round(minute);
   return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
@@ -6354,7 +6754,44 @@ function drawCurveDisplayXAxis(ctx, canvas, plot, snapshot = state.snapshot || {
   const right = width - plot.right;
   const top = plot.top;
   const bottom = height - plot.bottom;
-  if (curveDisplayMode(snapshot) === "year") {
+  const mode = curveDisplayMode(snapshot);
+  if (mode === "hour") {
+    const minuteStep = width < 560 ? 15 : 10;
+    for (let minute = 0; minute <= 60; minute += minuteStep) {
+      const x = left + (minute / 60) * (right - left);
+      ctx.strokeStyle = minute % 30 === 0 ? "#c9d6dc" : "#e7eef1";
+      ctx.beginPath();
+      ctx.moveTo(x, top);
+      ctx.lineTo(x, bottom);
+      ctx.stroke();
+      ctx.fillStyle = "#63717a";
+      const labelHour = Math.floor(minute / 60);
+      const labelMinute = minute % 60;
+      ctx.fillText(`${String(labelHour).padStart(2, "0")}:${String(labelMinute).padStart(2, "0")}`, x - 14, height - 12);
+    }
+    return;
+  }
+  if (mode === "week" || mode === "month") {
+    const dayCount = curveDisplayModeDayCount(mode);
+    const dayStep = mode === "week" ? 1 : width < 560 ? 10 : width < 900 ? 5 : 3;
+    for (let day = 0; day <= dayCount; day += dayStep) {
+      const x = left + (day / dayCount) * (right - left);
+      ctx.strokeStyle = day === 0 || day === dayCount ? "#c9d6dc" : "#e7eef1";
+      ctx.beginPath();
+      ctx.moveTo(x, top);
+      ctx.lineTo(x, bottom);
+      ctx.stroke();
+      ctx.fillStyle = "#63717a";
+      ctx.fillText(`第${Math.min(day + 1, dayCount)}天`, x - 16, height - 12);
+    }
+    if (dayCount % dayStep !== 0) {
+      ctx.textAlign = "right";
+      ctx.fillText(`第${dayCount}天`, right, height - 12);
+      ctx.textAlign = "left";
+    }
+    return;
+  }
+  if (mode === "year") {
     const monthStarts = [["01月", 0], ["02月", 31], ["03月", 59], ["04月", 90], ["05月", 120], ["06月", 151], ["07月", 181], ["08月", 212], ["09月", 243], ["10月", 273], ["11月", 304], ["12月", 334]];
     const monthStep = width < 560 ? 3 : width < 900 ? 2 : 1;
     monthStarts.forEach(([label, day], index) => {
@@ -10202,6 +10639,13 @@ document.addEventListener("input", (event) => {
 
 async function toggleReceiveMode() {
   if (state.receiveMode) {
+    try {
+      await setTraineeReceiveActive(state.activeModelId, false);
+    } catch (error) {
+      addRuntimeLog("接收模式", "学员台服务端", "停止接收失败", apiErrorText(error), "warn");
+      renderReceiveMode(apiErrorText(error));
+      return;
+    }
     state.receiveMode = false;
     state.frozen = true;
     state.receiveEpoch += 1;
@@ -10210,15 +10654,10 @@ async function toggleReceiveMode() {
     persistActiveModelContext({ receiveMode: false, frozen: true });
     addRuntimeLog("接收模式", "模拟台实时数据", "停止接收", `冻结于 ${state.lastReceiveAt || "--"}`, "warn");
     noteRenewableReceiveInterruption("连续接收已停止，新能源优先策略保持运行，继续使用最近一次有效数据。");
-    try {
-      await saveTraineeReceiveState(state.activeModelId, { active: false, frozen: true });
-    } catch (error) {
-      addRuntimeLog("接收模式", "学员台服务端", "保存停止状态失败", apiErrorText(error), "warn");
-    }
     renderReceiveMode();
     return;
   }
-  openReceiveLinkDialog();
+  await startReceiveMode();
 }
 
 $("modelManagementButton").addEventListener("click", openModelManagementDialog);
@@ -10236,45 +10675,17 @@ document.addEventListener("click", (event) => {
   if (event.target instanceof Element && event.target.closest("#modelContextMenu")) return;
   closeModelContextMenu();
 });
-$("importDefinitionsButton").addEventListener("click", () => $("definitionArchiveInput").click());
-$("definitionArchiveInput").addEventListener("change", (event) => {
-  const file = event.target.files?.[0];
-  if (file) openImportModelDialog(file);
-});
 $("newModelButton").addEventListener("click", openNewModelDialog);
 $("closeNewModelDialog").addEventListener("click", closeNewModelDialog);
 $("cancelNewModel").addEventListener("click", closeNewModelDialog);
 $("newModelDialog").addEventListener("click", (event) => {
   if (event.target === $("newModelDialog")) closeNewModelDialog();
 });
-$("selectNewModelFile").addEventListener("click", () => $("newModelFileInput").click());
-$("newModelFileInput").addEventListener("change", handleNewModelFileSelected);
 $("newModelForm").addEventListener("submit", (event) => {
   event.preventDefault();
-  createNewModelFromArchive();
+  createNewModelSlot();
 });
 $("newModelName").addEventListener("input", () => validateNewModelForm());
-$("closeImportModelDialog").addEventListener("click", closeImportModelDialog);
-$("cancelImportModel").addEventListener("click", closeImportModelDialog);
-$("importModelDialog").addEventListener("click", (event) => {
-  if (event.target === $("importModelDialog")) closeImportModelDialog();
-});
-$("importModelForm").addEventListener("submit", (event) => {
-  event.preventDefault();
-  importDefinitionModel();
-});
-$("importModelName").addEventListener("input", () => validateImportModelName());
-$("closeUpdateModelDialog").addEventListener("click", closeUpdateModelDialog);
-$("cancelUpdateModel").addEventListener("click", closeUpdateModelDialog);
-$("updateModelDialog").addEventListener("click", (event) => {
-  if (event.target === $("updateModelDialog")) closeUpdateModelDialog();
-});
-$("selectUpdateModelFile").addEventListener("click", () => $("updateModelFileInput").click());
-$("updateModelFileInput").addEventListener("change", handleUpdateModelFileSelected);
-$("updateModelForm").addEventListener("submit", (event) => {
-  event.preventDefault();
-  updateModelFromArchive();
-});
 $("closeCloneModelDialog").addEventListener("click", closeCloneModelDialog);
 $("cancelCloneModel").addEventListener("click", closeCloneModelDialog);
 $("cloneModelDialog").addEventListener("click", (event) => {
@@ -10285,10 +10696,11 @@ $("cloneModelForm").addEventListener("submit", (event) => {
   cloneManagedModel();
 });
 $("cloneModelName").addEventListener("input", () => validateCloneModelName());
+$("modelInitializeButton").addEventListener("click", openReceiveLinkDialog);
 $("traineeRunToggle").addEventListener("click", toggleReceiveMode);
 $("receiveLinkClose").addEventListener("click", closeReceiveLinkDialog);
 $("receiveLinkCancel").addEventListener("click", closeReceiveLinkDialog);
-$("confirmReceiveLink").addEventListener("click", startReceiveModeFromLink);
+$("confirmReceiveLink").addEventListener("click", initializeModelFromLink);
 $("receiveLinkDialog").addEventListener("click", (event) => {
   if (event.target === $("receiveLinkDialog")) closeReceiveLinkDialog();
 });

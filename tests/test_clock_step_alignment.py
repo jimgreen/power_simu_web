@@ -19,11 +19,11 @@ class ClockStepAlignmentTest(unittest.TestCase):
         service = PolarMicrogridSimulator(source, runtime, kernel=lambda _config: None)
 
         service.control_clock({"minute": 8 * 60 + 7})
-        clock = service.control_clock({"step_minutes": 60})
+        clock = service.control_clock({"step_minutes": 60, "speed": 1})
         self.assertEqual(clock["minute"], 9 * 60)
         self.assertEqual(clock["time"], "09:00:00")
 
-        clock = service.control_clock({"step_minutes": 15, "minute": 8 * 60 + 23})
+        clock = service.control_clock({"step_minutes": 15, "minute": 8 * 60 + 23, "speed": 1})
         self.assertEqual(clock["minute"], 8 * 60 + 30)
         self.assertEqual(clock["time"], "08:30:00")
 
@@ -31,7 +31,8 @@ class ClockStepAlignmentTest(unittest.TestCase):
         self.assertEqual(clock["minute"] % clock["step_minutes"], 0)
 
         service.control_clock({"action": "stop"})
-        service.control_clock({"minute": 8 * 60 + 7, "step_minutes": 1})
+        service.set_system_parameters({"clock_speed": 1, "compute_interval_seconds": 1})
+        service.control_clock({"minute": 8 * 60 + 7})
         service.set_curves(
             {
                 "mode": "year",
@@ -42,16 +43,17 @@ class ClockStepAlignmentTest(unittest.TestCase):
             }
         )
         clock = service.snapshot()["clock"]
-        self.assertEqual(clock["step_minutes"], 60)
+        self.assertEqual(clock["step_seconds"], 1)
+        self.assertEqual(clock["speed"], 3600)
         self.assertEqual(clock["time"], "09:00:00")
 
-        clock = service.control_clock({"step_minutes": 1, "minute": 72, "speed": 15})
-        self.assertEqual(clock["time"], "01:15:00")
-        self.assertEqual(clock["minute"] % 15, 0)
+        clock = service.control_clock({"step_seconds": 1, "minute": 72 + 7 / 60, "speed": 15})
+        self.assertEqual(clock["time"], "01:12:15")
+        self.assertEqual(clock["absolute_second"] % 15, 0)
 
         clock = service.control_clock({"action": "step"})
-        self.assertEqual(clock["time"], "01:30:00")
-        self.assertEqual(clock["minute"] % 15, 0)
+        self.assertEqual(clock["time"], "01:12:30")
+        self.assertEqual(clock["absolute_second"] % 15, 0)
         self.assertEqual(clock["step_count"], 1)
 
         stopped = service.control_clock({"action": "stop"})
@@ -68,7 +70,7 @@ class ClockStepAlignmentTest(unittest.TestCase):
         self.assertEqual(second_run["run_id"], 3)
         self.assertEqual(resumed_run["run_id"], 3)
         self.assertEqual(nonzero_run["run_id"], 4)
-        self.assertEqual(nonzero_run["time"], "08:15:00")
+        self.assertEqual(nonzero_run["time"], "08:07:00")
         self.assertEqual(stopped["step_count"], 0)
         self.assertEqual(first_run["step_count"], 0)
 

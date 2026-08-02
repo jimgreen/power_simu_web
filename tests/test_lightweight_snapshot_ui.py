@@ -59,7 +59,7 @@ process.stdout.write(JSON.stringify([
         self.assertNotIn('"overview": ["files", "source_files", "work_files", "definitions", "curves"', script)
         self.assertNotIn('"faults": ["files", "source_files", "work_files", "definitions", "curves"', script)
         self.assertIn("params.set(\"static\", requiredStaticKeys.join(\",\"));", script)
-        self.assertIn("params.set(\"devices\", pageNeedsDevices(page) ? \"1\" : \"0\");", script)
+        self.assertIn('params.set("devices", "0");', script)
         self.assertIn("params.set(\"commands\", pageNeedsCommands(page) ? \"1\" : \"0\");", script)
         self.assertIn("function pageNeedsMeasurementDelta", script)
         self.assertIn("function pageNeedsRuntimeLogDelta", script)
@@ -70,7 +70,7 @@ process.stdout.write(JSON.stringify([
         self.assertIn("if (state.refreshRequestActive) return;", script)
         self.assertIn("snapshot.curve_boundary", script)
 
-    def test_trainee_polling_uses_lite_snapshot_without_breaking_teacher_definition_check(self):
+    def test_trainee_polling_uses_lite_remote_snapshot_with_initialized_local_definitions(self):
         script = (ROOT / "simu" / "web" / "trainee" / "app.js").read_text(encoding="utf-8")
 
         self.assertIn("function mergeSnapshot", script)
@@ -86,7 +86,7 @@ process.stdout.write(JSON.stringify([
         self.assertIn('"overview": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"]', script)
         self.assertIn('"measurements": ["files", "source_files", "work_files", "definitions"]', script)
         self.assertIn('"commands": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"]', script)
-        self.assertIn("params.set(\"static\", requiredStaticKeys.join(\",\"));", script)
+        self.assertIn('params.set("static", "0");', script)
         self.assertIn("params.set(\"devices\", pageNeedsDevices(page) ? \"1\" : \"0\");", script)
         self.assertIn("params.set(\"commands\", pageNeedsCommands(page) ? \"1\" : \"0\");", script)
         self.assertIn('params.set("lite", "1");', script)
@@ -95,8 +95,9 @@ process.stdout.write(JSON.stringify([
         self.assertIn("teacherMeasurementDeltaAddress", script)
         self.assertIn("function refreshMeasurementDelta", script)
         self.assertIn("let snapshot = mergeSnapshot(state.snapshot, await api(snapshotPollPath(page)))", script)
-        self.assertIn("let snapshot = mergeSnapshot(state.snapshot, await teacherSnapshotApi(page))", script)
-        self.assertIn("fetchTeacherSnapshot(connection)", script)
+        self.assertIn("ensureLocalDefinitionSnapshot", script)
+        self.assertIn("mergeTeacherSnapshotWithLocalDefinitions", script)
+        self.assertIn("const remoteSnapshot = await teacherSnapshotApi(page)", script)
 
     def test_static_snapshot_merge_drops_previous_model_or_changed_revision_fields(self):
         simulator_script = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")

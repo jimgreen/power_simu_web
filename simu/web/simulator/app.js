@@ -146,8 +146,11 @@ function overviewInitialBottomColumnRatio() {
 }
 
 const CURVE_MODES = {
-  year: { key: "year", label: "年曲线", pointCount: 8760, stepMinutes: 60, durationMinutes: 365 * 24 * 60, tableTitle: "年曲线数据表", tableSummary: "1小时间隔 · 可编辑" },
-  day: { key: "day", label: "日曲线", pointCount: 1440, stepMinutes: 1, durationMinutes: 24 * 60, tableTitle: "日曲线数据表", tableSummary: "1分钟间隔 · 可编辑" },
+  hour: { key: "hour", label: "时曲线", pointCount: 3600, stepMinutes: 1 / 60, durationMinutes: 60, simulationLabel: "时仿真", defaultClockSpeed: 1, tableTitle: "时曲线数据表", tableSummary: "1秒间隔 · 可编辑" },
+  day: { key: "day", label: "日曲线", pointCount: 1440, stepMinutes: 1, durationMinutes: 24 * 60, simulationLabel: "日仿真", defaultClockSpeed: 60, tableTitle: "日曲线数据表", tableSummary: "1分钟间隔 · 可编辑" },
+  week: { key: "week", label: "周曲线", pointCount: 10080, stepMinutes: 1, durationMinutes: 7 * 24 * 60, simulationLabel: "周仿真", defaultClockSpeed: 60, tableTitle: "周曲线数据表", tableSummary: "1分钟间隔 · 可编辑" },
+  month: { key: "month", label: "月曲线", pointCount: 720, stepMinutes: 60, durationMinutes: 30 * 24 * 60, simulationLabel: "月仿真", defaultClockSpeed: 3600, tableTitle: "月曲线数据表", tableSummary: "1小时间隔 · 可编辑" },
+  year: { key: "year", label: "年曲线", pointCount: 8760, stepMinutes: 60, durationMinutes: 365 * 24 * 60, simulationLabel: "年仿真", defaultClockSpeed: 3600, tableTitle: "年曲线数据表", tableSummary: "1小时间隔 · 可编辑" },
 };
 const CURVE_META = [
   { key: "wind_speed_mps", label: "风速", color: "#008c8c", min: 0, max: 50, digits: 2, unit: "m/s" },
@@ -832,18 +835,42 @@ function simulationModeLocked(clock = state.snapshot?.clock) {
   return Boolean(clock) && clock.state !== "stopped";
 }
 
+function simulationModeLabel(mode = state.curveMode) {
+  return CURVE_MODES[mode]?.simulationLabel || CURVE_MODES.day.simulationLabel;
+}
+
+function simulationModeDayCount(mode = state.curveMode) {
+  if (mode === "week") return 7;
+  if (mode === "month") return 30;
+  if (mode === "year") return 365;
+  return 1;
+}
+
+function isExtendedSimulationMode(mode = state.curveMode) {
+  return simulationModeDayCount(mode) > 1;
+}
+
+function formatClockDuration(seconds) {
+  const value = Math.max(0, Number(seconds) || 0);
+  if (value >= 3600 && value % 3600 === 0) return `${formatOverviewNumber(value / 3600)} h`;
+  if (value >= 60 && value % 60 === 0) return `${formatOverviewNumber(value / 60)} min`;
+  return `${formatOverviewNumber(value)} s`;
+}
+
 function formatSimulationClock(clock) {
   const timeText = clock?.time || "00:00:00";
-  if (state.curveMode !== "year") return timeText;
+  const mode = CURVE_MODES[state.curveMode] ? state.curveMode : "day";
+  if (!isExtendedSimulationMode(mode)) return timeText;
   const absoluteMinute = Math.max(0, Number(clock?.absolute_minute ?? clock?.minute ?? 0) || 0);
-  let dayOfYear = Math.floor(absoluteMinute / 1440) % 365;
+  let dayOfCycle = Math.floor(absoluteMinute / 1440) % simulationModeDayCount(mode);
+  if (mode !== "year") return `第${dayOfCycle + 1}天 ${timeText}`;
   const monthDays = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   let month = 0;
-  while (month < monthDays.length - 1 && dayOfYear >= monthDays[month]) {
-    dayOfYear -= monthDays[month];
+  while (month < monthDays.length - 1 && dayOfCycle >= monthDays[month]) {
+    dayOfCycle -= monthDays[month];
     month += 1;
   }
-  return `${String(month + 1).padStart(2, "0")}-${String(dayOfYear + 1).padStart(2, "0")} ${timeText}`;
+  return `${String(month + 1).padStart(2, "0")}-${String(dayOfCycle + 1).padStart(2, "0")} ${timeText}`;
 }
 
 function clockControlButtonDisabled(action, clockState) {
@@ -863,7 +890,7 @@ function renderClock(clock) {
   const readout = document.querySelector(".clock-readout");
   if (readout) {
     readout.dataset.clockState = clock.state || "stopped";
-    readout.classList.toggle("is-year-mode", state.curveMode === "year");
+    readout.classList.toggle("is-year-mode", isExtendedSimulationMode());
   }
   document.querySelectorAll("[data-clock]").forEach((button) => {
     const action = button.dataset.clock;
@@ -895,14 +922,21 @@ function parameterText(value, digits = 2) {
 function snapshotSystemParameters(snapshot = state.snapshot || {}) {
   const params = snapshot.system_parameters || {};
   const clock = snapshot.clock || {};
+  const clockStepSeconds = parameterNumber(params.clock_step_seconds ?? clock.step_seconds, 1);
+  const clockSpeed = parameterNumber(params.clock_speed ?? clock.speed, 1);
   return {
-    clock_speed: parameterNumber(params.clock_speed ?? clock.speed, 1),
+    clock_speed: clockSpeed,
     compute_interval_seconds: parameterNumber(params.compute_interval_seconds, 1),
     storage_initial_soc: Math.max(0, Math.min(1, parameterNumber(params.storage_initial_soc, 0.5))),
-    clock_step_minutes: parameterNumber(params.clock_step_minutes ?? clock.step_minutes, 1),
+    clock_step_seconds: clockStepSeconds,
+    clock_step_minutes: parameterNumber(params.clock_step_minutes ?? clock.step_minutes, clockStepSeconds / 60),
+    effective_step_seconds: parameterNumber(
+      params.effective_step_seconds ?? clock.effective_step_seconds,
+      clockStepSeconds * clockSpeed,
+    ),
     effective_step_minutes: parameterNumber(
-      params.effective_step_minutes,
-      parameterNumber(params.clock_step_minutes ?? clock.step_minutes, 1) * parameterNumber(params.clock_speed ?? clock.speed, 1),
+      params.effective_step_minutes ?? clock.effective_step_minutes,
+      (clockStepSeconds * clockSpeed) / 60,
     ),
   };
 }
@@ -939,7 +973,7 @@ function renderSystemParameters(snapshot = state.snapshot) {
 
   const modelName = snapshot?.model?.name || snapshot?.model?.id || state.activeModelId || "--";
   const clock = snapshot?.clock || {};
-  const modeLabel = state.curveMode === "year" ? "年仿真" : "日仿真";
+  const modeLabel = simulationModeLabel();
   const stateText = clock.state || "--";
   const stateMap = { running: "运行中", paused: "已暂停", stopped: "已停止" };
   const values = {
@@ -948,7 +982,7 @@ function renderSystemParameters(snapshot = state.snapshot) {
     parameterSimulationMode: modeLabel,
     parameterClockState: stateMap[stateText] || stateText,
     parameterClockTime: snapshot?.clock ? formatSimulationClock(clock) : "--",
-    parameterEffectiveStep: `${parameterText(params.effective_step_minutes, 1)} min`,
+    parameterEffectiveStep: formatClockDuration(params.effective_step_seconds),
     parameterComputePeriod: `${parameterText(params.compute_interval_seconds, 2)} s`,
     parameterStorageInitialSocState: parameterText(params.storage_initial_soc, 2),
   };
@@ -1045,13 +1079,16 @@ async function controlClock(action, payload = {}) {
 }
 
 function startSimulationMode() {
-  return state.curveMode === "year" ? "year" : "day";
+  return CURVE_MODES[state.curveMode] ? state.curveMode : "day";
 }
 
-function startSimulationDefaultAbsoluteMinute() {
+function startSimulationDefaultAbsoluteSecond() {
   const clock = state.snapshot?.clock || {};
-  const minute = Number(clock.absolute_minute ?? clock.minute ?? 0);
-  return Number.isFinite(minute) ? Math.max(0, Math.floor(minute)) : 0;
+  const second = Number(
+    clock.absolute_second
+      ?? ((clock.absolute_minute ?? clock.minute ?? 0) * 60),
+  );
+  return Number.isFinite(second) ? Math.max(0, second) : 0;
 }
 
 function setStartSimulationMessage(text, kind = "") {
@@ -1078,16 +1115,21 @@ function setStartSimulationBusy(isBusy) {
 }
 
 function updateStartSimulationFields() {
-  const isYearMode = startSimulationMode() === "year";
+  const mode = startSimulationMode();
+  const dayCount = simulationModeDayCount(mode);
+  const usesDay = dayCount > 1;
   const dayField = $("startSimulationDayField");
   const dayInput = $("startSimulationDay");
   const hint = $("startSimulationHint");
-  if (dayField) dayField.hidden = !isYearMode;
-  if (dayInput) dayInput.disabled = !isYearMode;
+  if (dayField) dayField.hidden = !usesDay;
+  if (dayInput) {
+    dayInput.disabled = !usesDay;
+    dayInput.max = String(dayCount);
+  }
   if (hint) {
-    hint.textContent = isYearMode
-      ? "年仿真按起始日和时刻启动；后台会按当前仿真步长向上对齐。"
-      : "日仿真按起始时刻启动；后台会按当前仿真步长向上对齐。";
+    hint.textContent = usesDay
+      ? `${simulationModeLabel(mode)}按周期内起始日和时刻启动；后台会按当前时钟步长向上对齐。`
+      : `${simulationModeLabel(mode)}按起始时刻启动；后台会按当前时钟步长向上对齐。`;
   }
 }
 
@@ -1096,16 +1138,17 @@ function openStartSimulationDialog() {
   const dayInput = $("startSimulationDay");
   const timeInput = $("startSimulationTime");
   if (!dialog || !timeInput) return;
-  const absoluteMinute = startSimulationDefaultAbsoluteMinute();
-  const day = Math.floor(absoluteMinute / 1440) % 365 + 1;
+  const absoluteSecond = startSimulationDefaultAbsoluteSecond();
+  const dayCount = simulationModeDayCount(startSimulationMode());
+  const day = Math.floor(absoluteSecond / 86400) % dayCount + 1;
   if (dayInput) dayInput.value = String(day);
-  timeInput.value = minuteToTimeInput(absoluteMinute % 1440, 0);
+  timeInput.value = secondToTimeInput(absoluteSecond % 86400, 0);
   updateStartSimulationFields();
   setStartSimulationBusy(false);
   setStartSimulationMessage("");
   dialog.hidden = false;
   requestAnimationFrame(() => {
-    if (startSimulationMode() === "year" && dayInput) {
+    if (isExtendedSimulationMode(startSimulationMode()) && dayInput) {
       dayInput.focus();
       dayInput.select();
       return;
@@ -1121,20 +1164,21 @@ function closeStartSimulationDialog() {
   setStartSimulationBusy(false);
 }
 
-function startSimulationMinuteFromDialog() {
-  const timeMinute = timeInputToMinute($("startSimulationTime")?.value, 0);
-  if (startSimulationMode() !== "year") return timeMinute;
+function startSimulationSecondFromDialog() {
+  const timeSecond = timeInputToSecond($("startSimulationTime")?.value, 0);
+  const dayCount = simulationModeDayCount(startSimulationMode());
+  if (dayCount <= 1) return timeSecond;
   const rawDay = Number($("startSimulationDay")?.value);
-  const day = clamp(Math.round(Number.isFinite(rawDay) ? rawDay : 1), 1, 365);
-  return (day - 1) * 1440 + timeMinute;
+  const day = clamp(Math.round(Number.isFinite(rawDay) ? rawDay : 1), 1, dayCount);
+  return (day - 1) * 86400 + timeSecond;
 }
 
 async function startSimulationFromDialog() {
-  const minute = startSimulationMinuteFromDialog();
+  const second = startSimulationSecondFromDialog();
   setStartSimulationBusy(true);
   setStartSimulationMessage("正在启动仿真...");
   try {
-    await controlClock("start", { minute });
+    await controlClock("start", { second });
     closeStartSimulationDialog();
   } catch (error) {
     setStartSimulationMessage(apiErrorText(error), "error");
@@ -2846,7 +2890,7 @@ const DIAGRAM_DISPLAY_PREFERENCES_DEFAULTS = Object.freeze({
 });
 const DIAGRAM_MAX_ZOOM = 8;
 const DIAGRAM_PAN_THRESHOLD_PX = 5;
-const DIAGRAM_TOOLTIP_HIDE_DELAY_MS = 500;
+const DIAGRAM_TOOLTIP_HIDE_DELAY_MS = 150;
 
 function normalizeDiagramDisplayPreferences(value) {
   const source = value && typeof value === "object" ? value : {};
@@ -2912,9 +2956,77 @@ function diagramFlowArrowDirection(power, orientation = 1) {
 function diagramFlowArrowSize(power, referencePower) {
   const reference = Math.abs(Number(referencePower));
   const magnitude = Math.abs(Number(power));
-  if (!Number.isFinite(magnitude) || magnitude <= 0) return 6;
+  if (!Number.isFinite(magnitude) || magnitude <= 0) return 10;
   const ratio = reference > 0 ? Math.max(0, Math.min(1, magnitude / reference)) : 1;
-  return 6 + 10 * Math.sqrt(ratio);
+  return 10 + 14 * Math.sqrt(ratio);
+}
+
+function diagramFlowArrowCount(routeLength) {
+  const length = Number(routeLength);
+  if (!Number.isFinite(length) || length <= 0) return 2;
+  return Math.max(2, Math.min(6, Math.ceil(length / 80) + 1));
+}
+
+function diagramFlowMotionAttributes(direction) {
+  const reverse = Number(direction) < 0;
+  return {
+    keyPoints: reverse ? "1;0" : "0;1",
+    rotate: reverse ? "auto-reverse" : "auto",
+  };
+}
+
+const DIAGRAM_FLOW_POWER_MEASUREMENT_TYPES = Object.freeze({
+  ACGENERATOR: Object.freeze(["P_GEN"]),
+  DCGENERATOR: Object.freeze(["P_GEN"]),
+  ACLOAD: Object.freeze(["P_LOAD"]),
+  DCLOAD: Object.freeze(["P_LOAD"]),
+  DCACCONVERTER: Object.freeze(["P_AC", "P_DC"]),
+  DCDCCONVERTER: Object.freeze(["P_FROM", "P_TO"]),
+  ACACCONVERTER: Object.freeze(["P_FROM", "P_TO"]),
+  ACTRANSFORMER: Object.freeze(["P_FROM", "P_TO"]),
+  ACBRANCH: Object.freeze(["P_FROM", "P_TO"]),
+  DCBRANCH: Object.freeze(["P_FROM", "P_TO"]),
+  ACZEROBRANCH: Object.freeze(["P_FROM", "P_TO"]),
+  DCZEROBRANCH: Object.freeze(["P_FROM", "P_TO"]),
+  ACBREAK: Object.freeze(["P_FROM", "P_TO"]),
+  DCBREAK: Object.freeze(["P_FROM", "P_TO"]),
+  ACSWITCH: Object.freeze(["P_FROM", "P_TO"]),
+  DCSWITCH: Object.freeze(["P_FROM", "P_TO"]),
+});
+
+function diagramFlowPowerMeasurementTypes(devType) {
+  const type = normalizeDiagramMeasurementToken(devType);
+  const specific = DIAGRAM_FLOW_POWER_MEASUREMENT_TYPES[type];
+  return specific ? [...specific] : diagramMetricMeasurementTypes(devType, "activePower");
+}
+
+function diagramFlowInlineDeviceKind(devType) {
+  const type = normalizeDiagramMeasurementToken(devType);
+  if (type.includes("BRANCH")) return "branch";
+  if (
+    type.includes("BREAK")
+    || type.includes("SWITCH")
+    || type.includes("CONVERTER")
+    || type.includes("TRANSFORMER")
+  ) return "device";
+  return "";
+}
+
+function diagramFlowSeriesOrientation(subjectTerminal, neighborKind, neighborTerminal = 0) {
+  const terminal = Number(subjectTerminal);
+  if (neighborKind === "generator") return terminal === 1 ? 1 : -1;
+  if (neighborKind === "load") return terminal === 2 ? 1 : -1;
+  return terminal !== Number(neighborTerminal) ? 1 : -1;
+}
+
+function diagramFlowEdgeTerminalOrientation(position, terminal) {
+  const terminalIndex = Number(terminal);
+  if (position === "source") return terminalIndex === 2 ? 1 : -1;
+  return terminalIndex === 1 ? 1 : -1;
+}
+
+function diagramFlowNodeKey(node, domain = "") {
+  return `${normalizeDiagramMeasurementToken(domain) || "NODE"}:${String(node || "").trim()}`;
 }
 
 function diagramFlowArrowVisibility({ power, referencePower, valid = true, offline = false } = {}) {
@@ -3668,6 +3780,33 @@ function diagramFlowRouteD(element) {
   return String(element.getAttribute?.("d") || "").trim();
 }
 
+function diagramFlowRouteLength(element) {
+  try {
+    const length = Number(element?.getTotalLength?.());
+    return Number.isFinite(length) && length > 0 ? length : 0;
+  } catch (_error) {
+    return 0;
+  }
+}
+
+function diagramFlowArrowColor(sourceElement) {
+  const computed = typeof window !== "undefined" && typeof window.getComputedStyle === "function"
+    ? window.getComputedStyle(sourceElement)
+    : null;
+  const values = [
+    sourceElement?.getAttribute?.("stroke"),
+    computed?.stroke,
+    sourceElement?.getAttribute?.("color"),
+    computed?.color,
+  ];
+  return values.find((value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    return normalized
+      && !["none", "transparent", "currentcolor", "inherit", "initial", "unset"].includes(normalized)
+      && normalized !== "rgba(0, 0, 0, 0)";
+  }) || "";
+}
+
 function diagramFlowSymbol(svg, useElement) {
   const href = String(useElement?.getAttribute("href") || useElement?.getAttribute("xlink:href") || "").trim();
   if (!href.startsWith("#")) return null;
@@ -3727,13 +3866,183 @@ function diagramFlowEndpointKind(device) {
   return "";
 }
 
-function createDiagramFlowArrow(sourceElement, routeD, transforms = []) {
+function diagramFlowPowerAnchorKind(device) {
+  const endpointKind = diagramFlowEndpointKind(device);
+  if (endpointKind) return endpointKind;
+  const type = normalizeDiagramMeasurementToken(device?.devType);
+  if (type.includes("BRANCH") || type.includes("CONVERTER") || type.includes("TRANSFORMER")) {
+    return "two-terminal";
+  }
+  return "";
+}
+
+function diagramFlowDeviceNodes(element) {
+  if (!element?.getAttribute) return [];
+  const node1 = String(element.getAttribute("node-1") || "").trim();
+  const node2 = String(element.getAttribute("node-2") || "").trim();
+  const baseDomain = String(element.getAttribute("voltage-type") || "").trim();
+  const fallbackType = normalizeDiagramMeasurementToken(element.parentElement?.getAttribute?.("device-type"));
+  const fallbackDomain = fallbackType.startsWith("AC") ? "ac" : fallbackType.startsWith("DC") ? "dc" : "";
+  const domain1 = String(element.getAttribute("voltage-type-1") || baseDomain || fallbackDomain).trim();
+  const domain2 = String(element.getAttribute("voltage-type-2") || baseDomain || fallbackDomain).trim();
+  const nodes = [];
+  if (node1) nodes.push({ node: node1, key: diagramFlowNodeKey(node1, domain1), terminal: 1 });
+  if (node2) nodes.push({ node: node2, key: diagramFlowNodeKey(node2, domain2), terminal: 2 });
+  if (!nodes.length) {
+    const node = String(element.getAttribute("node") || "").trim();
+    if (node) nodes.push({ node, key: diagramFlowNodeKey(node, baseDomain || fallbackDomain), terminal: 0 });
+  }
+  return nodes;
+}
+
+function diagramFlowTopology(svg, container) {
+  const entries = [];
+  const byId = new Map();
+  const byNode = new Map();
+  svg?.querySelectorAll?.("g[device-type] > use[dev-id]").forEach((element) => {
+    const devId = diagramElementDeviceId(element);
+    const device = diagramDeviceRecord(container, devId);
+    const entry = { devId, device, element, nodes: diagramFlowDeviceNodes(element) };
+    entries.push(entry);
+    byId.set(devId, entry);
+    entry.nodes.forEach(({ key }) => {
+      if (!byNode.has(key)) byNode.set(key, []);
+      byNode.get(key).push(entry);
+    });
+  });
+  return { entries, byId, byNode };
+}
+
+function diagramFlowDeviceRoute(symbol) {
+  const viewBox = diagramViewBoxValue(symbol?.getAttribute?.("viewBox"));
+  if (!viewBox) return null;
+  const y = viewBox.y + viewBox.height / 2;
+  const inset = viewBox.width * 0.08;
+  const x1 = viewBox.x + inset;
+  const x2 = viewBox.x + viewBox.width - inset;
+  const orientationGroup = [...(symbol.children || [])].find(
+    (element) => String(element.tagName || "").toLowerCase() === "g",
+  );
+  return {
+    routeD: `M ${x1} ${y} L ${x2} ${y}`,
+    routeLength: viewBox.width * 0.45,
+    transforms: [String(orientationGroup?.getAttribute?.("transform") || "").trim()].filter(Boolean),
+  };
+}
+
+function diagramFlowPowerBindings(device, element, topology) {
+  const own = { device, orientation: 1, priority: 1 };
+  const type = normalizeDiagramMeasurementToken(device?.devType);
+  if (!type.includes("BREAK") && !type.includes("SWITCH")) return [own];
+  const entry = topology?.byId?.get(String(device?.devId || ""));
+  if (!entry) return [own];
+  const fallbacks = [];
+  entry.nodes.filter(({ terminal }) => terminal > 0).forEach(({ key, terminal }) => {
+    (topology.byNode.get(key) || []).forEach((neighbor) => {
+      if (neighbor === entry) return;
+      const neighborKind = diagramFlowPowerAnchorKind(neighbor.device);
+      if (!neighborKind) return;
+      const neighborTerminal = neighbor.nodes.find((item) => item.key === key)?.terminal || 0;
+      fallbacks.push({
+        device: neighbor.device,
+        orientation: diagramFlowSeriesOrientation(terminal, neighborKind, neighborTerminal),
+        priority: 2,
+      });
+    });
+  });
+  const unique = new Map();
+  fallbacks.forEach((binding) => {
+    const key = `${binding.device?.devId || ""}|${binding.orientation}`;
+    if (!unique.has(key)) unique.set(key, binding);
+  });
+  return [...unique.values(), own];
+}
+
+function diagramFlowEdgeBinding(sourceEntry, targetEntry, topology) {
+  const endpoints = [
+    { position: "source", entry: sourceEntry, endpointKind: diagramFlowEndpointKind(sourceEntry?.device) },
+    { position: "target", entry: targetEntry, endpointKind: diagramFlowEndpointKind(targetEntry?.device) },
+  ];
+  const direct = endpoints.filter((item) => item.endpointKind);
+  if (direct.length === 1) {
+    const selected = direct[0];
+    const orientation = selected.endpointKind === "generator"
+      ? (selected.position === "source" ? 1 : -1)
+      : (selected.position === "target" ? 1 : -1);
+    return {
+      kind: "endpoint",
+      device: selected.entry.device,
+      orientation,
+      powerBindings: diagramFlowPowerBindings(selected.entry.device, selected.entry.element, topology),
+    };
+  }
+  if (direct.length > 1) return null;
+  const connectorCandidates = endpoints.map((item) => {
+    const inlineKind = diagramFlowInlineDeviceKind(item.entry?.device?.devType);
+    const type = normalizeDiagramMeasurementToken(item.entry?.device?.devType);
+    const priority = inlineKind === "branch" ? 3 : type.includes("CONVERTER") ? 2 : inlineKind ? 1 : 0;
+    return { ...item, priority };
+  }).filter((item) => item.priority > 0);
+  if (!connectorCandidates.length) return null;
+  const bestPriority = Math.max(...connectorCandidates.map((item) => item.priority));
+  const best = connectorCandidates.filter((item) => item.priority === bestPriority);
+  if (best.length !== 1) return null;
+  const selected = best[0];
+  const other = selected.position === "source" ? targetEntry : sourceEntry;
+  const terminal = selected.entry.nodes.find(
+    (item) => item.terminal > 0 && other?.nodes?.some((otherNode) => otherNode.key === item.key),
+  )?.terminal;
+  if (!terminal) return null;
+  return {
+    kind: "connector",
+    device: selected.entry.device,
+    orientation: diagramFlowEdgeTerminalOrientation(selected.position, terminal),
+    powerBindings: diagramFlowPowerBindings(selected.entry.device, selected.entry.element, topology),
+  };
+}
+
+function diagramFlowDevicePowerRow(device, measurementMaps) {
+  const types = diagramFlowPowerMeasurementTypes(device?.devType);
+  for (const map of [measurementMaps?.scadaByDevice, measurementMaps?.realByDevice]) {
+    for (const measType of types) {
+      const key = diagramDeviceMeasurementKey(device?.devType, device?.devName, measType);
+      if (map?.has(key)) return map.get(key);
+    }
+  }
+  return null;
+}
+
+function diagramFlowResolvePower(record, measurementMaps) {
+  const resolved = (record?.powerBindings || [{ device: record?.device, orientation: 1, priority: 1 }])
+    .map((binding) => {
+      const row = diagramFlowDevicePowerRow(binding.device, measurementMaps);
+      const rawPower = Number(row?.value);
+      return {
+        binding,
+        row,
+        valid: Boolean(row) && Number(row.valid ?? 1) === 1 && Number.isFinite(rawPower),
+        power: rawPower * (Number(binding.orientation) < 0 ? -1 : 1),
+      };
+    })
+    .filter((item) => item.valid);
+  if (!resolved.length) return { row: null, binding: null, power: Number.NaN, valid: false };
+  const priority = Math.max(...resolved.map((item) => Number(item.binding.priority) || 0));
+  const candidates = resolved.filter((item) => (Number(item.binding.priority) || 0) === priority);
+  const selected = candidates.reduce((best, item) => (
+    Math.abs(item.power) > Math.abs(best.power) ? item : best
+  ));
+  return { ...selected, valid: true };
+}
+
+function createDiagramFlowArrow(sourceElement, routeD, transforms = [], routeLength = 0) {
   if (!sourceElement?.parentNode || !routeD) return null;
   const createSvgElement = (tagName) => document.createElementNS("http://www.w3.org/2000/svg", tagName);
   const root = createSvgElement("g");
   root.classList.add("diagram-flow-arrow");
   root.setAttribute("data-diagram-runtime-flow", "true");
   root.setAttribute("hidden", "");
+  const color = diagramFlowArrowColor(sourceElement);
+  if (color) root.style.setProperty("--diagram-flow-color", color);
   let parent = root;
   transforms.filter(Boolean).forEach((transform) => {
     const group = createSvgElement("g");
@@ -3745,24 +4054,31 @@ function createDiagramFlowArrow(sourceElement, routeD, transforms = []) {
   guide.classList.add("diagram-flow-guide");
   guide.setAttribute("d", routeD);
   guide.setAttribute("fill", "none");
-  const marker = createSvgElement("g");
-  marker.classList.add("diagram-flow-arrow-marker");
-  const polygon = createSvgElement("polygon");
-  polygon.setAttribute("points", "-3,-2 3,0 -3,2");
-  const animation = createSvgElement("animateMotion");
-  animation.setAttribute("path", routeD);
-  animation.setAttribute("dur", "1.8s");
-  animation.setAttribute("repeatCount", "indefinite");
-  animation.setAttribute("calcMode", "linear");
-  animation.setAttribute("keyTimes", "0;1");
-  animation.setAttribute("keyPoints", "0;1");
-  animation.setAttribute("rotate", "auto");
-  marker.appendChild(polygon);
-  marker.appendChild(animation);
   parent.appendChild(guide);
-  parent.appendChild(marker);
+  const markerCount = diagramFlowArrowCount(routeLength);
+  const durationSeconds = 1.8;
+  const markers = Array.from({ length: markerCount }, (_value, index) => {
+    const marker = createSvgElement("g");
+    marker.classList.add("diagram-flow-arrow-marker");
+    marker.setAttribute("data-flow-marker-index", String(index));
+    const polygon = createSvgElement("polygon");
+    polygon.setAttribute("points", "-5,-3 5,0 -5,3");
+    const animation = createSvgElement("animateMotion");
+    animation.setAttribute("path", routeD);
+    animation.setAttribute("dur", `${durationSeconds}s`);
+    animation.setAttribute("begin", `${-(durationSeconds * index / markerCount).toFixed(3)}s`);
+    animation.setAttribute("repeatCount", "indefinite");
+    animation.setAttribute("calcMode", "linear");
+    animation.setAttribute("keyTimes", "0;1");
+    animation.setAttribute("keyPoints", "0;1");
+    animation.setAttribute("rotate", "auto");
+    marker.appendChild(polygon);
+    marker.appendChild(animation);
+    parent.appendChild(marker);
+    return { marker, polygon, animation };
+  });
   sourceElement.parentNode.insertBefore(root, sourceElement.nextSibling);
-  return { root, guide, marker, polygon, animation, direction: 0 };
+  return { root, guide, markers, direction: 0 };
 }
 
 function removeDiagramFlowArrows(container) {
@@ -3781,47 +4097,75 @@ function compileDiagramFlowArrows(container) {
   interaction.flowArrows = [];
   interaction.flowArrowPeakReferences = new Map();
   if (!svg) return interaction.flowArrows;
+  const topology = diagramFlowTopology(svg, container);
 
-  svg.querySelectorAll("use[dev-id], use[id][name]").forEach((useElement) => {
-    const device = diagramDeviceRecord(container, diagramElementDeviceId(useElement));
-    if (!normalizeDiagramMeasurementToken(device?.devType).includes("BRANCH")) return;
+  topology.entries.forEach(({ device, element: useElement }) => {
+    const inlineKind = diagramFlowInlineDeviceKind(device?.devType);
+    if (!inlineKind) return;
     const symbol = diagramFlowSymbol(svg, useElement);
-    const routePath = symbol?.querySelector(".routable-line-device-glyph path[d]");
-    const routeD = diagramFlowRouteD(routePath);
-    if (!routePath || !routeD) return;
-    const transforms = [
+    if (!symbol) return;
+    const baseTransforms = [
       String(useElement.getAttribute("transform") || "").trim(),
       diagramUseRouteTransform(useElement, symbol),
-      ...diagramFlowPathTransforms(routePath, symbol),
     ].filter(Boolean);
-    const arrow = createDiagramFlowArrow(useElement, routeD, transforms);
-    if (arrow) interaction.flowArrows.push({ ...arrow, kind: "branch", device, orientation: 1 });
+    const powerBindings = diagramFlowPowerBindings(device, useElement, topology);
+    if (inlineKind === "branch") {
+      const routePath = symbol.querySelector(".routable-line-device-glyph path[d]");
+      const routeD = diagramFlowRouteD(routePath);
+      if (!routePath || !routeD) return;
+      const transforms = [...baseTransforms, ...diagramFlowPathTransforms(routePath, symbol)];
+      const arrow = createDiagramFlowArrow(useElement, routeD, transforms, diagramFlowRouteLength(routePath));
+      if (!arrow) return;
+      arrow.root.setAttribute("data-flow-source-id", String(device?.devId || ""));
+      interaction.flowArrows.push({
+        ...arrow,
+        kind: "branch",
+        device,
+        pathDevices: [device],
+        powerBindings,
+        orientation: 1,
+      });
+      return;
+    }
+    const route = diagramFlowDeviceRoute(symbol);
+    if (!route?.routeD) return;
+    const arrow = createDiagramFlowArrow(
+      useElement,
+      route.routeD,
+      [...baseTransforms, ...(route.transforms || [])],
+      route.routeLength,
+    );
+    if (!arrow) return;
+    arrow.root.setAttribute("data-flow-source-id", String(device?.devId || ""));
+    interaction.flowArrows.push({
+      ...arrow,
+      kind: "device",
+      device,
+      pathDevices: [device],
+      powerBindings,
+      orientation: 1,
+    });
   });
 
   svg.querySelectorAll("path[source-dev-id][target-dev-id], line[source-dev-id][target-dev-id]").forEach((edge) => {
     if (edge.closest("defs, symbol, marker, pattern, clipPath, mask") || edge.hasAttribute("data-diagram-runtime-flow")) return;
-    const sourceDevice = diagramDeviceRecord(container, edge.getAttribute("source-dev-id"));
-    const targetDevice = diagramDeviceRecord(container, edge.getAttribute("target-dev-id"));
-    const candidates = [
-      { position: "source", device: sourceDevice, endpointKind: diagramFlowEndpointKind(sourceDevice) },
-      { position: "target", device: targetDevice, endpointKind: diagramFlowEndpointKind(targetDevice) },
-    ].filter((item) => item.endpointKind);
-    if (candidates.length !== 1) return;
-    const endpoint = candidates[0];
-    const orientation = endpoint.endpointKind === "generator"
-      ? (endpoint.position === "source" ? 1 : -1)
-      : (endpoint.position === "target" ? 1 : -1);
+    const sourceEntry = topology.byId.get(String(edge.getAttribute("source-dev-id") || ""));
+    const targetEntry = topology.byId.get(String(edge.getAttribute("target-dev-id") || ""));
+    const binding = diagramFlowEdgeBinding(sourceEntry, targetEntry, topology);
+    if (!binding) return;
     const routeD = diagramFlowRouteD(edge);
     if (!routeD) return;
     const transforms = [String(edge.getAttribute("transform") || "").trim()].filter(Boolean);
-    const arrow = createDiagramFlowArrow(edge, routeD, transforms);
+    const arrow = createDiagramFlowArrow(edge, routeD, transforms, diagramFlowRouteLength(edge));
     if (arrow) {
+      arrow.root.setAttribute("data-flow-source-id", String(binding.device?.devId || ""));
       interaction.flowArrows.push({
         ...arrow,
-        kind: "endpoint",
-        device: endpoint.device,
-        pathDevices: [sourceDevice, targetDevice].filter(Boolean),
-        orientation,
+        kind: binding.kind,
+        device: binding.device,
+        pathDevices: [sourceEntry?.device, targetEntry?.device].filter(Boolean),
+        powerBindings: binding.powerBindings,
+        orientation: binding.orientation,
       });
     }
   });
@@ -3851,33 +4195,43 @@ function updateDiagramFlowArrows(container, snapshot = state.snapshot || {}, mea
   if (!interaction?.flowArrows?.length) return;
   const operatingMaps = diagramDeviceOperatingStateMaps(snapshot);
   interaction.flowArrows.forEach((record) => {
-    const row = diagramMetricBindingValue({ ...record.device, metricType: "activePower" }, measurementMaps);
-    const power = Number(row?.value);
-    const valid = Boolean(row) && Number(row.valid ?? 1) === 1 && Number.isFinite(power);
-    const deviceState = diagramDeviceOperatingState(record.device, operatingMaps);
-    const pathOffline = record.pathDevices?.some((device) => (
+    const resolved = diagramFlowResolvePower(record, measurementMaps);
+    const power = Number(resolved.power);
+    const valid = Boolean(resolved.valid) && Number.isFinite(power);
+    const relevantDevices = [
+      record.device,
+      resolved.binding?.device,
+      ...(record.pathDevices || []),
+    ].filter(Boolean);
+    const offline = relevantDevices.some((device) => (
       diagramDeviceIsOffline(diagramDeviceOperatingState(device, operatingMaps))
     ));
-    const offline = diagramDeviceIsOffline(deviceState) || Boolean(pathOffline);
-    const referencePower = diagramFlowReferencePower(container, record.device, snapshot, interaction, power);
+    const referenceDevice = resolved.binding?.device || record.device;
+    const referencePower = diagramFlowReferencePower(container, referenceDevice, snapshot, interaction, power);
     const visible = diagramFlowArrowVisibility({ power, referencePower, valid, offline });
+    record.root.setAttribute("data-flow-power", valid ? String(power) : "");
+    record.root.setAttribute("data-flow-binding-id", String(resolved.binding?.device?.devId || ""));
     record.root.toggleAttribute("hidden", !visible);
     if (!visible) return;
     const size = diagramFlowArrowSize(power, referencePower);
     const halfLength = size / 2;
     const halfHeight = Math.max(2, size * 0.32);
-    record.polygon.setAttribute(
-      "points",
-      `${-halfLength},${-halfHeight} ${halfLength},0 ${-halfLength},${halfHeight}`,
-    );
+    record.markers.forEach(({ polygon }) => {
+      polygon.setAttribute(
+        "points",
+        `${-halfLength},${-halfHeight} ${halfLength},0 ${-halfLength},${halfHeight}`,
+      );
+    });
     const direction = diagramFlowArrowDirection(power, record.orientation);
     if (direction !== record.direction) {
       record.direction = direction;
-      record.animation.setAttribute("keyPoints", direction < 0 ? "1;0" : "0;1");
-      record.animation.setAttribute("rotate", direction < 0 ? "auto-reverse" : "auto");
+      const motion = diagramFlowMotionAttributes(direction);
+      record.markers.forEach(({ animation }) => {
+        animation.setAttribute("keyPoints", motion.keyPoints);
+        animation.setAttribute("rotate", motion.rotate);
+      });
     }
     record.root.setAttribute("data-flow-direction", direction < 0 ? "reverse" : "forward");
-    record.root.setAttribute("data-flow-power", String(power));
   });
 }
 
@@ -3893,6 +4247,7 @@ function diagramInteractionState(container) {
       tooltipPositionKey: "",
       trendPeriod: "hour",
       trendChart: null,
+      trendCursorClientX: null,
       contextMenu: null,
       flowArrows: [],
       flowArrowPeakReferences: new Map(),
@@ -4044,14 +4399,21 @@ function diagramMeasurementUnit(measType) {
   return "";
 }
 
-function diagramTooltipRows(rows = []) {
+function diagramTooltipRowKey(sectionKey, label, index = 0) {
+  return `${String(sectionKey || "section")}:${String(label || index)}`;
+}
+
+function diagramTooltipRows(rows = [], sectionKey = "") {
   const content = rows
     .filter((row) => row && row[0])
-    .map(([label, value]) => `
-      <div class="diagram-tooltip-row">
+    .map(([label, value, key], index) => {
+      const rowKey = String(key || diagramTooltipRowKey(sectionKey, label, index));
+      return `
+      <div class="diagram-tooltip-row" data-diagram-tooltip-row="${escapeHtml(rowKey)}">
         <dt>${escapeHtml(label)}</dt>
-        <dd>${escapeHtml(diagramTooltipValue(value))}</dd>
-      </div>`)
+        <dd data-diagram-tooltip-value="${escapeHtml(rowKey)}">${escapeHtml(diagramTooltipValue(value))}</dd>
+      </div>`;
+    })
     .join("");
   return content ? `<dl class="diagram-tooltip-grid">${content}</dl>` : "";
 }
@@ -4098,48 +4460,146 @@ function diagramDeviceMeasurements(device, snapshot = state.snapshot || {}) {
   ));
 }
 
-function renderDiagramDeviceTooltip(container, hover, snapshot) {
+function diagramDeviceTooltipData(container, hover, snapshot) {
   const device = hover?.device || null;
-  if (!device) return "";
+  if (!device) return null;
   const { definition, live, raw, svgIdx } = diagramDeviceData(container, device, snapshot);
   const idx = live?.raw?.idx ?? definition?.idx ?? raw.idx ?? svgIdx ?? "--";
   const identityRows = [
-    ["设备类型", device.devType || "--"],
-    ["设备标识", device.devId || "--"],
-    ["idx", idx],
+    ["设备类型", device.devType || "--", "identity:type"],
+    ["设备标识", device.devId || "--", "identity:id"],
+    ["idx", idx, "identity:idx"],
   ];
   const statusRows = [
-    ["运行状态", live?.run_stat ?? raw.run_stat],
-    ["开关状态", live?.status ?? raw.status],
-    ["控制模式", live?.mode ?? raw.control_type ?? raw.mode],
+    ["运行状态", live?.run_stat ?? raw.run_stat, "status:run_stat"],
+    ["开关状态", live?.status ?? raw.status, "status:status"],
+    ["控制模式", live?.mode ?? raw.control_type ?? raw.mode, "status:mode"],
   ];
   const setRows = Object.entries(live?.set_values || {})
-    .map(([key, value]) => [key, value]);
+    .map(([key, value]) => [key, value, `set:${key}`]);
   const duplicateKeys = new Set([
     "idx", "name", "dev_name", "dev_type", "run_stat", "status", "mode", "control_type",
     ...Object.keys(live?.set_values || {}),
   ]);
   const rawRows = Object.entries(raw)
     .filter(([key]) => !duplicateKeys.has(key))
-    .map(([key, value]) => [key, value]);
+    .map(([key, value]) => [key, value, `raw:${key}`]);
   const measurementRows = diagramDeviceMeasurements(device, snapshot).map((row) => {
     const metricType = normalizeDiagramMeasurementToken(row.meas_type) === "SOC" ? "level" : "";
     const value = diagramTrendDisplayValue(row.value, row, metricType);
     const unit = diagramMeasurementUnit(row.meas_type);
-    return [row.meas_type || row.name || "量测", value === null ? "--" : `${diagramNumberText(value)}${unit ? ` ${unit}` : ""}`];
+    return [
+      row.meas_type || row.name || "量测",
+      value === null ? "--" : `${diagramNumberText(value)}${unit ? ` ${unit}` : ""}`,
+      `measurement:${measurementKey(row)}`,
+    ];
   });
+  return {
+    title: device.devName || device.devId || "设备",
+    sections: [
+      { key: "identity", title: "", rows: identityRows },
+      { key: "status", title: "运行信息", rows: statusRows },
+      { key: "set", title: "当前设定值", rows: setRows },
+      { key: "raw", title: "Model.e 参数", rows: rawRows },
+      { key: "measurement", title: "实时量测", rows: measurementRows },
+    ].filter((section) => section.rows.length),
+  };
+}
+
+function diagramTooltipSectionsHtml(sections = []) {
+  return sections.map((section) => `
+    <section class="diagram-tooltip-section" data-diagram-tooltip-section="${escapeHtml(section.key)}">
+      ${section.title ? `<h4>${escapeHtml(section.title)}</h4>` : ""}
+      ${diagramTooltipRows(section.rows, section.key)}
+    </section>`).join("");
+}
+
+function renderDiagramDeviceTooltip(container, hover, snapshot) {
+  const data = diagramDeviceTooltipData(container, hover, snapshot);
+  if (!data) return "";
   return `
     <div class="diagram-tooltip-head">
-      <strong>${escapeHtml(device.devName || device.devId || "设备")}</strong>
+      <strong data-diagram-tooltip-device-name>${escapeHtml(data.title)}</strong>
       <span>设备参数</span>
     </div>
-    <div class="diagram-tooltip-body">
-      ${diagramTooltipRows(identityRows)}
-      ${statusRows.some((row) => row[1] !== undefined && row[1] !== null && row[1] !== "") ? `<h4>运行信息</h4>${diagramTooltipRows(statusRows)}` : ""}
-      ${setRows.length ? `<h4>当前设定值</h4>${diagramTooltipRows(setRows)}` : ""}
-      ${rawRows.length ? `<h4>Model.e 参数</h4>${diagramTooltipRows(rawRows)}` : ""}
-      ${measurementRows.length ? `<h4>实时量测</h4>${diagramTooltipRows(measurementRows)}` : ""}
+    <div class="diagram-tooltip-body" data-diagram-device-tooltip-body>
+      ${diagramTooltipSectionsHtml(data.sections)}
     </div>`;
+}
+
+function syncDiagramTooltipSections(body, sections = []) {
+  if (!body) return false;
+  const existingSections = new Map(Array.from(body.children)
+    .filter((element) => element.hasAttribute("data-diagram-tooltip-section"))
+    .map((element) => [element.getAttribute("data-diagram-tooltip-section") || "", element]));
+  const desiredSectionKeys = new Set();
+  sections.forEach((section) => {
+    const sectionKey = String(section.key || "");
+    desiredSectionKeys.add(sectionKey);
+    let sectionElement = existingSections.get(sectionKey);
+    if (!sectionElement) {
+      sectionElement = document.createElement("section");
+      sectionElement.className = "diagram-tooltip-section";
+      sectionElement.setAttribute("data-diagram-tooltip-section", sectionKey);
+    }
+    let heading = Array.from(sectionElement.children).find((element) => element.tagName === "H4") || null;
+    if (section.title) {
+      if (!heading) {
+        heading = document.createElement("h4");
+        sectionElement.prepend(heading);
+      }
+      heading.textContent = section.title;
+    } else if (heading) {
+      heading.remove();
+    }
+    let list = Array.from(sectionElement.children).find((element) => element.classList.contains("diagram-tooltip-grid")) || null;
+    if (!list) {
+      list = document.createElement("dl");
+      list.className = "diagram-tooltip-grid";
+      sectionElement.appendChild(list);
+    }
+    const existingRows = new Map(Array.from(list.children)
+      .filter((element) => element.hasAttribute("data-diagram-tooltip-row"))
+      .map((element) => [element.getAttribute("data-diagram-tooltip-row") || "", element]));
+    const desiredRowKeys = new Set();
+    section.rows.forEach(([label, value, key], index) => {
+      const rowKey = String(key || diagramTooltipRowKey(sectionKey, label, index));
+      desiredRowKeys.add(rowKey);
+      let rowElement = existingRows.get(rowKey);
+      if (!rowElement) {
+        rowElement = document.createElement("div");
+        rowElement.className = "diagram-tooltip-row";
+        rowElement.setAttribute("data-diagram-tooltip-row", rowKey);
+        const term = document.createElement("dt");
+        const description = document.createElement("dd");
+        description.setAttribute("data-diagram-tooltip-value", rowKey);
+        rowElement.append(term, description);
+      }
+      const term = rowElement.querySelector("dt");
+      const description = rowElement.querySelector("dd");
+      if (term) term.textContent = label;
+      if (description) description.textContent = diagramTooltipValue(value);
+      list.appendChild(rowElement);
+    });
+    existingRows.forEach((element, key) => {
+      if (!desiredRowKeys.has(key)) element.remove();
+    });
+    body.appendChild(sectionElement);
+  });
+  existingSections.forEach((element, key) => {
+    if (!desiredSectionKeys.has(key)) element.remove();
+  });
+  return true;
+}
+
+function updateDiagramDeviceTooltip(container, hover, snapshot, interaction) {
+  const tooltip = interaction?.tooltip;
+  const data = diagramDeviceTooltipData(container, hover, snapshot);
+  const body = tooltip?.querySelector("[data-diagram-device-tooltip-body]");
+  if (!tooltip || !data || !body) return false;
+  const title = tooltip.querySelector("[data-diagram-tooltip-device-name]");
+  if (title) title.textContent = data.title;
+  return syncDiagramTooltipSections(body, data.sections);
 }
 
 function diagramMetricCurrentRow(container, hover, snapshot) {
@@ -4193,23 +4653,22 @@ function diagramMetricLabel(metricType, row) {
     || "动态量测";
 }
 
-function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute = null, unit = "", interaction = null) {
-  if (!points.length) {
-    if (interaction) interaction.trendChart = null;
-    return '<div class="diagram-trend-empty">当前分页暂无历史曲线</div>';
-  }
+function diagramTrendChartModel(points, period, tooltipWidth = 360, currentMinute = null, unit = "") {
+  const sourcePoints = Array.isArray(points) ? points : [];
   const targetCount = Math.max(32, Math.floor(Math.max(tooltipWidth, 320) * 0.75));
-  const sampled = diagramSampleTrendPoints(points, targetCount);
+  const sampled = diagramSampleTrendPoints(sourcePoints, targetCount);
   const values = sampled.map((point) => Number(point.value));
   const axis = diagramTrendAxisScale(values, 4);
   const width = 336;
   const height = 148;
   const plot = { left: 52, right: 10, top: 20, bottom: 10 };
+  const lastSourcePoint = sourcePoints[sourcePoints.length - 1] || null;
+  const fallbackMinute = Number(lastSourcePoint?.minute);
   const range = diagramTrendPeriodRange(
     period,
     currentMinute !== null && currentMinute !== undefined && currentMinute !== "" && Number.isFinite(Number(currentMinute))
       ? Number(currentMinute)
-      : Number(points[points.length - 1].minute),
+      : (Number.isFinite(fallbackMinute) ? fallbackMinute : 0),
   );
   const labels = diagramTrendPeriodLabels(period, range);
   const minuteSpan = Math.max(1, range.endMinute - range.startMinute);
@@ -4221,33 +4680,62 @@ function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute
     const y = plot.top + ((axis.max - Number(point.value)) / valueSpan) * plotHeight;
     return { ...point, x, y };
   });
+  const numericValues = sourcePoints.map((point) => Number(point.value)).filter(Number.isFinite);
+  return {
+    empty: renderedPoints.length === 0,
+    period: period === "day" ? "day" : "hour",
+    unit: String(unit || ""),
+    width,
+    height,
+    plot,
+    range,
+    labels,
+    axis,
+    renderedPoints,
+    polyline: renderedPoints.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" "),
+    min: numericValues.length ? Math.min(...numericValues) : null,
+    max: numericValues.length ? Math.max(...numericValues) : null,
+    latest: numericValues.length ? numericValues[numericValues.length - 1] : null,
+  };
+}
+
+function setDiagramTrendChartModel(interaction, model) {
   if (interaction) {
-    interaction.trendChart = {
-      width,
-      height,
-      plot,
-      range,
-      points: renderedPoints,
-      unit: String(unit || ""),
+    interaction.trendChart = model.empty ? null : {
+      width: model.width,
+      height: model.height,
+      plot: model.plot,
+      range: model.range,
+      points: model.renderedPoints,
+      unit: model.unit,
     };
   }
-  const polyline = renderedPoints.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ");
-  const axisTicks = axis.ticks.map((value) => {
-    const y = plot.top + ((axis.max - Number(value)) / valueSpan) * plotHeight;
+}
+
+function diagramTrendAxisTicksHtml(model) {
+  const valueSpan = Math.max(1e-9, model.axis.max - model.axis.min);
+  const plotHeight = model.height - model.plot.top - model.plot.bottom;
+  return model.axis.ticks.map((value) => {
+    const y = model.plot.top + ((model.axis.max - Number(value)) / valueSpan) * plotHeight;
     return `
       <g class="diagram-trend-y-tick">
-        <line x1="${plot.left}" y1="${y.toFixed(2)}" x2="${width - plot.right}" y2="${y.toFixed(2)}" class="diagram-trend-grid-line"></line>
-        <text x="${plot.left - 7}" y="${(y + 3.5).toFixed(2)}">${escapeHtml(diagramNumberText(value))}</text>
+        <line x1="${model.plot.left}" y1="${y.toFixed(2)}" x2="${model.width - model.plot.right}" y2="${y.toFixed(2)}" class="diagram-trend-grid-line"></line>
+        <text x="${model.plot.left - 7}" y="${(y + 3.5).toFixed(2)}">${escapeHtml(diagramNumberText(value))}</text>
       </g>`;
   }).join("");
-  const last = points[points.length - 1];
+}
+
+function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute = null, unit = "", interaction = null) {
+  const model = diagramTrendChartModel(points, period, tooltipWidth, currentMinute, unit);
+  setDiagramTrendChartModel(interaction, model);
   return `
-    <svg class="diagram-trend-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${period === "day" ? "日曲线" : "小时曲线"}">
-      <text x="${plot.left}" y="12" class="diagram-trend-axis-unit">${escapeHtml(unit)}</text>
-      ${axisTicks}
-      <line x1="${plot.left}" y1="${plot.top}" x2="${plot.left}" y2="${height - plot.bottom}" class="diagram-trend-y-axis"></line>
-      <polyline class="diagram-trend-series" points="${polyline}" fill="none" vector-effect="non-scaling-stroke"></polyline>
-      <line x1="0" y1="${plot.top}" x2="0" y2="${height - plot.bottom}" class="diagram-trend-cursor diagram-trend-cursor-line" data-diagram-trend-cursor data-diagram-trend-cursor-line visibility="hidden"></line>
+    <div class="diagram-trend-empty" data-diagram-trend-empty${model.empty ? "" : " hidden"}>当前分页暂无历史曲线</div>
+    <svg class="diagram-trend-chart" data-diagram-trend-chart viewBox="0 0 ${model.width} ${model.height}" role="img" aria-label="${model.period === "day" ? "日曲线" : "小时曲线"}"${model.empty ? " hidden" : ""}>
+      <text x="${model.plot.left}" y="12" class="diagram-trend-axis-unit" data-diagram-trend-unit>${escapeHtml(model.unit)}</text>
+      <g data-diagram-trend-axis-ticks>${diagramTrendAxisTicksHtml(model)}</g>
+      <line x1="${model.plot.left}" y1="${model.plot.top}" x2="${model.plot.left}" y2="${model.height - model.plot.bottom}" class="diagram-trend-y-axis"></line>
+      <polyline class="diagram-trend-series" data-diagram-trend-series points="${model.polyline}" fill="none" vector-effect="non-scaling-stroke"></polyline>
+      <line x1="0" y1="${model.plot.top}" x2="0" y2="${model.height - model.plot.bottom}" class="diagram-trend-cursor diagram-trend-cursor-line" data-diagram-trend-cursor data-diagram-trend-cursor-line visibility="hidden"></line>
       <circle cx="0" cy="0" r="3.5" class="diagram-trend-cursor diagram-trend-cursor-point" data-diagram-trend-cursor data-diagram-trend-cursor-point visibility="hidden"></circle>
       <g class="diagram-trend-cursor diagram-trend-cursor-label" data-diagram-trend-cursor data-diagram-trend-cursor-label visibility="hidden">
         <rect width="112" height="34" rx="4" ry="4"></rect>
@@ -4255,18 +4743,90 @@ function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute
         <text x="7" y="27" data-diagram-trend-cursor-value>--</text>
       </g>
     </svg>
-    <div class="diagram-trend-range"><span>${escapeHtml(labels.start)}</span><span>${escapeHtml(labels.end)}</span></div>
-    <div class="diagram-trend-stats">
-      <span>最小 <strong>${diagramNumberText(Math.min(...points.map((point) => point.value)))}</strong></span>
-      <span>最大 <strong>${diagramNumberText(Math.max(...points.map((point) => point.value)))}</strong></span>
-      <span>最新 <strong>${diagramNumberText(last.value)}</strong></span>
+    <div class="diagram-trend-range" data-diagram-trend-range${model.empty ? " hidden" : ""}><span data-diagram-trend-range-start>${escapeHtml(model.labels.start)}</span><span data-diagram-trend-range-end>${escapeHtml(model.labels.end)}</span></div>
+    <div class="diagram-trend-stats" data-diagram-trend-stats${model.empty ? " hidden" : ""}>
+      <span>最小 <strong data-diagram-trend-stat-min>${model.min === null ? "--" : diagramNumberText(model.min)}</strong></span>
+      <span>最大 <strong data-diagram-trend-stat-max>${model.max === null ? "--" : diagramNumberText(model.max)}</strong></span>
+      <span>最新 <strong data-diagram-trend-stat-latest>${model.latest === null ? "--" : diagramNumberText(model.latest)}</strong></span>
     </div>`;
 }
 
 function hideDiagramTrendCursor(interaction) {
+  if (interaction) interaction.trendCursorClientX = null;
   interaction?.tooltip?.querySelectorAll("[data-diagram-trend-cursor]").forEach((element) => {
     element.setAttribute("visibility", "hidden");
   });
+}
+
+function syncDiagramTrendAxisTicks(group, model) {
+  if (!group || !model) return false;
+  const valueSpan = Math.max(1e-9, model.axis.max - model.axis.min);
+  const plotHeight = model.height - model.plot.top - model.plot.bottom;
+  const existing = Array.from(group.children);
+  model.axis.ticks.forEach((value, index) => {
+    let tick = existing[index];
+    if (!tick) {
+      tick = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      tick.classList.add("diagram-trend-y-tick");
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.classList.add("diagram-trend-grid-line");
+      const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      tick.append(line, text);
+    }
+    const y = model.plot.top + ((model.axis.max - Number(value)) / valueSpan) * plotHeight;
+    const line = tick.querySelector("line");
+    const text = tick.querySelector("text");
+    line?.setAttribute("x1", String(model.plot.left));
+    line?.setAttribute("y1", y.toFixed(2));
+    line?.setAttribute("x2", String(model.width - model.plot.right));
+    line?.setAttribute("y2", y.toFixed(2));
+    text?.setAttribute("x", String(model.plot.left - 7));
+    text?.setAttribute("y", (y + 3.5).toFixed(2));
+    if (text) text.textContent = diagramNumberText(value);
+    group.appendChild(tick);
+  });
+  existing.slice(model.axis.ticks.length).forEach((element) => element.remove());
+  return true;
+}
+
+function updateDiagramTrendChart(content, points, period, tooltipWidth, currentMinute, unit, interaction) {
+  if (!content) return false;
+  const model = diagramTrendChartModel(points, period, tooltipWidth, currentMinute, unit);
+  setDiagramTrendChartModel(interaction, model);
+  const empty = content.querySelector("[data-diagram-trend-empty]");
+  const chart = content.querySelector("[data-diagram-trend-chart]");
+  const tickGroup = content.querySelector("[data-diagram-trend-axis-ticks]");
+  const series = content.querySelector("[data-diagram-trend-series]");
+  const range = content.querySelector("[data-diagram-trend-range]");
+  const stats = content.querySelector("[data-diagram-trend-stats]");
+  if (!empty || !chart || !tickGroup || !series || !range || !stats) return false;
+  empty.hidden = !model.empty;
+  chart.toggleAttribute("hidden", model.empty);
+  range.hidden = model.empty;
+  stats.hidden = model.empty;
+  if (model.empty) {
+    hideDiagramTrendCursor(interaction);
+    return true;
+  }
+  chart.setAttribute("aria-label", model.period === "day" ? "日曲线" : "小时曲线");
+  const unitElement = chart.querySelector("[data-diagram-trend-unit]");
+  if (unitElement) unitElement.textContent = model.unit;
+  syncDiagramTrendAxisTicks(tickGroup, model);
+  series.setAttribute("points", model.polyline);
+  const rangeStart = range.querySelector("[data-diagram-trend-range-start]");
+  const rangeEnd = range.querySelector("[data-diagram-trend-range-end]");
+  const statMin = stats.querySelector("[data-diagram-trend-stat-min]");
+  const statMax = stats.querySelector("[data-diagram-trend-stat-max]");
+  const statLatest = stats.querySelector("[data-diagram-trend-stat-latest]");
+  if (rangeStart) rangeStart.textContent = model.labels.start;
+  if (rangeEnd) rangeEnd.textContent = model.labels.end;
+  if (statMin) statMin.textContent = model.min === null ? "--" : diagramNumberText(model.min);
+  if (statMax) statMax.textContent = model.max === null ? "--" : diagramNumberText(model.max);
+  if (statLatest) statLatest.textContent = model.latest === null ? "--" : diagramNumberText(model.latest);
+  if (Number.isFinite(interaction?.trendCursorClientX)) {
+    updateDiagramTrendCursor(interaction, chart, { clientX: interaction.trendCursorClientX });
+  }
+  return true;
 }
 
 function updateDiagramTrendCursor(interaction, chart, event) {
@@ -4282,6 +4842,7 @@ function updateDiagramTrendCursor(interaction, chart, event) {
     hideDiagramTrendCursor(interaction);
     return;
   }
+  interaction.trendCursorClientX = Number(event.clientX);
   const targetMinute = model.range.startMinute
     + ((viewX - model.plot.left) / plotWidth) * (model.range.endMinute - model.range.startMinute);
   const point = diagramNearestTrendPoint(model.points, targetMinute);
@@ -4318,7 +4879,7 @@ function updateDiagramTrendCursor(interaction, chart, event) {
   });
 }
 
-function renderDiagramMetricTooltip(container, hover, snapshot, interaction) {
+function diagramMetricTooltipData(container, hover, snapshot, interaction) {
   const row = diagramMetricCurrentRow(container, hover, snapshot);
   const metricType = hover?.binding?.metricType || hover?.metricType || "";
   const displayValue = diagramTrendDisplayValue(row?.value, row, metricType);
@@ -4334,23 +4895,69 @@ function renderDiagramMetricTooltip(container, hover, snapshot, interaction) {
   const deviceName = hover?.binding?.devName || row?.dev_name || row?.name || "动态量测";
   const metricLabel = diagramMetricLabel(metricType, row);
   const validText = row ? (Number(row.valid ?? 1) === 1 ? "有效" : "无效") : "缺失";
+  return {
+    deviceName,
+    metricLabel,
+    displayText: displayValue === null ? "--" : diagramNumberText(displayValue),
+    unit: String(unit || ""),
+    validText,
+    period,
+    endMinute: Number.isFinite(endMinute) ? endMinute : null,
+    windowPoints,
+  };
+}
+
+function renderDiagramMetricTooltip(container, hover, snapshot, interaction) {
+  const data = diagramMetricTooltipData(container, hover, snapshot, interaction);
   return `
     <div class="diagram-tooltip-head">
-      <strong>${escapeHtml(deviceName)}</strong>
-      <span>${escapeHtml(metricLabel)}</span>
+      <strong data-diagram-tooltip-device-name>${escapeHtml(data.deviceName)}</strong>
+      <span data-diagram-tooltip-metric-label>${escapeHtml(data.metricLabel)}</span>
     </div>
     <div class="diagram-metric-current">
-      <strong>${displayValue === null ? "--" : escapeHtml(diagramNumberText(displayValue))}</strong>
-      <span>${escapeHtml(unit)}</span>
-      <small>${escapeHtml(validText)}</small>
+      <strong data-diagram-tooltip-current-value>${escapeHtml(data.displayText)}</strong>
+      <span data-diagram-tooltip-current-unit>${escapeHtml(data.unit)}</span>
+      <small data-diagram-tooltip-validity>${escapeHtml(data.validText)}</small>
     </div>
     <div class="diagram-trend-tabs" role="tablist" aria-label="量测趋势范围">
-      <button type="button" data-diagram-trend-period="hour" class="${period === "hour" ? "is-active" : ""}" aria-selected="${period === "hour"}">小时曲线</button>
-      <button type="button" data-diagram-trend-period="day" class="${period === "day" ? "is-active" : ""}" aria-selected="${period === "day"}">日曲线</button>
+      <button type="button" data-diagram-trend-period="hour" class="${data.period === "hour" ? "is-active" : ""}" aria-selected="${data.period === "hour"}">小时曲线</button>
+      <button type="button" data-diagram-trend-period="day" class="${data.period === "day" ? "is-active" : ""}" aria-selected="${data.period === "day"}">日曲线</button>
     </div>
-    <div class="diagram-trend-content">
-      ${diagramTrendChartHtml(windowPoints, period, interaction.tooltip?.clientWidth || 360, endMinute, unit, interaction)}
+    <div class="diagram-trend-content" data-diagram-trend-content>
+      ${diagramTrendChartHtml(data.windowPoints, data.period, interaction.tooltip?.clientWidth || 360, data.endMinute, data.unit, interaction)}
     </div>`;
+}
+
+function updateDiagramMetricTooltip(container, hover, snapshot, interaction) {
+  const tooltip = interaction?.tooltip;
+  if (!tooltip) return false;
+  const data = diagramMetricTooltipData(container, hover, snapshot, interaction);
+  const value = tooltip.querySelector("[data-diagram-tooltip-current-value]");
+  const unit = tooltip.querySelector("[data-diagram-tooltip-current-unit]");
+  const validity = tooltip.querySelector("[data-diagram-tooltip-validity]");
+  const content = tooltip.querySelector("[data-diagram-trend-content]");
+  if (!value || !unit || !validity || !content) return false;
+  const deviceName = tooltip.querySelector("[data-diagram-tooltip-device-name]");
+  const metricLabel = tooltip.querySelector("[data-diagram-tooltip-metric-label]");
+  if (deviceName) deviceName.textContent = data.deviceName;
+  if (metricLabel) metricLabel.textContent = data.metricLabel;
+  value.textContent = data.displayText;
+  unit.textContent = data.unit;
+  validity.textContent = data.validText;
+  tooltip.querySelectorAll("[data-diagram-trend-period]").forEach((button) => {
+    const selected = button.getAttribute("data-diagram-trend-period") === data.period;
+    button.classList.toggle("is-active", selected);
+    button.setAttribute("aria-selected", String(selected));
+  });
+  return updateDiagramTrendChart(
+    content,
+    data.windowPoints,
+    data.period,
+    interaction.tooltip?.clientWidth || 360,
+    data.endMinute,
+    data.unit,
+    interaction,
+  );
 }
 
 function positionDiagramTooltip(interaction) {
@@ -4403,25 +5010,42 @@ function scheduleDiagramTooltipHide(container) {
   interaction.hideTimer = setTimeout(() => hideDiagramTooltip(container), DIAGRAM_TOOLTIP_HIDE_DELAY_MS);
 }
 
+function renderActiveDiagramTooltip(container, snapshot, interaction) {
+  const hover = interaction?.hover;
+  const tooltip = interaction?.tooltip;
+  if (!hover || !tooltip) return false;
+  hideDiagramTrendCursor(interaction);
+  interaction.trendChart = null;
+  const html = hover.kind === "metric"
+    ? renderDiagramMetricTooltip(container, hover, snapshot, interaction)
+    : renderDiagramDeviceTooltip(container, hover, snapshot);
+  if (!html) {
+    hideDiagramTooltip(container);
+    return false;
+  }
+  tooltip.dataset.kind = hover.kind;
+  tooltip.dataset.hoverKey = String(hover.key || "");
+  tooltip.innerHTML = html;
+  tooltip.hidden = false;
+  tooltip.classList.add("is-visible");
+  positionDiagramTooltip(interaction);
+  return true;
+}
+
 function refreshDiagramTooltip(container, snapshot = state.snapshot || {}) {
   const interaction = diagramInteractionCache.get(container);
   if (!interaction) return;
   interaction.snapshot = snapshot;
   if (!interaction.hover || !interaction.tooltip) return;
-  hideDiagramTrendCursor(interaction);
-  interaction.trendChart = null;
-  const html = interaction.hover.kind === "metric"
-    ? renderDiagramMetricTooltip(container, interaction.hover, snapshot, interaction)
-    : renderDiagramDeviceTooltip(container, interaction.hover, snapshot);
-  if (!html) {
-    hideDiagramTooltip(container);
+  const hoverKey = String(interaction.hover.key || "");
+  if (interaction.tooltip.hidden || interaction.tooltip.dataset.hoverKey !== hoverKey) {
+    renderActiveDiagramTooltip(container, snapshot, interaction);
     return;
   }
-  interaction.tooltip.dataset.kind = interaction.hover.kind;
-  interaction.tooltip.innerHTML = html;
-  interaction.tooltip.hidden = false;
-  interaction.tooltip.classList.add("is-visible");
-  positionDiagramTooltip(interaction);
+  const updated = interaction.hover.kind === "metric"
+    ? updateDiagramMetricTooltip(container, interaction.hover, snapshot, interaction)
+    : updateDiagramDeviceTooltip(container, interaction.hover, snapshot, interaction);
+  if (!updated) renderActiveDiagramTooltip(container, snapshot, interaction);
 }
 
 function resetDiagramInteractions(container) {
@@ -4864,12 +5488,35 @@ function minuteToTimeInput(value, fallback = 0) {
 }
 
 function timeInputToMinute(value, fallback = 0) {
-  const match = /^(\d{2}):(\d{2})$/.exec(String(value || ""));
-  if (!match) return clamp(Number(fallback) || 0, 0, 1439);
+  return timeInputToSecond(value, Number(fallback) * 60) / 60;
+}
+
+function timeInputToSecond(value, fallback = 0) {
+  const match = /^(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(String(value || ""));
+  if (!match) return clamp(Number(fallback) || 0, 0, 86399);
   const hour = Number(match[1]);
   const minute = Number(match[2]);
-  if (hour > 23 || minute > 59) return clamp(Number(fallback) || 0, 0, 1439);
-  return hour * 60 + minute;
+  const second = Number(match[3] || 0);
+  if (hour > 23 || minute > 59 || second > 59) return clamp(Number(fallback) || 0, 0, 86399);
+  return hour * 3600 + minute * 60 + second;
+}
+
+function secondToTimeInput(value, fallback = 0) {
+  const numeric = Number(value);
+  const fallbackNumeric = Number(fallback);
+  const totalSeconds = clamp(
+    Math.round(Number.isFinite(numeric) ? numeric : (Number.isFinite(fallbackNumeric) ? fallbackNumeric : 0)),
+    0,
+    24 * 60 * 60 - 1,
+  );
+  const hourText = String(Math.floor(totalSeconds / 3600)).padStart(2, "0");
+  const minuteText = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, "0");
+  const secondText = String(totalSeconds % 60).padStart(2, "0");
+  return `${hourText}:${minuteText}:${secondText}`;
+}
+
+function minuteToSecondTimeInput(value, fallback = 0) {
+  return secondToTimeInput(Number(value) * 60, Number(fallback) * 60);
 }
 
 function curveModeConfig(mode = state.curveMode) {
@@ -5273,7 +5920,7 @@ function renderCurveModeControls() {
   if (selector) {
     selector.value = state.curveMode;
     selector.disabled = modeLocked;
-    selector.title = modeLocked ? "请先停止仿真，再切换仿真模式" : "选择年仿真或日仿真";
+    selector.title = modeLocked ? "请先停止仿真，再切换仿真模式" : "选择时、日、周、月或年仿真";
   }
   if (state.snapshot?.clock) renderClockTextOnly(state.snapshot.clock);
 }
@@ -5286,7 +5933,7 @@ function renderClockTextOnly(clock) {
   if (time) time.textContent = formatSimulationClock(clock);
   if (simSpeed) simSpeed.textContent = `x${clock.speed ?? 1}`;
   if (overviewClockSpeed) overviewClockSpeed.textContent = `x${clock.speed ?? 1}`;
-  if (readout) readout.classList.toggle("is-year-mode", state.curveMode === "year");
+  if (readout) readout.classList.toggle("is-year-mode", isExtendedSimulationMode());
 }
 
 function updateCurveModeLabels() {
@@ -5802,6 +6449,43 @@ function drawCurveXAxis(ctx, canvas, plot) {
   const right = width - plot.right;
   const top = plot.top;
   const bottom = height - plot.bottom;
+  if (state.curveMode === "hour") {
+    const minuteStep = width < 560 ? 15 : 10;
+    for (let minute = 0; minute <= 60; minute += minuteStep) {
+      const x = left + (minute / 60) * (right - left);
+      ctx.strokeStyle = minute % 30 === 0 ? "#c9d6dc" : "#e7eef1";
+      ctx.beginPath();
+      ctx.moveTo(x, top);
+      ctx.lineTo(x, bottom);
+      ctx.stroke();
+      ctx.fillStyle = "#63717a";
+      const labelHour = Math.floor(minute / 60);
+      const labelMinute = minute % 60;
+      ctx.fillText(`${String(labelHour).padStart(2, "0")}:${String(labelMinute).padStart(2, "0")}`, x - 14, height - 12);
+    }
+    return;
+  }
+  if (state.curveMode === "week" || state.curveMode === "month") {
+    const dayCount = simulationModeDayCount();
+    const dayStep = state.curveMode === "week" ? 1 : width < 560 ? 10 : width < 900 ? 5 : 3;
+    for (let day = 0; day <= dayCount; day += dayStep) {
+      const x = left + (day / dayCount) * (right - left);
+      ctx.strokeStyle = day === 0 || day === dayCount ? "#c9d6dc" : "#e7eef1";
+      ctx.beginPath();
+      ctx.moveTo(x, top);
+      ctx.lineTo(x, bottom);
+      ctx.stroke();
+      ctx.fillStyle = "#63717a";
+      const labelDay = Math.min(day + 1, dayCount);
+      ctx.fillText(`第${labelDay}天`, x - 16, height - 12);
+    }
+    if (dayCount % dayStep !== 0) {
+      ctx.textAlign = "right";
+      ctx.fillText(`第${dayCount}天`, right, height - 12);
+      ctx.textAlign = "left";
+    }
+    return;
+  }
   if (state.curveMode === "year") {
     const monthStarts = [
       ["01月", 0],
@@ -6135,6 +6819,12 @@ function applyCurveDrag(event) {
 }
 
 function formatCurveTableTime(minute) {
+  if (state.curveMode === "hour") {
+    const totalSeconds = Math.max(0, Math.round(Number(minute) * 60));
+    const minutePart = Math.floor(totalSeconds / 60);
+    const secondPart = totalSeconds % 60;
+    return `00:${String(minutePart).padStart(2, "0")}:${String(secondPart).padStart(2, "0")}`;
+  }
   if (state.curveMode === "year") {
     const dayOfYear = Math.floor(minute / (24 * 60));
     const hour = Math.floor((minute % (24 * 60)) / 60);
@@ -6146,6 +6836,14 @@ function formatCurveTableTime(minute) {
       month += 1;
     }
     return `${String(month + 1).padStart(2, "0")}-${String(day + 1).padStart(2, "0")} ${String(hour).padStart(2, "0")}:00`;
+  }
+  if (state.curveMode === "week" || state.curveMode === "month") {
+    const total = Math.max(0, Math.round(Number(minute)));
+    const day = Math.floor(total / 1440) + 1;
+    const minuteOfDay = total % 1440;
+    const hour = Math.floor(minuteOfDay / 60);
+    const minutePart = minuteOfDay % 60;
+    return `第${day}天 ${String(hour).padStart(2, "0")}:${String(minutePart).padStart(2, "0")}`;
   }
   const total = Math.round(minute);
   const hour = Math.floor(total / 60);
@@ -6424,10 +7122,9 @@ function overviewCurveBoundary(snapshot) {
   }
   const curves = snapshot.curves || {};
   const weather = Array.isArray(curves.weather) ? curves.weather : [];
-  const step = Math.max(1, Number(curves.time_step_minutes) || 1);
-  const targetMinute = curves.mode === "year"
-    ? Number(snapshot.clock?.absolute_minute || 0)
-    : Number(snapshot.clock?.minute || 0);
+  const rawStep = Number(curves.time_step_minutes);
+  const step = Number.isFinite(rawStep) && rawStep > 0 ? rawStep : 1;
+  const targetMinute = Number(snapshot.clock?.absolute_minute ?? snapshot.clock?.minute ?? 0);
   const index = weather.length ? Math.round(targetMinute / step) % weather.length : 0;
   const point = weather[index] || {};
   const loadTotal = Object.values(curves.loads || {}).reduce((total, points) => {
@@ -7043,8 +7740,13 @@ function renderOverviewDashboard(snapshot) {
   }
   setOverviewText("overviewModel", snapshot.model?.name || snapshot.model?.id || "--");
   const overviewMode = snapshot.curve_boundary?.mode || snapshot.curves?.mode || state.curveMode;
-  setOverviewText("overviewMode", overviewMode === "year" ? "年仿真" : "日仿真");
-  setOverviewText("overviewStep", `${formatOverviewNumber(clock.step_minutes || 1)} min`);
+  setOverviewText("overviewMode", simulationModeLabel(overviewMode));
+  const effectiveStepSeconds = Number(
+    clock.effective_step_seconds
+      ?? snapshot.system_parameters?.effective_step_seconds
+      ?? ((clock.step_seconds ?? 1) * (clock.speed ?? 1)),
+  );
+  setOverviewText("overviewStep", formatClockDuration(effectiveStepSeconds));
   setOverviewText("metricScada", validMeasurements);
   setOverviewText("overviewMeasurementTotal", totalMeasurements);
   setOverviewText("metricCommands", snapshot.summary?.command_count || 0);
@@ -9766,17 +10468,19 @@ function renderFaults(force = false) {
 }
 
 function faultWindowFields() {
-  if (state.curveMode === "year") {
+  if (isExtendedSimulationMode()) {
+    const isYearMode = state.curveMode === "year";
+    const dayCount = simulationModeDayCount();
     return {
       startField: "start_day",
       clearField: "clear_day",
       startLabel: "故障启始日",
       clearLabel: "结束日",
-      inputType: "text",
-      min: "",
-      max: "",
-      step: "",
-      placeholder: "1月1日",
+      inputType: isYearMode ? "text" : "number",
+      min: isYearMode ? "" : "1",
+      max: isYearMode ? "" : String(dayCount),
+      step: isYearMode ? "" : "1",
+      placeholder: isYearMode ? "1月1日" : `1-${dayCount}`,
       deviceStart: 1,
       deviceClear: 2,
       measurementStart: 1,
@@ -9831,11 +10535,14 @@ function faultWindowInputValue(fault, field, fallback) {
     return minuteToTimeInput(fault?.[field], fallback);
   }
   const value = Number(fault?.[field]);
-  return dayOfYearToMonthDay(Number.isFinite(value) ? value : fallback);
+  const day = Number.isFinite(value) ? value : fallback;
+  return state.curveMode === "year"
+    ? dayOfYearToMonthDay(day)
+    : String(clamp(Math.round(Number(day) || 1), 1, simulationModeDayCount()));
 }
 
 function faultSimulationModeLabel() {
-  return state.curveMode === "year" ? "年仿真 · 按日整定" : "日仿真 · 按时分整定";
+  return `${simulationModeLabel()} · ${isExtendedSimulationMode() ? "按日整定" : "按时分整定"}`;
 }
 
 function renderDeviceFaultTable() {
@@ -9958,7 +10665,9 @@ function updateDeviceFault(index, field, rawValue, shouldRender = true) {
   if (field === "start_minute" || field === "clear_minute") {
     fault[field] = timeInputToMinute(rawValue, fault[field]);
   } else if (field === "start_day" || field === "clear_day") {
-    fault[field] = monthDayToDayOfYear(rawValue, fault[field] || 1);
+    fault[field] = state.curveMode === "year"
+      ? monthDayToDayOfYear(rawValue, fault[field] || 1)
+      : clamp(Math.round(Number(rawValue) || Number(fault[field]) || 1), 1, simulationModeDayCount());
   }
   if (shouldRender) renderFaults(true);
 }
@@ -9977,7 +10686,9 @@ function updateMeasurementFault(index, field, rawValue, shouldRender = true) {
   } else if (field === "start_minute" || field === "clear_minute") {
     fault[field] = timeInputToMinute(rawValue, fault[field]);
   } else if (field === "start_day" || field === "clear_day") {
-    fault[field] = monthDayToDayOfYear(rawValue, fault[field] || 1);
+    fault[field] = state.curveMode === "year"
+      ? monthDayToDayOfYear(rawValue, fault[field] || 1)
+      : clamp(Math.round(Number(rawValue) || Number(fault[field]) || 1), 1, simulationModeDayCount());
   } else if (field === "median" || field === "bias") {
     fault[field] = Number(rawValue);
   }
@@ -10160,13 +10871,18 @@ function updateModeValue(index, field, rawValue) {
   renderModes(true);
 }
 
+function setCurveStatus(text) {
+  const status = $("curveStatus") || state.pageSections?.curves?.querySelector("#curveStatus");
+  if (status) status.textContent = text;
+}
+
 async function saveCurves() {
   const config = curveModeConfig();
   const dirtyKeys = state.curveDirtyKeys instanceof Set ? Array.from(state.curveDirtyKeys) : [];
   const keysToSave = Array.from(new Set([...dirtyKeys, ...selectedCurveKeys()]))
     .filter((key) => curveHasLoadedSeries(key));
   if (!keysToSave.length) {
-    $("curveStatus").textContent = "没有需要保存的曲线";
+    setCurveStatus("没有需要保存的曲线");
     return;
   }
   await ensureCurveSeriesLoaded(keysToSave);
@@ -10184,7 +10900,7 @@ async function saveCurves() {
     }),
   });
   state.curveDirtyKeys = new Set();
-  $("curveStatus").textContent = "已保存";
+  setCurveStatus("已保存");
 }
 
 async function pushSettings() {

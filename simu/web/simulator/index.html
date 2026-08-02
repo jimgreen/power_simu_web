@@ -24,9 +24,12 @@
             <span id="activeModelName">默认模型</span>
           </label>
           <label class="simulation-mode-switcher">仿真模式
-            <select id="simulationModeSelector" title="选择年仿真或日仿真">
-              <option value="year">年仿真</option>
+            <select id="simulationModeSelector" title="选择时、日、周、月或年仿真">
+              <option value="hour">时仿真</option>
               <option value="day">日仿真</option>
+              <option value="week">周仿真</option>
+              <option value="month">月仿真</option>
+              <option value="year">年仿真</option>
             </select>
           </label>
           <button id="traineeLinkButton" class="trainee-link-button" type="button">交互链接</button>
@@ -338,8 +341,11 @@
                 </div>
                 <div class="curve-toolbar">
                   <div class="segmented-control curve-mode-control" role="group" aria-label="仿真类型">
-                    <button type="button" class="is-active" data-curve-mode="year" aria-pressed="true">年仿真</button>
+                    <button type="button" data-curve-mode="hour" aria-pressed="false">时仿真</button>
                     <button type="button" data-curve-mode="day" aria-pressed="false">日仿真</button>
+                    <button type="button" data-curve-mode="week" aria-pressed="false">周仿真</button>
+                    <button type="button" data-curve-mode="month" aria-pressed="false">月仿真</button>
+                    <button type="button" class="is-active" data-curve-mode="year" aria-pressed="true">年仿真</button>
                   </div>
                   <span id="activeCurveLabel">风速</span>
                   <button id="generateDenseCurves">生成典型曲线</button>
@@ -509,8 +515,8 @@
                   <tbody>
                     <tr>
                       <td>
-                        <strong>仿真步长</strong>
-                        <small>时钟加速比</small>
+                        <strong>时钟倍率</strong>
+                        <small>真实 1 秒推进量</small>
                       </td>
                       <td id="currentClockSpeed" class="numeric-cell">x1</td>
                       <td>
@@ -520,6 +526,10 @@
                           <option value="15">15:1</option>
                           <option value="30">30:1</option>
                           <option value="60">60:1</option>
+                          <option value="300">300:1</option>
+                          <option value="900">900:1</option>
+                          <option value="1800">1800:1</option>
+                          <option value="3600">3600:1</option>
                         </select>
                       </td>
                       <td>倍</td>
@@ -835,10 +845,10 @@
               <input id="startSimulationDay" name="startSimulationDay" type="number" min="1" max="365" step="1" inputmode="numeric" value="1" />
             </label>
             <label class="modal-field">起始时刻
-              <input id="startSimulationTime" name="startSimulationTime" type="time" step="60" value="00:00" required />
+              <input id="startSimulationTime" name="startSimulationTime" type="time" step="1" value="00:00:00" required />
             </label>
           </div>
-          <p id="startSimulationHint" class="modal-hint">仅从停止状态新启动时设置起点；后台会按当前仿真步长向上对齐。</p>
+          <p id="startSimulationHint" class="modal-hint">仅从停止状态新启动时设置起点；后台会按当前时钟步长向上对齐。</p>
           <p id="startSimulationMessage" class="modal-message" aria-live="polite"></p>
           <div class="modal-actions">
             <button id="cancelStartSimulation" type="button">取消</button>

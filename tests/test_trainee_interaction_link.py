@@ -46,6 +46,10 @@ class TraineeInteractionLinkTest(unittest.TestCase):
         self.assertEqual(payload["selected_telemetry_path"], "/api/external/telemetry/query?model_id=simple_model")
         self.assertEqual(payload["control_values_path"], "/api/external/controls?model_id=simple_model")
         self.assertEqual(payload["control_command_path"], "/api/external/controls?model_id=simple_model")
+        self.assertEqual(
+            payload["definition_archive_path"],
+            "/api/export-definitions?format=json&model_id=simple_model",
+        )
 
     def test_simulator_ui_can_generate_and_copy_trainee_link(self):
         html = (ROOT / "simu/web/simulator/index.html").read_text(encoding="utf-8")
@@ -63,24 +67,24 @@ class TraineeInteractionLinkTest(unittest.TestCase):
         self.assertIn("copyTraineeLink", script)
         self.assertIn(".trainee-link-modal", styles)
 
-    def test_trainee_start_receive_prompts_for_interaction_link(self):
+    def test_trainee_model_initialization_prompts_for_interaction_link_before_receive_start(self):
         html = (ROOT / "simu/web/trainee/index.html").read_text(encoding="utf-8")
         script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
         styles = (ROOT / "simu/web/trainee/styles.css").read_text(encoding="utf-8")
 
+        self.assertIn('id="modelInitializeButton"', html)
+        self.assertIn('id="traineeRunToggle"', html)
         self.assertIn('id="receiveLinkDialog"', html)
         self.assertIn('id="receiveLinkInput"', html)
         self.assertIn("一个链接可供多个学员台", html)
         self.assertIn("openReceiveLinkDialog", script)
-        self.assertIn("resolveTeacherInteractionLink", script)
-        self.assertIn("/api/trainee/connect", script)
-        self.assertIn('api("/api/trainee/connect"', script)
-        self.assertIn("state.teacherApiBase = (connection.teacherApiBase || \"\").replace", script)
-        self.assertIn("state.teacherModelId = connection.modelId", script)
-        self.assertNotIn("state.activeModelId = connection.modelId", script)
-        self.assertIn("const activeModelIdBeforeReceive = state.activeModelId", script)
-        self.assertIn("selectLocalDefinitionSnapshotForTeacher(connection, teacherSnapshot, activeModelIdBeforeReceive)", script)
-        self.assertIn("saveTraineeReceiveState(activeModelIdBeforeReceive, { active: true", script)
+        self.assertIn("initializeModelFromLink", script)
+        self.assertIn('api("/api/trainee/model-initialize"', script)
+        self.assertIn('api("/api/trainee/receive"', script)
+        self.assertIn("const activeModelIdBeforeInitialize = state.activeModelId", script)
+        self.assertIn("state.activeModelId = activeModelIdBeforeInitialize", script)
+        self.assertIn('$("modelInitializeButton").addEventListener("click", openReceiveLinkDialog);', script)
+        self.assertIn('$("traineeRunToggle").addEventListener("click", toggleReceiveMode);', script)
         self.assertNotIn("fetch(url.href", script)
         self.assertIn(".receive-link-dialog", styles)
 

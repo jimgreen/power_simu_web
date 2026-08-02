@@ -167,6 +167,36 @@ process.stdout.write(JSON.stringify({
                     {"minute": 20, "time": "00:20", "value": 4, "unit": "kW"},
                 )
 
+    def test_svg_display_preferences_are_separate_and_normalized(self):
+        expected_keys = {
+            "simulator": "simulator.svgDisplayPreferences.v1",
+            "trainee": "trainee.svgDisplayPreferences.v1",
+        }
+        body = """
+process.stdout.write(JSON.stringify({
+  defaults: normalizeDiagramDisplayPreferences(null),
+  partial: normalizeDiagramDisplayPreferences({ measurements: false, labels: "bad", flowArrows: true }),
+  labels: diagramDisplayPreferenceMenuItems({ measurements: false, labels: true, flowArrows: false }),
+}));
+"""
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                script = path.read_text(encoding="utf-8")
+                self.assertIn(expected_keys[path.parent.name], script)
+                payload = self._run_helpers(script, body)
+                self.assertEqual(
+                    payload["defaults"],
+                    {"measurements": True, "labels": True, "flowArrows": True},
+                )
+                self.assertEqual(
+                    payload["partial"],
+                    {"measurements": False, "labels": True, "flowArrows": True},
+                )
+                self.assertEqual(
+                    [item["label"] for item in payload["labels"]],
+                    ["显示量测", "不显示标识", "显示流动箭头"],
+                )
+
     def test_trend_value_converts_soc_without_clamping(self):
         body = """
 process.stdout.write(JSON.stringify([

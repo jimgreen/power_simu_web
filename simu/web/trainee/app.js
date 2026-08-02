@@ -1385,9 +1385,53 @@ function sanitizeDiagramSvg(svgText) {
 }
 
 const DIAGRAM_TREND_WINDOWS = Object.freeze({ hour: 60, day: 24 * 60 });
+const DIAGRAM_DISPLAY_PREFERENCES_KEY = "trainee.svgDisplayPreferences.v1";
+const DIAGRAM_DISPLAY_PREFERENCES_DEFAULTS = Object.freeze({
+  measurements: true,
+  labels: true,
+  flowArrows: true,
+});
 const DIAGRAM_MAX_ZOOM = 8;
 const DIAGRAM_PAN_THRESHOLD_PX = 5;
 const DIAGRAM_TOOLTIP_HIDE_DELAY_MS = 500;
+
+function normalizeDiagramDisplayPreferences(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return Object.fromEntries(Object.entries(DIAGRAM_DISPLAY_PREFERENCES_DEFAULTS).map(([key, fallback]) => [
+    key,
+    typeof source[key] === "boolean" ? source[key] : fallback,
+  ]));
+}
+
+function diagramDisplayPreferenceMenuItems(preferences) {
+  const value = normalizeDiagramDisplayPreferences(preferences);
+  return [
+    { key: "measurements", label: value.measurements ? "不显示量测" : "显示量测" },
+    { key: "labels", label: value.labels ? "不显示标识" : "显示标识" },
+    { key: "flowArrows", label: value.flowArrows ? "不显示流动箭头" : "显示流动箭头" },
+  ];
+}
+
+function loadDiagramDisplayPreferences(storage = typeof localStorage === "undefined" ? null : localStorage) {
+  try {
+    const raw = storage?.getItem?.(DIAGRAM_DISPLAY_PREFERENCES_KEY);
+    return normalizeDiagramDisplayPreferences(raw ? JSON.parse(raw) : null);
+  } catch (_error) {
+    return normalizeDiagramDisplayPreferences(null);
+  }
+}
+
+function saveDiagramDisplayPreferences(preferences, storage = typeof localStorage === "undefined" ? null : localStorage) {
+  const normalized = normalizeDiagramDisplayPreferences(preferences);
+  try {
+    storage?.setItem?.(DIAGRAM_DISPLAY_PREFERENCES_KEY, JSON.stringify(normalized));
+  } catch (_error) {
+    // The current page still uses the normalized in-memory preference when storage is unavailable.
+  }
+  return normalized;
+}
+
+let diagramDisplayPreferences = loadDiagramDisplayPreferences();
 
 function diagramTooltipPointerMoveAction(currentHover, nextHover, tooltipHidden = false) {
   if (currentHover && !tooltipHidden && nextHover?.kind !== currentHover.kind) return "schedule-hide";

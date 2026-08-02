@@ -2300,6 +2300,28 @@ canvas {
 .model-diagram-svg.is-diagram-flow-arrows-hidden .diagram-flow-arrow {
   display: none !important;
 }
+.diagram-flow-arrow {
+  color: #b24631;
+  pointer-events: none;
+}
+.diagram-flow-arrow[hidden] {
+  display: none;
+}
+.diagram-flow-guide {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 1;
+  pointer-events: none;
+}
+.diagram-flow-arrow-marker {
+  pointer-events: none;
+}
+.diagram-flow-arrow-marker polygon {
+  fill: #b24631;
+  stroke: rgba(255, 255, 255, 0.9);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
 .diagram-device-label-id {
   fill: #687980;
   font-family: Consolas, "Microsoft YaHei", monospace;

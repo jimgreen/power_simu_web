@@ -278,6 +278,80 @@ process.stdout.write(JSON.stringify({
                 for token in required:
                     self.assertIn(token, styles)
 
+    def test_flow_arrow_math_uses_signed_power_and_clamped_sqrt_size(self):
+        body = """
+const available = typeof diagramFlowArrowDirection === "function"
+  && typeof diagramFlowArrowSize === "function"
+  && typeof diagramFlowArrowVisibility === "function";
+process.stdout.write(JSON.stringify(available ? {
+  positive: diagramFlowArrowDirection(12, 1),
+  negative: diagramFlowArrowDirection(-12, 1),
+  reversed: diagramFlowArrowDirection(12, -1),
+  zero: diagramFlowArrowSize(0, 100),
+  quarter: diagramFlowArrowSize(25, 100),
+  full: diagramFlowArrowSize(100, 100),
+  over: diagramFlowArrowSize(400, 100),
+  visible: diagramFlowArrowVisibility({ power: 10, referencePower: 100, valid: true, offline: false }),
+  nearZero: diagramFlowArrowVisibility({ power: 0.05, referencePower: 100, valid: true, offline: false }),
+  offline: diagramFlowArrowVisibility({ power: 10, referencePower: 100, valid: true, offline: true }),
+} : null));
+"""
+        expected = {
+            "positive": 1,
+            "negative": -1,
+            "reversed": -1,
+            "zero": 6,
+            "quarter": 11,
+            "full": 16,
+            "over": 16,
+            "visible": True,
+            "nearZero": False,
+            "offline": False,
+        }
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                self.assertEqual(
+                    self._run_helpers(path.read_text(encoding="utf-8"), body),
+                    expected,
+                )
+
+    def test_scripts_compile_and_update_svg_native_flow_arrows(self):
+        required = (
+            ".routable-line-device-glyph",
+            "source-dev-id",
+            "target-dev-id",
+            "function createDiagramFlowArrow",
+            "function compileDiagramFlowArrows",
+            "function updateDiagramFlowArrows",
+            "animateMotion",
+            "repeatCount",
+            "diagramFlowReferencePower",
+            'record.root.toggleAttribute("hidden", !visible)',
+        )
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                script = path.read_text(encoding="utf-8")
+                for token in required:
+                    self.assertIn(token, script)
+                flow_block = script.split("function createDiagramFlowArrow", 1)[1].split(
+                    "function updateDiagramRealtimeBindings",
+                    1,
+                )[0]
+                self.assertNotIn("setInterval", flow_block)
+                self.assertNotIn("requestAnimationFrame", flow_block)
+
+    def test_styles_include_noninteractive_flow_arrow_layers(self):
+        required = (
+            ".diagram-flow-arrow",
+            ".diagram-flow-arrow-marker",
+            "pointer-events: none",
+        )
+        for path in self._styles():
+            with self.subTest(app=path.parent.name):
+                styles = path.read_text(encoding="utf-8")
+                for token in required:
+                    self.assertIn(token, styles)
+
     def test_trend_value_converts_soc_without_clamping(self):
         body = """
 process.stdout.write(JSON.stringify([

@@ -2904,6 +2904,27 @@ function diagramFloatingPosition(anchor, size, viewport, padding = 8) {
   };
 }
 
+function diagramFlowArrowDirection(power, orientation = 1) {
+  const value = Number(power) * (Number(orientation) < 0 ? -1 : 1);
+  return value < 0 ? -1 : value > 0 ? 1 : 0;
+}
+
+function diagramFlowArrowSize(power, referencePower) {
+  const reference = Math.abs(Number(referencePower));
+  const magnitude = Math.abs(Number(power));
+  if (!Number.isFinite(magnitude) || magnitude <= 0) return 6;
+  const ratio = reference > 0 ? Math.max(0, Math.min(1, magnitude / reference)) : 1;
+  return 6 + 10 * Math.sqrt(ratio);
+}
+
+function diagramFlowArrowVisibility({ power, referencePower, valid = true, offline = false } = {}) {
+  const magnitude = Math.abs(Number(power));
+  if (!valid || offline || !Number.isFinite(magnitude)) return false;
+  const reference = Math.abs(Number(referencePower));
+  const threshold = reference > 0 ? reference * 0.001 : 0;
+  return magnitude > threshold;
+}
+
 function diagramTooltipPointerMoveAction(currentHover, nextHover, tooltipHidden = false) {
   if (currentHover && !tooltipHidden && nextHover?.kind !== currentHover.kind) return "schedule-hide";
   if (!nextHover) return "hide";
@@ -3631,6 +3652,225 @@ function openDiagramContextMenu(interaction, event) {
   menu.style.top = `${position.top}px`;
 }
 
+function diagramFlowRouteD(element) {
+  if (!element) return "";
+  if (String(element.tagName || "").toLowerCase() === "line") {
+    const values = ["x1", "y1", "x2", "y2"].map((attribute) => Number(element.getAttribute(attribute)));
+    if (values.some((value) => !Number.isFinite(value))) return "";
+    return `M ${values[0]} ${values[1]} L ${values[2]} ${values[3]}`;
+  }
+  return String(element.getAttribute?.("d") || "").trim();
+}
+
+function diagramFlowSymbol(svg, useElement) {
+  const href = String(useElement?.getAttribute("href") || useElement?.getAttribute("xlink:href") || "").trim();
+  if (!href.startsWith("#")) return null;
+  const id = href.slice(1);
+  return [...(svg?.querySelectorAll("symbol") || [])].find((symbol) => symbol.getAttribute("id") === id) || null;
+}
+
+function diagramFlowPathTransforms(path, symbol) {
+  const elements = [];
+  let current = path?.parentElement || null;
+  while (current && current !== symbol) {
+    elements.unshift(current);
+    current = current.parentElement;
+  }
+  if (path) elements.push(path);
+  return elements
+    .map((element) => String(element.getAttribute?.("transform") || "").trim())
+    .filter(Boolean);
+}
+
+function diagramUseRouteTransform(useElement, symbol) {
+  const viewBox = diagramViewBoxValue(symbol?.getAttribute("viewBox"));
+  if (!viewBox) return "";
+  const x = Number(useElement.getAttribute("x")) || 0;
+  const y = Number(useElement.getAttribute("y")) || 0;
+  const width = Number(useElement.getAttribute("width")) || viewBox.width;
+  const height = Number(useElement.getAttribute("height")) || viewBox.height;
+  if (width <= 0 || height <= 0) return "";
+  const preserve = String(
+    useElement.getAttribute("preserveAspectRatio")
+    || symbol.getAttribute("preserveAspectRatio")
+    || "xMidYMid meet",
+  ).trim();
+  if (preserve.startsWith("none")) {
+    const scaleX = width / viewBox.width;
+    const scaleY = height / viewBox.height;
+    return `translate(${x - viewBox.x * scaleX} ${y - viewBox.y * scaleY}) scale(${scaleX} ${scaleY})`;
+  }
+  const parts = preserve.split(/\s+/);
+  const align = parts[0] || "xMidYMid";
+  const scaleMode = parts.includes("slice") ? "slice" : "meet";
+  const scaleX = width / viewBox.width;
+  const scaleY = height / viewBox.height;
+  const scale = scaleMode === "slice" ? Math.max(scaleX, scaleY) : Math.min(scaleX, scaleY);
+  const spareX = width - viewBox.width * scale;
+  const spareY = height - viewBox.height * scale;
+  const alignX = align.includes("xMax") ? spareX : align.includes("xMid") ? spareX / 2 : 0;
+  const alignY = align.includes("YMax") ? spareY : align.includes("YMid") ? spareY / 2 : 0;
+  return `translate(${x + alignX - viewBox.x * scale} ${y + alignY - viewBox.y * scale}) scale(${scale})`;
+}
+
+function diagramFlowEndpointKind(device) {
+  const type = normalizeDiagramMeasurementToken(device?.devType);
+  if (type.includes("CONVERTER")) return "";
+  if (type.includes("GENERATOR")) return "generator";
+  if (type.includes("LOAD")) return "load";
+  return "";
+}
+
+function createDiagramFlowArrow(sourceElement, routeD, transforms = []) {
+  if (!sourceElement?.parentNode || !routeD) return null;
+  const createSvgElement = (tagName) => document.createElementNS("http://www.w3.org/2000/svg", tagName);
+  const root = createSvgElement("g");
+  root.classList.add("diagram-flow-arrow");
+  root.setAttribute("data-diagram-runtime-flow", "true");
+  root.setAttribute("hidden", "");
+  let parent = root;
+  transforms.filter(Boolean).forEach((transform) => {
+    const group = createSvgElement("g");
+    group.setAttribute("transform", transform);
+    parent.appendChild(group);
+    parent = group;
+  });
+  const guide = createSvgElement("path");
+  guide.classList.add("diagram-flow-guide");
+  guide.setAttribute("d", routeD);
+  guide.setAttribute("fill", "none");
+  const marker = createSvgElement("g");
+  marker.classList.add("diagram-flow-arrow-marker");
+  const polygon = createSvgElement("polygon");
+  polygon.setAttribute("points", "-3,-2 3,0 -3,2");
+  const animation = createSvgElement("animateMotion");
+  animation.setAttribute("path", routeD);
+  animation.setAttribute("dur", "1.8s");
+  animation.setAttribute("repeatCount", "indefinite");
+  animation.setAttribute("calcMode", "linear");
+  animation.setAttribute("keyTimes", "0;1");
+  animation.setAttribute("keyPoints", "0;1");
+  animation.setAttribute("rotate", "auto");
+  marker.appendChild(polygon);
+  marker.appendChild(animation);
+  parent.appendChild(guide);
+  parent.appendChild(marker);
+  sourceElement.parentNode.insertBefore(root, sourceElement.nextSibling);
+  return { root, guide, marker, polygon, animation, direction: 0 };
+}
+
+function removeDiagramFlowArrows(container) {
+  container?.querySelectorAll?.('.diagram-flow-arrow[data-diagram-runtime-flow]').forEach((element) => element.remove());
+  const interaction = container ? diagramInteractionCache.get(container) : null;
+  if (interaction) {
+    interaction.flowArrows = [];
+    interaction.flowArrowPeakReferences = new Map();
+  }
+}
+
+function compileDiagramFlowArrows(container) {
+  const svg = diagramDisplaySvg(container);
+  const interaction = diagramInteractionState(container);
+  removeDiagramFlowArrows(container);
+  interaction.flowArrows = [];
+  interaction.flowArrowPeakReferences = new Map();
+  if (!svg) return interaction.flowArrows;
+
+  svg.querySelectorAll("use[dev-id], use[id][name]").forEach((useElement) => {
+    const device = diagramDeviceRecord(container, diagramElementDeviceId(useElement));
+    if (!normalizeDiagramMeasurementToken(device?.devType).includes("BRANCH")) return;
+    const symbol = diagramFlowSymbol(svg, useElement);
+    const routePath = symbol?.querySelector(".routable-line-device-glyph path[d]");
+    const routeD = diagramFlowRouteD(routePath);
+    if (!routePath || !routeD) return;
+    const transforms = [
+      String(useElement.getAttribute("transform") || "").trim(),
+      diagramUseRouteTransform(useElement, symbol),
+      ...diagramFlowPathTransforms(routePath, symbol),
+    ].filter(Boolean);
+    const arrow = createDiagramFlowArrow(useElement, routeD, transforms);
+    if (arrow) interaction.flowArrows.push({ ...arrow, kind: "branch", device, orientation: 1 });
+  });
+
+  svg.querySelectorAll("path[source-dev-id][target-dev-id], line[source-dev-id][target-dev-id]").forEach((edge) => {
+    if (edge.closest("defs, symbol, marker, pattern, clipPath, mask") || edge.hasAttribute("data-diagram-runtime-flow")) return;
+    const sourceDevice = diagramDeviceRecord(container, edge.getAttribute("source-dev-id"));
+    const targetDevice = diagramDeviceRecord(container, edge.getAttribute("target-dev-id"));
+    const candidates = [
+      { position: "source", device: sourceDevice, endpointKind: diagramFlowEndpointKind(sourceDevice) },
+      { position: "target", device: targetDevice, endpointKind: diagramFlowEndpointKind(targetDevice) },
+    ].filter((item) => item.endpointKind);
+    if (candidates.length !== 1) return;
+    const endpoint = candidates[0];
+    const orientation = endpoint.endpointKind === "generator"
+      ? (endpoint.position === "source" ? 1 : -1)
+      : (endpoint.position === "target" ? 1 : -1);
+    const routeD = diagramFlowRouteD(edge);
+    if (!routeD) return;
+    const transforms = [String(edge.getAttribute("transform") || "").trim()].filter(Boolean);
+    const arrow = createDiagramFlowArrow(edge, routeD, transforms);
+    if (arrow) {
+      interaction.flowArrows.push({
+        ...arrow,
+        kind: "endpoint",
+        device: endpoint.device,
+        orientation,
+      });
+    }
+  });
+  return interaction.flowArrows;
+}
+
+function diagramFlowReferencePower(container, device, snapshot, interaction, power) {
+  const raw = diagramDeviceData(container, device, snapshot).raw || {};
+  const capacities = new Map(Object.entries(raw).map(([key, value]) => [
+    String(key).trim().toLowerCase(),
+    Number(value),
+  ]));
+  for (const key of ["rated_capacity", "rated_power", "p_max", "max_power", "max_charge_power", "max_discharge_power"]) {
+    const value = Math.abs(Number(capacities.get(key)));
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  const peakKey = normalizeDiagramMeasurementToken(device?.devType) || String(device?.devId || "unknown");
+  const magnitude = Math.abs(Number(power));
+  const previous = Number(interaction?.flowArrowPeakReferences?.get(peakKey)) || 0;
+  const peak = Math.max(previous, Number.isFinite(magnitude) ? magnitude : 0);
+  interaction?.flowArrowPeakReferences?.set(peakKey, peak);
+  return peak > 0 ? peak : 1;
+}
+
+function updateDiagramFlowArrows(container, snapshot = state.snapshot || {}, measurementMaps = diagramMeasurementMaps(snapshot)) {
+  const interaction = container ? diagramInteractionCache.get(container) : null;
+  if (!interaction?.flowArrows?.length) return;
+  const operatingMaps = diagramDeviceOperatingStateMaps(snapshot);
+  interaction.flowArrows.forEach((record) => {
+    const row = diagramMetricBindingValue({ ...record.device, metricType: "activePower" }, measurementMaps);
+    const power = Number(row?.value);
+    const valid = Boolean(row) && Number(row.valid ?? 1) === 1 && Number.isFinite(power);
+    const deviceState = diagramDeviceOperatingState(record.device, operatingMaps);
+    const offline = diagramDeviceIsOffline(deviceState);
+    const referencePower = diagramFlowReferencePower(container, record.device, snapshot, interaction, power);
+    const visible = diagramFlowArrowVisibility({ power, referencePower, valid, offline });
+    record.root.toggleAttribute("hidden", !visible);
+    if (!visible) return;
+    const size = diagramFlowArrowSize(power, referencePower);
+    const halfLength = size / 2;
+    const halfHeight = Math.max(2, size * 0.32);
+    record.polygon.setAttribute(
+      "points",
+      `${-halfLength},${-halfHeight} ${halfLength},0 ${-halfLength},${halfHeight}`,
+    );
+    const direction = diagramFlowArrowDirection(power, record.orientation);
+    if (direction !== record.direction) {
+      record.direction = direction;
+      record.animation.setAttribute("keyPoints", direction < 0 ? "1;0" : "0;1");
+      record.animation.setAttribute("rotate", direction < 0 ? "auto-reverse" : "auto");
+    }
+    record.root.setAttribute("data-flow-direction", direction < 0 ? "reverse" : "forward");
+    record.root.setAttribute("data-flow-power", String(power));
+  });
+}
+
 function diagramInteractionState(container) {
   let interaction = diagramInteractionCache.get(container);
   if (!interaction) {
@@ -3644,6 +3884,8 @@ function diagramInteractionState(container) {
       trendPeriod: "hour",
       trendChart: null,
       contextMenu: null,
+      flowArrows: [],
+      flowArrowPeakReferences: new Map(),
       pointer: { x: 0, y: 0 },
       hideTimer: null,
       drag: null,
@@ -4193,6 +4435,7 @@ function resetDiagramInteractions(container) {
       interaction.tooltip.classList.remove("is-visible");
     }
   }
+  removeDiagramFlowArrows(container);
   container.classList.remove("is-diagram-panning");
   container.querySelectorAll(".is-diagram-selected").forEach((element) => element.classList.remove("is-diagram-selected"));
   diagramDeviceIndexCache.delete(container);
@@ -4508,6 +4751,7 @@ function updateDiagramRealtimeBindings(container = $("modelDiagramCanvas"), snap
       binding.metricType,
     );
   });
+  updateDiagramFlowArrows(container, snapshot, measurementMaps);
   refreshDiagramTooltip(container, snapshot);
 }
 
@@ -4533,7 +4777,10 @@ function renderModelDiagramPage(snapshot = state.snapshot || {}) {
     canvas.innerHTML = sanitized
       ? `<div class="model-diagram-svg-wrap">${sanitized}</div>`
       : '<div class="empty-state">接线图 SVG 无法解析</div>';
-    if (sanitized) prepareDiagramDisplayLayers(canvas);
+    if (sanitized) {
+      prepareDiagramDisplayLayers(canvas);
+      compileDiagramFlowArrows(canvas);
+    }
   }
   initDiagramInteractions(canvas);
   applyDiagramDisplayPreferences(canvas, diagramDisplayPreferences);

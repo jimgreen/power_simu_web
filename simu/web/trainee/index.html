@@ -771,14 +771,28 @@
               <h3>充电功率上限</h3>
               <span>SOC 越高，上限不升高</span>
             </div>
-            <div id="storageChargeDeratingRows" class="storage-power-derating-rows"></div>
+            <div class="storage-power-derating-table-wrap">
+              <table class="storage-power-derating-table">
+                <thead>
+                  <tr><th scope="col">充电 SOC</th><th scope="col">功率上限</th></tr>
+                </thead>
+                <tbody id="storageChargeDeratingRows" class="storage-power-derating-rows"></tbody>
+              </table>
+            </div>
           </section>
           <section>
             <div class="storage-power-derating-head">
               <h3>放电功率上限</h3>
               <span>SOC 越高，上限不降低</span>
             </div>
-            <div id="storageDischargeDeratingRows" class="storage-power-derating-rows"></div>
+            <div class="storage-power-derating-table-wrap">
+              <table class="storage-power-derating-table">
+                <thead>
+                  <tr><th scope="col">放电 SOC</th><th scope="col">功率上限</th></tr>
+                </thead>
+                <tbody id="storageDischargeDeratingRows" class="storage-power-derating-rows"></tbody>
+              </table>
+            </div>
           </section>
         </div>
         <p id="storagePowerDeratingMessage" class="remote-control-hint" aria-live="polite"></p>

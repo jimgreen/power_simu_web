@@ -59,12 +59,32 @@ class TraineeRenewableSocLimitUiTest(unittest.TestCase):
             with self.subTest(required_text=required_text):
                 self.assertIn(required_text, self.script)
 
+    def test_storage_derating_editor_uses_two_semantic_tables(self):
+        self.assertEqual(
+            self.html.count('<table class="storage-power-derating-table">'),
+            2,
+        )
+        self.assertIn(
+            '<tbody id="storageChargeDeratingRows" class="storage-power-derating-rows"></tbody>',
+            self.html,
+        )
+        self.assertIn(
+            '<tbody id="storageDischargeDeratingRows" class="storage-power-derating-rows"></tbody>',
+            self.html,
+        )
+        self.assertIn('<tr class="storage-power-derating-row"', self.script)
+        self.assertIn("<td>", self.script)
+        self.assertNotIn('<div class="storage-power-derating-row"', self.script)
+
     def test_storage_derating_editor_has_scoped_responsive_styles(self):
         for selector in (
             ".storage-power-derating-dialog",
             ".storage-power-derating-grid",
+            ".storage-power-derating-table-wrap",
+            ".storage-power-derating-table",
             ".storage-power-derating-rows",
             ".storage-power-derating-row",
+            ".storage-power-derating-input",
         ):
             with self.subTest(selector=selector):
                 self.assertIn(selector, self.styles)

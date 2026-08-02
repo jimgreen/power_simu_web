@@ -6771,14 +6771,20 @@ async function updateRenewableSettings() {
 function storagePowerDeratingRowHtml(direction, point, index) {
   const directionLabel = direction === "charge" ? "充电" : "放电";
   return `
-    <div class="storage-power-derating-row" data-derating-direction="${direction}" data-derating-index="${index}">
-      <label>${directionLabel} SOC
-        <span><input type="number" min="0" max="100" step="0.1" value="${formatNumber(point.soc * 100)}" data-derating-field="soc" /><i>%</i></span>
-      </label>
-      <label>功率上限
-        <span><input type="number" min="0" max="100" step="0.1" value="${formatNumber(point.powerRatio * 100)}" data-derating-field="powerRatio" /><i>%</i></span>
-      </label>
-    </div>`;
+    <tr class="storage-power-derating-row" data-derating-direction="${direction}" data-derating-index="${index}">
+      <td>
+        <label class="storage-power-derating-input">
+          <input type="number" min="0" max="100" step="0.1" value="${formatNumber(point.soc * 100)}" data-derating-field="soc" aria-label="${directionLabel} SOC 节点 ${index + 1}" />
+          <span>%</span>
+        </label>
+      </td>
+      <td>
+        <label class="storage-power-derating-input">
+          <input type="number" min="0" max="100" step="0.1" value="${formatNumber(point.powerRatio * 100)}" data-derating-field="powerRatio" aria-label="${directionLabel}功率上限节点 ${index + 1}" />
+          <span>%</span>
+        </label>
+      </td>
+    </tr>`;
 }
 
 function renderStoragePowerDeratingRows(

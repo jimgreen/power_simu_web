@@ -40,6 +40,11 @@ if not PACKAGE_DIR.exists():
 for path in (PACKAGE_DIR, PACKAGE_DIR / "lfcore", PACKAGE_DIR / "model", SCRIPTS_DIR):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
+# Keep the WEB ``simu`` package ahead of the kernel package with the same name.
+web_root = str(SIMU_DIR)
+if web_root in sys.path:
+    sys.path.remove(web_root)
+sys.path.insert(0, web_root)
 
 from efile_read import EBook
 from update_meas_from_lf import (  # noqa: E402

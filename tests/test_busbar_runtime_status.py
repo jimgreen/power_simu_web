@@ -1,3 +1,4 @@
+import importlib.util
 import unittest
 
 import simu_loop
@@ -8,6 +9,9 @@ def _book(**blocks):
 
 
 class BusbarRuntimeStatusTest(unittest.TestCase):
+    def test_kernel_path_setup_keeps_web_simu_package_visible(self):
+        self.assertIsNotNone(importlib.util.find_spec("simu.generate_simple_model"))
+
     def test_retired_real_bus_forces_referenced_ac_and_dc_nodes_off(self):
         model = _book(
             ACNode=[{"idx": 7, "name": "ac-node", "run_stat": 1}],

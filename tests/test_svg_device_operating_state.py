@@ -141,6 +141,70 @@ class SvgDeviceOperatingStateTest(unittest.TestCase):
         self.assertTrue(states[("ACBranch", "dead-branch")]["dead_island"])
         self.assertFalse(states[("HydroLoad", "hydrogen-load")]["dead_island"])
 
+    def test_dead_island_requires_all_converter_endpoints_but_preserves_boundary_semantics(self):
+        live_ac_node = self._node(1, "live-ac-node", True)
+        dead_ac_node = self._node(2, "dead-ac-node", False)
+        live_dc_node = self._node(3, "live-dc-node", True)
+        dead_dc_node = self._node(4, "dead-dc-node", False)
+        ac_node_alive = {1: True, 2: False}
+        dc_node_alive = {3: True, 4: False}
+        converter = SimpleNamespace(
+            run_stat=1,
+            ac_node_obj=live_ac_node,
+            dc_node_obj=dead_dc_node,
+        )
+
+        self.assertTrue(
+            simu_loop._device_dead_island(
+                "DCACConverter",
+                converter,
+                ac_node_alive,
+                dc_node_alive,
+            )
+        )
+
+        for dev_type, live_node, dead_node in (
+            ("ACSwitch", live_ac_node, dead_ac_node),
+            ("ACBreak", live_ac_node, dead_ac_node),
+            ("DCSwitch", live_dc_node, dead_dc_node),
+            ("DCBreak", live_dc_node, dead_dc_node),
+        ):
+            boundary_device = SimpleNamespace(
+                run_stat=1,
+                i_node_obj=live_node,
+                j_node_obj=dead_node,
+            )
+            with self.subTest(boundary_device=dev_type):
+                self.assertFalse(
+                    simu_loop._device_dead_island(
+                        dev_type,
+                        boundary_device,
+                        ac_node_alive,
+                        dc_node_alive,
+                    )
+                )
+
+        converter.dc_node_obj = live_dc_node
+        self.assertFalse(
+            simu_loop._device_dead_island(
+                "DCACConverter",
+                converter,
+                ac_node_alive,
+                dc_node_alive,
+            )
+        )
+
+        converter.run_stat = 0
+        converter.dc_node_obj = dead_dc_node
+        self.assertFalse(
+            simu_loop._device_dead_island(
+                "DCACConverter",
+                converter,
+                ac_node_alive,
+                dc_node_alive,
+            )
+        )
+
     def test_snapshot_can_return_compact_device_states_without_full_devices(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

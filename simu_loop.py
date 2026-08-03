@@ -510,9 +510,11 @@ def _device_dead_island(
         if (alive := _terminal_node_alive(getattr(device, attr, None), alive_map)) is not None
     ]
     if terminal_alive:
-        # An open boundary switch may have one energized and one dead side. It is
-        # not itself a dead-island device unless none of its terminals is energized.
-        return not any(terminal_alive)
+        if dev_type in {"ACSwitch", "ACBreak", "DCSwitch", "DCBreak"}:
+            # An open boundary device is not dead-island equipment while either
+            # side remains energized.
+            return not any(terminal_alive)
+        return not all(terminal_alive)
     if dev_type in {"ACSwitch", "ACBreak", "DCSwitch", "DCBreak"}:
         return False
     alive = getattr(device, "is_alive", None)

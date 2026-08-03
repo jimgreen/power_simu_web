@@ -18,6 +18,49 @@ class SvgDeviceOperatingStateTest(unittest.TestCase):
     def _node(idx: int, name: str, alive: bool) -> SimpleNamespace:
         return SimpleNamespace(idx=idx, name=name, run_stat=1, is_alive=alive)
 
+    def _qinling_model_dir(self):
+        for candidate in (ROOT / "models/simulator/source").glob("*/model.e"):
+            book = simu_loop.EBook(candidate)
+            model = book.data.get("Model")
+            if model is not None and model.data and model.data[0].get("name") == "qinling":
+                return candidate.parent
+        self.fail("Qinling simulator model was not found")
+
+    @staticmethod
+    def _set_runtime_run_stat(stat_book, dev_type, dev_name, run_stat):
+        block = stat_book.data.get("RunStat")
+        for row in block.data:
+            if row.get("dev_type") == dev_type and row.get("dev_name") == dev_name:
+                row["run_stat"] = run_stat
+                return
+        block.data.append({"dev_type": dev_type, "dev_name": dev_name, "run_stat": run_stat})
+
+    def _run_qinling_once(self, model_dir, model_book, stat_book):
+        control_book = simu_loop.EBook(model_dir / "control.e")
+        weather_book = simu_loop.EBook(model_dir / "weather.e")
+        before, measurement_rows, after = simu_loop.parse_measurement_rows(model_dir / "meas.e")
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary)
+            return simu_loop.run_once(simu_loop.SimulationConfig(
+                model_file=model_dir / "model.e",
+                meas_file=model_dir / "meas.e",
+                weather_file=model_dir / "weather.e",
+                dev_stat_file=model_dir / "stat.e",
+                yt_ctrl_file=model_dir / "control.e",
+                real_file=runtime / "real.e",
+                scada_file=runtime / "scada.e",
+                period_seconds=60.0,
+                write_output_files=False,
+                model_book=model_book,
+                meas_before=before,
+                meas_rows=measurement_rows,
+                meas_after=after,
+                weather_book=weather_book,
+                dev_stat_book=stat_book,
+                yt_ctrl_book=control_book,
+                dev_define_book=simu_loop._capability_define_book(model_book, None),
+            ))
+
     def test_topology_state_distinguishes_dead_island_from_open_boundary_switch(self):
         live_node = self._node(1, "live-node", True)
         dead_node_a = self._node(2, "dead-node-a", False)
@@ -131,6 +174,78 @@ class SvgDeviceOperatingStateTest(unittest.TestCase):
         state_by_name = {item["dev_name"]: item for item in payload["device_states"]}
         self.assertIn("generator-a", state_by_name)
         self.assertTrue(state_by_name["generator-a"]["dead_island"])
+
+    def test_qinling_dc_busbar_retirement_changes_topology_without_stopping_ac_flow(self):
+        model_dir = self._qinling_model_dir()
+        model_book = simu_loop.EBook(model_dir / "model.e")
+        stat_book = simu_loop.EBook(model_dir / "stat.e")
+        busbar = next(row for row in model_book.data["DCRealBs"].data if int(row["idx"]) == 1)
+        node = next(row for row in model_book.data["DCNode"].data if int(row["idx"]) == int(busbar["node"]))
+        self._set_runtime_run_stat(stat_book, "DCRealBs", busbar["name"], 0)
+
+        result = self._run_qinling_once(model_dir, model_book, stat_book)
+
+        self.assertRegex(result.solver_info, r"^iter=\d+, normF=\d\.\d{3}e[+-]\d+$|^iter=0, normF=0\.000e\+00$")
+        measurements = {(row[2], row[3], row[4]): float(row[7]) for row in result.real_rows or []}
+        for key in (
+            ("DCNode", node["name"], "V"),
+            ("DCBreak", "直流断路器-1", "P_FROM"),
+            ("DCBreak", "直流断路器-1", "I"),
+            ("DCACConverter", "ACDC变流器-1", "P_DC"),
+            ("DCACConverter", "ACDC变流器-1", "P_AC"),
+            ("DCACConverter", "ACDC变流器-1", "I_DC"),
+            ("DCACConverter", "ACDC变流器-1", "I_AC"),
+        ):
+            with self.subTest(zero_measurement=key):
+                self.assertAlmostEqual(0.0, measurements[key], places=9)
+
+        states = {(row["dev_type"], row["dev_name"]): row for row in result.device_states or []}
+        self.assertEqual(0, states[("DCRealBs", busbar["name"])]["run_stat"])
+        self.assertEqual(0, states[("DCNode", node["name"])]["run_stat"])
+        self.assertEqual(1, states[("DCACConverter", "ACDC变流器-1")]["run_stat"])
+        self.assertTrue(states[("DCACConverter", "ACDC变流器-1")]["dead_island"])
+        self.assertGreater(abs(measurements[("ACNode", "交流母线（竖向）-1", "V")]), 0.0)
+
+    def test_qinling_ac_busbar_retirement_converges_and_zeroes_the_referenced_node(self):
+        model_dir = self._qinling_model_dir()
+        model_book = simu_loop.EBook(model_dir / "model.e")
+        stat_book = simu_loop.EBook(model_dir / "stat.e")
+        busbar = next(row for row in model_book.data["ACRealBs"].data if int(row["idx"]) == 1)
+        node = next(row for row in model_book.data["ACNode"].data if int(row["idx"]) == int(busbar["node"]))
+        self._set_runtime_run_stat(stat_book, "ACRealBs", busbar["name"], 0)
+
+        result = self._run_qinling_once(model_dir, model_book, stat_book)
+
+        self.assertRegex(result.solver_info, r"^iter=\d+, normF=\d\.\d{3}e[+-]\d+$|^iter=0, normF=0\.000e\+00$")
+        measurements = {(row[2], row[3], row[4]): float(row[7]) for row in result.real_rows or []}
+        states = {(row["dev_type"], row["dev_name"]): row for row in result.device_states or []}
+        self.assertEqual(0, states[("ACRealBs", busbar["name"])]["run_stat"])
+        self.assertEqual(0, states[("ACNode", node["name"])]["run_stat"])
+        self.assertAlmostEqual(0.0, measurements[("ACNode", node["name"], "V")], places=9)
+
+        for state_key, state in states.items():
+            if state_key[0] != "DCNode" or state["run_stat"] != 1:
+                continue
+            voltage_key = ("DCNode", state_key[1], "V")
+            if voltage_key not in measurements:
+                continue
+            if state["dead_island"]:
+                self.assertAlmostEqual(0.0, measurements[voltage_key], places=9)
+
+    def test_qinling_busbar_restore_does_not_reenable_explicitly_retired_node(self):
+        model_dir = self._qinling_model_dir()
+        source = simu_loop.EBook(model_dir / "model.e")
+        busbar = next(row for row in source.data["DCRealBs"].data if int(row["idx"]) == 1)
+        node = next(row for row in source.data["DCNode"].data if int(row["idx"]) == int(busbar["node"]))
+        stat = simu_loop.EBook(model_dir / "stat.e")
+        self._set_runtime_run_stat(stat, "DCRealBs", busbar["name"], 1)
+        self._set_runtime_run_stat(stat, "DCNode", node["name"], 0)
+
+        result = self._run_qinling_once(model_dir, source, stat)
+        states = {(row["dev_type"], row["dev_name"]): row for row in result.device_states or []}
+
+        self.assertEqual(1, states[("DCRealBs", busbar["name"])]["run_stat"])
+        self.assertEqual(0, states[("DCNode", node["name"])]["run_stat"])
 
     def test_open_main_bus_branches_are_zeroed_and_reported_as_dead_islands(self):
         model_dir = None

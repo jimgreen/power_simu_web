@@ -72,8 +72,10 @@ class CommandActiveOnlyFilterUiTest(unittest.TestCase):
             "function formatRemoteAdjustmentValue",
             1,
         )[0]
-        self.assertIn("active: Boolean(cancelName)", remote_control_block)
-        self.assertIn("active: Boolean(cancelName)", remote_adjustment_block)
+        self.assertIn('active: issuedTime.wall_time !== "--"', remote_control_block)
+        self.assertIn('active: issuedTime.wall_time !== "--"', remote_adjustment_block)
+        self.assertIn('activeCommandCancelName(row.dev, row.commandType, "", snapshot, issuedTime, "manual")', remote_control_block)
+        self.assertIn('activeCommandCancelName(dev, "set_value", setType, snapshot, issuedTime, "manual")', remote_adjustment_block)
 
         structure_block = script.split("function traineeCommandTableStructureKey", 1)[1].split(
             "function traineeCommandCancelButtonHtml",

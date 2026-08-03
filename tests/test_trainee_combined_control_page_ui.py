@@ -64,13 +64,19 @@ class TraineeCombinedControlPageUiTest(unittest.TestCase):
         self.assertIn("findDeviceByKey(statusCell.dataset.runStatusCommand || \"\")", self.script)
         self.assertIn("openRemoteControlDialog(dev)", self.script)
 
-    def test_active_remote_commands_can_be_cancelled_from_command_tables(self):
+    def test_manual_remote_commands_can_be_exited_from_command_tables(self):
         self.assertIn("function activeCommandCancelName", self.script)
         self.assertIn("function sendCommandCancel", self.script)
         self.assertIn("data-command-cancel-name", self.script)
-        self.assertIn("取消指令", self.script)
+        self.assertIn("退出人工", self.script)
         self.assertIn("cancel_commands: [{ name: commandName }]", self.script)
+        self.assertIn("command_origin: origin", self.script)
         self.assertIn("await postTeacherCommand(body)", self.script)
+
+    def test_command_tables_display_effective_command_origin(self):
+        self.assertIn("指令来源", self.script)
+        self.assertIn("commandOriginLabel", self.script)
+        self.assertIn('origin = "manual"', self.script)
 
 
 if __name__ == "__main__":

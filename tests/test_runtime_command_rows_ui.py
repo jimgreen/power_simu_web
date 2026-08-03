@@ -24,6 +24,8 @@ class RuntimeCommandRowsUiTest(unittest.TestCase):
         self.assertIn("指令项", app_js)
         self.assertIn("接收本机时刻", app_js)
         self.assertIn("接收仿真时刻", app_js)
+        self.assertIn("指令来源", app_js)
+        self.assertIn("origin_text", app_js)
         self.assertIn("refresh_time", app_js)
         self.assertIn("receive_time", app_js)
         self.assertIn("function runtimeCommandRefreshInfo", app_js)

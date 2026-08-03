@@ -36,12 +36,14 @@ class TraineeRemoteAdjustmentUiTest(unittest.TestCase):
         self.assertIn("<colgroup>", self.script)
         self.assertIn('class="remote-adjustment-name-col"', self.script)
         self.assertIn('class="remote-adjustment-value-col"', self.script)
+        self.assertIn('class="remote-adjustment-origin-col"', self.script)
         self.assertIn('class="remote-adjustment-time-col"', self.script)
         self.assertIn('class="remote-adjustment-action-col"', self.script)
         self.assertIn(".remote-adjustment-table {\n  table-layout: fixed;", self.styles)
-        self.assertIn(".remote-adjustment-name-col { width: 38%; }", self.styles)
-        self.assertIn(".remote-adjustment-value-col { width: 11%; }", self.styles)
-        self.assertIn(".remote-adjustment-time-col { width: 15%; }", self.styles)
+        self.assertIn(".remote-adjustment-name-col { width: 32%; }", self.styles)
+        self.assertIn(".remote-adjustment-value-col { width: 10%; }", self.styles)
+        self.assertIn(".remote-adjustment-origin-col { width: 10%; }", self.styles)
+        self.assertIn(".remote-adjustment-time-col { width: 14%; }", self.styles)
         self.assertIn(".remote-adjustment-action-col { width: 10%; }", self.styles)
         self.assertIn(".remote-adjustment-table th,\n.remote-adjustment-table td {\n  vertical-align: middle;", self.styles)
         self.assertIn(".remote-adjustment-table th:nth-child(2),\n.remote-adjustment-table th:nth-child(3),", self.styles)
@@ -96,8 +98,8 @@ class TraineeRemoteAdjustmentUiTest(unittest.TestCase):
         self.assertIn("function manualCommandHoldsAcrossClockLifecycle", self.script)
         remote_control_time_block = self.script.split("function remoteControlIssuedTimeInfo", 1)[1].split("function remoteControlIssuedAt", 1)[0]
         remote_adjustment_time_block = self.script.split("function remoteAdjustmentIssuedTimeInfo", 1)[1].split("function remoteAdjustmentIssuedAt", 1)[0]
-        self.assertIn("activeCommandHistory(snapshot).reverse()", remote_control_time_block)
-        self.assertIn("activeCommandHistory(snapshot).reverse()", remote_adjustment_time_block)
+        self.assertIn("activeCommandEntryForControl", remote_control_time_block)
+        self.assertIn("activeCommandEntryForControl", remote_adjustment_time_block)
 
     def test_manual_commands_are_not_filtered_out_by_simulator_run_id(self):
         active_block = self.script.split("function activeCommandHistory", 1)[1].split("function addRuntimeLog", 1)[0]

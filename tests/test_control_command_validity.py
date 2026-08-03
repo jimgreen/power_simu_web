@@ -209,14 +209,19 @@ class ControlCommandValidityTest(unittest.TestCase):
         detail = "\n".join(str(item) for item in service.runtime_logs[-1]["detail"])
         self.assertIn("ACBreak.br1.status=0", detail)
 
-    def test_manual_control_commands_override_later_strategy_commands(self):
+    def test_active_strategy_command_overrides_manual_command_until_expiry(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
 
         service.apply_student_commands(
             {
                 "set_values": [
-                    {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 20}
+                    {
+                        "dev_type": "DCACConverter",
+                        "dev_name": "grid_inv_acp",
+                        "set_type": "p_set",
+                        "set_value": -200,
+                    }
                 ],
             },
             source="trainee-ui",
@@ -226,16 +231,34 @@ class ControlCommandValidityTest(unittest.TestCase):
                 "valid_for_minutes": 5,
                 "strategy": {"name": "renewable_priority"},
                 "set_values": [
-                    {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 5}
+                    {
+                        "dev_type": "DCACConverter",
+                        "dev_name": "grid_inv_acp",
+                        "set_type": "p_set",
+                        "set_value": 0,
+                    }
                 ],
             },
             source="trainee-renewable-priority",
         )
 
-        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
+        self.assertEqual(self._set_value(service, "DCACConverter", "grid_inv_acp", "p_set"), "0")
         by_name = {item["name"]: item for item in service.latest_control_values()["items"]}
-        self.assertTrue(by_name["ESS.ess01.p_set"]["active"])
-        self.assertIsNone(by_name["ESS.ess01.p_set"]["expires_at_absolute_minute"])
+        effective = by_name["DCACConverter.grid_inv_acp.p_set"]
+        self.assertTrue(effective["active"])
+        self.assertEqual(effective["command_origin"], "automatic")
+        self.assertEqual(effective["expires_at_absolute_minute"], 5.0)
+
+        service.clock.absolute_minute = 6
+        service.clock.minute = 6
+        service._materialize_active_control_commands(6)
+
+        self.assertEqual(self._set_value(service, "DCACConverter", "grid_inv_acp", "p_set"), "-200")
+        resumed = {
+            item["name"]: item for item in service.latest_control_values()["items"]
+        }["DCACConverter.grid_inv_acp.p_set"]
+        self.assertEqual(resumed["command_origin"], "manual")
+        self.assertIsNone(resumed["expires_at_absolute_minute"])
 
     def test_manual_control_commands_are_not_evicted_by_frequent_strategy_refreshes(self):
         workspace, service = self._make_service()
@@ -261,7 +284,7 @@ class ControlCommandValidityTest(unittest.TestCase):
                 source="trainee-renewable-priority",
             )
 
-        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "5")
         from simu.service import PolarMicrogridSimulator
 
         restarted = PolarMicrogridSimulator(service.sim_dir, service.runtime_dir, kernel=lambda _config: None)
@@ -305,7 +328,63 @@ class ControlCommandValidityTest(unittest.TestCase):
 
         self.assertIn(manual_entry, history)
         self.assertLessEqual(len(history), 51)
-        self.assertEqual(commands["effective"], [manual_entry])
+        self.assertEqual(len(commands["effective"]), 1)
+        self.assertIsNot(commands["effective"][0], manual_entry)
+        self.assertEqual(commands["effective"][0]["source"], "trainee-renewable-priority")
+
+    def test_manual_exit_only_cancels_manual_hold_and_keeps_automatic_command_active(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        service.apply_student_commands(
+            {
+                "set_values": [
+                    {
+                        "dev_type": "DCACConverter",
+                        "dev_name": "grid_inv_acp",
+                        "set_type": "p_set",
+                        "set_value": -200,
+                    }
+                ],
+            },
+            source="trainee-ui",
+        )
+        manual_entry = service.command_history[-1]
+        service.apply_student_commands(
+            {
+                "valid_for_minutes": 5,
+                "strategy": {"name": "renewable_priority"},
+                "set_values": [
+                    {
+                        "dev_type": "DCACConverter",
+                        "dev_name": "grid_inv_acp",
+                        "set_type": "p_set",
+                        "set_value": 0,
+                    }
+                ],
+            },
+            source="trainee-renewable-priority",
+        )
+        automatic_entry = service.command_history[-1]
+
+        result = service.cancel_student_commands(
+            {
+                "command_origin": "manual",
+                "cancel_commands": [{"name": "DCACConverter.grid_inv_acp.p_set"}],
+            },
+            source="trainee-ui",
+        )
+
+        self.assertEqual(result["remote_adjustments"], 1)
+        self.assertEqual(result["command_origin"], "manual")
+        self.assertTrue(manual_entry["cancelled"])
+        self.assertFalse(automatic_entry.get("cancelled", False))
+        self.assertEqual(self._set_value(service, "DCACConverter", "grid_inv_acp", "p_set"), "0")
+
+        service.clock.absolute_minute = 6
+        service.clock.minute = 6
+        service._materialize_active_control_commands(6)
+        self.assertEqual(self._set_value(service, "DCACConverter", "grid_inv_acp", "p_set"), "-45")
 
     def test_manual_acdc_active_power_command_with_stale_trainee_expiry_survives_next_step(self):
         from simu.service import PolarMicrogridSimulator

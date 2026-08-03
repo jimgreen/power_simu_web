@@ -154,6 +154,7 @@ const state = {
     converterStepRatio: 0.03,
     dieselDeadbandRatio: 0.03,
     socDeadband: 0.05,
+    commandValidMinutes: 120,
     storageChargeDeratingCurve: DEFAULT_STORAGE_CHARGE_DERATING_CURVE.map((point) => ({ ...point })),
     storageDischargeDeratingCurve: DEFAULT_STORAGE_DISCHARGE_DERATING_CURVE.map((point) => ({ ...point })),
     sending: false,
@@ -4684,7 +4685,17 @@ function commandSentTimeInfo(entry = {}, snapshot = state.snapshot || {}) {
     || entry.sim_time
     || "",
   ).trim();
-  if (explicitSimTime) return { wall_time: wallTime, simu_time: explicitSimTime };
+  const origin = commandOrigin(entry);
+  const source = String(entry.source || payload.source || "");
+  if (explicitSimTime) {
+    return {
+      wall_time: wallTime,
+      simu_time: explicitSimTime,
+      source,
+      command_origin: origin,
+      origin_text: commandOriginLabel(origin),
+    };
+  }
   const minute = Number(
     payload.sent_absolute_minute
     ?? payload.trainee_sent_absolute_minute
@@ -4695,6 +4706,9 @@ function commandSentTimeInfo(entry = {}, snapshot = state.snapshot || {}) {
   return {
     wall_time: wallTime,
     simu_time: Number.isFinite(minute) ? simulationClockTextFromMinute(minute, snapshot) : "--",
+    source,
+    command_origin: origin,
+    origin_text: commandOriginLabel(origin),
   };
 }
 
@@ -4711,6 +4725,23 @@ function manualCommandHoldsAcrossClockLifecycle(entry = {}) {
     || source.includes("人工");
 }
 
+function commandOrigin(entry = {}) {
+  const payload = entry.payload && typeof entry.payload === "object" ? entry.payload : entry;
+  const explicit = String(entry.command_origin || payload.command_origin || "").trim().toLowerCase();
+  if (["manual", "human", "operator", "人工"].includes(explicit)) return "manual";
+  if (["automatic", "auto", "strategy", "自动"].includes(explicit)) return "automatic";
+  return manualCommandHoldsAcrossClockLifecycle(entry) ? "manual" : "automatic";
+}
+
+function commandOriginLabel(originOrEntry = "") {
+  const origin = typeof originOrEntry === "string"
+    ? String(originOrEntry).trim().toLowerCase()
+    : commandOrigin(originOrEntry);
+  if (origin === "manual") return "人工";
+  if (origin === "automatic") return "自动";
+  return "--";
+}
+
 function activeCommandHistory(snapshot = state.snapshot || {}) {
   const currentMinute = Number(snapshot.clock?.absolute_minute ?? snapshot.clock?.minute ?? 0) || 0;
   const currentRunId = Number(snapshot.clock?.run_id ?? 0) || 0;
@@ -4720,6 +4751,26 @@ function activeCommandHistory(snapshot = state.snapshot || {}) {
   return [...commandEntries].filter((entry) => {
     if (!entry?.eligible_source) return false;
     if (entry.cancelled) return false;
+    const manualHold = manualCommandHoldsAcrossClockLifecycle(entry);
+    if (!manualHold) {
+      const entryRunId = Number(entry.run_id);
+      if (!Number.isFinite(entryRunId) || entryRunId !== currentRunId) return false;
+    }
+    const accepted = entry.accepted || {};
+    const acceptedCount = Number(accepted.run_status || 0) + Number(accepted.set_values || 0);
+    if (manualHold) return acceptedCount > 0;
+    const issued = Number(entry.issued_absolute_minute);
+    const expires = Number(entry.expires_at_absolute_minute);
+    if (!Number.isFinite(issued) || !Number.isFinite(expires)) return false;
+    return acceptedCount > 0 && currentMinute < expires && issued <= currentMinute;
+  });
+}
+
+function allActiveCommandHistory(snapshot = state.snapshot || {}) {
+  const currentMinute = Number(snapshot.clock?.absolute_minute ?? snapshot.clock?.minute ?? 0) || 0;
+  const currentRunId = Number(snapshot.clock?.run_id ?? 0) || 0;
+  return [...(snapshot.commands?.history || [])].filter((entry) => {
+    if (!entry?.eligible_source || entry.cancelled) return false;
     const manualHold = manualCommandHoldsAcrossClockLifecycle(entry);
     if (!manualHold) {
       const entryRunId = Number(entry.run_id);
@@ -7360,6 +7411,7 @@ function applyRenewableControlState(payload = {}) {
     converterStepRatio: Math.max(0, toNumber(settings.converterStepRatio, control.converterStepRatio || 0.03)),
     dieselDeadbandRatio: Math.max(0, toNumber(settings.dieselDeadbandRatio, control.dieselDeadbandRatio || 0.03)),
     socDeadband: Math.max(0, toNumber(settings.socDeadband, control.socDeadband || 0.05)),
+    commandValidMinutes: Math.max(0.1, toNumber(settings.commandValidMinutes, control.commandValidMinutes || 120)),
     storageChargeDeratingCurve: normalizeStorageDeratingCurve(
       settings.storageChargeDeratingCurve,
       control.storageChargeDeratingCurve || DEFAULT_STORAGE_CHARGE_DERATING_CURVE,
@@ -7754,7 +7806,11 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     const input = $(id);
     if (input && document.activeElement !== input) input.value = String(Number(value || 0) * 100);
   });
-  [periodInput, ...Object.keys(ratioInputs).map((id) => $(id))].forEach((input) => {
+  const commandValidInput = $("renewableCommandValidMinutes");
+  if (commandValidInput && document.activeElement !== commandValidInput) {
+    commandValidInput.value = String(control.commandValidMinutes || 120);
+  }
+  [periodInput, commandValidInput, ...Object.keys(ratioInputs).map((id) => $(id))].forEach((input) => {
     if (input) input.disabled = control.actionActive;
   });
   const storagePowerDeratingButton = $("storagePowerDeratingButton");
@@ -7850,10 +7906,12 @@ async function setRenewableLoopMode(mode) {
 
 async function updateRenewableSettings() {
   const intervalSeconds = Math.max(1, toNumber($("renewableControlPeriod")?.value, 2));
+  const commandValidMinutes = Math.max(0.1, toNumber($("renewableCommandValidMinutes")?.value, 120));
   const ratio = (id, fallbackPercent) => Math.max(0, toNumber($(id)?.value, fallbackPercent)) / 100;
   await runRenewableControlAction("update_settings", {
     settings: {
       intervalSeconds,
+      commandValidMinutes,
       largeStepThresholdKw: state.renewableControl.largeStepThresholdKw,
       renewableStepRatio: ratio("renewableStepRatio", 3),
       converterStepRatio: ratio("converterStepRatio", 3),
@@ -9464,20 +9522,47 @@ function selectedControlRows(blockName, devices, snapshot = state.snapshot || {}
   return definedControlRows(blockName, snapshot).filter((row) => selectedKeys.has(`${row.dev_type}|${row.dev_name}`));
 }
 
-function remoteControlIssuedTimeInfo(dev, commandType = "run_stat", snapshot = state.snapshot || {}) {
-  const history = activeCommandHistory(snapshot).reverse();
-  for (const entry of history) {
-    const items = entry.normalized?.run_status || entry.payload?.run_status || [];
-    const match = items.find((item) => (
+function commandEntryMatchesControl(entry, dev, commandType, setType = "") {
+  if (!entry || !dev) return false;
+  if (commandType === "set_value") {
+    const items = entry.normalized?.set_values || entry.payload?.set_values || [];
+    return items.some((item) => (
       item.dev_type === deviceType(dev)
       && item.dev_name === deviceName(dev)
-      && (commandType === "status"
-        ? Object.prototype.hasOwnProperty.call(item, "status")
-        : item.run_stat !== undefined && item.run_stat !== "")
+      && item.set_type === setType
     ));
-    if (match) return commandSentTimeInfo(entry, snapshot);
   }
-  return { wall_time: "--", simu_time: "--" };
+  const items = entry.normalized?.run_status || entry.payload?.run_status || [];
+  return items.some((item) => (
+    item.dev_type === deviceType(dev)
+    && item.dev_name === deviceName(dev)
+    && (commandType === "status"
+      ? Object.prototype.hasOwnProperty.call(item, "status")
+      : item.run_stat !== undefined && item.run_stat !== "")
+  ));
+}
+
+function activeCommandEntryForControl(
+  dev,
+  commandType,
+  setType = "",
+  snapshot = state.snapshot || {},
+  origin = "effective",
+) {
+  const entries = origin === "manual" ? allActiveCommandHistory(snapshot) : activeCommandHistory(snapshot);
+  return [...entries].reverse().find((entry) => (
+    (origin !== "manual" || commandOrigin(entry) === "manual")
+    && commandEntryMatchesControl(entry, dev, commandType, setType)
+  )) || null;
+}
+
+function emptyIssuedCommandInfo() {
+  return { wall_time: "--", simu_time: "--", source: "", command_origin: "", origin_text: "--" };
+}
+
+function remoteControlIssuedTimeInfo(dev, commandType = "run_stat", snapshot = state.snapshot || {}) {
+  const entry = activeCommandEntryForControl(dev, commandType, "", snapshot);
+  return entry ? commandSentTimeInfo(entry, snapshot) : emptyIssuedCommandInfo();
 }
 
 function remoteControlIssuedAt(dev, commandType = "run_stat", snapshot = state.snapshot || {}) {
@@ -9493,30 +9578,39 @@ function remoteControlLabel(commandType) {
   return commandType === "status" ? "开关开合" : "设备投退";
 }
 
-function activeCommandCancelName(dev, commandType, setType = "", snapshot = state.snapshot || {}, issuedTime = null) {
+function activeCommandCancelName(
+  dev,
+  commandType,
+  setType = "",
+  snapshot = state.snapshot || {},
+  issuedTime = null,
+  origin = "manual",
+) {
   if (!dev) return "";
   const fieldName = commandType === "set_value" ? setType : (commandType === "status" ? "status" : "run_stat");
   if (!fieldName) return "";
-  const activeIssuedTime = issuedTime || (commandType === "set_value"
-    ? remoteAdjustmentIssuedTimeInfo(dev, setType, snapshot)
-    : remoteControlIssuedTimeInfo(dev, fieldName, snapshot));
-  if (!activeIssuedTime || activeIssuedTime.wall_time === "--") return "";
+  const entry = activeCommandEntryForControl(dev, commandType, setType, snapshot, origin);
+  if (!entry) return "";
   return `${deviceType(dev)}.${deviceName(dev)}.${fieldName}`;
 }
 
-async function sendCommandCancel(commandName, label = "") {
+async function sendCommandCancel(commandName, label = "", origin = "manual") {
   const name = String(commandName || "").trim();
-  if (!name || state.commandCancelSending.has(name)) return;
+  const normalizedOrigin = origin === "automatic" ? "automatic" : "manual";
+  const sendingKey = `${normalizedOrigin}|${name}`;
+  if (!name || state.commandCancelSending.has(sendingKey)) return;
   const displayLabel = label || name;
-  if (!window.confirm(`确认取消当前有效指令：${displayLabel}？`)) return;
+  const actionLabel = normalizedOrigin === "manual" ? "退出人工指令" : "取消自动指令";
+  if (!window.confirm(`确认${actionLabel}：${displayLabel}？`)) return;
   const body = withCommandSendTime({
     source: "trainee-ui",
+    command_origin: origin,
     cancel_commands: [{ name: commandName }],
   });
   const useInteractionLink = hasTeacherCommandConnection();
   const targetName = useInteractionLink ? teacherCommandTargetName() : "模拟台交互链接";
-  state.commandCancelSending.add(name);
-  addRuntimeLog("人工取消", targetName, "取消请求", displayLabel);
+  state.commandCancelSending.add(sendingKey);
+  addRuntimeLog("人工退出", targetName, "退出请求", `${displayLabel}；范围 ${commandOriginLabel(normalizedOrigin)}`);
   renderCombinedControlPage();
   try {
     const result = await postTeacherCommand(body);
@@ -9525,15 +9619,15 @@ async function sendCommandCancel(commandName, label = "") {
     addRuntimeLog(
       "模拟台响应",
       targetName,
-      count ? "取消成功" : "无可取消指令",
-      `${displayLabel}；取消 ${count} 条，缺失 ${cancelled.missing || 0} 条`,
+      count ? "退出成功" : "无可退出指令",
+      `${displayLabel}；退出 ${count} 条，缺失 ${cancelled.missing || 0} 条`,
       count ? "ok" : "warn",
     );
     await refresh();
   } catch (error) {
-    addRuntimeLog("模拟台响应", targetName, "取消失败", apiErrorText(error), "error");
+    addRuntimeLog("模拟台响应", targetName, "退出失败", apiErrorText(error), "error");
   } finally {
-    state.commandCancelSending.delete(name);
+    state.commandCancelSending.delete(sendingKey);
     renderCombinedControlPage();
   }
 }
@@ -9556,7 +9650,7 @@ function remoteControlCommandRows(devices, snapshot = state.snapshot || {}) {
     })),
   ].map((row) => {
     const issuedTime = remoteControlIssuedTimeInfo(row.dev, row.commandType, snapshot);
-    const cancelName = activeCommandCancelName(row.dev, row.commandType, "", snapshot, issuedTime);
+    const cancelName = activeCommandCancelName(row.dev, row.commandType, "", snapshot, issuedTime, "manual");
     return {
       ...row,
       key: `${deviceKey(row.dev)}|${row.commandType}`,
@@ -9564,8 +9658,10 @@ function remoteControlCommandRows(devices, snapshot = state.snapshot || {}) {
       name: `${deviceName(row.dev)}.${remoteControlLabel(row.commandType)}`,
       category: "遥控",
       issuedTime,
+      commandOrigin: issuedTime.command_origin,
+      commandOriginText: issuedTime.origin_text,
       cancelName,
-      active: Boolean(cancelName),
+      active: issuedTime.wall_time !== "--",
     };
   });
   drawRenewableTrendChart();
@@ -9632,7 +9728,7 @@ function traineeCommandTraceKey(row) {
 }
 
 function traineeCommandColumnCount(activeTab) {
-  return activeTab === "remote-adjustment" ? 6 : 9;
+  return activeTab === "remote-adjustment" ? 7 : 10;
 }
 
 function traineeCommandTableStructureKey(rows, activeTab = state.activeControlTab) {
@@ -9647,11 +9743,12 @@ function traineeCommandTableStructureKey(rows, activeTab = state.activeControlTa
   ].join("::");
 }
 
-function traineeCommandCancelButtonHtml(cancelName, cancelLabel) {
-  const sending = cancelName && state.commandCancelSending.has(cancelName);
+function traineeCommandCancelButtonHtml(cancelName, cancelLabel, origin = "manual") {
+  const sendingKey = `${origin}|${cancelName}`;
+  const sending = cancelName && state.commandCancelSending.has(sendingKey);
   return `
-    <button type="button" class="command-cancel-button" data-command-cancel-name="${escapeHtml(cancelName)}" data-command-cancel-label="${escapeHtml(cancelLabel)}" ${cancelName && !sending ? "" : "disabled"}>
-      ${sending ? "取消中" : "取消指令"}
+    <button type="button" class="command-cancel-button" data-command-cancel-name="${escapeHtml(cancelName)}" data-command-cancel-label="${escapeHtml(cancelLabel)}" data-command-cancel-origin="${escapeHtml(origin)}" ${cancelName && !sending ? "" : "disabled"}>
+      ${sending ? "退出中" : "退出人工"}
     </button>
   `;
 }
@@ -9673,6 +9770,7 @@ function traineeRemoteControlLiveValue(row, field) {
   }
   if (field === "wall_time") return escapeHtml(row.issuedTime?.wall_time || "--");
   if (field === "simu_time") return escapeHtml(row.issuedTime?.simu_time || "--");
+  if (field === "origin") return escapeHtml(row.commandOriginText || "--");
   if (field === "cancel") {
     return traineeCommandCancelButtonHtml(
       row.cancelName || "",
@@ -9687,6 +9785,7 @@ function traineeRemoteAdjustmentLiveValue(row, field) {
   if (field === "control") return escapeHtml(formatRemoteAdjustmentValue(row.controlValue));
   if (field === "wall_time") return escapeHtml(row.issuedTime?.wall_time || row.issuedAt || "--");
   if (field === "simu_time") return escapeHtml(row.issuedTime?.simu_time || "--");
+  if (field === "origin") return escapeHtml(row.commandOriginText || "--");
   if (field === "cancel") return traineeCommandCancelButtonHtml(row.cancelName, row.name);
   return "";
 }
@@ -9720,6 +9819,7 @@ function renderTraineeCommandRows(rows, activeTab = state.activeControlTab) {
       <td><span class="remote-adjustment-name-cell"><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(deviceType(row.dev))}</small></span></td>
       <td class="numeric-cell" data-trainee-command-live-field="measurement">${traineeCommandLiveCellHtml(row, "measurement", activeTab)}</td>
       <td class="numeric-cell" data-trainee-command-live-field="control">${traineeCommandLiveCellHtml(row, "control", activeTab)}</td>
+      <td data-trainee-command-live-field="origin">${traineeCommandLiveCellHtml(row, "origin", activeTab)}</td>
       <td class="mono-cell command-issued-at-cell" data-trainee-command-live-field="wall_time">${traineeCommandLiveCellHtml(row, "wall_time", activeTab)}</td>
       <td class="mono-cell command-issued-at-cell" data-trainee-command-live-field="simu_time">${traineeCommandLiveCellHtml(row, "simu_time", activeTab)}</td>
       <td data-trainee-command-live-field="cancel">${traineeCommandLiveCellHtml(row, "cancel", activeTab)}</td>
@@ -9739,6 +9839,7 @@ function renderTraineeCommandRows(rows, activeTab = state.activeControlTab) {
       <td>${escapeHtml(deviceType(row.dev))}</td>
       <td class="run-status-command-cell" title="双击进行遥控操作" data-trainee-command-live-field="status">${traineeCommandLiveCellHtml(row, "status", activeTab)}</td>
       <td data-trainee-command-live-field="control">${traineeCommandLiveCellHtml(row, "control", activeTab)}</td>
+      <td data-trainee-command-live-field="origin">${traineeCommandLiveCellHtml(row, "origin", activeTab)}</td>
       <td class="mono-cell command-issued-at-cell" data-trainee-command-live-field="wall_time">${traineeCommandLiveCellHtml(row, "wall_time", activeTab)}</td>
       <td class="mono-cell command-issued-at-cell" data-trainee-command-live-field="simu_time">${traineeCommandLiveCellHtml(row, "simu_time", activeTab)}</td>
       <td data-trainee-command-live-field="cancel">${traineeCommandLiveCellHtml(row, "cancel", activeTab)}</td>
@@ -9756,11 +9857,12 @@ function renderTraineeCommandTable(rows, activeTab, emptyText, virtualRows = { b
           <col class="remote-adjustment-name-col" />
           <col class="remote-adjustment-value-col" />
           <col class="remote-adjustment-value-col" />
+          <col class="remote-adjustment-origin-col" />
           <col class="remote-adjustment-time-col" />
           <col class="remote-adjustment-time-col" />
           <col class="remote-adjustment-action-col" />
         </colgroup>
-        <thead><tr><th>遥调名称</th><th>量测值</th><th>控制值</th><th>下发本机时刻</th><th>下发仿真时刻</th><th>操作</th></tr></thead>
+        <thead><tr><th>遥调名称</th><th>量测值</th><th>控制值</th><th>指令来源</th><th>下发本机时刻</th><th>下发仿真时刻</th><th>操作</th></tr></thead>
         <tbody>
           ${renderVirtualSpacerRow(virtualRows.beforeHeight, columnCount)}
           ${renderTraineeCommandRows(rows, activeTab)}
@@ -9770,7 +9872,7 @@ function renderTraineeCommandTable(rows, activeTab, emptyText, virtualRows = { b
   }
   return `
     <table class="runtime-device-table">
-      <thead><tr><th>idx</th><th>遥控名称</th><th>设备名称</th><th>类型</th><th>当前状态</th><th>下发状态</th><th>下发本机时刻</th><th>下发仿真时刻</th><th>操作</th></tr></thead>
+      <thead><tr><th>idx</th><th>遥控名称</th><th>设备名称</th><th>类型</th><th>当前状态</th><th>下发状态</th><th>指令来源</th><th>下发本机时刻</th><th>下发仿真时刻</th><th>操作</th></tr></thead>
       <tbody>
         ${renderVirtualSpacerRow(virtualRows.beforeHeight, columnCount)}
         ${renderTraineeCommandRows(rows, activeTab)}
@@ -9911,17 +10013,8 @@ function remoteAdjustmentMeasurement(dev, setType, snapshot = state.snapshot || 
 }
 
 function remoteAdjustmentIssuedTimeInfo(dev, setType, snapshot = state.snapshot || {}) {
-  const history = activeCommandHistory(snapshot).reverse();
-  for (const entry of history) {
-    const items = entry.normalized?.set_values || entry.payload?.set_values || [];
-    const match = items.find((item) => (
-      item.dev_type === deviceType(dev)
-      && item.dev_name === deviceName(dev)
-      && item.set_type === setType
-    ));
-    if (match) return commandSentTimeInfo(entry, snapshot);
-  }
-  return { wall_time: "--", simu_time: "--" };
+  const entry = activeCommandEntryForControl(dev, "set_value", setType, snapshot);
+  return entry ? commandSentTimeInfo(entry, snapshot) : emptyIssuedCommandInfo();
 }
 
 function remoteAdjustmentIssuedAt(dev, setType, snapshot = state.snapshot || {}) {
@@ -9933,7 +10026,7 @@ function remoteAdjustmentRows(devices, snapshot = state.snapshot || {}, options 
     const dev = controlDeviceFromRow(definitionRow, snapshot);
     const setType = definitionRow.set_type || "";
     const issuedTime = remoteAdjustmentIssuedTimeInfo(dev, setType, snapshot);
-    const cancelName = activeCommandCancelName(dev, "set_value", setType, snapshot, issuedTime);
+    const cancelName = activeCommandCancelName(dev, "set_value", setType, snapshot, issuedTime, "manual");
     return {
       key: `${deviceKey(dev)}|${setType}`,
       traceKey: commandTraceAdjustmentKey(dev, setType),
@@ -9949,9 +10042,11 @@ function remoteAdjustmentRows(devices, snapshot = state.snapshot || {}, options 
       })(),
       issuedAt: issuedTime.wall_time,
       issuedTime,
+      commandOrigin: issuedTime.command_origin,
+      commandOriginText: issuedTime.origin_text,
       cancelName,
-      active: Boolean(cancelName),
-      cancelSending: state.commandCancelSending.has(cancelName),
+      active: issuedTime.wall_time !== "--",
+      cancelSending: state.commandCancelSending.has(`manual|${cancelName}`),
     };
   });
 }
@@ -10805,7 +10900,8 @@ document.addEventListener("click", (event) => {
     event.stopPropagation();
     const commandName = commandCancelButton.dataset.commandCancelName || "";
     const commandLabel = commandCancelButton.dataset.commandCancelLabel || commandName;
-    sendCommandCancel(commandName, commandLabel);
+    const commandOrigin = commandCancelButton.dataset.commandCancelOrigin || "manual";
+    sendCommandCancel(commandName, commandLabel, commandOrigin);
     return;
   }
   const commandTraceRow = target?.closest("[data-command-trace-key]");
@@ -11003,6 +11099,7 @@ document.querySelectorAll("[data-renewable-loop-mode]").forEach((button) => {
 });
 $("renewableControlPeriod").addEventListener("change", updateRenewableSettings);
 [
+  "renewableCommandValidMinutes",
   "renewableStepRatio",
   "converterStepRatio",
   "dieselDeadbandRatio",

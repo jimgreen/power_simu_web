@@ -573,6 +573,25 @@ def _manual_command_holds_across_clock_lifecycle(entry_or_payload: Mapping[str, 
     return text in {"trainee-ui", "student-ui"} or text.startswith("trainee-ui-") or text.startswith("student-ui-") or "人工" in text
 
 
+def _command_origin(entry_or_payload: Mapping[str, Any], source: Any = "") -> str:
+    return "manual" if _manual_command_holds_across_clock_lifecycle(entry_or_payload, source) else "automatic"
+
+
+def _cancel_command_origin_filter(payload: Mapping[str, Any]) -> str:
+    value = str(
+        payload.get(
+            "command_origin",
+            payload.get("commandOrigin", payload.get("origin", payload.get("priority", "all"))),
+        )
+        or "all"
+    ).strip().casefold()
+    if value in {"manual", "human", "operator", "人工"}:
+        return "manual"
+    if value in {"automatic", "auto", "strategy", "自动"}:
+        return "automatic"
+    return "all"
+
+
 def _first_number(source: Mapping[str, Any], keys: Sequence[str]) -> Optional[float]:
     for key in keys:
         if key not in source:
@@ -1691,7 +1710,9 @@ class PolarMicrogridSimulator:
         for index, item in enumerate(self.command_history):
             if self._command_entry_is_active(item, absolute_minute, current_run_id):
                 active.append((index, item))
-        active.sort(key=lambda pair: (1 if _manual_command_holds_across_clock_lifecycle(pair[1]) else 0, pair[0]))
+        # Materialization is last-write-wins. Apply held manual values first so an
+        # active automatic strategy can temporarily supersede the same control point.
+        active.sort(key=lambda pair: (0 if _manual_command_holds_across_clock_lifecycle(pair[1]) else 1, pair[0]))
         return [item for _index, item in active]
 
     def _effective_active_control_command_entries(self, absolute_minute: int | float) -> List[Mapping[str, Any]]:
@@ -1983,6 +2004,9 @@ class PolarMicrogridSimulator:
             "action",
             "operation",
             "cancel",
+            "command_origin",
+            "commandOrigin",
+            "origin",
         ):
             if key in entry and key not in cancel_payload:
                 cancel_payload[key] = entry.get(key)
@@ -2004,6 +2028,7 @@ class PolarMicrogridSimulator:
             targets = self._cancel_command_targets(cancel_payload)
             if not targets:
                 continue
+            origin_filter = _cancel_command_origin_filter(cancel_payload)
             cancel_minute = _to_float(
                 entry.get("received_absolute_minute", entry.get("issued_absolute_minute", entry.get("expires_at_absolute_minute"))),
                 None,
@@ -2016,6 +2041,8 @@ class PolarMicrogridSimulator:
                 if not isinstance(previous, dict):
                     continue
                 if not self._command_entry_can_be_cancelled(previous, cancel_minute, int(run_id) if run_id is not None else None):
+                    continue
+                if origin_filter != "all" and _command_origin(previous) != origin_filter:
                     continue
                 matched = self._command_entry_control_keys(previous) & set(targets)
                 if not matched:
@@ -2065,6 +2092,7 @@ class PolarMicrogridSimulator:
             source = source or str(payload.get("source", ""))
             eligible_source = _is_trainee_command_source(source)
             targets = self._cancel_command_targets(payload)
+            origin_filter = _cancel_command_origin_filter(payload)
             current = float(self.clock.absolute_minute)
             received_wall_time = _now_text()
             received_simu_time = minute_to_time(self.clock.minute)
@@ -2074,6 +2102,8 @@ class PolarMicrogridSimulator:
                     if not isinstance(entry, dict):
                         continue
                     if not self._command_entry_can_be_cancelled(entry, current, int(self.clock.run_id)):
+                        continue
+                    if origin_filter != "all" and _command_origin(entry) != origin_filter:
                         continue
                     matched = self._command_entry_control_keys(entry) & set(targets)
                     if not matched:
@@ -2095,6 +2125,7 @@ class PolarMicrogridSimulator:
                 "remote_adjustments": cancelled_adjustment,
                 "missing": missing,
                 "ignored": ignored,
+                "command_origin": origin_filter,
             }
             cancel_entry = {
                 "time": received_wall_time,
@@ -2103,6 +2134,7 @@ class PolarMicrogridSimulator:
                 "received_absolute_minute": current,
                 "run_id": int(self.clock.run_id),
                 "source": source,
+                "command_origin": origin_filter,
                 "eligible_source": eligible_source,
                 "issued_absolute_minute": current,
                 "expires_at_absolute_minute": current,
@@ -2139,6 +2171,7 @@ class PolarMicrogridSimulator:
             ]
             detail = [
                 f"来源 {source}",
+                f"取消范围 {'人工指令' if origin_filter == 'manual' else '自动指令' if origin_filter == 'automatic' else '全部有效指令'}",
                 f"取消遥控 {cancelled_remote} 条，取消遥调 {cancelled_adjustment} 条，缺失 {missing} 条，忽略 {ignored} 条",
             ]
             if targets:
@@ -3000,6 +3033,7 @@ class PolarMicrogridSimulator:
             received_wall_time = _now_text()
             received_simu_time = minute_to_time(self.clock.minute)
             manual_hold = _manual_command_holds_across_clock_lifecycle(payload, source)
+            command_origin = "manual" if manual_hold else "automatic"
             expires_at_absolute_minute = None if manual_hold else _command_expires_at(payload, None, issued_absolute_minute)
             accepted_run = len(normalized_run_items) if eligible_source else 0
             accepted_set = len(normalized_set_items) if eligible_source else 0
@@ -3020,6 +3054,7 @@ class PolarMicrogridSimulator:
                 "source": source,
                 "eligible_source": eligible_source,
                 "manual_hold": manual_hold,
+                "command_origin": command_origin,
                 "issued_absolute_minute": issued_absolute_minute,
                 "expires_at_absolute_minute": expires_at_absolute_minute,
                 "valid_for_minutes": valid_for_minutes,
@@ -4206,6 +4241,7 @@ class PolarMicrogridSimulator:
         if include_active or "active" in item:
             row["active"] = bool(item.get("active", False))
             row["expires_at_absolute_minute"] = _json_scalar(item.get("expires_at_absolute_minute"))
+            row["command_origin"] = str(item.get("command_origin", ""))
         return row
 
     def _latest_telemetry_items(self) -> List[Dict[str, Any]]:
@@ -4392,6 +4428,7 @@ class PolarMicrogridSimulator:
             "absolute_minute": absolute_minute,
             "expires_at_absolute_minute": _to_float(entry.get("expires_at_absolute_minute"), None),
             "source": entry.get("source", ""),
+            "command_origin": _command_origin(entry),
         }
 
     def _latest_active_control_update(
@@ -4430,7 +4467,15 @@ class PolarMicrogridSimulator:
                     return self._command_entry_time_info(entry) | {"active": True}
                 if field_name == "run_stat" and item.get("run_stat", "") != "":
                     return self._command_entry_time_info(entry) | {"active": True}
-        return {"wall_time": "--", "simu_time": "--", "absolute_minute": None, "expires_at_absolute_minute": None, "source": "", "active": False}
+        return {
+            "wall_time": "--",
+            "simu_time": "--",
+            "absolute_minute": None,
+            "expires_at_absolute_minute": None,
+            "source": "",
+            "command_origin": "",
+            "active": False,
+        }
 
     def _control_definition_rows(self, block_name: str) -> List[Dict[str, Any]]:
         book = self.control_book if block_name in self.control_book.data else self.source_stat_book
@@ -4469,6 +4514,7 @@ class PolarMicrogridSimulator:
                     "expires_at_absolute_minute": update["expires_at_absolute_minute"],
                     "active": update["active"],
                     "source": update["source"],
+                    "command_origin": update["command_origin"],
                 }
             )
 
@@ -4495,6 +4541,7 @@ class PolarMicrogridSimulator:
                     "expires_at_absolute_minute": update["expires_at_absolute_minute"],
                     "active": update["active"],
                     "source": update["source"],
+                    "command_origin": update["command_origin"],
                 }
             )
 
@@ -4521,6 +4568,7 @@ class PolarMicrogridSimulator:
                     "expires_at_absolute_minute": update["expires_at_absolute_minute"],
                     "active": update["active"],
                     "source": update["source"],
+                    "command_origin": update["command_origin"],
                 }
             )
 
@@ -5097,9 +5145,21 @@ class PolarMicrogridSimulator:
         if include_commands:
             recent_commands = self.command_history[-50:]
             recent_ids = {id(entry) for entry in recent_commands}
+            active_commands = self._active_control_command_entries(self.clock.absolute_minute)
             effective_commands = self._effective_active_control_command_entries(self.clock.absolute_minute)
+            pinned_commands = [
+                entry
+                for entry in active_commands
+                if _manual_command_holds_across_clock_lifecycle(entry) and id(entry) not in recent_ids
+            ]
+            pinned_ids = {id(entry) for entry in pinned_commands}
+            pinned_commands.extend(
+                entry
+                for entry in effective_commands
+                if id(entry) not in recent_ids and id(entry) not in pinned_ids
+            )
             snapshot["commands"] = {
-                "history": [entry for entry in effective_commands if id(entry) not in recent_ids] + recent_commands,
+                "history": pinned_commands + recent_commands,
                 "effective": effective_commands,
             }
         if include_devices:

@@ -2821,9 +2821,10 @@ th {
 .remote-adjustment-table {
   table-layout: fixed;
 }
-.remote-adjustment-name-col { width: 38%; }
-.remote-adjustment-value-col { width: 11%; }
-.remote-adjustment-time-col { width: 15%; }
+.remote-adjustment-name-col { width: 32%; }
+.remote-adjustment-value-col { width: 10%; }
+.remote-adjustment-origin-col { width: 10%; }
+.remote-adjustment-time-col { width: 14%; }
 .remote-adjustment-action-col { width: 10%; }
 .remote-adjustment-table th,
 .remote-adjustment-table td {

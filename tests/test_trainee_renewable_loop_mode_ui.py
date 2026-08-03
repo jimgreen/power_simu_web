@@ -57,6 +57,18 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         self.assertIn("Math.max(1", settings_block)
         self.assertIn("interval_seconds=max(1.0", self.backend)
 
+    def test_automatic_command_validity_is_editable_and_persisted(self):
+        self.assertIn('id="renewableCommandValidMinutes"', self.html)
+        self.assertIn('value="120"', self.html)
+        self.assertIn("commandValidMinutes", self.script)
+        settings_block = self.script.split("async function updateRenewableSettings", 1)[1].split(
+            "function storagePowerDeratingRowHtml",
+            1,
+        )[0]
+        self.assertIn("commandValidMinutes", settings_block)
+        self.assertIn("command_valid_minutes", self.backend)
+        self.assertIn('"valid_for_minutes": state.settings.command_valid_minutes', self.backend)
+
     def test_strategy_steps_and_deadbands_are_editable_capacity_ratios(self):
         for field_id in (
             "renewableStepRatio",

@@ -8781,7 +8781,7 @@ function commandRefreshTimeFromMinute(minute) {
 }
 
 function emptyCommandTimeInfo() {
-  return { wall_time: "--", simu_time: "--" };
+  return { wall_time: "--", simu_time: "--", source: "", command_origin: "", origin_text: "--" };
 }
 
 function commandTimeInfoAvailable(info = {}) {
@@ -8794,9 +8794,13 @@ function commandTimeInfoAvailable(info = {}) {
 function commandReceiveTimeInfo(entry = {}) {
   const wallTime = runtimeLogWallTimeText(entry.received_wall_time || entry.time || entry.wall_time || entry.record_time || "");
   const minute = entry.received_absolute_minute ?? entry.issued_absolute_minute;
+  const origin = commandOrigin(entry);
   return {
     wall_time: wallTime,
     simu_time: commandRefreshTimeFromMinute(minute),
+    source: String(entry.source || entry.payload?.source || ""),
+    command_origin: origin,
+    origin_text: commandOriginLabel(origin),
   };
 }
 
@@ -8813,10 +8817,30 @@ function manualCommandHoldsAcrossClockLifecycle(entry = {}) {
     || source.includes("人工");
 }
 
+function commandOrigin(entry = {}) {
+  const payload = entry.payload && typeof entry.payload === "object" ? entry.payload : entry;
+  const explicit = String(entry.command_origin || payload.command_origin || "").trim().toLowerCase();
+  if (["manual", "human", "operator", "人工"].includes(explicit)) return "manual";
+  if (["automatic", "auto", "strategy", "自动"].includes(explicit)) return "automatic";
+  return manualCommandHoldsAcrossClockLifecycle(entry) ? "manual" : "automatic";
+}
+
+function commandOriginLabel(originOrEntry = "") {
+  const origin = typeof originOrEntry === "string"
+    ? String(originOrEntry).trim().toLowerCase()
+    : commandOrigin(originOrEntry);
+  if (origin === "manual") return "人工";
+  if (origin === "automatic") return "自动";
+  return "--";
+}
+
 function activeCommandHistory(snapshot = state.snapshot || {}) {
   const currentMinute = Number(snapshot.clock?.absolute_minute ?? snapshot.clock?.minute ?? 0) || 0;
   const currentRunId = Number(snapshot.clock?.run_id ?? 0) || 0;
-  return [...(snapshot.commands?.history || [])].filter((entry) => {
+  const commandEntries = Array.isArray(snapshot.commands?.effective)
+    ? snapshot.commands.effective
+    : (snapshot.commands?.history || []);
+  return [...commandEntries].filter((entry) => {
     if (!entry?.eligible_source) return false;
     if (entry.cancelled) return false;
     const manualHold = manualCommandHoldsAcrossClockLifecycle(entry);
@@ -9074,6 +9098,7 @@ function runtimeCommandTableValueText(row, field) {
 
 function runtimeCommandLiveCellHtml(row, field) {
   if (field === "control") return escapeHtml(runtimeCommandTableValueText(row, "control"));
+  if (field === "origin") return escapeHtml(row.receive_time?.origin_text || "--");
   if (field === "wall_time") return escapeHtml(row.receive_time?.wall_time || "--");
   if (field === "simu_time") return escapeHtml(row.receive_time?.simu_time || row.refresh_time || "--");
   if (field === "real") return escapeHtml(runtimeCommandTableValueText(row, "real"));
@@ -9115,6 +9140,7 @@ function renderRuntimeCommandRows(rows) {
       <td>${escapeHtml(row.device.mode || "--")}</td>
       <td>${escapeHtml(row.command)} <small class="command-set-type">${escapeHtml(row.set_type)}</small></td>
       <td class="numeric-cell" data-runtime-command-live-field="control">${runtimeCommandLiveCellHtml(row, "control")}</td>
+      <td data-runtime-command-live-field="origin">${runtimeCommandLiveCellHtml(row, "origin")}</td>
       <td class="mono-cell" data-runtime-command-live-field="wall_time">${escapeHtml(row.receive_time?.wall_time || "--")}</td>
       <td class="mono-cell" data-runtime-command-live-field="simu_time">${escapeHtml(row.receive_time?.simu_time || row.refresh_time || "--")}</td>
       <td class="numeric-cell" data-runtime-command-live-field="real">${runtimeCommandLiveCellHtml(row, "real")}</td>
@@ -9135,6 +9161,7 @@ function renderRuntimeCommandTable(rows, emptyText, virtualRows = { beforeHeight
           <th>模式</th>
           <th>指令项</th>
           <th>控制指令</th>
+          <th>指令来源</th>
           <th>接收本机时刻</th>
           <th>接收仿真时刻</th>
           <th>实时值</th>
@@ -9142,9 +9169,9 @@ function renderRuntimeCommandTable(rows, emptyText, virtualRows = { beforeHeight
         </tr>
       </thead>
       <tbody>
-        ${renderVirtualSpacerRow(virtualRows.beforeHeight, 9)}
+        ${renderVirtualSpacerRow(virtualRows.beforeHeight, 10)}
         ${renderRuntimeCommandRows(rows)}
-        ${renderVirtualSpacerRow(virtualRows.afterHeight, 9)}
+        ${renderVirtualSpacerRow(virtualRows.afterHeight, 10)}
       </tbody>
     </table>
   `;

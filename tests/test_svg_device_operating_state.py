@@ -18,6 +18,18 @@ class SvgDeviceOperatingStateTest(unittest.TestCase):
     def _node(idx: int, name: str, alive: bool) -> SimpleNamespace:
         return SimpleNamespace(idx=idx, name=name, run_stat=1, is_alive=alive)
 
+    @staticmethod
+    def _topology_grid(node_alive):
+        return SimpleNamespace(
+            ppc={
+                "_topology_arrays": SimpleNamespace(
+                    node_ids=list(node_alive),
+                    node_alive_mask=list(node_alive.values()),
+                )
+            },
+            nodes=[],
+        )
+
     def _qinling_model_dir(self):
         for candidate in (ROOT / "models/simulator/source").glob("*/model.e"):
             book = simu_loop.EBook(candidate)
@@ -141,7 +153,7 @@ class SvgDeviceOperatingStateTest(unittest.TestCase):
         self.assertTrue(states[("ACBranch", "dead-branch")]["dead_island"])
         self.assertFalse(states[("HydroLoad", "hydrogen-load")]["dead_island"])
 
-    def test_dead_island_requires_all_converter_endpoints_but_preserves_boundary_semantics(self):
+    def test_converter_is_dead_when_any_endpoint_is_dead_but_boundary_device_is_not(self):
         live_ac_node = self._node(1, "live-ac-node", True)
         dead_ac_node = self._node(2, "dead-ac-node", False)
         live_dc_node = self._node(3, "live-dc-node", True)
@@ -184,6 +196,22 @@ class SvgDeviceOperatingStateTest(unittest.TestCase):
                     )
                 )
 
+        unresolved_ac_node = SimpleNamespace(idx=99, run_stat=1)
+        unresolved_boundary = SimpleNamespace(
+            run_stat=1,
+            is_alive=False,
+            i_node_obj=dead_ac_node,
+            j_node_obj=unresolved_ac_node,
+        )
+        self.assertFalse(
+            simu_loop._device_dead_island(
+                "ACBreak",
+                unresolved_boundary,
+                ac_node_alive,
+                dc_node_alive,
+            )
+        )
+
         converter.dc_node_obj = live_dc_node
         self.assertFalse(
             simu_loop._device_dead_island(
@@ -204,6 +232,75 @@ class SvgDeviceOperatingStateTest(unittest.TestCase):
                 dc_node_alive,
             )
         )
+
+    def test_model_only_converter_uses_ac_and_dc_terminal_topology(self):
+        snapshot = SimpleNamespace(
+            ac=self._topology_grid({1: True}),
+            dc=self._topology_grid({2: False}),
+            dcac_converters=[],
+        )
+        model_book = SimpleNamespace(
+            data={
+                "DCACConverter": SimpleNamespace(
+                    header_list=["name", "run_stat", "ac_node", "dc_node"],
+                    data=[
+                        {
+                            "name": "model-only-converter",
+                            "run_stat": 1,
+                            "ac_node": 1,
+                            "dc_node": 2,
+                        }
+                    ],
+                )
+            }
+        )
+
+        states = {
+            (row["dev_type"], row["dev_name"]): row
+            for row in simu_loop.collect_device_operating_states(snapshot, model_book)
+        }
+
+        self.assertTrue(states[("DCACConverter", "model-only-converter")]["dead_island"])
+
+    def test_model_only_boundary_devices_keep_one_live_endpoint_non_dead(self):
+        snapshot = SimpleNamespace(
+            ac=self._topology_grid({1: True, 2: False}),
+            dc=self._topology_grid({3: True, 4: False}),
+        )
+        model_book = SimpleNamespace(
+            data={
+                "ACSwitch": SimpleNamespace(
+                    header_list=["name", "run_stat", "i_node", "j_node"],
+                    data=[
+                        {
+                            "name": "model-only-ac-switch",
+                            "run_stat": 1,
+                            "i_node": 1,
+                            "j_node": 2,
+                        }
+                    ],
+                ),
+                "DCBreak": SimpleNamespace(
+                    header_list=["name", "run_stat", "i_node", "j_node"],
+                    data=[
+                        {
+                            "name": "model-only-dc-break",
+                            "run_stat": 1,
+                            "i_node": 3,
+                            "j_node": 4,
+                        }
+                    ],
+                ),
+            }
+        )
+
+        states = {
+            (row["dev_type"], row["dev_name"]): row
+            for row in simu_loop.collect_device_operating_states(snapshot, model_book)
+        }
+
+        self.assertFalse(states[("ACSwitch", "model-only-ac-switch")]["dead_island"])
+        self.assertFalse(states[("DCBreak", "model-only-dc-break")]["dead_island"])
 
     def test_snapshot_can_return_compact_device_states_without_full_devices(self):
         with tempfile.TemporaryDirectory() as temporary:

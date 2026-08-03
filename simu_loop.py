@@ -485,6 +485,94 @@ def _terminal_node_alive(node: object, alive_by_idx: Mapping[int, bool]) -> Opti
     return None
 
 
+_BOUNDARY_DEVICE_TYPES = frozenset({"ACSwitch", "ACBreak", "DCSwitch", "DCBreak"})
+# Descriptors are object attribute, model-row field, and topology domain. A
+# missing object attribute means the device itself is the terminal node.
+_DEVICE_TERMINAL_DESCRIPTORS = {
+    "ACNode": ((None, "idx", "ac"),),
+    "ACRealBs": (("node_obj", "node", "ac"),),
+    "ACGenerator": (("node_obj", "node", "ac"),),
+    "ACLoad": (("node_obj", "node", "ac"),),
+    "ACShuntCompensator": (("node_obj", "node", "ac"),),
+    "ACBranch": (("i_node_obj", "i_node", "ac"), ("j_node_obj", "j_node", "ac")),
+    "ACTransformer": (("i_node_obj", "i_node", "ac"), ("j_node_obj", "j_node", "ac")),
+    "ACThreeWindingTransformer": (
+        ("i_node_obj", "i_node", "ac"),
+        ("j_node_obj", "j_node", "ac"),
+        ("k_node_obj", "k_node", "ac"),
+    ),
+    "ACZeroBranch": (("i_node_obj", "i_node", "ac"), ("j_node_obj", "j_node", "ac")),
+    "ACSwitch": (("i_node_obj", "i_node", "ac"), ("j_node_obj", "j_node", "ac")),
+    "ACBreak": (("i_node_obj", "i_node", "ac"), ("j_node_obj", "j_node", "ac")),
+    "ACACConverter": (("i_node_obj", "i_node", "ac"), ("j_node_obj", "j_node", "ac")),
+    "DCNode": ((None, "idx", "dc"),),
+    "DCRealBs": (("node_obj", "node", "dc"),),
+    "DCGenerator": (("node_obj", "node", "dc"),),
+    "DCLoad": (("node_obj", "node", "dc"),),
+    "DCBranch": (("i_node_obj", "i_node", "dc"), ("j_node_obj", "j_node", "dc")),
+    "DCZeroBranch": (("i_node_obj", "i_node", "dc"), ("j_node_obj", "j_node", "dc")),
+    "DCSwitch": (("i_node_obj", "i_node", "dc"), ("j_node_obj", "j_node", "dc")),
+    "DCBreak": (("i_node_obj", "i_node", "dc"), ("j_node_obj", "j_node", "dc")),
+    "DCDCConverter": (("i_node_obj", "i_node", "dc"), ("j_node_obj", "j_node", "dc")),
+    "DCACConverter": (("ac_node_obj", "ac_node", "ac"), ("dc_node_obj", "dc_node", "dc")),
+}
+
+
+def _terminal_alive_map(
+    domain: str,
+    ac_node_alive: Mapping[int, bool],
+    dc_node_alive: Mapping[int, bool],
+) -> Mapping[int, bool]:
+    return dc_node_alive if domain == "dc" else ac_node_alive
+
+
+def _object_terminal_states(
+    dev_type: str,
+    device: object,
+    ac_node_alive: Mapping[int, bool],
+    dc_node_alive: Mapping[int, bool],
+) -> List[Optional[bool]]:
+    states = []
+    for object_attr, _row_field, domain in _DEVICE_TERMINAL_DESCRIPTORS.get(dev_type, ()):
+        node = device if object_attr is None else getattr(device, object_attr, None)
+        states.append(
+            _terminal_node_alive(
+                node,
+                _terminal_alive_map(domain, ac_node_alive, dc_node_alive),
+            )
+        )
+    return states
+
+
+def _model_terminal_states(
+    dev_type: str,
+    row: Mapping[str, object],
+    ac_node_alive: Mapping[int, bool],
+    dc_node_alive: Mapping[int, bool],
+) -> List[Optional[bool]]:
+    states = []
+    for _object_attr, row_field, domain in _DEVICE_TERMINAL_DESCRIPTORS.get(dev_type, ()):
+        alive_by_idx = _terminal_alive_map(domain, ac_node_alive, dc_node_alive)
+        node_idx = _safe_int(row.get(row_field), -1)
+        states.append(bool(alive_by_idx[node_idx]) if node_idx in alive_by_idx else None)
+    return states
+
+
+def _terminal_states_dead_island(
+    dev_type: str,
+    terminal_states: Sequence[Optional[bool]],
+    fallback_alive: Optional[bool] = None,
+) -> bool:
+    if dev_type in _BOUNDARY_DEVICE_TYPES:
+        # Do not infer a dead boundary unless every required endpoint is known dead.
+        return bool(terminal_states) and all(state is False for state in terminal_states)
+    if any(state is False for state in terminal_states):
+        return True
+    if terminal_states and all(state is True for state in terminal_states):
+        return False
+    return fallback_alive is False
+
+
 def _device_dead_island(
     dev_type: str,
     device: object,
@@ -493,32 +581,17 @@ def _device_dead_island(
 ) -> bool:
     if _safe_int(getattr(device, "run_stat", 1), 1) != 1:
         return False
-    if dev_type in {"ACNode", "DCNode"}:
-        node_alive_map = dc_node_alive if dev_type.startswith("DC") else ac_node_alive
-        return _terminal_node_alive(device, node_alive_map) is False
-    terminal_specs = (
-        ("node_obj", dc_node_alive if str(dev_type).startswith("DC") else ac_node_alive),
-        ("i_node_obj", dc_node_alive if str(dev_type).startswith("DC") else ac_node_alive),
-        ("j_node_obj", dc_node_alive if str(dev_type).startswith("DC") else ac_node_alive),
-        ("k_node_obj", dc_node_alive if str(dev_type).startswith("DC") else ac_node_alive),
-        ("ac_node_obj", ac_node_alive),
-        ("dc_node_obj", dc_node_alive),
+    terminal_states = _object_terminal_states(
+        dev_type,
+        device,
+        ac_node_alive,
+        dc_node_alive,
     )
-    terminal_alive = [
-        alive
-        for attr, alive_map in terminal_specs
-        if (alive := _terminal_node_alive(getattr(device, attr, None), alive_map)) is not None
-    ]
-    if terminal_alive:
-        if dev_type in {"ACSwitch", "ACBreak", "DCSwitch", "DCBreak"}:
-            # An open boundary device is not dead-island equipment while either
-            # side remains energized.
-            return not any(terminal_alive)
-        return not all(terminal_alive)
-    if dev_type in {"ACSwitch", "ACBreak", "DCSwitch", "DCBreak"}:
-        return False
-    alive = getattr(device, "is_alive", None)
-    return alive is False
+    return _terminal_states_dead_island(
+        dev_type,
+        terminal_states,
+        getattr(device, "is_alive", None),
+    )
 
 
 def collect_device_operating_states(
@@ -592,12 +665,6 @@ def collect_device_operating_states(
         for dev_type, block in model_book.data.items():
             if "name" not in block.header_list or "run_stat" not in block.header_list:
                 continue
-            if str(dev_type).startswith("DC"):
-                node_alive_map = dc_node_alive
-            elif str(dev_type).startswith("AC"):
-                node_alive_map = ac_node_alive
-            else:
-                node_alive_map = {}
             for row in block.data:
                 name = str(row.get("name", "")).strip()
                 if not name:
@@ -614,12 +681,15 @@ def collect_device_operating_states(
                 if run_stat == 0:
                     state["dead_island"] = False
                 elif key not in states:
-                    terminal_alive = [
-                        node_alive_map[node_idx]
-                        for field in ("node", "i_node", "j_node", "k_node")
-                        if (node_idx := _safe_int(row.get(field), -1)) in node_alive_map
-                    ]
-                    state["dead_island"] = bool(terminal_alive) and not any(terminal_alive)
+                    state["dead_island"] = _terminal_states_dead_island(
+                        str(dev_type),
+                        _model_terminal_states(
+                            str(dev_type),
+                            row,
+                            ac_node_alive,
+                            dc_node_alive,
+                        ),
+                    )
                 states[key] = state
 
     return [states[key] for key in sorted(states)]

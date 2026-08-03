@@ -84,6 +84,10 @@ ROLE_MODEL_DIRS = {
     "trainee": ("models", "trainee"),
 }
 CONTROL_DEFINITION_BLOCKS = {"RunStat", "CbOpenStat", "SetValue", "StorageSoc"}
+DEFINITION_EDIT_PATHS = {
+    "/api/definitions/device-parameters",
+    "/api/definitions/measurement",
+}
 
 def _role_models_base_dir(sim_dir: Path, role: str) -> Path:
     parts = ROLE_MODEL_DIRS.get(role.lower(), ("models", role.lower()))
@@ -1016,6 +1020,8 @@ def make_http_server(
         def do_POST(self) -> None:
             try:
                 path = urlparse(self.path).path
+                if path in DEFINITION_EDIT_PATHS and role != "simulator":
+                    raise JsonApiError(404, f"Unknown API route: {path}")
                 if path == renewable_control_path and role == "trainee":
                     self._handle_api_post()
                     return
@@ -1676,7 +1682,19 @@ def make_http_server(
                 return
 
             target = self._target_service(payload)
-            if path == "/api/student/commands":
+            if path in DEFINITION_EDIT_PATHS:
+                if role != "simulator":
+                    raise JsonApiError(404, f"Unknown API route: {path}")
+                try:
+                    result = (
+                        target.update_device_parameters(payload)
+                        if path == "/api/definitions/device-parameters"
+                        else target.update_measurement_definition(payload)
+                    )
+                except (KeyError, ValueError) as exc:
+                    raise JsonApiError(400, str(exc)) from exc
+                self._send_json(result)
+            elif path == "/api/student/commands":
                 self._send_json(target.apply_student_commands(payload, source=str(payload.get("source", ""))))
             elif path == "/api/trainee/receive-state":
                 self._send_json(target.set_trainee_receive_state(payload))

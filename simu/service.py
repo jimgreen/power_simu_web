@@ -42,6 +42,14 @@ try:
 except ImportError:  # pragma: no cover - legacy package compatibility.
     from hybrid_power_system_analysis.simu import simu_loop
 
+from simu.definition_editing import (
+    DefinitionSnapshot,
+    atomic_write_text,
+    normalize_device_changes,
+    normalize_measurement_changes,
+    render_ebook_aligned,
+)
+
 
 WEATHER_HEADER = (
     "time",
@@ -800,6 +808,7 @@ class PolarMicrogridSimulator:
         self.random_seed = random_seed
         self.clock = ClockState()
         self.lock = threading.RLock()
+        self.definition_update_lock = threading.Lock()
         # Curve definitions change only through explicit editing APIs. Keep their
         # short read lock separate from the long-running power-flow calculation lock.
         self.curves_lock = threading.RLock()
@@ -819,6 +828,14 @@ class PolarMicrogridSimulator:
         self.control_book = EBook({})
         self.weather_book = EBook({})
         self.dev_define_book = EBook({})
+        self._definition_snapshot = DefinitionSnapshot(
+            revision=0,
+            model_book=self.source_model_book,
+            dev_define_book=self.dev_define_book,
+            measurement_before=(),
+            measurement_rows=(),
+            measurement_after=(),
+        )
         self.runtime_stat_book = EBook({})
         self.yt_ctrl_book = EBook({})
         self.mode_book: Optional[EBook] = None
@@ -918,6 +935,40 @@ class PolarMicrogridSimulator:
             self._load_runtime_state_from_disk()
             return {"removed": removed}
 
+    @property
+    def definition_snapshot(self) -> DefinitionSnapshot:
+        snapshot = self._definition_snapshot
+        measurement_before = tuple(self.measurement_before)
+        measurement_rows = tuple(tuple(row) for row in self.measurement_rows)
+        measurement_after = tuple(self.measurement_after)
+        if (
+            self.source_model_book is snapshot.model_book
+            and self.dev_define_book is snapshot.dev_define_book
+            and measurement_before == snapshot.measurement_before
+            and measurement_rows == snapshot.measurement_rows
+            and measurement_after == snapshot.measurement_after
+        ):
+            return snapshot
+        snapshot = DefinitionSnapshot(
+            revision=snapshot.revision + 1,
+            model_book=self.source_model_book,
+            dev_define_book=self.dev_define_book,
+            measurement_before=measurement_before,
+            measurement_rows=measurement_rows,
+            measurement_after=measurement_after,
+        )
+        self._definition_snapshot = snapshot
+        return snapshot
+
+    def _publish_definition_snapshot(self, snapshot: DefinitionSnapshot) -> None:
+        self._definition_snapshot = snapshot
+        self.source_model_book = snapshot.model_book
+        self.dev_define_book = snapshot.dev_define_book
+        self.measurement_before = list(snapshot.measurement_before)
+        self.measurement_rows = [list(row) for row in snapshot.measurement_rows]
+        self.measurement_after = list(snapshot.measurement_after)
+        self._wind_converter_names_cache = None
+
     def reload_definition_state(self) -> None:
         """Load source definition E files into the live calculation state."""
         self.source_model_book = _load_book(self.source_files["model"])
@@ -936,6 +987,16 @@ class PolarMicrogridSimulator:
             )
         except Exception:
             self.measurement_before, self.measurement_rows, self.measurement_after = [], [], []
+        self._publish_definition_snapshot(
+            DefinitionSnapshot(
+                revision=self._definition_snapshot.revision + 1,
+                model_book=self.source_model_book,
+                dev_define_book=self.dev_define_book,
+                measurement_before=tuple(self.measurement_before),
+                measurement_rows=tuple(tuple(row) for row in self.measurement_rows),
+                measurement_after=tuple(self.measurement_after),
+            )
+        )
         self.runtime_stat_book = self._base_stat_book_for_controls()
         self._ensure_runtime_stat_book()
         self.yt_ctrl_book = _make_book({"SetValue": (STAT_HEADERS["SetValue"], [])})
@@ -2103,6 +2164,7 @@ class PolarMicrogridSimulator:
             }
 
     def _make_config(self, period_seconds: Optional[float] = None) -> simu_loop.SimulationConfig:
+        definition_snapshot = self.definition_snapshot
         return simu_loop.SimulationConfig(
             model_file=self.files["model"],
             meas_file=self.files["meas"],
@@ -2120,14 +2182,14 @@ class PolarMicrogridSimulator:
             log_file=None,
             step_mode=True,
             write_output_files=False,
-            model_book=self.source_model_book,
-            meas_before=list(self.measurement_before),
-            meas_rows=[list(row) for row in self.measurement_rows],
-            meas_after=list(self.measurement_after),
+            model_book=definition_snapshot.model_book,
+            meas_before=list(definition_snapshot.measurement_before),
+            meas_rows=[list(row) for row in definition_snapshot.measurement_rows],
+            meas_after=list(definition_snapshot.measurement_after),
             weather_book=self.weather_book,
             dev_stat_book=self.runtime_stat_book,
             yt_ctrl_book=self.yt_ctrl_book,
-            dev_define_book=self.dev_define_book,
+            dev_define_book=definition_snapshot.dev_define_book,
             mode_book=self.mode_book,
         )
 
@@ -3799,9 +3861,22 @@ class PolarMicrogridSimulator:
         return self._with_signal_measurements(self._with_weather_measurements(measurements))
 
     def measurements(self) -> Dict[str, List[Dict[str, Any]]]:
-        definitions = [_measurement_row_to_dict(row) for row in self.measurement_rows]
+        definition_snapshot = self.definition_snapshot
+        definitions = [_measurement_row_to_dict(row) for row in definition_snapshot.measurement_rows]
+        definitions_by_name = {
+            str(row.get("name", "")): row
+            for row in definitions
+            if str(row.get("name", ""))
+        }
         real = [_measurement_row_to_dict(row) for row in self.latest_real_rows]
         scada = [_measurement_row_to_dict(row) for row in self.latest_scada_rows]
+        for rows in (real, scada):
+            for row in rows:
+                definition = definitions_by_name.get(str(row.get("name", "")))
+                if definition is None:
+                    continue
+                row["weight"] = definition.get("weight", row.get("weight"))
+                row["valid"] = definition.get("valid", row.get("valid"))
         measurements = self._with_realtime_measurements({"definitions": definitions, "real": real, "scada": scada})
         for item in measurements["scada"]:
             self._last_scada_values[
@@ -3812,6 +3887,11 @@ class PolarMicrogridSimulator:
     def _measurement_delta_current_items(self) -> Dict[str, Dict[str, Any]]:
         measurements = self.measurements()
         definitions = measurements.get("definitions") or measurements.get("scada") or measurements.get("real") or []
+        definitions_by_name = {
+            str(row.get("name", "")): row
+            for row in definitions
+            if str(row.get("name", ""))
+        }
         real_by_name = {str(row.get("name", "")): row for row in measurements.get("real", []) if row.get("name")}
         scada_by_name = {str(row.get("name", "")): row for row in measurements.get("scada", []) if row.get("name")}
         time_payload = self._api_time_payload()
@@ -3825,14 +3905,15 @@ class PolarMicrogridSimulator:
             real_value = real.get("value") if real else None
             scada_value = scada.get("value") if scada else None
             value = scada_value if scada is not None else real_value
-            valid = scada.get("valid") if scada else real.get("valid") if real else definition.get("valid", 0)
+            active_definition = definitions_by_name.get(name, definition)
+            valid = active_definition.get("valid", 0)
             items[name] = {
                 "name": name,
                 "value": _json_scalar(value),
                 "real_value": _json_scalar(real_value),
                 "scada_value": _json_scalar(scada_value),
                 "valid": int(_to_float(valid, 0) or 0),
-                "weight": _json_scalar(definition.get("weight", "")),
+                "weight": _json_scalar(active_definition.get("weight", "")),
                 **self._external_update_time_fields(time_payload),
             }
         return items
@@ -3919,7 +4000,8 @@ class PolarMicrogridSimulator:
         return [_measurement_row_to_dict(row) for row in rows]
 
     def devices(self) -> List[Dict[str, Any]]:
-        model_book = self.source_model_book
+        definition_snapshot = self.definition_snapshot
+        model_book = definition_snapshot.model_book
         run_stats, cb_status, set_values, soc_values = self._stat_maps()
         devices: List[Dict[str, Any]] = []
         device_blocks = (
@@ -3968,7 +4050,7 @@ class PolarMicrogridSimulator:
             for device in devices
         }
         storage_raw: Dict[str, Dict[str, Any]] = {}
-        capability_book = self.dev_define_book
+        capability_book = definition_snapshot.dev_define_book
         storage_block = capability_book.data.get("estorage")
         for row in getattr(storage_block, "data", []):
             name = str(row.get("name", "")).strip()
@@ -4029,6 +4111,7 @@ class PolarMicrogridSimulator:
 
     def device_states(self) -> List[Dict[str, Any]]:
         """Return the compact state needed by the live SVG diagram."""
+        definition_snapshot = self.definition_snapshot
         states: Dict[Tuple[str, str], Dict[str, Any]] = {}
         for item in self.latest_device_states:
             dev_type = str(item.get("dev_type", "")).strip()
@@ -4043,7 +4126,7 @@ class PolarMicrogridSimulator:
             }
 
         run_stats, _cb_status, _set_values, _soc_values = self._stat_maps()
-        for dev_type, block in self.source_model_book.data.items():
+        for dev_type, block in definition_snapshot.model_book.data.items():
             if "name" not in block.header_list or "run_stat" not in block.header_list:
                 continue
             for row in block.data:
@@ -4580,8 +4663,177 @@ class PolarMicrogridSimulator:
             "control_values": self.latest_control_values(),
         }
 
+    def _definition_row(self, block: EBlock, row_key: Any) -> Dict[str, Any]:
+        if not isinstance(row_key, Mapping):
+            raise ValueError("row_key must be an object")
+        name = str(row_key.get("name", "")).strip()
+        idx = str(row_key.get("idx", "")).strip()
+        if not name and not idx:
+            raise ValueError("row_key requires name or idx")
+
+        row: Optional[Dict[str, Any]] = None
+        if name and "name" in block.header_list:
+            row = next(
+                (item for item in block.data if str(item.get("name", "")) == name),
+                None,
+            )
+        if row is None and idx and "idx" in block.header_list:
+            row = next(
+                (item for item in block.data if str(item.get("idx", "")) == idx),
+                None,
+            )
+        if row is None:
+            identity = name or idx
+            raise ValueError(f"Unknown definition row in {block.name}: {identity}")
+        if name and "name" in block.header_list and str(row.get("name", "")) != name:
+            raise ValueError(f"Definition row name does not match idx in {block.name}")
+        if idx and "idx" in block.header_list and str(row.get("idx", "")) != idx:
+            raise ValueError(f"Definition row idx does not match name in {block.name}")
+        return row
+
+    def _measurement_definition_row(
+        self,
+        rows: Sequence[Sequence[str]],
+        payload: Mapping[str, Any],
+    ) -> Tuple[int, Dict[str, Any]]:
+        name = str(payload.get("name", "")).strip()
+        if not name:
+            raise ValueError("Measurement name is required")
+        for index, row in enumerate(rows):
+            item = _measurement_row_to_dict(row)
+            if str(item.get("name", "")) != name:
+                continue
+            for identity_field in ("dev_type", "dev_name", "meas_type"):
+                expected = str(payload.get(identity_field, "")).strip()
+                if expected and str(item.get(identity_field, "")) != expected:
+                    raise ValueError(f"Measurement {identity_field} does not match: {name}")
+            return index, item
+        raise ValueError(f"Unknown measurement: {name}")
+
+    def _definition_update_result(
+        self,
+        snapshot: DefinitionSnapshot,
+        record: Mapping[str, Any],
+        *,
+        persisted: bool,
+        warning: str = "",
+    ) -> Dict[str, Any]:
+        result = {
+            "model_id": self.model_id,
+            "model_name": self.model_name,
+            "revision": snapshot.revision,
+            "memory_updated": True,
+            "persisted": persisted,
+            "record": dict(record),
+            "static_meta": self.static_meta(),
+        }
+        if warning:
+            result["warning"] = warning
+        return result
+
+    def update_device_parameters(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        with self.definition_update_lock:
+            current = self.definition_snapshot
+            model_book = simu_loop._clone_ebook(current.model_book)
+            block_name = str(payload.get("block_name", "")).strip()
+            if not block_name:
+                raise ValueError("block_name is required")
+            block = model_book.data.get(block_name)
+            if block is None:
+                raise ValueError(f"Unknown model block: {block_name}")
+            row = self._definition_row(block, payload.get("row_key", {}))
+            changes = payload.get("changes", {})
+            if not isinstance(changes, Mapping):
+                raise ValueError("changes must be an object")
+            row.update(normalize_device_changes(row, changes))
+            dev_define_book = simu_loop._capability_define_book(
+                model_book,
+                self._legacy_dev_define_file(),
+            )
+            next_snapshot = DefinitionSnapshot(
+                revision=current.revision + 1,
+                model_book=model_book,
+                dev_define_book=dev_define_book,
+                measurement_before=current.measurement_before,
+                measurement_rows=current.measurement_rows,
+                measurement_after=current.measurement_after,
+            )
+            self._publish_definition_snapshot(next_snapshot)
+
+            persisted = True
+            warning = ""
+            try:
+                atomic_write_text(
+                    self.source_files["model"],
+                    render_ebook_aligned(next_snapshot.model_book),
+                )
+            except OSError as exc:
+                persisted = False
+                warning = f"后台定义已更新，但 E 文件保存失败，请重试: {exc}"
+            record = {
+                header: _json_scalar(row.get(header, ""))
+                for header in block.header_list
+            }
+            return self._definition_update_result(
+                next_snapshot,
+                {
+                    "block_name": block_name,
+                    "row_key": {
+                        "idx": record.get("idx", ""),
+                        "name": record.get("name", ""),
+                    },
+                    **record,
+                },
+                persisted=persisted,
+                warning=warning,
+            )
+
+    def update_measurement_definition(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        with self.definition_update_lock:
+            current = self.definition_snapshot
+            rows = [list(row) for row in current.measurement_rows]
+            index, current_item = self._measurement_definition_row(rows, payload)
+            changes = payload.get("changes", {})
+            if not isinstance(changes, Mapping):
+                raise ValueError("changes must be an object")
+            normalized = normalize_measurement_changes(current_item, changes)
+            rows[index][5] = normalized["weight"]
+            rows[index][6] = normalized["valid"]
+            next_snapshot = DefinitionSnapshot(
+                revision=current.revision + 1,
+                model_book=current.model_book,
+                dev_define_book=current.dev_define_book,
+                measurement_before=current.measurement_before,
+                measurement_rows=tuple(tuple(row) for row in rows),
+                measurement_after=current.measurement_after,
+            )
+            self._publish_definition_snapshot(next_snapshot)
+
+            persisted = True
+            warning = ""
+            try:
+                atomic_write_text(
+                    self.source_files["meas"],
+                    simu_loop.render_measurement_snapshot_aligned(
+                        next_snapshot.measurement_before,
+                        next_snapshot.measurement_rows,
+                        next_snapshot.measurement_after,
+                    ),
+                )
+            except OSError as exc:
+                persisted = False
+                warning = f"后台定义已更新，但 E 文件保存失败，请重试: {exc}"
+            record = _measurement_row_to_dict(rows[index])
+            record["error_sigma"] = normalized["error_sigma"]
+            return self._definition_update_result(
+                next_snapshot,
+                record,
+                persisted=persisted,
+                warning=warning,
+            )
+
     def device_parameters(self) -> Dict[str, List[Dict[str, Any]]]:
-        book = self.source_model_book
+        book = self.definition_snapshot.model_book
         parameter_blocks = ("ACWindGen", "DCPVGen", "DCStorageGen")
         return {
             name: [
@@ -4596,8 +4848,9 @@ class PolarMicrogridSimulator:
         self,
         path: Path,
         block_names: Optional[Sequence[str]] = None,
+        definition_snapshot: Optional[DefinitionSnapshot] = None,
     ) -> Dict[str, Dict[str, Any]]:
-        book = self._definition_book_for_path(path)
+        book = self._definition_book_for_path(path, definition_snapshot)
         selected = set(block_names or [])
         blocks: Dict[str, Dict[str, Any]] = {}
         for name, block in book.data.items():
@@ -4611,13 +4864,18 @@ class PolarMicrogridSimulator:
             blocks[name] = {"headers": headers, "rows": rows}
         return blocks
 
-    def _definition_book_for_path(self, path: Path) -> EBook:
+    def _definition_book_for_path(
+        self,
+        path: Path,
+        definition_snapshot: Optional[DefinitionSnapshot] = None,
+    ) -> EBook:
+        active_snapshot = definition_snapshot or self.definition_snapshot
         try:
             resolved = Path(path).resolve()
         except Exception:
             resolved = Path(path)
         path_by_book = (
-            (self.source_files.get("model"), self.source_model_book),
+            (self.source_files.get("model"), active_snapshot.model_book),
             (self.source_files.get("stat"), self.source_stat_book),
             (self.source_files.get("control"), self.control_book),
             (self.work_files.get("stat"), self.runtime_stat_book),
@@ -4639,17 +4897,27 @@ class PolarMicrogridSimulator:
         return self.files["stat"]
 
     def definitions(self, measurements: Optional[Mapping[str, Sequence[Mapping[str, Any]]]] = None) -> Dict[str, Any]:
-        measurement_rows = list((measurements or {}).get("definitions", []))
-        if not measurement_rows:
-            measurement_rows = self._with_realtime_measurements(
-                {"definitions": [_measurement_row_to_dict(row) for row in self.measurement_rows], "real": [], "scada": []}
-            )["definitions"]
+        definition_snapshot = self.definition_snapshot
+        measurement_rows = self._with_realtime_measurements(
+            {
+                "definitions": [
+                    _measurement_row_to_dict(row)
+                    for row in definition_snapshot.measurement_rows
+                ],
+                "real": [],
+                "scada": [],
+            }
+        )["definitions"]
         return {
-            "model": self._definition_book_blocks(self.files["model"]),
+            "model": self._definition_book_blocks(
+                self.files["model"],
+                definition_snapshot=definition_snapshot,
+            ),
             "measurement": measurement_rows,
             "control": self._definition_book_blocks(
                 self._control_definition_path(),
                 CONTROL_DEFINITION_BLOCKS,
+                definition_snapshot=definition_snapshot,
             ),
         }
 
@@ -4725,6 +4993,7 @@ class PolarMicrogridSimulator:
         return {"signature": "|".join(signatures)}
 
     def static_meta(self) -> Dict[str, Any]:
+        definition_revision = self.definition_snapshot.revision
         definition_paths = [
             self.source_files.get("model"),
             self.source_files.get("meas"),
@@ -4732,14 +5001,18 @@ class PolarMicrogridSimulator:
             self.source_files.get("control"),
             self.source_files.get("weather"),
         ]
+        definitions_meta = self._path_static_signature(definition_paths)
+        definitions_meta["revision"] = definition_revision
+        device_parameters_meta = self._path_static_signature([self.source_files.get("model")])
+        device_parameters_meta["revision"] = definition_revision
         return {
             "files": self._path_static_signature(list(self.files.values())),
             "source_files": self._path_static_signature(list(self.source_files.values())),
             "work_files": self._path_static_signature(list(self.work_files.values())),
-            "definitions": self._path_static_signature(definition_paths),
+            "definitions": definitions_meta,
             "curves": self._path_static_signature([self.source_curves_file, self.curves_file]),
             "settings": self._path_static_signature([self.sim_dir / "local_settings.json", self.settings_file]),
-            "device_parameters": self._path_static_signature([self.source_files.get("model")]),
+            "device_parameters": device_parameters_meta,
             "diagram": self._path_static_signature([self.source_files.get("diagram")]),
         }
 
@@ -4798,9 +5071,12 @@ class PolarMicrogridSimulator:
     ) -> Dict[str, Any]:
         measurements: Dict[str, Any] = {}
         if include_measurements:
-            measurements = dict(self.latest_measurements or self.measurements())
+            measurements = self.measurements()
             if "definitions" not in measurements:
-                measurements["definitions"] = [_measurement_row_to_dict(row) for row in self.measurement_rows]
+                measurements["definitions"] = [
+                    _measurement_row_to_dict(row)
+                    for row in self.definition_snapshot.measurement_rows
+                ]
             measurements = self._with_realtime_measurements(measurements)
         try:
             log_limit = max(0, int(runtime_log_limit))

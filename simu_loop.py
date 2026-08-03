@@ -85,6 +85,7 @@ GENERIC_CURRENT_BRANCH_TYPES = {
     "DCBreak",
     "DCZeroBranch",
 }
+LOGGER = logging.getLogger("SimulationLoop")
 
 
 @dataclass(frozen=True)
@@ -976,6 +977,48 @@ def _run_stat_by_name(stat_book: EBook) -> Dict[Tuple[str, str], str]:
     return rows
 
 
+def _apply_real_bus_node_constraints(model_book: EBook) -> int:
+    changed = 0
+    for real_bus_type, node_type in (("ACRealBs", "ACNode"), ("DCRealBs", "DCNode")):
+        real_bus_block = model_book.data.get(real_bus_type)
+        node_block = model_book.data.get(node_type)
+        if real_bus_block is None or node_block is None:
+            continue
+
+        node_by_idx = {
+            _safe_int(row.get("idx"), -1): row
+            for row in node_block.data
+            if _safe_int(row.get("idx"), -1) >= 0
+        }
+        all_busbars_running: Dict[int, bool] = {}
+        for busbar in real_bus_block.data:
+            node_idx = _safe_int(busbar.get("node"), -1)
+            node = node_by_idx.get(node_idx)
+            if node is None:
+                LOGGER.warning(
+                    "%s.%s references missing %s[%s]",
+                    real_bus_type,
+                    busbar.get("name", busbar.get("idx", "")),
+                    node_type,
+                    busbar.get("node", ""),
+                )
+                continue
+            all_busbars_running[node_idx] = (
+                all_busbars_running.get(node_idx, True)
+                and _safe_int(busbar.get("run_stat", 1), 1) == 1
+            )
+
+        for node_idx, busbars_running in all_busbars_running.items():
+            node = node_by_idx[node_idx]
+            own_running = _safe_int(node.get("run_stat", 1), 1) == 1
+            changed += _set_row_value(
+                node,
+                "run_stat",
+                1 if own_running and busbars_running else 0,
+            )
+    return changed
+
+
 def apply_dev_stat_file(model_book: EBook, dev_stat_file: Path) -> int:
     dev_stat_file = Path(dev_stat_file)
     if not dev_stat_file.exists():
@@ -1065,6 +1108,7 @@ def apply_dev_stat_book(model_book: EBook, stat_book: EBook) -> int:
                     )
                 if run_stat != "":
                     changed += _set_row_value(target, "run_stat", run_stat)
+    changed += _apply_real_bus_node_constraints(model_book)
     return changed
 
 

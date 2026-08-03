@@ -982,14 +982,18 @@ def _apply_real_bus_node_constraints(model_book: EBook) -> int:
     for real_bus_type, node_type in (("ACRealBs", "ACNode"), ("DCRealBs", "DCNode")):
         real_bus_block = model_book.data.get(real_bus_type)
         node_block = model_book.data.get(node_type)
-        if real_bus_block is None or node_block is None:
+        if real_bus_block is None:
             continue
 
-        node_by_idx = {
-            _safe_int(row.get("idx"), -1): row
-            for row in node_block.data
-            if _safe_int(row.get("idx"), -1) >= 0
-        }
+        node_by_idx = (
+            {
+                _safe_int(row.get("idx"), -1): row
+                for row in node_block.data
+                if _safe_int(row.get("idx"), -1) >= 0
+            }
+            if node_block is not None
+            else {}
+        )
         all_busbars_running: Dict[int, bool] = {}
         for busbar in real_bus_block.data:
             node_idx = _safe_int(busbar.get("node"), -1)

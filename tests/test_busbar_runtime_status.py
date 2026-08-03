@@ -85,6 +85,20 @@ class BusbarRuntimeStatusTest(unittest.TestCase):
         self.assertIn("bad-bus", "\n".join(captured.output))
         self.assertIn("999", "\n".join(captured.output))
 
+    def test_missing_node_block_warns_for_each_real_busbar(self):
+        model = _book(
+            DCRealBs=[{"idx": 1, "name": "orphan-bus", "node": 777, "run_stat": 1}],
+        )
+
+        with self.assertLogs("SimulationLoop", level="WARNING") as captured:
+            simu_loop.apply_dev_stat_book(model, _book())
+
+        output = "\n".join(captured.output)
+        self.assertIn("DCRealBs", output)
+        self.assertIn("orphan-bus", output)
+        self.assertIn("777", output)
+        self.assertNotIn("DCNode", model.data)
+
     def test_fresh_model_clone_restores_node_when_busbar_returns(self):
         source = _book(
             DCNode=[{"idx": 3, "name": "node", "run_stat": 1}],

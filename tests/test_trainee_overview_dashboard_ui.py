@@ -392,7 +392,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         summary_block = self.styles.split(".energy-green-share {", 1)[1].split("}", 1)[0]
         self.assertIn("position: absolute;", summary_block)
         self.assertIn("left: 50%;", summary_block)
-        self.assertIn("top: 4px;", summary_block)
+        self.assertIn("top: 52px;", summary_block)
         self.assertIn("width: min(320px, 36%);", summary_block)
         self.assertIn("transform: translateX(-50%);", summary_block)
         self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", summary_block)
@@ -490,8 +490,17 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn('aria-orientation="horizontal"', self.html)
         self.assertIn("调整下方表格高度", self.html)
         self.assertIn("--overview-bottom-height", self.styles)
-        self.assertIn("grid-template-rows: auto minmax(180px, 1fr) 10px minmax(96px, var(--overview-bottom-height));", self.styles)
+        self.assertIn("--overview-main-min-height: 420px;", self.styles)
+        self.assertIn(
+            "grid-template-rows: auto minmax(var(--overview-main-min-height), 1fr) "
+            "10px minmax(96px, var(--overview-bottom-height));",
+            self.styles,
+        )
+        main_grid_block = self.styles.split(".overview-main-grid {", 1)[1].split("}", 1)[0]
+        self.assertIn("min-height: var(--overview-main-min-height);", main_grid_block)
         self.assertIn("const OVERVIEW_BOTTOM_MAX_HEIGHT = 640;", self.script)
+        self.assertIn("const mainMinHeight = Number.parseFloat", self.script)
+        self.assertIn("statusHeight + mainMinHeight + splitterHeight", self.script)
         self.assertIn(".overview-bottom-splitter", self.styles)
         self.assertIn("cursor: row-resize;", self.styles)
         self.assertIn("is-overview-splitter-dragging", self.styles)
@@ -511,8 +520,8 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("height: min(100%, 390px);", self.styles)
         self.assertIn("align-self: center;", self.styles)
         self.assertIn("container-type: size;", self.styles)
-        self.assertIn("--energy-storage-gap: 104px;", self.styles)
-        self.assertIn("--energy-storage-gap: 94px;", self.styles)
+        self.assertIn("--energy-storage-gap: 36px;", self.styles)
+        self.assertIn("--energy-storage-gap: 64px;", self.styles)
         self.assertIn("top: calc(var(--energy-trunk-y) + var(--energy-storage-gap));", self.styles)
         self.assertIn("width: max(22px, calc((100% - var(--energy-storage-card-width)) / 2 + 2px));", self.styles)
         self.assertIn("height: var(--flow-thickness);", self.styles)
@@ -524,7 +533,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertNotIn(".energy-board-meta", self.styles)
         self.assertNotIn("min-height: 340px;", self.styles)
         self.assertIn("@container (max-height: 220px)", self.styles)
-        self.assertIn("--energy-storage-gap: 94px;", self.styles)
+        self.assertIn("--energy-storage-gap: 64px;", self.styles)
         self.assertIn("--energy-trunk-y: min(50%, calc(100% - 86px));", self.styles)
 
     def test_trainee_short_desktop_viewports_do_not_compress_the_energy_flow_map(self):
@@ -534,10 +543,13 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         )[1].split("@media (max-width: 820px) {", 1)[0]
         dashboard_block = low_height_styles.split(".overview-dashboard {", 1)[1].split("}", 1)[0]
         main_grid_block = low_height_styles.split(".overview-main-grid {", 1)[1].split("}", 1)[0]
+        low_height_flow_block = low_height_styles.split(".energy-flow-map {", 1)[1].split("}", 1)[0]
 
         self.assertIn("overflow-y: auto;", dashboard_block)
         self.assertIn("overflow-x: hidden;", dashboard_block)
-        self.assertIn("min-height: 350px;", main_grid_block)
+        self.assertIn("--overview-main-min-height: 370px;", dashboard_block)
+        self.assertIn("min-height: var(--overview-main-min-height);", main_grid_block)
+        self.assertIn("height: min(100%, 340px);", low_height_flow_block)
 
     def test_trainee_home_storage_cards_connect_horizontally_to_their_own_bus(self):
         def css_block(selector: str, text: str = self.styles) -> str:
@@ -555,17 +567,20 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         low_height_styles = self.styles[low_height_start:mobile_start]
         low_height_flow_block = css_block(".energy-flow-map", low_height_styles)
 
-        self.assertIn("--energy-trunk-y: 44%;", energy_flow_block)
+        self.assertIn("--energy-trunk-y: 54%;", energy_flow_block)
         self.assertIn("--energy-bus-inset: clamp(230px, 28%, 312px);", energy_flow_block)
         self.assertIn("--energy-storage-gap:", energy_flow_block)
         self.assertIn("top: var(--energy-trunk-y);", trunk_block)
+        self.assertIn("transform: translateY(-50%);", trunk_block)
         self.assertIn("top: calc(var(--energy-trunk-y) + var(--energy-storage-gap));", storage_stack_block)
         self.assertIn("top: 50%;", storage_branch_block)
         self.assertIn("height: var(--flow-thickness);", storage_branch_block)
         self.assertIn("width: max(22px, calc((100% - var(--energy-storage-card-width)) / 2 + 2px));", storage_branch_block)
         self.assertIn("background-image: repeating-linear-gradient(", storage_branch_block)
         self.assertNotIn("bottom: calc(100% + 2px);", storage_branch_block)
-        self.assertIn("--energy-trunk-y: min(50%, calc(100% - 86px));", low_height_flow_block)
+        self.assertIn("--energy-trunk-y: min(58%, calc(100% - 86px));", low_height_flow_block)
+        self.assertIn("--energy-storage-gap: 36px;", low_height_flow_block)
+        self.assertIn(".energy-green-share {\n    top: 40px;\n  }", low_height_styles)
 
     def test_trainee_topbar_removes_send_command_button(self):
         self.assertNotIn("发送指令", self.html)

@@ -557,12 +557,13 @@ h1 {
 }
 .overview-dashboard {
   --overview-bottom-height: 156px;
+  --overview-main-min-height: 420px;
   flex: 1;
   width: 100%;
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(180px, 1fr) 10px minmax(96px, var(--overview-bottom-height));
+  grid-template-rows: auto minmax(var(--overview-main-min-height), 1fr) 10px minmax(96px, var(--overview-bottom-height));
   gap: 12px;
   overflow: hidden;
 }
@@ -721,7 +722,7 @@ h1 {
 }
 .overview-status-tail span { color: var(--muted); font-size: 11px; }
 .overview-main-grid {
-  min-height: 180px;
+  min-height: var(--overview-main-min-height);
   display: grid;
   grid-template-columns: minmax(760px, 1fr) 300px;
   gap: 12px;
@@ -873,9 +874,9 @@ body.is-vertical-splitter-dragging {
   --load-flow-color: #4978c4;
   --green-flow-color: #2f9e62;
   --diesel-flow-color: #c84f4f;
-  --energy-trunk-y: 44%;
+  --energy-trunk-y: 54%;
   --energy-bus-inset: clamp(230px, 28%, 312px);
-  --energy-storage-gap: 104px;
+  --energy-storage-gap: 36px;
   position: relative;
   width: min(100%, 1360px);
   min-height: 0;
@@ -1129,6 +1130,7 @@ body.is-vertical-splitter-dragging {
   left: var(--energy-bus-inset);
   right: var(--energy-bus-inset);
   top: var(--energy-trunk-y);
+  transform: translateY(-50%);
   width: auto;
   height: 4px;
   border-radius: 999px;
@@ -1212,7 +1214,7 @@ body.is-vertical-splitter-dragging {
   position: absolute;
   z-index: 3;
   left: 50%;
-  top: 4px;
+  top: 52px;
   width: min(320px, 36%);
   min-width: 280px;
   padding: 8px 10px;
@@ -1681,7 +1683,7 @@ body.is-vertical-splitter-dragging {
 @container (max-height: 220px) {
   .energy-flow-map {
     --energy-trunk-y: min(50%, calc(100% - 86px));
-    --energy-storage-gap: 94px;
+    --energy-storage-gap: 64px;
   }
   .energy-acdc-converter {
     width: min(210px, 28%);
@@ -4048,22 +4050,26 @@ th {
 
 @media (max-height: 780px) and (min-width: 821px) {
   .overview-dashboard {
-    grid-template-rows: auto minmax(180px, 1fr) 10px minmax(96px, var(--overview-bottom-height));
+    --overview-main-min-height: 370px;
+    grid-template-rows: auto minmax(var(--overview-main-min-height), 1fr) 10px minmax(96px, var(--overview-bottom-height));
     overflow-x: hidden;
     overflow-y: auto;
   }
   .overview-main-grid {
-    min-height: 350px;
+    min-height: var(--overview-main-min-height);
   }
   .overview-energy-board {
     min-height: 0;
     grid-template-rows: minmax(0, 1fr);
   }
   .energy-flow-map {
-    --energy-trunk-y: min(50%, calc(100% - 86px));
-    --energy-storage-gap: 94px;
+    --energy-trunk-y: min(58%, calc(100% - 86px));
+    --energy-storage-gap: 36px;
     min-height: 0;
-    height: min(100%, 320px);
+    height: min(100%, 340px);
+  }
+  .energy-green-share {
+    top: 40px;
   }
   .energy-storage-branch-wrap .energy-device.storage {
     min-height: 52px;

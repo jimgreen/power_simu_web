@@ -59,7 +59,7 @@ process.stdout.write(JSON.stringify([
         self.assertNotIn('"overview": ["files", "source_files", "work_files", "definitions", "curves"', script)
         self.assertNotIn('"faults": ["files", "source_files", "work_files", "definitions", "curves"', script)
         self.assertIn("params.set(\"static\", requiredStaticKeys.join(\",\"));", script)
-        self.assertIn('params.set("devices", "0");', script)
+        self.assertIn('params.set("devices", pageNeedsDevices(page) ? "1" : "0");', script)
         self.assertIn("params.set(\"commands\", pageNeedsCommands(page) ? \"1\" : \"0\");", script)
         self.assertIn("function pageNeedsMeasurementDelta", script)
         self.assertIn("function pageNeedsRuntimeLogDelta", script)

@@ -19,7 +19,34 @@ const VERTICAL_SPLIT_MIN_TOP_PX = 120;
 const VERTICAL_SPLIT_MIN_BOTTOM_PX = 120;
 const STATIC_CACHE_STORAGE_KEY = "polarTraineeStaticCacheV2";
 const STATIC_CACHE_MODEL_LIMIT = 4;
-const API_REQUEST_TIMEOUT_MS = 30000;
+const WEB_RUNTIME_FALLBACKS = {
+  frontend_refresh_seconds: 1,
+  frontend_request_timeout_seconds: 30,
+  runtime_log_page_size: 20,
+  runtime_log_cache_limit: 300,
+  trace_history_limit: 45000,
+  backend_refresh_seconds: 1,
+  backend_request_timeout_seconds: 8,
+  frame_age_limit_seconds: 15,
+  same_frame_limit_seconds: 30,
+  receive_state_sync_seconds: 5,
+  receive_max_reconnect_attempts: 3,
+  measurement_delta_history_limit: 200,
+};
+const WEB_RUNTIME_CURRENT_IDS = {
+  frontend_refresh_seconds: "currentWebRuntimeFrontendRefresh",
+  frontend_request_timeout_seconds: "currentWebRuntimeFrontendRequestTimeout",
+  runtime_log_page_size: "currentWebRuntimeLogPageSize",
+  runtime_log_cache_limit: "currentWebRuntimeLogCacheLimit",
+  trace_history_limit: "currentWebRuntimeTraceHistoryLimit",
+  backend_refresh_seconds: "currentWebRuntimeBackendRefresh",
+  backend_request_timeout_seconds: "currentWebRuntimeBackendRequestTimeout",
+  frame_age_limit_seconds: "currentWebRuntimeFrameAgeLimit",
+  same_frame_limit_seconds: "currentWebRuntimeSameFrameLimit",
+  receive_state_sync_seconds: "currentWebRuntimeReceiveStateSync",
+  receive_max_reconnect_attempts: "currentWebRuntimeReconnectAttempts",
+  measurement_delta_history_limit: "currentWebRuntimeMeasurementDeltaHistoryLimit",
+};
 const DEFAULT_STORAGE_CHARGE_DERATING_CURVE = Object.freeze([
   { soc: 0.60, powerRatio: 1.00 },
   { soc: 0.70, powerRatio: 0.50 },
@@ -86,6 +113,16 @@ const state = {
   teacherDefinitionArchivePath: "",
   localDefinitionSnapshot: null,
   localDefinitionModelId: "",
+  manualDefinitionChanges: [],
+  manualDefinitionChangesRevision: 0,
+  manualDefinitionChangesLoadedModelId: "",
+  manualDefinitionChangesLoading: false,
+  manualDefinitionChangesResetting: false,
+  manualDefinitionChangesRetrying: false,
+  manualDefinitionChangesError: "",
+  manualDefinitionChangesMessage: "",
+  manualDefinitionChangesMessageWarning: false,
+  manualDefinitionChangeSelection: new Set(),
   receiveReconnectAttempts: 0,
   refreshRequestActive: false,
   receiveRequestActive: false,
@@ -147,6 +184,9 @@ const state = {
   renewableControl: {
     modelId: "",
     enabled: false,
+    receiveActive: false,
+    canRun: false,
+    prerequisiteStatus: "请先启动接收。",
     loopMode: "open",
     intervalSeconds: 2,
     largeStepThresholdKw: 10,
@@ -166,7 +206,7 @@ const state = {
     lastSentAt: "",
     lastStatus: "请选择单次计算或启动实时控制。",
     logs: [],
-    strategyTab: "wind",
+    strategyTab: "ac-wind",
     detailTab: "trend",
     logPage: 1,
     lastControlLogRenderKey: "",
@@ -180,17 +220,32 @@ const state = {
   deviceTreeSelectionAnchors: {},
   virtualTables: {},
   virtualTableScrollRaf: {},
+  webRuntimeSettings: { ...WEB_RUNTIME_FALLBACKS },
+  webRuntimeDefaults: { ...WEB_RUNTIME_FALLBACKS },
+  webRuntimeConstraints: {},
+  webRuntimeDraft: { ...WEB_RUNTIME_FALLBACKS },
+  webRuntimeUpdatedAt: "",
+  webRuntimeLoadedModelId: "",
+  webRuntimeLoading: false,
+  webRuntimeSaving: false,
+  webRuntimeDirty: false,
+  webRuntimeError: "",
+  frontendRefreshTimerId: null,
 };
 const pending = { run_status: new Map(), set_values: new Map() };
 const RENEWABLE_CONTROL_LOG_PAGE_SIZE = 8;
 const RENEWABLE_STRATEGY_TABS = {
-  wind: { label: "风电", categories: new Set(["风电"]) },
-  pv: { label: "光伏", categories: new Set(["光伏"]) },
-  storage: { label: "储能", categories: new Set(["储能平衡源"]) },
+  "ac-wind": { label: "交流风电", categories: new Set(["交流风电"]) },
+  "dc-wind": { label: "直流风电", categories: new Set(["直流风电"]) },
+  "ac-pv": { label: "交流光伏", categories: new Set(["交流光伏"]) },
+  "dc-pv": { label: "直流光伏", categories: new Set(["直流光伏"]) },
+  "ac-grid-storage": { label: "交流跟网储能", categories: new Set(["交流跟网储能"]) },
+  "dc-grid-storage": { label: "直流跟网储能", categories: new Set(["直流跟网储能"]) },
+  "ac-balance-storage": { label: "交流平衡储能", categories: new Set(["交流平衡储能"]) },
+  "dc-balance-storage": { label: "直流平衡储能", categories: new Set(["直流平衡储能"]) },
   diesel: { label: "柴发", categories: new Set(["柴油发电"]) },
-  converter: { label: "变流", categories: new Set(["交直流变流器"]) },
+  converter: { label: "ACDC变流", categories: new Set(["交直流变流器"]) },
 };
-const TRACE_HISTORY_LIMIT = 45000;
 const TRACE_HIGH_RES_WINDOW_MINUTES = 24 * 60;
 const VIRTUAL_TABLE_ROW_HEIGHT = 34;
 const VIRTUAL_TABLE_MIN_ROWS = 220;
@@ -222,12 +277,58 @@ const SIGNAL_MEASUREMENT_LABELS = {
   RUN_STAT: { label: "运行状态", order: 0 },
   STATUS: { label: "开关状态", order: 1 },
 };
-const RECEIVE_STATE_SYNC_INTERVAL_MS = 5000;
-const RECEIVE_MAX_RECONNECT_ATTEMPTS = 3;
 const RECEIVE_WARNING_LIMIT = 40;
 
 const $ = (id) => document.getElementById(id);
 const deviceTreeRenderKeys = new WeakMap();
+
+function activeRuntimeSetting(name) {
+  const value = Number(state.webRuntimeSettings?.[name]);
+  if (Number.isFinite(value)) return value;
+  const configuredDefault = Number(state.webRuntimeDefaults?.[name]);
+  if (Number.isFinite(configuredDefault)) return configuredDefault;
+  return Number(WEB_RUNTIME_FALLBACKS[name]) || 0;
+}
+
+function frontendRefreshIntervalMs() {
+  return Math.max(200, activeRuntimeSetting("frontend_refresh_seconds") * 1000);
+}
+
+function frontendRequestTimeoutMs() {
+  return Math.max(1000, activeRuntimeSetting("frontend_request_timeout_seconds") * 1000);
+}
+
+function traceHistoryLimit() {
+  return Math.max(1000, Math.round(activeRuntimeSetting("trace_history_limit")));
+}
+
+function receiveStateSyncIntervalMs() {
+  return Math.max(500, activeRuntimeSetting("receive_state_sync_seconds") * 1000);
+}
+
+function receiveMaxReconnectAttempts() {
+  return Math.max(1, Math.round(activeRuntimeSetting("receive_max_reconnect_attempts")));
+}
+
+function scheduleNextRefresh(delayMs = frontendRefreshIntervalMs()) {
+  if (state.frontendRefreshTimerId) clearTimeout(state.frontendRefreshTimerId);
+  state.frontendRefreshTimerId = setTimeout(runRefreshScheduler, Math.max(0, delayMs));
+}
+
+function restartRefreshScheduler() {
+  scheduleNextRefresh();
+}
+
+async function runRefreshScheduler() {
+  state.frontendRefreshTimerId = null;
+  const startedAtMs = Date.now();
+  try {
+    await refresh();
+  } finally {
+    const elapsedMs = Date.now() - startedAtMs;
+    scheduleNextRefresh(Math.max(0, frontendRefreshIntervalMs() - elapsedMs));
+  }
+}
 
 function contextKey(modelId = state.activeModelId) {
   return String(modelId || "__default__");
@@ -451,7 +552,7 @@ async function syncActiveReceiveStateFromBackend(modelId = state.activeModelId) 
 
 async function syncActiveReceiveStateBeforeRefresh(force = false) {
   if (!state.activeModelId || state.receiveStateSyncActive) return;
-  if (!force && Date.now() - state.lastReceiveStateSyncAtMs < RECEIVE_STATE_SYNC_INTERVAL_MS) return;
+  if (!force && Date.now() - state.lastReceiveStateSyncAtMs < receiveStateSyncIntervalMs()) return;
   state.receiveStateSyncActive = true;
   state.lastReceiveStateSyncAtMs = Date.now();
   const previousReceiveMode = state.receiveMode;
@@ -468,6 +569,7 @@ async function syncActiveReceiveStateBeforeRefresh(force = false) {
       state.localDefinitionModelId = "";
       state.snapshot = null;
       state.measurementDeltaSeq = 0;
+      invalidateManualDefinitionChanges();
       clearStaticSnapshotCacheForModel(state.activeModelId);
     }
     if (state.receiveMode !== previousReceiveMode || state.interactionLink !== previousLink) {
@@ -588,7 +690,8 @@ function sampleCurvePointsForCanvas(values, canvasWidth, density = 1.5) {
 }
 
 function compactTraceHistory(history, visibleWindowMinutes = 24 * 60) {
-  if (!Array.isArray(history) || history.length <= TRACE_HISTORY_LIMIT) return history || [];
+  const historyLimit = traceHistoryLimit();
+  if (!Array.isArray(history) || history.length <= historyLimit) return history || [];
   const latestMinute = Number(history[history.length - 1]?.minute ?? 0) || 0;
   const highResStart = latestMinute - Math.max(TRACE_HIGH_RES_WINDOW_MINUTES, Number(visibleWindowMinutes) || 0);
   const recent = [];
@@ -603,7 +706,7 @@ function compactTraceHistory(history, visibleWindowMinutes = 24 * 60) {
     const bucket = Math.floor(minute / bucketMinutes);
     archived.set(bucket, point);
   });
-  return [...archived.values(), ...recent].slice(-TRACE_HISTORY_LIMIT);
+  return [...archived.values(), ...recent].slice(-historyLimit);
 }
 
 function virtualTableWindow(key, rows, options = {}) {
@@ -854,6 +957,8 @@ const TRAINEE_PAGE_ROUTES = {
   "/measurements": "measurements",
   "/commands": "commands",
   "/renewable": "renewable",
+  "/manual-changes": "manual-changes",
+  "/parameters": "parameters",
   "/history": "history",
 };
 
@@ -951,7 +1056,7 @@ function teacherScopedPath(path) {
 async function api(path, options = {}) {
   const {
     modelScoped = true,
-    timeoutMs = API_REQUEST_TIMEOUT_MS,
+    timeoutMs = frontendRequestTimeoutMs(),
     signal: callerSignal,
     ...fetchOptions
   } = options;
@@ -987,6 +1092,438 @@ async function api(path, options = {}) {
   }
 }
 
+function runtimeParameterElement(id) {
+  return $(id) || state.pageSections?.parameters?.querySelector?.(`#${id}`) || null;
+}
+
+function resetWebRuntimeSettingsState() {
+  state.webRuntimeSettings = { ...WEB_RUNTIME_FALLBACKS };
+  state.webRuntimeDefaults = { ...WEB_RUNTIME_FALLBACKS };
+  state.webRuntimeConstraints = {};
+  state.webRuntimeDraft = { ...WEB_RUNTIME_FALLBACKS };
+  state.webRuntimeUpdatedAt = "";
+  state.webRuntimeLoadedModelId = "";
+  state.webRuntimeLoading = false;
+  state.webRuntimeSaving = false;
+  state.webRuntimeDirty = false;
+  state.webRuntimeError = "";
+}
+
+function runtimeSettingDisplay(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "--";
+  return Number.isInteger(number) ? String(number) : String(Number(number.toFixed(3)));
+}
+
+function renderWebRuntimeSettings() {
+  const root = state.pageSections?.parameters || document;
+  const values = state.webRuntimeDirty ? state.webRuntimeDraft : state.webRuntimeSettings;
+  root.querySelectorAll?.("[data-runtime-setting]").forEach((input) => {
+    const name = input.dataset.runtimeSetting || "";
+    const value = Number(values?.[name]);
+    if (Number.isFinite(value) && document.activeElement !== input) input.value = String(value);
+    const constraint = state.webRuntimeConstraints?.[name] || {};
+    if (constraint.min !== undefined) input.min = String(constraint.min);
+    if (constraint.max !== undefined) input.max = String(constraint.max);
+    input.disabled = state.webRuntimeLoading || state.webRuntimeSaving;
+  });
+  Object.entries(WEB_RUNTIME_CURRENT_IDS).forEach(([name, id]) => {
+    const node = runtimeParameterElement(id);
+    if (node) node.textContent = runtimeSettingDisplay(state.webRuntimeSettings?.[name]);
+  });
+  const activeModel = state.models.find((model) => model.id === state.activeModelId);
+  const modelName = activeModel?.name || state.snapshot?.model?.name || state.activeModelId || "--";
+  const valuesById = {
+    runtimeParameterModelName: modelName,
+    runtimeParameterUpdatedAt: state.webRuntimeUpdatedAt || "尚未保存（使用默认值）",
+    runtimeParameterFrontendRefreshState: `${runtimeSettingDisplay(activeRuntimeSetting("frontend_refresh_seconds"))} s`,
+    runtimeParameterBackendRefreshState: `${runtimeSettingDisplay(activeRuntimeSetting("backend_refresh_seconds"))} s`,
+    runtimeParameterRequestTimeoutState: `${runtimeSettingDisplay(activeRuntimeSetting("frontend_request_timeout_seconds"))} / ${runtimeSettingDisplay(activeRuntimeSetting("backend_request_timeout_seconds"))} s`,
+    runtimeParameterReceiveState: state.receiveMode ? "正在接收" : "未启动接收",
+  };
+  Object.entries(valuesById).forEach(([id, text]) => {
+    const node = runtimeParameterElement(id);
+    if (node) node.textContent = text;
+  });
+  const summary = runtimeParameterElement("runtimeParameterSummary");
+  const status = state.webRuntimeSaving
+    ? "保存中"
+    : state.webRuntimeLoading
+      ? "加载中"
+      : state.webRuntimeError
+        ? `加载失败：${state.webRuntimeError}`
+        : state.webRuntimeDirty
+          ? "有未保存修改"
+          : "已生效";
+  if (summary) summary.textContent = status;
+  const stateNode = runtimeParameterElement("runtimeParameterState");
+  if (stateNode) stateNode.textContent = status;
+  const saveButton = runtimeParameterElement("saveRuntimeParameters");
+  const undoButton = runtimeParameterElement("undoRuntimeParameters");
+  const defaultsButton = runtimeParameterElement("restoreRuntimeParameterDefaults");
+  if (saveButton) saveButton.disabled = !state.webRuntimeDirty || state.webRuntimeLoading || state.webRuntimeSaving;
+  if (undoButton) undoButton.disabled = !state.webRuntimeDirty || state.webRuntimeLoading || state.webRuntimeSaving;
+  if (defaultsButton) defaultsButton.disabled = state.webRuntimeLoading || state.webRuntimeSaving;
+}
+
+function applyWebRuntimeSettings() {
+  state.runtimeLogPageSize = Math.max(5, Math.round(activeRuntimeSetting("runtime_log_page_size")));
+  const logLimit = Math.max(50, Math.round(activeRuntimeSetting("runtime_log_cache_limit")));
+  state.runtimeLogs = state.runtimeLogs.slice(0, logLimit);
+  state.measurementTraceHistory = compactTraceHistory(state.measurementTraceHistory, state.measurementTraceWindowMinutes);
+  state.commandTraceHistory = compactTraceHistory(state.commandTraceHistory, state.commandTraceWindowMinutes);
+  state.renewableTrendHistory = compactTraceHistory(state.renewableTrendHistory, state.renewableTrendWindowMinutes);
+  restartRefreshScheduler();
+}
+
+async function loadWebRuntimeSettings(force = false) {
+  const modelId = state.activeModelId;
+  if (!modelId) return null;
+  if (!force && state.webRuntimeLoadedModelId === modelId) {
+    renderWebRuntimeSettings();
+    return state.webRuntimeSettings;
+  }
+  state.webRuntimeLoading = true;
+  state.webRuntimeError = "";
+  renderWebRuntimeSettings();
+  try {
+    const payload = await api("/api/runtime-settings", { timeoutMs: frontendRequestTimeoutMs() });
+    if (modelId !== state.activeModelId) return null;
+    state.webRuntimeSettings = { ...WEB_RUNTIME_FALLBACKS, ...(payload.settings || {}) };
+    state.webRuntimeDefaults = { ...WEB_RUNTIME_FALLBACKS, ...(payload.defaults || {}) };
+    state.webRuntimeConstraints = payload.constraints || {};
+    state.webRuntimeDraft = { ...state.webRuntimeSettings };
+    state.webRuntimeUpdatedAt = payload.updatedAt || "";
+    state.webRuntimeLoadedModelId = modelId;
+    state.webRuntimeDirty = false;
+    applyWebRuntimeSettings();
+    return payload;
+  } catch (error) {
+    if (modelId === state.activeModelId) state.webRuntimeError = apiErrorText(error);
+    return null;
+  } finally {
+    if (modelId === state.activeModelId) {
+      state.webRuntimeLoading = false;
+      renderWebRuntimeSettings();
+    }
+  }
+}
+
+function updateWebRuntimeDraft(input) {
+  const name = input?.dataset?.runtimeSetting || "";
+  if (!name) return;
+  const value = Number(input.value);
+  state.webRuntimeDraft = {
+    ...state.webRuntimeDraft,
+    [name]: Number.isFinite(value) ? value : input.value,
+  };
+  state.webRuntimeDirty = true;
+  renderWebRuntimeSettings();
+}
+
+async function saveWebRuntimeSettings() {
+  if (state.webRuntimeSaving || !state.webRuntimeDirty) return;
+  state.webRuntimeSaving = true;
+  state.webRuntimeError = "";
+  renderWebRuntimeSettings();
+  try {
+    const payload = await api("/api/runtime-settings", {
+      method: "POST",
+      body: JSON.stringify({ settings: state.webRuntimeDraft }),
+    });
+    state.webRuntimeSettings = { ...WEB_RUNTIME_FALLBACKS, ...(payload.settings || {}) };
+    state.webRuntimeDefaults = { ...WEB_RUNTIME_FALLBACKS, ...(payload.defaults || {}) };
+    state.webRuntimeConstraints = payload.constraints || {};
+    state.webRuntimeDraft = { ...state.webRuntimeSettings };
+    state.webRuntimeUpdatedAt = payload.updatedAt || "";
+    state.webRuntimeLoadedModelId = state.activeModelId;
+    state.webRuntimeDirty = false;
+    applyWebRuntimeSettings();
+  } catch (error) {
+    state.webRuntimeError = apiErrorText(error);
+  } finally {
+    state.webRuntimeSaving = false;
+    renderWebRuntimeSettings();
+  }
+}
+
+function undoWebRuntimeSettings() {
+  state.webRuntimeDraft = { ...state.webRuntimeSettings };
+  state.webRuntimeDirty = false;
+  state.webRuntimeError = "";
+  renderWebRuntimeSettings();
+}
+
+function restoreWebRuntimeDefaults() {
+  state.webRuntimeDraft = { ...state.webRuntimeDefaults };
+  state.webRuntimeDirty = true;
+  state.webRuntimeError = "";
+  renderWebRuntimeSettings();
+}
+
+function invalidateManualDefinitionChanges() {
+  state.manualDefinitionChanges = [];
+  state.manualDefinitionChangesRevision = 0;
+  state.manualDefinitionChangesLoadedModelId = "";
+  state.manualDefinitionChangesLoading = false;
+  state.manualDefinitionChangesResetting = false;
+  state.manualDefinitionChangesRetrying = false;
+  state.manualDefinitionChangesError = "";
+  state.manualDefinitionChangesMessage = "";
+  state.manualDefinitionChangesMessageWarning = false;
+  state.manualDefinitionChangeSelection = new Set();
+}
+
+function manualDefinitionChangeValue(change, key) {
+  const value = String(change?.[key] ?? "");
+  if (change?.field === "valid") {
+    return Number(value) === 1 ? "有效（1）" : "无效（0）";
+  }
+  if (change?.field === "weight") {
+    const sigmaKey = key === "default_value" ? "default_error_sigma" : "current_error_sigma";
+    const sigma = Number(change?.[sigmaKey]);
+    return Number.isFinite(sigma) && sigma > 0
+      ? `${value || "--"} / σ ${Number(sigma.toPrecision(6))}`
+      : (value || "--");
+  }
+  return value || "--";
+}
+
+function renderManualDefinitionChanges() {
+  const container = $("manualDefinitionChangesTable");
+  if (!container) return;
+  const changes = Array.isArray(state.manualDefinitionChanges) ? state.manualDefinitionChanges : [];
+  const availableIds = new Set(changes.map((item) => String(item.id || "")));
+  state.manualDefinitionChangeSelection = new Set(
+    [...state.manualDefinitionChangeSelection].filter((changeId) => availableIds.has(changeId)),
+  );
+  const selectedCount = state.manualDefinitionChangeSelection.size;
+  const pendingChanges = changes.filter((item) => !item.persisted);
+  const summary = $("manualDefinitionChangesSummary");
+  if (summary) summary.textContent = `${changes.length} 项修改 · ${pendingChanges.length} 项未保存 · 已选 ${selectedCount} 项`;
+  const message = $("manualDefinitionChangesMessage");
+  if (message) {
+    const text = state.manualDefinitionChangesError || state.manualDefinitionChangesMessage || "";
+    message.textContent = text;
+    message.hidden = !text;
+    message.classList.toggle("is-error", Boolean(state.manualDefinitionChangesError));
+    message.classList.toggle(
+      "is-warning",
+      !state.manualDefinitionChangesError
+        && (state.manualDefinitionChangesMessageWarning || pendingChanges.length > 0),
+    );
+  }
+  const resetButton = $("resetSelectedManualChanges");
+  if (resetButton) {
+    resetButton.disabled = !selectedCount || state.manualDefinitionChangesLoading || state.manualDefinitionChangesResetting || state.manualDefinitionChangesRetrying;
+    resetButton.textContent = state.manualDefinitionChangesResetting ? "恢复中" : "恢复默认值";
+  }
+  const refreshButton = $("refreshManualChanges");
+  if (refreshButton) {
+    refreshButton.disabled = state.manualDefinitionChangesLoading || state.manualDefinitionChangesResetting || state.manualDefinitionChangesRetrying;
+    refreshButton.textContent = state.manualDefinitionChangesLoading ? "刷新中" : "刷新";
+  }
+  const retryButton = $("retryPendingManualChanges");
+  if (retryButton) {
+    retryButton.disabled = !pendingChanges.length || state.manualDefinitionChangesLoading || state.manualDefinitionChangesResetting || state.manualDefinitionChangesRetrying;
+    retryButton.textContent = state.manualDefinitionChangesRetrying ? "保存中" : "重试保存";
+  }
+
+  if (state.manualDefinitionChangesLoading && !changes.length) {
+    container.innerHTML = '<div class="empty-state">正在加载人工修改记录...</div>';
+    return;
+  }
+  if (state.manualDefinitionChangesError && !changes.length) {
+    container.innerHTML = `<div class="empty-state">${escapeHtml(state.manualDefinitionChangesError)}</div>`;
+    return;
+  }
+  if (!changes.length) {
+    container.innerHTML = '<div class="empty-state">当前模型没有人工修改</div>';
+    return;
+  }
+
+  const allSelected = changes.every((item) => state.manualDefinitionChangeSelection.has(String(item.id || "")));
+  container.innerHTML = `
+    <table class="manual-definition-changes-table">
+      <thead>
+        <tr>
+          <th class="manual-change-select-cell">
+            <input type="checkbox" data-manual-change-select-all aria-label="选择全部人工修改" ${allSelected ? "checked" : ""} />
+          </th>
+          <th>对象</th>
+          <th>修改类型</th>
+          <th>参数 / 状态项</th>
+          <th>默认值</th>
+          <th>当前值</th>
+          <th>修改时间</th>
+          <th>保存状态</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${changes.map((change) => {
+          const changeId = String(change.id || "");
+          const checked = state.manualDefinitionChangeSelection.has(changeId);
+          const modifiedAt = String(change.modified_at || "").replace("T", " ") || "--";
+          return `
+            <tr class="${checked ? "is-selected" : ""}">
+              <td class="manual-change-select-cell">
+                <input type="checkbox" data-manual-change-id="${escapeHtml(changeId)}" aria-label="选择 ${escapeHtml(change.object_label || change.object_name || changeId)}" ${checked ? "checked" : ""} />
+              </td>
+              <td>
+                <strong>${escapeHtml(change.object_label || change.object_name || "--")}</strong>
+                <small>${escapeHtml(change.measurement_type || change.source_file || "")}</small>
+              </td>
+              <td>${escapeHtml(change.change_type || "--")}</td>
+              <td><code>${escapeHtml(change.field_label || change.field || "--")}</code></td>
+              <td class="manual-change-value-cell">${escapeHtml(manualDefinitionChangeValue(change, "default_value"))}</td>
+              <td class="manual-change-value-cell">${escapeHtml(manualDefinitionChangeValue(change, "current_value"))}</td>
+              <td>${escapeHtml(modifiedAt)}</td>
+              <td>
+                <span class="manual-change-persistence ${change.persisted ? "is-saved" : "is-warning"}" title="${escapeHtml(change.last_sync_error || "")}">
+                  ${escapeHtml(change.persistence_status || (change.persisted ? "已保存" : "保存失败"))}
+                </span>
+              </td>
+            </tr>`;
+        }).join("")}
+      </tbody>
+    </table>`;
+  const selectAll = container.querySelector("[data-manual-change-select-all]");
+  if (selectAll) selectAll.indeterminate = selectedCount > 0 && !allSelected;
+}
+
+function toggleManualDefinitionChange(changeId, selected) {
+  const normalizedId = String(changeId || "");
+  if (!normalizedId) return;
+  if (selected === undefined) {
+    if (state.manualDefinitionChangeSelection.has(normalizedId)) state.manualDefinitionChangeSelection.delete(normalizedId);
+    else state.manualDefinitionChangeSelection.add(normalizedId);
+  } else if (selected) {
+    state.manualDefinitionChangeSelection.add(normalizedId);
+  } else {
+    state.manualDefinitionChangeSelection.delete(normalizedId);
+  }
+  renderManualDefinitionChanges();
+}
+
+async function loadManualDefinitionChanges() {
+  if (state.manualDefinitionChangesLoading || state.manualDefinitionChangesResetting || state.manualDefinitionChangesRetrying) return;
+  const requestedModelId = state.activeModelId;
+  state.manualDefinitionChangesLoading = true;
+  state.manualDefinitionChangesError = "";
+  state.manualDefinitionChangesMessage = "";
+  state.manualDefinitionChangesMessageWarning = false;
+  renderManualDefinitionChanges();
+  try {
+    const payload = await api("/api/definitions/manual-changes");
+    if (requestedModelId !== state.activeModelId) return;
+    state.manualDefinitionChanges = Array.isArray(payload.changes) ? payload.changes : [];
+    state.manualDefinitionChangesRevision = Number(payload.revision) || 0;
+    state.manualDefinitionChangesLoadedModelId = requestedModelId;
+    state.manualDefinitionChangesMessage = `已加载 ${state.manualDefinitionChanges.length} 项人工修改`;
+  } catch (error) {
+    if (requestedModelId === state.activeModelId) {
+      state.manualDefinitionChangesError = apiErrorText(error);
+      state.manualDefinitionChangesLoadedModelId = "";
+    }
+  } finally {
+    if (requestedModelId === state.activeModelId) {
+      state.manualDefinitionChangesLoading = false;
+      renderManualDefinitionChanges();
+    }
+  }
+}
+
+async function retryPendingManualDefinitionChanges() {
+  if (state.manualDefinitionChangesRetrying) return;
+  const changeIds = state.manualDefinitionChanges
+    .filter((item) => !item.persisted)
+    .map((item) => String(item.id || ""))
+    .filter(Boolean);
+  if (!changeIds.length) return;
+  const requestedModelId = state.activeModelId;
+  state.manualDefinitionChangesRetrying = true;
+  state.manualDefinitionChangesError = "";
+  state.manualDefinitionChangesMessage = "正在重新保存 E 文件";
+  state.manualDefinitionChangesMessageWarning = false;
+  renderManualDefinitionChanges();
+  try {
+    const result = await api("/api/definitions/manual-changes/retry", {
+      method: "POST",
+      body: JSON.stringify({
+        revision: state.manualDefinitionChangesRevision,
+        change_ids: changeIds,
+      }),
+    });
+    if (requestedModelId !== state.activeModelId) return;
+    state.manualDefinitionChanges = Array.isArray(result.changes) ? result.changes : [];
+    state.manualDefinitionChangesRevision = Number(result.revision) || 0;
+    state.manualDefinitionChangesLoadedModelId = requestedModelId;
+    const resultWarning = definitionEditResultHasWarning(result);
+    state.manualDefinitionChangesMessageWarning = resultWarning;
+    state.manualDefinitionChangesMessage = result.warning
+      || (resultWarning
+        ? "重试保存未完整完成，请查看保存状态并重试"
+        : `已重新保存 ${Number(result.persisted_count) || 0} 项人工修改`);
+    await reloadLocalDefinitionSnapshotAfterEdit(requestedModelId);
+    renderSnapshot(state.snapshot || {});
+  } catch (error) {
+    if (requestedModelId === state.activeModelId) {
+      state.manualDefinitionChangesError = apiErrorText(error);
+      state.manualDefinitionChangesLoadedModelId = "";
+    }
+  } finally {
+    if (requestedModelId === state.activeModelId) {
+      state.manualDefinitionChangesRetrying = false;
+      renderManualDefinitionChanges();
+    }
+  }
+}
+
+async function resetSelectedManualDefinitionChanges() {
+  if (state.manualDefinitionChangesResetting) return;
+  const changeIds = [...state.manualDefinitionChangeSelection];
+  if (!changeIds.length) return;
+  if (!window.confirm(`确认将选中的 ${changeIds.length} 项人工修改恢复为默认值吗？`)) return;
+  const requestedModelId = state.activeModelId;
+  state.manualDefinitionChangesResetting = true;
+  state.manualDefinitionChangesError = "";
+  state.manualDefinitionChangesMessage = "正在恢复后台定义并更新 E 文件";
+  state.manualDefinitionChangesMessageWarning = false;
+  renderManualDefinitionChanges();
+  try {
+    const result = await api("/api/definitions/manual-changes/reset", {
+      method: "POST",
+      body: JSON.stringify({
+        revision: state.manualDefinitionChangesRevision,
+        change_ids: changeIds,
+      }),
+    });
+    if (requestedModelId !== state.activeModelId) return;
+    state.manualDefinitionChanges = Array.isArray(result.changes) ? result.changes : [];
+    state.manualDefinitionChangesRevision = Number(result.revision) || 0;
+    state.manualDefinitionChangesLoadedModelId = requestedModelId;
+    state.manualDefinitionChangeSelection = new Set();
+    const resultWarning = definitionEditResultHasWarning(result);
+    state.manualDefinitionChangesMessageWarning = resultWarning;
+    state.manualDefinitionChangesMessage = result.warning
+      || (resultWarning
+        ? "恢复默认值未完整完成，请查看保存状态并重试"
+        : `已恢复 ${Number(result.reset_count) || changeIds.length} 项人工修改`);
+    await reloadLocalDefinitionSnapshotAfterEdit(requestedModelId);
+    renderSnapshot(state.snapshot || {});
+  } catch (error) {
+    if (requestedModelId === state.activeModelId) {
+      state.manualDefinitionChangesError = apiErrorText(error);
+      state.manualDefinitionChangesLoadedModelId = "";
+    }
+  } finally {
+    if (requestedModelId === state.activeModelId) {
+      state.manualDefinitionChangesResetting = false;
+      renderManualDefinitionChanges();
+    }
+  }
+}
+
 const STATIC_SNAPSHOT_KEYS = [
   "files",
   "source_files",
@@ -1006,6 +1543,8 @@ const STATIC_SNAPSHOT_KEYS_BY_PAGE = {
   "measurements": ["files", "source_files", "work_files", "definitions"],
   "commands": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"],
   "renewable": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"],
+  "manual-changes": ["definitions", "device_parameters"],
+  "parameters": [],
   "history": [],
 };
 const CACHEABLE_STATIC_KEYS = STATIC_SNAPSHOT_KEYS.filter((key) => key !== "curves");
@@ -1304,6 +1843,7 @@ function applyMeasurementDelta(payload) {
   let changed = false;
   (payload.items || []).forEach((item) => {
     if (!item?.name) return;
+    const definition = definitionsByName.get(item.name);
     if (item.deleted) {
       ensureMeasurementChannelRow(measurements, definitionsByName, "real", item);
       ensureMeasurementChannelRow(measurements, definitionsByName, "scada", item);
@@ -1318,14 +1858,16 @@ function applyMeasurementDelta(payload) {
       : null;
     if (realRow) {
       realRow.value = item.real_value;
-      realRow.valid = item.valid;
+      realRow.valid = definition?.valid ?? item.valid ?? realRow.valid;
+      realRow.weight = definition?.weight ?? item.weight ?? realRow.weight;
       realRow.updated_simu_time = item.updated_simu_time;
       realRow.updated_wall_time = item.updated_wall_time;
       changed = true;
     }
     if (scadaRow) {
       scadaRow.value = item.scada_value;
-      scadaRow.valid = item.valid;
+      scadaRow.valid = definition?.valid ?? item.valid ?? scadaRow.valid;
+      scadaRow.weight = definition?.weight ?? item.weight ?? scadaRow.weight;
       scadaRow.updated_simu_time = item.updated_simu_time;
       scadaRow.updated_wall_time = item.updated_wall_time;
       changed = true;
@@ -2807,6 +3349,10 @@ function diagramInteractionState(container) {
       flowArrowPeakReferences: new Map(),
       pointer: { x: 0, y: 0 },
       hideTimer: null,
+      definitionEditor: null,
+      definitionSaving: false,
+      definitionMessage: "",
+      definitionMessageWarning: false,
       drag: null,
       suppressClick: false,
       suppressClickTimer: null,
@@ -2972,6 +3518,285 @@ function diagramTooltipRows(rows = [], sectionKey = "") {
   return content ? `<dl class="diagram-tooltip-grid">${content}</dl>` : "";
 }
 
+const DIAGRAM_DEFINITION_PROTECTED_FIELDS = new Set([
+  "idx", "name", "dev_name", "dev_type", "path",
+  "node", "i_node", "j_node", "ac_node", "dc_node",
+  "run_stat", "status", "isl",
+  "p_set", "q_set", "v_set", "i_set",
+  "p_ac_set", "q_ac_set", "v_ac_set", "v_dc_set",
+]);
+
+const DIAGRAM_LINKED_DEFINITION_BLOCKS = Object.freeze({
+  ACGENERATOR: [
+    { blockName: "ACWindGen", referenceField: "idx_acgenerator" },
+    { blockName: "ACPVGen", referenceField: "idx_acgenerator" },
+    { blockName: "ACStorageGen", referenceField: "idx_acgenerator" },
+  ],
+  DCGENERATOR: [
+    { blockName: "DCWindGen", referenceField: "idx_dcgenerator" },
+    { blockName: "DCPVGen", referenceField: "idx_dcgenerator" },
+    { blockName: "DCStorageGen", referenceField: "idx_dcgenerator" },
+  ],
+});
+
+function diagramDeviceParameterEditable(field) {
+  const name = String(field || "").trim().toLowerCase();
+  return Boolean(name)
+    && !DIAGRAM_DEFINITION_PROTECTED_FIELDS.has(name)
+    && !name.startsWith("idx_");
+}
+
+function diagramDefinitionSigmaFromWeight(weight) {
+  const number = Number(weight);
+  return Number.isFinite(number) && number > 0 ? 1 / Math.sqrt(number) : null;
+}
+
+function diagramDefinitionWeightFromSigma(sigma) {
+  const number = Number(sigma);
+  return Number.isFinite(number) && number > 0 ? 1 / (number * number) : null;
+}
+
+function diagramDefinitionEditorMessageHtml(interaction, validationError = "") {
+  const validation = String(validationError || "").trim();
+  const message = validation || String(interaction?.definitionMessage || "").trim();
+  const warning = Boolean(validation || interaction?.definitionMessageWarning);
+  return `<div class="diagram-definition-message${warning ? " is-warning" : " is-success"}" data-diagram-definition-message${message ? "" : " hidden"}>${escapeHtml(message)}</div>`;
+}
+
+function diagramDefinitionRecord(blockName, block, row, rowIndex) {
+  const headers = Array.isArray(block?.headers) ? [...block.headers] : Object.keys(row || {});
+  const recordRow = Object.fromEntries(headers.map((header) => [header, row?.[header] ?? ""]));
+  return {
+    blockName,
+    headers,
+    row: recordRow,
+    rowIndex,
+    rowKey: {
+      idx: recordRow.idx ?? "",
+      name: recordRow.name ?? "",
+    },
+    editableFields: headers.filter((field) => diagramDeviceParameterEditable(field)),
+  };
+}
+
+function diagramDeviceDefinitionRecords(device, snapshot = state.snapshot || {}) {
+  if (!device) return [];
+  const blocks = snapshot?.definitions?.model || {};
+  const deviceType = normalizeDiagramMeasurementToken(device.devType);
+  const primaryEntry = Object.entries(blocks).find(([blockName]) => (
+    normalizeDiagramMeasurementToken(blockName) === deviceType
+  ));
+  if (!primaryEntry) return [];
+  const [primaryBlockName, primaryBlock] = primaryEntry;
+  const primaryRows = Array.isArray(primaryBlock?.rows) ? primaryBlock.rows : [];
+  const deviceName = String(device.devName || "");
+  const primaryIndex = primaryRows.findIndex((row, rowIndex) => {
+    const rowName = String(row?.name ?? row?.dev_name ?? "");
+    if (rowName) return rowName === deviceName;
+    const idx = String(row?.idx ?? rowIndex + 1);
+    return deviceName === `${primaryBlockName}_${idx}`
+      || String(device.devId || "") === `${primaryBlockName}-${idx}`;
+  });
+  if (primaryIndex < 0) return [];
+  const primaryRecord = diagramDefinitionRecord(
+    primaryBlockName,
+    primaryBlock,
+    primaryRows[primaryIndex],
+    primaryIndex,
+  );
+  const primaryIdx = String(primaryRecord.row.idx ?? "");
+  if (!primaryIdx) return [primaryRecord];
+
+  const configuredLinks = DIAGRAM_LINKED_DEFINITION_BLOCKS[deviceType] || [];
+  const configuredByBlock = new Map(configuredLinks.map((item) => [item.blockName, item.referenceField]));
+  const expectedReference = `idx_${String(primaryBlockName || "").toLowerCase()}`;
+  const linkedRecords = [];
+  Object.entries(blocks).forEach(([blockName, block]) => {
+    if (blockName === primaryBlockName) return;
+    const headers = Array.isArray(block?.headers) ? block.headers : [];
+    const configuredReference = configuredByBlock.get(blockName);
+    const referenceField = configuredReference && headers.includes(configuredReference)
+      ? configuredReference
+      : headers.find((field) => String(field || "").toLowerCase() === expectedReference);
+    if (!referenceField) return;
+    (block.rows || []).forEach((row, rowIndex) => {
+      if (String(row?.[referenceField] ?? "") !== primaryIdx) return;
+      linkedRecords.push(diagramDefinitionRecord(blockName, block, row, rowIndex));
+    });
+  });
+  return [primaryRecord, ...linkedRecords];
+}
+
+function diagramMetricMeasurementRows(snapshot = state.snapshot || {}) {
+  const measurements = snapshot?.measurements || {};
+  return {
+    definitions: snapshot?.definitions?.measurement || measurements.definitions || [],
+    scada: measurements.scada || [],
+    real: measurements.real || [],
+  };
+}
+
+function diagramMeasurementIdentityMatches(row, identity) {
+  if (!row || !identity) return false;
+  if (identity.name) return String(row.name || "") === String(identity.name);
+  return normalizeDiagramMeasurementToken(row.dev_type) === normalizeDiagramMeasurementToken(identity.devType)
+    && String(row.dev_name || "") === String(identity.devName || "")
+    && normalizeDiagramMeasurementToken(row.meas_type) === normalizeDiagramMeasurementToken(identity.measType);
+}
+
+function diagramMeasurementFiniteValue(row) {
+  if (!row || row.value === null || row.value === undefined || row.value === "") return null;
+  const value = Number(row.value);
+  return Number.isFinite(value) ? value : null;
+}
+
+function diagramMetricMeasurementPair(hover, snapshot = state.snapshot || {}) {
+  const rows = diagramMetricMeasurementRows(snapshot);
+  let identity = null;
+  if (hover?.name) {
+    identity = { name: hover.name };
+  } else if (hover?.binding) {
+    const candidates = diagramMetricMeasurementTypes(
+      hover.binding.devType,
+      hover.binding.metricType,
+    );
+    const measType = candidates.find((candidate) => {
+      const candidateIdentity = {
+        devType: hover.binding.devType,
+        devName: hover.binding.devName,
+        measType: candidate,
+      };
+      return [...rows.scada, ...rows.real, ...rows.definitions]
+        .some((row) => diagramMeasurementIdentityMatches(row, candidateIdentity));
+    }) || candidates[0] || hover.binding.metricType;
+    identity = {
+      devType: hover.binding.devType,
+      devName: hover.binding.devName,
+      measType,
+    };
+  }
+  const scadaRow = rows.scada.find((row) => diagramMeasurementIdentityMatches(row, identity)) || null;
+  const realRow = rows.real.find((row) => diagramMeasurementIdentityMatches(row, identity)) || null;
+  const channelRow = scadaRow || realRow;
+  if (identity?.name && channelRow) {
+    identity = {
+      name: identity.name,
+      devType: channelRow.dev_type,
+      devName: channelRow.dev_name,
+      measType: channelRow.meas_type,
+    };
+  }
+  const definition = rows.definitions.find((row) => (
+    identity?.name
+      ? String(row.name || "") === String(identity.name)
+      : diagramMeasurementIdentityMatches(row, identity)
+  )) || null;
+  const scadaValue = diagramMeasurementFiniteValue(scadaRow);
+  const realValue = diagramMeasurementFiniteValue(realRow);
+  const weightNumber = Number(definition?.weight ?? channelRow?.weight);
+  const validNumber = Number(definition?.valid ?? channelRow?.valid ?? 1);
+  const weight = Number.isFinite(weightNumber) ? weightNumber : null;
+  return {
+    definition,
+    scadaRow,
+    realRow,
+    row: scadaRow || realRow || definition,
+    name: String(definition?.name || channelRow?.name || identity?.name || ""),
+    devType: String(definition?.dev_type || channelRow?.dev_type || identity?.devType || ""),
+    devName: String(definition?.dev_name || channelRow?.dev_name || identity?.devName || ""),
+    measType: String(definition?.meas_type || channelRow?.meas_type || identity?.measType || ""),
+    scadaValue,
+    realValue,
+    deviation: scadaValue !== null && realValue !== null ? scadaValue - realValue : null,
+    valid: validNumber === 0 ? 0 : 1,
+    weight,
+    errorSigma: diagramDefinitionSigmaFromWeight(weight),
+  };
+}
+
+function diagramDefinitionRowMatches(row, rowKey = {}) {
+  const name = String(rowKey.name ?? "");
+  const idx = String(rowKey.idx ?? "");
+  if (name && String(row?.name ?? "") !== name) return false;
+  if (idx && String(row?.idx ?? "") !== idx) return false;
+  return Boolean(name || idx);
+}
+
+function patchDiagramModelDefinitionRecord(snapshot, record) {
+  const blockName = String(record?.block_name || "");
+  const block = snapshot?.definitions?.model?.[blockName];
+  if (!block) return false;
+  const row = (block.rows || []).find((item) => diagramDefinitionRowMatches(item, record.row_key || {}));
+  if (!row) return false;
+  (block.headers || Object.keys(row)).forEach((field) => {
+    if (Object.prototype.hasOwnProperty.call(record, field)) row[field] = record[field];
+  });
+  const parameterRows = snapshot?.device_parameters?.[blockName];
+  if (Array.isArray(parameterRows)) {
+    const parameterRow = parameterRows.find((item) => diagramDefinitionRowMatches(item, record.row_key || {}));
+    if (parameterRow) Object.assign(parameterRow, row);
+  }
+  return true;
+}
+
+function patchDiagramMeasurementDefinitionRecord(snapshot, record) {
+  const name = String(record?.name || "");
+  if (!name) return false;
+  let changed = false;
+  const definitionLists = [
+    snapshot?.definitions?.measurement,
+    snapshot?.measurements?.definitions,
+  ];
+  const visited = new Set();
+  definitionLists.forEach((rows) => {
+    if (!Array.isArray(rows) || visited.has(rows)) return;
+    visited.add(rows);
+    const row = rows.find((item) => String(item?.name || "") === name);
+    if (!row) return;
+    Object.assign(row, record);
+    changed = true;
+  });
+  [snapshot?.measurements?.real, snapshot?.measurements?.scada].forEach((rows) => {
+    if (!Array.isArray(rows)) return;
+    const row = rows.find((item) => String(item?.name || "") === name);
+    if (!row) return;
+    if (record.valid !== undefined) row.valid = record.valid;
+    if (record.weight !== undefined) row.weight = record.weight;
+  });
+  return changed;
+}
+
+function applyDefinitionEditResult(result) {
+  if (!result?.memory_updated || !state.snapshot || !result.record) return false;
+  invalidateManualDefinitionChanges();
+  const record = result.record;
+  const patchSnapshot = (snapshot) => {
+    if (!snapshot) return false;
+    const changed = record.block_name
+      ? patchDiagramModelDefinitionRecord(snapshot, record)
+      : patchDiagramMeasurementDefinitionRecord(snapshot, record);
+    if (result.static_meta) {
+      snapshot.static_meta = {
+        ...(snapshot.static_meta || {}),
+        ...result.static_meta,
+      };
+    }
+    return changed;
+  };
+  const changed = patchSnapshot(state.snapshot);
+  if (state.localDefinitionSnapshot && state.localDefinitionSnapshot !== state.snapshot) {
+    patchSnapshot(state.localDefinitionSnapshot);
+  }
+  persistStaticSnapshotCache(state.snapshot, currentPageName());
+  return changed;
+}
+
+function definitionEditResultHasWarning(result) {
+  return !result?.persisted
+    || result?.change_record_persisted === false
+    || Boolean(result?.warning);
+}
+
 function diagramDeviceData(container, device, snapshot = state.snapshot || {}) {
   if (!device) return { definition: null, live: null, raw: {}, svgIdx: "" };
   const type = normalizeDiagramMeasurementToken(device.devType);
@@ -3018,6 +3843,7 @@ function diagramDeviceTooltipData(container, hover, snapshot) {
   const device = hover?.device || null;
   if (!device) return null;
   const { definition, live, raw, svgIdx } = diagramDeviceData(container, device, snapshot);
+  const definitionRecords = diagramDeviceDefinitionRecords(device, snapshot);
   const idx = live?.raw?.idx ?? definition?.idx ?? raw.idx ?? svgIdx ?? "--";
   const identityRows = [
     ["设备类型", device.devType || "--", "identity:type"],
@@ -3036,7 +3862,7 @@ function diagramDeviceTooltipData(container, hover, snapshot) {
     ...Object.keys(live?.set_values || {}),
   ]);
   const rawRows = Object.entries(raw)
-    .filter(([key]) => !duplicateKeys.has(key))
+    .filter(([key]) => !duplicateKeys.has(key) && !definitionRecords.length)
     .map(([key, value]) => [key, value, `raw:${key}`]);
   const measurementRows = diagramDeviceMeasurements(device, snapshot).map((row) => {
     const metricType = normalizeDiagramMeasurementToken(row.meas_type) === "SOC" ? "level" : "";
@@ -3050,13 +3876,14 @@ function diagramDeviceTooltipData(container, hover, snapshot) {
   });
   return {
     title: device.devName || device.devId || "设备",
-    sections: [
+    dynamicSections: [
       { key: "identity", title: "", rows: identityRows },
       { key: "status", title: "运行信息", rows: statusRows },
       { key: "set", title: "当前设定值", rows: setRows },
-      { key: "raw", title: "Model.e 参数", rows: rawRows },
+      { key: "raw", title: "Model.e 参数（只读）", rows: rawRows },
       { key: "measurement", title: "实时量测", rows: measurementRows },
     ].filter((section) => section.rows.length),
+    definitionRecords,
   };
 }
 
@@ -3068,7 +3895,100 @@ function diagramTooltipSectionsHtml(sections = []) {
     </section>`).join("");
 }
 
-function renderDiagramDeviceTooltip(container, hover, snapshot) {
+function diagramDefinitionMessageHtml(interaction) {
+  const message = String(interaction?.definitionMessage || "").trim();
+  if (!message) return "";
+  const levelClass = interaction?.definitionMessageWarning ? " is-warning" : " is-success";
+  return `<div class="diagram-definition-message${levelClass}" data-diagram-definition-message>${escapeHtml(message)}</div>`;
+}
+
+function diagramDefinitionInputDescriptor(value) {
+  const raw = String(value ?? "").trim();
+  const suffix = raw.endsWith("%") ? "%" : "";
+  const numericText = suffix ? raw.slice(0, -1).trim() : raw;
+  const number = Number(numericText);
+  return Number.isFinite(number)
+    ? { type: "number", value: numericText, suffix }
+    : { type: "text", value: raw, suffix: "" };
+}
+
+function renderDiagramDeviceDefinitionEditor(record, editor, interaction) {
+  const protectedRows = record.headers
+    .filter((field) => !diagramDeviceParameterEditable(field))
+    .map((field) => [field, record.row[field], `definition:${record.blockName}:${field}`]);
+  const fields = record.editableFields.map((field) => {
+    const descriptor = diagramDefinitionInputDescriptor(editor.draft[field]);
+    return `
+      <label class="diagram-definition-field">
+        <span>${escapeHtml(field)}</span>
+        <span class="diagram-definition-input-wrap">
+          <input
+            class="diagram-definition-input"
+            data-diagram-definition-input="device"
+            data-diagram-definition-field="${escapeHtml(field)}"
+            type="${descriptor.type}"
+            ${descriptor.type === "number" ? 'step="any"' : ""}
+            value="${escapeHtml(descriptor.value)}"
+            ${interaction?.definitionSaving ? "disabled" : ""}
+          >
+          ${descriptor.suffix ? `<small>${escapeHtml(descriptor.suffix)}</small>` : ""}
+        </span>
+      </label>`;
+  }).join("");
+  const canSave = editor.dirtyFields?.size > 0 && !interaction?.definitionSaving;
+  return `
+    <div class="diagram-definition-editor" data-diagram-definition-editor="device">
+      ${protectedRows.length ? `<div class="diagram-definition-readonly">${diagramTooltipRows(protectedRows, `readonly:${record.blockName}`)}</div>` : ""}
+      <div class="diagram-definition-fields">${fields}</div>
+      <div class="diagram-definition-actions">
+        <button type="button" data-diagram-definition-cancel>取消</button>
+        <button type="button" class="primary" data-diagram-definition-save="device" ${canSave ? "" : "disabled"}>
+          ${interaction?.definitionSaving ? "保存中" : "保存"}
+        </button>
+      </div>
+      ${diagramDefinitionEditorMessageHtml(interaction)}
+    </div>`;
+}
+
+function renderDiagramDeviceDefinitionRecord(record, interaction) {
+  const activeEditor = interaction?.definitionEditor?.kind === "device"
+    && interaction.definitionEditor.blockName === record.blockName
+    && Number(interaction.definitionEditor.rowIndex) === Number(record.rowIndex)
+    ? interaction.definitionEditor
+    : null;
+  const rows = record.headers.map((field) => [
+    field,
+    record.row[field],
+    `definition:${record.blockName}:${record.rowIndex}:${field}`,
+  ]);
+  return `
+    <section class="diagram-definition-section" data-diagram-definition-block="${escapeHtml(record.blockName)}" data-diagram-definition-row-index="${record.rowIndex}">
+      <div class="diagram-definition-section-head">
+        <h4>${escapeHtml(record.blockName)}</h4>
+        ${!activeEditor && record.editableFields.length ? `
+          <button
+            type="button"
+            class="diagram-definition-edit-button"
+            data-diagram-definition-edit="${escapeHtml(record.blockName)}"
+            data-diagram-definition-row-index="${record.rowIndex}"
+          >编辑参数</button>` : ""}
+      </div>
+      ${activeEditor
+        ? renderDiagramDeviceDefinitionEditor(record, activeEditor, interaction)
+        : diagramTooltipRows(rows, `definition:${record.blockName}:${record.rowIndex}`)}
+    </section>`;
+}
+
+function renderDiagramDeviceDefinitionRecords(records, interaction) {
+  if (!records.length) return "";
+  return `
+    <div class="diagram-definition-records" data-diagram-definition-records>
+      ${records.map((record) => renderDiagramDeviceDefinitionRecord(record, interaction)).join("")}
+      ${interaction?.definitionEditor ? "" : diagramDefinitionMessageHtml(interaction)}
+    </div>`;
+}
+
+function renderDiagramDeviceTooltip(container, hover, snapshot, interaction) {
   const data = diagramDeviceTooltipData(container, hover, snapshot);
   if (!data) return "";
   return `
@@ -3077,8 +3997,131 @@ function renderDiagramDeviceTooltip(container, hover, snapshot) {
       <span>设备参数</span>
     </div>
     <div class="diagram-tooltip-body" data-diagram-device-tooltip-body>
-      ${diagramTooltipSectionsHtml(data.sections)}
+      <div data-diagram-device-dynamic-body>
+        ${diagramTooltipSectionsHtml(data.dynamicSections)}
+      </div>
+      ${renderDiagramDeviceDefinitionRecords(data.definitionRecords, interaction)}
     </div>`;
+}
+
+function diagramDefinitionEditPinned(interaction) {
+  return Boolean(interaction?.definitionEditor || interaction?.definitionSaving);
+}
+
+function beginDiagramDeviceDefinitionEdit(container, blockName, rowIndex = 0) {
+  const interaction = diagramInteractionState(container);
+  const snapshot = interaction.snapshot || state.snapshot || {};
+  const records = diagramDeviceDefinitionRecords(interaction.hover?.device, snapshot);
+  const record = records.find((item) => (
+    item.blockName === String(blockName || "")
+    && Number(item.rowIndex) === Number(rowIndex)
+  ));
+  if (!record || !record.editableFields.length) return false;
+  interaction.definitionEditor = {
+    kind: "device",
+    blockName: record.blockName,
+    rowIndex: record.rowIndex,
+    rowKey: { ...record.rowKey },
+    revision: Number(snapshot?.static_meta?.definitions?.revision),
+    original: { ...record.row },
+    draft: { ...record.row },
+    dirtyFields: new Set(),
+  };
+  interaction.definitionSaving = false;
+  interaction.definitionMessage = "";
+  interaction.definitionMessageWarning = false;
+  interaction.tooltip?.classList.add("is-editing-definition");
+  renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
+  return true;
+}
+
+function cancelDiagramDefinitionEdit(container) {
+  const interaction = diagramInteractionCache.get(container);
+  if (!interaction?.definitionEditor && !interaction?.definitionSaving) return false;
+  interaction.definitionEditor = null;
+  interaction.definitionSaving = false;
+  interaction.definitionMessage = "";
+  interaction.definitionMessageWarning = false;
+  interaction.tooltip?.classList.remove("is-editing-definition");
+  renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
+  return true;
+}
+
+function updateDiagramDefinitionSaveState(interaction) {
+  const button = interaction?.tooltip?.querySelector("[data-diagram-definition-save]");
+  if (!button) return;
+  const editor = interaction.definitionEditor;
+  const invalid = editor?.validationError;
+  button.disabled = Boolean(
+    interaction.definitionSaving
+    || !editor?.dirtyFields?.size
+    || invalid,
+  );
+  const message = interaction.tooltip.querySelector("[data-diagram-definition-message]");
+  if (message && invalid) {
+    message.textContent = invalid;
+    message.classList.add("is-warning");
+  }
+}
+
+function updateDiagramDeviceDefinitionDraft(interaction, input) {
+  const editor = interaction?.definitionEditor;
+  if (editor?.kind !== "device") return false;
+  const field = String(input?.getAttribute?.("data-diagram-definition-field") || "");
+  if (!diagramDeviceParameterEditable(field)) return false;
+  const value = String(input.value ?? "");
+  editor.draft[field] = value;
+  if (value === String(editor.original[field] ?? "")) editor.dirtyFields.delete(field);
+  else editor.dirtyFields.add(field);
+  interaction.definitionMessage = "";
+  interaction.definitionMessageWarning = false;
+  updateDiagramDefinitionSaveState(interaction);
+  return true;
+}
+
+async function saveDiagramDeviceDefinitionEdit(container) {
+  const interaction = diagramInteractionCache.get(container);
+  const editor = interaction?.definitionEditor;
+  if (!interaction || editor?.kind !== "device" || interaction.definitionSaving) return false;
+  const changes = Object.fromEntries([...editor.dirtyFields].map((field) => [field, editor.draft[field]]));
+  if (!Object.keys(changes).length) return false;
+  const requestedModelId = state.activeModelId;
+  interaction.definitionSaving = true;
+  interaction.definitionMessage = "正在更新学员台后台定义并保存 E 文件";
+  interaction.definitionMessageWarning = false;
+  renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
+  try {
+    const result = await api("/api/definitions/device-parameters", {
+      method: "POST",
+      body: JSON.stringify({
+        block_name: editor.blockName,
+        row_key: editor.rowKey,
+        revision: editor.revision,
+        changes,
+      }),
+    });
+    applyDefinitionEditResult(result);
+    await reloadLocalDefinitionSnapshotAfterEdit(requestedModelId);
+    interaction.snapshot = state.snapshot;
+    interaction.definitionEditor = null;
+    interaction.definitionSaving = false;
+    const resultWarning = definitionEditResultHasWarning(result);
+    interaction.definitionMessage = resultWarning
+      ? (result.warning || (result.persisted
+        ? "Model.e 已保存，但人工修改记录未保存，请重试"
+        : "学员台后台定义已更新，但 Model.e 保存失败"))
+      : "学员台后台定义及 Model.e 已保存，新能源控制将从下一轮采用新参数";
+    interaction.definitionMessageWarning = resultWarning;
+    interaction.tooltip?.classList.remove("is-editing-definition");
+    renderActiveDiagramTooltip(container, state.snapshot || {}, interaction);
+    return true;
+  } catch (error) {
+    interaction.definitionSaving = false;
+    interaction.definitionMessage = apiErrorText(error);
+    interaction.definitionMessageWarning = true;
+    renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
+    return false;
+  }
 }
 
 function syncDiagramTooltipSections(body, sections = []) {
@@ -3149,11 +4192,24 @@ function syncDiagramTooltipSections(body, sections = []) {
 function updateDiagramDeviceTooltip(container, hover, snapshot, interaction) {
   const tooltip = interaction?.tooltip;
   const data = diagramDeviceTooltipData(container, hover, snapshot);
-  const body = tooltip?.querySelector("[data-diagram-device-tooltip-body]");
-  if (!tooltip || !data || !body) return false;
+  const definitions = tooltip?.querySelector("[data-diagram-definition-records]");
+  if (!tooltip || !data) return false;
+  const dynamicBody = tooltip.querySelector("[data-diagram-device-dynamic-body]");
+  if (!dynamicBody) return false;
   const title = tooltip.querySelector("[data-diagram-tooltip-device-name]");
   if (title) title.textContent = data.title;
-  return syncDiagramTooltipSections(body, data.sections);
+  const dynamicUpdated = syncDiagramTooltipSections(dynamicBody, data.dynamicSections);
+  if (interaction.definitionEditor?.kind === "device") return dynamicUpdated;
+  if (definitions) {
+    definitions.innerHTML = data.definitionRecords
+      .map((record) => renderDiagramDeviceDefinitionRecord(record, interaction))
+      .join("") + diagramDefinitionMessageHtml(interaction);
+  } else if (data.definitionRecords.length) {
+    const body = tooltip.querySelector("[data-diagram-device-tooltip-body]");
+    if (!body) return false;
+    body.insertAdjacentHTML("beforeend", renderDiagramDeviceDefinitionRecords(data.definitionRecords, interaction));
+  }
+  return dynamicUpdated;
 }
 
 function diagramMetricCurrentRow(container, hover, snapshot) {
@@ -3434,12 +4490,15 @@ function updateDiagramTrendCursor(interaction, chart, event) {
 }
 
 function diagramMetricTooltipData(container, hover, snapshot, interaction) {
-  const row = diagramMetricCurrentRow(container, hover, snapshot);
+  const pair = diagramMetricMeasurementPair(hover, snapshot);
+  const row = pair.row || diagramMetricCurrentRow(container, hover, snapshot);
   const metricType = hover?.binding?.metricType || hover?.metricType || "";
-  const displayValue = diagramTrendDisplayValue(row?.value, row, metricType);
+  const scadaValue = diagramTrendDisplayValue(pair.scadaValue, pair.scadaRow || row, metricType);
+  const realValue = diagramTrendDisplayValue(pair.realValue, pair.realRow || row, metricType);
+  const deviation = scadaValue !== null && realValue !== null ? scadaValue - realValue : null;
   const unit = row?.unit || diagramMeasurementUnit(row?.meas_type || metricType);
   const period = interaction.trendPeriod === "day" ? "day" : "hour";
-  const history = diagramTrendHistoryPoints(row, metricType);
+  const history = diagramTrendHistoryPoints(pair.scadaRow || pair.realRow || row, metricType);
   const endMinute = Number(snapshot?.clock?.absolute_minute ?? snapshot?.clock?.minute);
   const windowPoints = diagramTrendWindowPoints(
     history,
@@ -3448,30 +4507,263 @@ function diagramMetricTooltipData(container, hover, snapshot, interaction) {
   );
   const deviceName = hover?.binding?.devName || row?.dev_name || row?.name || "动态量测";
   const metricLabel = diagramMetricLabel(metricType, row);
-  const validText = row ? (Number(row.valid ?? 1) === 1 ? "有效" : "无效") : "缺失";
+  const validText = pair.row || pair.definition ? (pair.valid === 1 ? "有效" : "无效") : "缺失";
   return {
     deviceName,
     metricLabel,
-    displayText: displayValue === null ? "--" : diagramNumberText(displayValue),
+    displayText: scadaValue === null ? "--" : diagramNumberText(scadaValue),
+    scadaValue,
+    scadaText: scadaValue === null ? "--" : diagramNumberText(scadaValue),
+    realValue,
+    realText: realValue === null ? "--" : diagramNumberText(realValue),
+    deviation,
+    deviationText: deviation === null ? "--" : diagramNumberText(deviation),
+    valid: pair.valid,
     unit: String(unit || ""),
     validText,
+    weight: pair.weight,
+    weightText: pair.weight === null ? "--" : String(pair.weight),
+    errorSigma: pair.errorSigma,
+    errorSigmaText: pair.errorSigma === null ? "--" : String(pair.errorSigma),
+    definition: pair.definition,
+    measurementName: pair.name,
+    devType: pair.devType,
+    devName: pair.devName,
+    measType: pair.measType,
     period,
     endMinute: Number.isFinite(endMinute) ? endMinute : null,
     windowPoints,
   };
 }
 
+function diagramMeasurementValueWithUnit(text, unit) {
+  return text === "--" || !unit ? text : `${text} ${unit}`;
+}
+
+function renderDiagramMeasurementSummary(data) {
+  return `
+    <dl class="diagram-measurement-summary">
+      <div>
+        <dt>量测值</dt>
+        <dd><strong data-diagram-tooltip-current-value data-diagram-measurement-scada>${escapeHtml(data.scadaText)}</strong><span data-diagram-tooltip-current-unit>${escapeHtml(data.unit)}</span></dd>
+      </div>
+      <div>
+        <dt>真值</dt>
+        <dd data-diagram-measurement-real>${escapeHtml(diagramMeasurementValueWithUnit(data.realText, data.unit))}</dd>
+      </div>
+      <div>
+        <dt>当前偏差</dt>
+        <dd data-diagram-measurement-deviation>${escapeHtml(diagramMeasurementValueWithUnit(data.deviationText, data.unit))}</dd>
+      </div>
+      <div>
+        <dt>量测状态</dt>
+        <dd data-diagram-tooltip-validity data-diagram-measurement-valid>${escapeHtml(data.validText)}</dd>
+      </div>
+      <div>
+        <dt>误差 σ</dt>
+        <dd data-diagram-measurement-sigma>${escapeHtml(data.errorSigmaText)}</dd>
+      </div>
+      <div>
+        <dt>权重</dt>
+        <dd data-diagram-measurement-weight>${escapeHtml(data.weightText)}</dd>
+      </div>
+    </dl>`;
+}
+
+function syncDiagramMeasurementDefinitionFields(editor, changedField = "") {
+  if (!editor || editor.kind !== "measurement") return { valid: false, error: "量测定义编辑器无效" };
+  const sigma = Number(editor.draft.errorSigma);
+  const weight = Number(editor.draft.weight);
+  if (changedField === "errorSigma" && Number.isFinite(sigma) && sigma > 0) {
+    editor.draft.weight = String(diagramDefinitionWeightFromSigma(sigma));
+  } else if (changedField === "weight" && Number.isFinite(weight) && weight > 0) {
+    editor.draft.errorSigma = String(diagramDefinitionSigmaFromWeight(weight));
+  }
+  const nextSigma = Number(editor.draft.errorSigma);
+  const nextWeight = Number(editor.draft.weight);
+  const nextValid = Number(editor.draft.valid);
+  let error = "";
+  if (!Number.isFinite(nextSigma) || nextSigma <= 0) error = "误差 σ 必须大于 0";
+  else if (!Number.isFinite(nextWeight) || nextWeight <= 0) error = "权重必须大于 0";
+  else if (![0, 1].includes(nextValid)) error = "量测状态必须为有效或无效";
+  editor.validationError = error;
+  return { valid: !error, error };
+}
+
+function renderDiagramMeasurementDefinitionEditor(editor, interaction) {
+  syncDiagramMeasurementDefinitionFields(editor);
+  const canSave = editor.dirtyFields?.size > 0
+    && !editor.validationError
+    && !interaction?.definitionSaving;
+  return `
+    <div class="diagram-definition-editor diagram-measurement-definition-editor" data-diagram-definition-editor="measurement">
+      <div class="diagram-definition-fields">
+        <label class="diagram-definition-field">
+          <span>误差 σ</span>
+          <input class="diagram-definition-input" data-diagram-definition-input="measurement" data-diagram-measurement-definition-field="errorSigma" type="number" min="0" step="any" value="${escapeHtml(editor.draft.errorSigma)}" ${interaction?.definitionSaving ? "disabled" : ""}>
+        </label>
+        <label class="diagram-definition-field">
+          <span>权重</span>
+          <input class="diagram-definition-input" data-diagram-definition-input="measurement" data-diagram-measurement-definition-field="weight" type="number" min="0" step="any" value="${escapeHtml(editor.draft.weight)}" ${interaction?.definitionSaving ? "disabled" : ""}>
+        </label>
+        <label class="diagram-definition-field">
+          <span>量测状态</span>
+          <select class="diagram-definition-input" data-diagram-definition-input="measurement" data-diagram-measurement-definition-field="valid" ${interaction?.definitionSaving ? "disabled" : ""}>
+            <option value="1" ${Number(editor.draft.valid) === 1 ? "selected" : ""}>有效</option>
+            <option value="0" ${Number(editor.draft.valid) === 0 ? "selected" : ""}>无效</option>
+          </select>
+        </label>
+      </div>
+      <div class="diagram-definition-actions">
+        <button type="button" data-diagram-definition-cancel>取消</button>
+        <button type="button" class="primary" data-diagram-definition-save="measurement" ${canSave ? "" : "disabled"}>
+          ${interaction?.definitionSaving ? "保存中" : "保存"}
+        </button>
+      </div>
+      ${diagramDefinitionEditorMessageHtml(interaction, editor.validationError)}
+    </div>`;
+}
+
+function beginDiagramMeasurementDefinitionEdit(container) {
+  const interaction = diagramInteractionState(container);
+  const snapshot = interaction.snapshot || state.snapshot || {};
+  const data = diagramMetricTooltipData(container, interaction.hover, snapshot, interaction);
+  if (!data.definition || !data.measurementName) return false;
+  const originalWeight = data.weight === null ? String(data.definition.weight ?? "") : String(data.weight);
+  const originalSigma = data.errorSigma === null ? "" : String(data.errorSigma);
+  interaction.definitionEditor = {
+    kind: "measurement",
+    name: data.measurementName,
+    devType: data.devType,
+    devName: data.devName,
+    measType: data.measType,
+    revision: Number(snapshot?.static_meta?.definitions?.revision),
+    original: {
+      weight: originalWeight,
+      errorSigma: originalSigma,
+      valid: String(data.valid),
+    },
+    draft: {
+      weight: originalWeight,
+      errorSigma: originalSigma,
+      valid: String(data.valid),
+    },
+    dirtyFields: new Set(),
+    validationError: "",
+  };
+  interaction.definitionSaving = false;
+  interaction.definitionMessage = "";
+  interaction.definitionMessageWarning = false;
+  interaction.tooltip?.classList.add("is-editing-definition");
+  renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
+  return true;
+}
+
+function updateDiagramMeasurementDefinitionDraft(interaction, input) {
+  const editor = interaction?.definitionEditor;
+  if (editor?.kind !== "measurement") return false;
+  const field = String(input?.getAttribute?.("data-diagram-measurement-definition-field") || "");
+  if (!["errorSigma", "weight", "valid"].includes(field)) return false;
+  editor.draft[field] = String(input.value ?? "");
+  if (field === "errorSigma" || field === "weight") {
+    syncDiagramMeasurementDefinitionFields(editor, field);
+    editor.dirtyFields.add("errorSigma");
+    editor.dirtyFields.add("weight");
+    const counterpartField = field === "errorSigma" ? "weight" : "errorSigma";
+    const counterpart = interaction.tooltip?.querySelector(`[data-diagram-measurement-definition-field="${counterpartField}"]`);
+    if (counterpart) counterpart.value = editor.draft[counterpartField];
+  } else {
+    syncDiagramMeasurementDefinitionFields(editor, field);
+    if (String(editor.draft.valid) === String(editor.original.valid)) editor.dirtyFields.delete("valid");
+    else editor.dirtyFields.add("valid");
+  }
+  interaction.definitionMessage = "";
+  interaction.definitionMessageWarning = false;
+  const message = interaction.tooltip?.querySelector("[data-diagram-definition-message]");
+  if (message) {
+    message.textContent = editor.validationError || "";
+    message.classList.toggle("is-warning", Boolean(editor.validationError));
+    message.hidden = !editor.validationError;
+  }
+  updateDiagramDefinitionSaveState(interaction);
+  return true;
+}
+
+async function saveDiagramMeasurementDefinitionEdit(container) {
+  const interaction = diagramInteractionCache.get(container);
+  const editor = interaction?.definitionEditor;
+  if (!interaction || editor?.kind !== "measurement" || interaction.definitionSaving) return false;
+  const validation = syncDiagramMeasurementDefinitionFields(editor);
+  if (!validation.valid || !editor.dirtyFields.size) {
+    updateDiagramDefinitionSaveState(interaction);
+    return false;
+  }
+  const requestedModelId = state.activeModelId;
+  interaction.definitionSaving = true;
+  interaction.definitionMessage = "正在更新学员台后台定义并保存 E 文件";
+  interaction.definitionMessageWarning = false;
+  renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
+  try {
+    const result = await api("/api/definitions/measurement", {
+      method: "POST",
+      body: JSON.stringify({
+        name: editor.name,
+        dev_type: editor.devType,
+        dev_name: editor.devName,
+        meas_type: editor.measType,
+        revision: editor.revision,
+        changes: {
+          weight: Number(editor.draft.weight),
+          error_sigma: Number(editor.draft.errorSigma),
+          valid: Number(editor.draft.valid),
+        },
+      }),
+    });
+    applyDefinitionEditResult(result);
+    await reloadLocalDefinitionSnapshotAfterEdit(requestedModelId);
+    interaction.snapshot = state.snapshot;
+    interaction.definitionEditor = null;
+    interaction.definitionSaving = false;
+    const resultWarning = definitionEditResultHasWarning(result);
+    interaction.definitionMessage = resultWarning
+      ? (result.warning || (result.persisted
+        ? "meas.e 已保存，但人工修改记录未保存，请重试"
+        : "学员台后台定义已更新，但 meas.e 保存失败"))
+      : "学员台后台定义及 meas.e 已保存";
+    interaction.definitionMessageWarning = resultWarning;
+    interaction.tooltip?.classList.remove("is-editing-definition");
+    renderActiveDiagramTooltip(container, state.snapshot || {}, interaction);
+    return true;
+  } catch (error) {
+    interaction.definitionSaving = false;
+    interaction.definitionMessage = apiErrorText(error);
+    interaction.definitionMessageWarning = true;
+    renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
+    return false;
+  }
+}
+
 function renderDiagramMetricTooltip(container, hover, snapshot, interaction) {
   const data = diagramMetricTooltipData(container, hover, snapshot, interaction);
+  const editor = interaction?.definitionEditor?.kind === "measurement"
+    && interaction.definitionEditor.name === data.measurementName
+    ? interaction.definitionEditor
+    : null;
   return `
     <div class="diagram-tooltip-head">
       <strong data-diagram-tooltip-device-name>${escapeHtml(data.deviceName)}</strong>
       <span data-diagram-tooltip-metric-label>${escapeHtml(data.metricLabel)}</span>
     </div>
-    <div class="diagram-metric-current">
-      <strong data-diagram-tooltip-current-value>${escapeHtml(data.displayText)}</strong>
-      <span data-diagram-tooltip-current-unit>${escapeHtml(data.unit)}</span>
-      <small data-diagram-tooltip-validity>${escapeHtml(data.validText)}</small>
+    <div class="diagram-metric-current" data-diagram-measurement-summary>
+      ${renderDiagramMeasurementSummary(data)}
+    </div>
+    <div class="diagram-measurement-definition-actions">
+      ${editor
+        ? renderDiagramMeasurementDefinitionEditor(editor, interaction)
+        : data.definition
+          ? '<button type="button" class="diagram-definition-edit-button" data-diagram-definition-edit-measurement>编辑定义</button>'
+          : '<span class="diagram-definition-unavailable">当前量测没有可编辑定义</span>'}
+      ${editor ? "" : diagramDefinitionMessageHtml(interaction)}
     </div>
     <div class="diagram-trend-tabs" role="tablist" aria-label="量测趋势范围">
       <button type="button" data-diagram-trend-period="hour" class="${data.period === "hour" ? "is-active" : ""}" aria-selected="${data.period === "hour"}">小时曲线</button>
@@ -3482,22 +4774,37 @@ function renderDiagramMetricTooltip(container, hover, snapshot, interaction) {
     </div>`;
 }
 
+function updateDiagramMetricDynamicValues(tooltip, data) {
+  if (!tooltip || !data) return false;
+  const values = [
+    ["[data-diagram-tooltip-device-name]", data.deviceName],
+    ["[data-diagram-tooltip-metric-label]", data.metricLabel],
+    ["[data-diagram-measurement-scada]", data.scadaText],
+    ["[data-diagram-tooltip-current-unit]", data.unit],
+    ["[data-diagram-measurement-real]", diagramMeasurementValueWithUnit(data.realText, data.unit)],
+    ["[data-diagram-measurement-deviation]", diagramMeasurementValueWithUnit(data.deviationText, data.unit)],
+    ["[data-diagram-measurement-valid]", data.validText],
+    ["[data-diagram-measurement-sigma]", data.errorSigmaText],
+    ["[data-diagram-measurement-weight]", data.weightText],
+  ];
+  let updated = true;
+  values.forEach(([selector, value]) => {
+    const element = tooltip.querySelector(selector);
+    if (!element) {
+      updated = false;
+      return;
+    }
+    element.textContent = value;
+  });
+  return updated;
+}
+
 function updateDiagramMetricTooltip(container, hover, snapshot, interaction) {
   const tooltip = interaction?.tooltip;
   if (!tooltip) return false;
   const data = diagramMetricTooltipData(container, hover, snapshot, interaction);
-  const value = tooltip.querySelector("[data-diagram-tooltip-current-value]");
-  const unit = tooltip.querySelector("[data-diagram-tooltip-current-unit]");
-  const validity = tooltip.querySelector("[data-diagram-tooltip-validity]");
   const content = tooltip.querySelector("[data-diagram-trend-content]");
-  if (!value || !unit || !validity || !content) return false;
-  const deviceName = tooltip.querySelector("[data-diagram-tooltip-device-name]");
-  const metricLabel = tooltip.querySelector("[data-diagram-tooltip-metric-label]");
-  if (deviceName) deviceName.textContent = data.deviceName;
-  if (metricLabel) metricLabel.textContent = data.metricLabel;
-  value.textContent = data.displayText;
-  unit.textContent = data.unit;
-  validity.textContent = data.validText;
+  if (!content || !updateDiagramMetricDynamicValues(tooltip, data)) return false;
   tooltip.querySelectorAll("[data-diagram-trend-period]").forEach((button) => {
     const selected = button.getAttribute("data-diagram-trend-period") === data.period;
     button.classList.toggle("is-active", selected);
@@ -3560,6 +4867,7 @@ function hideDiagramTooltip(container) {
 function scheduleDiagramTooltipHide(container) {
   const interaction = diagramInteractionCache.get(container);
   if (!interaction) return;
+  if (diagramDefinitionEditPinned(interaction)) return;
   clearDiagramTooltipHide(interaction);
   interaction.hideTimer = setTimeout(() => hideDiagramTooltip(container), DIAGRAM_TOOLTIP_HIDE_DELAY_MS);
 }
@@ -3572,7 +4880,7 @@ function renderActiveDiagramTooltip(container, snapshot, interaction) {
   interaction.trendChart = null;
   const html = hover.kind === "metric"
     ? renderDiagramMetricTooltip(container, hover, snapshot, interaction)
-    : renderDiagramDeviceTooltip(container, hover, snapshot);
+    : renderDiagramDeviceTooltip(container, hover, snapshot, interaction);
   if (!html) {
     hideDiagramTooltip(container);
     return false;
@@ -3582,6 +4890,7 @@ function renderActiveDiagramTooltip(container, snapshot, interaction) {
   tooltip.innerHTML = html;
   tooltip.hidden = false;
   tooltip.classList.add("is-visible");
+  tooltip.classList.toggle("is-editing-definition", diagramDefinitionEditPinned(interaction));
   positionDiagramTooltip(interaction);
   return true;
 }
@@ -3613,6 +4922,10 @@ function resetDiagramInteractions(container) {
     interaction.hover = null;
     interaction.snapshot = null;
     interaction.tooltipPositionKey = "";
+    interaction.definitionEditor = null;
+    interaction.definitionSaving = false;
+    interaction.definitionMessage = "";
+    interaction.definitionMessageWarning = false;
     hideDiagramTrendCursor(interaction);
     interaction.trendChart = null;
     interaction.drag = null;
@@ -3621,6 +4934,7 @@ function resetDiagramInteractions(container) {
     if (interaction.tooltip) {
       interaction.tooltip.hidden = true;
       interaction.tooltip.classList.remove("is-visible");
+      interaction.tooltip.classList.remove("is-editing-definition");
     }
   }
   removeDiagramRuntimeLabels(container);
@@ -3803,6 +5117,7 @@ function initDiagramInteractions(container) {
   container.addEventListener("pointermove", (event) => {
     interaction.pointer = { x: event.clientX, y: event.clientY };
     if (moveDiagramPan(container, event)) return;
+    if (diagramDefinitionEditPinned(interaction)) return;
     const nextHover = diagramHoverTarget(container, event.target);
     const tooltipAction = diagramTooltipPointerMoveAction(
       interaction.hover,
@@ -3895,12 +5210,54 @@ function initDiagramInteractions(container) {
     scheduleDiagramTooltipHide(container);
   });
   tooltip.addEventListener("click", (event) => {
-    const button = event.target instanceof Element ? event.target.closest("[data-diagram-trend-period]") : null;
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+    const deviceEdit = target.closest("[data-diagram-definition-edit]");
+    if (deviceEdit) {
+      beginDiagramDeviceDefinitionEdit(
+        container,
+        deviceEdit.getAttribute("data-diagram-definition-edit") || "",
+        Number(deviceEdit.getAttribute("data-diagram-definition-row-index") || 0),
+      );
+      return;
+    }
+    if (target.closest("[data-diagram-definition-edit-measurement]")) {
+      beginDiagramMeasurementDefinitionEdit(container);
+      return;
+    }
+    if (target.closest("[data-diagram-definition-cancel]")) {
+      cancelDiagramDefinitionEdit(container);
+      return;
+    }
+    const save = target.closest("[data-diagram-definition-save]");
+    if (save) {
+      if (save.getAttribute("data-diagram-definition-save") === "measurement") {
+        saveDiagramMeasurementDefinitionEdit(container);
+      } else {
+        saveDiagramDeviceDefinitionEdit(container);
+      }
+      return;
+    }
+    const button = target.closest("[data-diagram-trend-period]");
     if (!button) return;
     const period = button.getAttribute("data-diagram-trend-period") === "day" ? "day" : "hour";
     if (period === interaction.trendPeriod) return;
     interaction.trendPeriod = period;
     refreshDiagramTooltip(container, interaction.snapshot || state.snapshot || {});
+  });
+  tooltip.addEventListener("input", (event) => {
+    const input = event.target instanceof Element ? event.target.closest("[data-diagram-definition-input]") : null;
+    if (!input) return;
+    if (input.getAttribute("data-diagram-definition-input") === "measurement") {
+      updateDiagramMeasurementDefinitionDraft(interaction, input);
+    } else {
+      updateDiagramDeviceDefinitionDraft(interaction, input);
+    }
+  });
+  tooltip.addEventListener("change", (event) => {
+    const input = event.target instanceof Element ? event.target.closest("[data-diagram-definition-input]") : null;
+    if (!input || input.getAttribute("data-diagram-definition-input") !== "measurement") return;
+    updateDiagramMeasurementDefinitionDraft(interaction, input);
   });
   contextMenu.addEventListener("click", (event) => {
     const button = event.target instanceof Element ? event.target.closest("[data-diagram-display-toggle]") : null;
@@ -3919,7 +5276,9 @@ function initDiagramInteractions(container) {
     closeDiagramContextMenu(interaction);
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") closeDiagramContextMenu(interaction);
+    if (event.key !== "Escape") return;
+    closeDiagramContextMenu(interaction);
+    if (diagramDefinitionEditPinned(interaction)) cancelDiagramDefinitionEdit(container);
   });
   window.addEventListener("resize", () => closeDiagramContextMenu(interaction));
 }
@@ -4143,6 +5502,21 @@ async function ensureLocalDefinitionSnapshot(modelId = state.activeModelId) {
   return local;
 }
 
+async function reloadLocalDefinitionSnapshotAfterEdit(modelId = state.activeModelId) {
+  const requestedModelId = String(modelId || state.activeModelId || "");
+  const runtimeSnapshot = state.snapshot;
+  const local = await fetchLocalDefinitionSnapshot(requestedModelId);
+  if (requestedModelId !== String(state.activeModelId || "")) return false;
+  state.localDefinitionSnapshot = local.snapshot;
+  state.localDefinitionModelId = local.modelId;
+  state.snapshot = state.receiveMode && runtimeSnapshot
+    ? mergeTeacherSnapshotWithLocalDefinitions(runtimeSnapshot, runtimeSnapshot)
+    : mergeSnapshot(runtimeSnapshot, local.snapshot);
+  clearStaticSnapshotCacheForModel(requestedModelId);
+  persistStaticSnapshotCache(state.snapshot, currentPageName());
+  return true;
+}
+
 function mergeTeacherRuntimeDevices(localDevices = [], remoteDevices = []) {
   const remoteByKey = new Map((remoteDevices || []).map((device) => ([
     `${String(device?.dev_type || "").trim()}\u0000${String(device?.dev_name || device?.name || "").trim()}`,
@@ -4161,6 +5535,38 @@ function mergeTeacherRuntimeDevices(localDevices = [], remoteDevices = []) {
   });
 }
 
+function mergeTeacherMeasurementsWithLocalDefinitions(remoteMeasurements = {}, localDefinitionRows = []) {
+  const typedKey = (item) => [
+    String(item?.dev_type || "").trim().toUpperCase(),
+    String(item?.dev_name || "").trim(),
+    String(item?.meas_type || "").trim().toUpperCase(),
+  ].join("\u0000");
+  const localByName = new Map();
+  const localByType = new Map();
+  (localDefinitionRows || []).forEach((definition) => {
+    const name = String(definition?.name || "").trim();
+    const key = typedKey(definition);
+    if (name) localByName.set(name, definition);
+    if (key !== "\u0000\u0000") localByType.set(key, definition);
+  });
+  const mergeChannel = (rows) => (rows || []).map((item) => {
+    const name = String(item?.name || "").trim();
+    const definition = (name ? localByName.get(name) : null) || localByType.get(typedKey(item));
+    if (!definition) return item;
+    return {
+      ...item,
+      valid: definition?.valid ?? item.valid,
+      weight: definition?.weight ?? item.weight,
+    };
+  });
+  return {
+    ...(remoteMeasurements || {}),
+    definitions: localDefinitionRows || [],
+    scada: mergeChannel(remoteMeasurements?.scada),
+    real: mergeChannel(remoteMeasurements?.real),
+  };
+}
+
 function mergeTeacherSnapshotWithLocalDefinitions(previousSnapshot, remoteSnapshot) {
   const localDefinitions = state.localDefinitionSnapshot || {};
   const merged = mergeSnapshot(previousSnapshot || localDefinitions, remoteSnapshot || {});
@@ -4171,6 +5577,13 @@ function mergeTeacherSnapshotWithLocalDefinitions(previousSnapshot, remoteSnapsh
   if (localDefinitions.devices) {
     merged.devices = mergeTeacherRuntimeDevices(localDefinitions.devices, merged.devices);
   }
+  const localMeasurementDefinitions = localDefinitions.definitions?.measurement
+    || localDefinitions.measurements?.definitions
+    || [];
+  merged.measurements = mergeTeacherMeasurementsWithLocalDefinitions(
+    merged.measurements,
+    localMeasurementDefinitions,
+  );
   if (localDefinitions.static_meta) merged.static_meta = localDefinitions.static_meta;
   return merged;
 }
@@ -4349,6 +5762,7 @@ function resetReceiveIssueStreak() {
 
 function stopReceiveAfterPersistentIssue(result, detail = [], simTime = "") {
   const detailItems = Array.isArray(detail) ? detail.filter(Boolean) : [detail].filter(Boolean);
+  const maxAttempts = receiveMaxReconnectAttempts();
   state.receiveMode = false;
   state.frozen = true;
   state.receiveEpoch += 1;
@@ -4361,16 +5775,16 @@ function stopReceiveAfterPersistentIssue(result, detail = [], simTime = "") {
     "实时交互",
     "接收保护",
     "停止接收",
-    [`连续 ${RECEIVE_MAX_RECONNECT_ATTEMPTS} 次接收异常`, ...detailItems],
+    [`连续 ${maxAttempts} 次接收异常`, ...detailItems],
     "error",
     true,
     simTime,
   );
-  noteRenewableReceiveInterruption("连续接收异常，新能源优先策略保持运行，继续使用最近一次有效数据。");
+  noteRenewableReceiveInterruption("连续接收异常，新能源实时控制已同步停止。");
   renderReceiveMode(result || "接收异常");
   openReceiveWarningDialog(
     `${result || "接收异常"}，已停止接收`,
-    [`已连续 ${RECEIVE_MAX_RECONNECT_ATTEMPTS} 次发现接收异常。`, ...detailItems],
+    [`已连续 ${maxAttempts} 次发现接收异常。`, ...detailItems],
     "请检查模拟台仿真状态、交互链接和定义文件一致性。",
   );
 }
@@ -4378,21 +5792,22 @@ function stopReceiveAfterPersistentIssue(result, detail = [], simTime = "") {
 function recordReceiveIssue(type, target, result, detail = "", simTime = "") {
   state.receiveReconnectAttempts += 1;
   const attempt = state.receiveReconnectAttempts;
+  const maxAttempts = receiveMaxReconnectAttempts();
   const detailItems = Array.isArray(detail) ? detail.filter(Boolean) : [detail].filter(Boolean);
   addRuntimeLog(
     type,
     target,
     result,
-    [`连续告警 ${attempt}/${RECEIVE_MAX_RECONNECT_ATTEMPTS}`, ...detailItems],
+    [`连续告警 ${attempt}/${maxAttempts}`, ...detailItems],
     "warn",
     true,
     simTime,
   );
-  if (attempt >= RECEIVE_MAX_RECONNECT_ATTEMPTS) {
+  if (attempt >= maxAttempts) {
     stopReceiveAfterPersistentIssue(result, detailItems, simTime);
     return false;
   }
-  renderReceiveMode(`告警 ${attempt}/${RECEIVE_MAX_RECONNECT_ATTEMPTS}`);
+  renderReceiveMode(`告警 ${attempt}/${maxAttempts}`);
   return true;
 }
 
@@ -4460,7 +5875,8 @@ function acceptTeacherSnapshot(snapshot, epoch = state.receiveEpoch) {
 async function attemptTeacherReconnect(epoch) {
   if (!state.receiveMode || epoch !== state.receiveEpoch) return;
   const attempt = state.receiveReconnectAttempts;
-  renderReceiveMode(`重连中 ${attempt}/${RECEIVE_MAX_RECONNECT_ATTEMPTS}`);
+  const maxAttempts = receiveMaxReconnectAttempts();
+  renderReceiveMode(`重连中 ${attempt}/${maxAttempts}`);
   try {
     await ensureLocalDefinitionSnapshot(state.activeModelId);
     const remoteSnapshot = await teacherSnapshotApi(currentPageName());
@@ -4473,7 +5889,7 @@ async function attemptTeacherReconnect(epoch) {
     }
   } catch (error) {
     if (!state.receiveMode || epoch !== state.receiveEpoch) return;
-    renderReceiveMode(`重连等待 ${attempt}/${RECEIVE_MAX_RECONNECT_ATTEMPTS}`);
+    renderReceiveMode(`重连等待 ${attempt}/${maxAttempts}`);
   }
 }
 
@@ -4517,6 +5933,7 @@ async function startReceiveMode() {
       "ok",
     );
     renderReceiveMode();
+    await refreshRenewableControlState({ preview: false, render: currentPageName() === "renewable" });
     await refreshFromTeacher(state.receiveEpoch);
   } catch (error) {
     addRuntimeLog("接收模式", "模拟台实时链路", "启动接收失败", apiErrorText(error), "warn");
@@ -4562,6 +5979,7 @@ async function initializeModelFromLink() {
     state.snapshotSource = "local";
     state.localDefinitionSnapshot = null;
     state.localDefinitionModelId = "";
+    invalidateManualDefinitionChanges();
     state.lastTeacherSnapshotLogKey = "";
     clearStaticSnapshotCacheForModel(activeModelIdBeforeInitialize);
     persistActiveModelContext();
@@ -4799,7 +6217,10 @@ function addRuntimeLog(type, target, result, detail = "", level = "info", render
     level,
     scope,
   });
-  state.runtimeLogs = state.runtimeLogs.slice(0, 300);
+  state.runtimeLogs = state.runtimeLogs.slice(
+    0,
+    Math.max(50, Math.round(activeRuntimeSetting("runtime_log_cache_limit"))),
+  );
   if (renderNow) renderHistoryIfMounted();
 }
 
@@ -5408,7 +6829,7 @@ function renderModelSelector() {
   }
 }
 
-function setActiveModel(modelId, shouldRefresh = true) {
+async function setActiveModel(modelId, shouldRefresh = true) {
   persistActiveModelContext();
   const nextId = modelId || state.models[0]?.id || "";
   state.activeModelId = nextId;
@@ -5419,6 +6840,7 @@ function setActiveModel(modelId, shouldRefresh = true) {
   if (!state.receiveMode) state.frozen = false;
   state.localDefinitionSnapshot = null;
   state.localDefinitionModelId = "";
+  invalidateManualDefinitionChanges();
   state.selectedMeasurementKey = "";
   state.selectedCommandTraceKey = "";
   state.selectedCommandTraceLabel = "";
@@ -5440,11 +6862,14 @@ function setActiveModel(modelId, shouldRefresh = true) {
   state.controlFilter = { dev_type: "all", dev_name: "" };
   state.activeControlTab = "remote-control";
   state.deviceTreeSelectionAnchors = {};
+  resetWebRuntimeSettingsState();
+  restartRefreshScheduler();
   resetRenewableControlView(nextId);
   renderModelSelector();
   if ($("modelManagementDialog")?.open) renderModelManagementList();
   updatePendingCount();
-  if (shouldRefresh) refresh();
+  await loadWebRuntimeSettings();
+  if (shouldRefresh) await refresh();
 }
 
 async function loadModels() {
@@ -5459,7 +6884,7 @@ async function loadModels() {
     }
     const preferred = state.activeModelId || catalog.active_model_id || state.models[0]?.id || "";
     const exists = state.models.some((model) => model.id === preferred);
-    setActiveModel(exists ? preferred : state.models[0]?.id || "", false);
+    await setActiveModel(exists ? preferred : state.models[0]?.id || "", false);
     if ($("modelManagementDialog")?.open) renderModelManagementList();
   } catch (_error) {
     state.models = [];
@@ -5767,6 +7192,114 @@ function powerSummaryNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+const OVERVIEW_FLOW_GROUP_DEFINITIONS = [
+  { key: "dcWind", category: "generation", region: "dc", color: "#2f9e62" },
+  { key: "dcSolar", category: "generation", region: "dc", color: "#2f9e62" },
+  { key: "dcGridFollowingStorage", category: "storage", region: "dc", color: "#2f9e62" },
+  { key: "dcLoad", category: "load", region: "dc", color: "#bd5656" },
+  { key: "dcGridFormingStorage", category: "storage", region: "forming", color: "#2f9e62" },
+  { key: "acGridFormingStorage", category: "storage", region: "forming", color: "#2f9e62" },
+  { key: "acdcConverter", category: "converter", region: "bridge", color: "#0a8b8b" },
+  { key: "acWind", category: "generation", region: "ac", color: "#2f9e62" },
+  { key: "acSolar", category: "generation", region: "ac", color: "#2f9e62" },
+  { key: "acGridFollowingStorage", category: "storage", region: "ac", color: "#2f9e62" },
+  { key: "acLoad", category: "load", region: "ac", color: "#bd5656" },
+  { key: "diesel", category: "generation", region: "ac", color: "#c84f4f" },
+];
+
+const OVERVIEW_FLOW_STATUS_LABELS = {
+  generation: "发电",
+  absorption: "吸收",
+  consumption: "用电",
+  discharge: "放电",
+  charge: "充电",
+  dcToAc: "直流送交流",
+  acToDc: "交流送直流",
+  idle: "待机",
+  retired: "退运",
+  deadIsland: "死岛",
+  unmeasured: "待量测",
+};
+
+function overviewFallbackFlowGroups(power) {
+  return {
+    acWind: { power: power.wind },
+    dcSolar: { power: power.solar },
+    dcGridFormingStorage: { power: power.storage, soc: power.soc },
+    acdcConverter: { power: Number.isFinite(power.greenPower) ? -power.greenPower : null },
+    acLoad: { power: power.load },
+    diesel: { power: power.diesel },
+  };
+}
+
+function overviewFlowState(category, power) {
+  if (!Number.isFinite(power)) return { status: "unmeasured", flowDirection: "idle" };
+  if (Math.abs(power) <= 1e-9) return { status: "idle", flowDirection: "idle" };
+  if (category === "storage") {
+    return power > 0
+      ? { status: "discharge", flowDirection: "toBus" }
+      : { status: "charge", flowDirection: "fromBus" };
+  }
+  if (category === "load") {
+    return power > 0
+      ? { status: "consumption", flowDirection: "fromBus" }
+      : { status: "generation", flowDirection: "toBus" };
+  }
+  if (category === "converter") {
+    return power > 0
+      ? { status: "dcToAc", flowDirection: "toAc" }
+      : { status: "acToDc", flowDirection: "toDc" };
+  }
+  return power > 0
+    ? { status: "generation", flowDirection: "toBus" }
+    : { status: "absorption", flowDirection: "fromBus" };
+}
+
+function normalizeOverviewFlowGroups(rawGroups, power) {
+  const source = rawGroups && typeof rawGroups === "object" ? { ...rawGroups } : {};
+  if (!source.dcLoad && !source.acLoad && source.load && typeof source.load === "object") {
+    source.acLoad = source.load;
+  }
+  const hasStructuredGroups = Object.keys(source).length > 0;
+  const fallback = overviewFallbackFlowGroups(power);
+  return Object.fromEntries(OVERVIEW_FLOW_GROUP_DEFINITIONS.map((definition) => {
+    const data = source[definition.key] && typeof source[definition.key] === "object"
+      ? source[definition.key]
+      : {};
+    const fallbackData = hasStructuredGroups ? {} : (fallback[definition.key] || {});
+    const groupPower = powerSummaryNumber(data.power ?? fallbackData.power);
+    const totalCountValue = Number(data.totalCount);
+    const totalCount = Number.isFinite(totalCountValue)
+      ? Math.max(0, Math.trunc(totalCountValue))
+      : Number.isFinite(groupPower) ? 1 : 0;
+    const onlineCountValue = Number(data.onlineCount);
+    const onlineCount = Number.isFinite(onlineCountValue)
+      ? Math.max(0, Math.trunc(onlineCountValue))
+      : totalCount;
+    const derived = overviewFlowState(definition.category, groupPower);
+    const flowDirection = ["toBus", "fromBus", "toAc", "toDc", "idle"].includes(data.flowDirection)
+      ? data.flowDirection
+      : derived.flowDirection;
+    const status = String(data.status || derived.status);
+    return [definition.key, {
+      ...data,
+      key: definition.key,
+      category: definition.category,
+      region: definition.region,
+      color: definition.color,
+      present: totalCount > 0,
+      power: groupPower,
+      soc: powerSummaryNumber(data.soc ?? fallbackData.soc),
+      totalCount,
+      onlineCount,
+      retiredCount: Math.max(0, Number(data.retiredCount) || 0),
+      deadIslandCount: Math.max(0, Number(data.deadIslandCount) || 0),
+      status,
+      flowDirection,
+    }];
+  }));
+}
+
 function parsePowerFlowOverview(snapshot) {
   const summary = snapshot.power_summary && typeof snapshot.power_summary === "object"
     ? snapshot.power_summary
@@ -5791,7 +7324,7 @@ function parsePowerFlowOverview(snapshot) {
   const controlText = logDetailText(latestRuntimeLog(snapshot, "控制响应"));
   const liveSoc = averageStorageSocRatio(snapshot);
   const logSoc = storageSocPercentFromText(text);
-  return {
+  const power = {
     log,
     source: structured.source,
     wind: structured.wind ?? matchedNumber(text, /风力发电总功率\s*([-+\d.]+)/),
@@ -5812,6 +7345,8 @@ function parsePowerFlowOverview(snapshot) {
     consumption: structured.consumption ?? matchedNumber(text, /用电及充电总功率\s*([-+\d.]+)/),
     balance: structured.balance ?? matchedNumber(text, /功率差额\s*([-+\d.]+)/),
   };
+  power.flowGroups = normalizeOverviewFlowGroups(summary.flowGroups, power);
+  return power;
 }
 
 function formatOverviewNumber(value) {
@@ -5864,8 +7399,7 @@ function overviewFlowStyle(powerValue, maxPower) {
   };
 }
 
-function setOverviewFlowVisual(id, powerValue, maxPower, color) {
-  const element = $(id);
+function setOverviewFlowVisualElement(element, powerValue, maxPower, color) {
   if (!element) return;
   const visual = overviewFlowStyle(powerValue, maxPower);
   element.dataset.flowActive = visual.active ? "true" : "false";
@@ -5877,23 +7411,75 @@ function setOverviewFlowVisual(id, powerValue, maxPower, color) {
   element.style.setProperty("--flow-duration", visual.duration);
 }
 
-function renderEnergyFlowVisuals(power, storagePower, greenPowerShare) {
-  const windPower = overviewFlowPowerValue(power.wind);
-  const solarPower = overviewFlowPowerValue(power.solar);
-  const dieselPower = overviewFlowPowerValue(power.diesel);
-  const loadPower = overviewFlowPowerValue(power.load);
-  const storageMagnitude = overviewFlowPowerValue(storagePower);
-  const renewablePower = windPower + solarPower + Math.max(0, Number(storagePower) || 0);
-  const maxPower = Math.max(1, windPower, solarPower, dieselPower, loadPower, storageMagnitude, renewablePower);
-  const greenColor = "#2f9e62";
-  const dieselColor = "#c84f4f";
-  const loadColor = overviewLoadFlowColor(greenPowerShare);
-  setOverviewFlowVisual("overviewFlowWindNode", windPower, maxPower, greenColor);
-  setOverviewFlowVisual("overviewFlowSolarNode", solarPower, maxPower, greenColor);
-  setOverviewFlowVisual("overviewFlowDieselNode", dieselPower, maxPower, dieselColor);
-  setOverviewFlowVisual("overviewFlowLoadNode", loadPower, maxPower, loadColor);
-  setOverviewFlowVisual("overviewStorageFlowLink", storageMagnitude, maxPower, greenColor);
-  setOverviewFlowVisual("overviewEnergyMainTrunk", renewablePower, maxPower, greenColor);
+function setOverviewFlowVisual(id, powerValue, maxPower, color) {
+  setOverviewFlowVisualElement($(id), powerValue, maxPower, color);
+}
+
+function overviewFlowGroupMeta(group) {
+  const status = OVERVIEW_FLOW_STATUS_LABELS[group.status] || "待量测";
+  const count = `${group.onlineCount}/${group.totalCount} 台`;
+  if (group.category !== "storage") return `${status} · ${count}`;
+  const soc = Number.isFinite(group.soc) ? `${formatOverviewNumber(group.soc)}%` : "--";
+  return `${status} · SOC ${soc} · ${count}`;
+}
+
+function renderOverviewFlowGroups(power) {
+  const groups = power.flowGroups || {};
+  const visibleGroups = OVERVIEW_FLOW_GROUP_DEFINITIONS
+    .map((definition) => groups[definition.key])
+    .filter((group) => group?.present);
+  const maxPower = Math.max(1, ...visibleGroups.map((group) => overviewFlowPowerValue(group.power)));
+  const greenPowerShare = Number.isFinite(power.diesel) && Number.isFinite(power.load) && Math.abs(power.load) > 1e-9
+    ? (1.0 - power.diesel / power.load) * 100.0
+    : null;
+
+  OVERVIEW_FLOW_GROUP_DEFINITIONS.forEach((definition) => {
+    const group = groups[definition.key] || { present: false };
+    const node = document.querySelector(`[data-overview-group="${definition.key}"]`);
+    const wrapper = document.querySelector(`[data-overview-group-wrapper="${definition.key}"]`);
+    if (!node) return;
+    node.hidden = !group.present;
+    if (wrapper) wrapper.hidden = !group.present;
+    if (!group.present) return;
+    node.dataset.flowDirection = group.flowDirection;
+    node.dataset.operatingState = group.status;
+    const powerNode = node.querySelector("[data-overview-power]");
+    const metaNode = node.querySelector("[data-overview-meta]");
+    if (powerNode) powerNode.textContent = overviewPowerText(group.power);
+    if (metaNode) metaNode.textContent = overviewFlowGroupMeta(group);
+    node.title = `${node.querySelector("span")?.textContent || "设备"} · ${overviewFlowGroupMeta(group)}`;
+    const flowPower = group.flowDirection === "idle" ? 0 : group.power;
+    const color = definition.category === "load" ? overviewLoadFlowColor(greenPowerShare) : definition.color;
+    setOverviewFlowVisualElement(node, flowPower, maxPower, color);
+    if (wrapper) {
+      wrapper.dataset.storageFlow = group.status === "discharge" ? "discharge" : group.status === "charge" ? "charge" : "idle";
+      wrapper.dataset.operatingState = group.status;
+      setOverviewFlowVisualElement(wrapper, flowPower, maxPower, color);
+    }
+  });
+
+  document.querySelectorAll("[data-overview-region]").forEach((region) => {
+    if (region.id === "overviewGridFormingStack") return;
+    const regionKey = region.dataset.overviewRegion;
+    region.hidden = !visibleGroups.some((group) => group.region === regionKey);
+  });
+  const formingStack = $("overviewGridFormingStack");
+  if (formingStack) formingStack.hidden = !visibleGroups.some((group) => group.region === "forming");
+
+  const converterGroup = groups.acdcConverter;
+  const aggregateTrunkPower = visibleGroups
+    .filter((group) => !["load", "converter"].includes(group.category))
+    .reduce((total, group) => total + overviewFlowPowerValue(group.power), 0);
+  const trunkPower = converterGroup?.present && Number.isFinite(converterGroup.power)
+    ? converterGroup.power
+    : aggregateTrunkPower;
+  const trunk = $("overviewEnergyMainTrunk");
+  if (trunk) trunk.dataset.flowDirection = converterGroup?.flowDirection || "toAc";
+  setOverviewFlowVisual("overviewEnergyMainTrunk", trunkPower, maxPower, "#2f9e62");
+}
+
+function renderEnergyFlowVisuals(power) {
+  renderOverviewFlowGroups(power);
 }
 
 function setOverviewText(id, value) {
@@ -6373,33 +7959,13 @@ function renderTraineeOverviewDashboard(snapshot) {
   setOverviewText("teacherLoad", overviewPowerText(weather.loadKw));
   setOverviewText("teacherWeatherTime", overviewClockText(snapshot));
 
-  const storagePower = Number.isFinite(power.storage)
-    ? power.storage
-    : Number.isFinite(power.storageDischarge) && Number.isFinite(power.storageCharge)
-      ? power.storageDischarge - power.storageCharge
-      : null;
-  const storageFlow = storagePower === null ? "idle" : storagePower > 0 ? "discharge" : storagePower < 0 ? "charge" : "idle";
-  const storageNode = $("overviewStorageFlowNode");
-  if (storageNode) storageNode.dataset.storageFlow = storageFlow;
-  const storageLink = $("overviewStorageFlowLink");
-  if (storageLink) storageLink.dataset.storageFlow = storageFlow;
-  setOverviewText("overviewFlowWindPower", overviewPowerText(power.wind));
-  setOverviewText("overviewFlowWindMeta", Number.isFinite(weather.windSpeed) ? `风速 ${formatOverviewNumber(weather.windSpeed)} m/s` : "风速 未知");
-  setOverviewText("overviewFlowSolarPower", overviewPowerText(power.solar));
-  setOverviewText("overviewFlowSolarMeta", Number.isFinite(weather.solarIrradiance) ? `辐照 ${formatOverviewNumber(weather.solarIrradiance)} W/m²` : "辐照 未知");
-  setOverviewText("overviewFlowDieselPower", overviewPowerText(power.diesel));
-  setOverviewText("overviewFlowStoragePower", overviewPowerText(storagePower));
-  setOverviewText("overviewFlowStorageDirection", storagePower === null ? "待接收" : storagePower > 0 ? "放电" : storagePower < 0 ? "充电" : "静置");
-  setOverviewText("overviewFlowSoc", Number.isFinite(power.soc) ? `${formatOverviewNumber(power.soc)}%` : "--");
-  setOverviewText("overviewFlowLoadPower", overviewPowerText(power.load));
-  setOverviewText("overviewFlowLoadMeta", `需求 ${overviewPowerText(weather.loadKw)}`);
+  const greenPower = Number.isFinite(power.greenPower) ? -power.greenPower : null;
   const greenPowerShare = Number.isFinite(power.diesel) && Number.isFinite(power.load) && Math.abs(power.load) > 1e-9
     ? (1.0 - power.diesel / power.load) * 100.0
     : null;
-  const greenPower = Number.isFinite(power.greenPower) ? -power.greenPower : null;
   setOverviewText("overviewFlowGreenPower", overviewPowerText(greenPower));
   setOverviewText("overviewFlowGreenShare", overviewPercentText(greenPowerShare));
-  renderEnergyFlowVisuals(power, storagePower, greenPowerShare);
+  renderOverviewFlowGroups(power);
   renderTraineeOverviewEvents();
 }
 
@@ -6437,6 +8003,29 @@ function renderActiveTraineePage(snapshot = state.snapshot || {}, force = false)
   }
   if (activePage === "renewable") {
     renderRenewableControl(snapshot);
+    return;
+  }
+  if (activePage === "manual-changes") {
+    renderManualDefinitionChanges();
+    const activeDefinitionRevision = Number(snapshot?.static_meta?.definitions?.revision) || 0;
+    if (
+      (
+        state.manualDefinitionChangesLoadedModelId !== state.activeModelId
+        || (activeDefinitionRevision && activeDefinitionRevision !== state.manualDefinitionChangesRevision)
+      )
+      && !state.manualDefinitionChangesLoading
+      && !state.manualDefinitionChangesResetting
+      && !state.manualDefinitionChangesRetrying
+    ) {
+      loadManualDefinitionChanges();
+    }
+    return;
+  }
+  if (activePage === "parameters") {
+    renderWebRuntimeSettings();
+    if (state.webRuntimeLoadedModelId !== state.activeModelId && !state.webRuntimeLoading) {
+      loadWebRuntimeSettings();
+    }
     return;
   }
   if (activePage === "history") {
@@ -7267,18 +8856,30 @@ function measurementValuesByDevice(snapshot, measurementTypes) {
 function storageSocRatiosByDevice(snapshot) {
   const measured = measurementValuesByDevice(snapshot, ["SOC"]);
   const ratios = new Map();
-  const storageParams = parameterRows(snapshot, "DCStorageGen");
-  if (storageParams.length) {
-    storageParams.forEach((param, index) => {
-      const dev = indexedDevice(snapshot, "DCGenerator", param.idx_dcgenerator);
-      const name = deviceName(dev) || `DCGenerator_${param.idx_dcgenerator ?? index + 1}`;
-      const key = `DCGenerator|${name}`;
-      const soc = liveStorageSocRatio(
-        measured.get(key) ?? dev?.soc_curr ?? dev?.raw?.soc_curr,
-        null,
-      );
-      if (Number.isFinite(soc)) ratios.set(key, soc);
-    });
+  let linkedStorageCount = 0;
+  parameterRows(snapshot, "ACStorageGen").forEach((param, index) => {
+    linkedStorageCount += 1;
+    const dev = indexedDevice(snapshot, "ACGenerator", param.idx_acgenerator);
+    const name = deviceName(dev) || `ACGenerator_${param.idx_acgenerator ?? index + 1}`;
+    const key = `ACGenerator|${name}`;
+    const soc = liveStorageSocRatio(
+      measured.get(key) ?? dev?.soc_curr ?? dev?.raw?.soc_curr,
+      null,
+    );
+    if (Number.isFinite(soc)) ratios.set(key, soc);
+  });
+  parameterRows(snapshot, "DCStorageGen").forEach((param, index) => {
+    linkedStorageCount += 1;
+    const dev = indexedDevice(snapshot, "DCGenerator", param.idx_dcgenerator);
+    const name = deviceName(dev) || `DCGenerator_${param.idx_dcgenerator ?? index + 1}`;
+    const key = `DCGenerator|${name}`;
+    const soc = liveStorageSocRatio(
+      measured.get(key) ?? dev?.soc_curr ?? dev?.raw?.soc_curr,
+      null,
+    );
+    if (Number.isFinite(soc)) ratios.set(key, soc);
+  });
+  if (linkedStorageCount) {
     return ratios;
   }
 
@@ -7352,6 +8953,9 @@ function resetRenewableControlView(modelId = state.activeModelId) {
   Object.assign(control, {
     modelId: modelId || "",
     enabled: false,
+    receiveActive: false,
+    canRun: false,
+    prerequisiteStatus: "请先启动接收。",
     loopMode: "open",
     sending: false,
     requestActive: false,
@@ -7362,10 +8966,25 @@ function resetRenewableControlView(modelId = state.activeModelId) {
     lastSentAt: "",
     lastStatus: "正在读取学员台后台控制状态。",
     logs: [],
+    strategyTab: "ac-wind",
     logPage: 1,
     lastControlLogRenderKey: "",
   });
   state.renewableTrendHistory = [];
+}
+
+function renewableDataSourceLabel(source = "") {
+  return ({
+    "trainee-live": "学员台实时数据",
+    "trainee-cache": "学员台缓存数据",
+  })[String(source || "")] || "等待实时数据";
+}
+
+function renewablePrerequisiteStatus(control = {}) {
+  if (control.prerequisiteStatus) return control.prerequisiteStatus;
+  return control.receiveActive
+    ? "学员台正在等待第一份实时数据。"
+    : "请先启动接收，再启动新能源实时控制。";
 }
 
 function renewableTrendLifecycleChanged(previous = {}, current = {}) {
@@ -7403,6 +9022,9 @@ function applyRenewableControlState(payload = {}) {
   Object.assign(control, {
     modelId: String(payload.modelId || state.activeModelId || ""),
     enabled: Boolean(payload.enabled),
+    receiveActive: Boolean(payload.receiveActive),
+    canRun: Boolean(payload.canRun),
+    prerequisiteStatus: payload.prerequisiteStatus || "",
     loopMode: payload.loopMode === "closed" ? "closed" : "open",
     sending: Boolean(payload.sending),
     intervalSeconds: Math.max(1, toNumber(settings.intervalSeconds, control.intervalSeconds || 2)),
@@ -7491,8 +9113,11 @@ function renewableLoopModeLabel(mode = renewableLoopMode()) {
 }
 
 function noteRenewableReceiveInterruption(message) {
-  if (!state.renewableControl.enabled || currentPageName() !== "renewable") return;
-  refreshRenewableControlState({ preview: false });
+  if (message) state.renewableControl.lastStatus = message;
+  refreshRenewableControlState({
+    preview: false,
+    render: currentPageName() === "renewable",
+  });
 }
 
 function renderRenewablePager(kind, totalCount) {
@@ -7523,15 +9148,64 @@ function renewableRemoteAdjustmentPointName(row = {}) {
   return `${row.dev_type}.${row.dev_name}.${row.set_type}`;
 }
 
+function renewableTopologyCellText(value) {
+  if (Array.isArray(value)) return value.length ? value.map((item) => renewableTopologyCellText(item)).join(" -> ") : "--";
+  const text = String(value ?? "").trim();
+  return text || "--";
+}
+
+function renewableConverterPathText(row = {}) {
+  if (!Array.isArray(row.converterPath) || !row.converterPath.length) return "--";
+  const names = row.converterPath.map((device) => (
+    Array.isArray(device)
+      ? device[1]
+      : device?.dev_name ?? device?.devName ?? device?.name ?? device
+  ));
+  return names.map((name) => String(name ?? "").trim()).filter(Boolean).join(" -> ") || "--";
+}
+
+function renewableIndirectControlText(row = {}) {
+  const devices = Array.isArray(row.indirectControlDevices) ? row.indirectControlDevices : [];
+  if (!devices.length) return "--";
+  return devices.map((device) => (
+    Array.isArray(device)
+      ? device[1]
+      : device?.dev_name ?? device?.devName ?? device?.name ?? device
+  )).map((name) => String(name ?? "").trim()).filter(Boolean).join(" -> ") || "--";
+}
+
+function renewableRowBoundaryText(row = {}) {
+  if (row.category === "柴油发电") return `下限 ${formatNumber(row.minKw)} / 容量 ${formatNumber(row.capacityKw)}`;
+  if (String(row.category || "").includes("储能")) return `充 ${formatNumber(row.chargePower)} / 放 ${formatNumber(row.dischargePower)}`;
+  if (row.category === "交直流变流器") return Number.isFinite(row.transferCapacityKw)
+    ? `${formatNumber(row.transferCapacityKw)} kW`
+    : "--";
+  if (Number.isFinite(row.availableKw)) return `${formatNumber(row.availableKw)} kW`;
+  if (Number.isFinite(row.capacityKw)) return `${formatNumber(row.capacityKw)} kW`;
+  return "--";
+}
+
+function renewableRowStatusLabel(row = {}) {
+  if (row.connectionStatusLabel) return row.connectionStatusLabel;
+  if (row.statusLabel) return row.statusLabel;
+  if (row.online) return "可控";
+  if (row.activelyConnected === false) return "当前断开";
+  return "停用";
+}
+
+function renewableTopologyTitle(text) {
+  return text === "--" ? "" : text;
+}
+
 function renewableStrategyRows(plan, tabKey = state.renewableControl.strategyTab) {
-  const normalizedTab = RENEWABLE_STRATEGY_TABS[tabKey] ? tabKey : "wind";
+  const normalizedTab = RENEWABLE_STRATEGY_TABS[tabKey] ? tabKey : "ac-wind";
   const categories = RENEWABLE_STRATEGY_TABS[normalizedTab].categories;
   return (plan?.commandRows || []).filter((row) => categories.has(row.category));
 }
 
 function renderRenewableStrategyTabs(plan) {
   const requestedTab = state.renewableControl.strategyTab;
-  const activeTab = RENEWABLE_STRATEGY_TABS[requestedTab] ? requestedTab : "wind";
+  const activeTab = RENEWABLE_STRATEGY_TABS[requestedTab] ? requestedTab : "ac-wind";
   state.renewableControl.strategyTab = activeTab;
   document.querySelectorAll("[data-renewable-strategy-tab]").forEach((button) => {
     const tabKey = button.dataset.renewableStrategyTab || "";
@@ -7539,11 +9213,55 @@ function renderRenewableStrategyTabs(plan) {
     if (!tab) return;
     const active = tabKey === activeTab;
     const count = renewableStrategyRows(plan, tabKey).length;
-    button.textContent = `${tab.label} ${count}`;
+    button.textContent = tab.label;
+    button.title = `${tab.label}：${count} 台设备`;
+    button.setAttribute("aria-label", `${tab.label}，${count} 台设备`);
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-selected", String(active));
     button.tabIndex = active ? 0 : -1;
   });
+}
+
+function renewableStrategyDiagnosticRows(plan) {
+  const tabCategories = new Set();
+  Object.values(RENEWABLE_STRATEGY_TABS).forEach((tab) => {
+    tab.categories.forEach((category) => tabCategories.add(category));
+  });
+  return (plan?.commandRows || []).filter((row) => (
+    !tabCategories.has(row.category)
+    && Boolean(
+      row.topologyStatusLabel
+      || row.resourceIdentityDiagnostic
+      || row.resourceIdentityValid === false
+      || row.connectionStatusLabel
+      || row.statusLabel
+    )
+  ));
+}
+
+function renderRenewableStrategyDiagnostics(plan) {
+  const container = $("renewableStrategyDiagnostics");
+  if (!container) return;
+  const rows = renewableStrategyDiagnosticRows(plan);
+  if (!rows.length) {
+    container.hidden = true;
+    container.innerHTML = "";
+    return;
+  }
+  container.hidden = false;
+  container.innerHTML = `
+    <div class="renewable-strategy-diagnostic-list">
+      ${rows.map((row) => {
+        const deviceNameText = String(row.dev_name || row.devName || row.name || "--");
+        const statusText = String(row.topologyStatusLabel || row.resourceIdentityDiagnostic || row.statusLabel || row.connectionStatusLabel || "不可执行");
+        return `
+          <div class="renewable-strategy-diagnostic-row">
+            <span class="renewable-topology-text" title="${escapeHtml(deviceNameText)}">${escapeHtml(deviceNameText)}</span>
+            <span class="renewable-topology-text" title="${escapeHtml(statusText)}">${escapeHtml(statusText)}</span>
+            <button type="button" class="renewable-row-action" disabled>不可执行</button>
+          </div>`;
+      }).join("")}
+    </div>`;
 }
 
 function renewableControlLogs() {
@@ -7771,6 +9489,7 @@ function drawRenewableTrendChart() {
 
 function renderRenewableControl(snapshot = state.snapshot || {}) {
   const control = state.renewableControl;
+  const receiveReady = Boolean(state.receiveMode && control.receiveActive && control.canRun);
   const loopMode = renewableLoopMode(control);
   const loopModeLabel = renewableLoopModeLabel(loopMode);
   const plan = control.lastPlan;
@@ -7783,9 +9502,11 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   const hasDecisionSnapshot = Boolean(plan);
   button.textContent = control.enabled ? "停止实时控制" : "启动实时控制";
   button.classList.toggle("is-running", control.enabled);
-  button.disabled = control.sending || control.actionActive;
+  button.disabled = control.sending || control.actionActive || (!receiveReady && !control.enabled);
+  button.title = !receiveReady && !control.enabled ? "请先启动接收" : "";
   if (sendOnce) {
-    sendOnce.disabled = control.sending || control.actionActive;
+    sendOnce.disabled = control.sending || control.actionActive || !receiveReady;
+    sendOnce.title = !receiveReady ? "请先启动接收" : "";
     sendOnce.textContent = loopMode === "closed" ? "单次计算下发" : "单次计算";
   }
   document.querySelectorAll("[data-renewable-loop-mode]").forEach((modeButton) => {
@@ -7817,7 +9538,9 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   if (storagePowerDeratingButton) storagePowerDeratingButton.disabled = control.actionActive;
   if (lastActionLabel) lastActionLabel.textContent = loopMode === "closed" ? "最近下发" : "最近计算";
   if (stateNode) {
-    stateNode.textContent = control.enabled
+    stateNode.textContent = !receiveReady
+      ? "等待接收"
+      : control.enabled
       ? `${loopModeLabel}运行`
       : hasDecisionSnapshot
         ? `${loopModeLabel}待命`
@@ -7844,13 +9567,20 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   });
   const status = $("renewableControlStatus");
   if (status) {
-    status.textContent = control.sending || control.actionActive ? "学员台后台正在执行控制操作..." : control.lastStatus;
+    status.textContent = control.sending || control.actionActive
+      ? "学员台后台正在执行控制操作..."
+      : !receiveReady
+        ? renewablePrerequisiteStatus(control)
+        : control.lastStatus;
     status.classList.toggle("is-ok", control.enabled || Boolean(control.lastCalculatedAt) || Boolean(control.lastSentAt));
     status.classList.toggle("is-error", !hasDecisionSnapshot && control.enabled);
   }
-  if (summary) summary.textContent = `${plan?.commands?.length || 0} 条 · ${plan?.time || "--"} · ${loopModeLabel}`;
+  if (summary) {
+    summary.textContent = `${plan?.commands?.length || 0} 条 · ${plan?.time || "--"} · ${loopModeLabel} · ${renewableDataSourceLabel(plan?.dataQuality?.source)}`;
+  }
   renderRenewableDetailTabs();
   renderRenewableStrategyTabs(plan);
+  renderRenewableStrategyDiagnostics(plan);
   const table = $("renewableCommandTable");
   if (!table) return;
   const rows = renewableStrategyRows(plan);
@@ -7861,37 +9591,90 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   }
   table.innerHTML = `
     <table class="runtime-device-table renewable-command-table">
-      <thead><tr><th>设备名称</th><th>遥调点名称</th><th>状态</th><th>当前值</th><th>可用边界</th><th>目标值</th><th>SOC</th></tr></thead>
+      <thead>
+        <tr>
+          <th>设备名称</th>
+          <th>遥调点名称</th>
+          <th>并网侧</th>
+          <th>接入状态</th>
+          <th>接入母线</th>
+          <th>传输组</th>
+          <th>接入路径</th>
+          <th>拓扑状态</th>
+          <th>间接调节设备</th>
+          <th>当前值</th>
+          <th>可用边界</th>
+          <th>目标值</th>
+          <th>SOC</th>
+          <th>执行</th>
+        </tr>
+      </thead>
       <tbody>
-        ${rows.map((row) => `
-          <tr class="${row.online ? "" : "is-muted"}">
-            <td>${escapeHtml(row.dev_name)}</td>
-            <td class="renewable-control-point" title="${escapeHtml(renewableRemoteAdjustmentPointName(row))}">${escapeHtml(renewableRemoteAdjustmentPointName(row))}</td>
-            <td><span class="status-pill ${row.online ? "is-ok" : "is-off"}">${escapeHtml(row.statusLabel || (row.online ? "可控" : "停用"))}</span></td>
+        ${rows.map((row) => {
+          const commandable = row.online && row.commandable !== false;
+          const balanceStorage = row.category.includes("平衡储能");
+          const disabledReason = !row.online
+            ? renewableRowStatusLabel(row)
+            : row.commandable === false
+              ? renewableRowStatusLabel(row)
+              : balanceStorage
+                ? "平衡储能仅间接调节"
+                : "";
+          const pointName = renewableRemoteAdjustmentPointName(row);
+          const gridSideText = renewableTopologyCellText(row.gridSide ?? row.connectionSide);
+          const connectionText = row.connectionStatusLabel || (row.activelyConnected === false ? "当前断开" : renewableRowStatusLabel(row));
+          const busText = renewableTopologyCellText(row.bus ?? row.busbarName ?? row.busbarNode);
+          const transferGroupText = renewableTopologyCellText(row.transferGroup || row.dcTransferGroupId || "--");
+          const converterPath = row.converterPath;
+          const pathText = renewableConverterPathText({ converterPath });
+          const topologyStatusText = renewableTopologyCellText(row.topologyStatusLabel);
+          const indirectControlDevices = row.indirectControlDevices;
+          const indirectText = renewableIndirectControlText({ indirectControlDevices });
+          const boundaryText = renewableRowBoundaryText(row);
+          const targetValue = balanceStorage
+            ? optionalNumber(row.projectedTargetKw)
+            : optionalNumber(row.targetKw ?? row.commandKw);
+          const actionDisabled = !commandable || balanceStorage;
+          return `
+          <tr class="${commandable && !balanceStorage ? "" : "is-muted"}">
+            <td class="renewable-topology-text" title="${escapeHtml(row.dev_name)}">${escapeHtml(row.dev_name)}</td>
+            <td class="renewable-control-point" title="${escapeHtml(pointName)}">${escapeHtml(pointName)}</td>
+            <td class="renewable-topology-text" title="${escapeHtml(renewableTopologyTitle(gridSideText))}">${escapeHtml(gridSideText)}</td>
+            <td><span class="status-pill ${commandable ? "is-ok" : "is-off"}">${escapeHtml(connectionText)}</span></td>
+            <td class="renewable-topology-text" title="${escapeHtml(renewableTopologyTitle(busText))}">${escapeHtml(busText)}</td>
+            <td class="renewable-topology-text" title="${escapeHtml(renewableTopologyTitle(transferGroupText))}">${escapeHtml(transferGroupText)}</td>
+            <td class="renewable-topology-text" title="${escapeHtml(renewableTopologyTitle(pathText))}">${escapeHtml(pathText)}</td>
+            <td class="renewable-topology-text" title="${escapeHtml(renewableTopologyTitle(topologyStatusText))}">${escapeHtml(topologyStatusText)}</td>
+            <td class="renewable-topology-text" title="${escapeHtml(renewableTopologyTitle(indirectText))}">${escapeHtml(indirectText)}</td>
             <td class="numeric-cell">${Number.isFinite(row.currentKw) ? `${formatNumber(row.currentKw)} kW` : "--"}</td>
-            <td class="numeric-cell">${row.category === "柴油发电"
-              ? `下限 ${formatNumber(row.minKw)} / 容量 ${formatNumber(row.capacityKw)}`
-              : row.category === "储能平衡源"
-                ? `充 ${formatNumber(row.chargePower)} / 放 ${formatNumber(row.dischargePower)}`
-                : Number.isFinite(row.availableKw)
-                  ? `${formatNumber(row.availableKw)} kW`
-                  : Number.isFinite(row.capacityKw)
-                    ? `${formatNumber(row.capacityKw)} kW`
-                    : "--"}</td>
-            <td class="numeric-cell">${Number.isFinite(row.commandKw) ? `${formatNumber(row.commandKw)} kW` : "--"}</td>
-            <td>${row.soc === undefined ? "--" : formatNumber(row.soc)}</td>
-          </tr>
-        `).join("")}
+            <td class="numeric-cell" title="${escapeHtml(boundaryText)}">${escapeHtml(boundaryText)}</td>
+            <td class="numeric-cell">${Number.isFinite(targetValue) ? `${formatNumber(targetValue)} kW` : "--"}</td>
+            <td class="numeric-cell">${row.soc === undefined ? "--" : formatNumber(row.soc)}</td>
+            <td>${actionDisabled
+              ? `<button type="button" class="renewable-row-action" disabled title="${escapeHtml(disabledReason || "不可直接下发")}">不可执行</button>`
+              : '<span class="renewable-row-ready">随策略下发</span>'}</td>
+          </tr>`;
+        }).join("")}
       </tbody>
     </table>`;
 }
 
 async function toggleRenewableAuto() {
+  if (!state.renewableControl.enabled && !state.receiveMode) {
+    state.renewableControl.lastStatus = "请先启动接收，再启动新能源实时控制。";
+    renderRenewableControl(state.snapshot || {});
+    return;
+  }
   const action = state.renewableControl.enabled ? "stop" : "start";
   await runRenewableControlAction(action);
 }
 
 async function runRenewableControlOnce() {
+  if (!state.receiveMode) {
+    state.renewableControl.lastStatus = "请先启动接收，再执行单次计算。";
+    renderRenewableControl(state.snapshot || {});
+    return;
+  }
   await runRenewableControlAction("run_once");
 }
 
@@ -8056,7 +9839,7 @@ function deviceKey(dev) {
 }
 
 function deviceName(dev) {
-  return String(dev.dev_name || dev.name || "");
+  return String(dev?.dev_name || dev?.name || "");
 }
 
 function deviceType(dev) {
@@ -10996,7 +12779,7 @@ async function toggleReceiveMode() {
     state.receiveRequestActive = false;
     persistActiveModelContext({ receiveMode: false, frozen: true });
     addRuntimeLog("接收模式", "模拟台实时数据", "停止接收", `冻结于 ${state.lastReceiveAt || "--"}`, "warn");
-    noteRenewableReceiveInterruption("连续接收已停止，新能源优先策略保持运行，继续使用最近一次有效数据。");
+    noteRenewableReceiveInterruption("连续接收已停止，新能源实时控制已同步停止。");
     renderReceiveMode();
     return;
   }
@@ -11107,7 +12890,7 @@ $("renewableControlPeriod").addEventListener("change", updateRenewableSettings);
 ].forEach((id) => $(id)?.addEventListener("change", updateRenewableSettings));
 document.querySelectorAll("[data-renewable-strategy-tab]").forEach((button) => {
   button.addEventListener("click", () => {
-    const tabKey = button.dataset.renewableStrategyTab || "wind";
+    const tabKey = button.dataset.renewableStrategyTab || "ac-wind";
     if (!RENEWABLE_STRATEGY_TABS[tabKey]) return;
     state.renewableControl.strategyTab = tabKey;
     renderRenewableControl(state.snapshot || {});
@@ -11132,6 +12915,28 @@ $("renewableControlLogPager")?.addEventListener("click", (event) => {
   renderRenewableControlLogs();
 });
 $("clearRuntimeLogs").addEventListener("click", clearTraineeRuntimeLogs);
+$("saveRuntimeParameters").addEventListener("click", saveWebRuntimeSettings);
+$("undoRuntimeParameters").addEventListener("click", undoWebRuntimeSettings);
+$("restoreRuntimeParameterDefaults").addEventListener("click", restoreWebRuntimeDefaults);
+document.querySelectorAll("[data-runtime-setting]").forEach((input) => {
+  input.addEventListener("input", () => updateWebRuntimeDraft(input));
+});
+$("refreshManualChanges").addEventListener("click", loadManualDefinitionChanges);
+$("retryPendingManualChanges").addEventListener("click", retryPendingManualDefinitionChanges);
+$("resetSelectedManualChanges").addEventListener("click", resetSelectedManualDefinitionChanges);
+$("manualDefinitionChangesTable").addEventListener("change", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement) || target.type !== "checkbox") return;
+  if (target.matches("[data-manual-change-select-all]")) {
+    state.manualDefinitionChangeSelection = target.checked
+      ? new Set(state.manualDefinitionChanges.map((item) => String(item.id || "")).filter(Boolean))
+      : new Set();
+    renderManualDefinitionChanges();
+    return;
+  }
+  const changeId = target.dataset.manualChangeId || "";
+  if (changeId) toggleManualDefinitionChange(changeId, target.checked);
+});
 $("traineeRuntimeLogTypeFilter").addEventListener("change", (event) => {
   state.runtimeLogTypeFilter = event.target.value || "all";
   state.runtimeLogPage = 1;
@@ -11227,5 +13032,7 @@ initVerticalSplitters();
 renderReceiveMode();
 renderHistory();
 initPageNavigation();
-loadModels().finally(refresh);
-setInterval(refresh, 1000);
+loadModels().finally(() => {
+  refresh();
+  restartRefreshScheduler();
+});

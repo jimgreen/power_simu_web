@@ -8,12 +8,16 @@ that both the simulator console and trainee console can poll.
 
 from __future__ import annotations
 
+import hashlib
+import heapq
 import json
 import math
 import re
 import shutil
 import threading
 import time
+import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -47,8 +51,10 @@ from simu.definition_editing import (
     atomic_write_text,
     normalize_device_changes,
     normalize_measurement_changes,
+    require_definition_revision,
     render_ebook_aligned,
 )
+from simu.web_runtime_settings import runtime_settings_payload, updated_runtime_settings_entry
 
 
 WEATHER_HEADER = (
@@ -72,6 +78,10 @@ DEFAULT_WEATHER: Dict[str, Optional[float]] = {
     "load_kw": 100.0,
 }
 UNKNOWN_WEATHER_VALUE = "NA"
+
+
+class ServiceInstanceRetiredError(RuntimeError):
+    """Raised when a request targets a service lifecycle that has been retired."""
 
 WEATHER_MEASUREMENTS = (
     ("wind_speed_mps", "wind_speed", "WIND_SPEED"),
@@ -104,10 +114,15 @@ STAT_HEADERS = {
     "SetValue": ("dev_type", "dev_name", "set_type", "set_value"),
     "StorageSoc": ("dev_type", "idx", "name", "soc_curr"),
 }
+STORAGE_PARAMETER_SPECS = (
+    ("ACStorageGen", "ACGenerator", "idx_acgenerator"),
+    ("DCStorageGen", "DCGenerator", "idx_dcgenerator"),
+)
 
 SOURCE_DEFINITION_FILES = ("model.e", "meas.e", "stat.e", "control.e", "weather.e", "curves.e")
 LEGACY_RUNTIME_DEFINITION_FILES = SOURCE_DEFINITION_FILES + ("device.e",)
 DIAGRAM_FILE_NAME = "diagram.svg"
+MANUAL_DEFINITION_CHANGES_FILE = ".manual_definition_changes.json"
 CONTROL_DEFINITION_BLOCKS = ("RunStat", "CbOpenStat", "SetValue", "StorageSoc")
 CLOCK_SPEED_LEVELS = (1.0, 5.0, 15.0, 30.0, 60.0, 300.0, 900.0, 1800.0, 3600.0)
 SIMULATION_MODE_CONFIGS: Dict[str, Dict[str, float | int | str]] = {
@@ -818,6 +833,7 @@ class PolarMicrogridSimulator:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.model_id = _safe_model_id(model_id)
         self.model_name = model_name or self.model_id
+        self.service_instance_id = uuid.uuid4().hex
         self.kernel = kernel or simu_loop.run_once
         self.period_seconds = float(period_seconds)
         self._initial_compute_interval_seconds = _compute_interval_seconds(compute_interval_seconds)
@@ -827,7 +843,11 @@ class PolarMicrogridSimulator:
         self.random_seed = random_seed
         self.clock = ClockState()
         self.lock = threading.RLock()
-        self.definition_update_lock = threading.Lock()
+        self._service_instance_lifecycle_lock = threading.RLock()
+        self._service_instance_retired = False
+        # Definition/control transactions always acquire this lock before
+        # ``self.lock``. Reentrancy lets model-import helpers compose safely.
+        self.definition_update_lock = threading.RLock()
         # Curve definitions change only through explicit editing APIs. Keep their
         # short read lock separate from the long-running power-flow calculation lock.
         self.curves_lock = threading.RLock()
@@ -861,11 +881,23 @@ class PolarMicrogridSimulator:
         self.measurement_before: List[str] = []
         self.measurement_rows: List[List[str]] = []
         self.measurement_after: List[str] = []
+        self._definition_publish_epoch = 0
+        self._definition_snapshot_sync_lock = threading.Lock()
+        self._definition_mirror_refs = (
+            self.source_model_book,
+            self.dev_define_book,
+            self.measurement_before,
+            self.measurement_rows,
+            self.measurement_after,
+        )
         self.latest_real_rows: List[List[str]] = []
         self.latest_scada_rows: List[List[str]] = []
         self._fault_restore: Dict[Tuple[str, str, str], str] = {}
         self._last_scada_values: Dict[str, float] = {}
-        self._wind_converter_names_cache: Optional[set[str]] = None
+        self._wind_converter_names_cache: Optional[Tuple[int, set[str]]] = None
+        self._power_flow_connection_sides_cache: Optional[
+            Tuple[int, Tuple[Tuple[str, str, str], ...], Dict[Tuple[str, str], str]]
+        ] = None
 
         self.work_dir = self.runtime_dir / ".simu_loop_work"
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -901,8 +933,31 @@ class PolarMicrogridSimulator:
         self.commands_file = self.runtime_dir / "commands.json"
         self.runtime_logs_file = self.runtime_dir / "runtime_logs.json"
         self.trainee_receive_file = self.runtime_dir / "trainee_receive.json"
+        self.manual_definition_changes_file = self.sim_dir / MANUAL_DEFINITION_CHANGES_FILE
+        self._manual_definition_changes: Dict[str, Dict[str, Any]] = {}
 
         self._load_runtime_state_from_disk()
+
+    def _service_instance_active_locked(self) -> bool:
+        return not self._service_instance_retired
+
+    def service_instance_active(self) -> bool:
+        with self._service_instance_lifecycle_lock:
+            return self._service_instance_active_locked()
+
+    def _retire_service_instance_locked(self) -> None:
+        with self._service_instance_lifecycle_lock:
+            self._service_instance_retired = True
+
+    @contextmanager
+    def _active_definition_update_guard(self):
+        # Definition edits must not wait for a running kernel that owns service.lock.
+        # The lifecycle lock still makes retirement versus memory/WAL/E publication atomic.
+        with self.definition_update_lock:
+            with self._service_instance_lifecycle_lock:
+                if not self._service_instance_active_locked():
+                    raise ServiceInstanceRetiredError("定义修改请求所属模型生命周期已失效或已退休。")
+                yield
 
     def _load_runtime_state_from_disk(self) -> None:
         self._copy_runtime_inputs()
@@ -922,76 +977,161 @@ class PolarMicrogridSimulator:
         self._runtime_log_seq = max((int(_to_float(item.get("seq"), 0) or 0) for item in self.runtime_logs), default=0)
         self.reload_definition_state()
         self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
+        self._load_manual_definition_changes()
 
     def reset_runtime_for_model_change(self) -> Dict[str, int]:
         """Discard runtime artifacts and rebuild a clean in-memory state from source definitions."""
-        with self.lock:
-            if self.clock.state != "stopped":
-                raise ValueError(f"模型运行中或暂停中，无法清理运行数据: {self.model_id}")
-            removed = _clear_directory_contents(self.runtime_dir)
-            self.runtime_dir.mkdir(parents=True, exist_ok=True)
-            self.work_dir.mkdir(parents=True, exist_ok=True)
+        with self.definition_update_lock:
+            with self.lock:
+                if self.clock.state != "stopped":
+                    raise ValueError(f"模型运行中或暂停中，无法清理运行数据: {self.model_id}")
+                removed = _clear_directory_contents(self.runtime_dir)
+                self.runtime_dir.mkdir(parents=True, exist_ok=True)
+                self.work_dir.mkdir(parents=True, exist_ok=True)
 
-            self.compute_interval_seconds = self._initial_compute_interval_seconds
-            self.storage_initial_soc = DEFAULT_STORAGE_INITIAL_SOC
-            self.clock = ClockState()
-            self.command_history = []
-            self.runtime_logs = []
-            self._runtime_log_seq = 0
-            self._measurement_delta_seq = 0
-            self._measurement_delta_state = {}
-            self._measurement_delta_history = []
-            self._last_command_response_index = 0
-            self.latest_result = {}
-            self.latest_measurements = {}
-            self.latest_model_book = None
-            self.latest_device_states = []
-            self.latest_real_rows = []
-            self.latest_scada_rows = []
-            self._fault_restore = {}
-            self._last_scada_values = {}
+                self.compute_interval_seconds = self._initial_compute_interval_seconds
+                self.storage_initial_soc = DEFAULT_STORAGE_INITIAL_SOC
+                self.clock = ClockState()
+                self.command_history = []
+                self.runtime_logs = []
+                self._runtime_log_seq = 0
+                self._measurement_delta_seq = 0
+                self._measurement_delta_state = {}
+                self._measurement_delta_history = []
+                self._last_command_response_index = 0
+                self.latest_result = {}
+                self.latest_measurements = {}
+                self.latest_model_book = None
+                self.latest_device_states = []
+                self.latest_real_rows = []
+                self.latest_scada_rows = []
+                self._fault_restore = {}
+                self._last_scada_values = {}
+                self._clear_manual_definition_changes_unlocked()
 
-            self._load_runtime_state_from_disk()
-            return {"removed": removed}
+                self._load_runtime_state_from_disk()
+                return {"removed": removed}
 
     @property
     def definition_snapshot(self) -> DefinitionSnapshot:
+        epoch_before = self._definition_publish_epoch
         snapshot = self._definition_snapshot
-        measurement_before = tuple(self.measurement_before)
-        measurement_rows = tuple(tuple(row) for row in self.measurement_rows)
-        measurement_after = tuple(self.measurement_after)
-        if (
-            self.source_model_book is snapshot.model_book
-            and self.dev_define_book is snapshot.dev_define_book
-            and measurement_before == snapshot.measurement_before
-            and measurement_rows == snapshot.measurement_rows
-            and measurement_after == snapshot.measurement_after
+        if epoch_before & 1:
+            return snapshot
+        mirror_refs = (
+            self.source_model_book,
+            self.dev_define_book,
+            self.measurement_before,
+            self.measurement_rows,
+            self.measurement_after,
+        )
+        epoch_after = self._definition_publish_epoch
+        if epoch_before != epoch_after or epoch_after & 1:
+            return self._definition_snapshot
+        if all(
+            current is published
+            for current, published in zip(mirror_refs, self._definition_mirror_refs)
         ):
             return snapshot
-        snapshot = DefinitionSnapshot(
-            revision=snapshot.revision + 1,
-            model_book=self.source_model_book,
-            dev_define_book=self.dev_define_book,
-            measurement_before=measurement_before,
-            measurement_rows=measurement_rows,
-            measurement_after=measurement_after,
-        )
-        self._definition_snapshot = snapshot
-        return snapshot
+
+        # A few legacy tests and integrations replace mirror objects directly.
+        # Copy those objects before the short snapshot commit window.
+        measurement_before = tuple(mirror_refs[2])
+        measurement_rows = tuple(tuple(row) for row in mirror_refs[3])
+        measurement_after = tuple(mirror_refs[4])
+        with self._definition_snapshot_sync_lock:
+            if (
+                self._definition_publish_epoch != epoch_after
+                or self._definition_publish_epoch & 1
+                or self._definition_snapshot is not snapshot
+            ):
+                return self._definition_snapshot
+            live_refs = (
+                self.source_model_book,
+                self.dev_define_book,
+                self.measurement_before,
+                self.measurement_rows,
+                self.measurement_after,
+            )
+            if not all(current is captured for current, captured in zip(live_refs, mirror_refs)):
+                return self._definition_snapshot
+            candidate = DefinitionSnapshot(
+                revision=snapshot.revision + 1,
+                model_book=mirror_refs[0],
+                dev_define_book=mirror_refs[1],
+                measurement_before=measurement_before,
+                measurement_rows=measurement_rows,
+                measurement_after=measurement_after,
+            )
+            self._definition_publish_epoch = epoch_after + 1
+            self._definition_mirror_refs = mirror_refs
+            self._definition_snapshot = candidate
+            self._definition_publish_epoch = epoch_after + 2
+            self._wind_converter_names_cache = None
+            self._power_flow_connection_sides_cache = None
+            return candidate
 
     def _publish_definition_snapshot(self, snapshot: DefinitionSnapshot) -> None:
-        self._definition_snapshot = snapshot
-        self.source_model_book = snapshot.model_book
-        self.dev_define_book = snapshot.dev_define_book
-        self.measurement_before = list(snapshot.measurement_before)
-        self.measurement_rows = [list(row) for row in snapshot.measurement_rows]
-        self.measurement_after = list(snapshot.measurement_after)
-        self._wind_converter_names_cache = None
+        normalized = DefinitionSnapshot(
+            revision=int(snapshot.revision),
+            model_book=snapshot.model_book,
+            dev_define_book=snapshot.dev_define_book,
+            measurement_before=tuple(snapshot.measurement_before),
+            measurement_rows=tuple(tuple(row) for row in snapshot.measurement_rows),
+            measurement_after=tuple(snapshot.measurement_after),
+        )
+        measurement_before = list(normalized.measurement_before)
+        measurement_rows = [list(row) for row in normalized.measurement_rows]
+        measurement_after = list(normalized.measurement_after)
+        with self._definition_snapshot_sync_lock:
+            epoch = self._definition_publish_epoch
+            if epoch & 1:  # pragma: no cover - publishers are serialized by the lock.
+                raise RuntimeError("定义快照发布序列处于无效状态")
+            old_snapshot = self._definition_snapshot
+            old_mirrors = (
+                self.source_model_book,
+                self.dev_define_book,
+                self.measurement_before,
+                self.measurement_rows,
+                self.measurement_after,
+            )
+            old_refs = self._definition_mirror_refs
+            self._definition_publish_epoch = epoch + 1
+            try:
+                self.source_model_book = normalized.model_book
+                self.dev_define_book = normalized.dev_define_book
+                self.measurement_before = measurement_before
+                self.measurement_rows = measurement_rows
+                self.measurement_after = measurement_after
+                self._definition_mirror_refs = (
+                    self.source_model_book,
+                    self.dev_define_book,
+                    self.measurement_before,
+                    self.measurement_rows,
+                    self.measurement_after,
+                )
+                # The immutable pointer is committed last; readers seeing an odd
+                # epoch return the previously committed old or this complete new value.
+                self._definition_snapshot = normalized
+            except Exception:
+                (
+                    self.source_model_book,
+                    self.dev_define_book,
+                    self.measurement_before,
+                    self.measurement_rows,
+                    self.measurement_after,
+                ) = old_mirrors
+                self._definition_mirror_refs = old_refs
+                self._definition_snapshot = old_snapshot
+                raise
+            finally:
+                self._definition_publish_epoch = epoch + 2
+            self._wind_converter_names_cache = None
+            self._power_flow_connection_sides_cache = None
 
     def reload_definition_state(self) -> None:
         """Load source definition E files into the live calculation state."""
-        self.source_model_book = _load_book(self.source_files["model"])
-        self._wind_converter_names_cache = None
+        model_book = _load_book(self.source_files["model"])
         self.source_stat_book = _load_book(self.source_files["stat"])
         self.control_book = _load_book(
             self.source_files["control"] if self.source_files["control"].exists() else self.source_files["stat"]
@@ -999,21 +1139,24 @@ class PolarMicrogridSimulator:
         self.weather_book = _load_book(
             self.source_files["weather"] if self.source_files["weather"].exists() else self.work_files["weather"]
         )
-        self.dev_define_book = simu_loop._capability_define_book(self.source_model_book, self._legacy_dev_define_file())
+        dev_define_book = simu_loop._capability_define_book(
+            model_book,
+            self._legacy_dev_define_file(),
+        )
         try:
-            self.measurement_before, self.measurement_rows, self.measurement_after = parse_measurement_rows(
+            measurement_before, measurement_rows, measurement_after = parse_measurement_rows(
                 self.source_files["meas"]
             )
         except Exception:
-            self.measurement_before, self.measurement_rows, self.measurement_after = [], [], []
+            measurement_before, measurement_rows, measurement_after = [], [], []
         self._publish_definition_snapshot(
             DefinitionSnapshot(
                 revision=self._definition_snapshot.revision + 1,
-                model_book=self.source_model_book,
-                dev_define_book=self.dev_define_book,
-                measurement_before=tuple(self.measurement_before),
-                measurement_rows=tuple(tuple(row) for row in self.measurement_rows),
-                measurement_after=tuple(self.measurement_after),
+                model_book=model_book,
+                dev_define_book=dev_define_book,
+                measurement_before=tuple(measurement_before),
+                measurement_rows=tuple(tuple(row) for row in measurement_rows),
+                measurement_after=tuple(measurement_after),
             )
         )
         self.runtime_stat_book = self._base_stat_book_for_controls()
@@ -1025,7 +1168,7 @@ class PolarMicrogridSimulator:
         self.latest_real_rows = []
         self.latest_scada_rows = []
         self.latest_measurements = {
-            "definitions": [_measurement_row_to_dict(row) for row in self.measurement_rows],
+            "definitions": [_measurement_row_to_dict(row) for row in measurement_rows],
             "real": [],
             "scada": [],
         }
@@ -1178,6 +1321,8 @@ class PolarMicrogridSimulator:
 
     def set_trainee_receive_state(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
         with self.lock:
+            if not self._service_instance_active_locked():
+                raise RuntimeError("学员台接收请求所属模型生命周期已失效或已退休。")
             existing = self.trainee_receive_state()
             merged = {**existing, **dict(payload)}
             if "updated_at" not in payload and "updatedAt" not in payload:
@@ -1450,6 +1595,38 @@ class PolarMicrogridSimulator:
             )
             return {"system_parameters": self.system_parameters(), "clock": self.clock.as_dict()}
 
+    def web_runtime_settings(self, role: str) -> Dict[str, Any]:
+        with self.lock:
+            return runtime_settings_payload(
+                self.local_settings,
+                role,
+                model_id=self.model_id,
+            )
+
+    def set_web_runtime_settings(self, role: str, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        with self.lock:
+            with self._service_instance_lifecycle_lock:
+                if not self._service_instance_active_locked():
+                    raise ServiceInstanceRetiredError(
+                        "运行参数请求所属模型生命周期已失效或已退休。"
+                    )
+                entry = updated_runtime_settings_entry(
+                    self.local_settings,
+                    role,
+                    payload,
+                    updated_at=_now_text(),
+                )
+                existing = self.local_settings.get("web_runtime_parameters", {})
+                parameters = dict(existing) if isinstance(existing, Mapping) else {}
+                parameters[str(role).strip().lower()] = entry
+                self.local_settings["web_runtime_parameters"] = parameters
+                _write_json(self.settings_file, self.local_settings)
+                return runtime_settings_payload(
+                    self.local_settings,
+                    role,
+                    model_id=self.model_id,
+                )
+
     def clone_files_to(self, target_dir: Path) -> None:
         with self.lock:
             _write_json(self.curves_file, self.curves)
@@ -1529,15 +1706,107 @@ class PolarMicrogridSimulator:
             return False
         return math.floor((end + 1e-9) / cycle_minutes) > math.floor((start + 1e-9) / cycle_minutes)
 
-    def _runtime_storage_soc_values(self) -> Dict[str, float]:
+    @staticmethod
+    def _legacy_storage_target_key(
+        row: Mapping[str, Any],
+        device_keys: set[Tuple[str, str]],
+    ) -> Optional[Tuple[str, str]]:
+        name = str(row.get("name", "")).strip()
+        declared_type = str(row.get("dev_type", "")).strip()
+        source_name = str(row.get("source_name", "")).strip()
+        target_name = source_name or name
+        if not target_name:
+            return None
+        if declared_type:
+            key = (declared_type, target_name)
+            if declared_type in ("ACGenerator", "DCGenerator") and key not in device_keys:
+                return None
+            return key
+        for key in (("DCGenerator", target_name), ("DCGenerator", f"{target_name}_vsrc")):
+            if key in device_keys:
+                return key
+        return ("ESS", name) if name else None
+
+    def _storage_target_aliases(self) -> Dict[str, set[Tuple[str, str]]]:
+        definition_snapshot = self.definition_snapshot
+        model_book = definition_snapshot.model_book
+        device_keys = {
+            (dev_type, str(row.get("name", "")).strip())
+            for dev_type in ("ACGenerator", "DCGenerator")
+            for row in getattr(model_book.data.get(dev_type), "data", [])
+            if str(row.get("name", "")).strip()
+        }
+        aliases: Dict[str, set[Tuple[str, str]]] = {}
+
+        def add_alias(name: str, key: Tuple[str, str]) -> None:
+            normalized = str(name or "").strip()
+            if normalized:
+                aliases.setdefault(normalized, set()).add(key)
+
+        generators_by_idx = {
+            dev_type: {
+                str(row.get("idx", "")): row
+                for row in getattr(model_book.data.get(dev_type), "data", [])
+                if str(row.get("idx", ""))
+            }
+            for dev_type in ("ACGenerator", "DCGenerator")
+        }
+        seen_structured: set[Tuple[str, str]] = set()
+        for block_name, generator_type, index_field in STORAGE_PARAMETER_SPECS:
+            for row in getattr(model_book.data.get(block_name), "data", []):
+                source = generators_by_idx[generator_type].get(str(row.get(index_field, "")))
+                if source is None:
+                    continue
+                name = str(source.get("name", "")).strip()
+                key = (generator_type, name)
+                if not name or key in seen_structured:
+                    continue
+                seen_structured.add(key)
+                add_alias(name, key)
+
+        for row in getattr(definition_snapshot.dev_define_book.data.get("estorage"), "data", []):
+            target_key = self._legacy_storage_target_key(row, device_keys)
+            if target_key is None:
+                continue
+            name = str(row.get("name", "")).strip()
+            source_name = str(row.get("source_name", "")).strip()
+            for alias_name in (
+                name,
+                source_name,
+                target_key[1],
+                name.removesuffix("_vsrc"),
+                source_name.removesuffix("_vsrc"),
+                target_key[1].removesuffix("_vsrc"),
+            ):
+                add_alias(alias_name, target_key)
+        return aliases
+
+    def _runtime_storage_soc_values(self) -> Dict[Tuple[str, str], float]:
         storage_block = self.runtime_stat_book.data.get("StorageSoc") or self.runtime_stat_book.data.get("StorageStatus")
-        values: Dict[str, float] = {}
+        typed_values: Dict[Tuple[str, str], float] = {}
+        blank_values: List[Tuple[str, float]] = []
         for row in getattr(storage_block, "data", []):
+            dev_type = str(row.get("dev_type", "")).strip()
             name = str(row.get("name", row.get("dev_name", ""))).strip()
             if not name:
                 continue
-            values[name] = _to_float(row.get("soc_curr", row.get("soc", row.get("soc_cur", 0.0))), 0.0) or 0.0
-        return values
+            value = _to_float(
+                row.get("soc_curr", row.get("soc", row.get("soc_cur", 0.0))),
+                0.0,
+            ) or 0.0
+            if dev_type:
+                typed_values[(dev_type, name)] = value
+            else:
+                blank_values.append((name, value))
+
+        resolved = dict(typed_values)
+        aliases = self._storage_target_aliases()
+        for name, value in blank_values:
+            targets = aliases.get(name, set())
+            if len(targets) != 1:
+                continue
+            resolved.setdefault(next(iter(targets)), value)
+        return resolved
 
     def _sync_latest_storage_soc_measurement_rows(self) -> None:
         soc_values = self._runtime_storage_soc_values()
@@ -1550,9 +1819,11 @@ class PolarMicrogridSimulator:
                     continue
                 if str(row[4]).upper() != "SOC":
                     continue
+                dev_type = str(row[2]).strip()
                 dev_name = str(row[3]).strip()
-                if dev_name in soc_values:
-                    row[7] = _number_text(soc_values[dev_name])
+                key = (dev_type, dev_name)
+                if key in soc_values:
+                    row[7] = _number_text(soc_values[key])
 
         sync_rows(self.latest_real_rows)
         sync_rows(self.latest_scada_rows)
@@ -2512,17 +2783,25 @@ class PolarMicrogridSimulator:
         row = block.data[0]
         return {header: row.get(header, "") for header in block.header_list}
 
-    def _load_flow_input_model_book(self) -> Optional[EBook]:
+    def _load_flow_input_model_book(
+        self,
+        definition_snapshot: Optional[DefinitionSnapshot] = None,
+    ) -> Optional[EBook]:
         if self.latest_model_book is not None:
             return self.latest_model_book
-        return self.source_model_book
+        active_snapshot = definition_snapshot or self.definition_snapshot
+        return active_snapshot.model_book
 
-    def _renewable_limit_boundary_lines(self) -> List[str]:
+    def _renewable_limit_boundary_lines(
+        self,
+        definition_snapshot: Optional[DefinitionSnapshot] = None,
+    ) -> List[str]:
+        active_snapshot = definition_snapshot or self.definition_snapshot
         weather = simu_loop._weather_values_from_book(self.weather_book)
-        model_book = self._load_flow_input_model_book()
+        model_book = self._load_flow_input_model_book(active_snapshot)
         if model_book is None:
             return ["新能源限值 未读取到潮流输入模型"]
-        device_book = self.dev_define_book
+        device_book = active_snapshot.dev_define_book
         if not device_book.data:
             return ["新能源限值 未读取到 model.e 内的设备能力参数"]
 
@@ -2643,7 +2922,11 @@ class PolarMicrogridSimulator:
             for (dev_type, dev_name), values in grouped.items()
         ]
 
-    def _device_category_names(self) -> Dict[str, set[str]]:
+    def _device_category_names(
+        self,
+        definition_snapshot: Optional[DefinitionSnapshot] = None,
+    ) -> Dict[str, set[str]]:
+        active_snapshot = definition_snapshot or self.definition_snapshot
         categories = {
             "wind": set(),
             "pv": set(),
@@ -2651,8 +2934,8 @@ class PolarMicrogridSimulator:
             "load": set(),
             "storage": set(),
         }
-        model_book = self.source_model_book
-        capability_book = self.dev_define_book
+        model_book = active_snapshot.model_book
+        capability_book = active_snapshot.dev_define_book
         for category, block_name in {
             "wind": "wind_generator",
             "pv": "pv_generator",
@@ -2675,12 +2958,16 @@ class PolarMicrogridSimulator:
                 categories["load"].add(name)
         return categories
 
-    def _wind_converter_names(self) -> set[str]:
+    def _wind_converter_names(
+        self,
+        definition_snapshot: Optional[DefinitionSnapshot] = None,
+    ) -> set[str]:
+        active_snapshot = definition_snapshot or self.definition_snapshot
         cached = self._wind_converter_names_cache
-        if cached is not None:
-            return cached
+        if cached is not None and cached[0] == active_snapshot.revision:
+            return cached[1]
 
-        model_book = self.source_model_book
+        model_book = active_snapshot.model_book
         ac_generators = {
             str(row.get("idx", "")): row
             for row in getattr(model_book.data.get("ACGenerator"), "data", [])
@@ -2720,7 +3007,7 @@ class PolarMicrogridSimulator:
             if topology_match or explicit_match:
                 names.add(name)
 
-        self._wind_converter_names_cache = names
+        self._wind_converter_names_cache = (active_snapshot.revision, names)
         return names
 
     def _measurement_power_category(
@@ -2777,12 +3064,471 @@ class PolarMicrogridSimulator:
                 return values[meas_type]
         return None
 
+    def _power_flow_connection_sides(
+        self,
+        resources: Sequence[Tuple[str, str, str]],
+        definition_snapshot: Optional[DefinitionSnapshot] = None,
+    ) -> Dict[Tuple[str, str], str]:
+        resource_key = tuple(sorted(set(resources)))
+        definition_snapshot = definition_snapshot or self.definition_snapshot
+        cached = self._power_flow_connection_sides_cache
+        if cached is not None and cached[0] == definition_snapshot.revision and cached[1] == resource_key:
+            return dict(cached[2])
+
+        model_book = definition_snapshot.model_book
+
+        def rows(block_name: str) -> Sequence[Mapping[str, Any]]:
+            return getattr(model_book.data.get(block_name), "data", [])
+
+        def node_id(value: Any) -> str:
+            return str(value).strip() if value is not None else ""
+
+        adjacency: Dict[
+            Tuple[str, str],
+            List[Tuple[Tuple[str, str], Tuple[int, int]]],
+        ] = {}
+
+        def add_edge(
+            left: Tuple[str, str],
+            right: Tuple[str, str],
+            cost: Tuple[int, int],
+        ) -> None:
+            adjacency.setdefault(left, []).append((right, cost))
+            adjacency.setdefault(right, []).append((left, cost))
+
+        same_domain_edges = (
+            ("ACBranch", "ac", False),
+            ("ACLine", "ac", False),
+            ("ACTransformer", "ac", False),
+            ("ACZeroBranch", "ac", True),
+            ("ACSwitch", "ac", True),
+            ("ACBreak", "ac", True),
+            ("ACACConverter", "ac", False),
+            ("DCBranch", "dc", False),
+            ("DCLine", "dc", False),
+            ("DCZeroBranch", "dc", True),
+            ("DCSwitch", "dc", True),
+            ("DCBreak", "dc", True),
+            ("DCDCConverter", "dc", False),
+        )
+        for block_name, domain, switchlike in same_domain_edges:
+            for row in rows(block_name):
+                left_id = node_id(row.get("i_node"))
+                right_id = node_id(row.get("j_node"))
+                if not left_id or not right_id:
+                    continue
+                add_edge(
+                    (domain, left_id),
+                    (domain, right_id),
+                    (0, 0) if switchlike else (0, 1),
+                )
+
+        for row in rows("DCACConverter"):
+            ac_node = node_id(row.get("ac_node"))
+            dc_node = node_id(row.get("dc_node"))
+            if ac_node and dc_node:
+                add_edge(("ac", ac_node), ("dc", dc_node), (1, 1))
+
+        anchors: Dict[Tuple[str, str], set[str]] = {}
+        for block_name, domain in (("ACRealBs", "ac"), ("DCRealBs", "dc")):
+            for row in rows(block_name):
+                terminal = node_id(row.get("node"))
+                if terminal:
+                    anchors.setdefault((domain, terminal), set()).add(domain)
+
+        generators_by_name = {
+            dev_type: {
+                str(row.get("name", "")).strip(): row
+                for row in rows(dev_type)
+                if str(row.get("name", "")).strip()
+            }
+            for dev_type in ("ACGenerator", "DCGenerator")
+        }
+        sides: Dict[Tuple[str, str], str] = {}
+        for _category, dev_type, dev_name in resource_key:
+            native_side = "ac" if dev_type == "ACGenerator" else "dc" if dev_type == "DCGenerator" else ""
+            generator = generators_by_name.get(dev_type, {}).get(dev_name)
+            terminal = node_id(generator.get("node")) if generator is not None else ""
+            if not native_side or not terminal:
+                continue
+            start = (native_side, terminal)
+            queue: List[Tuple[int, int, Tuple[str, str]]] = [(0, 0, start)]
+            best_node_cost: Dict[Tuple[str, str], Tuple[int, int]] = {start: (0, 0)}
+            best_anchor_cost: Dict[str, Tuple[int, int]] = {}
+            while queue:
+                domain_changes, hop_count, node = heapq.heappop(queue)
+                cost = (domain_changes, hop_count)
+                if best_node_cost.get(node) != cost:
+                    continue
+                node_anchors = anchors.get(node, set())
+                if node_anchors:
+                    for anchor_side in node_anchors:
+                        current = best_anchor_cost.get(anchor_side)
+                        if current is None or cost < current:
+                            best_anchor_cost[anchor_side] = cost
+                    continue
+                for neighbor, edge_cost in adjacency.get(node, []):
+                    next_cost = (cost[0] + edge_cost[0], cost[1] + edge_cost[1])
+                    current = best_node_cost.get(neighbor)
+                    if current is not None and current <= next_cost:
+                        continue
+                    best_node_cost[neighbor] = next_cost
+                    heapq.heappush(queue, (next_cost[0], next_cost[1], neighbor))
+
+            ac_cost = best_anchor_cost.get("ac")
+            dc_cost = best_anchor_cost.get("dc")
+            if ac_cost is None and dc_cost is None:
+                continue
+            if dc_cost is None or (ac_cost is not None and ac_cost < dc_cost):
+                sides[(dev_type, dev_name)] = "ac"
+            elif ac_cost is None or dc_cost < ac_cost:
+                sides[(dev_type, dev_name)] = "dc"
+
+        self._power_flow_connection_sides_cache = (
+            definition_snapshot.revision,
+            resource_key,
+            dict(sides),
+        )
+        return sides
+
+    def _power_flow_device_profiles(
+        self,
+        definition_snapshot: Optional[DefinitionSnapshot] = None,
+    ) -> List[Dict[str, Any]]:
+        active_snapshot = definition_snapshot or self.definition_snapshot
+        model_book = active_snapshot.model_book
+        category_names = self._device_category_names(active_snapshot)
+        run_stats, _cb_status, _set_values, _soc_values = self._stat_maps()
+        latest_states = {
+            (str(item.get("dev_type", "")), str(item.get("dev_name", item.get("name", "")))): item
+            for item in self.latest_device_states
+            if str(item.get("dev_type", "")) and str(item.get("dev_name", item.get("name", "")))
+        }
+
+        def block_rows(name: str) -> List[Mapping[str, Any]]:
+            return list(getattr(model_book.data.get(name), "data", []))
+
+        generator_rows: Dict[str, Dict[str, Mapping[str, Any]]] = {}
+        for dev_type in ("ACGenerator", "DCGenerator"):
+            generator_rows[dev_type] = {
+                str(row.get("idx", "")): row
+                for row in block_rows(dev_type)
+                if str(row.get("idx", ""))
+            }
+
+        referenced_categories: Dict[Tuple[str, str], str] = {}
+        storage_capacity_by_key: Dict[Tuple[str, str], float] = {}
+        reference_blocks = (
+            ("ACWindGen", "ACGenerator", "idx_acgenerator", "wind"),
+            ("DCWindGen", "DCGenerator", "idx_dcgenerator", "wind"),
+            ("ACPVGen", "ACGenerator", "idx_acgenerator", "pv"),
+            ("DCPVGen", "DCGenerator", "idx_dcgenerator", "pv"),
+            ("ACStorageGen", "ACGenerator", "idx_acgenerator", "storage"),
+            ("DCStorageGen", "DCGenerator", "idx_dcgenerator", "storage"),
+        )
+        for block_name, generator_type, index_field, category in reference_blocks:
+            for row in block_rows(block_name):
+                generator = generator_rows[generator_type].get(str(row.get(index_field, "")))
+                if generator is None:
+                    continue
+                name = str(generator.get("name", "")).strip()
+                if not name:
+                    continue
+                referenced_categories[(generator_type, name)] = category
+                if category == "storage":
+                    capacity = _to_float(
+                        row.get("energy_capacity", row.get("rated_capacity")),
+                        None,
+                    )
+                    if capacity is not None and capacity > 0:
+                        storage_capacity_by_key[(generator_type, name)] = float(capacity)
+
+        capability_storage = {
+            self._canonical_power_device_name("storage", str(row.get("name", "")).strip()): row
+            for row in getattr(active_snapshot.dev_define_book.data.get("estorage"), "data", [])
+            if str(row.get("name", "")).strip()
+        }
+
+        def contains_any(text: str, tokens: Sequence[str]) -> bool:
+            lowered = text.casefold()
+            return any(token.casefold() in lowered for token in tokens)
+
+        def generator_category(dev_type: str, row: Mapping[str, Any]) -> str:
+            name = str(row.get("name", "")).strip()
+            canonical_name = self._canonical_power_device_name("storage", name)
+            explicit = referenced_categories.get((dev_type, name), "")
+            if explicit:
+                return explicit
+            type_text = str(row.get("dev_type", ""))
+            if (
+                name in category_names["storage"]
+                or canonical_name in category_names["storage"]
+                or contains_any(type_text, ("storage", "battery", "ess", "储能"))
+            ):
+                return "storage"
+            if name in category_names["wind"] or contains_any(f"{type_text} {name}", ("wind", "风电", "风机")):
+                return "wind"
+            if name in category_names["pv"] or contains_any(f"{type_text} {name}", ("solar", "pv", "光伏")):
+                return "pv"
+            if name in category_names["diesel"] or contains_any(f"{type_text} {name}", ("diesel", "柴发", "柴油")):
+                return "diesel"
+            return ""
+
+        def is_grid_forming(side: str, mode: str) -> bool:
+            normalized = str(mode or "").strip().upper().replace("-", "").replace("_", "")
+            if side == "dc":
+                return normalized in {"V", "VDC", "VF", "PH", "SLACK", "SWING", "VOLTAGE"}
+            return normalized in {"V", "VF", "PH", "SLACK", "SWING", "VOLTAGE"}
+
+        def flow_group_key(category: str, side: str, mode: str = "") -> str:
+            if category == "wind":
+                return "dcWind" if side == "dc" else "acWind"
+            if category == "pv":
+                return "dcSolar" if side == "dc" else "acSolar"
+            if category == "storage":
+                suffix = "GridFormingStorage" if is_grid_forming(side, mode) else "GridFollowingStorage"
+                return f"{side}{suffix[0].upper()}{suffix[1:]}"
+            if category == "diesel":
+                return "diesel"
+            if category == "load":
+                return "dcLoad" if side == "dc" else "acLoad"
+            return ""
+
+        def profile_state_keys(dev_type: str, name: str, category: str) -> List[Tuple[str, str]]:
+            keys = [(dev_type, name)]
+            if category != "storage":
+                return keys
+            canonical = self._canonical_power_device_name(category, name)
+            aliases = (
+                (dev_type, canonical),
+                ("ESS", canonical),
+                ("Storage", canonical),
+                ("DCGenerator", canonical),
+                ("DCGenerator", f"{canonical}_vsrc"),
+                ("ACGenerator", canonical),
+                ("ACGenerator", f"{canonical}_vsrc"),
+            )
+            for key in aliases:
+                if key not in keys:
+                    keys.append(key)
+            return keys
+
+        def operating_state(
+            dev_type: str,
+            name: str,
+            category: str,
+            row: Mapping[str, Any],
+        ) -> Tuple[int, bool]:
+            state_keys = profile_state_keys(dev_type, name, category)
+            run_stat: Optional[int] = None
+            for key in state_keys:
+                if key in run_stats:
+                    run_stat = int(_to_float(run_stats[key], 1) or 0)
+                    break
+            if run_stat is None:
+                for key in state_keys:
+                    if key in latest_states:
+                        run_stat = int(_to_float(latest_states[key].get("run_stat"), 1) or 0)
+                        break
+            if run_stat is None:
+                run_stat = int(_to_float(row.get("run_stat"), 1) or 0)
+            dead_island = run_stat != 0 and any(
+                bool(latest_states.get(key, {}).get("dead_island", False))
+                for key in state_keys
+            )
+            return run_stat, dead_island
+
+        profiles: List[Dict[str, Any]] = []
+        seen_profiles: set[Tuple[str, str]] = set()
+        classified_generators: List[Tuple[str, str, Mapping[str, Any], str]] = []
+        for dev_type, native_side in (("ACGenerator", "ac"), ("DCGenerator", "dc")):
+            for row in block_rows(dev_type):
+                name = str(row.get("name", "")).strip()
+                if not name:
+                    continue
+                category = generator_category(dev_type, row)
+                if category not in {"wind", "pv", "diesel", "storage"}:
+                    continue
+                classified_generators.append((dev_type, native_side, row, category))
+
+        connection_sides = self._power_flow_connection_sides(
+            [
+                (category, dev_type, str(row.get("name", "")).strip())
+                for dev_type, _native_side, row, category in classified_generators
+                if category in {"wind", "pv", "storage"}
+            ],
+            active_snapshot,
+        )
+        for dev_type, native_side, row, category in classified_generators:
+            name = str(row.get("name", "")).strip()
+            side = connection_sides.get((dev_type, name), native_side)
+            canonical = self._canonical_power_device_name(category, name)
+            mode = str(
+                row.get("control_type")
+                or row.get("ac_control_type")
+                or row.get("dc_control_type")
+                or row.get("mode", "")
+            )
+            group_key = flow_group_key(category, side, mode)
+            identity = (group_key, canonical)
+            if not group_key or identity in seen_profiles:
+                continue
+            seen_profiles.add(identity)
+            run_stat, dead_island = operating_state(dev_type, name, category, row)
+            capacity = storage_capacity_by_key.get((dev_type, name))
+            if category == "storage" and capacity is None:
+                capability = capability_storage.get(canonical, {})
+                capacity = _to_float(
+                    capability.get(
+                        "emva",
+                        capability.get(
+                            "energy_capacity",
+                            row.get("energy_capacity", row.get("rated_capacity")),
+                        ),
+                    ),
+                    None,
+                )
+            profiles.append(
+                {
+                    "dev_type": dev_type,
+                    "dev_name": name,
+                    "canonical_name": canonical,
+                    "category": category,
+                    "side": side,
+                    "control_mode": mode,
+                    "group_key": group_key,
+                    "run_stat": run_stat,
+                    "dead_island": dead_island,
+                    "online": run_stat != 0 and not dead_island,
+                    "capacity": float(capacity) if capacity is not None and capacity > 0 else None,
+                    "state_keys": profile_state_keys(dev_type, name, category),
+                }
+            )
+
+        wind_converter_names = self._wind_converter_names(active_snapshot)
+        for row in block_rows("DCACConverter"):
+            name = str(row.get("name", "")).strip()
+            if not name or name in wind_converter_names:
+                continue
+            identity = ("acdcConverter", name)
+            if identity in seen_profiles:
+                continue
+            seen_profiles.add(identity)
+            run_stat, dead_island = operating_state("DCACConverter", name, "converter", row)
+            profiles.append(
+                {
+                    "dev_type": "DCACConverter",
+                    "dev_name": name,
+                    "canonical_name": name,
+                    "category": "converter",
+                    "side": "bridge",
+                    "control_mode": str(
+                        row.get("ac_control_type")
+                        or row.get("control_type")
+                        or row.get("mode", "")
+                    ),
+                    "group_key": "acdcConverter",
+                    "run_stat": run_stat,
+                    "dead_island": dead_island,
+                    "online": run_stat != 0 and not dead_island,
+                    "capacity": None,
+                    "state_keys": [("DCACConverter", name)],
+                }
+            )
+
+        for dev_type, side in (("ACLoad", "ac"), ("DCLoad", "dc")):
+            for row in block_rows(dev_type):
+                name = str(row.get("name", "")).strip()
+                if not name:
+                    continue
+                group_key = flow_group_key("load", side)
+                identity = (group_key, name)
+                if identity in seen_profiles:
+                    continue
+                seen_profiles.add(identity)
+                run_stat, dead_island = operating_state(dev_type, name, "load", row)
+                profiles.append(
+                    {
+                        "dev_type": dev_type,
+                        "dev_name": name,
+                        "canonical_name": name,
+                        "category": "load",
+                        "side": side,
+                        "control_mode": "",
+                        "group_key": group_key,
+                        "run_stat": run_stat,
+                        "dead_island": dead_island,
+                        "online": run_stat != 0 and not dead_island,
+                        "capacity": None,
+                        "state_keys": [(dev_type, name)],
+                    }
+                )
+        return profiles
+
+    def _power_flow_profile_indexes(
+        self,
+        profiles: Sequence[Mapping[str, Any]],
+    ) -> Tuple[
+        Dict[Tuple[str, str], Mapping[str, Any]],
+        Dict[Tuple[str, str], Mapping[str, Any]],
+        Dict[Tuple[str, str, str], Mapping[str, Any]],
+    ]:
+        by_measurement: Dict[Tuple[str, str], Mapping[str, Any]] = {}
+        by_category_name: Dict[Tuple[str, str], Mapping[str, Any]] = {}
+        by_power_key: Dict[Tuple[str, str, str], Mapping[str, Any]] = {}
+        for profile in profiles:
+            dev_type = str(profile.get("dev_type", ""))
+            dev_name = str(profile.get("dev_name", ""))
+            category = str(profile.get("category", ""))
+            canonical = str(profile.get("canonical_name", dev_name))
+            group_key = str(profile.get("group_key", ""))
+            by_measurement[(dev_type, dev_name)] = profile
+            by_category_name[(category, canonical)] = profile
+            by_power_key[(category, canonical, group_key)] = profile
+            if category == "storage":
+                for alias_type, alias_name in profile.get("state_keys", []):
+                    by_measurement.setdefault((str(alias_type), str(alias_name)), profile)
+        return by_measurement, by_category_name, by_power_key
+
+    def _flow_group_status(self, group: Mapping[str, Any]) -> Tuple[str, str]:
+        total_count = int(group.get("totalCount", 0) or 0)
+        online_count = int(group.get("onlineCount", 0) or 0)
+        retired_count = int(group.get("retiredCount", 0) or 0)
+        dead_count = int(group.get("deadIslandCount", 0) or 0)
+        if total_count and online_count == 0:
+            if dead_count:
+                return "deadIsland", "idle"
+            if retired_count:
+                return "retired", "idle"
+        power = group.get("power")
+        if power is None:
+            return "unmeasured", "idle"
+        power_value = float(power)
+        if abs(power_value) <= 1e-9:
+            return "idle", "idle"
+        category = str(group.get("category", ""))
+        if category == "storage":
+            return ("discharge", "toBus") if power_value > 0 else ("charge", "fromBus")
+        if category == "load":
+            return ("consumption", "fromBus") if power_value > 0 else ("generation", "toBus")
+        if category == "converter":
+            return ("dcToAc", "toAc") if power_value > 0 else ("acToDc", "toDc")
+        return ("generation", "toBus") if power_value > 0 else ("absorption", "fromBus")
+
     def _power_flow_summary(self, realtime_measurements: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
-        category_names = self._device_category_names()
-        wind_converter_names = self._wind_converter_names()
-        power_by_device: Dict[Tuple[str, str], Dict[str, float]] = {}
+        definition_snapshot = self.definition_snapshot
+        category_names = self._device_category_names(definition_snapshot)
+        wind_converter_names = self._wind_converter_names(definition_snapshot)
+        profiles = self._power_flow_device_profiles(definition_snapshot)
+        (
+            profiles_by_measurement,
+            profiles_by_category_name,
+            profiles_by_power_key,
+        ) = self._power_flow_profile_indexes(profiles)
+        power_by_device: Dict[Tuple[str, str, str], Dict[str, float]] = {}
         soc_by_storage: Dict[str, float] = {}
         green_power_by_converter: Dict[str, float] = {}
+        converter_transfer_power_by_name: Dict[str, float] = {}
 
         for item in realtime_measurements:
             if int(_to_float(item.get("valid"), 1) or 0) != 1:
@@ -2796,8 +3542,12 @@ class PolarMicrogridSimulator:
             if dev_type == "DCACConverter" and meas_type == "P_AC":
                 if dev_name not in wind_converter_names:
                     green_power_by_converter[dev_name] = value
+                    converter_transfer_power_by_name[dev_name] = -value
                 continue
-            category = self._measurement_power_category(dev_type, dev_name, category_names)
+            profile = profiles_by_measurement.get((dev_type, dev_name))
+            category = str(profile.get("category", "")) if profile else ""
+            if not category:
+                category = self._measurement_power_category(dev_type, dev_name, category_names)
             if category == "storage" and meas_type == "SOC":
                 soc_by_storage[self._canonical_power_device_name(category, dev_name)] = value
                 continue
@@ -2805,7 +3555,9 @@ class PolarMicrogridSimulator:
                 continue
             if not category:
                 continue
-            device_key = (category, self._canonical_power_device_name(category, dev_name))
+            canonical_name = self._canonical_power_device_name(category, dev_name)
+            group_key = str(profile.get("group_key", "")) if profile else ""
+            device_key = (category, canonical_name, group_key)
             power_by_device.setdefault(device_key, {})[meas_type] = value
 
         totals = {"wind": 0.0, "pv": 0.0, "diesel": 0.0, "load": 0.0}
@@ -2820,9 +3572,14 @@ class PolarMicrogridSimulator:
         storage_generation = 0.0
         storage_charge = 0.0
         storage_total = 0.0
-        for (category, _dev_name), values in power_by_device.items():
+        measured_group_devices: Dict[str, set[str]] = {}
+        group_power_totals: Dict[str, float] = {}
+        for (category, dev_name, group_key), values in power_by_device.items():
             power = self._preferred_power_value(category, values)
             if power is None:
+                continue
+            profile = profiles_by_power_key.get((category, dev_name, group_key))
+            if profile is not None and not bool(profile.get("online", False)):
                 continue
             counts[category] += 1
             if category == "storage":
@@ -2834,14 +3591,85 @@ class PolarMicrogridSimulator:
             else:
                 totals[category] += power
 
-        soc_values = list(soc_by_storage.values())
+            if profile is not None:
+                if group_key:
+                    group_power_totals[group_key] = group_power_totals.get(group_key, 0.0) + power
+                    measured_group_devices.setdefault(group_key, set()).add(dev_name)
+
+        for dev_name, power in converter_transfer_power_by_name.items():
+            profile = profiles_by_measurement.get(("DCACConverter", dev_name))
+            if profile is None or not bool(profile.get("online", False)):
+                continue
+            group_key = str(profile.get("group_key", ""))
+            if not group_key:
+                continue
+            group_power_totals[group_key] = group_power_totals.get(group_key, 0.0) + power
+            measured_group_devices.setdefault(group_key, set()).add(dev_name)
+
+        soc_values = [value * 100.0 if abs(value) <= 2.0 else value for value in soc_by_storage.values()]
         soc_average = sum(soc_values) / len(soc_values) if soc_values else None
-        soc_total = sum(soc_values)
+        soc_total = sum(soc_by_storage.values()) if soc_values else None
         has_power = any(counts[key] for key in ("wind", "pv", "diesel", "load", "storage"))
         green_power = sum(green_power_by_converter.values())
         generation_total = totals["wind"] + totals["pv"] + totals["diesel"] + storage_generation
         consumption_total = totals["load"] + storage_charge
         power_difference = generation_total - consumption_total
+        flow_groups: Dict[str, Dict[str, Any]] = {}
+        for profile in profiles:
+            group_key = str(profile.get("group_key", ""))
+            if not group_key:
+                continue
+            group = flow_groups.setdefault(
+                group_key,
+                {
+                    "category": profile.get("category", ""),
+                    "side": profile.get("side", ""),
+                    "controlMode": "gridForming" if "GridForming" in group_key else "gridFollowing" if "GridFollowing" in group_key else "",
+                    "power": None,
+                    "soc": None,
+                    "totalCount": 0,
+                    "onlineCount": 0,
+                    "retiredCount": 0,
+                    "deadIslandCount": 0,
+                    "measuredCount": 0,
+                },
+            )
+            group["totalCount"] += 1
+            if int(profile.get("run_stat", 1) or 0) == 0:
+                group["retiredCount"] += 1
+            elif bool(profile.get("dead_island", False)):
+                group["deadIslandCount"] += 1
+            else:
+                group["onlineCount"] += 1
+
+        for group_key, group in flow_groups.items():
+            measured_devices = measured_group_devices.get(group_key, set())
+            group["measuredCount"] = len(measured_devices)
+            if measured_devices:
+                group["power"] = group_power_totals.get(group_key, 0.0)
+            elif int(group.get("onlineCount", 0) or 0) == 0:
+                group["power"] = 0.0
+
+        storage_soc_groups: Dict[str, List[Tuple[float, float]]] = {}
+        for storage_name, raw_soc in soc_by_storage.items():
+            profile = profiles_by_category_name.get(("storage", storage_name))
+            if profile is None:
+                continue
+            group_key = str(profile.get("group_key", ""))
+            if not group_key:
+                continue
+            soc_percent = raw_soc * 100.0 if abs(raw_soc) <= 2.0 else raw_soc
+            weight = _to_float(profile.get("capacity"), 1.0) or 1.0
+            storage_soc_groups.setdefault(group_key, []).append((soc_percent, max(1e-9, float(weight))))
+        for group_key, values in storage_soc_groups.items():
+            total_weight = sum(weight for _soc, weight in values)
+            if total_weight > 0 and group_key in flow_groups:
+                flow_groups[group_key]["soc"] = sum(soc * weight for soc, weight in values) / total_weight
+
+        for group in flow_groups.values():
+            status, direction = self._flow_group_status(group)
+            group["status"] = status
+            group["flowDirection"] = direction
         return {
             "wind": totals["wind"] if counts["wind"] else None,
             "solar": totals["pv"] if counts["pv"] else None,
@@ -2851,11 +3679,12 @@ class PolarMicrogridSimulator:
             "storageDischarge": storage_generation if counts["storage"] else None,
             "storageCharge": storage_charge if counts["storage"] else None,
             "greenPower": green_power if counts["greenPowerConverter"] else None,
-            "soc": soc_average * 100.0 if soc_average is not None else None,
+            "soc": soc_average,
             "socTotal": soc_total if soc_values else None,
             "generation": generation_total if has_power else None,
             "consumption": consumption_total if has_power else None,
             "balance": power_difference if has_power else None,
+            "flowGroups": flow_groups,
             "counts": {
                 "wind": counts["wind"],
                 "solar": counts["pv"],
@@ -4084,51 +4913,121 @@ class PolarMicrogridSimulator:
             (str(device.get("dev_type", "")), str(device.get("dev_name", ""))): device
             for device in devices
         }
-        storage_raw: Dict[str, Dict[str, Any]] = {}
+        storage_raw: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        storage_soc_defaults: Dict[Tuple[str, str], float] = {}
+        storage_soc_aliases: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
+        legacy_storage_raw: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+        def storage_soc_value(row: Mapping[str, Any], default: float = 0.0) -> float:
+            value: Any = ""
+            for column in ("state_of_charge", "soc_curr", "soc_cur", "soc"):
+                if row.get(column, "") != "":
+                    value = row.get(column)
+                    break
+            text = str(value or "").strip()
+            number = _to_float(text.replace("%", "").strip() if "%" in text else value, None)
+            if number is None:
+                return default
+            return float(number) / 100.0 if "%" in text else float(number)
+
+        generator_rows_by_idx = {
+            dev_type: {
+                str(row.get("idx", "")): row
+                for row in getattr(model_book.data.get(dev_type), "data", [])
+                if str(row.get("idx", ""))
+            }
+            for dev_type in ("ACGenerator", "DCGenerator")
+        }
+        for block_name, generator_type, index_field in STORAGE_PARAMETER_SPECS:
+            parameter_block = model_book.data.get(block_name)
+            for row in getattr(parameter_block, "data", []):
+                source = generator_rows_by_idx[generator_type].get(str(row.get(index_field, "")))
+                if source is None:
+                    continue
+                name = str(source.get("name", "")).strip()
+                if not name:
+                    continue
+                key = (generator_type, name)
+                if key in storage_raw:
+                    continue
+                storage_raw[key] = {
+                    header: row.get(header, "")
+                    for header in getattr(parameter_block, "header_list", [])
+                }
+                storage_soc_defaults[key] = storage_soc_value(row)
+
         capability_book = definition_snapshot.dev_define_book
         storage_block = capability_book.data.get("estorage")
         for row in getattr(storage_block, "data", []):
             name = str(row.get("name", "")).strip()
             if not name:
                 continue
-            storage_raw[name] = {header: row.get(header, "") for header in storage_block.header_list}
-            storage_base_name = name.removesuffix("_vsrc")
-            storage_soc_name = storage_base_name if storage_base_name in soc_values else name
-            soc_value = soc_values.get(
-                storage_soc_name,
-                _to_float(row.get("soc_curr", row.get("soc_cur", row.get("soc", 0.0))), 0.0) or 0.0,
-            )
-            soc_values.setdefault(name, soc_value)
-            if storage_base_name and storage_base_name != name:
-                soc_values.setdefault(storage_base_name, soc_value)
-            for key in (("DCGenerator", name), ("DCGenerator", f"{name}_vsrc")):
-                device = devices_by_key.get(key)
-                if device is None:
-                    continue
-                device["soc_curr"] = soc_value
-                device["raw"] = dict(device.get("raw", {})) | storage_raw[name] | {"soc_curr": soc_value}
-                for set_type in ("p_set", "v_set"):
-                    if set_type not in device["set_types"]:
-                        device["set_types"].append(set_type)
-        source_storage_keys = {
-            (str(row.get("dev_type", "")).strip(), str(row.get("name", row.get("dev_name", ""))).strip())
-            for row in getattr(self.source_stat_book.data.get("StorageSoc"), "data", [])
-            if str(row.get("dev_type", "")).strip() and str(row.get("name", row.get("dev_name", ""))).strip()
-        }
-        for name, soc in soc_values.items():
+            raw = {header: row.get(header, "") for header in storage_block.header_list}
+            declared_type = str(row.get("dev_type", "")).strip()
+            source_name = str(row.get("source_name", "")).strip()
+            target_key = self._legacy_storage_target_key(row, set(devices_by_key))
+
+            alias_names = []
+            for alias_name in (name, source_name, name.removesuffix("_vsrc"), source_name.removesuffix("_vsrc")):
+                if alias_name and alias_name not in alias_names:
+                    alias_names.append(alias_name)
+            for alias_type in ("ESS", "Storage"):
+                for alias_name in alias_names:
+                    legacy_storage_raw[(alias_type, alias_name)] = raw
+
+            if target_key is None:
+                continue
+            storage_raw[target_key] = raw | storage_raw.get(target_key, {})
+            storage_soc_defaults.setdefault(target_key, storage_soc_value(row))
+            aliases = storage_soc_aliases.setdefault(target_key, [])
+            for alias_name in alias_names:
+                for alias_type in ("ESS", "Storage", ""):
+                    alias = (alias_type, alias_name)
+                    if alias not in aliases:
+                        aliases.append(alias)
+            if declared_type:
+                declared_alias = (declared_type, name)
+                if declared_alias not in aliases:
+                    aliases.append(declared_alias)
+
+        alias_targets: Dict[Tuple[str, str], set[Tuple[str, str]]] = {}
+        for target_key, aliases in storage_soc_aliases.items():
+            for alias in aliases:
+                alias_targets.setdefault(alias, set()).add(target_key)
+
+        consumed_soc_keys: set[Tuple[str, str]] = set()
+        for key, raw in storage_raw.items():
+            device = devices_by_key.get(key)
+            if device is None:
+                continue
+            if key in soc_values:
+                soc_value = soc_values[key]
+                consumed_soc_keys.add(key)
+            else:
+                soc_value = storage_soc_defaults.get(key, 0.0)
+                for alias in storage_soc_aliases.get(key, []):
+                    if len(alias_targets.get(alias, ())) != 1 or alias not in soc_values:
+                        continue
+                    soc_value = soc_values[alias]
+                    consumed_soc_keys.add(alias)
+                    break
+            device["soc_curr"] = soc_value
+            device["raw"] = dict(device.get("raw", {})) | raw | {"soc_curr": soc_value}
+            for set_type in ("p_set", "v_set"):
+                if set_type not in device["set_types"]:
+                    device["set_types"].append(set_type)
+
+        for (source_storage_type, name), soc in soc_values.items():
+            if source_storage_type not in ("ESS", "Storage"):
+                continue
+            if (source_storage_type, name) in consumed_soc_keys:
+                continue
             if ("DCGenerator", name) in devices_by_key or ("DCGenerator", f"{name}_vsrc") in devices_by_key:
                 continue
-            source_storage_type = next(
-                (
-                    dev_type
-                    for dev_type, storage_name in source_storage_keys
-                    if storage_name == name and dev_type in ("ESS", "Storage")
-                ),
-                "",
+            storage_set_values = set_values.get(
+                (source_storage_type, name),
+                set_values.get(("DCGenerator", f"{name}_vsrc"), {}),
             )
-            if not source_storage_type:
-                continue
-            storage_set_values = set_values.get((source_storage_type, name), set_values.get(("DCGenerator", f"{name}_vsrc"), {}))
             devices.append(
                 {
                     "dev_type": source_storage_type,
@@ -4139,7 +5038,7 @@ class PolarMicrogridSimulator:
                     "set_types": ["p_set", "v_set"],
                     "set_values": storage_set_values,
                     "soc_curr": soc,
-                    "raw": storage_raw.get(name, {}) | {"soc_curr": soc},
+                    "raw": legacy_storage_raw.get((source_storage_type, name), {}) | {"soc_curr": soc},
                 }
             )
         return devices
@@ -4719,25 +5618,22 @@ class PolarMicrogridSimulator:
         if not name and not idx:
             raise ValueError("row_key requires name or idx")
 
-        row: Optional[Dict[str, Any]] = None
-        if name and "name" in block.header_list:
-            row = next(
-                (item for item in block.data if str(item.get("name", "")) == name),
-                None,
-            )
-        if row is None and idx and "idx" in block.header_list:
-            row = next(
-                (item for item in block.data if str(item.get("idx", "")) == idx),
-                None,
-            )
-        if row is None:
+        matches: List[Dict[str, Any]] = []
+        for item in block.data:
+            if name:
+                if "name" not in block.header_list or str(item.get("name", "")) != name:
+                    continue
+            if idx:
+                if "idx" not in block.header_list or str(item.get("idx", "")) != idx:
+                    continue
+            matches.append(item)
+        if not matches:
             identity = name or idx
             raise ValueError(f"Unknown definition row in {block.name}: {identity}")
-        if name and "name" in block.header_list and str(row.get("name", "")) != name:
-            raise ValueError(f"Definition row name does not match idx in {block.name}")
-        if idx and "idx" in block.header_list and str(row.get("idx", "")) != idx:
-            raise ValueError(f"Definition row idx does not match name in {block.name}")
-        return row
+        if len(matches) != 1:
+            identity = name or idx
+            raise ValueError(f"Definition row identity must be unique in {block.name}: {identity}")
+        return matches[0]
 
     def _measurement_definition_row(
         self,
@@ -4747,16 +5643,662 @@ class PolarMicrogridSimulator:
         name = str(payload.get("name", "")).strip()
         if not name:
             raise ValueError("Measurement name is required")
+        matches: List[Tuple[int, Dict[str, Any]]] = []
         for index, row in enumerate(rows):
             item = _measurement_row_to_dict(row)
-            if str(item.get("name", "")) != name:
+            if str(item.get("name", "")) == name:
+                matches.append((index, item))
+        if not matches:
+            raise ValueError(f"Unknown measurement: {name}")
+        if len(matches) != 1:
+            raise ValueError(f"Measurement identity must be unique: {name}")
+        index, item = matches[0]
+        for identity_field in ("dev_type", "dev_name", "meas_type"):
+            expected = str(payload.get(identity_field, "")).strip()
+            if expected and str(item.get(identity_field, "")) != expected:
+                raise ValueError(f"Measurement {identity_field} does not match: {name}")
+        return index, item
+
+    @staticmethod
+    def _manual_change_value_text(value: Any) -> str:
+        if isinstance(value, bool):
+            return "1" if value else "0"
+        if value is None:
+            return ""
+        return str(value)
+
+    @staticmethod
+    def _manual_change_values_equal(left: Any, right: Any) -> bool:
+        left_text = str(left if left is not None else "").strip()
+        right_text = str(right if right is not None else "").strip()
+        if left_text == right_text:
+            return True
+        try:
+            left_number = float(left_text[:-1].strip() if left_text.endswith("%") else left_text)
+            right_number = float(right_text[:-1].strip() if right_text.endswith("%") else right_text)
+        except (TypeError, ValueError):
+            return False
+        return math.isfinite(left_number) and math.isfinite(right_number) and math.isclose(
+            left_number,
+            right_number,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        )
+
+    @staticmethod
+    def _manual_change_persistence_status(persisted: bool) -> str:
+        return "已保存" if persisted else "E文件保存失败"
+
+    def _set_manual_change_sync_state_unlocked(
+        self,
+        item: Dict[str, Any],
+        *,
+        persisted: bool,
+        error: str = "",
+        increment_retry: bool = False,
+    ) -> None:
+        item["persisted"] = bool(persisted)
+        item["persistence_status"] = self._manual_change_persistence_status(persisted)
+        item["sync_status"] = "synced" if persisted else "failed"
+        item["last_sync_time"] = _now_text()
+        item["last_sync_error"] = "" if persisted else str(error or "E 文件保存失败")
+        retry_count = int(_to_float(item.get("retry_count"), 0) or 0)
+        item["retry_count"] = retry_count + (1 if increment_retry else 0)
+
+    @staticmethod
+    def _manual_change_sigma(weight: Any) -> Optional[float]:
+        number = _to_float(weight, None)
+        if number is None or number <= 0:
+            return None
+        return 1.0 / math.sqrt(number)
+
+    @staticmethod
+    def _manual_change_id(kind: str, identity: Mapping[str, Any], field_name: str) -> str:
+        canonical = json.dumps(
+            {
+                "kind": str(kind),
+                "identity": {str(key): str(value) for key, value in sorted(identity.items())},
+                "field": str(field_name),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+        return f"{kind}-{digest}"
+
+    def _manual_definition_changes_payload_unlocked(
+        self,
+        *,
+        accepted_source_fingerprints: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Any]:
+        changes = []
+        for item in self._manual_definition_changes.values():
+            copied = dict(item)
+            if isinstance(copied.get("row_key"), Mapping):
+                copied["row_key"] = dict(copied["row_key"])
+            changes.append(copied)
+        changes.sort(
+            key=lambda item: (str(item.get("modified_at", "")), str(item.get("id", ""))),
+            reverse=True,
+        )
+        source_fingerprint = self._manual_definition_source_fingerprint()
+        accepted_fingerprints = list(
+            dict.fromkeys(
+                fingerprint
+                for fingerprint in (
+                    source_fingerprint,
+                    *(accepted_source_fingerprints or ()),
+                )
+                if fingerprint
+            )
+        )
+        return {
+            "version": 4,
+            "model_id": self.model_id,
+            "model_name": self.model_name,
+            "source_fingerprint": source_fingerprint,
+            "accepted_source_fingerprints": accepted_fingerprints,
+            "revision": self.definition_snapshot.revision,
+            "count": len(changes),
+            "changes": changes,
+        }
+
+    def _write_manual_definition_changes_unlocked(
+        self,
+        *,
+        accepted_source_fingerprints: Optional[Sequence[str]] = None,
+    ) -> None:
+        if not self._manual_definition_changes:
+            self.manual_definition_changes_file.unlink(missing_ok=True)
+            return
+        payload = self._manual_definition_changes_payload_unlocked(
+            accepted_source_fingerprints=accepted_source_fingerprints,
+        )
+        atomic_write_text(
+            self.manual_definition_changes_file,
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        )
+
+    def _manual_definition_source_fingerprint(
+        self,
+        text_overrides: Optional[Mapping[str, str]] = None,
+    ) -> str:
+        overrides = text_overrides or {}
+        digest = hashlib.sha256()
+        for file_key in ("model", "meas"):
+            path = self.source_files[file_key]
+            digest.update(file_key.encode("ascii"))
+            digest.update(b"\0")
+            if file_key in overrides:
+                digest.update(str(overrides[file_key]).encode("utf-8"))
+            else:
+                try:
+                    digest.update(path.read_bytes())
+                except OSError:
+                    digest.update(b"<missing>")
+            digest.update(b"\0")
+        return digest.hexdigest()
+
+    def _write_ahead_manual_definition_changes_unlocked(
+        self,
+        rendered_texts: Mapping[str, str],
+    ) -> None:
+        file_keys = [file_key for file_key in ("model", "meas") if file_key in rendered_texts]
+        accepted_fingerprints: List[str] = []
+        # Independent atomic file replaces can stop after any subset; every reachable
+        # fingerprint must keep the pending journal valid after a crash or partial failure.
+        for mask in range(1 << len(file_keys)):
+            overrides = {
+                file_key: rendered_texts[file_key]
+                for index, file_key in enumerate(file_keys)
+                if mask & (1 << index)
+            }
+            fingerprint = self._manual_definition_source_fingerprint(overrides)
+            if fingerprint not in accepted_fingerprints:
+                accepted_fingerprints.append(fingerprint)
+        self._write_manual_definition_changes_unlocked(
+            accepted_source_fingerprints=accepted_fingerprints,
+        )
+
+    @staticmethod
+    def _manual_definition_rendered_texts(
+        snapshot: DefinitionSnapshot,
+        kinds: Iterable[str],
+    ) -> Dict[str, str]:
+        selected = set(kinds)
+        rendered: Dict[str, str] = {}
+        if "device" in selected:
+            rendered["model"] = render_ebook_aligned(snapshot.model_book)
+        if "measurement" in selected:
+            rendered["meas"] = simu_loop.render_measurement_snapshot_aligned(
+                snapshot.measurement_before,
+                snapshot.measurement_rows,
+                snapshot.measurement_after,
+            )
+        return rendered
+
+    def _clear_manual_definition_changes_unlocked(self) -> int:
+        cleared = len(self._manual_definition_changes)
+        self._manual_definition_changes = {}
+        self.manual_definition_changes_file.unlink(missing_ok=True)
+        return cleared
+
+    def clear_manual_definition_changes(self) -> Dict[str, Any]:
+        with self._active_definition_update_guard():
+            cleared = self._clear_manual_definition_changes_unlocked()
+            return {
+                **self._manual_definition_changes_payload_unlocked(),
+                "cleared_count": cleared,
+            }
+
+    def _current_manual_change_value(
+        self,
+        item: Mapping[str, Any],
+        snapshot: Optional[DefinitionSnapshot] = None,
+    ) -> Optional[str]:
+        active = snapshot or self.definition_snapshot
+        kind = str(item.get("kind", ""))
+        field_name = str(item.get("field", ""))
+        if kind == "device":
+            block = active.model_book.data.get(str(item.get("block_name", "")))
+            if block is None or field_name not in block.header_list:
+                return None
+            row = self._definition_row(block, item.get("row_key", {}))
+            return self._manual_change_value_text(row.get(field_name, ""))
+        if kind == "measurement":
+            index, _record = self._measurement_definition_row(
+                active.measurement_rows,
+                {"name": item.get("measurement_name", "")},
+            )
+            column = {"weight": 5, "valid": 6}.get(field_name)
+            if column is None:
+                return None
+            return self._manual_change_value_text(active.measurement_rows[index][column])
+        return None
+
+    def _load_manual_definition_changes(self) -> None:
+        payload = _read_json(self.manual_definition_changes_file, {})
+        accepted_fingerprints: List[str] = []
+        if isinstance(payload, Mapping):
+            expected_fingerprint = str(payload.get("source_fingerprint", "")).strip()
+            if expected_fingerprint:
+                accepted_fingerprints.append(expected_fingerprint)
+            raw_accepted = payload.get("accepted_source_fingerprints", [])
+            if isinstance(raw_accepted, Sequence) and not isinstance(raw_accepted, (str, bytes)):
+                accepted_fingerprints.extend(
+                    str(fingerprint).strip()
+                    for fingerprint in raw_accepted
+                    if str(fingerprint).strip()
+                )
+        accepted_fingerprints = list(dict.fromkeys(accepted_fingerprints))
+        if (
+            accepted_fingerprints
+            and self._manual_definition_source_fingerprint() not in accepted_fingerprints
+        ):
+            self._manual_definition_changes = {}
+            self.manual_definition_changes_file.unlink(missing_ok=True)
+            return
+        items = payload.get("changes", []) if isinstance(payload, Mapping) else []
+        loaded: Dict[str, Dict[str, Any]] = {}
+        if isinstance(items, Sequence) and not isinstance(items, (str, bytes)):
+            for raw_item in items:
+                if not isinstance(raw_item, Mapping):
+                    continue
+                item = dict(raw_item)
+                change_id = str(item.get("id", "")).strip()
+                if not change_id or item.get("kind") not in {"device", "measurement"} or not item.get("field"):
+                    continue
+                persisted = bool(item.get("persisted", False))
+                item.setdefault("sync_status", "synced" if persisted else "failed")
+                item.setdefault("last_sync_time", str(item.get("modified_at", "")))
+                item.setdefault("last_sync_error", "" if persisted else "E 文件尚未同步")
+                item.setdefault("retry_count", 0)
+                loaded[change_id] = item
+        self._manual_definition_changes = loaded
+
+        pending_ids = [
+            change_id
+            for change_id, item in self._manual_definition_changes.items()
+            if not bool(item.get("persisted", False))
+        ]
+        if pending_ids:
+            try:
+                self.retry_manual_definition_changes({"change_ids": pending_ids})
+            except (KeyError, OSError, ValueError):
+                pass
+
+        reconciled = False
+        for change_id, item in list(self._manual_definition_changes.items()):
+            try:
+                current_value = self._current_manual_change_value(item)
+            except (KeyError, ValueError):
+                current_value = None
+            if current_value is None:
+                self._manual_definition_changes.pop(change_id, None)
+                reconciled = True
                 continue
-            for identity_field in ("dev_type", "dev_name", "meas_type"):
-                expected = str(payload.get(identity_field, "")).strip()
-                if expected and str(item.get(identity_field, "")) != expected:
-                    raise ValueError(f"Measurement {identity_field} does not match: {name}")
-            return index, item
-        raise ValueError(f"Unknown measurement: {name}")
+            if bool(item.get("persisted", False)) and self._manual_change_values_equal(
+                current_value,
+                item.get("default_value", ""),
+            ):
+                self._manual_definition_changes.pop(change_id, None)
+                reconciled = True
+                continue
+            if not self._manual_change_values_equal(current_value, item.get("current_value", "")):
+                item["current_value"] = current_value
+                if item.get("field") == "weight":
+                    item["current_error_sigma"] = self._manual_change_sigma(current_value)
+                reconciled = True
+            if bool(item.get("persisted", False)) and item.get("sync_status") != "synced":
+                self._set_manual_change_sync_state_unlocked(item, persisted=True)
+                reconciled = True
+        if reconciled:
+            try:
+                self._write_manual_definition_changes_unlocked()
+            except OSError:
+                pass
+
+    def manual_definition_changes(self) -> Dict[str, Any]:
+        with self.definition_update_lock:
+            return self._manual_definition_changes_payload_unlocked()
+
+    def _snapshot_with_manual_change_values_unlocked(
+        self,
+        current: DefinitionSnapshot,
+        items: Sequence[Mapping[str, Any]],
+    ) -> Tuple[DefinitionSnapshot, set[str]]:
+        kinds = {str(item.get("kind", "")) for item in items}
+        model_book = simu_loop._clone_ebook(current.model_book) if "device" in kinds else current.model_book
+        measurement_rows = [list(row) for row in current.measurement_rows]
+        changed = False
+
+        for item in items:
+            kind = str(item.get("kind", ""))
+            field_name = str(item.get("field", ""))
+            desired_value = item.get("current_value", "")
+            if kind == "device":
+                block_name = str(item.get("block_name", ""))
+                block = model_book.data.get(block_name)
+                if block is None:
+                    raise ValueError(f"Unknown model block: {block_name}")
+                row_key = item.get("row_key", {})
+                if not isinstance(row_key, Mapping):
+                    raise ValueError(f"Invalid device identity for manual change: {item.get('id', '')}")
+                row = self._definition_row(block, row_key)
+                normalized = normalize_device_changes(row, {field_name: desired_value})
+                changed = changed or not self._manual_change_values_equal(
+                    row.get(field_name, ""),
+                    normalized[field_name],
+                )
+                row.update(normalized)
+
+        measurement_groups: Dict[str, Dict[str, Any]] = {}
+        for item in items:
+            if item.get("kind") != "measurement":
+                continue
+            measurement_name = str(item.get("measurement_name", ""))
+            measurement_groups.setdefault(measurement_name, {})[str(item.get("field", ""))] = item.get(
+                "current_value",
+                "",
+            )
+        for measurement_name, desired_values in measurement_groups.items():
+            index, current_item = self._measurement_definition_row(
+                measurement_rows,
+                {"name": measurement_name},
+            )
+            normalized = normalize_measurement_changes(current_item, desired_values)
+            changed = changed or not self._manual_change_values_equal(
+                measurement_rows[index][5],
+                normalized["weight"],
+            ) or not self._manual_change_values_equal(
+                measurement_rows[index][6],
+                normalized["valid"],
+            )
+            measurement_rows[index][5] = normalized["weight"]
+            measurement_rows[index][6] = normalized["valid"]
+
+        if not changed:
+            return current, kinds
+        dev_define_book = (
+            simu_loop._capability_define_book(model_book, self._legacy_dev_define_file())
+            if "device" in kinds
+            else current.dev_define_book
+        )
+        return DefinitionSnapshot(
+            revision=current.revision + 1,
+            model_book=model_book,
+            dev_define_book=dev_define_book,
+            measurement_before=current.measurement_before,
+            measurement_rows=tuple(tuple(row) for row in measurement_rows),
+            measurement_after=current.measurement_after,
+        ), kinds
+
+    def retry_manual_definition_changes(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        with self._active_definition_update_guard():
+            current = self.definition_snapshot
+            require_definition_revision(payload, current.revision)
+            raw_change_ids = payload.get("change_ids")
+            if raw_change_ids is None:
+                change_ids = [
+                    change_id
+                    for change_id, item in self._manual_definition_changes.items()
+                    if not bool(item.get("persisted", False))
+                ]
+            else:
+                if not isinstance(raw_change_ids, Sequence) or isinstance(raw_change_ids, (str, bytes)):
+                    raise ValueError("change_ids must be an array")
+                change_ids = list(
+                    dict.fromkeys(
+                        str(change_id).strip()
+                        for change_id in raw_change_ids
+                        if str(change_id).strip()
+                    )
+                )
+            missing = [change_id for change_id in change_ids if change_id not in self._manual_definition_changes]
+            if missing:
+                raise ValueError(f"Unknown manual definition change: {missing[0]}")
+            selected = [
+                self._manual_definition_changes[change_id]
+                for change_id in change_ids
+                if not bool(self._manual_definition_changes[change_id].get("persisted", False))
+            ]
+            if not selected:
+                result = self._manual_definition_changes_payload_unlocked()
+                result.update(
+                    {
+                        "retried_count": 0,
+                        "persisted_count": 0,
+                        "memory_updated": False,
+                        "persisted": True,
+                        "change_record_persisted": True,
+                    }
+                )
+                return result
+
+            next_snapshot, kinds = self._snapshot_with_manual_change_values_unlocked(current, selected)
+            if next_snapshot is not current:
+                self._publish_definition_snapshot(next_snapshot)
+
+            for item in selected:
+                active_item = self._manual_definition_changes.get(str(item.get("id", "")))
+                if active_item is not None:
+                    self._set_manual_change_sync_state_unlocked(
+                        active_item,
+                        persisted=False,
+                        error="等待 E 文件保存",
+                    )
+
+            rendered_texts = self._manual_definition_rendered_texts(next_snapshot, kinds)
+            try:
+                self._write_ahead_manual_definition_changes_unlocked(rendered_texts)
+            except OSError as exc:
+                error = f"人工修改记录保存失败，未写入 E 文件: {exc}"
+                for item in selected:
+                    active_item = self._manual_definition_changes.get(str(item.get("id", "")))
+                    if active_item is not None:
+                        self._set_manual_change_sync_state_unlocked(
+                            active_item,
+                            persisted=False,
+                            error=error,
+                            increment_retry=True,
+                        )
+                warning = f"人工修改记录保存失败，未保存 E 文件，请重试: {exc}"
+                result = self._manual_definition_changes_payload_unlocked()
+                result.update(
+                    {
+                        "retried_count": len(selected),
+                        "persisted_count": 0,
+                        "memory_updated": next_snapshot is not current,
+                        "persisted": False,
+                        "change_record_persisted": False,
+                        "static_meta": self.static_meta(),
+                        "warning": warning,
+                    }
+                )
+                return result
+
+            errors: Dict[str, str] = {}
+            if "model" in rendered_texts:
+                try:
+                    atomic_write_text(self.source_files["model"], rendered_texts["model"])
+                except OSError as exc:
+                    errors["device"] = str(exc)
+            if "meas" in rendered_texts:
+                try:
+                    atomic_write_text(self.source_files["meas"], rendered_texts["meas"])
+                except OSError as exc:
+                    errors["measurement"] = str(exc)
+
+            persisted_count = 0
+            for change_id, item in list(self._manual_definition_changes.items()):
+                kind = str(item.get("kind", ""))
+                if kind not in kinds or bool(item.get("persisted", False)):
+                    continue
+                persisted = kind not in errors
+                self._set_manual_change_sync_state_unlocked(
+                    item,
+                    persisted=persisted,
+                    error=errors.get(kind, ""),
+                    increment_retry=True,
+                )
+                if persisted:
+                    persisted_count += 1
+                    if self._manual_change_values_equal(
+                        item.get("current_value", ""),
+                        item.get("default_value", ""),
+                    ):
+                        self._manual_definition_changes.pop(change_id, None)
+
+            warning = "；".join(
+                f"{('model.e' if kind == 'device' else 'meas.e')} 保存失败，请重试: {error}"
+                for kind, error in errors.items()
+            )
+            change_record_persisted = True
+            try:
+                self._write_manual_definition_changes_unlocked()
+            except OSError as exc:
+                change_record_persisted = False
+                warning = self._merge_definition_warning(warning, f"人工修改记录保存失败，请重试: {exc}")
+
+            result = self._manual_definition_changes_payload_unlocked()
+            result.update(
+                {
+                    "retried_count": len(selected),
+                    "persisted_count": persisted_count,
+                    "memory_updated": next_snapshot is not current,
+                    "persisted": not errors,
+                    "change_record_persisted": change_record_persisted,
+                    "static_meta": self.static_meta(),
+                }
+            )
+            if warning:
+                result["warning"] = warning
+            return result
+
+    def _mark_manual_changes_persisted_unlocked(self, kind: str) -> None:
+        for change_id, item in list(self._manual_definition_changes.items()):
+            if item.get("kind") != kind:
+                continue
+            self._set_manual_change_sync_state_unlocked(item, persisted=True)
+            if self._manual_change_values_equal(
+                item.get("current_value", ""),
+                item.get("default_value", ""),
+            ):
+                self._manual_definition_changes.pop(change_id, None)
+
+    def _record_device_manual_changes_unlocked(
+        self,
+        block_name: str,
+        before: Mapping[str, Any],
+        after: Mapping[str, Any],
+        changed_fields: Sequence[str],
+        *,
+        persisted: bool,
+        persistence_error: str = "",
+    ) -> None:
+        row_key = {
+            key: self._manual_change_value_text(after.get(key, ""))
+            for key in ("idx", "name")
+            if self._manual_change_value_text(after.get(key, "")).strip()
+        }
+        identity = {"block_name": block_name, **row_key}
+        object_name = str(after.get("name", "")).strip() or f"{block_name}_{after.get('idx', '')}"
+        now = _now_text()
+        for field_name in changed_fields:
+            change_id = self._manual_change_id("device", identity, field_name)
+            existing = self._manual_definition_changes.get(change_id, {})
+            default_value = self._manual_change_value_text(
+                existing.get("default_value", before.get(field_name, ""))
+            )
+            current_value = self._manual_change_value_text(after.get(field_name, ""))
+            if persisted and self._manual_change_values_equal(current_value, default_value):
+                self._manual_definition_changes.pop(change_id, None)
+                continue
+            item = {
+                **existing,
+                "id": change_id,
+                "kind": "device",
+                "change_type": "设备参数",
+                "object_type": block_name,
+                "object_name": object_name,
+                "object_id": str(after.get("idx", "")),
+                "object_label": f"{block_name} · {object_name}",
+                "block_name": block_name,
+                "row_key": row_key,
+                "field": field_name,
+                "field_label": field_name,
+                "default_value": default_value,
+                "current_value": current_value,
+                "modified_at": now,
+                "source_file": "model.e",
+            }
+            self._set_manual_change_sync_state_unlocked(
+                item,
+                persisted=persisted,
+                error=persistence_error,
+            )
+            self._manual_definition_changes[change_id] = item
+
+    def _record_measurement_manual_changes_unlocked(
+        self,
+        before_row: Sequence[Any],
+        after_row: Sequence[Any],
+        changed_fields: Sequence[str],
+        *,
+        persisted: bool,
+        persistence_error: str = "",
+    ) -> None:
+        after = _measurement_row_to_dict(after_row)
+        measurement_name = str(after.get("name", ""))
+        identity = {"measurement_name": measurement_name}
+        object_type = str(after.get("dev_type", ""))
+        object_name = str(after.get("dev_name", ""))
+        raw_values = {
+            "weight": (before_row[5], after_row[5]),
+            "valid": (before_row[6], after_row[6]),
+        }
+        now = _now_text()
+        for field_name in changed_fields:
+            default_raw, current_raw = raw_values[field_name]
+            change_id = self._manual_change_id("measurement", identity, field_name)
+            existing = self._manual_definition_changes.get(change_id, {})
+            default_value = self._manual_change_value_text(existing.get("default_value", default_raw))
+            current_value = self._manual_change_value_text(current_raw)
+            if persisted and self._manual_change_values_equal(current_value, default_value):
+                self._manual_definition_changes.pop(change_id, None)
+                continue
+            item = {
+                **existing,
+                "id": change_id,
+                "kind": "measurement",
+                "change_type": "量测参数" if field_name == "weight" else "量测状态",
+                "object_type": object_type,
+                "object_name": object_name,
+                "object_id": str(after.get("idx", "")),
+                "object_label": f"{object_type}.{object_name} · {measurement_name}",
+                "measurement_name": measurement_name,
+                "measurement_type": str(after.get("meas_type", "")),
+                "field": field_name,
+                "field_label": "量测误差 / 权重" if field_name == "weight" else "量测状态",
+                "default_value": default_value,
+                "current_value": current_value,
+                "modified_at": now,
+                "source_file": "meas.e",
+            }
+            self._set_manual_change_sync_state_unlocked(
+                item,
+                persisted=persisted,
+                error=persistence_error,
+            )
+            if field_name == "weight":
+                item["default_error_sigma"] = self._manual_change_sigma(default_value)
+                item["current_error_sigma"] = self._manual_change_sigma(current_value)
+            self._manual_definition_changes[change_id] = item
+
+    @staticmethod
+    def _merge_definition_warning(current: str, extra: str) -> str:
+        return "；".join(text for text in (current, extra) if text)
 
     def _definition_update_result(
         self,
@@ -4780,8 +6322,9 @@ class PolarMicrogridSimulator:
         return result
 
     def update_device_parameters(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
-        with self.definition_update_lock:
+        with self._active_definition_update_guard():
             current = self.definition_snapshot
+            require_definition_revision(payload, current.revision)
             model_book = simu_loop._clone_ebook(current.model_book)
             block_name = str(payload.get("block_name", "")).strip()
             if not block_name:
@@ -4790,10 +6333,12 @@ class PolarMicrogridSimulator:
             if block is None:
                 raise ValueError(f"Unknown model block: {block_name}")
             row = self._definition_row(block, payload.get("row_key", {}))
+            before_row = dict(row)
             changes = payload.get("changes", {})
             if not isinstance(changes, Mapping):
                 raise ValueError("changes must be an object")
-            row.update(normalize_device_changes(row, changes))
+            normalized_changes = normalize_device_changes(row, changes)
+            row.update(normalized_changes)
             dev_define_book = simu_loop._capability_define_book(
                 model_book,
                 self._legacy_dev_define_file(),
@@ -4808,21 +6353,64 @@ class PolarMicrogridSimulator:
             )
             self._publish_definition_snapshot(next_snapshot)
 
-            persisted = True
+            rendered_model_text = render_ebook_aligned(next_snapshot.model_book)
+            self._record_device_manual_changes_unlocked(
+                block_name,
+                before_row,
+                row,
+                tuple(normalized_changes),
+                persisted=False,
+                persistence_error="等待 model.e 保存",
+            )
+            persisted = False
+            change_record_persisted = False
             warning = ""
             try:
-                atomic_write_text(
-                    self.source_files["model"],
-                    render_ebook_aligned(next_snapshot.model_book),
+                self._write_ahead_manual_definition_changes_unlocked(
+                    {"model": rendered_model_text},
                 )
             except OSError as exc:
-                persisted = False
-                warning = f"后台定义已更新，但 E 文件保存失败，请重试: {exc}"
+                persistence_error = f"人工修改记录保存失败，未写入 model.e: {exc}"
+                warning = f"后台定义已更新，但人工修改记录保存失败，未保存 E 文件，请重试: {exc}"
+                self._record_device_manual_changes_unlocked(
+                    block_name,
+                    before_row,
+                    row,
+                    tuple(normalized_changes),
+                    persisted=False,
+                    persistence_error=persistence_error,
+                )
+            else:
+                change_record_persisted = True
+                try:
+                    atomic_write_text(self.source_files["model"], rendered_model_text)
+                except OSError as exc:
+                    persistence_error = str(exc)
+                    warning = f"后台定义已更新，但 E 文件保存失败，请重试: {exc}"
+                    self._record_device_manual_changes_unlocked(
+                        block_name,
+                        before_row,
+                        row,
+                        tuple(normalized_changes),
+                        persisted=False,
+                        persistence_error=persistence_error,
+                    )
+                else:
+                    persisted = True
+                    self._mark_manual_changes_persisted_unlocked("device")
+                try:
+                    self._write_manual_definition_changes_unlocked()
+                except OSError as exc:
+                    change_record_persisted = False
+                    warning = self._merge_definition_warning(
+                        warning,
+                        f"人工修改记录保存失败，请重试: {exc}",
+                    )
             record = {
                 header: _json_scalar(row.get(header, ""))
                 for header in block.header_list
             }
-            return self._definition_update_result(
+            result = self._definition_update_result(
                 next_snapshot,
                 {
                     "block_name": block_name,
@@ -4835,12 +6423,16 @@ class PolarMicrogridSimulator:
                 persisted=persisted,
                 warning=warning,
             )
+            result["change_record_persisted"] = change_record_persisted
+            return result
 
     def update_measurement_definition(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
-        with self.definition_update_lock:
+        with self._active_definition_update_guard():
             current = self.definition_snapshot
+            require_definition_revision(payload, current.revision)
             rows = [list(row) for row in current.measurement_rows]
             index, current_item = self._measurement_definition_row(rows, payload)
+            before_row = list(rows[index])
             changes = payload.get("changes", {})
             if not isinstance(changes, Mapping):
                 raise ValueError("changes must be an object")
@@ -4857,32 +6449,281 @@ class PolarMicrogridSimulator:
             )
             self._publish_definition_snapshot(next_snapshot)
 
-            persisted = True
+            rendered_measurement_text = simu_loop.render_measurement_snapshot_aligned(
+                next_snapshot.measurement_before,
+                next_snapshot.measurement_rows,
+                next_snapshot.measurement_after,
+            )
+            changed_fields: List[str] = []
+            if "weight" in changes or "error_sigma" in changes:
+                changed_fields.append("weight")
+            if "valid" in changes:
+                changed_fields.append("valid")
+            self._record_measurement_manual_changes_unlocked(
+                before_row,
+                rows[index],
+                changed_fields,
+                persisted=False,
+                persistence_error="等待 meas.e 保存",
+            )
+            persisted = False
+            change_record_persisted = False
             warning = ""
             try:
-                atomic_write_text(
-                    self.source_files["meas"],
-                    simu_loop.render_measurement_snapshot_aligned(
-                        next_snapshot.measurement_before,
-                        next_snapshot.measurement_rows,
-                        next_snapshot.measurement_after,
-                    ),
+                self._write_ahead_manual_definition_changes_unlocked(
+                    {"meas": rendered_measurement_text},
                 )
             except OSError as exc:
-                persisted = False
-                warning = f"后台定义已更新，但 E 文件保存失败，请重试: {exc}"
+                persistence_error = f"人工修改记录保存失败，未写入 meas.e: {exc}"
+                warning = f"后台定义已更新，但人工修改记录保存失败，未保存 E 文件，请重试: {exc}"
+                self._record_measurement_manual_changes_unlocked(
+                    before_row,
+                    rows[index],
+                    changed_fields,
+                    persisted=False,
+                    persistence_error=persistence_error,
+                )
+            else:
+                change_record_persisted = True
+                try:
+                    atomic_write_text(self.source_files["meas"], rendered_measurement_text)
+                except OSError as exc:
+                    persistence_error = str(exc)
+                    warning = f"后台定义已更新，但 E 文件保存失败，请重试: {exc}"
+                    self._record_measurement_manual_changes_unlocked(
+                        before_row,
+                        rows[index],
+                        changed_fields,
+                        persisted=False,
+                        persistence_error=persistence_error,
+                    )
+                else:
+                    persisted = True
+                    self._mark_manual_changes_persisted_unlocked("measurement")
+                try:
+                    self._write_manual_definition_changes_unlocked()
+                except OSError as exc:
+                    change_record_persisted = False
+                    warning = self._merge_definition_warning(
+                        warning,
+                        f"人工修改记录保存失败，请重试: {exc}",
+                    )
             record = _measurement_row_to_dict(rows[index])
             record["error_sigma"] = normalized["error_sigma"]
-            return self._definition_update_result(
+            result = self._definition_update_result(
                 next_snapshot,
                 record,
                 persisted=persisted,
                 warning=warning,
             )
+            result["change_record_persisted"] = change_record_persisted
+            return result
+
+    def reset_manual_definition_changes(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        with self._active_definition_update_guard():
+            current = self.definition_snapshot
+            require_definition_revision(payload, current.revision)
+            raw_change_ids = payload.get("change_ids", [])
+            if not isinstance(raw_change_ids, Sequence) or isinstance(raw_change_ids, (str, bytes)):
+                raise ValueError("change_ids must be an array")
+            change_ids = list(
+                dict.fromkeys(
+                    str(change_id).strip()
+                    for change_id in raw_change_ids
+                    if str(change_id).strip()
+                )
+            )
+            if not change_ids:
+                raise ValueError("At least one manual change must be selected")
+            missing = [change_id for change_id in change_ids if change_id not in self._manual_definition_changes]
+            if missing:
+                raise ValueError(f"Unknown manual definition change: {missing[0]}")
+            selected = [dict(self._manual_definition_changes[change_id]) for change_id in change_ids]
+
+            device_groups: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
+            measurement_groups: Dict[str, List[Dict[str, Any]]] = {}
+            for item in selected:
+                if item.get("kind") == "device":
+                    row_key = item.get("row_key", {})
+                    if not isinstance(row_key, Mapping):
+                        raise ValueError(f"Invalid device identity for manual change: {item.get('id', '')}")
+                    group_key = (
+                        str(item.get("block_name", "")),
+                        str(row_key.get("idx", "")),
+                        str(row_key.get("name", "")),
+                    )
+                    device_groups.setdefault(group_key, []).append(item)
+                elif item.get("kind") == "measurement":
+                    measurement_name = str(item.get("measurement_name", ""))
+                    measurement_groups.setdefault(measurement_name, []).append(item)
+                else:
+                    raise ValueError(f"Unknown manual change kind: {item.get('kind', '')}")
+
+            model_book = simu_loop._clone_ebook(current.model_book) if device_groups else current.model_book
+            measurement_rows = [list(row) for row in current.measurement_rows]
+            for (block_name, idx, name), items in device_groups.items():
+                block = model_book.data.get(block_name)
+                if block is None:
+                    raise ValueError(f"Unknown model block: {block_name}")
+                row_key = {key: value for key, value in (("idx", idx), ("name", name)) if value}
+                row = self._definition_row(block, row_key)
+                restore_values = {
+                    str(item.get("field", "")): item.get("default_value", "")
+                    for item in items
+                }
+                row.update(normalize_device_changes(row, restore_values))
+
+            for measurement_name, items in measurement_groups.items():
+                index, current_item = self._measurement_definition_row(
+                    measurement_rows,
+                    {"name": measurement_name},
+                )
+                restore_values = {
+                    str(item.get("field", "")): item.get("default_value", "")
+                    for item in items
+                }
+                normalized = normalize_measurement_changes(current_item, restore_values)
+                measurement_rows[index][5] = normalized["weight"]
+                measurement_rows[index][6] = normalized["valid"]
+
+            dev_define_book = (
+                simu_loop._capability_define_book(model_book, self._legacy_dev_define_file())
+                if device_groups
+                else current.dev_define_book
+            )
+            next_snapshot = DefinitionSnapshot(
+                revision=current.revision + 1,
+                model_book=model_book,
+                dev_define_book=dev_define_book,
+                measurement_before=current.measurement_before,
+                measurement_rows=tuple(tuple(row) for row in measurement_rows),
+                measurement_after=current.measurement_after,
+            )
+            self._publish_definition_snapshot(next_snapshot)
+
+            now = _now_text()
+            for item in selected:
+                change_id = str(item.get("id", ""))
+                active_item = self._manual_definition_changes.get(change_id)
+                if active_item is None:
+                    continue
+                active_item["current_value"] = self._manual_change_value_text(item.get("default_value", ""))
+                active_item["modified_at"] = now
+                self._set_manual_change_sync_state_unlocked(
+                    active_item,
+                    persisted=False,
+                    error="等待 E 文件保存",
+                )
+                if active_item.get("field") == "weight":
+                    active_item["current_error_sigma"] = self._manual_change_sigma(active_item["current_value"])
+
+            kinds = set()
+            if device_groups:
+                kinds.add("device")
+            if measurement_groups:
+                kinds.add("measurement")
+            rendered_texts = self._manual_definition_rendered_texts(next_snapshot, kinds)
+            try:
+                self._write_ahead_manual_definition_changes_unlocked(rendered_texts)
+            except OSError as exc:
+                error = f"人工修改记录保存失败，未写入 E 文件: {exc}"
+                for item in selected:
+                    active_item = self._manual_definition_changes.get(str(item.get("id", "")))
+                    if active_item is not None:
+                        self._set_manual_change_sync_state_unlocked(
+                            active_item,
+                            persisted=False,
+                            error=error,
+                        )
+                result = self._manual_definition_changes_payload_unlocked()
+                result.update(
+                    {
+                        "reset_count": len(selected),
+                        "persisted_count": 0,
+                        "memory_updated": True,
+                        "persisted": False,
+                        "change_record_persisted": False,
+                        "reset_ids": change_ids,
+                        "static_meta": self.static_meta(),
+                        "warning": f"人工修改记录保存失败，未保存 E 文件，请重试: {exc}",
+                    }
+                )
+                return result
+
+            errors: Dict[str, str] = {}
+            if "model" in rendered_texts:
+                try:
+                    atomic_write_text(self.source_files["model"], rendered_texts["model"])
+                except OSError as exc:
+                    errors["device"] = str(exc)
+            if "meas" in rendered_texts:
+                try:
+                    atomic_write_text(self.source_files["meas"], rendered_texts["meas"])
+                except OSError as exc:
+                    errors["measurement"] = str(exc)
+
+            for item in selected:
+                kind = str(item.get("kind", ""))
+                if kind not in errors:
+                    continue
+                active_item = self._manual_definition_changes.get(str(item.get("id", "")))
+                if active_item is not None:
+                    self._set_manual_change_sync_state_unlocked(
+                        active_item,
+                        persisted=False,
+                        error=errors[kind],
+                    )
+            if "device" in kinds and "device" not in errors:
+                self._mark_manual_changes_persisted_unlocked("device")
+            if "measurement" in kinds and "measurement" not in errors:
+                self._mark_manual_changes_persisted_unlocked("measurement")
+
+            persisted_count = sum(
+                1
+                for item in selected
+                if str(item.get("kind", "")) not in errors
+            )
+            warning = "；".join(
+                f"后台定义已恢复，但 {('model.e' if kind == 'device' else 'meas.e')} 保存失败，请重试: {error}"
+                for kind, error in errors.items()
+            )
+
+            change_record_persisted = True
+            try:
+                self._write_manual_definition_changes_unlocked()
+            except OSError as exc:
+                change_record_persisted = False
+                warning = self._merge_definition_warning(
+                    warning,
+                    f"人工修改记录保存失败，请重试: {exc}",
+                )
+
+            result = self._manual_definition_changes_payload_unlocked()
+            result.update(
+                {
+                    "reset_count": len(selected),
+                    "persisted_count": persisted_count,
+                    "memory_updated": True,
+                    "persisted": not errors,
+                    "change_record_persisted": change_record_persisted,
+                    "reset_ids": change_ids,
+                    "static_meta": self.static_meta(),
+                }
+            )
+            if warning:
+                result["warning"] = warning
+            return result
 
     def device_parameters(self) -> Dict[str, List[Dict[str, Any]]]:
         book = self.definition_snapshot.model_book
-        parameter_blocks = ("ACWindGen", "DCPVGen", "DCStorageGen")
+        parameter_blocks = (
+            "ACWindGen",
+            "DCWindGen",
+            "ACPVGen",
+            "DCPVGen",
+            "ACStorageGen",
+            "DCStorageGen",
+        )
         return {
             name: [
                 {key: _json_scalar(value) for key, value in row.items()}
@@ -4969,12 +6810,19 @@ class PolarMicrogridSimulator:
             ),
         }
 
-    def _stat_maps(self) -> Tuple[Dict[Tuple[str, str], Any], Dict[Tuple[str, str], Any], Dict[Tuple[str, str], dict], Dict[str, float]]:
+    def _stat_maps(
+        self,
+    ) -> Tuple[
+        Dict[Tuple[str, str], Any],
+        Dict[Tuple[str, str], Any],
+        Dict[Tuple[str, str], dict],
+        Dict[Tuple[str, str], float],
+    ]:
         stat_book = self.runtime_stat_book
         run_stats: Dict[Tuple[str, str], Any] = {}
         cb_status: Dict[Tuple[str, str], Any] = {}
         set_values: Dict[Tuple[str, str], dict] = {}
-        soc_values: Dict[str, float] = {}
+        soc_values = self._runtime_storage_soc_values()
         for row in getattr(stat_book.data.get("RunStat"), "data", []):
             run_stats[(str(row.get("dev_type", "")), _dev_name(row))] = row.get("run_stat", "")
         for row in getattr(stat_book.data.get("CbOpenStat"), "data", []):
@@ -4982,10 +6830,6 @@ class PolarMicrogridSimulator:
         for row in getattr(stat_book.data.get("SetValue"), "data", []):
             key = (str(row.get("dev_type", "")), _dev_name(row))
             set_values.setdefault(key, {})[str(row.get("set_type", ""))] = row.get("set_value", "")
-        storage_block = stat_book.data.get("StorageSoc") or stat_book.data.get("StorageStatus")
-        for row in getattr(storage_block, "data", []):
-            name = str(row.get("name", row.get("dev_name", "")))
-            soc_values[name] = _to_float(row.get("soc_curr", row.get("soc", 0.0)), 0.0) or 0.0
         return run_stats, cb_status, set_values, soc_values
 
     def model_diagram(self) -> Dict[str, Any]:
@@ -5394,6 +7238,11 @@ class MultiModelSimulator:
             model_name=spec.name,
         )
 
+    @staticmethod
+    def _retire_service_instance(service: PolarMicrogridSimulator) -> None:
+        with service.lock:
+            service._retire_service_instance_locked()
+
     def _sync_models_from_directory_locked(self) -> None:
         specs = self._unique_specs(self._directory_specs(self.models_root))
         if not specs:
@@ -5405,6 +7254,9 @@ class MultiModelSimulator:
                 self._services[spec.model_id] = self._make_service(spec, clear_runtime=True)
             else:
                 self._services[spec.model_id].model_name = spec.name
+        for model_id, service in list(self._services.items()):
+            if model_id not in ordered_ids:
+                self._retire_service_instance(service)
         self._services = {model_id: self._services[model_id] for model_id in ordered_ids}
         if self.default_model_id not in self._services:
             self.default_model_id = self._preferred_default_model_id(ordered_ids)
@@ -5491,11 +7343,17 @@ class MultiModelSimulator:
                 raise KeyError(f"Unknown simulation model: {model_id}")
             if len(self._services) <= 1:
                 raise ValueError("至少需要保留一个模型")
-            if service.clock.state != "stopped":
-                raise ValueError(f"模型正在运行中，无法删除: {target_id}")
+            with service.lock:
+                if service.trainee_receive_state().get("active"):
+                    raise ValueError(f"模型正在接收中，无法删除: {target_id}")
+                if service.clock.state != "stopped":
+                    raise ValueError(f"模型正在运行中，无法删除: {target_id}")
+                source_dir = Path(service.sim_dir).resolve()
+                runtime_dir = Path(service.runtime_dir).resolve()
+                removed = service.model_info()
+                service._retire_service_instance_locked()
+                self._services.pop(target_id, None)
 
-            source_dir = Path(service.sim_dir).resolve()
-            runtime_dir = Path(service.runtime_dir).resolve()
             models_root = self.models_root.resolve()
             runtime_root = self.runtime_dir.resolve()
             try:
@@ -5504,8 +7362,6 @@ class MultiModelSimulator:
             except ValueError as exc:
                 raise ValueError(f"模型目录无效，无法删除: {target_id}") from exc
 
-            removed = service.model_info()
-            self._services.pop(target_id, None)
             if source_dir.exists():
                 shutil.rmtree(source_dir)
             if runtime_dir.exists():

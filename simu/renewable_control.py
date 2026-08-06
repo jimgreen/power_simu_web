@@ -13,13 +13,20 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
-from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
-from urllib.request import Request, urlopen
+from typing import Any, Callable, ContextManager, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
+
+from simu.resource_topology import (
+    DcTransferGroup,
+    ResourceConnection,
+    ResourceRef,
+    ResourceTopology,
+    resolve_resource_topology,
+)
+from simu.trainee_exchange import TraineeControlSnapshot
 
 
 EPSILON = 1e-9
@@ -27,7 +34,23 @@ GENERATION_CAPACITY_TOLERANCE_RATIO = 0.001
 GENERATION_CAPACITY_TOLERANCE_CAP_RATIO = 0.01
 MEASUREMENT_NOISE_SIGMA_MULTIPLIER = 5.0
 POWER_CONTROL_MODES = {"P", "PQ", "PV", "ACP"}
-REMOTE_SNAPSHOT_STATIC_FIELDS = ("definitions", "settings", "device_parameters")
+RENEWABLE_PARAMETER_SPECS = (
+    ("wind", "ACWindGen", "ACGenerator", "idx_acgenerator"),
+    ("wind", "DCWindGen", "DCGenerator", "idx_dcgenerator"),
+    ("pv", "ACPVGen", "ACGenerator", "idx_acgenerator"),
+    ("pv", "DCPVGen", "DCGenerator", "idx_dcgenerator"),
+)
+STORAGE_PARAMETER_SPECS = (
+    ("ACStorageGen", "ACGenerator", "idx_acgenerator"),
+    ("DCStorageGen", "DCGenerator", "idx_dcgenerator"),
+)
+GRID_FOLLOWING_STORAGE_MODES = {"P", "PQ"}
+BALANCE_STORAGE_MODES = {"SLACK", "V", "VF", "V/F", "PH"}
+LEGACY_RESOURCE_SPECS = (
+    ("wind", "wind_generator", "ACGenerator"),
+    ("pv", "pv_generator", "DCGenerator"),
+    ("storage", "estorage", ""),
+)
 RENEWABLE_CONTROL_STATE_FILE = "renewable_control.json"
 DEADBAND_STEP_SCALE = 0.20
 DEFAULT_STORAGE_CHARGE_DERATING_CURVE: Tuple[Tuple[float, float], ...] = (
@@ -64,6 +87,11 @@ def _number(value: Any, default: Optional[float] = None) -> Optional[float]:
         except ValueError:
             return default
     return number if math.isfinite(number) else default
+
+
+def _finite_number(value: Any, default: float = 0.0) -> float:
+    number = _number(value)
+    return number if number is not None else default
 
 
 def _positive(values: Iterable[Any], default: float = 0.0) -> float:
@@ -190,12 +218,25 @@ def _device_key(device: Mapping[str, Any]) -> Tuple[str, str]:
 
 def _parameter_rows(snapshot: Mapping[str, Any], block_name: str) -> List[Mapping[str, Any]]:
     parameters = snapshot.get("device_parameters")
-    if not isinstance(parameters, Mapping):
-        return []
     wanted = block_name.lower()
-    for name, rows in parameters.items():
-        if str(name).lower() == wanted and isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)):
-            return [row for row in rows if isinstance(row, Mapping)]
+    if isinstance(parameters, Mapping):
+        for name, rows in parameters.items():
+            if str(name).lower() == wanted and isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)):
+                return [row for row in rows if isinstance(row, Mapping)]
+
+    definitions = snapshot.get("definitions")
+    if not isinstance(definitions, Mapping):
+        return []
+    for section_name in ("device", "model"):
+        section = definitions.get(section_name)
+        if not isinstance(section, Mapping):
+            continue
+        for name, block in section.items():
+            if str(name).lower() != wanted:
+                continue
+            rows = block.get("rows") if isinstance(block, Mapping) else block
+            if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)):
+                return [row for row in rows if isinstance(row, Mapping)]
     return []
 
 
@@ -203,14 +244,31 @@ def _parameter_name(row: Mapping[str, Any]) -> str:
     return str(row.get("name", row.get("dev_name", "")))
 
 
-def _indexed_device(snapshot: Mapping[str, Any], dev_type: str, index: Any) -> Optional[Mapping[str, Any]]:
+def _indexed_device_matches(
+    snapshot: Mapping[str, Any],
+    dev_type: str,
+    index: Any,
+) -> Tuple[List[Mapping[str, Any]], List[Mapping[str, Any]]]:
     target = str(index if index is not None else "").strip()
     if not target:
-        return None
-    for device in snapshot.get("devices", []) or []:
-        if isinstance(device, Mapping) and _device_type(device) == dev_type and _device_index(device) == target:
-            return device
-    return None
+        return [], []
+    runtime_matches = [
+        device
+        for device in snapshot.get("devices", []) or []
+        if isinstance(device, Mapping)
+        and _device_type(device) == dev_type
+        and _device_index(device) == target
+    ]
+    definitions = snapshot.get("definitions")
+    model = definitions.get("model") if isinstance(definitions, Mapping) else None
+    block = model.get(dev_type) if isinstance(model, Mapping) else None
+    rows = block.get("rows") if isinstance(block, Mapping) else block
+    model_matches = [
+        row
+        for row in rows
+        if isinstance(row, Mapping) and str(row.get("idx", "")).strip() == target
+    ] if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)) else []
+    return runtime_matches, model_matches
 
 
 def _device_map(snapshot: Mapping[str, Any]) -> Dict[Tuple[str, str], Mapping[str, Any]]:
@@ -219,6 +277,235 @@ def _device_map(snapshot: Mapping[str, Any]) -> Dict[Tuple[str, str], Mapping[st
         for device in snapshot.get("devices", []) or []
         if isinstance(device, Mapping)
     }
+
+
+def _duplicate_typed_identities(
+    snapshot: Mapping[str, Any],
+) -> Dict[Tuple[str, str], str]:
+    runtime_counts: Dict[Tuple[str, str], int] = {}
+    for device in snapshot.get("devices", []) or []:
+        if not isinstance(device, Mapping):
+            continue
+        key = _device_key(device)
+        if all(key):
+            runtime_counts[key] = runtime_counts.get(key, 0) + 1
+
+    model_counts: Dict[Tuple[str, str], int] = {}
+    definitions = snapshot.get("definitions")
+    model = definitions.get("model") if isinstance(definitions, Mapping) else None
+    if isinstance(model, Mapping):
+        for dev_type, block in model.items():
+            rows = block.get("rows") if isinstance(block, Mapping) else block
+            if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+                continue
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    continue
+                dev_name = str(row.get("name", row.get("dev_name", ""))).strip()
+                key = (str(dev_type), dev_name)
+                if all(key):
+                    model_counts[key] = model_counts.get(key, 0) + 1
+
+    diagnostics: Dict[Tuple[str, str], str] = {}
+    for key in runtime_counts.keys() | model_counts.keys():
+        reasons = []
+        if runtime_counts.get(key, 0) > 1:
+            reasons.append(f"运行设备列表存在{runtime_counts[key]}个同身份设备")
+        if model_counts.get(key, 0) > 1:
+            reasons.append(f"definitions.model存在{model_counts[key]}个同身份模型行")
+        if reasons:
+            diagnostics[key] = (
+                f"资源{key[0]}.{key[1]}设备身份重复（{'；'.join(reasons)}），"
+                "自动命令地址不唯一，本轮仅保留诊断"
+            )
+    return diagnostics
+
+
+def _device_state_rows(snapshot: Mapping[str, Any], dev_type: str) -> List[Mapping[str, Any]]:
+    return [
+        row
+        for row in snapshot.get("device_states", []) or []
+        if isinstance(row, Mapping) and _device_type(row) == dev_type
+    ]
+
+
+@dataclass(frozen=True)
+class _LinkedResourceSpec:
+    technology: str
+    parameter_block: str
+    parameter: Mapping[str, Any]
+    device: Mapping[str, Any]
+    identity_diagnostic: str = ""
+
+    @property
+    def dev_type(self) -> str:
+        return _device_type(self.device)
+
+    @property
+    def dev_name(self) -> str:
+        return _device_name(self.device)
+
+
+def _linked_resource_specs(
+    snapshot: Mapping[str, Any],
+    quality: "_Quality",
+    identity_diagnostics: Optional[Mapping[Tuple[str, str], str]] = None,
+) -> Tuple[List[_LinkedResourceSpec], List[_LinkedResourceSpec], List[ResourceRef]]:
+    renewable_specs: List[_LinkedResourceSpec] = []
+    storage_specs: List[_LinkedResourceSpec] = []
+    linked_keys: set[Tuple[str, str]] = set()
+    if identity_diagnostics is None:
+        identity_diagnostics = _duplicate_typed_identities(snapshot)
+
+    def indexed_device(
+        block_name: str,
+        position: int,
+        dev_type: str,
+        index_name: str,
+        index_value: Any,
+    ) -> Optional[Mapping[str, Any]]:
+        runtime_matches, model_matches = _indexed_device_matches(
+            snapshot,
+            dev_type,
+            index_value,
+        )
+        index_text = str(
+            index_value if index_value is not None else ""
+        ).strip() or "--"
+        if not runtime_matches:
+            quality.add(
+                f"{block_name}参数行{position}引用的{dev_type}.{index_name}="
+                f"{index_text}不存在，已忽略"
+            )
+            return None
+        if len(runtime_matches) > 1 or len(model_matches) > 1:
+            candidate_names = sorted(
+                {
+                    *(_device_name(device) for device in runtime_matches),
+                    *(
+                        str(row.get("name", row.get("dev_name", ""))).strip()
+                        for row in model_matches
+                    ),
+                }
+                - {""},
+                key=lambda name: _natural_topology_identity(name),
+            )
+            source_counts = []
+            if len(runtime_matches) > 1:
+                source_counts.append(f"运行设备{len(runtime_matches)}行")
+            if len(model_matches) > 1:
+                source_counts.append(f"模型{len(model_matches)}行")
+            candidates_text = "、".join(
+                f"{dev_type}.{name}" for name in candidate_names
+            ) or "--"
+            quality.add(
+                f"{block_name}参数行{position}引用的{dev_type}.{index_name}="
+                f"{index_text}匹配到多个候选（{'、'.join(source_counts)}："
+                f"{candidates_text}），引用歧义，已忽略"
+            )
+            return None
+        return runtime_matches[0]
+
+    def add_spec(
+        technology: str,
+        parameter_block: str,
+        parameter: Mapping[str, Any],
+        device: Mapping[str, Any],
+    ) -> None:
+        key = _device_key(device)
+        if key in linked_keys:
+            quality.add(
+                f"资源{key[0]}.{key[1]}被多个技术参数行重复引用，保留首个有效引用"
+            )
+            return
+        linked_keys.add(key)
+        spec = _LinkedResourceSpec(
+            technology=technology,
+            parameter_block=parameter_block,
+            parameter=parameter,
+            device=device,
+            identity_diagnostic=identity_diagnostics.get(key, ""),
+        )
+        if spec.identity_diagnostic:
+            quality.add(spec.identity_diagnostic)
+        (storage_specs if technology == "storage" else renewable_specs).append(spec)
+
+    for technology, block_name, dev_type, index_name in RENEWABLE_PARAMETER_SPECS:
+        for position, parameter in enumerate(_parameter_rows(snapshot, block_name), start=1):
+            index_value = parameter.get(index_name)
+            device = indexed_device(
+                block_name,
+                position,
+                dev_type,
+                index_name,
+                index_value,
+            )
+            if device is None:
+                continue
+            add_spec(technology, block_name, parameter, device)
+
+    for block_name, dev_type, index_name in STORAGE_PARAMETER_SPECS:
+        for position, parameter in enumerate(_parameter_rows(snapshot, block_name), start=1):
+            index_value = parameter.get(index_name)
+            device = indexed_device(
+                block_name,
+                position,
+                dev_type,
+                index_name,
+                index_value,
+            )
+            if device is None:
+                continue
+            add_spec("storage", block_name, parameter, device)
+
+    devices = _device_map(snapshot)
+    for technology, block_name, default_dev_type in LEGACY_RESOURCE_SPECS:
+        for position, parameter in enumerate(_parameter_rows(snapshot, block_name), start=1):
+            declared_type = str(
+                parameter.get("dev_type")
+                or parameter.get("resource_dev_type")
+                or ""
+            ).strip()
+            source_name = str(
+                parameter.get("source_name")
+                or parameter.get("dev_name")
+                or parameter.get("name")
+                or ""
+            ).strip()
+            if not source_name:
+                quality.add(f"{block_name}参数行{position}缺少资源名称，已忽略")
+                continue
+
+            candidate_types = (declared_type,) if declared_type else (
+                default_dev_type or "DCGenerator",
+            )
+            candidate_names = [source_name]
+            if technology == "storage" and not declared_type and not str(
+                parameter.get("source_name", "")
+            ).strip():
+                candidate_names.append(f"{source_name}_vsrc")
+            device = next(
+                (
+                    devices.get((candidate_type, candidate_name))
+                    for candidate_type in candidate_types
+                    for candidate_name in candidate_names
+                    if devices.get((candidate_type, candidate_name)) is not None
+                ),
+                None,
+            )
+            if device is None:
+                target_type = candidate_types[0]
+                quality.add(
+                    f"{block_name}参数行{position}引用的{target_type}.{source_name}不存在，已忽略"
+                )
+                continue
+            add_spec(technology, block_name, parameter, device)
+
+    refs = [
+        ResourceRef(spec.technology, spec.dev_type, spec.dev_name)
+        for spec in (*renewable_specs, *storage_specs)
+    ]
+    return renewable_specs, storage_specs, refs
 
 
 @dataclass(frozen=True)
@@ -442,9 +729,9 @@ class _Quality:
         self.issues: List[str] = []
         self.inputs: Dict[str, Dict[str, Any]] = {}
         self.blocked = False
-        self.dispatch_forbidden = source != "remote"
-        if source == "cached":
-            self.add("模拟台实时快照获取失败，当前使用最近一次有效快照", dispatch_forbidden=True)
+        self.dispatch_forbidden = source not in {"remote", "trainee-live"}
+        if source in {"cached", "trainee-cache"}:
+            self.add("学员台实时交换更新失败，当前使用最近一次有效快照", dispatch_forbidden=True)
         elif source == "local":
             self.add("当前使用学员台本地模型数据，不允许闭环下发", dispatch_forbidden=True)
 
@@ -487,68 +774,6 @@ def _rated_capacity(row: Mapping[str, Any], device: Optional[Mapping[str, Any]],
     area = _positive((row.get("array_area"), row.get("area")))
     reference = _positive((row.get("reference_irradiance"),), 1000.0)
     return reference * area * efficiency / 1000.0 if efficiency is not None and area > 0 else 0.0
-
-
-def _bounded_available(
-    value: Optional[float],
-    row: Mapping[str, Any],
-    device: Optional[Mapping[str, Any]],
-) -> Optional[float]:
-    if value is None:
-        return None
-    raw = device.get("raw") if device and isinstance(device.get("raw"), Mapping) else {}
-    p_min = max(0.0, _number(row.get("p_min", raw.get("p_min")), 0.0) or 0.0)
-    raw_max = _number(row.get("p_max", raw.get("p_max")))
-    p_max = max(p_min, value) if raw_max is None else max(p_min, raw_max)
-    return _clamp(max(0.0, value), p_min, p_max)
-
-
-def _wind_available(
-    row: Mapping[str, Any],
-    device: Optional[Mapping[str, Any]],
-    wind_speed: Optional[float],
-) -> Optional[float]:
-    if wind_speed is None:
-        return None
-    rated = _rated_capacity(row, device, "风电")
-    cut_in = _number(row.get("cut_in_wind_speed", row.get("cut_in_speed")))
-    rated_speed = _number(row.get("rated_wind_speed"))
-    cut_out = _number(row.get("cut_out_wind_speed", row.get("cut_out_speed")))
-    if rated <= 0 or cut_in is None or rated_speed is None or cut_out is None:
-        return None
-    effective_rated = max(rated_speed, cut_in + EPSILON)
-    effective_cut_out = max(cut_out, effective_rated + EPSILON)
-    speed = max(0.0, wind_speed)
-    if speed < cut_in or speed >= effective_cut_out:
-        return 0.0
-    available = rated if speed >= effective_rated else rated * ((speed - cut_in) / (effective_rated - cut_in)) ** 3
-    return _bounded_available(available, row, device)
-
-
-def _pv_available(
-    row: Mapping[str, Any],
-    device: Optional[Mapping[str, Any]],
-    irradiance: Optional[float],
-    air_temperature: Optional[float],
-) -> Optional[float]:
-    if irradiance is None:
-        return None
-    rated = _rated_capacity(row, device, "光伏")
-    efficiency = _ratio(row.get("module_efficiency", row.get("conversion_efficiency")), None)
-    area = _positive((row.get("array_area"), row.get("area")))
-    reference_irradiance = max(EPSILON, _number(row.get("reference_irradiance"), 1000.0) or 1000.0)
-    reference_temperature = _number(row.get("reference_temperature"), 25.0) or 25.0
-    temperature_coefficient = _number(row.get("temp_coefficient"), 0.0) or 0.0
-    available = (
-        max(0.0, irradiance) * area * efficiency / 1000.0
-        if efficiency is not None and area > 0
-        else rated * max(0.0, irradiance) / reference_irradiance
-    )
-    if rated > 0:
-        available = min(available, rated)
-    if air_temperature is not None:
-        available *= max(0.0, 1.0 + temperature_coefficient * (air_temperature - reference_temperature))
-    return _bounded_available(available, row, device)
 
 
 def _load_boundary(
@@ -616,7 +841,6 @@ def _normalized_generation_current(
     if measured is None:
         return None, None
     current = measured.value
-    planning = _clamp(current, 0.0, capacity_kw) if capacity_kw > 0 else current
     if capacity_kw > 0 and current > capacity_kw:
         weight = _number(measured.row.get("weight"), 0.0) or 0.0
         noise_margin = MEASUREMENT_NOISE_SIGMA_MULTIPLIER / math.sqrt(weight) if weight > 0 else 0.0
@@ -628,114 +852,182 @@ def _normalized_generation_current(
             ),
         )
         if current > capacity_kw + warning_tolerance:
-            quality.add(f"{label}实时有功 {current:g} kW 超过额定容量 {capacity_kw:g} kW，规划值按额定容量限幅")
-    return current, planning
+            quality.add(f"{label}实时有功 {current:g} kW 超过额定容量 {capacity_kw:g} kW")
+    return current, current
+
+
+def _topology_payload(
+    spec: _LinkedResourceSpec,
+    connection: Optional[ResourceConnection],
+) -> Dict[str, Any]:
+    if connection is None:
+        return {
+            "technology": spec.technology,
+            "resourceDevType": spec.dev_type,
+            "resourceDevName": spec.dev_name,
+            "connectionSide": "INVALID",
+            "activelyConnected": False,
+            "busbarType": "",
+            "busbarName": "",
+            "busbarNode": "",
+            "structuralPath": [],
+            "activePath": [],
+            "converterPath": [],
+            "gridComponentId": "",
+            "dcTransferGroupId": "",
+            "topologyStatusLabel": "资源模型引用或端子无效",
+        }
+    return {
+        "technology": spec.technology,
+        "resourceDevType": spec.dev_type,
+        "resourceDevName": spec.dev_name,
+        "connectionSide": connection.connection_side,
+        "activelyConnected": bool(connection.actively_connected),
+        "busbarType": connection.busbar_type,
+        "busbarName": connection.busbar_name,
+        "busbarNode": connection.busbar_node,
+        "structuralPath": list(connection.structural_path),
+        "activePath": list(connection.active_path),
+        "converterPath": list(connection.converter_path),
+        "gridComponentId": connection.grid_component_id,
+        "dcTransferGroupId": connection.dc_transfer_group_id,
+        "topologyStatusLabel": connection.topology_status_label,
+    }
 
 
 def _renewable_rows(
     snapshot: Mapping[str, Any],
     measurements: Mapping[Tuple[str, str, str], MeasurementValue],
-    wind_speed: Optional[float],
-    irradiance: Optional[float],
-    air_temperature: Optional[float],
+    resource_specs: Sequence[_LinkedResourceSpec],
+    connections: Mapping[Tuple[str, str], ResourceConnection],
     quality: _Quality,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
-    for category, block_name, dev_type, index_name, candidates in (
-        ("风电", "ACWindGen", "ACGenerator", "idx_acgenerator", ("p_set", "p_ac_set")),
-        ("光伏", "DCPVGen", "DCGenerator", "idx_dcgenerator", ("p_set",)),
-    ):
-        for index, parameter in enumerate(_parameter_rows(snapshot, block_name), start=1):
-            device = _indexed_device(snapshot, dev_type, parameter.get(index_name))
-            name = _device_name(device) if device else _parameter_name(parameter) or f"{dev_type}_{parameter.get(index_name, index)}"
-            online = _is_online(device, measurements)
-            capacity = _rated_capacity(parameter, device, category)
-            measured = _measured(measurements, dev_type, name, ("P_GEN", "P", "P_AC", "P_DC")) if online else None
-            current, planning_current = _normalized_generation_current(measured, capacity, quality, f"{category}{name}")
-            available = (
-                _wind_available(parameter, device, wind_speed)
-                if category == "风电"
-                else _pv_available(parameter, device, irradiance, air_temperature)
-            ) if online else 0.0
-            environment_known = wind_speed is not None if category == "风电" else irradiance is not None
-            capability_known = available is not None
-            set_type = _preferred_set_type(snapshot, device, candidates)
-            recovery_ready = planning_current is not None and capacity > 0
-            rows.append(
-                {
-                    "category": category,
-                    "dev_type": dev_type,
-                    "dev_name": name,
-                    "online": online,
-                    "environmentKnown": environment_known,
-                    "capabilityKnown": capability_known,
-                    "capacityKw": capacity,
-                    "currentKw": current if online else 0.0,
-                    "planningCurrentKw": planning_current if online else 0.0,
-                    "headroomKw": max(0.0, capacity - (planning_current or 0.0)) if recovery_ready else 0.0,
-                    "commandable": online and bool(set_type) and (capability_known or recovery_ready),
-                    "availableKw": available,
-                    "set_type": set_type,
-                    "statusLabel": (
-                        "停用"
-                        if not online
-                        else "无遥调点"
-                        if not set_type
-                        else "可控"
-                        if capability_known
-                        else f"{'风速' if category == '风电' else '辐照'}未知·渐进恢复"
-                        if recovery_ready
-                        else f"{'风速' if category == '风电' else '辐照'}/实时值未知"
-                    ),
-                }
+    categories = {
+        ("wind", "AC"): "交流风电",
+        ("wind", "DC"): "直流风电",
+        ("pv", "AC"): "交流光伏",
+        ("pv", "DC"): "直流光伏",
+    }
+    for spec in resource_specs:
+        device = spec.device
+        dev_type = spec.dev_type
+        name = spec.dev_name
+        topology = _topology_payload(spec, connections.get((dev_type, name)))
+        connection_side = topology["connectionSide"]
+        device_online = _is_online(device, measurements)
+        online = device_online and topology["activelyConnected"]
+        capacity = _rated_capacity(
+            spec.parameter,
+            device,
+            "风电" if spec.technology == "wind" else "光伏",
+        )
+        measured = (
+            _measured(measurements, dev_type, name, ("P_GEN", "P", "P_AC", "P_DC"))
+            if device_online
+            else None
+        )
+        category = categories.get(
+            (spec.technology, connection_side),
+            "拓扑未解析新能源",
+        )
+        current, planning_current = _normalized_generation_current(
+            measured,
+            capacity,
+            quality,
+            f"{category}{name}",
+        )
+        set_type = _preferred_set_type(snapshot, device, ("p_set",))
+        capability_known = capacity > EPSILON
+        recovery_ready = planning_current is not None and capability_known
+        signed_baseline_valid = planning_current is None or planning_current >= 0.0
+        capacity_baseline_valid = (
+            planning_current is None
+            or not capability_known
+            or planning_current <= capacity
+        )
+        identity_valid = not spec.identity_diagnostic
+        topology_valid = connection_side in {"AC", "DC"}
+        commandable = bool(
+            online
+            and topology_valid
+            and identity_valid
+            and set_type
+            and recovery_ready
+            and signed_baseline_valid
+            and capacity_baseline_valid
+        )
+
+        if not topology_valid:
+            quality.add(
+                f"新能源{name}拓扑状态{connection_side}：{topology['topologyStatusLabel']}，本轮仅保留诊断"
+            )
+        elif device_online and not topology["activelyConnected"]:
+            quality.add(f"新能源{name}当前拓扑断开，本轮不参与自动策略")
+        if device_online and not set_type:
+            quality.add(f"新能源{name}缺少有效p_set有功遥调点，本轮仅保留诊断")
+        if online and planning_current is not None and planning_current < 0.0:
+            quality.add(
+                f"新能源{name}实时有功 {planning_current:g} kW 为负，本轮保持原值且不下发自动设点"
             )
 
-    if rows:
-        return rows
-
-    devices = _device_map(snapshot)
-    for category, block_name, dev_type, candidates in (
-        ("风电", "wind_generator", "ACGenerator", ("p_set", "p_ac_set")),
-        ("光伏", "pv_generator", "DCGenerator", ("p_set",)),
-    ):
-        for parameter in _parameter_rows(snapshot, block_name):
-            name = _parameter_name(parameter)
-            device = devices.get((dev_type, name))
-            online = _is_online(device, measurements)
-            capacity = _rated_capacity(parameter, device, category)
-            measured = _measured(measurements, dev_type, name, ("P_GEN", "P", "P_AC", "P_DC")) if online else None
-            current, planning_current = _normalized_generation_current(measured, capacity, quality, f"{category}{name}")
-            available = (
-                _wind_available(parameter, device, wind_speed)
-                if category == "风电"
-                else _pv_available(parameter, device, irradiance, air_temperature)
-            ) if online else 0.0
-            environment_known = wind_speed is not None if category == "风电" else irradiance is not None
-            set_type = _preferred_set_type(snapshot, device, candidates)
-            rows.append(
-                {
-                    "category": category,
-                    "dev_type": dev_type,
-                    "dev_name": name,
-                    "online": online,
-                    "environmentKnown": environment_known,
-                    "capabilityKnown": available is not None,
-                    "capacityKw": capacity,
-                    "currentKw": current if online else 0.0,
-                    "planningCurrentKw": planning_current if online else 0.0,
-                    "headroomKw": max(0.0, capacity - (planning_current or 0.0)) if planning_current is not None else 0.0,
-                    "commandable": online and bool(set_type) and (available is not None or (planning_current is not None and capacity > 0)),
-                    "availableKw": available,
-                    "set_type": set_type,
-                    "statusLabel": "可控" if online and set_type else "无遥调点" if online else "停用",
-                }
-            )
+        status_label = (
+            topology["topologyStatusLabel"]
+            if not topology_valid
+            else "停用"
+            if not device_online
+            else "当前断开"
+            if not topology["activelyConnected"]
+            else "设备身份重复·仅保留诊断"
+            if not identity_valid
+            else "无遥调点"
+            if not set_type
+            else "额定容量无效"
+            if not capability_known
+            else "实时有功未知"
+            if planning_current is None
+            else "实时有功为负·保持原值"
+            if not signed_baseline_valid
+            else "实时有功超过容量·保持原值"
+            if not capacity_baseline_valid
+            else "可控"
+        )
+        rows.append(
+            {
+                **topology,
+                "category": category,
+                "dev_type": dev_type,
+                "dev_name": name,
+                "source_name": name,
+                "deviceOnline": device_online,
+                "online": online,
+                "environmentKnown": False,
+                "capabilityKnown": capability_known,
+                "resourceIdentityValid": identity_valid,
+                "resourceIdentityDiagnostic": spec.identity_diagnostic,
+                "capacityKw": capacity,
+                "currentKw": current if device_online else 0.0,
+                "planningCurrentKw": planning_current if device_online else 0.0,
+                "headroomKw": (
+                    max(0.0, capacity - (planning_current or 0.0))
+                    if recovery_ready
+                    and signed_baseline_valid
+                    and capacity_baseline_valid
+                    else 0.0
+                ),
+                "commandable": commandable,
+                "availableKw": capacity if capability_known else None,
+                "set_type": set_type if topology_valid else "",
+                "statusLabel": status_label,
+            }
+        )
     return rows
 
 
 def _diesel_rows(
     snapshot: Mapping[str, Any],
     measurements: Mapping[Tuple[str, str, str], MeasurementValue],
+    resource_keys: Optional[set[Tuple[str, str]]] = None,
 ) -> List[Dict[str, Any]]:
     wind_indexes = {
         str(row.get("idx_acgenerator", "")).strip()
@@ -747,6 +1039,8 @@ def _diesel_rows(
     rows: List[Dict[str, Any]] = []
     for device in snapshot.get("devices", []) or []:
         if not isinstance(device, Mapping) or _device_type(device) != "ACGenerator":
+            continue
+        if resource_keys and _device_key(device) in resource_keys:
             continue
         if _device_index(device) in wind_indexes:
             continue
@@ -833,55 +1127,143 @@ def _storage_rows(
     measurements: Mapping[Tuple[str, str, str], MeasurementValue],
     settings: RenewableControlSettings,
     quality: _Quality,
+    resource_specs: Sequence[_LinkedResourceSpec],
+    connections: Mapping[Tuple[str, str], ResourceConnection],
+    dc_transfer_groups: Mapping[str, DcTransferGroup],
 ) -> List[Dict[str, Any]]:
     control_horizon_minutes = _storage_control_horizon_minutes(snapshot, settings)
     step_hours = max(1.0 / 3600.0, control_horizon_minutes / 60.0)
     rows: List[Dict[str, Any]] = []
-    for index, parameter in enumerate(_parameter_rows(snapshot, "DCStorageGen"), start=1):
-        device = _indexed_device(snapshot, "DCGenerator", parameter.get("idx_dcgenerator"))
-        name = _device_name(device) if device else f"DCGenerator_{parameter.get('idx_dcgenerator', index)}"
-        online = _is_online(device, measurements)
-        soc_measurement = _measured(measurements, "DCGenerator", name, ("SOC",)) if online else None
+    categories = {
+        ("AC", "grid_following"): "交流跟网储能",
+        ("DC", "grid_following"): "直流跟网储能",
+        ("AC", "balance"): "交流平衡储能",
+        ("DC", "balance"): "直流平衡储能",
+    }
+    for spec in resource_specs:
+        parameter = spec.parameter
+        device = spec.device
+        dev_type = spec.dev_type
+        name = spec.dev_name
+        topology = _topology_payload(spec, connections.get((dev_type, name)))
+        connection_side = topology["connectionSide"]
+        topology_valid = connection_side in {"AC", "DC"}
+        identity_valid = not spec.identity_diagnostic
+        device_online = _is_online(device, measurements)
+        online = device_online and topology["activelyConnected"]
+        mode = _runtime_mode(snapshot, device).strip().upper()
+        preferred_set_type = _preferred_set_type(snapshot, device, ("p_set",))
+        role = (
+            "grid_following"
+            if mode in GRID_FOLLOWING_STORAGE_MODES and preferred_set_type == "p_set"
+            else "balance"
+            if mode in BALANCE_STORAGE_MODES
+            else "uncontrolled"
+        )
+        set_type = preferred_set_type if role == "grid_following" else ""
+        category = categories.get(
+            (connection_side, role),
+            "拓扑未解析储能",
+        )
+        soc_measurement = (
+            _measured(measurements, dev_type, name, ("SOC",))
+            if device_online
+            else None
+        )
         live_soc = _live_soc_ratio(soc_measurement.value) if soc_measurement else None
         soc_weight = _number(soc_measurement.row.get("weight"), 0.0) if soc_measurement else 0.0
         soc_noise_sigma = 1.0 / math.sqrt(soc_weight) if soc_weight and soc_weight > 0 else 0.0
+        raw = device.get("raw") if isinstance(device.get("raw"), Mapping) else {}
         fallback_soc = _ratio(
-            parameter.get("state_of_charge", parameter.get("soc_curr", parameter.get("soc_cur"))),
+            parameter.get(
+                "state_of_charge",
+                parameter.get(
+                    "soc_curr",
+                    parameter.get(
+                        "soc_cur",
+                        device.get("soc_curr", raw.get("soc_curr")),
+                    ),
+                ),
+            ),
             0.5,
         )
         soc = live_soc if live_soc is not None else fallback_soc
         soc_known = live_soc is not None
         if online and not soc_known:
             quality.add(f"储能{name}缺少有效实时SOC，本轮禁止该储能参与充放电调节")
-        power = _measured(measurements, "DCGenerator", name, ("P_GEN", "P")) if online else None
-        capacity = max(
-            EPSILON,
-            _positive(
-                (
-                    parameter.get("energy_capacity"),
-                    parameter.get("capacity_kwh"),
-                    parameter.get("emva"),
-                    (device.get("raw") or {}).get("rated_capacity") if device and isinstance(device.get("raw"), Mapping) else None,
-                ),
-                1.0,
-            ),
+        power = (
+            _measured(measurements, dev_type, name, ("P_GEN", "P", "P_AC", "P_DC"))
+            if device_online
+            else None
         )
-        defined_min = _ratio(parameter.get("soc_lower_limit", parameter.get("soc_min")), None)
-        defined_max = _ratio(parameter.get("soc_upper_limit", parameter.get("soc_max")), None)
+        capacity_value = _positive(
+            (
+                parameter.get("energy_capacity"),
+                parameter.get("capacity_kwh"),
+                parameter.get("emva"),
+                raw.get("energy_capacity"),
+                raw.get("capacity_kwh"),
+                raw.get("rated_capacity"),
+            )
+        )
+        calculation_capacity = max(EPSILON, capacity_value)
+        lower_value = parameter.get("soc_lower_limit", parameter.get("soc_min"))
+        upper_value = parameter.get("soc_upper_limit", parameter.get("soc_max"))
+        defined_min = _ratio(lower_value, None)
+        defined_max = _ratio(upper_value, None)
         soc_min = _clamp(defined_min if defined_min is not None else settings.soc_min, 0.0, 1.0)
         soc_max = _clamp(defined_max if defined_max is not None else settings.soc_max, soc_min, 1.0)
-        efficiency = max(EPSILON, _ratio(parameter.get("charge_discharge_efficiency"), 1.0) or 1.0)
-        charge_max = max(0.0, _number(parameter.get("max_charge_power", parameter.get("charge_p_max")), 0.0) or 0.0)
-        discharge_max = max(
-            0.0,
-            _number(
-                parameter.get("max_discharge_power", parameter.get("dis_charge_p_max", parameter.get("discharge_p_max"))),
-                0.0,
-            )
-            or 0.0,
+        efficiency_value = parameter.get("charge_discharge_efficiency")
+        parsed_efficiency = _ratio(efficiency_value, None)
+        efficiency = max(
+            EPSILON,
+            parsed_efficiency if parsed_efficiency is not None else 1.0,
         )
-        charge_by_energy = max(0.0, ((soc_max - (soc or 0.0)) * capacity) / (efficiency * step_hours)) if soc_known else 0.0
-        discharge_by_energy = max(0.0, (((soc or 0.0) - soc_min) * capacity * efficiency) / step_hours) if soc_known else 0.0
+        charge_limit_value = parameter.get(
+            "max_charge_power",
+            parameter.get("charge_p_max"),
+        )
+        discharge_limit_value = parameter.get(
+            "max_discharge_power",
+            parameter.get("dis_charge_p_max", parameter.get("discharge_p_max")),
+        )
+        parsed_charge_max = _number(charge_limit_value)
+        parsed_discharge_max = _number(discharge_limit_value)
+        charge_max = max(0.0, parsed_charge_max or 0.0)
+        discharge_max = max(0.0, parsed_discharge_max or 0.0)
+        lower_present = lower_value is not None and str(lower_value).strip() != ""
+        upper_present = upper_value is not None and str(upper_value).strip() != ""
+        efficiency_present = efficiency_value is not None and str(efficiency_value).strip() != ""
+        limits_valid = bool(
+            capacity_value > EPSILON
+            and parsed_charge_max is not None
+            and parsed_charge_max >= 0.0
+            and parsed_discharge_max is not None
+            and parsed_discharge_max >= 0.0
+            and (parsed_charge_max > EPSILON or parsed_discharge_max > EPSILON)
+            and (not lower_present or defined_min is not None)
+            and (not upper_present or defined_max is not None)
+            and soc_min < soc_max - EPSILON
+            and (not efficiency_present or parsed_efficiency is not None and parsed_efficiency > EPSILON)
+        )
+        charge_by_energy = (
+            max(
+                0.0,
+                ((soc_max - (soc or 0.0)) * calculation_capacity)
+                / (efficiency * step_hours),
+            )
+            if soc_known
+            else 0.0
+        )
+        discharge_by_energy = (
+            max(
+                0.0,
+                (((soc or 0.0) - soc_min) * calculation_capacity * efficiency)
+                / step_hours,
+            )
+            if soc_known
+            else 0.0
+        )
         charge_before_derating = min(charge_max, charge_by_energy)
         discharge_before_derating = min(discharge_max, discharge_by_energy)
         charge_derating_factor = (
@@ -900,7 +1282,9 @@ def _storage_rows(
         discharge_power = min(discharge_before_derating, discharge_curve_limit)
         soc_constraint = (
             "offline"
-            if not online
+            if not device_online
+            else "disconnected"
+            if not topology["activelyConnected"]
             else "unknown"
             if not soc_known
             else "above_upper"
@@ -909,37 +1293,105 @@ def _storage_rows(
             if (soc or 0.0) <= soc_min
             else "normal"
         )
-        status_label = {
-            "offline": "停用",
-            "unknown": "SOC未知",
-            "above_upper": "SOC达到上限·禁止充电",
-            "below_lower": "SOC达到下限·禁止放电",
-            "normal": (
-                f"充电降额 {charge_derating_factor * 100:.0f}%"
-                if charge_derating_factor < 1.0 - EPSILON
-                else f"放电降额 {discharge_derating_factor * 100:.0f}%"
-                if discharge_derating_factor < 1.0 - EPSILON
-                else "随网平衡"
-            ),
-        }[soc_constraint]
+        if not topology_valid:
+            quality.add(
+                f"储能{name}拓扑状态{connection_side}：{topology['topologyStatusLabel']}，本轮仅保留诊断"
+            )
+        elif device_online and not topology["activelyConnected"]:
+            quality.add(f"储能{name}当前拓扑断开，本轮不参与自动策略")
+        if online and power is None:
+            quality.add(f"储能{name}缺少有效实时有功，本轮禁止该储能参与自动调节")
+        if device_online and not limits_valid:
+            quality.add(f"储能{name}功率边界、能量容量或SOC上下限无效，本轮仅禁用该储能")
+        if device_online and role == "uncontrolled":
+            quality.add(f"储能{name}控制模式{mode or '--'}或p_set遥调点无效，本轮仅保留诊断")
+
+        group = dc_transfer_groups.get(topology["dcTransferGroupId"])
+        indirect_control_devices = [
+            {"dev_type": dev_type_value, "dev_name": dev_name_value}
+            for dev_type_value, dev_name_value in getattr(group, "converter_keys", ())
+        ]
+        if not indirect_control_devices:
+            indirect_control_devices = [
+                {"dev_type": dev_type_value, "dev_name": dev_name_value}
+                for dev_type_value, dev_name_value in topology["converterPath"]
+                if dev_type_value == "DCACConverter"
+            ]
+
+        commandable = bool(
+            role == "grid_following"
+            and topology_valid
+            and identity_valid
+            and online
+            and soc_known
+            and power is not None
+            and limits_valid
+            and set_type == "p_set"
+        )
+        state_eligible = bool(
+            role == "balance"
+            and topology_valid
+            and identity_valid
+            and online
+            and soc_known
+            and power is not None
+            and limits_valid
+        )
+        status_label = (
+            topology["topologyStatusLabel"]
+            if not topology_valid
+            else "停用"
+            if not device_online
+            else "当前断开"
+            if not topology["activelyConnected"]
+            else "设备身份重复·仅保留诊断"
+            if not identity_valid
+            else "控制模式或遥调点无效"
+            if role == "uncontrolled"
+            else "SOC未知"
+            if not soc_known
+            else "实时有功未知"
+            if power is None
+            else "储能边界无效"
+            if not limits_valid
+            else "SOC达到上限·禁止充电"
+            if soc_constraint == "above_upper"
+            else "SOC达到下限·禁止放电"
+            if soc_constraint == "below_lower"
+            else "平衡储能·间接控制"
+            if role == "balance"
+            else f"充电降额 {charge_derating_factor * 100:.0f}%"
+            if charge_derating_factor < 1.0 - EPSILON
+            else f"放电降额 {discharge_derating_factor * 100:.0f}%"
+            if discharge_derating_factor < 1.0 - EPSILON
+            else "可控"
+        )
         rows.append(
             {
-                "category": "储能平衡源",
-                "dev_type": "DCGenerator",
+                **topology,
+                "category": category,
+                "dev_type": dev_type,
                 "dev_name": name,
                 "source_name": name,
+                "deviceOnline": device_online,
                 "online": online,
-                "commandable": False,
-                "currentKw": power.value if power else 0.0 if not online else None,
+                "resourceIdentityValid": identity_valid,
+                "resourceIdentityDiagnostic": spec.identity_diagnostic,
+                "commandable": commandable,
+                "stateEligible": state_eligible,
+                "role": role,
+                "mode": mode,
+                "currentKw": power.value if power else 0.0 if not device_online else None,
                 "soc": soc,
                 "socKnown": soc_known,
                 "socNoiseSigma": soc_noise_sigma,
                 "socMin": soc_min,
                 "socMax": soc_max,
                 "socConstraint": soc_constraint,
-                "capacityKwh": capacity,
+                "capacityKwh": capacity_value,
                 "maxChargePowerKw": charge_max,
                 "maxDischargePowerKw": discharge_max,
+                "limitsValid": limits_valid,
                 "chargePowerBeforeDerating": charge_before_derating,
                 "dischargePowerBeforeDerating": discharge_before_derating,
                 "chargeDeratingFactor": charge_derating_factor,
@@ -952,7 +1404,8 @@ def _storage_rows(
                 "dischargePower": discharge_power,
                 "efficiency": efficiency,
                 "controlHorizonMinutes": control_horizon_minutes,
-                "set_type": "",
+                "set_type": set_type,
+                "indirectControlDevices": indirect_control_devices,
                 "statusLabel": status_label,
             }
         )
@@ -962,16 +1415,38 @@ def _storage_rows(
 def _converter_rows(
     snapshot: Mapping[str, Any],
     measurements: Mapping[Tuple[str, str, str], MeasurementValue],
+    converter_group_ids: Optional[Mapping[Tuple[str, str], str]] = None,
+    identity_diagnostics: Optional[Mapping[Tuple[str, str], str]] = None,
+    quality: Optional[_Quality] = None,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
+    devices_by_key: Dict[Tuple[str, str], List[Mapping[str, Any]]] = {}
     for device in snapshot.get("devices", []) or []:
         if not isinstance(device, Mapping) or _device_type(device) != "DCACConverter":
             continue
+        devices_by_key.setdefault(_device_key(device), []).append(device)
+
+    for key, candidates in devices_by_key.items():
+        device = min(
+            candidates,
+            key=lambda item: (
+                _natural_topology_identity(_device_index(item)),
+                json.dumps(dict(item), ensure_ascii=False, sort_keys=True, default=str),
+            ),
+        )
+        identity_diagnostic = (identity_diagnostics or {}).get(key, "")
+        if identity_diagnostic and quality is not None:
+            quality.add(identity_diagnostic)
         mode = _runtime_mode(snapshot, device)
         set_type = _preferred_set_type(snapshot, device, ("p_ac_set", "p_set"))
         online = _is_online(device, measurements)
-        commandable = online and mode in POWER_CONTROL_MODES and bool(set_type)
-        if not commandable:
+        commandable = bool(
+            not identity_diagnostic
+            and online
+            and mode in POWER_CONTROL_MODES
+            and set_type
+        )
+        if not commandable and not identity_diagnostic:
             continue
         measured = _measured(measurements, "DCACConverter", _device_name(device), ("P_AC", "P_DC", "P"))
         raw = device.get("raw") if isinstance(device.get("raw"), Mapping) else {}
@@ -985,15 +1460,228 @@ def _converter_rows(
                 "dev_name": _device_name(device),
                 "online": online,
                 "commandable": commandable,
+                "resourceIdentityValid": not identity_diagnostic,
+                "resourceIdentityDiagnostic": identity_diagnostic,
                 "mode": mode,
-                "set_type": set_type,
+                "set_type": set_type if commandable else "",
                 "currentKw": measured.value if measured else None,
                 "transferCapacityKw": transfer_capacity,
                 "capacitySource": "model" if transfer_capacity > 0 else "missing",
-                "statusLabel": f"并联 {mode}",
+                "dcTransferGroupId": (converter_group_ids or {}).get(
+                    ("DCACConverter", _device_name(device)),
+                    "",
+                ),
+                "statusLabel": (
+                    "设备身份重复·仅保留诊断"
+                    if identity_diagnostic
+                    else f"并联 {mode}"
+                ),
             }
         )
     return rows
+
+
+@dataclass(frozen=True)
+class _RenewableStorageIslandComponent:
+    grid_component_id: str
+    dc_transfer_group_id: str
+    renewable_rows: Tuple[Mapping[str, Any], ...]
+    storage_rows: Tuple[Mapping[str, Any], ...]
+    converter_rows: Tuple[Mapping[str, Any], ...]
+
+
+def _natural_topology_identity(value: Any) -> Tuple[Tuple[int, Any], ...]:
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part.casefold())
+        for part in re.split(r"(\d+)", str(value))
+        if part
+    )
+
+
+def _converter_row_sort_key(row: Mapping[str, Any]) -> Tuple[Any, ...]:
+    return (
+        _natural_topology_identity(row.get("dcTransferGroupId", "")),
+        _natural_topology_identity(row.get("dev_type", "")),
+        _natural_topology_identity(row.get("dev_name", "")),
+    )
+
+
+def _dc_transfer_group_sort_key(
+    topology: ResourceTopology,
+    group_id: str,
+) -> Tuple[Any, ...]:
+    group = topology.dc_transfer_groups.get(group_id)
+    nodes = tuple(
+        _natural_topology_identity(node)
+        for node in getattr(group, "dc_nodes", ())
+    )
+    return nodes, group_id
+
+
+def _active_dc_transfer_group_ids(
+    topology: ResourceTopology,
+    rows: Sequence[Mapping[str, Any]],
+) -> set[str]:
+    rows_by_group: Dict[str, List[Mapping[str, Any]]] = {}
+    for row in rows:
+        group_id = str(row.get("dcTransferGroupId", ""))
+        if group_id:
+            rows_by_group.setdefault(group_id, []).append(row)
+
+    active_group_ids: set[str] = set()
+    for group_id in topology.dc_transfer_groups:
+        group_rows = [row for row in rows_by_group.get(group_id, []) if row.get("online")]
+        converters = [
+            row
+            for row in group_rows
+            if row.get("dev_type") == "DCACConverter"
+            and row.get("commandable") is not False
+        ]
+        dc_rows = [row for row in group_rows if row.get("connectionSide") == "DC"]
+        if group_rows and converters and dc_rows:
+            active_group_ids.add(group_id)
+    return active_group_ids
+
+
+def _renewable_storage_island_components(
+    renewable_rows: Sequence[Mapping[str, Any]],
+    storage_rows: Sequence[Mapping[str, Any]],
+    converter_rows: Sequence[Mapping[str, Any]],
+) -> List[_RenewableStorageIslandComponent]:
+    storage_by_component: Dict[Tuple[str, str], List[Mapping[str, Any]]] = {}
+    for row in storage_rows:
+        key = (
+            str(row.get("gridComponentId", "")),
+            str(row.get("dcTransferGroupId", "")),
+        )
+        if all(key):
+            storage_by_component.setdefault(key, []).append(row)
+
+    renewable_by_component: Dict[Tuple[str, str], List[Mapping[str, Any]]] = {}
+    component_order: List[Tuple[str, str]] = []
+    for row in renewable_rows:
+        key = (
+            str(row.get("gridComponentId", "")),
+            str(row.get("dcTransferGroupId", "")),
+        )
+        if not all(key):
+            continue
+        if key not in renewable_by_component:
+            component_order.append(key)
+            renewable_by_component[key] = []
+        renewable_by_component[key].append(row)
+
+    converters_by_group: Dict[str, List[Mapping[str, Any]]] = {}
+    for row in converter_rows:
+        group_id = str(row.get("dcTransferGroupId", ""))
+        if group_id:
+            converters_by_group.setdefault(group_id, []).append(row)
+
+    return [
+        _RenewableStorageIslandComponent(
+            grid_component_id=component_id,
+            dc_transfer_group_id=group_id,
+            renewable_rows=tuple(renewable_by_component[(component_id, group_id)]),
+            storage_rows=tuple(storage_by_component[(component_id, group_id)]),
+            converter_rows=tuple(converters_by_group.get(group_id, ())),
+        )
+        for component_id, group_id in component_order
+        if (component_id, group_id) in storage_by_component
+    ]
+
+
+def _plan_renewable_storage_island_component(
+    component: _RenewableStorageIslandComponent,
+    settings: RenewableControlSettings,
+) -> Dict[str, Any]:
+    known_soc_rows = [
+        row
+        for row in component.storage_rows
+        if row.get("socKnown") and row.get("soc") is not None
+    ]
+    storage_soc = (
+        sum(_finite_number(row.get("soc")) for row in known_soc_rows)
+        / len(known_soc_rows)
+        if known_soc_rows
+        else None
+    )
+    storage_soc_upper_limit = (
+        sum(_finite_number(row.get("socMax")) for row in known_soc_rows)
+        / len(known_soc_rows)
+        if known_soc_rows
+        else None
+    )
+    raw_charge = sum(
+        max(0.0, _finite_number(row.get("chargePower")))
+        for row in component.storage_rows
+    )
+    storage_current = sum(
+        _finite_number(row.get("currentKw"))
+        for row in component.storage_rows
+        if row.get("currentKw") is not None
+    )
+    converter_current = sum(
+        min(0.0, _finite_number(row.get("currentKw")))
+        for row in component.converter_rows
+        if row.get("currentKw") is not None
+    )
+    projected_storage_charge = max(0.0, -(storage_current + converter_current))
+    charge_residual = max(0.0, projected_storage_charge - raw_charge)
+
+    if storage_soc is None or storage_soc_upper_limit is None:
+        action = "hold_unknown_soc"
+    elif storage_soc >= storage_soc_upper_limit - EPSILON:
+        action = "curtail_one_step_storage_island_full_soc"
+    elif raw_charge <= EPSILON:
+        action = "curtail_one_step_storage_island_no_charge_capacity"
+    elif charge_residual > EPSILON:
+        action = "curtail_charge_safety"
+    else:
+        action = "recover_one_step_storage_island"
+
+    targets: Dict[Tuple[str, str], Optional[float]] = {}
+    for row in component.renewable_rows:
+        key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        planning_current = _number(row.get("planningCurrentKw"))
+        if planning_current is None:
+            targets[key] = None
+            continue
+        if not row.get("commandable"):
+            targets[key] = planning_current
+            continue
+        capacity = max(0.0, _finite_number(row.get("capacityKw")))
+        step = settings.step_coefficient * capacity
+        if action == "recover_one_step_storage_island":
+            target = min(capacity, planning_current + step)
+        elif action in {
+            "curtail_one_step_storage_island_full_soc",
+            "curtail_one_step_storage_island_no_charge_capacity",
+            "curtail_charge_safety",
+        }:
+            target = max(0.0, planning_current - step)
+        else:
+            target = planning_current
+        targets[key] = target
+
+    return {
+        "gridComponentId": component.grid_component_id,
+        "dcTransferGroupId": component.dc_transfer_group_id,
+        "action": action,
+        "storageSoc": storage_soc,
+        "storageSocUpperLimit": storage_soc_upper_limit,
+        "renewableCurrentKw": sum(
+            _finite_number(row.get("currentKw")) for row in component.renewable_rows
+        ),
+        "renewableTargetKw": sum(
+            _finite_number(target) for target in targets.values()
+        ),
+        "renewableTargets": targets,
+        "converterTargetKw": 0.0,
+        "converterKeys": [
+            (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+            for row in component.converter_rows
+        ],
+    }
 
 
 def _resolve_converter_capacities(
@@ -1021,6 +1709,39 @@ def _allocate(items: Sequence[Mapping[str, Any]], total: float, capacity_key: st
     if target <= 0 or total_capacity <= 0:
         return [0.0 for _ in items]
     return [min(capacity, target * capacity / total_capacity) for capacity in capacities]
+
+
+def _capacity_weighted_soc(rows: Sequence[Mapping[str, Any]]) -> Optional[float]:
+    weighted_sum = 0.0
+    total_weight = 0.0
+    for row in rows:
+        soc = _number(row.get("soc"))
+        if not row.get("socKnown") or soc is None or not math.isfinite(soc):
+            continue
+        capacity = _number(row.get("capacityKwh"))
+        weight = (
+            max(EPSILON, capacity)
+            if capacity is not None and math.isfinite(capacity)
+            else EPSILON
+        )
+        weighted_sum += soc * weight
+        total_weight += weight
+    return weighted_sum / total_weight if total_weight > EPSILON else None
+
+
+def _json_safe_copy(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe_copy(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_copy(item) for item in value]
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if not math.isfinite(number):
+            return None
+        return value
+    return str(value)
 
 
 def _equal_margin_increments(rows: Sequence[Mapping[str, Any]], target: float) -> List[float]:
@@ -1133,8 +1854,2391 @@ def _allocate_converters(rows: Sequence[Mapping[str, Any]], total: float) -> Lis
     return [target / len(rows) for _ in rows]
 
 
+def _grid_storage_step_kw(row, settings):
+    rated = max(_finite_number(row.get('maxChargePowerKw')), _finite_number(row.get('maxDischargePowerKw')))
+    return max(0.0, settings.converter_step_ratio * rated)
+
+
+def _grid_storage_sort_key(row: Mapping[str, Any]) -> Tuple[Any, ...]:
+    return (
+        _natural_topology_identity(row.get("connectionSide", "")),
+        _natural_topology_identity(row.get("dcTransferGroupId", "")),
+        _natural_topology_identity(row.get("dev_type", "")),
+        _natural_topology_identity(row.get("dev_name", "")),
+    )
+
+
+def _grid_storage_signed_power_bounds_kw(
+    row: Mapping[str, Any],
+) -> Tuple[float, float]:
+    if not row.get("limitsValid") or not row.get("socKnown"):
+        return 0.0, 0.0
+
+    soc = _number(row.get("soc"))
+    soc_min = _number(row.get("socMin"))
+    soc_max = _number(row.get("socMax"))
+    capacity_kwh = _number(row.get("capacityKwh"))
+    efficiency = _number(row.get("efficiency"))
+    horizon_minutes = _number(row.get("controlHorizonMinutes"))
+    if (
+        soc is None
+        or soc_min is None
+        or soc_max is None
+        or capacity_kwh is None
+        or capacity_kwh <= EPSILON
+        or efficiency is None
+        or efficiency <= EPSILON
+        or horizon_minutes is None
+        or horizon_minutes <= EPSILON
+    ):
+        return 0.0, 0.0
+
+    # Apply direct-storage limits in the required order: model power limits,
+    # configured SOC derating, then one-period energy margin.
+    charge_limit_kw = max(0.0, _finite_number(row.get("maxChargePowerKw")))
+    discharge_limit_kw = max(0.0, _finite_number(row.get("maxDischargePowerKw")))
+
+    charge_derating_factor = _clamp(
+        _finite_number(row.get("chargeDeratingFactor")),
+        0.0,
+        1.0,
+    )
+    discharge_derating_factor = _clamp(
+        _finite_number(row.get("dischargeDeratingFactor")),
+        0.0,
+        1.0,
+    )
+    charge_limit_kw = min(
+        charge_limit_kw,
+        max(0.0, _finite_number(row.get("maxChargePowerKw")))
+        * charge_derating_factor,
+    )
+    discharge_limit_kw = min(
+        discharge_limit_kw,
+        max(0.0, _finite_number(row.get("maxDischargePowerKw")))
+        * discharge_derating_factor,
+    )
+
+    horizon_hours = max(EPSILON, horizon_minutes / 60.0)
+    charge_energy_limit_kw = max(
+        0.0,
+        ((soc_max - soc) * capacity_kwh) / (efficiency * horizon_hours),
+    )
+    discharge_energy_limit_kw = max(
+        0.0,
+        ((soc - soc_min) * capacity_kwh * efficiency) / horizon_hours,
+    )
+    charge_limit_kw = min(charge_limit_kw, charge_energy_limit_kw)
+    discharge_limit_kw = min(discharge_limit_kw, discharge_energy_limit_kw)
+    return -charge_limit_kw, discharge_limit_kw
+
+
+def _grid_storage_target_margins(
+    row: Mapping[str, Any],
+    settings: RenewableControlSettings,
+    diesel_boundary_distance_kw: float,
+) -> Dict[str, Any]:
+    current_kw = _number(row.get("currentKw"))
+    step_kw = _grid_storage_step_kw(row, settings)
+    eligible = bool(
+        row.get("role") == "grid_following"
+        and row.get("commandable")
+        and current_kw is not None
+        and math.isfinite(current_kw)
+        and step_kw > EPSILON
+    )
+    if not eligible:
+        return {
+            "eligible": False,
+            "currentKw": current_kw,
+            "targetKw": current_kw,
+            "signedMinTargetKw": current_kw,
+            "signedMaxTargetKw": current_kw,
+            "stepKw": step_kw,
+            "stepScale": 1.0,
+            "chargeMarginKw": 0.0,
+            "dischargeMarginKw": 0.0,
+            "positiveReductionMarginKw": 0.0,
+            "protectiveDeltaKw": 0.0,
+        }
+
+    signed_min_kw, signed_max_kw = _grid_storage_signed_power_bounds_kw(row)
+    bounded_current_kw = _clamp(current_kw, signed_min_kw, signed_max_kw)
+    protective_target_kw = _move_toward(
+        current_kw,
+        bounded_current_kw,
+        step_kw,
+    )
+    protective_delta_kw = protective_target_kw - current_kw
+    protection_active = abs(protective_delta_kw) > EPSILON
+
+    soc = _number(row.get("soc"))
+    soc_min = _number(row.get("socMin"))
+    lower_soc_deadband_active = bool(
+        soc is not None
+        and soc_min is not None
+        and soc_min - settings.soc_deadband - EPSILON
+        <= soc
+        <= soc_min + settings.soc_deadband + EPSILON
+    )
+    diesel_boundary_slow = bool(
+        diesel_boundary_distance_kw > EPSILON
+        and diesel_boundary_distance_kw <= step_kw + EPSILON
+    )
+    increase_step_scale = (
+        DEADBAND_STEP_SCALE
+        if lower_soc_deadband_active or diesel_boundary_slow
+        else 1.0
+    )
+    discharge_step_kw = step_kw * increase_step_scale
+
+    if protection_active:
+        charge_margin_kw = 0.0
+        discharge_margin_kw = 0.0
+        positive_reduction_margin_kw = 0.0
+    else:
+        charge_margin_kw = min(
+            step_kw,
+            max(0.0, current_kw - signed_min_kw),
+        )
+        discharge_margin_kw = min(
+            discharge_step_kw,
+            max(0.0, signed_max_kw - current_kw),
+        )
+        positive_reduction_margin_kw = min(
+            step_kw,
+            max(0.0, current_kw),
+        )
+
+    return {
+        "eligible": True,
+        "currentKw": current_kw,
+        "targetKw": protective_target_kw,
+        "signedMinTargetKw": signed_min_kw,
+        "signedMaxTargetKw": signed_max_kw,
+        "stepKw": step_kw,
+        "stepScale": increase_step_scale,
+        "chargeMarginKw": charge_margin_kw,
+        "dischargeMarginKw": discharge_margin_kw,
+        "positiveReductionMarginKw": positive_reduction_margin_kw,
+        "protectiveDeltaKw": protective_delta_kw,
+    }
+
+
+def _allocate_by_margin(
+    rows: Sequence[MutableMapping[str, Any]],
+    total_kw: float,
+    margin_key: str,
+) -> List[float]:
+    requested_kw = max(0.0, total_kw)
+    margins = [max(0.0, _finite_number(row.get(margin_key))) for row in rows]
+    total_margin_kw = sum(margins)
+    accepted_kw = min(requested_kw, total_margin_kw)
+    if accepted_kw <= EPSILON or total_margin_kw <= EPSILON:
+        return [0.0 for _ in rows]
+
+    allocations = [
+        min(margin_kw, accepted_kw * margin_kw / total_margin_kw)
+        for margin_kw in margins
+    ]
+    remainder_kw = max(0.0, accepted_kw - sum(allocations))
+    if remainder_kw <= EPSILON:
+        return allocations
+
+    remaining_margins = [
+        max(0.0, margin_kw - allocation_kw)
+        for margin_kw, allocation_kw in zip(margins, allocations)
+    ]
+    remaining_total_kw = sum(remaining_margins)
+    if remaining_total_kw <= EPSILON:
+        return allocations
+    for index, remaining_margin_kw in enumerate(remaining_margins):
+        if remainder_kw <= EPSILON:
+            break
+        if remaining_margin_kw <= EPSILON:
+            continue
+        addition_kw = min(
+            remaining_margin_kw,
+            remainder_kw * remaining_margin_kw / remaining_total_kw,
+        )
+        allocations[index] += addition_kw
+        remainder_kw = max(0.0, remainder_kw - addition_kw)
+        remaining_total_kw = max(0.0, remaining_total_kw - remaining_margin_kw)
+    return allocations
+
+
+@dataclass(frozen=True)
+class _DcGroupBudget:
+    group_id: str
+    renewable_current_kw: float
+    renewable_recovery_kw: float
+    local_net_demand_kw: float
+    grid_storage_charge_margin_kw: float
+    grid_storage_discharge_margin_kw: float
+    balance_storage_charge_margin_kw: float
+    balance_storage_discharge_margin_kw: float
+    balance_storage_current_kw: float
+    acdc_current_export_kw: float
+    acdc_export_headroom_kw: float
+    acdc_step_headroom_kw: float
+
+
+@dataclass(frozen=True)
+class _AcSideBudget:
+    renewable_current_kw: float
+    renewable_recovery_kw: float
+    local_net_demand_kw: float
+    diesel_down_margin_kw: float
+    grid_storage_charge_margin_kw: float
+    grid_storage_discharge_margin_kw: float
+    balance_storage_charge_margin_kw: float
+    balance_storage_discharge_margin_kw: float
+    balance_storage_current_kw: float
+    accepted_acdc_export_kw: float
+
+
+def _active_load_budgets(
+    snapshot: Mapping[str, Any],
+    measurements: Mapping[Tuple[str, str, str], MeasurementValue],
+    dc_transfer_groups: Mapping[str, DcTransferGroup],
+) -> Tuple[float, Dict[str, float]]:
+    ac_total_kw = 0.0
+    dc_totals_kw = {group_id: 0.0 for group_id in dc_transfer_groups}
+    dc_group_by_node = {
+        str(node): group_id
+        for group_id, group in dc_transfer_groups.items()
+        for node in group.dc_nodes
+    }
+    model = (
+        snapshot.get("definitions", {}).get("model", {})
+        if isinstance(snapshot.get("definitions"), Mapping)
+        else {}
+    )
+    model_nodes: Dict[Tuple[str, str], str] = {}
+    if isinstance(model, Mapping):
+        for dev_type in ("ACLoad", "DCLoad"):
+            block = model.get(dev_type)
+            rows = block.get("rows") if isinstance(block, Mapping) else []
+            for row in rows or []:
+                if isinstance(row, Mapping) and str(row.get("name", "")):
+                    model_nodes[(dev_type, str(row.get("name")))] = str(
+                        row.get("node", "")
+                    )
+
+    for device in snapshot.get("devices", []) or []:
+        if not isinstance(device, Mapping):
+            continue
+        dev_type = _device_type(device)
+        if dev_type not in {"ACLoad", "DCLoad"} or not _is_online(
+            device, measurements
+        ):
+            continue
+        dead_island = _number(device.get("dead_island"), 0.0)
+        if dead_island is not None and dead_island != 0.0:
+            continue
+        dev_name = _device_name(device)
+        measured = _measured(
+            measurements,
+            dev_type,
+            dev_name,
+            ("P_LOAD", "P", "P_AC", "P_DC"),
+        )
+        if measured is None:
+            continue
+        if dev_type == "ACLoad":
+            ac_total_kw += measured.value
+            continue
+        raw = device.get("raw") if isinstance(device.get("raw"), Mapping) else {}
+        node = model_nodes.get((dev_type, dev_name), str(raw.get("node", "")))
+        group_id = dc_group_by_node.get(str(node), "")
+        if group_id:
+            dc_totals_kw[group_id] += measured.value
+    return ac_total_kw, dc_totals_kw
+
+
+def _side_aware_storage_state(
+    row: Mapping[str, Any],
+    settings: RenewableControlSettings,
+    initial_target_kw: Any,
+    *,
+    preserve_initial: bool = True,
+) -> MutableMapping[str, Any]:
+    current_kw = _number(row.get("currentKw"))
+    state = _grid_storage_target_margins(row, settings, 0.0)
+    state.update(
+        {
+            "row": row,
+            "key": (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+            "side": str(row.get("connectionSide", "")),
+            "groupId": str(row.get("dcTransferGroupId", "")),
+        }
+    )
+    if current_kw is None or not state.get("eligible"):
+        state["targetKw"] = current_kw
+        return state
+    candidate_kw = _number(initial_target_kw, current_kw)
+    state["targetKw"] = (
+        candidate_kw
+        if preserve_initial
+        and candidate_kw is not None
+        and candidate_kw >= min(current_kw, 0.0) - EPSILON
+        else current_kw
+    )
+    return state
+
+
+def _project_balance_storage_targets(
+    balance_rows: Sequence[Mapping[str, Any]],
+    renewable_states: Sequence[Mapping[str, Any]],
+    storage_states: Sequence[Mapping[str, Any]],
+    converter_states: Sequence[Mapping[str, Any]],
+    *,
+    ac_balance_delta_kw: Optional[float] = None,
+    dc_balance_delta_by_group: Optional[Mapping[str, float]] = None,
+) -> Tuple[
+    Dict[Tuple[str, str], float],
+    Dict[Tuple[str, str], List[Dict[str, str]]],
+]:
+    projected_targets: Dict[Tuple[str, str], float] = {}
+    indirect_devices: Dict[Tuple[str, str], List[Dict[str, str]]] = {}
+
+    def changed_device_keys(states: Sequence[Mapping[str, Any]]) -> List[Tuple[str, str]]:
+        keys = set()
+        for state in states:
+            row = state.get("row") if isinstance(state.get("row"), Mapping) else state
+            current_kw = _number(state.get("currentKw", row.get("currentKw")))
+            target_kw = _number(state.get("targetKw", state.get("commandKw")))
+            if (
+                current_kw is None
+                or target_kw is None
+                or abs(target_kw - current_kw) <= EPSILON
+            ):
+                continue
+            keys.add(
+                (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+            )
+        return sorted(keys)
+
+    def allocate_rows(
+        rows: Sequence[Mapping[str, Any]],
+        delta_kw: float,
+        changed_states: Sequence[Mapping[str, Any]],
+    ) -> None:
+        candidates: List[MutableMapping[str, Any]] = []
+        margin_key = "upMarginKw" if delta_kw >= 0.0 else "downMarginKw"
+        for row in sorted(rows, key=_grid_storage_sort_key):
+            current_kw = _finite_number(row.get("currentKw"))
+            signed_min_kw, signed_max_kw = _grid_storage_signed_power_bounds_kw(row)
+            candidates.append(
+                {
+                    "row": row,
+                    "upMarginKw": max(0.0, signed_max_kw - current_kw),
+                    "downMarginKw": max(0.0, current_kw - signed_min_kw),
+                }
+            )
+        allocations = _allocate_by_margin(candidates, abs(delta_kw), margin_key)
+        direction = 1.0 if delta_kw >= 0.0 else -1.0
+        devices = changed_device_keys(changed_states)
+        for candidate, allocation_kw in zip(candidates, allocations):
+            row = candidate["row"]
+            key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+            current_kw = _finite_number(row.get("currentKw"))
+            signed_min_kw, signed_max_kw = _grid_storage_signed_power_bounds_kw(row)
+            candidate_kw = current_kw + direction * allocation_kw
+            projected_targets[key] = (
+                min(candidate_kw, signed_max_kw)
+                if direction > 0.0
+                else max(candidate_kw, signed_min_kw)
+            )
+            indirect_devices[key] = [
+                {"dev_type": dev_type, "dev_name": dev_name}
+                for dev_type, dev_name in devices
+                if (dev_type, dev_name) != key
+            ]
+
+    ac_rows = [
+        row for row in balance_rows if row.get("connectionSide") == "AC"
+    ]
+    if ac_rows:
+        ac_renewable_delta_kw = sum(
+            _finite_number(state.get("targetKw"))
+            - _finite_number(state.get("currentKw"))
+            for state in renewable_states
+            if state.get("side") == "AC"
+        )
+        ac_storage_delta_kw = sum(
+            _finite_number(state.get("targetKw"))
+            - _finite_number(state.get("currentKw"))
+            for state in storage_states
+            if state.get("side") == "AC"
+        )
+        export_delta_kw = sum(
+            _finite_number(state.get("currentKw"))
+            - _finite_number(state.get("targetKw"))
+            for state in converter_states
+            if state.get("currentKw") is not None
+            and state.get("targetKw") is not None
+        )
+        projected_delta_kw = (
+            ac_balance_delta_kw
+            if ac_balance_delta_kw is not None
+            else -(ac_renewable_delta_kw + ac_storage_delta_kw + export_delta_kw)
+        )
+        allocate_rows(
+            ac_rows,
+            projected_delta_kw,
+            [*renewable_states, *storage_states, *converter_states],
+        )
+
+    group_ids = sorted(
+        {
+            str(row.get("dcTransferGroupId", ""))
+            for row in balance_rows
+            if row.get("connectionSide") == "DC"
+            and str(row.get("dcTransferGroupId", ""))
+        },
+        key=_natural_topology_identity,
+    )
+    for group_id in group_ids:
+        rows = [
+            row
+            for row in balance_rows
+            if row.get("connectionSide") == "DC"
+            and row.get("dcTransferGroupId") == group_id
+        ]
+        group_renewables = [
+            state
+            for state in renewable_states
+            if state.get("side") == "DC" and state.get("groupId") == group_id
+        ]
+        group_storage = [
+            state
+            for state in storage_states
+            if state.get("side") == "DC" and state.get("groupId") == group_id
+        ]
+        group_converters = [
+            state
+            for state in converter_states
+            if state.get("groupId") == group_id
+        ]
+        renewable_delta_kw = sum(
+            _finite_number(state.get("targetKw"))
+            - _finite_number(state.get("currentKw"))
+            for state in group_renewables
+        )
+        storage_delta_kw = sum(
+            _finite_number(state.get("targetKw"))
+            - _finite_number(state.get("currentKw"))
+            for state in group_storage
+        )
+        export_delta_kw = sum(
+            _finite_number(state.get("currentKw"))
+            - _finite_number(state.get("targetKw"))
+            for state in group_converters
+            if state.get("currentKw") is not None
+            and state.get("targetKw") is not None
+        )
+        projected_delta_kw = (
+            _finite_number(dc_balance_delta_by_group.get(group_id))
+            if dc_balance_delta_by_group is not None
+            else -(renewable_delta_kw + storage_delta_kw) + export_delta_kw
+        )
+        allocate_rows(
+            rows,
+            projected_delta_kw,
+            [*group_renewables, *group_storage, *group_converters],
+        )
+    return projected_targets, indirect_devices
+
+
+def _side_aware_renewable_recovery_plan_without_balance(
+    snapshot: Mapping[str, Any],
+    measurements: Mapping[Tuple[str, str, str], MeasurementValue],
+    settings: RenewableControlSettings,
+    resource_topology: ResourceTopology,
+    renewable_rows: Sequence[Mapping[str, Any]],
+    storage_rows: Sequence[Mapping[str, Any]],
+    converter_rows: Sequence[Mapping[str, Any]],
+    initial_storage_targets: Mapping[Tuple[str, str], Any],
+    initial_converter_targets: Mapping[Tuple[str, str], Any],
+    *,
+    diesel_current_kw: float,
+    diesel_min_kw: float,
+) -> Dict[str, Any]:
+    renewable_states: List[MutableMapping[str, Any]] = []
+    for row in sorted(
+        renewable_rows,
+        key=lambda item: (
+            str(item.get("connectionSide", "")),
+            str(item.get("dcTransferGroupId", "")),
+            str(item.get("technology", "")),
+            str(item.get("dev_type", "")),
+            str(item.get("dev_name", "")),
+        ),
+    ):
+        current_kw = _number(row.get("planningCurrentKw"))
+        capacity_kw = _number(row.get("capacityKw"))
+        eligible = bool(
+            row.get("commandable")
+            and current_kw is not None
+            and capacity_kw is not None
+            and capacity_kw > EPSILON
+            and current_kw >= -EPSILON
+            and current_kw <= capacity_kw + EPSILON
+        )
+        margin_kw = (
+            min(
+                max(0.0, capacity_kw - current_kw),
+                settings.step_coefficient * capacity_kw,
+            )
+            if eligible
+            else 0.0
+        )
+        renewable_states.append(
+            {
+                "row": row,
+                "key": (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                "side": str(row.get("connectionSide", "")),
+                "groupId": str(row.get("dcTransferGroupId", "")),
+                "technology": str(row.get("technology", "")),
+                "currentKw": current_kw,
+                "targetKw": current_kw,
+                "marginKw": margin_kw,
+                "acceptedKw": 0.0,
+            }
+        )
+
+    storage_states = [
+        _side_aware_storage_state(
+            row,
+            settings,
+            initial_storage_targets.get(
+                (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                row.get("currentKw"),
+            ),
+        )
+        for row in sorted(storage_rows, key=_grid_storage_sort_key)
+        if row.get("role") == "grid_following"
+    ]
+    converter_states: List[MutableMapping[str, Any]] = []
+    for row in sorted(converter_rows, key=_converter_row_sort_key):
+        current_kw = _number(row.get("currentKw"))
+        capacity_kw = _number(row.get("transferCapacityKw"))
+        key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        target_kw = _number(initial_converter_targets.get(key), current_kw)
+        if current_kw is None or target_kw is None:
+            target_kw = current_kw
+        if target_kw is not None:
+            target_kw = min(0.0, target_kw)
+        step_kw = (
+            settings.converter_step_ratio * capacity_kw
+            if capacity_kw is not None and capacity_kw > EPSILON
+            else 0.0
+        )
+        used_step_kw = (
+            abs(target_kw - current_kw)
+            if target_kw is not None and current_kw is not None
+            else step_kw
+        )
+        converter_states.append(
+            {
+                "row": row,
+                "key": key,
+                "groupId": str(row.get("dcTransferGroupId", "")),
+                "currentKw": current_kw,
+                "targetKw": target_kw,
+                "capacityKw": capacity_kw,
+                "exportMarginKw": (
+                    min(
+                        max(0.0, capacity_kw + target_kw),
+                        max(0.0, step_kw - used_step_kw),
+                    )
+                    if row.get("commandable")
+                    and current_kw is not None
+                    and current_kw <= EPSILON
+                    and target_kw is not None
+                    and capacity_kw is not None
+                    and capacity_kw > EPSILON
+                    else 0.0
+                ),
+            }
+        )
+
+    def allocate_renewable(
+        states: Sequence[MutableMapping[str, Any]],
+        request_kw: float,
+        accepted_key: str = "",
+    ) -> float:
+        allocations = _allocate_by_margin(states, request_kw, "marginKw")
+        for state, allocation_kw in zip(states, allocations):
+            state["targetKw"] = _finite_number(state.get("targetKw")) + allocation_kw
+            state["marginKw"] = max(0.0, _finite_number(state.get("marginKw")) - allocation_kw)
+            state["acceptedKw"] = _finite_number(state.get("acceptedKw")) + allocation_kw
+            if accepted_key:
+                state[accepted_key] = _finite_number(state.get(accepted_key)) + allocation_kw
+        return sum(allocations)
+
+    def charge_storage(states: Sequence[MutableMapping[str, Any]], request_kw: float) -> float:
+        allocations = _allocate_by_margin(states, request_kw, "chargeMarginKw")
+        for state, allocation_kw in zip(states, allocations):
+            state["targetKw"] = _finite_number(state.get("targetKw")) - allocation_kw
+            state["chargeMarginKw"] = max(
+                0.0, _finite_number(state.get("chargeMarginKw")) - allocation_kw
+            )
+        return sum(allocations)
+
+    def increase_group_export(group_id: str, request_kw: float) -> float:
+        states = [state for state in converter_states if state.get("groupId") == group_id]
+        allocations = _allocate_by_margin(states, request_kw, "exportMarginKw")
+        for state, allocation_kw in zip(states, allocations):
+            state["targetKw"] = min(
+                0.0, _finite_number(state.get("targetKw")) - allocation_kw
+            )
+            state["exportMarginKw"] = max(
+                0.0, _finite_number(state.get("exportMarginKw")) - allocation_kw
+            )
+        return sum(allocations)
+
+    ac_load_kw, dc_load_kw = _active_load_budgets(
+        snapshot,
+        measurements,
+        resource_topology.dc_transfer_groups,
+    )
+    initial_ac_storage_effect_kw = sum(
+        _finite_number(state.get("targetKw")) - _finite_number(state.get("currentKw"))
+        for state in storage_states
+        if state.get("side") == "AC" and state.get("currentKw") is not None
+    )
+    initial_export_effect_kw = sum(
+        _finite_number(state.get("currentKw")) - _finite_number(state.get("targetKw"))
+        for state in converter_states
+        if state.get("currentKw") is not None and state.get("targetKw") is not None
+    )
+    diesel_margin_kw = max(
+        0.0,
+        diesel_current_kw
+        - diesel_min_kw
+        - initial_ac_storage_effect_kw
+        - initial_export_effect_kw,
+    )
+    direct_balance_rows = [
+        row
+        for row in storage_rows
+        if row.get("role") == "balance"
+        and row.get("stateEligible")
+        and not row.get("activePath")
+    ]
+    ac_balance_rows = [
+        row for row in direct_balance_rows if row.get("connectionSide") == "AC"
+    ]
+
+    ac_renewables = [state for state in renewable_states if state.get("side") == "AC"]
+    ac_recovery_margin_kw = sum(_finite_number(state.get("marginKw")) for state in ac_renewables)
+    ac_diesel_recovery_kw = allocate_renewable(
+        ac_renewables,
+        min(ac_recovery_margin_kw, diesel_margin_kw),
+        "dieselAcceptedKw",
+    )
+    diesel_margin_kw = max(0.0, diesel_margin_kw - ac_diesel_recovery_kw)
+    ac_storage_states = [state for state in storage_states if state.get("side") == "AC"]
+    ac_charge_request_kw = min(
+        sum(_finite_number(state.get("marginKw")) for state in ac_renewables),
+        sum(_finite_number(state.get("chargeMarginKw")) for state in ac_storage_states),
+    )
+    ac_charge_source_kw = allocate_renewable(
+        ac_renewables,
+        ac_charge_request_kw,
+        "acGridStorageAcceptedKw",
+    )
+    ac_storage_charge_kw = charge_storage(ac_storage_states, ac_charge_source_kw)
+    if ac_storage_charge_kw + EPSILON < ac_charge_source_kw:
+        rollback_kw = ac_charge_source_kw - ac_storage_charge_kw
+        for state in reversed(ac_renewables):
+            amount_kw = min(rollback_kw, _finite_number(state.get("acceptedKw")))
+            state["targetKw"] = _finite_number(state.get("targetKw")) - amount_kw
+            state["acceptedKw"] = _finite_number(state.get("acceptedKw")) - amount_kw
+            state["acGridStorageAcceptedKw"] = max(
+                0.0,
+                _finite_number(state.get("acGridStorageAcceptedKw")) - amount_kw,
+            )
+            state["marginKw"] = _finite_number(state.get("marginKw")) + amount_kw
+            rollback_kw -= amount_kw
+            if rollback_kw <= EPSILON:
+                break
+    ac_balance_charge_request_kw = min(
+        sum(_finite_number(state.get("marginKw")) for state in ac_renewables),
+        sum(
+            max(
+                0.0,
+                _finite_number(row.get("currentKw"))
+                - _grid_storage_signed_power_bounds_kw(row)[0],
+            )
+            for row in ac_balance_rows
+        ),
+    )
+    ac_balance_charge_accepted_kw = allocate_renewable(
+        ac_renewables,
+        ac_balance_charge_request_kw,
+        "acBalanceAcceptedKw",
+    )
+
+    dc_budgets: List[_DcGroupBudget] = []
+    dc_balance_delta_by_group: Dict[str, float] = {}
+    paired_export_kw = 0.0
+    for group_id in sorted(
+        resource_topology.dc_transfer_groups,
+        key=_natural_topology_identity,
+    ):
+        group_renewables = [
+            state
+            for state in renewable_states
+            if state.get("side") == "DC" and state.get("groupId") == group_id
+        ]
+        group_storage = [
+            state
+            for state in storage_states
+            if state.get("side") == "DC" and state.get("groupId") == group_id
+        ]
+        group_balance = [
+            row
+            for row in storage_rows
+            if row.get("role") == "balance"
+            and row.get("connectionSide") == "DC"
+            and row.get("dcTransferGroupId") == group_id
+            and row.get("stateEligible")
+            and not row.get("activePath")
+        ]
+        renewable_current_kw = sum(
+            _finite_number(state.get("currentKw")) for state in group_renewables
+        )
+        balance_current_kw = sum(
+            _finite_number(row.get("currentKw")) for row in group_balance
+        )
+        local_deficit_kw = max(
+            0.0,
+            _finite_number(dc_load_kw.get(group_id))
+            - renewable_current_kw
+            - sum(
+                _finite_number(state.get("currentKw"))
+                for state in group_storage
+            ),
+        )
+        local_recovery_kw = allocate_renewable(
+            group_renewables,
+            local_deficit_kw,
+            "dcLocalLoadAcceptedKw",
+        )
+        charge_request_kw = min(
+            sum(_finite_number(state.get("marginKw")) for state in group_renewables),
+            sum(_finite_number(state.get("chargeMarginKw")) for state in group_storage),
+        )
+        charge_source_kw = allocate_renewable(
+            group_renewables,
+            charge_request_kw,
+            "dcGridStorageAcceptedKw",
+        )
+        local_storage_charge_kw = charge_storage(group_storage, charge_source_kw)
+        balance_charge_request_kw = min(
+            sum(_finite_number(state.get("marginKw")) for state in group_renewables),
+            sum(
+                max(
+                    0.0,
+                    _finite_number(row.get("currentKw"))
+                    - _grid_storage_signed_power_bounds_kw(row)[0],
+                )
+                for row in group_balance
+            ),
+        )
+        balance_charge_source_kw = allocate_renewable(
+            group_renewables,
+            balance_charge_request_kw,
+            "dcBalanceAcceptedKw",
+        )
+        dc_balance_delta_by_group[group_id] = -balance_charge_source_kw
+        export_request_kw = min(
+            sum(_finite_number(state.get("marginKw")) for state in group_renewables),
+            diesel_margin_kw,
+            sum(
+                _finite_number(state.get("exportMarginKw"))
+                for state in converter_states
+                if state.get("groupId") == group_id
+            ),
+        )
+        export_source_kw = allocate_renewable(
+            group_renewables,
+            export_request_kw,
+            "dcAcdcExportAcceptedKw",
+        )
+        accepted_export_kw = increase_group_export(group_id, export_source_kw)
+        paired_export_kw += accepted_export_kw
+        diesel_margin_kw = max(0.0, diesel_margin_kw - accepted_export_kw)
+        dc_budgets.append(
+            _DcGroupBudget(
+                group_id=group_id,
+                renewable_current_kw=renewable_current_kw,
+                renewable_recovery_kw=sum(
+                    _finite_number(state.get("acceptedKw")) for state in group_renewables
+                ),
+                local_net_demand_kw=_finite_number(dc_load_kw.get(group_id)),
+                grid_storage_charge_margin_kw=sum(
+                    _finite_number(state.get("chargeMarginKw")) for state in group_storage
+                ),
+                grid_storage_discharge_margin_kw=sum(
+                    _finite_number(state.get("dischargeMarginKw")) for state in group_storage
+                ),
+                balance_storage_charge_margin_kw=sum(
+                    max(0.0, _finite_number(row.get("currentKw")) - _grid_storage_signed_power_bounds_kw(row)[0])
+                    for row in group_balance
+                ),
+                balance_storage_discharge_margin_kw=sum(
+                    max(0.0, _grid_storage_signed_power_bounds_kw(row)[1] - _finite_number(row.get("currentKw")))
+                    for row in group_balance
+                ),
+                balance_storage_current_kw=balance_current_kw,
+                acdc_current_export_kw=sum(
+                    max(0.0, -_finite_number(state.get("currentKw")))
+                    for state in converter_states
+                    if state.get("groupId") == group_id
+                ),
+                acdc_export_headroom_kw=sum(
+                    _finite_number(state.get("exportMarginKw"))
+                    for state in converter_states
+                    if state.get("groupId") == group_id
+                ),
+                acdc_step_headroom_kw=sum(
+                    _finite_number(state.get("exportMarginKw"))
+                    for state in converter_states
+                    if state.get("groupId") == group_id
+                ),
+            )
+        )
+
+    ac_renewable_delta_kw = sum(
+        _finite_number(state.get("targetKw")) - _finite_number(state.get("currentKw"))
+        for state in ac_renewables
+    )
+    ac_storage_delta_kw = sum(
+        _finite_number(state.get("targetKw")) - _finite_number(state.get("currentKw"))
+        for state in ac_storage_states
+    )
+    export_delta_kw = sum(
+        _finite_number(state.get("currentKw")) - _finite_number(state.get("targetKw"))
+        for state in converter_states
+        if state.get("currentKw") is not None and state.get("targetKw") is not None
+    )
+    diesel_effect_kw = (
+        ac_renewable_delta_kw
+        - ac_balance_charge_accepted_kw
+        + ac_storage_delta_kw
+        + export_delta_kw
+    )
+    projected_targets, indirect_devices = _project_balance_storage_targets(
+        direct_balance_rows,
+        renewable_states,
+        storage_states,
+        converter_states,
+        ac_balance_delta_kw=-ac_balance_charge_accepted_kw,
+        dc_balance_delta_by_group=dc_balance_delta_by_group,
+    )
+    ac_balance = [
+        row for row in direct_balance_rows if row.get("connectionSide") == "AC"
+    ]
+    ac_budget = _AcSideBudget(
+        renewable_current_kw=sum(
+            _finite_number(state.get("currentKw")) for state in ac_renewables
+        ),
+        renewable_recovery_kw=ac_renewable_delta_kw,
+        local_net_demand_kw=ac_load_kw,
+        diesel_down_margin_kw=max(0.0, diesel_current_kw - diesel_min_kw),
+        grid_storage_charge_margin_kw=sum(
+            _finite_number(state.get("chargeMarginKw")) for state in ac_storage_states
+        ),
+        grid_storage_discharge_margin_kw=sum(
+            _finite_number(state.get("dischargeMarginKw")) for state in ac_storage_states
+        ),
+        balance_storage_charge_margin_kw=sum(
+            max(
+                0.0,
+                _finite_number(row.get("currentKw"))
+                - _grid_storage_signed_power_bounds_kw(row)[0],
+            )
+            for row in direct_balance_rows
+            if row.get("connectionSide") == "AC"
+        ),
+        balance_storage_discharge_margin_kw=sum(
+            max(
+                0.0,
+                _grid_storage_signed_power_bounds_kw(row)[1]
+                - _finite_number(row.get("currentKw")),
+            )
+            for row in direct_balance_rows
+            if row.get("connectionSide") == "AC"
+        ),
+        balance_storage_current_kw=sum(
+            _finite_number(row.get("currentKw"))
+            for row in storage_rows
+            if row.get("role") == "balance" and row.get("connectionSide") == "AC"
+        ),
+        accepted_acdc_export_kw=paired_export_kw,
+    )
+    return {
+        "renewableTargets": {
+            state["key"]: state.get("targetKw") for state in renewable_states
+        },
+        "storageTargets": {
+            state["key"]: state.get("targetKw") for state in storage_states
+        },
+        "storageStates": {state["key"]: state for state in storage_states},
+        "converterTargets": {
+            state["key"]: min(0.0, _finite_number(state.get("targetKw")))
+            for state in converter_states
+            if state.get("targetKw") is not None
+        },
+        "dieselEffectKw": diesel_effect_kw,
+        "dieselTargetKw": diesel_current_kw - diesel_effect_kw,
+        "acBudget": ac_budget,
+        "dcBudgets": tuple(dc_budgets),
+        "projectedBalanceTargets": projected_targets,
+        "indirectControlDevices": indirect_devices,
+    }
+
+
+def _side_aware_renewable_recovery_plan(
+    snapshot: Mapping[str, Any],
+    measurements: Mapping[Tuple[str, str, str], MeasurementValue],
+    settings: RenewableControlSettings,
+    resource_topology: ResourceTopology,
+    renewable_rows: Sequence[Mapping[str, Any]],
+    storage_rows: Sequence[Mapping[str, Any]],
+    converter_rows: Sequence[Mapping[str, Any]],
+    initial_storage_targets: Mapping[Tuple[str, str], Any],
+    initial_converter_targets: Mapping[Tuple[str, str], Any],
+    *,
+    diesel_current_kw: float,
+    diesel_min_kw: float,
+) -> Dict[str, Any]:
+    ac_has_protective_actor = any(
+        row.get("commandable") and row.get("connectionSide") == "AC"
+        for row in (*renewable_rows, *storage_rows)
+        if row.get("role") != "balance"
+    )
+    dc_protective_actor_groups = {
+        str(row.get("dcTransferGroupId", ""))
+        for row in (*renewable_rows, *storage_rows)
+        if row.get("commandable")
+        and row.get("connectionSide") == "DC"
+        and row.get("role") != "balance"
+        and str(row.get("dcTransferGroupId", ""))
+    }
+    balance_rows = [
+        row
+        for row in storage_rows
+        if row.get("role") == "balance"
+        and row.get("stateEligible")
+        and not row.get("activePath")
+        and (
+            row.get("connectionSide") == "AC" and ac_has_protective_actor
+            or row.get("connectionSide") == "DC"
+            and str(row.get("dcTransferGroupId", ""))
+            in dc_protective_actor_groups
+        )
+    ]
+    protective_rows: List[Mapping[str, Any]] = []
+    for row in balance_rows:
+        current_kw = _number(row.get("currentKw"))
+        if current_kw is None:
+            continue
+        signed_min_kw, signed_max_kw = _grid_storage_signed_power_bounds_kw(row)
+        if current_kw < signed_min_kw - EPSILON or current_kw > signed_max_kw + EPSILON:
+            protective_rows.append(row)
+    if not protective_rows:
+        return _side_aware_renewable_recovery_plan_without_balance(
+            snapshot,
+            measurements,
+            settings,
+            resource_topology,
+            renewable_rows,
+            storage_rows,
+            converter_rows,
+            initial_storage_targets,
+            initial_converter_targets,
+            diesel_current_kw=diesel_current_kw,
+            diesel_min_kw=diesel_min_kw,
+        )
+
+    renewable_states: List[MutableMapping[str, Any]] = []
+    for row in sorted(
+        renewable_rows,
+        key=lambda item: (
+            str(item.get("connectionSide", "")),
+            str(item.get("dcTransferGroupId", "")),
+            str(item.get("technology", "")),
+            str(item.get("dev_type", "")),
+            str(item.get("dev_name", "")),
+        ),
+    ):
+        current_kw = _number(row.get("planningCurrentKw"))
+        capacity_kw = _number(row.get("capacityKw"))
+        eligible = bool(
+            row.get("commandable")
+            and current_kw is not None
+            and capacity_kw is not None
+            and capacity_kw > EPSILON
+            and -EPSILON <= current_kw <= capacity_kw + EPSILON
+        )
+        renewable_states.append(
+            {
+                "row": row,
+                "key": (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                "side": str(row.get("connectionSide", "")),
+                "groupId": str(row.get("dcTransferGroupId", "")),
+                "currentKw": current_kw,
+                "targetKw": current_kw,
+                "recoveryMarginKw": (
+                    min(
+                        max(0.0, capacity_kw - current_kw),
+                        settings.step_coefficient * capacity_kw,
+                    )
+                    if eligible
+                    else 0.0
+                ),
+                "curtailMarginKw": (
+                    min(max(0.0, current_kw), settings.step_coefficient * capacity_kw)
+                    if eligible
+                    else 0.0
+                ),
+            }
+        )
+    storage_states = [
+        _side_aware_storage_state(
+            row,
+            settings,
+            initial_storage_targets.get(
+                (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                row.get("currentKw"),
+            ),
+            preserve_initial=False,
+        )
+        for row in sorted(storage_rows, key=_grid_storage_sort_key)
+        if row.get("role") == "grid_following"
+    ]
+    converter_states: List[MutableMapping[str, Any]] = []
+    for row in sorted(converter_rows, key=_converter_row_sort_key):
+        current_kw = _number(row.get("currentKw"))
+        capacity_kw = _number(row.get("transferCapacityKw"))
+        target_kw = min(0.0, current_kw) if current_kw is not None else None
+        step_kw = (
+            settings.converter_step_ratio * capacity_kw
+            if capacity_kw is not None and capacity_kw > EPSILON
+            else 0.0
+        )
+        converter_states.append(
+            {
+                "row": row,
+                "key": (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                "groupId": str(row.get("dcTransferGroupId", "")),
+                "currentKw": current_kw,
+                "targetKw": target_kw,
+                "capacityKw": capacity_kw,
+                "exportMarginKw": (
+                    min(max(0.0, capacity_kw + target_kw), step_kw)
+                    if row.get("commandable")
+                    and current_kw is not None
+                    and current_kw <= EPSILON
+                    and target_kw is not None
+                    and capacity_kw is not None
+                    and capacity_kw > EPSILON
+                    else 0.0
+                ),
+                "exportReductionMarginKw": (
+                    min(max(0.0, -target_kw), step_kw)
+                    if row.get("commandable") and target_kw is not None
+                    else 0.0
+                ),
+            }
+        )
+
+    def apply_margin(
+        states: Sequence[MutableMapping[str, Any]],
+        request_kw: float,
+        margin_key: str,
+        target_sign: float,
+    ) -> float:
+        allocations = _allocate_by_margin(states, request_kw, margin_key)
+        for state, allocation_kw in zip(states, allocations):
+            state["targetKw"] = _finite_number(state.get("targetKw")) + target_sign * allocation_kw
+            state[margin_key] = max(
+                0.0, _finite_number(state.get(margin_key)) - allocation_kw
+            )
+        return sum(allocations)
+
+    def group_converters(group_id: str) -> List[MutableMapping[str, Any]]:
+        return [
+            state
+            for state in converter_states
+            if state.get("groupId") == group_id
+        ]
+
+    diesel_margin_kw = max(0.0, diesel_current_kw - diesel_min_kw)
+    protected_ac = [
+        row for row in protective_rows if row.get("connectionSide") == "AC"
+    ]
+    protected_groups = sorted(
+        {
+            str(row.get("dcTransferGroupId", ""))
+            for row in protective_rows
+            if row.get("connectionSide") == "DC"
+            and str(row.get("dcTransferGroupId", ""))
+        },
+        key=_natural_topology_identity,
+    )
+
+    if protected_ac:
+        ac_renewables = [
+            state for state in renewable_states if state.get("side") == "AC"
+        ]
+        ac_grid = [state for state in storage_states if state.get("side") == "AC"]
+        low_request_kw = sum(
+            max(
+                0.0,
+                _finite_number(row.get("currentKw"))
+                - _grid_storage_signed_power_bounds_kw(row)[1],
+            )
+            for row in protected_ac
+        )
+        high_request_kw = sum(
+            max(
+                0.0,
+                _grid_storage_signed_power_bounds_kw(row)[0]
+                - _finite_number(row.get("currentKw")),
+            )
+            for row in protected_ac
+        )
+        if low_request_kw > EPSILON:
+            recovered_kw = apply_margin(
+                ac_renewables,
+                min(low_request_kw, diesel_margin_kw),
+                "recoveryMarginKw",
+                1.0,
+            )
+            diesel_margin_kw -= recovered_kw
+            remaining_kw = max(0.0, low_request_kw - recovered_kw)
+            discharged_kw = apply_margin(
+                ac_grid,
+                min(remaining_kw, diesel_margin_kw),
+                "dischargeMarginKw",
+                1.0,
+            )
+            diesel_margin_kw -= discharged_kw
+            remaining_kw = max(0.0, remaining_kw - discharged_kw)
+            for group_id in sorted(
+                resource_topology.dc_transfer_groups,
+                key=_natural_topology_identity,
+            ):
+                if remaining_kw <= EPSILON or diesel_margin_kw <= EPSILON:
+                    break
+                exported_kw = apply_margin(
+                    group_converters(group_id),
+                    min(remaining_kw, diesel_margin_kw),
+                    "exportMarginKw",
+                    -1.0,
+                )
+                diesel_margin_kw -= exported_kw
+                remaining_kw -= exported_kw
+        if high_request_kw > EPSILON:
+            verified_surplus_kw = min(
+                high_request_kw,
+                sum(
+                    max(0.0, -_finite_number(row.get("currentKw")))
+                    for row in protected_ac
+                ),
+                sum(
+                    max(0.0, _finite_number(state.get("currentKw")))
+                    for state in ac_renewables
+                ),
+            )
+            charged_kw = apply_margin(
+                ac_grid,
+                verified_surplus_kw,
+                "chargeMarginKw",
+                -1.0,
+            )
+            remaining_kw = max(0.0, high_request_kw - charged_kw)
+            curtailed_kw = apply_margin(
+                ac_renewables,
+                remaining_kw,
+                "curtailMarginKw",
+                -1.0,
+            )
+            remaining_kw -= curtailed_kw
+            for group_id in sorted(
+                resource_topology.dc_transfer_groups,
+                key=_natural_topology_identity,
+            ):
+                if remaining_kw <= EPSILON:
+                    break
+                remaining_kw -= apply_margin(
+                    group_converters(group_id),
+                    remaining_kw,
+                    "exportReductionMarginKw",
+                    1.0,
+                )
+
+    for group_id in protected_groups:
+        group_balance = [
+            row
+            for row in protective_rows
+            if row.get("connectionSide") == "DC"
+            and row.get("dcTransferGroupId") == group_id
+        ]
+        group_renewables = [
+            state
+            for state in renewable_states
+            if state.get("side") == "DC" and state.get("groupId") == group_id
+        ]
+        group_grid = [
+            state
+            for state in storage_states
+            if state.get("side") == "DC" and state.get("groupId") == group_id
+        ]
+        low_request_kw = sum(
+            max(
+                0.0,
+                _finite_number(row.get("currentKw"))
+                - _grid_storage_signed_power_bounds_kw(row)[1],
+            )
+            for row in group_balance
+        )
+        high_request_kw = sum(
+            max(
+                0.0,
+                _grid_storage_signed_power_bounds_kw(row)[0]
+                - _finite_number(row.get("currentKw")),
+            )
+            for row in group_balance
+        )
+        if low_request_kw > EPSILON:
+            reduced_export_kw = apply_margin(
+                group_converters(group_id),
+                low_request_kw,
+                "exportReductionMarginKw",
+                1.0,
+            )
+            remaining_kw = max(0.0, low_request_kw - reduced_export_kw)
+            recovered_kw = apply_margin(
+                group_renewables,
+                remaining_kw,
+                "recoveryMarginKw",
+                1.0,
+            )
+            remaining_kw -= recovered_kw
+            apply_margin(
+                group_grid,
+                remaining_kw,
+                "dischargeMarginKw",
+                1.0,
+            )
+        if high_request_kw > EPSILON:
+            exported_kw = apply_margin(
+                group_converters(group_id),
+                min(high_request_kw, diesel_margin_kw),
+                "exportMarginKw",
+                -1.0,
+            )
+            diesel_margin_kw -= exported_kw
+            remaining_kw = max(0.0, high_request_kw - exported_kw)
+            apply_margin(
+                group_renewables,
+                remaining_kw,
+                "curtailMarginKw",
+                -1.0,
+            )
+
+    ac_renewable_delta_kw = sum(
+        _finite_number(state.get("targetKw")) - _finite_number(state.get("currentKw"))
+        for state in renewable_states
+        if state.get("side") == "AC"
+    )
+    ac_storage_delta_kw = sum(
+        _finite_number(state.get("targetKw")) - _finite_number(state.get("currentKw"))
+        for state in storage_states
+        if state.get("side") == "AC"
+    )
+    export_delta_kw = sum(
+        _finite_number(state.get("currentKw")) - _finite_number(state.get("targetKw"))
+        for state in converter_states
+        if state.get("currentKw") is not None and state.get("targetKw") is not None
+    )
+
+    projected_targets, indirect_devices = _project_balance_storage_targets(
+        balance_rows,
+        renewable_states,
+        storage_states,
+        converter_states,
+    )
+
+    ac_load_kw, dc_load_kw = _active_load_budgets(
+        snapshot, measurements, resource_topology.dc_transfer_groups
+    )
+    dc_budgets = []
+    for group_id in sorted(resource_topology.dc_transfer_groups):
+        group_renewables = [
+            state
+            for state in renewable_states
+            if state.get("side") == "DC" and state.get("groupId") == group_id
+        ]
+        group_grid = [
+            state
+            for state in storage_states
+            if state.get("side") == "DC" and state.get("groupId") == group_id
+        ]
+        group_balance = [
+            row
+            for row in balance_rows
+            if row.get("connectionSide") == "DC"
+            and row.get("dcTransferGroupId") == group_id
+        ]
+        dc_budgets.append(
+            _DcGroupBudget(
+                group_id=group_id,
+                renewable_current_kw=sum(
+                    _finite_number(state.get("currentKw")) for state in group_renewables
+                ),
+                renewable_recovery_kw=sum(
+                    max(
+                        0.0,
+                        _finite_number(state.get("targetKw"))
+                        - _finite_number(state.get("currentKw")),
+                    )
+                    for state in group_renewables
+                ),
+                local_net_demand_kw=_finite_number(dc_load_kw.get(group_id)),
+                grid_storage_charge_margin_kw=sum(
+                    _finite_number(state.get("chargeMarginKw")) for state in group_grid
+                ),
+                grid_storage_discharge_margin_kw=sum(
+                    _finite_number(state.get("dischargeMarginKw")) for state in group_grid
+                ),
+                balance_storage_charge_margin_kw=sum(
+                    max(
+                        0.0,
+                        _finite_number(row.get("currentKw"))
+                        - _grid_storage_signed_power_bounds_kw(row)[0],
+                    )
+                    for row in group_balance
+                ),
+                balance_storage_discharge_margin_kw=sum(
+                    max(
+                        0.0,
+                        _grid_storage_signed_power_bounds_kw(row)[1]
+                        - _finite_number(row.get("currentKw")),
+                    )
+                    for row in group_balance
+                ),
+                balance_storage_current_kw=sum(
+                    _finite_number(row.get("currentKw")) for row in group_balance
+                ),
+                acdc_current_export_kw=sum(
+                    max(0.0, -_finite_number(state.get("currentKw")))
+                    for state in group_converters(group_id)
+                ),
+                acdc_export_headroom_kw=sum(
+                    _finite_number(state.get("exportMarginKw"))
+                    for state in group_converters(group_id)
+                ),
+                acdc_step_headroom_kw=sum(
+                    _finite_number(state.get("exportMarginKw"))
+                    for state in group_converters(group_id)
+                ),
+            )
+        )
+    ac_balance = [
+        row for row in balance_rows if row.get("connectionSide") == "AC"
+    ]
+    ac_budget = _AcSideBudget(
+        renewable_current_kw=sum(
+            _finite_number(state.get("currentKw"))
+            for state in renewable_states
+            if state.get("side") == "AC"
+        ),
+        renewable_recovery_kw=ac_renewable_delta_kw,
+        local_net_demand_kw=ac_load_kw,
+        diesel_down_margin_kw=max(0.0, diesel_current_kw - diesel_min_kw),
+        grid_storage_charge_margin_kw=sum(
+            _finite_number(state.get("chargeMarginKw"))
+            for state in storage_states
+            if state.get("side") == "AC"
+        ),
+        grid_storage_discharge_margin_kw=sum(
+            _finite_number(state.get("dischargeMarginKw"))
+            for state in storage_states
+            if state.get("side") == "AC"
+        ),
+        balance_storage_charge_margin_kw=sum(
+            max(
+                0.0,
+                _finite_number(row.get("currentKw"))
+                - _grid_storage_signed_power_bounds_kw(row)[0],
+            )
+            for row in ac_balance
+        ),
+        balance_storage_discharge_margin_kw=sum(
+            max(
+                0.0,
+                _grid_storage_signed_power_bounds_kw(row)[1]
+                - _finite_number(row.get("currentKw")),
+            )
+            for row in ac_balance
+        ),
+        balance_storage_current_kw=sum(
+            _finite_number(row.get("currentKw")) for row in ac_balance
+        ),
+        accepted_acdc_export_kw=export_delta_kw,
+    )
+    diesel_effect_kw = ac_renewable_delta_kw + ac_storage_delta_kw + export_delta_kw
+    return {
+        "renewableTargets": {
+            state["key"]: state.get("targetKw") for state in renewable_states
+        },
+        "storageTargets": {
+            state["key"]: state.get("targetKw") for state in storage_states
+        },
+        "storageStates": {state["key"]: state for state in storage_states},
+        "converterTargets": {
+            state["key"]: min(0.0, _finite_number(state.get("targetKw")))
+            for state in converter_states
+            if state.get("targetKw") is not None
+        },
+        "dieselEffectKw": diesel_effect_kw,
+        "dieselTargetKw": diesel_current_kw - diesel_effect_kw,
+        "acBudget": ac_budget,
+        "dcBudgets": tuple(dc_budgets),
+        "projectedBalanceTargets": projected_targets,
+        "indirectControlDevices": indirect_devices,
+    }
+
+
+def _converter_direct_state(
+    row: Mapping[str, Any],
+    base_target_kw: Any,
+    settings: RenewableControlSettings,
+) -> Dict[str, Any]:
+    current_kw = _number(row.get("currentKw"))
+    capacity_kw = _number(row.get("transferCapacityKw"))
+    parsed_base_target_kw = _number(base_target_kw)
+    if (
+        not row.get("commandable")
+        or current_kw is None
+        or capacity_kw is None
+        or capacity_kw <= EPSILON
+    ):
+        return {
+            "row": row,
+            "groupId": str(row.get("dcTransferGroupId", "")),
+            "currentKw": current_kw,
+            "targetKw": (
+                min(0.0, parsed_base_target_kw)
+                if parsed_base_target_kw is not None
+                else min(0.0, current_kw)
+                if current_kw is not None
+                else None
+            ),
+            "exportMarginKw": 0.0,
+            "exportReductionMarginKw": 0.0,
+            "eligible": False,
+        }
+
+    bounded_base_target_kw = _clamp(
+        _finite_number(base_target_kw, min(0.0, current_kw)),
+        -capacity_kw,
+        0.0,
+    )
+    step_kw = max(0.0, settings.converter_step_ratio * capacity_kw)
+    used_step_kw = abs(bounded_base_target_kw - current_kw)
+    remaining_step_kw = max(0.0, step_kw - used_step_kw)
+    export_margin_kw = (
+        min(
+            max(0.0, capacity_kw + bounded_base_target_kw),
+            remaining_step_kw,
+        )
+        if current_kw <= EPSILON and bounded_base_target_kw <= EPSILON
+        else 0.0
+    )
+    export_reduction_margin_kw = min(
+        max(0.0, -bounded_base_target_kw),
+        remaining_step_kw,
+    )
+    return {
+        "row": row,
+        "groupId": str(row.get("dcTransferGroupId", "")),
+        "currentKw": current_kw,
+        "targetKw": bounded_base_target_kw,
+        "capacityKw": capacity_kw,
+        "stepKw": step_kw,
+        "exportMarginKw": export_margin_kw,
+        "exportReductionMarginKw": export_reduction_margin_kw,
+        "eligible": bool(str(row.get("dcTransferGroupId", ""))),
+    }
+
+
+def _apply_converter_group_adjustment(
+    converter_states: Sequence[MutableMapping[str, Any]],
+    group_id: str,
+    request_kw: float,
+    *,
+    increase_export: bool,
+) -> float:
+    margin_key = "exportMarginKw" if increase_export else "exportReductionMarginKw"
+    group_states = [
+        state
+        for state in converter_states
+        if state.get("eligible") and state.get("groupId") == group_id
+    ]
+    allocations = _allocate_by_margin(group_states, request_kw, margin_key)
+    for state, allocation_kw in zip(group_states, allocations):
+        if increase_export:
+            state["targetKw"] = min(0.0, _finite_number(state.get("targetKw")) - allocation_kw)
+        else:
+            state["targetKw"] = min(0.0, _finite_number(state.get("targetKw")) + allocation_kw)
+        state[margin_key] = max(
+            0.0,
+            _finite_number(state.get(margin_key)) - allocation_kw,
+        )
+    return sum(allocations)
+
+
+def _plan_direct_grid_storage_dispatch(
+    storage_rows: Sequence[Mapping[str, Any]],
+    converter_rows: Sequence[Mapping[str, Any]],
+    base_converter_targets: Mapping[Tuple[str, str], float],
+    settings: RenewableControlSettings,
+    *,
+    diesel_current_kw: float,
+    diesel_min_kw: float,
+    diesel_deadband_upper_kw: float,
+    balance_effect_kw: float,
+    enabled: bool,
+) -> Dict[str, Any]:
+    predicted_after_balance_kw = diesel_current_kw - balance_effect_kw
+    diesel_boundary_distance_kw = max(
+        0.0,
+        predicted_after_balance_kw - diesel_deadband_upper_kw,
+    )
+    grid_rows = sorted(
+        (
+            row
+            for row in storage_rows
+            if row.get("role") == "grid_following"
+        ),
+        key=_grid_storage_sort_key,
+    )
+    storage_states: List[MutableMapping[str, Any]] = []
+    for row in grid_rows:
+        state = _grid_storage_target_margins(
+            row,
+            settings,
+            diesel_boundary_distance_kw,
+        )
+        state.update(
+            {
+                "row": row,
+                "key": (
+                    str(row.get("dev_type", "")),
+                    str(row.get("dev_name", "")),
+                ),
+                "side": str(row.get("connectionSide", "")),
+                "groupId": str(row.get("dcTransferGroupId", "")),
+            }
+        )
+        if not enabled and state.get("currentKw") is not None:
+            state["targetKw"] = state["currentKw"]
+            state["chargeMarginKw"] = 0.0
+            state["dischargeMarginKw"] = 0.0
+            state["positiveReductionMarginKw"] = 0.0
+            state["protectiveDeltaKw"] = 0.0
+        storage_states.append(state)
+
+    converter_states = [
+        _converter_direct_state(
+            row,
+            base_converter_targets.get(
+                (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                row.get("currentKw"),
+            ),
+            settings,
+        )
+        for row in sorted(converter_rows, key=_converter_row_sort_key)
+    ]
+
+    if enabled:
+        # AC protective corrections are direct. DC protective corrections are
+        # paired with an equal same-group ACDC target change.
+        for state in storage_states:
+            if state.get("side") != "AC" or not state.get("eligible"):
+                continue
+            state["targetKw"] = _finite_number(state.get("targetKw"))
+
+        for group_id in sorted(
+            {
+                str(state.get("groupId", ""))
+                for state in storage_states
+                if state.get("side") == "DC" and state.get("groupId")
+            },
+            key=_natural_topology_identity,
+        ):
+            group_states = [
+                state
+                for state in storage_states
+                if state.get("side") == "DC"
+                and state.get("groupId") == group_id
+                and state.get("eligible")
+            ]
+            for increase_export in (True, False):
+                candidates: List[MutableMapping[str, Any]] = []
+                for state in group_states:
+                    protective_delta_kw = _finite_number(state.get("protectiveDeltaKw"))
+                    requested_kw = (
+                        max(0.0, protective_delta_kw)
+                        if increase_export
+                        else max(0.0, -protective_delta_kw)
+                    )
+                    if requested_kw <= EPSILON:
+                        continue
+                    candidates.append({"state": state, "marginKw": requested_kw})
+                if not candidates:
+                    continue
+                converter_accepted_kw = _apply_converter_group_adjustment(
+                    converter_states,
+                    group_id,
+                    sum(_finite_number(item.get("marginKw")) for item in candidates),
+                    increase_export=increase_export,
+                )
+                storage_allocations = _allocate_by_margin(
+                    candidates,
+                    converter_accepted_kw,
+                    "marginKw",
+                )
+                for item, allocation_kw in zip(candidates, storage_allocations):
+                    state = item["state"]
+                    current_kw = _finite_number(state.get("currentKw"))
+                    state["targetKw"] = (
+                        current_kw + allocation_kw
+                        if increase_export
+                        else current_kw - allocation_kw
+                    )
+
+    def ac_effect_kw() -> float:
+        return sum(
+            _finite_number(state.get("targetKw"))
+            - _finite_number(state.get("currentKw"))
+            for state in storage_states
+            if state.get("side") == "AC"
+            and state.get("currentKw") is not None
+            and state.get("targetKw") is not None
+        )
+
+    def converter_effect_kw() -> float:
+        return sum(
+            _finite_number(
+                base_converter_targets.get(
+                    (
+                        str(state["row"].get("dev_type", "")),
+                        str(state["row"].get("dev_name", "")),
+                    ),
+                    state.get("currentKw"),
+                )
+            )
+            - _finite_number(state.get("targetKw"))
+            for state in converter_states
+            if state.get("targetKw") is not None
+        )
+
+    predicted_kw = (
+        predicted_after_balance_kw
+        - ac_effect_kw()
+        - converter_effect_kw()
+    )
+    action = "hold"
+    requested_kw = 0.0
+    if enabled and predicted_kw < diesel_min_kw - EPSILON:
+        action = "reduce_discharge"
+        requested_kw = diesel_min_kw - predicted_kw
+        ac_states = [
+            state
+            for state in storage_states
+            if state.get("side") == "AC"
+            and state.get("eligible")
+            and _finite_number(state.get("positiveReductionMarginKw")) > EPSILON
+        ]
+        ac_allocations = _allocate_by_margin(
+            ac_states,
+            requested_kw,
+            "positiveReductionMarginKw",
+        )
+        for state, allocation_kw in zip(ac_states, ac_allocations):
+            state["targetKw"] = _finite_number(state.get("targetKw")) - allocation_kw
+        remaining_kw = max(0.0, requested_kw - sum(ac_allocations))
+
+        group_budgets: List[MutableMapping[str, Any]] = []
+        for group_id in sorted(
+            {
+                str(state.get("groupId", ""))
+                for state in storage_states
+                if state.get("side") == "DC" and state.get("groupId")
+            },
+            key=_natural_topology_identity,
+        ):
+            storage_margin_kw = sum(
+                _finite_number(state.get("positiveReductionMarginKw"))
+                for state in storage_states
+                if state.get("side") == "DC"
+                and state.get("groupId") == group_id
+                and state.get("eligible")
+            )
+            converter_margin_kw = sum(
+                _finite_number(state.get("exportReductionMarginKw"))
+                for state in converter_states
+                if state.get("groupId") == group_id and state.get("eligible")
+            )
+            group_budgets.append(
+                {
+                    "groupId": group_id,
+                    "marginKw": min(storage_margin_kw, converter_margin_kw),
+                }
+            )
+        group_allocations = _allocate_by_margin(
+            group_budgets,
+            remaining_kw,
+            "marginKw",
+        )
+        for group_budget, group_request_kw in zip(group_budgets, group_allocations):
+            group_id = str(group_budget.get("groupId", ""))
+            converter_accepted_kw = _apply_converter_group_adjustment(
+                converter_states,
+                group_id,
+                group_request_kw,
+                increase_export=False,
+            )
+            group_storage_states = [
+                state
+                for state in storage_states
+                if state.get("side") == "DC"
+                and state.get("groupId") == group_id
+                and state.get("eligible")
+            ]
+            storage_allocations = _allocate_by_margin(
+                group_storage_states,
+                converter_accepted_kw,
+                "positiveReductionMarginKw",
+            )
+            for state, allocation_kw in zip(group_storage_states, storage_allocations):
+                state["targetKw"] = _finite_number(state.get("targetKw")) - allocation_kw
+    elif enabled and predicted_kw > diesel_deadband_upper_kw + EPSILON:
+        action = "increase_discharge"
+        requested_kw = predicted_kw - diesel_deadband_upper_kw
+        ac_states = [
+            state
+            for state in storage_states
+            if state.get("side") == "AC"
+            and state.get("eligible")
+            and _finite_number(state.get("dischargeMarginKw")) > EPSILON
+        ]
+        ac_allocations = _allocate_by_margin(
+            ac_states,
+            requested_kw,
+            "dischargeMarginKw",
+        )
+        for state, allocation_kw in zip(ac_states, ac_allocations):
+            state["targetKw"] = _finite_number(state.get("targetKw")) + allocation_kw
+        remaining_kw = max(0.0, requested_kw - sum(ac_allocations))
+
+        group_budgets = []
+        for group_id in sorted(
+            {
+                str(state.get("groupId", ""))
+                for state in storage_states
+                if state.get("side") == "DC" and state.get("groupId")
+            },
+            key=_natural_topology_identity,
+        ):
+            storage_margin_kw = sum(
+                _finite_number(state.get("dischargeMarginKw"))
+                for state in storage_states
+                if state.get("side") == "DC"
+                and state.get("groupId") == group_id
+                and state.get("eligible")
+            )
+            converter_margin_kw = sum(
+                _finite_number(state.get("exportMarginKw"))
+                for state in converter_states
+                if state.get("groupId") == group_id and state.get("eligible")
+            )
+            group_budgets.append(
+                {
+                    "groupId": group_id,
+                    "marginKw": min(storage_margin_kw, converter_margin_kw),
+                }
+            )
+        group_allocations = _allocate_by_margin(
+            group_budgets,
+            remaining_kw,
+            "marginKw",
+        )
+        for group_budget, group_request_kw in zip(group_budgets, group_allocations):
+            group_id = str(group_budget.get("groupId", ""))
+            converter_accepted_kw = _apply_converter_group_adjustment(
+                converter_states,
+                group_id,
+                group_request_kw,
+                increase_export=True,
+            )
+            group_storage_states = [
+                state
+                for state in storage_states
+                if state.get("side") == "DC"
+                and state.get("groupId") == group_id
+                and state.get("eligible")
+            ]
+            storage_allocations = _allocate_by_margin(
+                group_storage_states,
+                converter_accepted_kw,
+                "dischargeMarginKw",
+            )
+            for state, allocation_kw in zip(group_storage_states, storage_allocations):
+                state["targetKw"] = _finite_number(state.get("targetKw")) + allocation_kw
+
+    final_ac_effect_kw = ac_effect_kw()
+    final_converter_effect_kw = converter_effect_kw()
+    final_predicted_kw = (
+        predicted_after_balance_kw
+        - final_ac_effect_kw
+        - final_converter_effect_kw
+    )
+    accepted_correction_kw = (
+        max(0.0, predicted_kw - final_predicted_kw)
+        if action == "increase_discharge"
+        else max(0.0, final_predicted_kw - predicted_kw)
+        if action == "reduce_discharge"
+        else 0.0
+    )
+
+    storage_targets = {
+        state["key"]: state.get("targetKw")
+        for state in storage_states
+    }
+    converter_targets = {
+        (
+            str(state["row"].get("dev_type", "")),
+            str(state["row"].get("dev_name", "")),
+        ): min(0.0, _finite_number(state.get("targetKw")))
+        for state in converter_states
+        if state.get("targetKw") is not None
+    }
+    group_summaries = []
+    for group_id in sorted(
+        {
+            str(state.get("groupId", ""))
+            for state in storage_states
+            if state.get("side") == "DC" and state.get("groupId")
+        },
+        key=_natural_topology_identity,
+    ):
+        group_summaries.append(
+            {
+                "dcTransferGroupId": group_id,
+                "storageDeltaKw": sum(
+                    _finite_number(state.get("targetKw"))
+                    - _finite_number(state.get("currentKw"))
+                    for state in storage_states
+                    if state.get("side") == "DC"
+                    and state.get("groupId") == group_id
+                    and state.get("currentKw") is not None
+                    and state.get("targetKw") is not None
+                ),
+                "acdcDeltaKw": sum(
+                    _finite_number(
+                        base_converter_targets.get(
+                            (
+                                str(state["row"].get("dev_type", "")),
+                                str(state["row"].get("dev_name", "")),
+                            ),
+                            state.get("currentKw"),
+                        )
+                    )
+                    - _finite_number(state.get("targetKw"))
+                    for state in converter_states
+                    if state.get("groupId") == group_id
+                    and state.get("targetKw") is not None
+                ),
+                "exportHeadroomKw": sum(
+                    _finite_number(state.get("exportMarginKw"))
+                    for state in converter_states
+                    if state.get("groupId") == group_id
+                ),
+            }
+        )
+
+    return {
+        "action": action,
+        "requestedKw": requested_kw,
+        "acceptedKw": accepted_correction_kw,
+        "residualKw": max(0.0, requested_kw - accepted_correction_kw),
+        "storageStates": {
+            state["key"]: state
+            for state in storage_states
+        },
+        "storageTargets": storage_targets,
+        "converterTargets": converter_targets,
+        "acEffectKw": final_ac_effect_kw,
+        "acdcEffectKw": final_converter_effect_kw,
+        "predictedDieselKw": final_predicted_kw,
+        "groups": group_summaries,
+    }
+
+
+def _metric_target(row: Mapping[str, Any], fallback_key: str = "currentKw") -> Optional[float]:
+    for key in ("commandKw", "targetKw", "projectedTargetKw", fallback_key):
+        value = _number(row.get(key))
+        if value is not None and math.isfinite(value):
+            return value
+    return None
+
+
+def _sum_metric(
+    rows: Sequence[Mapping[str, Any]],
+    key: str,
+    *,
+    fallback_key: str = "currentKw",
+) -> float:
+    total = 0.0
+    for row in rows:
+        value = (
+            _metric_target(row, fallback_key)
+            if key == "target"
+            else _number(row.get(key))
+        )
+        if value is not None and math.isfinite(value):
+            total += value
+    return total
+
+
+def _task8_side_metrics(command_rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    online = [row for row in command_rows if row.get("online")]
+
+    def renewable(side: str, technology: str) -> List[Mapping[str, Any]]:
+        return [
+            row
+            for row in online
+            if row.get("technology") == technology
+            and row.get("connectionSide") == side
+        ]
+
+    def storage(side: str, role: str) -> List[Mapping[str, Any]]:
+        return [
+            row
+            for row in online
+            if row.get("role") == role
+            and row.get("connectionSide") == side
+        ]
+
+    ac_wind = renewable("AC", "wind")
+    dc_wind = renewable("DC", "wind")
+    ac_pv = renewable("AC", "pv")
+    dc_pv = renewable("DC", "pv")
+    ac_grid = storage("AC", "grid_following")
+    dc_grid = storage("DC", "grid_following")
+    ac_balance = storage("AC", "balance")
+    dc_balance = storage("DC", "balance")
+    return {
+        "acWindCurrentKw": _sum_metric(ac_wind, "currentKw"),
+        "acWindTargetKw": _sum_metric(ac_wind, "target"),
+        "dcWindCurrentKw": _sum_metric(dc_wind, "currentKw"),
+        "dcWindTargetKw": _sum_metric(dc_wind, "target"),
+        "acPvCurrentKw": _sum_metric(ac_pv, "currentKw"),
+        "acPvTargetKw": _sum_metric(ac_pv, "target"),
+        "dcPvCurrentKw": _sum_metric(dc_pv, "currentKw"),
+        "dcPvTargetKw": _sum_metric(dc_pv, "target"),
+        "acGridStorageCurrentKw": _sum_metric(ac_grid, "currentKw"),
+        "acGridStorageTargetKw": _sum_metric(ac_grid, "target"),
+        "acGridStorageSoc": _capacity_weighted_soc(ac_grid),
+        "dcGridStorageCurrentKw": _sum_metric(dc_grid, "currentKw"),
+        "dcGridStorageTargetKw": _sum_metric(dc_grid, "target"),
+        "dcGridStorageSoc": _capacity_weighted_soc(dc_grid),
+        "acBalanceStorageCurrentKw": _sum_metric(ac_balance, "currentKw"),
+        "acBalanceStorageTargetKw": sum(
+            _finite_number(row.get("projectedTargetKw"))
+            for row in ac_balance
+            if _number(row.get("projectedTargetKw")) is not None
+        ),
+        "dcBalanceStorageCurrentKw": _sum_metric(dc_balance, "currentKw"),
+        "dcBalanceStorageTargetKw": sum(
+            _finite_number(row.get("projectedTargetKw"))
+            for row in dc_balance
+            if _number(row.get("projectedTargetKw")) is not None
+        ),
+        "acBalanceStorageSoc": _capacity_weighted_soc(ac_balance),
+        "dcBalanceStorageSoc": _capacity_weighted_soc(dc_balance),
+    }
+
+
+def _dc_transfer_group_metrics(
+    topology: ResourceTopology,
+    command_rows: Sequence[Mapping[str, Any]],
+    dc_load_kw: Mapping[str, float],
+    *,
+    converter_step_ratio: float,
+) -> Tuple[List[Dict[str, Any]], float]:
+    groups: List[Dict[str, Any]] = []
+    dc_renewable_to_ac_kw = 0.0
+    active_group_ids = _active_dc_transfer_group_ids(topology, command_rows)
+    rows_by_group: Dict[str, List[Mapping[str, Any]]] = {}
+    for row in command_rows:
+        group_id = str(row.get("dcTransferGroupId", ""))
+        if group_id:
+            rows_by_group.setdefault(group_id, []).append(row)
+
+    for group_id in sorted(topology.dc_transfer_groups, key=_natural_topology_identity):
+        rows = [row for row in rows_by_group.get(group_id, []) if row.get("online")]
+        converters = [
+            row
+            for row in rows
+            if row.get("dev_type") == "DCACConverter"
+            and row.get("commandable") is not False
+        ]
+        group = topology.dc_transfer_groups[group_id]
+        dc_rows = [row for row in rows if row.get("connectionSide") == "DC"]
+        renewables = [
+            row for row in dc_rows if row.get("technology") in {"wind", "pv"}
+        ]
+        wind = [row for row in renewables if row.get("technology") == "wind"]
+        pv = [row for row in renewables if row.get("technology") == "pv"]
+        all_storage = [
+            row
+            for row in dc_rows
+            if row.get("technology") == "storage"
+            and row.get("resourceIdentityValid") is not False
+        ]
+        grid_storage = [row for row in dc_rows if row.get("role") == "grid_following"]
+        balance_storage = [row for row in dc_rows if row.get("role") == "balance"]
+        affected = sorted(
+            (*renewables, *all_storage, *converters),
+            key=lambda item: (
+                _natural_topology_identity(item.get("dev_type", "")),
+                _natural_topology_identity(item.get("dev_name", "")),
+            ),
+        )
+        if group_id not in active_group_ids:
+            reasons = {
+                str(row.get("statusLabel", ""))
+                for row in affected
+                if str(row.get("statusLabel", "")).strip()
+            }
+            if not rows:
+                reasons.add("no online resources in transfer group")
+            if not converters:
+                reasons.add("no active ACDC transfer path")
+            if not dc_rows:
+                reasons.add("no active DC resources in transfer group")
+            renewable_current_kw = _sum_metric(renewables, "currentKw")
+            renewable_target_kw = _sum_metric(renewables, "target")
+            groups.append(
+                _json_safe_copy(
+                    {
+                        "groupId": group_id,
+                        "active": False,
+                        "dcNodes": list(group.dc_nodes),
+                        "acComponentIds": list(group.ac_component_ids),
+                        "converterDevices": [
+                            {"dev_type": dev_type, "dev_name": dev_name}
+                            for dev_type, dev_name in group.converter_keys
+                        ],
+                        "currentWindKw": _sum_metric(wind, "currentKw"),
+                        "targetWindKw": _sum_metric(wind, "target"),
+                        "currentPvKw": _sum_metric(pv, "currentKw"),
+                        "targetPvKw": _sum_metric(pv, "target"),
+                        "currentRenewableKw": renewable_current_kw,
+                        "targetRenewableKw": renewable_target_kw,
+                        "localLoadKw": max(0.0, _finite_number(dc_load_kw.get(group_id))),
+                        "currentGridStorageKw": _sum_metric(grid_storage, "currentKw"),
+                        "targetGridStorageKw": _sum_metric(grid_storage, "target"),
+                        "gridStorageSoc": _capacity_weighted_soc(grid_storage),
+                        "currentBalanceStorageKw": _sum_metric(balance_storage, "currentKw"),
+                        "targetBalanceStorageKw": sum(
+                            _finite_number(row.get("projectedTargetKw"))
+                            for row in balance_storage
+                            if _number(row.get("projectedTargetKw")) is not None
+                        ),
+                        "balanceStorageSoc": _capacity_weighted_soc(balance_storage),
+                        "currentAcdcExportKw": 0.0,
+                        "finalAcdcExportKw": 0.0,
+                        "acdcCapacityKw": 0.0,
+                        "remainingAcdcHeadroomKw": 0.0,
+                        "stepAcdcHeadroomKw": 0.0,
+                        "renewableDeliveredThroughAcdcKw": 0.0,
+                        "currentRenewableDeliveredThroughAcdcKw": 0.0,
+                        "finalRenewableDeliveredThroughAcdcKw": 0.0,
+                        "curtailedRenewableKw": max(
+                            0.0,
+                            renewable_current_kw - renewable_target_kw,
+                        ),
+                        "blockedRenewableKw": 0.0,
+                        "reasons": sorted(reasons),
+                        "affectedDevices": [
+                            {
+                                "dev_type": str(row.get("dev_type", "")),
+                                "dev_name": str(row.get("dev_name", "")),
+                                "side": str(row.get("connectionSide", "")),
+                                "role": str(row.get("role", "")),
+                                "technology": str(row.get("technology", "")),
+                                "bus": str(row.get("busbarName", "")),
+                            }
+                            for row in affected
+                        ],
+                    }
+                )
+            )
+            continue
+        current_export_kw = sum(
+            max(0.0, -_finite_number(row.get("currentKw")))
+            for row in converters
+            if row.get("currentKw") is not None
+        )
+        final_export_kw = sum(
+            max(0.0, -_finite_number(row.get("commandKw")))
+            for row in converters
+            if _number(row.get("commandKw")) is not None
+        )
+        capacity_kw = sum(
+            max(0.0, _finite_number(row.get("transferCapacityKw")))
+            for row in converters
+        )
+        renewable_current_kw = _sum_metric(renewables, "currentKw")
+        renewable_target_kw = _sum_metric(renewables, "target")
+        local_load_kw = max(0.0, _finite_number(dc_load_kw.get(group_id)))
+        current_storage_charge_kw = sum(
+            max(0.0, -_finite_number(row.get("currentKw")))
+            for row in all_storage
+            if row.get("currentKw") is not None
+        )
+        final_storage_charge_kw = sum(
+            max(0.0, -_finite_number(_metric_target(row)))
+            for row in all_storage
+        )
+        current_renewable_exportable_kw = max(
+            0.0,
+            renewable_current_kw - local_load_kw - current_storage_charge_kw,
+        )
+        final_renewable_exportable_kw = max(
+            0.0,
+            renewable_target_kw - local_load_kw - final_storage_charge_kw,
+        )
+        delivered_through_acdc_kw = min(current_export_kw, current_renewable_exportable_kw)
+        final_delivered_through_acdc_kw = min(final_export_kw, final_renewable_exportable_kw)
+        dc_renewable_to_ac_kw += delivered_through_acdc_kw
+        blocked_kw = sum(
+            max(
+                0.0,
+                _finite_number(row.get("capacityKw"))
+                - _finite_number(_metric_target(row)),
+            )
+            for row in renewables
+        )
+        step_headroom_kw = sum(
+            min(
+                max(
+                    0.0,
+                    _finite_number(row.get("transferCapacityKw"))
+                    - max(0.0, -_finite_number(row.get("commandKw"))),
+                ),
+                max(
+                    0.0,
+                    converter_step_ratio
+                    * _finite_number(row.get("transferCapacityKw")),
+                ),
+            )
+            for row in converters
+        )
+        groups.append(
+            _json_safe_copy(
+                {
+                    "groupId": group_id,
+                    "active": True,
+                    "dcNodes": list(group.dc_nodes),
+                    "acComponentIds": list(group.ac_component_ids),
+                    "converterDevices": [
+                        {"dev_type": dev_type, "dev_name": dev_name}
+                        for dev_type, dev_name in group.converter_keys
+                    ],
+                    "currentWindKw": _sum_metric(wind, "currentKw"),
+                    "targetWindKw": _sum_metric(wind, "target"),
+                    "currentPvKw": _sum_metric(pv, "currentKw"),
+                    "targetPvKw": _sum_metric(pv, "target"),
+                    "currentRenewableKw": renewable_current_kw,
+                    "targetRenewableKw": renewable_target_kw,
+                    "localLoadKw": local_load_kw,
+                    "currentGridStorageKw": _sum_metric(grid_storage, "currentKw"),
+                    "targetGridStorageKw": _sum_metric(grid_storage, "target"),
+                    "gridStorageSoc": _capacity_weighted_soc(grid_storage),
+                    "currentBalanceStorageKw": _sum_metric(balance_storage, "currentKw"),
+                    "targetBalanceStorageKw": sum(
+                        _finite_number(row.get("projectedTargetKw"))
+                        for row in balance_storage
+                        if _number(row.get("projectedTargetKw")) is not None
+                    ),
+                    "balanceStorageSoc": _capacity_weighted_soc(balance_storage),
+                    "currentAcdcExportKw": current_export_kw,
+                    "finalAcdcExportKw": final_export_kw,
+                    "acdcCapacityKw": capacity_kw,
+                    "remainingAcdcHeadroomKw": max(0.0, capacity_kw - final_export_kw),
+                    "stepAcdcHeadroomKw": step_headroom_kw,
+                    "renewableDeliveredThroughAcdcKw": delivered_through_acdc_kw,
+                    "currentRenewableDeliveredThroughAcdcKw": delivered_through_acdc_kw,
+                    "finalRenewableDeliveredThroughAcdcKw": final_delivered_through_acdc_kw,
+                    "curtailedRenewableKw": max(0.0, renewable_current_kw - renewable_target_kw),
+                    "blockedRenewableKw": blocked_kw,
+                    "reasons": sorted(
+                        {
+                            str(row.get("statusLabel", ""))
+                            for row in affected
+                            if str(row.get("statusLabel", "")).strip()
+                        }
+                    ),
+                    "affectedDevices": [
+                        {
+                            "dev_type": str(row.get("dev_type", "")),
+                            "dev_name": str(row.get("dev_name", "")),
+                            "side": str(row.get("connectionSide", "")),
+                            "role": str(row.get("role", "")),
+                            "technology": str(row.get("technology", "")),
+                            "bus": str(row.get("busbarName", "")),
+                        }
+                        for row in affected
+                    ],
+                }
+            )
+        )
+    return groups, dc_renewable_to_ac_kw
+
+
+def _task8_decision_detail(
+    command_rows: Sequence[Mapping[str, Any]],
+    metrics: Mapping[str, Any],
+) -> List[str]:
+    rows = sorted(
+        command_rows,
+        key=lambda row: (
+            _natural_topology_identity(row.get("connectionSide", "")),
+            _natural_topology_identity(row.get("dcTransferGroupId", "")),
+            _natural_topology_identity(row.get("dev_type", "")),
+            _natural_topology_identity(row.get("dev_name", "")),
+        ),
+    )
+
+    def path_text(row: Mapping[str, Any]) -> str:
+        path = row.get("activePath") or row.get("structuralPath") or ()
+        return ">".join(f"{dev_type}:{dev_name}" for dev_type, dev_name in path) or "local"
+
+    def device_text(row: Mapping[str, Any]) -> str:
+        current_kw = _number(row.get("currentKw"))
+        target_kw = _metric_target(row)
+        candidate_delta = (
+            target_kw - current_kw
+            if current_kw is not None and target_kw is not None
+            else None
+        )
+        accepted_delta = candidate_delta if candidate_delta is not None else 0.0
+        limit = (
+            row.get("transferCapacityKw")
+            if row.get("dev_type") == "DCACConverter"
+            else row.get("capacityKw", row.get("maxDischargePowerKw"))
+        )
+        return (
+            f"device={row.get('dev_name', '')} type={row.get('dev_type', '')} "
+            f"side={row.get('connectionSide', '')} bus={row.get('busbarName', '')} "
+            f"group={row.get('dcTransferGroupId', '')} path={path_text(row)} "
+            f"currentKw={current_kw if current_kw is not None else 'None'} "
+            f"candidateDeltaKw={candidate_delta if candidate_delta is not None else 'None'} "
+            f"acceptedDeltaKw={accepted_delta} limit={limit if limit is not None else 'None'} "
+            f"reason={row.get('statusLabel', 'hold')}"
+        )
+
+    detail: List[str] = [
+        f"phase=topology {device_text(row)}"
+        for row in rows
+        if row.get("dev_type") in {"ACGenerator", "DCGenerator", "DCACConverter"}
+    ]
+    detail.extend(
+        [
+            "phase=side/role totals "
+            f"side=AC windCurrentKw={metrics.get('acWindCurrentKw')} "
+            f"pvCurrentKw={metrics.get('acPvCurrentKw')} "
+            f"gridStorageCurrentKw={metrics.get('acGridStorageCurrentKw')} "
+            f"balanceStorageCurrentKw={metrics.get('acBalanceStorageCurrentKw')}",
+            "phase=side/role totals "
+            f"side=DC windCurrentKw={metrics.get('dcWindCurrentKw')} "
+            f"pvCurrentKw={metrics.get('dcPvCurrentKw')} "
+            f"gridStorageCurrentKw={metrics.get('dcGridStorageCurrentKw')} "
+            f"balanceStorageCurrentKw={metrics.get('dcBalanceStorageCurrentKw')}",
+        ]
+    )
+    converters = [row for row in rows if row.get("dev_type") == "DCACConverter"]
+    detail.extend(
+        [f"phase=ACDC balance candidate {device_text(row)}" for row in converters]
+        or ["phase=ACDC balance candidate device=none side= bus= group= path=local currentKw=None candidateDeltaKw=None acceptedDeltaKw=0.0 limit=None reason=hold"]
+    )
+    detail.extend(
+        f"phase=direct-storage allocation {device_text(row)}"
+        for row in rows
+        if row.get("role") == "grid_following"
+    )
+    for row in rows:
+        if row.get("technology") not in {"wind", "pv"}:
+            continue
+        sink = (
+            "same-group-acdc"
+            if row.get("connectionSide") == "DC" and row.get("dcTransferGroupId")
+            else "local-ac"
+            if row.get("connectionSide") == "AC"
+            else "local"
+        )
+        detail.append(
+            f"phase=renewable sink allocation legalSink={sink} "
+            f"acdcReservationKw={metrics.get('dcRenewableToAcKw')} {device_text(row)}"
+        )
+    detail.extend(
+        f"phase=unified validation {device_text(row)}"
+        for row in rows
+        if row.get("strategyCommand") is not False or row.get("role") == "balance"
+    )
+    commands = [
+        row
+        for row in rows
+        if row.get("online")
+        and row.get("commandable") is not False
+        and row.get("strategyCommand") is not False
+        and row.get("set_type")
+    ]
+    for loop in ("open-loop-preview", "closed-loop-command"):
+        if not commands:
+            detail.append(
+                f"phase=dispatch result loop={loop} device=none side= bus= group= path=local currentKw=None candidateDeltaKw=None acceptedDeltaKw=0.0 limit=None reason=hold"
+            )
+            continue
+        detail.extend(
+            f"phase=dispatch result loop={loop} {device_text(row)}"
+            for row in commands
+        )
+    return detail
+
+
 def _source_label(source: str) -> str:
-    return {"remote": "模拟台实时快照", "cached": "最近一次有效模拟台快照", "local": "学员台本地数据"}.get(source, source)
+    return {
+        "trainee-live": "学员台实时交换数据",
+        "trainee-cache": "学员台最近一次有效交换数据",
+        "remote": "实时快照",
+        "cached": "最近一次有效实时快照",
+        "local": "学员台本地数据",
+    }.get(source, source)
 
 
 def calculate_renewable_control_plan(
@@ -1161,21 +4265,227 @@ def calculate_renewable_control_plan(
     quality.input("solarIrradiance", observed_irradiance, "ignored_by_control_policy", False)
     quality.input("airTemperature", observed_air_temperature, "ignored_by_control_policy", False)
 
+    identity_diagnostics = _duplicate_typed_identities(snapshot)
+    renewable_specs, storage_specs, resource_refs = _linked_resource_specs(
+        snapshot,
+        quality,
+        identity_diagnostics,
+    )
+    resource_topology = resolve_resource_topology(snapshot, resource_refs)
+    converter_group_ids = {
+        converter_key: group_id
+        for group_id, group in resource_topology.dc_transfer_groups.items()
+        for converter_key in group.converter_keys
+    }
     renewable_rows = _renewable_rows(
         snapshot,
         measurements,
-        wind_speed,
-        irradiance,
-        air_temperature,
+        renewable_specs,
+        resource_topology.resources,
         quality,
     )
-    diesel_rows = _diesel_rows(snapshot, measurements)
-    storage_rows = _storage_rows(snapshot, measurements, settings, quality)
-    converter_rows = _converter_rows(snapshot, measurements)
+    resource_keys = {
+        (spec.dev_type, spec.dev_name)
+        for spec in (*renewable_specs, *storage_specs)
+    }
+    diesel_rows = _diesel_rows(snapshot, measurements, resource_keys)
+    storage_rows = _storage_rows(
+        snapshot,
+        measurements,
+        settings,
+        quality,
+        storage_specs,
+        resource_topology.resources,
+        resource_topology.dc_transfer_groups,
+    )
+    converter_inventory_rows = sorted(
+        _converter_rows(
+            snapshot,
+            measurements,
+            converter_group_ids,
+            identity_diagnostics,
+            quality,
+        ),
+        key=_converter_row_sort_key,
+    )
+    all_converter_rows = [
+        row for row in converter_inventory_rows if row.get("commandable")
+    ]
+    diagnostic_converter_rows = [
+        row for row in converter_inventory_rows if not row.get("commandable")
+    ]
 
-    finite = lambda value: value if isinstance(value, (int, float)) and math.isfinite(value) else 0.0
-    online_renewable = [row for row in renewable_rows if row["online"]]
-    missing_renewable_power = [row for row in online_renewable if row.get("currentKw") is None]
+    strategy_online_renewable = [row for row in renewable_rows if row["online"]]
+    online_diesel = [row for row in diesel_rows if row["online"]]
+    measured_diesel = [row for row in online_diesel if row.get("currentKw") is not None]
+    diesel_current = (
+        sum(_finite_number(row.get("currentKw")) for row in measured_diesel)
+        if measured_diesel
+        else None
+    )
+    diesel_min = sum(max(0.0, _finite_number(row.get("minKw"))) for row in online_diesel)
+    diesel_capacity = sum(
+        max(0.0, _finite_number(row.get("capacityKw"))) for row in online_diesel
+    )
+    diesel_deadband_kw = settings.diesel_deadband_ratio * diesel_capacity
+    diesel_deadband_lower_kw = diesel_min
+    diesel_deadband_upper_kw = diesel_min + diesel_deadband_kw
+
+    online_ac_balance_storage = [
+        row
+        for row in storage_rows
+        if row["online"] and row.get("role") == "balance" and row.get("connectionSide") == "AC"
+    ]
+    online_dc_balance_storage = [
+        row
+        for row in storage_rows
+        if row["online"]
+        and row.get("role") == "balance"
+        and row.get("connectionSide") == "DC"
+        and row.get("stateEligible")
+    ]
+    online_ac_grid_following_storage = [
+        row
+        for row in storage_rows
+        if row["online"] and row.get("role") == "grid_following" and row.get("connectionSide") == "AC"
+    ]
+    online_dc_grid_following_storage = [
+        row
+        for row in storage_rows
+        if row["online"] and row.get("role") == "grid_following" and row.get("connectionSide") == "DC"
+    ]
+    ac_balance_storage_current = sum(
+        _finite_number(row.get("currentKw"))
+        for row in online_ac_balance_storage
+        if row.get("currentKw") is not None
+    )
+    dc_balance_storage_current = sum(
+        _finite_number(row.get("currentKw"))
+        for row in online_dc_balance_storage
+        if row.get("currentKw") is not None
+    )
+    ac_grid_following_storage_current = sum(
+        _finite_number(row.get("currentKw"))
+        for row in online_ac_grid_following_storage
+        if row.get("currentKw") is not None
+    )
+    dc_grid_following_storage_current = sum(
+        _finite_number(row.get("currentKw"))
+        for row in online_dc_grid_following_storage
+        if row.get("currentKw") is not None
+    )
+
+    ac_bus_rows = _device_state_rows(snapshot, "ACRealBs")
+    online_ac_buses = [row for row in ac_bus_rows if _is_online(row, measurements)]
+    ac_load_devices = [
+        device
+        for device in snapshot.get("devices", []) or []
+        if isinstance(device, Mapping) and _device_type(device) == "ACLoad"
+    ]
+    online_ac_loads = [device for device in ac_load_devices if _is_online(device, measurements)]
+    ac_side_fully_offline = bool(ac_bus_rows) and not online_ac_buses and not online_diesel and not online_ac_loads
+
+    storage_group_set = {
+        str(row.get("dcTransferGroupId", ""))
+        for row in online_dc_balance_storage
+        if str(row.get("dcTransferGroupId", ""))
+    }
+    candidate_group_ids = sorted(
+        (
+            group_id
+            for group_id in storage_group_set
+            if group_id in resource_topology.dc_transfer_groups
+        ),
+        key=lambda group_id: _dc_transfer_group_sort_key(
+            resource_topology,
+            group_id,
+        ),
+    )
+    primary_control_group_id = candidate_group_ids[0] if candidate_group_ids else ""
+    if primary_control_group_id:
+        normal_online_storage = [
+            row
+            for row in online_dc_balance_storage
+            if row.get("dcTransferGroupId") == primary_control_group_id
+        ]
+        normal_converter_rows = [
+            row
+            for row in all_converter_rows
+            if row.get("dcTransferGroupId") == primary_control_group_id
+        ]
+        held_normal_converter_rows = [
+            row for row in all_converter_rows if row not in normal_converter_rows
+        ]
+    elif all_converter_rows:
+        normal_online_storage = []
+        normal_converter_rows = []
+        held_normal_converter_rows = list(all_converter_rows)
+    else:
+        normal_online_storage = list(online_dc_balance_storage)
+        normal_converter_rows = []
+        held_normal_converter_rows = []
+
+    dc_renewable_rows = [
+        row
+        for row in strategy_online_renewable
+        if row.get("connectionSide") == "DC" and row.get("gridComponentId")
+    ]
+    island_components = _renewable_storage_island_components(
+        dc_renewable_rows,
+        online_dc_balance_storage,
+        all_converter_rows,
+    )
+    renewable_storage_island = bool(
+        ac_side_fully_offline
+        and island_components
+    )
+    primary_island_component = island_components[0] if renewable_storage_island else None
+    island_online_renewable = [
+        row
+        for component in island_components
+        for row in component.renewable_rows
+    ]
+    island_online_storage = [
+        row
+        for component in island_components
+        for row in component.storage_rows
+    ]
+    island_converter_keys = {
+        (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        for component in island_components
+        for row in component.converter_rows
+    }
+    if primary_island_component is not None:
+        online_storage = list(primary_island_component.storage_rows)
+        online_renewable = list(primary_island_component.renewable_rows)
+        converter_rows = list(primary_island_component.converter_rows)
+        held_converter_rows = [
+            row
+            for row in all_converter_rows
+            if (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+            not in island_converter_keys
+        ]
+    else:
+        online_storage = normal_online_storage
+        online_renewable = strategy_online_renewable
+        converter_rows = normal_converter_rows
+        held_converter_rows = held_normal_converter_rows
+    renewable_metric_rows = (
+        island_online_renewable
+        if renewable_storage_island
+        else online_renewable
+    )
+    operating_mode = (
+        "renewable_storage_island"
+        if renewable_storage_island
+        else "diesel_reference"
+        if online_diesel
+        else "blocked_no_diesel"
+    )
+
+    missing_renewable_power = [
+        row for row in renewable_metric_rows if row.get("currentKw") is None
+    ]
     for row in missing_renewable_power:
         quality.add(
             f"{row['category']}{row['dev_name']}缺少有效实时有功，无法计算新能源出力变化量",
@@ -1183,7 +4493,7 @@ def calculate_renewable_control_plan(
         )
     capability_unknown_rows = [
         row
-        for row in online_renewable
+        for row in renewable_metric_rows
         if row.get("environmentKnown") and not row.get("capabilityKnown")
     ]
     for row in capability_unknown_rows:
@@ -1191,34 +4501,45 @@ def calculate_renewable_control_plan(
             f"{row['category']}{row['dev_name']}缺少计算最大可发所需的有效模型参数",
             blocked=True,
         )
-    renewable_current = sum(finite(row.get("currentKw")) for row in online_renewable)
-    renewable_capacity = sum(max(0.0, finite(row.get("capacityKw"))) for row in online_renewable)
-    wind_current = sum(finite(row.get("currentKw")) for row in online_renewable if row["category"] == "风电")
-    pv_current = sum(finite(row.get("currentKw")) for row in online_renewable if row["category"] == "光伏")
+    renewable_current = sum(
+        _finite_number(row.get("currentKw")) for row in renewable_metric_rows
+    )
+    renewable_capacity = sum(
+        max(0.0, _finite_number(row.get("capacityKw")))
+        for row in renewable_metric_rows
+    )
+    wind_current = sum(
+        _finite_number(row.get("currentKw"))
+        for row in renewable_metric_rows
+        if row.get("technology") == "wind"
+    )
+    pv_current = sum(
+        _finite_number(row.get("currentKw"))
+        for row in renewable_metric_rows
+        if row.get("technology") == "pv"
+    )
 
-    online_diesel = [row for row in diesel_rows if row["online"]]
-    measured_diesel = [row for row in online_diesel if row.get("currentKw") is not None]
-    diesel_current = sum(finite(row.get("currentKw")) for row in measured_diesel) if measured_diesel else None
-    diesel_min = sum(max(0.0, finite(row.get("minKw"))) for row in online_diesel)
-    diesel_capacity = sum(max(0.0, finite(row.get("capacityKw"))) for row in online_diesel)
-    diesel_deadband_kw = settings.diesel_deadband_ratio * diesel_capacity
-    diesel_deadband_lower_kw = diesel_min
-    diesel_deadband_upper_kw = diesel_min + diesel_deadband_kw
-
-    online_storage = [row for row in storage_rows if row["online"]]
     measured_storage = [row for row in online_storage if row.get("currentKw") is not None]
-    storage_current = sum(finite(row.get("currentKw")) for row in measured_storage) if measured_storage else None
+    storage_current = (
+        sum(_finite_number(row.get("currentKw")) for row in measured_storage)
+        if measured_storage
+        else None
+    )
     storage_control_horizon_minutes = max(
-        (finite(row.get("controlHorizonMinutes")) for row in online_storage),
+        (_finite_number(row.get("controlHorizonMinutes")) for row in online_storage),
         default=_storage_control_horizon_minutes(snapshot, settings),
     )
-    known_soc = [finite(row.get("soc")) for row in online_storage if row.get("socKnown") and row.get("soc") is not None]
+    known_soc = [
+        _finite_number(row.get("soc"))
+        for row in online_storage
+        if row.get("socKnown") and row.get("soc") is not None
+    ]
     storage_soc = sum(known_soc) / len(known_soc) if known_soc else None
     known_soc_rows = [row for row in online_storage if row.get("socKnown") and row.get("soc") is not None]
     known_soc_noise_sigmas = [
-        max(0.0, finite(row.get("socNoiseSigma")))
+        max(0.0, _finite_number(row.get("socNoiseSigma")))
         for row in known_soc_rows
-        if finite(row.get("socNoiseSigma")) > 0.0
+        if _finite_number(row.get("socNoiseSigma")) > 0.0
     ]
     storage_soc_noise_sigma = (
         math.sqrt(sum(sigma * sigma for sigma in known_soc_noise_sigmas)) / len(known_soc_rows)
@@ -1227,12 +4548,12 @@ def calculate_renewable_control_plan(
     )
     storage_soc_noise_margin = MEASUREMENT_NOISE_SIGMA_MULTIPLIER * storage_soc_noise_sigma
     storage_soc_lower_limit = (
-        sum(finite(row.get("socMin")) for row in known_soc_rows) / len(known_soc_rows)
+        sum(_finite_number(row.get("socMin")) for row in known_soc_rows) / len(known_soc_rows)
         if known_soc_rows
         else None
     )
     storage_soc_upper_limit = (
-        sum(finite(row.get("socMax")) for row in known_soc_rows) / len(known_soc_rows)
+        sum(_finite_number(row.get("socMax")) for row in known_soc_rows) / len(known_soc_rows)
         if known_soc_rows
         else None
     )
@@ -1284,23 +4605,23 @@ def calculate_renewable_control_plan(
     storage_above_upper = [row for row in online_storage if row.get("socConstraint") == "above_upper"]
     storage_below_lower = [row for row in online_storage if row.get("socConstraint") == "below_lower"]
     raw_charge_before_derating = sum(
-        max(0.0, finite(row.get("chargePowerBeforeDerating"))) for row in online_storage
+        max(0.0, _finite_number(row.get("chargePowerBeforeDerating"))) for row in online_storage
     )
     raw_discharge_before_derating = sum(
-        max(0.0, finite(row.get("dischargePowerBeforeDerating"))) for row in online_storage
+        max(0.0, _finite_number(row.get("dischargePowerBeforeDerating"))) for row in online_storage
     )
-    raw_charge = sum(max(0.0, finite(row.get("chargePower"))) for row in online_storage)
-    raw_discharge = sum(max(0.0, finite(row.get("dischargePower"))) for row in online_storage)
+    raw_charge = sum(max(0.0, _finite_number(row.get("chargePower"))) for row in online_storage)
+    raw_discharge = sum(max(0.0, _finite_number(row.get("dischargePower"))) for row in online_storage)
     charge_derating_capacity = sum(
-        max(0.0, finite(row.get("maxChargePowerKw"))) for row in online_storage
+        max(0.0, _finite_number(row.get("maxChargePowerKw"))) for row in online_storage
     )
     discharge_derating_capacity = sum(
-        max(0.0, finite(row.get("maxDischargePowerKw"))) for row in online_storage
+        max(0.0, _finite_number(row.get("maxDischargePowerKw"))) for row in online_storage
     )
     storage_charge_derating_factor = (
         sum(
-            max(0.0, finite(row.get("maxChargePowerKw")))
-            * _clamp(finite(row.get("chargeDeratingFactor")), 0.0, 1.0)
+            max(0.0, _finite_number(row.get("maxChargePowerKw")))
+            * _clamp(_finite_number(row.get("chargeDeratingFactor")), 0.0, 1.0)
             for row in online_storage
         )
         / charge_derating_capacity
@@ -1309,8 +4630,8 @@ def calculate_renewable_control_plan(
     )
     storage_discharge_derating_factor = (
         sum(
-            max(0.0, finite(row.get("maxDischargePowerKw")))
-            * _clamp(finite(row.get("dischargeDeratingFactor")), 0.0, 1.0)
+            max(0.0, _finite_number(row.get("maxDischargePowerKw")))
+            * _clamp(_finite_number(row.get("dischargeDeratingFactor")), 0.0, 1.0)
             for row in online_storage
         )
         / discharge_derating_capacity
@@ -1322,10 +4643,10 @@ def calculate_renewable_control_plan(
     converter_rows = _resolve_converter_capacities(converter_rows, max(raw_charge, raw_discharge))
 
     measured_converters = [row for row in converter_rows if row.get("currentKw") is not None]
-    converter_current = sum(finite(row.get("currentKw")) for row in measured_converters) if measured_converters else None
+    converter_current = sum(_finite_number(row.get("currentKw")) for row in measured_converters) if measured_converters else None
     if converter_rows and len(measured_converters) != len(converter_rows):
         quality.add("部分在线功率控制型交直流变流器缺少有效实时有功", dispatch_forbidden=True)
-    if any(finite(row.get("transferCapacityKw")) <= 0 for row in converter_rows):
+    if any(_finite_number(row.get("transferCapacityKw")) <= 0 for row in converter_rows):
         quality.add("部分在线功率控制型交直流变流器缺少有效容量边界", dispatch_forbidden=True)
     converter_limit = _parallel_converter_limit(converter_rows)
     storage_power_capacity = max(raw_charge, raw_discharge)
@@ -1340,12 +4661,17 @@ def calculate_renewable_control_plan(
         if converter_rows and math.isfinite(converter_limit)
         else 0.0
     )
-    if online_storage and not converter_rows:
+    if online_storage and not converter_rows and not renewable_storage_island:
         quality.add(
             "无在线功率控制型交直流变流器，储能保持当前功率且禁止闭环下发",
             dispatch_forbidden=True,
         )
-    if not online_diesel:
+    if ac_side_fully_offline and not online_storage:
+        quality.add(
+            "交流侧全部退运，但没有在线储能，不能建立新能源储能联合运行状态",
+            blocked=True,
+        )
+    if not online_diesel and not renewable_storage_island:
         quality.add("没有在线柴油发电机，缺少新能源控制所需的系统平衡基准", blocked=True)
     elif len(measured_diesel) != len(online_diesel):
         quality.add("部分在线柴油发电机缺少有效实时有功，无法可靠计算柴发下调裕度", blocked=True)
@@ -1476,8 +4802,8 @@ def calculate_renewable_control_plan(
     renewable_recovery_boundary_scale = DEADBAND_STEP_SCALE if upper_soc_deadband_active else 1.0
     renewable_recovery_capacity_step_kw = sum(
         min(
-            max(0.0, finite(row.get("capacityKw")) - finite(row.get("planningCurrentKw"))),
-            settings.step_coefficient * max(0.0, finite(row.get("capacityKw"))),
+            max(0.0, _finite_number(row.get("capacityKw")) - _finite_number(row.get("planningCurrentKw"))),
+            settings.step_coefficient * max(0.0, _finite_number(row.get("capacityKw"))),
         )
         for row in online_renewable
         if row.get("commandable") and row.get("planningCurrentKw") is not None
@@ -1497,16 +4823,16 @@ def calculate_renewable_control_plan(
     renewable_recovery_effective_step_ratio = settings.step_coefficient * renewable_recovery_step_scale
     renewable_recovery_step_request_kw = sum(
         min(
-            max(0.0, finite(row.get("capacityKw")) - finite(row.get("planningCurrentKw"))),
-            renewable_recovery_effective_step_ratio * max(0.0, finite(row.get("capacityKw"))),
+            max(0.0, _finite_number(row.get("capacityKw")) - _finite_number(row.get("planningCurrentKw"))),
+            renewable_recovery_effective_step_ratio * max(0.0, _finite_number(row.get("capacityKw"))),
         )
         for row in online_renewable
         if row.get("commandable") and row.get("planningCurrentKw") is not None
     )
     renewable_curtail_base_steps = {
         (row["dev_type"], row["dev_name"]): min(
-            max(0.0, finite(row.get("planningCurrentKw"))),
-            settings.step_coefficient * max(0.0, finite(row.get("capacityKw"))),
+            max(0.0, _finite_number(row.get("planningCurrentKw"))),
+            settings.step_coefficient * max(0.0, _finite_number(row.get("capacityKw"))),
         )
         for row in online_renewable
         if row.get("commandable") and row.get("planningCurrentKw") is not None
@@ -1517,7 +4843,7 @@ def calculate_renewable_control_plan(
         if row.get("commandable") and row.get("planningCurrentKw") is not None
     ]
     renewable_commandable_current_kw = sum(
-        max(0.0, finite(row.get("planningCurrentKw")))
+        max(0.0, _finite_number(row.get("planningCurrentKw")))
         for row in renewable_commandable_rows
     )
     renewable_curtail_capacity_step_kw = sum(renewable_curtail_base_steps.values())
@@ -1555,7 +4881,14 @@ def calculate_renewable_control_plan(
     raw_converter_desired_target = converter_current_for_control
     emergency_charge_requested = bool(soc_below_lower_deadband)
     diesel_emergency_charge_allowed = False
-    if not converter_rows or storage_soc is None:
+    if renewable_storage_island and converter_rows:
+        raw_converter_desired_target = 0.0
+        storage_control_action = (
+            "stop_acdc_export_renewable_storage_island"
+            if converter_current_for_control < -EPSILON
+            else "hold_acdc_zero_renewable_storage_island"
+        )
+    elif not converter_rows or storage_soc is None:
         storage_control_action = "hold"
     elif soc_below_lower_deadband:
         raw_converter_desired_target = 0.0
@@ -1726,6 +5059,15 @@ def calculate_renewable_control_plan(
             if converter_storage_constraint_conflict
             else storage_constrained_converter_target
         )
+    if renewable_storage_island:
+        converter_desired_target = 0.0
+        storage_derating_constraint_override = False
+        storage_charge_derating_actuator = (
+            "renewable"
+            if storage_charge_derating_candidate_limited or storage_charge_derating_excess_kw > EPSILON
+            else "none"
+        )
+        storage_discharge_derating_actuator = "none"
     converter_step_direction = (
         "increase"
         if converter_desired_target > converter_current_for_control + EPSILON
@@ -1766,6 +5108,11 @@ def calculate_renewable_control_plan(
         soc_below_lower_deadband
         and converter_export_step_direction == "decrease_export"
     )
+    converter_island_zero_override = bool(
+        renewable_storage_island
+        and converter_rows
+        and abs(converter_current_for_control) > EPSILON
+    )
     converter_step_scale = (
         DEADBAND_STEP_SCALE
         if converter_slow_export_increase or diesel_boundary_approach_active
@@ -1774,7 +5121,7 @@ def calculate_renewable_control_plan(
     converter_step_kw = converter_base_step_kw * converter_step_scale
     normal_stepped_converter_target = (
         converter_desired_target
-        if converter_emergency_stop_active
+        if converter_emergency_stop_active or converter_island_zero_override
         else _move_toward(converter_current_for_control, converter_desired_target, converter_step_kw)
         if converter_rows
         else 0.0
@@ -1868,7 +5215,18 @@ def calculate_renewable_control_plan(
     high_soc_storage_balance_limited = False
     high_soc_required_curtail_kw = 0.0
 
-    if storage_soc is None or storage_soc_upper_limit is None:
+    if renewable_storage_island:
+        if storage_soc is None or storage_soc_upper_limit is None:
+            renewable_control_action = "hold_unknown_soc"
+        elif storage_soc >= storage_soc_upper_limit - EPSILON:
+            renewable_control_action = "curtail_one_step_storage_island_full_soc"
+        elif raw_charge <= EPSILON:
+            renewable_control_action = "curtail_one_step_storage_island_no_charge_capacity"
+        elif storage_charge_derating_residual_kw > EPSILON:
+            renewable_control_action = "curtail_charge_safety"
+        else:
+            renewable_control_action = "recover_one_step_storage_island"
+    elif storage_soc is None or storage_soc_upper_limit is None:
         renewable_control_action = "hold_unknown_soc"
     elif soc_below_lower_deadband:
         renewable_control_action = "recover_one_step_below_soc_lower_deadband"
@@ -1915,10 +5273,13 @@ def calculate_renewable_control_plan(
         if renewable_control_action in {
             "recover_one_step",
             "recover_one_step_below_soc_lower_deadband",
+            "recover_one_step_storage_island",
         }
         else "decrease"
         if renewable_control_action in {
             "curtail_one_step_full_soc",
+            "curtail_one_step_storage_island_full_soc",
+            "curtail_one_step_storage_island_no_charge_capacity",
             "curtail_one_step_above_soc_upper_deadband",
             "curtail_one_step_charge_derating",
             "curtail_charge_safety",
@@ -1930,9 +5291,11 @@ def calculate_renewable_control_plan(
         if renewable_control_action in {
             "recover_one_step_below_soc_lower_deadband",
             "curtail_one_step_above_soc_upper_deadband",
+            "curtail_one_step_storage_island_full_soc",
+            "curtail_one_step_storage_island_no_charge_capacity",
         }
         else renewable_recovery_step_scale
-        if renewable_control_action == "recover_one_step"
+        if renewable_control_action in {"recover_one_step", "recover_one_step_storage_island"}
         else renewable_curtail_step_scale
         if renewable_control_action == "curtail_one_step_full_soc"
         else renewable_derating_curtail_step_scale
@@ -1952,17 +5315,22 @@ def calculate_renewable_control_plan(
         if row.get("planningCurrentKw") is None:
             renewable_target_by_device[key] = None
             continue
-        current_kw = finite(row.get("planningCurrentKw"))
-        capacity_kw = max(0.0, finite(row.get("capacityKw")))
+        current_kw = _finite_number(row.get("planningCurrentKw"))
+        capacity_kw = max(0.0, _finite_number(row.get("capacityKw")))
         step_kw = renewable_effective_step_ratio * capacity_kw
         if not row.get("commandable"):
-            target_kw = current_kw
+            renewable_target_by_device[key] = current_kw
+            continue
         elif renewable_control_action == "curtail_charge_safety":
             target_kw = max(
                 0.0,
                 current_kw - renewable_charge_safety_by_device.get(key, 0.0),
             )
-        elif renewable_control_action == "curtail_one_step_above_soc_upper_deadband":
+        elif renewable_control_action in {
+            "curtail_one_step_above_soc_upper_deadband",
+            "curtail_one_step_storage_island_full_soc",
+            "curtail_one_step_storage_island_no_charge_capacity",
+        }:
             target_kw = max(0.0, current_kw - step_kw)
         elif renewable_control_action == "curtail_one_step_full_soc":
             target_kw = max(
@@ -1980,37 +5348,339 @@ def calculate_renewable_control_plan(
         elif renewable_control_action in {
             "recover_one_step",
             "recover_one_step_below_soc_lower_deadband",
+            "recover_one_step_storage_island",
         }:
             target_kw = min(capacity_kw, current_kw + step_kw)
         else:
             target_kw = current_kw
         renewable_target_by_device[key] = _clamp(target_kw, 0.0, capacity_kw) if capacity_kw > EPSILON else 0.0
 
-    renewable_target = sum(finite(value) for value in renewable_target_by_device.values())
+    island_component_plans: List[Dict[str, Any]] = []
+    island_control_action_by_component: Dict[Tuple[str, str], str] = {}
+    island_control_action_by_resource: Dict[Tuple[str, str], str] = {}
+    island_control_action_by_converter: Dict[Tuple[str, str], str] = {}
+    secondary_island_converter_rows: List[Mapping[str, Any]] = []
+    if primary_island_component is not None:
+        primary_plan = _plan_renewable_storage_island_component(
+            primary_island_component,
+            settings,
+        )
+        primary_targets = {
+            (str(row.get("dev_type", "")), str(row.get("dev_name", ""))): renewable_target_by_device.get(
+                (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+            )
+            for row in primary_island_component.renewable_rows
+        }
+        primary_plan["action"] = renewable_control_action
+        primary_plan["renewableTargets"] = primary_targets
+        primary_plan["renewableTargetKw"] = sum(
+            _finite_number(target) for target in primary_targets.values()
+        )
+        island_component_plans.append(primary_plan)
+
+        for component in island_components:
+            component_key = (
+                component.grid_component_id,
+                component.dc_transfer_group_id,
+            )
+            component_plan = (
+                primary_plan
+                if component is primary_island_component
+                else _plan_renewable_storage_island_component(component, settings)
+            )
+            action = str(component_plan["action"])
+            island_control_action_by_component[component_key] = action
+            for row in component.renewable_rows:
+                resource_key = (
+                    str(row.get("dev_type", "")),
+                    str(row.get("dev_name", "")),
+                )
+                island_control_action_by_resource[resource_key] = action
+            for row in component.converter_rows:
+                converter_key = (
+                    str(row.get("dev_type", "")),
+                    str(row.get("dev_name", "")),
+                )
+                island_control_action_by_converter[converter_key] = action
+
+            if component is primary_island_component:
+                continue
+            renewable_target_by_device.update(component_plan["renewableTargets"])
+            island_component_plans.append(component_plan)
+            secondary_island_converter_rows.extend(component.converter_rows)
+
+    renewable_target = sum(_finite_number(value) for value in renewable_target_by_device.values())
     renewable_delta = renewable_target - renewable_current
     storage_delta = storage_target - storage_current_for_control
-    current_diesel_violation = _diesel_boundary_violation(
-        diesel_current_for_control,
-        diesel_min,
-        diesel_capacity,
+
+    base_converter_direction = (
+        1.0 if converter_target > 0 else -1.0 if converter_target < 0 else 0.0
     )
-    candidate_effect = storage_delta
-    predicted_diesel = diesel_current_for_control - candidate_effect
-    diesel_target = predicted_diesel
-    diesel_residual = diesel_target
-    diesel_boundary_error = diesel_target - diesel_min
-    predicted_diesel_violation = _diesel_boundary_violation(diesel_target, diesel_min, diesel_capacity)
-    diesel_violation_improved = (
-        predicted_diesel_violation + 0.001 < current_diesel_violation
-        if current_diesel_violation > 0.001
-        else predicted_diesel_violation <= 0.001
+    base_converter_allocations = [
+        value * base_converter_direction
+        for value in _allocate_converters(converter_rows, abs(converter_target))
+    ]
+    converter_target = sum(base_converter_allocations) if converter_rows else 0.0
+    base_converter_targets: Dict[Tuple[str, str], float] = {
+        (str(row.get("dev_type", "")), str(row.get("dev_name", ""))): allocation_kw
+        for row, allocation_kw in zip(converter_rows, base_converter_allocations)
+    }
+    for row in secondary_island_converter_rows:
+        base_converter_targets[
+            (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        ] = 0.0
+    for row in held_converter_rows:
+        current_kw = _number(row.get("currentKw"))
+        base_converter_targets[
+            (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        ] = (
+            0.0
+            if current_kw is not None and current_kw > EPSILON
+            else current_kw
+            if current_kw is not None
+            else 0.0
+        )
+    for row in all_converter_rows:
+        key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        current_kw = _number(row.get("currentKw"))
+        base_converter_targets.setdefault(
+            key,
+            min(0.0, current_kw) if current_kw is not None else 0.0,
+        )
+    base_converter_effect_kw = sum(
+        current_kw
+        - _finite_number(
+            base_converter_targets.get(
+                (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                current_kw,
+            )
+        )
+        for row in all_converter_rows
+        if (current_kw := _number(row.get("currentKw"))) is not None
     )
-    if predicted_diesel_violation <= 0.001:
-        diesel_validation_status = "within_bounds"
-    elif current_diesel_violation > 0.001 and diesel_violation_improved:
-        diesel_validation_status = "improved"
+
+    direct_storage_plan = _plan_direct_grid_storage_dispatch(
+        storage_rows,
+        all_converter_rows,
+        base_converter_targets,
+        settings,
+        diesel_current_kw=diesel_current_for_control,
+        diesel_min_kw=diesel_min,
+        diesel_deadband_upper_kw=diesel_deadband_upper_kw,
+        balance_effect_kw=base_converter_effect_kw,
+        enabled=bool(online_diesel) and not renewable_storage_island,
+    )
+    direct_storage_states = direct_storage_plan["storageStates"]
+    direct_storage_targets = direct_storage_plan["storageTargets"]
+    final_converter_targets = {
+        **base_converter_targets,
+        **direct_storage_plan["converterTargets"],
+    }
+    side_aware_plan: Optional[Dict[str, Any]] = None
+    side_aware_ac_actor = any(
+        row.get("commandable")
+        and row.get("connectionSide") == "AC"
+        and row.get("role") != "balance"
+        for row in (*renewable_rows, *storage_rows)
+    )
+    side_aware_dc_actor_groups = {
+        str(row.get("dcTransferGroupId", ""))
+        for row in (*renewable_rows, *storage_rows)
+        if row.get("commandable")
+        and row.get("connectionSide") == "DC"
+        and row.get("role") != "balance"
+        and str(row.get("dcTransferGroupId", ""))
+    }
+    side_aware_balance_protection = any(
+        row.get("stateEligible")
+        and row.get("role") == "balance"
+        and not row.get("activePath")
+        and (
+            row.get("connectionSide") == "AC" and side_aware_ac_actor
+            or row.get("connectionSide") == "DC"
+            and str(row.get("dcTransferGroupId", ""))
+            in side_aware_dc_actor_groups
+        )
+        and _number(row.get("currentKw")) is not None
+        and (
+            _finite_number(row.get("currentKw"))
+            < _grid_storage_signed_power_bounds_kw(row)[0] - EPSILON
+            or _finite_number(row.get("currentKw"))
+            > _grid_storage_signed_power_bounds_kw(row)[1] + EPSILON
+        )
+        for row in storage_rows
+    )
+    side_aware_balance_recovery = any(
+        row.get("stateEligible")
+        and row.get("role") == "balance"
+        and row.get("connectionSide") == "DC"
+        and not row.get("activePath")
+        and str(row.get("dcTransferGroupId", ""))
+        in side_aware_dc_actor_groups
+        and _number(row.get("currentKw")) is not None
+        and _finite_number(row.get("currentKw"))
+        > _grid_storage_signed_power_bounds_kw(row)[0] + EPSILON
+        and any(
+            renewable.get("commandable")
+            and renewable.get("connectionSide") == "DC"
+            and renewable.get("dcTransferGroupId")
+            == row.get("dcTransferGroupId")
+            and _finite_number(renewable.get("headroomKw")) > EPSILON
+            for renewable in renewable_rows
+        )
+        for row in storage_rows
+    )
+    side_aware_ac_balance_recovery = any(
+        row.get("stateEligible")
+        and row.get("role") == "balance"
+        and row.get("connectionSide") == "AC"
+        and not row.get("activePath")
+        and _number(row.get("currentKw")) is not None
+        and _finite_number(row.get("currentKw"))
+        > _grid_storage_signed_power_bounds_kw(row)[0] + EPSILON
+        and any(
+            renewable.get("commandable")
+            and renewable.get("connectionSide") == "AC"
+            and _finite_number(renewable.get("headroomKw")) > EPSILON
+            for renewable in renewable_rows
+        )
+        for row in storage_rows
+    )
+    if online_diesel and not renewable_storage_island and (
+        side_aware_balance_protection
+        or side_aware_balance_recovery
+        or side_aware_ac_balance_recovery
+        or not any(
+            row.get("stateEligible") and row.get("role") == "balance"
+            for row in storage_rows
+        )
+    ):
+        side_aware_plan = _side_aware_renewable_recovery_plan(
+            snapshot,
+            measurements,
+            settings,
+            resource_topology,
+            renewable_rows,
+            storage_rows,
+            all_converter_rows,
+            direct_storage_targets,
+            final_converter_targets,
+            diesel_current_kw=diesel_current_for_control,
+            diesel_min_kw=diesel_min,
+        )
+        renewable_target_by_device = side_aware_plan["renewableTargets"]
+        renewable_target = sum(
+            _finite_number(value) for value in renewable_target_by_device.values()
+        )
+        renewable_delta = renewable_target - renewable_current
+        direct_storage_targets = side_aware_plan["storageTargets"]
+        direct_storage_states = side_aware_plan["storageStates"]
+        final_converter_targets = side_aware_plan["converterTargets"]
+    direct_converter_groups = {
+        str(row.get("dcTransferGroupId", ""))
+        for row in all_converter_rows
+        if row.get("commandable")
+        and str(row.get("dcTransferGroupId", ""))
+        and _number(row.get("currentKw")) is not None
+        and (_number(row.get("transferCapacityKw")) or 0.0) > EPSILON
+    }
+    for state in direct_storage_states.values():
+        direct_dispatch_eligible = bool(
+            state.get("eligible")
+            and (
+                state.get("side") == "AC"
+                or state.get("side") == "DC"
+                and state.get("groupId") in direct_converter_groups
+            )
+        )
+        state["directDispatchEligible"] = direct_dispatch_eligible
+        if (
+            state.get("side") == "DC"
+            and state.get("eligible")
+            and not direct_dispatch_eligible
+        ):
+            row = state["row"]
+            quality.add(
+                f"直流跟网储能{row.get('dev_name', '')}缺少本传输组有效ACDC容量，"
+                "本轮仅禁用该储能直接调节"
+            )
+
+    direct_ac_storage_effect_kw = _finite_number(
+        direct_storage_plan.get("acEffectKw")
+    )
+    direct_acdc_effect_kw = _finite_number(
+        direct_storage_plan.get("acdcEffectKw")
+    )
+    if side_aware_plan is not None:
+        direct_ac_storage_effect_kw = sum(
+            _finite_number(target_kw)
+            - _finite_number(
+                next(
+                    row.get("currentKw")
+                    for row in storage_rows
+                    if (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+                    == key
+                )
+            )
+            for key, target_kw in direct_storage_targets.items()
+            if next(
+                row.get("connectionSide")
+                for row in storage_rows
+                if (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+                == key
+            )
+            == "AC"
+        )
+        direct_acdc_effect_kw = sum(
+            _finite_number(row.get("currentKw"))
+            - _finite_number(
+                final_converter_targets.get(
+                    (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                    row.get("currentKw"),
+                )
+            )
+            for row in all_converter_rows
+            if row.get("currentKw") is not None
+        )
+    if renewable_storage_island:
+        current_diesel_violation = 0.0
+        candidate_effect = 0.0
+        predicted_diesel = 0.0
+        diesel_target = 0.0
+        diesel_residual = 0.0
+        diesel_boundary_error = 0.0
+        predicted_diesel_violation = 0.0
+        diesel_violation_improved = True
+        diesel_validation_status = "not_applicable"
     else:
-        diesel_validation_status = "feedback_pending"
+        current_diesel_violation = _diesel_boundary_violation(
+            diesel_current_for_control,
+            diesel_min,
+            diesel_capacity,
+        )
+        candidate_effect = (
+            _finite_number(side_aware_plan.get("dieselEffectKw"))
+            if side_aware_plan is not None
+            else base_converter_effect_kw
+            + direct_ac_storage_effect_kw
+            + direct_acdc_effect_kw
+        )
+        predicted_diesel = diesel_current_for_control - candidate_effect
+        diesel_target = predicted_diesel
+        diesel_residual = diesel_target
+        diesel_boundary_error = diesel_target - diesel_min
+        predicted_diesel_violation = _diesel_boundary_violation(diesel_target, diesel_min, diesel_capacity)
+        diesel_violation_improved = (
+            predicted_diesel_violation + 0.001 < current_diesel_violation
+            if current_diesel_violation > 0.001
+            else predicted_diesel_violation <= 0.001
+        )
+        if predicted_diesel_violation <= 0.001:
+            diesel_validation_status = "within_bounds"
+        elif current_diesel_violation > 0.001 and diesel_violation_improved:
+            diesel_validation_status = "improved"
+        else:
+            diesel_validation_status = "feedback_pending"
     unserved_kw = 0.0
     surplus_kw = 0.0
 
@@ -2019,7 +5689,10 @@ def calculate_renewable_control_plan(
         if storage_target < 0
         else _allocate(online_storage, storage_target, "dischargePower")
     )
-    storage_by_name = {row["dev_name"]: storage_allocations[index] for index, row in enumerate(online_storage)}
+    storage_by_key = {
+        (row["dev_type"], row["dev_name"]): storage_allocations[index]
+        for index, row in enumerate(online_storage)
+    }
 
     diesel_dispatch = [{**row, "headroomKw": max(0.0, row["capacityKw"] - row["minKw"])} for row in online_diesel]
     diesel_additional = max(0.0, diesel_target - diesel_min)
@@ -2034,33 +5707,50 @@ def calculate_renewable_control_plan(
         for index, row in enumerate(diesel_dispatch)
     }
 
-    converter_direction = 1.0 if converter_target > 0 else -1.0 if converter_target < 0 else 0.0
     converter_allocations = [
-        value * converter_direction
-        for value in _allocate_converters(converter_rows, abs(converter_target))
+        min(
+            0.0,
+            _finite_number(
+                final_converter_targets.get(
+                    (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                    base_converter_allocations[index],
+                )
+            ),
+        )
+        for index, row in enumerate(converter_rows)
     ]
-    converter_target = sum(converter_allocations) if converter_rows else 0.0
+
+    active_dc_transfer_group_ids = _active_dc_transfer_group_ids(
+        resource_topology,
+        (*renewable_rows, *storage_rows, *all_converter_rows),
+    )
 
     command_rows: List[Dict[str, Any]] = []
     for row in renewable_rows:
         key = (row["dev_type"], row["dev_name"])
+        dc_group_command_safe = (
+            row.get("connectionSide") != "DC"
+            or str(row.get("dcTransferGroupId", "")) in active_dc_transfer_group_ids
+        )
         strategy_command = (
             row["commandable"] and row["capabilityKnown"]
             if row["environmentKnown"]
-            else row["commandable"] and row.get("planningCurrentKw") is not None and finite(row.get("capacityKw")) > 0
+            else row["commandable"] and row.get("planningCurrentKw") is not None and _finite_number(row.get("capacityKw")) > 0
         )
+        strategy_command = bool(strategy_command and dc_group_command_safe)
         command_rows.append(
             {
                 **row,
+                "islandControlAction": island_control_action_by_resource.get(key, ""),
                 "recoveryKw": max(
                     0.0,
-                    finite(renewable_target_by_device.get(key)) - finite(row.get("currentKw")),
+                    _finite_number(renewable_target_by_device.get(key)) - _finite_number(row.get("currentKw")),
                 ),
                 "strategyCommand": strategy_command,
                 "commandKw": (
                     renewable_target_by_device.get(key)
                     if row.get("online") and key in renewable_target_by_device
-                    else finite(row.get("planningCurrentKw"))
+                    else _finite_number(row.get("planningCurrentKw"))
                     if row.get("online") and row.get("planningCurrentKw") is not None
                     else None
                     if row.get("online")
@@ -2068,16 +5758,117 @@ def calculate_renewable_control_plan(
                 ),
             }
         )
-    command_rows.extend(
-        {
-            **row,
-            "commandable": False,
-            "strategyCommand": False,
-            "availableKw": max(finite(row.get("chargePower")), finite(row.get("dischargePower"))) if row["online"] else 0.0,
-            "commandKw": storage_by_name.get(row["dev_name"], 0.0),
-        }
-        for row in storage_rows
-    )
+    for row in storage_rows:
+        key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        current_kw = _number(row.get("currentKw"))
+        direct_state = direct_storage_states.get(key, {})
+        is_grid_following = row.get("role") == "grid_following"
+        dc_group_command_safe = (
+            row.get("connectionSide") != "DC"
+            or str(row.get("dcTransferGroupId", "")) in active_dc_transfer_group_ids
+        )
+        direct_target_kw = (
+            direct_storage_targets.get(key, current_kw)
+            if is_grid_following
+            else None
+        )
+        projected_target_kw = (
+            (
+                side_aware_plan.get("projectedBalanceTargets", {}).get(
+                    key,
+                    storage_by_key.get(
+                        key,
+                        current_kw if row.get("deviceOnline") else 0.0,
+                    ),
+                )
+                if side_aware_plan is not None
+                else storage_by_key.get(
+                    key,
+                    current_kw if row.get("deviceOnline") else 0.0,
+                )
+            )
+            if row.get("role") == "balance"
+            else None
+        )
+        direct_changed = bool(
+            is_grid_following
+            and row.get("commandable")
+            and dc_group_command_safe
+            and direct_state.get("directDispatchEligible")
+            and current_kw is not None
+            and direct_target_kw is not None
+            and abs(_finite_number(direct_target_kw) - current_kw) > EPSILON
+        )
+        command_kw = (
+            direct_target_kw
+            if is_grid_following
+            else projected_target_kw
+        )
+        command_rows.append(
+            {
+                **row,
+                "indirectControlDevices": (
+                    side_aware_plan.get("indirectControlDevices", {}).get(
+                        key,
+                        row.get("indirectControlDevices", []),
+                    )
+                    if side_aware_plan is not None
+                    else row.get("indirectControlDevices", [])
+                ),
+                "commandable": bool(
+                    row.get("commandable")
+                    and dc_group_command_safe
+                    and (
+                        not is_grid_following
+                        or direct_state.get("directDispatchEligible")
+                    )
+                ),
+                "islandControlAction": island_control_action_by_component.get(
+                    (
+                        str(row.get("gridComponentId", "")),
+                        str(row.get("dcTransferGroupId", "")),
+                    ),
+                    "",
+                ),
+                "planningCurrentKw": current_kw,
+                "targetKw": direct_target_kw,
+                "projectedTargetKw": projected_target_kw,
+                "signedMinTargetKw": direct_state.get(
+                    "signedMinTargetKw",
+                    -max(0.0, _finite_number(row.get("chargePower"))),
+                ),
+                "signedMaxTargetKw": direct_state.get(
+                    "signedMaxTargetKw",
+                    max(0.0, _finite_number(row.get("dischargePower"))),
+                ),
+                "chargeMarginKw": _finite_number(
+                    direct_state.get("chargeMarginKw")
+                ),
+                "dischargeMarginKw": _finite_number(
+                    direct_state.get("dischargeMarginKw")
+                ),
+                "gridStorageStepKw": _finite_number(
+                    direct_state.get("stepKw")
+                ),
+                "gridStorageStepScale": _finite_number(
+                    direct_state.get("stepScale"),
+                    1.0,
+                ),
+                "directDispatchEligible": bool(
+                    direct_state.get("directDispatchEligible")
+                ),
+                "strategyCommand": direct_changed,
+                "availableKw": (
+                    max(
+                        _finite_number(row.get("chargePower")),
+                        _finite_number(row.get("dischargePower")),
+                    )
+                    if row["online"]
+                    else 0.0
+                ),
+                "commandKw": command_kw,
+            }
+        )
     command_rows.extend(
         {
             **row,
@@ -2091,16 +5882,106 @@ def calculate_renewable_control_plan(
     command_rows.extend(
         {
             **row,
+            "islandControlAction": island_control_action_by_converter.get(
+                (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                "",
+            ),
             "ratedAvailableKw": row["transferCapacityKw"]
             if row["transferCapacityKw"] > 0
             else max(total_charge, total_discharge) / max(1, len(converter_rows)),
             "availableKw": row["transferCapacityKw"]
             if row["transferCapacityKw"] > 0
             else max(total_charge, total_discharge) / max(1, len(converter_rows)),
-            "strategyCommand": True,
+            "strategyCommand": str(row.get("dcTransferGroupId", ""))
+            in active_dc_transfer_group_ids,
             "commandKw": converter_allocations[index],
         }
         for index, row in enumerate(converter_rows)
+    )
+    command_rows.extend(
+        {
+            **row,
+            "islandControlAction": island_control_action_by_converter.get(
+                (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                "",
+            ),
+            "ratedAvailableKw": row["transferCapacityKw"],
+            "availableKw": row["transferCapacityKw"],
+            "strategyCommand": str(row.get("dcTransferGroupId", ""))
+            in active_dc_transfer_group_ids,
+            "commandKw": 0.0,
+            "statusLabel": f"{row.get('statusLabel', '')}·新能源储能孤岛归零",
+        }
+        for row in secondary_island_converter_rows
+    )
+    for row in held_converter_rows:
+        current_kw = _number(row.get("currentKw"))
+        key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        final_target_kw = min(
+            0.0,
+            _finite_number(
+                final_converter_targets.get(
+                    key,
+                    0.0 if current_kw is not None and current_kw > EPSILON else current_kw,
+                )
+            ),
+        )
+        reverse_power = current_kw is not None and current_kw > EPSILON
+        direct_changed = bool(
+            current_kw is not None
+            and abs(final_target_kw - current_kw) > EPSILON
+        )
+        dc_group_command_safe = (
+            str(row.get("dcTransferGroupId", "")) in active_dc_transfer_group_ids
+        )
+        command_rows.append(
+            {
+                **row,
+                "ratedAvailableKw": row["transferCapacityKw"],
+                "availableKw": row["transferCapacityKw"],
+                "strategyCommand": dc_group_command_safe
+                and (reverse_power or direct_changed),
+                "commandKw": final_target_kw,
+                "statusLabel": (
+                    f"{row.get('statusLabel', '')}·禁止反向功率"
+                    if reverse_power
+                    else f"{row.get('statusLabel', '')}·直控储能同组配对"
+                    if direct_changed
+                    else f"{row.get('statusLabel', '')}·分组隔离保持"
+                ),
+            }
+        )
+    command_rows.extend(
+        {
+            **row,
+            "ratedAvailableKw": row["transferCapacityKw"],
+            "availableKw": row["transferCapacityKw"],
+            "strategyCommand": False,
+            "commandKw": row.get("currentKw") if row.get("online") else 0.0,
+        }
+        for row in diagnostic_converter_rows
+    )
+    aggregate_converter_values = [
+        (current_kw, target_kw)
+        for row in command_rows
+        if row.get("dev_type") == "DCACConverter"
+        and row.get("online")
+        and row.get("commandable") is not False
+        and (
+            not renewable_storage_island
+            or row.get("strategyCommand") is not False
+        )
+        and row.get("set_type")
+        and (current_kw := _number(row.get("currentKw"))) is not None
+        and (target_kw := _number(row.get("commandKw"))) is not None
+    ]
+    aggregate_converter_current_kw = (
+        sum(current_kw for current_kw, _ in aggregate_converter_values)
+        if aggregate_converter_values
+        else None
+    )
+    aggregate_converter_target_kw = sum(
+        target_kw for _, target_kw in aggregate_converter_values
     )
 
     commands = [
@@ -2120,9 +6001,9 @@ def calculate_renewable_control_plan(
     ]
 
     warnings: List[str] = []
-    if any(row["category"] == "风电" for row in renewable_rows) and wind_speed is None:
+    if any(row.get("technology") == "wind" for row in renewable_rows) and wind_speed is None:
         warnings.append("风速量测默认不参与新能源控制，风电按当前出力与容量执行渐进恢复")
-    if any(row["category"] == "光伏" for row in renewable_rows) and irradiance is None:
+    if any(row.get("technology") == "pv" for row in renewable_rows) and irradiance is None:
         warnings.append("太阳辐照度量测默认不参与新能源控制，光伏按当前出力与容量执行渐进恢复")
     if renewable_charge_safety_curtail_shortfall_kw > EPSILON:
         warnings.append(
@@ -2131,14 +6012,14 @@ def calculate_renewable_control_plan(
     warnings.extend(issue for issue in quality.issues if issue not in warnings)
 
     wind_available = sum(
-        max(0.0, finite(row.get("capacityKw")))
+        max(0.0, _finite_number(row.get("capacityKw")))
         for row in renewable_rows
-        if row["category"] == "风电" and row.get("online")
+        if row.get("technology") == "wind" and row.get("online")
     )
     pv_available = sum(
-        max(0.0, finite(row.get("capacityKw")))
+        max(0.0, _finite_number(row.get("capacityKw")))
         for row in renewable_rows
-        if row["category"] == "光伏" and row.get("online")
+        if row.get("technology") == "pv" and row.get("online")
     )
     available_renewable = wind_available + pv_available
     curtail_kw = max(0.0, available_renewable - renewable_target)
@@ -2146,14 +6027,134 @@ def calculate_renewable_control_plan(
     recovery_candidate_count = sum(
         1
         for row in online_renewable
-        if row.get("commandable") and finite(row.get("capacityKw")) > finite(row.get("currentKw")) + EPSILON
+        if row.get("commandable") and _finite_number(row.get("capacityKw")) > _finite_number(row.get("currentKw")) + EPSILON
     )
     clock = snapshot.get("clock") if isinstance(snapshot.get("clock"), Mapping) else {}
     time_text = str(clock.get("time", "--"))
     run_id = int(_number(clock.get("run_id"), 0.0) or 0)
     clock_key = f"{run_id}|{clock.get('absolute_minute', clock.get('minute', ''))}|{time_text}"
     quality_payload = quality.payload()
+    island_component_metrics = [
+        {
+            "gridComponentId": str(plan.get("gridComponentId", "")),
+            "dcTransferGroupId": str(plan.get("dcTransferGroupId", "")),
+            "action": str(plan.get("action", "")),
+            "storageSoc": plan.get("storageSoc"),
+            "storageSocUpperLimit": plan.get("storageSocUpperLimit"),
+            "renewableCurrentKw": _finite_number(plan.get("renewableCurrentKw")),
+            "renewableTargetKw": _finite_number(plan.get("renewableTargetKw")),
+            "converterTargetKw": _finite_number(plan.get("converterTargetKw")),
+            "converterDevices": [
+                {"dev_type": dev_type, "dev_name": dev_name}
+                for dev_type, dev_name in plan.get("converterKeys", [])
+            ],
+        }
+        for plan in island_component_plans
+    ]
+    ac_grid_following_storage_target = sum(
+        _finite_number(
+            direct_storage_targets.get(
+                (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                row.get("currentKw"),
+            )
+        )
+        for row in online_ac_grid_following_storage
+        if row.get("currentKw") is not None
+    )
+    dc_grid_following_storage_target = sum(
+        _finite_number(
+            direct_storage_targets.get(
+                (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                row.get("currentKw"),
+            )
+        )
+        for row in online_dc_grid_following_storage
+        if row.get("currentKw") is not None
+    )
+    task8_side_metrics = _task8_side_metrics(command_rows)
+    _ac_load_for_transfer_metrics, dc_load_for_transfer_metrics = _active_load_budgets(
+        snapshot,
+        measurements,
+        resource_topology.dc_transfer_groups,
+    )
+    dc_transfer_groups_metric, dc_renewable_to_ac_kw = _dc_transfer_group_metrics(
+        resource_topology,
+        command_rows,
+        dc_load_for_transfer_metrics,
+        converter_step_ratio=settings.converter_step_ratio,
+    )
+    online_storage_metric_rows = [
+        row
+        for row in command_rows
+        if row.get("online")
+        and row.get("technology") == "storage"
+        and row.get("dev_type") in {"ACGenerator", "DCGenerator"}
+        and row.get("resourceIdentityValid") is not False
+    ]
+    measured_storage_metric_rows = [
+        row for row in online_storage_metric_rows if row.get("currentKw") is not None
+    ]
+    metric_storage_current = (
+        sum(_finite_number(row.get("currentKw")) for row in measured_storage_metric_rows)
+        if measured_storage_metric_rows
+        else None
+    )
+    metric_storage_soc = _capacity_weighted_soc(online_storage_metric_rows)
     metrics = {
+        "operatingMode": operating_mode,
+        "acSideFullyOffline": ac_side_fully_offline,
+        "renewableStorageIsland": renewable_storage_island,
+        "renewableStorageIslandComponentCount": len(island_component_metrics),
+        "renewableStorageIslandComponents": island_component_metrics,
+        "acBusCount": len(ac_bus_rows),
+        "onlineAcBusCount": len(online_ac_buses),
+        "acLoadCount": len(ac_load_devices),
+        "onlineAcLoadCount": len(online_ac_loads),
+        "onlineDieselCount": len(online_diesel),
+        "onlineStorageCount": len(island_online_storage) if renewable_storage_island else len(online_storage),
+        "onlineAcBalanceStorageCount": len(online_ac_balance_storage),
+        "onlineDcBalanceStorageCount": len(online_dc_balance_storage),
+        "onlineAcGridFollowingStorageCount": len(online_ac_grid_following_storage),
+        "onlineDcGridFollowingStorageCount": len(online_dc_grid_following_storage),
+        "acBalanceStorageCurrentKw": ac_balance_storage_current,
+        "dcBalanceStorageCurrentKw": dc_balance_storage_current,
+        "acGridFollowingStorageCurrentKw": ac_grid_following_storage_current,
+        "dcGridFollowingStorageCurrentKw": dc_grid_following_storage_current,
+        "acGridFollowingStorageTargetKw": ac_grid_following_storage_target,
+        "dcGridFollowingStorageTargetKw": dc_grid_following_storage_target,
+        **task8_side_metrics,
+        "dcRenewableToAcKw": dc_renewable_to_ac_kw,
+        "dcTransferGroups": dc_transfer_groups_metric,
+        "directStorageControlAction": direct_storage_plan["action"],
+        "directStorageCorrectionRequestKw": _finite_number(
+            direct_storage_plan.get("requestedKw")
+        ),
+        "directStorageCorrectionAcceptedKw": _finite_number(
+            direct_storage_plan.get("acceptedKw")
+        ),
+        "directStorageCorrectionResidualKw": _finite_number(
+            direct_storage_plan.get("residualKw")
+        ),
+        "directStorageAcEffectKw": direct_ac_storage_effect_kw,
+        "directStorageAcdcEffectKw": direct_acdc_effect_kw,
+        "directStorageDcGroups": copy.deepcopy(direct_storage_plan["groups"]),
+        "dcBalanceControlGroupIds": (
+            sorted(
+                {
+                    component.dc_transfer_group_id
+                    for component in island_components
+                }
+            )
+            if renewable_storage_island
+            else sorted(
+                {
+                    str(row.get("dcTransferGroupId"))
+                    for row in online_storage
+                    if row.get("dcTransferGroupId")
+                }
+            )
+        ),
+        "onlineRenewableCount": len(renewable_metric_rows),
         "availableRenewable": available_renewable,
         "renewableCurrentKw": renewable_current,
         "windCurrentKw": wind_current,
@@ -2187,8 +6188,8 @@ def calculate_renewable_control_plan(
         "storageDischargeDeratingCandidateLimited": storage_discharge_derating_candidate_limited,
         "storageChargeDeratingAcdcAllowed": storage_charge_derating_acdc_allowed,
         "storageDeratingConstraintOverride": storage_derating_constraint_override,
-        "storageCurrentKw": storage_current,
-        "storageSoc": storage_soc,
+        "storageCurrentKw": metric_storage_current,
+        "storageSoc": metric_storage_soc,
         "storageSocLowerLimit": storage_soc_lower_limit,
         "storageSocUpperLimit": storage_soc_upper_limit,
         "storageSocRegion": storage_soc_region,
@@ -2243,11 +6244,15 @@ def calculate_renewable_control_plan(
         "acdcControlAction": storage_control_action,
         "storageSwitchDeadbandKw": settings.storage_switch_deadband_kw,
         "storageSwitchDeadbandAction": storage_deadband_action,
-        "acdcCurrentKw": converter_current,
+        "acdcCurrentKw": aggregate_converter_current_kw,
         "acdcCurrentForControlKw": converter_current_for_control,
         "acdcDesiredTargetKw": converter_desired_target,
-        "acdcTargetKw": converter_target,
-        "acdcAdjustmentKw": converter_target - converter_current if converter_current is not None else None,
+        "acdcTargetKw": aggregate_converter_target_kw,
+        "acdcAdjustmentKw": (
+            aggregate_converter_target_kw - aggregate_converter_current_kw
+            if aggregate_converter_current_kw is not None
+            else None
+        ),
         "converterRatedCapacityKw": converter_limit if math.isfinite(converter_limit) else None,
         "storageSocNoiseSigma": storage_soc_noise_sigma,
         "storageSocNoiseMargin": storage_soc_noise_margin,
@@ -2267,6 +6272,7 @@ def calculate_renewable_control_plan(
         "converterSlowIncrease": converter_slow_export_increase,
         "converterSlowExportIncrease": converter_slow_export_increase,
         "converterEmergencyStopActive": converter_emergency_stop_active,
+        "converterIslandZeroOverride": converter_island_zero_override,
         "converterChargeDeratingSafetyOverride": converter_charge_derating_safety_override,
         "converterStepScale": converter_step_scale,
         "converterStepKw": converter_step_kw,
@@ -2329,7 +6335,9 @@ def calculate_renewable_control_plan(
     if diesel_deadband_active:
         converter_step_reasons.append("柴发下限死区")
     converter_step_region_text = "、".join(converter_step_reasons)
-    if converter_emergency_stop_active:
+    if converter_island_zero_override:
+        converter_step_reason_text = "交流侧全部退运，跳过常规步长并将ACDC送出目标直接归零"
+    elif converter_emergency_stop_active:
         converter_step_reason_text = (
             "SOC低于下限-死区，跳过常规步长限制，ACDC送出直接回退到校核后安全目标"
         )
@@ -2355,13 +6363,29 @@ def calculate_renewable_control_plan(
         converter_step_reason_text = f"{converter_step_region_text}内无功率调整，保持原步长"
     converter_step_application_text = (
         f"保护校核实际变化 {converter_applied_step_kw:.2f} kW"
-        if converter_emergency_stop_active or converter_charge_derating_safety_override
+        if converter_island_zero_override
+        or converter_emergency_stop_active
+        or converter_charge_derating_safety_override
         else (
             f"实际按 {converter_step_scale * 100:.0f}% 即最大 {converter_step_kw:.2f} kW 调节，"
             f"本轮变化 {converter_applied_step_kw:.2f} kW"
         )
     )
-    if renewable_control_action == "recover_one_step_below_soc_lower_deadband":
+    if renewable_control_action == "curtail_one_step_storage_island_full_soc":
+        renewable_step_reason_text = (
+            f"交流侧全部退运且储能达到model.e定义的SOC上限 "
+            f"{storage_soc_upper_limit * 100:.2f}%，新能源按原步长逐步弃电"
+        )
+    elif renewable_control_action == "curtail_one_step_storage_island_no_charge_capacity":
+        renewable_step_reason_text = (
+            "交流侧全部退运，储能线性降额后的允许充电功率已经为零，"
+            "新能源按原步长逐步弃电"
+        )
+    elif renewable_control_action == "recover_one_step_storage_island":
+        renewable_step_reason_text = (
+            "交流侧全部退运，储能仍有充电空间，新能源按充电降额允许的步长逐步恢复"
+        )
+    elif renewable_control_action == "recover_one_step_below_soc_lower_deadband":
         renewable_step_reason_text = (
             "SOC低于下限-死区，新能源按原步长恢复，为储能补能创造直流侧功率余量"
         )
@@ -2484,24 +6508,77 @@ def calculate_renewable_control_plan(
         if converter_storage_constraint_conflict
         else "与状态机调节方向一致"
     )
+    operating_mode_detail = (
+        f"运行方式：380V实体交流母线 {len(ac_bus_rows)} 个、柴油发电机 {len(diesel_rows)} 台、"
+        f"交流负荷 {len(ac_load_devices)} 个均无在线设备，交流侧全部退运，进入新能源储能孤岛"
+        if renewable_storage_island
+        else "运行方式：采用在线柴油发电机作为交流侧功率调节基准"
+        if online_diesel
+        else "运行方式：交流侧仍有在线设备，但没有在线柴油发电机，新能源实时控制阻断"
+    )
+    control_architecture_detail = (
+        "控制架构：新能源与储能在直流侧联合运行；ACDC目标强制归零，新能源依据储能SOC及充电能力独立恢复或弃电"
+        if renewable_storage_island
+        else "控制架构：ACDC与新能源两条策略相互独立生成候选目标，再统一执行SOC、功率和柴油边界校核；不把两条策略增量直接相加"
+    )
+    control_reference_detail = (
+        f"控制基准：时刻 {time_text}，新能源当前 {renewable_current:.2f} kW，储能当前 "
+        f"{storage_current_for_control:.2f} kW、SOC {storage_soc * 100 if storage_soc is not None else '--'}%；柴发基准不适用"
+        if renewable_storage_island
+        else f"控制基准：时刻 {time_text}，新能源当前 {renewable_current:.2f} kW，柴发当前 {diesel_current_for_control:.2f} kW、下限 {diesel_min:.2f} kW"
+    )
+    diesel_region_detail = (
+        "柴发分区：交流侧全部退运，柴油下限调节不参与本轮决策"
+        if renewable_storage_island
+        else f"柴发分区：下限 {diesel_deadband_lower_kw:.2f} kW，单边死区上界 {diesel_deadband_upper_kw:.2f} kW（容量比例 {settings.diesel_deadband_ratio * 100:.2f}%）；低于下限逐步降低ACDC送出，区间内保持，高于上界才允许增加ACDC送出；当前位于 {diesel_control_region} 区"
+    )
+    acdc_strategy_detail = (
+        f"ACDC策略：交流侧全部退运，实时 {converter_current if converter_current is not None else '--'} kW，"
+        f"跳过常规步长并将目标直接归零至 {converter_target:.2f} kW"
+        if renewable_storage_island
+        else f"ACDC策略：只读取柴发分区与SOC分区，动作 {storage_control_action}；实时 {converter_current if converter_current is not None else '--'} kW，控制基准 {converter_current_for_control:.2f} kW，基础步长 {converter_base_step_kw:.2f} kW，{converter_step_reason_text}，{converter_step_application_text}，目标 {converter_target:.2f} kW"
+    )
+    renewable_strategy_detail = (
+        f"新能源策略：新能源储能孤岛中以model.e的SOC上限为满电判据；当前上限 "
+        f"{storage_soc_upper_limit * 100 if storage_soc_upper_limit is not None else '--'}%，本轮动作 {renewable_control_action}"
+        if renewable_storage_island
+        else f"新能源策略：以SOC为主；低于下限-死区时按原步长恢复；高于上限+死区时，仅当ACDC候选目标已经形成有效放电才保持新能源，否则先一次消除剩余充电超限，再按正常步长建立放电；普通上限附近按线性充电边界校核；本轮动作 {renewable_control_action}"
+    )
+    soc_constraint_detail = (
+        "SOC运行约束：新能源储能孤岛中ACDC保持零送出；达到model.e定义的SOC上限后禁止继续充电，并按步长逐步降低新能源出力"
+        if renewable_storage_island
+        else "SOC运行约束：达到上限禁止充电；超过上限+死区后优先增加ACDC送出，受柴发下限约束时降低新能源；达到下限禁止放电，低于下限-死区后ACDC向零回退并恢复新能源"
+    )
     decision_detail = [
         f"数据来源：{_source_label(data_source)}，质量 {quality_payload['status']}，闭环下发{'允许' if quality_payload['dispatchAllowed'] else '禁止'}",
-        "控制架构：ACDC与新能源两条策略相互独立生成候选目标，再统一执行SOC、功率和柴油边界校核；不把两条策略增量直接相加",
-        f"控制基准：时刻 {time_text}，新能源当前 {renewable_current:.2f} kW，柴发当前 {diesel_current_for_control:.2f} kW、下限 {diesel_min:.2f} kW",
-        f"柴发分区：下限 {diesel_deadband_lower_kw:.2f} kW，单边死区上界 {diesel_deadband_upper_kw:.2f} kW（容量比例 {settings.diesel_deadband_ratio * 100:.2f}%）；低于下限逐步降低ACDC送出，区间内保持，高于上界才允许增加ACDC送出；当前位于 {diesel_control_region} 区",
+        *_task8_decision_detail(command_rows, metrics),
+        operating_mode_detail,
+        control_architecture_detail,
+        control_reference_detail,
+        diesel_region_detail,
         f"储能状态：当前 {storage_current_for_control:.2f} kW，SOC {storage_soc * 100 if storage_soc is not None else '--'}%，运行边界 [{storage_soc_lower_limit * 100 if storage_soc_lower_limit is not None else '--'}%, {storage_soc_upper_limit * 100 if storage_soc_upper_limit is not None else '--'}%]",
         f"SOC分区：下限 {storage_soc_lower_limit * 100 if storage_soc_lower_limit is not None else '--'}%，上限 {storage_soc_upper_limit * 100 if storage_soc_upper_limit is not None else '--'}%，死区 {settings.soc_deadband * 100:.2f}%，当前 {storage_soc_region}",
-        f"SOC运行约束：达到上限禁止充电；超过上限+死区后优先增加ACDC送出，受柴发下限约束时降低新能源；达到下限禁止放电，低于下限-死区后ACDC向零回退并恢复新能源",
+        soc_constraint_detail,
         f"充电线性降额：配置节点 {_derating_curve_text(settings.storage_charge_derating_curve)}；能量校核时域 {storage_control_horizon_minutes:.2f} min；当前因子 {storage_charge_derating_factor * 100:.2f}%，降额前 {raw_charge_before_derating:.2f} kW、允许 {raw_charge:.2f} kW、实时充电 {storage_charge_current_kw:.2f} kW、超限 {storage_charge_derating_excess_kw:.2f} kW；ACDC候选目标作用后预计充电 {storage_predicted_charge_after_acdc_kw:.2f} kW、剩余超限 {storage_charge_derating_residual_kw:.2f} kW，线性插值后由 {charge_derating_actuator_text} 及统一保护校核处理",
         f"放电线性降额：配置节点 {_derating_curve_text(settings.storage_discharge_derating_curve)}；当前因子 {storage_discharge_derating_factor * 100:.2f}%，降额前 {raw_discharge_before_derating:.2f} kW、允许 {raw_discharge:.2f} kW、实时放电 {storage_discharge_current_kw:.2f} kW、超限 {storage_discharge_derating_excess_kw:.2f} kW，线性插值后由 {discharge_derating_actuator_text} 处理",
         soc_correction_detail,
         f"环境策略：风速 {observed_wind_speed if observed_wind_speed is not None else '--'}、太阳辐照度 {observed_irradiance if observed_irradiance is not None else '--'}、温度 {observed_air_temperature if observed_air_temperature is not None else '--'}，均按默认策略忽略",
         f"ACDC容量边界：自动控制使用原始并联容量 {converter_rated_capacity_text} kW",
         f"ACDC方向约束：禁止交流侧向直流侧倒送，自动控制目标范围 [{converter_lower_target:.2f}, {converter_upper_target:.2f}] kW",
+        *(
+            ["ACDC校核：检测到正向p_ac实时值，自动目标按禁止ACDC倒送规则回退到0 kW"]
+            if converter_reverse_power_detected
+            or any(
+                (_number(row.get("currentKw")) or 0.0) > EPSILON
+                for row in all_converter_rows
+            )
+            else []
+        ),
         f"ACDC后置校核：储能运行边界与充放电线性降额折算目标 {storage_constrained_converter_target:.2f} kW，{converter_storage_validation_text}",
-        f"ACDC策略：只读取柴发分区与SOC分区，动作 {storage_control_action}；实时 {converter_current if converter_current is not None else '--'} kW，控制基准 {converter_current_for_control:.2f} kW，基础步长 {converter_base_step_kw:.2f} kW，{converter_step_reason_text}，{converter_step_application_text}，目标 {converter_target:.2f} kW",
+        acdc_strategy_detail,
         f"ACDC独立预估：对应储能平衡功率由 {storage_current_for_control:.2f} kW 变为 {storage_target:.2f} kW，柴发反馈参考值 {diesel_target:.2f} kW；该值不叠加新能源动作",
-        f"新能源策略：以SOC为主；低于下限-死区时按原步长恢复；高于上限+死区时，仅当ACDC候选目标已经形成有效放电才保持新能源，否则先一次消除剩余充电超限，再按正常步长建立放电；普通上限附近按线性充电边界校核；本轮动作 {renewable_control_action}",
+        f"跟网储能直调：动作 {direct_storage_plan['action']}，从既有ACDC/直流平衡候选后的柴发偏差请求 {_finite_number(direct_storage_plan.get('requestedKw')):.2f} kW；交流跟网储能目标 {ac_grid_following_storage_target:.2f} kW，直流跟网储能目标 {dc_grid_following_storage_target:.2f} kW，直流侧仅使用同传输组ACDC增量，交流供电净影响 {direct_ac_storage_effect_kw + direct_acdc_effect_kw:.2f} kW，剩余 {_finite_number(direct_storage_plan.get('residualKw')):.2f} kW",
+        renewable_strategy_detail,
         f"新能源目标：当前 {renewable_current:.2f} kW，储能当前 {storage_current_for_control:.2f} kW、充电死区 {settings.storage_switch_deadband_kw:.2f} kW、超出死区 {renewable_storage_charge_excess_kw:.2f} kW；基础单步比例 {settings.step_coefficient * 100:.2f}%，{renewable_step_reason_text}，实际按 {renewable_step_scale * 100:.1f}% 即 {renewable_effective_step_ratio * 100:.2f}% 调节，目标 {renewable_target:.2f} kW",
         f"负荷功率仅用于展示：当前 {load_kw:.2f} kW，不参与新能源、储能、变流器或柴发目标计算",
         f"独立边界检查与统一保护校核：ACDC目标已按并联容量、禁止倒送、model.e中的SOC运行边界、储能剩余能量和分段线性充放电降额校核；常规动作遵守步长，充电超限时保护校核可直接消除超限；新能源恢复量同时受充电降额剩余空间约束",
@@ -2531,76 +6608,59 @@ def calculate_renewable_control_plan(
     }
 
 
-def _request_json(
-    url: str,
-    *,
-    method: str = "GET",
-    payload: Optional[Mapping[str, Any]] = None,
-    timeout: float = 8.0,
-) -> Any:
-    body = None
-    headers = {"Accept": "application/json"}
-    if method in {"POST", "PUT"}:
-        body = json.dumps(payload or {}, ensure_ascii=False, default=str).encode("utf-8")
-        headers["Content-Type"] = "application/json; charset=utf-8"
-    request = Request(url, data=body, headers=headers, method=method)
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            text = response.read().decode("utf-8")
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(detail or str(exc.reason)) from exc
-    except URLError as exc:
-        raise RuntimeError(f"模拟台服务不可达：{exc.reason}") from exc
-    try:
-        return json.loads(text) if text else {}
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("模拟台返回内容不是有效 JSON") from exc
+_RENEWABLE_READY_IDLE_STATUS = "请选择单次计算或启动实时控制。"
+_USER_CONTROL_BUSY_WAIT_SECONDS = 30.0
 
 
-def _url_with_query(path: str, **overrides: Any) -> str:
-    parsed = urlparse(path)
-    query = parse_qs(parsed.query, keep_blank_values=True)
-    for key, value in overrides.items():
-        if value is None:
-            query.pop(key, None)
-        else:
-            query[key] = [str(value)]
-    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(query, doseq=True), parsed.fragment))
+class TraineeRenewableControlLifecycleError(RuntimeError):
+    """Raised when a controller request outlives its captured model service."""
 
 
-def _merge_snapshot(previous: Optional[Mapping[str, Any]], current: Mapping[str, Any]) -> Dict[str, Any]:
-    merged = copy.deepcopy(dict(previous or {}))
-    for key, value in current.items():
-        merged[key] = copy.deepcopy(value)
-    return merged
+def _stale_receive_prerequisite_status(message: Any) -> bool:
+    text = str(message or "").strip()
+    return (
+        "请先启动接收" in text
+        or "等待第一份实时数据" in text
+        or "接收已停止" in text
+        or text.startswith("学员台实时交换状态不可用")
+        or text.startswith("学员台尚未收到实时数据")
+    )
 
 
 @dataclass
 class _ControllerState:
     model_id: str
+    service_instance_id: str
     settings: RenewableControlSettings = field(default_factory=RenewableControlSettings)
     enabled: bool = False
     loop_mode: str = "open"
+    operation_epoch: int = 0
     sending: bool = False
-    status: str = "请选择单次计算或启动实时控制。"
+    status: str = _RENEWABLE_READY_IDLE_STATUS
     last_plan: Optional[Dict[str, Any]] = None
     last_calculated_at: str = ""
     last_sent_at: str = ""
     last_clock_key: str = ""
     last_dispatched_clock_key: str = ""
+    last_dispatched_generation_key: Tuple[Any, ...] = ()
+    pending_dispatch_clock_key: str = ""
+    pending_dispatch_generation_key: Tuple[Any, ...] = ()
     last_auto_started: float = 0.0
     last_preview_started: float = 0.0
+    background_cycle_pending: bool = False
     revision: int = 0
     log_seq: int = 0
     logs: List[Dict[str, Any]] = field(default_factory=list)
     trend: List[Dict[str, Any]] = field(default_factory=list)
     trend_normalized: bool = False
-    cached_snapshot: Optional[Dict[str, Any]] = None
-    cached_snapshot_at: float = 0.0
-    cached_static_signature: str = ""
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     run_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+
+@dataclass
+class _TrendCandidate:
+    trend: List[Dict[str, Any]]
+    trend_normalized: bool
 
 
 class TraineeRenewableControlManager:
@@ -2610,14 +6670,22 @@ class TraineeRenewableControlManager:
         self,
         services: Any,
         *,
-        request_json: Callable[..., Any] = _request_json,
+        snapshot_provider: Callable[[Optional[str]], TraineeControlSnapshot],
+        receive_status_provider: Callable[[Optional[str]], Mapping[str, Any]],
+        command_sink: Callable[[Optional[str], Mapping[str, Any]], Mapping[str, Any]],
         start_worker: bool = True,
     ) -> None:
         self.services = services
-        self.request_json = request_json
+        self.snapshot_provider = snapshot_provider
+        self.receive_status_provider = receive_status_provider
+        self.command_sink = command_sink
         self._states: Dict[str, _ControllerState] = {}
+        self._states_by_service_instance: Dict[str, _ControllerState] = {}
         self._states_lock = threading.RLock()
         self._stop_event = threading.Event()
+        self._close_lock = threading.Lock()
+        self._background_submit_lock = threading.Lock()
+        self._closed = False
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="renewable-control")
         self._worker: Optional[threading.Thread] = None
         if start_worker:
@@ -2625,27 +6693,75 @@ class TraineeRenewableControlManager:
             self._worker.start()
 
     def close(self) -> None:
-        self._stop_event.set()
-        if self._worker and self._worker.is_alive():
-            self._worker.join(timeout=2)
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        current_thread = threading.current_thread()
+        if current_thread is self._worker or current_thread.name.startswith("renewable-control_"):
+            raise RuntimeError("新能源控制管理器不能从自身后台工作线程中关闭")
+        with self._close_lock:
+            if self._closed:
+                return
+            with self._background_submit_lock:
+                self._closed = True
+            self._stop_event.set()
+            if self._worker and self._worker.is_alive():
+                self._worker.join()
+            # Provider/transport calls have finite timeouts and run without broad
+            # locks; waiting here guarantees no control task outlives its provider.
+            self._executor.shutdown(wait=True, cancel_futures=True)
+            with self._states_lock:
+                states_by_identity = {
+                    id(state): state
+                    for state in (
+                        list(self._states.values())
+                        + list(self._states_by_service_instance.values())
+                    )
+                }
+                states = list(states_by_identity.values())
+            for state in states:
+                with state.lock:
+                    state.background_cycle_pending = False
 
     def _service_for(self, model_id: Optional[str]) -> Any:
         if hasattr(self.services, "service_for"):
             return self.services.service_for(model_id)
         return self.services
 
+    def _service_is_current_registry_instance(self, service: Any) -> bool:
+        if hasattr(self.services, "service_for"):
+            try:
+                current = self.services.service_for(
+                    str(getattr(service, "model_id", "default"))
+                )
+            except KeyError:
+                return False
+            return current is service
+        return self.services is service
+
     def _model_id(self, model_id: Optional[str]) -> str:
         service = self._service_for(model_id)
         return str(getattr(service, "model_id", model_id or "default"))
 
-    def _persistence_path(self, model_id: Optional[str]) -> Optional[Path]:
-        target = self._service_for(model_id)
-        runtime_dir = getattr(target, "runtime_dir", None)
+    @staticmethod
+    def _service_instance_id(service: Any) -> str:
+        value = str(getattr(service, "service_instance_id", "") or "").strip()
+        return value or f"object:{id(service)}"
+
+    @staticmethod
+    def _service_instance_active_locked(service: Any) -> bool:
+        checker = getattr(service, "_service_instance_active_locked", None)
+        if callable(checker):
+            return bool(checker())
+        return not bool(getattr(service, "_service_instance_retired", False))
+
+    @staticmethod
+    def _persistence_path_for_service(service: Any) -> Optional[Path]:
+        runtime_dir = getattr(service, "runtime_dir", None)
         return Path(runtime_dir) / RENEWABLE_CONTROL_STATE_FILE if runtime_dir else None
 
-    def _load_configuration(self, model_id: Optional[str]) -> Tuple[RenewableControlSettings, str]:
-        path = self._persistence_path(model_id)
+    def _persistence_path(self, model_id: Optional[str]) -> Optional[Path]:
+        return self._persistence_path_for_service(self._service_for(model_id))
+
+    def _load_configuration_for_service(self, service: Any) -> Tuple[RenewableControlSettings, str]:
+        path = self._persistence_path_for_service(service)
         if path is None or not path.exists():
             return RenewableControlSettings(), "open"
         try:
@@ -2663,16 +6779,16 @@ class TraineeRenewableControlManager:
 
     def _persist_configuration(
         self,
-        model_id: Optional[str],
+        service: Any,
         settings: RenewableControlSettings,
         loop_mode: str,
     ) -> None:
-        path = self._persistence_path(model_id)
+        path = self._persistence_path_for_service(service)
         if path is None:
             raise RuntimeError("当前模型没有可用的运行目录，无法持久化新能源控制参数")
         payload = {
             "version": 1,
-            "modelId": self._model_id(model_id),
+            "modelId": str(getattr(service, "model_id", "default")),
             "loopMode": "closed" if loop_mode == "closed" else "open",
             "settings": settings.payload(),
         }
@@ -2688,97 +6804,387 @@ class TraineeRenewableControlManager:
                 pass
             raise RuntimeError(f"新能源控制参数持久化失败：{exc}") from exc
 
-    def _state_for(self, model_id: Optional[str]) -> _ControllerState:
-        normalized = self._model_id(model_id)
+    def _require_active_service_for_state_locked(
+        self,
+        service: Any,
+        state: _ControllerState,
+    ) -> None:
+        if (
+            self._service_instance_id(service) != state.service_instance_id
+            or not self._service_instance_active_locked(service)
+        ):
+            raise RuntimeError("新能源控制请求所属模型生命周期已失效或已退休，操作已取消。")
+
+    def _state_for_service(self, service: Any) -> _ControllerState:
+        normalized = str(getattr(service, "model_id", "default"))
+        service_instance_id = self._service_instance_id(service)
         with self._states_lock:
             state = self._states.get(normalized)
-            if state is None:
-                settings, loop_mode = self._load_configuration(normalized)
-                state = _ControllerState(normalized, settings=settings, loop_mode=loop_mode)
-                self._states[normalized] = state
+            if state is not None and state.service_instance_id == service_instance_id:
+                return state
+            state = self._states_by_service_instance.get(service_instance_id)
+        if state is None:
+            settings, loop_mode = self._load_configuration_for_service(service)
+            candidate = _ControllerState(
+                normalized,
+                service_instance_id,
+                settings=settings,
+                loop_mode=loop_mode,
+            )
+            with self._states_lock:
+                state = self._states_by_service_instance.setdefault(
+                    service_instance_id,
+                    candidate,
+                )
+        with self._states_lock:
+            self._states[normalized] = state
             return state
 
-    @staticmethod
-    def _connection(target: Any) -> Optional[Dict[str, str]]:
-        receive_state = target.trainee_receive_state()
-        base = str(receive_state.get("teacher_api_base") or "").rstrip("/")
-        snapshot_path = str(receive_state.get("snapshot_path") or "")
-        command_path = str(receive_state.get("command_path") or "")
-        if not base or not snapshot_path:
-            return None
-        return {"base": base, "snapshot_path": snapshot_path, "command_path": command_path}
-
-    @staticmethod
-    def _static_signature(snapshot: Mapping[str, Any]) -> str:
-        meta = snapshot.get("static_meta")
-        if not isinstance(meta, Mapping):
-            return ""
-        selected = {key: meta.get(key) for key in REMOTE_SNAPSHOT_STATIC_FIELDS}
-        return json.dumps(selected, ensure_ascii=False, sort_keys=True, default=str)
-
-    def _fetch_remote_snapshot(self, state: _ControllerState, target: Any, connection: Mapping[str, str]) -> Dict[str, Any]:
-        snapshot_path = _url_with_query(
-            connection["snapshot_path"],
-            lite=1,
-            logs=0,
-            commands=0,
-            measurements=1,
-            devices=1,
-            static=0,
-        )
-        snapshot_url = urljoin(connection["base"] + "/", snapshot_path.lstrip("/"))
-        current = self.request_json(snapshot_url)
-        if not isinstance(current, Mapping):
-            raise RuntimeError("模拟台快照不是 JSON 对象")
-        signature = self._static_signature(current)
-        need_static = not state.cached_snapshot or not state.cached_static_signature or signature != state.cached_static_signature
-        if need_static:
-            static_path = _url_with_query(
-                connection["snapshot_path"],
-                lite=1,
-                logs=0,
-                commands=0,
-                measurements=1,
-                devices=1,
-                static=",".join(REMOTE_SNAPSHOT_STATIC_FIELDS),
+    def _state_for_live_service(self, service: Any) -> _ControllerState:
+        if not self._service_is_current_registry_instance(service):
+            raise TraineeRenewableControlLifecycleError(
+                "新能源控制请求所属模型生命周期已失效或已退休。"
             )
-            static_url = urljoin(connection["base"] + "/", static_path.lstrip("/"))
-            with_static = self.request_json(static_url)
-            if not isinstance(with_static, Mapping):
-                raise RuntimeError("模拟台静态快照不是 JSON 对象")
-            current = _merge_snapshot(current, with_static)
-            signature = self._static_signature(current)
-        merged = _merge_snapshot(state.cached_snapshot, current)
-        state.cached_snapshot = merged
-        state.cached_snapshot_at = time.time()
-        state.cached_static_signature = signature or state.cached_static_signature
-        return merged
+        service_lock = getattr(service, "lock", None)
+        with (service_lock if service_lock is not None else nullcontext()):
+            if not self._service_instance_active_locked(service):
+                raise TraineeRenewableControlLifecycleError(
+                    "新能源控制请求所属模型生命周期已失效或已退休。"
+                )
+            return self._state_for_service(service)
 
-    def _snapshot_for_calculation(self, model_id: Optional[str]) -> Tuple[Dict[str, Any], str, float, Optional[str]]:
-        target = self._service_for(model_id)
-        state = self._state_for(model_id)
-        connection = self._connection(target)
-        if connection:
-            try:
-                return self._fetch_remote_snapshot(state, target, connection), "remote", 0.0, None
-            except Exception as exc:
-                with state.lock:
-                    cached = copy.deepcopy(state.cached_snapshot)
-                    age = max(0.0, time.time() - state.cached_snapshot_at) if state.cached_snapshot_at else 0.0
-                if cached:
-                    return cached, "cached", age, str(exc)
-                error = str(exc)
-        else:
-            error = "当前模型尚未配置模拟台交互链接"
-        local = target.snapshot(
-            include_static=True,
-            include_runtime_logs=False,
-            include_measurements=True,
-            include_devices=True,
-            include_commands=False,
-            static_fields=list(REMOTE_SNAPSHOT_STATIC_FIELDS),
+    def _state_for(self, model_id: Optional[str]) -> _ControllerState:
+        return self._state_for_service(self._service_for(model_id))
+
+    @staticmethod
+    def _service_bound_provider(
+        provider: Callable[..., Any],
+        method_name: str,
+    ) -> Optional[Callable[[Any], Any]]:
+        explicit = getattr(provider, "for_service", None)
+        if callable(explicit):
+            return explicit
+        owner = getattr(provider, "__self__", None)
+        candidate = getattr(owner, method_name, None)
+        return candidate if callable(candidate) else None
+
+    def _service_lifecycle_valid(self, service: Any, state: _ControllerState) -> bool:
+        with state.lock:
+            service_lock = getattr(service, "lock", None)
+            with (service_lock if service_lock is not None else nullcontext()):
+                return bool(
+                    self._service_instance_id(service) == state.service_instance_id
+                    and self._service_instance_active_locked(service)
+                )
+
+    def _require_active_service_for_state(
+        self,
+        service: Any,
+        state: _ControllerState,
+    ) -> None:
+        with state.lock:
+            service_lock = getattr(service, "lock", None)
+            with (service_lock if service_lock is not None else nullcontext()):
+                self._require_active_service_for_state_locked(service, state)
+
+    def _receive_status_for_service(self, service: Any) -> Dict[str, Any]:
+        provider = self._service_bound_provider(
+            self.receive_status_provider,
+            "receive_status_for_service",
         )
-        return local, "local", 0.0, error
+        try:
+            payload = (
+                provider(service)
+                if provider is not None
+                else self.receive_status_provider(str(getattr(service, "model_id", "default")))
+            )
+        except Exception as exc:
+            return {
+                "receiveActive": False,
+                "ready": False,
+                "canRun": False,
+                "prerequisiteStatus": f"学员台实时交换状态不可用：{exc}",
+                "revision": 0,
+                "connectionSignature": [],
+            }
+        return dict(payload) if isinstance(payload, Mapping) else {}
+
+    def _receive_status(self, model_id: Optional[str]) -> Dict[str, Any]:
+        return self._receive_status_for_service(self._service_for(model_id))
+
+    def _receive_state_signature_for_service(self, service: Any) -> Tuple[Any, ...]:
+        status = self._receive_status_for_service(service)
+        signature = status.get("connectionSignature", ())
+        if not isinstance(signature, Sequence) or isinstance(signature, (str, bytes)):
+            signature = ()
+        return (
+            bool(status.get("receiveActive")),
+            bool(status.get("ready")),
+            int(_number(status.get("receiveEpoch", status.get("connectionEpoch")), 0.0) or 0),
+            tuple(signature),
+        )
+
+    def _receive_state_signature(self, model_id: Optional[str]) -> Tuple[Any, ...]:
+        return self._receive_state_signature_for_service(self._service_for(model_id))
+
+    def _candidate_generation_guard(
+        self,
+        service: Any,
+        view: TraineeControlSnapshot,
+        receive_signature: Tuple[Any, ...],
+    ) -> ContextManager[bool]:
+        lease = getattr(view, "control_lease", None)
+        if lease is not None:
+            return lease.guard()
+        return nullcontext(
+            self._receive_state_signature_for_service(service) == receive_signature
+        )
+
+    @staticmethod
+    def _view_matches_controller_state(
+        view: TraineeControlSnapshot,
+        state: _ControllerState,
+    ) -> bool:
+        lease = getattr(view, "control_lease", None)
+        generation = getattr(lease, "generation", None)
+        if generation is None:
+            return True
+        return str(getattr(generation, "service_instance_id", "")) == state.service_instance_id
+
+    def _receive_prerequisite_for_service(self, service: Any) -> Dict[str, Any]:
+        status = self._receive_status_for_service(service)
+        active = bool(status.get("receiveActive"))
+        ready = bool(status.get("ready"))
+        can_calculate = active and ready and bool(
+            status.get("canCalculate", status.get("canRun", True))
+        )
+        can_dispatch = can_calculate and bool(status.get("canDispatch", can_calculate))
+        if not active:
+            message = str(status.get("prerequisiteStatus") or "请先启动接收。")
+        elif not ready:
+            message = str(status.get("prerequisiteStatus") or "学员台正在等待第一份实时数据。")
+        else:
+            message = str(status.get("prerequisiteStatus") or "") if not can_calculate else ""
+        normalized = dict(status)
+        normalized.update({
+            "receiveActive": active,
+            "receiveConfigured": active,
+            "ready": ready,
+            "canRun": can_calculate,
+            "canCalculate": can_calculate,
+            "canDispatch": can_dispatch,
+            "prerequisiteStatus": message,
+            "dispatchStatus": str(status.get("dispatchStatus") or "") if not can_dispatch else "",
+        })
+        return normalized
+
+    def _receive_prerequisite(self, model_id: Optional[str]) -> Dict[str, Any]:
+        return self._receive_prerequisite_for_service(self._service_for(model_id))
+
+    @staticmethod
+    def _dispatch_generation_key(
+        view: TraineeControlSnapshot,
+        receive_signature: Tuple[Any, ...],
+    ) -> Tuple[Any, ...]:
+        lease = getattr(view, "control_lease", None)
+        generation = getattr(lease, "generation", None)
+        if generation is None:
+            return tuple(receive_signature)
+        return (
+            str(getattr(generation, "model_id", "")),
+            str(getattr(generation, "service_instance_id", "")),
+            int(getattr(generation, "receive_epoch", 0)),
+            tuple(getattr(generation, "connection_signature", ())),
+            int(getattr(generation, "definition_revision", 0)),
+        )
+
+    def _control_snapshot(self, model_id: Optional[str]) -> TraineeControlSnapshot:
+        return self._control_snapshot_for_service(self._service_for(model_id))
+
+    def _control_snapshot_for_service(self, service: Any) -> TraineeControlSnapshot:
+        provider = self._service_bound_provider(
+            self.snapshot_provider,
+            "control_snapshot_for_service",
+        )
+        view = (
+            provider(service)
+            if provider is not None
+            else self.snapshot_provider(str(getattr(service, "model_id", "default")))
+        )
+        if not isinstance(view, TraineeControlSnapshot):
+            raise RuntimeError("学员台实时交换服务返回了无效快照契约")
+        if not view.ready:
+            raise RuntimeError(view.error or "学员台尚未收到实时数据")
+        if not isinstance(view.snapshot, Mapping):
+            raise RuntimeError("学员台实时交换服务返回的快照不是对象")
+        return view
+
+    def _reject_without_receive_for_service(
+        self,
+        service: Any,
+        state: _ControllerState,
+        *,
+        action_label: str,
+        record_log: bool,
+        raise_on_retired: bool,
+    ) -> Optional[Dict[str, Any]]:
+        if not self._service_lifecycle_valid(service, state):
+            if raise_on_retired:
+                self._require_active_service_for_state(service, state)
+            return self._serialize_for_service(service, state)
+        prerequisite = self._receive_prerequisite_for_service(service)
+        if prerequisite["canRun"]:
+            return None
+        runtime_log_entry = None
+        with state.lock:
+            service_lock = getattr(service, "lock", None)
+            with (service_lock if service_lock is not None else nullcontext()):
+                if not (
+                    self._service_instance_id(service) == state.service_instance_id
+                    and self._service_instance_active_locked(service)
+                ):
+                    if raise_on_retired:
+                        self._require_active_service_for_state_locked(service, state)
+                    return self._serialize_for_service(service, state)
+                state.enabled = False
+                state.status = str(prerequisite["prerequisiteStatus"])
+                if record_log:
+                    runtime_log_entry = self._append_log(
+                        state,
+                        "策略控制",
+                        f"{action_label}阻断",
+                        state.status,
+                        level="warn",
+                        simu_time=state.last_plan.get("time", "--") if state.last_plan else "--",
+                        persist_runtime=False,
+                    )
+                state.revision += 1
+        if runtime_log_entry is not None:
+            self._persist_runtime_log_for_service(service, state, runtime_log_entry)
+        return self._serialize_for_service(service, state)
+
+    def _reject_without_receive(
+        self,
+        model_id: Optional[str],
+        *,
+        action_label: str,
+        record_log: bool,
+    ) -> Optional[Dict[str, Any]]:
+        service = self._service_for(model_id)
+        state = self._state_for_service(service)
+        return self._reject_without_receive_for_service(
+            service,
+            state,
+            action_label=action_label,
+            record_log=record_log,
+            raise_on_retired=True,
+        )
+
+    def receive_state_changed_for_service(self, service: Any) -> Dict[str, Any]:
+        state = self._state_for_service(service)
+        prerequisite = self._receive_prerequisite_for_service(service)
+        runtime_log_entry = None
+        with state.lock:
+            service_lock = getattr(service, "lock", None)
+            with (service_lock if service_lock is not None else nullcontext()):
+                self._require_active_service_for_state_locked(service, state)
+                if prerequisite["canRun"]:
+                    if not state.enabled and _stale_receive_prerequisite_status(state.status):
+                        state.status = _RENEWABLE_READY_IDLE_STATUS
+                        state.revision += 1
+                elif state.enabled:
+                    state.enabled = False
+                    state.operation_epoch += 1
+                    state.status = "接收已停止，新能源实时控制同步停止。"
+                    runtime_log_entry = self._append_log(
+                        state,
+                        "策略控制",
+                        "接收联动停止",
+                        state.status,
+                        level="warn",
+                        simu_time=state.last_plan.get("time", "--") if state.last_plan else "--",
+                        persist_runtime=False,
+                    )
+                    state.revision += 1
+        if runtime_log_entry is not None:
+            self._persist_runtime_log_for_service(service, state, runtime_log_entry)
+        return self._serialize_for_service(service, state)
+
+    def receive_state_changed(self, model_id: Optional[str]) -> Dict[str, Any]:
+        return self.receive_state_changed_for_service(self._service_for(model_id))
+
+    def _retire_state(self, state: _ControllerState) -> None:
+        with state.lock:
+            state.operation_epoch += 1
+            state.enabled = False
+        with self._states_lock:
+            if self._states.get(state.model_id) is state:
+                self._states.pop(state.model_id, None)
+            if self._states_by_service_instance.get(state.service_instance_id) is state:
+                self._states_by_service_instance.pop(state.service_instance_id, None)
+
+    def remove_model_for_service(self, service: Any) -> bool:
+        """Cancel and remove only the controller lifecycle for this service."""
+        service_instance_id = self._service_instance_id(service)
+        with self._states_lock:
+            state = self._states_by_service_instance.get(service_instance_id)
+        if state is None:
+            return False
+        self._retire_state(state)
+        return True
+
+    def _serialize_cancelled_cycle(
+        self,
+        service: Any,
+        state: _ControllerState,
+        *,
+        clear_sending: bool,
+    ) -> Dict[str, Any]:
+        if clear_sending:
+            with state.lock:
+                if state.sending:
+                    state.sending = False
+                    state.revision += 1
+        return self._serialize_for_service(service, state)
+
+    def _busy_cycle_response(
+        self,
+        service: Any,
+        state: _ControllerState,
+        *,
+        action_label: str,
+        record_log: bool,
+        disable_control: bool = False,
+        raise_on_retired: bool,
+    ) -> Dict[str, Any]:
+        runtime_log_entry = None
+        with state.lock:
+            service_lock = getattr(service, "lock", None)
+            with (service_lock if service_lock is not None else nullcontext()):
+                if not (
+                    self._service_instance_id(service) == state.service_instance_id
+                    and self._service_instance_active_locked(service)
+                ):
+                    if raise_on_retired:
+                        self._require_active_service_for_state_locked(service, state)
+                    return self._serialize_for_service(service, state)
+                if disable_control:
+                    state.enabled = False
+                state.status = f"新能源控制正在执行上一轮计算，本次{action_label}未执行，请稍后重试。"
+                if record_log:
+                    runtime_log_entry = self._append_log(
+                        state,
+                        "策略控制",
+                        f"{action_label}忙碌阻断",
+                        state.status,
+                        level="warn",
+                        simu_time=state.last_plan.get("time", "--") if state.last_plan else "--",
+                        persist_runtime=False,
+                    )
+                state.revision += 1
+        if runtime_log_entry is not None:
+            self._persist_runtime_log_for_service(service, state, runtime_log_entry)
+        return self._serialize_for_service(service, state)
 
     def _append_log(
         self,
@@ -2789,50 +7195,61 @@ class TraineeRenewableControlManager:
         *,
         level: str = "info",
         simu_time: str = "--",
-    ) -> None:
+        persist_runtime: bool = True,
+    ) -> Dict[str, Any]:
         state.log_seq += 1
         normalized_detail = detail if isinstance(detail, str) else "；".join(str(item) for item in detail if item)
-        state.logs.insert(
-            0,
-            {
-                "seq": state.log_seq,
-                "wall_time": _now_text(),
-                "simu_time": simu_time or "--",
-                "type": log_type,
-                "target": "新能源优先",
-                "result": result,
-                "detail": normalized_detail,
-                "level": level,
-            },
-        )
+        entry = {
+            "seq": state.log_seq,
+            "wall_time": _now_text(),
+            "simu_time": simu_time or "--",
+            "type": log_type,
+            "target": "新能源优先",
+            "result": result,
+            "detail": normalized_detail,
+            "level": level,
+        }
+        state.logs.insert(0, entry)
         state.logs = state.logs[:300]
+        if persist_runtime:
+            self._persist_runtime_log(state, entry)
+        return entry
+
+    def _persist_runtime_log(
+        self,
+        state: _ControllerState,
+        entry: Mapping[str, Any],
+    ) -> None:
         try:
             target = self._service_for(state.model_id)
-            append_runtime_log = getattr(target, "_append_runtime_log", None)
-            if callable(append_runtime_log):
-                target_lock = getattr(target, "lock", None)
-                if target_lock is not None:
-                    with target_lock:
-                        append_runtime_log(
-                            log_type,
-                            "新能源优先",
-                            result,
-                            normalized_detail,
-                            level=level,
-                            simu_time=simu_time,
-                        )
-                else:
-                    append_runtime_log(
-                        log_type,
-                        "新能源优先",
-                        result,
-                        normalized_detail,
-                        level=level,
-                        simu_time=simu_time,
-                    )
+            self._persist_runtime_log_for_service(target, state, entry)
         except Exception:
             # A runtime-log persistence failure must not interrupt the controller.
             pass
+
+    def _persist_runtime_log_for_service(
+        self,
+        service: Any,
+        state: _ControllerState,
+        entry: Mapping[str, Any],
+    ) -> None:
+        target_lock = getattr(service, "lock", None)
+        with (target_lock if target_lock is not None else nullcontext()):
+            if (
+                self._service_instance_id(service) != state.service_instance_id
+                or not self._service_instance_active_locked(service)
+            ):
+                return
+            append_runtime_log = getattr(service, "_append_runtime_log", None)
+            if callable(append_runtime_log):
+                append_runtime_log(
+                    str(entry.get("type", "")),
+                    str(entry.get("target", "新能源优先")),
+                    str(entry.get("result", "")),
+                    str(entry.get("detail", "")),
+                    level=str(entry.get("level", "info")),
+                    simu_time=str(entry.get("simu_time", "--")),
+                )
 
     @staticmethod
     def _trend_point(plan: Mapping[str, Any], snapshot: Mapping[str, Any]) -> Dict[str, Any]:
@@ -2841,7 +7258,7 @@ class TraineeRenewableControlManager:
         run_id = int(_number(clock.get("run_id"), 0.0) or 0)
         step_count = int(_number(clock.get("step_count"), 0.0) or 0)
         minute = _number(clock.get("absolute_minute", clock.get("minute")), 0.0) or 0.0
-        return {
+        point = {
             "sampleKey": f"{run_id}|{minute}|{clock.get('time', '')}",
             "runId": run_id,
             "stepCount": step_count,
@@ -2855,6 +7272,32 @@ class TraineeRenewableControlManager:
             "acdcCurrentKw": metrics.get("acdcCurrentKw"),
             "acdcTargetKw": metrics.get("acdcTargetKw"),
         }
+        for key in (
+            "acWindCurrentKw",
+            "acWindTargetKw",
+            "dcWindCurrentKw",
+            "dcWindTargetKw",
+            "acPvCurrentKw",
+            "acPvTargetKw",
+            "dcPvCurrentKw",
+            "dcPvTargetKw",
+            "acGridStorageCurrentKw",
+            "acGridStorageTargetKw",
+            "acGridStorageSoc",
+            "dcGridStorageCurrentKw",
+            "dcGridStorageTargetKw",
+            "dcGridStorageSoc",
+            "acBalanceStorageCurrentKw",
+            "acBalanceStorageTargetKw",
+            "dcBalanceStorageCurrentKw",
+            "dcBalanceStorageTargetKw",
+            "acBalanceStorageSoc",
+            "dcBalanceStorageSoc",
+            "dcRenewableToAcKw",
+            "dcTransferGroups",
+        ):
+            point[key] = _json_safe_copy(metrics.get(key))
+        return point
 
     @staticmethod
     def _trend_lifecycle_changed(previous: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
@@ -2884,7 +7327,7 @@ class TraineeRenewableControlManager:
                 segment_start = index
         return [dict(point) for point in points[segment_start:]]
 
-    def _update_trend(self, state: _ControllerState, plan: Mapping[str, Any], snapshot: Mapping[str, Any]) -> None:
+    def _update_trend(self, state: Any, plan: Mapping[str, Any], snapshot: Mapping[str, Any]) -> None:
         point = self._trend_point(plan, snapshot)
         if not state.trend_normalized:
             state.trend = self._latest_trend_segment(state.trend)
@@ -2897,21 +7340,49 @@ class TraineeRenewableControlManager:
             state.trend.append(point)
         state.trend = state.trend[-45000:]
 
-    def _command_payload(self, state: _ControllerState, plan: Mapping[str, Any], snapshot: Mapping[str, Any], trigger: str) -> Dict[str, Any]:
+    def _stage_trend(
+        self,
+        state: _ControllerState,
+        plan: Mapping[str, Any],
+        snapshot: Mapping[str, Any],
+    ) -> _TrendCandidate:
+        with state.lock:
+            candidate = _TrendCandidate(
+                trend=copy.deepcopy(state.trend),
+                trend_normalized=state.trend_normalized,
+            )
+        self._update_trend(candidate, plan, snapshot)
+        return candidate
+
+    def _command_payload(
+        self,
+        state: _ControllerState,
+        plan: Mapping[str, Any],
+        snapshot: Mapping[str, Any],
+        trigger: str,
+        *,
+        settings: Optional[RenewableControlSettings] = None,
+        loop_mode: Optional[str] = None,
+    ) -> Dict[str, Any]:
         metrics = plan.get("metrics") if isinstance(plan.get("metrics"), Mapping) else {}
         clock = snapshot.get("clock") if isinstance(snapshot.get("clock"), Mapping) else {}
+        metrics_payload = _json_safe_copy(metrics)
+        cycle_settings = settings if settings is not None else state.settings
+        cycle_loop_mode = loop_mode if loop_mode is not None else state.loop_mode
         return {
             "source": "trainee-renewable-priority-backend",
-            "valid_for_minutes": state.settings.command_valid_minutes,
+            "valid_for_minutes": cycle_settings.command_valid_minutes,
             "sent_wall_time": _now_text(),
             "sent_simu_time": str(clock.get("time", "")),
             "sent_absolute_minute": _number(clock.get("absolute_minute", clock.get("minute"))),
             "set_values": copy.deepcopy(plan.get("commands", [])),
+            "command_rows": copy.deepcopy(plan.get("commandRows", [])),
             "strategy": {
                 "name": "renewable_priority",
-                "loop_mode": state.loop_mode,
+                "loop_mode": cycle_loop_mode,
                 "trigger": trigger,
                 "time": plan.get("time"),
+                "metrics": metrics_payload,
                 "load_kw": metrics.get("loadKw"),
                 "renewable_available_kw": metrics.get("availableRenewable"),
                 "renewable_used_kw": metrics.get("renewableTarget"),
@@ -2928,23 +7399,141 @@ class TraineeRenewableControlManager:
             },
         }
 
+    def _submit_commands_for_service(
+        self,
+        service: Any,
+        state: _ControllerState,
+        payload: Mapping[str, Any],
+        *,
+        on_transport_start: Optional[Callable[[], None]] = None,
+    ) -> Mapping[str, Any]:
+        provider = self._service_bound_provider(
+            self.command_sink,
+            "submit_commands_for_service",
+        )
+        self._require_active_service_for_state(service, state)
+        if on_transport_start is not None:
+            on_transport_start()
+        if provider is not None:
+            return provider(service, payload)  # type: ignore[call-arg]
+        return self.command_sink(
+            str(getattr(service, "model_id", "default")),
+            payload,
+        )
+
     def collect_once(self, model_id: Optional[str]) -> Dict[str, Any]:
         """Refresh the shared plan and trend without changing or dispatching control state."""
-        state = self._state_for(model_id)
+        service = self._service_for(model_id)
+        state = self._state_for_service(service)
+        return self._collect_once_for_service(
+            service,
+            state,
+            raise_on_retired=True,
+        )
+
+    def _collect_once_for_service(
+        self,
+        service: Any,
+        state: _ControllerState,
+        *,
+        raise_on_retired: bool,
+    ) -> Dict[str, Any]:
+        blocked = self._reject_without_receive_for_service(
+            service,
+            state,
+            action_label="实时数据采集",
+            record_log=False,
+            raise_on_retired=raise_on_retired,
+        )
+        if blocked is not None:
+            return blocked
+        receive_signature = self._receive_state_signature_for_service(service)
         if not state.run_lock.acquire(blocking=False):
-            return self.state(model_id)
+            return self._serialize_for_service(service, state)
         try:
-            snapshot, source, age, _fetch_error = self._snapshot_for_calculation(model_id)
-            plan = calculate_renewable_control_plan(snapshot, state.settings, data_source=source, snapshot_age_seconds=age)
             with state.lock:
-                state.last_plan = plan
-                state.last_calculated_at = _now_text()
-                state.last_clock_key = str(plan.get("clockKey", ""))
-                self._update_trend(state, plan, snapshot)
-                state.revision += 1
+                service_lock = getattr(service, "lock", None)
+                with (service_lock if service_lock is not None else nullcontext()):
+                    if not (
+                        self._service_instance_id(service) == state.service_instance_id
+                        and self._service_instance_active_locked(service)
+                    ):
+                        if raise_on_retired:
+                            self._require_active_service_for_state_locked(service, state)
+                        return self._serialize_for_service(service, state)
+                operation_epoch = state.operation_epoch
+                cycle_settings = state.settings
+            try:
+                view = self._control_snapshot_for_service(service)
+            except RuntimeError:
+                if not self._service_lifecycle_valid(service, state):
+                    return self._serialize_cancelled_cycle(
+                        service,
+                        state,
+                        clear_sending=False,
+                    )
+                raise
+            if not self._view_matches_controller_state(view, state):
+                return self._serialize_cancelled_cycle(
+                    service,
+                    state,
+                    clear_sending=False,
+                )
+            snapshot = copy.deepcopy(dict(view.snapshot))
+            source = view.source
+            age = view.age_seconds
+            blocked = self._reject_without_receive_for_service(
+                service,
+                state,
+                action_label="实时数据采集",
+                record_log=False,
+                raise_on_retired=False,
+            )
+            if blocked is not None:
+                return blocked
+            if self._receive_state_signature_for_service(service) != receive_signature:
+                return self._serialize_cancelled_cycle(
+                    service,
+                    state,
+                    clear_sending=False,
+                )
+            plan = calculate_renewable_control_plan(
+                snapshot,
+                cycle_settings,
+                data_source=source,
+                snapshot_age_seconds=age,
+            )
+            trend_candidate = self._stage_trend(state, plan, snapshot)
+            committed = False
+            with state.lock:
+                with self._candidate_generation_guard(
+                    service,
+                    view,
+                    receive_signature,
+                ) as generation_valid:
+                    if (
+                        generation_valid
+                        and state.operation_epoch == operation_epoch
+                        and self._service_instance_id(service) == state.service_instance_id
+                    ):
+                        state.last_plan = plan
+                        state.last_calculated_at = _now_text()
+                        state.last_clock_key = str(plan.get("clockKey", ""))
+                        state.trend = trend_candidate.trend
+                        state.trend_normalized = trend_candidate.trend_normalized
+                        if not state.enabled and _stale_receive_prerequisite_status(state.status):
+                            state.status = _RENEWABLE_READY_IDLE_STATUS
+                        state.revision += 1
+                        committed = True
+            if not committed:
+                return self._serialize_cancelled_cycle(
+                    service,
+                    state,
+                    clear_sending=False,
+                )
         finally:
             state.run_lock.release()
-        return self.state(model_id)
+        return self._serialize_for_service(service, state)
 
     def run_once(
         self,
@@ -2954,120 +7543,440 @@ class TraineeRenewableControlManager:
         allow_dispatch: bool = True,
         record_log: bool = True,
     ) -> Dict[str, Any]:
-        state = self._state_for(model_id)
-        if not state.run_lock.acquire(blocking=False):
-            return self.state(model_id)
+        service = self._service_for(model_id)
+        state = self._state_for_service(service)
+        return self._run_once_for_service(
+            service,
+            state,
+            trigger=trigger,
+            allow_dispatch=allow_dispatch,
+            record_log=record_log,
+            raise_on_retired=True,
+        )
+
+    def _run_once_for_service(
+        self,
+        service: Any,
+        state: _ControllerState,
+        *,
+        trigger: str,
+        allow_dispatch: bool,
+        record_log: bool,
+        raise_on_retired: bool,
+    ) -> Dict[str, Any]:
+        blocked = self._reject_without_receive_for_service(
+            service,
+            state,
+            action_label="实时控制" if trigger in {"start", "auto"} else "单次计算",
+            record_log=record_log,
+            raise_on_retired=raise_on_retired,
+        )
+        if blocked is not None:
+            return blocked
+        receive_signature = self._receive_state_signature_for_service(service)
+        wait_for_running_cycle = trigger in {"manual", "start"}
+        if wait_for_running_cycle:
+            acquired = state.run_lock.acquire(timeout=_USER_CONTROL_BUSY_WAIT_SECONDS)
+        else:
+            acquired = state.run_lock.acquire(blocking=False)
+        if not acquired:
+            if wait_for_running_cycle:
+                return self._busy_cycle_response(
+                    service,
+                    state,
+                    action_label="启动实时控制" if trigger == "start" else "单次计算",
+                    record_log=record_log,
+                    disable_control=trigger == "start",
+                    raise_on_retired=raise_on_retired,
+                )
+            return self._serialize_for_service(service, state)
         try:
+            blocked = self._reject_without_receive_for_service(
+                service,
+                state,
+                action_label="实时控制" if trigger in {"start", "auto"} else "单次计算",
+                record_log=record_log,
+                raise_on_retired=raise_on_retired,
+            )
+            if blocked is not None:
+                return blocked
             with state.lock:
+                service_lock = getattr(service, "lock", None)
+                with (service_lock if service_lock is not None else nullcontext()):
+                    if not (
+                        self._service_instance_id(service) == state.service_instance_id
+                        and self._service_instance_active_locked(service)
+                    ):
+                        if raise_on_retired:
+                            self._require_active_service_for_state_locked(service, state)
+                        return self._serialize_for_service(service, state)
+                operation_epoch = state.operation_epoch
+                cycle_settings = state.settings
+                cycle_loop_mode = state.loop_mode
+                cycle_requires_enabled = trigger in {"start", "auto"}
+                if cycle_requires_enabled and not state.enabled:
+                    return self._serialize_for_service(service, state)
                 state.sending = True
                 state.revision += 1
-            snapshot, source, age, fetch_error = self._snapshot_for_calculation(model_id)
-            plan = calculate_renewable_control_plan(snapshot, state.settings, data_source=source, snapshot_age_seconds=age)
-            with state.lock:
-                state.last_plan = plan
-                state.last_calculated_at = _now_text()
-                state.last_clock_key = str(plan.get("clockKey", ""))
-                self._update_trend(state, plan, snapshot)
-                if record_log:
-                    self._append_log(
+            try:
+                view = self._control_snapshot_for_service(service)
+            except RuntimeError:
+                if not self._service_lifecycle_valid(service, state):
+                    return self._serialize_cancelled_cycle(
+                        service,
                         state,
-                        "策略决策",
-                        "计算完成",
-                        plan.get("decisionDetail", []),
-                        level="info" if plan.get("dataQuality", {}).get("status") == "ok" else "warn",
-                        simu_time=str(plan.get("time", "--")),
+                        clear_sending=True,
                     )
-
+                raise
+            if not self._view_matches_controller_state(view, state):
+                return self._serialize_cancelled_cycle(
+                    service,
+                    state,
+                    clear_sending=True,
+                )
+            snapshot = copy.deepcopy(dict(view.snapshot))
+            source = view.source
+            age = view.age_seconds
+            fetch_error = view.error
+            blocked = self._reject_without_receive_for_service(
+                service,
+                state,
+                action_label="实时控制" if trigger in {"start", "auto"} else "单次计算",
+                record_log=record_log,
+                raise_on_retired=False,
+            )
+            if blocked is not None:
+                with state.lock:
+                    state.sending = False
+                return self._serialize_for_service(service, state)
+            if self._receive_state_signature_for_service(service) != receive_signature:
+                return self._serialize_cancelled_cycle(
+                    service,
+                    state,
+                    clear_sending=True,
+                )
+            plan = calculate_renewable_control_plan(
+                snapshot,
+                cycle_settings,
+                data_source=source,
+                snapshot_age_seconds=age,
+            )
+            trend_candidate = self._stage_trend(state, plan, snapshot)
             commands = plan.get("commands") if isinstance(plan.get("commands"), Sequence) else []
             quality = plan.get("dataQuality") if isinstance(plan.get("dataQuality"), Mapping) else {}
-            should_dispatch = allow_dispatch and state.loop_mode == "closed" and bool(commands)
-            if should_dispatch and not quality.get("dispatchAllowed"):
-                with state.lock:
-                    state.status = "控制策略已生成，但输入数据质量不满足闭环下发条件。"
-                    if record_log:
-                        self._append_log(state, "策略控制", "闭环未下发", state.status, level="warn", simu_time=str(plan.get("time", "--")))
-            elif should_dispatch:
-                target = self._service_for(model_id)
-                connection = self._connection(target)
-                if not connection or not connection.get("command_path"):
-                    with state.lock:
-                        state.status = "控制策略已生成，但当前没有可用的模拟台指令接口。"
+            dispatch_prerequisite = self._receive_prerequisite_for_service(service)
+            dispatch_generation_key = self._dispatch_generation_key(view, receive_signature)
+            committed_runtime_logs: List[Dict[str, Any]] = []
+            dispatch_payload: Optional[Dict[str, Any]] = None
+            dispatch_clock_key = ""
+            dispatch_ticket: Any = None
+            dispatch_claimed = False
+            committed = False
+            with state.lock:
+                with self._candidate_generation_guard(
+                    service,
+                    view,
+                    receive_signature,
+                ) as generation_valid:
+                    controller_valid = (
+                        state.operation_epoch == operation_epoch
+                        and (not cycle_requires_enabled or state.enabled)
+                        and self._service_instance_id(service) == state.service_instance_id
+                    )
+                    if not generation_valid or not controller_valid:
+                        committed = False
+                    else:
+                        state.last_plan = plan
+                        state.last_calculated_at = _now_text()
+                        state.last_clock_key = str(plan.get("clockKey", ""))
+                        state.trend = trend_candidate.trend
+                        state.trend_normalized = trend_candidate.trend_normalized
                         if record_log:
-                            self._append_log(state, "策略控制", "下发失败", state.status, level="error", simu_time=str(plan.get("time", "--")))
-                else:
-                    command_url = urljoin(connection["base"] + "/", connection["command_path"].lstrip("/"))
-                    payload = self._command_payload(state, plan, snapshot, trigger)
-                    dispatch_clock_key = str(plan.get("clockKey", "")).strip()
-                    with state.lock:
-                        duplicate_dispatch = bool(
-                            dispatch_clock_key
-                            and state.last_dispatched_clock_key == dispatch_clock_key
-                        )
-                        if duplicate_dispatch:
-                            state.status = "当前仿真时刻已下发控制策略，已跳过重复下发。"
-                            if record_log:
+                            committed_runtime_logs.append(
                                 self._append_log(
                                     state,
-                                    "策略控制",
-                                    "重复抑制",
-                                    state.status,
-                                    level="info",
+                                    "策略决策",
+                                    "计算完成",
+                                    plan.get("decisionDetail", []),
+                                    level=(
+                                        "info"
+                                        if plan.get("dataQuality", {}).get("status") == "ok"
+                                        else "warn"
+                                    ),
                                     simu_time=str(plan.get("time", "--")),
+                                    persist_runtime=False,
                                 )
-                        elif dispatch_clock_key:
-                            # Claim the simulation instant before the HTTP call. A timeout may
-                            # be ambiguous, so retrying the same instant could duplicate control.
-                            state.last_dispatched_clock_key = dispatch_clock_key
-                    if not duplicate_dispatch:
-                        try:
-                            result = self.request_json(command_url, method="POST", payload=payload)
-                        except Exception as exc:
-                            with state.lock:
-                                state.status = f"遥调指令下发失败：{exc}；当前仿真时刻不再重复下发。"
-                                if record_log:
-                                    self._append_log(state, "模拟台响应", "下发失败", state.status, level="error", simu_time=str(plan.get("time", "--")))
-                        else:
-                            accepted = int(_number(result.get("set_values"), len(commands)) or 0) if isinstance(result, Mapping) else len(commands)
-                            with state.lock:
-                                state.last_sent_at = _now_text()
-                                state.status = f"已由学员台后台下发 {accepted} 条遥调指令。"
-                                if record_log:
+                            )
+
+                        should_dispatch = (
+                            allow_dispatch
+                            and cycle_loop_mode == "closed"
+                            and bool(commands)
+                        )
+                        if should_dispatch and not dispatch_prerequisite["canDispatch"]:
+                            state.status = str(
+                                dispatch_prerequisite.get("dispatchStatus")
+                                or "实时数据状态不允许闭环下发。"
+                            )
+                            if record_log:
+                                committed_runtime_logs.append(
                                     self._append_log(
                                         state,
-                                        "模拟台响应",
-                                        "下发成功",
-                                        f"模拟台接受遥调指令 {accepted} 条；策略时刻 {plan.get('time', '--')}",
-                                        level="ok",
+                                        "策略控制",
+                                        "闭环未下发",
+                                        state.status,
+                                        level="warn",
                                         simu_time=str(plan.get("time", "--")),
+                                        persist_runtime=False,
                                     )
-            else:
-                with state.lock:
-                    if not commands:
-                        state.status = "本轮没有可生成的遥调策略。"
-                    elif state.loop_mode == "open" or not allow_dispatch:
-                        state.status = f"开环计算完成，生成 {len(commands)} 条遥调策略，未向模拟台下发。"
-                    if record_log:
-                        self._append_log(
-                            state,
-                            "策略控制",
-                            "开环未下发" if commands else "无可用策略",
-                            state.status,
-                            level="ok" if commands else "warn",
-                            simu_time=str(plan.get("time", "--")),
+                                )
+                        elif should_dispatch and not quality.get("dispatchAllowed"):
+                            state.status = "控制策略已生成，但输入数据质量不满足闭环下发条件。"
+                            if record_log:
+                                committed_runtime_logs.append(
+                                    self._append_log(
+                                        state,
+                                        "策略控制",
+                                        "闭环未下发",
+                                        state.status,
+                                        level="warn",
+                                        simu_time=str(plan.get("time", "--")),
+                                        persist_runtime=False,
+                                    )
+                                )
+                        elif should_dispatch:
+                            payload = self._command_payload(
+                                state,
+                                plan,
+                                snapshot,
+                                trigger,
+                                settings=cycle_settings,
+                                loop_mode=cycle_loop_mode,
+                            )
+                            dispatch_clock_key = str(plan.get("clockKey", "")).strip()
+                            duplicate_dispatch = bool(
+                                dispatch_clock_key
+                                and (
+                                    state.last_dispatched_clock_key == dispatch_clock_key
+                                    or (
+                                        state.pending_dispatch_clock_key == dispatch_clock_key
+                                        and state.pending_dispatch_generation_key
+                                        == dispatch_generation_key
+                                    )
+                                )
+                            )
+                            if duplicate_dispatch:
+                                state.status = "当前仿真时刻已下发控制策略，已跳过重复下发。"
+                                if record_log:
+                                    committed_runtime_logs.append(
+                                        self._append_log(
+                                            state,
+                                            "策略控制",
+                                            "重复抑制",
+                                            state.status,
+                                            level="info",
+                                            simu_time=str(plan.get("time", "--")),
+                                            persist_runtime=False,
+                                        )
+                                    )
+                            else:
+                                # This guarded claim is the dispatch-eligibility
+                                # linearization point; transport runs after lock release.
+                                if dispatch_clock_key:
+                                    state.pending_dispatch_clock_key = dispatch_clock_key
+                                    state.pending_dispatch_generation_key = dispatch_generation_key
+                                dispatch_payload = payload
+                                dispatch_ticket = getattr(generation_valid, "dispatch_ticket", None)
+                                dispatch_claimed = True
+                        else:
+                            if not commands:
+                                state.status = "本轮没有可生成的遥调策略。"
+                            elif cycle_loop_mode == "open" or not allow_dispatch:
+                                state.status = (
+                                    f"开环计算完成，生成 {len(commands)} 条遥调策略，"
+                                    "未提交学员台指令入口。"
+                                )
+                            if record_log:
+                                committed_runtime_logs.append(
+                                    self._append_log(
+                                        state,
+                                        "策略控制",
+                                        "开环未下发" if commands else "无可用策略",
+                                        state.status,
+                                        level="ok" if commands else "warn",
+                                        simu_time=str(plan.get("time", "--")),
+                                        persist_runtime=False,
+                                    )
+                                )
+                        if fetch_error and record_log:
+                            committed_runtime_logs.append(
+                                self._append_log(
+                                    state,
+                                    "数据状态",
+                                    "实时获取失败",
+                                    fetch_error,
+                                    level="warn",
+                                    simu_time=str(plan.get("time", "--")),
+                                    persist_runtime=False,
+                                )
+                            )
+                        state.revision += 1
+                        committed = True
+
+            if not committed:
+                return self._serialize_cancelled_cycle(
+                    service,
+                    state,
+                    clear_sending=True,
+                )
+            for entry in committed_runtime_logs:
+                self._persist_runtime_log(state, entry)
+
+            if dispatch_claimed and dispatch_payload is not None:
+                response_runtime_logs: List[Dict[str, Any]] = []
+                transport_started = False
+
+                def mark_transport_started() -> None:
+                    nonlocal transport_started
+                    with state.lock:
+                        controller_valid = (
+                            state.operation_epoch == operation_epoch
+                            and (not cycle_requires_enabled or state.enabled)
+                            and self._service_instance_id(service)
+                            == state.service_instance_id
+                            and state.pending_dispatch_clock_key == dispatch_clock_key
+                            and state.pending_dispatch_generation_key
+                            == dispatch_generation_key
                         )
-            if fetch_error and record_log:
-                with state.lock:
-                    self._append_log(state, "数据状态", "实时获取失败", fetch_error, level="warn", simu_time=str(plan.get("time", "--")))
-            with state.lock:
-                state.revision += 1
+                        if not controller_valid:
+                            raise RuntimeError(
+                                "控制周期状态或待下发声明已失效，未提交学员台指令。"
+                            )
+                        transport_started = True
+                        if dispatch_clock_key:
+                            state.last_dispatched_clock_key = dispatch_clock_key
+                            state.last_dispatched_generation_key = dispatch_generation_key
+                        if (
+                            state.pending_dispatch_clock_key == dispatch_clock_key
+                            and state.pending_dispatch_generation_key == dispatch_generation_key
+                        ):
+                            state.pending_dispatch_clock_key = ""
+                            state.pending_dispatch_generation_key = ()
+
+                try:
+                    if dispatch_ticket is not None:
+                        with state.lock:
+                            dispatch_permit = dispatch_ticket.prepare(
+                                dispatch_payload,
+                                on_transport_start=mark_transport_started,
+                            )
+                        result = dispatch_permit.submit()
+                    else:
+                        result = self._submit_commands_for_service(
+                            service,
+                            state,
+                            dispatch_payload,
+                            on_transport_start=mark_transport_started,
+                        )
+                except Exception as exc:
+                    with state.lock:
+                        if (
+                            not transport_started
+                            and state.pending_dispatch_clock_key == dispatch_clock_key
+                            and state.pending_dispatch_generation_key == dispatch_generation_key
+                        ):
+                            state.pending_dispatch_clock_key = ""
+                            state.pending_dispatch_generation_key = ()
+                        result_guard = (
+                            dispatch_ticket.guard()
+                            if dispatch_ticket is not None
+                            else self._candidate_generation_guard(
+                                service,
+                                view,
+                                receive_signature,
+                            )
+                        )
+                        with result_guard as generation_valid:
+                            controller_valid = (
+                                state.operation_epoch == operation_epoch
+                                and (not cycle_requires_enabled or state.enabled)
+                                and self._service_instance_id(service) == state.service_instance_id
+                            )
+                            if generation_valid and controller_valid:
+                                state.status = (
+                                    f"学员台指令入口提交失败：{exc}；"
+                                    "当前仿真时刻不再重复下发。"
+                                )
+                                if record_log:
+                                    response_runtime_logs.append(
+                                        self._append_log(
+                                            state,
+                                            "学员台响应",
+                                            "下发失败",
+                                            state.status,
+                                            level="error",
+                                            simu_time=str(plan.get("time", "--")),
+                                            persist_runtime=False,
+                                        )
+                                    )
+                else:
+                    accepted = (
+                        int(_number(result.get("set_values"), len(commands)) or 0)
+                        if isinstance(result, Mapping)
+                        else len(commands)
+                    )
+                    with state.lock:
+                        result_guard = (
+                            dispatch_ticket.guard()
+                            if dispatch_ticket is not None
+                            else self._candidate_generation_guard(
+                                service,
+                                view,
+                                receive_signature,
+                            )
+                        )
+                        with result_guard as generation_valid:
+                            controller_valid = (
+                                state.operation_epoch == operation_epoch
+                                and (not cycle_requires_enabled or state.enabled)
+                                and self._service_instance_id(service) == state.service_instance_id
+                            )
+                            if generation_valid and controller_valid:
+                                state.last_sent_at = _now_text()
+                                state.status = f"已向学员台指令入口提交 {accepted} 条遥调指令。"
+                                if record_log:
+                                    response_runtime_logs.append(
+                                        self._append_log(
+                                            state,
+                                            "学员台响应",
+                                            "下发成功",
+                                            f"学员台指令入口接受遥调指令 {accepted} 条；策略时刻 {plan.get('time', '--')}",
+                                            level="ok",
+                                            simu_time=str(plan.get("time", "--")),
+                                            persist_runtime=False,
+                                        )
+                                    )
+                for entry in response_runtime_logs:
+                    self._persist_runtime_log(state, entry)
         finally:
             with state.lock:
                 state.sending = False
                 state.revision += 1
             state.run_lock.release()
-        return self.state(model_id)
+        return self._serialize_for_service(service, state)
 
-    def _serialize(self, state: _ControllerState) -> Dict[str, Any]:
+    def _serialize_current_lifecycle(self, state: _ControllerState) -> Dict[str, Any]:
+        try:
+            current = self._state_for(state.model_id)
+        except KeyError:
+            current = state
+        return self._serialize(current)
+
+    def _serialize_with_prerequisite(
+        self,
+        state: _ControllerState,
+        prerequisite: Mapping[str, Any],
+    ) -> Dict[str, Any]:
         with state.lock:
             return {
                 "modelId": state.model_id,
@@ -3080,93 +7989,307 @@ class TraineeRenewableControlManager:
                 "lastCalculatedAt": state.last_calculated_at,
                 "lastSentAt": state.last_sent_at,
                 "lastDispatchedClockKey": state.last_dispatched_clock_key,
+                "lastDispatchedGenerationKey": copy.deepcopy(list(state.last_dispatched_generation_key)),
                 "revision": state.revision,
                 "logs": copy.deepcopy(state.logs),
                 "trend": copy.deepcopy(state.trend),
+                **prerequisite,
             }
 
+    def _serialize_for_service(
+        self,
+        service: Any,
+        state: _ControllerState,
+    ) -> Dict[str, Any]:
+        prerequisite = self._receive_prerequisite_for_service(service)
+        return self._serialize_with_prerequisite(state, prerequisite)
+
+    def _serialize(self, state: _ControllerState) -> Dict[str, Any]:
+        try:
+            service = self._service_for(state.model_id)
+        except KeyError:
+            service = None
+        if (
+            service is None
+            or self._service_instance_id(service) != state.service_instance_id
+        ):
+            prerequisite = {
+                "receiveActive": False,
+                "receiveConfigured": False,
+                "ready": False,
+                "canRun": False,
+                "canCalculate": False,
+                "canDispatch": False,
+                "prerequisiteStatus": "模型生命周期已失效或已退休。",
+                "dispatchStatus": "模型生命周期已失效或已退休。",
+            }
+            return self._serialize_with_prerequisite(state, prerequisite)
+        return self._serialize_for_service(service, state)
+
     def state(self, model_id: Optional[str], *, refresh: bool = False) -> Dict[str, Any]:
-        state = self._state_for(model_id)
+        service = self._service_for(model_id)
+        return self.state_for_service(service, refresh=refresh)
+
+    def state_for_service(self, service: Any, *, refresh: bool = False) -> Dict[str, Any]:
+        state = self._state_for_live_service(service)
         now = time.monotonic()
         if refresh and not state.enabled and now - state.last_preview_started >= 0.9:
             with state.lock:
-                state.last_preview_started = now
-            return self.collect_once(model_id)
-        return self._serialize(state)
+                service_lock = getattr(service, "lock", None)
+                with (service_lock if service_lock is not None else nullcontext()):
+                    self._require_active_service_for_state_locked(service, state)
+                    state.last_preview_started = now
+            return self._collect_once_for_service(
+                service,
+                state,
+                raise_on_retired=True,
+            )
+        return self._serialize_for_service(service, state)
+
+    def _submit_background_cycle(
+        self,
+        state: _ControllerState,
+        *,
+        timestamp_attr: str,
+        timestamp: float,
+        callback: Callable[..., Dict[str, Any]],
+        args: Tuple[Any, ...],
+        kwargs: Mapping[str, Any],
+        service: Any = None,
+    ) -> bool:
+        def run_pending_cycle() -> Dict[str, Any]:
+            try:
+                return callback(*args, **dict(kwargs))
+            finally:
+                with state.lock:
+                    state.background_cycle_pending = False
+
+        with self._background_submit_lock:
+            if self._closed or self._stop_event.is_set():
+                return False
+            if service is not None and not self._service_is_current_registry_instance(service):
+                return False
+            with state.lock:
+                service_lock = getattr(service, "lock", None) if service is not None else None
+                with (service_lock if service_lock is not None else nullcontext()):
+                    if service is not None and not (
+                        self._service_instance_active_locked(service)
+                        and self._service_instance_id(service) == state.service_instance_id
+                    ):
+                        return False
+                    if state.sending or state.background_cycle_pending or state.run_lock.locked():
+                        return False
+                    state.background_cycle_pending = True
+                    setattr(state, timestamp_attr, timestamp)
+                    try:
+                        self._executor.submit(run_pending_cycle)
+                    except Exception:
+                        state.background_cycle_pending = False
+                        raise
+        return True
 
     def apply_action(self, model_id: Optional[str], payload: Mapping[str, Any]) -> Dict[str, Any]:
-        state = self._state_for(model_id)
+        service = self._service_for(model_id)
+        state = self._state_for_service(service)
+        self._require_active_service_for_state(service, state)
         action = str(payload.get("action", "state")).strip().lower()
         settings_payload = payload.get("settings") if isinstance(payload.get("settings"), Mapping) else payload
         if action in {"update_settings", "settings"}:
             with state.lock:
-                next_settings = state.settings.updated(settings_payload)
-                self._persist_configuration(state.model_id, next_settings, state.loop_mode)
-                state.settings = next_settings
-                state.status = "新能源实时控制参数已更新并持久化。"
-                state.revision += 1
-            return self._serialize(state)
+                service_lock = getattr(service, "lock", None)
+                with (service_lock if service_lock is not None else nullcontext()):
+                    self._require_active_service_for_state_locked(service, state)
+                    next_settings = state.settings.updated(settings_payload)
+                    self._persist_configuration(service, next_settings, state.loop_mode)
+                    if next_settings != state.settings:
+                        state.operation_epoch += 1
+                    state.settings = next_settings
+                    state.status = "新能源实时控制参数已更新并持久化。"
+                    state.revision += 1
+            return self._serialize_for_service(service, state)
         if action in {"set_loop_mode", "loop_mode"}:
             next_mode = "closed" if str(payload.get("loop_mode", payload.get("loopMode", "open"))).lower() == "closed" else "open"
+            runtime_log_entry = None
             with state.lock:
-                previous = state.loop_mode
-                self._persist_configuration(state.model_id, state.settings, next_mode)
-                state.loop_mode = next_mode
-                state.status = "闭环模式已启用，后续策略由后台下发执行。" if next_mode == "closed" else "开环模式已启用，后台只计算并记录日志。"
-                self._append_log(state, "策略控制", "方式切换", f"{previous} -> {next_mode}；{state.status}", simu_time=state.last_plan.get("time", "--") if state.last_plan else "--")
-                state.revision += 1
-            return self._serialize(state)
+                service_lock = getattr(service, "lock", None)
+                with (service_lock if service_lock is not None else nullcontext()):
+                    self._require_active_service_for_state_locked(service, state)
+                    previous = state.loop_mode
+                    self._persist_configuration(service, state.settings, next_mode)
+                    if next_mode != previous:
+                        state.operation_epoch += 1
+                    state.loop_mode = next_mode
+                    state.status = "闭环模式已启用，后续策略由后台下发执行。" if next_mode == "closed" else "开环模式已启用，后台只计算并记录日志。"
+                    runtime_log_entry = self._append_log(
+                        state,
+                        "策略控制",
+                        "方式切换",
+                        f"{previous} -> {next_mode}；{state.status}",
+                        simu_time=state.last_plan.get("time", "--") if state.last_plan else "--",
+                        persist_runtime=False,
+                    )
+                    state.revision += 1
+            try:
+                self._persist_runtime_log_for_service(service, state, runtime_log_entry)
+            except Exception:
+                pass
+            return self._serialize_for_service(service, state)
         if action == "start":
+            blocked = self._reject_without_receive_for_service(
+                service,
+                state,
+                action_label="启动实时控制",
+                record_log=True,
+                raise_on_retired=True,
+            )
+            if blocked is not None:
+                return blocked
+            runtime_log_entry = None
             with state.lock:
-                state.enabled = True
-                state.last_auto_started = 0.0
-                state.status = f"{'闭环' if state.loop_mode == 'closed' else '开环'}实时控制已在学员台后台启动。"
-                self._append_log(state, "策略控制", "启动", state.status, level="ok", simu_time=state.last_plan.get("time", "--") if state.last_plan else "--")
-                state.revision += 1
-            return self.run_once(model_id, trigger="start", allow_dispatch=True, record_log=True)
+                service_lock = getattr(service, "lock", None)
+                with (service_lock if service_lock is not None else nullcontext()):
+                    self._require_active_service_for_state_locked(service, state)
+                    state.operation_epoch += 1
+                    state.enabled = True
+                    state.last_auto_started = 0.0
+                    state.status = f"{'闭环' if state.loop_mode == 'closed' else '开环'}实时控制已在学员台后台启动。"
+                    runtime_log_entry = self._append_log(
+                        state,
+                        "策略控制",
+                        "启动",
+                        state.status,
+                        level="ok",
+                        simu_time=state.last_plan.get("time", "--") if state.last_plan else "--",
+                        persist_runtime=False,
+                    )
+                    state.revision += 1
+            if runtime_log_entry is not None:
+                self._persist_runtime_log_for_service(service, state, runtime_log_entry)
+            return self._run_once_for_service(
+                service,
+                state,
+                trigger="start",
+                allow_dispatch=True,
+                record_log=True,
+                raise_on_retired=True,
+            )
         if action == "stop":
+            runtime_log_entry = None
             with state.lock:
-                was_enabled = state.enabled
-                state.enabled = False
-                state.status = "实时控制已在学员台后台停止。"
-                if was_enabled:
-                    self._append_log(state, "策略控制", "停止", state.status, level="warn", simu_time=state.last_plan.get("time", "--") if state.last_plan else "--")
-                state.revision += 1
-            return self._serialize(state)
+                service_lock = getattr(service, "lock", None)
+                with (service_lock if service_lock is not None else nullcontext()):
+                    self._require_active_service_for_state_locked(service, state)
+                    was_enabled = state.enabled
+                    state.operation_epoch += 1
+                    state.enabled = False
+                    state.status = "实时控制已在学员台后台停止。"
+                    if was_enabled:
+                        runtime_log_entry = self._append_log(
+                            state,
+                            "策略控制",
+                            "停止",
+                            state.status,
+                            level="warn",
+                            simu_time=state.last_plan.get("time", "--") if state.last_plan else "--",
+                            persist_runtime=False,
+                        )
+                    state.revision += 1
+            if runtime_log_entry is not None:
+                self._persist_runtime_log_for_service(service, state, runtime_log_entry)
+            return self._serialize_for_service(service, state)
         if action in {"run_once", "calculate"}:
-            return self.run_once(model_id, trigger="manual", allow_dispatch=True, record_log=True)
+            return self._run_once_for_service(
+                service,
+                state,
+                trigger="manual",
+                allow_dispatch=True,
+                record_log=True,
+                raise_on_retired=True,
+            )
         if action in {"refresh", "preview"}:
-            return self.run_once(model_id, trigger="preview", allow_dispatch=False, record_log=False)
-        return self._serialize(state)
+            return self._run_once_for_service(
+                service,
+                state,
+                trigger="preview",
+                allow_dispatch=False,
+                record_log=False,
+                raise_on_retired=True,
+            )
+        return self._serialize_for_service(service, state)
 
     def _worker_loop(self) -> None:
         while not self._stop_event.is_set():
             now = time.monotonic()
+            enumeration_succeeded = True
             try:
                 services = list(self.services.iter_services()) if hasattr(self.services, "iter_services") else [self.services]
             except Exception:
                 services = []
-            live_ids = set()
+                enumeration_succeeded = False
             for target in services:
-                model_id = str(getattr(target, "model_id", "default"))
-                live_ids.add(model_id)
-                state = self._state_for(model_id)
+                if not self._service_is_current_registry_instance(target):
+                    continue
+                try:
+                    state = self._state_for_live_service(target)
+                    receive_prerequisite = self._receive_prerequisite_for_service(target)
+                except (KeyError, RuntimeError):
+                    continue
+                if not receive_prerequisite["canRun"]:
+                    if state.enabled:
+                        try:
+                            self.receive_state_changed_for_service(target)
+                        except RuntimeError:
+                            pass
+                    continue
                 with state.lock:
-                    control_due = state.enabled and not state.sending and now - state.last_auto_started >= state.settings.interval_seconds
+                    cycle_idle = (
+                        not state.sending
+                        and not state.background_cycle_pending
+                        and not state.run_lock.locked()
+                    )
+                    control_due = state.enabled and cycle_idle and now - state.last_auto_started >= state.settings.interval_seconds
                     monitor_due = (
                         not state.enabled
-                        and not state.sending
+                        and cycle_idle
                         and now - state.last_preview_started >= state.settings.interval_seconds
                     )
-                    if control_due:
-                        state.last_auto_started = now
-                    elif monitor_due:
-                        state.last_preview_started = now
                 if control_due:
-                    self._executor.submit(self.run_once, model_id, trigger="auto", allow_dispatch=True, record_log=True)
+                    self._submit_background_cycle(
+                        state,
+                        timestamp_attr="last_auto_started",
+                        timestamp=now,
+                        callback=self._run_once_for_service,
+                        args=(target, state),
+                        kwargs={
+                            "trigger": "auto",
+                            "allow_dispatch": True,
+                            "record_log": True,
+                            "raise_on_retired": False,
+                        },
+                        service=target,
+                    )
                 elif monitor_due:
-                    self._executor.submit(self.collect_once, model_id)
-            with self._states_lock:
-                for stale in set(self._states) - live_ids:
-                    self._states.pop(stale, None)
+                    self._submit_background_cycle(
+                        state,
+                        timestamp_attr="last_preview_started",
+                        timestamp=now,
+                        callback=self._collect_once_for_service,
+                        args=(target, state),
+                        kwargs={"raise_on_retired": False},
+                        service=target,
+                    )
+            if enumeration_succeeded:
+                with self._states_lock:
+                    states = list(self._states_by_service_instance.values())
+                for state in states:
+                    try:
+                        current = self._service_for(state.model_id)
+                    except KeyError:
+                        current = None
+                    if (
+                        current is not None
+                        and self._service_instance_id(current) == state.service_instance_id
+                    ):
+                        continue
+                    self._retire_state(state)
             self._stop_event.wait(0.1)

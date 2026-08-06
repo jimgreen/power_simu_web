@@ -32,6 +32,10 @@
 # ACNode         盒型开关-7              1
 # ACNode         盒型开关-9              1
 # ACNode         交流负荷-1              1
+# ACNode         交流电化学储能-23          1
+# ACNode         交流风力发电机-24          1
+# ACNode         交流光伏发电机-25          1
+# ACNode         交流电化学储能-26          1
 # ACRealBs       交流母线（竖向）-1          1
 # ACBranch       交流线路（自适应）-20        1
 # ACBranch       交流线路（自适应）-21        1
@@ -60,6 +64,10 @@
 # ACGenerator    柴油发电机-2             1
 # ACGenerator    柴油发电机-3             1
 # ACGenerator    柴油发电机-4             1
+# ACGenerator    交流电化学储能-23          1
+# ACGenerator    交流风力发电机-24          1
+# ACGenerator    交流光伏发电机-25          1
+# ACGenerator    交流电化学储能-26          1
 # ACZeroBranch   交流零阻抗支路（自适应）-1      1
 # ACBreak        交流断路器-1             1
 # ACBreak        交流断路器-2             1
@@ -70,6 +78,10 @@
 # ACBreak        盒型开关-7              1
 # ACBreak        盒型开关-8              1
 # ACBreak        盒型开关-9              1
+# ACBreak        盒型开关-10             1
+# ACBreak        盒型开关-11             1
+# ACBreak        盒型开关-12             1
+# ACBreak        盒型开关-13             1
 # DCNode         风机变流器-1             1
 # DCNode         风机变流器-2             1
 # DCNode         风机变流器-3             1
@@ -107,11 +119,13 @@
 # DCNode         光伏变流器-1             1
 # DCNode         光伏变流器-2             1
 # DCNode         光伏变流器-3             1
+# DCNode         直流负荷-1              1
 # DCRealBs       直流母线（竖向）-1          1
 # DCBranch       光伏直流线路-1            1
 # DCBranch       光伏直流线路-2            1
 # DCBranch       光伏直流线路-3            1
 # DCBranch       燃料电池直流线路-1          1
+# DCLoad         直流负荷-1              1
 # DCGenerator    直流光伏-1              1
 # DCGenerator    直流光伏-2              1
 # DCGenerator    直流光伏-3              1
@@ -145,6 +159,7 @@
 # DCBreak        直流断路器-30            1
 # DCBreak        直流断路器-31            1
 # DCBreak        直流断路器-32            1
+# DCBreak        直流断路器-33            1
 # DCDCConverter  光伏变流器-1             1
 # DCDCConverter  光伏变流器-2             1
 # DCDCConverter  光伏变流器-3             1
@@ -220,6 +235,18 @@
 # ACGenerator    柴油发电机-4             p_set     0
 # ACGenerator    柴油发电机-4             q_set     0
 # ACGenerator    柴油发电机-4             v_set     380
+# ACGenerator    交流电化学储能-23          p_set     0.0
+# ACGenerator    交流电化学储能-23          q_set     0.0
+# ACGenerator    交流电化学储能-23          v_set     380
+# ACGenerator    交流风力发电机-24          p_set     0
+# ACGenerator    交流风力发电机-24          q_set     0
+# ACGenerator    交流风力发电机-24          v_set     380
+# ACGenerator    交流光伏发电机-25          p_set     0
+# ACGenerator    交流光伏发电机-25          q_set     0
+# ACGenerator    交流光伏发电机-25          v_set     380
+# ACGenerator    交流电化学储能-26          p_set     0.0
+# ACGenerator    交流电化学储能-26          q_set     0.0
+# ACGenerator    交流电化学储能-26          v_set     380
 # DCGenerator    直流光伏-1              p_set     5.0
 # DCGenerator    直流光伏-1              v_set     400
 # DCGenerator    直流光伏-1              i_set     0.0
@@ -261,10 +288,10 @@
 # DCDCConverter  光伏变流器-3             v_set     400
 # DCDCConverter  储能变流器-1             p_set     0
 # DCDCConverter  储能变流器-1             i_set     0
-# DCDCConverter  储能变流器-1             v_set     750
+# DCDCConverter  储能变流器-1             v_set     400
 # DCDCConverter  储能变流器-2             p_set     0
 # DCDCConverter  储能变流器-2             i_set     0
-# DCDCConverter  储能变流器-2             v_set     750
+# DCDCConverter  储能变流器-2             v_set     400
 # DCDCConverter  储能变流器-3             p_set     0
 # DCDCConverter  储能变流器-3             i_set     0
 # DCDCConverter  储能变流器-3             v_set     750
@@ -337,6 +364,10 @@
 # ACBreak   盒型开关-7    1
 # ACBreak   盒型开关-8    1
 # ACBreak   盒型开关-9    1
+# ACBreak   盒型开关-10   1
+# ACBreak   盒型开关-11   1
+# ACBreak   盒型开关-12   1
+# ACBreak   盒型开关-13   1
 # DCBreak   直流断路器-1   1
 # DCBreak   直流断路器-2   1
 # DCBreak   直流断路器-3   1
@@ -360,13 +391,16 @@
 # DCBreak   直流断路器-30  1
 # DCBreak   直流断路器-31  1
 # DCBreak   直流断路器-32  1
+# DCBreak   直流断路器-33  1
 </CbOpenStat>
 <StorageSoc>
-@ dev_type     idx  name     soc_curr
-# DCGenerator  4    电化学储能-1  0.5
-# DCGenerator  5    电化学储能-2  0.5
-# DCGenerator  6    电化学储能-3  0.5
-# DCGenerator  7    电化学储能-4  0.5
-# DCGenerator  8    电化学储能-5  0.5
-# DCGenerator  9    电化学储能-6  0.5
+@ dev_type     idx  name        soc_curr
+# ACGenerator  23   交流电化学储能-23  50.0
+# ACGenerator  26   交流电化学储能-26  50.0
+# DCGenerator  4    电化学储能-1     50.0
+# DCGenerator  5    电化学储能-2     50.0
+# DCGenerator  6    电化学储能-3     50.0
+# DCGenerator  7    电化学储能-4     50.0
+# DCGenerator  8    电化学储能-5     50.0
+# DCGenerator  9    电化学储能-6     50.0
 </StorageSoc>

@@ -33,10 +33,9 @@ def test_trainee_model_management_operations_do_not_switch_display_model():
     script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
 
     for function_name in (
-        "createNewModelFromArchive",
-        "importDefinitionModel",
-        "updateModelFromArchive",
+        "createNewModelSlot",
         "cloneManagedModel",
+        "initializeModelFromLink",
     ):
         assert "setActiveModel(" not in _function_body(script, function_name)
 

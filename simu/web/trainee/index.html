@@ -46,6 +46,8 @@
         <button data-nav-page="measurements">实时量测</button>
         <button data-nav-page="commands">控制指令</button>
         <button data-nav-page="renewable">新能源控制</button>
+        <button data-nav-page="manual-changes">人工修改</button>
+        <button data-nav-page="parameters">参数配置</button>
         <button data-nav-page="history">运行日志</button>
       </nav>
 
@@ -70,69 +72,199 @@
             <div class="overview-main-grid">
               <section class="panel overview-energy-panel">
                 <div class="overview-energy-board" aria-label="学员台接收的交直流微电网能量流向">
-                  <div class="energy-flow-map" data-flow-layout="single-line">
-                    <section class="energy-source-stack" aria-label="新能源">
-                      <div class="energy-column-title">新能源</div>
-                      <article class="energy-device wind energy-source-node" id="overviewFlowWindNode" data-flow-active="false">
-                        <span>风力发电</span>
-                        <strong id="overviewFlowWindPower">--</strong>
-                        <small id="overviewFlowWindMeta">风速 --</small>
-                      </article>
-                      <article class="energy-device solar energy-source-node" id="overviewFlowSolarNode" data-flow-active="false">
-                        <span>光伏发电</span>
-                        <strong id="overviewFlowSolarPower">--</strong>
-                        <small id="overviewFlowSolarMeta">辐照 --</small>
-                      </article>
+                  <div class="energy-flow-map" data-flow-layout="topology-aware">
+                    <svg class="energy-icon-defs" aria-hidden="true">
+                      <defs>
+                        <symbol id="energy-icon-wind-turbine" viewBox="0 0 28 28">
+                          <path d="M14 12v13M10 25h8" />
+                          <circle cx="14" cy="10" r="2" />
+                          <path d="M14 8 12 2c3 0 5 2 4 5M12.5 11l-6 2c0-3 2-5 5-4M15.5 11l4 5c-3 1-6-1-5-4" />
+                        </symbol>
+                        <symbol id="energy-icon-solar-array" viewBox="0 0 28 28">
+                          <path d="M5 7h18l2 12H3L5 7ZM9 7 8 19M14 7v12M19 7l1 12M4 13h20M11 23h6M14 19v4" />
+                        </symbol>
+                        <symbol id="energy-icon-battery-storage" viewBox="0 0 28 28">
+                          <rect x="4" y="7" width="19" height="15" rx="2" />
+                          <path d="M23 12h2v5h-2M8 11v7M12 11v7M16 11v7M20 11v7" />
+                        </symbol>
+                        <symbol id="energy-icon-electric-load" viewBox="0 0 28 28">
+                          <path d="M9 3v7M19 3v7M7 10h14v4a7 7 0 0 1-14 0v-4ZM14 21v4M10 25h8M15 11l-3 5h4l-3 5" />
+                        </symbol>
+                        <symbol id="energy-icon-diesel-generator" viewBox="0 0 28 28">
+                          <rect x="3" y="7" width="22" height="15" rx="2" />
+                          <circle cx="10" cy="14.5" r="4" />
+                          <path d="M10 12v5M8 14.5h4M16 11h6M16 15h6M16 19h4M6 24v-2M22 24v-2" />
+                        </symbol>
+                        <symbol id="energy-icon-acdc-converter" viewBox="0 0 36 36">
+                          <rect x="4" y="5" width="28" height="26" rx="3" />
+                          <path d="M7 18h22M9 12h8M11 9v6M21 11c2-3 5-3 7 0M21 25h7M24 22v6M15 16l3 2-3 2M21 20l-3-2 3-2" />
+                        </symbol>
+                      </defs>
+                    </svg>
+                    <section class="energy-source-stack" data-overview-region="dc" aria-label="直流电源与负荷侧">
+                      <div class="energy-column-title">直流电源与负荷侧</div>
+                      <div class="energy-device-list">
+                        <article class="energy-device wind energy-side-node" data-overview-group="dcWind" data-flow-side="left" data-flow-active="false" data-flow-direction="idle" hidden>
+                          <div class="energy-device-card">
+                            <span>直流并网风电</span>
+                            <strong data-overview-power>--</strong>
+                            <small data-overview-meta>等待量测</small>
+                          </div>
+                          <div class="energy-device-icon" role="img" aria-label="风力发电机">
+                            <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-wind-turbine"></use></svg>
+                          </div>
+                        </article>
+                        <article class="energy-device solar energy-side-node" data-overview-group="dcSolar" data-flow-side="left" data-flow-active="false" data-flow-direction="idle" hidden>
+                          <div class="energy-device-card">
+                            <span>直流并网光伏</span>
+                            <strong data-overview-power>--</strong>
+                            <small data-overview-meta>等待量测</small>
+                          </div>
+                          <div class="energy-device-icon" role="img" aria-label="光伏阵列">
+                            <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-solar-array"></use></svg>
+                          </div>
+                        </article>
+                        <article class="energy-device storage energy-side-node" data-overview-group="dcGridFollowingStorage" data-flow-side="left" data-flow-active="false" data-flow-direction="idle" hidden>
+                          <div class="energy-device-card">
+                            <span>直流跟网储能</span>
+                            <strong data-overview-power>--</strong>
+                            <small data-overview-meta>等待量测</small>
+                          </div>
+                          <div class="energy-device-icon" role="img" aria-label="电池储能">
+                            <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-battery-storage"></use></svg>
+                          </div>
+                        </article>
+                        <article class="energy-device load energy-side-node" data-overview-group="dcLoad" data-flow-side="left" data-flow-active="false" data-flow-direction="idle" hidden>
+                          <div class="energy-device-card">
+                            <span>直流负荷</span>
+                            <strong data-overview-power>--</strong>
+                            <small data-overview-meta>等待量测</small>
+                          </div>
+                          <div class="energy-device-icon" role="img" aria-label="电气负荷">
+                            <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-electric-load"></use></svg>
+                          </div>
+                        </article>
+                      </div>
                     </section>
 
-                    <div class="energy-bus-rail left" id="overviewEnergyLeftBus" aria-label="新能源汇集母线">
-                      <span>新能源汇集母线</span>
+                    <div class="energy-bus-rail left" id="overviewEnergyLeftBus" aria-label="直流母线">
+                      <span>直流母线</span>
                     </div>
                     <div class="energy-main-trunk" id="overviewEnergyMainTrunk" data-flow-active="false" aria-hidden="true">
                       <i class="energy-flow-stream energy-flow-main-stream" aria-hidden="true"></i>
                       <span>交直流汇流母线</span>
                     </div>
-                    <article class="energy-green-share" aria-label="实时绿电指标">
-                      <div class="energy-green-metric">
-                        <span>实时绿电占比</span>
-                        <strong id="overviewFlowGreenShare">--</strong>
-                      </div>
+                    <article class="energy-green-share" aria-label="绿电指标">
                       <div class="energy-green-metric">
                         <span>绿电功率</span>
                         <strong id="overviewFlowGreenPower">--</strong>
                       </div>
+                      <div class="energy-green-metric">
+                        <span>绿电占比</span>
+                        <strong id="overviewFlowGreenShare">--</strong>
+                      </div>
+                    </article>
+                    <article class="energy-device converter energy-acdc-converter" data-overview-group="acdcConverter" data-flow-side="center" data-flow-active="false" data-flow-direction="idle" hidden>
+                      <div class="energy-device-icon energy-converter-icon" role="img" aria-label="AC/DC变流器">
+                        <svg aria-hidden="true" viewBox="0 0 36 36"><use href="#energy-icon-acdc-converter"></use></svg>
+                      </div>
+                      <div class="energy-device-card energy-converter-card">
+                        <span>AC/DC变流器</span>
+                        <strong data-overview-power>--</strong>
+                        <small data-overview-meta>等待量测</small>
+                      </div>
                     </article>
 
-                    <section
-                      class="energy-storage-branch-wrap"
-                      id="overviewStorageFlowLink"
-                      data-storage-flow="idle"
-                      aria-label="储能支路"
-                    >
-                      <div class="energy-storage-branch" aria-hidden="true"></div>
-                      <article class="energy-device storage" id="overviewStorageFlowNode" data-storage-flow="idle">
-                        <span>储能功率</span>
-                        <strong id="overviewFlowStoragePower">--</strong>
-                        <small><b id="overviewFlowStorageDirection">待接收</b> · SOC <b id="overviewFlowSoc">--</b></small>
-                      </article>
+                    <section class="energy-grid-forming-stack" id="overviewGridFormingStack" data-overview-region="forming" aria-label="构网储能" hidden>
+                      <div class="energy-column-title">构网储能</div>
+                      <div class="energy-grid-forming-list">
+                        <section class="energy-storage-branch-wrap" data-overview-group-wrapper="dcGridFormingStorage" data-storage-flow="idle" hidden>
+                          <div class="energy-storage-branch" aria-hidden="true"></div>
+                          <article class="energy-device storage" data-overview-group="dcGridFormingStorage" data-flow-side="center" data-flow-active="false" data-flow-direction="idle" hidden>
+                            <div class="energy-device-icon" role="img" aria-label="直流构网电池储能">
+                              <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-battery-storage"></use></svg>
+                            </div>
+                            <div class="energy-device-card">
+                              <span>直流构网储能</span>
+                              <strong data-overview-power>--</strong>
+                              <small data-overview-meta>等待量测</small>
+                            </div>
+                          </article>
+                        </section>
+                        <section class="energy-storage-branch-wrap" data-overview-group-wrapper="acGridFormingStorage" data-storage-flow="idle" hidden>
+                          <div class="energy-storage-branch" aria-hidden="true"></div>
+                          <article class="energy-device storage" data-overview-group="acGridFormingStorage" data-flow-side="center" data-flow-active="false" data-flow-direction="idle" hidden>
+                            <div class="energy-device-card">
+                              <span>交流构网储能</span>
+                              <strong data-overview-power>--</strong>
+                              <small data-overview-meta>等待量测</small>
+                            </div>
+                            <div class="energy-device-icon" role="img" aria-label="交流构网电池储能">
+                              <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-battery-storage"></use></svg>
+                            </div>
+                          </article>
+                        </section>
+                      </div>
                     </section>
 
-                    <div class="energy-bus-rail right" id="overviewEnergyRightBus" aria-label="负荷与柴发母线">
-                      <span>负荷与柴发母线</span>
+                    <div class="energy-bus-rail right" id="overviewEnergyRightBus" aria-label="交流母线">
+                      <span>交流母线</span>
                     </div>
 
-                    <section class="energy-terminal-stack" aria-label="负荷和柴发">
-                      <div class="energy-column-title">负荷与柴发</div>
-                      <article class="energy-device load energy-load-node" id="overviewFlowLoadNode" data-flow-active="false">
-                        <span>负荷用电</span>
-                        <strong id="overviewFlowLoadPower">--</strong>
-                        <small id="overviewFlowLoadMeta">需求 --</small>
-                      </article>
-                      <article class="energy-device diesel energy-diesel-node" id="overviewFlowDieselNode" data-flow-active="false">
-                        <span>柴油发电</span>
-                        <strong id="overviewFlowDieselPower">--</strong>
-                        <small>常规电源</small>
-                      </article>
+                    <section class="energy-terminal-stack" data-overview-region="ac" aria-label="交流电源与负荷侧">
+                      <div class="energy-column-title">交流电源与负荷侧</div>
+                      <div class="energy-device-list energy-terminal-list">
+                        <article class="energy-device wind energy-side-node" data-overview-group="acWind" data-flow-side="right" data-flow-active="false" data-flow-direction="idle" hidden>
+                          <div class="energy-device-icon" role="img" aria-label="风力发电机">
+                            <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-wind-turbine"></use></svg>
+                          </div>
+                          <div class="energy-device-card">
+                            <span>交流并网风电</span>
+                            <strong data-overview-power>--</strong>
+                            <small data-overview-meta>等待量测</small>
+                          </div>
+                        </article>
+                        <article class="energy-device solar energy-side-node" data-overview-group="acSolar" data-flow-side="right" data-flow-active="false" data-flow-direction="idle" hidden>
+                          <div class="energy-device-icon" role="img" aria-label="光伏阵列">
+                            <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-solar-array"></use></svg>
+                          </div>
+                          <div class="energy-device-card">
+                            <span>交流并网光伏</span>
+                            <strong data-overview-power>--</strong>
+                            <small data-overview-meta>等待量测</small>
+                          </div>
+                        </article>
+                        <article class="energy-device storage energy-side-node" data-overview-group="acGridFollowingStorage" data-flow-side="right" data-flow-active="false" data-flow-direction="idle" hidden>
+                          <div class="energy-device-icon" role="img" aria-label="电池储能">
+                            <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-battery-storage"></use></svg>
+                          </div>
+                          <div class="energy-device-card">
+                            <span>交流跟网储能</span>
+                            <strong data-overview-power>--</strong>
+                            <small data-overview-meta>等待量测</small>
+                          </div>
+                        </article>
+                        <article class="energy-device load energy-side-node" data-overview-group="acLoad" data-flow-side="right" data-flow-active="false" data-flow-direction="idle" hidden>
+                          <div class="energy-device-icon" role="img" aria-label="电气负荷">
+                            <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-electric-load"></use></svg>
+                          </div>
+                          <div class="energy-device-card">
+                            <span>交流负荷</span>
+                            <strong data-overview-power>--</strong>
+                            <small data-overview-meta>等待量测</small>
+                          </div>
+                        </article>
+                        <article class="energy-device diesel energy-side-node" data-overview-group="diesel" data-flow-side="right" data-flow-active="false" data-flow-direction="idle" hidden>
+                          <div class="energy-device-icon" role="img" aria-label="柴油发电机">
+                            <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-diesel-generator"></use></svg>
+                          </div>
+                          <div class="energy-device-card">
+                            <span>柴油发电</span>
+                            <strong data-overview-power>--</strong>
+                            <small data-overview-meta>等待量测</small>
+                          </div>
+                        </article>
+                      </div>
                     </section>
                   </div>
                 </div>
@@ -548,12 +680,18 @@
                 </div>
               </div>
                 <div id="renewableStrategyTabs" class="renewable-strategy-tabs" role="tablist" aria-label="控制策略设备分类">
-                  <button type="button" class="is-active" role="tab" data-renewable-strategy-tab="wind" aria-selected="true">风电</button>
-                  <button type="button" role="tab" data-renewable-strategy-tab="pv" aria-selected="false">光伏</button>
-                  <button type="button" role="tab" data-renewable-strategy-tab="storage" aria-selected="false">储能</button>
+                  <button type="button" class="is-active" role="tab" data-renewable-strategy-tab="ac-wind" aria-selected="true">交流风电</button>
+                  <button type="button" role="tab" data-renewable-strategy-tab="dc-wind" aria-selected="false">直流风电</button>
+                  <button type="button" role="tab" data-renewable-strategy-tab="ac-pv" aria-selected="false">交流光伏</button>
+                  <button type="button" role="tab" data-renewable-strategy-tab="dc-pv" aria-selected="false">直流光伏</button>
+                  <button type="button" role="tab" data-renewable-strategy-tab="ac-grid-storage" aria-selected="false">交流跟网储能</button>
+                  <button type="button" role="tab" data-renewable-strategy-tab="dc-grid-storage" aria-selected="false">直流跟网储能</button>
+                  <button type="button" role="tab" data-renewable-strategy-tab="ac-balance-storage" aria-selected="false">交流平衡储能</button>
+                  <button type="button" role="tab" data-renewable-strategy-tab="dc-balance-storage" aria-selected="false">直流平衡储能</button>
                   <button type="button" role="tab" data-renewable-strategy-tab="diesel" aria-selected="false">柴发</button>
-                  <button type="button" role="tab" data-renewable-strategy-tab="converter" aria-selected="false">变流</button>
+                  <button type="button" role="tab" data-renewable-strategy-tab="converter" aria-selected="false">ACDC变流</button>
                 </div>
+                <div id="renewableStrategyDiagnostics" class="renewable-strategy-diagnostics" aria-live="polite" hidden></div>
                 <div id="renewableCommandTable" class="runtime-device-wrap"></div>
               </section>
 
@@ -614,6 +752,74 @@
                 </div>
               </section>
             </div>
+          </div>
+        </section>
+
+        <section class="page-section" data-page="manual-changes">
+          <section class="panel manual-definition-changes-panel">
+            <div class="panel-head">
+              <div class="panel-title-group">
+                <h2>人工修改</h2>
+                <span id="manualDefinitionChangesSummary">0 项修改 · 已选 0 项</span>
+              </div>
+              <div class="manual-definition-changes-actions">
+                <button id="refreshManualChanges" type="button">刷新</button>
+                <button id="retryPendingManualChanges" type="button" disabled>重试保存</button>
+                <button id="resetSelectedManualChanges" class="primary" type="button" disabled>恢复默认值</button>
+              </div>
+            </div>
+            <p id="manualDefinitionChangesMessage" class="manual-definition-changes-message" hidden></p>
+            <div id="manualDefinitionChangesTable" class="manual-definition-changes-wrap" aria-live="polite">
+              <div class="empty-state">当前模型没有人工修改</div>
+            </div>
+          </section>
+        </section>
+
+        <section class="page-section" data-page="parameters">
+          <div class="parameter-page-layout">
+            <section class="panel parameter-table-panel">
+              <div class="panel-head">
+                <div class="panel-title-group">
+                  <h2>WEB 运行参数</h2>
+                  <span id="runtimeParameterSummary">待加载</span>
+                </div>
+                <div class="panel-actions">
+                  <button id="restoreRuntimeParameterDefaults" type="button">恢复默认</button>
+                  <button id="undoRuntimeParameters" type="button">撤销修改</button>
+                  <button id="saveRuntimeParameters" class="primary" type="button">保存</button>
+                </div>
+              </div>
+              <form id="webRuntimeParameterForm" class="system-parameter-form web-runtime-parameter-form">
+                <table class="system-parameter-table web-runtime-parameter-table">
+                  <thead><tr><th>参数名称</th><th>当前值</th><th>设置值</th><th>单位</th></tr></thead>
+                  <tbody>
+                    <tr><td><strong>前端数据刷新周期</strong><small>页面轮询完成后等待时长</small></td><td id="currentWebRuntimeFrontendRefresh" class="numeric-cell">1</td><td><input id="webRuntimeFrontendRefresh" type="number" min="0.2" max="60" step="0.1" data-runtime-setting="frontend_refresh_seconds" /></td><td>s</td></tr>
+                    <tr><td><strong>前端请求超时</strong><small>学员台页面 API 最长等待</small></td><td id="currentWebRuntimeFrontendRequestTimeout" class="numeric-cell">30</td><td><input id="webRuntimeFrontendRequestTimeout" type="number" min="1" max="300" step="1" data-runtime-setting="frontend_request_timeout_seconds" /></td><td>s</td></tr>
+                    <tr><td><strong>运行日志分页条数</strong><small>每页展示的日志数量</small></td><td id="currentWebRuntimeLogPageSize" class="numeric-cell">20</td><td><input id="webRuntimeLogPageSize" type="number" min="5" max="200" step="1" data-runtime-setting="runtime_log_page_size" /></td><td>条</td></tr>
+                    <tr><td><strong>运行日志缓存上限</strong><small>浏览器内保留的日志数量</small></td><td id="currentWebRuntimeLogCacheLimit" class="numeric-cell">300</td><td><input id="webRuntimeLogCacheLimit" type="number" min="50" max="5000" step="10" data-runtime-setting="runtime_log_cache_limit" /></td><td>条</td></tr>
+                    <tr><td><strong>趋势历史保留点数</strong><small>曲线最大历史点数</small></td><td id="currentWebRuntimeTraceHistoryLimit" class="numeric-cell">45000</td><td><input id="webRuntimeTraceHistoryLimit" type="number" min="1000" max="200000" step="1000" data-runtime-setting="trace_history_limit" /></td><td>点</td></tr>
+                    <tr><td><strong>后台数据刷新周期</strong><small>学员台后台从模拟台拉取数据周期</small></td><td id="currentWebRuntimeBackendRefresh" class="numeric-cell">1</td><td><input id="webRuntimeBackendRefresh" type="number" min="0.1" max="60" step="0.1" data-runtime-setting="backend_refresh_seconds" /></td><td>s</td></tr>
+                    <tr><td><strong>后台请求超时</strong><small>实时交换请求最长等待</small></td><td id="currentWebRuntimeBackendRequestTimeout" class="numeric-cell">8</td><td><input id="webRuntimeBackendRequestTimeout" type="number" min="1" max="300" step="1" data-runtime-setting="backend_request_timeout_seconds" /></td><td>s</td></tr>
+                    <tr><td><strong>数据帧超时上限</strong><small>超过后阻断闭环下发</small></td><td id="currentWebRuntimeFrameAgeLimit" class="numeric-cell">15</td><td><input id="webRuntimeFrameAgeLimit" type="number" min="1" max="3600" step="1" data-runtime-setting="frame_age_limit_seconds" /></td><td>s</td></tr>
+                    <tr><td><strong>同帧持续上限</strong><small>同一仿真帧持续过久判定冻结</small></td><td id="currentWebRuntimeSameFrameLimit" class="numeric-cell">30</td><td><input id="webRuntimeSameFrameLimit" type="number" min="1" max="3600" step="1" data-runtime-setting="same_frame_limit_seconds" /></td><td>s</td></tr>
+                    <tr><td><strong>接收状态同步周期</strong><small>前端读取后台接收状态周期</small></td><td id="currentWebRuntimeReceiveStateSync" class="numeric-cell">5</td><td><input id="webRuntimeReceiveStateSync" type="number" min="0.5" max="60" step="0.5" data-runtime-setting="receive_state_sync_seconds" /></td><td>s</td></tr>
+                    <tr><td><strong>连续异常保护次数</strong><small>达到后停止接收并告警</small></td><td id="currentWebRuntimeReconnectAttempts" class="numeric-cell">3</td><td><input id="webRuntimeReconnectAttempts" type="number" min="1" max="20" step="1" data-runtime-setting="receive_max_reconnect_attempts" /></td><td>次</td></tr>
+                    <tr><td><strong>量测增量历史上限</strong><small>后台保留的量测变更批次数</small></td><td id="currentWebRuntimeMeasurementDeltaHistoryLimit" class="numeric-cell">200</td><td><input id="webRuntimeMeasurementDeltaHistoryLimit" type="number" min="10" max="5000" step="10" data-runtime-setting="measurement_delta_history_limit" /></td><td>批</td></tr>
+                  </tbody>
+                </table>
+              </form>
+            </section>
+            <section class="panel parameter-state-panel">
+              <div class="panel-head"><h2>当前状态</h2><span id="runtimeParameterState">--</span></div>
+              <dl class="parameter-state-list">
+                <div><dt>当前模型</dt><dd id="runtimeParameterModelName">--</dd></div>
+                <div><dt>最后保存</dt><dd id="runtimeParameterUpdatedAt">--</dd></div>
+                <div><dt>前端刷新</dt><dd id="runtimeParameterFrontendRefreshState">--</dd></div>
+                <div><dt>后台刷新</dt><dd id="runtimeParameterBackendRefreshState">--</dd></div>
+                <div><dt>请求超时</dt><dd id="runtimeParameterRequestTimeoutState">--</dd></div>
+                <div><dt>接收状态</dt><dd id="runtimeParameterReceiveState">--</dd></div>
+              </dl>
+            </section>
           </div>
         </section>
 

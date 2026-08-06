@@ -31,7 +31,10 @@ class TraineeRenewableDieselMetricsUiTest(unittest.TestCase):
     def test_acdc_feedback_uses_diesel_current_and_lower_limit_not_load(self):
         planner_block = self.backend.split("def calculate_renewable_control_plan", 1)[1].split("def _request_json", 1)[0]
         self.assertIn("diesel_down_margin = diesel_current_for_control - diesel_min", planner_block)
-        self.assertIn("candidate_effect = storage_delta", planner_block)
+        self.assertIn('side_aware_plan.get("dieselEffectKw")', planner_block)
+        self.assertIn("base_converter_effect_kw", planner_block)
+        self.assertIn("direct_ac_storage_effect_kw", planner_block)
+        self.assertIn("direct_acdc_effect_kw", planner_block)
         self.assertNotIn("candidate_effect = renewable_delta + storage_delta", planner_block)
         self.assertIn("predicted_diesel = diesel_current_for_control - candidate_effect", planner_block)
         self.assertIn("_diesel_boundary_violation", planner_block)

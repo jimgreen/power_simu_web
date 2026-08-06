@@ -222,8 +222,9 @@ class CurveLazyLoadingTest(unittest.TestCase):
     def test_simulator_curve_page_bounds_requests_and_recovers_from_failures(self):
         script = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
 
-        self.assertIn("const API_REQUEST_TIMEOUT_MS", script)
-        self.assertIn("const CURVE_REQUEST_TIMEOUT_MS", script)
+        self.assertIn("function frontendRequestTimeoutMs", script)
+        self.assertIn("function curveRequestTimeoutMs", script)
+        self.assertIn('activeRuntimeSetting("curve_request_timeout_seconds")', script)
         self.assertIn("new AbortController()", script)
         self.assertIn("function cancelCurveRequests", script)
         self.assertIn("function startCurveEditorLoad", script)
@@ -259,7 +260,8 @@ class CurveLazyLoadingTest(unittest.TestCase):
             1,
         )[0]
 
-        self.assertIn("const API_REQUEST_TIMEOUT_MS", script)
+        self.assertIn("function frontendRequestTimeoutMs", script)
+        self.assertIn('activeRuntimeSetting("frontend_request_timeout_seconds")', script)
         self.assertIn("virtualTableWindow", table_block)
         self.assertIn("renderVirtualSpacerRow", table_block)
         self.assertIn("data-virtual-table", table_block)

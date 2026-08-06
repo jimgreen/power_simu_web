@@ -41,9 +41,19 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         self.assertNotIn("trainee-renewable-priority\"", self.script)
 
     def test_backend_owns_open_loop_closed_loop_and_periodic_execution(self):
-        self.assertIn('state.loop_mode == "closed"', self.backend)
-        self.assertIn('state.loop_mode == "open"', self.backend)
-        self.assertIn('state.enabled and not state.sending', self.backend)
+        self.assertIn("operation_epoch = state.operation_epoch", self.backend)
+        self.assertIn("cycle_settings = state.settings", self.backend)
+        self.assertIn("cycle_loop_mode = state.loop_mode", self.backend)
+        self.assertIn('cycle_loop_mode == "closed"', self.backend)
+        self.assertIn('cycle_loop_mode == "open"', self.backend)
+        self.assertIn("state.operation_epoch == operation_epoch", self.backend)
+        self.assertIn("settings=cycle_settings", self.backend)
+        self.assertIn("loop_mode=cycle_loop_mode", self.backend)
+        self.assertIn("cycle_idle = (", self.backend)
+        self.assertIn("not state.sending", self.backend)
+        self.assertIn("not state.background_cycle_pending", self.backend)
+        self.assertIn("not state.run_lock.locked()", self.backend)
+        self.assertIn("state.enabled and cycle_idle", self.backend)
         self.assertIn('state.settings.interval_seconds', self.backend)
         self.assertIn('"开环未下发"', self.backend)
         self.assertIn('"下发成功"', self.backend)
@@ -67,7 +77,7 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         )[0]
         self.assertIn("commandValidMinutes", settings_block)
         self.assertIn("command_valid_minutes", self.backend)
-        self.assertIn('"valid_for_minutes": state.settings.command_valid_minutes', self.backend)
+        self.assertIn('"valid_for_minutes": cycle_settings.command_valid_minutes', self.backend)
 
     def test_strategy_steps_and_deadbands_are_editable_capacity_ratios(self):
         for field_id in (
@@ -136,7 +146,13 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             "_move_toward(converter_current_for_control, converter_desired_target, converter_step_kw)",
             self.backend,
         )
-        self.assertIn("candidate_effect = storage_delta", self.backend)
+        self.assertIn('"dieselEffectKw": diesel_effect_kw', self.backend)
+        self.assertIn('side_aware_plan.get("dieselEffectKw")', self.backend)
+        self.assertIn("base_converter_effect_kw", self.backend)
+        self.assertIn("direct_ac_storage_effect_kw", self.backend)
+        self.assertIn("direct_acdc_effect_kw", self.backend)
+        self.assertIn("+ direct_ac_storage_effect_kw", self.backend)
+        self.assertIn("+ direct_acdc_effect_kw", self.backend)
         self.assertNotIn("candidate_effect = renewable_delta + storage_delta", self.backend)
         self.assertIn("renewable_storage_coordination_active = False", self.backend)
         self.assertIn('"commandKw": converter_allocations[index]', self.backend)

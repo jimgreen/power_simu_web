@@ -106,6 +106,62 @@ process.stdout.write(JSON.stringify(mergeTeacherRuntimeDevices(localDevices, rem
     assert "mergeTeacherRuntimeDevices(localDefinitions.devices, merged.devices)" in merge_block
 
 
+def test_trainee_receive_keeps_local_measurement_status_while_applying_teacher_values():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+
+    assert "function mergeTeacherMeasurementsWithLocalDefinitions" in script
+    helper = "function mergeTeacherMeasurementsWithLocalDefinitions" + script.split(
+        "function mergeTeacherMeasurementsWithLocalDefinitions",
+        1,
+    )[1].split("function mergeTeacherSnapshotWithLocalDefinitions", 1)[0]
+    body = """
+const remote = {
+  definitions: [{ name: "wind.p", valid: 1, weight: 100 }],
+  scada: [{ name: "wind.p", value: 12.5, valid: 1, weight: 100 }],
+  real: [{ name: "wind.p", value: 12.0, valid: 1, weight: 100 }],
+};
+const local = [{ name: "wind.p", valid: 0, weight: 625 }];
+process.stdout.write(JSON.stringify(mergeTeacherMeasurementsWithLocalDefinitions(remote, local)));
+"""
+    result = subprocess.run(
+        ["node", "-e", f"{helper}\n{body}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    merged = json.loads(result.stdout)
+    assert merged["scada"][0]["value"] == 12.5
+    assert merged["real"][0]["value"] == 12.0
+    assert merged["scada"][0]["valid"] == 0
+    assert merged["real"][0]["valid"] == 0
+    assert merged["scada"][0]["weight"] == 625
+
+    merge_block = script.split("function mergeTeacherSnapshotWithLocalDefinitions", 1)[1].split(
+        "function applyTeacherConnection",
+        1,
+    )[0]
+    assert "mergeTeacherMeasurementsWithLocalDefinitions" in merge_block
+    delta_block = script.split("function applyMeasurementDelta", 1)[1].split(
+        "async function refreshMeasurementDelta",
+        1,
+    )[0]
+    assert "definition?.valid ?? item.valid" in delta_block
+
+
+def test_trainee_external_model_initialization_invalidates_manual_change_view_state():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+    sync_block = script.split("async function syncActiveReceiveStateBeforeRefresh", 1)[1].split(
+        "function mergeReceiveStatesFromBackend",
+        1,
+    )[0]
+
+    changed_block = sync_block.split("state.modelInitialized !== previousInitialized", 1)[1].split(
+        "if (state.receiveMode !== previousReceiveMode",
+        1,
+    )[0]
+    assert "invalidateManualDefinitionChanges();" in changed_block
+
+
 def test_trainee_receive_start_uses_saved_backend_link_without_resolving_or_importing_again():
     script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
     block = script.split("async function startReceiveMode()", 1)[1].split("async function initializeModelFromLink", 1)[0]
@@ -239,9 +295,10 @@ def test_trainee_receive_overview_keeps_teacher_runtime_logs_for_power_flow():
 def test_trainee_receive_runtime_logs_each_issue_and_stops_after_consecutive_failures():
     script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
 
-    assert "RECEIVE_MAX_RECONNECT_ATTEMPTS = 3" in script
+    assert 'activeRuntimeSetting("receive_max_reconnect_attempts")' in script
+    assert "function receiveMaxReconnectAttempts" in script
     assert "function recordReceiveIssue" in script
-    assert "连续告警 ${attempt}/${RECEIVE_MAX_RECONNECT_ATTEMPTS}" in script
+    assert "连续告警 ${attempt}/${maxAttempts}" in script
     assert "function stopReceiveAfterPersistentIssue" in script
     assert "attemptTeacherReconnect(epoch)" in script
     reconnect_block = script.split("async function attemptTeacherReconnect(epoch)", 1)[1].split(
@@ -279,9 +336,14 @@ def test_trainee_commands_are_sent_through_interaction_link_command_path():
     assert "async function teacherCommandApi" in script
     assert 'api("/api/trainee/commands", options)' in script
     assert "await teacherCommandApi({ method: \"POST\", body: JSON.stringify(body) })" in script
-    backend = (ROOT / "simu/renewable_control.py").read_text(encoding="utf-8")
-    assert 'connection["command_path"]' in backend
-    assert 'self.request_json(command_url, method="POST", payload=payload)' in backend
+    exchange = (ROOT / "simu/trainee_exchange.py").read_text(encoding="utf-8")
+    renewable = (ROOT / "simu/renewable_control.py").read_text(encoding="utf-8")
+    assert 'receive.get("command_path")' in exchange
+    assert "result = self.request_json(" in exchange
+    assert "payload=forwarded" in exchange
+    assert "dispatch_ticket.submit(dispatch_payload)" in renewable
+    assert "self.command_sink(model_id, dispatch_payload)" in renewable
+    assert 'connection["command_path"]' not in renewable
 
 
 def test_manual_telecontrol_and_teleadjust_commands_require_teacher_link():

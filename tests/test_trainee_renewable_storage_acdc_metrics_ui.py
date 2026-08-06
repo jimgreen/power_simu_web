@@ -24,7 +24,7 @@ class TraineeRenewableStorageAcdcMetricsUiTest(unittest.TestCase):
 
     def test_backend_reads_signed_storage_power_soc_efficiency_and_boundaries(self):
         storage_block = self.backend.split("def _storage_rows", 1)[1].split("def _converter_rows", 1)[0]
-        self.assertIn('(\"P_GEN\", \"P\")', storage_block)
+        self.assertIn('(\"P_GEN\", \"P\", \"P_AC\", \"P_DC\")', storage_block)
         self.assertIn("_live_soc_ratio", storage_block)
         self.assertIn("charge_discharge_efficiency", storage_block)
         self.assertIn("charge_by_energy", storage_block)

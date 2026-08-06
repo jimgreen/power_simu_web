@@ -78,6 +78,7 @@ DEFAULT_LOG_DIR = ROOT_DIR / "log"
 DEFAULT_PERIOD_SECONDS = 60.0
 DEFAULT_STORAGE_CAPACITY_KWH = 50.0
 DEFAULT_DC_EXPORT_EFFICIENCY = 0.98
+StorageTarget = Tuple[str, dict, str, Optional[dict], int]
 SIGNAL_MEASUREMENT_TYPES = {"RUN_STAT", "STATUS"}
 GENERIC_CURRENT_BRANCH_TYPES = {
     "ACBranch",
@@ -871,22 +872,39 @@ def _embedded_device_define_book(model_book: EBook) -> EBook:
             }
         )
 
-    for pos, row in enumerate(_sorted_rows(_book_rows(model_book, "DCStorageGen")), start=1):
-        source = dc_generators.get(str(row.get("idx_dcgenerator", "")), {})
-        source_name = str(source.get("name", row.get("name", f"storage_{pos}")))
-        storage_rows.append(
-            {
-                "id": row.get("idx", pos),
-                "name": source_name,
-                "emva": _numeric_from_text(row.get("energy_capacity"), DEFAULT_STORAGE_CAPACITY_KWH) or DEFAULT_STORAGE_CAPACITY_KWH,
-                "soc_max": _ratio_from_text(row.get("soc_upper_limit"), 1.0) or 1.0,
-                "soc_min": _ratio_from_text(row.get("soc_lower_limit"), 0.0) or 0.0,
-                "soc_cur": _ratio_from_text(row.get("state_of_charge"), 0.5) or 0.5,
-                "charge_p_max": _numeric_from_text(row.get("max_charge_power"), 0.0) or 0.0,
-                "dis_charge_p_max": _numeric_from_text(row.get("max_discharge_power"), 0.0) or 0.0,
-                "charge_discharge_efficiency": _efficiency_from_text(row.get("charge_discharge_efficiency"), 1.0),
-            }
-        )
+    generator_rows_by_type = {
+        "ACGenerator": ac_generators,
+        "DCGenerator": dc_generators,
+    }
+    for block_name, generator_type, reference_field in (
+        ("ACStorageGen", "ACGenerator", "idx_acgenerator"),
+        ("DCStorageGen", "DCGenerator", "idx_dcgenerator"),
+    ):
+        generators = generator_rows_by_type[generator_type]
+        for pos, row in enumerate(_sorted_rows(_book_rows(model_book, block_name)), start=1):
+            source = generators.get(str(row.get(reference_field, "")))
+            if source is None:
+                continue
+            source_name = str(source.get("name", "")).strip()
+            if not source_name:
+                continue
+            soc_max = _ratio_from_text(row.get("soc_upper_limit"), None)
+            soc_cur = _ratio_from_text(row.get("state_of_charge"), None)
+            storage_rows.append(
+                {
+                    "id": row.get("idx", pos),
+                    "name": source_name,
+                    "dev_type": generator_type,
+                    "source_name": source_name,
+                    "emva": _numeric_from_text(row.get("energy_capacity"), DEFAULT_STORAGE_CAPACITY_KWH) or DEFAULT_STORAGE_CAPACITY_KWH,
+                    "soc_max": 1.0 if soc_max is None else soc_max,
+                    "soc_min": _ratio_from_text(row.get("soc_lower_limit"), 0.0) or 0.0,
+                    "soc_cur": 0.5 if soc_cur is None else soc_cur,
+                    "charge_p_max": _numeric_from_text(row.get("max_charge_power"), 0.0) or 0.0,
+                    "dis_charge_p_max": _numeric_from_text(row.get("max_discharge_power"), 0.0) or 0.0,
+                    "charge_discharge_efficiency": _efficiency_from_text(row.get("charge_discharge_efficiency"), 1.0),
+                }
+            )
 
     wind_names = {row["name"] for row in wind_rows}
     for pos, row in enumerate(_sorted_rows(_book_rows(model_book, "ACGenerator")), start=1):
@@ -1554,57 +1572,339 @@ def _storage_soc_by_name_book(stat_book: EBook) -> Tuple[Dict[str, dict], List[d
     for row in _sorted_rows(_storage_soc_rows(stat_book)):
         item = dict(row)
         storage_name = str(item.get("name", item.get("dev_name", "")))
-        value = run_stat.get(
-            ("ESS", storage_name),
-            run_stat.get(
-                ("DCGenerator", storage_name),
-                run_stat.get(("DCGenerator", _storage_source_name(storage_name))),
-            ),
-        )
+        item_type = _storage_generator_type(item.get("dev_type"))
+        candidate_names = _storage_identity_names(storage_name)
+        value = None
+        if item_type is not None:
+            for candidate in candidate_names:
+                value = run_stat.get((item_type, candidate))
+                if value is not None:
+                    break
+        elif _is_legacy_storage_type(item.get("dev_type")):
+            for legacy_type in ("ESS", "Storage"):
+                for candidate in candidate_names:
+                    value = run_stat.get((legacy_type, candidate))
+                    if value is not None:
+                        break
+                if value is not None:
+                    break
+            if value is None:
+                typed_values = {
+                    run_stat[(dev_type, candidate)]
+                    for dev_type in ("ACGenerator", "DCGenerator")
+                    for candidate in candidate_names
+                    if (dev_type, candidate) in run_stat
+                }
+                if len(typed_values) == 1:
+                    value = next(iter(typed_values))
         if value is not None and item.get("run_stat", "") == "":
             item["run_stat"] = value
         rows.append(item)
-    return {str(row.get("name", "")): row for row in rows}, rows
-
-
-def _storage_define_for(dev_define: EBook, storage_name: str, pos: int) -> Optional[dict]:
-    rows = _sorted_rows(_book_rows(dev_define, "estorage"))
+    by_name: Dict[str, dict] = {}
+    ambiguous: set[str] = set()
     for row in rows:
-        define_name = str(row.get("name", ""))
-        if define_name == storage_name or _storage_source_name(define_name) == storage_name:
-            return row
-    if 0 <= pos < len(rows):
-        return rows[pos]
+        name = str(row.get("name", row.get("dev_name", "")))
+        if name in ambiguous:
+            continue
+        if name in by_name:
+            by_name.pop(name, None)
+            ambiguous.add(name)
+            continue
+        by_name[name] = row
+    return by_name, rows
+
+
+def _storage_generator_type(value: object) -> Optional[str]:
+    normalized = str(value or "").strip().casefold()
+    return {
+        "acgenerator": "ACGenerator",
+        "dcgenerator": "DCGenerator",
+    }.get(normalized)
+
+
+def _is_legacy_storage_type(value: object) -> bool:
+    return str(value or "").strip().casefold() in ("", "ess", "storage")
+
+
+def _storage_identity_names(*names: object) -> List[str]:
+    candidates: List[str] = []
+    for raw_name in names:
+        name = str(raw_name or "").strip()
+        if not name:
+            continue
+        candidates.append(name)
+        if name.endswith("_vsrc"):
+            candidates.append(name.removesuffix("_vsrc"))
+        else:
+            candidates.append(_storage_source_name(name))
+    return _unique_names(*candidates)
+
+
+def _storage_target_key(target: StorageTarget) -> Tuple[str, str]:
+    dev_type, row, _storage_name, _define, _pos = target
+    return dev_type, str(row.get("name", ""))
+
+
+def _storage_target_exact_name(target: StorageTarget) -> str:
+    return str(target[1].get("name", ""))
+
+
+def _storage_target_identity_names(target: StorageTarget) -> List[str]:
+    _dev_type, row, storage_name, define, _pos = target
+    return _storage_identity_names(
+        row.get("name", ""),
+        (define or {}).get("source_name", ""),
+        storage_name,
+    )
+
+
+def _storage_target_alias_names(target: StorageTarget, targets: Sequence[StorageTarget]) -> List[str]:
+    target_key = _storage_target_key(target)
+    exact_name = _storage_target_exact_name(target)
+    other_exact_names = {
+        _storage_target_exact_name(candidate)
+        for candidate in targets
+        if _storage_target_key(candidate) != target_key
+    }
+    aliases: List[str] = []
+    for name in _storage_target_identity_names(target):
+        if name == exact_name or name in other_exact_names:
+            continue
+        owners = {
+            _storage_target_key(candidate)
+            for candidate in targets
+            if name in _storage_target_identity_names(candidate)
+        }
+        if owners == {target_key}:
+            aliases.append(name)
+    return _unique_names(*aliases)
+
+
+def _storage_target_lookup_names(target: StorageTarget, targets: Sequence[StorageTarget]) -> List[str]:
+    return _unique_names(
+        _storage_target_exact_name(target),
+        *_storage_target_alias_names(target, targets),
+    )
+
+
+def _storage_target_for_identity(row: Mapping[str, object], targets: Sequence[StorageTarget]) -> Optional[StorageTarget]:
+    identity_type = _storage_generator_type(row.get("dev_type"))
+    if identity_type is None and not _is_legacy_storage_type(row.get("dev_type")):
+        return None
+    identity_name = str(row.get("name", row.get("dev_name", ""))).strip()
+    if not identity_name:
+        return None
+    eligible = [
+        target
+        for target in targets
+        if (identity_type is None or target[0] == identity_type)
+    ]
+    exact_candidates = [
+        target
+        for target in eligible
+        if _storage_target_exact_name(target) == identity_name
+    ]
+    if len(exact_candidates) == 1:
+        return exact_candidates[0]
+    if exact_candidates:
+        return None
+    alias_candidates = [
+        target
+        for target in eligible
+        if identity_name in _storage_target_alias_names(target, targets)
+    ]
+    return alias_candidates[0] if len(alias_candidates) == 1 else None
+
+
+def _storage_status_for_target(
+    target: StorageTarget,
+    targets: Sequence[StorageTarget],
+    status_by_name: Mapping[str, dict],
+    status_rows: Sequence[dict],
+) -> Optional[dict]:
+    target_key = _storage_target_key(target)
+    for status in status_rows:
+        resolved = _storage_target_for_identity(status, targets)
+        if resolved is not None and _storage_target_key(resolved) == target_key:
+            return status
+    for candidate in _storage_target_lookup_names(target, targets):
+        status = status_by_name.get(candidate)
+        if status is None:
+            continue
+        resolved = _storage_target_for_identity(status, targets)
+        if resolved is not None and _storage_target_key(resolved) == target_key:
+            return status
     return None
 
 
-def _storage_target_rows(model_book: EBook, dev_define: EBook) -> List[Tuple[dict, str, Optional[dict], int]]:
-    generator_rows = _sorted_rows(_book_rows(model_book, "DCGenerator"))
-    by_name = {str(row.get("name", "")): row for row in generator_rows}
-    matched: List[Tuple[dict, str, Optional[dict], int]] = []
-    seen: set[str] = set()
+def _storage_target_rows(model_book: EBook, dev_define: EBook) -> List[StorageTarget]:
+    """Return dev_type, generator row, storage name, definition row, and position."""
+    generator_rows = {
+        dev_type: _sorted_rows(_book_rows(model_book, dev_type))
+        for dev_type in ("ACGenerator", "DCGenerator")
+    }
+    generator_by_name = {
+        dev_type: {str(row.get("name", "")): row for row in rows}
+        for dev_type, rows in generator_rows.items()
+    }
+    generator_entries = [
+        (dev_type, row)
+        for dev_type in ("ACGenerator", "DCGenerator")
+        for row in generator_rows[dev_type]
+    ]
     define_rows = _sorted_rows(_book_rows(dev_define, "estorage"))
-    for pos, define in enumerate(define_rows):
-        storage_name = str(define.get("name", ""))
-        row = by_name.get(storage_name) or by_name.get(_storage_source_name(storage_name))
-        if row is None:
-            continue
+    has_structured_storage_rows = any(
+        _book_rows(model_book, block_name)
+        for block_name in ("ACStorageGen", "DCStorageGen")
+    )
+    indexed_defines = list(enumerate(define_rows))
+    typed_defines = [
+        (pos, define, _storage_generator_type(define.get("dev_type")))
+        for pos, define in indexed_defines
+        if _storage_generator_type(define.get("dev_type")) is not None
+    ]
+    legacy_defines = [
+        (pos, define)
+        for pos, define in indexed_defines
+        if _is_legacy_storage_type(define.get("dev_type"))
+    ]
+    matched: List[StorageTarget] = []
+    seen: set[Tuple[str, str]] = set()
+
+    def add_target(dev_type: str, row: dict, define: Optional[dict], pos: int) -> bool:
         row_name = str(row.get("name", ""))
-        matched.append((row, storage_name, define, pos))
-        seen.add(row_name)
-    if matched:
-        return matched
-    for pos, row in enumerate(generator_rows):
-        row_name = str(row.get("name", ""))
-        if row_name in seen:
+        key = (dev_type, row_name)
+        if not row_name or key in seen:
+            return False
+        storage_name = str((define or {}).get("name", "")).strip()
+        source_name = str((define or {}).get("source_name", "")).strip()
+        matched.append((dev_type, row, storage_name or source_name or row_name.removesuffix("_vsrc"), define, pos))
+        seen.add(key)
+        return True
+
+    def unmatched_entries(dev_type: Optional[str] = None) -> List[Tuple[str, dict]]:
+        return [
+            (candidate_type, row)
+            for candidate_type, row in generator_entries
+            if (dev_type is None or candidate_type == dev_type)
+            and (candidate_type, str(row.get("name", ""))) not in seen
+        ]
+
+    def matching_entries(entries: Sequence[Tuple[str, dict]], names: Sequence[str]) -> List[Tuple[str, dict]]:
+        wanted = set(names)
+        return [
+            (dev_type, row)
+            for dev_type, row in entries
+            if str(row.get("name", "")) in wanted
+        ]
+
+    for pos, define, explicit_type in typed_defines:
+        if explicit_type is None:
             continue
+        source_name = str(define.get("source_name", "")).strip()
+        storage_name = str(define.get("name", "")).strip()
+        row = None
+        if source_name:
+            row = generator_by_name[explicit_type].get(source_name)
+        elif storage_name:
+            row = generator_by_name[explicit_type].get(storage_name)
+            if row is None:
+                aliases = [
+                    name
+                    for name in _storage_identity_names(storage_name)
+                    if name != storage_name
+                ]
+                candidates = matching_entries(unmatched_entries(explicit_type), aliases)
+                if len(candidates) == 1:
+                    _candidate_type, row = candidates[0]
+        if row is not None:
+            add_target(explicit_type, row, define, pos)
+
+    unmatched_legacy: List[Tuple[int, dict]] = []
+    for pos, define in legacy_defines:
+        source_name = str(define.get("source_name", "")).strip()
+        storage_name = str(define.get("name", "")).strip()
+        identity_names = _unique_names(source_name, storage_name)
+        available = unmatched_entries()
+        candidates = matching_entries(available, identity_names)
+        if not candidates and identity_names:
+            aliases = _unique_names(*(
+                alias
+                for name in identity_names
+                for alias in _storage_identity_names(name)
+                if alias not in identity_names
+            ))
+            candidates = matching_entries(available, aliases)
+        if len(candidates) == 1:
+            dev_type, row = candidates[0]
+            add_target(dev_type, row, define, pos)
+        else:
+            unmatched_legacy.append((pos, define))
+
+    storage_candidates = []
+    for dev_type, row in unmatched_entries():
+        row_name = str(row.get("name", ""))
         lower_name = row_name.casefold()
-        dev_type = str(row.get("dev_type", "")).casefold()
-        if lower_name.startswith(("ess", "storage")) or "storage" in dev_type or "储能" in row_name:
-            storage_name = row_name.removesuffix("_vsrc")
-            matched.append((row, storage_name, _storage_define_for(dev_define, storage_name, pos), pos))
-            seen.add(row_name)
+        row_kind = str(row.get("dev_type", "")).casefold()
+        if lower_name.startswith(("ess", "storage")) or "storage" in row_kind or "储能" in row_name:
+            storage_candidates.append((dev_type, row))
+    name_counts: Dict[str, int] = {}
+    for _dev_type, row in storage_candidates:
+        row_name = str(row.get("name", ""))
+        name_counts[row_name] = name_counts.get(row_name, 0) + 1
+    storage_candidates = [
+        (dev_type, row)
+        for dev_type, row in storage_candidates
+        if name_counts.get(str(row.get("name", "")), 0) == 1
+    ]
+
+    if unmatched_legacy and len(unmatched_legacy) == len(storage_candidates):
+        for (pos, define), (dev_type, row) in zip(unmatched_legacy, storage_candidates):
+            add_target(dev_type, row, define, pos)
+    elif not define_rows and not has_structured_storage_rows:
+        for pos, (dev_type, row) in enumerate(storage_candidates):
+            add_target(dev_type, row, None, pos)
     return matched
+
+
+def _ensure_storage_soc_rows_book(stat_book: EBook, model_book: EBook, dev_define: EBook) -> int:
+    targets = _storage_target_rows(model_book, dev_define)
+    if not targets:
+        return 0
+    block = _storage_soc_block(stat_book)
+    if block is None:
+        template = EBook(
+            {
+                "StorageSoc": [
+                    {"dev_type": "", "idx": "", "name": "", "soc_curr": ""}
+                ]
+            }
+        )
+        block = template.data["StorageSoc"]
+        block.data.clear()
+        stat_book.data["StorageSoc"] = block
+    elif block.data:
+        return 0
+
+    status_by_name, status_rows = _storage_soc_by_name_book(stat_book)
+    changed = 0
+    for target in targets:
+        if _storage_status_for_target(target, targets, status_by_name, status_rows) is not None:
+            continue
+        dev_type, source, _storage_name, define, pos = target
+        initial_soc = _safe_float((define or {}).get("soc_cur"), None)
+        if initial_soc is None:
+            initial_soc = 0.5
+        row = {
+            "dev_type": dev_type,
+            "idx": source.get("idx", (define or {}).get("id", pos + 1)),
+            "name": source.get("name", ""),
+            "soc_curr": format_number(initial_soc),
+        }
+        block.data.append(row)
+        status_rows.append(dict(row))
+        changed += 1
+    return changed
 
 
 def apply_storage_constraints(
@@ -1626,10 +1926,10 @@ def apply_storage_constraints_book(
 ) -> int:
     changed = 0
     period_hours = max(0.0, float(period_seconds)) / 3600.0
-    for row, storage_name, define, pos in _storage_target_rows(model_book, dev_define):
-        status = status_by_name.get(storage_name)
-        if status is None and pos < len(status_rows):
-            status = status_rows[pos]
+    targets = _storage_target_rows(model_book, dev_define)
+    for _dev_type, row, _storage_name, define, _pos in targets:
+        target = (_dev_type, row, _storage_name, define, _pos)
+        status = _storage_status_for_target(target, targets, status_by_name, status_rows)
         run_stat = _safe_int((status or {}).get("run_stat", row.get("run_stat", 1)), 1)
         if run_stat != 1 or not _is_running_row(row):
             changed += _set_row_value(row, "p_set", "0")
@@ -1639,7 +1939,9 @@ def apply_storage_constraints_book(
         if soc is None:
             soc = 0.5
         soc_min = _safe_float((define or {}).get("soc_min", 0.0), 0.0) or 0.0
-        soc_max = _safe_float((define or {}).get("soc_max", 1.0), 1.0) or 1.0
+        soc_max = _safe_float((define or {}).get("soc_max", 1.0), None)
+        if soc_max is None:
+            soc_max = 1.0
         capacity = _safe_float((define or {}).get("emva", DEFAULT_STORAGE_CAPACITY_KWH), DEFAULT_STORAGE_CAPACITY_KWH)
         capacity = max(float(capacity if capacity is not None else DEFAULT_STORAGE_CAPACITY_KWH), 1e-9)
         charge_max = _safe_float((define or {}).get("charge_p_max", abs(command)), abs(command)) or 0.0
@@ -1691,7 +1993,9 @@ def apply_dc_export_limits(
             continue
         source_power += max(0.0, _safe_float(row.get("p_set", 0.0), 0.0) or 0.0)
 
-    for row, _storage_name, _define, _pos in _storage_target_rows(model_book, dev_define):
+    for dev_type, row, _storage_name, _define, _pos in _storage_target_rows(model_book, dev_define):
+        if dev_type != "DCGenerator":
+            continue
         if not _is_running_row(row):
             continue
         source_power += max(0.0, _safe_float(row.get("p_set", 0.0), 0.0) or 0.0)
@@ -1750,6 +2054,7 @@ def apply_device_capability_limits_book(
     if not dev_define.data:
         return 0
     weather_values = dict(weather)
+    _ensure_storage_soc_rows_book(stat_book, model_book, dev_define)
     status_by_name, status_rows = _storage_soc_by_name_book(stat_book)
     changed = 0
     changed += apply_load_model(model_book, dev_define, weather_values)
@@ -1912,37 +2217,108 @@ def _unique_names(*names: str) -> List[str]:
     return result
 
 
-def _storage_power_lookup(powers: Mapping[str, float], storage_name: str, source_name: str) -> Optional[float]:
-    for name in _unique_names(source_name, storage_name, _storage_source_name(storage_name)):
-        if name in powers:
+def _storage_power_lookup(
+    powers: Mapping[object, float],
+    target: StorageTarget,
+    targets: Sequence[StorageTarget],
+) -> Optional[float]:
+    dev_type = target[0]
+    lookup_names = _storage_target_lookup_names(target, targets)
+    for name in lookup_names:
+        key = (dev_type, name)
+        if key in powers:
+            return powers[key]
+    for name in lookup_names:
+        if name not in powers:
+            continue
+        resolved = _storage_target_for_identity({"dev_type": "", "name": name}, targets)
+        if resolved is not None and _storage_target_key(resolved) == _storage_target_key(target):
             return powers[name]
     return None
 
 
-def _snapshot_storage_power_by_name(snapshot, model_book: EBook, dev_define: EBook) -> Dict[str, float]:
-    if snapshot is None or not hasattr(snapshot, "value"):
-        return {}
-    powers: Dict[str, float] = {}
-    for row, storage_name, _define, _pos in _storage_target_rows(model_book, dev_define):
-        row_name = str(row.get("name", ""))
-        candidates = _unique_names(row_name, _storage_source_name(storage_name), storage_name)
-        actual_power: Optional[float] = None
-        for candidate in candidates:
-            try:
-                value = snapshot.value("DCGenerator", candidate, "P_GEN")
-            except Exception:
-                value = None
-            if value is None:
-                continue
-            try:
-                actual_power = float(value)
-            except (TypeError, ValueError):
-                continue
-            break
-        if actual_power is None:
+def _snapshot_device_state_by_key(snapshot) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    """Return operating states carried by this solved snapshot only."""
+    states: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    ac_grid = getattr(snapshot, "ac", None)
+    dc_grid = getattr(snapshot, "dc", None)
+    ac_node_alive = _topology_node_alive_by_idx(ac_grid) if ac_grid is not None else {}
+    dc_node_alive = _topology_node_alive_by_idx(dc_grid) if dc_grid is not None else {}
+
+    def add_device(dev_type: str, device: object, fallback_name: str = "") -> None:
+        dev_name = str(getattr(device, "name", fallback_name) or fallback_name)
+        if not dev_name:
+            return
+        states[(dev_type, dev_name)] = {
+            "dev_type": dev_type,
+            "dev_name": dev_name,
+            "run_stat": _safe_int(getattr(device, "run_stat", 1), 1),
+            "dead_island": (
+                getattr(device, "dead_island", None) is True
+                or _device_dead_island(
+                    dev_type,
+                    device,
+                    ac_node_alive,
+                    dc_node_alive,
+                )
+            ),
+        }
+
+    for dev_type, grid in (("ACGenerator", ac_grid), ("DCGenerator", dc_grid)):
+        for device in list(getattr(grid, "generators", []) or []):
+            add_device(dev_type, device)
+    for devices_by_type in (
+        getattr(snapshot, "ac_devices", {}) or {},
+        getattr(snapshot, "dc_devices", {}) or {},
+    ):
+        for dev_type, devices in devices_by_type.items():
+            for fallback_name, device in devices.items():
+                add_device(str(dev_type), device, str(fallback_name))
+    explicit_states = getattr(snapshot, "device_states", None)
+    if isinstance(explicit_states, Mapping):
+        explicit_rows = list(explicit_states.values())
+    else:
+        explicit_rows = list(explicit_states or [])
+    for row in explicit_rows:
+        if not isinstance(row, Mapping):
             continue
-        for candidate in candidates:
-            powers[candidate] = actual_power
+        dev_type = str(row.get("dev_type", ""))
+        dev_name = str(row.get("dev_name", row.get("name", "")))
+        if dev_type and dev_name:
+            states[(dev_type, dev_name)] = dict(row)
+    return states
+
+
+def _snapshot_storage_power_by_name(snapshot, model_book: EBook, dev_define: EBook) -> Dict[object, float]:
+    if snapshot is None:
+        return {}
+    powers: Dict[object, float] = {}
+    states = _snapshot_device_state_by_key(snapshot)
+    value_reader = getattr(snapshot, "value", None)
+    targets = _storage_target_rows(model_book, dev_define)
+    for target in targets:
+        dev_type, row, _storage_name, _define, _pos = target
+        row_name = str(row.get("name", ""))
+        actual_power: Optional[float] = None
+        state = states.get((dev_type, row_name))
+        if (
+            state is None
+            or _safe_int(state.get("run_stat", 0), 0) != 1
+            or state.get("dead_island") is True
+        ):
+            actual_power = 0.0
+        else:
+            if callable(value_reader):
+                try:
+                    value = value_reader(dev_type, row_name, "P_GEN")
+                except Exception:
+                    value = None
+                number = _safe_float(value, None)
+                if number is not None and math.isfinite(number):
+                    actual_power = number
+            if actual_power is None:
+                actual_power = 0.0
+        powers[(dev_type, row_name)] = actual_power
     return powers
 
 
@@ -1959,35 +2335,32 @@ def update_storage_soc_book(
     model_book: EBook,
     period_seconds: float,
     dev_define: EBook,
-    storage_power_by_name: Optional[Mapping[str, float]] = None,
+    storage_power_by_name: Optional[Mapping[object, float]] = None,
     snapshot=None,
 ) -> int:
+    changed = _ensure_storage_soc_rows_book(stat_book, model_book, dev_define)
     block = _storage_soc_block(stat_book)
     if block is None:
-        return 0
-    dc_generator = model_book.data.get("DCGenerator")
-    dc_generator_by_name = _rows_by_name(dc_generator) if dc_generator is not None else {}
+        return changed
     actual_storage_power = dict(storage_power_by_name or {})
     if snapshot is not None:
         actual_storage_power.update(_snapshot_storage_power_by_name(snapshot, model_book, dev_define))
-    changed = 0
-    for pos, row in enumerate(_sorted_rows(block.data)):
-        ess_name = str(row.get("name", ""))
-        source = dc_generator_by_name.get(_storage_source_name(ess_name)) or dc_generator_by_name.get(ess_name)
-        if source is None:
+    targets = _storage_target_rows(model_book, dev_define)
+    for row in _sorted_rows(block.data):
+        target = _storage_target_for_identity(row, targets)
+        if target is None:
             continue
+        _dev_type, source, _storage_name, define, _pos = target
         try:
             soc = float(row.get("soc_curr", 0.5))
         except (TypeError, ValueError):
             continue
-        source_name = str(source.get("name", ""))
-        actual_power = _storage_power_lookup(actual_storage_power, ess_name, source_name)
+        actual_power = _storage_power_lookup(actual_storage_power, target, targets)
         if actual_power is None:
             try:
                 actual_power = float(source.get("p_set", 0.0))
             except (TypeError, ValueError):
                 continue
-        define = _storage_define_for(dev_define, ess_name, pos)
         capacity = _safe_float((define or {}).get("emva", DEFAULT_STORAGE_CAPACITY_KWH), DEFAULT_STORAGE_CAPACITY_KWH) or DEFAULT_STORAGE_CAPACITY_KWH
         charge_efficiency, discharge_efficiency = _storage_efficiencies(define)
         soc_power = _storage_internal_power_for_soc(actual_power, charge_efficiency, discharge_efficiency)

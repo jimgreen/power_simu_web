@@ -35,9 +35,10 @@ class IncrementalRuntimeDataUiTest(unittest.TestCase):
         script = self._script("trainee")
 
         self.assertIn('params.set("measurements", "0");', script)
-        self.assertIn("RECEIVE_STATE_SYNC_INTERVAL_MS", script)
+        self.assertIn("function receiveStateSyncIntervalMs", script)
+        self.assertIn('activeRuntimeSetting("receive_state_sync_seconds")', script)
         self.assertIn("lastReceiveStateSyncAtMs", script)
-        self.assertIn("Date.now() - state.lastReceiveStateSyncAtMs < RECEIVE_STATE_SYNC_INTERVAL_MS", script)
+        self.assertIn("Date.now() - state.lastReceiveStateSyncAtMs < receiveStateSyncIntervalMs()", script)
         self.assertIn("teacherMeasurementDeltaAddress", script)
         self.assertIn("refreshMeasurementDelta", script)
         self.assertIn("applyMeasurementDelta", script)

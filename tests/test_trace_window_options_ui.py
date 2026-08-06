@@ -21,7 +21,8 @@ class TraceWindowOptionsUiTest(unittest.TestCase):
             self.assertIn('<option value="525600">1年</option>', html)
         self.assertIn("第${day + 1}天", simulator_js)
         self.assertIn("formatYearTraceTickLabel", simulator_js)
-        self.assertIn("TRACE_HISTORY_LIMIT", simulator_js)
+        self.assertIn("function traceHistoryLimit", simulator_js)
+        self.assertIn('activeRuntimeSetting("trace_history_limit")', simulator_js)
 
     def test_trainee_measurement_trace_uses_manual_window_range_for_x_axis(self):
         trainee_js = (ROOT / "simu" / "web" / "trainee" / "app.js").read_text(encoding="utf-8")

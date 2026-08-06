@@ -40,6 +40,7 @@ except ImportError:  # The migrated web repo can run outside the original packag
     from efile_read import EBlock, EBook
 
 try:
+    from .definition_editing import DefinitionRevisionConflict
     from .service import (
         DEFAULT_WEATHER,
         DIAGRAM_FILE_NAME,
@@ -51,10 +52,16 @@ try:
         WEATHER_MEASUREMENTS,
         MultiModelSimulator,
         PolarMicrogridSimulator,
+        ServiceInstanceRetiredError,
         _to_float,
     )
-    from .renewable_control import TraineeRenewableControlManager
+    from .renewable_control import (
+        TraineeRenewableControlLifecycleError,
+        TraineeRenewableControlManager,
+    )
+    from .trainee_exchange import TraineeExchangeLifecycleError, TraineeRealtimeExchange
 except ImportError:  # pragma: no cover - legacy package compatibility.
+    from hybrid_power_system_analysis.polar_microgrid_sim.definition_editing import DefinitionRevisionConflict
     from hybrid_power_system_analysis.polar_microgrid_sim.service import (
         DEFAULT_WEATHER,
         DIAGRAM_FILE_NAME,
@@ -66,9 +73,14 @@ except ImportError:  # pragma: no cover - legacy package compatibility.
         WEATHER_MEASUREMENTS,
         MultiModelSimulator,
         PolarMicrogridSimulator,
+        ServiceInstanceRetiredError,
         _to_float,
     )
-    from renewable_control import TraineeRenewableControlManager
+    from renewable_control import (
+        TraineeRenewableControlLifecycleError,
+        TraineeRenewableControlManager,
+    )
+    from trainee_exchange import TraineeExchangeLifecycleError, TraineeRealtimeExchange
 
 try:
     import simu_loop  # type: ignore
@@ -87,7 +99,12 @@ CONTROL_DEFINITION_BLOCKS = {"RunStat", "CbOpenStat", "SetValue", "StorageSoc"}
 DEFINITION_EDIT_PATHS = {
     "/api/definitions/device-parameters",
     "/api/definitions/measurement",
+    "/api/definitions/manual-changes/reset",
+    "/api/definitions/manual-changes/retry",
 }
+MANUAL_DEFINITION_CHANGES_PATH = "/api/definitions/manual-changes"
+LOCAL_DEFINITION_PATHS = DEFINITION_EDIT_PATHS | {MANUAL_DEFINITION_CHANGES_PATH}
+LOCAL_RUNTIME_SETTINGS_PATH = "/api/runtime-settings"
 
 def _role_models_base_dir(sim_dir: Path, role: str) -> Path:
     parts = ROLE_MODEL_DIRS.get(role.lower(), ("models", role.lower()))
@@ -469,6 +486,10 @@ MEASUREMENT_TYPE_MAP = {
     "DCACConverter": ("P_DC", "V_DC", "I_DC", "P_AC", "Q_AC", "V_AC", "I_AC"),
     "ACACConverter": ("P_FROM", "Q_FROM", "V_FROM", "I_FROM", "P_TO", "Q_TO", "V_TO", "I_TO"),
 }
+STORAGE_PARAMETER_SPECS = (
+    ("ACStorageGen", "ACGenerator", "idx_acgenerator"),
+    ("DCStorageGen", "DCGenerator", "idx_dcgenerator"),
+)
 
 
 def _rows(book: EBook, block_name: str) -> list[dict]:
@@ -501,6 +522,15 @@ def _numeric(value: Any, default: float = 0.0) -> float:
     return float(number)
 
 
+def _storage_soc_value(value: Any, default: float = 0.5) -> float:
+    text = str(value or "").strip()
+    raw_value = text.replace("%", "").strip() if "%" in text else value
+    number = _to_float(raw_value, None)
+    if number is None:
+        return default
+    return number / 100.0 if "%" in text else number
+
+
 def _first_present(row: Mapping[str, Any], columns: Sequence[str], default: Any = "") -> Any:
     for column in columns:
         if column in row and row.get(column, "") != "":
@@ -513,26 +543,42 @@ def _model_book_has_power_model(book: EBook) -> bool:
 
 
 def _storage_source_rows(model_book: EBook) -> list[dict]:
-    dc_generators = {str(row.get("idx", "")): row for row in _rows(model_book, "DCGenerator")}
     storage_rows: list[dict] = []
     seen: set[tuple[str, str]] = set()
-    for pos, row in enumerate(_rows(model_book, "DCStorageGen"), start=1):
-        source = dc_generators.get(str(row.get("idx_dcgenerator", "")), {})
-        name = str(source.get("name", row.get("name", f"storage_{pos}")))
-        if not name:
-            continue
-        soc = _numeric(row.get("state_of_charge", row.get("soc_curr", row.get("soc_cur", 0.5))), 0.5)
-        if soc > 1.0:
-            soc /= 100.0
-        storage_rows.append(
-            {
-                "dev_type": "DCGenerator" if source else "ESS",
-                "idx": source.get("idx", row.get("idx", pos)),
-                "name": name,
-                "soc_curr": max(0.0, min(1.0, soc)),
-            }
-        )
-        seen.add((str(storage_rows[-1]["dev_type"]), name))
+    has_structured_storage = any(
+        block_name in model_book.data
+        for block_name, _generator_type, _index_field in STORAGE_PARAMETER_SPECS
+    )
+    for block_name, generator_type, index_field in STORAGE_PARAMETER_SPECS:
+        generators = {
+            str(row.get("idx", "")): row
+            for row in _rows(model_book, generator_type)
+            if str(row.get("idx", ""))
+        }
+        for pos, row in enumerate(_rows(model_book, block_name), start=1):
+            source = generators.get(str(row.get(index_field, "")))
+            if source is None:
+                continue
+            name = _row_name(source)
+            key = (generator_type, name)
+            if not name or key in seen:
+                continue
+            storage_rows.append(
+                {
+                    "dev_type": generator_type,
+                    "idx": source.get("idx", row.get("idx", pos)),
+                    "name": name,
+                    "soc_curr": _storage_soc_value(
+                        _first_present(row, ("state_of_charge", "soc_curr", "soc_cur", "soc"), 0.5),
+                        0.5,
+                    ),
+                }
+            )
+            seen.add(key)
+
+    if has_structured_storage:
+        return storage_rows
+
     for pos, row in enumerate(_rows(model_book, "DCGenerator"), start=1):
         name = _row_name(row)
         if not name or ("storage" not in str(row.get("dev_type", "")).casefold() and "储能" not in name):
@@ -545,7 +591,10 @@ def _storage_source_rows(model_book: EBook) -> list[dict]:
                 "dev_type": "DCGenerator",
                 "idx": row.get("idx", pos),
                 "name": name,
-                "soc_curr": row.get("soc_curr", row.get("soc", row.get("state_of_charge", 0.5))),
+                "soc_curr": _storage_soc_value(
+                    _first_present(row, ("soc_curr", "soc", "state_of_charge"), 0.5),
+                    0.5,
+                ),
             }
         )
         seen.add(key)
@@ -609,10 +658,13 @@ def _generated_measurement_book(
 ) -> EBook:
     rows: list[dict[str, Any]] = []
     name_counts: dict[str, int] = {}
-    storage_names = {
-        (str(row.get("dev_type", "")), str(row.get("name", "")))
-        for row in control_blocks.get("StorageSoc", ((), ()))[1]
+    storage_rows = list(control_blocks.get("StorageSoc", ((), ()))[1])
+    storage_by_key = {
+        (str(row.get("dev_type", "")), str(row.get("name", ""))): row
+        for row in storage_rows
     }
+    storage_names = set(storage_by_key)
+    measured_storage_keys: set[tuple[str, str]] = set()
 
     def add(
         dev_type: str,
@@ -649,8 +701,20 @@ def _generated_measurement_book(
                 continue
             for meas_type in meas_types:
                 add(block_name, name, meas_type)
-            if (block_name, name) in storage_names:
-                add(block_name, name, "SOC", value=row.get("soc_curr", row.get("soc", 0.5)))
+            storage_key = (block_name, name)
+            if storage_key in storage_names:
+                add(block_name, name, "SOC", value=storage_by_key[storage_key].get("soc_curr", 0.5))
+                measured_storage_keys.add(storage_key)
+
+    for storage_key, storage_row in storage_by_key.items():
+        if storage_key in measured_storage_keys:
+            continue
+        add(
+            storage_key[0],
+            storage_key[1],
+            "SOC",
+            value=storage_row.get("soc_curr", 0.5),
+        )
 
     for weather_key, _name_suffix, meas_type in WEATHER_MEASUREMENTS:
         value = _to_float(DEFAULT_WEATHER.get(weather_key), None)
@@ -828,8 +892,6 @@ def update_model_from_efile(
 ) -> Mapping[str, Any]:
     """Replace an existing stopped model's source definitions from an uploaded model.e file."""
     target = manager.service_for(model_id)
-    if target.clock.state != "stopped":
-        raise ValueError(f"模型运行中或暂停中，无法更新定义: {target.model_id}")
     artifacts = _generated_model_artifacts(model_text)
     target_dir = Path(target.sim_dir).resolve()
     try:
@@ -837,14 +899,19 @@ def update_model_from_efile(
     except ValueError as exc:
         raise ValueError(f"模型目录无效，无法更新定义: {target.model_id}") from exc
 
-    written = _write_generated_model_artifacts(
-        target_dir,
-        artifacts,
-        diagram_svg_text=diagram_svg_text,
-        remove_diagram_when_absent=replace_diagram,
-    )
-    target.reset_runtime_for_model_change()
-    model_info = target.model_info()
+    with target.definition_update_lock:
+        with target.lock:
+            _require_active_service_instance_locked(target)
+            if target.clock.state != "stopped":
+                raise ValueError(f"模型运行中或暂停中，无法更新定义: {target.model_id}")
+            written = _write_generated_model_artifacts(
+                target_dir,
+                artifacts,
+                diagram_svg_text=diagram_svg_text,
+                remove_diagram_when_absent=replace_diagram,
+            )
+            target.reset_runtime_for_model_change()
+            model_info = target.model_info()
     return {
         **model_info,
         "updated": {
@@ -855,24 +922,41 @@ def update_model_from_efile(
     }
 
 
-def import_definition_archive(service: PolarMicrogridSimulator, data: bytes) -> Mapping[str, Any]:
-    if service.clock.state != "stopped":
-        raise ValueError(f"模型运行中或暂停中，无法更新定义: {service.model_id}")
+def _parse_definition_archive(data: bytes) -> Mapping[str, Any]:
     try:
-        archive = zipfile.ZipFile(BytesIO(data), mode="r")
+        with zipfile.ZipFile(BytesIO(data), mode="r") as archive:
+            model_text = _read_zip_text(archive, "model.e")
+            meas_text = _read_zip_text(archive, "meas.e")
+            control_text = _read_zip_text(archive, "control.e")
+            curves_text = _read_zip_text(archive, "curves.e")
+            diagram_text = _read_zip_text(archive, DIAGRAM_FILE_NAME)
     except zipfile.BadZipFile as exc:
         raise ValueError("Invalid definition archive") from exc
 
-    with archive:
-        model_text = _read_zip_text(archive, "model.e")
-        meas_text = _read_zip_text(archive, "meas.e")
-        control_text = _read_zip_text(archive, "control.e")
-        curves_text = _read_zip_text(archive, "curves.e")
-        diagram_text = _read_zip_text(archive, DIAGRAM_FILE_NAME)
-
     assert model_text is not None and meas_text is not None and control_text is not None and curves_text is not None
-    diagram_text = _normalize_diagram_svg_text(diagram_text)
-    curves_payload = _curves_from_definition_text(curves_text)
+    return {
+        "model_text": model_text,
+        "meas_text": meas_text,
+        "control_text": control_text,
+        "curves_text": curves_text,
+        "diagram_text": _normalize_diagram_svg_text(diagram_text),
+        "curves_payload": _curves_from_definition_text(curves_text),
+    }
+
+
+def _apply_parsed_definition_archive_locked(
+    service: PolarMicrogridSimulator,
+    parsed: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    _require_active_service_instance_locked(service)
+    if service.clock.state != "stopped":
+        raise ValueError(f"模型运行中或暂停中，无法更新定义: {service.model_id}")
+    model_text = str(parsed["model_text"])
+    meas_text = str(parsed["meas_text"])
+    control_text = str(parsed["control_text"])
+    curves_text = str(parsed["curves_text"])
+    diagram_text = parsed.get("diagram_text")
+    curves_payload = parsed["curves_payload"]
     written_files: list[str] = []
     root = Path(service.sim_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -903,6 +987,20 @@ def import_definition_archive(service: PolarMicrogridSimulator, data: bytes) -> 
     }
 
 
+def _apply_parsed_definition_archive(
+    service: PolarMicrogridSimulator,
+    parsed: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    with service.definition_update_lock:
+        with service.lock:
+            return _apply_parsed_definition_archive_locked(service, parsed)
+
+
+def import_definition_archive(service: PolarMicrogridSimulator, data: bytes) -> Mapping[str, Any]:
+    parsed = _parse_definition_archive(data)
+    return _apply_parsed_definition_archive(service, parsed)
+
+
 def import_definition_model(
     manager: MultiModelSimulator,
     source_model_id: Optional[str],
@@ -910,22 +1008,11 @@ def import_definition_model(
     data: bytes,
 ) -> Mapping[str, Any]:
     manager.validate_new_model_name(new_model_name)
-    try:
-        with zipfile.ZipFile(BytesIO(data), mode="r") as archive:
-            curves_text = _read_zip_text(archive, "curves.e")
-            _read_zip_text(archive, "model.e")
-            _read_zip_text(archive, "meas.e")
-            _read_zip_text(archive, "control.e")
-            diagram_text = _read_zip_text(archive, DIAGRAM_FILE_NAME)
-        assert curves_text is not None
-        _curves_from_definition_text(curves_text)
-        _normalize_diagram_svg_text(diagram_text)
-    except zipfile.BadZipFile as exc:
-        raise ValueError("Invalid definition archive") from exc
+    parsed = _parse_definition_archive(data)
 
     model_info = manager.clone_model(source_model_id, new_model_name)
     imported_service = manager.service_for(str(model_info["id"]))
-    imported = import_definition_archive(imported_service, data)
+    imported = _apply_parsed_definition_archive(imported_service, parsed)
     return {**model_info, "imported": imported}
 
 
@@ -958,10 +1045,17 @@ def make_definition_archive(service: PolarMicrogridSimulator) -> tuple[str, byte
 
 
 class JsonApiError(Exception):
-    def __init__(self, status: int, message: str) -> None:
+    def __init__(self, status: int, message: str, details: Optional[Mapping[str, Any]] = None) -> None:
         super().__init__(message)
         self.status = status
         self.message = message
+        self.details = dict(details or {})
+
+
+def _require_active_service_instance_locked(service: PolarMicrogridSimulator) -> None:
+    checker = getattr(service, "_service_instance_active_locked", None)
+    if callable(checker) and not checker():
+        raise JsonApiError(409, "请求所属模型生命周期已失效或已退休，操作已取消。")
 
 
 def make_http_server(
@@ -971,6 +1065,7 @@ def make_http_server(
     role: str = "simulator",
     static_root: Optional[str | Path] = None,
     sim_url: Optional[str] = None,
+    trainee_exchange: Optional[TraineeRealtimeExchange] = None,
     renewable_control_manager: Optional[TraineeRenewableControlManager] = None,
 ) -> ThreadingHTTPServer:
     role = role.lower()
@@ -978,10 +1073,33 @@ def make_http_server(
         static_root = WEB_DIR / ("trainee" if role == "trainee" else "simulator")
     static_root = Path(static_root).resolve()
     sim_url = sim_url.rstrip("/") if sim_url else None
+    exchange = trainee_exchange
+    if role == "trainee" and exchange is None:
+        exchange = TraineeRealtimeExchange(service)
     renewable_manager = renewable_control_manager
     if role == "trainee" and renewable_manager is None:
-        renewable_manager = TraineeRenewableControlManager(service)
+        if exchange is None:  # pragma: no cover - guarded by learner construction above.
+            raise RuntimeError("学员台实时交换服务未初始化")
+        renewable_manager = TraineeRenewableControlManager(
+            service,
+            snapshot_provider=exchange.control_snapshot,
+            receive_status_provider=exchange.receive_status,
+            command_sink=exchange.submit_commands,
+        )
     renewable_control_path = "/api/trainee/renewable-control"
+
+    def captured_service_is_current(target: PolarMicrogridSimulator) -> bool:
+        if hasattr(service, "service_for"):
+            try:
+                current = service.service_for(target.model_id)  # type: ignore[union-attr]
+            except KeyError:
+                return False
+            if current is not target:
+                return False
+        elif service is not target:
+            return False
+        checker = getattr(target, "service_instance_active", None)
+        return bool(checker()) if callable(checker) else True
 
     class PolarMicrogridHandler(BaseHTTPRequestHandler):
         server_version = "PolarMicrogridHTTP/0.1"
@@ -997,6 +1115,9 @@ def make_http_server(
         def do_GET(self) -> None:
             try:
                 path = urlparse(self.path).path
+                if path in LOCAL_DEFINITION_PATHS or path == LOCAL_RUNTIME_SETTINGS_PATH:
+                    self._handle_api_get()
+                    return
                 if path == renewable_control_path and role == "trainee":
                     self._handle_api_get()
                     return
@@ -1013,15 +1134,22 @@ def make_http_server(
                     return
                 self._serve_static(static_root)
             except JsonApiError as exc:
-                self._send_json({"error": exc.message}, status=exc.status)
+                self._send_json({"error": exc.message, **exc.details}, status=exc.status)
+            except (
+                ServiceInstanceRetiredError,
+                TraineeExchangeLifecycleError,
+                TraineeRenewableControlLifecycleError,
+            ) as exc:
+                self._send_json({"error": str(exc)}, status=409)
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=500)
 
         def do_POST(self) -> None:
             try:
                 path = urlparse(self.path).path
-                if path in DEFINITION_EDIT_PATHS and role != "simulator":
-                    raise JsonApiError(404, f"Unknown API route: {path}")
+                if path in LOCAL_DEFINITION_PATHS or path == LOCAL_RUNTIME_SETTINGS_PATH:
+                    self._handle_api_post()
+                    return
                 if path == renewable_control_path and role == "trainee":
                     self._handle_api_post()
                     return
@@ -1035,7 +1163,7 @@ def make_http_server(
                     return
                 self._handle_api_post()
             except JsonApiError as exc:
-                self._send_json({"error": exc.message}, status=exc.status)
+                self._send_json({"error": exc.message, **exc.details}, status=exc.status)
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=500)
 
@@ -1346,33 +1474,46 @@ def make_http_server(
             except (ValueError, TypeError) as exc:
                 raise JsonApiError(502, "模拟台返回的定义压缩包编码无效") from exc
 
+            exchange_invalidated = False
             try:
-                with target.lock:
-                    if target.trainee_receive_state().get("active"):
-                        raise JsonApiError(409, "当前模型正在接收中，不能执行模型初始化。")
-                    imported = import_definition_archive(target, archive_data)
-                    receive_state = target.set_trainee_receive_state(
-                        {
-                            "initialized": True,
-                            "initialized_at": datetime.now().isoformat(timespec="seconds"),
-                            "active": False,
-                            "frozen": False,
-                            "interaction_link": connection["link"],
-                            "teacher_api_base": connection["teacher_api_base"],
-                            "teacher_model_id": connection["model_id"],
-                            "teacher_model_name": connection["model_name"],
-                            "snapshot_path": connection["snapshot_path"],
-                            "command_path": connection["command_path"],
-                            "measurement_delta_path": connection["measurement_delta_path"],
-                            "definition_archive_path": connection["definition_archive_path"],
-                            "last_receive_at": "",
-                        }
-                    )
+                # Download and archive parsing stay outside the mutation locks.
+                parsed_archive = _parse_definition_archive(archive_data)
+                # Global mutation order: definition -> service -> exchange.
+                with target.definition_update_lock:
+                    with target.lock:
+                        _require_active_service_instance_locked(target)
+                        if target.trainee_receive_state().get("active"):
+                            raise JsonApiError(409, "当前模型正在接收中，不能执行模型初始化。")
+                        imported = _apply_parsed_definition_archive_locked(target, parsed_archive)
+                        receive_state = target.set_trainee_receive_state(
+                            {
+                                "initialized": True,
+                                "initialized_at": datetime.now().isoformat(timespec="seconds"),
+                                "active": False,
+                                "frozen": False,
+                                "interaction_link": connection["link"],
+                                "teacher_api_base": connection["teacher_api_base"],
+                                "teacher_model_id": connection["model_id"],
+                                "teacher_model_name": connection["model_name"],
+                                "snapshot_path": connection["snapshot_path"],
+                                "command_path": connection["command_path"],
+                                "measurement_delta_path": connection["measurement_delta_path"],
+                                "definition_archive_path": connection["definition_archive_path"],
+                                "last_receive_at": "",
+                            }
+                        )
+                        if exchange is not None:
+                            invalidate = getattr(exchange, "invalidate_model_for_service", None)
+                            if callable(invalidate):
+                                invalidate(target)
+                                exchange_invalidated = True
             except JsonApiError:
                 raise
             except (ValueError, OSError) as exc:
                 raise JsonApiError(400, str(exc)) from exc
 
+            if exchange is not None and not exchange_invalidated:
+                exchange.invalidate_model(target.model_id)
             self._send_json(
                 {
                     "model": target.model_info(),
@@ -1396,7 +1537,9 @@ def make_http_server(
                 "no",
                 "off",
             }
+            exchange_notified = False
             with target.lock:
+                _require_active_service_instance_locked(target)
                 receive_state = target.trainee_receive_state()
                 if active:
                     required = (
@@ -1413,6 +1556,27 @@ def make_http_server(
                         "frozen": not active,
                     }
                 )
+                if exchange is not None:
+                    notify = getattr(exchange, "notify_receive_state_changed_for_service", None)
+                    if callable(notify):
+                        notify(target)
+                        exchange_notified = True
+            if exchange is not None and not exchange_notified:
+                if captured_service_is_current(target):
+                    exchange.receive_state_changed(target.model_id)
+            if renewable_manager is not None:
+                notify_renewable = getattr(
+                    renewable_manager,
+                    "receive_state_changed_for_service",
+                    None,
+                )
+                if callable(notify_renewable):
+                    try:
+                        notify_renewable(target)
+                    except RuntimeError:
+                        pass
+                elif captured_service_is_current(target):
+                    renewable_manager.receive_state_changed(target.model_id)
             self._send_json(next_state)
 
         def _handle_api_get(self) -> None:
@@ -1423,14 +1587,27 @@ def make_http_server(
             elif path == renewable_control_path:
                 if role != "trainee" or renewable_manager is None:
                     raise JsonApiError(404, f"Unknown API route: {path}")
-                self._send_json(
-                    renewable_manager.state(
-                        self._request_model_id(),
+                state_for_service = getattr(renewable_manager, "state_for_service", None)
+                if callable(state_for_service):
+                    state_payload = state_for_service(
+                        target,
                         refresh=self._truthy_query("refresh"),
                     )
-                )
+                else:
+                    if not captured_service_is_current(target):
+                        raise JsonApiError(
+                            409,
+                            "新能源控制请求所属模型生命周期已失效或已退休。",
+                        )
+                    state_payload = renewable_manager.state(
+                        target.model_id,
+                        refresh=self._truthy_query("refresh"),
+                    )
+                self._send_json(state_payload)
             elif path == "/api/models":
                 self._send_json(self._model_catalog())
+            elif path == MANUAL_DEFINITION_CHANGES_PATH:
+                self._send_json(target.manual_definition_changes())
             elif path == "/api/snapshot":
                 lite = self._truthy_query("lite")
                 include_static, static_fields = self._static_query(default_include_static=not lite)
@@ -1496,34 +1673,81 @@ def make_http_server(
                     self._send_json({"items": service.trainee_receive_states()})  # type: ignore[union-attr]
                 else:
                     self._send_json({"items": {target.model_id: target.trainee_receive_state()}})
+            elif path == "/api/trainee/diagnostics":
+                if exchange is None:
+                    raise JsonApiError(404, f"Unknown API route: {path}")
+                receive_status_for_service = getattr(
+                    exchange,
+                    "receive_status_for_service",
+                    None,
+                )
+                if callable(receive_status_for_service):
+                    diagnostics = receive_status_for_service(target)
+                else:
+                    if not captured_service_is_current(target):
+                        raise JsonApiError(
+                            409,
+                            "学员台诊断请求所属模型生命周期已失效或已退休。",
+                        )
+                    diagnostics = exchange.receive_status(target.model_id)
+                self._send_json(diagnostics)
             elif path == "/api/trainee/snapshot":
-                remote_url = self._trainee_remote_url(
-                    target,
-                    "snapshot_path",
-                    default_path="/api/snapshot",
-                    query_overrides=self._trainee_snapshot_query_overrides(),
-                )
-                self._send_json(self._json_request_to_url(remote_url))
+                if exchange is None:
+                    raise JsonApiError(404, f"Unknown API route: {path}")
+                snapshot_for_service = getattr(exchange, "snapshot_for_service", None)
+                if callable(snapshot_for_service):
+                    snapshot_payload = snapshot_for_service(
+                        target,
+                        options=self._trainee_snapshot_query_overrides(),
+                        refresh=self._truthy_query("refresh"),
+                    )
+                else:
+                    if not captured_service_is_current(target):
+                        raise JsonApiError(
+                            409,
+                            "学员台快照请求所属模型生命周期已失效或已退休。",
+                        )
+                    snapshot_payload = exchange.snapshot(
+                        target.model_id,
+                        options=self._trainee_snapshot_query_overrides(),
+                        refresh=self._truthy_query("refresh"),
+                    )
+                self._send_json(snapshot_payload)
             elif path == "/api/trainee/measurements/delta":
-                remote_url = self._trainee_remote_url(
-                    target,
-                    "measurement_delta_path",
-                    default_path=self._measurement_delta_path_from_snapshot_path(target.trainee_receive_state().get("snapshot_path", "")),
-                    query_overrides={"after_seq": self._int_query("after_seq", 0, 0, 2_000_000_000)},
-                )
-                self._send_json(self._json_request_to_url(remote_url))
+                if exchange is None:
+                    raise JsonApiError(404, f"Unknown API route: {path}")
+                delta_for_service = getattr(exchange, "measurement_delta_for_service", None)
+                if callable(delta_for_service):
+                    delta_payload = delta_for_service(
+                        target,
+                        after_seq=self._int_query("after_seq", 0, 0, 2_000_000_000),
+                    )
+                else:
+                    if not captured_service_is_current(target):
+                        raise JsonApiError(
+                            409,
+                            "学员台量测增量请求所属模型生命周期已失效或已退休。",
+                        )
+                    delta_payload = exchange.measurement_delta(
+                        target.model_id,
+                        after_seq=self._int_query("after_seq", 0, 0, 2_000_000_000),
+                    )
+                self._send_json(delta_payload)
             elif path in ("/api/trainee-link", "/api/client-link"):
                 self._send_json(self._trainee_link_payload(target))
             elif path == "/api/config":
+                runtime_settings = target.web_runtime_settings(role)["settings"]
                 self._send_json(
                     {
                         "role": role,
                         "sim_url": sim_url,
-                        "poll_ms": 2000,
+                        "poll_ms": int(float(runtime_settings["frontend_refresh_seconds"]) * 1000),
                         "system_parameters": target.system_parameters(),
                         **self._model_catalog(),
                     }
                 )
+            elif path == LOCAL_RUNTIME_SETTINGS_PATH:
+                self._send_json(target.web_runtime_settings(role))
             elif path == "/api/export-definitions":
                 parsed = urlparse(self.path)
                 response_format = (parse_qs(parsed.query).get("format") or ["zip"])[0]
@@ -1639,11 +1863,20 @@ def make_http_server(
                 if not str(model_id or "").strip():
                     raise JsonApiError(400, "Model id is required")
                 try:
+                    old_service = service.service_for(model_id)  # type: ignore[union-attr]
+                    if old_service.trainee_receive_state().get("active"):
+                        raise JsonApiError(400, "模型正在接收中，不能删除。")
                     deleted = service.delete_model(model_id)  # type: ignore[union-attr]
+                except JsonApiError:
+                    raise
                 except KeyError as exc:
                     raise JsonApiError(404, str(exc)) from exc
                 except ValueError as exc:
                     raise JsonApiError(400, str(exc)) from exc
+                for lifecycle_owner in (exchange, renewable_manager):
+                    remove = getattr(lifecycle_owner, "remove_model_for_service", None)
+                    if callable(remove):
+                        remove(old_service)
                 catalog = dict(self._model_catalog())
                 catalog["active_model_id"] = deleted.get("active_model_id", catalog.get("active_model_id"))
                 self._send_json({"deleted": deleted, **catalog})
@@ -1683,31 +1916,75 @@ def make_http_server(
 
             target = self._target_service(payload)
             if path in DEFINITION_EDIT_PATHS:
-                if role != "simulator":
-                    raise JsonApiError(404, f"Unknown API route: {path}")
                 try:
-                    result = (
-                        target.update_device_parameters(payload)
-                        if path == "/api/definitions/device-parameters"
-                        else target.update_measurement_definition(payload)
-                    )
+                    if path == "/api/definitions/device-parameters":
+                        result = target.update_device_parameters(payload)
+                    elif path == "/api/definitions/measurement":
+                        result = target.update_measurement_definition(payload)
+                    elif path == "/api/definitions/manual-changes/retry":
+                        result = target.retry_manual_definition_changes(payload)
+                    else:
+                        result = target.reset_manual_definition_changes(payload)
+                except DefinitionRevisionConflict as exc:
+                    raise JsonApiError(
+                        409,
+                        str(exc),
+                        {
+                            "expected_revision": exc.expected_revision,
+                            "current_revision": exc.current_revision,
+                        },
+                    ) from exc
+                except ServiceInstanceRetiredError as exc:
+                    raise JsonApiError(409, str(exc)) from exc
                 except (KeyError, ValueError) as exc:
                     raise JsonApiError(400, str(exc)) from exc
                 self._send_json(result)
             elif path == "/api/student/commands":
                 self._send_json(target.apply_student_commands(payload, source=str(payload.get("source", ""))))
             elif path == "/api/trainee/receive-state":
-                self._send_json(target.set_trainee_receive_state(payload))
+                exchange_notified = False
+                with target.lock:
+                    _require_active_service_instance_locked(target)
+                    receive_state = target.set_trainee_receive_state(payload)
+                    if exchange is not None:
+                        notify = getattr(exchange, "notify_receive_state_changed_for_service", None)
+                        if callable(notify):
+                            notify(target)
+                            exchange_notified = True
+                if exchange is not None and not exchange_notified:
+                    if captured_service_is_current(target):
+                        exchange.receive_state_changed(target.model_id)
+                if renewable_manager is not None:
+                    notify_renewable = getattr(
+                        renewable_manager,
+                        "receive_state_changed_for_service",
+                        None,
+                    )
+                    if callable(notify_renewable):
+                        try:
+                            notify_renewable(target)
+                        except RuntimeError:
+                            pass
+                    elif captured_service_is_current(target):
+                        renewable_manager.receive_state_changed(target.model_id)
+                self._send_json(receive_state)
             elif path == "/api/trainee/commands":
-                remote_url = self._trainee_remote_url(
-                    target,
-                    "command_path",
-                    default_path="/api/student/commands",
-                )
-                command_payload = dict(payload)
-                command_payload.pop("model_id", None)
-                command_payload.pop("model", None)
-                self._send_json(self._json_request_to_url(remote_url, method="POST", payload=command_payload))
+                if exchange is None:
+                    raise JsonApiError(404, f"Unknown API route: {path}")
+                submit_for_service = getattr(exchange, "submit_commands_for_service", None)
+                try:
+                    if callable(submit_for_service):
+                        result = submit_for_service(target, payload)
+                    else:
+                        if not captured_service_is_current(target):
+                            raise JsonApiError(
+                                409,
+                                "学员台指令请求所属模型生命周期已失效或已退休。",
+                            )
+                        result = exchange.submit_commands(target.model_id, payload)
+                except (ServiceInstanceRetiredError, TraineeExchangeLifecycleError) as exc:
+                    raise JsonApiError(409, str(exc)) from exc
+                self._send_json(result)
             elif path == "/api/external/telemetry/query":
                 self._send_json(target.selected_telemetry_values(payload))
             elif path == "/api/external/controls":
@@ -1716,6 +1993,26 @@ def make_http_server(
                 self._send_json(target.control_clock(payload))
             elif path == "/api/config":
                 self._send_json(target.set_system_parameters(payload))
+            elif path == LOCAL_RUNTIME_SETTINGS_PATH:
+                try:
+                    result = target.set_web_runtime_settings(role, payload)
+                except ServiceInstanceRetiredError as exc:
+                    raise JsonApiError(409, str(exc)) from exc
+                except ValueError as exc:
+                    raise JsonApiError(400, str(exc)) from exc
+                if exchange is not None:
+                    notify_for_service = getattr(
+                        exchange,
+                        "runtime_settings_changed_for_service",
+                        None,
+                    )
+                    if callable(notify_for_service):
+                        notify_for_service(target)
+                    elif captured_service_is_current(target):
+                        notify = getattr(exchange, "runtime_settings_changed", None)
+                        if callable(notify):
+                            notify(target.model_id)
+                self._send_json(result)
             elif path == "/api/runtime-logs/clear":
                 self._send_json(target.clear_runtime_logs())
             elif path == "/api/step":
@@ -1833,16 +2130,21 @@ def make_http_server(
             self.send_header("Cache-Control", "no-store")
 
     class ManagedThreadingHTTPServer(ThreadingHTTPServer):
+        _trainee_exchange_closed = False
         _renewable_manager_closed = False
 
         def server_close(self) -> None:
             if renewable_manager is not None and not self._renewable_manager_closed:
                 self._renewable_manager_closed = True
                 renewable_manager.close()
+            if exchange is not None and not self._trainee_exchange_closed:
+                self._trainee_exchange_closed = True
+                exchange.close()
             super().server_close()
 
     server = ManagedThreadingHTTPServer(server_address, PolarMicrogridHandler)
     server.service = service  # type: ignore[attr-defined]
+    server.trainee_exchange = exchange  # type: ignore[attr-defined]
     server.renewable_control_manager = renewable_manager  # type: ignore[attr-defined]
     return server
 

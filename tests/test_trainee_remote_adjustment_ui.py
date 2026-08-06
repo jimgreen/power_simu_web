@@ -90,7 +90,7 @@ class TraineeRemoteAdjustmentUiTest(unittest.TestCase):
         self.assertNotIn("calculateRenewableControlPlan", self.script)
 
         backend = (ROOT / "simu/renewable_control.py").read_text(encoding="utf-8")
-        self.assertIn('"valid_for_minutes": state.settings.command_valid_minutes', backend)
+        self.assertIn('"valid_for_minutes": cycle_settings.command_valid_minutes', backend)
         self.assertNotIn("manual_hold", backend)
 
     def test_displayed_command_times_use_shared_active_command_filter(self):

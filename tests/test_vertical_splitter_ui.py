@@ -44,8 +44,8 @@ class VerticalSplitterUiTest(unittest.TestCase):
         )
         self.assertRegex(
             self.trainee_html,
-            r'data-vertical-split="trainee-commands"\s+'
-            r'data-vertical-split-min-bottom="330"',
+            r'data-vertical-split="trainee-commands"[^>]*'
+            r'data-vertical-split-min-bottom="240"',
         )
         self.assertIn("container.dataset.verticalSplitMinBottom", self.trainee_script)
 

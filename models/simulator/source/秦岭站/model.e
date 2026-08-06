@@ -2,6 +2,35 @@
 @ path      name     p_base  u_unit  p_unit  i_unit
 # IEEE标准算例  qinling  100     V       kW      A
 </Model>
+<basevoltage>
+@ idx  name  vltp  type
+# 1    0     0     ac
+# 2    0.4   0.4   ac
+# 3    6     6     ac
+# 4    10    10    ac
+# 5    10.5  10.5  ac
+# 6    35    35    ac
+# 7    66    66    ac
+# 8    110   110   ac
+# 9    220   220   ac
+# 10   330   330   ac
+# 11   500   500   ac
+# 12   750   750   ac
+# 13   800   800   ac
+# 14   0     0     dc
+# 15   0.4   0.4   dc
+# 16   6     6     dc
+# 17   10    10    dc
+# 18   10.5  10.5  dc
+# 19   35    35    dc
+# 20   66    66    dc
+# 21   110   110   dc
+# 22   220   220   dc
+# 23   330   330   dc
+# 24   500   500   dc
+# 25   750   750   dc
+# 26   800   800   dc
+</basevoltage>
 <ACNode>
 @ idx  name          vbase  run_stat
 # 1    交流风电-1        380    1
@@ -36,6 +65,10 @@
 # 30   盒型开关-7        380    1
 # 31   盒型开关-9        380    1
 # 32   交流负荷-1        380    1
+# 33   交流电化学储能-23    380    1
+# 34   交流风力发电机-24    380    1
+# 35   交流光伏发电机-25    380    1
+# 36   交流电化学储能-26    380    1
 </ACNode>
 <ACRealBs>
 @ idx  name        dev_type         node  run_stat
@@ -61,21 +94,25 @@
 # 2    交流电制氢-1_交流设备端交流电负荷  ac-electrolyzer  31    1         0      1.0  0.0  0.0  0      1.0  0.0  0.0
 </ACLoad>
 <ACGenerator>
-@ idx  name     dev_type        node  control_type  p_set  p_max  p_min  q_set  q_max  q_min  v_set  alpha  run_stat  rated_capacity  rated_voltage
-# 1    交流风电-1   ac-wind-source  1     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
-# 2    交流风电-2   ac-wind-source  2     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
-# 3    交流风电-3   ac-wind-source  3     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
-# 4    交流风电-4   ac-wind-source  4     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
-# 5    交流风电-5   ac-wind-source  5     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
-# 6    交流风电-6   ac-wind-source  6     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
-# 7    交流风电-7   ac-wind-source  7     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
-# 8    交流风电-8   ac-wind-source  8     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
-# 9    交流风电-9   ac-wind-source  9     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
-# 10   交流风电-10  ac-wind-source  10    PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
-# 11   柴油发电机-1  ac-source       11    PH            0      0      0      0      0      0      380    1.0    1         300             380
-# 12   柴油发电机-2  ac-source       12    PH            0      0      0      0      0      0      380    1.0    1         300             380
-# 13   柴油发电机-3  ac-source       13    PH            0      0      0      0      0      0      380    1.0    1         300             380
-# 14   柴油发电机-4  ac-source       14    PH            0      0      0      0      0      0      380    1.0    1         300             380
+@ idx  name        dev_type        node  control_type  p_set  p_max  p_min  q_set  q_max  q_min  v_set  alpha  run_stat  rated_capacity  rated_voltage
+# 1    交流风电-1      ac-wind-source  1     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 2    交流风电-2      ac-wind-source  2     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 3    交流风电-3      ac-wind-source  3     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 4    交流风电-4      ac-wind-source  4     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 5    交流风电-5      ac-wind-source  5     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 6    交流风电-6      ac-wind-source  6     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 7    交流风电-7      ac-wind-source  7     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 8    交流风电-8      ac-wind-source  8     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 9    交流风电-9      ac-wind-source  9     PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 10   交流风电-10     ac-wind-source  10    PQ            3.0    0      0      0.5    0      0      380    0.5    1         10.1            380
+# 11   柴油发电机-1     ac-source       11    PH            0      0      0      0      0      0      380    1.0    1         300             380
+# 12   柴油发电机-2     ac-source       12    PH            0      0      0      0      0      0      380    1.0    1         300             380
+# 13   柴油发电机-3     ac-source       13    PH            0      0      0      0      0      0      380    1.0    1         300             380
+# 14   柴油发电机-4     ac-source       14    PH            0      0      0      0      0      0      380    1.0    1         300             380
+# 23   交流电化学储能-23  ac-storage      33    PQ            0.0    100    -100   0.0    0      0      380    1.0    1         100             380
+# 24   交流风力发电机-24  ac-wind-source  34    PQ            0      50     0      0      0      0      380    1.0    1         50              380
+# 25   交流光伏发电机-25  ac-pv-source    35    PV            0      0      0      0      0      0      380    1.0    1         20              10
+# 26   交流电化学储能-26  ac-storage      36    PH            0.0    100    -100   0.0    0      0      380    1.0    1         5               380
 </ACGenerator>
 <ACZeroBranch>
 @ idx  name            dev_type                 i_node  j_node  run_stat
@@ -92,6 +129,10 @@
 # 7    盒型开关-7   ac-box-breaker  29      30      1       1
 # 8    盒型开关-8   ac-box-breaker  29      27      1       1
 # 9    盒型开关-9   ac-box-breaker  31      28      1       1
+# 10   盒型开关-10  ac-box-breaker  29      33      1       1
+# 11   盒型开关-11  ac-box-breaker  29      34      1       1
+# 12   盒型开关-12  ac-box-breaker  29      35      1       1
+# 13   盒型开关-13  ac-box-breaker  36      29      1       1
 </ACBreak>
 <DCNode>
 @ idx  name        vbase  voltage  isl  run_stat
@@ -132,6 +173,7 @@
 # 35   光伏变流器-1     400    400      0    1
 # 36   光伏变流器-2     400    400      0    1
 # 37   光伏变流器-3     400    400      0    1
+# 38   直流负荷-1      750    750      0    1
 </DCNode>
 <DCRealBs>
 @ idx  name        dev_type         node  run_stat
@@ -144,13 +186,17 @@
 # 3    光伏直流线路-3    dc-routable-line  28      37      1         1.0
 # 4    燃料电池直流线路-1  dc-routable-line  23      24      1         1.0
 </DCBranch>
+<DCLoad>
+@ idx  name    dev_type  node  run_stat  pbase  pv0  pv1  pv2
+# 1    直流负荷-1  dc-load   38    1         0      1.0  0.0  0.0
+</DCLoad>
 <DCGenerator>
 @ idx  name                dev_type      node  control_type  v_set  p_set  p_max  p_min  i_set  run_stat  rated_capacity  rated_voltage
 # 1    直流光伏-1              dc-pv-source  26    P             400    5.0    0      0      0.0    1         50              400
 # 2    直流光伏-2              dc-pv-source  27    P             400    5.0    0      0      0.0    1         50              400
 # 3    直流光伏-3              dc-pv-source  28    P             400    5.0    0      0      0.0    1         50              400
-# 4    电化学储能-1             dc-storage    29    V             500    0.0    0      0      0.0    1         60              500
-# 5    电化学储能-2             dc-storage    30    V             500    0.0    0      0      0.0    1         60              500
+# 4    电化学储能-1             dc-storage    29    P             500    0.0    0      0      0.0    1         60              500
+# 5    电化学储能-2             dc-storage    30    P             500    0.0    0      0      0.0    1         60              500
 # 6    电化学储能-3             dc-storage    31    V             500    0.0    0      0      0.0    1         60              500
 # 7    电化学储能-4             dc-storage    32    V             500    0.0    0      0      0.0    1         60              500
 # 8    电化学储能-5             dc-storage    33    V             500    0.0    0      0      0.0    1         60              500
@@ -182,14 +228,15 @@
 # 30   直流断路器-30  dc-breaker  13      12      1       1
 # 31   直流断路器-31  dc-breaker  13      23      1       1
 # 32   直流断路器-32  dc-breaker  24      25      1       1
+# 33   直流断路器-33  dc-breaker  13      38      1       1
 </DCBreak>
 <DCDCConverter>
 @ idx  name     dev_type        i_node  j_node  i_control_type  j_control_type  p_set  i_set  v_set  run_stat  r1  r2
 # 1    光伏变流器-1  dcdc-converter  35      14      V               NONE            0      0      400    1         0   0
 # 2    光伏变流器-2  dcdc-converter  36      15      V               NONE            0      0      400    1         0   0
 # 3    光伏变流器-3  dcdc-converter  37      16      V               NONE            0      0      400    1         0   0
-# 4    储能变流器-1  dcdc-converter  17      29      V               NONE            0      0      750    1         0   0
-# 5    储能变流器-2  dcdc-converter  18      30      V               NONE            0      0      750    1         0   0
+# 4    储能变流器-1  dcdc-converter  17      29      NONE            V               0      0      400    1         0   0
+# 5    储能变流器-2  dcdc-converter  18      30      NONE            V               0      0      400    1         0   0
 # 6    储能变流器-3  dcdc-converter  19      31      V               NONE            0      0      750    1         0   0
 # 7    储能变流器-4  dcdc-converter  20      32      V               NONE            0      0      750    1         0   0
 # 8    储能变流器-5  dcdc-converter  21      33      V               NONE            0      0      750    1         0   0
@@ -242,6 +289,7 @@
 # 8    8                WT-5MW              3                  12                35                  6               10
 # 9    9                WT-5MW              3                  12                35                  6               10
 # 10   10               WT-5MW              3                  12                35                  6               10
+# 11   24               WT-5MW              3                  12                25                  170             110
 </ACWindGen>
 <DCPVGen>
 @ idx  idx_dcgenerator  pv_module_model  module_efficiency  array_area  mppt_count
@@ -258,3 +306,12 @@
 # 5    8                lithium             20                  60               0.95                         60                60                   50               90               10
 # 6    9                lithium             20                  60               0.95                         60                60                   50               90               10
 </DCStorageGen>
+<ACStorageGen>
+@ idx  idx_acgenerator  storage_technology  battery_rack_count  energy_capacity  charge_discharge_efficiency  max_charge_power  max_discharge_power  state_of_charge  soc_upper_limit  soc_lower_limit
+# 1    23               lithium             20                  200              90                           100               100                  50               90               10
+# 2    26               lithium             20                  100              90                           100               100                  50               90               10
+</ACStorageGen>
+<ACPVGen>
+@ idx  idx_acgenerator  pv_module_model  module_efficiency  array_area  mppt_count
+# 1    25               Mono-550W        21.3               100000      100
+</ACPVGen>

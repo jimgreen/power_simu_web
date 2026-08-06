@@ -18,6 +18,16 @@ class DefinitionSnapshot:
     measurement_after: Tuple[str, ...]
 
 
+class DefinitionRevisionConflict(ValueError):
+    def __init__(self, expected_revision: int, current_revision: int) -> None:
+        super().__init__(
+            "Definition revision conflict: "
+            f"expected {expected_revision}, current {current_revision}"
+        )
+        self.expected_revision = expected_revision
+        self.current_revision = current_revision
+
+
 PROTECTED_DEVICE_FIELDS = {
     "idx",
     "name",
@@ -167,6 +177,17 @@ def normalize_measurement_changes(current: Mapping[str, Any], changes: Mapping[s
         "valid": str(valid),
         "error_sigma": sigma,
     }
+
+
+def require_definition_revision(payload: Mapping[str, Any], current_revision: int) -> None:
+    if "revision" not in payload or payload.get("revision") is None:
+        return
+    revision = _finite_number(payload.get("revision"), "revision")
+    if not revision.is_integer() or revision < 0:
+        raise ValueError("revision must be a non-negative integer")
+    expected_revision = int(revision)
+    if expected_revision != current_revision:
+        raise DefinitionRevisionConflict(expected_revision, current_revision)
 
 
 def render_ebook_aligned(book: Any) -> str:

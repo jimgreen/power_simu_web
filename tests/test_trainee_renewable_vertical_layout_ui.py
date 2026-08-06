@@ -42,18 +42,25 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
     def test_strategy_uses_device_category_tabs_and_control_logs_remain_paginated(self):
         self.assertIn('id="renewableStrategyTabs"', self.html)
         expected_tabs = {
-            "wind": "风电",
-            "pv": "光伏",
-            "storage": "储能",
+            "ac-wind": "交流风电",
+            "dc-wind": "直流风电",
+            "ac-pv": "交流光伏",
+            "dc-pv": "直流光伏",
+            "ac-grid-storage": "交流跟网储能",
+            "dc-grid-storage": "直流跟网储能",
+            "ac-balance-storage": "交流平衡储能",
+            "dc-balance-storage": "直流平衡储能",
             "diesel": "柴发",
-            "converter": "变流",
+            "converter": "ACDC变流",
         }
         for key, label in expected_tabs.items():
             self.assertIn(f'data-renewable-strategy-tab="{key}"', self.html)
             self.assertIn(f">{label}</button>", self.html)
+        for old_key in ("wind", "pv", "storage"):
+            self.assertNotIn(f'data-renewable-strategy-tab="{old_key}"', self.html)
         self.assertNotIn('id="renewableStrategyPager"', self.html)
         self.assertIn('id="renewableControlLogPager"', self.html)
-        self.assertIn('strategyTab: "wind"', self.script)
+        self.assertIn('strategyTab: "ac-wind"', self.script)
         self.assertIn("function renewableStrategyRows", self.script)
         self.assertIn("function renderRenewableStrategyTabs", self.script)
         self.assertIn("RENEWABLE_CONTROL_LOG_PAGE_SIZE", self.script)

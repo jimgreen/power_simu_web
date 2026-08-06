@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import re
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from shutil import copytree
+from unittest.mock import patch
 
 import simu_loop
 import simu.server as server_module
@@ -17,6 +19,44 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SimulatorModelCreationTest(unittest.TestCase):
+    @staticmethod
+    def _tree_bytes(root: Path) -> dict[str, bytes]:
+        return {
+            path.relative_to(root).as_posix(): path.read_bytes()
+            for path in sorted(root.rglob("*"))
+            if path.is_file()
+        }
+
+    @staticmethod
+    def _structured_storage_model_text(ac_soc: str, dc_soc: str = "-0.05") -> str:
+        return f"""<ACGenerator>
+@ idx  name  node  control_type  p_set  q_set  v_set  run_stat
+# 1  ac-storage  1  P  0  0  380  1
+</ACGenerator>
+<DCGenerator>
+@ idx  name  node  control_type  p_set  v_set  i_set  run_stat
+# 1  dc-storage  1  P  0  720  0  1
+</DCGenerator>
+<ACStorageGen>
+@ idx  idx_acgenerator  energy_capacity  state_of_charge
+# 1  1  100  {ac_soc}
+</ACStorageGen>
+<DCStorageGen>
+@ idx  idx_dcgenerator  energy_capacity  state_of_charge
+# 1  1  120  {dc_soc}
+</DCStorageGen>
+"""
+
+    @staticmethod
+    def _manager(temp_root: Path) -> MultiModelSimulator:
+        models_root = temp_root / "models"
+        copytree(SIMPLE_MODEL_SOURCE, models_root / "default-model")
+        return MultiModelSimulator.discover(
+            models_root.parent,
+            temp_root / "runtime",
+            models_dir=models_root,
+        )
+
     def test_create_model_from_uploaded_model_e_generates_runtime_definitions(self):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
@@ -61,6 +101,119 @@ class SimulatorModelCreationTest(unittest.TestCase):
 
             devices = manager.service_for("新建测试模型").devices()
             self.assertGreater(len(devices), 0)
+
+    def test_create_model_from_uploaded_model_e_generates_ac_and_dc_storage_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            manager = self._manager(temp_root)
+
+            server_module.create_model_from_efile(
+                manager,
+                "structured-storage",
+                self._structured_storage_model_text("1.08", "-0.05"),
+            )
+
+            target_dir = temp_root / "models" / "structured-storage"
+            expected = [
+                ("ACGenerator", "ac-storage", 1.08),
+                ("DCGenerator", "dc-storage", -0.05),
+            ]
+            for file_name in ("control.e", "stat.e"):
+                with self.subTest(file=file_name):
+                    book = simu_loop.EBook(target_dir / file_name)
+                    storage_rows = book.data["StorageSoc"].data
+                    self.assertEqual(
+                        [
+                            (row["dev_type"], row["name"], float(row["soc_curr"]))
+                            for row in storage_rows
+                        ],
+                        expected,
+                    )
+
+            measurement_rows = simu_loop.EBook(target_dir / "meas.e").data["Measurement"].data
+            soc_rows = [
+                row
+                for row in measurement_rows
+                if str(row["meas_type"]).upper() == "SOC"
+            ]
+            self.assertEqual(len(soc_rows), 2)
+            self.assertEqual(
+                [
+                    (row["dev_type"], row["dev_name"], int(float(row["valid"])))
+                    for row in soc_rows
+                ],
+                [
+                    ("ACGenerator", "ac-storage", 1),
+                    ("DCGenerator", "dc-storage", 1),
+                ],
+            )
+
+    def test_create_model_from_uploaded_model_e_parses_percent_storage_soc(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            manager = self._manager(temp_root)
+
+            server_module.create_model_from_efile(
+                manager,
+                "percent-storage",
+                self._structured_storage_model_text("108%"),
+            )
+
+            control = simu_loop.EBook(temp_root / "models" / "percent-storage" / "control.e")
+            ac_storage_rows = [
+                row
+                for row in control.data["StorageSoc"].data
+                if row["dev_type"] == "ACGenerator" and row["name"] == "ac-storage"
+            ]
+            self.assertEqual(len(ac_storage_rows), 1)
+            self.assertEqual(float(ac_storage_rows[0]["soc_curr"]), 1.08)
+
+    def test_generic_percent_values_remain_ratios_for_generated_loads(self):
+        self.assertEqual(server_module._numeric("50%"), 0.5)
+        self.assertEqual(server_module._storage_soc_value(108), 108.0)
+        self.assertEqual(server_module._storage_soc_value("108"), 108.0)
+        self.assertEqual(server_module._storage_soc_value(1.08), 1.08)
+        self.assertEqual(server_module._storage_soc_value("108%"), 1.08)
+        self.assertEqual(server_module._storage_soc_value(-0.05), -0.05)
+
+        model_book = server_module._book_from_text(
+            """<ACLoad>
+@ idx  name  node  pbase  pv0  qbase  qv0  run_stat
+# 1  load-percent  1  100  50%  1  0  1
+</ACLoad>
+"""
+        )
+        curves = server_module._generated_curves_payload(model_book)
+
+        self.assertEqual(server_module._load_base_kw(model_book.data["ACLoad"].data[0], "ACLoad"), 50.0)
+        self.assertEqual(curves["loads"]["load-percent"][0]["p_kw"], 38.653)
+
+    def test_create_model_skips_storage_rows_with_missing_generator_reference(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            manager = self._manager(temp_root)
+            model_text = """<ACGenerator>
+@ idx  name  node  control_type  p_set  q_set  v_set  run_stat
+# 1  ac-source  1  P  0  0  380  1
+</ACGenerator>
+<ACStorageGen>
+@ idx  idx_acgenerator  energy_capacity  state_of_charge
+# 1  999  100  0.75
+</ACStorageGen>
+"""
+
+            server_module.create_model_from_efile(manager, "malformed-storage", model_text)
+
+            target_dir = temp_root / "models" / "malformed-storage"
+            for file_name in ("control.e", "stat.e"):
+                with self.subTest(file=file_name):
+                    book = simu_loop.EBook(target_dir / file_name)
+                    self.assertNotIn("StorageSoc", book.data)
+            measurement_rows = simu_loop.EBook(target_dir / "meas.e").data["Measurement"].data
+            self.assertEqual(
+                [row for row in measurement_rows if str(row["meas_type"]).upper() == "SOC"],
+                [],
+            )
 
     def test_create_model_from_uploaded_model_e_can_store_svg_diagram(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -121,6 +274,73 @@ class SimulatorModelCreationTest(unittest.TestCase):
             self.assertIn("diagram.svg", updated["updated"]["files"])
             self.assertEqual((models_root / "默认模型" / "diagram.svg").read_text(encoding="utf-8"), diagram_text)
             self.assertGreater(len(manager.service_for("默认模型").definitions()["measurement"]), 0)
+
+    def test_update_model_cannot_write_deleted_recreated_service_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            models_root = temp_root / "models"
+            for model_id in ("target", "keep"):
+                copytree(SIMPLE_MODEL_SOURCE, models_root / model_id)
+            manager = MultiModelSimulator.discover(
+                models_root.parent,
+                temp_root / "runtime",
+                models_dir=models_root,
+            )
+            old_target = manager.service_for("target")
+            model_text = (SIMPLE_MODEL_SOURCE / "model.e").read_text(encoding="utf-8")
+            artifacts_ready = threading.Event()
+            release_write = threading.Event()
+            original_generate = server_module._generated_model_artifacts
+
+            def blocking_generate(text):
+                artifacts = original_generate(text)
+                artifacts_ready.set()
+                self.assertTrue(release_write.wait(timeout=3.0))
+                return artifacts
+
+            result = {}
+
+            def update_old_target():
+                try:
+                    result["value"] = server_module.update_model_from_efile(
+                        manager,
+                        "target",
+                        model_text,
+                    )
+                except Exception as exc:
+                    result["error"] = exc
+
+            update_thread = threading.Thread(target=update_old_target, daemon=True)
+            try:
+                with patch.object(
+                    server_module,
+                    "_generated_model_artifacts",
+                    side_effect=blocking_generate,
+                ):
+                    update_thread.start()
+                    self.assertTrue(artifacts_ready.wait(timeout=3.0))
+
+                    manager.delete_model("target")
+                    manager.create_model_slot("target")
+                    new_target = manager.service_for("target")
+                    source_before = self._tree_bytes(new_target.sim_dir)
+                    runtime_before = self._tree_bytes(new_target.runtime_dir)
+
+                    release_write.set()
+                    update_thread.join(timeout=5.0)
+                    self.assertFalse(update_thread.is_alive())
+            finally:
+                release_write.set()
+                update_thread.join(timeout=2.0)
+
+            self.assertNotIn("value", result)
+            self.assertIsInstance(result.get("error"), server_module.JsonApiError)
+            self.assertEqual(result["error"].status, 409)
+            self.assertRegex(str(result["error"]), "生命周期|失效|删除|退休")
+            self.assertIsNot(new_target, old_target)
+            self.assertFalse(old_target.service_instance_active())
+            self.assertEqual(self._tree_bytes(new_target.sim_dir), source_before)
+            self.assertEqual(self._tree_bytes(new_target.runtime_dir), runtime_before)
 
     def test_create_model_rejects_duplicate_names_before_writing_files(self):
         with tempfile.TemporaryDirectory() as temporary:

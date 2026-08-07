@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import gzip
 import json
 import threading
 import time
@@ -12,6 +13,25 @@ from typing import Any, Callable, ContextManager, Dict, Iterator, Mapping, Optio
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
+
+try:
+    from .measurement_delta import (
+        MeasurementArrayMismatchError,
+        apply_measurement_delta,
+        compact_measurement_delta,
+        measurement_definition_signature,
+        measurement_row_index,
+        measurement_rows_by_definition_index,
+    )
+except ImportError:  # pragma: no cover - legacy package compatibility.
+    from measurement_delta import (
+        MeasurementArrayMismatchError,
+        apply_measurement_delta,
+        compact_measurement_delta,
+        measurement_definition_signature,
+        measurement_row_index,
+        measurement_rows_by_definition_index,
+    )
 
 
 CONTROL_STATIC_FIELDS = ("definitions", "settings", "device_parameters")
@@ -29,14 +49,17 @@ def _request_json(
     timeout: float = 8.0,
 ) -> Any:
     body = None
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/json", "Accept-Encoding": "gzip"}
     if method in {"POST", "PUT"}:
         body = json.dumps(payload or {}, ensure_ascii=False, default=str).encode("utf-8")
         headers["Content-Type"] = "application/json; charset=utf-8"
     request = Request(url, data=body, headers=headers, method=method)
     try:
         with urlopen(request, timeout=timeout) as response:
-            text = response.read().decode("utf-8")
+            response_body = response.read()
+            if str(response.headers.get("Content-Encoding", "")).lower() == "gzip":
+                response_body = gzip.decompress(response_body)
+            text = response_body.decode("utf-8")
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(detail or str(exc.reason)) from exc
@@ -173,8 +196,15 @@ class _ExchangeState:
     receive_epoch: int = 0
     connection_signature: Tuple[Any, ...] = ()
     measurement_delta_seq: int = 0
+    remote_measurement_delta_seq: int = 0
     measurement_delta_state: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     measurement_delta_history: list[Dict[str, Any]] = field(default_factory=list)
+    accepted_measurement_frame_count: int = 0
+    rejected_measurement_frame_count: int = 0
+    last_accepted_measurement_seq: int = 0
+    last_rejected_measurement_seq: int = 0
+    last_rejected_measurement_reason: str = ""
+    last_accepted_measurement_count: int = 0
     frame_identity: Tuple[Tuple[str, str], ...] = ()
     frame_changed_at: float = 0.0
     last_attempt_at: float = 0.0
@@ -212,14 +242,6 @@ def _device_key(device: Mapping[str, Any]) -> Tuple[str, str]:
     )
 
 
-def _measurement_definition_identity(row: Mapping[str, Any]) -> Tuple[str, str, str]:
-    return (
-        str(row.get("dev_type", "")),
-        str(row.get("dev_name", "")),
-        str(row.get("meas_type", "")).upper(),
-    )
-
-
 def _merge_remote_measurements_with_local_definitions(
     remote_measurements: Any,
     local_snapshot: Mapping[str, Any],
@@ -235,35 +257,43 @@ def _merge_remote_measurements_with_local_definitions(
         return copy.deepcopy(remote_measurements)
 
     normalized_rows = [dict(row) for row in local_rows if isinstance(row, Mapping)]
-    by_name = {
-        str(row.get("name", "")): row
-        for row in normalized_rows
-        if str(row.get("name", ""))
-    }
-    by_identity = {
-        _measurement_definition_identity(row): row
-        for row in normalized_rows
-        if all(_measurement_definition_identity(row))
-    }
-    merged = copy.deepcopy(dict(remote_measurements))
+    expected_signature = measurement_definition_signature(normalized_rows)
+    merged = dict(remote_measurements)
     merged["definitions"] = normalized_rows
+    if (
+        str(remote_measurements.get("definition_signature", "") or "") == expected_signature
+        and all(
+            isinstance(remote_measurements.get(channel), Sequence)
+            and not isinstance(remote_measurements.get(channel), (str, bytes))
+            and len(remote_measurements.get(channel) or []) == len(normalized_rows)
+            for channel in ("real", "scada")
+        )
+    ):
+        return merged
+
+    definitions_by_index = {
+        measurement_row_index(row): row
+        for row in normalized_rows
+        if measurement_row_index(row) >= 0
+    }
     for channel in ("real", "scada"):
         rows = merged.get(channel)
         if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
             continue
         updated_rows = []
-        for raw_row in rows:
+        positional_fallback = len(rows) == len(normalized_rows)
+        for position, raw_row in enumerate(rows):
             if not isinstance(raw_row, Mapping):
-                updated_rows.append(copy.deepcopy(raw_row))
+                updated_rows.append(raw_row)
                 continue
             row = dict(raw_row)
-            definition = by_name.get(str(row.get("name", ""))) or by_identity.get(
-                _measurement_definition_identity(row)
-            )
+            definition = definitions_by_index.get(measurement_row_index(row))
+            if definition is None and positional_fallback:
+                definition = normalized_rows[position]
             if definition is not None:
                 for field_name in ("weight", "valid"):
                     if field_name in definition:
-                        row[field_name] = copy.deepcopy(definition[field_name])
+                        row[field_name] = definition[field_name]
             updated_rows.append(row)
         merged[channel] = updated_rows
     return merged
@@ -325,6 +355,8 @@ def _measurement_delta_signature(item: Mapping[str, Any]) -> str:
         "scada_value": item.get("scada_value"),
         "valid": item.get("valid"),
         "weight": item.get("weight"),
+        "status": item.get("status"),
+        "fixed_value": item.get("fixed_value"),
     }
     return json.dumps(comparable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -340,18 +372,14 @@ def _measurement_delta_items(
     definitions = measurements.get("definitions") or []
     if not isinstance(definitions, Sequence) or isinstance(definitions, (str, bytes)):
         definitions = []
-    real_rows = measurements.get("real") or []
-    scada_rows = measurements.get("scada") or []
-    real_by_name = {
-        str(row.get("name", "")): row
-        for row in real_rows
-        if isinstance(row, Mapping) and str(row.get("name", ""))
-    }
-    scada_by_name = {
-        str(row.get("name", "")): row
-        for row in scada_rows
-        if isinstance(row, Mapping) and str(row.get("name", ""))
-    }
+    real_rows = measurement_rows_by_definition_index(
+        definitions,
+        measurements.get("real") or [],
+    )
+    scada_rows = measurement_rows_by_definition_index(
+        definitions,
+        measurements.get("scada") or [],
+    )
     clock = snapshot.get("clock") if isinstance(snapshot.get("clock"), Mapping) else {}
     simu_time = str(clock.get("time") or "--")
     absolute_minute = clock.get("absolute_minute")
@@ -361,27 +389,29 @@ def _measurement_delta_items(
         else "--"
     )
     items: Dict[str, Dict[str, Any]] = {}
-    for definition in definitions:
+    for index, definition in enumerate(definitions):
         if not isinstance(definition, Mapping):
             continue
         name = str(definition.get("name", "")).strip()
         if not name:
             continue
-        real = real_by_name.get(name)
-        scada = scada_by_name.get(name)
-        real_value = copy.deepcopy(real.get("value")) if real is not None else None
-        scada_value = copy.deepcopy(scada.get("value")) if scada is not None else None
+        real = real_rows[index]
+        scada = scada_rows[index]
+        real_value = real.get("value") if real is not None else None
+        scada_value = scada.get("value") if scada is not None else None
         try:
             valid = int(float(definition.get("valid", 0) or 0))
         except (TypeError, ValueError):
             valid = 0
         items[name] = {
             "name": name,
-            "value": copy.deepcopy(scada_value if scada is not None else real_value),
+            "value": scada_value if scada is not None else real_value,
             "real_value": real_value,
             "scada_value": scada_value,
             "valid": valid,
-            "weight": copy.deepcopy(definition.get("weight", "")),
+            "weight": definition.get("weight", ""),
+            "status": definition.get("status"),
+            "fixed_value": definition.get("fixed_value"),
             "updated_wall_time": wall_time,
             "updated_simu_time": simu_time,
             "updated_absolute_minute": absolute_minute,
@@ -808,62 +838,84 @@ class TraineeRealtimeExchange:
         attempted_at: Optional[float] = None,
         request_duration_seconds: Optional[float] = None,
         response_size_bytes: Optional[int] = None,
+        remote_measurement_delta_seq: Optional[int] = None,
+        accepted_measurement_frame: Optional[Mapping[str, Any]] = None,
+        measurement_frame_unchanged: bool = False,
+        snapshot_owned: bool = False,
     ) -> Optional[int]:
         runtime_settings = self._runtime_settings_for_service(service)
         history_limit = max(1, int(runtime_settings["measurement_delta_history_limit"]))
         published_at = float(received_at if received_at is not None else time.time())
-        runtime = copy.deepcopy(dict(snapshot))
-        local = service.snapshot(
-            include_static=True,
-            include_runtime_logs=False,
-            include_measurements=False,
-            include_devices=True,
-            include_device_states=False,
-            include_commands=False,
-            static_fields=list(CONTROL_STATIC_FIELDS),
-        )
-        merged = _merge_runtime_snapshot_with_local_definitions(runtime, local)
-        current_measurements = _measurement_delta_items(merged, received_at=published_at)
+        runtime = dict(snapshot) if snapshot_owned else copy.deepcopy(dict(snapshot))
+        remote_measurements = runtime.get("measurements")
+        if isinstance(remote_measurements, Mapping) and not measurement_frame_unchanged:
+            if snapshot_owned:
+                merged_measurements = remote_measurements
+            else:
+                local = service.snapshot(
+                    include_static=True,
+                    include_runtime_logs=False,
+                    include_measurements=False,
+                    include_devices=False,
+                    include_device_states=False,
+                    include_commands=False,
+                    static_fields=["definitions"],
+                )
+                merged_measurements = _merge_remote_measurements_with_local_definitions(
+                    remote_measurements,
+                    local,
+                )
+            measurement_snapshot = {
+                "clock": runtime.get("clock"),
+                "measurements": merged_measurements,
+            }
+            current_measurements = _measurement_delta_items(
+                measurement_snapshot,
+                received_at=published_at,
+            )
+        else:
+            current_measurements = None
         frame_identity = _runtime_frame_identity(runtime)
         frame_observed_at = time.time()
         with self._refresh_commit_scope(service, state, refresh_token) as valid:
             if not valid:
                 return None
-            previous_measurements = state.measurement_delta_state
-            changed_names = [
-                name
-                for name, item in current_measurements.items()
-                if name not in previous_measurements
-                or _measurement_delta_signature(previous_measurements[name])
-                != _measurement_delta_signature(item)
-            ]
-            removed_names = [name for name in previous_measurements if name not in current_measurements]
-            if changed_names or removed_names:
-                state.measurement_delta_seq += 1
-                changed_items = [current_measurements[name] for name in changed_names]
-                changed_items.extend(
-                    {
-                        "name": name,
-                        "deleted": True,
-                        "updated_wall_time": datetime.fromtimestamp(published_at).strftime("%H:%M:%S"),
-                        "updated_simu_time": str(
-                            (runtime.get("clock") or {}).get("time", "--")
-                            if isinstance(runtime.get("clock"), Mapping)
-                            else "--"
-                        ),
-                    }
-                    for name in removed_names
-                )
-                state.measurement_delta_history.append(
-                    {
-                        "seq": state.measurement_delta_seq,
-                        "items": copy.deepcopy(changed_items),
-                    }
-                )
-                state.measurement_delta_history = state.measurement_delta_history[
-                    -history_limit:
+            if current_measurements is not None:
+                previous_measurements = state.measurement_delta_state
+                changed_names = [
+                    name
+                    for name, item in current_measurements.items()
+                    if name not in previous_measurements
+                    or _measurement_delta_signature(previous_measurements[name])
+                    != _measurement_delta_signature(item)
                 ]
-                state.measurement_delta_state = copy.deepcopy(current_measurements)
+                removed_names = [name for name in previous_measurements if name not in current_measurements]
+                if changed_names or removed_names:
+                    state.measurement_delta_seq += 1
+                    changed_items = [current_measurements[name] for name in changed_names]
+                    changed_items.extend(
+                        {
+                            "name": name,
+                            "deleted": True,
+                            "updated_wall_time": datetime.fromtimestamp(published_at).strftime("%H:%M:%S"),
+                            "updated_simu_time": str(
+                                (runtime.get("clock") or {}).get("time", "--")
+                                if isinstance(runtime.get("clock"), Mapping)
+                                else "--"
+                            ),
+                        }
+                        for name in removed_names
+                    )
+                    state.measurement_delta_history.append(
+                        {
+                            "seq": state.measurement_delta_seq,
+                            "items": list(changed_items),
+                        }
+                    )
+                    state.measurement_delta_history = state.measurement_delta_history[
+                        -history_limit:
+                    ]
+                    state.measurement_delta_state = current_measurements
             state.runtime_snapshot = runtime
             state.received_at = published_at
             state.last_success_at = published_at
@@ -887,6 +939,24 @@ class TraineeRealtimeExchange:
                 )
             if response_size_bytes is not None:
                 state.last_response_size_bytes = max(0, int(response_size_bytes))
+            if remote_measurement_delta_seq is not None:
+                state.remote_measurement_delta_seq = max(0, int(remote_measurement_delta_seq))
+            if accepted_measurement_frame is not None:
+                state.accepted_measurement_frame_count += 1
+                try:
+                    state.last_accepted_measurement_seq = max(
+                        0,
+                        int(accepted_measurement_frame.get("seq", 0)),
+                    )
+                except (TypeError, ValueError):
+                    state.last_accepted_measurement_seq = 0
+                try:
+                    state.last_accepted_measurement_count = max(
+                        0,
+                        int(accepted_measurement_frame.get("count", 0)),
+                    )
+                except (TypeError, ValueError):
+                    state.last_accepted_measurement_count = 0
             state.revision += 1
             return state.revision
 
@@ -899,6 +969,7 @@ class TraineeRealtimeExchange:
         *,
         attempted_at: float,
         request_duration_seconds: float,
+        rejected_measurement_frame: Optional[Mapping[str, Any]] = None,
     ) -> bool:
         with self._refresh_commit_scope(service, state, token) as valid:
             if not valid:
@@ -910,6 +981,16 @@ class TraineeRealtimeExchange:
                 0.0,
                 float(request_duration_seconds),
             )
+            if rejected_measurement_frame is not None:
+                state.rejected_measurement_frame_count += 1
+                try:
+                    state.last_rejected_measurement_seq = max(
+                        0,
+                        int(rejected_measurement_frame.get("seq", 0)),
+                    )
+                except (TypeError, ValueError):
+                    state.last_rejected_measurement_seq = 0
+                state.last_rejected_measurement_reason = str(error)
             return True
 
     def control_snapshot(self, model_id: Optional[str]) -> TraineeControlSnapshot:
@@ -996,6 +1077,13 @@ class TraineeRealtimeExchange:
             consecutive_failures = state.consecutive_failures
             request_duration = state.last_request_duration_seconds
             response_size = state.last_response_size_bytes
+            remote_measurement_seq = state.remote_measurement_delta_seq
+            accepted_measurement_frames = state.accepted_measurement_frame_count
+            rejected_measurement_frames = state.rejected_measurement_frame_count
+            last_accepted_measurement_seq = state.last_accepted_measurement_seq
+            last_rejected_measurement_seq = state.last_rejected_measurement_seq
+            last_rejected_measurement_reason = state.last_rejected_measurement_reason
+            last_accepted_measurement_count = state.last_accepted_measurement_count
             command_attempt_count = state.command_attempt_count
             command_success_count = state.command_success_count
             command_failure_count = state.command_failure_count
@@ -1060,6 +1148,13 @@ class TraineeRealtimeExchange:
             "consecutiveFailures": consecutive_failures,
             "requestDurationSeconds": request_duration,
             "responseSizeBytes": response_size,
+            "remoteMeasurementSeq": remote_measurement_seq,
+            "acceptedMeasurementFrameCount": accepted_measurement_frames,
+            "rejectedMeasurementFrameCount": rejected_measurement_frames,
+            "lastAcceptedMeasurementSeq": last_accepted_measurement_seq,
+            "lastRejectedMeasurementSeq": last_rejected_measurement_seq,
+            "lastRejectedMeasurementReason": last_rejected_measurement_reason,
+            "lastAcceptedMeasurementCount": last_accepted_measurement_count,
             "commandAttemptCount": command_attempt_count,
             "commandSuccessCount": command_success_count,
             "commandFailureCount": command_failure_count,
@@ -1114,6 +1209,7 @@ class TraineeRealtimeExchange:
                 str(requested.get("devices", "1")) == "0",
                 str(requested.get("device_states", "1")) == "0",
                 str(requested.get("commands", "1")) == "0",
+                str(requested.get("command_history", "1")) == "0",
                 str(requested.get("logs", requested.get("runtime_logs", "1"))) == "0",
                 str(requested.get("static", "1")) == "0",
             )
@@ -1160,6 +1256,15 @@ class TraineeRealtimeExchange:
             payload.pop("device_states", None)
         if str(requested.get("commands", "1")) == "0":
             payload.pop("commands", None)
+        elif str(requested.get("command_history", "1")) == "0":
+            commands = payload.get("commands")
+            if isinstance(commands, Mapping):
+                payload["commands"] = {
+                    key: copy.deepcopy(value)
+                    for key, value in commands.items()
+                    if key != "history"
+                }
+                payload["commands"]["history"] = []
         if str(requested.get("logs", requested.get("runtime_logs", "1"))) == "0":
             payload.pop("runtime_logs", None)
         if str(requested.get("static", "1")) == "0":
@@ -1177,6 +1282,7 @@ class TraineeRealtimeExchange:
         include_devices = str(requested.get("devices", "1")) != "0"
         include_device_states = str(requested.get("device_states", "1")) != "0"
         include_commands = str(requested.get("commands", "1")) != "0"
+        include_command_history = str(requested.get("command_history", "1")) != "0"
         include_logs = (
             str(requested.get("logs", requested.get("runtime_logs", "1"))) != "0"
         )
@@ -1210,7 +1316,14 @@ class TraineeRealtimeExchange:
             static_fields=static_fields,
         )
 
-        deferred = {"model", "static_meta", "measurements", "devices", *CONTROL_STATIC_FIELDS}
+        deferred = {
+            "model",
+            "static_meta",
+            "measurements",
+            "devices",
+            "commands",
+            *CONTROL_STATIC_FIELDS,
+        }
         payload = {
             key: copy.deepcopy(value)
             for key, value in runtime.items()
@@ -1234,22 +1347,39 @@ class TraineeRealtimeExchange:
                 runtime.get("measurements"),
                 local,
             )
+        if include_commands and isinstance(runtime.get("commands"), Mapping):
+            commands = runtime["commands"]
+            payload["commands"] = {
+                key: copy.deepcopy(value)
+                for key, value in commands.items()
+                if key != "history"
+            }
+            payload["commands"]["history"] = (
+                copy.deepcopy(commands.get("history", []))
+                if include_command_history
+                else []
+            )
         return payload
 
     def measurement_delta(
         self,
         model_id: Optional[str],
         after_seq: int | float = 0,
+        *,
+        compact: bool = False,
     ) -> Dict[str, Any]:
         return self.measurement_delta_for_service(
             self._service_for(model_id),
             after_seq=after_seq,
+            compact=compact,
         )
 
     def measurement_delta_for_service(
         self,
         service: Any,
         after_seq: int | float = 0,
+        *,
+        compact: bool = False,
     ) -> Dict[str, Any]:
         state = self._state_for_request_service(service)
         try:
@@ -1262,7 +1392,12 @@ class TraineeRealtimeExchange:
             oldest_seq = int(history[0].get("seq", seq)) if history else seq
             reset = False
             reset_reason = ""
-            if after <= 0 or after > seq:
+            frame = after != seq
+            if compact and frame:
+                item_refs = list(state.measurement_delta_state.values())
+                reset = after <= 0 or after > seq
+                reset_reason = "initial" if after <= 0 else ("sequence_ahead" if after > seq else "")
+            elif after <= 0 or after > seq:
                 item_refs = list(state.measurement_delta_state.values())
                 reset = True
                 reset_reason = "initial" if after <= 0 else "sequence_ahead"
@@ -1288,16 +1423,27 @@ class TraineeRealtimeExchange:
             runtime = state.runtime_snapshot or {}
             clock = runtime.get("clock") if isinstance(runtime.get("clock"), Mapping) else {}
             clock_time = str(clock.get("time") or "--")
-            absolute_minute = copy.deepcopy(clock.get("absolute_minute"))
+            absolute_minute = clock.get("absolute_minute")
+            runtime_measurements = runtime.get("measurements")
+            definition_refs = (
+                list(runtime_measurements.get("definitions", []))
+                if isinstance(runtime_measurements, Mapping)
+                else []
+            )
             received_at = state.received_at
             receive_epoch = state.receive_epoch
-        items = copy.deepcopy(item_refs)
+        items = item_refs if compact else copy.deepcopy(item_refs)
+        definitions = [
+            row
+            for row in definition_refs
+            if isinstance(row, Mapping)
+        ]
         wall_time = (
             datetime.fromtimestamp(received_at).strftime("%H:%M:%S")
             if received_at
             else "--"
         )
-        return {
+        payload = {
             "model_id": str(getattr(service, "model_id", "default")),
             "model_name": str(getattr(service, "model_name", "")),
             "time": clock_time,
@@ -1311,6 +1457,16 @@ class TraineeRealtimeExchange:
             "reset": reset,
             "resetReason": reset_reason,
         }
+        if compact:
+            payload.update(
+                {
+                    "frame": frame,
+                    "count": len(definitions),
+                    "definition_revision": self._definition_revision(service),
+                    "definition_signature": measurement_definition_signature(definitions),
+                }
+            )
+        return compact_measurement_delta(payload) if compact else payload
 
     def submit_commands(
         self,
@@ -1512,8 +1668,15 @@ class TraineeRealtimeExchange:
             state.received_at = 0.0
             state.last_error = ""
             state.measurement_delta_seq = 0
+            state.remote_measurement_delta_seq = 0
             state.measurement_delta_state = {}
             state.measurement_delta_history = []
+            state.accepted_measurement_frame_count = 0
+            state.rejected_measurement_frame_count = 0
+            state.last_accepted_measurement_seq = 0
+            state.last_rejected_measurement_seq = 0
+            state.last_rejected_measurement_reason = ""
+            state.last_accepted_measurement_count = 0
             state.frame_identity = ()
             state.frame_changed_at = 0.0
             state.last_attempt_at = 0.0
@@ -1587,13 +1750,18 @@ class TraineeRealtimeExchange:
                     request_duration_seconds=0.0,
                 )
                 return self._refresh_result_for_service(service, state)
+            with state.lock:
+                remote_measurement_seq = state.remote_measurement_delta_seq
             snapshot_path = _url_with_query(
                 connection["snapshot_path"],
                 lite=1,
                 logs=1,
                 log_limit=max(5, int(runtime_settings["runtime_log_page_size"])),
                 commands=1,
-                measurements=1,
+                command_history=0,
+                measurements=0,
+                measurement_after_seq=remote_measurement_seq,
+                measurement_compact=1,
                 devices=1,
                 device_states=1,
                 static=0,
@@ -1629,20 +1797,85 @@ class TraineeRealtimeExchange:
             request_duration = max(0.0, time.monotonic() - request_started)
             try:
                 response_size = len(
-                    json.dumps(current, ensure_ascii=False, default=str).encode("utf-8")
+                    json.dumps(
+                        current,
+                        ensure_ascii=False,
+                        default=str,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
                 )
             except (TypeError, ValueError):
                 response_size = 0
+            current_payload = dict(current)
+            embedded_delta = current_payload.pop("measurement_delta", None)
+            next_remote_measurement_seq: Optional[int] = None
+            accepted_measurement_frame: Optional[Mapping[str, Any]] = None
+            measurement_frame_unchanged = False
+            try:
+                if isinstance(embedded_delta, Mapping):
+                    with state.lock:
+                        previous_measurements = (
+                            (state.runtime_snapshot or {}).get("measurements", {})
+                        )
+                    definitions = previous_measurements.get("definitions", [])
+                    if not definitions:
+                        local = service.snapshot(
+                            include_static=True,
+                            include_runtime_logs=False,
+                            include_measurements=False,
+                            include_devices=False,
+                            include_device_states=False,
+                            include_commands=False,
+                            static_fields=["definitions"],
+                        )
+                        definitions = (
+                            local.get("definitions", {}).get("measurement", [])
+                            if isinstance(local.get("definitions"), Mapping)
+                            else []
+                        )
+                    current_payload["measurements"] = apply_measurement_delta(
+                        previous_measurements,
+                        definitions,
+                        embedded_delta,
+                    )
+                    try:
+                        next_remote_measurement_seq = max(0, int(embedded_delta.get("seq", 0)))
+                    except (TypeError, ValueError):
+                        next_remote_measurement_seq = 0
+                    if (
+                        str(embedded_delta.get("encoding", "")) == "measurement-arrays-v1"
+                        and embedded_delta.get("frame") is not False
+                    ):
+                        accepted_measurement_frame = embedded_delta
+                    elif str(embedded_delta.get("encoding", "")) == "measurement-arrays-v1":
+                        measurement_frame_unchanged = True
+            except MeasurementArrayMismatchError as exc:
+                self._commit_refresh_failure_for_service(
+                    service,
+                    state,
+                    token,
+                    exc,
+                    attempted_at=attempted_at,
+                    request_duration_seconds=request_duration,
+                    rejected_measurement_frame=(
+                        embedded_delta if isinstance(embedded_delta, Mapping) else None
+                    ),
+                )
+                return self._refresh_result_for_service(service, state)
             published_revision = self._publish_runtime_snapshot_for_service(
                 service,
                 state,
-                current,
+                current_payload,
                 received_at=time.time(),
                 connection_signature=signature,
                 refresh_token=token,
                 attempted_at=attempted_at,
                 request_duration_seconds=request_duration,
                 response_size_bytes=response_size,
+                remote_measurement_delta_seq=next_remote_measurement_seq,
+                accepted_measurement_frame=accepted_measurement_frame,
+                measurement_frame_unchanged=measurement_frame_unchanged,
+                snapshot_owned=True,
             )
             if published_revision is None:
                 return self._refresh_result_for_service(service, state)
@@ -1712,8 +1945,15 @@ class TraineeRealtimeExchange:
             state.received_at = 0.0
             state.last_error = ""
             state.measurement_delta_seq = 0
+            state.remote_measurement_delta_seq = 0
             state.measurement_delta_state = {}
             state.measurement_delta_history = []
+            state.accepted_measurement_frame_count = 0
+            state.rejected_measurement_frame_count = 0
+            state.last_accepted_measurement_seq = 0
+            state.last_rejected_measurement_seq = 0
+            state.last_rejected_measurement_reason = ""
+            state.last_accepted_measurement_count = 0
             state.frame_identity = ()
             state.frame_changed_at = 0.0
             state.last_attempt_at = 0.0
@@ -1741,8 +1981,15 @@ class TraineeRealtimeExchange:
             state.received_at = 0.0
             state.last_error = ""
             state.measurement_delta_seq = 0
+            state.remote_measurement_delta_seq = 0
             state.measurement_delta_state = {}
             state.measurement_delta_history = []
+            state.accepted_measurement_frame_count = 0
+            state.rejected_measurement_frame_count = 0
+            state.last_accepted_measurement_seq = 0
+            state.last_rejected_measurement_seq = 0
+            state.last_rejected_measurement_reason = ""
+            state.last_accepted_measurement_count = 0
             state.frame_identity = ()
             state.frame_changed_at = 0.0
             state.revision += 1

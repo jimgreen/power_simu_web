@@ -2969,6 +2969,12 @@ canvas {
   border-color: var(--teal);
   outline: 2px solid rgba(0, 140, 140, 0.12);
 }
+.diagram-tooltip-row .diagram-definition-input,
+.diagram-measurement-summary .diagram-definition-input {
+  min-width: 0;
+  height: 24px;
+  box-sizing: border-box;
+}
 .diagram-definition-input-wrap small {
   color: var(--muted);
   font-size: 10px;

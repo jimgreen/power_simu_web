@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import gzip
 import html
 import json
 import math
@@ -59,6 +60,7 @@ try:
         TraineeRenewableControlLifecycleError,
         TraineeRenewableControlManager,
     )
+    from .power_flow_worker import PowerFlowProcessRunner
     from .trainee_exchange import TraineeExchangeLifecycleError, TraineeRealtimeExchange
 except ImportError:  # pragma: no cover - legacy package compatibility.
     from hybrid_power_system_analysis.polar_microgrid_sim.definition_editing import DefinitionRevisionConflict
@@ -80,6 +82,7 @@ except ImportError:  # pragma: no cover - legacy package compatibility.
         TraineeRenewableControlLifecycleError,
         TraineeRenewableControlManager,
     )
+    from power_flow_worker import PowerFlowProcessRunner
     from trainee_exchange import TraineeExchangeLifecycleError, TraineeRealtimeExchange
 
 try:
@@ -1431,6 +1434,7 @@ def make_http_server(
                 "devices",
                 "device_states",
                 "commands",
+                "command_history",
                 "static",
             )
             return {key: values[key][0] for key in allowed if values.get(key)}
@@ -1583,15 +1587,38 @@ def make_http_server(
             path = urlparse(self.path).path
             target = self._target_service()
             if path == "/api/health":
-                self._send_json({"ok": True, "role": role})
+                health = {
+                    "ok": True,
+                    "role": role,
+                    "compute": dict(getattr(target, "latest_compute", {}) or {}),
+                }
+                runner = getattr(target, "kernel_runner", None)
+                diagnostics = getattr(runner, "diagnostics", None)
+                if callable(diagnostics):
+                    health["power_flow_worker"] = diagnostics()
+                self._send_json(health)
             elif path == renewable_control_path:
                 if role != "trainee" or renewable_manager is None:
                     raise JsonApiError(404, f"Unknown API route: {path}")
+                renewable_query = parse_qs(urlparse(self.path).query)
+                renewable_state_options = {
+                    "refresh": self._truthy_query("refresh"),
+                    "compact": self._truthy_query("compact"),
+                    "after_log_seq": self._int_query(
+                        "after_log_seq",
+                        0,
+                        0,
+                        2_000_000_000,
+                    ),
+                    "after_trend_sample_key": str(
+                        (renewable_query.get("after_trend_sample_key") or [""])[0]
+                    ),
+                }
                 state_for_service = getattr(renewable_manager, "state_for_service", None)
                 if callable(state_for_service):
                     state_payload = state_for_service(
                         target,
-                        refresh=self._truthy_query("refresh"),
+                        **renewable_state_options,
                     )
                 else:
                     if not captured_service_is_current(target):
@@ -1601,7 +1628,7 @@ def make_http_server(
                         )
                     state_payload = renewable_manager.state(
                         target.model_id,
-                        refresh=self._truthy_query("refresh"),
+                        **renewable_state_options,
                     )
                 self._send_json(state_payload)
             elif path == "/api/models":
@@ -1612,20 +1639,26 @@ def make_http_server(
                 lite = self._truthy_query("lite")
                 include_static, static_fields = self._static_query(default_include_static=not lite)
                 default_log_limit = 20 if lite else 300
-                self._send_json(
-                    target.snapshot(
-                        include_static=include_static,
-                        runtime_log_limit=self._int_query("log_limit", default_log_limit),
-                        include_runtime_logs=not (
-                            self._falsey_query("logs") or self._falsey_query("runtime_logs")
-                        ),
-                        include_measurements=not self._falsey_query("measurements"),
-                        static_fields=static_fields,
-                        include_devices=not self._falsey_query("devices"),
-                        include_device_states=not self._falsey_query("device_states"),
-                        include_commands=not self._falsey_query("commands"),
-                    )
+                snapshot_payload = target.snapshot(
+                    include_static=include_static,
+                    runtime_log_limit=self._int_query("log_limit", default_log_limit),
+                    include_runtime_logs=not (
+                        self._falsey_query("logs") or self._falsey_query("runtime_logs")
+                    ),
+                    include_measurements=not self._falsey_query("measurements"),
+                    static_fields=static_fields,
+                    include_devices=not self._falsey_query("devices"),
+                    include_device_states=not self._falsey_query("device_states"),
+                    include_commands=not self._falsey_query("commands"),
+                    include_command_history=not self._falsey_query("command_history"),
                 )
+                measurement_after_seq = self._optional_int_query("measurement_after_seq")
+                if measurement_after_seq is not None:
+                    snapshot_payload["measurement_delta"] = target.measurement_delta(
+                        after_seq=max(0, measurement_after_seq),
+                        compact=self._truthy_query("measurement_compact"),
+                    )
+                self._send_json(snapshot_payload)
             elif path == "/api/runtime-logs":
                 self._send_json(
                     target.runtime_logs_delta(
@@ -1641,6 +1674,7 @@ def make_http_server(
                 self._send_json(
                     target.measurement_delta(
                         after_seq=self._int_query("after_seq", 0, 0, 2_000_000_000),
+                        compact=self._truthy_query("compact"),
                     )
                 )
             elif path == "/api/external/telemetry":
@@ -1712,6 +1746,23 @@ def make_http_server(
                         options=self._trainee_snapshot_query_overrides(),
                         refresh=self._truthy_query("refresh"),
                     )
+                measurement_after_seq = self._optional_int_query("measurement_after_seq")
+                if measurement_after_seq is not None:
+                    delta_for_service = getattr(exchange, "measurement_delta_for_service", None)
+                    if callable(delta_for_service):
+                        snapshot_payload["measurement_delta"] = delta_for_service(
+                            target,
+                            after_seq=max(0, measurement_after_seq),
+                            compact=self._truthy_query("measurement_compact"),
+                        )
+                    else:
+                        delta_options = {"after_seq": max(0, measurement_after_seq)}
+                        if self._truthy_query("measurement_compact"):
+                            delta_options["compact"] = True
+                        snapshot_payload["measurement_delta"] = exchange.measurement_delta(
+                            target.model_id,
+                            **delta_options,
+                        )
                 self._send_json(snapshot_payload)
             elif path == "/api/trainee/measurements/delta":
                 if exchange is None:
@@ -1721,6 +1772,7 @@ def make_http_server(
                     delta_payload = delta_for_service(
                         target,
                         after_seq=self._int_query("after_seq", 0, 0, 2_000_000_000),
+                        compact=self._truthy_query("compact"),
                     )
                 else:
                     if not captured_service_is_current(target):
@@ -1728,9 +1780,14 @@ def make_http_server(
                             409,
                             "学员台量测增量请求所属模型生命周期已失效或已退休。",
                         )
+                    delta_options = {
+                        "after_seq": self._int_query("after_seq", 0, 0, 2_000_000_000)
+                    }
+                    if self._truthy_query("compact"):
+                        delta_options["compact"] = True
                     delta_payload = exchange.measurement_delta(
                         target.model_id,
-                        after_seq=self._int_query("after_seq", 0, 0, 2_000_000_000),
+                        **delta_options,
                     )
                 self._send_json(delta_payload)
             elif path in ("/api/trainee-link", "/api/client-link"):
@@ -2092,10 +2149,25 @@ def make_http_server(
             self.wfile.write(data)
 
         def _send_json(self, payload: Any, status: int = 200) -> None:
-            data = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+            data = json.dumps(
+                payload,
+                ensure_ascii=False,
+                default=str,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            content_encoding = ""
+            accepted_encodings = self.headers.get("Accept-Encoding", "").lower()
+            if len(data) >= 1024 and "gzip" in accepted_encodings:
+                compressed = gzip.compress(data, compresslevel=1, mtime=0)
+                if len(compressed) + 32 < len(data):
+                    data = compressed
+                    content_encoding = "gzip"
             self.send_response(status)
             self._cors()
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Vary", "Accept-Encoding")
+            if content_encoding:
+                self.send_header("Content-Encoding", content_encoding)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -2132,6 +2204,7 @@ def make_http_server(
     class ManagedThreadingHTTPServer(ThreadingHTTPServer):
         _trainee_exchange_closed = False
         _renewable_manager_closed = False
+        _service_closed = False
 
         def server_close(self) -> None:
             if renewable_manager is not None and not self._renewable_manager_closed:
@@ -2140,6 +2213,11 @@ def make_http_server(
             if exchange is not None and not self._trainee_exchange_closed:
                 self._trainee_exchange_closed = True
                 exchange.close()
+            if not self._service_closed:
+                self._service_closed = True
+                close_service = getattr(service, "close", None)
+                if callable(close_service):
+                    close_service()
             super().server_close()
 
     server = ManagedThreadingHTTPServer(server_address, PolarMicrogridHandler)
@@ -2226,6 +2304,18 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--noise-std", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--compute-interval-seconds", type=float, default=1.0)
+    parser.add_argument(
+        "--power-flow-workers",
+        type=int,
+        default=1,
+        help="Load-flow worker process count; use 0 only for in-process debugging.",
+    )
+    parser.add_argument(
+        "--power-flow-timeout-seconds",
+        type=float,
+        default=30.0,
+        help="Terminate and rebuild the load-flow worker after this many seconds.",
+    )
     return parser.parse_args(argv)
 
 
@@ -2235,14 +2325,28 @@ def main(argv: Optional[list[str]] = None) -> int:
     sim_dir = Path(args.sim_dir).resolve()
     runtime_dir = Path(args.runtime_dir).resolve() if args.runtime_dir else _default_runtime_dir(sim_dir, args.role)
     models_dir = Path(args.models_dir).resolve() if args.models_dir else _default_models_dir(sim_dir, args.role)
-    service = MultiModelSimulator.discover(
-        sim_dir=sim_dir,
-        runtime_dir=runtime_dir,
-        noise_std=args.noise_std,
-        random_seed=args.seed,
-        compute_interval_seconds=args.compute_interval_seconds,
-        models_dir=models_dir,
+    power_flow_runner = (
+        PowerFlowProcessRunner(
+            max_workers=args.power_flow_workers,
+            timeout_seconds=args.power_flow_timeout_seconds,
+        )
+        if args.power_flow_workers > 0
+        else None
     )
+    try:
+        service = MultiModelSimulator.discover(
+            sim_dir=sim_dir,
+            runtime_dir=runtime_dir,
+            noise_std=args.noise_std,
+            random_seed=args.seed,
+            compute_interval_seconds=args.compute_interval_seconds,
+            models_dir=models_dir,
+            kernel_runner=power_flow_runner,
+        )
+    except Exception:
+        if power_flow_runner is not None:
+            power_flow_runner.close()
+        raise
     server = make_http_server(
         (args.host, port),
         service,

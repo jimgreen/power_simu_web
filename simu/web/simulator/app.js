@@ -144,6 +144,8 @@ const state = {
   lastRuntimeLogKey: "",
   measurementDeltaSeq: 0,
   measurementDeltaRequestActive: false,
+  embeddedMeasurementDeltaReceived: false,
+  measurementArrayWarning: "",
   systemParameters: { clock_speed: 1, compute_interval_seconds: 1, storage_initial_soc: 0.5 },
   systemParametersDirty: false,
   systemParametersSaving: false,
@@ -2763,6 +2765,10 @@ function pageNeedsCommands(page = currentPageName()) {
   return ["overview", "diagram", "runtime"].includes(page);
 }
 
+function pageNeedsCommandHistory(page = currentPageName()) {
+  return page === "runtime";
+}
+
 function mergeSnapshot(previous, incoming) {
   if (!previous || !incoming) return incoming;
   const merged = { ...previous, ...incoming };
@@ -2808,6 +2814,11 @@ function snapshotPollPath(page = currentPageName(), forceStaticKeys = null) {
   params.set("devices", pageNeedsDevices(page) ? "1" : "0");
   params.set("device_states", pageNeedsDeviceStates(page) ? "1" : "0");
   params.set("commands", pageNeedsCommands(page) ? "1" : "0");
+  params.set("command_history", pageNeedsCommandHistory(page) ? "1" : "0");
+  if (pageNeedsMeasurementDelta(page)) {
+    params.set("measurement_after_seq", String(state.measurementDeltaSeq || 0));
+    params.set("measurement_compact", "1");
+  }
   if (requiredStaticKeys.length) {
     params.set("static", requiredStaticKeys.join(","));
   } else {
@@ -2907,73 +2918,230 @@ function measurementChannelIndex(rows = []) {
   return new Map((rows || []).map((row) => [measurementNameKey(row), row]));
 }
 
-function ensureMeasurementChannelRow(measurements, definitionsByName, channel, item) {
+function ensureMeasurementChannelRow(measurements, definitionsByName, channel, item, channelIndex) {
   if (item.deleted) {
-    measurements[channel] = (measurements[channel] || []).filter((row) => measurementNameKey(row) !== item.name);
+    channelIndex.delete(item.name);
     return null;
   }
-  const rows = measurements[channel] || [];
-  let row = rows.find((entry) => measurementNameKey(entry) === item.name);
+  let row = channelIndex.get(item.name);
   if (!row) {
     const definition = definitionsByName.get(item.name);
     if (!definition) return null;
     row = { ...definition };
-    rows.push(row);
-    measurements[channel] = rows;
+    channelIndex.set(item.name, row);
   }
   return row;
+}
+
+function compactMeasurementDeltaItems(payload) {
+  if (payload && payload.encoding === "measurement-rows-v1") {
+    const simuTime = payload.simu_time ?? payload.time ?? "--";
+    const wallTime = payload.wall_time ?? "--";
+    return (payload.rows || []).map((row) => {
+      const flags = Number(row?.[5]) || 0;
+      return {
+        name: String(row?.[0] || ""),
+        real_value: flags & 2 ? row?.[1] : null,
+        scada_value: flags & 4 ? row?.[2] : null,
+        valid: row?.[3],
+        weight: row?.[4],
+        deleted: Boolean(flags & 1),
+        updated_simu_time: simuTime,
+        updated_wall_time: wallTime,
+        updated_absolute_minute: payload.absolute_minute,
+      };
+    });
+  }
+  return payload?.items || [];
+}
+
+function measurementDefinitionSignature(definitions = [], definitionRevision = "") {
+  const rows = Array.isArray(definitions) ? definitions : [];
+  const revisionKey = String(definitionRevision ?? "");
+  const cache = measurementDefinitionSignature.cache
+    || (measurementDefinitionSignature.cache = new WeakMap());
+  const cached = cache.get(rows);
+  if (cached?.revisionKey === revisionKey && cached?.length === rows.length) {
+    return cached.signature;
+  }
+  const encoder = new TextEncoder();
+  let checksum = 0x811c9dc5;
+  rows.forEach((definition) => {
+    const token = ["name", "dev_type", "dev_name", "meas_type"]
+      .map((fieldName) => String(definition?.[fieldName] ?? ""))
+      .join("\x1e") + "\x1f";
+    encoder.encode(token).forEach((value) => {
+      checksum ^= value;
+      checksum = Math.imul(checksum, 0x01000193) >>> 0;
+    });
+  });
+  const signature = `${rows.length}:${checksum.toString(16).padStart(8, "0")}`;
+  cache.set(rows, { revisionKey, length: rows.length, signature });
+  return signature;
+}
+
+function reportMeasurementArrayWarning(message) {
+  const changed = state.measurementArrayWarning !== message;
+  state.measurementArrayWarning = message;
+  console.warn(message);
+  const summary = $("measurementCompareSummary") || $("measurementSummary");
+  if (summary) summary.textContent = message;
+  if (changed && typeof addRuntimeLog === "function") {
+    addRuntimeLog("实时量测", "量测数组帧", "整帧拒绝", message, "warn");
+  }
+}
+
+function applyMeasurementArrayFrame(payload, measurements, definitions) {
+  const count = Number(payload.count);
+  const frame = payload.frame !== false;
+  const expectedValueCount = frame ? count : 0;
+  if (
+    !Number.isInteger(count)
+    || count < 0
+    || definitions.length !== count
+    || !Array.isArray(payload.real_values)
+    || payload.real_values.length !== expectedValueCount
+    || !Array.isArray(payload.scada_values)
+    || payload.scada_values.length !== expectedValueCount
+    || !Array.isArray(payload.valid_values)
+    || payload.valid_values.length !== expectedValueCount
+  ) {
+    reportMeasurementArrayWarning(
+      `实时量测数组长度不一致，整帧已拒绝：定义=${definitions.length}，声明=${payload.count}，`
+      + `真值=${payload.real_values?.length ?? "非数组"}，量测=${payload.scada_values?.length ?? "非数组"}，`
+      + `状态=${payload.valid_values?.length ?? "非数组"}`,
+    );
+    return false;
+  }
+  const expectedSignature = measurementDefinitionSignature(
+    definitions,
+    payload.definition_revision ?? measurements.definition_revision ?? "",
+  );
+  const receivedSignature = String(payload.definition_signature || "");
+  if (!receivedSignature) {
+    reportMeasurementArrayWarning("实时量测定义顺序签名缺失，整帧已拒绝");
+    return false;
+  }
+  if (receivedSignature !== expectedSignature) {
+    reportMeasurementArrayWarning(
+      `实时量测定义顺序不一致，整帧已拒绝：接收=${receivedSignature}，本地=${expectedSignature}`,
+    );
+    return false;
+  }
+  if (!frame) {
+    state.measurementArrayWarning = "";
+    return false;
+  }
+
+  const simuTime = payload.simu_time ?? payload.time ?? "--";
+  const wallTime = payload.wall_time ?? "--";
+  const absoluteMinute = payload.absolute_minute;
+  const currentReal = Array.isArray(measurements.real) ? measurements.real : [];
+  const currentScada = Array.isArray(measurements.scada) ? measurements.scada : [];
+  const realRows = definitions.map((definition, index) => {
+    const row = currentReal[index] || {};
+    Object.assign(row, definition);
+    row.value = payload.real_values[index];
+    row.valid = payload.valid_values[index] ?? definition.valid ?? row.valid;
+    row.weight = definition.weight ?? row.weight;
+    row.updated_simu_time = simuTime;
+    row.updated_wall_time = wallTime;
+    row.updated_absolute_minute = absoluteMinute;
+    return row;
+  });
+  const scadaRows = definitions.map((definition, index) => {
+    const row = currentScada[index] || {};
+    Object.assign(row, definition);
+    row.value = payload.scada_values[index];
+    row.valid = payload.valid_values[index] ?? definition.valid ?? row.valid;
+    row.weight = definition.weight ?? row.weight;
+    row.updated_simu_time = simuTime;
+    row.updated_wall_time = wallTime;
+    row.updated_absolute_minute = absoluteMinute;
+    return row;
+  });
+  measurements.definitions = definitions;
+  measurements.real = realRows;
+  measurements.scada = scadaRows;
+  measurements.definition_signature = expectedSignature;
+  measurements.definition_revision = payload.definition_revision;
+  state.measurementDeltaSeq = Math.max(Number(state.measurementDeltaSeq) || 0, Number(payload.seq) || 0);
+  state.measurementArrayWarning = "";
+  return true;
 }
 
 function applyMeasurementDelta(payload) {
   if (!payload || !state.snapshot) return false;
   const measurements = state.snapshot.measurements || {};
   state.snapshot.measurements = measurements;
+  const definitions = measurements.definitions || state.snapshot.definitions?.measurement || [];
+  if (payload.encoding === "measurement-arrays-v1") {
+    return applyMeasurementArrayFrame(payload, measurements, definitions);
+  }
   if (payload.reset) {
     measurements.real = [];
     measurements.scada = [];
   }
-  const definitions = measurements.definitions || state.snapshot.definitions?.measurement || [];
   const definitionsByName = new Map(definitions.map((row) => [measurementNameKey(row), row]));
+  const channelIndexes = {
+    real: measurementChannelIndex(measurements.real || []),
+    scada: measurementChannelIndex(measurements.scada || []),
+  };
   let changed = false;
-  (payload.items || []).forEach((item) => {
+  compactMeasurementDeltaItems(payload).forEach((item) => {
     if (!item?.name) return;
     if (item.deleted) {
-      ensureMeasurementChannelRow(measurements, definitionsByName, "real", item);
-      ensureMeasurementChannelRow(measurements, definitionsByName, "scada", item);
+      ensureMeasurementChannelRow(measurements, definitionsByName, "real", item, channelIndexes.real);
+      ensureMeasurementChannelRow(measurements, definitionsByName, "scada", item, channelIndexes.scada);
       changed = true;
       return;
     }
     const realRow = item.real_value !== undefined && item.real_value !== null
-      ? ensureMeasurementChannelRow(measurements, definitionsByName, "real", item)
+      ? ensureMeasurementChannelRow(measurements, definitionsByName, "real", item, channelIndexes.real)
       : null;
     const scadaRow = item.scada_value !== undefined && item.scada_value !== null
-      ? ensureMeasurementChannelRow(measurements, definitionsByName, "scada", item)
+      ? ensureMeasurementChannelRow(measurements, definitionsByName, "scada", item, channelIndexes.scada)
       : null;
     if (realRow) {
       realRow.value = item.real_value;
-      realRow.valid = item.valid;
+      if (item.valid !== undefined && item.valid !== null) realRow.valid = item.valid;
+      if (item.weight !== undefined && item.weight !== null) realRow.weight = item.weight;
       realRow.updated_simu_time = item.updated_simu_time;
       realRow.updated_wall_time = item.updated_wall_time;
+      realRow.updated_absolute_minute = item.updated_absolute_minute;
       changed = true;
     }
     if (scadaRow) {
       scadaRow.value = item.scada_value;
-      scadaRow.valid = item.valid;
+      if (item.valid !== undefined && item.valid !== null) scadaRow.valid = item.valid;
+      if (item.weight !== undefined && item.weight !== null) scadaRow.weight = item.weight;
       scadaRow.updated_simu_time = item.updated_simu_time;
       scadaRow.updated_wall_time = item.updated_wall_time;
+      scadaRow.updated_absolute_minute = item.updated_absolute_minute;
       changed = true;
     }
   });
+  measurements.real = Array.from(channelIndexes.real.values());
+  measurements.scada = Array.from(channelIndexes.scada.values());
   if (payload.reset) state.measurementDeltaSeq = Number(payload.seq) || 0;
   else state.measurementDeltaSeq = Math.max(Number(state.measurementDeltaSeq) || 0, Number(payload.seq) || 0);
   return changed;
+}
+
+function applyEmbeddedMeasurementDelta(snapshot) {
+  const payload = snapshot?.measurement_delta;
+  state.embeddedMeasurementDeltaReceived = Boolean(payload);
+  if (!payload) return false;
+  delete snapshot.measurement_delta;
+  state.snapshot = snapshot;
+  return applyMeasurementDelta(payload);
 }
 
 async function refreshMeasurementDelta(renderNow = false) {
   if (state.measurementDeltaRequestActive || !state.snapshot) return false;
   state.measurementDeltaRequestActive = true;
   try {
-    const payload = await api(`/api/measurements/delta?after_seq=${state.measurementDeltaSeq}`);
+    const payload = await api(`/api/measurements/delta?after_seq=${state.measurementDeltaSeq}&compact=1`);
     const changed = applyMeasurementDelta(payload);
     if (changed && renderNow && currentPageName() === "measurements") renderMeasurementCompareTable();
     return changed;
@@ -2986,16 +3154,29 @@ async function refreshMeasurementDelta(renderNow = false) {
 }
 
 async function refreshSnapshotPayload(page = currentPageName()) {
-  let snapshot = mergeSnapshot(state.snapshot, await api(snapshotPollPath(page)));
+  state.embeddedMeasurementDeltaReceived = false;
+  const incoming = await api(snapshotPollPath(page));
+  let embeddedMeasurementDelta = incoming?.measurement_delta || null;
+  if (incoming?.measurement_delta) delete incoming.measurement_delta;
+  let snapshot = mergeSnapshot(state.snapshot, incoming);
   snapshot = restoreStaticSnapshotCache(snapshot, page);
   let requiredStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
   if (requiredStaticKeys.length) {
-    snapshot = mergeSnapshot(snapshot, await api(snapshotPollPath(page, requiredStaticKeys)));
+    const staticIncoming = await api(snapshotPollPath(page, requiredStaticKeys));
+    if (staticIncoming?.measurement_delta) {
+      embeddedMeasurementDelta = staticIncoming.measurement_delta;
+      delete staticIncoming.measurement_delta;
+    }
+    snapshot = mergeSnapshot(snapshot, staticIncoming);
     snapshot = restoreStaticSnapshotCache(snapshot, page);
     requiredStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
   }
   if (!requiredStaticKeys.length) persistStaticSnapshotCache(snapshot, page);
   state.snapshot = snapshot;
+  if (embeddedMeasurementDelta) {
+    snapshot.measurement_delta = embeddedMeasurementDelta;
+    applyEmbeddedMeasurementDelta(snapshot);
+  }
   return snapshot;
 }
 
@@ -4782,6 +4963,7 @@ function diagramInteractionState(container) {
   let interaction = diagramInteractionCache.get(container);
   if (!interaction) {
     interaction = {
+      container,
       initialized: false,
       selectedDevId: "",
       hover: null,
@@ -5003,6 +5185,25 @@ function diagramDefinitionWeightFromSigma(sigma) {
   return Number.isFinite(number) && number > 0 ? 1 / (number * number) : null;
 }
 
+const DIAGRAM_MEASUREMENT_STATUS_LABELS = Object.freeze({
+  valid: "有效",
+  invalid: "无效",
+  undefined: "无定义",
+  dead: "死数",
+  zero: "零值",
+  fixed: "固定值",
+});
+
+function diagramMeasurementStatus(value, valid = 1) {
+  const status = String(value || "").trim().toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(DIAGRAM_MEASUREMENT_STATUS_LABELS, status)) return status;
+  return Number(valid) === 1 ? "valid" : "invalid";
+}
+
+function diagramMeasurementStatusLabel(value, valid = 1) {
+  return DIAGRAM_MEASUREMENT_STATUS_LABELS[diagramMeasurementStatus(value, valid)] || "无效";
+}
+
 function diagramDefinitionEditorMessageHtml(interaction, validationError = "") {
   const validation = String(validationError || "").trim();
   const message = validation || String(interaction?.definitionMessage || "").trim();
@@ -5143,6 +5344,11 @@ function diagramMetricMeasurementPair(hover, snapshot = state.snapshot || {}) {
   const weightNumber = Number(definition?.weight ?? channelRow?.weight);
   const validNumber = Number(definition?.valid ?? channelRow?.valid ?? 1);
   const weight = Number.isFinite(weightNumber) ? weightNumber : null;
+  const status = diagramMeasurementStatus(
+    definition?.status ?? channelRow?.status,
+    validNumber,
+  );
+  const fixedValueNumber = Number(definition?.fixed_value ?? channelRow?.fixed_value);
   return {
     definition,
     scadaRow,
@@ -5156,6 +5362,8 @@ function diagramMetricMeasurementPair(hover, snapshot = state.snapshot || {}) {
     realValue,
     deviation: scadaValue !== null && realValue !== null ? scadaValue - realValue : null,
     valid: validNumber === 0 ? 0 : 1,
+    status,
+    fixedValue: Number.isFinite(fixedValueNumber) ? fixedValueNumber : null,
     weight,
     errorSigma: diagramDefinitionSigmaFromWeight(weight),
   };
@@ -5209,6 +5417,8 @@ function patchDiagramMeasurementDefinitionRecord(snapshot, record) {
     if (!row) return;
     if (record.valid !== undefined) row.valid = record.valid;
     if (record.weight !== undefined) row.weight = record.weight;
+    if (record.status !== undefined) row.status = record.status;
+    if (record.fixed_value !== undefined) row.fixed_value = record.fixed_value;
   });
   return changed;
 }
@@ -5352,33 +5562,9 @@ function diagramDefinitionInputDescriptor(value) {
 }
 
 function renderDiagramDeviceDefinitionEditor(record, editor, interaction) {
-  const protectedRows = record.headers
-    .filter((field) => !diagramDeviceParameterEditable(field))
-    .map((field) => [field, record.row[field], `definition:${record.blockName}:${field}`]);
-  const fields = record.editableFields.map((field) => {
-    const descriptor = diagramDefinitionInputDescriptor(editor.draft[field]);
-    return `
-      <label class="diagram-definition-field">
-        <span>${escapeHtml(field)}</span>
-        <span class="diagram-definition-input-wrap">
-          <input
-            class="diagram-definition-input"
-            data-diagram-definition-input="device"
-            data-diagram-definition-field="${escapeHtml(field)}"
-            type="${descriptor.type}"
-            ${descriptor.type === "number" ? 'step="any"' : ""}
-            value="${escapeHtml(descriptor.value)}"
-            ${interaction?.definitionSaving ? "disabled" : ""}
-          >
-          ${descriptor.suffix ? `<small>${escapeHtml(descriptor.suffix)}</small>` : ""}
-        </span>
-      </label>`;
-  }).join("");
   const canSave = editor.dirtyFields?.size > 0 && !interaction?.definitionSaving;
   return `
-    <div class="diagram-definition-editor" data-diagram-definition-editor="device">
-      ${protectedRows.length ? `<div class="diagram-definition-readonly">${diagramTooltipRows(protectedRows, `readonly:${record.blockName}`)}</div>` : ""}
-      <div class="diagram-definition-fields">${fields}</div>
+    <div class="diagram-definition-editor diagram-definition-inline-actions" data-diagram-definition-editor="device">
       <div class="diagram-definition-actions">
         <button type="button" data-diagram-definition-cancel>取消</button>
         <button type="button" class="primary" data-diagram-definition-save="device" ${canSave ? "" : "disabled"}>
@@ -5389,17 +5575,47 @@ function renderDiagramDeviceDefinitionEditor(record, editor, interaction) {
     </div>`;
 }
 
+function renderDiagramDeviceDefinitionValueRow(record, field, activeEditor, interaction) {
+  const key = `definition:${record.blockName}:${record.rowIndex}:${field}`;
+  const editable = Boolean(activeEditor && diagramDeviceParameterEditable(field));
+  if (!editable) {
+    return `
+      <div class="diagram-tooltip-row" data-diagram-tooltip-row="${escapeHtml(key)}">
+        <dt>${escapeHtml(field)}</dt>
+        <dd data-diagram-definition-value="${escapeHtml(key)}" data-diagram-tooltip-value="${escapeHtml(key)}">${escapeHtml(diagramTooltipValue(record.row[field]))}</dd>
+      </div>`;
+  }
+  const descriptor = diagramDefinitionInputDescriptor(activeEditor.draft[field]);
+  return `
+    <div class="diagram-tooltip-row is-editing-definition" data-diagram-tooltip-row="${escapeHtml(key)}">
+      <dt>${escapeHtml(field)}</dt>
+      <dd data-diagram-definition-value="${escapeHtml(key)}">
+        <span class="diagram-definition-input-wrap">
+          <input
+            class="diagram-definition-input"
+            data-diagram-tooltip-inline-input
+            data-diagram-definition-input="device"
+            data-diagram-definition-field="${escapeHtml(field)}"
+            type="${descriptor.type}"
+            ${descriptor.type === "number" ? 'step="any"' : ""}
+            value="${escapeHtml(descriptor.value)}"
+            ${interaction?.definitionSaving ? "disabled" : ""}
+          >
+          ${descriptor.suffix ? `<small>${escapeHtml(descriptor.suffix)}</small>` : ""}
+        </span>
+      </dd>
+    </div>`;
+}
+
 function renderDiagramDeviceDefinitionRecord(record, interaction) {
   const activeEditor = interaction?.definitionEditor?.kind === "device"
     && interaction.definitionEditor.blockName === record.blockName
     && Number(interaction.definitionEditor.rowIndex) === Number(record.rowIndex)
     ? interaction.definitionEditor
     : null;
-  const rows = record.headers.map((field) => [
-    field,
-    record.row[field],
-    `definition:${record.blockName}:${record.rowIndex}:${field}`,
-  ]);
+  const rows = record.headers
+    .map((field) => renderDiagramDeviceDefinitionValueRow(record, field, activeEditor, interaction))
+    .join("");
   return `
     <section class="diagram-definition-section" data-diagram-definition-block="${escapeHtml(record.blockName)}" data-diagram-definition-row-index="${record.rowIndex}">
       <div class="diagram-definition-section-head">
@@ -5412,9 +5628,8 @@ function renderDiagramDeviceDefinitionRecord(record, interaction) {
             data-diagram-definition-row-index="${record.rowIndex}"
           >编辑参数</button>` : ""}
       </div>
-      ${activeEditor
-        ? renderDiagramDeviceDefinitionEditor(record, activeEditor, interaction)
-        : diagramTooltipRows(rows, `definition:${record.blockName}:${record.rowIndex}`)}
+      <dl class="diagram-tooltip-grid">${rows}</dl>
+      ${activeEditor ? renderDiagramDeviceDefinitionEditor(record, activeEditor, interaction) : ""}
     </section>`;
 }
 
@@ -5951,7 +6166,9 @@ function diagramMetricTooltipData(container, hover, snapshot, interaction) {
   );
   const deviceName = hover?.binding?.devName || row?.dev_name || row?.name || "动态量测";
   const metricLabel = diagramMetricLabel(metricType, row);
-  const validText = pair.row || pair.definition ? (pair.valid === 1 ? "有效" : "无效") : "缺失";
+  const validText = pair.row || pair.definition
+    ? diagramMeasurementStatusLabel(pair.status, pair.valid)
+    : "缺失";
   return {
     deviceName,
     metricLabel,
@@ -5963,6 +6180,10 @@ function diagramMetricTooltipData(container, hover, snapshot, interaction) {
     deviation,
     deviationText: deviation === null ? "--" : diagramNumberText(deviation),
     valid: pair.valid,
+    status: pair.status,
+    statusText: validText,
+    fixedValue: pair.fixedValue,
+    fixedValueText: pair.fixedValue === null ? "--" : diagramNumberText(pair.fixedValue),
     unit: String(unit || ""),
     validText,
     weight: pair.weight,
@@ -5984,7 +6205,36 @@ function diagramMeasurementValueWithUnit(text, unit) {
   return text === "--" || !unit ? text : `${text} ${unit}`;
 }
 
-function renderDiagramMeasurementSummary(data) {
+function renderDiagramMeasurementStatusOptions(selected, disabled = false) {
+  return Object.entries(DIAGRAM_MEASUREMENT_STATUS_LABELS).map(([value, label]) => (
+    `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`
+  )).join("");
+}
+
+function renderDiagramMeasurementSummary(data, editor = null, interaction = null) {
+  const editing = Boolean(editor);
+  const status = diagramMeasurementStatus(editor?.draft?.status ?? data.status, data.valid);
+  const statusValue = editing
+    ? `<select class="diagram-definition-input" data-diagram-tooltip-inline-input data-diagram-definition-input="measurement" data-diagram-measurement-definition-field="status" data-diagram-measurement-valid ${interaction?.definitionSaving ? "disabled" : ""}>${renderDiagramMeasurementStatusOptions(status)}</select>`
+    : `<span data-diagram-measurement-valid>${escapeHtml(diagramMeasurementStatusLabel(status, data.valid))}</span>`;
+  const sigmaValue = editing
+    ? `<input class="diagram-definition-input" data-diagram-tooltip-inline-input data-diagram-definition-input="measurement" data-diagram-measurement-definition-field="errorSigma" data-diagram-measurement-sigma type="number" min="0" step="any" value="${escapeHtml(editor.draft.errorSigma)}" ${interaction?.definitionSaving ? "disabled" : ""}>`
+    : `<span data-diagram-measurement-sigma>${escapeHtml(data.errorSigmaText)}</span>`;
+  const weightValue = editing
+    ? `<input class="diagram-definition-input" data-diagram-tooltip-inline-input data-diagram-definition-input="measurement" data-diagram-measurement-definition-field="weight" data-diagram-measurement-weight type="number" min="0" step="any" value="${escapeHtml(editor.draft.weight)}" ${interaction?.definitionSaving ? "disabled" : ""}>`
+    : `<span data-diagram-measurement-weight>${escapeHtml(data.weightText)}</span>`;
+  const fixedValue = editing ? editor.draft.fixedValue : data.fixedValue;
+  const fixedValueText = fixedValue === null || fixedValue === undefined || fixedValue === ""
+    ? "--"
+    : diagramNumberText(fixedValue);
+  const fixedValueCell = status === "fixed"
+    ? `<div>
+        <dt>固定值</dt>
+        <dd data-diagram-measurement-fixed-value>${editing
+          ? `<input class="diagram-definition-input" data-diagram-tooltip-inline-input data-diagram-definition-input="measurement" data-diagram-measurement-definition-field="fixedValue" type="number" step="any" value="${escapeHtml(fixedValueText)}" ${interaction?.definitionSaving ? "disabled" : ""}>`
+          : escapeHtml(fixedValueText)}</dd>
+      </div>`
+    : "";
   return `
     <dl class="diagram-measurement-summary">
       <div>
@@ -6001,17 +6251,19 @@ function renderDiagramMeasurementSummary(data) {
       </div>
       <div>
         <dt>量测状态</dt>
-        <dd data-diagram-tooltip-validity data-diagram-measurement-valid>${escapeHtml(data.validText)}</dd>
+        <dd data-diagram-tooltip-validity>${statusValue}</dd>
       </div>
       <div>
         <dt>误差 σ</dt>
-        <dd data-diagram-measurement-sigma>${escapeHtml(data.errorSigmaText)}</dd>
+        <dd>${sigmaValue}</dd>
       </div>
       <div>
         <dt>权重</dt>
-        <dd data-diagram-measurement-weight>${escapeHtml(data.weightText)}</dd>
+        <dd>${weightValue}</dd>
       </div>
-    </dl>`;
+      ${fixedValueCell}
+    </dl>
+    ${editing ? renderDiagramMeasurementDefinitionEditor(editor, interaction) : ""}`;
 }
 
 function syncDiagramMeasurementDefinitionFields(editor, changedField = "") {
@@ -6025,11 +6277,13 @@ function syncDiagramMeasurementDefinitionFields(editor, changedField = "") {
   }
   const nextSigma = Number(editor.draft.errorSigma);
   const nextWeight = Number(editor.draft.weight);
-  const nextValid = Number(editor.draft.valid);
+  const nextStatus = diagramMeasurementStatus(editor.draft.status, editor.original?.valid);
+  editor.draft.status = nextStatus;
+  const nextFixedValue = Number(editor.draft.fixedValue);
   let error = "";
   if (!Number.isFinite(nextSigma) || nextSigma <= 0) error = "误差 σ 必须大于 0";
   else if (!Number.isFinite(nextWeight) || nextWeight <= 0) error = "权重必须大于 0";
-  else if (![0, 1].includes(nextValid)) error = "量测状态必须为有效或无效";
+  else if (nextStatus === "fixed" && !Number.isFinite(nextFixedValue)) error = "固定值必须为有限数字";
   editor.validationError = error;
   return { valid: !error, error };
 }
@@ -6041,23 +6295,6 @@ function renderDiagramMeasurementDefinitionEditor(editor, interaction) {
     && !interaction?.definitionSaving;
   return `
     <div class="diagram-definition-editor diagram-measurement-definition-editor" data-diagram-definition-editor="measurement">
-      <div class="diagram-definition-fields">
-        <label class="diagram-definition-field">
-          <span>误差 σ</span>
-          <input class="diagram-definition-input" data-diagram-definition-input="measurement" data-diagram-measurement-definition-field="errorSigma" type="number" min="0" step="any" value="${escapeHtml(editor.draft.errorSigma)}" ${interaction?.definitionSaving ? "disabled" : ""}>
-        </label>
-        <label class="diagram-definition-field">
-          <span>权重</span>
-          <input class="diagram-definition-input" data-diagram-definition-input="measurement" data-diagram-measurement-definition-field="weight" type="number" min="0" step="any" value="${escapeHtml(editor.draft.weight)}" ${interaction?.definitionSaving ? "disabled" : ""}>
-        </label>
-        <label class="diagram-definition-field">
-          <span>量测状态</span>
-          <select class="diagram-definition-input" data-diagram-definition-input="measurement" data-diagram-measurement-definition-field="valid" ${interaction?.definitionSaving ? "disabled" : ""}>
-            <option value="1" ${Number(editor.draft.valid) === 1 ? "selected" : ""}>有效</option>
-            <option value="0" ${Number(editor.draft.valid) === 0 ? "selected" : ""}>无效</option>
-          </select>
-        </label>
-      </div>
       <div class="diagram-definition-actions">
         <button type="button" data-diagram-definition-cancel>取消</button>
         <button type="button" class="primary" data-diagram-definition-save="measurement" ${canSave ? "" : "disabled"}>
@@ -6090,11 +6327,15 @@ function beginDiagramMeasurementDefinitionEdit(container) {
     original: {
       weight: originalWeight,
       errorSigma: originalSigma,
+      status: data.status,
+      fixedValue: data.fixedValue === null ? "" : String(data.fixedValue),
       valid: String(data.valid),
     },
     draft: {
       weight: originalWeight,
       errorSigma: originalSigma,
+      status: data.status,
+      fixedValue: data.fixedValue === null ? "" : String(data.fixedValue),
       valid: String(data.valid),
     },
     dirtyFields: new Set(),
@@ -6112,7 +6353,7 @@ function updateDiagramMeasurementDefinitionDraft(interaction, input) {
   const editor = interaction?.definitionEditor;
   if (editor?.kind !== "measurement") return false;
   const field = String(input?.getAttribute?.("data-diagram-measurement-definition-field") || "");
-  if (!["errorSigma", "weight", "valid"].includes(field)) return false;
+  if (!["errorSigma", "weight", "status", "fixedValue"].includes(field)) return false;
   editor.draft[field] = String(input.value ?? "");
   if (field === "errorSigma" || field === "weight") {
     syncDiagramMeasurementDefinitionFields(editor, field);
@@ -6121,10 +6362,21 @@ function updateDiagramMeasurementDefinitionDraft(interaction, input) {
     const counterpartField = field === "errorSigma" ? "weight" : "errorSigma";
     const counterpart = interaction.tooltip?.querySelector(`[data-diagram-measurement-definition-field="${counterpartField}"]`);
     if (counterpart) counterpart.value = editor.draft[counterpartField];
+  } else if (field === "status") {
+    syncDiagramMeasurementDefinitionFields(editor, field);
+    if (String(editor.draft.status) === String(editor.original.status)) editor.dirtyFields.delete("status");
+    else editor.dirtyFields.add("status");
+    if (editor.draft.status !== "fixed") {
+      editor.dirtyFields.delete("fixedValue");
+    } else if (String(editor.draft.fixedValue) === String(editor.original.fixedValue)) {
+      editor.dirtyFields.delete("fixedValue");
+    } else {
+      editor.dirtyFields.add("fixedValue");
+    }
   } else {
     syncDiagramMeasurementDefinitionFields(editor, field);
-    if (String(editor.draft.valid) === String(editor.original.valid)) editor.dirtyFields.delete("valid");
-    else editor.dirtyFields.add("valid");
+    if (String(editor.draft.fixedValue) === String(editor.original.fixedValue)) editor.dirtyFields.delete("fixedValue");
+    else editor.dirtyFields.add("fixedValue");
   }
   interaction.definitionMessage = "";
   interaction.definitionMessageWarning = false;
@@ -6135,6 +6387,7 @@ function updateDiagramMeasurementDefinitionDraft(interaction, input) {
     message.hidden = !editor.validationError;
   }
   updateDiagramDefinitionSaveState(interaction);
+  if (field === "status") renderActiveDiagramTooltip(interaction.container, interaction.snapshot || state.snapshot || {}, interaction);
   return true;
 }
 
@@ -6163,7 +6416,8 @@ async function saveDiagramMeasurementDefinitionEdit(container) {
         changes: {
           weight: Number(editor.draft.weight),
           error_sigma: Number(editor.draft.errorSigma),
-          valid: Number(editor.draft.valid),
+          status: editor.draft.status,
+          ...(editor.draft.status === "fixed" ? { fixed_value: Number(editor.draft.fixedValue) } : {}),
         },
       }),
     });
@@ -6202,16 +6456,14 @@ function renderDiagramMetricTooltip(container, hover, snapshot, interaction) {
       <span data-diagram-tooltip-metric-label>${escapeHtml(data.metricLabel)}</span>
     </div>
     <div class="diagram-metric-current" data-diagram-measurement-summary>
-      ${renderDiagramMeasurementSummary(data)}
+      ${renderDiagramMeasurementSummary(data, editor, interaction)}
     </div>
-    <div class="diagram-measurement-definition-actions">
-      ${editor
-        ? renderDiagramMeasurementDefinitionEditor(editor, interaction)
-        : data.definition
-          ? '<button type="button" class="diagram-definition-edit-button" data-diagram-definition-edit-measurement>编辑定义</button>'
-          : '<span class="diagram-definition-unavailable">当前量测没有可编辑定义</span>'}
-      ${editor ? "" : diagramDefinitionMessageHtml(interaction)}
-    </div>
+    ${!editor ? `<div class="diagram-measurement-definition-actions">
+      ${data.definition
+        ? '<button type="button" class="diagram-definition-edit-button" data-diagram-definition-edit-measurement>编辑定义</button>'
+        : '<span class="diagram-definition-unavailable">当前量测没有可编辑定义</span>'}
+      ${diagramDefinitionMessageHtml(interaction)}
+    </div>` : ""}
     <div class="diagram-trend-tabs" role="tablist" aria-label="量测趋势范围">
       <button type="button" data-diagram-trend-period="hour" class="${data.period === "hour" ? "is-active" : ""}" aria-selected="${data.period === "hour"}">小时曲线</button>
       <button type="button" data-diagram-trend-period="day" class="${data.period === "day" ? "is-active" : ""}" aria-selected="${data.period === "day"}">日曲线</button>
@@ -6233,16 +6485,25 @@ function updateDiagramMetricDynamicValues(tooltip, data) {
     ["[data-diagram-measurement-valid]", data.validText],
     ["[data-diagram-measurement-sigma]", data.errorSigmaText],
     ["[data-diagram-measurement-weight]", data.weightText],
+    ["[data-diagram-measurement-fixed-value]", data.fixedValueText],
   ];
   let updated = true;
   values.forEach(([selector, value]) => {
     const element = tooltip.querySelector(selector);
     if (!element) {
+      if (selector === "[data-diagram-measurement-fixed-value]") return;
       updated = false;
       return;
     }
-    element.textContent = value;
+    if (!["INPUT", "SELECT", "TEXTAREA"].includes(element.tagName) && !element.querySelector("input,select,textarea")) element.textContent = value;
   });
+  const statusControl = tooltip.querySelector('[data-diagram-measurement-definition-field="status"]');
+  const expectedStatus = diagramMeasurementStatus(
+    statusControl?.value || data.status,
+    data.valid,
+  );
+  const hasFixedValueRow = Boolean(tooltip.querySelector("[data-diagram-measurement-fixed-value]"));
+  if ((expectedStatus === "fixed") !== hasFixedValueRow) updated = false;
   return updated;
 }
 
@@ -8386,7 +8647,9 @@ async function refresh() {
     const snapshot = await refreshSnapshotPayload(activePage);
     const deltaRequests = [];
     if (pageNeedsRuntimeLogDelta(activePage)) deltaRequests.push(refreshRuntimeLogs(false));
-    if (pageNeedsMeasurementDelta(activePage)) deltaRequests.push(refreshMeasurementDelta(false));
+    if (pageNeedsMeasurementDelta(activePage) && !state.embeddedMeasurementDeltaReceived) {
+      deltaRequests.push(refreshMeasurementDelta(false));
+    }
     await Promise.all(deltaRequests);
     renderSnapshot(snapshot);
   } catch (error) {

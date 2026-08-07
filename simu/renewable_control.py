@@ -94,6 +94,20 @@ def _finite_number(value: Any, default: float = 0.0) -> float:
     return number if number is not None else default
 
 
+def _sum_known(values: Iterable[Any]) -> Optional[float]:
+    numbers = [_number(value) for value in values]
+    if any(number is None for number in numbers):
+        return None
+    return sum(number for number in numbers if number is not None)
+
+
+def _acdc_export_delta_kw(current_kw: Any, target_kw: Any) -> float:
+    """Return the physical DC-to-AC export change for signed P_AC values."""
+    current_export_kw = max(0.0, -_finite_number(current_kw))
+    target_export_kw = max(0.0, -_finite_number(target_kw))
+    return target_export_kw - current_export_kw
+
+
 def _positive(values: Iterable[Any], default: float = 0.0) -> float:
     for value in values:
         number = _number(value)
@@ -197,6 +211,49 @@ def _derating_curve_text(curve: Sequence[Tuple[float, float]]) -> str:
 def _command_number(value: float) -> float:
     normalized = 0.0 if abs(value) < 0.0005 else value
     return round(normalized, 3)
+
+
+def _deduplicate_dispatch_commands(
+    commands: Sequence[Mapping[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    ordered_keys: List[Tuple[str, str, str]] = []
+    selected: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    values_by_key: Dict[Tuple[str, str, str], List[float]] = {}
+    for row in commands:
+        key = (
+            str(row.get("dev_type", "")),
+            str(row.get("dev_name", "")),
+            str(row.get("set_type", "")),
+        )
+        value = _number(row.get("set_value"))
+        if not all(key) or value is None or not math.isfinite(value):
+            continue
+        if key not in selected:
+            ordered_keys.append(key)
+        selected[key] = {
+            "dev_type": key[0],
+            "dev_name": key[1],
+            "set_type": key[2],
+            "set_value": _command_number(value),
+        }
+        values_by_key.setdefault(key, []).append(value)
+
+    duplicates = [
+        {
+            "dev_type": key[0],
+            "dev_name": key[1],
+            "set_type": key[2],
+            "duplicateCount": len(values),
+            "candidateValues": [_command_number(value) for value in values],
+            "selectedValue": selected[key]["set_value"],
+            "conflict": any(
+                abs(value - values[-1]) > EPSILON for value in values[:-1]
+            ),
+        }
+        for key, values in values_by_key.items()
+        if len(values) > 1
+    ]
+    return [selected[key] for key in ordered_keys], duplicates
 
 
 def _device_type(device: Mapping[str, Any]) -> str:
@@ -1028,6 +1085,7 @@ def _diesel_rows(
     snapshot: Mapping[str, Any],
     measurements: Mapping[Tuple[str, str, str], MeasurementValue],
     resource_keys: Optional[set[Tuple[str, str]]] = None,
+    quality: Optional[_Quality] = None,
 ) -> List[Dict[str, Any]]:
     wind_indexes = {
         str(row.get("idx_acgenerator", "")).strip()
@@ -1076,21 +1134,91 @@ def _diesel_rows(
         measured = _measured(measurements, "ACGenerator", name, ("P_GEN", "P")) if online else None
         current = measured.value if measured else None
         set_type = _preferred_set_type(snapshot, device, ("p_set", "p_ac_set"))
+        limits_valid = bool(capacity > EPSILON and minimum <= capacity + EPSILON)
+        commandable = bool(
+            online
+            and current is not None
+            and math.isfinite(current)
+            and limits_valid
+            and set_type
+        )
+        if online and current is None and quality is not None:
+            quality.add(f"柴油发电机{name}缺少有效实时有功，本轮禁止直接下发有功策略")
+        if online and not limits_valid and quality is not None:
+            quality.add(f"柴油发电机{name}有功上下限无效，本轮禁止直接下发有功策略")
         rows.append(
             {
                 "category": "柴油发电",
                 "dev_type": "ACGenerator",
                 "dev_name": name,
                 "online": online,
-                "commandable": False,
+                "commandable": commandable,
                 "currentKw": current if online else 0.0,
                 "minKw": minimum,
                 "capacityKw": capacity,
                 "set_type": set_type,
-                "statusLabel": "停用" if not online else "平衡运行" if set_type else "无遥调点",
+                "directDispatchBlockedReason": (
+                    "缺少有效p_set有功遥调点"
+                    if online and not set_type
+                    else "实时有功未知"
+                    if online and current is None
+                    else "有功上下限无效"
+                    if online and not limits_valid
+                    else ""
+                ),
+                "statusLabel": (
+                    "停用"
+                    if not online
+                    else "实时有功未知"
+                    if current is None
+                    else "有功边界无效"
+                    if not limits_valid
+                    else "平衡运行·可直控"
+                    if set_type
+                    else "平衡运行·无有功遥调点"
+                ),
             }
         )
     return rows
+
+
+def _annotate_diesel_topology(
+    rows: Sequence[MutableMapping[str, Any]],
+    connections: Mapping[Tuple[str, str], ResourceConnection],
+    device_component_ids: Mapping[Tuple[str, str], str],
+) -> None:
+    for row in rows:
+        key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        connection = connections.get(key)
+        component_id = str(device_component_ids.get(key, ""))
+        row.update(
+            {
+                "connectionSide": (
+                    connection.connection_side if connection is not None else "INVALID"
+                ),
+                "activelyConnected": bool(
+                    connection is not None and connection.actively_connected
+                ),
+                "busbarType": connection.busbar_type if connection is not None else "",
+                "busbarName": connection.busbar_name if connection is not None else "",
+                "busbarNode": connection.busbar_node if connection is not None else "",
+                "gridComponentId": (
+                    connection.grid_component_id
+                    if connection is not None
+                    else component_id
+                ),
+                "topologyStatusLabel": (
+                    connection.topology_status_label
+                    if connection is not None
+                    else "结构接入交流母线"
+                    if component_id
+                    else "资源模型引用或端子无效"
+                ),
+            }
+        )
+        if connection is None and component_id:
+            row["connectionSide"] = "AC"
+            row["activelyConnected"] = True
 
 
 def _effective_step_minutes(snapshot: Mapping[str, Any]) -> float:
@@ -1160,7 +1288,11 @@ def _storage_rows(
             if mode in BALANCE_STORAGE_MODES
             else "uncontrolled"
         )
-        set_type = preferred_set_type if role == "grid_following" else ""
+        set_type = (
+            preferred_set_type
+            if role in {"grid_following", "balance"}
+            else ""
+        )
         category = categories.get(
             (connection_side, role),
             "拓扑未解析储能",
@@ -1300,7 +1432,10 @@ def _storage_rows(
         elif device_online and not topology["activelyConnected"]:
             quality.add(f"储能{name}当前拓扑断开，本轮不参与自动策略")
         if online and power is None:
-            quality.add(f"储能{name}缺少有效实时有功，本轮禁止该储能参与自动调节")
+            quality.add(
+                f"储能{name}缺少有效实时有功，本轮禁止该储能参与自动调节",
+                dispatch_forbidden=role == "balance",
+            )
         if device_online and not limits_valid:
             quality.add(f"储能{name}功率边界、能量容量或SOC上下限无效，本轮仅禁用该储能")
         if device_online and role == "uncontrolled":
@@ -1319,7 +1454,7 @@ def _storage_rows(
             ]
 
         commandable = bool(
-            role == "grid_following"
+            role in {"grid_following", "balance"}
             and topology_valid
             and identity_valid
             and online
@@ -1358,7 +1493,9 @@ def _storage_rows(
             if soc_constraint == "above_upper"
             else "SOC达到下限·禁止放电"
             if soc_constraint == "below_lower"
-            else "平衡储能·间接控制"
+            else "构网储能·可直控"
+            if role == "balance" and commandable
+            else "构网储能·间接校核"
             if role == "balance"
             else f"充电降额 {charge_derating_factor * 100:.0f}%"
             if charge_derating_factor < 1.0 - EPSILON
@@ -1405,6 +1542,11 @@ def _storage_rows(
                 "efficiency": efficiency,
                 "controlHorizonMinutes": control_horizon_minutes,
                 "set_type": set_type,
+                "directDispatchBlockedReason": (
+                    "缺少有效p_set有功遥调点"
+                    if role == "balance" and not set_type
+                    else ""
+                ),
                 "indirectControlDevices": indirect_control_devices,
                 "statusLabel": status_label,
             }
@@ -1479,6 +1621,87 @@ def _converter_rows(
             }
         )
     return rows
+
+
+def _apply_grid_forming_fail_closed_scopes(
+    renewable_rows: Sequence[MutableMapping[str, Any]],
+    storage_rows: Sequence[MutableMapping[str, Any]],
+    converter_rows: Sequence[MutableMapping[str, Any]],
+    diesel_rows: Sequence[MutableMapping[str, Any]],
+    quality: _Quality,
+) -> Dict[str, set[str]]:
+    blocked_ac_components: set[str] = set()
+    blocked_dc_groups: set[str] = set()
+    for row in storage_rows:
+        if (
+            row.get("role") != "balance"
+            or not row.get("deviceOnline")
+            or not row.get("activelyConnected")
+            or row.get("stateEligible")
+        ):
+            continue
+        side = str(row.get("connectionSide", ""))
+        scope_id = str(
+            row.get("gridComponentId", "")
+            if side == "AC"
+            else row.get("dcTransferGroupId", "")
+        )
+        if not scope_id:
+            continue
+        missing = []
+        if not row.get("socKnown"):
+            missing.append("SOC")
+        if _number(row.get("currentKw")) is None:
+            missing.append("实时有功")
+        if not row.get("limitsValid"):
+            missing.append("功率/能量/SOC边界")
+        if not missing:
+            missing.append("设备身份或拓扑状态")
+        if side == "AC":
+            blocked_ac_components.add(scope_id)
+            scope_label = f"交流分量闭锁（{scope_id}）"
+        else:
+            blocked_dc_groups.add(scope_id)
+            scope_label = f"直流传输组闭锁（{scope_id}）"
+        reason = (
+            f"构网储能{row.get('dev_name', '')}缺少有效{'、'.join(missing)}，"
+            f"{scope_label}，禁止该范围自动策略"
+        )
+        row["automaticControlBlocked"] = True
+        row["automaticControlBlockedReason"] = reason
+        quality.add(reason)
+
+    def block_row(row: MutableMapping[str, Any], reason: str) -> None:
+        row["commandable"] = False
+        row["automaticControlBlocked"] = True
+        row["automaticControlBlockedReason"] = reason
+        status = str(row.get("statusLabel", "")).strip()
+        row["statusLabel"] = f"{status}·自动闭锁" if status else "自动闭锁"
+
+    for row in (*renewable_rows, *storage_rows):
+        side = str(row.get("connectionSide", ""))
+        blocked = (
+            side == "AC"
+            and str(row.get("gridComponentId", "")) in blocked_ac_components
+            or side == "DC"
+            and str(row.get("dcTransferGroupId", "")) in blocked_dc_groups
+        )
+        if blocked:
+            block_row(row, "所在构网储能控制范围的数据不完整")
+
+    for row in converter_rows:
+        group_id = str(row.get("dcTransferGroupId", ""))
+        if group_id in blocked_dc_groups:
+            block_row(row, "所在直流传输组的构网储能数据不完整")
+
+    if blocked_ac_components:
+        for row in diesel_rows:
+            block_row(row, "交流构网储能控制范围的数据不完整")
+
+    return {
+        "acComponents": blocked_ac_components,
+        "dcTransferGroups": blocked_dc_groups,
+    }
 
 
 @dataclass(frozen=True)
@@ -1599,16 +1822,27 @@ def _plan_renewable_storage_island_component(
         for row in component.storage_rows
         if row.get("socKnown") and row.get("soc") is not None
     ]
-    storage_soc = (
-        sum(_finite_number(row.get("soc")) for row in known_soc_rows)
-        / len(known_soc_rows)
-        if known_soc_rows
-        else None
+    storage_soc = _capacity_weighted_soc(known_soc_rows)
+    total_soc_weight = sum(
+        (
+            _finite_number(row.get("capacityKwh"))
+            if _finite_number(row.get("capacityKwh")) > EPSILON
+            else 1.0
+        )
+        for row in known_soc_rows
     )
     storage_soc_upper_limit = (
-        sum(_finite_number(row.get("socMax")) for row in known_soc_rows)
-        / len(known_soc_rows)
-        if known_soc_rows
+        sum(
+            _finite_number(row.get("socMax"))
+            * (
+                _finite_number(row.get("capacityKwh"))
+                if _finite_number(row.get("capacityKwh")) > EPSILON
+                else 1.0
+            )
+            for row in known_soc_rows
+        )
+        / total_soc_weight
+        if total_soc_weight > EPSILON
         else None
     )
     raw_charge = sum(
@@ -1640,6 +1874,7 @@ def _plan_renewable_storage_island_component(
         action = "recover_one_step_storage_island"
 
     targets: Dict[Tuple[str, str], Optional[float]] = {}
+    renewable_states: List[MutableMapping[str, Any]] = []
     for row in component.renewable_rows:
         key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
         planning_current = _number(row.get("planningCurrentKw"))
@@ -1652,7 +1887,14 @@ def _plan_renewable_storage_island_component(
         capacity = max(0.0, _finite_number(row.get("capacityKw")))
         step = settings.step_coefficient * capacity
         if action == "recover_one_step_storage_island":
-            target = min(capacity, planning_current + step)
+            renewable_states.append(
+                {
+                    "key": key,
+                    "currentKw": planning_current,
+                    "marginKw": min(step, max(0.0, capacity - planning_current)),
+                }
+            )
+            target = planning_current
         elif action in {
             "curtail_one_step_storage_island_full_soc",
             "curtail_one_step_storage_island_no_charge_capacity",
@@ -1662,6 +1904,26 @@ def _plan_renewable_storage_island_component(
         else:
             target = planning_current
         targets[key] = target
+
+    if action == "recover_one_step_storage_island" and renewable_states:
+        charge_headroom_kw = sum(
+            max(
+                0.0,
+                _finite_number(row.get("chargePower"))
+                - max(0.0, -_finite_number(row.get("currentKw"))),
+            )
+            for row in component.storage_rows
+        )
+        allocations = _allocate_by_margin(
+            renewable_states,
+            min(
+                charge_headroom_kw,
+                sum(_finite_number(state.get("marginKw")) for state in renewable_states),
+            ),
+            "marginKw",
+        )
+        for state, allocation_kw in zip(renewable_states, allocations):
+            targets[state["key"]] = _finite_number(state.get("currentKw")) + allocation_kw
 
     return {
         "gridComponentId": component.grid_component_id,
@@ -1720,9 +1982,9 @@ def _capacity_weighted_soc(rows: Sequence[Mapping[str, Any]]) -> Optional[float]
             continue
         capacity = _number(row.get("capacityKwh"))
         weight = (
-            max(EPSILON, capacity)
-            if capacity is not None and math.isfinite(capacity)
-            else EPSILON
+            capacity
+            if capacity is not None and math.isfinite(capacity) and capacity > EPSILON
+            else 1.0
         )
         weighted_sum += soc * weight
         total_weight += weight
@@ -2245,11 +2507,24 @@ def _project_balance_storage_targets(
             current_kw = _finite_number(row.get("currentKw"))
             signed_min_kw, signed_max_kw = _grid_storage_signed_power_bounds_kw(row)
             candidate_kw = current_kw + direction * allocation_kw
-            projected_targets[key] = (
-                min(candidate_kw, signed_max_kw)
-                if direction > 0.0
-                else max(candidate_kw, signed_min_kw)
-            )
+            if current_kw < signed_min_kw - EPSILON:
+                projected_targets[key] = _clamp(
+                    candidate_kw,
+                    current_kw,
+                    signed_max_kw,
+                )
+            elif current_kw > signed_max_kw + EPSILON:
+                projected_targets[key] = _clamp(
+                    candidate_kw,
+                    signed_min_kw,
+                    current_kw,
+                )
+            else:
+                projected_targets[key] = _clamp(
+                    candidate_kw,
+                    signed_min_kw,
+                    signed_max_kw,
+                )
             indirect_devices[key] = [
                 {"dev_type": dev_type, "dev_name": dev_name}
                 for dev_type, dev_name in devices
@@ -2273,8 +2548,10 @@ def _project_balance_storage_targets(
             if state.get("side") == "AC"
         )
         export_delta_kw = sum(
-            _finite_number(state.get("currentKw"))
-            - _finite_number(state.get("targetKw"))
+            _acdc_export_delta_kw(
+                state.get("currentKw"),
+                state.get("targetKw"),
+            )
             for state in converter_states
             if state.get("currentKw") is not None
             and state.get("targetKw") is not None
@@ -2332,8 +2609,10 @@ def _project_balance_storage_targets(
             for state in group_storage
         )
         export_delta_kw = sum(
-            _finite_number(state.get("currentKw"))
-            - _finite_number(state.get("targetKw"))
+            _acdc_export_delta_kw(
+                state.get("currentKw"),
+                state.get("targetKw"),
+            )
             for state in group_converters
             if state.get("currentKw") is not None
             and state.get("targetKw") is not None
@@ -2361,10 +2640,82 @@ def _side_aware_renewable_recovery_plan_without_balance(
     converter_rows: Sequence[Mapping[str, Any]],
     initial_storage_targets: Mapping[Tuple[str, str], Any],
     initial_converter_targets: Mapping[Tuple[str, str], Any],
+    initial_renewable_targets: Mapping[Tuple[str, str], Any],
+    allow_topology_recovery_fallback: bool,
     *,
     diesel_current_kw: float,
     diesel_min_kw: float,
+    diesel_deadband_upper_kw: Optional[float] = None,
 ) -> Dict[str, Any]:
+    preserve_state_machine_recovery_budget = any(
+        row.get("role") == "balance" and row.get("stateEligible")
+        for row in storage_rows
+    )
+    high_soc_dc_group_ids = {
+        str(row.get("dcTransferGroupId", ""))
+        for row in storage_rows
+        if row.get("role") == "balance"
+        and row.get("connectionSide") == "DC"
+        and str(row.get("dcTransferGroupId", ""))
+        and _number(row.get("soc")) is not None
+        and _number(row.get("socMax")) is not None
+        and _finite_number(row.get("soc"))
+        > _finite_number(row.get("socMax")) + EPSILON
+    }
+    high_soc_ac_component_ids = {
+        str(row.get("gridComponentId", ""))
+        for row in storage_rows
+        if row.get("role") == "balance"
+        and row.get("connectionSide") == "AC"
+        and str(row.get("gridComponentId", ""))
+        and _number(row.get("soc")) is not None
+        and _number(row.get("socMax")) is not None
+        and _finite_number(row.get("soc"))
+        > _finite_number(row.get("socMax")) + EPSILON
+    }
+    initial_curtail_request_kw = sum(
+        max(
+            0.0,
+            _finite_number(row.get("planningCurrentKw"))
+            - _finite_number(
+                initial_renewable_targets.get(
+                    (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                    row.get("planningCurrentKw"),
+                )
+            ),
+        )
+        for row in renewable_rows
+        if _number(row.get("planningCurrentKw")) is not None
+    )
+    high_soc_curtail_rows = [
+        row
+        for row in renewable_rows
+        if _number(row.get("planningCurrentKw")) is not None
+        and (
+            row.get("connectionSide") == "DC"
+            and str(row.get("dcTransferGroupId", "")) in high_soc_dc_group_ids
+            or row.get("connectionSide") == "AC"
+            and str(row.get("gridComponentId", "")) in high_soc_ac_component_ids
+        )
+    ]
+    high_soc_curtail_allocations = _allocate(
+        high_soc_curtail_rows,
+        min(
+            initial_curtail_request_kw,
+            sum(
+                max(0.0, _finite_number(row.get("planningCurrentKw")))
+                for row in high_soc_curtail_rows
+            ),
+        ),
+        "planningCurrentKw",
+    )
+    high_soc_curtail_by_key = {
+        (str(row.get("dev_type", "")), str(row.get("dev_name", ""))): allocation_kw
+        for row, allocation_kw in zip(
+            high_soc_curtail_rows,
+            high_soc_curtail_allocations,
+        )
+    }
     renewable_states: List[MutableMapping[str, Any]] = []
     for row in sorted(
         renewable_rows,
@@ -2378,6 +2729,14 @@ def _side_aware_renewable_recovery_plan_without_balance(
     ):
         current_kw = _number(row.get("planningCurrentKw"))
         capacity_kw = _number(row.get("capacityKw"))
+        key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        initial_target_kw = _number(
+            initial_renewable_targets.get(key),
+            current_kw,
+        )
+        preserved_curtailment_kw = _finite_number(
+            high_soc_curtail_by_key.get(key)
+        )
         eligible = bool(
             row.get("commandable")
             and current_kw is not None
@@ -2386,10 +2745,19 @@ def _side_aware_renewable_recovery_plan_without_balance(
             and current_kw >= -EPSILON
             and current_kw <= capacity_kw + EPSILON
         )
+        initial_recovery_margin_kw = max(
+            0.0,
+            _finite_number(initial_target_kw, current_kw) - current_kw,
+        ) if current_kw is not None else 0.0
         margin_kw = (
             min(
                 max(0.0, capacity_kw - current_kw),
-                settings.step_coefficient * capacity_kw,
+                initial_recovery_margin_kw
+                if initial_recovery_margin_kw > EPSILON
+                else settings.step_coefficient * capacity_kw
+                if allow_topology_recovery_fallback
+                or not preserve_state_machine_recovery_budget
+                else 0.0,
             )
             if eligible
             else 0.0
@@ -2397,12 +2765,17 @@ def _side_aware_renewable_recovery_plan_without_balance(
         renewable_states.append(
             {
                 "row": row,
-                "key": (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                "key": key,
                 "side": str(row.get("connectionSide", "")),
                 "groupId": str(row.get("dcTransferGroupId", "")),
                 "technology": str(row.get("technology", "")),
                 "currentKw": current_kw,
-                "targetKw": current_kw,
+                "targetKw": (
+                    max(0.0, current_kw - preserved_curtailment_kw)
+                    if current_kw is not None
+                    and preserved_curtailment_kw > EPSILON
+                    else current_kw
+                ),
                 "marginKw": margin_kw,
                 "acceptedKw": 0.0,
             }
@@ -2464,6 +2837,51 @@ def _side_aware_renewable_recovery_plan_without_balance(
             }
         )
 
+    # Near the diesel deadband boundary, the ACDC and AC-renewable candidates
+    # would otherwise consume the same small diesel margin twice.  Prefer the
+    # directly connected AC renewable recovery for this one-step correction and
+    # keep ACDC at its measured export; clearly high diesel output still uses
+    # the normal ACDC discharge path below.
+    diesel_boundary_kw = max(
+        diesel_min_kw,
+        _finite_number(diesel_deadband_upper_kw, diesel_min_kw),
+    )
+    converter_base_step_kw = sum(
+        max(0.0, _finite_number(state.get("capacityKw")))
+        * settings.converter_step_ratio
+        for state in converter_states
+    )
+    ac_renewable_has_headroom = any(
+        state.get("side") == "AC"
+        and _number(state.get("currentKw")) is not None
+        and _finite_number(state.get("marginKw")) > EPSILON
+        for state in renewable_states
+    )
+    if (
+        ac_renewable_has_headroom
+        and converter_base_step_kw > EPSILON
+        and diesel_current_kw > diesel_boundary_kw + EPSILON
+        and diesel_current_kw - diesel_boundary_kw
+        <= converter_base_step_kw + EPSILON
+    ):
+        for state in converter_states:
+            current_kw = _number(state.get("currentKw"))
+            target_kw = _number(state.get("targetKw"))
+            capacity_kw = _number(state.get("capacityKw"))
+            if (
+                current_kw is None
+                or target_kw is None
+                or capacity_kw is None
+                or target_kw >= current_kw - EPSILON
+            ):
+                continue
+            state["targetKw"] = current_kw
+            state["exportMarginKw"] = min(
+                max(0.0, capacity_kw + current_kw),
+                max(0.0, settings.converter_step_ratio * capacity_kw),
+            )
+            state["exportReductionMarginKw"] = max(0.0, -current_kw)
+
     def allocate_renewable(
         states: Sequence[MutableMapping[str, Any]],
         request_kw: float,
@@ -2471,6 +2889,8 @@ def _side_aware_renewable_recovery_plan_without_balance(
     ) -> float:
         allocations = _allocate_by_margin(states, request_kw, "marginKw")
         for state, allocation_kw in zip(states, allocations):
+            if _number(state.get("targetKw")) is None:
+                continue
             state["targetKw"] = _finite_number(state.get("targetKw")) + allocation_kw
             state["marginKw"] = max(0.0, _finite_number(state.get("marginKw")) - allocation_kw)
             state["acceptedKw"] = _finite_number(state.get("acceptedKw")) + allocation_kw
@@ -2481,6 +2901,8 @@ def _side_aware_renewable_recovery_plan_without_balance(
     def charge_storage(states: Sequence[MutableMapping[str, Any]], request_kw: float) -> float:
         allocations = _allocate_by_margin(states, request_kw, "chargeMarginKw")
         for state, allocation_kw in zip(states, allocations):
+            if _number(state.get("targetKw")) is None:
+                continue
             state["targetKw"] = _finite_number(state.get("targetKw")) - allocation_kw
             state["chargeMarginKw"] = max(
                 0.0, _finite_number(state.get("chargeMarginKw")) - allocation_kw
@@ -2491,6 +2913,8 @@ def _side_aware_renewable_recovery_plan_without_balance(
         states = [state for state in converter_states if state.get("groupId") == group_id]
         allocations = _allocate_by_margin(states, request_kw, "exportMarginKw")
         for state, allocation_kw in zip(states, allocations):
+            if _number(state.get("targetKw")) is None:
+                continue
             state["targetKw"] = min(
                 0.0, _finite_number(state.get("targetKw")) - allocation_kw
             )
@@ -2510,23 +2934,28 @@ def _side_aware_renewable_recovery_plan_without_balance(
         if state.get("side") == "AC" and state.get("currentKw") is not None
     )
     initial_export_effect_kw = sum(
-        _finite_number(state.get("currentKw")) - _finite_number(state.get("targetKw"))
+        _acdc_export_delta_kw(
+            state.get("currentKw"),
+            state.get("targetKw"),
+        )
         for state in converter_states
         if state.get("currentKw") is not None and state.get("targetKw") is not None
     )
     diesel_margin_kw = max(
         0.0,
         diesel_current_kw
-        - diesel_min_kw
-        - initial_ac_storage_effect_kw
-        - initial_export_effect_kw,
+        - max(
+            diesel_min_kw,
+            _finite_number(diesel_deadband_upper_kw, diesel_min_kw),
+        )
+        - max(0.0, initial_ac_storage_effect_kw)
+        - max(0.0, initial_export_effect_kw),
     )
     direct_balance_rows = [
         row
         for row in storage_rows
         if row.get("role") == "balance"
         and row.get("stateEligible")
-        and not row.get("activePath")
     ]
     ac_balance_rows = [
         row for row in direct_balance_rows if row.get("connectionSide") == "AC"
@@ -2606,7 +3035,6 @@ def _side_aware_renewable_recovery_plan_without_balance(
             and row.get("connectionSide") == "DC"
             and row.get("dcTransferGroupId") == group_id
             and row.get("stateEligible")
-            and not row.get("activePath")
         ]
         renewable_current_kw = sum(
             _finite_number(state.get("currentKw")) for state in group_renewables
@@ -2722,7 +3150,10 @@ def _side_aware_renewable_recovery_plan_without_balance(
         for state in ac_storage_states
     )
     export_delta_kw = sum(
-        _finite_number(state.get("currentKw")) - _finite_number(state.get("targetKw"))
+        _acdc_export_delta_kw(
+            state.get("currentKw"),
+            state.get("targetKw"),
+        )
         for state in converter_states
         if state.get("currentKw") is not None and state.get("targetKw") is not None
     )
@@ -2813,35 +3244,18 @@ def _side_aware_renewable_recovery_plan(
     converter_rows: Sequence[Mapping[str, Any]],
     initial_storage_targets: Mapping[Tuple[str, str], Any],
     initial_converter_targets: Mapping[Tuple[str, str], Any],
+    initial_renewable_targets: Mapping[Tuple[str, str], Any],
+    allow_topology_recovery_fallback: bool,
     *,
     diesel_current_kw: float,
     diesel_min_kw: float,
+    diesel_deadband_upper_kw: Optional[float] = None,
 ) -> Dict[str, Any]:
-    ac_has_protective_actor = any(
-        row.get("commandable") and row.get("connectionSide") == "AC"
-        for row in (*renewable_rows, *storage_rows)
-        if row.get("role") != "balance"
-    )
-    dc_protective_actor_groups = {
-        str(row.get("dcTransferGroupId", ""))
-        for row in (*renewable_rows, *storage_rows)
-        if row.get("commandable")
-        and row.get("connectionSide") == "DC"
-        and row.get("role") != "balance"
-        and str(row.get("dcTransferGroupId", ""))
-    }
     balance_rows = [
         row
         for row in storage_rows
         if row.get("role") == "balance"
         and row.get("stateEligible")
-        and not row.get("activePath")
-        and (
-            row.get("connectionSide") == "AC" and ac_has_protective_actor
-            or row.get("connectionSide") == "DC"
-            and str(row.get("dcTransferGroupId", ""))
-            in dc_protective_actor_groups
-        )
     ]
     protective_rows: List[Mapping[str, Any]] = []
     for row in balance_rows:
@@ -2862,9 +3276,40 @@ def _side_aware_renewable_recovery_plan(
             converter_rows,
             initial_storage_targets,
             initial_converter_targets,
+            initial_renewable_targets,
+            allow_topology_recovery_fallback,
             diesel_current_kw=diesel_current_kw,
             diesel_min_kw=diesel_min_kw,
+            diesel_deadband_upper_kw=diesel_deadband_upper_kw,
         )
+
+    protected_ac_present = any(
+        row.get("connectionSide") == "AC" for row in protective_rows
+    )
+    protected_dc_group_ids = {
+        str(row.get("dcTransferGroupId", ""))
+        for row in protective_rows
+        if row.get("connectionSide") == "DC"
+        and str(row.get("dcTransferGroupId", ""))
+    }
+
+    def preserve_initial_storage_candidate(row: Mapping[str, Any]) -> bool:
+        current_kw = _number(row.get("currentKw"))
+        if current_kw is not None:
+            signed_min_kw, signed_max_kw = _grid_storage_signed_power_bounds_kw(row)
+            if (
+                current_kw < signed_min_kw - EPSILON
+                or current_kw > signed_max_kw + EPSILON
+            ):
+                return True
+        if row.get("connectionSide") == "AC" and protected_ac_present:
+            return False
+        if (
+            row.get("connectionSide") == "DC"
+            and str(row.get("dcTransferGroupId", "")) in protected_dc_group_ids
+        ):
+            return False
+        return True
 
     renewable_states: List[MutableMapping[str, Any]] = []
     for row in sorted(
@@ -2879,6 +3324,11 @@ def _side_aware_renewable_recovery_plan(
     ):
         current_kw = _number(row.get("planningCurrentKw"))
         capacity_kw = _number(row.get("capacityKw"))
+        key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        initial_target_kw = _number(
+            initial_renewable_targets.get(key),
+            current_kw,
+        )
         eligible = bool(
             row.get("commandable")
             and current_kw is not None
@@ -2889,7 +3339,7 @@ def _side_aware_renewable_recovery_plan(
         renewable_states.append(
             {
                 "row": row,
-                "key": (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                "key": key,
                 "side": str(row.get("connectionSide", "")),
                 "groupId": str(row.get("dcTransferGroupId", "")),
                 "currentKw": current_kw,
@@ -2897,13 +3347,24 @@ def _side_aware_renewable_recovery_plan(
                 "recoveryMarginKw": (
                     min(
                         max(0.0, capacity_kw - current_kw),
-                        settings.step_coefficient * capacity_kw,
+                        (
+                            max(
+                                0.0,
+                                _finite_number(initial_target_kw, current_kw)
+                                - current_kw,
+                            )
+                            or (
+                                settings.step_coefficient * capacity_kw
+                                if allow_topology_recovery_fallback
+                                else 0.0
+                            )
+                        ),
                     )
                     if eligible
                     else 0.0
                 ),
                 "curtailMarginKw": (
-                    min(max(0.0, current_kw), settings.step_coefficient * capacity_kw)
+                    max(0.0, current_kw)
                     if eligible
                     else 0.0
                 ),
@@ -2917,31 +3378,92 @@ def _side_aware_renewable_recovery_plan(
                 (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
                 row.get("currentKw"),
             ),
-            preserve_initial=False,
+            preserve_initial=preserve_initial_storage_candidate(row),
         )
         for row in sorted(storage_rows, key=_grid_storage_sort_key)
         if row.get("role") == "grid_following"
     ]
+    reduce_export_protective_group_ids = {
+        str(row.get("dcTransferGroupId", ""))
+        for row in balance_rows
+        if row.get("connectionSide") == "DC"
+        and str(row.get("dcTransferGroupId", ""))
+        and _number(row.get("currentKw")) is not None
+        and _finite_number(row.get("currentKw"))
+        > _grid_storage_signed_power_bounds_kw(row)[1] + EPSILON
+    }
+    emergency_stop_export_group_ids = {
+        str(row.get("dcTransferGroupId", ""))
+        for row in balance_rows
+        if row.get("connectionSide") == "DC"
+        and str(row.get("dcTransferGroupId", ""))
+        and _number(row.get("soc")) is not None
+        and _number(row.get("socMin")) is not None
+        and _finite_number(row.get("soc"))
+        <= _finite_number(row.get("socMin")) + EPSILON
+    }
+    increase_export_protective_group_ids = {
+        str(row.get("dcTransferGroupId", ""))
+        for row in balance_rows
+        if row.get("connectionSide") == "DC"
+        and str(row.get("dcTransferGroupId", ""))
+        and _number(row.get("currentKw")) is not None
+        and _finite_number(row.get("currentKw"))
+        < _grid_storage_signed_power_bounds_kw(row)[0] - EPSILON
+    }
     converter_states: List[MutableMapping[str, Any]] = []
     for row in sorted(converter_rows, key=_converter_row_sort_key):
         current_kw = _number(row.get("currentKw"))
         capacity_kw = _number(row.get("transferCapacityKw"))
-        target_kw = min(0.0, current_kw) if current_kw is not None else None
+        key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        target_kw = _number(initial_converter_targets.get(key), current_kw)
         step_kw = (
             settings.converter_step_ratio * capacity_kw
             if capacity_kw is not None and capacity_kw > EPSILON
             else 0.0
         )
+        if target_kw is not None:
+            target_kw = min(0.0, target_kw)
+        group_id = str(row.get("dcTransferGroupId", ""))
+        if (
+            group_id in emergency_stop_export_group_ids
+            and group_id not in increase_export_protective_group_ids
+        ):
+            target_kw = 0.0
+        preserve_immediate_stop = bool(
+            current_kw is not None
+            and target_kw is not None
+            and target_kw > current_kw + EPSILON
+            and (
+                group_id in emergency_stop_export_group_ids
+                or current_kw > EPSILON
+            )
+        )
+        if (
+            current_kw is not None
+            and target_kw is not None
+            and not preserve_immediate_stop
+        ):
+            target_kw = _move_toward(current_kw, target_kw, step_kw)
+        used_step_kw = (
+            abs(target_kw - current_kw)
+            if target_kw is not None and current_kw is not None
+            else step_kw
+        )
+        remaining_step_kw = max(0.0, step_kw - used_step_kw)
         converter_states.append(
             {
                 "row": row,
-                "key": (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
-                "groupId": str(row.get("dcTransferGroupId", "")),
+                "key": key,
+                "groupId": group_id,
                 "currentKw": current_kw,
                 "targetKw": target_kw,
                 "capacityKw": capacity_kw,
                 "exportMarginKw": (
-                    min(max(0.0, capacity_kw + target_kw), step_kw)
+                    max(0.0, capacity_kw + target_kw)
+                    if group_id in increase_export_protective_group_ids
+                    and group_id not in reduce_export_protective_group_ids
+                    else min(max(0.0, capacity_kw + target_kw), remaining_step_kw)
                     if row.get("commandable")
                     and current_kw is not None
                     and current_kw <= EPSILON
@@ -2951,7 +3473,12 @@ def _side_aware_renewable_recovery_plan(
                     else 0.0
                 ),
                 "exportReductionMarginKw": (
-                    min(max(0.0, -target_kw), step_kw)
+                    max(0.0, -target_kw)
+                    if row.get("commandable")
+                    and target_kw is not None
+                    and group_id in reduce_export_protective_group_ids
+                    and group_id not in increase_export_protective_group_ids
+                    else min(max(0.0, -target_kw), remaining_step_kw)
                     if row.get("commandable") and target_kw is not None
                     else 0.0
                 ),
@@ -2966,6 +3493,8 @@ def _side_aware_renewable_recovery_plan(
     ) -> float:
         allocations = _allocate_by_margin(states, request_kw, margin_key)
         for state, allocation_kw in zip(states, allocations):
+            if _number(state.get("targetKw")) is None:
+                continue
             state["targetKw"] = _finite_number(state.get("targetKw")) + target_sign * allocation_kw
             state[margin_key] = max(
                 0.0, _finite_number(state.get(margin_key)) - allocation_kw
@@ -2979,18 +3508,47 @@ def _side_aware_renewable_recovery_plan(
             if state.get("groupId") == group_id
         ]
 
-    diesel_margin_kw = max(0.0, diesel_current_kw - diesel_min_kw)
+    initial_ac_storage_effect_kw = sum(
+        _finite_number(state.get("targetKw"))
+        - _finite_number(state.get("currentKw"))
+        for state in storage_states
+        if state.get("side") == "AC"
+        and state.get("currentKw") is not None
+        and state.get("targetKw") is not None
+    )
+    initial_export_effect_kw = sum(
+        _acdc_export_delta_kw(
+            state.get("currentKw"),
+            state.get("targetKw"),
+        )
+        for state in converter_states
+        if state.get("currentKw") is not None
+        and state.get("targetKw") is not None
+    )
+    diesel_margin_kw = max(
+        0.0,
+        diesel_current_kw
+        - max(
+            diesel_min_kw,
+            _finite_number(diesel_deadband_upper_kw, diesel_min_kw),
+        )
+        - max(0.0, initial_ac_storage_effect_kw)
+        - max(0.0, initial_export_effect_kw),
+    )
     protected_ac = [
         row for row in protective_rows if row.get("connectionSide") == "AC"
     ]
     protected_groups = sorted(
-        {
-            str(row.get("dcTransferGroupId", ""))
-            for row in protective_rows
-            if row.get("connectionSide") == "DC"
-            and str(row.get("dcTransferGroupId", ""))
-        },
+        protected_dc_group_ids,
         key=_natural_topology_identity,
+    )
+    initial_projected_targets, _initial_indirect_devices = (
+        _project_balance_storage_targets(
+            balance_rows,
+            renewable_states,
+            storage_states,
+            converter_states,
+        )
     )
 
     if protected_ac:
@@ -3001,7 +3559,15 @@ def _side_aware_renewable_recovery_plan(
         low_request_kw = sum(
             max(
                 0.0,
-                _finite_number(row.get("currentKw"))
+                _finite_number(
+                    initial_projected_targets.get(
+                        (
+                            str(row.get("dev_type", "")),
+                            str(row.get("dev_name", "")),
+                        ),
+                        row.get("currentKw"),
+                    )
+                )
                 - _grid_storage_signed_power_bounds_kw(row)[1],
             )
             for row in protected_ac
@@ -3010,7 +3576,15 @@ def _side_aware_renewable_recovery_plan(
             max(
                 0.0,
                 _grid_storage_signed_power_bounds_kw(row)[0]
-                - _finite_number(row.get("currentKw")),
+                - _finite_number(
+                    initial_projected_targets.get(
+                        (
+                            str(row.get("dev_type", "")),
+                            str(row.get("dev_name", "")),
+                        ),
+                        row.get("currentKw"),
+                    )
+                ),
             )
             for row in protected_ac
         )
@@ -3045,6 +3619,26 @@ def _side_aware_renewable_recovery_plan(
                 )
                 diesel_margin_kw -= exported_kw
                 remaining_kw -= exported_kw
+        if any(
+            _number(row.get("soc")) is not None
+            and _number(row.get("socMin")) is not None
+            and _finite_number(row.get("soc"))
+            < _finite_number(row.get("socMin")) - EPSILON
+            for row in protected_ac
+        ):
+            recovered_kw = apply_margin(
+                ac_renewables,
+                min(
+                    diesel_margin_kw,
+                    sum(
+                        _finite_number(state.get("recoveryMarginKw"))
+                        for state in ac_renewables
+                    ),
+                ),
+                "recoveryMarginKw",
+                1.0,
+            )
+            diesel_margin_kw = max(0.0, diesel_margin_kw - recovered_kw)
         if high_request_kw > EPSILON:
             verified_surplus_kw = min(
                 high_request_kw,
@@ -3104,7 +3698,15 @@ def _side_aware_renewable_recovery_plan(
         low_request_kw = sum(
             max(
                 0.0,
-                _finite_number(row.get("currentKw"))
+                _finite_number(
+                    initial_projected_targets.get(
+                        (
+                            str(row.get("dev_type", "")),
+                            str(row.get("dev_name", "")),
+                        ),
+                        row.get("currentKw"),
+                    )
+                )
                 - _grid_storage_signed_power_bounds_kw(row)[1],
             )
             for row in group_balance
@@ -3113,7 +3715,15 @@ def _side_aware_renewable_recovery_plan(
             max(
                 0.0,
                 _grid_storage_signed_power_bounds_kw(row)[0]
-                - _finite_number(row.get("currentKw")),
+                - _finite_number(
+                    initial_projected_targets.get(
+                        (
+                            str(row.get("dev_type", "")),
+                            str(row.get("dev_name", "")),
+                        ),
+                        row.get("currentKw"),
+                    )
+                ),
             )
             for row in group_balance
         )
@@ -3136,6 +3746,22 @@ def _side_aware_renewable_recovery_plan(
                 group_grid,
                 remaining_kw,
                 "dischargeMarginKw",
+                1.0,
+            )
+        if any(
+            _number(row.get("soc")) is not None
+            and _number(row.get("socMin")) is not None
+            and _finite_number(row.get("soc"))
+            < _finite_number(row.get("socMin")) - EPSILON
+            for row in group_balance
+        ):
+            apply_margin(
+                group_renewables,
+                sum(
+                    _finite_number(state.get("recoveryMarginKw"))
+                    for state in group_renewables
+                ),
+                "recoveryMarginKw",
                 1.0,
             )
         if high_request_kw > EPSILON:
@@ -3165,7 +3791,10 @@ def _side_aware_renewable_recovery_plan(
         if state.get("side") == "AC"
     )
     export_delta_kw = sum(
-        _finite_number(state.get("currentKw")) - _finite_number(state.get("targetKw"))
+        _acdc_export_delta_kw(
+            state.get("currentKw"),
+            state.get("targetKw"),
+        )
         for state in converter_states
         if state.get("currentKw") is not None and state.get("targetKw") is not None
     )
@@ -3796,6 +4425,1554 @@ def _plan_direct_grid_storage_dispatch(
     }
 
 
+def _plan_direct_grid_forming_dispatch(
+    renewable_rows: Sequence[Mapping[str, Any]],
+    storage_rows: Sequence[Mapping[str, Any]],
+    converter_rows: Sequence[Mapping[str, Any]],
+    renewable_targets: Mapping[Tuple[str, str], Any],
+    grid_storage_targets: Mapping[Tuple[str, str], Any],
+    converter_targets: Mapping[Tuple[str, str], Any],
+    projected_balance_targets: Mapping[Tuple[str, str], Any],
+    settings: RenewableControlSettings,
+    *,
+    diesel_current_kw: float,
+    diesel_min_kw: float,
+    diesel_deadband_upper_kw: float,
+    enabled: bool,
+    dc_load_kw: Optional[Mapping[str, float]] = None,
+) -> Dict[str, Any]:
+    renewable_target_map = {}
+    for row in renewable_rows:
+        key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        if key not in renewable_targets:
+            continue
+        renewable_target_map[key] = _number(
+            renewable_targets.get(key),
+            row.get("planningCurrentKw", row.get("currentKw")),
+        )
+    grid_target_map = {
+        (str(row.get("dev_type", "")), str(row.get("dev_name", ""))): _number(
+            grid_storage_targets.get(
+                (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                row.get("currentKw"),
+            )
+        )
+        for row in storage_rows
+        if row.get("role") == "grid_following"
+    }
+    protective_grid_storage_keys = {
+        (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        for row in storage_rows
+        if row.get("role") == "grid_following"
+        and _number(row.get("currentKw")) is not None
+        and (
+            _finite_number(row.get("currentKw"))
+            < _grid_storage_signed_power_bounds_kw(row)[0] - EPSILON
+            or _finite_number(row.get("currentKw"))
+            > _grid_storage_signed_power_bounds_kw(row)[1] + EPSILON
+        )
+    }
+    converter_target_map = {
+        (str(row.get("dev_type", "")), str(row.get("dev_name", ""))): min(
+            0.0,
+            _finite_number(
+                converter_targets.get(
+                    (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                    row.get("currentKw"),
+                )
+            ),
+        )
+        for row in converter_rows
+        if _number(row.get("currentKw")) is not None
+    }
+    balance_rows = sorted(
+        (row for row in storage_rows if row.get("role") == "balance"),
+        key=_grid_storage_sort_key,
+    )
+    direct_balance_rows = [
+        row
+        for row in balance_rows
+        if row.get("commandable") and row.get("stateEligible")
+    ]
+    direct_balance_keys = {
+        (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        for row in direct_balance_rows
+    }
+    protective_balance_keys = {
+        (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        for row in balance_rows
+        if _number(row.get("currentKw")) is not None
+        and (
+            _finite_number(row.get("currentKw"))
+            < _grid_storage_signed_power_bounds_kw(row)[0] - EPSILON
+            or _finite_number(row.get("currentKw"))
+            > _grid_storage_signed_power_bounds_kw(row)[1] + EPSILON
+        )
+    }
+    projected_balance_keys = {
+        (str(key[0]), str(key[1]))
+        for key in projected_balance_targets
+        if isinstance(key, tuple) and len(key) == 2
+    }
+    balance_target_map: Dict[Tuple[str, str], Optional[float]] = {}
+    for row in balance_rows:
+        key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        current_kw = _number(row.get("currentKw"))
+        requested_kw = _number(projected_balance_targets.get(key), current_kw)
+        if current_kw is None:
+            balance_target_map[key] = None
+            continue
+        if row.get("stateEligible"):
+            signed_min_kw, signed_max_kw = _grid_storage_signed_power_bounds_kw(row)
+            requested_target_kw = _finite_number(requested_kw, current_kw)
+            soc = _number(row.get("soc"))
+            soc_min = _number(row.get("socMin"))
+            soc_max = _number(row.get("socMax"))
+            emergency_charge_stop = bool(
+                current_kw < signed_min_kw - EPSILON
+                and soc is not None
+                and soc_max is not None
+                and soc >= soc_max - EPSILON
+            )
+            emergency_discharge_stop = bool(
+                current_kw > signed_max_kw + EPSILON
+                and soc is not None
+                and soc_min is not None
+                and soc <= soc_min + EPSILON
+            )
+            if emergency_charge_stop or emergency_discharge_stop:
+                balance_target_map[key] = _clamp(
+                    requested_target_kw,
+                    signed_min_kw,
+                    signed_max_kw,
+                )
+            elif current_kw < signed_min_kw - EPSILON:
+                balance_target_map[key] = _clamp(
+                    requested_target_kw,
+                    current_kw,
+                    signed_max_kw,
+                )
+            elif current_kw > signed_max_kw + EPSILON:
+                balance_target_map[key] = _clamp(
+                    requested_target_kw,
+                    signed_min_kw,
+                    current_kw,
+                )
+            else:
+                balance_target_map[key] = _clamp(
+                    requested_target_kw,
+                    signed_min_kw,
+                    signed_max_kw,
+                )
+        else:
+            balance_target_map[key] = current_kw
+
+    renewable_states = [
+        {
+            "row": row,
+            "side": str(row.get("connectionSide", "")),
+            "groupId": str(row.get("dcTransferGroupId", "")),
+            "currentKw": _number(row.get("planningCurrentKw", row.get("currentKw"))),
+            "targetKw": renewable_target_map.get(
+                (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+            ),
+        }
+        for row in renewable_rows
+        if (
+            str(row.get("dev_type", "")),
+            str(row.get("dev_name", "")),
+        )
+        in renewable_target_map
+    ]
+    grid_states = [
+        {
+            "row": row,
+            "side": str(row.get("connectionSide", "")),
+            "groupId": str(row.get("dcTransferGroupId", "")),
+            "currentKw": _number(row.get("currentKw")),
+            "targetKw": grid_target_map.get(
+                (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+            ),
+        }
+        for row in storage_rows
+        if row.get("role") == "grid_following"
+    ]
+    converter_states: List[MutableMapping[str, Any]] = []
+    for row in sorted(converter_rows, key=_converter_row_sort_key):
+        key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        current_kw = _number(row.get("currentKw"))
+        target_kw = converter_target_map.get(key)
+        capacity_kw = _number(row.get("transferCapacityKw"))
+        if current_kw is None or target_kw is None:
+            continue
+        step_kw = (
+            settings.converter_step_ratio * capacity_kw
+            if capacity_kw is not None and capacity_kw > EPSILON
+            else 0.0
+        )
+        used_step_kw = abs(target_kw - current_kw)
+        remaining_step_kw = max(0.0, step_kw - used_step_kw)
+        converter_states.append(
+            {
+                "row": row,
+                "key": key,
+                "groupId": str(row.get("dcTransferGroupId", "")),
+                "currentKw": current_kw,
+                "targetKw": target_kw,
+                "exportMarginKw": (
+                    min(
+                        max(0.0, (capacity_kw or 0.0) + target_kw),
+                        remaining_step_kw,
+                    )
+                    if row.get("commandable")
+                    and capacity_kw is not None
+                    and capacity_kw > EPSILON
+                    else 0.0
+                ),
+                "exportReductionMarginKw": (
+                    min(max(0.0, -target_kw), remaining_step_kw)
+                    if row.get("commandable")
+                    else 0.0
+                ),
+            }
+        )
+
+    def sync_candidate_states() -> None:
+        for state in renewable_states:
+            row = state["row"]
+            key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+            state["targetKw"] = renewable_target_map.get(key, state.get("currentKw"))
+        for state in grid_states:
+            row = state["row"]
+            key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+            state["targetKw"] = grid_target_map.get(key, state.get("currentKw"))
+
+    # A side-aware state-machine projection is authoritative: it may represent
+    # an SOC hard-protection action or local-load absorption that cannot be
+    # reconstructed from deltas alone. Only synthesize targets for directly
+    # dispatchable DC balancing storage that does not already have such a
+    # projection.
+    def recalculate_dc_balance_targets() -> None:
+        sync_candidate_states()
+        group_ids = sorted(
+            {
+                str(row.get("dcTransferGroupId", ""))
+                for row in balance_rows
+                if row.get("connectionSide") == "DC"
+                and str(row.get("dcTransferGroupId", ""))
+                and (
+                    (key := (
+                        str(row.get("dev_type", "")),
+                        str(row.get("dev_name", "")),
+                    ))
+                    in protective_balance_keys
+                    or key in direct_balance_keys
+                    and key not in projected_balance_keys
+                )
+            },
+            key=_natural_topology_identity,
+        )
+        for group_id in group_ids:
+            group_rows = [
+                row
+                for row in balance_rows
+                if row.get("connectionSide") == "DC"
+                and row.get("dcTransferGroupId") == group_id
+                and (
+                    (
+                        str(row.get("dev_type", "")),
+                        str(row.get("dev_name", "")),
+                    )
+                    in direct_balance_keys
+                    and (
+                        str(row.get("dev_type", "")),
+                        str(row.get("dev_name", "")),
+                    )
+                    not in projected_balance_keys
+                    or (
+                        str(row.get("dev_type", "")),
+                        str(row.get("dev_name", "")),
+                    )
+                    in protective_balance_keys
+                )
+            ]
+            if not group_rows:
+                continue
+            group_renewables = [
+                state
+                for state in renewable_states
+                if state.get("side") == "DC" and state.get("groupId") == group_id
+            ]
+            group_storage = [
+                state
+                for state in grid_states
+                if state.get("side") == "DC" and state.get("groupId") == group_id
+            ]
+            group_converters = [
+                state for state in converter_states if state.get("groupId") == group_id
+            ]
+            renewable_delta_kw = sum(
+                _finite_number(state.get("targetKw"))
+                - _finite_number(state.get("currentKw"))
+                for state in group_renewables
+            )
+            storage_delta_kw = sum(
+                _finite_number(state.get("targetKw"))
+                - _finite_number(state.get("currentKw"))
+                for state in group_storage
+            )
+            nonbalance_delta_kw = renewable_delta_kw + storage_delta_kw
+            current_renewable_kw = sum(
+                _finite_number(state.get("currentKw"))
+                for state in group_renewables
+            )
+            current_grid_storage_kw = sum(
+                _finite_number(state.get("currentKw"))
+                for state in group_storage
+            )
+            local_sink_headroom_kw = max(
+                0.0,
+                _finite_number((dc_load_kw or {}).get(group_id))
+                - current_renewable_kw
+                - current_grid_storage_kw,
+            )
+            locally_absorbed_kw = min(
+                max(0.0, nonbalance_delta_kw),
+                local_sink_headroom_kw,
+            )
+            effective_nonbalance_delta_kw = (
+                nonbalance_delta_kw - locally_absorbed_kw
+            )
+            export_delta_kw = sum(
+                _acdc_export_delta_kw(
+                    state.get("currentKw"),
+                    state.get("targetKw"),
+                )
+                for state in group_converters
+            )
+            balance_delta_kw = export_delta_kw - effective_nonbalance_delta_kw
+            recalculated_targets, _indirect = _project_balance_storage_targets(
+                group_rows,
+                group_renewables,
+                group_storage,
+                group_converters,
+                dc_balance_delta_by_group={group_id: balance_delta_kw},
+            )
+            balance_target_map.update(recalculated_targets)
+
+    recalculate_dc_balance_targets()
+
+    def ac_effect_kw() -> float:
+        renewable_effect = sum(
+            _finite_number(renewable_target_map.get(key), current_kw) - current_kw
+            for row in renewable_rows
+            if row.get("connectionSide") == "AC"
+            and (current_kw := _number(row.get("planningCurrentKw", row.get("currentKw"))))
+            is not None
+            and (
+                key := (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+            )
+        )
+        grid_effect = sum(
+            _finite_number(grid_target_map.get(key), current_kw) - current_kw
+            for row in storage_rows
+            if row.get("role") == "grid_following"
+            and row.get("connectionSide") == "AC"
+            and (current_kw := _number(row.get("currentKw"))) is not None
+            and (
+                key := (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+            )
+        )
+        balance_effect = sum(
+            _finite_number(balance_target_map.get(key), current_kw) - current_kw
+            for row in balance_rows
+            if row.get("connectionSide") == "AC"
+            and (current_kw := _number(row.get("currentKw"))) is not None
+            and (key := (
+                str(row.get("dev_type", "")),
+                str(row.get("dev_name", "")),
+            ))
+            in (
+                direct_balance_keys | projected_balance_keys
+            )
+        )
+        converter_effect = sum(
+            _acdc_export_delta_kw(
+                state.get("currentKw"),
+                state.get("targetKw"),
+            )
+            for state in converter_states
+        )
+        return renewable_effect + grid_effect + balance_effect + converter_effect
+
+    predicted_diesel_kw = diesel_current_kw - ac_effect_kw()
+    action = "hold"
+    if (
+        enabled
+        and diesel_current_kw > diesel_deadband_upper_kw + EPSILON
+        and predicted_diesel_kw > diesel_deadband_upper_kw + EPSILON
+    ):
+        action = "increase_grid_forming_discharge"
+        remaining_kw = predicted_diesel_kw - diesel_deadband_upper_kw
+        ac_candidates: List[MutableMapping[str, Any]] = []
+        for row in balance_rows:
+            if (
+                row.get("connectionSide") != "AC"
+                or not row.get("commandable")
+                or not row.get("stateEligible")
+            ):
+                continue
+            key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+            target_kw = _number(balance_target_map.get(key))
+            if target_kw is None:
+                continue
+            _signed_min_kw, signed_max_kw = _grid_storage_signed_power_bounds_kw(row)
+            ac_candidates.append(
+                {
+                    "row": row,
+                    "key": key,
+                    "marginKw": max(0.0, signed_max_kw - target_kw),
+                }
+            )
+        allocations = _allocate_by_margin(ac_candidates, remaining_kw, "marginKw")
+        for candidate, allocation_kw in zip(ac_candidates, allocations):
+            key = candidate["key"]
+            balance_target_map[key] = _finite_number(balance_target_map.get(key)) + allocation_kw
+        remaining_kw = max(0.0, remaining_kw - sum(allocations))
+
+        dc_group_ids = sorted(
+            {
+                str(row.get("dcTransferGroupId", ""))
+                for row in balance_rows
+                if row.get("connectionSide") == "DC"
+                and row.get("commandable")
+                and row.get("stateEligible")
+                and str(row.get("dcTransferGroupId", ""))
+            },
+            key=_natural_topology_identity,
+        )
+        for group_id in dc_group_ids:
+            if remaining_kw <= EPSILON:
+                break
+            balance_candidates = []
+            for row in balance_rows:
+                if (
+                    row.get("connectionSide") != "DC"
+                    or row.get("dcTransferGroupId") != group_id
+                    or not row.get("commandable")
+                    or not row.get("stateEligible")
+                ):
+                    continue
+                key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+                target_kw = _number(balance_target_map.get(key))
+                if target_kw is None:
+                    continue
+                _signed_min_kw, signed_max_kw = _grid_storage_signed_power_bounds_kw(row)
+                balance_candidates.append(
+                    {
+                        "row": row,
+                        "key": key,
+                        "marginKw": max(0.0, signed_max_kw - target_kw),
+                    }
+                )
+            converter_margin_kw = sum(
+                _finite_number(state.get("exportMarginKw"))
+                for state in converter_states
+                if state.get("groupId") == group_id
+            )
+            group_request_kw = min(
+                remaining_kw,
+                converter_margin_kw,
+                sum(_finite_number(item.get("marginKw")) for item in balance_candidates),
+            )
+            exported_kw = _apply_converter_group_adjustment(
+                converter_states,
+                group_id,
+                group_request_kw,
+                increase_export=True,
+            )
+            balance_allocations = _allocate_by_margin(
+                balance_candidates,
+                exported_kw,
+                "marginKw",
+            )
+            for candidate, allocation_kw in zip(balance_candidates, balance_allocations):
+                key = candidate["key"]
+                balance_target_map[key] = _finite_number(balance_target_map.get(key)) + allocation_kw
+            remaining_kw = max(0.0, remaining_kw - sum(balance_allocations))
+
+    predicted_after_forming_kw = diesel_current_kw - ac_effect_kw()
+    helpful_diesel_raise_kw = sum(
+        max(
+            0.0,
+            current_kw
+            - _finite_number(renewable_target_map.get(key), current_kw),
+        )
+        for row in renewable_rows
+        if row.get("connectionSide") == "AC"
+        and (current_kw := _number(row.get("planningCurrentKw", row.get("currentKw"))))
+        is not None
+        and (key := (str(row.get("dev_type", "")), str(row.get("dev_name", ""))))
+    )
+    helpful_diesel_raise_kw += sum(
+        max(
+            0.0,
+            current_kw
+            - _finite_number(
+                (
+                    grid_target_map
+                    if row.get("role") == "grid_following"
+                    else balance_target_map
+                ).get(key),
+                current_kw,
+            ),
+        )
+        for row in storage_rows
+        if row.get("connectionSide") == "AC"
+        and (current_kw := _number(row.get("currentKw"))) is not None
+        and (key := (str(row.get("dev_type", "")), str(row.get("dev_name", ""))))
+        and (
+            row.get("role") == "grid_following"
+            or key in direct_balance_keys
+        )
+    )
+    helpful_diesel_raise_kw += sum(
+        max(
+            0.0,
+            _finite_number(state.get("targetKw"))
+            - _finite_number(state.get("currentKw")),
+        )
+        for state in converter_states
+    )
+    validation_floor_kw = (
+        diesel_min_kw
+        if diesel_current_kw >= diesel_min_kw - EPSILON
+        else min(diesel_min_kw, diesel_current_kw + helpful_diesel_raise_kw)
+    )
+    if enabled and predicted_after_forming_kw < validation_floor_kw - EPSILON:
+        action = "restore_diesel_floor"
+        remaining_kw = validation_floor_kw - predicted_after_forming_kw
+        converter_candidates = []
+        for state in converter_states:
+            current_kw = _finite_number(state.get("currentKw"))
+            target_kw = _finite_number(state.get("targetKw"))
+            rollback_margin_kw = max(0.0, current_kw - target_kw)
+            converter_candidates.append(
+                {"state": state, "marginKw": rollback_margin_kw}
+            )
+        converter_allocations = _allocate_by_margin(
+            converter_candidates,
+            remaining_kw,
+            "marginKw",
+        )
+        for candidate, allocation_kw in zip(
+            converter_candidates,
+            converter_allocations,
+        ):
+            state = candidate["state"]
+            state["targetKw"] = min(
+                0.0,
+                _finite_number(state.get("targetKw")) + allocation_kw,
+            )
+        remaining_kw = max(0.0, remaining_kw - sum(converter_allocations))
+        recalculate_dc_balance_targets()
+
+        rollback_candidates: List[MutableMapping[str, Any]] = []
+        for row in renewable_rows:
+            if row.get("connectionSide") != "AC":
+                continue
+            key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+            current_kw = _number(row.get("planningCurrentKw", row.get("currentKw")))
+            target_kw = _number(renewable_target_map.get(key))
+            if current_kw is None or target_kw is None:
+                continue
+            rollback_candidates.append(
+                {
+                    "kind": "renewable",
+                    "key": key,
+                    "marginKw": max(0.0, target_kw - current_kw),
+                }
+            )
+        for row in storage_rows:
+            if row.get("connectionSide") != "AC":
+                continue
+            key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+            if key in protective_grid_storage_keys:
+                continue
+            current_kw = _number(row.get("currentKw"))
+            targets = (
+                grid_target_map
+                if row.get("role") == "grid_following"
+                else balance_target_map
+            )
+            if row.get("role") == "balance" and key not in direct_balance_keys:
+                continue
+            target_kw = _number(targets.get(key))
+            if current_kw is None or target_kw is None:
+                continue
+            rollback_candidates.append(
+                {
+                    "kind": str(row.get("role", "")),
+                    "key": key,
+                    "marginKw": max(0.0, target_kw - current_kw),
+                }
+            )
+        rollback_allocations = _allocate_by_margin(
+            rollback_candidates,
+            remaining_kw,
+            "marginKw",
+        )
+        for candidate, allocation_kw in zip(
+            rollback_candidates,
+            rollback_allocations,
+        ):
+            key = candidate["key"]
+            if candidate["kind"] == "renewable":
+                renewable_target_map[key] = _finite_number(
+                    renewable_target_map.get(key)
+                ) - allocation_kw
+            elif candidate["kind"] == "grid_following":
+                grid_target_map[key] = _finite_number(
+                    grid_target_map.get(key)
+                ) - allocation_kw
+            else:
+                balance_target_map[key] = _finite_number(
+                    balance_target_map.get(key)
+                ) - allocation_kw
+
+        recalculate_dc_balance_targets()
+
+    converter_target_map.update(
+        {
+            state["key"]: min(0.0, _finite_number(state.get("targetKw")))
+            for state in converter_states
+        }
+    )
+    final_effect_kw = ac_effect_kw()
+    final_predicted_diesel_kw = diesel_current_kw - final_effect_kw
+    balance_states = {}
+    for row in balance_rows:
+        key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        current_kw = _number(row.get("currentKw"))
+        target_kw = _number(balance_target_map.get(key), current_kw)
+        signed_min_kw, signed_max_kw = (
+            _grid_storage_signed_power_bounds_kw(row)
+            if row.get("stateEligible")
+            else (current_kw or 0.0, current_kw or 0.0)
+        )
+        balance_states[key] = {
+            "row": row,
+            "currentKw": current_kw,
+            "targetKw": target_kw,
+            "signedMinTargetKw": signed_min_kw,
+            "signedMaxTargetKw": signed_max_kw,
+            "directDispatchEligible": bool(
+                enabled
+                and row.get("commandable")
+                and row.get("stateEligible")
+                and row.get("set_type") == "p_set"
+            ),
+        }
+
+    group_residuals = []
+    group_ids = sorted(
+        {
+            str(row.get("dcTransferGroupId", ""))
+            for row in (*renewable_rows, *storage_rows)
+            if row.get("connectionSide") == "DC"
+            and str(row.get("dcTransferGroupId", ""))
+        },
+        key=_natural_topology_identity,
+    )
+    for group_id in group_ids:
+        renewable_delta_kw = sum(
+            _finite_number(renewable_target_map.get(key), current_kw) - current_kw
+            for row in renewable_rows
+            if row.get("connectionSide") == "DC"
+            and row.get("dcTransferGroupId") == group_id
+            and (current_kw := _number(row.get("planningCurrentKw", row.get("currentKw"))))
+            is not None
+            and (
+                key := (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+            )
+        )
+        storage_delta_kw = sum(
+            _finite_number(
+                (
+                    grid_target_map
+                    if row.get("role") == "grid_following"
+                    else balance_target_map
+                ).get(key),
+                current_kw,
+            )
+            - current_kw
+            for row in storage_rows
+            if row.get("connectionSide") == "DC"
+            and row.get("dcTransferGroupId") == group_id
+            and row.get("role") in {"grid_following", "balance"}
+            and (current_kw := _number(row.get("currentKw"))) is not None
+            and (
+                key := (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+            )
+        )
+        export_delta_kw = sum(
+            _acdc_export_delta_kw(
+                state.get("currentKw"),
+                state.get("targetKw"),
+            )
+            for state in converter_states
+            if state.get("groupId") == group_id
+        )
+        group_residuals.append(
+            {
+                "dcTransferGroupId": group_id,
+                "renewableDeltaKw": renewable_delta_kw,
+                "storageDeltaKw": storage_delta_kw,
+                "acdcExportDeltaKw": export_delta_kw,
+                "residualKw": renewable_delta_kw + storage_delta_kw - export_delta_kw,
+            }
+        )
+
+    return {
+        "action": action,
+        "renewableTargets": renewable_target_map,
+        "gridStorageTargets": grid_target_map,
+        "balanceTargets": balance_target_map,
+        "balanceStates": balance_states,
+        "converterTargets": converter_target_map,
+        "dieselEffectKw": final_effect_kw,
+        "dieselTargetKw": final_predicted_diesel_kw,
+        "dcGroups": group_residuals,
+    }
+
+
+def _storage_target_is_hard_protection(
+    row: Mapping[str, Any],
+    target_kw: Any,
+) -> bool:
+    current_kw = _number(row.get("currentKw"))
+    parsed_target_kw = _number(target_kw)
+    if (
+        current_kw is None
+        or parsed_target_kw is None
+        or not row.get("limitsValid")
+        or not row.get("socKnown")
+    ):
+        return False
+    signed_min_kw, signed_max_kw = _grid_storage_signed_power_bounds_kw(row)
+    return bool(
+        current_kw < signed_min_kw - EPSILON
+        and parsed_target_kw > current_kw + EPSILON
+        or current_kw > signed_max_kw + EPSILON
+        and parsed_target_kw < current_kw - EPSILON
+    )
+
+
+def _clamp_direct_balance_targets_to_soc_bounds(
+    storage_rows: Sequence[Mapping[str, Any]],
+    balance_targets: Mapping[Tuple[str, str], Any],
+) -> Dict[Tuple[str, str], Any]:
+    """Keep directly controllable balance storage commands inside SOC limits.
+
+    Indirect grid-forming projections may remain outside the instantaneous
+    bound while the surrounding DC group is being rebalanced. That is useful
+    feedback, but it is not safe to send as a direct p_set command. Direct
+    balance storage therefore gets a final local SOC/power projection before
+    AC-component and DC-group validation continue.
+    """
+    final_targets = dict(balance_targets)
+    for row in storage_rows:
+        if (
+            row.get("role") != "balance"
+            or row.get("set_type") != "p_set"
+            or not row.get("commandable")
+            or not row.get("stateEligible")
+            or not row.get("limitsValid")
+            or not row.get("socKnown")
+        ):
+            continue
+        key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        current_kw = _number(row.get("currentKw"))
+        target_kw = _number(final_targets.get(key), current_kw)
+        if current_kw is None or target_kw is None:
+            continue
+        signed_min_kw, signed_max_kw = _grid_storage_signed_power_bounds_kw(row)
+        final_targets[key] = _clamp(target_kw, signed_min_kw, signed_max_kw)
+    return final_targets
+
+
+def _validate_dispatch_by_ac_component(
+    topology: ResourceTopology,
+    diesel_rows: Sequence[Mapping[str, Any]],
+    renewable_rows: Sequence[Mapping[str, Any]],
+    storage_rows: Sequence[Mapping[str, Any]],
+    converter_rows: Sequence[Mapping[str, Any]],
+    renewable_targets: Mapping[Tuple[str, str], Any],
+    grid_storage_targets: Mapping[Tuple[str, str], Any],
+    balance_targets: Mapping[Tuple[str, str], Any],
+    converter_targets: Mapping[Tuple[str, str], Any],
+    settings: RenewableControlSettings,
+    *,
+    dc_load_kw: Optional[Mapping[str, float]] = None,
+) -> Dict[str, Any]:
+    final_renewable_targets = dict(renewable_targets)
+    final_grid_storage_targets = dict(grid_storage_targets)
+    final_balance_targets = dict(balance_targets)
+    final_converter_targets = dict(converter_targets)
+
+    diesels_by_component: Dict[str, List[Mapping[str, Any]]] = {}
+    for row in diesel_rows:
+        component_id = str(row.get("gridComponentId", ""))
+        if (
+            not component_id
+            or not row.get("online")
+            or _number(row.get("currentKw")) is None
+        ):
+            continue
+        diesels_by_component.setdefault(component_id, []).append(row)
+
+    group_component_ids = {
+        group_id: str(group.ac_component_ids[0])
+        for group_id, group in topology.dc_transfer_groups.items()
+        if len(group.ac_component_ids) == 1
+    }
+
+    def row_key(row: Mapping[str, Any]) -> Tuple[str, str]:
+        return str(row.get("dev_type", "")), str(row.get("dev_name", ""))
+
+    def storage_target(row: Mapping[str, Any]) -> Optional[float]:
+        key = row_key(row)
+        targets = (
+            final_grid_storage_targets
+            if row.get("role") == "grid_following"
+            else final_balance_targets
+        )
+        return _number(targets.get(key), row.get("currentKw"))
+
+    # A diesel correction belongs only to its own AC electrical component.
+    # When a DC transfer group reaches an AC component with no online diesel,
+    # discard ordinary discharge/export candidates inherited from another
+    # component. Keep SOC hard-protection moves and positive-ACDC correction.
+    for group_id, component_id in sorted(
+        group_component_ids.items(),
+        key=lambda item: _natural_topology_identity(item[0]),
+    ):
+        if component_id in diesels_by_component:
+            continue
+        hard_storage_delta_kw = 0.0
+        for row in storage_rows:
+            if (
+                row.get("connectionSide") != "DC"
+                or str(row.get("dcTransferGroupId", "")) != group_id
+                or row.get("role") not in {"grid_following", "balance"}
+            ):
+                continue
+            key = row_key(row)
+            current_kw = _number(row.get("currentKw"))
+            target_kw = storage_target(row)
+            if current_kw is None or target_kw is None:
+                continue
+            if _storage_target_is_hard_protection(row, target_kw):
+                hard_storage_delta_kw += target_kw - current_kw
+                continue
+            if target_kw > current_kw + EPSILON:
+                targets = (
+                    final_grid_storage_targets
+                    if row.get("role") == "grid_following"
+                    else final_balance_targets
+                )
+                targets[key] = current_kw
+
+        group_converters = [
+            row
+            for row in converter_rows
+            if str(row.get("dcTransferGroupId", "")) == group_id
+            and _number(row.get("currentKw")) is not None
+        ]
+        if not group_converters:
+            continue
+        current_total_kw = sum(
+            _finite_number(row.get("currentKw")) for row in group_converters
+        )
+        converter_limit_kw = _parallel_converter_limit(group_converters)
+        target_total_kw = min(0.0, current_total_kw - hard_storage_delta_kw)
+        if math.isfinite(converter_limit_kw):
+            target_total_kw = max(-converter_limit_kw, target_total_kw)
+        allocations = _allocate_converters(group_converters, -target_total_kw)
+        for row, allocation_kw in zip(group_converters, allocations):
+            final_converter_targets[row_key(row)] = -allocation_kw
+
+    def component_effect_kw(component_id: str) -> float:
+        effect_kw = 0.0
+        for row in renewable_rows:
+            if (
+                row.get("connectionSide") != "AC"
+                or str(row.get("gridComponentId", "")) != component_id
+            ):
+                continue
+            current_kw = _number(row.get("planningCurrentKw", row.get("currentKw")))
+            target_kw = _number(final_renewable_targets.get(row_key(row)))
+            if current_kw is not None and target_kw is not None:
+                effect_kw += target_kw - current_kw
+        for row in storage_rows:
+            if (
+                row.get("connectionSide") != "AC"
+                or str(row.get("gridComponentId", "")) != component_id
+                or row.get("role") not in {"grid_following", "balance"}
+            ):
+                continue
+            current_kw = _number(row.get("currentKw"))
+            target_kw = storage_target(row)
+            if current_kw is not None and target_kw is not None:
+                effect_kw += target_kw - current_kw
+        for row in converter_rows:
+            group_id = str(row.get("dcTransferGroupId", ""))
+            if group_component_ids.get(group_id) != component_id:
+                continue
+            current_kw = _number(row.get("currentKw"))
+            target_kw = _number(final_converter_targets.get(row_key(row)))
+            if current_kw is not None and target_kw is not None:
+                effect_kw += current_kw - target_kw
+        return effect_kw
+
+    def rollback_dc_group_source(group_id: str, request_kw: float) -> float:
+        sink_candidates: List[MutableMapping[str, Any]] = []
+        for row in storage_rows:
+            if (
+                row.get("connectionSide") != "DC"
+                or str(row.get("dcTransferGroupId", "")) != group_id
+                or row.get("role") not in {"grid_following", "balance"}
+            ):
+                continue
+            current_kw = _number(row.get("currentKw"))
+            target_kw = storage_target(row)
+            if current_kw is None or target_kw is None:
+                continue
+            signed_min_kw, _signed_max_kw = _grid_storage_signed_power_bounds_kw(row)
+            if (
+                target_kw <= signed_min_kw + EPSILON
+                or _storage_target_is_hard_protection(row, target_kw)
+            ):
+                continue
+            sink_candidates.append(
+                {
+                    "kind": str(row.get("role", "")),
+                    "key": row_key(row),
+                    "marginKw": target_kw - signed_min_kw,
+                }
+            )
+        sink_allocations = _allocate_by_margin(
+            sink_candidates,
+            request_kw,
+            "marginKw",
+        )
+        for candidate, allocation_kw in zip(sink_candidates, sink_allocations):
+            key = candidate["key"]
+            targets = (
+                final_grid_storage_targets
+                if candidate["kind"] == "grid_following"
+                else final_balance_targets
+            )
+            targets[key] = _finite_number(targets.get(key)) - allocation_kw
+        absorbed_kw = sum(sink_allocations)
+        remaining_request_kw = max(0.0, request_kw - absorbed_kw)
+
+        candidates: List[MutableMapping[str, Any]] = []
+        for row in storage_rows:
+            if (
+                row.get("connectionSide") != "DC"
+                or str(row.get("dcTransferGroupId", "")) != group_id
+                or row.get("role") not in {"grid_following", "balance"}
+            ):
+                continue
+            current_kw = _number(row.get("currentKw"))
+            target_kw = storage_target(row)
+            if (
+                current_kw is None
+                or target_kw is None
+                or target_kw <= current_kw + EPSILON
+                or _storage_target_is_hard_protection(row, target_kw)
+            ):
+                continue
+            candidates.append(
+                {
+                    "kind": str(row.get("role", "")),
+                    "key": row_key(row),
+                    "marginKw": target_kw - current_kw,
+                }
+            )
+        for row in renewable_rows:
+            if (
+                row.get("connectionSide") != "DC"
+                or str(row.get("dcTransferGroupId", "")) != group_id
+            ):
+                continue
+            key = row_key(row)
+            current_kw = _number(row.get("planningCurrentKw", row.get("currentKw")))
+            target_kw = _number(final_renewable_targets.get(key))
+            if current_kw is None or target_kw is None or target_kw <= current_kw + EPSILON:
+                continue
+            candidates.append(
+                {
+                    "kind": "renewable",
+                    "key": key,
+                    "marginKw": target_kw - current_kw,
+                }
+            )
+        allocations = _allocate_by_margin(
+            candidates,
+            remaining_request_kw,
+            "marginKw",
+        )
+        for candidate, allocation_kw in zip(candidates, allocations):
+            key = candidate["key"]
+            if candidate["kind"] == "renewable":
+                final_renewable_targets[key] = _finite_number(
+                    final_renewable_targets.get(key)
+                ) - allocation_kw
+            elif candidate["kind"] == "grid_following":
+                final_grid_storage_targets[key] = _finite_number(
+                    final_grid_storage_targets.get(key)
+                ) - allocation_kw
+            else:
+                final_balance_targets[key] = _finite_number(
+                    final_balance_targets.get(key)
+                ) - allocation_kw
+        return absorbed_kw + sum(allocations)
+
+    component_rollbacks: Dict[str, float] = {}
+    for component_id in sorted(diesels_by_component, key=_natural_topology_identity):
+        component_diesels = diesels_by_component[component_id]
+        diesel_current_kw = sum(
+            _finite_number(row.get("currentKw")) for row in component_diesels
+        )
+        diesel_min_kw = sum(
+            max(0.0, _finite_number(row.get("minKw"))) for row in component_diesels
+        )
+        diesel_capacity_kw = sum(
+            max(0.0, _finite_number(row.get("capacityKw")))
+            for row in component_diesels
+        )
+        deadband_upper_kw = diesel_min_kw + settings.diesel_deadband_ratio * diesel_capacity_kw
+        allowed_effect_kw = max(0.0, diesel_current_kw - deadband_upper_kw)
+        rollback_request_kw = max(
+            0.0,
+            component_effect_kw(component_id) - allowed_effect_kw,
+        )
+        original_request_kw = rollback_request_kw
+
+        for row in sorted(converter_rows, key=_converter_row_sort_key):
+            if rollback_request_kw <= EPSILON:
+                break
+            group_id = str(row.get("dcTransferGroupId", ""))
+            if group_component_ids.get(group_id) != component_id:
+                continue
+            key = row_key(row)
+            current_kw = _number(row.get("currentKw"))
+            target_kw = _number(final_converter_targets.get(key))
+            if current_kw is None or target_kw is None:
+                continue
+            # Correcting a forbidden AC-to-DC realtime value to zero is a hard
+            # direction constraint, not a rollbackable increase in DC export.
+            if current_kw > EPSILON:
+                continue
+            export_increase_kw = max(0.0, current_kw - target_kw)
+            if export_increase_kw <= EPSILON:
+                continue
+            paired_rollback_kw = rollback_dc_group_source(
+                group_id,
+                min(rollback_request_kw, export_increase_kw),
+            )
+            if paired_rollback_kw <= EPSILON:
+                continue
+            final_converter_targets[key] = min(0.0, target_kw + paired_rollback_kw)
+            rollback_request_kw = max(0.0, rollback_request_kw - paired_rollback_kw)
+
+        ac_storage_candidates: List[MutableMapping[str, Any]] = []
+        for row in storage_rows:
+            if (
+                row.get("connectionSide") != "AC"
+                or str(row.get("gridComponentId", "")) != component_id
+                or row.get("role") not in {"grid_following", "balance"}
+            ):
+                continue
+            current_kw = _number(row.get("currentKw"))
+            target_kw = storage_target(row)
+            if (
+                current_kw is None
+                or target_kw is None
+                or target_kw <= current_kw + EPSILON
+                or _storage_target_is_hard_protection(row, target_kw)
+            ):
+                continue
+            ac_storage_candidates.append(
+                {
+                    "row": row,
+                    "key": row_key(row),
+                    "marginKw": target_kw - current_kw,
+                }
+            )
+        allocations = _allocate_by_margin(
+            ac_storage_candidates,
+            rollback_request_kw,
+            "marginKw",
+        )
+        for candidate, allocation_kw in zip(ac_storage_candidates, allocations):
+            row = candidate["row"]
+            key = candidate["key"]
+            targets = (
+                final_grid_storage_targets
+                if row.get("role") == "grid_following"
+                else final_balance_targets
+            )
+            targets[key] = _finite_number(targets.get(key)) - allocation_kw
+        rollback_request_kw = max(0.0, rollback_request_kw - sum(allocations))
+
+        ac_renewable_candidates = []
+        for row in renewable_rows:
+            if (
+                row.get("connectionSide") != "AC"
+                or str(row.get("gridComponentId", "")) != component_id
+            ):
+                continue
+            key = row_key(row)
+            current_kw = _number(row.get("planningCurrentKw", row.get("currentKw")))
+            target_kw = _number(final_renewable_targets.get(key))
+            if current_kw is None or target_kw is None or target_kw <= current_kw + EPSILON:
+                continue
+            ac_renewable_candidates.append(
+                {"key": key, "marginKw": target_kw - current_kw}
+            )
+        allocations = _allocate_by_margin(
+            ac_renewable_candidates,
+            rollback_request_kw,
+            "marginKw",
+        )
+        for candidate, allocation_kw in zip(ac_renewable_candidates, allocations):
+            key = candidate["key"]
+            final_renewable_targets[key] = _finite_number(
+                final_renewable_targets.get(key)
+            ) - allocation_kw
+        rollback_request_kw = max(0.0, rollback_request_kw - sum(allocations))
+        component_rollbacks[component_id] = max(
+            0.0,
+            original_request_kw - rollback_request_kw,
+        )
+
+    for group_id in sorted(topology.dc_transfer_groups, key=_natural_topology_identity):
+        group_renewables = [
+            row
+            for row in renewable_rows
+            if row.get("connectionSide") == "DC"
+            and str(row.get("dcTransferGroupId", "")) == group_id
+        ]
+        group_converters = [
+            row
+            for row in converter_rows
+            if str(row.get("dcTransferGroupId", "")) == group_id
+        ]
+        group_renewable_delta_kw = sum(
+            _finite_number(final_renewable_targets.get(row_key(row)))
+            - _finite_number(row.get("planningCurrentKw", row.get("currentKw")))
+            for row in renewable_rows
+            if row.get("connectionSide") == "DC"
+            and str(row.get("dcTransferGroupId", "")) == group_id
+            and _number(row.get("planningCurrentKw", row.get("currentKw")))
+            is not None
+            and _number(final_renewable_targets.get(row_key(row))) is not None
+        )
+        group_grid_storage_delta_kw = sum(
+            _finite_number(storage_target(row)) - _finite_number(row.get("currentKw"))
+            for row in storage_rows
+            if row.get("connectionSide") == "DC"
+            and str(row.get("dcTransferGroupId", "")) == group_id
+            and row.get("role") == "grid_following"
+            and _number(row.get("currentKw")) is not None
+            and storage_target(row) is not None
+        )
+        group_balance_delta_kw = sum(
+            _finite_number(storage_target(row)) - _finite_number(row.get("currentKw"))
+            for row in storage_rows
+            if row.get("connectionSide") == "DC"
+            and str(row.get("dcTransferGroupId", "")) == group_id
+            and row.get("role") == "balance"
+            and _number(row.get("currentKw")) is not None
+            and storage_target(row) is not None
+        )
+        group_export_delta_kw = sum(
+            _acdc_export_delta_kw(
+                row.get("currentKw"),
+                final_converter_targets.get(row_key(row)),
+            )
+            for row in converter_rows
+            if str(row.get("dcTransferGroupId", "")) == group_id
+            and _number(row.get("currentKw")) is not None
+            and _number(final_converter_targets.get(row_key(row))) is not None
+        )
+        local_sink_headroom_kw = max(
+            0.0,
+            _finite_number((dc_load_kw or {}).get(group_id))
+            - sum(
+                _finite_number(row.get("planningCurrentKw", row.get("currentKw")))
+                for row in renewable_rows
+                if row.get("connectionSide") == "DC"
+                and str(row.get("dcTransferGroupId", "")) == group_id
+            )
+            - sum(
+                _finite_number(row.get("currentKw"))
+                for row in storage_rows
+                if row.get("connectionSide") == "DC"
+                and str(row.get("dcTransferGroupId", "")) == group_id
+                and row.get("role") == "grid_following"
+            ),
+        )
+        locally_absorbed_kw = min(
+            max(0.0, group_renewable_delta_kw + group_grid_storage_delta_kw),
+            local_sink_headroom_kw,
+        )
+        residual_kw = (
+            group_renewable_delta_kw
+            + group_grid_storage_delta_kw
+            - locally_absorbed_kw
+            + group_balance_delta_kw
+            - group_export_delta_kw
+        )
+        if abs(residual_kw) <= EPSILON:
+            continue
+        candidates: List[MutableMapping[str, Any]] = []
+        for row in storage_rows:
+            if (
+                row.get("connectionSide") != "DC"
+                or str(row.get("dcTransferGroupId", "")) != group_id
+                or row.get("role") not in {"balance", "grid_following"}
+            ):
+                continue
+            current_kw = _number(row.get("currentKw"))
+            target_kw = storage_target(row)
+            if current_kw is None or target_kw is None:
+                continue
+            if _storage_target_is_hard_protection(row, target_kw):
+                # A DC balance storage already outside its SOC power bound is
+                # being moved back toward safety. Do not re-expand that
+                # target just to close a temporary group residual; let the
+                # same-group renewable or ACDC candidate absorb the residual.
+                continue
+            signed_min_kw, signed_max_kw = _grid_storage_signed_power_bounds_kw(row)
+            lower_target_kw = current_kw if current_kw < signed_min_kw - EPSILON else signed_min_kw
+            upper_target_kw = current_kw if current_kw > signed_max_kw + EPSILON else signed_max_kw
+            margin_kw = (
+                max(0.0, target_kw - lower_target_kw)
+                if residual_kw > 0.0
+                else max(0.0, upper_target_kw - target_kw)
+            )
+            if margin_kw <= EPSILON:
+                continue
+            candidates.append(
+                {
+                    "kind": str(row.get("role", "")),
+                    "key": row_key(row),
+                    "marginKw": margin_kw,
+                }
+            )
+        allocations = _allocate_by_margin(
+            candidates,
+            abs(residual_kw),
+            "marginKw",
+        )
+        for candidate, allocation_kw in zip(candidates, allocations):
+            key = candidate["key"]
+            targets = (
+                final_grid_storage_targets
+                if candidate["kind"] == "grid_following"
+                else final_balance_targets
+            )
+            targets[key] = _finite_number(targets.get(key)) + (
+                -allocation_kw if residual_kw > 0.0 else allocation_kw
+            )
+
+        remaining_residual_kw = max(0.0, abs(residual_kw) - sum(allocations))
+        if remaining_residual_kw > EPSILON:
+            renewable_candidates: List[MutableMapping[str, Any]] = []
+            for row in renewable_rows:
+                if (
+                    row.get("connectionSide") != "DC"
+                    or str(row.get("dcTransferGroupId", "")) != group_id
+                ):
+                    continue
+                key = row_key(row)
+                target_kw = _number(final_renewable_targets.get(key))
+                capacity_kw = _number(row.get("capacityKw"))
+                if target_kw is None or capacity_kw is None:
+                    continue
+                margin_kw = (
+                    max(0.0, target_kw)
+                    if residual_kw > 0.0
+                    else max(0.0, capacity_kw - target_kw)
+                )
+                if margin_kw > EPSILON:
+                    renewable_candidates.append(
+                        {"key": key, "marginKw": margin_kw}
+                    )
+            renewable_allocations = _allocate_by_margin(
+                renewable_candidates,
+                remaining_residual_kw,
+                "marginKw",
+            )
+            for candidate, allocation_kw in zip(
+                renewable_candidates,
+                renewable_allocations,
+            ):
+                key = candidate["key"]
+                target_kw = _finite_number(final_renewable_targets.get(key))
+                final_renewable_targets[key] = max(
+                    0.0,
+                    target_kw - allocation_kw
+                    if residual_kw > 0.0
+                    else target_kw + allocation_kw,
+                )
+
+            accepted_renewable_kw = sum(renewable_allocations)
+            residual_kw = (
+                residual_kw - accepted_renewable_kw
+                if residual_kw > 0.0
+                else residual_kw + accepted_renewable_kw
+            )
+
+    diesel_targets: Dict[str, float] = {}
+    component_summaries: List[Dict[str, Any]] = []
+    for component_id in sorted(diesels_by_component, key=_natural_topology_identity):
+        component_diesels = diesels_by_component[component_id]
+        diesel_current_kw = sum(
+            _finite_number(row.get("currentKw")) for row in component_diesels
+        )
+        diesel_min_kw = sum(
+            max(0.0, _finite_number(row.get("minKw"))) for row in component_diesels
+        )
+        diesel_capacity_kw = sum(
+            max(0.0, _finite_number(row.get("capacityKw")))
+            for row in component_diesels
+        )
+        effect_kw = component_effect_kw(component_id)
+        predicted_kw = diesel_current_kw - effect_kw
+        bounded_target_kw = _clamp(predicted_kw, diesel_min_kw, diesel_capacity_kw)
+        per_device_targets = {
+            str(row.get("dev_name", "")): _finite_number(row.get("currentKw"))
+            for row in component_diesels
+        }
+        if bounded_target_kw < diesel_current_kw - EPSILON:
+            candidates = [
+                {
+                    "name": str(row.get("dev_name", "")),
+                    "marginKw": max(
+                        0.0,
+                        _finite_number(row.get("currentKw"))
+                        - _finite_number(row.get("minKw")),
+                    ),
+                }
+                for row in component_diesels
+            ]
+            allocations = _allocate_by_margin(
+                candidates,
+                diesel_current_kw - bounded_target_kw,
+                "marginKw",
+            )
+            for candidate, allocation_kw in zip(candidates, allocations):
+                per_device_targets[candidate["name"]] -= allocation_kw
+        elif bounded_target_kw > diesel_current_kw + EPSILON:
+            candidates = [
+                {
+                    "name": str(row.get("dev_name", "")),
+                    "marginKw": max(
+                        0.0,
+                        _finite_number(row.get("capacityKw"))
+                        - _finite_number(row.get("currentKw")),
+                    ),
+                }
+                for row in component_diesels
+            ]
+            allocations = _allocate_by_margin(
+                candidates,
+                bounded_target_kw - diesel_current_kw,
+                "marginKw",
+            )
+            for candidate, allocation_kw in zip(candidates, allocations):
+                per_device_targets[candidate["name"]] += allocation_kw
+        diesel_targets.update(per_device_targets)
+        component_summaries.append(
+            {
+                "gridComponentId": component_id,
+                "dieselCurrentKw": diesel_current_kw,
+                "dieselMinKw": diesel_min_kw,
+                "dieselCapacityKw": diesel_capacity_kw,
+                "dieselDeadbandUpperKw": (
+                    diesel_min_kw + settings.diesel_deadband_ratio * diesel_capacity_kw
+                ),
+                "candidatePowerEffectKw": effect_kw,
+                "predictedDieselKw": predicted_kw,
+                "commandedDieselKw": bounded_target_kw,
+                "rollbackKw": _finite_number(component_rollbacks.get(component_id)),
+                "boundaryResidualKw": max(0.0, diesel_min_kw - predicted_kw),
+            }
+        )
+
+    dc_group_summaries: List[Dict[str, Any]] = []
+    for group_id in sorted(topology.dc_transfer_groups, key=_natural_topology_identity):
+        group_renewables = [
+            row
+            for row in renewable_rows
+            if row.get("connectionSide") == "DC"
+            and str(row.get("dcTransferGroupId", "")) == group_id
+        ]
+        group_storage = [
+            row
+            for row in storage_rows
+            if row.get("connectionSide") == "DC"
+            and str(row.get("dcTransferGroupId", "")) == group_id
+            and row.get("role") in {"grid_following", "balance"}
+        ]
+        group_converters = [
+            row
+            for row in converter_rows
+            if str(row.get("dcTransferGroupId", "")) == group_id
+        ]
+        renewable_current_kw = _sum_known(
+            row.get("planningCurrentKw", row.get("currentKw"))
+            for row in group_renewables
+        )
+        renewable_target_kw = _sum_known(
+            final_renewable_targets.get(
+                row_key(row),
+                row.get("planningCurrentKw", row.get("currentKw")),
+            )
+            for row in group_renewables
+        )
+        storage_current_kw = _sum_known(
+            row.get("currentKw") for row in group_storage
+        )
+        storage_target_kw = _sum_known(
+            storage_target(row) for row in group_storage
+        )
+        acdc_current_kw = _sum_known(
+            row.get("currentKw") for row in group_converters
+        )
+        acdc_target_kw = _sum_known(
+            final_converter_targets.get(row_key(row), row.get("currentKw"))
+            for row in group_converters
+        )
+        if any(
+            value is None
+            for value in (
+                renewable_current_kw,
+                renewable_target_kw,
+                storage_current_kw,
+                storage_target_kw,
+                acdc_current_kw,
+                acdc_target_kw,
+            )
+        ):
+            dc_group_summaries.append(
+                {
+                    "dcTransferGroupId": group_id,
+                    "acComponentIds": list(
+                        topology.dc_transfer_groups[group_id].ac_component_ids
+                    ),
+                    "renewableCurrentKw": renewable_current_kw,
+                    "renewableTargetKw": renewable_target_kw,
+                    "renewableDeltaKw": None,
+                    "storageCurrentKw": storage_current_kw,
+                    "storageTargetKw": storage_target_kw,
+                    "storageDeltaKw": None,
+                    "localLoadKw": _number((dc_load_kw or {}).get(group_id)),
+                    "locallyAbsorbedKw": None,
+                    "acdcCurrentKw": acdc_current_kw,
+                    "acdcTargetKw": acdc_target_kw,
+                    "acdcExportDeltaKw": None,
+                    "residualKw": None,
+                    "dataComplete": False,
+                }
+            )
+            continue
+        renewable_delta_kw = renewable_target_kw - renewable_current_kw
+        storage_delta_kw = storage_target_kw - storage_current_kw
+        grid_storage_delta_kw = sum(
+            _finite_number(storage_target(row)) - _finite_number(row.get("currentKw"))
+            for row in group_storage
+            if row.get("role") == "grid_following"
+        )
+        balance_storage_delta_kw = sum(
+            _finite_number(storage_target(row)) - _finite_number(row.get("currentKw"))
+            for row in group_storage
+            if row.get("role") == "balance"
+        )
+        acdc_export_delta_kw = _acdc_export_delta_kw(
+            acdc_current_kw,
+            acdc_target_kw,
+        )
+        local_load_value_kw = _finite_number((dc_load_kw or {}).get(group_id))
+        local_sink_headroom_kw = max(
+            0.0,
+            local_load_value_kw
+            - renewable_current_kw
+            - sum(
+                _finite_number(row.get("currentKw"))
+                for row in group_storage
+                if row.get("role") == "grid_following"
+            ),
+        )
+        locally_absorbed_kw = min(
+            max(0.0, renewable_delta_kw + grid_storage_delta_kw),
+            local_sink_headroom_kw,
+        )
+        dc_group_summaries.append(
+            {
+                "dcTransferGroupId": group_id,
+                "acComponentIds": list(
+                    topology.dc_transfer_groups[group_id].ac_component_ids
+                ),
+                "renewableCurrentKw": renewable_current_kw,
+                "renewableTargetKw": renewable_target_kw,
+                "renewableDeltaKw": renewable_delta_kw,
+                "storageCurrentKw": storage_current_kw,
+                "storageTargetKw": storage_target_kw,
+                "storageDeltaKw": storage_delta_kw,
+                "localLoadKw": local_load_value_kw,
+                "locallyAbsorbedKw": locally_absorbed_kw,
+                "acdcCurrentKw": acdc_current_kw,
+                "acdcTargetKw": acdc_target_kw,
+                "acdcExportDeltaKw": acdc_export_delta_kw,
+                "residualKw": (
+                    renewable_delta_kw
+                    + grid_storage_delta_kw
+                    - locally_absorbed_kw
+                    + balance_storage_delta_kw
+                    - acdc_export_delta_kw
+                ),
+                "dataComplete": True,
+            }
+        )
+
+    return {
+        "renewableTargets": final_renewable_targets,
+        "gridStorageTargets": final_grid_storage_targets,
+        "balanceTargets": final_balance_targets,
+        "converterTargets": {
+            key: min(0.0, _finite_number(target_kw))
+            for key, target_kw in final_converter_targets.items()
+        },
+        "dieselTargets": diesel_targets,
+        "components": component_summaries,
+        "dcGroups": dc_group_summaries,
+        "dieselEffectKw": sum(
+            _finite_number(row.get("candidatePowerEffectKw"))
+            for row in component_summaries
+        ),
+        "dieselTargetKw": sum(
+            _finite_number(row.get("predictedDieselKw"))
+            for row in component_summaries
+        ),
+    }
+
+
 def _metric_target(row: Mapping[str, Any], fallback_key: str = "currentKw") -> Optional[float]:
     for key in ("commandKw", "targetKw", "projectedTargetKw", fallback_key):
         value = _number(row.get(key))
@@ -4120,6 +6297,313 @@ def _dc_transfer_group_metrics(
     return groups, dc_renewable_to_ac_kw
 
 
+def _rebalance_dc_projection_targets(
+    topology: ResourceTopology,
+    renewable_rows: Sequence[Mapping[str, Any]],
+    storage_rows: Sequence[Mapping[str, Any]],
+    converter_rows: Sequence[Mapping[str, Any]],
+    renewable_targets: Mapping[Tuple[str, str], Any],
+    grid_storage_targets: Mapping[Tuple[str, str], Any],
+    balance_targets: Mapping[Tuple[str, str], Any],
+    converter_targets: Mapping[Tuple[str, str], Any],
+    *,
+    dc_load_kw: Optional[Mapping[str, float]] = None,
+) -> Tuple[
+    Dict[Tuple[str, str], Any],
+    Dict[Tuple[str, str], Any],
+    List[Dict[str, Any]],
+]:
+    """Close each DC group balance after AC-side rollback.
+
+    Component validation can roll back an ACDC export or a renewable target
+    after the first DC projection. Recompute the indirect balance-storage
+    projection, and restore only a same-group ACDC export change when it is
+    the remaining source of a group residual. Never borrow an actor from
+    another DC transfer group.
+    """
+    final_balance_targets = dict(balance_targets)
+    final_converter_targets = dict(converter_targets)
+    group_summaries: List[Dict[str, Any]] = []
+
+    def key_for(row: Mapping[str, Any]) -> Tuple[str, str]:
+        return str(row.get("dev_type", "")), str(row.get("dev_name", ""))
+
+    for group_id, group in sorted(
+        topology.dc_transfer_groups.items(),
+        key=lambda item: _natural_topology_identity(item[0]),
+    ):
+        group_renewables = [
+            row
+            for row in renewable_rows
+            if row.get("connectionSide") == "DC"
+            and str(row.get("dcTransferGroupId", "")) == group_id
+        ]
+        group_storage = [
+            row
+            for row in storage_rows
+            if row.get("connectionSide") == "DC"
+            and str(row.get("dcTransferGroupId", "")) == group_id
+            and row.get("role") in {"grid_following", "balance"}
+        ]
+        group_balance = [
+            row
+            for row in group_storage
+            if row.get("role") == "balance"
+            and row.get("stateEligible")
+            and _number(row.get("currentKw")) is not None
+        ]
+        group_converters = [
+            row
+            for row in converter_rows
+            if str(row.get("dcTransferGroupId", "")) == group_id
+        ]
+
+        def target_for(row: Mapping[str, Any]) -> Optional[float]:
+            key = key_for(row)
+            if row.get("role") == "grid_following":
+                return _number(
+                    grid_storage_targets.get(key), row.get("currentKw")
+                )
+            return _number(
+                final_balance_targets.get(key), row.get("currentKw")
+            )
+
+        renewable_current_values = [
+            _number(row.get("planningCurrentKw", row.get("currentKw")))
+            for row in group_renewables
+        ]
+        renewable_target_values = [
+            _number(
+                renewable_targets.get(key_for(row)),
+                row.get("planningCurrentKw", row.get("currentKw")),
+            )
+            for row in group_renewables
+        ]
+        storage_current_values = [
+            _number(row.get("currentKw")) for row in group_storage
+        ]
+        storage_target_values = [target_for(row) for row in group_storage]
+        converter_current_values = [
+            _number(row.get("currentKw")) for row in group_converters
+        ]
+        converter_target_values = [
+            _number(converter_targets.get(key_for(row)), row.get("currentKw"))
+            for row in group_converters
+        ]
+        data_complete = not any(
+            value is None
+            for values in (
+                renewable_current_values,
+                renewable_target_values,
+                storage_current_values,
+                storage_target_values,
+                converter_current_values,
+                converter_target_values,
+            )
+            for value in values
+        )
+        local_load_value_kw = _finite_number((dc_load_kw or {}).get(group_id))
+        if not data_complete:
+            group_summaries.append(
+                {
+                    "dcTransferGroupId": group_id,
+                    "acComponentIds": list(group.ac_component_ids),
+                    "renewableCurrentKw": _sum_known(renewable_current_values),
+                    "renewableTargetKw": _sum_known(renewable_target_values),
+                    "renewableDeltaKw": None,
+                    "storageCurrentKw": _sum_known(storage_current_values),
+                    "storageTargetKw": _sum_known(storage_target_values),
+                    "storageDeltaKw": None,
+                    "localLoadKw": local_load_value_kw,
+                    "locallyAbsorbedKw": None,
+                    "acdcCurrentKw": _sum_known(converter_current_values),
+                    "acdcTargetKw": _sum_known(converter_target_values),
+                    "acdcExportDeltaKw": None,
+                    "residualKw": None,
+                    "dataComplete": False,
+                }
+            )
+            continue
+
+        renewable_delta = sum(
+            target - current
+            for target, current in zip(
+                renewable_target_values,
+                renewable_current_values,
+            )
+        )
+        grid_storage_delta = sum(
+            target - current
+            for row, target, current in zip(
+                group_storage,
+                storage_target_values,
+                storage_current_values,
+            )
+            if row.get("role") == "grid_following"
+        )
+        storage_delta = sum(
+            target - current
+            for target, current in zip(
+                storage_target_values,
+                storage_current_values,
+            )
+        )
+        export_delta = sum(
+            _acdc_export_delta_kw(current, target)
+            for current, target in zip(
+                converter_current_values,
+                converter_target_values,
+            )
+        )
+        local_sink_headroom_kw = max(
+            0.0,
+            local_load_value_kw
+            - sum(
+                current for current in renewable_current_values
+            )
+            - sum(
+                current
+                for row, current in zip(group_storage, storage_current_values)
+                if row.get("role") == "grid_following"
+            ),
+        )
+        locally_absorbed_kw = min(
+            max(0.0, renewable_delta + grid_storage_delta),
+            local_sink_headroom_kw,
+        )
+        residual = (
+            renewable_delta
+            + storage_delta
+            - locally_absorbed_kw
+            - export_delta
+        )
+
+        if group_balance and abs(residual) > EPSILON:
+            remaining = abs(residual)
+            candidates: List[Tuple[Mapping[str, Any], float]] = []
+            for row in group_balance:
+                key = key_for(row)
+                current = _finite_number(row.get("currentKw"))
+                target = _finite_number(final_balance_targets.get(key), current)
+                signed_min, signed_max = _grid_storage_signed_power_bounds_kw(row)
+                margin = (
+                    max(0.0, signed_max - target)
+                    if residual < 0.0
+                    else max(0.0, target - signed_min)
+                )
+                if margin > EPSILON:
+                    candidates.append((row, margin))
+            total_margin = sum(margin for _, margin in candidates)
+            if total_margin > EPSILON:
+                accepted = min(remaining, total_margin)
+                for row, margin in candidates:
+                    allocation = accepted * margin / total_margin
+                    key = key_for(row)
+                    current = _finite_number(row.get("currentKw"))
+                    target = _finite_number(final_balance_targets.get(key), current)
+                    final_balance_targets[key] = target + (
+                        allocation if residual < 0.0 else -allocation
+                    )
+                residual = residual + accepted if residual < 0.0 else residual - accepted
+
+        # Re-read every final target after the balance-storage projection. The
+        # projection above mutates final_balance_targets, so keeping the
+        # original storage_target_values would make the reported residual
+        # inconsistent with the targets that will be published.
+        storage_target_values = [target_for(row) for row in group_storage]
+        storage_delta = sum(
+            target - current
+            for target, current in zip(storage_target_values, storage_current_values)
+        )
+        grid_storage_delta = sum(
+            target - current
+            for row, target, current in zip(
+                group_storage,
+                storage_target_values,
+                storage_current_values,
+            )
+            if row.get("role") == "grid_following"
+        )
+        locally_absorbed_kw = min(
+            max(0.0, renewable_delta + grid_storage_delta),
+            local_sink_headroom_kw,
+        )
+        residual = (
+            renewable_delta
+            + storage_delta
+            - locally_absorbed_kw
+            - export_delta
+        )
+
+        # If the same DC group still has a residual because its ACDC target
+        # was reduced by AC-side validation, restore only that ACDC change.
+        # Do not restore renewable or storage candidates here: those are the
+        # local control actions selected by the side-specific policy.
+        if abs(residual) > EPSILON:
+            for row in group_converters:
+                if abs(residual) <= EPSILON:
+                    break
+                key = key_for(row)
+                current_kw = _number(row.get("currentKw"))
+                target_kw = _number(final_converter_targets.get(key), current_kw)
+                if current_kw is None or target_kw is None:
+                    continue
+                current_export_kw = max(0.0, -current_kw)
+                target_export_kw = max(0.0, -target_kw)
+                export_delta_kw = target_export_kw - current_export_kw
+                if residual > 0.0 and export_delta_kw < -EPSILON:
+                    restore_kw = min(residual, -export_delta_kw)
+                    final_converter_targets[key] = -(
+                        target_export_kw + restore_kw
+                    )
+                    residual -= restore_kw
+                elif residual < 0.0 and export_delta_kw > EPSILON:
+                    restore_kw = min(-residual, export_delta_kw)
+                    final_converter_targets[key] = -max(
+                        0.0,
+                        target_export_kw - restore_kw,
+                    )
+                    residual += restore_kw
+
+        # The converter repair changes only the export term, but recompute all
+        # terms once more so metrics and command validation use one equation.
+        converter_target_values = [
+            _number(final_converter_targets.get(key_for(row)), row.get("currentKw"))
+            for row in group_converters
+        ]
+        export_delta = sum(
+            _acdc_export_delta_kw(current, target)
+            for current, target in zip(converter_current_values, converter_target_values)
+        )
+        residual = (
+            renewable_delta
+            + storage_delta
+            - locally_absorbed_kw
+            - export_delta
+        )
+
+        group_summaries.append(
+            {
+                "dcTransferGroupId": group_id,
+                "acComponentIds": list(group.ac_component_ids),
+                "renewableCurrentKw": sum(renewable_current_values),
+                "renewableTargetKw": sum(renewable_target_values),
+                "renewableDeltaKw": renewable_delta,
+                "storageCurrentKw": sum(storage_current_values),
+                "storageTargetKw": sum(storage_target_values),
+                "storageDeltaKw": storage_delta,
+                "localLoadKw": local_load_value_kw,
+                "locallyAbsorbedKw": locally_absorbed_kw,
+                "acdcCurrentKw": sum(converter_current_values),
+                "acdcTargetKw": sum(converter_target_values),
+                "acdcExportDeltaKw": export_delta,
+                "residualKw": residual,
+                "dataComplete": True,
+            }
+        )
+    return final_balance_targets, final_converter_targets, group_summaries
+
+
 def _task8_decision_detail(
     command_rows: Sequence[Mapping[str, Any]],
     metrics: Mapping[str, Any],
@@ -4190,6 +6674,37 @@ def _task8_decision_detail(
         f"phase=direct-storage allocation {device_text(row)}"
         for row in rows
         if row.get("role") == "grid_following"
+    )
+    detail.extend(
+        "phase=ac-component validation "
+        f"component={row.get('gridComponentId', '')} "
+        f"dieselCurrentKw={row.get('dieselCurrentKw')} "
+        f"dieselMinKw={row.get('dieselMinKw')} "
+        f"candidateEffectKw={row.get('candidatePowerEffectKw')} "
+        f"predictedDieselKw={row.get('predictedDieselKw')} "
+        f"commandedDieselKw={row.get('commandedDieselKw')} "
+        f"rollbackKw={row.get('rollbackKw')} "
+        f"residualKw={row.get('boundaryResidualKw')}"
+        for row in metrics.get("acComponentDispatch", [])
+        if isinstance(row, Mapping)
+    )
+    detail.extend(
+        "phase=direct-grid-forming group "
+        f"group={row.get('dcTransferGroupId', '')} "
+        f"renewableDeltaKw={row.get('renewableDeltaKw')} "
+        f"storageDeltaKw={row.get('storageDeltaKw')} "
+        f"acdcExportDeltaKw={row.get('acdcExportDeltaKw')} "
+        f"residualKw={row.get('residualKw')}"
+        for row in metrics.get("directGridFormingDcGroups", [])
+        if isinstance(row, Mapping)
+    )
+    detail.extend(
+        "phase=direct-dispatch blocked "
+        f"device={row.get('dev_name', '')} type={row.get('dev_type', '')} "
+        f"side={row.get('side', '')} group={row.get('dcTransferGroupId', '')} "
+        f"reason={row.get('reason', '')}"
+        for row in metrics.get("directDispatchBlocks", [])
+        if isinstance(row, Mapping)
     )
     for row in rows:
         if row.get("technology") not in {"wind", "pv"}:
@@ -4271,6 +6786,11 @@ def calculate_renewable_control_plan(
         quality,
         identity_diagnostics,
     )
+    resource_keys = {
+        (spec.dev_type, spec.dev_name)
+        for spec in (*renewable_specs, *storage_specs)
+    }
+    diesel_rows = _diesel_rows(snapshot, measurements, resource_keys, quality)
     resource_topology = resolve_resource_topology(snapshot, resource_refs)
     converter_group_ids = {
         converter_key: group_id
@@ -4284,11 +6804,11 @@ def calculate_renewable_control_plan(
         resource_topology.resources,
         quality,
     )
-    resource_keys = {
-        (spec.dev_type, spec.dev_name)
-        for spec in (*renewable_specs, *storage_specs)
-    }
-    diesel_rows = _diesel_rows(snapshot, measurements, resource_keys)
+    _annotate_diesel_topology(
+        diesel_rows,
+        resource_topology.resources,
+        resource_topology.device_component_ids,
+    )
     storage_rows = _storage_rows(
         snapshot,
         measurements,
@@ -4307,6 +6827,13 @@ def calculate_renewable_control_plan(
             quality,
         ),
         key=_converter_row_sort_key,
+    )
+    fail_closed_scopes = _apply_grid_forming_fail_closed_scopes(
+        renewable_rows,
+        storage_rows,
+        converter_inventory_rows,
+        diesel_rows,
+        quality,
     )
     all_converter_rows = [
         row for row in converter_inventory_rows if row.get("commandable")
@@ -4729,18 +7256,37 @@ def calculate_renewable_control_plan(
     )
     converter_upper_target = 0.0
     if converter_rows and math.isfinite(converter_limit):
-        converter_storage_baseline = storage_current_for_control + converter_current_for_control
-        converter_storage_min = converter_storage_baseline - converter_upper_target
-        converter_storage_max = converter_storage_baseline - converter_lower_target
-        storage_min_target = max(storage_min_target, converter_storage_min)
-        storage_max_target = min(storage_max_target, converter_storage_max)
+        # ACDC is an independent AC/DC coupling actuator, not a storage
+        # inverter. Its signed target must be checked against its own
+        # capacity, while storage SOC/power bounds remain local to storage.
+        # Coupling the two aggregate targets here incorrectly assumes that
+        # every storage-watt change must be supplied by ACDC, even when the
+        # DC group can rebalance through local renewable output or load.
         if abs(converter_current_for_control) > converter_limit + 0.001:
             quality.add("交直流变流器实时有功已经超过并联容量边界", blocked=True)
-    if storage_min_target > storage_max_target + EPSILON:
-        quality.add("储能SOC功率边界与交直流变流器容量边界没有可行交集", blocked=True)
-        fallback_storage_target = _clamp(storage_current_for_control, -raw_charge, raw_discharge)
-        storage_min_target = fallback_storage_target
-        storage_max_target = fallback_storage_target
+        elif abs(converter_current_for_control) > EPSILON:
+            # Preserve the legacy incremental capacity check only when the
+            # converter is actually carrying power. A zero-power ACDC cannot
+            # establish a storage/converter pairing for this projection.
+            converter_storage_baseline = (
+                storage_current_for_control + converter_current_for_control
+            )
+            converter_storage_min = converter_storage_baseline - converter_upper_target
+            converter_storage_max = converter_storage_baseline - converter_lower_target
+            storage_min_target = max(storage_min_target, converter_storage_min)
+            storage_max_target = min(storage_max_target, converter_storage_max)
+            if storage_min_target > storage_max_target + EPSILON:
+                quality.add(
+                    "储能SOC功率边界与交直流变流器容量边界没有可行交集",
+                    blocked=True,
+                )
+                fallback_storage_target = _clamp(
+                    storage_current_for_control,
+                    -raw_charge,
+                    raw_discharge,
+                )
+                storage_min_target = fallback_storage_target
+                storage_max_target = fallback_storage_target
     total_charge = max(0.0, -storage_min_target) if converter_rows else 0.0
     total_discharge = max(0.0, storage_max_target) if converter_rows else 0.0
     renewable_balance_limit = 0.0
@@ -5448,12 +7994,12 @@ def calculate_renewable_control_plan(
             min(0.0, current_kw) if current_kw is not None else 0.0,
         )
     base_converter_effect_kw = sum(
-        current_kw
-        - _finite_number(
+        _acdc_export_delta_kw(
+            current_kw,
             base_converter_targets.get(
                 (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
                 current_kw,
-            )
+            ),
         )
         for row in all_converter_rows
         if (current_kw := _number(row.get("currentKw"))) is not None
@@ -5476,6 +8022,7 @@ def calculate_renewable_control_plan(
         **base_converter_targets,
         **direct_storage_plan["converterTargets"],
     }
+    pre_side_aware_converter_targets = dict(final_converter_targets)
     side_aware_plan: Optional[Dict[str, Any]] = None
     side_aware_ac_actor = any(
         row.get("commandable")
@@ -5494,13 +8041,6 @@ def calculate_renewable_control_plan(
     side_aware_balance_protection = any(
         row.get("stateEligible")
         and row.get("role") == "balance"
-        and not row.get("activePath")
-        and (
-            row.get("connectionSide") == "AC" and side_aware_ac_actor
-            or row.get("connectionSide") == "DC"
-            and str(row.get("dcTransferGroupId", ""))
-            in side_aware_dc_actor_groups
-        )
         and _number(row.get("currentKw")) is not None
         and (
             _finite_number(row.get("currentKw"))
@@ -5513,43 +8053,32 @@ def calculate_renewable_control_plan(
     side_aware_balance_recovery = any(
         row.get("stateEligible")
         and row.get("role") == "balance"
-        and row.get("connectionSide") == "DC"
-        and not row.get("activePath")
-        and str(row.get("dcTransferGroupId", ""))
-        in side_aware_dc_actor_groups
-        and _number(row.get("currentKw")) is not None
-        and _finite_number(row.get("currentKw"))
-        > _grid_storage_signed_power_bounds_kw(row)[0] + EPSILON
-        and any(
-            renewable.get("commandable")
-            and renewable.get("connectionSide") == "DC"
-            and renewable.get("dcTransferGroupId")
-            == row.get("dcTransferGroupId")
-            and _finite_number(renewable.get("headroomKw")) > EPSILON
-            for renewable in renewable_rows
-        )
-        for row in storage_rows
-    )
-    side_aware_ac_balance_recovery = any(
-        row.get("stateEligible")
-        and row.get("role") == "balance"
-        and row.get("connectionSide") == "AC"
-        and not row.get("activePath")
-        and _number(row.get("currentKw")) is not None
-        and _finite_number(row.get("currentKw"))
-        > _grid_storage_signed_power_bounds_kw(row)[0] + EPSILON
-        and any(
-            renewable.get("commandable")
-            and renewable.get("connectionSide") == "AC"
-            and _finite_number(renewable.get("headroomKw")) > EPSILON
-            for renewable in renewable_rows
+        and (
+            row.get("connectionSide") == "AC"
+            and side_aware_ac_actor
+            and any(
+                renewable.get("commandable")
+                and renewable.get("connectionSide") == "AC"
+                and _finite_number(renewable.get("headroomKw")) > EPSILON
+                for renewable in renewable_rows
+            )
+            or row.get("connectionSide") == "DC"
+            and str(row.get("dcTransferGroupId", ""))
+            in side_aware_dc_actor_groups
+            and any(
+                renewable.get("commandable")
+                and renewable.get("connectionSide") == "DC"
+                and renewable.get("dcTransferGroupId")
+                == row.get("dcTransferGroupId")
+                and _finite_number(renewable.get("headroomKw")) > EPSILON
+                for renewable in renewable_rows
+            )
         )
         for row in storage_rows
     )
     if online_diesel and not renewable_storage_island and (
         side_aware_balance_protection
         or side_aware_balance_recovery
-        or side_aware_ac_balance_recovery
         or not any(
             row.get("stateEligible") and row.get("role") == "balance"
             for row in storage_rows
@@ -5565,8 +8094,11 @@ def calculate_renewable_control_plan(
             all_converter_rows,
             direct_storage_targets,
             final_converter_targets,
+            renewable_target_by_device,
+            renewable_control_action == "hold_unknown_soc",
             diesel_current_kw=diesel_current_for_control,
             diesel_min_kw=diesel_min,
+            diesel_deadband_upper_kw=diesel_deadband_upper_kw,
         )
         renewable_target_by_device = side_aware_plan["renewableTargets"]
         renewable_target = sum(
@@ -5576,6 +8108,181 @@ def calculate_renewable_control_plan(
         direct_storage_targets = side_aware_plan["storageTargets"]
         direct_storage_states = side_aware_plan["storageStates"]
         final_converter_targets = side_aware_plan["converterTargets"]
+        balance_rows_by_dc_group: Dict[str, List[Mapping[str, Any]]] = {}
+        for balance_row in storage_rows:
+            if (
+                balance_row.get("role") != "balance"
+                or balance_row.get("connectionSide") != "DC"
+            ):
+                continue
+            group_id = str(balance_row.get("dcTransferGroupId", ""))
+            if group_id:
+                balance_rows_by_dc_group.setdefault(group_id, []).append(balance_row)
+        for converter_row in all_converter_rows:
+            key = (
+                str(converter_row.get("dev_type", "")),
+                str(converter_row.get("dev_name", "")),
+            )
+            initial_target_kw = _number(pre_side_aware_converter_targets.get(key))
+            side_target_kw = _number(final_converter_targets.get(key))
+            if initial_target_kw is None or side_target_kw is None:
+                continue
+            group_rows = balance_rows_by_dc_group.get(
+                str(converter_row.get("dcTransferGroupId", "")),
+                [],
+            )
+            reduce_export_required = any(
+                _number(row.get("currentKw")) is not None
+                and _finite_number(row.get("currentKw"))
+                > _grid_storage_signed_power_bounds_kw(row)[1] + EPSILON
+                for row in group_rows
+            )
+            increase_export_required = any(
+                _number(row.get("currentKw")) is not None
+                and _finite_number(row.get("currentKw"))
+                < _grid_storage_signed_power_bounds_kw(row)[0] - EPSILON
+                for row in group_rows
+            )
+            if reduce_export_required and not increase_export_required:
+                final_converter_targets[key] = max(
+                    initial_target_kw,
+                    side_target_kw,
+                )
+    projected_balance_targets = (
+        side_aware_plan.get("projectedBalanceTargets", {})
+        if side_aware_plan is not None
+        else {}
+    )
+    _ac_load_for_dispatch_validation, dc_load_for_dispatch_validation = (
+        _active_load_budgets(
+            snapshot,
+            measurements,
+            resource_topology.dc_transfer_groups,
+        )
+    )
+    direct_grid_forming_plan = _plan_direct_grid_forming_dispatch(
+        renewable_rows,
+        storage_rows,
+        all_converter_rows,
+        renewable_target_by_device,
+        direct_storage_targets,
+        final_converter_targets,
+        projected_balance_targets,
+        settings,
+        diesel_current_kw=diesel_current_for_control,
+        diesel_min_kw=diesel_min,
+        diesel_deadband_upper_kw=diesel_deadband_upper_kw,
+        enabled=bool(online_diesel or renewable_storage_island),
+        dc_load_kw=dc_load_for_dispatch_validation,
+    )
+    renewable_target_by_device = direct_grid_forming_plan["renewableTargets"]
+    renewable_target = sum(
+        _finite_number(value) for value in renewable_target_by_device.values()
+    )
+    renewable_delta = renewable_target - renewable_current
+    direct_storage_targets = direct_grid_forming_plan["gridStorageTargets"]
+    for key, state in direct_storage_states.items():
+        state["targetKw"] = direct_storage_targets.get(
+            key,
+            state.get("targetKw", state.get("currentKw")),
+        )
+    projected_balance_targets = direct_grid_forming_plan["balanceTargets"]
+    projected_balance_targets = _clamp_direct_balance_targets_to_soc_bounds(
+        storage_rows,
+        projected_balance_targets,
+    )
+    direct_grid_forming_states = direct_grid_forming_plan["balanceStates"]
+    final_converter_targets = direct_grid_forming_plan["converterTargets"]
+    component_dispatch_plan = _validate_dispatch_by_ac_component(
+        resource_topology,
+        diesel_rows,
+        renewable_rows,
+        storage_rows,
+        all_converter_rows,
+        renewable_target_by_device,
+        direct_storage_targets,
+        projected_balance_targets,
+        final_converter_targets,
+        settings,
+        dc_load_kw=dc_load_for_dispatch_validation,
+    )
+    renewable_target_by_device = component_dispatch_plan["renewableTargets"]
+    direct_storage_targets = component_dispatch_plan["gridStorageTargets"]
+    projected_balance_targets = component_dispatch_plan["balanceTargets"]
+    final_converter_targets = component_dispatch_plan["converterTargets"]
+    projected_balance_targets, final_converter_targets, dc_projection_groups = (
+        _rebalance_dc_projection_targets(
+            resource_topology,
+            renewable_rows,
+            storage_rows,
+            all_converter_rows,
+            renewable_target_by_device,
+            direct_storage_targets,
+            projected_balance_targets,
+            final_converter_targets,
+            dc_load_kw=dc_load_for_dispatch_validation,
+        )
+    )
+    component_dispatch_plan["balanceTargets"] = projected_balance_targets
+    component_dispatch_plan["dcGroups"] = dc_projection_groups
+
+    # A DC-group repair may restore an ACDC target that AC-component
+    # validation had temporarily rolled back. Refresh the AC-component
+    # prediction from the targets that will actually be published; otherwise
+    # diesel metrics and diesel commands can describe the pre-repair target.
+    original_converter_targets = component_dispatch_plan.get(
+        "converterTargets", {}
+    )
+    converter_target_changed = any(
+        abs(
+            _finite_number(final_converter_targets.get(key))
+            - _finite_number(original_converter_targets.get(key))
+        )
+        > EPSILON
+        for key in set(final_converter_targets) | set(original_converter_targets)
+    )
+    if converter_target_changed:
+        refreshed_component_dispatch = _validate_dispatch_by_ac_component(
+            resource_topology,
+            diesel_rows,
+            renewable_rows,
+            storage_rows,
+            all_converter_rows,
+            renewable_target_by_device,
+            direct_storage_targets,
+            projected_balance_targets,
+            final_converter_targets,
+            settings,
+            dc_load_kw=dc_load_for_dispatch_validation,
+        )
+        component_dispatch_plan = refreshed_component_dispatch
+        renewable_target_by_device = refreshed_component_dispatch["renewableTargets"]
+        direct_storage_targets = refreshed_component_dispatch["gridStorageTargets"]
+        projected_balance_targets = refreshed_component_dispatch["balanceTargets"]
+        final_converter_targets = refreshed_component_dispatch["converterTargets"]
+        component_dispatch_plan["dcGroups"] = dc_projection_groups
+    renewable_target = sum(
+        _finite_number(value) for value in renewable_target_by_device.values()
+    )
+    renewable_delta = renewable_target - renewable_current
+    for key, state in direct_storage_states.items():
+        state["targetKw"] = direct_storage_targets.get(
+            key,
+            state.get("targetKw", state.get("currentKw")),
+        )
+    for key, state in direct_grid_forming_states.items():
+        state["targetKw"] = projected_balance_targets.get(
+            key,
+            state.get("targetKw", state.get("currentKw")),
+        )
+    direct_grid_forming_plan["dieselEffectKw"] = component_dispatch_plan[
+        "dieselEffectKw"
+    ]
+    direct_grid_forming_plan["dieselTargetKw"] = component_dispatch_plan[
+        "dieselTargetKw"
+    ]
+    direct_grid_forming_plan["balanceTargets"] = projected_balance_targets
+    direct_grid_forming_plan["dcGroups"] = component_dispatch_plan["dcGroups"]
     direct_converter_groups = {
         str(row.get("dcTransferGroupId", ""))
         for row in all_converter_rows
@@ -5658,15 +8365,14 @@ def calculate_renewable_control_plan(
             diesel_min,
             diesel_capacity,
         )
-        candidate_effect = (
-            _finite_number(side_aware_plan.get("dieselEffectKw"))
-            if side_aware_plan is not None
-            else base_converter_effect_kw
-            + direct_ac_storage_effect_kw
-            + direct_acdc_effect_kw
+        candidate_effect = _finite_number(
+            direct_grid_forming_plan.get("dieselEffectKw")
         )
         predicted_diesel = diesel_current_for_control - candidate_effect
-        diesel_target = predicted_diesel
+        diesel_target = _finite_number(
+            direct_grid_forming_plan.get("dieselTargetKw"),
+            predicted_diesel,
+        )
         diesel_residual = diesel_target
         diesel_boundary_error = diesel_target - diesel_min
         predicted_diesel_violation = _diesel_boundary_violation(diesel_target, diesel_min, diesel_capacity)
@@ -5702,9 +8408,13 @@ def calculate_renewable_control_plan(
         if diesel_headroom > 0
         else [diesel_additional / max(1, len(diesel_dispatch)) for _ in diesel_dispatch]
     )
-    diesel_by_name = {
+    fallback_diesel_by_name = {
         row["dev_name"]: row["minKw"] + diesel_additional_allocations[index]
         for index, row in enumerate(diesel_dispatch)
+    }
+    diesel_by_name = {
+        **fallback_diesel_by_name,
+        **component_dispatch_plan.get("dieselTargets", {}),
     }
 
     converter_allocations = [
@@ -5761,8 +8471,13 @@ def calculate_renewable_control_plan(
     for row in storage_rows:
         key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
         current_kw = _number(row.get("currentKw"))
-        direct_state = direct_storage_states.get(key, {})
         is_grid_following = row.get("role") == "grid_following"
+        is_grid_forming = row.get("role") == "balance"
+        direct_state = (
+            direct_storage_states.get(key, {})
+            if is_grid_following
+            else direct_grid_forming_states.get(key, {})
+        )
         dc_group_command_safe = (
             row.get("connectionSide") != "DC"
             or str(row.get("dcTransferGroupId", "")) in active_dc_transfer_group_ids
@@ -5773,21 +8488,14 @@ def calculate_renewable_control_plan(
             else None
         )
         projected_target_kw = (
-            (
-                side_aware_plan.get("projectedBalanceTargets", {}).get(
-                    key,
-                    storage_by_key.get(
-                        key,
-                        current_kw if row.get("deviceOnline") else 0.0,
-                    ),
-                )
-                if side_aware_plan is not None
-                else storage_by_key.get(
+            projected_balance_targets.get(
+                key,
+                storage_by_key.get(
                     key,
                     current_kw if row.get("deviceOnline") else 0.0,
-                )
+                ),
             )
-            if row.get("role") == "balance"
+            if is_grid_forming
             else None
         )
         direct_changed = bool(
@@ -5798,6 +8506,14 @@ def calculate_renewable_control_plan(
             and current_kw is not None
             and direct_target_kw is not None
             and abs(_finite_number(direct_target_kw) - current_kw) > EPSILON
+        )
+        grid_forming_dispatch = bool(
+            is_grid_forming
+            and row.get("commandable")
+            and dc_group_command_safe
+            and direct_state.get("directDispatchEligible")
+            and current_kw is not None
+            and projected_target_kw is not None
         )
         command_kw = (
             direct_target_kw
@@ -5819,7 +8535,7 @@ def calculate_renewable_control_plan(
                     row.get("commandable")
                     and dc_group_command_safe
                     and (
-                        not is_grid_following
+                        (not is_grid_following and not is_grid_forming)
                         or direct_state.get("directDispatchEligible")
                     )
                 ),
@@ -5831,7 +8547,11 @@ def calculate_renewable_control_plan(
                     "",
                 ),
                 "planningCurrentKw": current_kw,
-                "targetKw": direct_target_kw,
+                "targetKw": (
+                    direct_target_kw
+                    if is_grid_following
+                    else projected_target_kw
+                ),
                 "projectedTargetKw": projected_target_kw,
                 "signedMinTargetKw": direct_state.get(
                     "signedMinTargetKw",
@@ -5857,7 +8577,7 @@ def calculate_renewable_control_plan(
                 "directDispatchEligible": bool(
                     direct_state.get("directDispatchEligible")
                 ),
-                "strategyCommand": direct_changed,
+                "strategyCommand": direct_changed or grid_forming_dispatch,
                 "availableKw": (
                     max(
                         _finite_number(row.get("chargePower")),
@@ -5872,8 +8592,12 @@ def calculate_renewable_control_plan(
     command_rows.extend(
         {
             **row,
-            "commandable": False,
-            "strategyCommand": False,
+            "commandable": bool(
+                row.get("commandable") and not renewable_storage_island
+            ),
+            "strategyCommand": bool(
+                row.get("commandable") and not renewable_storage_island
+            ),
             "availableKw": row["capacityKw"],
             "commandKw": diesel_by_name.get(row["dev_name"], row["minKw"]) if row["online"] else 0.0,
         }
@@ -5984,7 +8708,52 @@ def calculate_renewable_control_plan(
         target_kw for _, target_kw in aggregate_converter_values
     )
 
-    commands = [
+    storage_charge_derating_residual_kw = sum(
+        max(
+            0.0,
+            _finite_number(row.get("signedMinTargetKw"))
+            - _finite_number(_metric_target(row), row.get("currentKw")),
+        )
+        for row in command_rows
+        if row.get("technology") == "storage"
+        and row.get("online")
+        and _metric_target(row) is not None
+    )
+
+    if renewable_control_action == "curtail_charge_safety":
+        final_safety_curtail_kw = sum(
+            max(
+                0.0,
+                _finite_number(row.get("planningCurrentKw", row.get("currentKw")))
+                - _finite_number(
+                    renewable_target_by_device.get(
+                        (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
+                        row.get("planningCurrentKw", row.get("currentKw")),
+                    )
+                ),
+            )
+            for row in online_renewable
+            if _number(row.get("planningCurrentKw", row.get("currentKw")))
+            is not None
+        )
+        renewable_charge_safety_curtail_delivered_kw = min(
+            renewable_charge_safety_curtail_required_kw,
+            final_safety_curtail_kw,
+        )
+        renewable_charge_safety_curtail_shortfall_kw = max(
+            0.0,
+            renewable_charge_safety_curtail_required_kw
+            - renewable_charge_safety_curtail_delivered_kw,
+        )
+        renewable_step_scale = (
+            renewable_charge_safety_curtail_delivered_kw
+            / renewable_curtail_capacity_step_kw
+            if renewable_curtail_capacity_step_kw > EPSILON
+            else 0.0
+        )
+        renewable_effective_step_ratio = settings.step_coefficient * renewable_step_scale
+
+    candidate_commands = [
         {
             "dev_type": row["dev_type"],
             "dev_name": row["dev_name"],
@@ -5999,6 +8768,9 @@ def calculate_renewable_control_plan(
         and isinstance(row.get("commandKw"), (int, float))
         and math.isfinite(float(row["commandKw"]))
     ]
+    commands, duplicate_commands = _deduplicate_dispatch_commands(candidate_commands)
+    if any("缺少有效实时有功" in issue for issue in quality.issues):
+        commands = []
 
     warnings: List[str] = []
     if any(row.get("technology") == "wind" for row in renewable_rows) and wind_speed is None:
@@ -6009,6 +8781,8 @@ def calculate_renewable_control_plan(
         warnings.append(
             f"储能充电保护仍缺少 {renewable_charge_safety_curtail_shortfall_kw:.2f} kW 可调节新能源，已下发当前可实现的最大校正"
         )
+    if any(row.get("conflict") for row in duplicate_commands):
+        warnings.append("检测到同一遥调点存在多个候选值，已按最终校核结果去重")
     warnings.extend(issue for issue in quality.issues if issue not in warnings)
 
     wind_available = sum(
@@ -6072,6 +8846,17 @@ def calculate_renewable_control_plan(
         if row.get("currentKw") is not None
     )
     task8_side_metrics = _task8_side_metrics(command_rows)
+    direct_dispatch_blocks = [
+        {
+            "dev_type": str(row.get("dev_type", "")),
+            "dev_name": str(row.get("dev_name", "")),
+            "side": str(row.get("connectionSide", "")),
+            "dcTransferGroupId": str(row.get("dcTransferGroupId", "")),
+            "reason": str(row.get("directDispatchBlockedReason", "")),
+        }
+        for row in command_rows
+        if str(row.get("directDispatchBlockedReason", "")).strip()
+    ]
     _ac_load_for_transfer_metrics, dc_load_for_transfer_metrics = _active_load_budgets(
         snapshot,
         measurements,
@@ -6138,6 +8923,15 @@ def calculate_renewable_control_plan(
         "directStorageAcEffectKw": direct_ac_storage_effect_kw,
         "directStorageAcdcEffectKw": direct_acdc_effect_kw,
         "directStorageDcGroups": copy.deepcopy(direct_storage_plan["groups"]),
+        "directGridFormingAction": str(direct_grid_forming_plan.get("action", "hold")),
+        "directGridFormingDcGroups": copy.deepcopy(
+            direct_grid_forming_plan.get("dcGroups", [])
+        ),
+        "acComponentDispatch": copy.deepcopy(
+            component_dispatch_plan.get("components", [])
+        ),
+        "duplicateDispatchCommands": copy.deepcopy(duplicate_commands),
+        "directDispatchBlocks": copy.deepcopy(direct_dispatch_blocks),
         "dcBalanceControlGroupIds": (
             sorted(
                 {
@@ -6610,6 +9404,20 @@ def calculate_renewable_control_plan(
 
 _RENEWABLE_READY_IDLE_STATUS = "请选择单次计算或启动实时控制。"
 _USER_CONTROL_BUSY_WAIT_SECONDS = 30.0
+_COMPACT_TREND_FIELDS = (
+    "sampleKey",
+    "runId",
+    "stepCount",
+    "minute",
+    "time",
+    "loadKw",
+    "dieselKw",
+    "storageKw",
+    "storageSocPercent",
+    "renewableKw",
+    "acdcCurrentKw",
+    "acdcTargetKw",
+)
 
 
 class TraineeRenewableControlLifecycleError(RuntimeError):
@@ -7437,7 +10245,9 @@ class TraineeRenewableControlManager:
         state: _ControllerState,
         *,
         raise_on_retired: bool,
+        serialization_options: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
+        response_options = dict(serialization_options or {})
         blocked = self._reject_without_receive_for_service(
             service,
             state,
@@ -7449,7 +10259,7 @@ class TraineeRenewableControlManager:
             return blocked
         receive_signature = self._receive_state_signature_for_service(service)
         if not state.run_lock.acquire(blocking=False):
-            return self._serialize_for_service(service, state)
+            return self._serialize_for_service(service, state, **response_options)
         try:
             with state.lock:
                 service_lock = getattr(service, "lock", None)
@@ -7533,7 +10343,7 @@ class TraineeRenewableControlManager:
                 )
         finally:
             state.run_lock.release()
-        return self._serialize_for_service(service, state)
+        return self._serialize_for_service(service, state, **response_options)
 
     def run_once(
         self,
@@ -7976,8 +10786,54 @@ class TraineeRenewableControlManager:
         self,
         state: _ControllerState,
         prerequisite: Mapping[str, Any],
+        *,
+        compact: bool = False,
+        after_log_seq: int = 0,
+        after_trend_sample_key: str = "",
     ) -> Dict[str, Any]:
         with state.lock:
+            requested_log_seq = max(0, int(after_log_seq or 0))
+            logs_reset = requested_log_seq <= 0 or requested_log_seq > state.log_seq
+            logs = (
+                state.logs
+                if logs_reset
+                else [
+                    entry
+                    for entry in state.logs
+                    if int(_number(entry.get("seq"), 0.0) or 0) > requested_log_seq
+                ]
+            )
+
+            requested_sample_key = str(after_trend_sample_key or "")
+            trend_reset = not requested_sample_key
+            trend = state.trend
+            if requested_sample_key:
+                matching_index = next(
+                    (
+                        index
+                        for index in range(len(state.trend) - 1, -1, -1)
+                        if str(state.trend[index].get("sampleKey", "")) == requested_sample_key
+                    ),
+                    None,
+                )
+                if matching_index is None:
+                    trend_reset = True
+                else:
+                    trend_reset = False
+                    # Include the cursor point so the browser can replace a sample
+                    # that was recomputed within the same simulation instant.
+                    trend = state.trend[matching_index:]
+            if compact:
+                serialized_trend = [
+                    {
+                        key: _json_safe_copy(point.get(key))
+                        for key in _COMPACT_TREND_FIELDS
+                        if key in point
+                    }
+                    for point in trend
+                ]
+            else:
+                serialized_trend = copy.deepcopy(trend)
             return {
                 "modelId": state.model_id,
                 "enabled": state.enabled,
@@ -7991,8 +10847,12 @@ class TraineeRenewableControlManager:
                 "lastDispatchedClockKey": state.last_dispatched_clock_key,
                 "lastDispatchedGenerationKey": copy.deepcopy(list(state.last_dispatched_generation_key)),
                 "revision": state.revision,
-                "logs": copy.deepcopy(state.logs),
-                "trend": copy.deepcopy(state.trend),
+                "logs": copy.deepcopy(logs),
+                "logsReset": logs_reset,
+                "latestLogSeq": state.log_seq,
+                "trend": serialized_trend,
+                "trendReset": trend_reset,
+                "latestTrendSampleKey": str(state.trend[-1].get("sampleKey", "")) if state.trend else "",
                 **prerequisite,
             }
 
@@ -8000,11 +10860,28 @@ class TraineeRenewableControlManager:
         self,
         service: Any,
         state: _ControllerState,
+        *,
+        compact: bool = False,
+        after_log_seq: int = 0,
+        after_trend_sample_key: str = "",
     ) -> Dict[str, Any]:
         prerequisite = self._receive_prerequisite_for_service(service)
-        return self._serialize_with_prerequisite(state, prerequisite)
+        return self._serialize_with_prerequisite(
+            state,
+            prerequisite,
+            compact=compact,
+            after_log_seq=after_log_seq,
+            after_trend_sample_key=after_trend_sample_key,
+        )
 
-    def _serialize(self, state: _ControllerState) -> Dict[str, Any]:
+    def _serialize(
+        self,
+        state: _ControllerState,
+        *,
+        compact: bool = False,
+        after_log_seq: int = 0,
+        after_trend_sample_key: str = "",
+    ) -> Dict[str, Any]:
         try:
             service = self._service_for(state.model_id)
         except KeyError:
@@ -8023,15 +10900,54 @@ class TraineeRenewableControlManager:
                 "prerequisiteStatus": "模型生命周期已失效或已退休。",
                 "dispatchStatus": "模型生命周期已失效或已退休。",
             }
-            return self._serialize_with_prerequisite(state, prerequisite)
-        return self._serialize_for_service(service, state)
+            return self._serialize_with_prerequisite(
+                state,
+                prerequisite,
+                compact=compact,
+                after_log_seq=after_log_seq,
+                after_trend_sample_key=after_trend_sample_key,
+            )
+        return self._serialize_for_service(
+            service,
+            state,
+            compact=compact,
+            after_log_seq=after_log_seq,
+            after_trend_sample_key=after_trend_sample_key,
+        )
 
-    def state(self, model_id: Optional[str], *, refresh: bool = False) -> Dict[str, Any]:
+    def state(
+        self,
+        model_id: Optional[str],
+        *,
+        refresh: bool = False,
+        compact: bool = False,
+        after_log_seq: int = 0,
+        after_trend_sample_key: str = "",
+    ) -> Dict[str, Any]:
         service = self._service_for(model_id)
-        return self.state_for_service(service, refresh=refresh)
+        return self.state_for_service(
+            service,
+            refresh=refresh,
+            compact=compact,
+            after_log_seq=after_log_seq,
+            after_trend_sample_key=after_trend_sample_key,
+        )
 
-    def state_for_service(self, service: Any, *, refresh: bool = False) -> Dict[str, Any]:
+    def state_for_service(
+        self,
+        service: Any,
+        *,
+        refresh: bool = False,
+        compact: bool = False,
+        after_log_seq: int = 0,
+        after_trend_sample_key: str = "",
+    ) -> Dict[str, Any]:
         state = self._state_for_live_service(service)
+        serialization_options = {
+            "compact": compact,
+            "after_log_seq": after_log_seq,
+            "after_trend_sample_key": after_trend_sample_key,
+        }
         now = time.monotonic()
         if refresh and not state.enabled and now - state.last_preview_started >= 0.9:
             with state.lock:
@@ -8043,8 +10959,9 @@ class TraineeRenewableControlManager:
                 service,
                 state,
                 raise_on_retired=True,
+                serialization_options=serialization_options,
             )
-        return self._serialize_for_service(service, state)
+        return self._serialize_for_service(service, state, **serialization_options)
 
     def _submit_background_cycle(
         self,

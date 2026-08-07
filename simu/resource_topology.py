@@ -4,7 +4,7 @@ import hashlib
 import heapq
 import json
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Dict, Mapping, Sequence, Tuple
 
@@ -50,6 +50,12 @@ class DcTransferGroup:
 class ResourceTopology:
     resources: Mapping[DeviceKey, ResourceConnection]
     dc_transfer_groups: Mapping[str, DcTransferGroup]
+    # Component ids are derived for all terminal devices in the single graph
+    # pass.  This lets callers inspect non-dispatchable balance devices (such
+    # as diesel generators) without resolving the topology a second time.
+    device_component_ids: Mapping[DeviceKey, str] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
 
 RESOURCE_TERMINALS = {
@@ -1319,6 +1325,19 @@ def resolve_resource_topology(
         active_graph,
         components,
     )
+    device_component_ids: Dict[DeviceKey, str] = {}
+    for device_key in parsed.resource_rows:
+        resource = ResourceRef(
+            technology="",
+            dev_type=device_key[0],
+            dev_name=device_key[1],
+        )
+        terminal = _resource_terminal(resource, parsed)
+        if terminal is None:
+            continue
+        component_id = components.node_component_ids.get(terminal, "")
+        if component_id:
+            device_component_ids[device_key] = component_id
     resolved: Dict[DeviceKey, ResourceConnection] = {}
     for resource in resources:
         device_key = (resource.dev_type, resource.dev_name)
@@ -1340,4 +1359,5 @@ def resolve_resource_topology(
     return ResourceTopology(
         resources=MappingProxyType(resolved),
         dc_transfer_groups=dc_transfer_groups,
+        device_component_ids=MappingProxyType(device_component_ids),
     )

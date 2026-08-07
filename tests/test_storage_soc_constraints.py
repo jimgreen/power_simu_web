@@ -86,6 +86,8 @@ class StorageSocConstraintTest(unittest.TestCase):
                         "node": 1,
                         "control_type": "P",
                         "p_set": setpoint,
+                        "p_max": max_discharge_power,
+                        "p_min": -max_charge_power,
                         "v_set": 300,
                         "i_set": 0,
                         "run_stat": 1,
@@ -1302,6 +1304,104 @@ class StorageSocConstraintTest(unittest.TestCase):
 
         self.assertAlmostEqual(executed_power, 0.0)
         self.assertAlmostEqual(next_soc, 0.0)
+
+    def test_realtime_storage_power_bounds_follow_soc_limits(self):
+        import simu_loop
+
+        cases = (
+            (0.2, 40.0, -40.0, 0.0),
+            (0.5, 40.0, -40.0, 40.0),
+            (0.9, -40.0, 0.0, 40.0),
+        )
+        for soc, command, expected_min, expected_max in cases:
+            with self.subTest(soc=soc):
+                model_book, stat_book, dev_define = self._typed_storage_books(
+                    dev_type="DCGenerator",
+                    parameter_block="DCStorageGen",
+                    reference_field="idx_dcgenerator",
+                    setpoint=command,
+                    soc=soc,
+                    capacity=100.0,
+                    efficiency=1.0,
+                )
+                status_by_name, status_rows = simu_loop._storage_soc_by_name_book(stat_book)
+
+                simu_loop.apply_storage_constraints_book(
+                    model_book,
+                    status_by_name,
+                    status_rows,
+                    dev_define,
+                    period_seconds=0.0,
+                )
+
+                row = model_book.data["DCGenerator"].data[0]
+                self.assertAlmostEqual(float(row["p_min"]), expected_min)
+                self.assertAlmostEqual(float(row["p_max"]), expected_max)
+
+    def test_realtime_storage_power_bounds_are_added_when_model_schema_omits_them(self):
+        import simu_loop
+
+        model_book, stat_book, dev_define = self._typed_storage_books(
+            dev_type="DCGenerator",
+            parameter_block="DCStorageGen",
+            reference_field="idx_dcgenerator",
+            setpoint=40.0,
+            soc=0.2,
+            capacity=100.0,
+            efficiency=1.0,
+        )
+        generator_block = model_book.data["DCGenerator"]
+        generator_block.header_list = [
+            column for column in generator_block.header_list if column not in {"p_min", "p_max"}
+        ]
+        for generator_row in generator_block.data:
+            generator_row.pop("p_min", None)
+            generator_row.pop("p_max", None)
+        self.assertNotIn("p_min", generator_block.header_list)
+        self.assertNotIn("p_max", generator_block.header_list)
+
+        status_by_name, status_rows = simu_loop._storage_soc_by_name_book(stat_book)
+        simu_loop.apply_storage_constraints_book(
+            model_book,
+            status_by_name,
+            status_rows,
+            dev_define,
+            period_seconds=0.0,
+        )
+
+        row = generator_block.data[0]
+        self.assertIn("p_min", generator_block.header_list)
+        self.assertIn("p_max", generator_block.header_list)
+        self.assertAlmostEqual(float(row["p_min"]), -40.0)
+        self.assertAlmostEqual(float(row["p_max"]), 0.0)
+
+    def test_storage_soc_control_targets_typed_ac_storage_source(self):
+        import simu_loop
+
+        model_book, _stat_book, _dev_define = self._typed_storage_books(
+            dev_type="ACGenerator",
+            parameter_block="ACStorageGen",
+            reference_field="idx_acgenerator",
+            setpoint=0.0,
+            soc=0.5,
+            capacity=100.0,
+            efficiency=1.0,
+        )
+        ctrl_book = _memory_book(
+            simu_loop,
+            StorageSoc=[
+                {
+                    "dev_type": "ACGenerator",
+                    "idx": 1,
+                    "name": "storage-1",
+                    "p_set": 20.0,
+                }
+            ],
+        )
+
+        simu_loop.apply_yt_ctrl_book(model_book, ctrl_book)
+
+        self.assertAlmostEqual(float(model_book.data["ACGenerator"].data[0]["p_set"]), 20.0)
 
     def _integrate_storage_soc(
         self,

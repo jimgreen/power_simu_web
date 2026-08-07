@@ -364,6 +364,24 @@ def _set_row_value(row: dict, column: str, value) -> int:
     return 1
 
 
+def _ensure_power_bound_columns(model_book: EBook, dev_type: str, row: dict) -> None:
+    """Expose runtime p_min/p_max columns to the in-memory solver model.
+
+    Older model E files omit optional generator bounds entirely.  The runtime
+    SOC gate still needs to send dynamic bounds to the load-flow kernel, so
+    add the optional columns to the cloned block without touching the source
+    model file.  Non-storage rows in the same block remain unbounded because
+    their newly added cells are left empty.
+    """
+    block = model_book.data.get(dev_type)
+    if block is None:
+        return
+    for column in ("p_min", "p_max"):
+        if column not in block.header_list:
+            block.header_list.append(column)
+        row.setdefault(column, "")
+
+
 def _safe_float(value, default: Optional[float] = 0.0) -> Optional[float]:
     try:
         return float(value)
@@ -1929,9 +1947,12 @@ def apply_storage_constraints_book(
     targets = _storage_target_rows(model_book, dev_define)
     for _dev_type, row, _storage_name, define, _pos in targets:
         target = (_dev_type, row, _storage_name, define, _pos)
+        _ensure_power_bound_columns(model_book, _dev_type, row)
         status = _storage_status_for_target(target, targets, status_by_name, status_rows)
         run_stat = _safe_int((status or {}).get("run_stat", row.get("run_stat", 1)), 1)
         if run_stat != 1 or not _is_running_row(row):
+            changed += _set_row_value(row, "p_min", _format_power(0.0))
+            changed += _set_row_value(row, "p_max", _format_power(0.0))
             changed += _set_row_value(row, "p_set", "0")
             continue
         command = _safe_float(row.get("p_set", 0.0), 0.0) or 0.0
@@ -1952,10 +1973,18 @@ def apply_storage_constraints_book(
             charge_soc_margin = max(0.0, soc_max - float(soc))
             discharge_max = min(discharge_max, discharge_soc_margin * capacity * discharge_efficiency / period_hours)
             charge_max = min(charge_max, charge_soc_margin * capacity / charge_efficiency / period_hours)
+        # Keep the solver's instantaneous bounds consistent with the SOC gate.
+        # Positive storage power is discharge and negative storage power is charge.
+        if soc <= soc_min:
+            discharge_max = 0.0
+        if soc >= soc_max:
+            charge_max = 0.0
+        changed += _set_row_value(row, "p_min", _format_power(-max(0.0, charge_max)))
+        changed += _set_row_value(row, "p_max", _format_power(max(0.0, discharge_max)))
         if command > 0.0:
-            target = 0.0 if soc <= soc_min else min(command, discharge_max)
+            target = min(command, discharge_max)
         elif command < 0.0:
-            target = 0.0 if soc >= soc_max else max(command, -charge_max)
+            target = max(command, -charge_max)
         else:
             target = 0.0
         changed += _set_row_value(row, "p_set", _format_power(target))
@@ -2179,7 +2208,16 @@ def apply_yt_ctrl_book(model_book: EBook, ctrl_book: Optional[EBook]) -> int:
         for row in block.data:
             if table_name in ("StorageSoc", "StorageStatus"):
                 ess_name = str(row.get("name", ""))
-                target = _model_row(model_book, "DCGenerator", _storage_source_name(ess_name))
+                typed_dev_type = _storage_generator_type(row.get("dev_type"))
+                target = None
+                if typed_dev_type is not None:
+                    target = _model_row(model_book, typed_dev_type, ess_name)
+                    if target is None:
+                        target = _model_row(model_book, typed_dev_type, _storage_source_name(ess_name))
+                if target is None:
+                    target = _model_row(model_book, "DCGenerator", _storage_source_name(ess_name))
+                if target is None:
+                    target = _model_row(model_book, "ACGenerator", ess_name)
                 if target is not None and row.get("p_set", "") != "":
                     changed += _set_row_value(target, "p_set", row["p_set"])
             else:

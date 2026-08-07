@@ -84,7 +84,8 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
 
     def test_control_logs_are_scoped_and_show_the_decision_chain(self):
         backend = (ROOT / "simu/renewable_control.py").read_text(encoding="utf-8")
-        self.assertIn('"logs": copy.deepcopy(state.logs)', backend)
+        self.assertIn('"logs": copy.deepcopy(logs)', backend)
+        self.assertIn("entry.get(\"seq\")", backend)
         self.assertIn("self._append_log", backend)
         self.assertIn("function renewableControlLogs", self.script)
         self.assertIn("function renderRenewableControlLogs", self.script)

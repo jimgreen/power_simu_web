@@ -45,7 +45,8 @@ class TraineeRenewableTrendChartUiTest(unittest.TestCase):
     def test_history_is_generated_once_by_the_backend_and_mirrored_by_browser_pages(self):
         self.assertIn("def _update_trend", self.backend)
         self.assertIn("state.trend.append(point)", self.backend)
-        self.assertIn('"trend": copy.deepcopy(state.trend)', self.backend)
+        self.assertIn("serialized_trend = copy.deepcopy(trend)", self.backend)
+        self.assertIn('"trend": serialized_trend', self.backend)
         apply_block = self.script.split("function applyRenewableControlState", 1)[1].split(
             "async function refreshRenewableControlState",
             1,
@@ -53,6 +54,48 @@ class TraineeRenewableTrendChartUiTest(unittest.TestCase):
         self.assertIn("payload.trend", apply_block)
         self.assertIn("state.renewableTrendHistory", apply_block)
         self.assertNotIn("function appendRenewableTrend", self.script)
+
+    def test_browser_requests_compact_deltas_and_merges_the_inclusive_tail(self):
+        for helper in ("mergeRenewableTrendDelta", "mergeRenewableControlLogDelta"):
+            if f"function {helper}" not in self.script:
+                self.fail(f"{helper} is missing")
+        self.assertIn('params.set("compact", "1");', self.script)
+        self.assertIn('params.set("after_log_seq"', self.script)
+        self.assertIn('params.set("after_trend_sample_key"', self.script)
+
+        helpers = "function renewableTrendLifecycleChanged" + self.script.split(
+            "function renewableTrendLifecycleChanged",
+            1,
+        )[1].split("function applyRenewableControlState", 1)[0]
+        body = """
+const trend = mergeRenewableTrendDelta(
+  [
+    { sampleKey: "a", runId: 1, stepCount: 1, minute: 1, loadKw: 10 },
+    { sampleKey: "b", runId: 1, stepCount: 2, minute: 2, loadKw: 20 },
+  ],
+  [
+    { sampleKey: "b", runId: 1, stepCount: 2, minute: 2, loadKw: 21 },
+    { sampleKey: "c", runId: 1, stepCount: 3, minute: 3, loadKw: 30 },
+  ],
+  false,
+);
+const logs = mergeRenewableControlLogDelta(
+  [{ seq: 2, detail: "two" }, { seq: 1, detail: "one" }],
+  [{ seq: 3, detail: "three" }],
+  false,
+);
+process.stdout.write(JSON.stringify({ trend, logs }));
+"""
+        result = subprocess.run(
+            ["node", "-e", f"{helpers}\n{body}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        merged = json.loads(result.stdout)
+        self.assertEqual([point["sampleKey"] for point in merged["trend"]], ["a", "b", "c"])
+        self.assertEqual(merged["trend"][1]["loadKw"], 21)
+        self.assertEqual([item["seq"] for item in merged["logs"]], [3, 2, 1])
 
     def test_browser_discards_mirrored_trend_when_simulation_lifecycle_restarts(self):
         render_block = self.script.split("function renderSnapshot", 1)[1].split(

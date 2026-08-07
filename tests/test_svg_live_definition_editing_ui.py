@@ -410,6 +410,37 @@ process.stdout.write(JSON.stringify({
         for token in required:
             self.assertIn(token, self.script)
 
+    def test_simulator_and_trainee_render_inline_measurement_status_modes_and_fixed_value(self):
+        for script in (self.script, self.trainee_script):
+            for token in (
+                'data-diagram-measurement-definition-field="status"',
+                'data-diagram-measurement-definition-field="fixedValue"',
+                'valid: "有效"',
+                'invalid: "无效"',
+                'undefined: "无定义"',
+                'dead: "死数"',
+                'zero: "零值"',
+                'fixed: "固定值"',
+            ):
+                self.assertIn(token, script)
+            self.assertIn("data-diagram-tooltip-inline-input", script)
+
+    def test_device_and_measurement_editors_use_existing_summary_rows(self):
+        for script in (self.script, self.trainee_script):
+            device_block = script.split("function renderDiagramDeviceDefinitionValueRow", 1)[1].split(
+                "function renderDiagramDeviceDefinitionRecords", 1,
+            )[0]
+            measurement_block = script.split("function renderDiagramMeasurementDefinitionEditor", 1)[1].split(
+                "function beginDiagramMeasurementDefinitionEdit", 1,
+            )[0]
+            measurement_summary = script.split("function renderDiagramMeasurementSummary", 1)[1].split(
+                "function syncDiagramMeasurementDefinitionFields", 1,
+            )[0]
+            self.assertIn("data-diagram-definition-value", device_block)
+            self.assertIn("data-diagram-tooltip-inline-input", device_block)
+            self.assertIn("data-diagram-tooltip-inline-input", measurement_summary)
+            self.assertNotIn("diagram-definition-fields", measurement_block)
+
     def test_definition_revision_participates_in_static_cache_matching(self):
         body = r"""
 function staticMetaSignature(meta) { return JSON.stringify(meta || null); }

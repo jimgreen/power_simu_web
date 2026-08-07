@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import threading
 import unittest
@@ -76,9 +77,9 @@ class RuntimeLogApiTest(unittest.TestCase):
             method="POST",
         )
         with urlopen(request, timeout=5) as response:
-            payload = response.read().decode("utf-8")
+            payload = json.loads(response.read().decode("utf-8"))
 
-        self.assertIn('"cleared": 1', payload)
+        self.assertEqual(payload["cleared"], 1)
         self.assertEqual(service.runtime_logs, [])
 
 

@@ -148,6 +148,27 @@ class DefinitionEditingHelpersTest(unittest.TestCase):
                 {"weight": 100, "error_sigma": 0.2},
             )
 
+    def test_measurement_statuses_accept_fault_modes_and_require_fixed_value(self):
+        current = {"weight": "25", "valid": "1"}
+        for status in ("valid", "invalid", "undefined", "dead", "zero"):
+            with self.subTest(status=status):
+                normalized = normalize_measurement_changes(current, {"status": status})
+                self.assertEqual(normalized["status"], status)
+                self.assertEqual(normalized["fixed_value"], None)
+
+        fixed = normalize_measurement_changes(
+            current,
+            {"status": "fixed", "fixed_value": "12.5"},
+        )
+        self.assertEqual(fixed["status"], "fixed")
+        self.assertEqual(fixed["fixed_value"], 12.5)
+        self.assertEqual(fixed["valid"], "1")
+
+        with self.assertRaisesRegex(ValueError, "fixed_value"):
+            normalize_measurement_changes(current, {"status": "fixed"})
+        with self.assertRaisesRegex(ValueError, "status"):
+            normalize_measurement_changes(current, {"status": "not-a-status"})
+
     def test_render_ebook_aligned_preserves_block_headers_and_rows(self):
         book = EBook({})
         block = EBlock("ACBranch")

@@ -12,6 +12,7 @@ import hashlib
 import heapq
 import json
 import math
+import os
 import re
 import shutil
 import threading
@@ -48,12 +49,20 @@ except ImportError:  # pragma: no cover - legacy package compatibility.
 
 from simu.definition_editing import (
     DefinitionSnapshot,
+    MEASUREMENT_STATUS_TOKENS,
+    MEASUREMENT_STATUS_VALIDITY,
     atomic_write_text,
     normalize_device_changes,
     normalize_measurement_changes,
     require_definition_revision,
     render_ebook_aligned,
 )
+from simu.measurement_delta import (
+    compact_measurement_delta,
+    measurement_definition_signature,
+    measurement_rows_by_definition_index,
+)
+from simu.power_flow_worker import PowerFlowExecution, PowerFlowTimeoutError
 from simu.web_runtime_settings import runtime_settings_payload, updated_runtime_settings_entry
 
 
@@ -812,6 +821,13 @@ def _measurement_dict_to_row(item: Mapping[str, Any]) -> List[str]:
     return [str(item.get(key, "")) for key in MEAS_HEADER]
 
 
+def _measurement_status_from_valid(value: Any) -> str:
+    try:
+        return "valid" if int(_to_float(value, 0) or 0) == 1 else "invalid"
+    except (TypeError, ValueError):
+        return "invalid"
+
+
 class PolarMicrogridSimulator:
     """Runtime service for simulator and trainee web consoles."""
 
@@ -821,6 +837,7 @@ class PolarMicrogridSimulator:
         runtime_dir: str | Path,
         kernel: Optional[Callable[[simu_loop.SimulationConfig], Optional[simu_loop.SimulationResult]]] = None,
         *,
+        kernel_runner: Optional[Any] = None,
         period_seconds: float = 60.0,
         noise_std: Optional[float] = None,
         random_seed: Optional[int] = None,
@@ -835,6 +852,7 @@ class PolarMicrogridSimulator:
         self.model_name = model_name or self.model_id
         self.service_instance_id = uuid.uuid4().hex
         self.kernel = kernel or simu_loop.run_once
+        self.kernel_runner = kernel_runner
         self.period_seconds = float(period_seconds)
         self._initial_compute_interval_seconds = _compute_interval_seconds(compute_interval_seconds)
         self.compute_interval_seconds = self._initial_compute_interval_seconds
@@ -843,6 +861,7 @@ class PolarMicrogridSimulator:
         self.random_seed = random_seed
         self.clock = ClockState()
         self.lock = threading.RLock()
+        self._step_lock = threading.Lock()
         self._service_instance_lifecycle_lock = threading.RLock()
         self._service_instance_retired = False
         # Definition/control transactions always acquire this lock before
@@ -857,11 +876,23 @@ class PolarMicrogridSimulator:
         self._measurement_delta_seq = 0
         self._measurement_delta_state: Dict[str, Dict[str, Any]] = {}
         self._measurement_delta_history: List[Dict[str, Any]] = []
+        self._measurement_delta_step_count: Optional[int] = None
+        self._measurement_delta_definition_signature = ""
+        self._measurement_delta_definition_count = 0
+        self._measurement_delta_definition_revision = 0
         self._last_command_response_index = 0
         self.latest_result: Dict[str, Any] = {}
         self.latest_measurements: Dict[str, Any] = {}
         self.latest_model_book: Optional[EBook] = None
         self.latest_device_states: List[Dict[str, Any]] = []
+        self.latest_compute: Dict[str, Any] = {
+            "mode": "process" if kernel_runner is not None else "in_process",
+            "http_pid": os.getpid(),
+            "worker_pid": 0,
+            "compute_ms": 0.0,
+            "round_trip_ms": 0.0,
+            "status": "idle",
+        }
         self.source_model_book = EBook({})
         self.source_stat_book = EBook({})
         self.control_book = EBook({})
@@ -998,6 +1029,10 @@ class PolarMicrogridSimulator:
                 self._measurement_delta_seq = 0
                 self._measurement_delta_state = {}
                 self._measurement_delta_history = []
+                self._measurement_delta_step_count = None
+                self._measurement_delta_definition_signature = ""
+                self._measurement_delta_definition_count = 0
+                self._measurement_delta_definition_revision = 0
                 self._last_command_response_index = 0
                 self.latest_result = {}
                 self.latest_measurements = {}
@@ -1069,6 +1104,7 @@ class PolarMicrogridSimulator:
             self._definition_publish_epoch = epoch_after + 2
             self._wind_converter_names_cache = None
             self._power_flow_connection_sides_cache = None
+            self._measurement_delta_step_count = None
             return candidate
 
     def _publish_definition_snapshot(self, snapshot: DefinitionSnapshot) -> None:
@@ -1128,6 +1164,7 @@ class PolarMicrogridSimulator:
                 self._definition_publish_epoch = epoch + 2
             self._wind_converter_names_cache = None
             self._power_flow_connection_sides_cache = None
+            self._measurement_delta_step_count = None
 
     def reload_definition_state(self) -> None:
         """Load source definition E files into the live calculation state."""
@@ -1175,6 +1212,10 @@ class PolarMicrogridSimulator:
         self._measurement_delta_seq = 0
         self._measurement_delta_state = {}
         self._measurement_delta_history = []
+        self._measurement_delta_step_count = None
+        self._measurement_delta_definition_signature = ""
+        self._measurement_delta_definition_count = 0
+        self._measurement_delta_definition_revision = 0
 
     def _copy_runtime_inputs(self) -> None:
         self._cleanup_legacy_runtime_definition_files()
@@ -1220,13 +1261,24 @@ class PolarMicrogridSimulator:
         return _read_json(self.curves_file, source_curves)
 
     def _read_local_settings(self) -> Dict[str, Any]:
-        default = {"device_faults": [], "measurement_faults": [], "modes": [], "system_parameters": {}}
+        default = {
+            "device_faults": [],
+            "measurement_faults": [],
+            "measurement_statuses": {},
+            "modes": [],
+            "system_parameters": {},
+        }
         if self.settings_file.exists():
             settings = _read_json(self.settings_file, default)
         else:
             source_settings_file = self.sim_dir / "local_settings.json"
             settings = _read_json(source_settings_file, default) if source_settings_file.exists() else default
-        return dict(settings) if isinstance(settings, Mapping) else dict(default)
+        normalized = dict(settings) if isinstance(settings, Mapping) else dict(default)
+        for key, fallback in default.items():
+            normalized.setdefault(key, fallback.copy() if isinstance(fallback, dict) else list(fallback))
+        if not isinstance(normalized.get("measurement_statuses"), Mapping):
+            normalized["measurement_statuses"] = {}
+        return normalized
 
     def _read_runtime_logs(self) -> List[Dict[str, Any]]:
         items = _read_json(self.runtime_logs_file, [])
@@ -2490,12 +2542,37 @@ class PolarMicrogridSimulator:
             meas_before=list(definition_snapshot.measurement_before),
             meas_rows=[list(row) for row in definition_snapshot.measurement_rows],
             meas_after=list(definition_snapshot.measurement_after),
-            weather_book=self.weather_book,
-            dev_stat_book=self.runtime_stat_book,
-            yt_ctrl_book=self.yt_ctrl_book,
+            weather_book=simu_loop._clone_ebook(self.weather_book),
+            dev_stat_book=simu_loop._clone_ebook(self.runtime_stat_book),
+            yt_ctrl_book=simu_loop._clone_ebook(self.yt_ctrl_book),
             dev_define_book=definition_snapshot.dev_define_book,
-            mode_book=self.mode_book,
+            mode_book=simu_loop._clone_ebook(self.mode_book) if self.mode_book is not None else None,
         )
+
+    def _execute_kernel(self, config: simu_loop.SimulationConfig) -> PowerFlowExecution:
+        if self.kernel_runner is not None:
+            return self.kernel_runner.run(config)
+        started = time.perf_counter()
+        result = self.kernel(config)
+        elapsed = max(0.0, time.perf_counter() - started)
+        return PowerFlowExecution(
+            result=result,
+            runtime_stat_book=config.dev_stat_book,
+            worker_pid=os.getpid(),
+            compute_seconds=elapsed,
+            round_trip_seconds=elapsed,
+            mode="in_process",
+        )
+
+    def _record_compute_execution(self, execution: PowerFlowExecution, status: str = "ok") -> None:
+        self.latest_compute = {
+            "mode": execution.mode,
+            "http_pid": os.getpid(),
+            "worker_pid": int(execution.worker_pid),
+            "compute_ms": round(max(0.0, execution.compute_seconds) * 1000.0, 3),
+            "round_trip_ms": round(max(0.0, execution.round_trip_seconds) * 1000.0, 3),
+            "status": status,
+        }
 
     def _legacy_dev_define_file(self) -> Optional[Path]:
         path = self.sim_dir / "device.e"
@@ -4169,18 +4246,23 @@ class PolarMicrogridSimulator:
             aliases = {
                 "device_faults": ("device_faults", "deviceFaults", "faults"),
                 "measurement_faults": ("measurement_faults", "measurementFaults", "meas_faults"),
+                "measurement_statuses": ("measurement_statuses", "measurementStatuses"),
                 "modes": ("modes", "device_modes", "deviceModes"),
             }
             for target_key, names in aliases.items():
                 for name in names:
                     if name in payload:
                         value = payload.get(name) or []
-                        self.local_settings[target_key] = list(value) if isinstance(value, Sequence) else []
+                        if target_key == "measurement_statuses":
+                            self.local_settings[target_key] = dict(value) if isinstance(value, Mapping) else {}
+                        else:
+                            self.local_settings[target_key] = list(value) if isinstance(value, Sequence) else []
                         break
             _write_json(self.settings_file, self.local_settings)
             return {
                 "device_faults": len(self.local_settings.get("device_faults", [])),
                 "measurement_faults": len(self.local_settings.get("measurement_faults", [])),
+                "measurement_statuses": len(self.local_settings.get("measurement_statuses", {})),
                 "modes": len(self.local_settings.get("modes", [])),
             }
 
@@ -4246,60 +4328,109 @@ class PolarMicrogridSimulator:
         *,
         advance_seconds: Optional[int | float] = None,
     ) -> Dict[str, Any]:
-        with self.lock:
-            if advance_seconds is not None:
-                clock_advance = max(1e-9, float(advance_seconds) / 60.0)
-            elif advance_minutes is not None:
-                clock_advance = max(1e-9, float(advance_minutes))
-            else:
-                clock_advance = _effective_clock_step(self.clock.step_minutes, self.clock.speed)
-            self.clock.absolute_minute = _align_minute_to_step(self.clock.absolute_minute, clock_advance)
-            self.clock.minute = self.clock.absolute_minute % 1440.0
-            period_seconds = clock_advance * 60.0
-            minute = self.clock.minute
-            absolute_minute = self.clock.absolute_minute
-            self._prepare_runtime_inputs(minute, absolute_minute)
-            config = self._make_config(period_seconds=period_seconds)
+        with self._step_lock:
+            with self.lock:
+                if advance_seconds is not None:
+                    clock_advance = max(1e-9, float(advance_seconds) / 60.0)
+                elif advance_minutes is not None:
+                    clock_advance = max(1e-9, float(advance_minutes))
+                else:
+                    clock_advance = _effective_clock_step(self.clock.step_minutes, self.clock.speed)
+                self.clock.absolute_minute = _align_minute_to_step(self.clock.absolute_minute, clock_advance)
+                self.clock.minute = self.clock.absolute_minute % 1440.0
+                period_seconds = clock_advance * 60.0
+                minute = self.clock.minute
+                absolute_minute = self.clock.absolute_minute
+                start_clock_state = self.clock.state
+                start_run_id = self.clock.run_id
+                start_step_count = self.clock.step_count
+                definition_revision = self.definition_snapshot.revision
+                self._prepare_runtime_inputs(minute, absolute_minute)
+                config = self._make_config(period_seconds=period_seconds)
+
+            execution_started = time.perf_counter()
             try:
-                kernel_result = self.kernel(config)
+                execution = self._execute_kernel(config)
             except Exception as exc:
-                self.latest_result = {
-                    "solver_info": "failed",
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
-                self._append_power_flow_failure_log(exc, minute, absolute_minute, clock_advance, period_seconds)
-                self.clock.updated_at = time.time()
+                elapsed = max(0.0, time.perf_counter() - execution_started)
+                compute_status = "timeout" if isinstance(exc, PowerFlowTimeoutError) else "failed"
+                with self.lock:
+                    self.latest_compute = {
+                        "mode": "process" if self.kernel_runner is not None else "in_process",
+                        "http_pid": os.getpid(),
+                        "worker_pid": int(self.latest_compute.get("worker_pid", 0) or 0),
+                        "compute_ms": round(elapsed * 1000.0, 3),
+                        "round_trip_ms": round(elapsed * 1000.0, 3),
+                        "status": compute_status,
+                    }
+                    self.latest_result = {
+                        "solver_info": "failed",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                    self._append_power_flow_failure_log(
+                        exc,
+                        minute,
+                        absolute_minute,
+                        clock_advance,
+                        period_seconds,
+                    )
+                    self.clock.updated_at = time.time()
                 raise
-            self.latest_model_book = getattr(kernel_result, "model_book", None)
-            self.latest_device_states = [
-                dict(item)
-                for item in (getattr(kernel_result, "device_states", None) or [])
-                if isinstance(item, Mapping)
-            ]
-            self._store_kernel_measurement_rows(kernel_result)
-            self._apply_measurement_faults(minute, absolute_minute)
-            self.latest_measurements = self.measurements()
-            result_dict = self._kernel_result_dict(kernel_result)
-            self.latest_result = result_dict
-            command_response_lines = self._collect_command_response_lines(result_dict)
-            self._append_power_flow_log(
-                result_dict,
-                self.latest_measurements,
-                minute,
-                absolute_minute,
-                clock_advance,
-                period_seconds,
-                command_response_lines,
-            )
-            next_absolute_minute = self.clock.absolute_minute + clock_advance
-            crossed_cycle_start = self._crossed_simulation_cycle_start(self.clock.absolute_minute, next_absolute_minute)
-            self.clock.absolute_minute = round(next_absolute_minute, 9)
-            self.clock.minute = self.clock.absolute_minute % 1440.0
-            self.clock.step_count += 1
-            if crossed_cycle_start:
-                self._reset_storage_soc_to_initial()
-            self.clock.updated_at = time.time()
-            return self.snapshot()
+
+            with self.lock:
+                stale = (
+                    not self.service_instance_active()
+                    or self.definition_snapshot.revision != definition_revision
+                    or self.clock.run_id != start_run_id
+                    or self.clock.step_count != start_step_count
+                    or abs(float(self.clock.absolute_minute) - float(absolute_minute)) > 1e-9
+                    or (start_clock_state != "stopped" and self.clock.state == "stopped")
+                )
+                if stale:
+                    self._record_compute_execution(execution, status="discarded")
+                    self.clock.updated_at = time.time()
+                    return self.snapshot()
+
+                if execution.runtime_stat_book is not None:
+                    self.runtime_stat_book = execution.runtime_stat_book
+                kernel_result = execution.result
+                self._record_compute_execution(execution)
+                self.latest_model_book = getattr(kernel_result, "model_book", None)
+                self.latest_device_states = [
+                    dict(item)
+                    for item in (getattr(kernel_result, "device_states", None) or [])
+                    if isinstance(item, Mapping)
+                ]
+                self._store_kernel_measurement_rows(kernel_result)
+                self._apply_measurement_faults(minute, absolute_minute)
+                self._apply_measurement_statuses(minute, absolute_minute)
+                self.latest_measurements = self.measurements()
+                result_dict = self._kernel_result_dict(kernel_result)
+                self.latest_result = result_dict
+                command_response_lines = self._collect_command_response_lines(result_dict)
+                self._append_power_flow_log(
+                    result_dict,
+                    self.latest_measurements,
+                    minute,
+                    absolute_minute,
+                    clock_advance,
+                    period_seconds,
+                    command_response_lines,
+                )
+                next_absolute_minute = self.clock.absolute_minute + clock_advance
+                crossed_cycle_start = self._crossed_simulation_cycle_start(
+                    self.clock.absolute_minute,
+                    next_absolute_minute,
+                )
+                self.clock.absolute_minute = round(next_absolute_minute, 9)
+                self.clock.minute = self.clock.absolute_minute % 1440.0
+                self.clock.step_count += 1
+                if crossed_cycle_start:
+                    self._reset_storage_soc_to_initial()
+                self.clock.updated_at = time.time()
+                self._refresh_measurement_delta_state(measurements=self.latest_measurements)
+                self._measurement_delta_step_count = self.clock.step_count
+                return self.snapshot()
 
     def _store_kernel_measurement_rows(self, result: Optional[simu_loop.SimulationResult]) -> None:
         if result is None:
@@ -4453,6 +4584,47 @@ class PolarMicrogridSimulator:
                 else:
                     bias = _to_float(fault.get("bias", fault.get("error", fault.get("offset", 10.0))), 10.0) or 0.0
                     row[7] = _number_text(current_value + bias)
+                changed = True
+        if changed:
+            self.latest_scada_rows = rows
+
+    def _measurement_status_override(self, row: Mapping[str, Any] | Sequence[Any]) -> Tuple[str, Optional[float]]:
+        if isinstance(row, Mapping):
+            name = str(row.get("name", "")).strip()
+            default_valid = row.get("valid", 1)
+        else:
+            name = str(row[1] if len(row) > 1 else "").strip()
+            default_valid = row[6] if len(row) > 6 else 1
+        statuses = self.local_settings.get("measurement_statuses", {})
+        configured = statuses.get(name) if isinstance(statuses, Mapping) else None
+        if not isinstance(configured, Mapping):
+            status = _measurement_status_from_valid(default_valid)
+            return status, None
+        status = str(configured.get("status", "")).strip().casefold()
+        if status not in MEASUREMENT_STATUS_TOKENS:
+            status = _measurement_status_from_valid(default_valid)
+        fixed_value = _to_float(configured.get("fixed_value"), None)
+        return status, fixed_value
+
+    def _apply_measurement_statuses(self, minute: int | float, absolute_minute: int | float) -> None:
+        del minute, absolute_minute
+        statuses = self.local_settings.get("measurement_statuses", {})
+        if not isinstance(statuses, Mapping) or not statuses or not self.latest_scada_rows:
+            return
+        rows = [list(row) for row in self.latest_scada_rows]
+        changed = False
+        for row in rows:
+            status, fixed_value = self._measurement_status_override(row)
+            if status == "zero":
+                row[7] = "0"
+                changed = True
+            elif status == "fixed" and fixed_value is not None:
+                row[7] = _number_text(fixed_value)
+                changed = True
+            elif status == "dead":
+                key = self._measurement_key(row)
+                current_value = _to_float(row[7], 0.0) or 0.0
+                row[7] = _number_text(self._last_scada_values.get(key, current_value))
                 changed = True
         if changed:
             self.latest_scada_rows = rows
@@ -4727,81 +4899,98 @@ class PolarMicrogridSimulator:
     def measurements(self) -> Dict[str, List[Dict[str, Any]]]:
         definition_snapshot = self.definition_snapshot
         definitions = [_measurement_row_to_dict(row) for row in definition_snapshot.measurement_rows]
-        definitions_by_name = {
-            str(row.get("name", "")): row
-            for row in definitions
-            if str(row.get("name", ""))
-        }
         real = [_measurement_row_to_dict(row) for row in self.latest_real_rows]
         scada = [_measurement_row_to_dict(row) for row in self.latest_scada_rows]
         for rows in (real, scada):
-            for row in rows:
-                definition = definitions_by_name.get(str(row.get("name", "")))
-                if definition is None:
+            aligned_rows = measurement_rows_by_definition_index(definitions, rows)
+            for definition, row in zip(definitions, aligned_rows):
+                if row is None:
                     continue
                 row["weight"] = definition.get("weight", row.get("weight"))
                 row["valid"] = definition.get("valid", row.get("valid"))
         measurements = self._with_realtime_measurements({"definitions": definitions, "real": real, "scada": scada})
+        for channel_rows in measurements.values():
+            for row in channel_rows:
+                status, fixed_value = self._measurement_status_override(row)
+                row["status"] = status
+                row["fixed_value"] = fixed_value
+                row["valid"] = MEASUREMENT_STATUS_VALIDITY.get(status, int(_to_float(row.get("valid"), 0) or 0))
         for item in measurements["scada"]:
             self._last_scada_values[
                 f"{item['name']}|{item['dev_type']}|{item['dev_name']}|{item['meas_type']}"
             ] = item.get("value", 0.0) or 0.0
         return measurements
 
-    def _measurement_delta_current_items(self) -> Dict[str, Dict[str, Any]]:
-        measurements = self.measurements()
+    def _measurement_delta_current_items(
+        self,
+        measurements: Optional[Mapping[str, Sequence[Mapping[str, Any]]]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        measurements = dict(measurements or self.measurements())
         definitions = measurements.get("definitions") or measurements.get("scada") or measurements.get("real") or []
-        definitions_by_name = {
-            str(row.get("name", "")): row
-            for row in definitions
-            if str(row.get("name", ""))
-        }
-        real_by_name = {str(row.get("name", "")): row for row in measurements.get("real", []) if row.get("name")}
-        scada_by_name = {str(row.get("name", "")): row for row in measurements.get("scada", []) if row.get("name")}
+        real_rows = measurement_rows_by_definition_index(definitions, measurements.get("real", []) or [])
+        scada_rows = measurement_rows_by_definition_index(definitions, measurements.get("scada", []) or [])
         time_payload = self._api_time_payload()
         items: Dict[str, Dict[str, Any]] = {}
-        for definition in definitions:
+        for index, definition in enumerate(definitions):
             name = str(definition.get("name", "")).strip()
             if not name:
                 continue
-            real = real_by_name.get(name)
-            scada = scada_by_name.get(name)
+            real = real_rows[index]
+            scada = scada_rows[index]
             real_value = real.get("value") if real else None
             scada_value = scada.get("value") if scada else None
             value = scada_value if scada is not None else real_value
-            active_definition = definitions_by_name.get(name, definition)
-            valid = active_definition.get("valid", 0)
+            valid = definition.get("valid", 0)
             items[name] = {
                 "name": name,
                 "value": _json_scalar(value),
                 "real_value": _json_scalar(real_value),
                 "scada_value": _json_scalar(scada_value),
                 "valid": int(_to_float(valid, 0) or 0),
-                "weight": _json_scalar(active_definition.get("weight", "")),
+                "weight": _json_scalar(definition.get("weight", "")),
+                "status": str(definition.get("status", _measurement_status_from_valid(valid))),
+                "fixed_value": _json_scalar(definition.get("fixed_value")),
                 **self._external_update_time_fields(time_payload),
             }
         return items
 
-    def _measurement_delta_signature(self, item: Mapping[str, Any]) -> str:
-        comparable = {
-            "value": item.get("value"),
-            "real_value": item.get("real_value"),
-            "scada_value": item.get("scada_value"),
-            "valid": item.get("valid"),
-            "weight": item.get("weight"),
-        }
-        return json.dumps(comparable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    def _measurement_delta_signature(self, item: Mapping[str, Any]) -> Tuple[Any, ...]:
+        return (
+            item.get("value"),
+            item.get("real_value"),
+            item.get("scada_value"),
+            item.get("valid"),
+            item.get("weight"),
+            item.get("status"),
+            item.get("fixed_value"),
+        )
 
-    def _refresh_measurement_delta_state(self) -> Dict[str, Dict[str, Any]]:
-        current = self._measurement_delta_current_items()
+    def _refresh_measurement_delta_state(
+        self,
+        measurements: Optional[Mapping[str, Sequence[Mapping[str, Any]]]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        measurement_payload = dict(measurements or self.measurements())
+        definitions = [
+            row
+            for row in measurement_payload.get("definitions", []) or []
+            if isinstance(row, Mapping)
+        ]
+        definition_signature = measurement_definition_signature(definitions)
+        definition_changed = definition_signature != self._measurement_delta_definition_signature
+        current = self._measurement_delta_current_items(measurement_payload)
         previous = self._measurement_delta_state
         changed_names: List[str] = []
         removed_names = [name for name in previous if name not in current]
         for name, item in current.items():
             previous_item = previous.get(name)
-            if previous_item is None or self._measurement_delta_signature(previous_item) != self._measurement_delta_signature(item):
+            if (
+                definition_changed
+                or previous_item is None
+                or self._measurement_delta_signature(previous_item)
+                != self._measurement_delta_signature(item)
+            ):
                 changed_names.append(name)
-        if changed_names or removed_names:
+        if definition_changed or changed_names or removed_names:
             self._measurement_delta_seq += 1
             changed_items = [current[name] for name in changed_names]
             changed_items.extend(
@@ -4815,44 +5004,72 @@ class PolarMicrogridSimulator:
             self._measurement_delta_history.append({"seq": self._measurement_delta_seq, "items": changed_items})
             self._measurement_delta_history = self._measurement_delta_history[-200:]
             self._measurement_delta_state = current
+        self._measurement_delta_definition_signature = definition_signature
+        self._measurement_delta_definition_count = len(definitions)
+        self._measurement_delta_definition_revision = self.definition_snapshot.revision
         return current
 
-    def measurement_delta(self, after_seq: int | float = 0) -> Dict[str, Any]:
+    def measurement_delta(self, after_seq: int | float = 0, *, compact: bool = False) -> Dict[str, Any]:
         """Return changed measurement values keyed by measurement name."""
         try:
             after = int(after_seq)
         except (TypeError, ValueError):
             after = 0
-        current = self._refresh_measurement_delta_state()
-        reset = False
-        if after <= 0:
-            items = list(current.values())
-            reset = True
-        elif after > self._measurement_delta_seq:
-            items = list(current.values())
-            reset = True
-        elif after == self._measurement_delta_seq:
-            items = []
-        else:
-            history = [entry for entry in self._measurement_delta_history if int(entry.get("seq", 0)) > after]
-            if not history:
+        with self.lock:
+            if (
+                self._measurement_delta_step_count == self.clock.step_count
+                and self._measurement_delta_state
+            ):
+                current = self._measurement_delta_state
+            else:
+                current = self._refresh_measurement_delta_state()
+            reset = False
+            frame = after != self._measurement_delta_seq
+            if compact and frame:
+                items = list(current.values())
+                reset = after <= 0 or after > self._measurement_delta_seq
+            elif after <= 0:
                 items = list(current.values())
                 reset = True
+            elif after > self._measurement_delta_seq:
+                items = list(current.values())
+                reset = True
+            elif after == self._measurement_delta_seq:
+                items = []
             else:
-                by_name: Dict[str, Dict[str, Any]] = {}
-                for entry in history:
-                    for item in entry.get("items", []):
-                        if isinstance(item, Mapping):
-                            by_name[str(item.get("name", ""))] = dict(item)
-                items = list(by_name.values())
-        return {
-            "model_id": self.model_id,
-            "model_name": self.model_name,
-            **self._api_time_payload(),
-            "seq": self._measurement_delta_seq,
-            "items": items,
-            "reset": reset,
-        }
+                history = [
+                    entry
+                    for entry in self._measurement_delta_history
+                    if int(entry.get("seq", 0)) > after
+                ]
+                if not history:
+                    items = list(current.values())
+                    reset = True
+                else:
+                    by_name: Dict[str, Dict[str, Any]] = {}
+                    for entry in history:
+                        for item in entry.get("items", []):
+                            if isinstance(item, Mapping):
+                                by_name[str(item.get("name", ""))] = dict(item)
+                    items = list(by_name.values())
+            payload = {
+                "model_id": self.model_id,
+                "model_name": self.model_name,
+                **self._api_time_payload(),
+                "seq": self._measurement_delta_seq,
+                "items": items,
+                "reset": reset,
+            }
+            if compact:
+                payload.update(
+                    {
+                        "frame": frame,
+                        "count": self._measurement_delta_definition_count,
+                        "definition_revision": self._measurement_delta_definition_revision,
+                        "definition_signature": self._measurement_delta_definition_signature,
+                    }
+                )
+        return compact_measurement_delta(payload) if compact else payload
 
     def _read_measurement_file(self, path: Path) -> List[Dict[str, Any]]:
         if not path.exists():
@@ -6436,9 +6653,31 @@ class PolarMicrogridSimulator:
             changes = payload.get("changes", {})
             if not isinstance(changes, Mapping):
                 raise ValueError("changes must be an object")
-            normalized = normalize_measurement_changes(current_item, changes)
+            current_with_status = dict(current_item)
+            current_status, current_fixed_value = self._measurement_status_override(current_item)
+            current_with_status["status"] = current_status
+            current_with_status["fixed_value"] = current_fixed_value
+            normalized = normalize_measurement_changes(current_with_status, changes)
             rows[index][5] = normalized["weight"]
             rows[index][6] = normalized["valid"]
+            measurement_name = str(current_item.get("name", "")).strip()
+            configured_statuses = self.local_settings.get("measurement_statuses", {})
+            has_status_override = (
+                isinstance(configured_statuses, Mapping)
+                and measurement_name in configured_statuses
+            )
+            status_changed = (
+                "status" in changes
+                or "fixed_value" in changes
+                or (has_status_override and normalized["status"] != current_status)
+            )
+            if status_changed:
+                statuses = dict(configured_statuses) if isinstance(configured_statuses, Mapping) else {}
+                statuses[measurement_name] = {
+                    "status": normalized["status"],
+                    "fixed_value": normalized["fixed_value"],
+                }
+                self.local_settings["measurement_statuses"] = statuses
             next_snapshot = DefinitionSnapshot(
                 revision=current.revision + 1,
                 model_book=current.model_book,
@@ -6510,6 +6749,16 @@ class PolarMicrogridSimulator:
                     )
             record = _measurement_row_to_dict(rows[index])
             record["error_sigma"] = normalized["error_sigma"]
+            record["status"] = normalized["status"]
+            record["fixed_value"] = normalized["fixed_value"]
+            if status_changed:
+                try:
+                    _write_json(self.settings_file, self.local_settings)
+                except OSError as exc:
+                    warning = self._merge_definition_warning(
+                        warning,
+                        f"量测状态保存失败: {exc}",
+                    )
             result = self._definition_update_result(
                 next_snapshot,
                 record,
@@ -6797,6 +7046,14 @@ class PolarMicrogridSimulator:
                 "scada": [],
             }
         )["definitions"]
+        for row in measurement_rows:
+            status, fixed_value = self._measurement_status_override(row)
+            row["status"] = status
+            row["fixed_value"] = fixed_value
+            row["valid"] = MEASUREMENT_STATUS_VALIDITY.get(
+                status,
+                int(_to_float(row.get("valid"), 0) or 0),
+            )
         return {
             "model": self._definition_book_blocks(
                 self.files["model"],
@@ -6960,6 +7217,7 @@ class PolarMicrogridSimulator:
         include_devices: bool = True,
         include_device_states: bool = True,
         include_commands: bool = True,
+        include_command_history: bool = True,
     ) -> Dict[str, Any]:
         measurements: Dict[str, Any] = {}
         if include_measurements:
@@ -6983,6 +7241,7 @@ class PolarMicrogridSimulator:
             "static_meta": self.static_meta(),
             "curve_boundary": self.curve_boundary(),
             "result": self.latest_result,
+            "compute": dict(self.latest_compute),
             "summary": self._summary(summary_measurements),
             "power_summary": self._latest_power_summary(summary_measurements),
         }
@@ -7003,7 +7262,7 @@ class PolarMicrogridSimulator:
                 if id(entry) not in recent_ids and id(entry) not in pinned_ids
             )
             snapshot["commands"] = {
-                "history": pinned_commands + recent_commands,
+                "history": pinned_commands + recent_commands if include_command_history else [],
                 "effective": effective_commands,
             }
         if include_devices:
@@ -7070,6 +7329,7 @@ class MultiModelSimulator:
         runtime_dir: str | Path,
         kernel: Optional[Callable[[simu_loop.SimulationConfig], Optional[simu_loop.SimulationResult]]] = None,
         *,
+        kernel_runner: Optional[Any] = None,
         period_seconds: float = 60.0,
         compute_interval_seconds: float = DEFAULT_COMPUTE_INTERVAL_SECONDS,
         noise_std: Optional[float] = None,
@@ -7084,6 +7344,7 @@ class MultiModelSimulator:
         self.models_root.mkdir(parents=True, exist_ok=True)
         self.directory_backed = directory_backed
         self.kernel = kernel
+        self.kernel_runner = kernel_runner
         self.period_seconds = period_seconds
         self.compute_interval_seconds = _compute_interval_seconds(compute_interval_seconds)
         self.noise_std = noise_std
@@ -7098,6 +7359,7 @@ class MultiModelSimulator:
                 sim_dir=spec.sim_dir,
                 runtime_dir=self.runtime_dir / spec.model_id,
                 kernel=kernel,
+                kernel_runner=kernel_runner,
                 period_seconds=period_seconds,
                 compute_interval_seconds=self.compute_interval_seconds,
                 noise_std=noise_std,
@@ -7150,6 +7412,7 @@ class MultiModelSimulator:
         runtime_dir: str | Path,
         kernel: Optional[Callable[[simu_loop.SimulationConfig], Optional[simu_loop.SimulationResult]]] = None,
         *,
+        kernel_runner: Optional[Any] = None,
         period_seconds: float = 60.0,
         compute_interval_seconds: float = DEFAULT_COMPUTE_INTERVAL_SECONDS,
         noise_std: Optional[float] = None,
@@ -7163,6 +7426,7 @@ class MultiModelSimulator:
             specs,
             runtime_dir=runtime_dir,
             kernel=kernel,
+            kernel_runner=kernel_runner,
             period_seconds=period_seconds,
             compute_interval_seconds=compute_interval_seconds,
             noise_std=noise_std,
@@ -7230,6 +7494,7 @@ class MultiModelSimulator:
             sim_dir=spec.sim_dir,
             runtime_dir=runtime_dir,
             kernel=self.kernel,
+            kernel_runner=self.kernel_runner,
             period_seconds=self.period_seconds,
             compute_interval_seconds=self.compute_interval_seconds,
             noise_std=self.noise_std,
@@ -7463,6 +7728,11 @@ class MultiModelSimulator:
         with self.lock:
             return list(self._services.values())
 
+    def close(self) -> None:
+        runner = self.kernel_runner
+        if runner is not None and callable(getattr(runner, "close", None)):
+            runner.close()
+
     def models(self) -> List[Dict[str, Any]]:
         with self.lock:
             if self.directory_backed:
@@ -7487,6 +7757,7 @@ class MultiModelSimulator:
         include_devices: bool = True,
         include_device_states: bool = True,
         include_commands: bool = True,
+        include_command_history: bool = True,
     ) -> Dict[str, Any]:
         return self.service_for(model_id).snapshot(
             include_static=include_static,
@@ -7497,13 +7768,20 @@ class MultiModelSimulator:
             include_devices=include_devices,
             include_device_states=include_device_states,
             include_commands=include_commands,
+            include_command_history=include_command_history,
         )
 
     def measurements(self, model_id: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
         return self.service_for(model_id).measurements()
 
-    def measurement_delta(self, after_seq: int | float = 0, model_id: Optional[str] = None) -> Dict[str, Any]:
-        return self.service_for(model_id).measurement_delta(after_seq=after_seq)
+    def measurement_delta(
+        self,
+        after_seq: int | float = 0,
+        model_id: Optional[str] = None,
+        *,
+        compact: bool = False,
+    ) -> Dict[str, Any]:
+        return self.service_for(model_id).measurement_delta(after_seq=after_seq, compact=compact)
 
     def runtime_logs_delta(
         self,

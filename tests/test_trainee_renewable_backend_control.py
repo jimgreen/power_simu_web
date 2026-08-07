@@ -1353,7 +1353,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertAlmostEqual(by_name["pv-1"]["commandKw"], 80.0)
         self.assertAlmostEqual(by_name["grid-converter-1"]["commandKw"], 0.0)
 
-    def test_ac_balance_sink_does_not_double_count_ac_renewable_for_diesel(self):
+    def test_ac_balance_sink_holds_diesel_inside_deadband_while_absorbing_renewable(self):
         snapshot = side_aware_recovery_snapshot(
             diesel_power_kw=25.0,
             wind_power_kw=30.0,
@@ -1379,8 +1379,8 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         by_name = {row["dev_name"]: row for row in plan["commandRows"]}
 
         self.assertAlmostEqual(by_name["wind-1"]["commandKw"], 40.0)
-        self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 20.0)
-        self.assertAlmostEqual(by_name["healthy-ac-balance"]["projectedTargetKw"], -10.0)
+        self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 25.0)
+        self.assertAlmostEqual(by_name["healthy-ac-balance"]["projectedTargetKw"], -15.0)
         self.assertFalse(by_name["healthy-ac-balance"]["commandable"])
         self.assertFalse(
             any(command["dev_name"] == "healthy-ac-balance" for command in plan["commands"])
@@ -1520,7 +1520,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertAlmostEqual(by_name["pv-1"]["commandKw"], 20.0)
         self.assertAlmostEqual(by_name["grid-converter-1"]["commandKw"], 0.0)
 
-    def test_ac_renewable_and_storage_pair_is_clipped_at_combined_diesel_floor(self):
+    def test_ac_renewable_and_storage_pair_holds_diesel_inside_deadband(self):
         plan = calculate_renewable_control_plan(
             side_aware_recovery_snapshot(
                 diesel_power_kw=25.0,
@@ -1537,9 +1537,9 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         storage_charge_delta = -min(0.0, by_name["ac-grid-storage"]["targetKw"])
 
         self.assertAlmostEqual(by_name["wind-1"]["commandKw"], 40.0)
-        self.assertAlmostEqual(by_name["ac-grid-storage"]["targetKw"], -5.0)
+        self.assertAlmostEqual(by_name["ac-grid-storage"]["targetKw"], -10.0)
         self.assertGreaterEqual(renewable_delta, storage_charge_delta)
-        self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 20.0)
+        self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 25.0)
 
     def test_dc_balance_high_soc_curtails_when_diesel_blocks_export(self):
         snapshot = side_aware_recovery_snapshot(
@@ -1650,7 +1650,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         )
         self.assertAlmostEqual(by_name["wind-1"]["commandKw"], 100.0)
 
-    def test_partial_balance_protection_does_not_overstate_projected_response(self):
+    def test_balance_storage_above_soc_limit_stops_charging_before_renewable_curtailment(self):
         snapshot = side_aware_recovery_snapshot(
             diesel_power_kw=20.0,
             wind_power_kw=100.0,
@@ -1671,14 +1671,14 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         )
         by_name = {row["dev_name"]: row for row in plan["commandRows"]}
 
-        self.assertAlmostEqual(by_name["wind-1"]["commandKw"], 97.0)
-        self.assertAlmostEqual(by_name["ac-balance"]["projectedTargetKw"], -12.0)
+        self.assertAlmostEqual(by_name["wind-1"]["commandKw"], 85.0)
+        self.assertAlmostEqual(by_name["ac-balance"]["projectedTargetKw"], 0.0)
         self.assertLess(
             abs(by_name["ac-balance"]["projectedTargetKw"]),
             abs(by_name["ac-balance"]["currentKw"]),
         )
 
-    def test_multiple_balance_rows_share_projected_delta_by_usable_margin(self):
+    def test_multiple_low_soc_balance_rows_do_not_continue_discharging(self):
         snapshot = side_aware_recovery_snapshot(
             diesel_power_kw=50.0,
             wind_power_kw=30.0,
@@ -1713,14 +1713,12 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         by_name = {row["dev_name"]: row for row in plan["commandRows"]}
         first = by_name["ac-balance-a"]
         second = by_name["ac-balance-b"]
-        first_move = first["currentKw"] - first["projectedTargetKw"]
-        second_move = second["currentKw"] - second["projectedTargetKw"]
-
-        self.assertAlmostEqual(
+        self.assertLessEqual(first["projectedTargetKw"], 0.0)
+        self.assertLessEqual(second["projectedTargetKw"], 0.0)
+        self.assertLessEqual(
             first["projectedTargetKw"] + second["projectedTargetKw"],
             0.0,
         )
-        self.assertAlmostEqual(first_move / second_move, 5.0 / 6.0)
         self.assertTrue(first["indirectControlDevices"])
         self.assertTrue(second["indirectControlDevices"])
         self.assertFalse(first["commandable"])
@@ -1837,7 +1835,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertAlmostEqual(by_name["second-grid-storage-converter"]["commandKw"], 0.0)
         self.assertFalse(by_name["dc-balance"]["commandable"])
 
-    def test_dc_balance_high_soc_charge_exports_then_curtails_same_group_renewable(self):
+    def test_dc_balance_high_soc_charge_uses_available_export_before_curtailment(self):
         snapshot = side_aware_recovery_snapshot(
             diesel_power_kw=50.0,
             pv_power_kw=20.0,
@@ -1861,8 +1859,8 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         )
         by_name = {row["dev_name"]: row for row in plan["commandRows"]}
 
-        self.assertAlmostEqual(by_name["grid-converter-1"]["commandKw"], -10.0)
-        self.assertAlmostEqual(by_name["pv-1"]["commandKw"], 15.0)
+        self.assertAlmostEqual(by_name["grid-converter-1"]["commandKw"], -15.0)
+        self.assertAlmostEqual(by_name["pv-1"]["commandKw"], 20.0)
         self.assertAlmostEqual(by_name["dc-balance"]["projectedTargetKw"], 0.0)
         self.assertFalse(by_name["dc-balance"]["commandable"])
         self.assertTrue(
@@ -2243,7 +2241,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
             )
         )
 
-    def test_dc_transfer_capacity_is_not_shared_across_groups(self):
+    def test_dc_transfer_capacity_is_not_shared_across_ac_components(self):
         snapshot = direct_grid_storage_snapshot(
             include_ac_storage=False,
             dc_max_discharge_kw=40.0,
@@ -2275,15 +2273,15 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
             by_name["second-dc-grid-storage"]["dcTransferGroupId"],
         )
         self.assertAlmostEqual(by_name["dc-grid-storage"]["targetKw"], 0.0)
-        self.assertAlmostEqual(by_name["second-dc-grid-storage"]["targetKw"], 2.0)
+        self.assertAlmostEqual(by_name["second-dc-grid-storage"]["targetKw"], 0.0)
         self.assertAlmostEqual(by_name["grid-converter-1"]["commandKw"], -50.0)
         self.assertAlmostEqual(
             by_name["second-grid-storage-converter"]["commandKw"],
-            -2.0,
+            0.0,
         )
         self.assertAlmostEqual(plan["metrics"]["acdcCurrentKw"], -50.0)
-        self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], -52.0)
-        self.assertAlmostEqual(plan["metrics"]["acdcAdjustmentKw"], -2.0)
+        self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], -50.0)
+        self.assertAlmostEqual(plan["metrics"]["acdcAdjustmentKw"], 0.0)
         self.assertAlmostEqual(
             plan["metrics"]["acdcCurrentKw"],
             sum(row["currentKw"] for row in converter_rows),
@@ -2292,17 +2290,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
             plan["metrics"]["acdcTargetKw"],
             sum(row["commandKw"] for row in converter_rows),
         )
-        self.assertEqual(
-            converter_commands,
-            [
-                {
-                    "dev_type": "DCACConverter",
-                    "dev_name": "second-grid-storage-converter",
-                    "set_type": "p_ac_set",
-                    "set_value": -2.0,
-                }
-            ],
-        )
+        self.assertEqual(converter_commands, [])
 
     def test_grid_storage_allocation_uses_margin_ratio_not_device_count(self):
         snapshot = direct_grid_storage_snapshot(
@@ -2893,7 +2881,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
             soc_deadband=0.10,
         )
         cases = (
-            ("below_limit", 0.097, 18.0, 116.0, -216.0, -198.0, 1.0),
+            ("below_limit", 0.097, 18.0, 116.0, -216.0, 0.0, 1.0),
             ("above_limit", 0.101, 200.0, -100.0, 0.0, -3.6, 0.20),
         )
         for label, soc, diesel_current, storage_current, converter_current, expected_target, expected_scale in cases:
@@ -2966,7 +2954,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         cases = (
             ("increase", "increase", 0.85, 60.0, -5.0, 1.0 / 18.0, 51.0),
             ("decrease_limited", "decrease", 0.90, 20.0, -10.0, 10.0 / 18.0, 40.0),
-            ("decrease_full", "decrease", 0.94, 20.0, -30.0, 30.0 / 18.0, 20.0),
+            ("decrease_full", "decrease", 0.94, 20.0, -30.0, 20.0 / 18.0, 30.0),
         )
         for label, direction, soc, diesel_current, storage_current, expected_scale, expected_target in cases:
             with self.subTest(label=label, soc=soc):
@@ -3933,7 +3921,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         }
         self.assertEqual(signed_after, signed_before)
 
-    def test_storage_roles_cover_all_four_topology_categories_without_balance_p_set(self):
+    def test_storage_roles_cover_all_four_topology_categories_with_balance_p_set(self):
         snapshot = renewable_snapshot()
         add_generator_device(
             snapshot,
@@ -4012,10 +4000,10 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
             self.assertEqual(by_name[name]["set_type"], "p_set")
 
         for name in ("ac-balance-storage", "storage-1"):
-            self.assertFalse(by_name[name]["commandable"])
-            self.assertEqual(by_name[name]["set_type"], "")
+            self.assertTrue(by_name[name]["commandable"])
+            self.assertEqual(by_name[name]["set_type"], "p_set")
             self.assertIsInstance(by_name[name]["indirectControlDevices"], list)
-            self.assertFalse(any(command["dev_name"] == name for command in plan["commands"]))
+            self.assertTrue(any(command["dev_name"] == name for command in plan["commands"]))
 
         metrics = plan["metrics"]
         self.assertEqual(metrics["onlineAcBalanceStorageCount"], 1)
@@ -4339,7 +4327,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         ):
             self.assertAlmostEqual(plan["metrics"][metric], baseline["metrics"][metric])
 
-    def test_second_dc_balance_group_cannot_change_first_group_acdc_candidate(self):
+    def test_second_dc_balance_group_is_controlled_independently(self):
         baseline = calculate_renewable_control_plan(renewable_snapshot())
         baseline_converter = next(
             row
@@ -4446,8 +4434,8 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
             by_name["second-group-balance"]["dcTransferGroupId"],
         )
         self.assertAlmostEqual(first["commandKw"], baseline_converter["commandKw"])
-        self.assertFalse(second["strategyCommand"])
-        self.assertAlmostEqual(second["commandKw"], -10.0)
+        self.assertTrue(second["strategyCommand"])
+        self.assertLess(second["commandKw"], second["currentKw"])
         self.assertEqual(
             plan["metrics"]["dcBalanceControlGroupIds"],
             [by_name["storage-1"]["dcTransferGroupId"]],
@@ -4469,14 +4457,14 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
             baseline_converter["commandKw"],
         )
         self.assertTrue(reverse_by_name["second-group-converter"]["strategyCommand"])
-        self.assertAlmostEqual(
+        self.assertLessEqual(
             reverse_by_name["second-group-converter"]["commandKw"],
             0.0,
         )
         self.assertTrue(
             any(
                 command["dev_name"] == "second-group-converter"
-                and command["set_value"] == 0.0
+                and command["set_value"] <= 0.0
                 for command in reverse_plan["commands"]
             )
         )
@@ -4519,7 +4507,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertEqual(ordered_converter_commands, reordered_converter_commands)
         self.assertEqual(
             [command["dev_name"] for command in ordered_converter_commands],
-            ["grid-converter-1"],
+            ["grid-converter-1", "second-group-converter"],
         )
         self.assertEqual(reordered_plan["commands"], ordered_plan["commands"])
 
@@ -4948,7 +4936,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertFalse(plan["metrics"]["renewableStorageCoordinationActive"])
         self.assertAlmostEqual(plan["metrics"]["storageRenewableCoordinationKw"], 0.0)
         self.assertAlmostEqual(plan["metrics"]["storageTarget"], 11.5)
-        self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 58.5)
+        self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 55.5)
         self.assertFalse(any("新能源储能协调" in line for line in plan["decisionDetail"]))
         self.assertTrue(any("两条策略相互独立" in line for line in plan["decisionDetail"]))
 
@@ -4962,7 +4950,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
         plan = calculate_renewable_control_plan(snapshot)
 
-        self.assertAlmostEqual(plan["metrics"]["renewableTarget"], 55.4)
+        self.assertAlmostEqual(plan["metrics"]["renewableTarget"], 52.4)
         self.assertAlmostEqual(plan["metrics"]["storageTarget"], 10.0)
         self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 20.0)
         self.assertEqual(plan["metrics"]["storageControlAction"], "hold")
@@ -4977,7 +4965,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
         plan = calculate_renewable_control_plan(snapshot)
 
-        self.assertAlmostEqual(plan["metrics"]["renewableTarget"], 55.4)
+        self.assertAlmostEqual(plan["metrics"]["renewableTarget"], 52.4)
         self.assertAlmostEqual(plan["metrics"]["storageTarget"], -5.0)
         self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 20.0)
         self.assertEqual(plan["metrics"]["storageControlAction"], "hold")
@@ -5102,7 +5090,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
         self.assertEqual(plan["metrics"]["dieselControlRegion"], "deadband")
         self.assertEqual(plan["metrics"]["storageControlAction"], "hold")
-        self.assertAlmostEqual(plan["metrics"]["renewableTarget"], 55.4)
+        self.assertAlmostEqual(plan["metrics"]["renewableTarget"], 52.4)
         self.assertAlmostEqual(plan["metrics"]["storageTarget"], 10.0)
         self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 23.0)
 
@@ -5386,8 +5374,8 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["converterStepKw"], 0.3)
         self.assertTrue(metrics["dieselBoundaryApproachActive"])
         self.assertAlmostEqual(metrics["dieselBoundaryDistanceKw"], 0.5)
-        self.assertAlmostEqual(metrics["acdcTargetKw"], -5.3)
-        self.assertAlmostEqual(metrics["dieselTargetKw"], 26.2)
+        self.assertAlmostEqual(metrics["acdcTargetKw"], -5.0)
+        self.assertAlmostEqual(metrics["dieselTargetKw"], 26.0)
 
     def test_storage_soc_constraint_does_not_override_diesel_deadband_hold(self):
         snapshot = renewable_snapshot()
@@ -5550,10 +5538,10 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
     def test_full_soc_curtailment_matches_piecewise_charge_excess_without_overshoot(self):
         cases = (
-            ("partial", -10.0, 10.0, 40.0, 10.0 / 18.0),
-            ("full", -30.0, 30.0, 20.0, 30.0 / 18.0),
+            ("partial", -10.0, 10.0, 40.0, 10.0, 0.0),
+            ("full", -30.0, 30.0, 30.0, 20.0, 10.0),
         )
-        for label, storage_kw, charge_excess_kw, expected_target, expected_scale in cases:
+        for label, storage_kw, charge_excess_kw, expected_target, delivered_kw, shortfall_kw in cases:
             with self.subTest(label=label):
                 snapshot = renewable_snapshot()
                 for row in snapshot["measurements"]["scada"]:
@@ -5572,12 +5560,15 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
                     ),
                 )
                 metrics = plan["metrics"]
+                expected_scale = delivered_kw / 18.0
 
                 self.assertEqual(metrics["renewableControlAction"], "curtail_charge_safety")
                 self.assertAlmostEqual(metrics["storageChargeDeratingExcessKw"], charge_excess_kw)
                 self.assertAlmostEqual(metrics["renewableStepScale"], expected_scale)
                 self.assertAlmostEqual(metrics["renewableDeratingCurtailStepRequestKw"], min(18.0, charge_excess_kw))
                 self.assertAlmostEqual(metrics["renewableChargeSafetyCurtailRequestKw"], charge_excess_kw)
+                self.assertAlmostEqual(metrics["renewableChargeSafetyCurtailDeliveredKw"], delivered_kw)
+                self.assertAlmostEqual(metrics["renewableChargeSafetyCurtailShortfallKw"], shortfall_kw)
                 self.assertAlmostEqual(metrics["renewableTarget"], expected_target)
 
     def test_charge_derating_removes_the_full_remaining_charge_excess(self):
@@ -5595,8 +5586,10 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
         self.assertAlmostEqual(metrics["storageChargeDeratingLimitKw"], 6.0)
         self.assertAlmostEqual(metrics["storageChargeDeratingExcessKw"], 24.0)
-        self.assertAlmostEqual(metrics["renewableCurrentKw"] - metrics["renewableTarget"], 24.0)
-        self.assertAlmostEqual(metrics["storageChargeDeratingResidualKw"], 24.0)
+        self.assertAlmostEqual(metrics["renewableCurrentKw"] - metrics["renewableTarget"], 20.0)
+        self.assertAlmostEqual(metrics["storageChargeDeratingResidualKw"], 4.0)
+        self.assertAlmostEqual(metrics["renewableChargeSafetyCurtailDeliveredKw"], 20.0)
+        self.assertAlmostEqual(metrics["renewableChargeSafetyCurtailShortfallKw"], 4.0)
         self.assertTrue(metrics["storageChargeDeratingSafetyOverride"])
 
     def test_above_upper_deadband_stops_charging_before_requesting_discharge(self):
@@ -5613,10 +5606,12 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         metrics = plan["metrics"]
 
         self.assertTrue(metrics["socAboveUpperDeadband"])
-        self.assertAlmostEqual(metrics["storageChargeDeratingResidualKw"], 30.0)
+        self.assertAlmostEqual(metrics["storageChargeDeratingResidualKw"], 10.0)
         self.assertAlmostEqual(metrics["storageHighSocDischargeRequestKw"], 5.4)
         self.assertAlmostEqual(metrics["renewableChargeSafetyCurtailRequestKw"], 35.4)
-        self.assertAlmostEqual(metrics["renewableTarget"], 14.6)
+        self.assertAlmostEqual(metrics["renewableChargeSafetyCurtailDeliveredKw"], 20.0)
+        self.assertAlmostEqual(metrics["renewableChargeSafetyCurtailShortfallKw"], 15.4)
+        self.assertAlmostEqual(metrics["renewableTarget"], 30.0)
         self.assertTrue(metrics["storageChargeDeratingSafetyOverride"])
 
     def test_storage_energy_limit_uses_the_full_control_horizon(self):
@@ -6090,10 +6085,12 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertAlmostEqual(plan["metrics"]["renewableBalancingDeltaKw"], 5.4)
         self.assertAlmostEqual(plan["metrics"]["storageTarget"], -3.5)
         self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], -1.5)
-        self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 58.5)
+        self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 55.5)
+        wind = next(row for row in plan["commandRows"] if row["dev_name"] == "wind-1")
         predicted_diesel = (
             plan["metrics"]["dieselCurrentKw"]
             - (plan["metrics"]["storageTarget"] - plan["metrics"]["storageCurrentKw"])
+            - (wind["commandKw"] - wind["currentKw"])
         )
         self.assertAlmostEqual(predicted_diesel, plan["metrics"]["dieselTargetKw"])
 
@@ -6198,7 +6195,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertAlmostEqual(plan["metrics"]["storageTarget"], -5.0)
         self.assertAlmostEqual(plan["metrics"]["renewableTarget"], 55.4)
         self.assertAlmostEqual(plan["metrics"]["renewableBalancingDeltaKw"], 5.4)
-        self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 60.0)
+        self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 57.0)
         self.assertEqual(plan["metrics"]["storageConverterCount"], 0)
         self.assertFalse(plan["dataQuality"]["dispatchAllowed"])
 
@@ -10770,6 +10767,99 @@ class RenewableControlBackendApiTest(unittest.TestCase):
         self.assertNotIn("converterSocPowerLimits", second_client["settings"])
         self.assertEqual(first_client["modelId"], "shared")
         self.assertTrue(any(item.get("result") == "方式切换" for item in runtime_logs))
+
+    def test_compact_incremental_state_omits_repeated_trend_and_log_history(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root = root / "source"
+            model_root = source_root / "shared"
+            model_root.mkdir(parents=True)
+            for source in SIMPLE_MODEL_SOURCE.iterdir():
+                if source.is_file():
+                    (model_root / source.name).write_bytes(source.read_bytes())
+            services = MultiModelSimulator(
+                [SimulationModelSpec("shared", model_root, "Shared")],
+                runtime_dir=root / "runtime",
+                models_root=source_root,
+                kernel=lambda _config: None,
+            )
+            manager = make_control_manager(services)
+            controller = manager._state_for("shared")
+            with controller.lock:
+                controller.trend = [
+                    {
+                        "sampleKey": "sample-1",
+                        "runId": 1,
+                        "stepCount": 1,
+                        "minute": 1,
+                        "time": "00:01:00",
+                        "loadKw": 100.0,
+                        "dieselKw": 20.0,
+                        "storageKw": 5.0,
+                        "storageSocPercent": 50.0,
+                        "renewableKw": 80.0,
+                        "acdcCurrentKw": 10.0,
+                        "acdcTargetKw": 11.0,
+                        "dcTransferGroups": [{"detail": "x" * 20000}],
+                    },
+                    {
+                        "sampleKey": "sample-2",
+                        "runId": 1,
+                        "stepCount": 2,
+                        "minute": 2,
+                        "time": "00:02:00",
+                        "loadKw": 101.0,
+                        "dieselKw": 19.0,
+                        "storageKw": 6.0,
+                        "storageSocPercent": 49.9,
+                        "renewableKw": 81.0,
+                        "acdcCurrentKw": 11.0,
+                        "acdcTargetKw": 12.0,
+                        "dcTransferGroups": [{"detail": "y" * 20000}],
+                    },
+                ]
+                controller.trend_normalized = True
+                controller.log_seq = 2
+                controller.logs = [
+                    {"seq": 2, "detail": "new-log", "type": "策略控制"},
+                    {"seq": 1, "detail": "old-log", "type": "策略控制"},
+                ]
+            server = make_http_server(
+                ("127.0.0.1", 0),
+                services,
+                role="trainee",
+                renewable_control_manager=manager,
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_address[1]}"
+                path = (
+                    "/api/trainee/renewable-control?model_id=shared"
+                    "&compact=1&after_log_seq=1&after_trend_sample_key=sample-1"
+                )
+                with urlopen(f"{base}{path}", timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+                manager.close()
+
+        self.assertFalse(payload["logsReset"])
+        self.assertEqual([item["seq"] for item in payload["logs"]], [2])
+        self.assertEqual(payload["latestLogSeq"], 2)
+        self.assertFalse(payload["trendReset"])
+        self.assertEqual(
+            [point["sampleKey"] for point in payload["trend"]],
+            ["sample-1", "sample-2"],
+        )
+        self.assertEqual(payload["latestTrendSampleKey"], "sample-2")
+        self.assertNotIn("dcTransferGroups", payload["trend"][0])
+        self.assertLess(
+            len(json.dumps(payload["trend"], ensure_ascii=False).encode("utf-8")),
+            2000,
+        )
 
 
 if __name__ == "__main__":

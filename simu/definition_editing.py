@@ -64,6 +64,24 @@ NONNEGATIVE_DEVICE_FIELD_TOKENS = (
     "wind_speed",
 )
 
+MEASUREMENT_STATUS_TOKENS = (
+    "valid",
+    "invalid",
+    "undefined",
+    "dead",
+    "zero",
+    "fixed",
+)
+
+MEASUREMENT_STATUS_VALIDITY = {
+    "valid": 1,
+    "invalid": 0,
+    "undefined": 0,
+    "dead": 1,
+    "zero": 1,
+    "fixed": 1,
+}
+
 
 def editable_device_field(field: str) -> bool:
     name = str(field or "").strip().casefold()
@@ -146,7 +164,7 @@ def normalize_device_changes(current: Mapping[str, Any], changes: Mapping[str, A
 def normalize_measurement_changes(current: Mapping[str, Any], changes: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(changes, Mapping) or not changes:
         raise ValueError("At least one measurement parameter change is required")
-    allowed = {"weight", "error_sigma", "valid"}
+    allowed = {"weight", "error_sigma", "valid", "status", "fixed_value"}
     unknown = [field for field in changes if field not in allowed]
     if unknown:
         raise ValueError(f"Unknown measurement parameter: {unknown[0]}")
@@ -168,14 +186,40 @@ def normalize_measurement_changes(current: Mapping[str, Any], changes: Mapping[s
     else:
         sigma = 1.0 / math.sqrt(weight)
 
-    valid_number = _finite_number(changes.get("valid", current.get("valid", 1)), "valid")
-    if valid_number not in (0.0, 1.0):
-        raise ValueError("valid must be 0 or 1")
-    valid = int(valid_number)
+    current_status = str(current.get("status", "")).strip().casefold()
+    if not current_status:
+        current_status = "valid" if int(_finite_number(current.get("valid", 1), "valid")) == 1 else "invalid"
+    if current_status not in MEASUREMENT_STATUS_TOKENS:
+        current_status = "valid" if int(_finite_number(current.get("valid", 1), "valid")) == 1 else "invalid"
+    status = str(changes.get("status", current_status)).strip().casefold()
+    if status not in MEASUREMENT_STATUS_TOKENS:
+        raise ValueError(
+            "status must be one of: " + ", ".join(MEASUREMENT_STATUS_TOKENS)
+        )
+
+    if "status" not in changes:
+        valid_number = _finite_number(changes.get("valid", current.get("valid", 1)), "valid")
+        if valid_number not in (0.0, 1.0):
+            raise ValueError("valid must be 0 or 1")
+        valid = int(valid_number)
+        status = "valid" if valid else "invalid"
+    else:
+        valid = MEASUREMENT_STATUS_VALIDITY[status]
+
+    fixed_value = None
+    if status == "fixed":
+        raw_fixed_value = changes.get("fixed_value", current.get("fixed_value"))
+        if raw_fixed_value in (None, ""):
+            raise ValueError("fixed_value is required when status is fixed")
+        fixed_value = _finite_number(raw_fixed_value, "fixed_value")
+    elif "fixed_value" in changes and changes.get("fixed_value") not in (None, ""):
+        raise ValueError("fixed_value is only allowed when status is fixed")
     return {
         "weight": _number_text(weight),
         "valid": str(valid),
         "error_sigma": sigma,
+        "status": status,
+        "fixed_value": fixed_value,
     }
 
 

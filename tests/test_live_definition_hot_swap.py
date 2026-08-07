@@ -182,6 +182,42 @@ class LiveDefinitionHotSwapTest(unittest.TestCase):
         self.assertAlmostEqual(result["record"]["error_sigma"], 0.02)
         self.assertEqual(result["record"]["valid"], 0)
 
+    def test_measurement_update_persists_fixed_status_and_applies_fixed_value(self):
+        source, _runtime, service = self._make_service()
+        name = "p_gen_diesel_300kw"
+
+        result = service.update_measurement_definition(
+            {
+                "name": name,
+                "changes": {"status": "fixed", "fixed_value": 12.5},
+            }
+        )
+
+        definition = next(row for row in service.measurements()["definitions"] if row["name"] == name)
+        self.assertEqual(definition["status"], "fixed")
+        self.assertEqual(definition["fixed_value"], 12.5)
+        self.assertEqual(result["record"]["status"], "fixed")
+        self.assertEqual(result["record"]["fixed_value"], 12.5)
+        self.assertEqual(service.local_settings["measurement_statuses"][name]["status"], "fixed")
+        self.assertEqual(service.local_settings["measurement_statuses"][name]["fixed_value"], 12.5)
+        self.assertIn('"status": "fixed"', (service.settings_file).read_text(encoding="utf-8"))
+
+        reloaded = PolarMicrogridSimulator(source, _runtime, model_id="hot-swap", kernel=lambda _config: None)
+        reloaded_definition = next(
+            row for row in reloaded.measurements()["definitions"] if row["name"] == name
+        )
+        self.assertEqual(reloaded_definition["status"], "fixed")
+        self.assertEqual(reloaded_definition["fixed_value"], 12.5)
+
+        service.latest_scada_rows = [
+            list(row)
+            for row in service.definition_snapshot.measurement_rows
+            if row[1] == name
+        ]
+        service._apply_measurement_statuses(0, 0)
+        fixed_row = next(row for row in service.latest_scada_rows if row[1] == name)
+        self.assertEqual(float(fixed_row[7]), 12.5)
+
     def test_measurement_update_rejects_unknown_measurement(self):
         _source, _runtime, service = self._make_service()
 

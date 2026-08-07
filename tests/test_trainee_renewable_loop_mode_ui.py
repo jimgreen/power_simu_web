@@ -147,16 +147,24 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             self.backend,
         )
         self.assertIn('"dieselEffectKw": diesel_effect_kw', self.backend)
-        self.assertIn('side_aware_plan.get("dieselEffectKw")', self.backend)
+        self.assertIn("def _plan_direct_grid_forming_dispatch(", self.backend)
+        self.assertIn("def _validate_dispatch_by_ac_component(", self.backend)
+        self.assertIn("component_dispatch_plan = _validate_dispatch_by_ac_component(", self.backend)
+        self.assertIn('direct_grid_forming_plan.get("dieselEffectKw")', self.backend)
+        self.assertIn('"acComponentDispatch": copy.deepcopy(', self.backend)
         self.assertIn("base_converter_effect_kw", self.backend)
         self.assertIn("direct_ac_storage_effect_kw", self.backend)
         self.assertIn("direct_acdc_effect_kw", self.backend)
-        self.assertIn("+ direct_ac_storage_effect_kw", self.backend)
-        self.assertIn("+ direct_acdc_effect_kw", self.backend)
+        self.assertIn(
+            'direct_grid_forming_plan["dieselEffectKw"] = component_dispatch_plan[',
+            self.backend,
+        )
+        self.assertIn("candidate_effect = _finite_number(", self.backend)
         self.assertNotIn("candidate_effect = renewable_delta + storage_delta", self.backend)
         self.assertIn("renewable_storage_coordination_active = False", self.backend)
         self.assertIn('"commandKw": converter_allocations[index]', self.backend)
-        self.assertIn('"commandable": False', self.backend)
+        self.assertIn("diagnostic_converter_rows = [", self.backend)
+        self.assertIn('if not row.get("commandable")', self.backend)
 
     def test_decision_log_explicitly_excludes_load_from_control_targets(self):
         self.assertIn("负荷功率仅用于展示", self.backend)

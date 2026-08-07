@@ -53,6 +53,7 @@ process.stdout.write(JSON.stringify([
         self.assertIn("function persistStaticSnapshotCache", script)
         self.assertIn("function pageNeedsDevices", script)
         self.assertIn("function pageNeedsCommands", script)
+        self.assertIn("function pageNeedsCommandHistory", script)
         self.assertIn('"model": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"]', script)
         self.assertIn('"overview": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"]', script)
         self.assertIn('"faults": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"]', script)
@@ -61,6 +62,8 @@ process.stdout.write(JSON.stringify([
         self.assertIn("params.set(\"static\", requiredStaticKeys.join(\",\"));", script)
         self.assertIn('params.set("devices", pageNeedsDevices(page) ? "1" : "0");', script)
         self.assertIn("params.set(\"commands\", pageNeedsCommands(page) ? \"1\" : \"0\");", script)
+        self.assertIn('params.set("command_history", pageNeedsCommandHistory(page) ? "1" : "0");', script)
+        self.assertIn('return page === "runtime";', script)
         self.assertIn("function pageNeedsMeasurementDelta", script)
         self.assertIn("function pageNeedsRuntimeLogDelta", script)
         self.assertIn('params.set("lite", "1");', script)
@@ -72,6 +75,10 @@ process.stdout.write(JSON.stringify([
 
     def test_trainee_polling_uses_lite_remote_snapshot_with_initialized_local_definitions(self):
         script = (ROOT / "simu" / "web" / "trainee" / "app.js").read_text(encoding="utf-8")
+        teacher_poll_source = "function teacherSnapshotPollAddress" + script.split(
+            "function teacherSnapshotPollAddress",
+            1,
+        )[1].split("function measurementDeltaPathFromSnapshotPath", 1)[0]
 
         self.assertIn("function mergeSnapshot", script)
         self.assertIn("function snapshotPollPath", script)
@@ -83,12 +90,19 @@ process.stdout.write(JSON.stringify([
         self.assertIn("function staticSnapshotMissingKeys", script)
         self.assertIn("function pageNeedsDevices", script)
         self.assertIn("function pageNeedsCommands", script)
+        self.assertIn("function pageNeedsCommandHistory", script)
         self.assertIn('"overview": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"]', script)
         self.assertIn('"measurements": ["files", "source_files", "work_files", "definitions"]', script)
         self.assertIn('"commands": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"]', script)
         self.assertIn('params.set("static", "0");', script)
         self.assertIn("params.set(\"devices\", pageNeedsDevices(page) ? \"1\" : \"0\");", script)
         self.assertIn("params.set(\"commands\", pageNeedsCommands(page) ? \"1\" : \"0\");", script)
+        self.assertIn('params.set("command_history", pageNeedsCommandHistory(page) ? "1" : "0");', script)
+        self.assertIn(
+            'params.set("command_history", pageNeedsCommandHistory(page) ? "1" : "0");',
+            teacher_poll_source,
+        )
+        self.assertIn('return page === "commands";', script)
         self.assertIn('params.set("lite", "1");', script)
         self.assertIn("function pageNeedsRuntimeLogs", script)
         self.assertIn('return ["overview", "history"].includes(page);', script)

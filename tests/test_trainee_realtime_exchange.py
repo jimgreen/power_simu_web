@@ -178,6 +178,209 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
         self.assertTrue(view.ready)
         self.assertEqual(len(urls), 1)
         self.assertIn("static=0", urls[0])
+        self.assertIn("measurements=0", urls[0])
+        self.assertIn("measurement_after_seq=0", urls[0])
+        self.assertIn("measurement_compact=1", urls[0])
+        self.assertIn("command_history=0", urls[0])
+
+    def test_refresh_rejects_a_bad_measurement_array_without_advancing_or_publishing(self):
+        service = self.make_service()
+        teacher = self.make_service("teacher")
+        configure_receive(service)
+        teacher.latest_real_rows = [list(row) for row in teacher.measurement_rows]
+        teacher.latest_scada_rows = [list(row) for row in teacher.measurement_rows]
+        good_frame = teacher.measurement_delta(after_seq=0, compact=True)
+        good_snapshot = teacher.snapshot(
+            include_static=False,
+            include_runtime_logs=False,
+            include_measurements=False,
+        )
+        good_snapshot["measurement_delta"] = good_frame
+        bad_snapshot = copy.deepcopy(good_snapshot)
+        bad_snapshot["measurement_delta"]["seq"] = good_frame["seq"] + 1
+        bad_snapshot["measurement_delta"]["count"] = good_frame["count"] + 1
+        responses = [good_snapshot, bad_snapshot]
+
+        exchange = TraineeRealtimeExchange(
+            service,
+            request_json=lambda _url, **_kwargs: copy.deepcopy(responses.pop(0)),
+            start_worker=False,
+        )
+        self.addCleanup(exchange.close)
+
+        first = exchange.refresh_once(service.model_id)
+        state = exchange._state_for_service(service)
+        with state.lock:
+            first_revision = state.revision
+            first_remote_seq = state.remote_measurement_delta_seq
+            first_measurements = copy.deepcopy((state.runtime_snapshot or {}).get("measurements"))
+
+        second = exchange.refresh_once(service.model_id)
+
+        self.assertEqual(second.revision, first_revision)
+        self.assertEqual(first_remote_seq, good_frame["seq"])
+        with state.lock:
+            self.assertEqual(state.revision, first_revision)
+            self.assertEqual(state.remote_measurement_delta_seq, first_remote_seq)
+            self.assertEqual((state.runtime_snapshot or {}).get("measurements"), first_measurements)
+            self.assertIn("实时量测数组长度不一致", state.last_error)
+
+    def test_refresh_diagnostics_count_accepted_and_rejected_measurement_frames(self):
+        service = self.make_service()
+        teacher = self.make_service("teacher")
+        configure_receive(service)
+        teacher.latest_real_rows = [list(row) for row in teacher.measurement_rows]
+        teacher.latest_scada_rows = [list(row) for row in teacher.measurement_rows]
+        good_frame = teacher.measurement_delta(after_seq=0, compact=True)
+        good_snapshot = teacher.snapshot(
+            include_static=False,
+            include_runtime_logs=False,
+            include_measurements=False,
+        )
+        good_snapshot["measurement_delta"] = good_frame
+        missing_signature = copy.deepcopy(good_snapshot)
+        missing_signature["measurement_delta"]["seq"] = good_frame["seq"] + 1
+        missing_signature["measurement_delta"].pop("definition_signature")
+        responses = [good_snapshot, missing_signature]
+        exchange = TraineeRealtimeExchange(
+            service,
+            request_json=lambda _url, **_kwargs: copy.deepcopy(responses.pop(0)),
+            start_worker=False,
+        )
+        self.addCleanup(exchange.close)
+
+        exchange.refresh_once(service.model_id)
+        accepted = exchange.receive_status(service.model_id)
+        exchange.refresh_once(service.model_id)
+        rejected = exchange.receive_status(service.model_id)
+
+        self.assertEqual(accepted["acceptedMeasurementFrameCount"], 1)
+        self.assertEqual(accepted["rejectedMeasurementFrameCount"], 0)
+        self.assertEqual(accepted["lastAcceptedMeasurementSeq"], good_frame["seq"])
+        self.assertEqual(accepted["lastAcceptedMeasurementCount"], good_frame["count"])
+        self.assertEqual(rejected["acceptedMeasurementFrameCount"], 1)
+        self.assertEqual(rejected["rejectedMeasurementFrameCount"], 1)
+        self.assertEqual(rejected["lastRejectedMeasurementSeq"], good_frame["seq"] + 1)
+        self.assertIn("定义顺序签名缺失", rejected["lastRejectedMeasurementReason"])
+        self.assertEqual(rejected["remoteMeasurementSeq"], good_frame["seq"])
+
+    def test_published_measurements_align_values_by_index_instead_of_measurement_name(self):
+        service = self.make_service()
+        runtime = service.snapshot(
+            include_static=True,
+            include_runtime_logs=False,
+            include_measurements=True,
+        )
+        measurement_index = runtime["measurements"]["real"][0]["idx"]
+        definition_position = next(
+            position
+            for position, definition in enumerate(runtime["measurements"]["definitions"])
+            if definition["idx"] == measurement_index
+        )
+        real_row = next(
+            row for row in runtime["measurements"]["real"] if row["idx"] == measurement_index
+        )
+        scada_row = next(
+            row for row in runtime["measurements"]["scada"] if row["idx"] == measurement_index
+        )
+        real_row["name"] = "故意不匹配的真值测点名"
+        scada_row["name"] = "故意不匹配的量测点名"
+        real_row["value"] = 41.5
+        scada_row["value"] = 40.75
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+
+        exchange.publish_runtime_snapshot(service.model_id, runtime)
+        compact = exchange.measurement_delta(service.model_id, after_seq=0, compact=True)
+
+        self.assertEqual(compact["real_values"][definition_position], 41.5)
+        self.assertEqual(compact["scada_values"][definition_position], 40.75)
+
+    def test_internal_snapshot_publish_does_not_deepcopy_unrelated_runtime_sections(self):
+        service = self.make_service()
+        runtime = service.snapshot(
+            include_static=False,
+            include_runtime_logs=False,
+            include_measurements=True,
+        )
+        runtime["unrelated"] = _DeepcopyBomb("unrelated runtime data must not be deep-copied")
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+        state = exchange._state_for_service(service)
+        service.snapshot = lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("validated owned measurement frames must not rebuild a local snapshot")
+        )
+
+        revision = exchange._publish_runtime_snapshot_for_service(
+            service,
+            state,
+            runtime,
+            snapshot_owned=True,
+        )
+
+        self.assertEqual(revision, 1)
+        with state.lock:
+            self.assertIs((state.runtime_snapshot or {})["unrelated"], runtime["unrelated"])
+
+    def test_runtime_snapshot_without_a_measurement_frame_preserves_the_last_valid_arrays(self):
+        service = self.make_service()
+        runtime = service.snapshot(
+            include_static=True,
+            include_runtime_logs=False,
+            include_measurements=True,
+        )
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+        exchange.publish_runtime_snapshot(service.model_id, runtime)
+        state = exchange._state_for_service(service)
+        with state.lock:
+            initial_seq = state.measurement_delta_seq
+            initial_items = list(state.measurement_delta_state.items())
+
+        without_measurements = service.snapshot(
+            include_static=False,
+            include_runtime_logs=False,
+            include_measurements=False,
+        )
+        exchange._publish_runtime_snapshot_for_service(
+            service,
+            state,
+            without_measurements,
+            snapshot_owned=True,
+        )
+
+        with state.lock:
+            self.assertEqual(state.measurement_delta_seq, initial_seq)
+            self.assertEqual(list(state.measurement_delta_state.items()), initial_items)
+
+    def test_unchanged_array_envelope_skips_rebuilding_measurement_rows(self):
+        service = self.make_service()
+        runtime = service.snapshot(
+            include_static=True,
+            include_runtime_logs=False,
+            include_measurements=True,
+        )
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+        exchange.publish_runtime_snapshot(service.model_id, runtime)
+        state = exchange._state_for_service(service)
+        with state.lock:
+            initial_seq = state.measurement_delta_seq
+
+        with patch(
+            "simu.trainee_exchange._measurement_delta_items",
+            side_effect=AssertionError("unchanged arrays must reuse the accepted measurement state"),
+        ):
+            exchange._publish_runtime_snapshot_for_service(
+                service,
+                state,
+                runtime,
+                snapshot_owned=True,
+                measurement_frame_unchanged=True,
+            )
+
+        with state.lock:
+            self.assertEqual(state.measurement_delta_seq, initial_seq)
 
     def test_worker_receives_without_any_browser_request(self):
         service = self.make_service()
@@ -1058,6 +1261,99 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
         self.assertEqual([item["name"] for item in delta["items"]], [measurement_name])
         self.assertEqual(delta["items"][0]["scada_value"], 13.0)
 
+    def test_compact_measurement_delta_uses_local_definition_order_without_names(self):
+        service = self.make_service()
+        runtime = service.snapshot(
+            include_static=True,
+            include_runtime_logs=False,
+            include_measurements=True,
+        )
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+        exchange.publish_runtime_snapshot(service.model_id, runtime)
+
+        payload = exchange.measurement_delta(service.model_id, after_seq=0, compact=True)
+
+        self.assertEqual(payload["encoding"], "measurement-arrays-v1")
+        self.assertTrue(payload["frame"])
+        self.assertEqual(payload["count"], len(runtime["measurements"]["definitions"]))
+        self.assertEqual(len(payload["real_values"]), payload["count"])
+        self.assertEqual(len(payload["scada_values"]), payload["count"])
+        self.assertNotIn(
+            runtime["measurements"]["definitions"][0]["name"],
+            json.dumps(payload, ensure_ascii=False),
+        )
+
+    def test_compact_measurement_delta_sends_all_values_after_one_runtime_value_changes(self):
+        service = self.make_service()
+        runtime = service.snapshot(
+            include_static=True,
+            include_runtime_logs=False,
+            include_measurements=True,
+        )
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+        exchange.publish_runtime_snapshot(service.model_id, runtime)
+        initial = exchange.measurement_delta(service.model_id, after_seq=0, compact=True)
+        changed_runtime = copy.deepcopy(runtime)
+        changed_name = changed_runtime["measurements"]["scada"][0]["name"]
+        changed_index = next(
+            index
+            for index, definition in enumerate(changed_runtime["measurements"]["definitions"])
+            if definition["name"] == changed_name
+        )
+        changed_runtime["measurements"]["scada"][0]["value"] = 37.5
+        exchange.publish_runtime_snapshot(service.model_id, changed_runtime)
+
+        changed = exchange.measurement_delta(
+            service.model_id,
+            after_seq=initial["seq"],
+            compact=True,
+        )
+
+        self.assertTrue(changed["frame"])
+        self.assertEqual(changed["count"], initial["count"])
+        self.assertEqual(len(changed["real_values"]), changed["count"])
+        self.assertEqual(len(changed["scada_values"]), changed["count"])
+        self.assertEqual(changed["scada_values"][changed_index], 37.5)
+
+    def test_compact_measurement_delta_propagates_status_and_fixed_value_changes(self):
+        service = self.make_service()
+        runtime = service.snapshot(
+            include_static=True,
+            include_runtime_logs=False,
+            include_measurements=True,
+        )
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+        exchange.publish_runtime_snapshot(service.model_id, runtime)
+        initial = exchange.measurement_delta(service.model_id, after_seq=0, compact=True)
+
+        changed_name = runtime["measurements"]["definitions"][0]["name"]
+        service.update_measurement_definition(
+            {
+                "name": changed_name,
+                "changes": {"status": "fixed", "fixed_value": 12.5},
+            }
+        )
+        changed_runtime = service.snapshot(
+            include_static=True,
+            include_runtime_logs=False,
+            include_measurements=True,
+        )
+        exchange.publish_runtime_snapshot(service.model_id, changed_runtime)
+
+        changed = exchange.measurement_delta(
+            service.model_id,
+            after_seq=initial["seq"],
+            compact=True,
+        )
+
+        self.assertTrue(changed["frame"])
+        self.assertEqual(changed["status_values"][0], "fixed")
+        self.assertEqual(changed["fixed_values"][0], 12.5)
+        self.assertNotIn(changed_name, json.dumps(changed, ensure_ascii=False))
+
     def test_measurement_delta_at_current_sequence_skips_unneeded_state_copies(self):
         service = self.make_service()
         runtime = service.snapshot(
@@ -1099,6 +1395,29 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
         self.assertEqual(unchanged["items"], [])
         self.assertEqual(unchanged["seq"], initial["seq"])
         self.assertEqual(unchanged["time"], str(runtime["clock"]["time"]))
+
+    def test_compact_measurement_frame_reads_owned_state_without_deepcopying_rows(self):
+        service = self.make_service()
+        runtime = service.snapshot(
+            include_static=True,
+            include_runtime_logs=False,
+            include_measurements=True,
+        )
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+        exchange.publish_runtime_snapshot(service.model_id, runtime)
+        state = exchange._state_for_service(service)
+        with state.lock:
+            first_item = next(iter(state.measurement_delta_state.values()))
+            first_item["unrelated"] = _DeepcopyBomb(
+                "compact array encoding must not deep-copy owned measurement rows"
+            )
+
+        compact = exchange.measurement_delta(service.model_id, after_seq=0, compact=True)
+
+        self.assertTrue(compact["frame"])
+        self.assertEqual(len(compact["real_values"]), compact["count"])
+        self.assertEqual(len(compact["scada_values"]), compact["count"])
 
     def test_measurement_delta_copies_only_batches_newer_than_requested_sequence(self):
         service = self.make_service()
@@ -1202,6 +1521,39 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
         for key in excluded_keys:
             self.assertNotIn(key, payload)
         self.assertEqual(payload["clock"], runtime["clock"])
+
+    def test_snapshot_can_project_effective_commands_without_copying_history(self):
+        service = self.make_service()
+        configure_receive(service)
+        runtime = service.snapshot(include_static=True, include_runtime_logs=False)
+        runtime["commands"] = {
+            "history": [
+                {
+                    "source": "performance-test",
+                    "detail": "x" * 20000,
+                }
+            ],
+            "effective": [{"source": "effective-test", "normalized": {}}],
+        }
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+        exchange.publish_runtime_snapshot(service.model_id, runtime)
+
+        payload = exchange.snapshot(
+            service.model_id,
+            options={
+                "measurements": "0",
+                "devices": "0",
+                "device_states": "0",
+                "logs": "0",
+                "static": "0",
+                "commands": "1",
+                "command_history": "0",
+            },
+        )
+
+        self.assertEqual(payload["commands"]["history"], [])
+        self.assertEqual(payload["commands"]["effective"], runtime["commands"]["effective"])
 
     def test_submit_commands_uses_learner_connection_and_preserves_payload(self):
         service = self.make_service()

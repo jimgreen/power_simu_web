@@ -235,7 +235,7 @@
 # ACGenerator    柴油发电机-4             p_set     0
 # ACGenerator    柴油发电机-4             q_set     0
 # ACGenerator    柴油发电机-4             v_set     380
-# ACGenerator    交流电化学储能-23          p_set     0.0
+# ACGenerator    交流电化学储能-23          p_set     10
 # ACGenerator    交流电化学储能-23          q_set     0.0
 # ACGenerator    交流电化学储能-23          v_set     380
 # ACGenerator    交流风力发电机-24          p_set     0

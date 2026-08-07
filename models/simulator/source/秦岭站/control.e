@@ -223,7 +223,7 @@
 # ACGenerator    交流风电-10             p_set     3.0
 # ACGenerator    交流风电-10             q_set     0.5
 # ACGenerator    交流风电-10             v_set     380
-# ACGenerator    柴油发电机-1             p_set     0
+# ACGenerator    柴油发电机-1             p_set     300
 # ACGenerator    柴油发电机-1             q_set     0
 # ACGenerator    柴油发电机-1             v_set     380
 # ACGenerator    柴油发电机-2             p_set     0
@@ -395,12 +395,12 @@
 </CbOpenStat>
 <StorageSoc>
 @ dev_type     idx  name        soc_curr
-# ACGenerator  23   交流电化学储能-23  50.0
-# ACGenerator  26   交流电化学储能-26  50.0
-# DCGenerator  4    电化学储能-1     50.0
-# DCGenerator  5    电化学储能-2     50.0
-# DCGenerator  6    电化学储能-3     50.0
-# DCGenerator  7    电化学储能-4     50.0
-# DCGenerator  8    电化学储能-5     50.0
-# DCGenerator  9    电化学储能-6     50.0
+# ACGenerator  23   交流电化学储能-23  0.5
+# ACGenerator  26   交流电化学储能-26  0.5
+# DCGenerator  4    电化学储能-1     0.5
+# DCGenerator  5    电化学储能-2     0.5
+# DCGenerator  6    电化学储能-3     0.5
+# DCGenerator  7    电化学储能-4     0.5
+# DCGenerator  8    电化学储能-5     0.5
+# DCGenerator  9    电化学储能-6     0.5
 </StorageSoc>

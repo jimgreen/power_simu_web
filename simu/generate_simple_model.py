@@ -230,7 +230,7 @@ def model_blocks() -> list[Block]:
                     "idx": 1,
                     "idx_dcgenerator": 2,
                     "pv_module_model": "Mono-550W",
-                    "module_efficiency": "20%",
+                    "module_efficiency": 0.2,
                     "array_area": "250_m2",
                     "mppt_count": 1,
                 }
@@ -261,9 +261,9 @@ def model_blocks() -> list[Block]:
                     "charge_discharge_efficiency": 0.95,
                     "max_charge_power": 40.0,
                     "max_discharge_power": 40.0,
-                    "state_of_charge": "55%",
-                    "soc_upper_limit": "90%",
-                    "soc_lower_limit": "20%",
+                    "state_of_charge": 0.55,
+                    "soc_upper_limit": 0.9,
+                    "soc_lower_limit": 0.2,
                 }
             ],
         ),

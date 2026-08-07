@@ -128,7 +128,7 @@ class DefinitionEditingHelpersTest(unittest.TestCase):
         self.assertEqual(normalize_device_changes(current, {"run_stat": 0})["run_stat"], "0")
         self.assertEqual(normalize_device_changes(current, {"status": 1})["status"], "1")
 
-    def test_device_changes_preserve_percentage_cells_and_validate_percentage_bounds(self):
+    def test_device_changes_normalize_percentage_cells_and_validate_ratio_bounds(self):
         current = {
             "energy_capacity": "100",
             "soc_lower_limit": "20%",
@@ -137,11 +137,11 @@ class DefinitionEditingHelpersTest(unittest.TestCase):
 
         normalized = normalize_device_changes(
             current,
-            {"energy_capacity": 222, "soc_upper_limit": 85},
+            {"energy_capacity": 222, "soc_upper_limit": "85%"},
         )
 
         self.assertEqual(normalized["energy_capacity"], "222")
-        self.assertEqual(normalized["soc_upper_limit"], "85%")
+        self.assertEqual(normalized["soc_upper_limit"], "0.85")
         with self.assertRaisesRegex(ValueError, "soc_lower_limit.*soc_upper_limit"):
             normalize_device_changes(current, {"soc_lower_limit": "95%"})
 

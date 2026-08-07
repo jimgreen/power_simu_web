@@ -44,6 +44,17 @@ PROTECTED_DEVICE_FIELDS = {
 
 BINARY_DEVICE_FIELDS = {"run_stat", "status"}
 
+DIAGRAM_RATIO_DEVICE_FIELDS = {
+    "state_of_charge",
+    "soc",
+    "soc_curr",
+    "soc_cur",
+    "soc_min",
+    "soc_max",
+    "soc_lower_limit",
+    "soc_upper_limit",
+}
+
 NONNEGATIVE_DEVICE_FIELD_TOKENS = (
     "capacity",
     "efficiency",
@@ -98,6 +109,65 @@ def _number_text(value: float) -> str:
     return "0" if text in {"-0", "-0.0"} else text
 
 
+def _normalized_field_name(field: Any) -> str:
+    return str(field or "").strip().casefold()
+
+
+def is_soc_parameter_field(field: Any) -> bool:
+    name = _normalized_field_name(field)
+    return name in DIAGRAM_RATIO_DEVICE_FIELDS or name.startswith("soc_")
+
+
+def is_efficiency_parameter_field(field: Any) -> bool:
+    name = _normalized_field_name(field)
+    return bool(
+        "efficiency" in name
+        or name == "eta"
+        or name.startswith("eta_")
+        or name.endswith("_eta")
+        or name.endswith("_eff")
+    )
+
+
+def is_ratio_parameter_field(field: Any) -> bool:
+    return is_soc_parameter_field(field) or is_efficiency_parameter_field(field)
+
+
+def ratio_parameter_number(
+    field: Any,
+    value: Any,
+    *,
+    legacy_percent_points: bool = False,
+) -> float:
+    raw = str(value).strip()
+    number = _finite_number(value, str(field))
+    if raw.endswith("%"):
+        return number / 100.0
+    if legacy_percent_points:
+        if is_efficiency_parameter_field(field) and 1.0 < number <= 100.0:
+            return number / 100.0
+        if is_soc_parameter_field(field) and 2.0 < abs(number) <= 100.0:
+            return number / 100.0
+    return number
+
+
+def canonical_ratio_parameter_text(
+    field: Any,
+    value: Any,
+    *,
+    legacy_percent_points: bool = False,
+    allow_out_of_range: bool = False,
+) -> str:
+    number = ratio_parameter_number(
+        field,
+        value,
+        legacy_percent_points=legacy_percent_points,
+    )
+    if not allow_out_of_range and not 0.0 <= number <= 1.0:
+        raise ValueError(f"{field} must be between 0 and 1")
+    return _number_text(number)
+
+
 def _numeric_cell(value: Any) -> bool:
     try:
         raw = str(value).strip()
@@ -136,21 +206,37 @@ def normalize_device_changes(current: Mapping[str, Any], changes: Mapping[str, A
     normalized: dict[str, str] = {}
     for field, value in changes.items():
         if _numeric_cell(current.get(field)):
-            number = _finite_number(value, field)
+            ratio_field = is_ratio_parameter_field(field)
+            number = (
+                ratio_parameter_number(field, value)
+                if ratio_field
+                else _finite_number(value, field)
+            )
             normalized_field = str(field).casefold()
             if normalized_field in BINARY_DEVICE_FIELDS and number not in (0.0, 1.0):
                 raise ValueError(f"{field} must be 0 or 1")
+            if ratio_field and not 0.0 <= number <= 1.0:
+                raise ValueError(f"{field} must be between 0 and 1")
             if any(token in normalized_field for token in NONNEGATIVE_DEVICE_FIELD_TOKENS) and number < 0:
                 raise ValueError(f"{field} must not be negative")
-            suffix = "%" if str(current.get(field, "")).strip().endswith("%") else ""
-            normalized[field] = f"{_number_text(number)}{suffix}"
+            normalized[field] = _number_text(number)
         else:
             normalized[field] = str(value).strip()
 
     merged = {key: str(value) for key, value in current.items()}
     merged.update(normalized)
     for lower, upper in _bound_pairs(tuple(merged)):
-        if _finite_number(merged[lower], lower) > _finite_number(merged[upper], upper):
+        lower_number = (
+            ratio_parameter_number(lower, merged[lower], legacy_percent_points=True)
+            if is_ratio_parameter_field(lower)
+            else _finite_number(merged[lower], lower)
+        )
+        upper_number = (
+            ratio_parameter_number(upper, merged[upper], legacy_percent_points=True)
+            if is_ratio_parameter_field(upper)
+            else _finite_number(merged[upper], upper)
+        )
+        if lower_number > upper_number:
             raise ValueError(f"{lower} must not exceed {upper}")
     return normalized
 

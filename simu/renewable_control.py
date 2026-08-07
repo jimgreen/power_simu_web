@@ -679,7 +679,7 @@ def _runtime_mode(snapshot: Mapping[str, Any], device: Mapping[str, Any]) -> str
 @dataclass(frozen=True)
 class RenewableControlSettings:
     interval_seconds: float = 2.0
-    soc_min: float = 0.3
+    soc_min: float = 0.1
     soc_max: float = 0.9
     large_step_threshold_kw: float = 10.0
     step_coefficient: float = 0.03

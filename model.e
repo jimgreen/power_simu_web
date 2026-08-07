@@ -245,16 +245,16 @@
 </ACWindGen>
 <DCPVGen>
 @ idx  idx_dcgenerator  pv_module_model  module_efficiency  array_area  mppt_count
-# 1    1                Mono-550W        21.3%              250_m2      25
-# 2    2                Mono-550W        21.3%              250_m2      25
-# 3    3                Mono-550W        21.3%              250_m2      25
+# 1    1                Mono-550W        0.213              250_m2      25
+# 2    2                Mono-550W        0.213              250_m2      25
+# 3    3                Mono-550W        0.213              250_m2      25
 </DCPVGen>
 <DCStorageGen>
 @ idx  idx_dcgenerator  storage_technology  battery_rack_count  energy_capacity  charge_discharge_efficiency  max_charge_power  max_discharge_power  state_of_charge  soc_upper_limit  soc_lower_limit
-# 1    4                lithium             20                  60               0.95                         60                60                   50%              90%              10%
-# 2    5                lithium             20                  60               0.95                         60                60                   50%              90%              10%
-# 3    6                lithium             20                  60               0.95                         60                60                   50%              90%              10%
-# 4    7                lithium             20                  60               0.95                         60                60                   50%              90%              10%
-# 5    8                lithium             20                  60               0.95                         60                60                   50%              90%              10%
-# 6    9                lithium             20                  60               0.95                         60                60                   50%              90%              10%
+# 1    4                lithium             20                  60               0.95                         60                60                   0.5              0.9              0.1
+# 2    5                lithium             20                  60               0.95                         60                60                   0.5              0.9              0.1
+# 3    6                lithium             20                  60               0.95                         60                60                   0.5              0.9              0.1
+# 4    7                lithium             20                  60               0.95                         60                60                   0.5              0.9              0.1
+# 5    8                lithium             20                  60               0.95                         60                60                   0.5              0.9              0.1
+# 6    9                lithium             20                  60               0.95                         60                60                   0.5              0.9              0.1
 </DCStorageGen>

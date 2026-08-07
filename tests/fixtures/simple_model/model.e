@@ -66,9 +66,9 @@
 </ACWindGen>
 <DCPVGen>
 @ idx  idx_dcgenerator  pv_module_model  module_efficiency  array_area  mppt_count
-# 1    2                Mono-550W        20%                250_m2      1
+# 1    2                Mono-550W        0.2                250_m2      1
 </DCPVGen>
 <DCStorageGen>
 @ idx  idx_dcgenerator  storage_technology  battery_rack_count  energy_capacity  charge_discharge_efficiency  max_charge_power  max_discharge_power  state_of_charge  soc_upper_limit  soc_lower_limit
-# 1    3                lithium             1                   100              0.95                         40                40                   55%              90%              20%
+# 1    3                lithium             1                   100              0.95                         40                40                   0.55             0.9              0.2
 </DCStorageGen>

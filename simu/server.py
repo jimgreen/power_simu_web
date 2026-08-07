@@ -41,7 +41,12 @@ except ImportError:  # The migrated web repo can run outside the original packag
     from efile_read import EBlock, EBook
 
 try:
-    from .definition_editing import DefinitionRevisionConflict
+    from .definition_editing import (
+        DefinitionRevisionConflict,
+        canonical_ratio_parameter_text,
+        is_ratio_parameter_field,
+        is_soc_parameter_field,
+    )
     from .service import (
         DEFAULT_WEATHER,
         DIAGRAM_FILE_NAME,
@@ -63,7 +68,12 @@ try:
     from .power_flow_worker import PowerFlowProcessRunner
     from .trainee_exchange import TraineeExchangeLifecycleError, TraineeRealtimeExchange
 except ImportError:  # pragma: no cover - legacy package compatibility.
-    from hybrid_power_system_analysis.polar_microgrid_sim.definition_editing import DefinitionRevisionConflict
+    from hybrid_power_system_analysis.polar_microgrid_sim.definition_editing import (
+        DefinitionRevisionConflict,
+        canonical_ratio_parameter_text,
+        is_ratio_parameter_field,
+        is_soc_parameter_field,
+    )
     from hybrid_power_system_analysis.polar_microgrid_sim.service import (
         DEFAULT_WEATHER,
         DIAGRAM_FILE_NAME,
@@ -554,7 +564,9 @@ def _storage_soc_value(value: Any, default: float = 0.5) -> float:
     number = _to_float(raw_value, None)
     if number is None:
         return default
-    return number / 100.0 if "%" in text else number
+    if "%" in text or 2.0 < abs(number) <= 100.0:
+        return number / 100.0
+    return number
 
 
 def _first_present(row: Mapping[str, Any], columns: Sequence[str], default: Any = "") -> Any:
@@ -830,6 +842,25 @@ def _generated_model_artifacts(model_text: str) -> Mapping[str, Any]:
     if not str(model_text or "").strip():
         raise ValueError("model.e 不能为空")
     model_book = _book_from_text(model_text)
+    for block in model_book.data.values():
+        for field in getattr(block, "header_list", []):
+            if not is_ratio_parameter_field(field):
+                continue
+            allow_out_of_range = is_soc_parameter_field(field) and str(field).casefold() in {
+                "state_of_charge",
+                "soc",
+                "soc_curr",
+                "soc_cur",
+            }
+            for row in getattr(block, "data", []):
+                if row.get(field, "") == "":
+                    continue
+                row[field] = canonical_ratio_parameter_text(
+                    field,
+                    row[field],
+                    legacy_percent_points=True,
+                    allow_out_of_range=allow_out_of_range,
+                )
     if not _model_book_has_power_model(model_book):
         raise ValueError("model.e 中未找到可识别的电网模型设备块")
 

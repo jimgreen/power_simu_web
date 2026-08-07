@@ -54,6 +54,7 @@ from simu.definition_editing import (
     atomic_write_text,
     normalize_device_changes,
     normalize_measurement_changes,
+    ratio_parameter_number,
     require_definition_revision,
     render_ebook_aligned,
 )
@@ -5388,10 +5389,16 @@ class PolarMicrogridSimulator:
                     value = row.get(column)
                     break
             text = str(value or "").strip()
-            number = _to_float(text.replace("%", "").strip() if "%" in text else value, None)
-            if number is None:
+            if not text:
                 return default
-            return float(number) / 100.0 if "%" in text else float(number)
+            try:
+                return ratio_parameter_number(
+                    "state_of_charge",
+                    value,
+                    legacy_percent_points=True,
+                )
+            except ValueError:
+                return default
 
         generator_rows_by_idx = {
             dev_type: {

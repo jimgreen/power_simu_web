@@ -417,6 +417,15 @@ def _ratio_from_text(value, default: Optional[float] = 0.0) -> Optional[float]:
     return number
 
 
+def _storage_soc_ratio_from_text(value, default: Optional[float] = 0.0) -> Optional[float]:
+    number = _ratio_from_text(value, default)
+    if number is None:
+        return default
+    if not (isinstance(value, str) and "%" in value) and 2.0 < abs(number) <= 100.0:
+        return number / 100.0
+    return number
+
+
 def _rated_power_from_name(value, default: Optional[float] = None) -> Optional[float]:
     text = str(value or "")
     match = re.search(r"([-+]?\d+(?:\.\d+)?)\s*(mw|kw|w)\b", text, re.IGNORECASE)
@@ -871,7 +880,7 @@ def _embedded_device_define_book(model_book: EBook) -> EBook:
         source_name = str(source.get("name", row.get("name", f"pv_{pos}")))
         rated = _numeric_from_text(row.get("rated_power"), None)
         if rated is None:
-            efficiency = _ratio_from_text(row.get("module_efficiency"), 0.2) or 0.2
+            efficiency = _efficiency_from_text(row.get("module_efficiency"), 0.2)
             area = _numeric_from_text(row.get("array_area"), 0.0) or 0.0
             rated = efficiency * area
         if rated <= 0.0:
@@ -906,8 +915,8 @@ def _embedded_device_define_book(model_book: EBook) -> EBook:
             source_name = str(source.get("name", "")).strip()
             if not source_name:
                 continue
-            soc_max = _ratio_from_text(row.get("soc_upper_limit"), None)
-            soc_cur = _ratio_from_text(row.get("state_of_charge"), None)
+            soc_max = _storage_soc_ratio_from_text(row.get("soc_upper_limit"), None)
+            soc_cur = _storage_soc_ratio_from_text(row.get("state_of_charge"), None)
             storage_rows.append(
                 {
                     "id": row.get("idx", pos),
@@ -916,7 +925,7 @@ def _embedded_device_define_book(model_book: EBook) -> EBook:
                     "source_name": source_name,
                     "emva": _numeric_from_text(row.get("energy_capacity"), DEFAULT_STORAGE_CAPACITY_KWH) or DEFAULT_STORAGE_CAPACITY_KWH,
                     "soc_max": 1.0 if soc_max is None else soc_max,
-                    "soc_min": _ratio_from_text(row.get("soc_lower_limit"), 0.0) or 0.0,
+                    "soc_min": _storage_soc_ratio_from_text(row.get("soc_lower_limit"), 0.0) or 0.0,
                     "soc_cur": 0.5 if soc_cur is None else soc_cur,
                     "charge_p_max": _numeric_from_text(row.get("max_charge_power"), 0.0) or 0.0,
                     "dis_charge_p_max": _numeric_from_text(row.get("max_discharge_power"), 0.0) or 0.0,

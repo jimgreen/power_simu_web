@@ -4134,8 +4134,15 @@ function normalizeDiagramMeasurementToken(value) {
   return String(value || "").trim().toUpperCase();
 }
 
+function normalizeDiagramMetricType(value) {
+  const metricName = String(value || "").trim().toLowerCase();
+  const compactName = metricName.replace(/[\s_-]+/g, "");
+  if (compactName === "soc" || compactName === "stateofcharge") return "level";
+  return metricName;
+}
+
 function diagramMetricMeasurementTypes(devType, metricType) {
-  const metricName = String(metricType || "").trim().toLowerCase();
+  const metricName = normalizeDiagramMetricType(metricType);
   const metricEntry = Object.entries(DIAGRAM_METRIC_MEASUREMENT_TYPES)
     .find(([key]) => key.toLowerCase() === metricName)?.[1] || {};
   const specific = metricEntry[normalizeDiagramMeasurementToken(devType)] || [];
@@ -4188,7 +4195,7 @@ function diagramMetricBindingValue(binding, maps) {
 function diagramDisplayRow(row, metricType = "") {
   if (!row) return row;
   if (
-    String(metricType || "").trim().toLowerCase() === "level"
+    normalizeDiagramMetricType(metricType) === "level"
     && normalizeDiagramMeasurementToken(row.meas_type) === "SOC"
     && Number.isFinite(Number(row.value))
   ) {
@@ -5159,11 +5166,66 @@ function diagramTooltipRowKey(sectionKey, label, index = 0) {
   return `${String(sectionKey || "section")}:${String(label || index)}`;
 }
 
-function diagramTooltipRows(rows = [], sectionKey = "") {
+function diagramIntegratedDefinitionBindingMatchesEditor(binding, interaction) {
+  return Boolean(
+    binding
+    && interaction?.definitionEditor?.kind === "device"
+    && interaction.definitionEditor.blockName === binding.blockName
+    && Number(interaction.definitionEditor.rowIndex) === Number(binding.rowIndex)
+  );
+}
+
+function renderDiagramIntegratedDefinitionRow(label, value, rowKey, binding, interaction) {
+  const fieldEditable = Boolean(binding?.editable);
+  const activeEditor = diagramIntegratedDefinitionBindingMatchesEditor(binding, interaction)
+    ? interaction.definitionEditor
+    : null;
+  const editing = Boolean(activeEditor && fieldEditable);
+  const recordAttributes = binding
+    ? ` data-diagram-definition-block="${escapeHtml(binding.blockName)}" data-diagram-definition-row-index="${binding.rowIndex}"`
+    : "";
+  if (!editing) {
+    return `
+      <div class="diagram-tooltip-row${fieldEditable ? " is-editable" : ""}" data-diagram-tooltip-row="${escapeHtml(rowKey)}"${recordAttributes}>
+        <dt>${escapeHtml(label)}</dt>
+        <dd
+          data-diagram-tooltip-value="${escapeHtml(rowKey)}"
+          ${fieldEditable ? 'data-diagram-definition-editable="device"' : ""}
+        >${escapeHtml(diagramDefinitionDisplayValue(binding?.field, value))}</dd>
+      </div>`;
+  }
+  const descriptor = diagramDefinitionInputDescriptor(binding.field, activeEditor.draft[binding.field]);
+  return `
+    <div class="diagram-tooltip-row is-editing-definition" data-diagram-tooltip-row="${escapeHtml(rowKey)}"${recordAttributes}>
+      <dt>${escapeHtml(label)}</dt>
+      <dd data-diagram-tooltip-value="${escapeHtml(rowKey)}">
+        <span class="diagram-definition-input-wrap">
+          <input
+            class="diagram-definition-input"
+            data-diagram-tooltip-inline-input
+            data-diagram-definition-input="device"
+            data-diagram-definition-field="${escapeHtml(binding.field)}"
+            type="${descriptor.type}"
+            ${descriptor.type === "number" ? 'step="any"' : ""}
+            ${descriptor.min !== "" ? `min="${descriptor.min}"` : ""}
+            ${descriptor.max !== "" ? `max="${descriptor.max}"` : ""}
+            value="${escapeHtml(descriptor.value)}"
+            ${interaction?.definitionSaving ? "disabled" : ""}
+          >
+          ${descriptor.suffix ? `<small>${escapeHtml(descriptor.suffix)}</small>` : ""}
+        </span>
+      </dd>
+    </div>`;
+}
+
+function diagramTooltipRows(rows = [], sectionKey = "", interaction = null) {
   const content = rows
     .filter((row) => row && row[0])
-    .map(([label, value, key], index) => {
+    .map(([label, value, key, binding], index) => {
       const rowKey = String(key || diagramTooltipRowKey(sectionKey, label, index));
+      if (binding) {
+        return renderDiagramIntegratedDefinitionRow(label, value, rowKey, binding, interaction);
+      }
       return `
       <div class="diagram-tooltip-row" data-diagram-tooltip-row="${escapeHtml(rowKey)}">
         <dt>${escapeHtml(label)}</dt>
@@ -5179,6 +5241,39 @@ const DIAGRAM_DEFINITION_PROTECTED_FIELDS = new Set([
   "node", "i_node", "j_node", "ac_node", "dc_node",
   "isl",
 ]);
+
+const DIAGRAM_DEFINITION_IDENTITY_FIELDS = new Set([
+  "idx", "name", "dev_name", "dev_type",
+]);
+
+function diagramDefinitionDisplayHeaders(record) {
+  const integratedFields = record?.integratedFields instanceof Set
+    ? record.integratedFields
+    : new Set(record?.integratedFields || []);
+  return (record?.headers || []).filter((field) => (
+    !DIAGRAM_DEFINITION_IDENTITY_FIELDS.has(String(field || "").trim().toLowerCase())
+    && !integratedFields.has(String(field || "").trim().toLowerCase())
+  ));
+}
+
+function diagramDefinitionFieldBinding(records, fieldNames = []) {
+  const candidates = new Set(fieldNames.map((field) => String(field || "").trim().toLowerCase()));
+  for (const record of records || []) {
+    const field = (record.headers || []).find((header) => (
+      candidates.has(String(header || "").trim().toLowerCase())
+    ));
+    if (!field) continue;
+    if (!(record.integratedFields instanceof Set)) record.integratedFields = new Set();
+    record.integratedFields.add(String(field).trim().toLowerCase());
+    return {
+      blockName: record.blockName,
+      rowIndex: record.rowIndex,
+      field,
+      editable: diagramDeviceParameterEditable(field),
+    };
+  }
+  return null;
+}
 
 const DIAGRAM_LINKED_DEFINITION_BLOCKS = Object.freeze({
   ACGENERATOR: [
@@ -5594,13 +5689,21 @@ function diagramDeviceTooltipData(container, hover, snapshot) {
     ["设备标识", device.devId || "--", "identity:id"],
     ["idx", idx, "identity:idx"],
   ];
+  const runStatBinding = diagramDefinitionFieldBinding(definitionRecords, ["run_stat"]);
+  const statusBinding = diagramDefinitionFieldBinding(definitionRecords, ["status"]);
+  const modeBinding = diagramDefinitionFieldBinding(definitionRecords, ["control_type", "mode"]);
   const statusRows = [
-    ["运行状态", live?.run_stat ?? raw.run_stat, "status:run_stat"],
-    ["开关状态", live?.status ?? raw.status, "status:status"],
-    ["控制模式", live?.mode ?? raw.control_type ?? raw.mode, "status:mode"],
+    ["运行状态", live?.run_stat ?? raw.run_stat, "status:run_stat", runStatBinding],
+    ["开关状态", live?.status ?? raw.status, "status:status", statusBinding],
+    ["控制模式", live?.mode ?? raw.control_type ?? raw.mode, "status:mode", modeBinding],
   ];
   const setRows = Object.entries(live?.set_values || {})
-    .map(([key, value]) => [key, value, `set:${key}`]);
+    .map(([key, value]) => [
+      key,
+      value,
+      `set:${key}`,
+      diagramDefinitionFieldBinding(definitionRecords, [key]),
+    ]);
   const duplicateKeys = new Set([
     "idx", "name", "dev_name", "dev_type", "run_stat", "status", "mode", "control_type",
     ...Object.keys(live?.set_values || {}),
@@ -5631,11 +5734,11 @@ function diagramDeviceTooltipData(container, hover, snapshot) {
   };
 }
 
-function diagramTooltipSectionsHtml(sections = []) {
+function diagramTooltipSectionsHtml(sections = [], interaction = null) {
   return sections.map((section) => `
     <section class="diagram-tooltip-section" data-diagram-tooltip-section="${escapeHtml(section.key)}">
       ${section.title ? `<h4>${escapeHtml(section.title)}</h4>` : ""}
-      ${diagramTooltipRows(section.rows, section.key)}
+      ${diagramTooltipRows(section.rows, section.key, interaction)}
     </section>`).join("");
 }
 
@@ -5646,14 +5749,93 @@ function diagramDefinitionMessageHtml(interaction) {
   return `<div class="diagram-definition-message${levelClass}" data-diagram-definition-message>${escapeHtml(message)}</div>`;
 }
 
-function diagramDefinitionInputDescriptor(value) {
+const DIAGRAM_DEFINITION_RATIO_FIELDS = new Set([
+  "state_of_charge",
+  "soc",
+  "soc_curr",
+  "soc_cur",
+  "soc_min",
+  "soc_max",
+  "soc_lower_limit",
+  "soc_upper_limit",
+]);
+
+function diagramDefinitionSocField(field) {
+  const name = String(field || "").trim().toLowerCase();
+  return DIAGRAM_DEFINITION_RATIO_FIELDS.has(name) || name.startsWith("soc_");
+}
+
+function diagramDefinitionEfficiencyField(field) {
+  const name = String(field || "").trim().toLowerCase();
+  return name.includes("efficiency")
+    || name === "eta"
+    || name.startsWith("eta_")
+    || name.endsWith("_eta")
+    || name.endsWith("_eff");
+}
+
+function diagramDefinitionRatioField(field) {
+  return diagramDefinitionSocField(field) || diagramDefinitionEfficiencyField(field);
+}
+
+function diagramDefinitionRatioFromStored(field, value) {
   const raw = String(value ?? "").trim();
+  const explicitPercent = raw.endsWith("%");
+  const numericText = explicitPercent ? raw.slice(0, -1).trim() : raw;
+  let number = Number(numericText);
+  if (!Number.isFinite(number)) return null;
+  if (explicitPercent) return number / 100;
+  if (diagramDefinitionEfficiencyField(field) && number > 1 && number <= 100) number /= 100;
+  if (diagramDefinitionSocField(field) && Math.abs(number) > 2 && Math.abs(number) <= 100) number /= 100;
+  return number;
+}
+
+function diagramDefinitionNumberText(value) {
+  if (!Number.isFinite(Number(value))) return "";
+  const number = Number(Number(value).toPrecision(15));
+  return Object.is(number, -0) ? "0" : String(number);
+}
+
+function diagramDefinitionDisplayValue(field, value) {
+  if (!diagramDefinitionRatioField(field)) return diagramTooltipValue(value);
+  const ratio = diagramDefinitionRatioFromStored(field, value);
+  return ratio === null ? diagramTooltipValue(value) : `${diagramDefinitionNumberText(ratio * 100)}%`;
+}
+
+function diagramDefinitionStoredValue(field, value) {
+  const raw = String(value ?? "").trim();
+  if (!diagramDefinitionRatioField(field)) return raw;
+  const numericText = raw.endsWith("%") ? raw.slice(0, -1).trim() : raw;
+  const percent = Number(numericText);
+  return Number.isFinite(percent) ? diagramDefinitionNumberText(percent / 100) : raw;
+}
+
+function diagramDefinitionCanonicalStoredValue(field, value) {
+  if (!diagramDefinitionRatioField(field)) return String(value ?? "").trim();
+  const ratio = diagramDefinitionRatioFromStored(field, value);
+  return ratio === null ? String(value ?? "").trim() : diagramDefinitionNumberText(ratio);
+}
+
+function diagramDefinitionInputDescriptor(field, value) {
+  const raw = String(value ?? "").trim();
+  if (diagramDefinitionRatioField(field)) {
+    const ratio = diagramDefinitionRatioFromStored(field, value);
+    if (ratio !== null) {
+      return {
+        type: "number",
+        value: diagramDefinitionNumberText(ratio * 100),
+        suffix: "%",
+        min: "0",
+        max: "100",
+      };
+    }
+  }
   const suffix = raw.endsWith("%") ? "%" : "";
   const numericText = suffix ? raw.slice(0, -1).trim() : raw;
   const number = Number(numericText);
   return Number.isFinite(number)
-    ? { type: "number", value: numericText, suffix }
-    : { type: "text", value: raw, suffix: "" };
+    ? { type: "number", value: numericText, suffix, min: "", max: "" }
+    : { type: "text", value: raw, suffix: "", min: "", max: "" };
 }
 
 function renderDiagramDeviceDefinitionEditor(record, editor, interaction) {
@@ -5680,10 +5862,10 @@ function renderDiagramDeviceDefinitionValueRow(record, field, activeEditor, inte
           data-diagram-definition-value="${escapeHtml(key)}"
           data-diagram-tooltip-value="${escapeHtml(key)}"
           ${fieldEditable ? 'data-diagram-definition-editable="device"' : ""}
-        >${escapeHtml(diagramTooltipValue(record.row[field]))}</dd>
+        >${escapeHtml(diagramDefinitionDisplayValue(field, record.row[field]))}</dd>
       </div>`;
   }
-  const descriptor = diagramDefinitionInputDescriptor(activeEditor.draft[field]);
+  const descriptor = diagramDefinitionInputDescriptor(field, activeEditor.draft[field]);
   return `
     <div class="diagram-tooltip-row is-editing-definition" data-diagram-tooltip-row="${escapeHtml(key)}">
       <dt>${escapeHtml(field)}</dt>
@@ -5696,6 +5878,8 @@ function renderDiagramDeviceDefinitionValueRow(record, field, activeEditor, inte
             data-diagram-definition-field="${escapeHtml(field)}"
             type="${descriptor.type}"
             ${descriptor.type === "number" ? 'step="any"' : ""}
+            ${descriptor.min !== "" ? `min="${descriptor.min}"` : ""}
+            ${descriptor.max !== "" ? `max="${descriptor.max}"` : ""}
             value="${escapeHtml(descriptor.value)}"
             ${interaction?.definitionSaving ? "disabled" : ""}
           >
@@ -5711,25 +5895,81 @@ function renderDiagramDeviceDefinitionRecord(record, interaction) {
     && Number(interaction.definitionEditor.rowIndex) === Number(record.rowIndex)
     ? interaction.definitionEditor
     : null;
-  const rows = record.headers
+  const displayHeaders = diagramDefinitionDisplayHeaders(record);
+  if (!displayHeaders.length) return "";
+  const rows = displayHeaders
     .map((field) => renderDiagramDeviceDefinitionValueRow(record, field, activeEditor, interaction))
     .join("");
   return `
-    <section class="diagram-definition-section" data-diagram-definition-block="${escapeHtml(record.blockName)}" data-diagram-definition-row-index="${record.rowIndex}">
+    <section class="diagram-tooltip-section diagram-definition-section" data-diagram-definition-block="${escapeHtml(record.blockName)}" data-diagram-definition-row-index="${record.rowIndex}">
       <div class="diagram-definition-section-head">
-        <h4>${escapeHtml(record.blockName)}</h4>
+        <h4>${escapeHtml(record.blockName)} 参数</h4>
       </div>
       <dl class="diagram-tooltip-grid">${rows}</dl>
-      ${activeEditor ? renderDiagramDeviceDefinitionEditor(record, activeEditor, interaction) : ""}
     </section>`;
+}
+
+function diagramDeviceDefinitionRecordsSignature(records) {
+  const payload = (records || []).map((record) => {
+    const headers = diagramDefinitionDisplayHeaders(record);
+    return [
+      record.blockName,
+      Number(record.rowIndex),
+      headers.map((field) => [field, record.row?.[field] ?? ""]),
+    ];
+  });
+  const text = JSON.stringify(payload);
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${payload.length}:${(hash >>> 0).toString(16)}`;
 }
 
 function renderDiagramDeviceDefinitionRecords(records, interaction) {
   if (!records.length) return "";
+  const content = records
+    .map((record) => renderDiagramDeviceDefinitionRecord(record, interaction))
+    .filter(Boolean)
+    .join("");
+  if (!content) return "";
   return `
-    <div class="diagram-definition-records" data-diagram-definition-records>
-      ${records.map((record) => renderDiagramDeviceDefinitionRecord(record, interaction)).join("")}
-      ${interaction?.definitionEditor ? "" : diagramDefinitionMessageHtml(interaction)}
+    <div
+      class="diagram-definition-records"
+      data-diagram-definition-records
+      data-diagram-definition-signature="${diagramDeviceDefinitionRecordsSignature(records)}"
+    >
+      ${content}
+    </div>`;
+}
+
+function renderDiagramDeviceDefinitionFooter(records, interaction) {
+  const activeRecord = interaction?.definitionEditor?.kind === "device"
+    ? records.find((record) => (
+      record.blockName === interaction.definitionEditor.blockName
+      && Number(record.rowIndex) === Number(interaction.definitionEditor.rowIndex)
+    ))
+    : null;
+  const content = activeRecord
+    ? renderDiagramDeviceDefinitionEditor(activeRecord, interaction.definitionEditor, interaction)
+    : diagramDefinitionMessageHtml(interaction);
+  if (!content) return "";
+  return `
+    <div class="diagram-definition-footer" data-diagram-definition-footer>
+      ${content}
+    </div>`;
+}
+
+function renderDiagramDeviceClassifiedTable(data, interaction) {
+  const [identitySection, ...detailSections] = data.dynamicSections;
+  const identitySections = identitySection ? [identitySection] : [];
+  return `
+    <div data-diagram-device-dynamic-body>
+      ${diagramTooltipSectionsHtml(identitySections, interaction)}
+      ${renderDiagramDeviceDefinitionRecords(data.definitionRecords, interaction)}
+      ${diagramTooltipSectionsHtml(detailSections, interaction)}
+      ${renderDiagramDeviceDefinitionFooter(data.definitionRecords, interaction)}
     </div>`;
 }
 
@@ -5742,10 +5982,7 @@ function renderDiagramDeviceTooltip(container, hover, snapshot, interaction) {
       <span>设备参数</span>
     </div>
     <div class="diagram-tooltip-body" data-diagram-device-tooltip-body>
-      <div data-diagram-device-dynamic-body>
-        ${diagramTooltipSectionsHtml(data.dynamicSections)}
-      </div>
-      ${renderDiagramDeviceDefinitionRecords(data.definitionRecords, interaction)}
+      ${renderDiagramDeviceClassifiedTable(data, interaction)}
     </div>`;
 }
 
@@ -5817,9 +6054,10 @@ function updateDiagramDeviceDefinitionDraft(interaction, input) {
   if (editor?.kind !== "device") return false;
   const field = String(input?.getAttribute?.("data-diagram-definition-field") || "");
   if (!diagramDeviceParameterEditable(field)) return false;
-  const value = String(input.value ?? "");
+  const value = diagramDefinitionStoredValue(field, input.value);
   editor.draft[field] = value;
-  if (value === String(editor.original[field] ?? "")) editor.dirtyFields.delete(field);
+  const originalValue = diagramDefinitionCanonicalStoredValue(field, editor.original[field]);
+  if (value === originalValue) editor.dirtyFields.delete(field);
   else editor.dirtyFields.add(field);
   interaction.definitionMessage = "";
   interaction.definitionMessageWarning = false;
@@ -5870,12 +6108,25 @@ async function saveDiagramDeviceDefinitionEdit(container) {
   }
 }
 
+function reorderDiagramChildren(parent, desiredChildren = []) {
+  if (!parent) return;
+  desiredChildren.filter(Boolean).forEach((child, index) => {
+    const current = parent.children[index] || null;
+    if (current !== child) parent.insertBefore(child, current);
+  });
+}
+
 function syncDiagramTooltipSections(body, sections = []) {
   if (!body) return false;
+  const definitionAnchor = Array.from(body.children)
+    .find((element) => element.hasAttribute("data-diagram-definition-records")) || null;
+  const definitionFooter = Array.from(body.children)
+    .find((element) => element.hasAttribute("data-diagram-definition-footer")) || null;
   const existingSections = new Map(Array.from(body.children)
     .filter((element) => element.hasAttribute("data-diagram-tooltip-section"))
     .map((element) => [element.getAttribute("data-diagram-tooltip-section") || "", element]));
   const desiredSectionKeys = new Set();
+  const desiredSectionElements = [];
   sections.forEach((section) => {
     const sectionKey = String(section.key || "");
     desiredSectionKeys.add(sectionKey);
@@ -5905,7 +6156,8 @@ function syncDiagramTooltipSections(body, sections = []) {
       .filter((element) => element.hasAttribute("data-diagram-tooltip-row"))
       .map((element) => [element.getAttribute("data-diagram-tooltip-row") || "", element]));
     const desiredRowKeys = new Set();
-    section.rows.forEach(([label, value, key], index) => {
+    const desiredRows = [];
+    section.rows.forEach(([label, value, key, binding], index) => {
       const rowKey = String(key || diagramTooltipRowKey(sectionKey, label, index));
       desiredRowKeys.add(rowKey);
       let rowElement = existingRows.get(rowKey);
@@ -5920,18 +6172,39 @@ function syncDiagramTooltipSections(body, sections = []) {
       }
       const term = rowElement.querySelector("dt");
       const description = rowElement.querySelector("dd");
+      const inlineInput = description?.querySelector("[data-diagram-tooltip-inline-input]");
       if (term) term.textContent = label;
-      if (description) description.textContent = diagramTooltipValue(value);
-      list.appendChild(rowElement);
+      if (description && !inlineInput) description.textContent = diagramTooltipValue(value);
+      if (!inlineInput) {
+        rowElement.className = `diagram-tooltip-row${binding?.editable ? " is-editable" : ""}`;
+        if (binding) {
+          rowElement.setAttribute("data-diagram-definition-block", binding.blockName);
+          rowElement.setAttribute("data-diagram-definition-row-index", String(binding.rowIndex));
+        } else {
+          rowElement.removeAttribute("data-diagram-definition-block");
+          rowElement.removeAttribute("data-diagram-definition-row-index");
+        }
+        if (description) {
+          if (binding?.editable) description.setAttribute("data-diagram-definition-editable", "device");
+          else description.removeAttribute("data-diagram-definition-editable");
+        }
+      }
+      desiredRows.push(rowElement);
     });
     existingRows.forEach((element, key) => {
       if (!desiredRowKeys.has(key)) element.remove();
     });
-    body.appendChild(sectionElement);
+    reorderDiagramChildren(list, desiredRows);
+    desiredSectionElements.push(sectionElement);
   });
   existingSections.forEach((element, key) => {
     if (!desiredSectionKeys.has(key)) element.remove();
   });
+  const desiredBodyChildren = definitionAnchor
+    ? [desiredSectionElements[0], definitionAnchor, ...desiredSectionElements.slice(1)]
+    : [...desiredSectionElements];
+  if (definitionFooter) desiredBodyChildren.push(definitionFooter);
+  reorderDiagramChildren(body, desiredBodyChildren);
   return true;
 }
 
@@ -5951,13 +6224,22 @@ function updateDiagramDeviceTooltip(container, hover, snapshot, interaction) {
   const dynamicUpdated = updateDiagramDeviceDynamicSections(tooltip, data);
   if (interaction.definitionEditor?.kind === "device") return dynamicUpdated;
   if (definitions) {
-    definitions.innerHTML = data.definitionRecords
-      .map((record) => renderDiagramDeviceDefinitionRecord(record, interaction))
-      .join("") + diagramDefinitionMessageHtml(interaction);
+    const definitionSignature = diagramDeviceDefinitionRecordsSignature(data.definitionRecords);
+    const currentDefinitionSignature = definitions.getAttribute("data-diagram-definition-signature") || "";
+    if (currentDefinitionSignature !== definitionSignature) {
+      const definitionHtml = renderDiagramDeviceDefinitionRecords(data.definitionRecords, interaction);
+      if (definitionHtml) definitions.outerHTML = definitionHtml;
+      else definitions.remove();
+    }
   } else if (data.definitionRecords.length) {
-    const body = tooltip.querySelector("[data-diagram-device-tooltip-body]");
-    if (!body) return false;
-    body.insertAdjacentHTML("beforeend", renderDiagramDeviceDefinitionRecords(data.definitionRecords, interaction));
+    const dynamicBody = tooltip.querySelector("[data-diagram-device-dynamic-body]");
+    const identitySection = dynamicBody?.querySelector('[data-diagram-tooltip-section="identity"]');
+    const definitionHtml = renderDiagramDeviceDefinitionRecords(data.definitionRecords, interaction);
+    if (definitionHtml) {
+      if (!dynamicBody) return false;
+      if (identitySection) identitySection.insertAdjacentHTML("afterend", definitionHtml);
+      else dynamicBody.insertAdjacentHTML("afterbegin", definitionHtml);
+    }
   }
   return dynamicUpdated;
 }
@@ -6007,7 +6289,7 @@ function diagramMetricLabel(metricType, row) {
     pressure: "压力",
     temperature: "温度",
   };
-  return labels[String(metricType || "").trim().toLowerCase()]
+  return labels[normalizeDiagramMetricType(metricType)]
     || row?.meas_type
     || row?.name
     || "动态量测";
@@ -9917,10 +10199,11 @@ function gridModelFilterLabel(filter = state.modelDeviceFilter || { dev_type: "a
   return deviceFilterLabel(filter);
 }
 
-function formatModelParamValue(value) {
+function formatModelParamValue(value, field = "") {
   if (value === null || value === undefined || value === "") return "--";
   if (Array.isArray(value)) return value.join(", ");
   if (typeof value === "object") return JSON.stringify(value);
+  if (diagramDefinitionRatioField(field)) return diagramDefinitionDisplayValue(field, value);
   return String(value);
 }
 
@@ -9947,7 +10230,7 @@ function modelAttributeRecordForDevice(dev) {
   };
   headers.forEach((key) => {
     if (["idx", "name", "dev_name", "dev_type"].includes(key)) return;
-    record[key] = formatModelParamValue(raw[key]);
+    record[key] = formatModelParamValue(raw[key], key);
   });
   return record;
 }

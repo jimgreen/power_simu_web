@@ -548,6 +548,126 @@ process.stdout.write(JSON.stringify({
             self.assertIn('data-diagram-definition-editable="measurement"', measurement_summary)
             self.assertNotIn("diagram-definition-fields", measurement_block)
 
+    def test_ratio_parameters_display_as_percent_but_save_as_decimal(self):
+        for script in (self.script, self.trainee_script):
+            marker = "const DIAGRAM_DEFINITION_RATIO_FIELDS"
+            self.assertIn(marker, script)
+            helper_source = marker + script.split(marker, 1)[1].split(
+                "function renderDiagramDeviceDefinitionEditor",
+                1,
+            )[0]
+            body = r"""
+const descriptor = diagramDefinitionInputDescriptor("charge_discharge_efficiency", "0.99");
+process.stdout.write(JSON.stringify({
+  efficiency: diagramDefinitionDisplayValue("charge_discharge_efficiency", "0.99"),
+  soc: diagramDefinitionDisplayValue("soc_upper_limit", 0.9),
+  descriptor,
+  stored: diagramDefinitionStoredValue("module_efficiency", "21.3"),
+  ordinary: diagramDefinitionInputDescriptor("p_set", "21.3"),
+}));
+"""
+            harness = r"""
+function escapeHtml(value) { return String(value ?? ""); }
+function diagramTooltipValue(value) { return String(value ?? ""); }
+"""
+            result = subprocess.run(
+                ["node"],
+                input=f"{harness}\n{helper_source}\n{body}",
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["efficiency"], "99%")
+            self.assertEqual(payload["soc"], "90%")
+            self.assertEqual(payload["descriptor"]["value"], "99")
+            self.assertEqual(payload["descriptor"]["suffix"], "%")
+            self.assertEqual(payload["descriptor"]["min"], "0")
+            self.assertEqual(payload["descriptor"]["max"], "100")
+            self.assertEqual(payload["stored"], "0.213")
+            self.assertEqual(payload["ordinary"]["value"], "21.3")
+            self.assertEqual(payload["ordinary"]["suffix"], "")
+
+    def test_device_model_parameters_are_integrated_into_the_classified_table(self):
+        for script in (self.script, self.trainee_script):
+            render_block = script.split(
+                "function renderDiagramDeviceClassifiedTable",
+                1,
+            )[1].split("function renderDiagramDeviceTooltip", 1)[0]
+            self.assertIn("data-diagram-device-dynamic-body", render_block)
+            self.assertLess(
+                render_block.index("diagramTooltipSectionsHtml(identitySections, interaction)"),
+                render_block.index("renderDiagramDeviceDefinitionRecords"),
+            )
+            self.assertLess(
+                render_block.index("renderDiagramDeviceDefinitionRecords"),
+                render_block.index("diagramTooltipSectionsHtml(detailSections, interaction)"),
+            )
+            self.assertLess(
+                render_block.index("diagramTooltipSectionsHtml(detailSections, interaction)"),
+                render_block.index("renderDiagramDeviceDefinitionFooter"),
+            )
+            self.assertIn("renderDiagramDeviceClassifiedTable(data, interaction)", script)
+
+    def test_device_model_parameter_rows_do_not_repeat_identity_fields(self):
+        body = r"""
+const record = {
+  headers: ["idx", "name", "dev_name", "dev_type", "i_node", "j_node", "status", "run_stat"],
+};
+process.stdout.write(JSON.stringify(diagramDefinitionDisplayHeaders(record)));
+"""
+        for script in (self.script, self.trainee_script):
+            self.assertEqual(
+                self._run_helpers(body, script),
+                ["i_node", "j_node", "status", "run_stat"],
+            )
+
+    def test_runtime_control_fields_are_merged_into_their_existing_categories(self):
+        body = r"""
+const record = {
+  headers: ["idx", "name", "i_node", "j_node", "status", "run_stat", "p_set"],
+  integratedFields: new Set(["status", "run_stat", "p_set"]),
+};
+process.stdout.write(JSON.stringify(diagramDefinitionDisplayHeaders(record)));
+"""
+        for script in (self.script, self.trainee_script):
+            self.assertEqual(self._run_helpers(body, script), ["i_node", "j_node"])
+            self.assertIn("function diagramDefinitionFieldBinding", script)
+            self.assertIn("renderDiagramIntegratedDefinitionRow", script)
+
+    def test_live_refresh_does_not_reparent_focused_editor_rows(self):
+        for script in (self.script, self.trainee_script):
+            sync_block = script.split("function syncDiagramTooltipSections", 1)[1].split(
+                "function updateDiagramDeviceTooltip",
+                1,
+            )[0]
+            self.assertIn("function reorderDiagramChildren", script)
+            self.assertIn("reorderDiagramChildren(list, desiredRows)", sync_block)
+            self.assertIn("reorderDiagramChildren(body, desiredBodyChildren)", sync_block)
+            self.assertNotIn("list.appendChild(rowElement)", sync_block)
+            self.assertNotIn("body.appendChild(sectionElement)", sync_block)
+
+    def test_static_parameter_sections_only_rebuild_when_the_definition_changes(self):
+        for script in (self.script, self.trainee_script):
+            update_block = script.split("function updateDiagramDeviceTooltip", 1)[1].split(
+                "function diagramMetricCurrentRow",
+                1,
+            )[0]
+            self.assertIn("function diagramDeviceDefinitionRecordsSignature", script)
+            self.assertIn("data-diagram-definition-signature", script)
+            self.assertIn("currentDefinitionSignature !== definitionSignature", update_block)
+            self.assertIn("definitions.outerHTML = definitionHtml", update_block)
+
+    def test_device_definition_sections_use_the_same_visual_table(self):
+        for styles_path in (
+            SIMULATOR_STYLES,
+            ROOT / "simu/web/trainee/styles.css",
+        ):
+            styles = styles_path.read_text(encoding="utf-8")
+            definition_records = styles.split(".diagram-definition-records", 1)[1].split("}", 1)[0]
+            self.assertIn("display: contents", definition_records)
+            self.assertNotIn("border-top", definition_records)
+
     def test_definition_revision_participates_in_static_cache_matching(self):
         body = r"""
 function staticMetaSignature(meta) { return JSON.stringify(meta || null); }

@@ -44,6 +44,7 @@ process.stdout.write(JSON.stringify({
   generator: diagramMetricMeasurementTypes("ACGenerator", "activePower"),
   converter: diagramMetricMeasurementTypes("DCACConverter", "activePower"),
   storage: diagramMetricMeasurementTypes("DCGenerator", "level"),
+  storageSocAlias: diagramMetricMeasurementTypes("DCGenerator", "soc"),
   switchStatus: diagramMetricMeasurementTypes("ACBreak", "status"),
 }));
 """
@@ -53,6 +54,7 @@ process.stdout.write(JSON.stringify({
                 self.assertEqual(payload["generator"][0], "P_GEN")
                 self.assertEqual(payload["converter"][:2], ["P_AC", "P_DC"])
                 self.assertEqual(payload["storage"][:2], ["SOC", "LEVEL"])
+                self.assertEqual(payload["storageSocAlias"][:2], ["SOC", "LEVEL"])
                 self.assertEqual(payload["switchStatus"][:2], ["STATUS", "RUN_STAT"])
 
     def test_semantic_binding_prefers_scada_and_falls_back_to_real(self):
@@ -78,13 +80,34 @@ process.stdout.write(JSON.stringify([preferred.value, fallback.value]));
 process.stdout.write(JSON.stringify([
   diagramDisplayRow({ meas_type: "SOC", value: 1.08 }, "level").value,
   diagramDisplayRow({ meas_type: "SOC", value: -0.03 }, "level").value,
+  diagramDisplayRow({ meas_type: "SOC", value: 0.5 }, "soc").value,
 ]));
 """
         for path in self._scripts():
             with self.subTest(app=path.parent.name):
                 self.assertEqual(
                     self._run_helpers(path.read_text(encoding="utf-8"), body),
-                    [108, -3],
+                    [108, -3, 50],
+                )
+
+    def test_exported_soc_metric_alias_resolves_live_measurement(self):
+        body = """
+const socRow = {
+  dev_type: "DCGenerator",
+  dev_name: "storage-1",
+  meas_type: "SOC",
+  value: 0.5,
+};
+const maps = diagramMeasurementMaps({ measurements: { scada: [socRow], real: [] } });
+const binding = { devType: "DCGenerator", devName: "storage-1", metricType: "soc" };
+const resolved = diagramMetricBindingValue(binding, maps);
+process.stdout.write(JSON.stringify({ value: resolved?.value, display: diagramDisplayRow(resolved, binding.metricType)?.value }));
+"""
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                self.assertEqual(
+                    self._run_helpers(path.read_text(encoding="utf-8"), body),
+                    {"value": 0.5, "display": 50},
                 )
 
     def test_exported_svg_semantic_placeholders_are_compiled_and_cached(self):

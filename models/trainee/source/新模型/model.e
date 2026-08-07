@@ -299,19 +299,19 @@
 </DCPVGen>
 <DCStorageGen>
 @ idx  idx_dcgenerator  storage_technology  battery_rack_count  energy_capacity  charge_discharge_efficiency  max_charge_power  max_discharge_power  state_of_charge  soc_upper_limit  soc_lower_limit
-# 1    4                lithium             20                  60               0.95                         60                60                   50               90               10
-# 2    5                lithium             20                  60               0.95                         60                60                   50               90               10
-# 3    6                lithium             20                  60               0.95                         60                60                   50               90               10
-# 4    7                lithium             20                  60               0.95                         60                60                   50               90               10
-# 5    8                lithium             20                  60               0.95                         60                60                   50               90               10
-# 6    9                lithium             20                  60               0.95                         60                60                   50               90               10
+# 1    4                lithium             20                  60               0.95                         60                60                   0.5              0.9              0.1
+# 2    5                lithium             20                  60               0.95                         60                60                   0.5              0.9              0.1
+# 3    6                lithium             20                  60               0.95                         60                60                   0.5              0.9              0.1
+# 4    7                lithium             20                  60               0.95                         60                60                   0.5              0.9              0.1
+# 5    8                lithium             20                  60               0.95                         60                60                   0.5              0.9              0.1
+# 6    9                lithium             20                  60               0.95                         60                60                   0.5              0.9              0.1
 </DCStorageGen>
 <ACStorageGen>
 @ idx  idx_acgenerator  storage_technology  battery_rack_count  energy_capacity  charge_discharge_efficiency  max_charge_power  max_discharge_power  state_of_charge  soc_upper_limit  soc_lower_limit
-# 1    23               lithium             20                  200              90                           100               100                  50               90               10
-# 2    26               lithium             20                  100              90                           100               100                  50               90               10
+# 1    23               lithium             20                  200              0.9                          100               100                  0.5              0.9              0.1
+# 2    26               lithium             20                  100              0.9                          100               100                  0.5              0.9              0.1
 </ACStorageGen>
 <ACPVGen>
 @ idx  idx_acgenerator  pv_module_model  module_efficiency  array_area  mppt_count
-# 1    25               Mono-550W        21.3               100000      100
+# 1    25               Mono-550W        0.213              100000      100
 </ACPVGen>

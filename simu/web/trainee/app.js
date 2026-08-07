@@ -1886,7 +1886,11 @@ function measurementDefinitionSignature(definitions = [], definitionRevision = "
   const cache = measurementDefinitionSignature.cache
     || (measurementDefinitionSignature.cache = new WeakMap());
   const cached = cache.get(rows);
-  if (cached?.revisionKey === revisionKey && cached?.length === rows.length) {
+  if (
+    revisionKey
+    && cached?.revisionKey === revisionKey
+    && cached?.length === rows.length
+  ) {
     return cached.signature;
   }
   const encoder = new TextEncoder();
@@ -1920,6 +1924,8 @@ function applyMeasurementArrayFrame(payload, measurements, definitions) {
   const count = Number(payload.count);
   const frame = payload.frame !== false;
   const expectedValueCount = frame ? count : 0;
+  const statusValues = payload.status_values;
+  const fixedValues = payload.fixed_values;
   if (
     !Number.isInteger(count)
     || count < 0
@@ -1930,6 +1936,22 @@ function applyMeasurementArrayFrame(payload, measurements, definitions) {
     || payload.scada_values.length !== expectedValueCount
     || !Array.isArray(payload.valid_values)
     || payload.valid_values.length !== expectedValueCount
+    || (
+      statusValues !== undefined
+      && statusValues !== null
+      && (
+        !Array.isArray(statusValues)
+        || statusValues.length !== expectedValueCount
+      )
+    )
+    || (
+      fixedValues !== undefined
+      && fixedValues !== null
+      && (
+        !Array.isArray(fixedValues)
+        || fixedValues.length !== expectedValueCount
+      )
+    )
   ) {
     reportMeasurementArrayWarning(
       `实时量测数组长度不一致，整帧已拒绝：定义=${definitions.length}，声明=${payload.count}，`
@@ -1969,6 +1991,8 @@ function applyMeasurementArrayFrame(payload, measurements, definitions) {
     row.value = payload.real_values[index];
     row.valid = payload.valid_values[index] ?? definition.valid ?? row.valid;
     row.weight = definition.weight ?? row.weight;
+    row.status = statusValues?.[index] ?? definition.status ?? row.status;
+    row.fixed_value = fixedValues?.[index] ?? definition.fixed_value ?? row.fixed_value;
     row.updated_simu_time = simuTime;
     row.updated_wall_time = wallTime;
     row.updated_absolute_minute = absoluteMinute;
@@ -1980,6 +2004,8 @@ function applyMeasurementArrayFrame(payload, measurements, definitions) {
     row.value = payload.scada_values[index];
     row.valid = payload.valid_values[index] ?? definition.valid ?? row.valid;
     row.weight = definition.weight ?? row.weight;
+    row.status = statusValues?.[index] ?? definition.status ?? row.status;
+    row.fixed_value = fixedValues?.[index] ?? definition.fixed_value ?? row.fixed_value;
     row.updated_simu_time = simuTime;
     row.updated_wall_time = wallTime;
     row.updated_absolute_minute = absoluteMinute;
@@ -4129,25 +4155,28 @@ function diagramDefinitionInputDescriptor(value) {
 function renderDiagramDeviceDefinitionEditor(record, editor, interaction) {
   const canSave = editor.dirtyFields?.size > 0 && !interaction?.definitionSaving;
   return `
-    <div class="diagram-definition-editor diagram-definition-inline-actions" data-diagram-definition-editor="device">
-      <div class="diagram-definition-actions">
-        <button type="button" data-diagram-definition-cancel>取消</button>
-        <button type="button" class="primary" data-diagram-definition-save="device" ${canSave ? "" : "disabled"}>
-          ${interaction?.definitionSaving ? "保存中" : "保存"}
-        </button>
-      </div>
-      ${diagramDefinitionEditorMessageHtml(interaction)}
-    </div>`;
+    <div class="diagram-definition-actions diagram-definition-inline-actions" data-diagram-definition-actions="device">
+      <button type="button" data-diagram-definition-cancel>取消</button>
+      <button type="button" class="primary" data-diagram-definition-save="device" ${canSave ? "" : "disabled"}>
+        ${interaction?.definitionSaving ? "保存中" : "保存"}
+      </button>
+    </div>
+    ${diagramDefinitionEditorMessageHtml(interaction)}`;
 }
 
 function renderDiagramDeviceDefinitionValueRow(record, field, activeEditor, interaction) {
   const key = `definition:${record.blockName}:${record.rowIndex}:${field}`;
-  const editable = Boolean(activeEditor && diagramDeviceParameterEditable(field));
+  const fieldEditable = diagramDeviceParameterEditable(field);
+  const editable = Boolean(activeEditor && fieldEditable);
   if (!editable) {
     return `
-      <div class="diagram-tooltip-row" data-diagram-tooltip-row="${escapeHtml(key)}">
+      <div class="diagram-tooltip-row${fieldEditable ? " is-editable" : ""}" data-diagram-tooltip-row="${escapeHtml(key)}">
         <dt>${escapeHtml(field)}</dt>
-        <dd data-diagram-definition-value="${escapeHtml(key)}" data-diagram-tooltip-value="${escapeHtml(key)}">${escapeHtml(diagramTooltipValue(record.row[field]))}</dd>
+        <dd
+          data-diagram-definition-value="${escapeHtml(key)}"
+          data-diagram-tooltip-value="${escapeHtml(key)}"
+          ${fieldEditable ? 'data-diagram-definition-editable="device"' : ""}
+        >${escapeHtml(diagramTooltipValue(record.row[field]))}</dd>
       </div>`;
   }
   const descriptor = diagramDefinitionInputDescriptor(activeEditor.draft[field]);
@@ -4185,13 +4214,6 @@ function renderDiagramDeviceDefinitionRecord(record, interaction) {
     <section class="diagram-definition-section" data-diagram-definition-block="${escapeHtml(record.blockName)}" data-diagram-definition-row-index="${record.rowIndex}">
       <div class="diagram-definition-section-head">
         <h4>${escapeHtml(record.blockName)}</h4>
-        ${!activeEditor && record.editableFields.length ? `
-          <button
-            type="button"
-            class="diagram-definition-edit-button"
-            data-diagram-definition-edit="${escapeHtml(record.blockName)}"
-            data-diagram-definition-row-index="${record.rowIndex}"
-          >编辑参数</button>` : ""}
       </div>
       <dl class="diagram-tooltip-grid">${rows}</dl>
       ${activeEditor ? renderDiagramDeviceDefinitionEditor(record, activeEditor, interaction) : ""}
@@ -4773,6 +4795,8 @@ function renderDiagramMeasurementStatusOptions(selected) {
 
 function renderDiagramMeasurementSummary(data, editor = null, interaction = null) {
   const editing = Boolean(editor);
+  const editableDefinition = Boolean(data.definition);
+  const measurementEditableAttr = !editing && editableDefinition ? 'data-diagram-definition-editable="measurement"' : "";
   const status = diagramMeasurementStatus(editor?.draft?.status ?? data.status, data.valid);
   const statusValue = editing
     ? `<select class="diagram-definition-input" data-diagram-tooltip-inline-input data-diagram-definition-input="measurement" data-diagram-measurement-definition-field="status" data-diagram-measurement-valid ${interaction?.definitionSaving ? "disabled" : ""}>${renderDiagramMeasurementStatusOptions(status)}</select>`
@@ -4790,7 +4814,7 @@ function renderDiagramMeasurementSummary(data, editor = null, interaction = null
   const fixedValueCell = status === "fixed"
     ? `<div>
         <dt>固定值</dt>
-        <dd data-diagram-measurement-fixed-value>${editing
+        <dd data-diagram-measurement-fixed-value ${measurementEditableAttr}>${editing
           ? `<input class="diagram-definition-input" data-diagram-tooltip-inline-input data-diagram-definition-input="measurement" data-diagram-measurement-definition-field="fixedValue" type="number" step="any" value="${escapeHtml(fixedValueText)}" ${interaction?.definitionSaving ? "disabled" : ""}>`
           : escapeHtml(fixedValueText)}</dd>
       </div>`
@@ -4811,15 +4835,15 @@ function renderDiagramMeasurementSummary(data, editor = null, interaction = null
       </div>
       <div>
         <dt>量测状态</dt>
-        <dd data-diagram-tooltip-validity>${statusValue}</dd>
+        <dd data-diagram-tooltip-validity ${measurementEditableAttr}>${statusValue}</dd>
       </div>
       <div>
         <dt>误差 σ</dt>
-        <dd>${sigmaValue}</dd>
+        <dd ${measurementEditableAttr}>${sigmaValue}</dd>
       </div>
       <div>
         <dt>权重</dt>
-        <dd>${weightValue}</dd>
+        <dd ${measurementEditableAttr}>${weightValue}</dd>
       </div>
       ${fixedValueCell}
     </dl>
@@ -4854,15 +4878,13 @@ function renderDiagramMeasurementDefinitionEditor(editor, interaction) {
     && !editor.validationError
     && !interaction?.definitionSaving;
   return `
-    <div class="diagram-definition-editor diagram-measurement-definition-editor" data-diagram-definition-editor="measurement">
-      <div class="diagram-definition-actions">
-        <button type="button" data-diagram-definition-cancel>取消</button>
-        <button type="button" class="primary" data-diagram-definition-save="measurement" ${canSave ? "" : "disabled"}>
-          ${interaction?.definitionSaving ? "保存中" : "保存"}
-        </button>
-      </div>
-      ${diagramDefinitionEditorMessageHtml(interaction, editor.validationError)}
-    </div>`;
+    <div class="diagram-definition-actions diagram-measurement-definition-editor" data-diagram-definition-actions="measurement">
+      <button type="button" data-diagram-definition-cancel>取消</button>
+      <button type="button" class="primary" data-diagram-definition-save="measurement" ${canSave ? "" : "disabled"}>
+        ${interaction?.definitionSaving ? "保存中" : "保存"}
+      </button>
+    </div>
+    ${diagramDefinitionEditorMessageHtml(interaction, editor.validationError)}`;
 }
 
 function beginDiagramMeasurementDefinitionEdit(container) {
@@ -5015,12 +5037,7 @@ function renderDiagramMetricTooltip(container, hover, snapshot, interaction) {
     <div class="diagram-metric-current" data-diagram-measurement-summary>
       ${renderDiagramMeasurementSummary(data, editor, interaction)}
     </div>
-    ${!editor ? `<div class="diagram-measurement-definition-actions">
-      ${data.definition
-        ? '<button type="button" class="diagram-definition-edit-button" data-diagram-definition-edit-measurement>编辑定义</button>'
-        : '<span class="diagram-definition-unavailable">当前量测没有可编辑定义</span>'}
-      ${diagramDefinitionMessageHtml(interaction)}
-    </div>` : ""}
+    ${!editor ? diagramDefinitionMessageHtml(interaction) : ""}
     <div class="diagram-trend-tabs" role="tablist" aria-label="量测趋势范围">
       <button type="button" data-diagram-trend-period="hour" class="${data.period === "hour" ? "is-active" : ""}" aria-selected="${data.period === "hour"}">小时曲线</button>
       <button type="button" data-diagram-trend-period="day" class="${data.period === "day" ? "is-active" : ""}" aria-selected="${data.period === "day"}">日曲线</button>
@@ -5477,17 +5494,18 @@ function initDiagramInteractions(container) {
   tooltip.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target : null;
     if (!target) return;
-    const deviceEdit = target.closest("[data-diagram-definition-edit]");
-    if (deviceEdit) {
-      beginDiagramDeviceDefinitionEdit(
-        container,
-        deviceEdit.getAttribute("data-diagram-definition-edit") || "",
-        Number(deviceEdit.getAttribute("data-diagram-definition-row-index") || 0),
-      );
-      return;
-    }
-    if (target.closest("[data-diagram-definition-edit-measurement]")) {
-      beginDiagramMeasurementDefinitionEdit(container);
+    const editable = target.closest("[data-diagram-definition-editable]");
+    if (editable && !interaction.definitionEditor && !interaction.definitionSaving) {
+      if (editable.getAttribute("data-diagram-definition-editable") === "measurement") {
+        beginDiagramMeasurementDefinitionEdit(container);
+      } else {
+        const section = editable.closest("[data-diagram-definition-block]");
+        beginDiagramDeviceDefinitionEdit(
+          container,
+          section?.getAttribute("data-diagram-definition-block") || "",
+          Number(section?.getAttribute("data-diagram-definition-row-index") || 0),
+        );
+      }
       return;
     }
     if (target.closest("[data-diagram-definition-cancel]")) {

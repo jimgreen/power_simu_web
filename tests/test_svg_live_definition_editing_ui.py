@@ -397,9 +397,10 @@ process.stdout.write(JSON.stringify({
 
     def test_tooltip_html_has_all_edit_and_measurement_update_targets(self):
         required = (
-            "data-diagram-definition-editor",
+            "data-diagram-definition-actions",
             "data-diagram-definition-save",
             "data-diagram-definition-cancel",
+            "data-diagram-definition-editable",
             "data-diagram-measurement-scada",
             "data-diagram-measurement-real",
             "data-diagram-measurement-deviation",
@@ -409,6 +410,8 @@ process.stdout.write(JSON.stringify({
         )
         for token in required:
             self.assertIn(token, self.script)
+        self.assertNotIn("data-diagram-definition-edit-button", self.script)
+        self.assertNotIn("data-diagram-definition-edit-measurement", self.script)
 
     def test_simulator_and_trainee_render_inline_measurement_status_modes_and_fixed_value(self):
         for script in (self.script, self.trainee_script):
@@ -439,6 +442,8 @@ process.stdout.write(JSON.stringify({
             self.assertIn("data-diagram-definition-value", device_block)
             self.assertIn("data-diagram-tooltip-inline-input", device_block)
             self.assertIn("data-diagram-tooltip-inline-input", measurement_summary)
+            self.assertIn('data-diagram-definition-editable="device"', device_block)
+            self.assertIn('data-diagram-definition-editable="measurement"', measurement_summary)
             self.assertNotIn("diagram-definition-fields", measurement_block)
 
     def test_definition_revision_participates_in_static_cache_matching(self):
@@ -463,16 +468,17 @@ process.stdout.write(JSON.stringify({
     def test_definition_editor_styles_are_scoped_to_the_tooltip(self):
         required = (
             ".diagram-definition-section-head",
-            ".diagram-definition-edit-button",
-            ".diagram-definition-editor",
             ".diagram-definition-input",
             ".diagram-definition-actions",
             ".diagram-definition-message",
             ".diagram-definition-message.is-warning",
             ".diagram-tooltip.is-editing-definition",
+            ".diagram-tooltip-row.is-editable",
         )
         for selector in required:
             self.assertIn(selector, self.styles)
+        self.assertNotIn(".diagram-definition-edit-button", self.styles)
+        self.assertNotIn(".diagram-definition-editor", self.styles)
 
 
 if __name__ == "__main__":

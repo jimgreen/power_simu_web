@@ -1284,6 +1284,54 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
             json.dumps(payload, ensure_ascii=False),
         )
 
+    def test_compact_measurement_delta_keeps_duplicate_names_by_definition_order(self):
+        from simu.definition_editing import DefinitionSnapshot
+
+        service = self.make_service()
+        current = service.definition_snapshot
+        measurement_rows = [list(row) for row in current.measurement_rows]
+        measurement_rows[1][1] = measurement_rows[0][1]
+        service._publish_definition_snapshot(
+            DefinitionSnapshot(
+                revision=current.revision + 1,
+                model_book=current.model_book,
+                dev_define_book=current.dev_define_book,
+                measurement_before=current.measurement_before,
+                measurement_rows=tuple(tuple(row) for row in measurement_rows),
+                measurement_after=current.measurement_after,
+            )
+        )
+        runtime = service.snapshot(
+            include_static=True,
+            include_runtime_logs=False,
+            include_measurements=True,
+        )
+        runtime["measurements"]["real"] = [
+            dict(row) for row in runtime["measurements"]["definitions"]
+        ]
+        runtime["measurements"]["scada"] = [
+            dict(row) for row in runtime["measurements"]["definitions"]
+        ]
+        first_real = next(row for row in runtime["measurements"]["real"] if row["idx"] == 0)
+        second_real = next(row for row in runtime["measurements"]["real"] if row["idx"] == 1)
+        first_scada = next(row for row in runtime["measurements"]["scada"] if row["idx"] == 0)
+        second_scada = next(row for row in runtime["measurements"]["scada"] if row["idx"] == 1)
+        first_real["value"] = 11.0
+        second_real["value"] = 22.0
+        first_scada["value"] = 10.5
+        second_scada["value"] = 21.5
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+        exchange.publish_runtime_snapshot(service.model_id, runtime)
+
+        payload = exchange.measurement_delta(service.model_id, after_seq=0, compact=True)
+
+        self.assertEqual(payload["count"], len(runtime["measurements"]["definitions"]))
+        self.assertEqual(len(payload["real_values"]), payload["count"])
+        self.assertEqual(len(payload["scada_values"]), payload["count"])
+        self.assertEqual(payload["real_values"][:2], [11.0, 22.0])
+        self.assertEqual(payload["scada_values"][:2], [10.5, 21.5])
+
     def test_compact_measurement_delta_sends_all_values_after_one_runtime_value_changes(self):
         service = self.make_service()
         runtime = service.snapshot(

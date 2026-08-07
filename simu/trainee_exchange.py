@@ -392,9 +392,8 @@ def _measurement_delta_items(
     for index, definition in enumerate(definitions):
         if not isinstance(definition, Mapping):
             continue
+        key = str(index)
         name = str(definition.get("name", "")).strip()
-        if not name:
-            continue
         real = real_rows[index]
         scada = scada_rows[index]
         real_value = real.get("value") if real is not None else None
@@ -403,7 +402,7 @@ def _measurement_delta_items(
             valid = int(float(definition.get("valid", 0) or 0))
         except (TypeError, ValueError):
             valid = 0
-        items[name] = {
+        items[key] = {
             "name": name,
             "value": scada_value if scada is not None else real_value,
             "real_value": real_value,
@@ -882,20 +881,20 @@ class TraineeRealtimeExchange:
                 return None
             if current_measurements is not None:
                 previous_measurements = state.measurement_delta_state
-                changed_names = [
-                    name
-                    for name, item in current_measurements.items()
-                    if name not in previous_measurements
-                    or _measurement_delta_signature(previous_measurements[name])
+                changed_keys = [
+                    key
+                    for key, item in current_measurements.items()
+                    if key not in previous_measurements
+                    or _measurement_delta_signature(previous_measurements[key])
                     != _measurement_delta_signature(item)
                 ]
-                removed_names = [name for name in previous_measurements if name not in current_measurements]
-                if changed_names or removed_names:
+                removed_keys = [key for key in previous_measurements if key not in current_measurements]
+                if changed_keys or removed_keys:
                     state.measurement_delta_seq += 1
-                    changed_items = [current_measurements[name] for name in changed_names]
+                    changed_items = [current_measurements[key] for key in changed_keys]
                     changed_items.extend(
                         {
-                            "name": name,
+                            "name": str(previous_measurements.get(key, {}).get("name", key)),
                             "deleted": True,
                             "updated_wall_time": datetime.fromtimestamp(published_at).strftime("%H:%M:%S"),
                             "updated_simu_time": str(
@@ -904,12 +903,13 @@ class TraineeRealtimeExchange:
                                 else "--"
                             ),
                         }
-                        for name in removed_names
+                        for key in removed_keys
                     )
                     state.measurement_delta_history.append(
                         {
                             "seq": state.measurement_delta_seq,
                             "items": list(changed_items),
+                            "keys": [*changed_keys, *removed_keys],
                         }
                     )
                     state.measurement_delta_history = state.measurement_delta_history[
@@ -1414,12 +1414,21 @@ class TraineeRealtimeExchange:
                     reset = True
                     reset_reason = "history_unavailable"
                 else:
-                    by_name: Dict[str, Mapping[str, Any]] = {}
+                    by_key: Dict[str, Mapping[str, Any]] = {}
                     for entry in newer:
-                        for item in entry.get("items", []):
+                        entry_items = entry.get("items", [])
+                        entry_keys = entry.get("keys", [])
+                        if not isinstance(entry_keys, Sequence) or isinstance(entry_keys, (str, bytes)):
+                            entry_keys = []
+                        for position, item in enumerate(entry_items):
                             if isinstance(item, Mapping):
-                                by_name[str(item.get("name", ""))] = item
-                    item_refs = list(by_name.values())
+                                key = (
+                                    str(entry_keys[position])
+                                    if position < len(entry_keys)
+                                    else str(item.get("name", ""))
+                                )
+                                by_key[key] = item
+                    item_refs = list(by_key.values())
             runtime = state.runtime_snapshot or {}
             clock = runtime.get("clock") if isinstance(runtime.get("clock"), Mapping) else {}
             clock_time = str(clock.get("time") or "--")

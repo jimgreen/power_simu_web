@@ -213,15 +213,15 @@ def _apply_measurement_array_frame(
     valid_values = _measurement_value_array(payload, "valid_values")
     status_values = payload.get("status_values")
     fixed_values = payload.get("fixed_values")
+    frame = payload.get("frame") is not False
     if status_values is None:
-        status_values = [definition.get("status") for definition in definition_rows]
+        status_values = [definition.get("status") for definition in definition_rows] if frame else []
     else:
         status_values = _measurement_value_array(payload, "status_values")
     if fixed_values is None:
-        fixed_values = [definition.get("fixed_value") for definition in definition_rows]
+        fixed_values = [definition.get("fixed_value") for definition in definition_rows] if frame else []
     else:
         fixed_values = _measurement_value_array(payload, "fixed_values")
-    frame = payload.get("frame") is not False
     expected_value_count = count if frame else 0
     lengths = {
         "definitions": len(definition_rows),

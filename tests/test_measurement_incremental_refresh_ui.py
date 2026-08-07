@@ -224,6 +224,98 @@ console.log(JSON.stringify({{ first, second, third, encoderConstructions }}));
             self.assertEqual(result["second"], result["third"])
             self.assertEqual(result["encoderConstructions"], 2)
 
+    def test_definition_signature_without_revision_recomputes_after_in_place_definition_change(self):
+        for role in ("simulator", "trainee"):
+            script = (ROOT / "simu" / "web" / role / "app.js").read_text(encoding="utf-8")
+            function_source = "function measurementDefinitionSignature" + script.split(
+                "function measurementDefinitionSignature",
+                1,
+            )[1].split("function reportMeasurementArrayWarning", 1)[0]
+            node_script = f"""
+{function_source}
+const definitions = [
+  {{ name: "测点A", dev_type: "Load", dev_name: "负荷A", meas_type: "P" }},
+];
+const before = measurementDefinitionSignature(definitions);
+definitions[0].name = "测点B";
+const after = measurementDefinitionSignature(definitions);
+console.log(JSON.stringify({{ before, after }}));
+"""
+            completed = subprocess.run(
+                ["node", "-e", node_script],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            result = json.loads(completed.stdout)
+
+            self.assertNotEqual(result["before"], result["after"])
+
+    def test_array_frame_uses_status_and_fixed_value_arrays_when_present(self):
+        for role in ("simulator", "trainee"):
+            script = (ROOT / "simu" / "web" / role / "app.js").read_text(encoding="utf-8")
+            functions = "function measurementDefinitionSignature" + script.split(
+                "function measurementDefinitionSignature",
+                1,
+            )[1].split("function applyEmbeddedMeasurementDelta", 1)[0]
+            node_script = f"""
+const warnings = [];
+const addRuntimeLog = () => undefined;
+const $ = () => null;
+const state = {{
+  snapshot: {{ measurements: {{ definitions: [], real: [], scada: [] }} }},
+  measurementDeltaSeq: 0,
+  measurementArrayWarning: "",
+}};
+{functions}
+const definitions = [
+  {{ name: "测点A", dev_type: "Load", dev_name: "负荷A", meas_type: "P", weight: 1, valid: 1 }},
+  {{ name: "测点B", dev_type: "Breaker", dev_name: "开关B", meas_type: "STATUS", weight: 1, valid: 1 }},
+];
+state.snapshot.measurements.definitions = definitions;
+const accepted = applyMeasurementDelta({{
+  encoding: "measurement-arrays-v1",
+  frame: true,
+  seq: 7,
+  count: 2,
+  definition_signature: measurementDefinitionSignature(definitions),
+  simu_time: "01:02:03",
+  wall_time: "04:05:06",
+  absolute_minute: 62.05,
+  real_values: [11.0, 1],
+  scada_values: [10.8, 0],
+  valid_values: [1, 0],
+  status_values: ["valid", "bad"],
+  fixed_values: [null, 12.5],
+}});
+console.log(JSON.stringify({{
+  accepted,
+  realStatus: state.snapshot.measurements.real.map((row) => row.status),
+  scadaStatus: state.snapshot.measurements.scada.map((row) => row.status),
+  realFixed: state.snapshot.measurements.real.map((row) => row.fixed_value),
+  scadaFixed: state.snapshot.measurements.scada.map((row) => row.fixed_value),
+  realValid: state.snapshot.measurements.real.map((row) => row.valid),
+  scadaValid: state.snapshot.measurements.scada.map((row) => row.valid),
+}}));
+"""
+            completed = subprocess.run(
+                ["node", "-e", node_script],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            result = json.loads(completed.stdout)
+
+            self.assertTrue(result["accepted"])
+            self.assertEqual(result["realStatus"], ["valid", "bad"])
+            self.assertEqual(result["scadaStatus"], ["valid", "bad"])
+            self.assertEqual(result["realFixed"], [None, 12.5])
+            self.assertEqual(result["scadaFixed"], [None, 12.5])
+            self.assertEqual(result["realValid"], [1, 0])
+            self.assertEqual(result["scadaValid"], [1, 0])
+
 
 if __name__ == "__main__":
     unittest.main()

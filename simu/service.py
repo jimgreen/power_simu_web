@@ -4932,16 +4932,15 @@ class PolarMicrogridSimulator:
         time_payload = self._api_time_payload()
         items: Dict[str, Dict[str, Any]] = {}
         for index, definition in enumerate(definitions):
+            key = str(index)
             name = str(definition.get("name", "")).strip()
-            if not name:
-                continue
             real = real_rows[index]
             scada = scada_rows[index]
             real_value = real.get("value") if real else None
             scada_value = scada.get("value") if scada else None
             value = scada_value if scada is not None else real_value
             valid = definition.get("valid", 0)
-            items[name] = {
+            items[key] = {
                 "name": name,
                 "value": _json_scalar(value),
                 "real_value": _json_scalar(real_value),
@@ -4979,29 +4978,35 @@ class PolarMicrogridSimulator:
         definition_changed = definition_signature != self._measurement_delta_definition_signature
         current = self._measurement_delta_current_items(measurement_payload)
         previous = self._measurement_delta_state
-        changed_names: List[str] = []
-        removed_names = [name for name in previous if name not in current]
-        for name, item in current.items():
-            previous_item = previous.get(name)
+        changed_keys: List[str] = []
+        removed_keys = [key for key in previous if key not in current]
+        for key, item in current.items():
+            previous_item = previous.get(key)
             if (
                 definition_changed
                 or previous_item is None
                 or self._measurement_delta_signature(previous_item)
                 != self._measurement_delta_signature(item)
             ):
-                changed_names.append(name)
-        if definition_changed or changed_names or removed_names:
+                changed_keys.append(key)
+        if definition_changed or changed_keys or removed_keys:
             self._measurement_delta_seq += 1
-            changed_items = [current[name] for name in changed_names]
+            changed_items = [current[key] for key in changed_keys]
             changed_items.extend(
                 {
-                    "name": name,
+                    "name": str(previous.get(key, {}).get("name", key)),
                     "deleted": True,
                     **self._external_update_time_fields(self._api_time_payload()),
                 }
-                for name in removed_names
+                for key in removed_keys
             )
-            self._measurement_delta_history.append({"seq": self._measurement_delta_seq, "items": changed_items})
+            self._measurement_delta_history.append(
+                {
+                    "seq": self._measurement_delta_seq,
+                    "items": changed_items,
+                    "keys": [*changed_keys, *removed_keys],
+                }
+            )
             self._measurement_delta_history = self._measurement_delta_history[-200:]
             self._measurement_delta_state = current
         self._measurement_delta_definition_signature = definition_signature
@@ -5046,12 +5051,21 @@ class PolarMicrogridSimulator:
                     items = list(current.values())
                     reset = True
                 else:
-                    by_name: Dict[str, Dict[str, Any]] = {}
+                    by_key: Dict[str, Dict[str, Any]] = {}
                     for entry in history:
-                        for item in entry.get("items", []):
+                        entry_items = entry.get("items", [])
+                        entry_keys = entry.get("keys", [])
+                        if not isinstance(entry_keys, Sequence) or isinstance(entry_keys, (str, bytes)):
+                            entry_keys = []
+                        for position, item in enumerate(entry_items):
                             if isinstance(item, Mapping):
-                                by_name[str(item.get("name", ""))] = dict(item)
-                    items = list(by_name.values())
+                                key = (
+                                    str(entry_keys[position])
+                                    if position < len(entry_keys)
+                                    else str(item.get("name", ""))
+                                )
+                                by_key[key] = dict(item)
+                    items = list(by_key.values())
             payload = {
                 "model_id": self.model_id,
                 "model_name": self.model_name,

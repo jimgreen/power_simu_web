@@ -2526,17 +2526,6 @@ body.is-vertical-splitter-dragging {
   color: var(--ink);
   font-size: 12px;
 }
-.diagram-definition-edit-button {
-  flex: 0 0 auto;
-  height: 26px;
-  padding: 0 9px;
-  border-color: rgba(0, 140, 140, 0.34);
-  color: var(--teal-dark);
-  font-size: 11px;
-}
-.diagram-definition-editor {
-  padding: 7px 0 3px;
-}
 .diagram-definition-readonly {
   margin-bottom: 7px;
   padding-bottom: 3px;
@@ -2585,6 +2574,15 @@ body.is-vertical-splitter-dragging {
   height: 24px;
   box-sizing: border-box;
 }
+.diagram-tooltip-row.is-editable dd,
+.diagram-measurement-summary [data-diagram-definition-editable] {
+  cursor: pointer;
+}
+.diagram-tooltip-row.is-editable:hover dd,
+.diagram-measurement-summary [data-diagram-definition-editable]:hover {
+  background: rgba(0, 140, 140, 0.07);
+  border-radius: 5px;
+}
 .diagram-definition-input-wrap small {
   color: var(--muted);
   font-size: 10px;
@@ -2618,17 +2616,6 @@ body.is-vertical-splitter-dragging {
 }
 .diagram-definition-message[hidden] {
   display: none;
-}
-.diagram-measurement-definition-actions {
-  padding: 0 12px 9px;
-  text-align: right;
-}
-.diagram-measurement-definition-actions > .diagram-definition-message {
-  text-align: left;
-}
-.diagram-definition-unavailable {
-  color: var(--muted);
-  font-size: 10px;
 }
 .diagram-metric-current {
   min-height: 58px;

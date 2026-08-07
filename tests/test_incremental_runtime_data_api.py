@@ -159,6 +159,39 @@ class IncrementalRuntimeDataApiTest(unittest.TestCase):
         self.assertEqual(compact["real_values"][0], 12.5)
         self.assertEqual(compact["scada_values"][0], 12.25)
 
+    def test_compact_measurement_delta_preserves_duplicate_names_by_definition_order(self):
+        from simu.definition_editing import DefinitionSnapshot
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        current = service.definition_snapshot
+        measurement_rows = [list(row) for row in current.measurement_rows]
+        measurement_rows[1][1] = measurement_rows[0][1]
+        service._publish_definition_snapshot(
+            DefinitionSnapshot(
+                revision=current.revision + 1,
+                model_book=current.model_book,
+                dev_define_book=current.dev_define_book,
+                measurement_before=current.measurement_before,
+                measurement_rows=tuple(tuple(row) for row in measurement_rows),
+                measurement_after=current.measurement_after,
+            )
+        )
+        service.latest_real_rows = [list(row) for row in service.measurement_rows]
+        service.latest_scada_rows = [list(row) for row in service.measurement_rows]
+        service.latest_real_rows[0][7] = "11.0"
+        service.latest_real_rows[1][7] = "22.0"
+        service.latest_scada_rows[0][7] = "10.5"
+        service.latest_scada_rows[1][7] = "21.5"
+
+        compact = service.measurement_delta(after_seq=0, compact=True)
+
+        self.assertEqual(compact["count"], len(service.measurements()["definitions"]))
+        self.assertEqual(len(compact["real_values"]), compact["count"])
+        self.assertEqual(len(compact["scada_values"]), compact["count"])
+        self.assertEqual(compact["real_values"][:2], [11.0, 22.0])
+        self.assertEqual(compact["scada_values"][:2], [10.5, 21.5])
+
     def test_compact_measurement_delta_at_current_sequence_has_no_value_frame(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
@@ -172,6 +205,24 @@ class IncrementalRuntimeDataApiTest(unittest.TestCase):
         self.assertEqual(unchanged["real_values"], [])
         self.assertEqual(unchanged["scada_values"], [])
         self.assertEqual(unchanged["valid_values"], [])
+
+    def test_measurement_array_no_change_frame_allows_omitted_optional_arrays(self):
+        from simu.measurement_delta import apply_measurement_delta
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        service.latest_real_rows = [list(row) for row in service.measurement_rows]
+        service.latest_scada_rows = [list(row) for row in service.measurement_rows]
+        definitions = service.measurements()["definitions"]
+        initial = service.measurement_delta(after_seq=0, compact=True)
+        existing = apply_measurement_delta({}, definitions, initial)
+        unchanged = service.measurement_delta(after_seq=initial["seq"], compact=True)
+        unchanged.pop("status_values", None)
+        unchanged.pop("fixed_values", None)
+
+        merged = apply_measurement_delta(existing, definitions, unchanged)
+
+        self.assertEqual(merged, existing)
 
     def test_compact_measurement_delta_sends_a_complete_frame_after_one_value_changes(self):
         workspace, service = self._make_service()

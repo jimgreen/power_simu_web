@@ -3077,8 +3077,37 @@ canvas {
   font-weight: 700;
 }
 .diagram-trend-content {
-  min-height: 190px;
+  min-height: 238px;
   padding: 10px 11px;
+}
+.diagram-trend-legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  min-height: 18px;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.diagram-trend-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.diagram-trend-legend i {
+  width: 16px;
+  height: 2px;
+  display: inline-block;
+  background: currentColor;
+}
+.diagram-trend-legend .is-scada,
+.diagram-trend-stat-label.is-scada {
+  color: #c93a3a;
+}
+.diagram-trend-legend .is-real,
+.diagram-trend-stat-label.is-real {
+  color: var(--teal);
 }
 .diagram-trend-chart {
   width: 100%;
@@ -3090,14 +3119,20 @@ canvas {
   cursor: crosshair;
 }
 .diagram-trend-chart[hidden],
+.diagram-trend-legend[hidden],
 .diagram-trend-range[hidden],
 .diagram-trend-stats[hidden],
 .diagram-trend-empty[hidden] {
   display: none;
 }
 .diagram-trend-chart .diagram-trend-series {
-  stroke: var(--teal);
   stroke-width: 2;
+}
+.diagram-trend-chart .diagram-trend-series.is-scada {
+  stroke: #c93a3a;
+}
+.diagram-trend-chart .diagram-trend-series.is-real {
+  stroke: var(--teal);
 }
 .diagram-trend-grid-line {
   stroke: #dbe5e8;
@@ -3131,8 +3166,13 @@ canvas {
 }
 .diagram-trend-cursor-point {
   fill: #fff;
-  stroke: #b24631;
   stroke-width: 2;
+}
+.diagram-trend-cursor-point.is-scada {
+  stroke: #c93a3a;
+}
+.diagram-trend-cursor-point.is-real {
+  stroke: var(--teal);
 }
 .diagram-trend-cursor-label rect {
   fill: rgba(28, 45, 52, 0.94);
@@ -3155,6 +3195,24 @@ canvas {
   gap: 8px;
   color: var(--muted);
   font-size: 10px;
+}
+.diagram-trend-stats {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 3px;
+}
+.diagram-trend-stats > div {
+  display: grid;
+  grid-template-columns: 48px repeat(3, minmax(0, 1fr));
+  align-items: center;
+  gap: 5px;
+}
+.diagram-trend-stats > div > span:not(.diagram-trend-stat-label) {
+  white-space: nowrap;
+  text-align: right;
+}
+.diagram-trend-stat-label {
+  font-weight: 700;
 }
 .diagram-trend-stats strong {
   color: var(--ink);

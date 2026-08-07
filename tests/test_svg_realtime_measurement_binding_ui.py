@@ -127,7 +127,7 @@ process.stdout.write(JSON.stringify({ value: resolved?.value, display: diagramDi
                     "compiled SVG bindings are not cached",
                 )
                 self.assertTrue(
-                    "diagramMetricBindingValue(binding, maps)" in script,
+                    "diagramMetricBindingValue(binding, maps, diagramDisplayPreferences.measurementSource)" in script,
                     "semantic bindings are not resolved during refresh",
                 )
 

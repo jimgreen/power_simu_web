@@ -238,6 +238,33 @@ class DefinitionEditingHelpersTest(unittest.TestCase):
             self.assertEqual(target.read_text(encoding="utf-8"), "new complete text\n")
             self.assertEqual(list(root.glob(".model.e.*.tmp")), [])
 
+    def test_atomic_write_text_retries_transient_windows_replace_denial(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target = root / "model.e"
+            target.write_text("old", encoding="utf-8")
+            real_replace = os.replace
+            attempts = []
+
+            def transient_replace(source, destination):
+                attempts.append((source, destination))
+                if len(attempts) < 3:
+                    error = PermissionError("file is temporarily open")
+                    error.winerror = 5
+                    raise error
+                real_replace(source, destination)
+
+            with (
+                patch("simu.definition_editing.os.replace", side_effect=transient_replace),
+                patch("simu.definition_editing.time.sleep") as sleep,
+            ):
+                atomic_write_text(target, "new")
+
+            self.assertEqual(len(attempts), 3)
+            self.assertEqual(sleep.call_count, 2)
+            self.assertEqual(target.read_text(encoding="utf-8"), "new")
+            self.assertEqual(list(root.glob(".model.e.*.tmp")), [])
+
     def test_atomic_write_text_cleans_temp_file_when_replace_fails(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

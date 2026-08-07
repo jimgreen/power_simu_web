@@ -2745,7 +2745,7 @@ def _measurement_value(
             return snapshot.value("DCGenerator", source_name, "V_GEN")
         if meas_type == "I":
             return snapshot.value("DCGenerator", source_name, "I_GEN")
-    if dev_type == "DCGenerator" and meas_type == "SOC":
+    if dev_type in ("ACGenerator", "DCGenerator") and meas_type == "SOC":
         return None if storage_soc is None else storage_soc.get(dev_name)
     if dev_type == "ACBreak":
         dev = snapshot.ac_devices.get("ACBreak", {}).get(dev_name)
@@ -2821,7 +2821,14 @@ def _row_noise_sigma(row: Sequence[str], noise_std: Optional[float]) -> float:
         return 0.0
     if weight <= 0.0:
         return 0.0
-    return 1.0 / math.sqrt(weight)
+    sigma = 1.0 / math.sqrt(weight)
+    meas_type = str(row[4]).upper() if len(row) > 4 else ""
+    value = _safe_float(row[7], None) if len(row) > 7 else None
+    if meas_type == "SOC" and value is not None and abs(value) <= 2.0:
+        # SOC definitions moved from percentage points to a 0-1 ratio. Keep
+        # existing measurement weights equivalent in the normalized unit.
+        sigma /= 100.0
+    return sigma
 
 
 def add_noise_to_rows(rows: Sequence[Sequence[str]], noise_std: Optional[float], rng: random.Random) -> List[List[str]]:

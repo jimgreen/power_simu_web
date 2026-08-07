@@ -39,8 +39,25 @@ class MeasurementIncrementalRefreshUiTest(unittest.TestCase):
                 1,
             )[1].split("async function refreshMeasurementDelta", 1)[0]
 
-            self.assertIn('return applyMeasurementArrayFrame(payload, measurements, definitions);', apply_source)
+            self.assertIn('appendMeasurementTraceAfterDelta(', apply_source)
             self.assertNotIn('.find((entry) => measurementNameKey(entry)', apply_source)
+
+    def test_measurement_delta_records_trace_after_the_frame_is_applied(self):
+        for role in ("simulator", "trainee"):
+            script = (ROOT / "simu" / "web" / role / "app.js").read_text(encoding="utf-8")
+            merge_source = "function appendMeasurementTraceAfterDelta" + script.split(
+                "function appendMeasurementTraceAfterDelta",
+                1,
+            )[1].split("async function refreshMeasurementDelta", 1)[0]
+            append_source = "function appendMeasurementTrace" + script.split(
+                "function appendMeasurementTrace",
+                1,
+            )[1].split("function ensureSelectedMeasurementKey", 1)[0]
+
+            self.assertIn("appendMeasurementTrace(state.snapshot)", merge_source)
+            self.assertIn("const rows = measurementCompareRows(snapshot.measurements || {})", append_source)
+            self.assertIn("if (!rows.some", append_source)
+            self.assertIn("state.lastMeasurementTraceKey = signature", append_source)
 
     def test_array_frame_updates_by_definition_index_without_measurement_names(self):
         for role in ("simulator", "trainee"):

@@ -179,6 +179,7 @@ const state = {
   selectedMeasurementKey: "",
   measurementTraceHistory: [],
   measurementTraceWindowMinutes: 60,
+  lastMeasurementTraceKey: "",
   renewableTrendHistory: [],
   renewableTrendWindowMinutes: 60,
   traceRunId: null,
@@ -361,6 +362,7 @@ function defaultModelContext(modelId = state.activeModelId) {
     runtimeLogs: [],
     snapshot: null,
     measurementTraceHistory: [],
+    lastMeasurementTraceKey: "",
     commandTraceHistory: [],
     renewableTrendHistory: [],
     traceRunId: null,
@@ -444,6 +446,7 @@ function captureActiveModelContext(overrides = {}) {
     runtimeLogs: state.runtimeLogs,
     snapshot: state.snapshot,
     measurementTraceHistory: state.measurementTraceHistory,
+    lastMeasurementTraceKey: state.lastMeasurementTraceKey,
     commandTraceHistory: state.commandTraceHistory,
     renewableTrendHistory: state.renewableTrendHistory,
     traceRunId: state.traceRunId,
@@ -482,6 +485,7 @@ function restoreModelContext(modelId = state.activeModelId) {
   state.runtimeLogs = Array.isArray(context.runtimeLogs) ? context.runtimeLogs : [];
   state.snapshot = context.snapshot || null;
   state.measurementTraceHistory = Array.isArray(context.measurementTraceHistory) ? context.measurementTraceHistory : [];
+  state.lastMeasurementTraceKey = context.lastMeasurementTraceKey || "";
   state.commandTraceHistory = Array.isArray(context.commandTraceHistory) ? context.commandTraceHistory : [];
   state.renewableTrendHistory = Array.isArray(context.renewableTrendHistory) ? context.renewableTrendHistory : [];
   state.traceRunId = context.traceRunId ?? null;
@@ -2021,13 +2025,26 @@ function applyMeasurementArrayFrame(payload, measurements, definitions) {
   return true;
 }
 
+function appendMeasurementTraceAfterDelta(changed) {
+  if (
+    changed
+    && state.snapshot
+    && typeof appendMeasurementTrace === "function"
+  ) {
+    appendMeasurementTrace(state.snapshot);
+  }
+  return changed;
+}
+
 function applyMeasurementDelta(payload) {
   if (!payload || !state.snapshot) return false;
   const measurements = state.snapshot.measurements || {};
   state.snapshot.measurements = measurements;
   const definitions = measurements.definitions || state.snapshot.definitions?.measurement || [];
   if (payload.encoding === "measurement-arrays-v1") {
-    return applyMeasurementArrayFrame(payload, measurements, definitions);
+    return appendMeasurementTraceAfterDelta(
+      applyMeasurementArrayFrame(payload, measurements, definitions),
+    );
   }
   if (payload.reset) {
     measurements.real = [];
@@ -2077,7 +2094,7 @@ function applyMeasurementDelta(payload) {
   measurements.scada = Array.from(channelIndexes.scada.values());
   if (payload.reset) state.measurementDeltaSeq = Number(payload.seq) || 0;
   else state.measurementDeltaSeq = Math.max(Number(state.measurementDeltaSeq) || 0, Number(payload.seq) || 0);
-  return changed;
+  return appendMeasurementTraceAfterDelta(changed);
 }
 
 function applyEmbeddedMeasurementDelta(snapshot) {
@@ -2192,6 +2209,7 @@ const DIAGRAM_DISPLAY_PREFERENCES_DEFAULTS = Object.freeze({
   measurements: true,
   labels: true,
   flowArrows: true,
+  measurementSource: "scada",
 });
 const DIAGRAM_MAX_ZOOM = 8;
 const DIAGRAM_PAN_THRESHOLD_PX = 5;
@@ -2199,15 +2217,22 @@ const DIAGRAM_TOOLTIP_HIDE_DELAY_MS = 150;
 
 function normalizeDiagramDisplayPreferences(value) {
   const source = value && typeof value === "object" ? value : {};
-  return Object.fromEntries(Object.entries(DIAGRAM_DISPLAY_PREFERENCES_DEFAULTS).map(([key, fallback]) => [
-    key,
-    typeof source[key] === "boolean" ? source[key] : fallback,
-  ]));
+  return {
+    measurements: typeof source.measurements === "boolean" ? source.measurements : true,
+    labels: typeof source.labels === "boolean" ? source.labels : true,
+    flowArrows: typeof source.flowArrows === "boolean" ? source.flowArrows : true,
+    measurementSource: source.measurementSource === "real" ? "real" : "scada",
+  };
 }
 
 function diagramDisplayPreferenceMenuItems(preferences) {
   const value = normalizeDiagramDisplayPreferences(preferences);
   return [
+    {
+      key: "measurementSource",
+      value: value.measurementSource === "scada" ? "real" : "scada",
+      label: value.measurementSource === "scada" ? "显示真值" : "显示量测值",
+    },
     { key: "measurements", label: value.measurements ? "不显示量测" : "显示量测" },
     { key: "labels", label: value.labels ? "不显示标识" : "显示标识" },
     { key: "flowArrows", label: value.flowArrows ? "不显示流动箭头" : "显示流动箭头" },
@@ -2447,9 +2472,18 @@ function diagramTrendPeriodLabels(period = "hour", range = {}) {
   return { start: clockText(startMinute), end: clockText(endMinute) };
 }
 
+function diagramTrendPointHasFiniteValue(point) {
+  return [point?.value, point?.scada, point?.real].some((value) => (
+    value !== null
+    && value !== undefined
+    && value !== ""
+    && Number.isFinite(Number(value))
+  ));
+}
+
 function diagramTrendWindowPoints(points, period = "hour", endMinute = null) {
   const valid = (points || []).filter((point) => (
-    Number.isFinite(Number(point?.minute)) && Number.isFinite(Number(point?.value))
+    Number.isFinite(Number(point?.minute)) && diagramTrendPointHasFiniteValue(point)
   ));
   if (!valid.length) return [];
   const explicitEndMinute = endMinute === null || endMinute === undefined || endMinute === ""
@@ -2735,15 +2769,18 @@ function diagramMeasurementMaps(snapshot = state.snapshot || {}) {
   return { scada, real, scadaByDevice, realByDevice };
 }
 
-function diagramMetricBindingValue(binding, maps) {
+function diagramMetricBindingValue(binding, maps, channel = "auto") {
   const candidates = diagramMetricMeasurementTypes(binding?.devType, binding?.metricType);
-  for (const measType of candidates) {
-    const key = diagramDeviceMeasurementKey(binding.devType, binding.devName, measType);
-    if (maps.scadaByDevice?.has(key)) return maps.scadaByDevice.get(key);
-  }
-  for (const measType of candidates) {
-    const key = diagramDeviceMeasurementKey(binding.devType, binding.devName, measType);
-    if (maps.realByDevice?.has(key)) return maps.realByDevice.get(key);
+  const sources = channel === "real"
+    ? [maps.realByDevice]
+    : channel === "scada"
+      ? [maps.scadaByDevice]
+      : [maps.scadaByDevice, maps.realByDevice];
+  for (const source of sources) {
+    for (const measType of candidates) {
+      const key = diagramDeviceMeasurementKey(binding.devType, binding.devName, measType);
+      if (source?.has(key)) return source.get(key);
+    }
   }
   return null;
 }
@@ -2761,6 +2798,7 @@ function diagramDisplayRow(row, metricType = "") {
 }
 
 function diagramTrendDisplayValue(value, row, metricType = "") {
+  if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   if (!Number.isFinite(number)) return null;
   const displayRow = diagramDisplayRow({ ...(row || {}), value: number }, metricType);
@@ -3049,6 +3087,7 @@ function applyDiagramDisplayPreferences(container, preferences = diagramDisplayP
   svg.classList.toggle("is-diagram-measurements-hidden", !value.measurements);
   svg.classList.toggle("is-diagram-labels-hidden", !value.labels);
   svg.classList.toggle("is-diagram-flow-arrows-hidden", !value.flowArrows);
+  svg.dataset.diagramMeasurementSource = value.measurementSource;
   return value;
 }
 
@@ -3056,7 +3095,7 @@ function renderDiagramContextMenu(interaction) {
   const menu = interaction?.contextMenu;
   if (!menu) return;
   menu.innerHTML = diagramDisplayPreferenceMenuItems(diagramDisplayPreferences).map((item) => `
-    <button type="button" class="diagram-context-menu-item" data-diagram-display-toggle="${item.key}">
+    <button type="button" class="diagram-context-menu-item" data-diagram-display-toggle="${item.key}"${item.value ? ` data-diagram-display-value="${item.value}"` : ""}>
       ${escapeHtml(item.label)}
     </button>`).join("");
 }
@@ -4811,7 +4850,7 @@ function diagramMetricCurrentRow(container, hover, snapshot) {
   return null;
 }
 
-function diagramTrendHistoryPoints(row, metricType = "") {
+function diagramTrendHistorySeries(row, metricType = "") {
   if (!row) return [];
   const key = measurementKey(row);
   return (state.measurementTraceHistory || []).map((point) => {
@@ -4824,14 +4863,14 @@ function diagramTrendHistoryPoints(row, metricType = "") {
       ));
     }
     if (!measurement) return null;
-    const candidates = [measurement.scada, measurement.real, measurement.value];
-    const rawValue = candidates.find((value) => value !== null && value !== undefined && Number.isFinite(Number(value)));
-    const value = diagramTrendDisplayValue(rawValue, row, metricType);
-    if (value === null) return null;
+    const scada = diagramTrendDisplayValue(measurement.scada ?? measurement.value, row, metricType);
+    const real = diagramTrendDisplayValue(measurement.real, row, metricType);
+    if (scada === null && real === null) return null;
     return {
       minute: Number(point.minute),
       time: point.sim_time || point.time || "--",
-      value,
+      scada,
+      real,
     };
   }).filter((point) => point && Number.isFinite(point.minute));
 }
@@ -4855,11 +4894,24 @@ function diagramMetricLabel(metricType, row) {
     || "动态量测";
 }
 
+const DIAGRAM_TREND_SERIES = Object.freeze([
+  Object.freeze({ key: "scada", label: "量测值" }),
+  Object.freeze({ key: "real", label: "真值" }),
+]);
+
+function diagramTrendFiniteValue(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function diagramTrendChartModel(points, period, tooltipWidth = 360, currentMinute = null, unit = "") {
   const sourcePoints = Array.isArray(points) ? points : [];
   const targetCount = Math.max(32, Math.floor(Math.max(tooltipWidth, 320) * 0.75));
-  const sampled = diagramSampleTrendPoints(sourcePoints, targetCount);
-  const values = sampled.map((point) => Number(point.value));
+  const values = sourcePoints.flatMap((point) => DIAGRAM_TREND_SERIES.flatMap((series) => {
+    const value = diagramTrendFiniteValue(point?.[series.key]);
+    return value === null ? [] : [value];
+  }));
   const axis = diagramTrendAxisScale(values, 4);
   const width = 336;
   const height = 148;
@@ -4877,14 +4929,46 @@ function diagramTrendChartModel(points, period, tooltipWidth = 360, currentMinut
   const valueSpan = Math.max(1e-9, axis.max - axis.min);
   const plotWidth = width - plot.left - plot.right;
   const plotHeight = height - plot.top - plot.bottom;
-  const renderedPoints = sampled.map((point) => {
-    const x = plot.left + ((Number(point.minute) - range.startMinute) / minuteSpan) * (width - plot.left - plot.right);
-    const y = plot.top + ((axis.max - Number(point.value)) / valueSpan) * plotHeight;
-    return { ...point, x, y };
-  });
-  const numericValues = sourcePoints.map((point) => Number(point.value)).filter(Number.isFinite);
+  const xForMinute = (minute) => plot.left + ((Number(minute) - range.startMinute) / minuteSpan) * plotWidth;
+  const yForValue = (value) => plot.top + ((axis.max - Number(value)) / valueSpan) * plotHeight;
+  const series = Object.fromEntries(DIAGRAM_TREND_SERIES.map((definition) => {
+    const sourceSeries = sourcePoints.map((point) => {
+      const value = diagramTrendFiniteValue(point?.[definition.key]);
+      return value === null ? null : { minute: point.minute, time: point.time, value };
+    }).filter(Boolean);
+    const renderedPoints = diagramSampleTrendPoints(sourceSeries, targetCount).map((point) => ({
+      ...point,
+      x: xForMinute(point.minute),
+      y: yForValue(point.value),
+    }));
+    const numericValues = sourceSeries.map((point) => point.value);
+    return [definition.key, {
+      ...definition,
+      renderedPoints,
+      polyline: renderedPoints.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" "),
+      min: numericValues.length ? Math.min(...numericValues) : null,
+      max: numericValues.length ? Math.max(...numericValues) : null,
+      latest: numericValues.length ? numericValues[numericValues.length - 1] : null,
+    }];
+  }));
+  const cursorPoints = sourcePoints.map((point) => {
+    const scada = diagramTrendFiniteValue(point?.scada);
+    const real = diagramTrendFiniteValue(point?.real);
+    const hasScada = scada !== null;
+    const hasReal = real !== null;
+    if (!hasScada && !hasReal) return null;
+    return {
+      minute: Number(point.minute),
+      time: point.time || "--",
+      x: xForMinute(point.minute),
+      scada: hasScada ? scada : null,
+      real: hasReal ? real : null,
+      scadaY: hasScada ? yForValue(scada) : null,
+      realY: hasReal ? yForValue(real) : null,
+    };
+  }).filter((point) => point && Number.isFinite(point.minute));
   return {
-    empty: renderedPoints.length === 0,
+    empty: values.length === 0,
     period: period === "day" ? "day" : "hour",
     unit: String(unit || ""),
     width,
@@ -4893,11 +4977,8 @@ function diagramTrendChartModel(points, period, tooltipWidth = 360, currentMinut
     range,
     labels,
     axis,
-    renderedPoints,
-    polyline: renderedPoints.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" "),
-    min: numericValues.length ? Math.min(...numericValues) : null,
-    max: numericValues.length ? Math.max(...numericValues) : null,
-    latest: numericValues.length ? numericValues[numericValues.length - 1] : null,
+    series,
+    cursorPoints,
   };
 }
 
@@ -4908,7 +4989,8 @@ function setDiagramTrendChartModel(interaction, model) {
       height: model.height,
       plot: model.plot,
       range: model.range,
-      points: model.renderedPoints,
+      points: model.cursorPoints,
+      series: model.series,
       unit: model.unit,
     };
   }
@@ -4932,24 +5014,30 @@ function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute
   setDiagramTrendChartModel(interaction, model);
   return `
     <div class="diagram-trend-empty" data-diagram-trend-empty${model.empty ? "" : " hidden"}>当前分页暂无历史曲线</div>
+    <div class="diagram-trend-legend" data-diagram-trend-legend${model.empty ? " hidden" : ""}>
+      <span><i class="is-scada"></i>量测值</span>
+      <span><i class="is-real"></i>真值</span>
+    </div>
     <svg class="diagram-trend-chart" data-diagram-trend-chart viewBox="0 0 ${model.width} ${model.height}" role="img" aria-label="${model.period === "day" ? "日曲线" : "小时曲线"}"${model.empty ? " hidden" : ""}>
       <text x="${model.plot.left}" y="12" class="diagram-trend-axis-unit" data-diagram-trend-unit>${escapeHtml(model.unit)}</text>
       <g data-diagram-trend-axis-ticks>${diagramTrendAxisTicksHtml(model)}</g>
       <line x1="${model.plot.left}" y1="${model.plot.top}" x2="${model.plot.left}" y2="${model.height - model.plot.bottom}" class="diagram-trend-y-axis"></line>
-      <polyline class="diagram-trend-series" data-diagram-trend-series points="${model.polyline}" fill="none" vector-effect="non-scaling-stroke"></polyline>
+      <polyline class="diagram-trend-series is-scada" data-diagram-trend-series="scada" points="${model.series.scada.polyline}" fill="none" vector-effect="non-scaling-stroke"></polyline>
+      <polyline class="diagram-trend-series is-real" data-diagram-trend-series="real" points="${model.series.real.polyline}" fill="none" vector-effect="non-scaling-stroke"></polyline>
       <line x1="0" y1="${model.plot.top}" x2="0" y2="${model.height - model.plot.bottom}" class="diagram-trend-cursor diagram-trend-cursor-line" data-diagram-trend-cursor data-diagram-trend-cursor-line visibility="hidden"></line>
-      <circle cx="0" cy="0" r="3.5" class="diagram-trend-cursor diagram-trend-cursor-point" data-diagram-trend-cursor data-diagram-trend-cursor-point visibility="hidden"></circle>
+      <circle cx="0" cy="0" r="3.5" class="diagram-trend-cursor diagram-trend-cursor-point is-scada" data-diagram-trend-cursor data-diagram-trend-cursor-point="scada" visibility="hidden"></circle>
+      <circle cx="0" cy="0" r="3.5" class="diagram-trend-cursor diagram-trend-cursor-point is-real" data-diagram-trend-cursor data-diagram-trend-cursor-point="real" visibility="hidden"></circle>
       <g class="diagram-trend-cursor diagram-trend-cursor-label" data-diagram-trend-cursor data-diagram-trend-cursor-label visibility="hidden">
-        <rect width="112" height="34" rx="4" ry="4"></rect>
+        <rect width="136" height="48" rx="4" ry="4"></rect>
         <text x="7" y="13" data-diagram-trend-cursor-time>--</text>
-        <text x="7" y="27" data-diagram-trend-cursor-value>--</text>
+        <text x="7" y="27" data-diagram-trend-cursor-value="scada">--</text>
+        <text x="7" y="41" data-diagram-trend-cursor-value="real">--</text>
       </g>
     </svg>
     <div class="diagram-trend-range" data-diagram-trend-range${model.empty ? " hidden" : ""}><span data-diagram-trend-range-start>${escapeHtml(model.labels.start)}</span><span data-diagram-trend-range-end>${escapeHtml(model.labels.end)}</span></div>
     <div class="diagram-trend-stats" data-diagram-trend-stats${model.empty ? " hidden" : ""}>
-      <span>最小 <strong data-diagram-trend-stat-min>${model.min === null ? "--" : diagramNumberText(model.min)}</strong></span>
-      <span>最大 <strong data-diagram-trend-stat-max>${model.max === null ? "--" : diagramNumberText(model.max)}</strong></span>
-      <span>最新 <strong data-diagram-trend-stat-latest>${model.latest === null ? "--" : diagramNumberText(model.latest)}</strong></span>
+      <div><span class="diagram-trend-stat-label is-scada">量测值</span><span>最小 <strong data-diagram-trend-stat-scada-min>${model.series.scada.min === null ? "--" : diagramNumberText(model.series.scada.min)}</strong></span><span>最大 <strong data-diagram-trend-stat-scada-max>${model.series.scada.max === null ? "--" : diagramNumberText(model.series.scada.max)}</strong></span><span>最新 <strong data-diagram-trend-stat-scada-latest>${model.series.scada.latest === null ? "--" : diagramNumberText(model.series.scada.latest)}</strong></span></div>
+      <div><span class="diagram-trend-stat-label is-real">真值</span><span>最小 <strong data-diagram-trend-stat-real-min>${model.series.real.min === null ? "--" : diagramNumberText(model.series.real.min)}</strong></span><span>最大 <strong data-diagram-trend-stat-real-max>${model.series.real.max === null ? "--" : diagramNumberText(model.series.real.max)}</strong></span><span>最新 <strong data-diagram-trend-stat-real-latest>${model.series.real.latest === null ? "--" : diagramNumberText(model.series.real.latest)}</strong></span></div>
     </div>`;
 }
 
@@ -4996,13 +5084,18 @@ function updateDiagramTrendChart(content, points, period, tooltipWidth, currentM
   const model = diagramTrendChartModel(points, period, tooltipWidth, currentMinute, unit);
   setDiagramTrendChartModel(interaction, model);
   const empty = content.querySelector("[data-diagram-trend-empty]");
+  const legend = content.querySelector("[data-diagram-trend-legend]");
   const chart = content.querySelector("[data-diagram-trend-chart]");
   const tickGroup = content.querySelector("[data-diagram-trend-axis-ticks]");
-  const series = content.querySelector("[data-diagram-trend-series]");
+  const seriesElements = Object.fromEntries(DIAGRAM_TREND_SERIES.map((series) => [
+    series.key,
+    content.querySelector(`[data-diagram-trend-series="${series.key}"]`),
+  ]));
   const range = content.querySelector("[data-diagram-trend-range]");
   const stats = content.querySelector("[data-diagram-trend-stats]");
-  if (!empty || !chart || !tickGroup || !series || !range || !stats) return false;
+  if (!empty || !legend || !chart || !tickGroup || !range || !stats || Object.values(seriesElements).some((element) => !element)) return false;
   empty.hidden = !model.empty;
+  legend.hidden = model.empty;
   chart.toggleAttribute("hidden", model.empty);
   range.hidden = model.empty;
   stats.hidden = model.empty;
@@ -5014,17 +5107,20 @@ function updateDiagramTrendChart(content, points, period, tooltipWidth, currentM
   const unitElement = chart.querySelector("[data-diagram-trend-unit]");
   if (unitElement) unitElement.textContent = model.unit;
   syncDiagramTrendAxisTicks(tickGroup, model);
-  series.setAttribute("points", model.polyline);
+  DIAGRAM_TREND_SERIES.forEach((definition) => {
+    seriesElements[definition.key].setAttribute("points", model.series[definition.key].polyline);
+  });
   const rangeStart = range.querySelector("[data-diagram-trend-range-start]");
   const rangeEnd = range.querySelector("[data-diagram-trend-range-end]");
-  const statMin = stats.querySelector("[data-diagram-trend-stat-min]");
-  const statMax = stats.querySelector("[data-diagram-trend-stat-max]");
-  const statLatest = stats.querySelector("[data-diagram-trend-stat-latest]");
   if (rangeStart) rangeStart.textContent = model.labels.start;
   if (rangeEnd) rangeEnd.textContent = model.labels.end;
-  if (statMin) statMin.textContent = model.min === null ? "--" : diagramNumberText(model.min);
-  if (statMax) statMax.textContent = model.max === null ? "--" : diagramNumberText(model.max);
-  if (statLatest) statLatest.textContent = model.latest === null ? "--" : diagramNumberText(model.latest);
+  DIAGRAM_TREND_SERIES.forEach((definition) => {
+    ["min", "max", "latest"].forEach((field) => {
+      const element = stats.querySelector(`[data-diagram-trend-stat-${definition.key}-${field}]`);
+      const value = model.series[definition.key][field];
+      if (element) element.textContent = value === null ? "--" : diagramNumberText(value);
+    });
+  });
   if (Number.isFinite(interaction?.trendCursorClientX)) {
     updateDiagramTrendCursor(interaction, chart, { clientX: interaction.trendCursorClientX });
   }
@@ -5049,36 +5145,52 @@ function updateDiagramTrendCursor(interaction, chart, event) {
     + ((viewX - model.plot.left) / plotWidth) * (model.range.endMinute - model.range.startMinute);
   const point = diagramNearestTrendPoint(model.points, targetMinute);
   const line = chart.querySelector("[data-diagram-trend-cursor-line]");
-  const marker = chart.querySelector("[data-diagram-trend-cursor-point]");
+  const markers = Object.fromEntries(DIAGRAM_TREND_SERIES.map((series) => [
+    series.key,
+    chart.querySelector(`[data-diagram-trend-cursor-point="${series.key}"]`),
+  ]));
   const label = chart.querySelector("[data-diagram-trend-cursor-label]");
   const timeText = chart.querySelector("[data-diagram-trend-cursor-time]");
-  const valueText = chart.querySelector("[data-diagram-trend-cursor-value]");
-  if (!point || !line || !marker || !label || !timeText || !valueText) {
+  const valueTexts = Object.fromEntries(DIAGRAM_TREND_SERIES.map((series) => [
+    series.key,
+    chart.querySelector(`[data-diagram-trend-cursor-value="${series.key}"]`),
+  ]));
+  if (!point || !line || !label || !timeText || Object.values(markers).some((element) => !element) || Object.values(valueTexts).some((element) => !element)) {
     hideDiagramTrendCursor(interaction);
     return;
   }
   line.setAttribute("x1", point.x.toFixed(2));
   line.setAttribute("x2", point.x.toFixed(2));
-  marker.setAttribute("cx", point.x.toFixed(2));
-  marker.setAttribute("cy", point.y.toFixed(2));
-  const labelWidth = 112;
-  const labelHeight = 34;
+  const pointYs = DIAGRAM_TREND_SERIES.flatMap((series) => {
+    const y = diagramTrendFiniteValue(point[`${series.key}Y`]);
+    return y === null ? [] : [y];
+  });
+  const anchorY = pointYs.length ? Math.min(...pointYs) : model.plot.top;
+  const labelWidth = 136;
+  const labelHeight = 48;
   const labelGap = 8;
   const maxLabelX = model.width - model.plot.right - labelWidth - 2;
   const labelX = Math.max(model.plot.left + 2, Math.min(point.x + labelGap, maxLabelX));
-  const preferredY = point.y - labelHeight - labelGap;
-  const fallbackY = point.y + labelGap;
+  const preferredY = anchorY - labelHeight - labelGap;
+  const fallbackY = anchorY + labelGap;
   const labelY = Math.max(
     model.plot.top + 2,
     Math.min(preferredY >= model.plot.top ? preferredY : fallbackY, model.height - model.plot.bottom - labelHeight - 2),
   );
   label.setAttribute("transform", `translate(${labelX.toFixed(2)} ${labelY.toFixed(2)})`);
   timeText.textContent = point.time || "--";
-  const value = diagramNumberText(point.value);
-  valueText.textContent = model.unit ? `${value} ${model.unit}` : value;
-  chart.querySelectorAll("[data-diagram-trend-cursor]").forEach((element) => {
-    element.setAttribute("visibility", "visible");
+  DIAGRAM_TREND_SERIES.forEach((series) => {
+    const value = diagramTrendFiniteValue(point[series.key]);
+    const y = diagramTrendFiniteValue(point[`${series.key}Y`]);
+    const available = value !== null && y !== null;
+    markers[series.key].setAttribute("cx", point.x.toFixed(2));
+    if (available) markers[series.key].setAttribute("cy", y.toFixed(2));
+    markers[series.key].setAttribute("visibility", available ? "visible" : "hidden");
+    const text = available ? diagramNumberText(value) : "--";
+    valueTexts[series.key].textContent = `${series.label} ${model.unit && available ? `${text} ${model.unit}` : text}`;
   });
+  line.setAttribute("visibility", "visible");
+  label.setAttribute("visibility", "visible");
 }
 
 function diagramMetricTooltipData(container, hover, snapshot, interaction) {
@@ -5090,7 +5202,7 @@ function diagramMetricTooltipData(container, hover, snapshot, interaction) {
   const deviation = scadaValue !== null && realValue !== null ? scadaValue - realValue : null;
   const unit = row?.unit || diagramMeasurementUnit(row?.meas_type || metricType);
   const period = interaction.trendPeriod === "day" ? "day" : "hour";
-  const history = diagramTrendHistoryPoints(pair.scadaRow || pair.realRow || row, metricType);
+  const history = diagramTrendHistorySeries(pair.scadaRow || pair.realRow || row, metricType);
   const endMinute = Number(snapshot?.clock?.absolute_minute ?? snapshot?.clock?.minute);
   const windowPoints = diagramTrendWindowPoints(
     history,
@@ -5898,11 +6010,15 @@ function initDiagramInteractions(container) {
     if (!button) return;
     const key = button.getAttribute("data-diagram-display-toggle") || "";
     if (!Object.prototype.hasOwnProperty.call(DIAGRAM_DISPLAY_PREFERENCES_DEFAULTS, key)) return;
+    const nextValue = key === "measurementSource"
+      ? (button.getAttribute("data-diagram-display-value") === "real" ? "real" : "scada")
+      : !diagramDisplayPreferences[key];
     diagramDisplayPreferences = saveDiagramDisplayPreferences({
       ...diagramDisplayPreferences,
-      [key]: !diagramDisplayPreferences[key],
+      [key]: nextValue,
     });
     applyDiagramDisplayPreferences(container, diagramDisplayPreferences);
+    updateDiagramRealtimeBindings(container, interaction.snapshot || state.snapshot || {});
     closeDiagramContextMenu(interaction);
   });
   document.addEventListener("pointerdown", (event) => {
@@ -5925,9 +6041,14 @@ function updateDiagramRealtimeBindings(container = $("modelDiagramCanvas"), snap
   const measurementMaps = diagramMeasurementMaps(snapshot);
   updateDiagramSwitchVisualStates(container, measurementMaps);
   const maps = { ...measurementMaps, controls: diagramControlMap(snapshot) };
-  container.querySelectorAll("[data-meas-name], [data-scada-name]").forEach((element) => {
-    const name = element.getAttribute("data-meas-name") || element.getAttribute("data-scada-name") || "";
-    setDiagramElementValue(element, diagramBindingValue(name, maps, "scada"));
+  container.querySelectorAll("[data-meas-name]").forEach((element) => {
+    setDiagramElementValue(
+      element,
+      diagramBindingValue(element.getAttribute("data-meas-name"), maps, diagramDisplayPreferences.measurementSource),
+    );
+  });
+  container.querySelectorAll("[data-scada-name]").forEach((element) => {
+    setDiagramElementValue(element, diagramBindingValue(element.getAttribute("data-scada-name"), maps, "scada"));
   });
   container.querySelectorAll("[data-real-name]").forEach((element) => {
     setDiagramElementValue(element, diagramBindingValue(element.getAttribute("data-real-name"), maps, "real"));
@@ -5938,7 +6059,7 @@ function updateDiagramRealtimeBindings(container = $("modelDiagramCanvas"), snap
   diagramMetricBindings(container).forEach((binding) => {
     setDiagramElementValue(
       binding.element,
-      diagramMetricBindingValue(binding, maps),
+      diagramMetricBindingValue(binding, maps, diagramDisplayPreferences.measurementSource),
       binding.metricType,
     );
   });
@@ -5988,6 +6109,7 @@ window.addEventListener("storage", (event) => {
   }
   const canvas = $("modelDiagramCanvas");
   applyDiagramDisplayPreferences(canvas, diagramDisplayPreferences);
+  updateDiagramRealtimeBindings(canvas, state.snapshot || {});
   const interaction = canvas ? diagramInteractionCache.get(canvas) : null;
   if (interaction?.contextMenu && !interaction.contextMenu.hidden) renderDiagramContextMenu(interaction);
 });
@@ -6563,6 +6685,7 @@ async function startReceiveMode() {
     resetReceiveIssueStreak();
     state.measurementDeltaSeq = 0;
     state.measurementTraceHistory = [];
+    state.lastMeasurementTraceKey = "";
     state.commandTraceHistory = [];
     state.lastReceiveAt = "";
     state.snapshotSource = "";
@@ -6615,6 +6738,7 @@ async function initializeModelFromLink() {
     resetReceiveIssueStreak();
     state.measurementDeltaSeq = 0;
     state.measurementTraceHistory = [];
+    state.lastMeasurementTraceKey = "";
     state.commandTraceHistory = [];
     state.renewableTrendHistory = [];
     state.lastReceiveAt = "";
@@ -7652,6 +7776,7 @@ function renderSnapshot(snapshot) {
   );
   if (traceLifecycleChanged) {
     state.measurementTraceHistory = [];
+    state.lastMeasurementTraceKey = "";
     state.commandTraceHistory = [];
     state.renewableTrendHistory = [];
     state.selectedMeasurementKey = "";
@@ -11216,9 +11341,14 @@ function measurementRows(snapshot = state.snapshot || {}) {
   return measurementDisplayRows(snapshot);
 }
 
-function measurementDisplayRows(snapshot = state.snapshot || {}) {
-  const measurements = snapshot.measurements || {};
-  const definitions = snapshot.definitions?.measurement || snapshot.measurements?.definitions || measurements.definitions || [];
+function measurementCompareRows(
+  measurements = state.snapshot?.measurements || {},
+  definitionRows = null,
+) {
+  const definitions = definitionRows
+    || state.snapshot?.definitions?.measurement
+    || measurements.definitions
+    || [];
   const primaryRows = definitions.length
     ? definitions
     : (measurements.scada?.length ? measurements.scada : measurements.real || []);
@@ -11228,13 +11358,31 @@ function measurementDisplayRows(snapshot = state.snapshot || {}) {
     const key = measurementKey(definition);
     const scada = scadaByKey.get(key);
     const real = realByKey.get(key);
+    const realValue = real?.value;
+    const scadaValue = scada?.value;
+    const realNumber = Number(realValue);
+    const scadaNumber = Number(scadaValue);
     return {
       ...definition,
-      value: scada?.value ?? real?.value ?? definition.value,
+      value: scadaValue ?? realValue ?? definition.value,
+      real_value: realValue,
+      scada_value: scadaValue,
+      diff: Number.isFinite(realNumber) && Number.isFinite(scadaNumber)
+        ? scadaNumber - realNumber
+        : null,
       valid: scada?.valid ?? real?.valid ?? definition.valid,
       weight: definition.weight,
     };
   }));
+}
+
+function measurementDisplayRows(snapshot = state.snapshot || {}) {
+  const measurements = snapshot.measurements || {};
+  const definitions = snapshot.definitions?.measurement
+    || snapshot.measurements?.definitions
+    || measurements.definitions
+    || [];
+  return measurementCompareRows(measurements, definitions);
 }
 
 function measurementsDevices(snapshot = state.snapshot || {}) {
@@ -11478,20 +11626,49 @@ function renderMeasurements(snapshot = state.snapshot || {}) {
 
 function appendMeasurementTrace(snapshot) {
   const clock = snapshot.clock || {};
-  if (Number(clock.step_count ?? 0) <= 0) return;
+  if (Number(clock.step_count ?? 0) <= 0) return false;
+  const rows = measurementCompareRows(snapshot.measurements || {});
+  if (!rows.some((row) => (
+    diagramTrendFiniteValue(row.real_value) !== null
+    || diagramTrendFiniteValue(row.scada_value) !== null
+  ))) {
+    return false;
+  }
+  const result = snapshot.result || {};
+  const summary = snapshot.summary || {};
+  const signature = [
+    snapshot.model?.id || state.activeModelId,
+    clock.absolute_minute ?? clock.minute ?? "",
+    clock.time || "",
+    result.updated ?? "",
+    result.solver_info || "",
+    summary.scada_count ?? 0,
+  ].join("|");
+  if (signature === state.lastMeasurementTraceKey) return false;
+  state.lastMeasurementTraceKey = signature;
   const point = {
     minute: Number(clock.absolute_minute ?? clock.minute ?? state.measurementTraceHistory.length) || 0,
     time: clock.time || "--",
+    sim_time: clock.time || "--",
     measurements: {},
   };
-  measurementRows(snapshot).forEach((row) => {
+  rows.forEach((row) => {
+    const real = diagramTrendFiniteValue(row.real_value);
+    const scada = diagramTrendFiniteValue(row.scada_value);
     point.measurements[measurementKey(row)] = {
-      value: Number(row.value),
+      value: scada ?? real,
+      real,
+      scada,
+      valid: Number(row.valid) === 1 ? 1 : 0,
+      dev_type: row.dev_type || "",
+      dev_name: row.dev_name || "",
+      meas_type: row.meas_type || "",
       label: `${measurementDeviceDisplay(row) || row.name || ""} ${measurementTypeDisplay(row) || ""}`.trim(),
     };
   });
   state.measurementTraceHistory.push(point);
   state.measurementTraceHistory = compactTraceHistory(state.measurementTraceHistory, state.measurementTraceWindowMinutes);
+  return true;
 }
 
 function traceAxisStepMinutes(windowMinutes) {

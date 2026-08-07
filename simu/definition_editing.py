@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence, Tuple
@@ -355,7 +356,15 @@ def atomic_write_text(path: Path, text: str) -> None:
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temp_path, target)
+        for attempt in range(5):
+            try:
+                os.replace(temp_path, target)
+                break
+            except OSError as exc:
+                transient_windows_denial = isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32}
+                if not transient_windows_denial or attempt >= 4:
+                    raise
+                time.sleep(0.05)
     except Exception:
         try:
             temp_path.unlink(missing_ok=True)

@@ -40,6 +40,25 @@ class SvgDiagramInteractionsUiTest(unittest.TestCase):
         )
         return json.loads(result.stdout)
 
+    def _trend_helper_source(self, script: str) -> str:
+        if "function diagramTrendHistorySeries" not in script:
+            self.fail("dual diagram trend helpers are missing")
+        trend_source = "function diagramTrendHistorySeries" + script.split(
+            "function diagramTrendHistorySeries",
+            1,
+        )[1].split("function diagramMeasurementValueWithUnit", 1)[0]
+        return f"{self._helper_source(script)}\n{trend_source}"
+
+    def _run_trend_helpers(self, script: str, body: str):
+        result = subprocess.run(
+            ["node"],
+            input=f"{self._trend_helper_source(script)}\n{body}",
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(result.stdout)
+
     def _selection_helper_source(self, script: str) -> str:
         if "const diagramDeviceIndexCache" not in script:
             self.fail("diagram selection helpers are missing")
@@ -177,8 +196,9 @@ process.stdout.write(JSON.stringify({
         body = """
 process.stdout.write(JSON.stringify({
   defaults: normalizeDiagramDisplayPreferences(null),
-  partial: normalizeDiagramDisplayPreferences({ measurements: false, labels: "bad", flowArrows: true }),
-  labels: diagramDisplayPreferenceMenuItems({ measurements: false, labels: true, flowArrows: false }),
+  partial: normalizeDiagramDisplayPreferences({ measurements: false, labels: "bad", flowArrows: true, measurementSource: "real" }),
+  invalidSource: normalizeDiagramDisplayPreferences({ measurementSource: "invalid" }),
+  labels: diagramDisplayPreferenceMenuItems({ measurements: false, labels: true, flowArrows: false, measurementSource: "scada" }),
 }));
 """
         for path in self._scripts():
@@ -188,16 +208,83 @@ process.stdout.write(JSON.stringify({
                 payload = self._run_helpers(script, body)
                 self.assertEqual(
                     payload["defaults"],
-                    {"measurements": True, "labels": True, "flowArrows": True},
+                    {
+                        "measurements": True,
+                        "labels": True,
+                        "flowArrows": True,
+                        "measurementSource": "scada",
+                    },
                 )
                 self.assertEqual(
                     payload["partial"],
-                    {"measurements": False, "labels": True, "flowArrows": True},
+                    {
+                        "measurements": False,
+                        "labels": True,
+                        "flowArrows": True,
+                        "measurementSource": "real",
+                    },
                 )
+                self.assertEqual(payload["invalidSource"]["measurementSource"], "scada")
                 self.assertEqual(
                     [item["label"] for item in payload["labels"]],
-                    ["显示量测", "不显示标识", "显示流动箭头"],
+                    ["显示真值", "显示量测", "不显示标识", "显示流动箭头"],
                 )
+
+    def test_svg_measurement_source_selects_real_or_scada_without_fallback(self):
+        body = """
+const binding = { devType: "ACGenerator", devName: "storage-1", metricType: "level" };
+const key = diagramDeviceMeasurementKey("ACGenerator", "storage-1", "SOC");
+const maps = {
+  scadaByDevice: new Map([[key, { value: 0.51, channel: "scada" }]]),
+  realByDevice: new Map([[key, { value: 0.48, channel: "real" }]]),
+};
+process.stdout.write(JSON.stringify({
+  scada: diagramMetricBindingValue(binding, maps, "scada"),
+  real: diagramMetricBindingValue(binding, maps, "real"),
+  missingReal: diagramMetricBindingValue(binding, { ...maps, realByDevice: new Map() }, "real"),
+}));
+"""
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                payload = self._run_helpers(path.read_text(encoding="utf-8"), body)
+                self.assertEqual(payload["scada"], {"value": 0.51, "channel": "scada"})
+                self.assertEqual(payload["real"], {"value": 0.48, "channel": "real"})
+                self.assertIsNone(payload["missingReal"])
+
+    def test_tooltip_trend_keeps_real_and_scada_as_two_series(self):
+        body = """
+function measurementKey(row) { return row.name; }
+const state = {
+  measurementTraceHistory: [
+    { minute: 1, sim_time: "00:01", measurements: { soc: { scada: 0.51, real: 0.50 } } },
+    { minute: 2, sim_time: "00:02", measurements: { soc: { scada: 0.49, real: 0.48 } } },
+    { minute: 3, sim_time: "00:03", measurements: { soc: { scada: 0.47, real: null } } },
+  ],
+};
+const row = { name: "soc", dev_type: "ACGenerator", dev_name: "storage-1", meas_type: "SOC" };
+const points = diagramTrendHistorySeries(row, "level");
+const windowPoints = diagramTrendWindowPoints(points, "hour", 3);
+const model = diagramTrendChartModel(windowPoints, "hour", 360, 3, "%");
+process.stdout.write(JSON.stringify({
+  points,
+  windowPointCount: windowPoints.length,
+  scadaLatest: model.series.scada.latest,
+  realLatest: model.series.real.latest,
+  scadaPolyline: model.series.scada.polyline,
+  realPolyline: model.series.real.polyline,
+}));
+"""
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                payload = self._run_trend_helpers(path.read_text(encoding="utf-8"), body)
+                self.assertEqual(payload["points"][0]["scada"], 51)
+                self.assertEqual(payload["points"][0]["real"], 50)
+                self.assertIsNone(payload["points"][2]["real"])
+                self.assertEqual(payload["windowPointCount"], 3)
+                self.assertEqual(payload["scadaLatest"], 47)
+                self.assertEqual(payload["realLatest"], 48)
+                self.assertTrue(payload["scadaPolyline"])
+                self.assertTrue(payload["realPolyline"])
 
     def test_svg_context_menu_only_opens_on_blank_and_clamps_to_viewport(self):
         body = """
@@ -1042,10 +1129,14 @@ process.stdout.write(JSON.stringify(payload));
             "data-diagram-tooltip-current-unit",
             "data-diagram-tooltip-validity",
             "data-diagram-trend-axis-ticks",
-            "data-diagram-trend-series",
+            'data-diagram-trend-series="scada"',
+            'data-diagram-trend-series="real"',
+            'data-diagram-trend-cursor-point="scada"',
+            'data-diagram-trend-cursor-point="real"',
+            "data-diagram-trend-stat-scada-latest",
+            "data-diagram-trend-stat-real-latest",
             "data-diagram-trend-range-start",
             "data-diagram-trend-range-end",
-            "data-diagram-trend-stat-latest",
         )
         for path in self._scripts():
             with self.subTest(app=path.parent.name):

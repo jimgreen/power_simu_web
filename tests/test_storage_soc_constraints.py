@@ -1080,6 +1080,44 @@ class StorageSocConstraintTest(unittest.TestCase):
 
                 self.assertAlmostEqual(float(stat_book.data["StorageSoc"].data[0]["soc_curr"]), 0.5)
 
+    def test_typed_generator_soc_measurement_uses_integrated_storage_value(self):
+        import simu_loop
+
+        for dev_type in ("ACGenerator", "DCGenerator"):
+            with self.subTest(dev_type=dev_type):
+                snapshot = _SolvedStorageSnapshot({(dev_type, "storage-1"): {"power": 10.0}})
+                source_row = [
+                    "1",
+                    f"{dev_type}.storage-1.SOC",
+                    dev_type,
+                    "storage-1",
+                    "SOC",
+                    "10000",
+                    "1",
+                    "0.5",
+                ]
+
+                _before, rows, _after, updated, missing = simu_loop.build_real_rows_from_data(
+                    [source_row],
+                    snapshot,
+                    storage_soc={"storage-1": 0.3481481524},
+                )
+
+                self.assertEqual(updated, 1)
+                self.assertEqual(missing, 0)
+                self.assertAlmostEqual(float(rows[0][7]), 0.3481481524)
+
+    def test_weight_derived_soc_noise_tracks_normalized_soc_units(self):
+        import simu_loop
+
+        normalized_row = ["1", "storage.soc", "ACGenerator", "storage-1", "SOC", "10000", "1", "0.5"]
+        legacy_row = [*normalized_row]
+        legacy_row[7] = "50"
+
+        self.assertAlmostEqual(simu_loop._row_noise_sigma(normalized_row, None), 0.0001)
+        self.assertAlmostEqual(simu_loop._row_noise_sigma(legacy_row, None), 0.01)
+        self.assertAlmostEqual(simu_loop._row_noise_sigma(normalized_row, 0.02), 0.02)
+
     def test_scada_soc_noise_preserves_out_of_range_values(self):
         import simu_loop
 

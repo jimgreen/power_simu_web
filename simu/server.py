@@ -108,6 +108,29 @@ DEFINITION_EDIT_PATHS = {
 MANUAL_DEFINITION_CHANGES_PATH = "/api/definitions/manual-changes"
 LOCAL_DEFINITION_PATHS = DEFINITION_EDIT_PATHS | {MANUAL_DEFINITION_CHANGES_PATH}
 LOCAL_RUNTIME_SETTINGS_PATH = "/api/runtime-settings"
+SIMULATOR_COMMAND_DELETE_PATH = "/api/simulator/commands/delete"
+TRAINEE_LOCAL_GET_PATHS = {
+    "/api/config",
+    "/api/models",
+    "/api/snapshot",
+    "/api/runtime-logs",
+    "/api/measurements",
+    "/api/measurements/delta",
+    "/api/devices",
+    "/api/device-states",
+    "/api/curves",
+    "/api/curves/summary",
+    "/api/curves/series",
+    "/api/settings",
+    "/api/export-definitions",
+}
+TRAINEE_LOCAL_POST_PATHS = {
+    "/api/models/create",
+    "/api/models/update-definitions",
+    "/api/models/clone",
+    "/api/models/delete",
+    "/api/models/import-definitions",
+}
 
 def _role_models_base_dir(sim_dir: Path, role: str) -> Path:
     parts = ROLE_MODEL_DIRS.get(role.lower(), ("models", role.lower()))
@@ -1118,7 +1141,11 @@ def make_http_server(
         def do_GET(self) -> None:
             try:
                 path = urlparse(self.path).path
-                if path in LOCAL_DEFINITION_PATHS or path == LOCAL_RUNTIME_SETTINGS_PATH:
+                if (
+                    path in LOCAL_DEFINITION_PATHS
+                    or path == LOCAL_RUNTIME_SETTINGS_PATH
+                    or (role == "trainee" and path in TRAINEE_LOCAL_GET_PATHS)
+                ):
                     self._handle_api_get()
                     return
                 if path == renewable_control_path and role == "trainee":
@@ -1150,7 +1177,12 @@ def make_http_server(
         def do_POST(self) -> None:
             try:
                 path = urlparse(self.path).path
-                if path in LOCAL_DEFINITION_PATHS or path == LOCAL_RUNTIME_SETTINGS_PATH:
+                if (
+                    path in LOCAL_DEFINITION_PATHS
+                    or path == LOCAL_RUNTIME_SETTINGS_PATH
+                    or path == SIMULATOR_COMMAND_DELETE_PATH
+                    or (role == "trainee" and path in TRAINEE_LOCAL_POST_PATHS)
+                ):
                     self._handle_api_post()
                     return
                 if path == renewable_control_path and role == "trainee":
@@ -1975,7 +2007,10 @@ def make_http_server(
             if path in DEFINITION_EDIT_PATHS:
                 try:
                     if path == "/api/definitions/device-parameters":
-                        result = target.update_device_parameters(payload)
+                        result = target.update_device_parameters(
+                            payload,
+                            allow_runtime_controls=role != "trainee",
+                        )
                     elif path == "/api/definitions/measurement":
                         result = target.update_measurement_definition(payload)
                     elif path == "/api/definitions/manual-changes/retry":
@@ -1998,6 +2033,10 @@ def make_http_server(
                 self._send_json(result)
             elif path == "/api/student/commands":
                 self._send_json(target.apply_student_commands(payload, source=str(payload.get("source", ""))))
+            elif path == SIMULATOR_COMMAND_DELETE_PATH:
+                if role != "simulator":
+                    raise JsonApiError(404, f"Unknown API route: {path}")
+                self._send_json(target.delete_active_commands(payload, source="simulator-ui"))
             elif path == "/api/trainee/receive-state":
                 exchange_notified = False
                 with target.lock:

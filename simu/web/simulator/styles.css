@@ -3353,6 +3353,7 @@ canvas {
 .runtime-command-table th:nth-child(6) { width: 86px; }
 .runtime-command-table th:nth-child(7) { width: 118px; }
 .runtime-command-table th:nth-child(n + 8) { width: 96px; }
+.runtime-command-table th:nth-child(11) { width: 72px; }
 .runtime-command-table tbody tr {
   cursor: pointer;
 }
@@ -3369,6 +3370,30 @@ canvas {
 }
 .runtime-command-table tbody tr.is-selected td:first-child {
   color: var(--teal-dark);
+}
+.runtime-command-delete-cell {
+  text-align: center !important;
+}
+.runtime-command-delete-button {
+  min-width: 48px;
+  height: 27px;
+  padding: 0 9px;
+  border: 1px solid #d7a1a1;
+  border-radius: 4px;
+  background: #fff;
+  color: #a52b2b;
+  font-size: 12px;
+  font-weight: 700;
+}
+.runtime-command-delete-button:hover:not(:disabled) {
+  border-color: #b94343;
+  background: #fff1f1;
+}
+.runtime-command-delete-button:disabled {
+  border-color: #dce3e5;
+  background: #f4f6f7;
+  color: #9aa6aa;
+  cursor: not-allowed;
 }
 .runtime-command-tabs {
   display: flex;

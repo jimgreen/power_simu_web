@@ -39,18 +39,10 @@ PROTECTED_DEVICE_FIELDS = {
     "j_node",
     "ac_node",
     "dc_node",
-    "run_stat",
-    "status",
     "isl",
-    "p_set",
-    "q_set",
-    "v_set",
-    "i_set",
-    "p_ac_set",
-    "q_ac_set",
-    "v_ac_set",
-    "v_dc_set",
 }
+
+BINARY_DEVICE_FIELDS = {"run_stat", "status"}
 
 NONNEGATIVE_DEVICE_FIELD_TOKENS = (
     "capacity",
@@ -146,6 +138,8 @@ def normalize_device_changes(current: Mapping[str, Any], changes: Mapping[str, A
         if _numeric_cell(current.get(field)):
             number = _finite_number(value, field)
             normalized_field = str(field).casefold()
+            if normalized_field in BINARY_DEVICE_FIELDS and number not in (0.0, 1.0):
+                raise ValueError(f"{field} must be 0 or 1")
             if any(token in normalized_field for token in NONNEGATIVE_DEVICE_FIELD_TOKENS) and number < 0:
                 raise ValueError(f"{field} must not be negative")
             suffix = "%" if str(current.get(field, "")).strip().endswith("%") else ""

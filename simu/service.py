@@ -123,6 +123,33 @@ STAT_HEADERS = {
     "SetValue": ("dev_type", "dev_name", "set_type", "set_value"),
     "StorageSoc": ("dev_type", "idx", "name", "soc_curr"),
 }
+RUNTIME_CONTROL_STATUS_FIELDS = frozenset(("run_stat", "status"))
+RUNTIME_CONTROL_SETPOINT_FIELDS = frozenset(
+    (
+        "p_set",
+        "q_set",
+        "v_set",
+        "i_set",
+        "p_ac_set",
+        "q_ac_set",
+        "v_ac_set",
+        "v_dc_set",
+        "p_dc_set",
+        "q_dc_set",
+        "p_from_set",
+        "q_from_set",
+        "v_from_set",
+        "p_to_set",
+        "q_to_set",
+        "v_to_set",
+    )
+)
+RUNTIME_CONTROL_SETPOINT_ALIASES = {
+    ("ACLoad", "pv0"): "p_set",
+    ("ACLoad", "qv0"): "q_set",
+    ("DCLoad", "pv0"): "p_set",
+    ("DCLoad", "qv0"): "q_set",
+}
 STORAGE_PARAMETER_SPECS = (
     ("ACStorageGen", "ACGenerator", "idx_acgenerator"),
     ("DCStorageGen", "DCGenerator", "idx_dcgenerator"),
@@ -570,6 +597,15 @@ def _is_trainee_command_source(source: Any) -> bool:
     if "学员" in text:
         return True
     return text in {"student", "trainee"} or text.startswith("student-") or text.startswith("trainee-")
+
+
+def _is_simulator_command_source(source: Any) -> bool:
+    text = str(source or "").strip().casefold()
+    if not text:
+        return False
+    if "模拟台" in text:
+        return True
+    return text in {"simulator", "teacher"} or text.startswith("simulator-") or text.startswith("teacher-")
 
 
 def _has_cancel_command_payload(payload: Mapping[str, Any]) -> bool:
@@ -2312,6 +2348,91 @@ class PolarMicrogridSimulator:
                     keys.add(("remote_adjustment", dev_type, dev_name, set_type))
         return keys
 
+    def _delete_command_entry_controls(
+        self,
+        entry: Dict[str, Any],
+        targets: set[Tuple[str, str, str, str]],
+        *,
+        deleted_names: Mapping[Tuple[str, str, str, str], str],
+        deleted_wall_time: str,
+        deleted_simu_time: str,
+        deleted_absolute_minute: float,
+    ) -> set[Tuple[str, str, str, str]]:
+        normalized = entry.get("normalized")
+        if not isinstance(normalized, dict):
+            return set()
+
+        removed: set[Tuple[str, str, str, str]] = set()
+        retained_run: List[Dict[str, Any]] = []
+        run_items = normalized.get("run_status", [])
+        if isinstance(run_items, Sequence) and not isinstance(run_items, (str, bytes)):
+            for raw_item in run_items:
+                if not isinstance(raw_item, Mapping):
+                    continue
+                item = dict(raw_item)
+                dev_type = str(item.get("dev_type", ""))
+                dev_name = str(item.get("dev_name", ""))
+                run_key = ("remote_control", dev_type, dev_name, "run_stat")
+                status_key = ("remote_control", dev_type, dev_name, "status")
+                if item.get("run_stat", "") != "" and run_key in targets:
+                    item.pop("run_stat", None)
+                    removed.add(run_key)
+                if "status" in item and status_key in targets:
+                    item.pop("status", None)
+                    removed.add(status_key)
+                if item.get("run_stat", "") != "" or "status" in item:
+                    retained_run.append(item)
+
+        retained_set: List[Dict[str, Any]] = []
+        set_items = normalized.get("set_values", [])
+        if isinstance(set_items, Sequence) and not isinstance(set_items, (str, bytes)):
+            for raw_item in set_items:
+                if not isinstance(raw_item, Mapping):
+                    continue
+                item = dict(raw_item)
+                key = (
+                    "remote_adjustment",
+                    str(item.get("dev_type", "")),
+                    str(item.get("dev_name", "")),
+                    str(item.get("set_type", "")),
+                )
+                if key in targets:
+                    removed.add(key)
+                    continue
+                retained_set.append(item)
+
+        if not removed:
+            return set()
+
+        normalized["run_status"] = retained_run
+        normalized["set_values"] = retained_set
+        accepted = entry.get("accepted")
+        if not isinstance(accepted, dict):
+            accepted = {}
+            entry["accepted"] = accepted
+        accepted["run_status"] = len(retained_run)
+        accepted["set_values"] = len(retained_set)
+
+        remaining_controls = bool(retained_run or retained_set)
+        if remaining_controls:
+            entry["partially_cancelled"] = True
+        else:
+            entry["cancelled"] = True
+            entry["expires_at_absolute_minute"] = deleted_absolute_minute
+
+        existing_names = entry.get("cancelled_names", [])
+        merged_names = {
+            str(name)
+            for name in existing_names
+            if str(name).strip()
+        } if isinstance(existing_names, Sequence) and not isinstance(existing_names, (str, bytes)) else set()
+        merged_names.update(deleted_names[key] for key in removed if key in deleted_names)
+        entry["cancelled_names"] = sorted(merged_names)
+        entry["cancelled_wall_time"] = deleted_wall_time
+        entry["cancelled_simu_time"] = deleted_simu_time
+        entry["cancelled_absolute_minute"] = deleted_absolute_minute
+        return removed
+
     def _cancel_payload_from_history_entry(self, entry: Mapping[str, Any]) -> Dict[str, Any]:
         payload = entry.get("payload") if isinstance(entry.get("payload"), Mapping) else {}
         cancel_payload = dict(payload)
@@ -2517,6 +2638,117 @@ class PolarMicrogridSimulator:
                 **result_counts,
                 "cancelled": result_counts,
                 "cancelled_items": cancelled_items,
+            }
+
+    def delete_active_commands(self, payload: Mapping[str, Any], source: str = "simulator-ui") -> Dict[str, Any]:
+        """Remove active command overlays while preserving control definitions and defaults."""
+        with self.lock:
+            source = source or "simulator-ui"
+            eligible_source = _is_simulator_command_source(source)
+            targets = self._cancel_command_targets(payload)
+            current = float(self.clock.absolute_minute)
+            received_wall_time = _now_text()
+            received_simu_time = minute_to_time(self.clock.minute)
+            deleted_keys: set[Tuple[str, str, str, str]] = set()
+
+            if eligible_source and targets:
+                target_keys = set(targets)
+                for entry in self.command_history:
+                    if not isinstance(entry, dict):
+                        continue
+                    if not self._command_entry_can_be_cancelled(entry, current, int(self.clock.run_id)):
+                        continue
+                    matched = self._command_entry_control_keys(entry) & target_keys
+                    if not matched:
+                        continue
+                    deleted_keys.update(
+                        self._delete_command_entry_controls(
+                            entry,
+                            matched,
+                            deleted_names=targets,
+                            deleted_wall_time=received_wall_time,
+                            deleted_simu_time=received_simu_time,
+                            deleted_absolute_minute=current,
+                        )
+                    )
+
+            deleted_remote = sum(1 for key in deleted_keys if key[0] == "remote_control")
+            deleted_adjustment = sum(1 for key in deleted_keys if key[0] == "remote_adjustment")
+            ignored = 0 if eligible_source else len(targets)
+            missing = max(0, len(targets) - len(deleted_keys)) if eligible_source else 0
+            result_counts = {
+                "remote_controls": deleted_remote,
+                "remote_adjustments": deleted_adjustment,
+                "missing": missing,
+                "ignored": ignored,
+            }
+            delete_entry = {
+                "time": received_wall_time,
+                "received_wall_time": received_wall_time,
+                "received_simu_time": received_simu_time,
+                "received_absolute_minute": current,
+                "run_id": int(self.clock.run_id),
+                "source": source,
+                "command_origin": "all",
+                "eligible_source": eligible_source,
+                "issued_absolute_minute": current,
+                "expires_at_absolute_minute": current,
+                "valid_for_minutes": 0.0,
+                "accepted": {
+                    "run_status": 0,
+                    "set_values": 0,
+                    "deleted_run_status": deleted_remote,
+                    "deleted_set_values": deleted_adjustment,
+                    "ignored": ignored,
+                    "missing": missing,
+                },
+                "normalized": {
+                    "run_status": [],
+                    "set_values": [],
+                    "delete_commands": [
+                        {"name": targets[key], "deleted": key in deleted_keys}
+                        for key in sorted(targets)
+                    ],
+                },
+                "payload": json.loads(json.dumps(payload, ensure_ascii=False, default=str)),
+            }
+            self.command_history.append(delete_entry)
+            self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
+            self._write_command_history()
+            time_payload = self._api_time_payload()
+            deleted_items = [
+                {
+                    "name": targets[key],
+                    "deleted": key in deleted_keys,
+                    **self._external_update_time_fields(time_payload),
+                }
+                for key in sorted(targets)
+            ]
+            detail = [
+                f"来源 {source}",
+                "删除范围 当前控制点的全部有效指令覆盖，控制值恢复模拟台默认值",
+                f"删除遥控 {deleted_remote} 条，删除遥调 {deleted_adjustment} 条，缺失 {missing} 条，忽略 {ignored} 条",
+            ]
+            if targets:
+                detail.append(
+                    "删除对象 "
+                    + "，".join(
+                        f"{targets[key]}={'已删除' if key in deleted_keys else '未匹配'}"
+                        for key in list(sorted(targets))[:8]
+                    )
+                    + (" ..." if len(targets) > 8 else "")
+                )
+            self._append_runtime_log(
+                "控制指令",
+                "模拟台 /api/simulator/commands/delete",
+                "删除成功" if deleted_keys else "无可删除指令",
+                detail,
+                level="ok" if deleted_keys else "warn",
+            )
+            return {
+                **result_counts,
+                "deleted": result_counts,
+                "deleted_items": deleted_items,
             }
 
     def _make_config(self, period_seconds: Optional[float] = None) -> simu_loop.SimulationConfig:
@@ -6552,7 +6784,149 @@ class PolarMicrogridSimulator:
             result["warning"] = warning
         return result
 
-    def update_device_parameters(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+    @staticmethod
+    def _runtime_control_set_type(block_name: str, field_name: str) -> Optional[str]:
+        normalized_block = str(block_name or "").strip()
+        normalized_field = str(field_name or "").strip().casefold()
+        alias = RUNTIME_CONTROL_SETPOINT_ALIASES.get(
+            (normalized_block, normalized_field)
+        )
+        if alias:
+            return alias
+        if normalized_field in RUNTIME_CONTROL_SETPOINT_FIELDS:
+            return normalized_field
+        if normalized_field.endswith("_set"):
+            return normalized_field
+        return None
+
+    @staticmethod
+    def _upsert_runtime_status_value(
+        book: EBook,
+        dev_type: str,
+        dev_name: str,
+        field_name: str,
+        value: Any,
+    ) -> None:
+        normalized_field = str(field_name or "").strip().casefold()
+        if normalized_field not in RUNTIME_CONTROL_STATUS_FIELDS:
+            return
+        block_name = "RunStat" if normalized_field == "run_stat" else "CbOpenStat"
+        block = _ensure_block(book, block_name, STAT_HEADERS[block_name])
+        row = _find_dev_row(block, dev_type, dev_name)
+        if row is None:
+            row = {
+                "dev_type": dev_type,
+                "dev_name": dev_name,
+                normalized_field: "",
+            }
+            block.data.append(row)
+        row[normalized_field] = _number_text(value)
+
+    @staticmethod
+    def _upsert_runtime_setpoint_value(
+        book: EBook,
+        dev_type: str,
+        dev_name: str,
+        set_type: str,
+        value: Any,
+    ) -> None:
+        block = _ensure_block(book, "SetValue", STAT_HEADERS["SetValue"])
+        row = _find_set_row(block, dev_type, dev_name, set_type)
+        if row is None:
+            row = {
+                "dev_type": dev_type,
+                "dev_name": dev_name,
+                "set_type": set_type,
+                "set_value": "",
+            }
+            block.data.append(row)
+        row["set_value"] = _number_text(value)
+
+    def _sync_runtime_controls_from_device_changes_unlocked(
+        self,
+        block_name: str,
+        row: Mapping[str, Any],
+        changes: Mapping[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        dev_type = str(block_name or "").strip()
+        dev_name = str(row.get("name", row.get("dev_name", ""))).strip()
+        if not dev_type or not dev_name:
+            return None
+
+        requested: Dict[str, Any] = {
+            "dev_type": dev_type,
+            "dev_name": dev_name,
+            "set_values": {},
+        }
+        changed = False
+        for field_name, value in changes.items():
+            normalized_field = str(field_name or "").strip().casefold()
+            if normalized_field in RUNTIME_CONTROL_STATUS_FIELDS:
+                for book in (self.source_stat_book, self.control_book):
+                    self._upsert_runtime_status_value(
+                        book,
+                        dev_type,
+                        dev_name,
+                        normalized_field,
+                        value,
+                    )
+                requested[normalized_field] = _json_scalar(value)
+                changed = True
+                continue
+
+            set_type = self._runtime_control_set_type(dev_type, normalized_field)
+            if set_type is None:
+                continue
+            for book in (self.source_stat_book, self.control_book):
+                self._upsert_runtime_setpoint_value(
+                    book,
+                    dev_type,
+                    dev_name,
+                    set_type,
+                    value,
+                )
+            requested["set_values"][set_type] = _json_scalar(value)
+            changed = True
+
+        if not changed:
+            return None
+
+        # The source books are the editable baseline. Rebuild the effective
+        # runtime book so valid commands and active device faults keep their
+        # existing precedence over that baseline.
+        self._materialize_active_control_commands(self.clock.absolute_minute)
+        self._apply_device_faults(self.clock.minute, self.clock.absolute_minute)
+        run_stats, cb_status, set_values, _soc_values = self._stat_maps()
+        key = (dev_type, dev_name)
+        effective: Dict[str, Any] = {
+            "dev_type": dev_type,
+            "dev_name": dev_name,
+        }
+        if "run_stat" in requested:
+            effective["run_stat"] = _json_scalar(
+                run_stats.get(key, requested["run_stat"])
+            )
+        if "status" in requested:
+            effective["status"] = _json_scalar(
+                cb_status.get(key, requested["status"])
+            )
+        requested_set_values = requested["set_values"]
+        if requested_set_values:
+            current_set_values = set_values.get(key, {})
+            effective["set_values"] = {
+                set_type: _json_scalar(
+                    current_set_values.get(set_type, requested_value)
+                )
+                for set_type, requested_value in requested_set_values.items()
+            }
+        return effective
+
+    def update_device_parameters(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        allow_runtime_controls: bool = True,
+    ) -> Dict[str, Any]:
         with self._active_definition_update_guard():
             current = self.definition_snapshot
             require_definition_revision(payload, current.revision)
@@ -6568,6 +6942,18 @@ class PolarMicrogridSimulator:
             changes = payload.get("changes", {})
             if not isinstance(changes, Mapping):
                 raise ValueError("changes must be an object")
+            if not allow_runtime_controls:
+                runtime_fields = [
+                    str(field)
+                    for field in changes
+                    if str(field).strip().casefold() in RUNTIME_CONTROL_STATUS_FIELDS
+                    or self._runtime_control_set_type(block_name, str(field)) is not None
+                ]
+                if runtime_fields:
+                    raise ValueError(
+                        "学员台设备参数入口禁止修改运行状态、开关状态和遥调设定值，"
+                        "请使用遥控/遥调。"
+                    )
             normalized_changes = normalize_device_changes(row, changes)
             row.update(normalized_changes)
             dev_define_book = simu_loop._capability_define_book(
@@ -6585,6 +6971,20 @@ class PolarMicrogridSimulator:
             self._publish_definition_snapshot(next_snapshot)
 
             rendered_model_text = render_ebook_aligned(next_snapshot.model_book)
+            runtime_control = self._sync_runtime_controls_from_device_changes_unlocked(
+                block_name,
+                row,
+                normalized_changes,
+            )
+            rendered_runtime_texts: Dict[str, str] = {}
+            if runtime_control is not None:
+                rendered_runtime_texts["stat"] = render_ebook_aligned(
+                    self.source_stat_book
+                )
+                if self.source_files["control"].exists():
+                    rendered_runtime_texts["control"] = render_ebook_aligned(
+                        self.control_book
+                    )
             self._record_device_manual_changes_unlocked(
                 block_name,
                 before_row,
@@ -6595,6 +6995,7 @@ class PolarMicrogridSimulator:
             )
             persisted = False
             change_record_persisted = False
+            runtime_control_persisted = True
             warning = ""
             try:
                 self._write_ahead_manual_definition_changes_unlocked(
@@ -6629,6 +7030,24 @@ class PolarMicrogridSimulator:
                 else:
                     persisted = True
                     self._mark_manual_changes_persisted_unlocked("device")
+                    runtime_errors: List[str] = []
+                    for file_key, rendered_text in rendered_runtime_texts.items():
+                        try:
+                            atomic_write_text(
+                                self.source_files[file_key],
+                                rendered_text,
+                            )
+                        except OSError as exc:
+                            runtime_errors.append(
+                                f"{self.source_files[file_key].name}: {exc}"
+                            )
+                    if runtime_errors:
+                        runtime_control_persisted = False
+                        warning = self._merge_definition_warning(
+                            warning,
+                            "运行控制 E 文件保存失败，请重试: "
+                            + "；".join(runtime_errors),
+                        )
                 try:
                     self._write_manual_definition_changes_unlocked()
                 except OSError as exc:
@@ -6655,6 +7074,9 @@ class PolarMicrogridSimulator:
                 warning=warning,
             )
             result["change_record_persisted"] = change_record_persisted
+            if runtime_control is not None:
+                result["runtime_control"] = runtime_control
+                result["runtime_control_persisted"] = runtime_control_persisted
             return result
 
     def update_measurement_definition(self, payload: Mapping[str, Any]) -> Dict[str, Any]:

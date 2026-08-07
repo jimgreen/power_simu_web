@@ -244,7 +244,9 @@ def test_trainee_receive_poll_urls_remain_relative_before_api_prefixing():
     assert "const isAbsoluteUrl = /^https?:\\/\\//i.test(String(url || \"\"));" in block
     assert "return isAbsoluteUrl ? target.href : `${target.pathname}${target.search}${target.hash}`;" in block
     assert 'return `/api/trainee/snapshot?${params.toString()}`;' in script
-    assert 'return appendUrlQuery("/api/trainee/measurements/delta", { after_seq: state.measurementDeltaSeq });' in script
+    assert 'return appendUrlQuery("/api/trainee/measurements/delta", {' in script
+    assert "after_seq: state.measurementDeltaSeq," in script
+    assert "compact: 1," in script
 
 
 def test_trainee_receive_never_requests_remote_static_definitions():
@@ -341,8 +343,11 @@ def test_trainee_commands_are_sent_through_interaction_link_command_path():
     assert 'receive.get("command_path")' in exchange
     assert "result = self.request_json(" in exchange
     assert "payload=forwarded" in exchange
-    assert "dispatch_ticket.submit(dispatch_payload)" in renewable
-    assert "self.command_sink(model_id, dispatch_payload)" in renewable
+    assert "dispatch_ticket.prepare(" in renewable
+    assert "dispatch_payload," in renewable
+    assert "dispatch_permit.submit()" in renewable
+    assert "return self.command_sink(" in renewable
+    assert 'str(getattr(service, "model_id", "default"))' in renewable
     assert 'connection["command_path"]' not in renewable
 
 

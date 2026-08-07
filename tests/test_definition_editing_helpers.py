@@ -18,7 +18,7 @@ from simu.service import EBlock, EBook
 
 
 class DefinitionEditingHelpersTest(unittest.TestCase):
-    def test_identity_topology_runtime_and_setpoint_fields_are_protected(self):
+    def test_identity_topology_fields_remain_protected_and_runtime_controls_become_editable(self):
         protected = {
             "idx",
             "name",
@@ -30,20 +30,35 @@ class DefinitionEditingHelpersTest(unittest.TestCase):
             "dc_node",
             "idx_acgenerator",
             "idx_dcgenerator",
-            "run_stat",
-            "status",
             "isl",
-            "p_set",
-            "q_set",
-            "v_set",
-            "p_ac_set",
-            "q_ac_set",
-            "v_ac_set",
-            "v_dc_set",
         }
         for field in protected:
             with self.subTest(field=field):
                 self.assertFalse(editable_device_field(field))
+
+        editable = {
+            "run_stat",
+            "status",
+            "p_set",
+            "q_set",
+            "v_set",
+            "i_set",
+            "p_ac_set",
+            "q_ac_set",
+            "v_ac_set",
+            "v_dc_set",
+            "p_dc_set",
+            "q_dc_set",
+            "p_from_set",
+            "q_from_set",
+            "v_from_set",
+            "p_to_set",
+            "q_to_set",
+            "v_to_set",
+        }
+        for field in editable:
+            with self.subTest(field=field):
+                self.assertTrue(editable_device_field(field))
 
         for field in (
             "p_max",
@@ -96,6 +111,22 @@ class DefinitionEditingHelpersTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "negative"):
             normalize_device_changes(current, {"rated_capacity": -1})
         self.assertEqual(normalize_device_changes(current, {"r": -0.01})["r"], "-0.01")
+
+    def test_device_changes_reject_invalid_runtime_control_binary_values(self):
+        current = {
+            "run_stat": "1",
+            "status": "0",
+            "p_set": "80",
+            "q_set": "0",
+            "v_set": "380",
+        }
+
+        with self.assertRaisesRegex(ValueError, "run_stat"):
+            normalize_device_changes(current, {"run_stat": 2})
+        with self.assertRaisesRegex(ValueError, "status"):
+            normalize_device_changes(current, {"status": -1})
+        self.assertEqual(normalize_device_changes(current, {"run_stat": 0})["run_stat"], "0")
+        self.assertEqual(normalize_device_changes(current, {"status": 1})["status"], "1")
 
     def test_device_changes_preserve_percentage_cells_and_validate_percentage_bounds(self):
         current = {

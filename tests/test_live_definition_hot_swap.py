@@ -80,12 +80,10 @@ class LiveDefinitionHotSwapTest(unittest.TestCase):
         self.assertTrue(result["persisted"])
         self.assertEqual(result["record"]["r"], 0.0025)
 
-    def test_device_update_rejects_topology_runtime_and_setpoint_fields(self):
+    def test_device_update_rejects_topology_fields(self):
         _source, _runtime, service = self._make_service()
         cases = (
             ("ACBranch", "diesel_line", {"i_node": 99}),
-            ("ACGenerator", "diesel_300kw", {"run_stat": 0}),
-            ("ACGenerator", "diesel_300kw", {"p_set": 12}),
         )
         for block_name, name, changes in cases:
             with self.subTest(changes=changes), self.assertRaises(ValueError):

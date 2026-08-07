@@ -115,6 +115,7 @@ const state = {
   runtimeCommandKeywordFilter: "",
   runtimeCommandTypeFilter: "all",
   runtimeCommandOnlyActive: false,
+  runtimeCommandDeleteSending: new Set(),
   measurementCompareFilter: { dev_type: "all", dev_name: "" },
   measurementCompareKeywordFilter: "",
   measurementCompareTypeFilter: "all",
@@ -5176,9 +5177,7 @@ function diagramTooltipRows(rows = [], sectionKey = "") {
 const DIAGRAM_DEFINITION_PROTECTED_FIELDS = new Set([
   "idx", "name", "dev_name", "dev_type", "path",
   "node", "i_node", "j_node", "ac_node", "dc_node",
-  "run_stat", "status", "isl",
-  "p_set", "q_set", "v_set", "i_set",
-  "p_ac_set", "q_ac_set", "v_ac_set", "v_dc_set",
+  "isl",
 ]);
 
 const DIAGRAM_LINKED_DEFINITION_BLOCKS = Object.freeze({
@@ -5420,6 +5419,75 @@ function patchDiagramModelDefinitionRecord(snapshot, record) {
   return true;
 }
 
+function patchDiagramRuntimeControlRecord(snapshot, runtime) {
+  const devType = String(runtime?.dev_type || "").trim();
+  const devName = String(runtime?.dev_name || "").trim();
+  if (!snapshot || !runtime || !devType || !devName) return false;
+  const matches = (item) => (
+    normalizeDiagramMeasurementToken(item?.dev_type) === normalizeDiagramMeasurementToken(devType)
+    && String(item?.dev_name || item?.name || "").trim() === devName
+  );
+  let changed = false;
+  if (Array.isArray(snapshot.devices)) {
+    snapshot.devices.forEach((device) => {
+      if (!matches(device)) return;
+      if (Object.prototype.hasOwnProperty.call(runtime, "run_stat")) device.run_stat = runtime.run_stat;
+      if (Object.prototype.hasOwnProperty.call(runtime, "status")) device.status = runtime.status;
+      if (runtime.set_values && typeof runtime.set_values === "object") {
+        device.set_values = {
+          ...(device.set_values || {}),
+          ...runtime.set_values,
+        };
+      }
+      if (device.raw && typeof device.raw === "object") {
+        if (Object.prototype.hasOwnProperty.call(runtime, "run_stat")) device.raw.run_stat = runtime.run_stat;
+        if (Object.prototype.hasOwnProperty.call(runtime, "status")) device.raw.status = runtime.status;
+        if (runtime.set_values && typeof runtime.set_values === "object") {
+          device.raw = {
+            ...(device.raw || {}),
+            ...runtime.set_values,
+          };
+        }
+      }
+      changed = true;
+    });
+  }
+  if (Array.isArray(snapshot.device_states)) {
+    snapshot.device_states.forEach((deviceState) => {
+      if (!matches(deviceState)) return;
+      if (Object.prototype.hasOwnProperty.call(runtime, "run_stat")) deviceState.run_stat = runtime.run_stat;
+      changed = true;
+    });
+  }
+  if (snapshot.measurements && (Object.prototype.hasOwnProperty.call(runtime, "run_stat") || Object.prototype.hasOwnProperty.call(runtime, "status"))) {
+    const measurementUpdates = new Map();
+    if (Object.prototype.hasOwnProperty.call(runtime, "run_stat")) {
+      measurementUpdates.set(normalizeDiagramMeasurementToken("RUN_STAT"), runtime.run_stat);
+    }
+    if (Object.prototype.hasOwnProperty.call(runtime, "status")) {
+      measurementUpdates.set(normalizeDiagramMeasurementToken("STATUS"), runtime.status);
+    }
+    ["definitions", "real", "scada"].forEach((channel) => {
+      const rows = snapshot.measurements[channel];
+      if (!Array.isArray(rows)) return;
+      rows.forEach((row) => {
+        if (
+          normalizeDiagramMeasurementToken(row?.dev_type) !== normalizeDiagramMeasurementToken(devType)
+          || String(row?.dev_name || "").trim() !== devName
+        ) {
+          return;
+        }
+        const measType = normalizeDiagramMeasurementToken(row?.meas_type || row?.name || "");
+        if (!measurementUpdates.has(measType)) return;
+        row.value = measurementUpdates.get(measType);
+        row.valid = 1;
+        changed = true;
+      });
+    });
+  }
+  return changed;
+}
+
 function patchDiagramMeasurementDefinitionRecord(snapshot, record) {
   const name = String(record?.name || "");
   if (!name) return false;
@@ -5456,6 +5524,7 @@ function applyDefinitionEditResult(result) {
   const changed = record.block_name
     ? patchDiagramModelDefinitionRecord(state.snapshot, record)
     : patchDiagramMeasurementDefinitionRecord(state.snapshot, record);
+  const runtimeChanged = patchDiagramRuntimeControlRecord(state.snapshot, result.runtime_control);
   if (result.static_meta) {
     state.snapshot.static_meta = {
       ...(state.snapshot.static_meta || {}),
@@ -5463,7 +5532,7 @@ function applyDefinitionEditResult(result) {
     };
   }
   persistStaticSnapshotCache(state.snapshot, currentPageName());
-  return changed;
+  return changed || runtimeChanged;
 }
 
 function definitionEditResultHasWarning(result) {
@@ -5787,7 +5856,7 @@ async function saveDiagramDeviceDefinitionEdit(container) {
       ? (result.warning || (result.persisted
         ? "Model.e 已保存，但人工修改记录未保存，请重试"
         : "后台定义已更新，但 Model.e 保存失败"))
-      : "后台定义及 Model.e 已保存";
+      : (result.runtime_control ? "后台定义、Model.e 及运行控制已保存" : "后台定义及 Model.e 已保存");
     interaction.definitionMessageWarning = resultWarning;
     interaction.tooltip?.classList.remove("is-editing-definition");
     renderActiveDiagramTooltip(container, state.snapshot || {}, interaction);
@@ -10901,6 +10970,57 @@ function runtimeCommandTableValueText(row, field) {
   return text.endsWith(suffix) ? text.slice(0, -suffix.length) : text;
 }
 
+function runtimeCommandDeleteName(row) {
+  const devType = String(row?.device?.dev_type || "").trim();
+  const devName = String(row?.device?.dev_name || "").trim();
+  const fieldName = String(row?.set_type || "").trim();
+  return devType && devName && fieldName ? `${devType}.${devName}.${fieldName}` : "";
+}
+
+function runtimeCommandDeleteButtonHtml(row) {
+  const commandName = runtimeCommandDeleteName(row);
+  const sending = commandName && state.runtimeCommandDeleteSending.has(commandName);
+  const label = runtimeCommandTraceLabel(row);
+  return `
+    <button
+      type="button"
+      class="runtime-command-delete-button"
+      data-runtime-command-delete-name="${escapeHtml(commandName)}"
+      data-runtime-command-delete-label="${escapeHtml(label)}"
+      title="删除当前有效指令"
+      aria-label="删除当前有效指令：${escapeHtml(label)}"
+      ${row.active && !sending ? "" : "disabled"}
+    >${sending ? "删除中" : "删除"}</button>
+  `;
+}
+
+async function deleteRuntimeCommand(commandName, label = "") {
+  const name = String(commandName || "").trim();
+  if (!name || state.runtimeCommandDeleteSending.has(name)) return;
+  const displayLabel = String(label || name).trim();
+  if (!window.confirm(`确认删除当前有效指令：${displayLabel}？\n删除后恢复模拟台默认值，后续学员台新指令仍可生效。`)) return;
+
+  state.runtimeCommandDeleteSending.add(name);
+  renderRuntimeDeviceTable();
+  try {
+    const result = await api("/api/simulator/commands/delete", {
+      method: "POST",
+      body: JSON.stringify({ commands: [{ name }] }),
+    });
+    const deleted = result.deleted || result;
+    const count = Number(deleted.remote_controls || 0) + Number(deleted.remote_adjustments || 0);
+    if (!count) {
+      window.alert(`未找到可删除的当前有效指令：${displayLabel}`);
+    }
+    await refresh();
+  } catch (error) {
+    window.alert(`删除控制指令失败：${apiErrorText(error)}`);
+  } finally {
+    state.runtimeCommandDeleteSending.delete(name);
+    renderRuntimeDeviceTable();
+  }
+}
+
 function runtimeCommandLiveCellHtml(row, field) {
   if (field === "control") return escapeHtml(runtimeCommandTableValueText(row, "control"));
   if (field === "origin") return escapeHtml(row.receive_time?.origin_text || "--");
@@ -10908,6 +11028,7 @@ function runtimeCommandLiveCellHtml(row, field) {
   if (field === "simu_time") return escapeHtml(row.receive_time?.simu_time || row.refresh_time || "--");
   if (field === "real") return escapeHtml(runtimeCommandTableValueText(row, "real"));
   if (field === "scada") return escapeHtml(runtimeCommandTableValueText(row, "scada"));
+  if (field === "delete") return runtimeCommandDeleteButtonHtml(row);
   return "";
 }
 
@@ -10950,6 +11071,7 @@ function renderRuntimeCommandRows(rows) {
       <td class="mono-cell" data-runtime-command-live-field="simu_time">${escapeHtml(row.receive_time?.simu_time || row.refresh_time || "--")}</td>
       <td class="numeric-cell" data-runtime-command-live-field="real">${runtimeCommandLiveCellHtml(row, "real")}</td>
       <td class="numeric-cell" data-runtime-command-live-field="scada">${runtimeCommandLiveCellHtml(row, "scada")}</td>
+      <td class="runtime-command-delete-cell" data-runtime-command-live-field="delete">${runtimeCommandLiveCellHtml(row, "delete")}</td>
     </tr>
   `;
   }).join("");
@@ -10971,12 +11093,13 @@ function renderRuntimeCommandTable(rows, emptyText, virtualRows = { beforeHeight
           <th>接收仿真时刻</th>
           <th>实时值</th>
           <th>量测值</th>
+          <th>操作</th>
         </tr>
       </thead>
       <tbody>
-        ${renderVirtualSpacerRow(virtualRows.beforeHeight, 10)}
+        ${renderVirtualSpacerRow(virtualRows.beforeHeight, 11)}
         ${renderRuntimeCommandRows(rows)}
-        ${renderVirtualSpacerRow(virtualRows.afterHeight, 10)}
+        ${renderVirtualSpacerRow(virtualRows.afterHeight, 11)}
       </tbody>
     </table>
   `;
@@ -13040,6 +13163,16 @@ document.addEventListener("click", (event) => {
   const runtimeCommandTab = event.target.closest("[data-runtime-command-tab]");
   if (runtimeCommandTab) {
     setRuntimeCommandTab(runtimeCommandTab.dataset.runtimeCommandTab || "");
+    return;
+  }
+  const runtimeCommandDeleteButton = event.target.closest("[data-runtime-command-delete-name]");
+  if (runtimeCommandDeleteButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    deleteRuntimeCommand(
+      runtimeCommandDeleteButton.dataset.runtimeCommandDeleteName || "",
+      runtimeCommandDeleteButton.dataset.runtimeCommandDeleteLabel || "",
+    );
     return;
   }
   const measurementCompareTab = event.target.closest("[data-measurement-compare-tab]");

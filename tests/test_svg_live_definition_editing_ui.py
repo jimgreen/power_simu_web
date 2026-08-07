@@ -19,16 +19,17 @@ class SvgLiveDefinitionEditingUiTest(unittest.TestCase):
         cls.styles = SIMULATOR_STYLES.read_text(encoding="utf-8")
         cls.trainee_script = TRAINEE_SCRIPT.read_text(encoding="utf-8")
 
-    def _helper_source(self) -> str:
+    def _helper_source(self, script: str | None = None) -> str:
+        script = script or self.script
         marker = "const DIAGRAM_DEFINITION_PROTECTED_FIELDS"
-        if marker not in self.script:
+        if marker not in script:
             self.fail("live definition editing helpers are missing")
-        return marker + self.script.split(marker, 1)[1].split(
+        return marker + script.split(marker, 1)[1].split(
             "function diagramDeviceData",
             1,
         )[0]
 
-    def _run_helpers(self, body: str):
+    def _run_helpers(self, body: str, script: str | None = None):
         harness = r"""
 const state = { snapshot: null };
 let persistedSnapshot = null;
@@ -57,7 +58,7 @@ function diagramMetricMeasurementTypes(devType, metricType) {
 """
         result = subprocess.run(
             ["node"],
-            input=f"{harness}\n{self._helper_source()}\n{body}",
+            input=f"{harness}\n{self._helper_source(script)}\n{body}",
             check=True,
             capture_output=True,
             text=True,
@@ -92,15 +93,23 @@ process.stdout.write(JSON.stringify({
     diagramDeviceParameterEditable("node"),
     diagramDeviceParameterEditable("run_stat"),
     diagramDeviceParameterEditable("p_set"),
+    diagramDeviceParameterEditable("q_set"),
+    diagramDeviceParameterEditable("v_set"),
+    diagramDeviceParameterEditable("status"),
   ],
 }));
 """
+        simulator = self._run_helpers(body)
+        trainee = self._run_helpers(body, self.trainee_script)
+        self.assertEqual(simulator["blocks"], ["ACGenerator", "ACWindGen"])
+        self.assertEqual(trainee["blocks"], ["ACGenerator", "ACWindGen"])
         self.assertEqual(
-            self._run_helpers(body),
-            {
-                "blocks": ["ACGenerator", "ACWindGen"],
-                "editable": [True, True, False, False, False],
-            },
+            simulator["editable"],
+            [True, True, False, True, True, True, True, True],
+        )
+        self.assertEqual(
+            trainee["editable"],
+            [True, True, False, False, False, False, False, False],
         )
 
     def test_nameless_model_rows_match_the_definition_driven_synthetic_device_name(self):
@@ -287,6 +296,99 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(payload["channelValid"], [0, 0])
         self.assertEqual(payload["meta"]["definitions"]["revision"], 3)
         self.assertEqual(payload["persistedPage"], "diagram")
+
+    def test_runtime_control_result_patching_updates_live_snapshot_values(self):
+        body = r"""
+const diagram = { svg: "keep-me" };
+state.snapshot = {
+  model: { id: "model-a" },
+  diagram,
+  static_meta: { definitions: { revision: 1 }, device_parameters: { revision: 1 } },
+  definitions: {
+    model: {
+      ACGenerator: {
+        headers: ["idx", "name", "p_set", "q_set", "v_set", "run_stat"],
+        rows: [{ idx: 2, name: "gen-1", p_set: 10, q_set: 0, v_set: 380, run_stat: 1 }],
+      },
+    },
+  },
+  device_parameters: {},
+  devices: [{
+    dev_type: "ACGenerator",
+    dev_name: "gen-1",
+    run_stat: 1,
+    status: 1,
+    set_values: { p_set: 10, q_set: 0, v_set: 380 },
+    raw: { idx: 2, name: "gen-1", p_set: 10, q_set: 0, v_set: 380, run_stat: 1 },
+  }],
+  device_states: [{
+    dev_type: "ACGenerator",
+    dev_name: "gen-1",
+    run_stat: 1,
+    dead_island: false,
+  }],
+  measurements: {
+    definitions: [
+      { name: "gen-1.run_stat", dev_type: "ACGenerator", dev_name: "gen-1", meas_type: "RUN_STAT", value: 1, valid: 1 },
+      { name: "gen-1.status", dev_type: "ACGenerator", dev_name: "gen-1", meas_type: "STATUS", value: 1, valid: 1 },
+    ],
+    real: [
+      { name: "gen-1.run_stat", dev_type: "ACGenerator", dev_name: "gen-1", meas_type: "RUN_STAT", value: 1, valid: 1 },
+      { name: "gen-1.status", dev_type: "ACGenerator", dev_name: "gen-1", meas_type: "STATUS", value: 1, valid: 1 },
+    ],
+    scada: [
+      { name: "gen-1.run_stat", dev_type: "ACGenerator", dev_name: "gen-1", meas_type: "RUN_STAT", value: 1, valid: 1 },
+      { name: "gen-1.status", dev_type: "ACGenerator", dev_name: "gen-1", meas_type: "STATUS", value: 1, valid: 1 },
+    ],
+  },
+};
+applyDefinitionEditResult({
+  revision: 2,
+  memory_updated: true,
+  persisted: true,
+  record: {
+    block_name: "ACGenerator",
+    row_key: { idx: 2, name: "gen-1" },
+    idx: 2,
+    name: "gen-1",
+    p_set: 35,
+    q_set: 5,
+    v_set: 400,
+    run_stat: 0,
+  },
+  runtime_control: {
+    dev_type: "ACGenerator",
+    dev_name: "gen-1",
+    run_stat: 0,
+    set_values: { p_set: 35, q_set: 5, v_set: 400 },
+  },
+  static_meta: { definitions: { revision: 2 }, device_parameters: { revision: 2 } },
+});
+process.stdout.write(JSON.stringify({
+  branch: state.snapshot.definitions.model.ACGenerator.rows[0],
+  device: state.snapshot.devices[0],
+  deviceState: state.snapshot.device_states[0],
+  measurements: state.snapshot.measurements,
+}));
+"""
+        payload = self._run_helpers(body)
+        self.assertEqual(payload["branch"]["p_set"], 35)
+        self.assertEqual(payload["branch"]["q_set"], 5)
+        self.assertEqual(payload["branch"]["v_set"], 400)
+        self.assertEqual(payload["branch"]["run_stat"], 0)
+        self.assertEqual(payload["device"]["run_stat"], 0)
+        self.assertEqual(payload["device"]["set_values"]["p_set"], 35)
+        self.assertEqual(payload["device"]["set_values"]["q_set"], 5)
+        self.assertEqual(payload["device"]["set_values"]["v_set"], 400)
+        self.assertEqual(payload["deviceState"]["run_stat"], 0)
+        for channel in ("definitions", "real", "scada"):
+            rows = payload["measurements"][channel]
+            run_row = next(row for row in rows if row["meas_type"] == "RUN_STAT")
+            status_row = next(row for row in rows if row["meas_type"] == "STATUS")
+            self.assertEqual(run_row["value"], 0)
+            self.assertEqual(run_row["valid"], 1)
+            self.assertEqual(status_row["value"], 1)
+            self.assertEqual(status_row["valid"], 1)
 
     def test_simulator_and_trainee_expose_both_local_definition_edit_apis(self):
         for endpoint in (

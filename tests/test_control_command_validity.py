@@ -260,6 +260,56 @@ class ControlCommandValidityTest(unittest.TestCase):
         self.assertEqual(resumed["command_origin"], "manual")
         self.assertIsNone(resumed["expires_at_absolute_minute"])
 
+    def test_static_runtime_control_edit_updates_baseline_without_overriding_active_strategy(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        service.apply_student_commands(
+            {
+                "valid_for_minutes": 5,
+                "strategy": {"name": "renewable_priority"},
+                "set_values": [
+                    {
+                        "dev_type": "ACGenerator",
+                        "dev_name": "diesel_300kw",
+                        "set_type": "p_set",
+                        "set_value": 60,
+                    }
+                ],
+            },
+            source="trainee-renewable-priority",
+        )
+        self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "60")
+
+        result = service.update_device_parameters(
+            {
+                "block_name": "ACGenerator",
+                "row_key": {"idx": "2", "name": "diesel_300kw"},
+                "revision": service.definition_snapshot.revision,
+                "changes": {"p_set": 95},
+            }
+        )
+
+        self.assertEqual(result["record"]["p_set"], 95)
+        self.assertEqual(result["runtime_control"]["set_values"]["p_set"], 60)
+        self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "60")
+        self.assertEqual(
+            next(
+                row
+                for row in service.source_stat_book.data["SetValue"].data
+                if row["dev_type"] == "ACGenerator"
+                and row["dev_name"] == "diesel_300kw"
+                and row["set_type"] == "p_set"
+            )["set_value"],
+            "95",
+        )
+
+        service.clock.absolute_minute = 6
+        service.clock.minute = 6
+        service._materialize_active_control_commands(6)
+
+        self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "95")
+
     def test_manual_control_commands_are_not_evicted_by_frequent_strategy_refreshes(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)

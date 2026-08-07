@@ -239,6 +239,92 @@ class TraineeModelInitializationTest(unittest.TestCase):
             self.assertTrue((created.sim_dir / "diagram.svg").exists())
             self.assertEqual((trainee.models_root / "local_a" / "model.e").read_bytes(), source_before)
 
+    def test_trainee_local_model_routes_are_not_proxied_to_simulator(self):
+        """The learner catalog must never expose or mutate the simulator catalog."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            simulator = self._make_simulator(root)
+            trainee = self._make_trainee(root)
+            simulator_server = make_http_server(("127.0.0.1", 0), simulator, role="simulator")
+            trainee_server = make_http_server(
+                ("127.0.0.1", 0),
+                trainee,
+                role="trainee",
+                sim_url=f"http://127.0.0.1:{simulator_server.server_address[1]}",
+            )
+            simulator_thread = threading.Thread(target=simulator_server.serve_forever, daemon=True)
+            trainee_thread = threading.Thread(target=trainee_server.serve_forever, daemon=True)
+            simulator_thread.start()
+            trainee_thread.start()
+            try:
+                trainee_base = f"http://127.0.0.1:{trainee_server.server_address[1]}"
+                with urlopen(f"{trainee_base}/api/models", timeout=5) as response:
+                    catalog = json.loads(response.read().decode("utf-8"))
+                with urlopen(f"{trainee_base}/api/config?model_id=local_b", timeout=5) as response:
+                    local_config = json.loads(response.read().decode("utf-8"))
+                with urlopen(
+                    f"{trainee_base}/api/snapshot?model_id=local_b&lite=1&measurements=0",
+                    timeout=5,
+                ) as response:
+                    local_snapshot = json.loads(response.read().decode("utf-8"))
+                with urlopen(
+                    f"{trainee_base}/api/measurements/delta?model_id=local_b&after_seq=0&compact=1",
+                    timeout=5,
+                ) as response:
+                    local_delta = json.loads(response.read().decode("utf-8"))
+                with urlopen(
+                    f"{trainee_base}/api/export-definitions?format=json&model_id=local_b",
+                    timeout=10,
+                ) as response:
+                    local_archive = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual({item["id"] for item in catalog["models"]}, {"local_a", "local_b"})
+                self.assertEqual(local_config["role"], "trainee")
+                self.assertEqual(
+                    {item["id"] for item in local_config["models"]},
+                    {"local_a", "local_b"},
+                )
+                self.assertEqual(local_snapshot["model"]["id"], "local_b")
+                self.assertTrue(local_delta["definition_signature"])
+                self.assertTrue(local_archive["filename"].startswith("local_b_"))
+
+                link = f"http://127.0.0.1:{simulator_server.server_address[1]}/api/trainee-link?model_id=remote_model"
+                initialized = self._post_json(
+                    f"{trainee_base}/api/trainee/model-initialize",
+                    {"model_id": "local_b", "link": link},
+                )
+                self.assertEqual(initialized["selected_model_id"], "local_b")
+
+                clone_request = Request(
+                    f"{trainee_base}/api/models/clone",
+                    data=json.dumps({"model_id": "local_a", "name": "local_clone"}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(clone_request, timeout=10) as response:
+                    cloned = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(cloned["model"]["id"], "local_clone")
+                self.assertTrue((trainee.models_root / "local_clone").exists())
+                self.assertFalse((root / "simulator-source" / "local_clone").exists())
+
+                delete_request = Request(
+                    f"{trainee_base}/api/models/delete",
+                    data=json.dumps({"model_id": "local_clone"}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(delete_request, timeout=10) as response:
+                    deleted = json.loads(response.read().decode("utf-8"))
+                self.assertTrue(deleted["deleted"]["deleted"])
+                self.assertFalse((trainee.models_root / "local_clone").exists())
+            finally:
+                trainee_server.shutdown()
+                simulator_server.shutdown()
+                trainee_server.server_close()
+                simulator_server.server_close()
+                trainee_thread.join(timeout=5)
+                simulator_thread.join(timeout=5)
+
     def test_receive_start_requires_initialization_and_does_not_redownload_definitions(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

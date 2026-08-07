@@ -95,6 +95,92 @@ class LiveDefinitionEditingApiTest(unittest.TestCase):
         self.assertEqual(first.clock.state, "running")
         self.assertEqual(second.definition_snapshot.revision, second_before)
 
+    def test_device_route_updates_runtime_control_books_and_live_values(self):
+        manager = self._make_manager()
+        service = manager.service_for("first")
+        base = self._serve(manager)
+        initial_revision = service.definition_snapshot.revision
+
+        status, run_result = self._post(
+            base,
+            "/api/definitions/device-parameters",
+            {
+                "model_id": "first",
+                "block_name": "ACGenerator",
+                "row_key": {"name": "diesel_300kw", "idx": "2"},
+                "revision": initial_revision,
+                "changes": {"run_stat": 0},
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(run_result["record"]["run_stat"], 0)
+        self.assertEqual(run_result["runtime_control"]["run_stat"], 0)
+        self.assertTrue(run_result["runtime_control_persisted"])
+        self.assertEqual(
+            next(
+                row
+                for row in service.source_stat_book.data["RunStat"].data
+                if row["dev_type"] == "ACGenerator" and row["dev_name"] == "diesel_300kw"
+            )["run_stat"],
+            "0",
+        )
+        self.assertEqual(
+            next(
+                row
+                for row in service.runtime_stat_book.data["RunStat"].data
+                if row["dev_type"] == "ACGenerator" and row["dev_name"] == "diesel_300kw"
+            )["run_stat"],
+            "0",
+        )
+
+        status, set_result = self._post(
+            base,
+            "/api/definitions/device-parameters",
+            {
+                "model_id": "first",
+                "block_name": "ACGenerator",
+                "row_key": {"name": "diesel_300kw", "idx": "2"},
+                "revision": run_result["revision"],
+                "changes": {"p_set": 96},
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(set_result["record"]["p_set"], 96)
+        self.assertEqual(set_result["runtime_control"]["set_values"]["p_set"], 96)
+        self.assertTrue(set_result["runtime_control_persisted"])
+        self.assertEqual(
+            next(
+                row
+                for row in service.source_stat_book.data["SetValue"].data
+                if row["dev_type"] == "ACGenerator"
+                and row["dev_name"] == "diesel_300kw"
+                and row["set_type"] == "p_set"
+            )["set_value"],
+            "96",
+        )
+        self.assertEqual(
+            next(
+                row
+                for row in service.control_book.data["SetValue"].data
+                if row["dev_type"] == "ACGenerator"
+                and row["dev_name"] == "diesel_300kw"
+                and row["set_type"] == "p_set"
+            )["set_value"],
+            "96",
+        )
+        self.assertEqual(
+            next(
+                row
+                for row in service.runtime_stat_book.data["SetValue"].data
+                if row["dev_type"] == "ACGenerator"
+                and row["dev_name"] == "diesel_300kw"
+                and row["set_type"] == "p_set"
+            )["set_value"],
+            "96",
+        )
+
     def test_simulator_measurement_route_updates_sigma_weight_and_validity(self):
         manager = self._make_manager()
         base = self._serve(manager)
@@ -359,6 +445,40 @@ class LiveDefinitionEditingApiTest(unittest.TestCase):
         self.assertAlmostEqual(result["record"]["error_sigma"], 0.04)
         self.assertAlmostEqual(float(result["record"]["weight"]), 625.0)
         self.assertEqual(result["record"]["valid"], 0)
+
+    def test_trainee_device_route_rejects_runtime_control_fields_without_mutation(self):
+        manager = self._make_manager()
+        service = manager.service_for("first")
+        base = self._serve(
+            manager,
+            role="trainee",
+            sim_url="http://127.0.0.1:1",
+        )
+        revision_before = service.definition_snapshot.revision
+        source_before = self._tree_bytes(service.sim_dir)
+        runtime_before = service._stat_maps()
+
+        for changes in ({"run_stat": 0}, {"status": 0}, {"p_set": 12}):
+            with self.subTest(changes=changes), self.assertRaises(HTTPError) as caught:
+                self._post(
+                    base,
+                    "/api/definitions/device-parameters",
+                    {
+                        "model_id": "first",
+                        "block_name": "ACGenerator",
+                        "row_key": {"name": "diesel_300kw", "idx": "2"},
+                        "revision": revision_before,
+                        "changes": changes,
+                    },
+                )
+
+            self.assertEqual(caught.exception.code, 400)
+            error = json.loads(caught.exception.read().decode("utf-8"))
+            self.assertIn("学员台", error["error"])
+            self.assertIn("遥控/遥调", error["error"])
+            self.assertEqual(service.definition_snapshot.revision, revision_before)
+            self.assertEqual(self._tree_bytes(service.sim_dir), source_before)
+            self.assertEqual(service._stat_maps(), runtime_before)
 
 
 if __name__ == "__main__":

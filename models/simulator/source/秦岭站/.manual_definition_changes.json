@@ -1,0 +1,39 @@
+{
+  "version": 4,
+  "model_id": "秦岭站",
+  "model_name": "秦岭站",
+  "source_fingerprint": "320ad5aeb3177298b2eaf52db1e30a7f6da2dcb8b9c24b0d7f9b3e3d6a4cf442",
+  "accepted_source_fingerprints": [
+    "320ad5aeb3177298b2eaf52db1e30a7f6da2dcb8b9c24b0d7f9b3e3d6a4cf442"
+  ],
+  "revision": 4,
+  "count": 1,
+  "changes": [
+    {
+      "id": "device-9e0ee847a6abcb398aac74f1",
+      "kind": "device",
+      "change_type": "设备参数",
+      "object_type": "ACGenerator",
+      "object_name": "柴油发电机-2",
+      "object_id": "12",
+      "object_label": "ACGenerator · 柴油发电机-2",
+      "block_name": "ACGenerator",
+      "row_key": {
+        "idx": "12",
+        "name": "柴油发电机-2"
+      },
+      "field": "p_set",
+      "field_label": "p_set",
+      "default_value": "0",
+      "current_value": "30",
+      "modified_at": "2026-08-07T13:26:11",
+      "source_file": "model.e",
+      "persisted": true,
+      "persistence_status": "已保存",
+      "sync_status": "synced",
+      "last_sync_time": "2026-08-07T13:26:11",
+      "last_sync_error": "",
+      "retry_count": 0
+    }
+  ]
+}

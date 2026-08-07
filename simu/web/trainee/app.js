@@ -3733,9 +3733,7 @@ function diagramTooltipRows(rows = [], sectionKey = "") {
 const DIAGRAM_DEFINITION_PROTECTED_FIELDS = new Set([
   "idx", "name", "dev_name", "dev_type", "path",
   "node", "i_node", "j_node", "ac_node", "dc_node",
-  "run_stat", "status", "isl",
-  "p_set", "q_set", "v_set", "i_set",
-  "p_ac_set", "q_ac_set", "v_ac_set", "v_dc_set",
+  "isl", "run_stat", "status", "pv0", "qv0",
 ]);
 
 const DIAGRAM_LINKED_DEFINITION_BLOCKS = Object.freeze({
@@ -3755,7 +3753,8 @@ function diagramDeviceParameterEditable(field) {
   const name = String(field || "").trim().toLowerCase();
   return Boolean(name)
     && !DIAGRAM_DEFINITION_PROTECTED_FIELDS.has(name)
-    && !name.startsWith("idx_");
+    && !name.startsWith("idx_")
+    && !name.endsWith("_set");
 }
 
 function diagramDefinitionSigmaFromWeight(weight) {
@@ -3977,6 +3976,75 @@ function patchDiagramModelDefinitionRecord(snapshot, record) {
   return true;
 }
 
+function patchDiagramRuntimeControlRecord(snapshot, runtime) {
+  const devType = String(runtime?.dev_type || "").trim();
+  const devName = String(runtime?.dev_name || "").trim();
+  if (!snapshot || !runtime || !devType || !devName) return false;
+  const matches = (item) => (
+    normalizeDiagramMeasurementToken(item?.dev_type) === normalizeDiagramMeasurementToken(devType)
+    && String(item?.dev_name || item?.name || "").trim() === devName
+  );
+  let changed = false;
+  if (Array.isArray(snapshot.devices)) {
+    snapshot.devices.forEach((device) => {
+      if (!matches(device)) return;
+      if (Object.prototype.hasOwnProperty.call(runtime, "run_stat")) device.run_stat = runtime.run_stat;
+      if (Object.prototype.hasOwnProperty.call(runtime, "status")) device.status = runtime.status;
+      if (runtime.set_values && typeof runtime.set_values === "object") {
+        device.set_values = {
+          ...(device.set_values || {}),
+          ...runtime.set_values,
+        };
+      }
+      if (device.raw && typeof device.raw === "object") {
+        if (Object.prototype.hasOwnProperty.call(runtime, "run_stat")) device.raw.run_stat = runtime.run_stat;
+        if (Object.prototype.hasOwnProperty.call(runtime, "status")) device.raw.status = runtime.status;
+        if (runtime.set_values && typeof runtime.set_values === "object") {
+          device.raw = {
+            ...(device.raw || {}),
+            ...runtime.set_values,
+          };
+        }
+      }
+      changed = true;
+    });
+  }
+  if (Array.isArray(snapshot.device_states)) {
+    snapshot.device_states.forEach((deviceState) => {
+      if (!matches(deviceState)) return;
+      if (Object.prototype.hasOwnProperty.call(runtime, "run_stat")) deviceState.run_stat = runtime.run_stat;
+      changed = true;
+    });
+  }
+  if (snapshot.measurements && (Object.prototype.hasOwnProperty.call(runtime, "run_stat") || Object.prototype.hasOwnProperty.call(runtime, "status"))) {
+    const measurementUpdates = new Map();
+    if (Object.prototype.hasOwnProperty.call(runtime, "run_stat")) {
+      measurementUpdates.set(normalizeDiagramMeasurementToken("RUN_STAT"), runtime.run_stat);
+    }
+    if (Object.prototype.hasOwnProperty.call(runtime, "status")) {
+      measurementUpdates.set(normalizeDiagramMeasurementToken("STATUS"), runtime.status);
+    }
+    ["definitions", "real", "scada"].forEach((channel) => {
+      const rows = snapshot.measurements[channel];
+      if (!Array.isArray(rows)) return;
+      rows.forEach((row) => {
+        if (
+          normalizeDiagramMeasurementToken(row?.dev_type) !== normalizeDiagramMeasurementToken(devType)
+          || String(row?.dev_name || "").trim() !== devName
+        ) {
+          return;
+        }
+        const measType = normalizeDiagramMeasurementToken(row?.meas_type || row?.name || "");
+        if (!measurementUpdates.has(measType)) return;
+        row.value = measurementUpdates.get(measType);
+        row.valid = 1;
+        changed = true;
+      });
+    });
+  }
+  return changed;
+}
+
 function patchDiagramMeasurementDefinitionRecord(snapshot, record) {
   const name = String(record?.name || "");
   if (!name) return false;
@@ -4015,13 +4083,14 @@ function applyDefinitionEditResult(result) {
     const changed = record.block_name
       ? patchDiagramModelDefinitionRecord(snapshot, record)
       : patchDiagramMeasurementDefinitionRecord(snapshot, record);
+    const runtimeChanged = patchDiagramRuntimeControlRecord(snapshot, result.runtime_control);
     if (result.static_meta) {
       snapshot.static_meta = {
         ...(snapshot.static_meta || {}),
         ...result.static_meta,
       };
     }
-    return changed;
+    return changed || runtimeChanged;
   };
   const changed = patchSnapshot(state.snapshot);
   if (state.localDefinitionSnapshot && state.localDefinitionSnapshot !== state.snapshot) {
@@ -4351,7 +4420,9 @@ async function saveDiagramDeviceDefinitionEdit(container) {
       ? (result.warning || (result.persisted
         ? "Model.e 已保存，但人工修改记录未保存，请重试"
         : "学员台后台定义已更新，但 Model.e 保存失败"))
-      : "学员台后台定义及 Model.e 已保存，新能源控制将从下一轮采用新参数";
+      : (result.runtime_control
+        ? "学员台后台定义、Model.e 及运行控制已保存，新能源控制将从下一轮采用新参数"
+        : "学员台后台定义及 Model.e 已保存，新能源控制将从下一轮采用新参数");
     interaction.definitionMessageWarning = resultWarning;
     interaction.tooltip?.classList.remove("is-editing-definition");
     renderActiveDiagramTooltip(container, state.snapshot || {}, interaction);

@@ -74,10 +74,10 @@
 # ACGenerator    交流风电-10             p_set     3.0
 # ACGenerator    交流风电-10             q_set     0.5
 # ACGenerator    交流风电-10             v_set     380
-# ACGenerator    柴油发电机-1             p_set     0
+# ACGenerator    柴油发电机-1             p_set     100
 # ACGenerator    柴油发电机-1             q_set     0
 # ACGenerator    柴油发电机-1             v_set     380
-# ACGenerator    柴油发电机-2             p_set     0
+# ACGenerator    柴油发电机-2             p_set     300
 # ACGenerator    柴油发电机-2             q_set     0
 # ACGenerator    柴油发电机-2             v_set     380
 # ACGenerator    柴油发电机-3             p_set     0
@@ -86,7 +86,7 @@
 # ACGenerator    柴油发电机-4             p_set     0
 # ACGenerator    柴油发电机-4             q_set     0
 # ACGenerator    柴油发电机-4             v_set     380
-# ACGenerator    交流电化学储能-23          p_set     0.0
+# ACGenerator    交流电化学储能-23          p_set     10
 # ACGenerator    交流电化学储能-23          q_set     0.0
 # ACGenerator    交流电化学储能-23          v_set     380
 # ACGenerator    交流风力发电机-24          p_set     0
@@ -95,7 +95,7 @@
 # ACGenerator    交流光伏发电机-25          p_set     0
 # ACGenerator    交流光伏发电机-25          q_set     0
 # ACGenerator    交流光伏发电机-25          v_set     380
-# ACGenerator    交流电化学储能-26          p_set     0.0
+# ACGenerator    交流电化学储能-26          p_set     -100
 # ACGenerator    交流电化学储能-26          q_set     0.0
 # ACGenerator    交流电化学储能-26          v_set     380
 # DCGenerator    直流光伏-1              p_set     5.0
@@ -107,10 +107,10 @@
 # DCGenerator    直流光伏-3              p_set     5.0
 # DCGenerator    直流光伏-3              v_set     400
 # DCGenerator    直流光伏-3              i_set     0.0
-# DCGenerator    电化学储能-1             p_set     0.0
+# DCGenerator    电化学储能-1             p_set     10
 # DCGenerator    电化学储能-1             v_set     500
 # DCGenerator    电化学储能-1             i_set     0.0
-# DCGenerator    电化学储能-2             p_set     0.0
+# DCGenerator    电化学储能-2             p_set     -20
 # DCGenerator    电化学储能-2             v_set     500
 # DCGenerator    电化学储能-2             i_set     0.0
 # DCGenerator    电化学储能-3             p_set     0.0

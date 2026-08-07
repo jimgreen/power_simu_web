@@ -768,8 +768,8 @@
 # 766  ACBreak.交流断路器-2.status                   ACBreak        交流断路器-2             STATUS            1.0      1      1.0
 # 767  ACBreak.盒型开关-3.status                    ACBreak        盒型开关-3              STATUS            1.0      1      1.0
 # 768  ACBreak.盒型开关-4.status                    ACBreak        盒型开关-4              STATUS            1.0      1      1.0
-# 769  ACBreak.盒型开关-5.status                    ACBreak        盒型开关-5              STATUS            1.0      1      0.0
-# 770  ACBreak.盒型开关-6.status                    ACBreak        盒型开关-6              STATUS            1.0      1      0.0
+# 769  ACBreak.盒型开关-5.status                    ACBreak        盒型开关-5              STATUS            1.0      1      1.0
+# 770  ACBreak.盒型开关-6.status                    ACBreak        盒型开关-6              STATUS            1.0      1      1.0
 # 771  ACBreak.盒型开关-7.status                    ACBreak        盒型开关-7              STATUS            1.0      1      1.0
 # 772  ACBreak.盒型开关-8.status                    ACBreak        盒型开关-8              STATUS            1.0      1      1.0
 # 773  ACBreak.盒型开关-9.status                    ACBreak        盒型开关-9              STATUS            1.0      1      1.0

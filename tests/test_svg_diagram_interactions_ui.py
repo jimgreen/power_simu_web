@@ -198,7 +198,9 @@ process.stdout.write(JSON.stringify({
   defaults: normalizeDiagramDisplayPreferences(null),
   partial: normalizeDiagramDisplayPreferences({ measurements: false, labels: "bad", flowArrows: true, measurementSource: "real" }),
   invalidSource: normalizeDiagramDisplayPreferences({ measurementSource: "invalid" }),
-  labels: diagramDisplayPreferenceMenuItems({ measurements: false, labels: true, flowArrows: false, measurementSource: "scada" }),
+  visibleScadaLabels: diagramDisplayPreferenceMenuItems({ measurements: true, labels: true, flowArrows: false, measurementSource: "scada" }),
+  visibleRealLabels: diagramDisplayPreferenceMenuItems({ measurements: true, labels: true, flowArrows: false, measurementSource: "real" }),
+  hiddenLabels: diagramDisplayPreferenceMenuItems({ measurements: false, labels: true, flowArrows: false, measurementSource: "scada" }),
 }));
 """
         for path in self._scripts():
@@ -226,8 +228,16 @@ process.stdout.write(JSON.stringify({
                 )
                 self.assertEqual(payload["invalidSource"]["measurementSource"], "scada")
                 self.assertEqual(
-                    [item["label"] for item in payload["labels"]],
-                    ["显示真值", "显示量测", "不显示标识", "显示流动箭头"],
+                    [item["label"] for item in payload["visibleScadaLabels"]],
+                    ["数据源: 量测", "不显示量测", "不显示标识", "显示流动箭头"],
+                )
+                self.assertEqual(
+                    [item["label"] for item in payload["visibleRealLabels"]],
+                    ["数据源: 真值", "不显示量测", "不显示标识", "显示流动箭头"],
+                )
+                self.assertEqual(
+                    [item["label"] for item in payload["hiddenLabels"]],
+                    ["显示量测", "不显示标识", "显示流动箭头"],
                 )
 
     def test_svg_measurement_source_selects_real_or_scada_without_fallback(self):

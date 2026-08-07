@@ -124,8 +124,8 @@
 # 2    交流断路器-2  ac-breaker      26      29      1       1
 # 3    盒型开关-3   ac-box-breaker  29      11      1       1
 # 4    盒型开关-4   ac-box-breaker  29      12      1       1
-# 5    盒型开关-5   ac-box-breaker  29      13      0       1
-# 6    盒型开关-6   ac-box-breaker  29      14      0       1
+# 5    盒型开关-5   ac-box-breaker  29      13      1       1
+# 6    盒型开关-6   ac-box-breaker  29      14      1       1
 # 7    盒型开关-7   ac-box-breaker  29      30      1       1
 # 8    盒型开关-8   ac-box-breaker  29      27      1       1
 # 9    盒型开关-9   ac-box-breaker  31      28      1       1

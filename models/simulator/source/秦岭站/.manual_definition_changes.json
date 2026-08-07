@@ -1,0 +1,65 @@
+{
+  "version": 4,
+  "model_id": "秦岭站",
+  "model_name": "秦岭站",
+  "source_fingerprint": "535f65e99e60fa92d9285de7301ba7ebb528700935c92356ef2d02e807d04589",
+  "accepted_source_fingerprints": [
+    "535f65e99e60fa92d9285de7301ba7ebb528700935c92356ef2d02e807d04589"
+  ],
+  "revision": 5,
+  "count": 2,
+  "changes": [
+    {
+      "id": "device-579ad01a2669a09a7aeb62ed",
+      "kind": "device",
+      "change_type": "设备参数",
+      "object_type": "ACBreak",
+      "object_name": "盒型开关-6",
+      "object_id": "6",
+      "object_label": "ACBreak · 盒型开关-6",
+      "block_name": "ACBreak",
+      "row_key": {
+        "idx": "6",
+        "name": "盒型开关-6"
+      },
+      "field": "status",
+      "field_label": "status",
+      "default_value": "0",
+      "current_value": "1",
+      "modified_at": "2026-08-07T21:14:43",
+      "source_file": "model.e",
+      "persisted": true,
+      "persistence_status": "已保存",
+      "sync_status": "synced",
+      "last_sync_time": "2026-08-07T21:14:43",
+      "last_sync_error": "",
+      "retry_count": 0
+    },
+    {
+      "id": "device-aa2fb7547e7cdd0594a832bc",
+      "kind": "device",
+      "change_type": "设备参数",
+      "object_type": "ACBreak",
+      "object_name": "盒型开关-5",
+      "object_id": "5",
+      "object_label": "ACBreak · 盒型开关-5",
+      "block_name": "ACBreak",
+      "row_key": {
+        "idx": "5",
+        "name": "盒型开关-5"
+      },
+      "field": "status",
+      "field_label": "status",
+      "default_value": "0",
+      "current_value": "1",
+      "modified_at": "2026-08-07T21:14:31",
+      "source_file": "model.e",
+      "persisted": true,
+      "persistence_status": "已保存",
+      "sync_status": "synced",
+      "last_sync_time": "2026-08-07T21:14:43",
+      "last_sync_error": "",
+      "retry_count": 0
+    }
+  ]
+}

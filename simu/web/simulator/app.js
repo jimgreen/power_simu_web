@@ -3679,16 +3679,19 @@ function normalizeDiagramDisplayPreferences(value) {
 
 function diagramDisplayPreferenceMenuItems(preferences) {
   const value = normalizeDiagramDisplayPreferences(preferences);
-  return [
-    {
-      key: "measurementSource",
-      value: value.measurementSource === "scada" ? "real" : "scada",
-      label: value.measurementSource === "scada" ? "显示真值" : "显示量测值",
-    },
+  const items = [
     { key: "measurements", label: value.measurements ? "不显示量测" : "显示量测" },
     { key: "labels", label: value.labels ? "不显示标识" : "显示标识" },
     { key: "flowArrows", label: value.flowArrows ? "不显示流动箭头" : "显示流动箭头" },
   ];
+  if (value.measurements) {
+    items.unshift({
+      key: "measurementSource",
+      value: value.measurementSource === "scada" ? "real" : "scada",
+      label: value.measurementSource === "scada" ? "数据源: 量测" : "数据源: 真值",
+    });
+  }
+  return items;
 }
 
 function loadDiagramDisplayPreferences(storage = typeof localStorage === "undefined" ? null : localStorage) {

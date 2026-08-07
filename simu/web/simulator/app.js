@@ -1003,6 +1003,16 @@ function parameterText(value, digits = 2) {
   return number.toFixed(digits).replace(/\.?0+$/, "");
 }
 
+function parameterPercentInputText(value, digits = 2) {
+  const number = Number(value);
+  return Number.isFinite(number) ? parameterText(number * 100, digits) : "";
+}
+
+function parameterPercentText(value, digits = 2) {
+  const text = parameterPercentInputText(value, digits);
+  return text ? `${text}%` : "--";
+}
+
 function snapshotSystemParameters(snapshot = state.snapshot || {}) {
   const params = snapshot.system_parameters || {};
   const clock = snapshot.clock || {};
@@ -1033,7 +1043,7 @@ function renderSystemParameters(snapshot = state.snapshot) {
   const currentStorageInitialSoc = $("currentStorageInitialSoc");
   if (currentSpeed) currentSpeed.textContent = `x${parameterText(params.clock_speed, 1)}`;
   if (currentInterval) currentInterval.textContent = `${parameterText(params.compute_interval_seconds, 2)} s`;
-  if (currentStorageInitialSoc) currentStorageInitialSoc.textContent = parameterText(params.storage_initial_soc, 2);
+  if (currentStorageInitialSoc) currentStorageInitialSoc.textContent = parameterPercentText(params.storage_initial_soc, 2);
 
   const form = $("systemParameterForm");
   const isEditing = Boolean(form?.contains(document.activeElement));
@@ -1043,7 +1053,7 @@ function renderSystemParameters(snapshot = state.snapshot) {
     const storageInitialSocInput = $("parameterStorageInitialSoc");
     if (speedInput) speedInput.value = String(params.clock_speed);
     if (intervalInput) intervalInput.value = parameterText(params.compute_interval_seconds, 2);
-    if (storageInitialSocInput) storageInitialSocInput.value = parameterText(params.storage_initial_soc, 2);
+    if (storageInitialSocInput) storageInitialSocInput.value = parameterPercentInputText(params.storage_initial_soc, 2);
   }
 
   const summary = $("systemParameterSummary");
@@ -1052,7 +1062,7 @@ function renderSystemParameters(snapshot = state.snapshot) {
       ? "保存中"
       : state.systemParametersDirty
         ? "有未保存修改"
-        : `x${parameterText(params.clock_speed, 1)} · ${parameterText(params.compute_interval_seconds, 2)} s · SOC ${parameterText(params.storage_initial_soc, 2)}`;
+        : `x${parameterText(params.clock_speed, 1)} · ${parameterText(params.compute_interval_seconds, 2)} s · SOC ${parameterPercentText(params.storage_initial_soc, 2)}`;
   }
 
   const modelName = snapshot?.model?.name || snapshot?.model?.id || state.activeModelId || "--";
@@ -1068,7 +1078,7 @@ function renderSystemParameters(snapshot = state.snapshot) {
     parameterClockTime: snapshot?.clock ? formatSimulationClock(clock) : "--",
     parameterEffectiveStep: formatClockDuration(params.effective_step_seconds),
     parameterComputePeriod: `${parameterText(params.compute_interval_seconds, 2)} s`,
-    parameterStorageInitialSocState: parameterText(params.storage_initial_soc, 2),
+    parameterStorageInitialSocState: parameterPercentText(params.storage_initial_soc, 2),
   };
   Object.entries(values).forEach(([id, text]) => {
     const node = $(id);
@@ -1094,8 +1104,8 @@ function systemParameterPayload() {
         1,
         parameterNumber(
           $("parameterStorageInitialSoc")?.value,
-          state.systemParameters.storage_initial_soc ?? 0.5,
-        ),
+          (state.systemParameters.storage_initial_soc ?? 0.5) * 100,
+        ) / 100,
       ),
     ),
   };

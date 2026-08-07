@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -32,6 +34,46 @@ class SimulatorParameterPageUiTest(unittest.TestCase):
         self.assertIn("storage_initial_soc", script)
         self.assertIn(".parameter-page-layout", styles)
         self.assertIn(".system-parameter-table", styles)
+
+    def test_storage_initial_soc_uses_percent_in_ui_and_decimal_in_payload(self):
+        html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="currentStorageInitialSoc" class="numeric-cell">50%</td>', html)
+        soc_input = html.split('id="parameterStorageInitialSoc"', 1)[1].split("/>", 1)[0]
+        self.assertIn('min="0"', soc_input)
+        self.assertIn('max="100"', soc_input)
+        self.assertIn('value="50"', soc_input)
+
+        helper_source = "function parameterNumber" + script.split("function parameterNumber", 1)[1].split(
+            "async function saveSystemParameters",
+            1,
+        )[0]
+        harness = r"""
+const inputValues = {
+  parameterClockSpeed: "60",
+  parameterComputeInterval: "1",
+  parameterStorageInitialSoc: "65",
+};
+function $(id) { return { value: inputValues[id] }; }
+const state = { systemParameters: { clock_speed: 60, compute_interval_seconds: 1, storage_initial_soc: 0.5 } };
+process.stdout.write(JSON.stringify({
+  display: parameterPercentText(0.99),
+  input: parameterPercentInputText(0.5),
+  payload: systemParameterPayload(),
+}));
+"""
+        result = subprocess.run(
+            ["node"],
+            input=f"{helper_source}\n{harness}",
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["display"], "99%")
+        self.assertEqual(payload["input"], "50")
+        self.assertEqual(payload["payload"]["storage_initial_soc"], 0.65)
 
 
 if __name__ == "__main__":

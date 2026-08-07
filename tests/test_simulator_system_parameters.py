@@ -7,6 +7,14 @@ from pathlib import Path
 
 
 class SimulatorSystemParametersTest(unittest.TestCase):
+    def test_legacy_percent_storage_initial_soc_is_normalized_to_decimal_ratio(self):
+        from simu.service import _storage_initial_soc
+
+        self.assertEqual(_storage_initial_soc(50), 0.5)
+        self.assertEqual(_storage_initial_soc("50"), 0.5)
+        self.assertEqual(_storage_initial_soc("50%"), 0.5)
+        self.assertEqual(_storage_initial_soc(0.5), 0.5)
+
     def test_service_saves_clock_speed_and_compute_interval_per_model(self):
         from simu.generate_simple_model import write_model_dir
         from simu.service import PolarMicrogridSimulator

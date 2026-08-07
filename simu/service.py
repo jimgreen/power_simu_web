@@ -345,8 +345,15 @@ def _compute_interval_seconds(value: Any, default: float = DEFAULT_COMPUTE_INTER
 
 
 def _storage_initial_soc(value: Any, default: float = DEFAULT_STORAGE_INITIAL_SOC) -> float:
-    soc = _to_float(value, default)
-    if soc is None or not math.isfinite(soc):
+    try:
+        soc = ratio_parameter_number(
+            "state_of_charge",
+            value,
+            legacy_percent_points=True,
+        )
+    except (TypeError, ValueError):
+        soc = default
+    if not math.isfinite(soc):
         soc = default
     return min(1.0, max(0.0, float(soc)))
 
@@ -1676,7 +1683,7 @@ class PolarMicrogridSimulator:
                 [
                     f"仿真步长/加速比 x{format_number(self.clock.speed)}",
                     f"仿真周期 {format_number(self.compute_interval_seconds)} s",
-                    f"储能SOC初始值 {format_number(self.storage_initial_soc)}",
+                    f"储能SOC初始值 {format_number(self.storage_initial_soc * 100.0)}%",
                     f"每次计算推进 {format_number(effective_step * 60.0)} s",
                 ],
                 level="ok",

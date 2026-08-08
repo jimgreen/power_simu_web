@@ -8,6 +8,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ActivePageRenderingUiTest(unittest.TestCase):
+    def test_simulator_navigation_omits_fault_and_mode_tabs(self):
+        html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
+        navigation = html.split('<nav class="page-nav"', 1)[1].split("</nav>", 1)[0]
+
+        self.assertNotIn('data-nav-page="faults"', navigation)
+        self.assertNotIn('data-nav-page="modes"', navigation)
+        self.assertNotIn("故障设置", navigation)
+        self.assertNotIn("运行模式", navigation)
+
     def test_simulator_uses_path_routes_and_detaches_inactive_pages(self):
         html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")

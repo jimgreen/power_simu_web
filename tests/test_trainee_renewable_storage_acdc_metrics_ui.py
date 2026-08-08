@@ -45,6 +45,81 @@ class TraineeRenewableStorageAcdcMetricsUiTest(unittest.TestCase):
         self.assertNotIn('id="renewableStorageCurrentKw"', self.html)
         self.assertNotIn('id="renewableStorageSoc"', self.html)
 
+    def test_metric_panel_adds_wind_pv_and_requested_storage_breakdowns(self):
+        expected = {
+            "renewableAcWindCurrentKw": "交流风电当前值",
+            "renewableAcWindTargetKw": "交流风电目标值",
+            "renewableAcPvCurrentKw": "交流光伏当前值",
+            "renewableAcPvTargetKw": "交流光伏目标值",
+            "renewableDcWindCurrentKw": "直流风电当前值",
+            "renewableDcWindTargetKw": "直流风电目标值",
+            "renewableDcPvCurrentKw": "直流光伏当前值",
+            "renewableDcPvTargetKw": "直流光伏目标值",
+            "renewableTotalWindCurrentKw": "总风电当前值",
+            "renewableTotalWindTargetKw": "总风电目标值",
+            "renewableTotalPvCurrentKw": "总光伏当前值",
+            "renewableTotalPvTargetKw": "总光伏目标值",
+        }
+        for node_id, label in expected.items():
+            with self.subTest(node_id=node_id):
+                self.assertIn(f'<dt>{label}</dt><dd id="{node_id}">--</dd>', self.html)
+
+        for group_name in (
+            "ac-wind",
+            "ac-pv",
+            "ac-grid-following-storage",
+            "ac-grid-forming-storage",
+            "dc-wind",
+            "dc-pv",
+            "dc-grid-following-storage",
+            "system-wind",
+            "system-pv",
+            "system-grid-following-storage",
+        ):
+            with self.subTest(group_name=group_name):
+                self.assertRegex(
+                    self.html,
+                    rf'data-renewable-metric-group="{group_name}"[^>]*data-renewable-metric-always="true"',
+                )
+
+    def test_backend_exposes_wind_pv_counts_and_system_totals(self):
+        for metric_key in (
+            "onlineAcWindCount",
+            "onlineDcWindCount",
+            "onlineAcPvCount",
+            "onlineDcPvCount",
+            "totalWindCurrentKw",
+            "totalWindTargetKw",
+            "totalPvCurrentKw",
+            "totalPvTargetKw",
+        ):
+            with self.subTest(metric_key=metric_key):
+                self.assertIn(f'"{metric_key}"', self.backend)
+
+    def test_rendering_populates_wind_pv_breakdowns_and_labels_empty_storage(self):
+        render_block = self.script.split("function renderRenewableControl", 1)[1].split(
+            "async function toggleRenewableAuto",
+            1,
+        )[0]
+        for node_id in (
+            "renewableAcWindCurrentKw",
+            "renewableAcWindTargetKw",
+            "renewableAcPvCurrentKw",
+            "renewableAcPvTargetKw",
+            "renewableDcWindCurrentKw",
+            "renewableDcWindTargetKw",
+            "renewableDcPvCurrentKw",
+            "renewableDcPvTargetKw",
+            "renewableTotalWindCurrentKw",
+            "renewableTotalWindTargetKw",
+            "renewableTotalPvCurrentKw",
+            "renewableTotalPvTargetKw",
+        ):
+            with self.subTest(node_id=node_id):
+                self.assertIn(node_id, render_block)
+        self.assertIn("renewableStorageSocMetricText", render_block)
+        self.assertIn("card.dataset.renewableMetricAlways", self.script)
+
     def test_metric_panel_hides_whole_device_groups_without_online_members(self):
         for group_name, expected_card_count in (
             ("ac-grid-following-storage", 3),
@@ -70,6 +145,10 @@ class TraineeRenewableStorageAcdcMetricsUiTest(unittest.TestCase):
 
     def test_backend_exposes_side_counts_used_to_suppress_empty_metrics(self):
         for metric_key in (
+            "acGridFollowingStorageCount",
+            "dcGridFollowingStorageCount",
+            "acGridFormingStorageCount",
+            "dcGridFormingStorageCount",
             "onlineAcRenewableCount",
             "onlineDcRenewableCount",
             "onlineAcGridFormingStorageCount",
@@ -84,6 +163,45 @@ class TraineeRenewableStorageAcdcMetricsUiTest(unittest.TestCase):
         ):
             with self.subTest(metric_key=metric_key):
                 self.assertIn(f'"{metric_key}"', self.backend)
+
+    def test_storage_metric_text_distinguishes_absent_offline_and_running_devices(self):
+        helpers = "function renewableMetricCount" + self.script.split(
+            "function renewableMetricCount",
+            1,
+        )[1].split("function openRenewableControlParametersDialog", 1)[0]
+        node_script = f"""
+function formatNumber(value) {{ return String(value); }}
+function formatOverviewNumber(value) {{ return String(value); }}
+{helpers}
+const group = "ac-grid-following-storage";
+process.stdout.write(JSON.stringify({{
+  absentPower: renewableStoragePowerMetricText(0, {{
+    acGridFollowingStorageCount: 0,
+    onlineAcGridFollowingStorageCount: 0,
+  }}, group),
+  offlineSoc: renewableStorageSocMetricText(0.5, {{
+    acGridFollowingStorageCount: 1,
+    onlineAcGridFollowingStorageCount: 0,
+  }}, group),
+  runningZeroPower: renewableStoragePowerMetricText(0, {{
+    acGridFollowingStorageCount: 1,
+    onlineAcGridFollowingStorageCount: 1,
+  }}, group),
+  legacyAbsentSoc: renewableStorageSocMetricText(null, {{
+    onlineAcGridFollowingStorageCount: 0,
+  }}, group),
+}}));
+"""
+        result = subprocess.run(["node", "-e", node_script], check=True, capture_output=True, text=True)
+        self.assertEqual(
+            json.loads(result.stdout),
+            {
+                "absentPower": "无此类设备",
+                "offlineSoc": "无运行设备",
+                "runningZeroPower": "0 kW",
+                "legacyAbsentSoc": "无设备",
+            },
+        )
 
     def test_metric_group_availability_uses_side_counts_instead_of_zero_power_values(self):
         helpers = "function renewableMetricCount" + self.script.split(

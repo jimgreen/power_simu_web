@@ -112,6 +112,191 @@ process.stdout.write(JSON.stringify({
             [True, True, False, False, False, False, False, False],
         )
 
+    def test_device_editor_includes_primary_and_linked_static_parameter_blocks(self):
+        body = r"""
+const snapshot = {
+  definitions: {
+    model: {
+      ACGenerator: {
+        headers: ["idx", "name", "node", "p_max", "run_stat"],
+        rows: [{ idx: 24, name: "wind-24", node: 34, p_max: 50, run_stat: 1 }],
+      },
+      ACWindGen: {
+        headers: [
+          "idx",
+          "idx_acgenerator",
+          "wind_turbine_model",
+          "cut_in_wind_speed",
+          "rated_wind_speed",
+          "cut_out_wind_speed",
+          "rotor_diameter",
+          "hub_height",
+        ],
+        rows: [{
+          idx: 7,
+          idx_acgenerator: 24,
+          wind_turbine_model: "WT-5MW",
+          cut_in_wind_speed: 3,
+          rated_wind_speed: 12,
+          cut_out_wind_speed: 25,
+          rotor_diameter: 170,
+          hub_height: 110,
+        }],
+      },
+    },
+  },
+};
+const records = diagramDeviceDefinitionRecords(
+  { devType: "ACGenerator", devName: "wind-24" },
+  snapshot,
+);
+const editors = diagramDeviceDefinitionEditorRecords(records);
+process.stdout.write(JSON.stringify(editors.map((editor) => ({
+  blockName: editor.blockName,
+  editableFields: editor.editableFields,
+  draft: editor.draft,
+}))));
+"""
+        expected = [
+            {
+                "blockName": "ACGenerator",
+                "editableFields": ["p_max", "run_stat"],
+                "draft": {
+                    "idx": 24,
+                    "name": "wind-24",
+                    "node": 34,
+                    "p_max": 50,
+                    "run_stat": 1,
+                },
+            },
+            {
+                "blockName": "ACWindGen",
+                "editableFields": [
+                    "wind_turbine_model",
+                    "cut_in_wind_speed",
+                    "rated_wind_speed",
+                    "cut_out_wind_speed",
+                    "rotor_diameter",
+                    "hub_height",
+                ],
+                "draft": {
+                    "idx": 7,
+                    "idx_acgenerator": 24,
+                    "wind_turbine_model": "WT-5MW",
+                    "cut_in_wind_speed": 3,
+                    "rated_wind_speed": 12,
+                    "cut_out_wind_speed": 25,
+                    "rotor_diameter": 170,
+                    "hub_height": 110,
+                },
+            },
+        ]
+        self.assertEqual(self._run_helpers(body), expected)
+        trainee = self._run_helpers(body, self.trainee_script)
+        self.assertEqual(trainee[0]["blockName"], "ACGenerator")
+        self.assertEqual(trainee[1], expected[1])
+
+        for script in (self.script, self.trainee_script):
+            save_block = script.split(
+                "async function saveDiagramDeviceDefinitionEdit",
+                1,
+            )[1].split("function reorderDiagramChildren", 1)[0]
+            self.assertIn("diagramDeviceDefinitionDirtyUpdates(editor)", save_block)
+            self.assertIn("for (const update of updates)", save_block)
+
+    def test_device_editor_handles_other_and_generic_linked_parameter_blocks(self):
+        body = r"""
+const snapshot = {
+  definitions: {
+    model: {
+      DCGenerator: {
+        headers: ["idx", "name", "node", "p_max", "p_set"],
+        rows: [{ idx: 9, name: "dc-source-9", node: 6, p_max: 40, p_set: 10 }],
+      },
+      DCPVGen: {
+        headers: ["idx", "idx_dcgenerator", "panel_efficiency", "tilt_angle"],
+        rows: [{ idx: 3, idx_dcgenerator: 9, panel_efficiency: 0.2, tilt_angle: 25 }],
+      },
+      DCStorageGen: {
+        headers: ["idx", "idx_dcgenerator", "energy_capacity", "charge_efficiency"],
+        rows: [{ idx: 4, idx_dcgenerator: 9, energy_capacity: 100, charge_efficiency: 0.95 }],
+      },
+      DCAuxiliaryCurve: {
+        headers: ["idx", "idx_dcgenerator", "curve_mode"],
+        rows: [{ idx: 5, idx_dcgenerator: 9, curve_mode: "linear" }],
+      },
+    },
+  },
+};
+const records = diagramDeviceDefinitionRecords(
+  { devType: "DCGenerator", devName: "dc-source-9" },
+  snapshot,
+);
+const editors = diagramDeviceDefinitionEditorRecords(records);
+[
+  ["DCPVGen", "tilt_angle", "30"],
+  ["DCStorageGen", "energy_capacity", "120"],
+  ["DCAuxiliaryCurve", "curve_mode", "spline"],
+].forEach(([blockName, field, value]) => {
+  const editor = editors.find((item) => item.blockName === blockName);
+  editor.draft[field] = value;
+  editor.dirtyFields.add(field);
+});
+process.stdout.write(JSON.stringify({
+  blocks: editors.map((editor) => editor.blockName),
+  protectedReferences: editors.every((editor) => !editor.editableFields.includes("idx_dcgenerator")),
+  updates: diagramDeviceDefinitionDirtyUpdates({ kind: "device", records: editors })
+    .map(({ blockName, changes }) => ({ blockName, changes })),
+}));
+"""
+        expected = {
+            "blocks": [
+                "DCGenerator",
+                "DCPVGen",
+                "DCStorageGen",
+                "DCAuxiliaryCurve",
+            ],
+            "protectedReferences": True,
+            "updates": [
+                {"blockName": "DCPVGen", "changes": {"tilt_angle": "30"}},
+                {
+                    "blockName": "DCStorageGen",
+                    "changes": {"energy_capacity": "120"},
+                },
+                {
+                    "blockName": "DCAuxiliaryCurve",
+                    "changes": {"curve_mode": "spline"},
+                },
+            ],
+        }
+        self.assertEqual(self._run_helpers(body), expected)
+        self.assertEqual(self._run_helpers(body, self.trainee_script), expected)
+
+    def test_switch_status_is_only_available_when_the_model_defines_status(self):
+        body = r"""
+const converterRecords = [{ headers: ["idx", "name", "run_stat", "p_set"] }];
+const breakerRecords = [{ headers: ["idx", "name", "status", "run_stat"] }];
+process.stdout.write(JSON.stringify({
+  converter: diagramDeviceHasSwitchStatus(converterRecords, { run_stat: 1, p_set: 10 }),
+  breaker: diagramDeviceHasSwitchStatus(breakerRecords, { run_stat: 1, status: 0 }),
+  rawFallback: diagramDeviceHasSwitchStatus([], { run_stat: 1, status: 1 }),
+  runtimeDefaultOnly: diagramDeviceHasSwitchStatus([], { run_stat: 1 }),
+}));
+"""
+        expected = {
+            "converter": False,
+            "breaker": True,
+            "rawFallback": True,
+            "runtimeDefaultOnly": False,
+        }
+        self.assertEqual(self._run_helpers(body), expected)
+        self.assertEqual(self._run_helpers(body, self.trainee_script), expected)
+        for script in (self.script, self.trainee_script):
+            self.assertIn(
+                "diagramDeviceHasSwitchStatus(definitionRecords, raw)",
+                script,
+            )
+
     def test_nameless_model_rows_match_the_definition_driven_synthetic_device_name(self):
         body = r"""
 const snapshot = {
@@ -416,7 +601,9 @@ process.stdout.write(JSON.stringify({
             1,
         )[1].split("function syncDiagramTooltipSections", 1)[0]
         self.assertIn("revision:", begin_block)
-        self.assertIn("revision: editor.revision", save_block)
+        self.assertIn("let revision = editor.revision", save_block)
+        self.assertIn("revision,", save_block)
+        self.assertIn("result?.revision", save_block)
         self.assertIn("reloadLocalDefinitionSnapshotAfterEdit", save_block)
 
     def test_trainee_measurement_editor_updates_local_definition_without_rebuilding_live_values(self):
@@ -529,7 +716,9 @@ process.stdout.write(JSON.stringify({
         )[1].split("function syncDiagramTooltipSections", 1)[0]
 
         self.assertIn("revision:", begin_block)
-        self.assertIn("revision: editor.revision", save_block)
+        self.assertIn("let revision = editor.revision", save_block)
+        self.assertIn("revision,", save_block)
+        self.assertIn("result?.revision", save_block)
 
     def test_measurement_editor_keeps_dynamic_values_independent_from_inputs(self):
         for function_name in (
@@ -696,6 +885,44 @@ process.stdout.write(JSON.stringify(diagramDefinitionDisplayHeaders(record)));
             self.assertEqual(self._run_helpers(body, script), ["i_node", "j_node"])
             self.assertIn("function diagramDefinitionFieldBinding", script)
             self.assertIn("renderDiagramIntegratedDefinitionRow", script)
+
+    def test_integrated_rows_use_the_matching_record_from_the_multi_block_editor(self):
+        for script in (self.script, self.trainee_script):
+            matcher_source = "function diagramIntegratedDefinitionBindingMatchesEditor" + script.split(
+                "function diagramIntegratedDefinitionBindingMatchesEditor",
+                1,
+            )[1].split("function renderDiagramIntegratedDefinitionRow", 1)[0]
+            body = f"""
+{matcher_source}
+const interaction = {{
+  definitionEditor: {{
+    kind: "device",
+    records: [{{ blockName: "ACGenerator", rowIndex: 0, draft: {{ run_stat: 1 }} }}],
+  }},
+}};
+process.stdout.write(JSON.stringify({{
+  matching: diagramIntegratedDefinitionBindingMatchesEditor(
+    {{ blockName: "ACGenerator", rowIndex: 0 }},
+    interaction,
+  ),
+  unrelated: diagramIntegratedDefinitionBindingMatchesEditor(
+    {{ blockName: "ACWindGen", rowIndex: 0 }},
+    interaction,
+  ),
+}}));
+"""
+            self.assertEqual(
+                self._run_helpers(body, script),
+                {"matching": True, "unrelated": False},
+            )
+            render_block = script.split(
+                "function renderDiagramIntegratedDefinitionRow",
+                1,
+            )[1].split("function diagramTooltipRows", 1)[0]
+            self.assertIn(
+                "const activeEditor = diagramDeviceDefinitionRecordEditor",
+                render_block,
+            )
 
     def test_live_refresh_does_not_reparent_focused_editor_rows(self):
         for script in (self.script, self.trainee_script):

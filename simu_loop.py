@@ -52,6 +52,8 @@ from update_meas_from_lf import (  # noqa: E402
     MEAS_HEADER,
     VALUE_TYPES,
     Snapshot,
+    _reconstruct_ac_ideal_edge_flows,
+    _reconstruct_dc_ideal_edge_flows,
     format_number,
     parse_measurement_rows,
 )
@@ -2493,6 +2495,7 @@ def solve_ac_snapshot(e_file: Path) -> Tuple[Snapshot, str]:
         rc = calc.run()
     if rc != 0 or not calc.converged:
         raise RuntimeError(f"AC load flow failed for {e_file}: rc={rc}, iter={calc.iterations}, normF={calc.normF:.3e}")
+    _reconstruct_ac_ideal_edge_flows(network)
     return Snapshot(network, ac_grid=network), f"iter={calc.iterations}, normF={calc.normF:.3e}"
 
 
@@ -2510,6 +2513,7 @@ def solve_ac_snapshot_from_book(model_book: EBook, source: Optional[Path] = None
             f"AC load flow failed for in-memory model {source_path}: "
             f"rc={rc}, iter={calc.iterations}, normF={calc.normF:.3e}"
         )
+    _reconstruct_ac_ideal_edge_flows(network)
     snapshot = Snapshot(network, ac_grid=network)
     _add_zero_impedance_devices_from_book(snapshot, model_book)
     _link_snapshot_terminal_objects(snapshot)
@@ -2526,6 +2530,15 @@ def solve_hybrid_snapshot(e_file: Path) -> Tuple[Snapshot, str]:
             f"Hybrid load flow failed for {e_file}: rc={rc}, "
             f"iter={calc.iterations}, normF={calc.normF:.3e}"
         )
+    _reconstruct_ac_ideal_edge_flows(
+        network.ac,
+        network.dcac_converters,
+        network.acac_converters,
+    )
+    _reconstruct_dc_ideal_edge_flows(
+        network.dc,
+        network.dcac_converters,
+    )
     snapshot = Snapshot(
         network,
         ac_grid=network.ac,
@@ -2559,6 +2572,15 @@ def solve_hybrid_snapshot_from_book(model_book: EBook, source: Optional[Path] = 
             f"Hybrid load flow failed for in-memory model {source_path}: "
             f"rc={rc}, iter={calc.iterations}, normF={calc.normF:.3e}"
         )
+    _reconstruct_ac_ideal_edge_flows(
+        network.ac,
+        network.dcac_converters,
+        network.acac_converters,
+    )
+    _reconstruct_dc_ideal_edge_flows(
+        network.dc,
+        network.dcac_converters,
+    )
     snapshot = Snapshot(
         network,
         ac_grid=network.ac,

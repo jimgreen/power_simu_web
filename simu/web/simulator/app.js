@@ -5085,7 +5085,7 @@ function diagramDeviceRecord(container, devId) {
   };
 }
 
-const DIAGRAM_DEVICE_ELEMENT_SELECTOR = "[dev-id], [dev], use[id][name]";
+const DIAGRAM_DEVICE_ELEMENT_SELECTOR = "[dev-id], use[id][name]";
 
 function diagramElementDeviceId(element) {
   if (!element || typeof element.getAttribute !== "function") return "";
@@ -5095,10 +5095,21 @@ function diagramElementDeviceId(element) {
   return String(element.getAttribute("id") || "").trim();
 }
 
+function diagramMetricElementForTarget(container, target) {
+  if (!(target instanceof Element) || !container.contains(target)) return null;
+  const directMetric = target.closest("[mt]");
+  if (directMetric && container.contains(directMetric)) return directMetric;
+  const owner = target.closest("[dev]");
+  const row = target.closest("text");
+  if (!owner || !row || !container.contains(owner) || !owner.contains(row)) return null;
+  const rowMetric = row.querySelector("[mt]");
+  return rowMetric && container.contains(rowMetric) ? rowMetric : null;
+}
+
 function diagramTargetDeviceId(container, target) {
   if (!(target instanceof Element) || !container.contains(target)) return "";
-  const metricElement = target.closest("[mt]");
-  if (metricElement && container.contains(metricElement)) {
+  const metricElement = diagramMetricElementForTarget(container, target);
+  if (metricElement) {
     const owner = metricElement.closest("[dev]");
     if (owner && container.contains(owner)) return String(owner.getAttribute("dev") || "").trim();
   }
@@ -5109,8 +5120,8 @@ function diagramTargetDeviceId(container, target) {
 
 function diagramHoverTarget(container, target) {
   if (!(target instanceof Element) || !container.contains(target)) return null;
-  const metricElement = target.closest("[mt]");
-  if (metricElement && container.contains(metricElement)) {
+  const metricElement = diagramMetricElementForTarget(container, target);
+  if (metricElement) {
     const owner = metricElement.closest("[dev]");
     const devId = String(owner?.getAttribute("dev") || "").trim();
     const metricType = String(metricElement.getAttribute("mt") || "").trim();
@@ -5215,19 +5226,18 @@ function diagramTooltipRowKey(sectionKey, label, index = 0) {
 }
 
 function diagramIntegratedDefinitionBindingMatchesEditor(binding, interaction) {
-  return Boolean(
-    binding
-    && interaction?.definitionEditor?.kind === "device"
-    && interaction.definitionEditor.blockName === binding.blockName
-    && Number(interaction.definitionEditor.rowIndex) === Number(binding.rowIndex)
-  );
+  return Boolean(diagramDeviceDefinitionRecordEditor(
+    interaction?.definitionEditor,
+    binding,
+  ));
 }
 
 function renderDiagramIntegratedDefinitionRow(label, value, rowKey, binding, interaction) {
   const fieldEditable = Boolean(binding?.editable);
-  const activeEditor = diagramIntegratedDefinitionBindingMatchesEditor(binding, interaction)
-    ? interaction.definitionEditor
-    : null;
+  const activeEditor = diagramDeviceDefinitionRecordEditor(
+    interaction?.definitionEditor,
+    binding,
+  );
   const editing = Boolean(activeEditor && fieldEditable);
   const recordAttributes = binding
     ? ` data-diagram-definition-block="${escapeHtml(binding.blockName)}" data-diagram-definition-row-index="${binding.rowIndex}"`
@@ -5684,6 +5694,50 @@ function definitionEditResultHasWarning(result) {
     || Boolean(result?.warning);
 }
 
+function diagramDeviceHasSwitchStatus(definitionRecords = [], raw = {}) {
+  const modelDefinesStatus = definitionRecords.some((record) => (
+    (record?.headers || []).some((field) => String(field || "").trim().toLowerCase() === "status")
+  ));
+  return modelDefinesStatus || Object.prototype.hasOwnProperty.call(raw || {}, "status");
+}
+
+function diagramDeviceDefinitionEditorRecords(records = []) {
+  return records
+    .filter((record) => Array.isArray(record?.editableFields) && record.editableFields.length)
+    .map((record) => ({
+      blockName: record.blockName,
+      rowIndex: record.rowIndex,
+      rowKey: { ...record.rowKey },
+      editableFields: [...record.editableFields],
+      original: { ...record.row },
+      draft: { ...record.row },
+      dirtyFields: new Set(),
+    }));
+}
+
+function diagramDeviceDefinitionRecordEditor(editor, record) {
+  if (editor?.kind !== "device" || !record) return null;
+  return (editor.records || []).find((item) => (
+    item.blockName === record.blockName
+    && Number(item.rowIndex) === Number(record.rowIndex)
+  )) || null;
+}
+
+function diagramDeviceDefinitionDirtyUpdates(editor) {
+  if (editor?.kind !== "device") return [];
+  return (editor.records || []).map((record) => {
+    const changes = Object.fromEntries(
+      [...(record.dirtyFields || [])].map((field) => [field, record.draft[field]]),
+    );
+    return Object.keys(changes).length ? {
+      blockName: record.blockName,
+      rowIndex: record.rowIndex,
+      rowKey: { ...record.rowKey },
+      changes,
+    } : null;
+  }).filter(Boolean);
+}
+
 function diagramDeviceData(container, device, snapshot = state.snapshot || {}) {
   if (!device) return { definition: null, live: null, raw: {}, svgIdx: "" };
   const type = normalizeDiagramMeasurementToken(device.devType);
@@ -5740,9 +5794,12 @@ function diagramDeviceTooltipData(container, hover, snapshot) {
   const runStatBinding = diagramDefinitionFieldBinding(definitionRecords, ["run_stat"]);
   const statusBinding = diagramDefinitionFieldBinding(definitionRecords, ["status"]);
   const modeBinding = diagramDefinitionFieldBinding(definitionRecords, ["control_type", "mode"]);
+  const hasSwitchStatus = diagramDeviceHasSwitchStatus(definitionRecords, raw);
   const statusRows = [
     ["运行状态", live?.run_stat ?? raw.run_stat, "status:run_stat", runStatBinding],
-    ["开关状态", live?.status ?? raw.status, "status:status", statusBinding],
+    ...(hasSwitchStatus
+      ? [["开关状态", live?.status ?? raw.status, "status:status", statusBinding]]
+      : []),
     ["控制模式", live?.mode ?? raw.control_type ?? raw.mode, "status:mode", modeBinding],
   ];
   const setRows = Object.entries(live?.set_values || {})
@@ -5887,7 +5944,8 @@ function diagramDefinitionInputDescriptor(field, value) {
 }
 
 function renderDiagramDeviceDefinitionEditor(record, editor, interaction) {
-  const canSave = editor.dirtyFields?.size > 0 && !interaction?.definitionSaving;
+  const canSave = diagramDeviceDefinitionDirtyUpdates(editor).length > 0
+    && !interaction?.definitionSaving;
   return `
     <div class="diagram-definition-actions diagram-definition-head-actions" data-diagram-definition-actions="device">
       <button type="button" data-diagram-definition-cancel>取消</button>
@@ -5898,14 +5956,14 @@ function renderDiagramDeviceDefinitionEditor(record, editor, interaction) {
 }
 
 function renderDiagramDeviceDefinitionHeadActions(records, interaction) {
-  const activeRecord = interaction?.definitionEditor?.kind === "device"
-    ? records.find((record) => (
-      record.blockName === interaction.definitionEditor.blockName
-      && Number(record.rowIndex) === Number(interaction.definitionEditor.rowIndex)
-    ))
+  const editor = interaction?.definitionEditor?.kind === "device"
+    ? interaction.definitionEditor
     : null;
-  return activeRecord
-    ? renderDiagramDeviceDefinitionEditor(activeRecord, interaction.definitionEditor, interaction)
+  const activeRecord = editor
+    ? records.find((record) => diagramDeviceDefinitionRecordEditor(editor, record))
+    : null;
+  return editor && activeRecord
+    ? renderDiagramDeviceDefinitionEditor(activeRecord, editor, interaction)
     : "";
 }
 
@@ -5949,11 +6007,10 @@ function renderDiagramDeviceDefinitionValueRow(record, field, activeEditor, inte
 }
 
 function renderDiagramDeviceDefinitionRecord(record, interaction) {
-  const activeEditor = interaction?.definitionEditor?.kind === "device"
-    && interaction.definitionEditor.blockName === record.blockName
-    && Number(interaction.definitionEditor.rowIndex) === Number(record.rowIndex)
-    ? interaction.definitionEditor
-    : null;
+  const activeEditor = diagramDeviceDefinitionRecordEditor(
+    interaction?.definitionEditor,
+    record,
+  );
   const displayHeaders = diagramDefinitionDisplayHeaders(record);
   if (!displayHeaders.length) return "";
   const rows = displayHeaders
@@ -6058,15 +6115,16 @@ function beginDiagramDeviceDefinitionEdit(container, blockName, rowIndex = 0) {
     && Number(item.rowIndex) === Number(rowIndex)
   ));
   if (!record || !record.editableFields.length) return false;
+  const editorRecords = diagramDeviceDefinitionEditorRecords(records);
+  if (!editorRecords.length) return false;
   interaction.definitionEditor = {
     kind: "device",
     blockName: record.blockName,
     rowIndex: record.rowIndex,
-    rowKey: { ...record.rowKey },
     revision: Number(snapshot?.static_meta?.definitions?.revision),
-    original: { ...record.row },
-    draft: { ...record.row },
+    records: editorRecords,
     dirtyFields: new Set(),
+    validationError: "",
   };
   interaction.definitionSaving = false;
   interaction.definitionMessage = "";
@@ -6110,11 +6168,24 @@ function updateDiagramDeviceDefinitionDraft(interaction, input) {
   if (editor?.kind !== "device") return false;
   const field = String(input?.getAttribute?.("data-diagram-definition-field") || "");
   if (!diagramDeviceParameterEditable(field)) return false;
+  const section = input.closest?.("[data-diagram-definition-block]");
+  const blockName = String(section?.getAttribute?.("data-diagram-definition-block") || "");
+  const rowIndex = Number(section?.getAttribute?.("data-diagram-definition-row-index") || 0);
+  const record = (editor.records || []).find((item) => (
+    item.blockName === blockName && Number(item.rowIndex) === rowIndex
+  ));
+  if (!record || !record.editableFields.includes(field)) return false;
   const value = diagramDefinitionStoredValue(field, input.value);
-  editor.draft[field] = value;
-  const originalValue = diagramDefinitionCanonicalStoredValue(field, editor.original[field]);
-  if (value === originalValue) editor.dirtyFields.delete(field);
-  else editor.dirtyFields.add(field);
+  record.draft[field] = value;
+  const originalValue = diagramDefinitionCanonicalStoredValue(field, record.original[field]);
+  const dirtyKey = `${record.blockName}:${record.rowIndex}:${field}`;
+  if (value === originalValue) {
+    record.dirtyFields.delete(field);
+    editor.dirtyFields.delete(dirtyKey);
+  } else {
+    record.dirtyFields.add(field);
+    editor.dirtyFields.add(dirtyKey);
+  }
   interaction.definitionMessage = "";
   interaction.definitionMessageWarning = false;
   updateDiagramDefinitionSaveState(interaction);
@@ -6125,39 +6196,58 @@ async function saveDiagramDeviceDefinitionEdit(container) {
   const interaction = diagramInteractionCache.get(container);
   const editor = interaction?.definitionEditor;
   if (!interaction || editor?.kind !== "device" || interaction.definitionSaving) return false;
-  const changes = Object.fromEntries([...editor.dirtyFields].map((field) => [field, editor.draft[field]]));
-  if (!Object.keys(changes).length) return false;
+  const updates = diagramDeviceDefinitionDirtyUpdates(editor);
+  if (!updates.length) return false;
   interaction.definitionSaving = true;
-  interaction.definitionMessage = "正在更新后台定义并保存 E 文件";
+  interaction.definitionMessage = `正在更新 ${updates.length} 个参数块并保存 E 文件`;
   interaction.definitionMessageWarning = false;
   renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
+  let completed = 0;
+  let revision = editor.revision;
+  let resultWarning = false;
+  let warningMessage = "";
+  let runtimeControlUpdated = false;
   try {
-    const result = await api("/api/definitions/device-parameters", {
-      method: "POST",
-      body: JSON.stringify({
-        block_name: editor.blockName,
-        row_key: editor.rowKey,
-        revision: editor.revision,
-        changes,
-      }),
-    });
-    applyDefinitionEditResult(result);
+    for (const update of updates) {
+      const result = await api("/api/definitions/device-parameters", {
+        method: "POST",
+        body: JSON.stringify({
+          block_name: update.blockName,
+          row_key: update.rowKey,
+          revision,
+          changes: update.changes,
+        }),
+      });
+      applyDefinitionEditResult(result);
+      revision = Number(
+        result?.revision
+        ?? result?.static_meta?.definitions?.revision
+        ?? revision,
+      );
+      completed += 1;
+      resultWarning = definitionEditResultHasWarning(result) || resultWarning;
+      if (result?.warning) warningMessage = result.warning;
+      runtimeControlUpdated = Boolean(result?.runtime_control) || runtimeControlUpdated;
+    }
     interaction.snapshot = state.snapshot;
     interaction.definitionEditor = null;
     interaction.definitionSaving = false;
-    const resultWarning = definitionEditResultHasWarning(result);
     interaction.definitionMessage = resultWarning
-      ? (result.warning || (result.persisted
-        ? "Model.e 已保存，但人工修改记录未保存，请重试"
-        : "后台定义已更新，但 Model.e 保存失败"))
-      : (result.runtime_control ? "后台定义、Model.e 及运行控制已保存" : "后台定义及 Model.e 已保存");
+      ? (warningMessage || `${completed} 个参数块已更新，但部分持久化结果需要重试`)
+      : (runtimeControlUpdated
+        ? `${completed} 个参数块、Model.e 及运行控制已保存`
+        : `${completed} 个参数块及 Model.e 已保存`);
     interaction.definitionMessageWarning = resultWarning;
     interaction.tooltip?.classList.remove("is-editing-definition");
     renderActiveDiagramTooltip(container, state.snapshot || {}, interaction);
     return true;
   } catch (error) {
+    interaction.snapshot = state.snapshot;
+    interaction.definitionEditor = null;
     interaction.definitionSaving = false;
-    interaction.definitionMessage = apiErrorText(error);
+    interaction.definitionMessage = completed
+      ? `已保存 ${completed}/${updates.length} 个参数块；后续保存失败：${apiErrorText(error)}`
+      : apiErrorText(error);
     interaction.definitionMessageWarning = true;
     renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
     return false;
@@ -8552,9 +8642,62 @@ function resizeCurveCanvas() {
 
 function curvePlot(canvas) {
   if (canvas.width < 640) {
-    return { left: 34, right: 12, top: 58, bottom: 30 };
+    return { left: 48, right: 12, top: 58, bottom: 30 };
   }
   return CURVE_PLOT;
+}
+
+function curveYAxisTicks(meta = {}, divisions = 5) {
+  const min = Number(meta?.min);
+  const max = Number(meta?.max);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return [];
+  const segmentCount = Math.max(1, Math.floor(Number(divisions) || 5));
+  const rawDigits = Number(meta?.digits);
+  const digits = Math.max(0, Math.min(4, Number.isFinite(rawDigits) ? Math.floor(rawDigits) : 2));
+  return Array.from({ length: segmentCount + 1 }, (_unused, index) => {
+    const ratio = index / segmentCount;
+    const value = Number((max - (max - min) * ratio).toFixed(digits));
+    return { ratio, value, label: String(value) };
+  });
+}
+
+function curveYAxisMeta(metas = [], preferredKey = "") {
+  return metas.find((meta) => meta?.key === preferredKey) || metas[0] || null;
+}
+
+function drawCurveYAxis(ctx, canvas, plot, meta) {
+  const ticks = curveYAxisTicks(meta, 5);
+  if (!ticks.length) return;
+  const left = plot.left;
+  const top = plot.top;
+  const bottom = canvas.height - plot.bottom;
+  ctx.save();
+  ctx.font = "11px Microsoft YaHei, Arial";
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "#aebfc7";
+  ctx.fillStyle = "#63717a";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  ctx.beginPath();
+  ctx.moveTo(left, top);
+  ctx.lineTo(left, bottom);
+  ctx.stroke();
+  ticks.forEach((tick) => {
+    const y = top + tick.ratio * (bottom - top);
+    ctx.beginPath();
+    ctx.moveTo(left - 5, y);
+    ctx.lineTo(left, y);
+    ctx.stroke();
+    ctx.fillText(tick.label, left - 8, y);
+  });
+  const unit = String(meta?.unit || "").trim();
+  if (unit) {
+    ctx.fillStyle = meta?.color || "#52656d";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText(unit, Math.max(4, left - 42), top - 10);
+  }
+  ctx.restore();
 }
 
 function valueToY(value, meta, canvas) {
@@ -8683,6 +8826,7 @@ function drawCurves() {
   const allMetas = selectedCurveKeys().map(curveMetaForKey);
   const metas = allMetas.filter((meta) => !isCurveSeriesHidden(meta.key));
   const editKey = curveEditKey(metas.map((meta) => meta.key));
+  const axisMeta = curveYAxisMeta(metas, editKey || state.activeCurveKey);
   const legendColumns = width < 560 ? 2 : Math.max(1, allMetas.length);
   const legendColumnWidth = (right - left) / legendColumns;
   state.curveLegendHitBoxes = [];
@@ -8701,6 +8845,7 @@ function drawCurves() {
     ctx.stroke();
   }
   drawCurveXAxis(ctx, canvas, plot);
+  drawCurveYAxis(ctx, canvas, plot, axisMeta);
   metas.forEach((meta) => {
     const values = state.curveSeries[meta.key] || [];
     const sampledPoints = sampleCurvePointsForCanvas(values, right - left, 1.4);

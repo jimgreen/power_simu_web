@@ -5594,7 +5594,7 @@ class PolarMicrogridSimulator:
                     consumed_soc_keys.add(alias)
                     break
             device["soc_curr"] = soc_value
-            device["raw"] = dict(device.get("raw", {})) | raw | {"soc_curr": soc_value}
+            device["raw"] = raw | dict(device.get("raw", {})) | {"soc_curr": soc_value}
             for set_type in ("p_set", "v_set"):
                 if set_type not in device["set_types"]:
                     device["set_types"].append(set_type)

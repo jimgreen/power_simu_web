@@ -102,6 +102,31 @@ class InMemoryKernelRuntimeTest(unittest.TestCase):
 
         self.assertEqual(values["ESS.ess01.p_set"], 22.5)
 
+    def test_in_memory_solver_reconstructs_contracted_ideal_edge_flows(self):
+        import simu_loop
+
+        root = Path(__file__).resolve().parents[1]
+        model_path = root / "models" / "simulator" / "source" / "\u79e6\u5cad\u7ad9" / "model.e"
+        model_book = simu_loop.EBook(model_path)
+
+        snapshot, _solver_info = simu_loop.solve_hybrid_snapshot_from_book(
+            model_book,
+            model_path,
+        )
+
+        load_power = snapshot.value("ACLoad", "\u4ea4\u6d41\u8d1f\u8377-1", "P_LOAD")
+        zero_branch_power = snapshot.value(
+            "ACZeroBranch",
+            "\u4ea4\u6d41\u96f6\u963b\u6297\u652f\u8def\uff08\u81ea\u9002\u5e94\uff09-1",
+            "P_FROM",
+        )
+        breaker_power = snapshot.value("ACBreak", "\u76d2\u578b\u5f00\u5173-7", "P_FROM")
+
+        self.assertIsNotNone(load_power)
+        self.assertGreater(abs(load_power), 1.0)
+        self.assertAlmostEqual(zero_branch_power, load_power, places=6)
+        self.assertAlmostEqual(breaker_power, load_power, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

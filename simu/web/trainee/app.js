@@ -252,6 +252,63 @@ const RENEWABLE_STRATEGY_TABS = {
   diesel: { label: "柴发", categories: new Set(["柴油发电"]) },
   converter: { label: "ACDC变流", categories: new Set(["交直流变流器"]) },
 };
+const RENEWABLE_TREND_SCOPE_DEFS = [
+  { key: "ac", label: "交流" },
+  { key: "dc", label: "直流" },
+  { key: "system", label: "系统" },
+];
+const RENEWABLE_TREND_SERIES_DEFS = [
+  { key: "acRenewableCurrent", metricId: "renewableAcCurrentKw", field: "acRenewableCurrentKw", label: "交流新能源当前值", scope: "ac", device: "renewable", deviceLabel: "新能源", curveLabel: "功率", group: "ac-renewable", color: "#23854a", axis: "left", unit: "kW", style: "power" },
+  { key: "acRenewableTarget", metricId: "renewableAcTargetKw", field: "acRenewableTargetKw", label: "交流新能源目标值", scope: "ac", device: "renewable", deviceLabel: "新能源", curveLabel: "目标", group: "ac-renewable", color: "#23854a", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "acWindCurrent", metricId: "renewableAcWindCurrentKw", field: "acWindCurrentKw", label: "交流风电当前值", scope: "ac", device: "wind", deviceLabel: "风电", curveLabel: "功率", group: "ac-wind", color: "#137c72", axis: "left", unit: "kW", style: "power" },
+  { key: "acWindTarget", metricId: "renewableAcWindTargetKw", field: "acWindTargetKw", label: "交流风电目标值", scope: "ac", device: "wind", deviceLabel: "风电", curveLabel: "目标", group: "ac-wind", color: "#137c72", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "acPvCurrent", metricId: "renewableAcPvCurrentKw", field: "acPvCurrentKw", label: "交流光伏当前值", scope: "ac", device: "pv", deviceLabel: "光伏", curveLabel: "功率", group: "ac-pv", color: "#c17a00", axis: "left", unit: "kW", style: "power" },
+  { key: "acPvTarget", metricId: "renewableAcPvTargetKw", field: "acPvTargetKw", label: "交流光伏目标值", scope: "ac", device: "pv", deviceLabel: "光伏", curveLabel: "目标", group: "ac-pv", color: "#c17a00", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "acGridFollowingStorageCurrent", metricId: "renewableAcGridFollowingStorageCurrentKw", field: "acGridFollowingStorageCurrentKw", label: "交流跟网储能当前值", scope: "ac", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "功率", group: "ac-grid-following-storage", color: "#315aa6", axis: "left", unit: "kW", style: "power" },
+  { key: "acGridFollowingStorageTarget", metricId: "renewableAcGridFollowingStorageTargetKw", field: "acGridFollowingStorageTargetKw", label: "交流跟网储能目标值", scope: "ac", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "目标", group: "ac-grid-following-storage", color: "#315aa6", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "acGridFollowingStorageSoc", metricId: "renewableAcGridFollowingStorageSoc", field: "acGridFollowingStorageSocPercent", label: "交流跟网储能SOC", scope: "ac", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "SOC", group: "ac-grid-following-storage", color: "#315aa6", axis: "right", unit: "%", style: "soc", dashPattern: [2, 4] },
+  { key: "acGridFormingStorageCurrent", metricId: "renewableAcGridFormingStorageCurrentKw", field: "acGridFormingStorageCurrentKw", label: "交流构网储能当前值", scope: "ac", device: "grid-forming-storage", deviceLabel: "构网储能", curveLabel: "功率", group: "ac-grid-forming-storage", color: "#7a4fb3", axis: "left", unit: "kW", style: "power" },
+  { key: "acGridFormingStorageTarget", metricId: "renewableAcGridFormingStorageTargetKw", field: "acGridFormingStorageTargetKw", label: "交流构网储能目标值", scope: "ac", device: "grid-forming-storage", deviceLabel: "构网储能", curveLabel: "目标", group: "ac-grid-forming-storage", color: "#7a4fb3", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "acGridFormingStorageSoc", metricId: "renewableAcGridFormingStorageSoc", field: "acGridFormingStorageSocPercent", label: "交流构网储能SOC", scope: "ac", device: "grid-forming-storage", deviceLabel: "构网储能", curveLabel: "SOC", group: "ac-grid-forming-storage", color: "#7a4fb3", axis: "right", unit: "%", style: "soc", dashPattern: [2, 4] },
+  { key: "acDieselCurrent", metricId: "renewableAcDieselCurrentKw", field: "acDieselCurrentKw", label: "交流柴发当前值", scope: "ac", device: "diesel", deviceLabel: "柴发", curveLabel: "功率", group: "ac-diesel", color: "#a76500", axis: "left", unit: "kW", style: "power" },
+  { key: "acDieselMin", metricId: "renewableAcDieselMinKw", field: "acDieselMinKw", label: "交流柴发下限值", scope: "ac", device: "diesel", deviceLabel: "柴发", curveLabel: "下限", group: "ac-diesel", color: "#a76500", axis: "left", unit: "kW", style: "limit", dashPattern: [10, 4, 2, 4] },
+  { key: "acDieselTarget", metricId: "renewableAcDieselTargetKw", field: "acDieselTargetKw", label: "交流柴发目标值", scope: "ac", device: "diesel", deviceLabel: "柴发", curveLabel: "目标", group: "ac-diesel", color: "#a76500", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "acLoad", metricId: "renewableAcLoadKw", field: "acLoadKw", label: "交流负荷功率", scope: "ac", device: "load", deviceLabel: "负荷", curveLabel: "功率", group: "ac-load", color: "#c93a3a", axis: "left", unit: "kW", style: "power" },
+  { key: "dcRenewableCurrent", metricId: "renewableDcCurrentKw", field: "dcRenewableCurrentKw", label: "直流新能源当前值", scope: "dc", device: "renewable", deviceLabel: "新能源", curveLabel: "功率", group: "dc-renewable", color: "#118b78", axis: "left", unit: "kW", style: "power" },
+  { key: "dcRenewableTarget", metricId: "renewableDcTargetKw", field: "dcRenewableTargetKw", label: "直流新能源目标值", scope: "dc", device: "renewable", deviceLabel: "新能源", curveLabel: "目标", group: "dc-renewable", color: "#118b78", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "dcWindCurrent", metricId: "renewableDcWindCurrentKw", field: "dcWindCurrentKw", label: "直流风电当前值", scope: "dc", device: "wind", deviceLabel: "风电", curveLabel: "功率", group: "dc-wind", color: "#087f89", axis: "left", unit: "kW", style: "power" },
+  { key: "dcWindTarget", metricId: "renewableDcWindTargetKw", field: "dcWindTargetKw", label: "直流风电目标值", scope: "dc", device: "wind", deviceLabel: "风电", curveLabel: "目标", group: "dc-wind", color: "#087f89", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "dcPvCurrent", metricId: "renewableDcPvCurrentKw", field: "dcPvCurrentKw", label: "直流光伏当前值", scope: "dc", device: "pv", deviceLabel: "光伏", curveLabel: "功率", group: "dc-pv", color: "#d66f3c", axis: "left", unit: "kW", style: "power" },
+  { key: "dcPvTarget", metricId: "renewableDcPvTargetKw", field: "dcPvTargetKw", label: "直流光伏目标值", scope: "dc", device: "pv", deviceLabel: "光伏", curveLabel: "目标", group: "dc-pv", color: "#d66f3c", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "dcGridFollowingStorageCurrent", metricId: "renewableDcGridFollowingStorageCurrentKw", field: "dcGridFollowingStorageCurrentKw", label: "直流跟网储能当前值", scope: "dc", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "功率", group: "dc-grid-following-storage", color: "#2f80c4", axis: "left", unit: "kW", style: "power" },
+  { key: "dcGridFollowingStorageTarget", metricId: "renewableDcGridFollowingStorageTargetKw", field: "dcGridFollowingStorageTargetKw", label: "直流跟网储能目标值", scope: "dc", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "目标", group: "dc-grid-following-storage", color: "#2f80c4", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "dcGridFollowingStorageSoc", metricId: "renewableDcGridFollowingStorageSoc", field: "dcGridFollowingStorageSocPercent", label: "直流跟网储能SOC", scope: "dc", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "SOC", group: "dc-grid-following-storage", color: "#2f80c4", axis: "right", unit: "%", style: "soc", dashPattern: [2, 4] },
+  { key: "dcGridFormingStorageCurrent", metricId: "renewableDcGridFormingStorageCurrentKw", field: "dcGridFormingStorageCurrentKw", label: "直流构网储能当前值", scope: "dc", device: "grid-forming-storage", deviceLabel: "构网储能", curveLabel: "功率", group: "dc-grid-forming-storage", color: "#a15ca8", axis: "left", unit: "kW", style: "power" },
+  { key: "dcGridFormingStorageTarget", metricId: "renewableDcGridFormingStorageTargetKw", field: "dcGridFormingStorageTargetKw", label: "直流构网储能目标值", scope: "dc", device: "grid-forming-storage", deviceLabel: "构网储能", curveLabel: "目标", group: "dc-grid-forming-storage", color: "#a15ca8", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "dcGridFormingStorageSoc", metricId: "renewableDcGridFormingStorageSoc", field: "dcGridFormingStorageSocPercent", label: "直流构网储能SOC", scope: "dc", device: "grid-forming-storage", deviceLabel: "构网储能", curveLabel: "SOC", group: "dc-grid-forming-storage", color: "#a15ca8", axis: "right", unit: "%", style: "soc", dashPattern: [2, 4] },
+  { key: "dcDieselCurrent", metricId: "renewableDcDieselCurrentKw", field: "dcDieselCurrentKw", label: "直流柴发当前值", scope: "dc", device: "diesel", deviceLabel: "柴发", curveLabel: "功率", group: "dc-diesel", color: "#8d6500", axis: "left", unit: "kW", style: "power" },
+  { key: "dcDieselMin", metricId: "renewableDcDieselMinKw", field: "dcDieselMinKw", label: "直流柴发下限值", scope: "dc", device: "diesel", deviceLabel: "柴发", curveLabel: "下限", group: "dc-diesel", color: "#8d6500", axis: "left", unit: "kW", style: "limit", dashPattern: [10, 4, 2, 4] },
+  { key: "dcDieselTarget", metricId: "renewableDcDieselTargetKw", field: "dcDieselTargetKw", label: "直流柴发目标值", scope: "dc", device: "diesel", deviceLabel: "柴发", curveLabel: "目标", group: "dc-diesel", color: "#8d6500", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "dcLoad", metricId: "renewableDcLoadKw", field: "dcLoadKw", label: "直流负荷功率", scope: "dc", device: "load", deviceLabel: "负荷", curveLabel: "功率", group: "dc-load", color: "#d66f3c", axis: "left", unit: "kW", style: "power" },
+  { key: "totalRenewableCurrent", metricId: "renewableTotalCurrentKw", field: "totalRenewableCurrentKw", label: "总新能源当前值", scope: "system", device: "renewable", deviceLabel: "新能源", curveLabel: "功率", group: "system-renewable", color: "#1f7a46", axis: "left", unit: "kW", style: "power" },
+  { key: "totalRenewableTarget", metricId: "renewableTotalTargetKw", field: "totalRenewableTargetKw", label: "总新能源目标值", scope: "system", device: "renewable", deviceLabel: "新能源", curveLabel: "目标", group: "system-renewable", color: "#1f7a46", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "totalWindCurrent", metricId: "renewableTotalWindCurrentKw", field: "totalWindCurrentKw", label: "总风电当前值", scope: "system", device: "wind", deviceLabel: "风电", curveLabel: "功率", group: "system-wind", color: "#0a7774", axis: "left", unit: "kW", style: "power" },
+  { key: "totalWindTarget", metricId: "renewableTotalWindTargetKw", field: "totalWindTargetKw", label: "总风电目标值", scope: "system", device: "wind", deviceLabel: "风电", curveLabel: "目标", group: "system-wind", color: "#0a7774", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "totalPvCurrent", metricId: "renewableTotalPvCurrentKw", field: "totalPvCurrentKw", label: "总光伏当前值", scope: "system", device: "pv", deviceLabel: "光伏", curveLabel: "功率", group: "system-pv", color: "#ba7200", axis: "left", unit: "kW", style: "power" },
+  { key: "totalPvTarget", metricId: "renewableTotalPvTargetKw", field: "totalPvTargetKw", label: "总光伏目标值", scope: "system", device: "pv", deviceLabel: "光伏", curveLabel: "目标", group: "system-pv", color: "#ba7200", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "totalGridFollowingStorageCurrent", metricId: "renewableTotalGridFollowingStorageCurrentKw", field: "totalGridFollowingStorageCurrentKw", label: "总跟网储能当前值", scope: "system", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "功率", group: "system-grid-following-storage", color: "#294f95", axis: "left", unit: "kW", style: "power" },
+  { key: "totalGridFollowingStorageTarget", metricId: "renewableTotalGridFollowingStorageTargetKw", field: "totalGridFollowingStorageTargetKw", label: "总跟网储能目标值", scope: "system", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "目标", group: "system-grid-following-storage", color: "#294f95", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "totalGridFollowingStorageSoc", metricId: "renewableTotalGridFollowingStorageSoc", field: "totalGridFollowingStorageSocPercent", label: "总跟网储能SOC", scope: "system", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "SOC", group: "system-grid-following-storage", color: "#294f95", axis: "right", unit: "%", style: "soc", dashPattern: [2, 4] },
+  { key: "totalGridFormingStorageCurrent", metricId: "renewableTotalGridFormingStorageCurrentKw", field: "totalGridFormingStorageCurrentKw", label: "总构网储能当前值", scope: "system", device: "grid-forming-storage", deviceLabel: "构网储能", curveLabel: "功率", group: "system-grid-forming-storage", color: "#674493", axis: "left", unit: "kW", style: "power" },
+  { key: "totalGridFormingStorageTarget", metricId: "renewableTotalGridFormingStorageTargetKw", field: "totalGridFormingStorageTargetKw", label: "总构网储能目标值", scope: "system", device: "grid-forming-storage", deviceLabel: "构网储能", curveLabel: "目标", group: "system-grid-forming-storage", color: "#674493", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "totalGridFormingStorageSoc", metricId: "renewableTotalGridFormingStorageSoc", field: "totalGridFormingStorageSocPercent", label: "总构网储能SOC", scope: "system", device: "grid-forming-storage", deviceLabel: "构网储能", curveLabel: "SOC", group: "system-grid-forming-storage", color: "#674493", axis: "right", unit: "%", style: "soc", dashPattern: [2, 4] },
+  { key: "dieselCurrent", metricId: "renewableTotalDieselCurrentKw", field: "totalDieselCurrentKw", label: "总柴发当前值", scope: "system", device: "diesel", deviceLabel: "柴发", curveLabel: "功率", group: "system-diesel", color: "#b87500", axis: "left", unit: "kW", style: "power" },
+  { key: "dieselMin", metricId: "renewableTotalDieselMinKw", field: "totalDieselMinKw", label: "总柴发下限值", scope: "system", device: "diesel", deviceLabel: "柴发", curveLabel: "下限", group: "system-diesel", color: "#b87500", axis: "left", unit: "kW", style: "limit", dashPattern: [10, 4, 2, 4] },
+  { key: "dieselTarget", metricId: "renewableTotalDieselTargetKw", field: "totalDieselTargetKw", label: "总柴发目标值", scope: "system", device: "diesel", deviceLabel: "柴发", curveLabel: "目标", group: "system-diesel", color: "#b87500", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "totalLoad", metricId: "renewableTotalLoadKw", field: "totalLoadKw", label: "总负荷功率", scope: "system", device: "load", deviceLabel: "负荷", curveLabel: "功率", group: "system-load", color: "#a93434", axis: "left", unit: "kW", style: "power" },
+  { key: "acdcCurrent", metricId: "renewableAcdcCurrentKw", field: "acdcCurrentKw", label: "AC/DC变流当前值", scope: "system", device: "acdc", deviceLabel: "AC/DC变流器", curveLabel: "功率", group: "system-acdc", color: "#0a8b8b", axis: "left", unit: "kW", style: "power" },
+  { key: "acdcTarget", metricId: "renewableAcdcTargetKw", field: "acdcTargetKw", label: "AC/DC变流目标值", scope: "system", device: "acdc", deviceLabel: "AC/DC变流器", curveLabel: "目标", group: "system-acdc", color: "#0a8b8b", axis: "left", unit: "kW", style: "target", dashed: true },
+];
 const RENEWABLE_TREND_DEFAULT_VISIBLE_SERIES = new Set([
   "acLoad",
   "dcLoad",
@@ -3663,7 +3720,7 @@ function diagramDeviceRecord(container, devId) {
   };
 }
 
-const DIAGRAM_DEVICE_ELEMENT_SELECTOR = "[dev-id], [dev], use[id][name]";
+const DIAGRAM_DEVICE_ELEMENT_SELECTOR = "[dev-id], use[id][name]";
 
 function diagramElementDeviceId(element) {
   if (!element || typeof element.getAttribute !== "function") return "";
@@ -3673,10 +3730,21 @@ function diagramElementDeviceId(element) {
   return String(element.getAttribute("id") || "").trim();
 }
 
+function diagramMetricElementForTarget(container, target) {
+  if (!(target instanceof Element) || !container.contains(target)) return null;
+  const directMetric = target.closest("[mt]");
+  if (directMetric && container.contains(directMetric)) return directMetric;
+  const owner = target.closest("[dev]");
+  const row = target.closest("text");
+  if (!owner || !row || !container.contains(owner) || !owner.contains(row)) return null;
+  const rowMetric = row.querySelector("[mt]");
+  return rowMetric && container.contains(rowMetric) ? rowMetric : null;
+}
+
 function diagramTargetDeviceId(container, target) {
   if (!(target instanceof Element) || !container.contains(target)) return "";
-  const metricElement = target.closest("[mt]");
-  if (metricElement && container.contains(metricElement)) {
+  const metricElement = diagramMetricElementForTarget(container, target);
+  if (metricElement) {
     const owner = metricElement.closest("[dev]");
     if (owner && container.contains(owner)) return String(owner.getAttribute("dev") || "").trim();
   }
@@ -3687,8 +3755,8 @@ function diagramTargetDeviceId(container, target) {
 
 function diagramHoverTarget(container, target) {
   if (!(target instanceof Element) || !container.contains(target)) return null;
-  const metricElement = target.closest("[mt]");
-  if (metricElement && container.contains(metricElement)) {
+  const metricElement = diagramMetricElementForTarget(container, target);
+  if (metricElement) {
     const owner = metricElement.closest("[dev]");
     const devId = String(owner?.getAttribute("dev") || "").trim();
     const metricType = String(metricElement.getAttribute("mt") || "").trim();
@@ -3793,19 +3861,18 @@ function diagramTooltipRowKey(sectionKey, label, index = 0) {
 }
 
 function diagramIntegratedDefinitionBindingMatchesEditor(binding, interaction) {
-  return Boolean(
-    binding
-    && interaction?.definitionEditor?.kind === "device"
-    && interaction.definitionEditor.blockName === binding.blockName
-    && Number(interaction.definitionEditor.rowIndex) === Number(binding.rowIndex)
-  );
+  return Boolean(diagramDeviceDefinitionRecordEditor(
+    interaction?.definitionEditor,
+    binding,
+  ));
 }
 
 function renderDiagramIntegratedDefinitionRow(label, value, rowKey, binding, interaction) {
   const fieldEditable = Boolean(binding?.editable);
-  const activeEditor = diagramIntegratedDefinitionBindingMatchesEditor(binding, interaction)
-    ? interaction.definitionEditor
-    : null;
+  const activeEditor = diagramDeviceDefinitionRecordEditor(
+    interaction?.definitionEditor,
+    binding,
+  );
   const editing = Boolean(activeEditor && fieldEditable);
   const recordAttributes = binding
     ? ` data-diagram-definition-block="${escapeHtml(binding.blockName)}" data-diagram-definition-row-index="${binding.rowIndex}"`
@@ -4271,6 +4338,50 @@ function definitionEditResultHasWarning(result) {
     || Boolean(result?.warning);
 }
 
+function diagramDeviceHasSwitchStatus(definitionRecords = [], raw = {}) {
+  const modelDefinesStatus = definitionRecords.some((record) => (
+    (record?.headers || []).some((field) => String(field || "").trim().toLowerCase() === "status")
+  ));
+  return modelDefinesStatus || Object.prototype.hasOwnProperty.call(raw || {}, "status");
+}
+
+function diagramDeviceDefinitionEditorRecords(records = []) {
+  return records
+    .filter((record) => Array.isArray(record?.editableFields) && record.editableFields.length)
+    .map((record) => ({
+      blockName: record.blockName,
+      rowIndex: record.rowIndex,
+      rowKey: { ...record.rowKey },
+      editableFields: [...record.editableFields],
+      original: { ...record.row },
+      draft: { ...record.row },
+      dirtyFields: new Set(),
+    }));
+}
+
+function diagramDeviceDefinitionRecordEditor(editor, record) {
+  if (editor?.kind !== "device" || !record) return null;
+  return (editor.records || []).find((item) => (
+    item.blockName === record.blockName
+    && Number(item.rowIndex) === Number(record.rowIndex)
+  )) || null;
+}
+
+function diagramDeviceDefinitionDirtyUpdates(editor) {
+  if (editor?.kind !== "device") return [];
+  return (editor.records || []).map((record) => {
+    const changes = Object.fromEntries(
+      [...(record.dirtyFields || [])].map((field) => [field, record.draft[field]]),
+    );
+    return Object.keys(changes).length ? {
+      blockName: record.blockName,
+      rowIndex: record.rowIndex,
+      rowKey: { ...record.rowKey },
+      changes,
+    } : null;
+  }).filter(Boolean);
+}
+
 function diagramDeviceData(container, device, snapshot = state.snapshot || {}) {
   if (!device) return { definition: null, live: null, raw: {}, svgIdx: "" };
   const type = normalizeDiagramMeasurementToken(device.devType);
@@ -4327,9 +4438,12 @@ function diagramDeviceTooltipData(container, hover, snapshot) {
   const runStatBinding = diagramDefinitionFieldBinding(definitionRecords, ["run_stat"]);
   const statusBinding = diagramDefinitionFieldBinding(definitionRecords, ["status"]);
   const modeBinding = diagramDefinitionFieldBinding(definitionRecords, ["control_type", "mode"]);
+  const hasSwitchStatus = diagramDeviceHasSwitchStatus(definitionRecords, raw);
   const statusRows = [
     ["运行状态", live?.run_stat ?? raw.run_stat, "status:run_stat", runStatBinding],
-    ["开关状态", live?.status ?? raw.status, "status:status", statusBinding],
+    ...(hasSwitchStatus
+      ? [["开关状态", live?.status ?? raw.status, "status:status", statusBinding]]
+      : []),
     ["控制模式", live?.mode ?? raw.control_type ?? raw.mode, "status:mode", modeBinding],
   ];
   const setRows = Object.entries(live?.set_values || {})
@@ -4474,7 +4588,8 @@ function diagramDefinitionInputDescriptor(field, value) {
 }
 
 function renderDiagramDeviceDefinitionEditor(record, editor, interaction) {
-  const canSave = editor.dirtyFields?.size > 0 && !interaction?.definitionSaving;
+  const canSave = diagramDeviceDefinitionDirtyUpdates(editor).length > 0
+    && !interaction?.definitionSaving;
   return `
     <div class="diagram-definition-actions diagram-definition-inline-actions" data-diagram-definition-actions="device">
       <button type="button" data-diagram-definition-cancel>取消</button>
@@ -4525,11 +4640,10 @@ function renderDiagramDeviceDefinitionValueRow(record, field, activeEditor, inte
 }
 
 function renderDiagramDeviceDefinitionRecord(record, interaction) {
-  const activeEditor = interaction?.definitionEditor?.kind === "device"
-    && interaction.definitionEditor.blockName === record.blockName
-    && Number(interaction.definitionEditor.rowIndex) === Number(record.rowIndex)
-    ? interaction.definitionEditor
-    : null;
+  const activeEditor = diagramDeviceDefinitionRecordEditor(
+    interaction?.definitionEditor,
+    record,
+  );
   const displayHeaders = diagramDefinitionDisplayHeaders(record);
   if (!displayHeaders.length) return "";
   const rows = displayHeaders
@@ -4580,14 +4694,14 @@ function renderDiagramDeviceDefinitionRecords(records, interaction) {
 }
 
 function renderDiagramDeviceDefinitionFooter(records, interaction) {
-  const activeRecord = interaction?.definitionEditor?.kind === "device"
-    ? records.find((record) => (
-      record.blockName === interaction.definitionEditor.blockName
-      && Number(record.rowIndex) === Number(interaction.definitionEditor.rowIndex)
-    ))
+  const editor = interaction?.definitionEditor?.kind === "device"
+    ? interaction.definitionEditor
+    : null;
+  const activeRecord = editor
+    ? records.find((record) => diagramDeviceDefinitionRecordEditor(editor, record))
     : null;
   const content = activeRecord
-    ? renderDiagramDeviceDefinitionEditor(activeRecord, interaction.definitionEditor, interaction)
+    ? renderDiagramDeviceDefinitionEditor(activeRecord, editor, interaction)
     : diagramDefinitionMessageHtml(interaction);
   if (!content) return "";
   return `
@@ -4634,15 +4748,16 @@ function beginDiagramDeviceDefinitionEdit(container, blockName, rowIndex = 0) {
     && Number(item.rowIndex) === Number(rowIndex)
   ));
   if (!record || !record.editableFields.length) return false;
+  const editorRecords = diagramDeviceDefinitionEditorRecords(records);
+  if (!editorRecords.length) return false;
   interaction.definitionEditor = {
     kind: "device",
     blockName: record.blockName,
     rowIndex: record.rowIndex,
-    rowKey: { ...record.rowKey },
     revision: Number(snapshot?.static_meta?.definitions?.revision),
-    original: { ...record.row },
-    draft: { ...record.row },
+    records: editorRecords,
     dirtyFields: new Set(),
+    validationError: "",
   };
   interaction.definitionSaving = false;
   interaction.definitionMessage = "";
@@ -4686,11 +4801,24 @@ function updateDiagramDeviceDefinitionDraft(interaction, input) {
   if (editor?.kind !== "device") return false;
   const field = String(input?.getAttribute?.("data-diagram-definition-field") || "");
   if (!diagramDeviceParameterEditable(field)) return false;
+  const section = input.closest?.("[data-diagram-definition-block]");
+  const blockName = String(section?.getAttribute?.("data-diagram-definition-block") || "");
+  const rowIndex = Number(section?.getAttribute?.("data-diagram-definition-row-index") || 0);
+  const record = (editor.records || []).find((item) => (
+    item.blockName === blockName && Number(item.rowIndex) === rowIndex
+  ));
+  if (!record || !record.editableFields.includes(field)) return false;
   const value = diagramDefinitionStoredValue(field, input.value);
-  editor.draft[field] = value;
-  const originalValue = diagramDefinitionCanonicalStoredValue(field, editor.original[field]);
-  if (value === originalValue) editor.dirtyFields.delete(field);
-  else editor.dirtyFields.add(field);
+  record.draft[field] = value;
+  const originalValue = diagramDefinitionCanonicalStoredValue(field, record.original[field]);
+  const dirtyKey = `${record.blockName}:${record.rowIndex}:${field}`;
+  if (value === originalValue) {
+    record.dirtyFields.delete(field);
+    editor.dirtyFields.delete(dirtyKey);
+  } else {
+    record.dirtyFields.add(field);
+    editor.dirtyFields.add(dirtyKey);
+  }
   interaction.definitionMessage = "";
   interaction.definitionMessageWarning = false;
   updateDiagramDefinitionSaveState(interaction);
@@ -4701,44 +4829,62 @@ async function saveDiagramDeviceDefinitionEdit(container) {
   const interaction = diagramInteractionCache.get(container);
   const editor = interaction?.definitionEditor;
   if (!interaction || editor?.kind !== "device" || interaction.definitionSaving) return false;
-  const changes = Object.fromEntries([...editor.dirtyFields].map((field) => [field, editor.draft[field]]));
-  if (!Object.keys(changes).length) return false;
+  const updates = diagramDeviceDefinitionDirtyUpdates(editor);
+  if (!updates.length) return false;
   const requestedModelId = state.activeModelId;
   interaction.definitionSaving = true;
-  interaction.definitionMessage = "正在更新学员台后台定义并保存 E 文件";
+  interaction.definitionMessage = `正在更新 ${updates.length} 个参数块并保存 E 文件`;
   interaction.definitionMessageWarning = false;
   renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
+  let completed = 0;
+  let revision = editor.revision;
+  let resultWarning = false;
+  let warningMessage = "";
+  let runtimeControlUpdated = false;
   try {
-    const result = await api("/api/definitions/device-parameters", {
-      method: "POST",
-      body: JSON.stringify({
-        block_name: editor.blockName,
-        row_key: editor.rowKey,
-        revision: editor.revision,
-        changes,
-      }),
-    });
-    applyDefinitionEditResult(result);
+    for (const update of updates) {
+      const result = await api("/api/definitions/device-parameters", {
+        method: "POST",
+        body: JSON.stringify({
+          block_name: update.blockName,
+          row_key: update.rowKey,
+          revision,
+          changes: update.changes,
+        }),
+      });
+      applyDefinitionEditResult(result);
+      revision = Number(
+        result?.revision
+        ?? result?.static_meta?.definitions?.revision
+        ?? revision,
+      );
+      completed += 1;
+      resultWarning = definitionEditResultHasWarning(result) || resultWarning;
+      if (result?.warning) warningMessage = result.warning;
+      runtimeControlUpdated = Boolean(result?.runtime_control) || runtimeControlUpdated;
+    }
     await reloadLocalDefinitionSnapshotAfterEdit(requestedModelId);
     interaction.snapshot = state.snapshot;
     interaction.definitionEditor = null;
     interaction.definitionSaving = false;
-    const resultWarning = definitionEditResultHasWarning(result);
     interaction.definitionMessage = resultWarning
-      ? (result.warning || (result.persisted
-        ? "Model.e 已保存，但人工修改记录未保存，请重试"
-        : "学员台后台定义已更新，但 Model.e 保存失败"))
-      : (result.runtime_control
-        ? "学员台后台定义、Model.e 及运行控制已保存，新能源控制将从下一轮采用新参数"
-        : "学员台后台定义及 Model.e 已保存，新能源控制将从下一轮采用新参数");
+      ? (warningMessage || `${completed} 个参数块已更新，但部分持久化结果需要重试`)
+      : (runtimeControlUpdated
+        ? `${completed} 个参数块、Model.e 及运行控制已保存，新能源控制将从下一轮采用新参数`
+        : `${completed} 个参数块及 Model.e 已保存，新能源控制将从下一轮采用新参数`);
     interaction.definitionMessageWarning = resultWarning;
     interaction.tooltip?.classList.remove("is-editing-definition");
     renderActiveDiagramTooltip(container, state.snapshot || {}, interaction);
     return true;
   } catch (error) {
+    interaction.snapshot = state.snapshot;
+    interaction.definitionEditor = null;
     interaction.definitionSaving = false;
-    interaction.definitionMessage = apiErrorText(error);
+    interaction.definitionMessage = completed
+      ? `已保存 ${completed}/${updates.length} 个参数块；后续保存失败：${apiErrorText(error)}`
+      : apiErrorText(error);
     interaction.definitionMessageWarning = true;
+    interaction.tooltip?.classList.remove("is-editing-definition");
     renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
     return false;
   }
@@ -9288,8 +9434,61 @@ function resizeCurveDisplayCanvas() {
 }
 
 function curveDisplayPlot(canvas) {
-  if (canvas.width < 640) return { left: 34, right: 12, top: 58, bottom: 30 };
+  if (canvas.width < 640) return { left: 48, right: 12, top: 58, bottom: 30 };
   return CURVE_DISPLAY_PLOT;
+}
+
+function curveYAxisTicks(meta = {}, divisions = 5) {
+  const min = Number(meta?.min);
+  const max = Number(meta?.max);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return [];
+  const segmentCount = Math.max(1, Math.floor(Number(divisions) || 5));
+  const rawDigits = Number(meta?.digits);
+  const digits = Math.max(0, Math.min(4, Number.isFinite(rawDigits) ? Math.floor(rawDigits) : 2));
+  return Array.from({ length: segmentCount + 1 }, (_unused, index) => {
+    const ratio = index / segmentCount;
+    const value = Number((max - (max - min) * ratio).toFixed(digits));
+    return { ratio, value, label: String(value) };
+  });
+}
+
+function curveYAxisMeta(metas = [], preferredKey = "") {
+  return metas.find((meta) => meta?.key === preferredKey) || metas[0] || null;
+}
+
+function drawCurveYAxis(ctx, canvas, plot, meta) {
+  const ticks = curveYAxisTicks(meta, 5);
+  if (!ticks.length) return;
+  const left = plot.left;
+  const top = plot.top;
+  const bottom = canvas.height - plot.bottom;
+  ctx.save();
+  ctx.font = "11px Microsoft YaHei, Arial";
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "#aebfc7";
+  ctx.fillStyle = "#63717a";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  ctx.beginPath();
+  ctx.moveTo(left, top);
+  ctx.lineTo(left, bottom);
+  ctx.stroke();
+  ticks.forEach((tick) => {
+    const y = top + tick.ratio * (bottom - top);
+    ctx.beginPath();
+    ctx.moveTo(left - 5, y);
+    ctx.lineTo(left, y);
+    ctx.stroke();
+    ctx.fillText(tick.label, left - 8, y);
+  });
+  const unit = String(meta?.unit || "").trim();
+  if (unit) {
+    ctx.fillStyle = meta?.color || "#52656d";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText(unit, Math.max(4, left - 42), top - 10);
+  }
+  ctx.restore();
 }
 
 function curveDisplayValueToY(value, meta, canvas) {
@@ -9474,6 +9673,8 @@ function drawCurveDisplay(snapshot = state.snapshot || {}) {
   const allMetas = selectedCurveDisplayKeys(snapshot).map((key) => curveDisplayMetaForKey(key, snapshot));
   const metas = allMetas.filter((meta) => !isCurveDisplaySeriesHidden(meta.key));
   const seriesByKey = new Map(allMetas.map((meta) => [meta.key, curveDisplaySeries(meta.key, snapshot)]));
+  const activeKey = isCurveDisplaySeriesHidden(state.activeCurveDisplayKey) ? "" : state.activeCurveDisplayKey;
+  const axisMeta = curveYAxisMeta(metas, activeKey);
   const legendColumns = width < 560 ? 2 : Math.max(1, allMetas.length);
   const legendColumnWidth = (right - left) / legendColumns;
   state.curveDisplayLegendHitBoxes = [];
@@ -9491,7 +9692,7 @@ function drawCurveDisplay(snapshot = state.snapshot || {}) {
     ctx.stroke();
   }
   drawCurveDisplayXAxis(ctx, canvas, plot, snapshot);
-  const activeKey = isCurveDisplaySeriesHidden(state.activeCurveDisplayKey) ? "" : state.activeCurveDisplayKey;
+  drawCurveYAxis(ctx, canvas, plot, axisMeta);
   metas.forEach((meta) => {
     const values = seriesByKey.get(meta.key) || [];
     const sampledPoints = sampleCurvePointsForCanvas(values, right - left, 1.4);
@@ -10316,6 +10517,10 @@ function renewableMetricGroupCount(metrics = {}, group = "") {
   const directKeys = {
     "ac-renewable": ["onlineAcRenewableCount"],
     "dc-renewable": ["onlineDcRenewableCount"],
+    "ac-wind": ["onlineAcWindCount"],
+    "dc-wind": ["onlineDcWindCount"],
+    "ac-pv": ["onlineAcPvCount"],
+    "dc-pv": ["onlineDcPvCount"],
     "ac-grid-following-storage": ["onlineAcGridFollowingStorageCount"],
     "dc-grid-following-storage": ["onlineDcGridFollowingStorageCount"],
     "ac-grid-forming-storage": ["onlineAcGridFormingStorageCount", "onlineAcBalanceStorageCount"],
@@ -10329,6 +10534,8 @@ function renewableMetricGroupCount(metrics = {}, group = "") {
   if (directKeys[group]) return renewableMetricCount(metrics, directKeys[group]);
   const aggregateGroups = {
     "system-renewable": ["ac-renewable", "dc-renewable"],
+    "system-wind": ["ac-wind", "dc-wind"],
+    "system-pv": ["ac-pv", "dc-pv"],
     "system-grid-following-storage": ["ac-grid-following-storage", "dc-grid-following-storage"],
     "system-grid-forming-storage": ["ac-grid-forming-storage", "dc-grid-forming-storage"],
     "system-diesel": ["ac-diesel", "dc-diesel"],
@@ -10342,6 +10549,26 @@ function renewableMetricGroupCount(metrics = {}, group = "") {
   return counts.length ? counts.reduce((sum, count) => sum + count, 0) : null;
 }
 
+function renewableMetricGroupConfiguredCount(metrics = {}, group = "") {
+  const directKeys = {
+    "ac-grid-following-storage": ["acGridFollowingStorageCount"],
+    "dc-grid-following-storage": ["dcGridFollowingStorageCount"],
+    "ac-grid-forming-storage": ["acGridFormingStorageCount"],
+    "dc-grid-forming-storage": ["dcGridFormingStorageCount"],
+  };
+  if (directKeys[group]) return renewableMetricCount(metrics, directKeys[group]);
+  const aggregateGroups = {
+    "system-grid-following-storage": ["ac-grid-following-storage", "dc-grid-following-storage"],
+    "system-grid-forming-storage": ["ac-grid-forming-storage", "dc-grid-forming-storage"],
+  };
+  const childGroups = aggregateGroups[group];
+  if (!childGroups) return null;
+  const counts = childGroups
+    .map((childGroup) => renewableMetricGroupConfiguredCount(metrics, childGroup))
+    .filter((count) => count !== null);
+  return counts.length ? counts.reduce((sum, count) => sum + count, 0) : null;
+}
+
 function renewableMetricGroupAvailable(metrics = {}, group = "") {
   const count = renewableMetricGroupCount(metrics, group);
   return count === null || count > 0;
@@ -10349,8 +10576,60 @@ function renewableMetricGroupAvailable(metrics = {}, group = "") {
 
 function renderRenewableMetricAvailability(metrics = {}) {
   document.querySelectorAll("[data-renewable-metric-group]").forEach((card) => {
-    card.hidden = !renewableMetricGroupAvailable(metrics, card.dataset.renewableMetricGroup || "");
+    const alwaysVisible = card.dataset.renewableMetricAlways === "true";
+    card.hidden = !alwaysVisible
+      && !renewableMetricGroupAvailable(metrics, card.dataset.renewableMetricGroup || "");
   });
+}
+
+function renderRenewableTrendSeriesTree() {
+  const container = $("renewableTrendSeriesGroups");
+  if (!container || container.dataset.rendered === "true") return;
+  container.innerHTML = RENEWABLE_TREND_SCOPE_DEFS.map((scope) => {
+    const devices = [];
+    RENEWABLE_TREND_SERIES_DEFS
+      .filter((series) => series.scope === scope.key)
+      .forEach((series) => {
+        let device = devices.find((candidate) => candidate.key === series.device);
+        if (!device) {
+          device = { key: series.device, label: series.deviceLabel, series: [] };
+          devices.push(device);
+        }
+        device.series.push(series);
+      });
+    const deviceHtml = devices.map((device) => {
+      const seriesHtml = device.series.map((series) => {
+        const checked = RENEWABLE_TREND_DEFAULT_VISIBLE_SERIES.has(series.key) ? " checked" : "";
+        const styleClass = `is-${series.style || "power"}`;
+        return `
+          <label
+            class="renewable-trend-series-item"
+            data-renewable-series-group="${escapeHtml(series.group)}"
+            data-renewable-series-metric="${escapeHtml(series.metricId)}"
+            title="${escapeHtml(series.label)}"
+          >
+            <input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="${escapeHtml(series.key)}"${checked} />
+            <i class="renewable-trend-series-swatch ${styleClass}" style="--renewable-series-color: ${escapeHtml(series.color)}"></i>
+            <span>${escapeHtml(series.curveLabel)}</span>
+          </label>
+        `;
+      }).join("");
+      return `
+        <details class="renewable-trend-series-device" data-renewable-series-device="${escapeHtml(device.key)}">
+          <summary><span>${escapeHtml(device.label)}</span><small>${device.series.length}</small></summary>
+          <div class="renewable-trend-series-list">${seriesHtml}</div>
+        </details>
+      `;
+    }).join("");
+    const open = scope.key === "ac" ? " open" : "";
+    return `
+      <details class="renewable-trend-series-group" data-renewable-series-scope="${escapeHtml(scope.key)}"${open}>
+        <summary><span>${escapeHtml(scope.label)}</span><small>${devices.length}</small></summary>
+        <div class="renewable-trend-series-devices">${deviceHtml}</div>
+      </details>
+    `;
+  }).join("");
+  container.dataset.rendered = "true";
 }
 
 function ensureRenewableTrendSeriesSelection(seriesDefs = []) {
@@ -10369,6 +10648,7 @@ function renewableTrendSeriesAvailable(series = {}, metrics = {}) {
 }
 
 function renderRenewableTrendSeriesAvailability(metrics = {}) {
+  renderRenewableTrendSeriesTree();
   const chartKey = "renewableTrend";
   const items = Array.from(document.querySelectorAll(".renewable-trend-series-item"));
   items.forEach((item) => {
@@ -10385,9 +10665,13 @@ function renderRenewableTrendSeriesAvailability(metrics = {}) {
       selectedChartSeriesKey(chartKey) === (input.dataset.chartSeries || ""),
     );
   });
-  document.querySelectorAll(".renewable-trend-series-group").forEach((group) => {
-    group.hidden = !Array.from(group.querySelectorAll(".renewable-trend-series-item"))
+  document.querySelectorAll(".renewable-trend-series-device").forEach((device) => {
+    device.hidden = !Array.from(device.querySelectorAll(".renewable-trend-series-item"))
       .some((item) => !item.hidden);
+  });
+  document.querySelectorAll(".renewable-trend-series-group").forEach((scope) => {
+    scope.hidden = !Array.from(scope.querySelectorAll(".renewable-trend-series-device"))
+      .some((device) => !device.hidden);
   });
   const availableInputs = items
     .filter((item) => !item.hidden)
@@ -10419,33 +10703,9 @@ function drawRenewableTrendChart() {
 
   const range = renewableTrendWindowRange();
   const points = renewableTrendWindowPoints();
-  const seriesDefs = [
-    { key: "acLoad", field: "acLoadKw", label: "交流负荷", group: "ac-load", color: "#c93a3a", axis: "left", unit: "kW" },
-    { key: "dcLoad", field: "dcLoadKw", label: "直流负荷", group: "dc-load", color: "#d66f3c", axis: "left", unit: "kW" },
-    { key: "dieselCurrent", field: "dieselCurrentKw", label: "柴发当前值", group: "system-diesel", color: "#b87500", axis: "left", unit: "kW" },
-    { key: "dieselTarget", field: "dieselTargetKw", label: "柴发目标值", group: "system-diesel", color: "#b87500", axis: "left", unit: "kW", dashed: true },
-    { key: "acRenewableCurrent", field: "acRenewableCurrentKw", label: "交流新能源当前值", group: "ac-renewable", color: "#23854a", axis: "left", unit: "kW" },
-    { key: "acRenewableTarget", field: "acRenewableTargetKw", label: "交流新能源目标值", group: "ac-renewable", color: "#23854a", axis: "left", unit: "kW", dashed: true },
-    { key: "dcRenewableCurrent", field: "dcRenewableCurrentKw", label: "直流新能源当前值", group: "dc-renewable", color: "#118b78", axis: "left", unit: "kW" },
-    { key: "dcRenewableTarget", field: "dcRenewableTargetKw", label: "直流新能源目标值", group: "dc-renewable", color: "#118b78", axis: "left", unit: "kW", dashed: true },
-    { key: "acGridFollowingStorageCurrent", field: "acGridFollowingStorageCurrentKw", label: "交流跟网储能当前值", group: "ac-grid-following-storage", color: "#315aa6", axis: "left", unit: "kW" },
-    { key: "acGridFollowingStorageTarget", field: "acGridFollowingStorageTargetKw", label: "交流跟网储能目标值", group: "ac-grid-following-storage", color: "#315aa6", axis: "left", unit: "kW", dashed: true },
-    { key: "acGridFollowingStorageSoc", field: "acGridFollowingStorageSocPercent", label: "交流跟网储能SOC", group: "ac-grid-following-storage", color: "#315aa6", axis: "right", unit: "%", dashPattern: [2, 4] },
-    { key: "dcGridFollowingStorageCurrent", field: "dcGridFollowingStorageCurrentKw", label: "直流跟网储能当前值", group: "dc-grid-following-storage", color: "#2f80c4", axis: "left", unit: "kW" },
-    { key: "dcGridFollowingStorageTarget", field: "dcGridFollowingStorageTargetKw", label: "直流跟网储能目标值", group: "dc-grid-following-storage", color: "#2f80c4", axis: "left", unit: "kW", dashed: true },
-    { key: "dcGridFollowingStorageSoc", field: "dcGridFollowingStorageSocPercent", label: "直流跟网储能SOC", group: "dc-grid-following-storage", color: "#2f80c4", axis: "right", unit: "%", dashPattern: [2, 4] },
-    { key: "acGridFormingStorageCurrent", field: "acGridFormingStorageCurrentKw", label: "交流构网储能当前值", group: "ac-grid-forming-storage", color: "#7a4fb3", axis: "left", unit: "kW" },
-    { key: "acGridFormingStorageTarget", field: "acGridFormingStorageTargetKw", label: "交流构网储能目标值", group: "ac-grid-forming-storage", color: "#7a4fb3", axis: "left", unit: "kW", dashed: true },
-    { key: "acGridFormingStorageSoc", field: "acGridFormingStorageSocPercent", label: "交流构网储能SOC", group: "ac-grid-forming-storage", color: "#7a4fb3", axis: "right", unit: "%", dashPattern: [2, 4] },
-    { key: "dcGridFormingStorageCurrent", field: "dcGridFormingStorageCurrentKw", label: "直流构网储能当前值", group: "dc-grid-forming-storage", color: "#a15ca8", axis: "left", unit: "kW" },
-    { key: "dcGridFormingStorageTarget", field: "dcGridFormingStorageTargetKw", label: "直流构网储能目标值", group: "dc-grid-forming-storage", color: "#a15ca8", axis: "left", unit: "kW", dashed: true },
-    { key: "dcGridFormingStorageSoc", field: "dcGridFormingStorageSocPercent", label: "直流构网储能SOC", group: "dc-grid-forming-storage", color: "#a15ca8", axis: "right", unit: "%", dashPattern: [2, 4] },
-    { key: "acdcCurrent", field: "acdcCurrentKw", label: "AC/DC变流器当前值", group: "system-acdc", color: "#0a8b8b", axis: "left", unit: "kW" },
-    { key: "acdcTarget", field: "acdcTargetKw", label: "AC/DC变流器目标值", group: "system-acdc", color: "#0a8b8b", axis: "left", unit: "kW", dashed: true },
-  ];
-  ensureRenewableTrendSeriesSelection(seriesDefs);
+  ensureRenewableTrendSeriesSelection(RENEWABLE_TREND_SERIES_DEFS);
   const metrics = state.renewableControl.lastPlan?.metrics || {};
-  const availableSeries = seriesDefs.filter((series) => renewableTrendSeriesAvailable(series, metrics));
+  const availableSeries = RENEWABLE_TREND_SERIES_DEFS.filter((series) => renewableTrendSeriesAvailable(series, metrics));
   const visibleSeries = visibleChartSeries(chartKey, availableSeries);
   renderRenewableTrendSeriesAvailability(metrics);
   const visiblePowerSeries = visibleSeries.filter((series) => series.axis !== "right");
@@ -10598,6 +10858,23 @@ function renewableMetricSocText(value) {
   return Number.isFinite(value) ? `${formatOverviewNumber(value * 100)}%` : "--";
 }
 
+function renewableStorageUnavailableMetricText(metrics = {}, group = "") {
+  const onlineCount = renewableMetricGroupCount(metrics, group);
+  if (onlineCount !== null && onlineCount > 0) return "";
+  const configuredCount = renewableMetricGroupConfiguredCount(metrics, group);
+  if (configuredCount === 0) return "无此类设备";
+  if (configuredCount !== null && configuredCount > 0 && onlineCount === 0) return "无运行设备";
+  return onlineCount === 0 ? "无设备" : "";
+}
+
+function renewableStoragePowerMetricText(value, metrics = {}, group = "") {
+  return renewableStorageUnavailableMetricText(metrics, group) || renewableMetricPowerText(value);
+}
+
+function renewableStorageSocMetricText(value, metrics = {}, group = "") {
+  return renewableStorageUnavailableMetricText(metrics, group) || renewableMetricSocText(value);
+}
+
 function openRenewableControlParametersDialog() {
   const dialog = $("renewableControlParametersDialog");
   if (dialog && !dialog.open) dialog.showModal();
@@ -10670,23 +10947,69 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
         : "等待数据";
   }
   const metrics = plan?.metrics || {};
+  const storagePowerText = (value, group) => renewableStoragePowerMetricText(value, metrics, group);
+  const storageSocText = (value, group) => renewableStorageSocMetricText(value, metrics, group);
   const metricText = {
     renewableAcCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "acRenewableCurrentKw", ["acWindCurrentKw", "acPvCurrentKw"])),
     renewableAcTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "acRenewableTargetKw", ["acWindTargetKw", "acPvTargetKw"])),
+    renewableAcWindCurrentKw: renewableMetricPowerText(metrics.acWindCurrentKw),
+    renewableAcWindTargetKw: renewableMetricPowerText(metrics.acWindTargetKw),
+    renewableAcPvCurrentKw: renewableMetricPowerText(metrics.acPvCurrentKw),
+    renewableAcPvTargetKw: renewableMetricPowerText(metrics.acPvTargetKw),
     renewableDcCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcRenewableCurrentKw", ["dcWindCurrentKw", "dcPvCurrentKw"])),
     renewableDcTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcRenewableTargetKw", ["dcWindTargetKw", "dcPvTargetKw"])),
-    renewableAcGridFollowingStorageCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "acGridFollowingStorageCurrentKw", ["acGridStorageCurrentKw"])),
-    renewableAcGridFollowingStorageTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "acGridFollowingStorageTargetKw", ["acGridStorageTargetKw"])),
-    renewableAcGridFollowingStorageSoc: renewableMetricSocText(renewableMetricValue(metrics, "acGridFollowingStorageSoc", ["acGridStorageSoc"])),
-    renewableDcGridFollowingStorageCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcGridFollowingStorageCurrentKw", ["dcGridStorageCurrentKw"])),
-    renewableDcGridFollowingStorageTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcGridFollowingStorageTargetKw", ["dcGridStorageTargetKw"])),
-    renewableDcGridFollowingStorageSoc: renewableMetricSocText(renewableMetricValue(metrics, "dcGridFollowingStorageSoc", ["dcGridStorageSoc"])),
-    renewableAcGridFormingStorageCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "acGridFormingStorageCurrentKw", ["acBalanceStorageCurrentKw"])),
-    renewableAcGridFormingStorageTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "acGridFormingStorageTargetKw", ["acBalanceStorageTargetKw"])),
-    renewableAcGridFormingStorageSoc: renewableMetricSocText(renewableMetricValue(metrics, "acGridFormingStorageSoc", ["acBalanceStorageSoc"])),
-    renewableDcGridFormingStorageCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcGridFormingStorageCurrentKw", ["dcBalanceStorageCurrentKw"])),
-    renewableDcGridFormingStorageTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcGridFormingStorageTargetKw", ["dcBalanceStorageTargetKw"])),
-    renewableDcGridFormingStorageSoc: renewableMetricSocText(renewableMetricValue(metrics, "dcGridFormingStorageSoc", ["dcBalanceStorageSoc"])),
+    renewableDcWindCurrentKw: renewableMetricPowerText(metrics.dcWindCurrentKw),
+    renewableDcWindTargetKw: renewableMetricPowerText(metrics.dcWindTargetKw),
+    renewableDcPvCurrentKw: renewableMetricPowerText(metrics.dcPvCurrentKw),
+    renewableDcPvTargetKw: renewableMetricPowerText(metrics.dcPvTargetKw),
+    renewableAcGridFollowingStorageCurrentKw: storagePowerText(
+      renewableMetricValue(metrics, "acGridFollowingStorageCurrentKw", ["acGridStorageCurrentKw"]),
+      "ac-grid-following-storage",
+    ),
+    renewableAcGridFollowingStorageTargetKw: storagePowerText(
+      renewableMetricValue(metrics, "acGridFollowingStorageTargetKw", ["acGridStorageTargetKw"]),
+      "ac-grid-following-storage",
+    ),
+    renewableAcGridFollowingStorageSoc: storageSocText(
+      renewableMetricValue(metrics, "acGridFollowingStorageSoc", ["acGridStorageSoc"]),
+      "ac-grid-following-storage",
+    ),
+    renewableDcGridFollowingStorageCurrentKw: storagePowerText(
+      renewableMetricValue(metrics, "dcGridFollowingStorageCurrentKw", ["dcGridStorageCurrentKw"]),
+      "dc-grid-following-storage",
+    ),
+    renewableDcGridFollowingStorageTargetKw: storagePowerText(
+      renewableMetricValue(metrics, "dcGridFollowingStorageTargetKw", ["dcGridStorageTargetKw"]),
+      "dc-grid-following-storage",
+    ),
+    renewableDcGridFollowingStorageSoc: storageSocText(
+      renewableMetricValue(metrics, "dcGridFollowingStorageSoc", ["dcGridStorageSoc"]),
+      "dc-grid-following-storage",
+    ),
+    renewableAcGridFormingStorageCurrentKw: storagePowerText(
+      renewableMetricValue(metrics, "acGridFormingStorageCurrentKw", ["acBalanceStorageCurrentKw"]),
+      "ac-grid-forming-storage",
+    ),
+    renewableAcGridFormingStorageTargetKw: storagePowerText(
+      renewableMetricValue(metrics, "acGridFormingStorageTargetKw", ["acBalanceStorageTargetKw"]),
+      "ac-grid-forming-storage",
+    ),
+    renewableAcGridFormingStorageSoc: storageSocText(
+      renewableMetricValue(metrics, "acGridFormingStorageSoc", ["acBalanceStorageSoc"]),
+      "ac-grid-forming-storage",
+    ),
+    renewableDcGridFormingStorageCurrentKw: storagePowerText(
+      renewableMetricValue(metrics, "dcGridFormingStorageCurrentKw", ["dcBalanceStorageCurrentKw"]),
+      "dc-grid-forming-storage",
+    ),
+    renewableDcGridFormingStorageTargetKw: storagePowerText(
+      renewableMetricValue(metrics, "dcGridFormingStorageTargetKw", ["dcBalanceStorageTargetKw"]),
+      "dc-grid-forming-storage",
+    ),
+    renewableDcGridFormingStorageSoc: storageSocText(
+      renewableMetricValue(metrics, "dcGridFormingStorageSoc", ["dcBalanceStorageSoc"]),
+      "dc-grid-forming-storage",
+    ),
     renewableAcDieselCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "acDieselCurrentKw", ["dieselCurrentKw"])),
     renewableAcDieselMinKw: renewableMetricPowerText(renewableMetricValue(metrics, "acDieselMinKw", ["dieselMinKw"])),
     renewableAcDieselTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "acDieselTargetKw", ["dieselTargetKw"])),
@@ -10697,12 +11020,34 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     renewableDcLoadKw: renewableMetricPowerText(metrics.dcLoadKw),
     renewableTotalCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalRenewableCurrentKw", ["renewableCurrentKw"])),
     renewableTotalTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalRenewableTargetKw", ["renewableTarget"])),
-    renewableTotalGridFollowingStorageCurrentKw: renewableMetricPowerText(metrics.totalGridFollowingStorageCurrentKw),
-    renewableTotalGridFollowingStorageTargetKw: renewableMetricPowerText(metrics.totalGridFollowingStorageTargetKw),
-    renewableTotalGridFollowingStorageSoc: renewableMetricSocText(metrics.totalGridFollowingStorageSoc),
-    renewableTotalGridFormingStorageCurrentKw: renewableMetricPowerText(metrics.totalGridFormingStorageCurrentKw),
-    renewableTotalGridFormingStorageTargetKw: renewableMetricPowerText(metrics.totalGridFormingStorageTargetKw),
-    renewableTotalGridFormingStorageSoc: renewableMetricSocText(metrics.totalGridFormingStorageSoc),
+    renewableTotalWindCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalWindCurrentKw", ["acWindCurrentKw", "dcWindCurrentKw"])),
+    renewableTotalWindTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalWindTargetKw", ["acWindTargetKw", "dcWindTargetKw"])),
+    renewableTotalPvCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalPvCurrentKw", ["acPvCurrentKw", "dcPvCurrentKw"])),
+    renewableTotalPvTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalPvTargetKw", ["acPvTargetKw", "dcPvTargetKw"])),
+    renewableTotalGridFollowingStorageCurrentKw: storagePowerText(
+      metrics.totalGridFollowingStorageCurrentKw,
+      "system-grid-following-storage",
+    ),
+    renewableTotalGridFollowingStorageTargetKw: storagePowerText(
+      metrics.totalGridFollowingStorageTargetKw,
+      "system-grid-following-storage",
+    ),
+    renewableTotalGridFollowingStorageSoc: storageSocText(
+      metrics.totalGridFollowingStorageSoc,
+      "system-grid-following-storage",
+    ),
+    renewableTotalGridFormingStorageCurrentKw: storagePowerText(
+      metrics.totalGridFormingStorageCurrentKw,
+      "system-grid-forming-storage",
+    ),
+    renewableTotalGridFormingStorageTargetKw: storagePowerText(
+      metrics.totalGridFormingStorageTargetKw,
+      "system-grid-forming-storage",
+    ),
+    renewableTotalGridFormingStorageSoc: storageSocText(
+      metrics.totalGridFormingStorageSoc,
+      "system-grid-forming-storage",
+    ),
     renewableTotalDieselCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalDieselCurrentKw", ["dieselCurrentKw"])),
     renewableTotalDieselMinKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalDieselMinKw", ["dieselMinKw"])),
     renewableTotalDieselTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalDieselTargetKw", ["dieselTargetKw"])),
@@ -14214,8 +14559,14 @@ if (renewableTrendWindow) {
     drawRenewableTrendChart();
   });
 }
-document.querySelectorAll('input[data-chart-toggle="renewableTrend"][data-chart-series]').forEach((input) => {
-  input.addEventListener("change", () => {
+renderRenewableTrendSeriesTree();
+const renewableTrendSeriesPanel = $("renewableTrendSeriesPanel");
+if (renewableTrendSeriesPanel) {
+  renewableTrendSeriesPanel.addEventListener("change", (event) => {
+    const input = event.target instanceof HTMLInputElement
+      ? event.target.closest('input[data-chart-toggle="renewableTrend"][data-chart-series]')
+      : null;
+    if (!input) return;
     setChartSeriesVisibility(
       "renewableTrend",
       input.dataset.chartSeries || "",
@@ -14223,7 +14574,7 @@ document.querySelectorAll('input[data-chart-toggle="renewableTrend"][data-chart-
       drawRenewableTrendChart,
     );
   });
-});
+}
 initTraceChartInteractions("measurementTrace", "measurementTraceChart", drawMeasurementTraceChart);
 initTraceChartInteractions("commandTrace", "commandTraceChart", drawCommandTraceChart);
 initTraceChartInteractions("renewableTrend", "renewableTrendChart", drawRenewableTrendChart);

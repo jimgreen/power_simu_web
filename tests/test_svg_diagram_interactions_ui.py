@@ -1005,6 +1005,136 @@ process.stdout.write(JSON.stringify(payload));
                     "#symbol_ACBreak_ac-breaker_state_1",
                 )
 
+    def test_measurement_rows_never_fall_back_to_the_device_tooltip(self):
+        body = """
+global.Element = class Element {
+  constructor(tagName, attrs = {}, parent = null) {
+    this.tagName = tagName;
+    this.attrs = attrs;
+    this.parentElement = parent;
+    this.children = [];
+    if (parent) parent.children.push(this);
+  }
+  getAttribute(name) { return this.attrs[name] ?? null; }
+  hasAttribute(name) { return this.attrs[name] !== undefined; }
+  matches(selector) {
+    if (selector === "[mt]") return this.hasAttribute("mt");
+    if (selector === "[dev]") return this.hasAttribute("dev");
+    if (selector === "[dev-id]") return this.hasAttribute("dev-id");
+    if (selector === "[device-type]") return this.hasAttribute("device-type");
+    if (selector === "text") return String(this.tagName).toLowerCase() === "text";
+    if (selector === "use[id][name]") {
+      return String(this.tagName).toLowerCase() === "use"
+        && this.hasAttribute("id")
+        && this.hasAttribute("name");
+    }
+    if (selector === DIAGRAM_DEVICE_ELEMENT_SELECTOR) {
+      return this.hasAttribute("dev-id")
+        || (selector.includes("[dev]") && this.hasAttribute("dev"))
+        || (String(this.tagName).toLowerCase() === "use"
+          && this.hasAttribute("id")
+          && this.hasAttribute("name"));
+    }
+    return false;
+  }
+  closest(selector) {
+    let current = this;
+    while (current) {
+      if (current.matches(selector)) return current;
+      current = current.parentElement;
+    }
+    return null;
+  }
+  querySelector(selector) {
+    for (const child of this.children) {
+      if (child.matches(selector)) return child;
+      const nested = child.querySelector(selector);
+      if (nested) return nested;
+    }
+    return null;
+  }
+  contains(candidate) {
+    let current = candidate;
+    while (current) {
+      if (current === this) return true;
+      current = current.parentElement;
+    }
+    return false;
+  }
+};
+
+const container = new Element("div");
+const deviceGraphic = new Element("use", {
+  "dev-id": "ACGenerator-14",
+  id: "ACGenerator-14",
+  name: "柴油发电机-4",
+}, container);
+const deviceLabel = new Element("text", { "dev-id": "ACGenerator-14" }, container);
+const metricGroup = new Element("g", { dev: "ACGenerator-14" }, container);
+const metricRow = new Element("text", {}, metricGroup);
+const metricLabel = new Element("tspan", {}, metricRow);
+const metricValue = new Element("tspan", { mt: "activePower" }, metricRow);
+const metricUnit = new Element("tspan", {}, metricRow);
+
+container.querySelectorAll = function querySelectorAll(selector) {
+  if (selector === "[dev-id][name], use[id][name]") return [deviceGraphic];
+  if (selector === DIAGRAM_DEVICE_ELEMENT_SELECTOR) return [deviceGraphic, deviceLabel];
+  return [];
+};
+
+function summarize(target) {
+  const hover = diagramHoverTarget(container, target);
+  return hover ? {
+    kind: hover.kind,
+    key: hover.key,
+    metricType: hover.binding?.metricType || "",
+  } : null;
+}
+
+process.stdout.write(JSON.stringify({
+  deviceGraphic: summarize(deviceGraphic),
+  deviceLabel: summarize(deviceLabel),
+  metricLabel: summarize(metricLabel),
+  metricValue: summarize(metricValue),
+  metricUnit: summarize(metricUnit),
+  metricGroup: summarize(metricGroup),
+}));
+"""
+        expected = {
+            "deviceGraphic": {
+                "kind": "device",
+                "key": "device:ACGenerator-14",
+                "metricType": "",
+            },
+            "deviceLabel": {
+                "kind": "device",
+                "key": "device:ACGenerator-14",
+                "metricType": "",
+            },
+            "metricLabel": {
+                "kind": "metric",
+                "key": "metric:ACGenerator-14:activePower",
+                "metricType": "activePower",
+            },
+            "metricValue": {
+                "kind": "metric",
+                "key": "metric:ACGenerator-14:activePower",
+                "metricType": "activePower",
+            },
+            "metricUnit": {
+                "kind": "metric",
+                "key": "metric:ACGenerator-14:activePower",
+                "metricType": "activePower",
+            },
+            "metricGroup": None,
+        }
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                self.assertEqual(
+                    self._run_selection_helpers(path.read_text(encoding="utf-8"), body),
+                    expected,
+                )
+
     def test_click_selection_keeps_only_one_logical_device(self):
         body = """
 function fakeElement(tagName, attrs = {}, selected = false) {
@@ -1029,12 +1159,12 @@ function fakeElement(tagName, attrs = {}, selected = false) {
 
 const stale = fakeElement("path", {}, true);
 const deviceAGraphic = fakeElement("use", { "dev-id": "device-A", id: "device-A", name: "A" });
-const deviceALabel = fakeElement("text", { dev: "device-A" });
+const deviceALabel = fakeElement("text", { "dev-id": "device-A" });
+const metricGroup = fakeElement("g", { dev: "device-A" });
 const deviceBGraphic = fakeElement("use", { id: "device-B", name: "B" });
-const elements = [stale, deviceAGraphic, deviceALabel, deviceBGraphic];
+const elements = [stale, deviceAGraphic, deviceALabel, metricGroup, deviceBGraphic];
 const deviceElements = elements.filter((element) => (
   element.hasAttribute("dev-id")
-  || element.hasAttribute("dev")
   || (String(element.tagName).toLowerCase() === "use" && element.hasAttribute("id") && element.hasAttribute("name"))
 ));
 const container = {
@@ -1043,10 +1173,7 @@ const container = {
     if (selector === ".is-diagram-selected") {
       return elements.filter((element) => element.classList.contains("is-diagram-selected"));
     }
-    if (selector === "[dev-id], [dev]") {
-      return deviceElements.filter((element) => element.hasAttribute("dev-id") || element.hasAttribute("dev"));
-    }
-    if (selector === "[dev-id], [dev], use[id][name]") return deviceElements;
+    if (selector === "[dev-id], use[id][name]") return deviceElements;
     return [];
   },
 };

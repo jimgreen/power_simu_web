@@ -161,6 +161,49 @@ class ResourceParameterSnapshotTest(unittest.TestCase):
             self.assertEqual(devices[("ACGenerator", "ac-storage")]["soc_curr"], 0.61)
             self.assertEqual(devices[("DCGenerator", "dc-storage")]["soc_curr"], 0.72)
 
+    def test_storage_parameters_do_not_overwrite_generator_identity_index(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            service = self._service_from_text(
+                Path(temporary),
+                """<ACGenerator>
+@ idx  name  node  control_type  p_set  q_set  v_set  run_stat
+# 23  ac-storage  1  P  0  0  380  1
+</ACGenerator>
+<DCGenerator>
+@ idx  name  node  control_type  p_set  v_set  i_set  run_stat
+# 9  dc-storage  1  P  0  720  0  1
+</DCGenerator>
+<ACStorageGen>
+@ idx  idx_acgenerator  energy_capacity  state_of_charge
+# 1  23  100  0.5
+</ACStorageGen>
+<DCStorageGen>
+@ idx  idx_dcgenerator  energy_capacity  state_of_charge
+# 1  9  120  0.5
+</DCStorageGen>
+""",
+                storage_stat_text(
+                    ac_storage_name="ac-storage",
+                    dc_storage_name="dc-storage",
+                    ac_soc=0.61,
+                    dc_soc=0.72,
+                ),
+            )
+
+            devices = {
+                (device["dev_type"], device["dev_name"]): device
+                for device in service.devices()
+            }
+            ac_storage = devices[("ACGenerator", "ac-storage")]
+            dc_storage = devices[("DCGenerator", "dc-storage")]
+
+            self.assertEqual(str(ac_storage["raw"]["idx"]), "23")
+            self.assertEqual(str(dc_storage["raw"]["idx"]), "9")
+            self.assertEqual(str(ac_storage["raw"]["idx_acgenerator"]), "23")
+            self.assertEqual(str(dc_storage["raw"]["idx_dcgenerator"]), "9")
+            self.assertEqual(str(ac_storage["raw"]["energy_capacity"]), "100")
+            self.assertEqual(str(dc_storage["raw"]["energy_capacity"]), "120")
+
     def test_same_name_ac_dc_storage_soc_is_isolated_by_device_type(self):
         with tempfile.TemporaryDirectory() as temporary:
             service = self._service(

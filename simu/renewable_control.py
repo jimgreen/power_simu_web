@@ -6044,6 +6044,15 @@ def _sum_metric(
 def _task8_side_metrics(command_rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     online = [row for row in command_rows if row.get("online")]
 
+    def storage_inventory(side: str, role: str) -> List[Mapping[str, Any]]:
+        return [
+            row
+            for row in command_rows
+            if row.get("technology") == "storage"
+            and row.get("role") == role
+            and row.get("connectionSide") == side
+        ]
+
     def renewable(side: str, technology: str) -> List[Mapping[str, Any]]:
         return [
             row
@@ -6076,13 +6085,25 @@ def _task8_side_metrics(command_rows: Sequence[Mapping[str, Any]]) -> Dict[str, 
     dc_grid = storage("DC", "grid_following")
     ac_balance = storage("AC", "balance")
     dc_balance = storage("DC", "balance")
+    ac_grid_inventory = storage_inventory("AC", "grid_following")
+    dc_grid_inventory = storage_inventory("DC", "grid_following")
+    ac_balance_inventory = storage_inventory("AC", "balance")
+    dc_balance_inventory = storage_inventory("DC", "balance")
     ac_diesel = diesel("AC")
     dc_diesel = diesel("DC")
 
-    ac_renewable_current = _sum_metric([*ac_wind, *ac_pv], "currentKw")
-    ac_renewable_target = _sum_metric([*ac_wind, *ac_pv], "target")
-    dc_renewable_current = _sum_metric([*dc_wind, *dc_pv], "currentKw")
-    dc_renewable_target = _sum_metric([*dc_wind, *dc_pv], "target")
+    ac_wind_current = _sum_metric(ac_wind, "currentKw")
+    ac_wind_target = _sum_metric(ac_wind, "target")
+    dc_wind_current = _sum_metric(dc_wind, "currentKw")
+    dc_wind_target = _sum_metric(dc_wind, "target")
+    ac_pv_current = _sum_metric(ac_pv, "currentKw")
+    ac_pv_target = _sum_metric(ac_pv, "target")
+    dc_pv_current = _sum_metric(dc_pv, "currentKw")
+    dc_pv_target = _sum_metric(dc_pv, "target")
+    ac_renewable_current = ac_wind_current + ac_pv_current
+    ac_renewable_target = ac_wind_target + ac_pv_target
+    dc_renewable_current = dc_wind_current + dc_pv_current
+    dc_renewable_target = dc_wind_target + dc_pv_target
     ac_grid_current = _sum_metric(ac_grid, "currentKw")
     ac_grid_target = _sum_metric(ac_grid, "target")
     dc_grid_current = _sum_metric(dc_grid, "currentKw")
@@ -6104,20 +6125,28 @@ def _task8_side_metrics(command_rows: Sequence[Mapping[str, Any]]) -> Dict[str, 
     return {
         "onlineAcRenewableCount": len(ac_wind) + len(ac_pv),
         "onlineDcRenewableCount": len(dc_wind) + len(dc_pv),
+        "onlineAcWindCount": len(ac_wind),
+        "onlineDcWindCount": len(dc_wind),
+        "onlineAcPvCount": len(ac_pv),
+        "onlineDcPvCount": len(dc_pv),
+        "acGridFollowingStorageCount": len(ac_grid_inventory),
+        "dcGridFollowingStorageCount": len(dc_grid_inventory),
+        "acGridFormingStorageCount": len(ac_balance_inventory),
+        "dcGridFormingStorageCount": len(dc_balance_inventory),
         "onlineAcGridFollowingStorageCount": len(ac_grid),
         "onlineDcGridFollowingStorageCount": len(dc_grid),
         "onlineAcGridFormingStorageCount": len(ac_balance),
         "onlineDcGridFormingStorageCount": len(dc_balance),
         "onlineAcDieselCount": len(ac_diesel),
         "onlineDcDieselCount": len(dc_diesel),
-        "acWindCurrentKw": _sum_metric(ac_wind, "currentKw"),
-        "acWindTargetKw": _sum_metric(ac_wind, "target"),
-        "dcWindCurrentKw": _sum_metric(dc_wind, "currentKw"),
-        "dcWindTargetKw": _sum_metric(dc_wind, "target"),
-        "acPvCurrentKw": _sum_metric(ac_pv, "currentKw"),
-        "acPvTargetKw": _sum_metric(ac_pv, "target"),
-        "dcPvCurrentKw": _sum_metric(dc_pv, "currentKw"),
-        "dcPvTargetKw": _sum_metric(dc_pv, "target"),
+        "acWindCurrentKw": ac_wind_current,
+        "acWindTargetKw": ac_wind_target,
+        "dcWindCurrentKw": dc_wind_current,
+        "dcWindTargetKw": dc_wind_target,
+        "acPvCurrentKw": ac_pv_current,
+        "acPvTargetKw": ac_pv_target,
+        "dcPvCurrentKw": dc_pv_current,
+        "dcPvTargetKw": dc_pv_target,
         "acGridStorageCurrentKw": ac_grid_current,
         "acGridStorageTargetKw": ac_grid_target,
         "acGridStorageSoc": ac_grid_soc,
@@ -6154,6 +6183,10 @@ def _task8_side_metrics(command_rows: Sequence[Mapping[str, Any]]) -> Dict[str, 
         "dcDieselTargetKw": dc_diesel_target,
         "totalRenewableCurrentKw": ac_renewable_current + dc_renewable_current,
         "totalRenewableTargetKw": ac_renewable_target + dc_renewable_target,
+        "totalWindCurrentKw": ac_wind_current + dc_wind_current,
+        "totalWindTargetKw": ac_wind_target + dc_wind_target,
+        "totalPvCurrentKw": ac_pv_current + dc_pv_current,
+        "totalPvTargetKw": ac_pv_target + dc_pv_target,
         "totalGridFollowingStorageCurrentKw": ac_grid_current + dc_grid_current,
         "totalGridFollowingStorageTargetKw": ac_grid_target + dc_grid_target,
         "totalGridFollowingStorageSoc": _capacity_weighted_soc([*ac_grid, *dc_grid]),
@@ -9538,8 +9571,16 @@ _COMPACT_TREND_FIELDS = (
     "dieselTargetKw",
     "acRenewableCurrentKw",
     "acRenewableTargetKw",
+    "acWindCurrentKw",
+    "acWindTargetKw",
+    "acPvCurrentKw",
+    "acPvTargetKw",
     "dcRenewableCurrentKw",
     "dcRenewableTargetKw",
+    "dcWindCurrentKw",
+    "dcWindTargetKw",
+    "dcPvCurrentKw",
+    "dcPvTargetKw",
     "acGridFollowingStorageCurrentKw",
     "acGridFollowingStorageTargetKw",
     "acGridFollowingStorageSocPercent",
@@ -9552,6 +9593,28 @@ _COMPACT_TREND_FIELDS = (
     "dcGridFormingStorageCurrentKw",
     "dcGridFormingStorageTargetKw",
     "dcGridFormingStorageSocPercent",
+    "acDieselCurrentKw",
+    "acDieselMinKw",
+    "acDieselTargetKw",
+    "dcDieselCurrentKw",
+    "dcDieselMinKw",
+    "dcDieselTargetKw",
+    "totalRenewableCurrentKw",
+    "totalRenewableTargetKw",
+    "totalWindCurrentKw",
+    "totalWindTargetKw",
+    "totalPvCurrentKw",
+    "totalPvTargetKw",
+    "totalGridFollowingStorageCurrentKw",
+    "totalGridFollowingStorageTargetKw",
+    "totalGridFollowingStorageSocPercent",
+    "totalGridFormingStorageCurrentKw",
+    "totalGridFormingStorageTargetKw",
+    "totalGridFormingStorageSocPercent",
+    "totalDieselCurrentKw",
+    "totalDieselMinKw",
+    "totalDieselTargetKw",
+    "totalLoadKw",
     "acdcCurrentKw",
     "acdcTargetKw",
 )
@@ -10209,8 +10272,14 @@ class TraineeRenewableControlManager:
             finite_values = [value for value in values if value is not None and math.isfinite(value)]
             return sum(finite_values) if finite_values else None
 
-        def metric_soc_percent(key: str) -> Optional[float]:
+        def metric_value(key: str, *fallback_keys: str) -> Optional[float]:
             value = _number(metrics.get(key))
+            if value is not None and math.isfinite(value):
+                return value
+            return metric_total(*fallback_keys)
+
+        def metric_soc_percent(key: str, *fallback_keys: str) -> Optional[float]:
+            value = metric_value(key, *fallback_keys)
             return value * 100.0 if value is not None and math.isfinite(value) else None
 
         point = {
@@ -10222,52 +10291,62 @@ class TraineeRenewableControlManager:
             "loadKw": metrics.get("loadKw"),
             "dieselKw": metrics.get("dieselCurrentKw"),
             "storageKw": metrics.get("storageCurrentKw"),
-            "storageSocPercent": metrics.get("storageSoc") * 100 if isinstance(metrics.get("storageSoc"), (int, float)) else None,
+            "storageSocPercent": metric_soc_percent("storageSoc"),
             "renewableKw": metrics.get("renewableCurrentKw"),
-            "acLoadKw": metrics.get("acLoadKw"),
-            "dcLoadKw": metrics.get("dcLoadKw"),
-            "dieselCurrentKw": metrics.get("dieselCurrentKw"),
-            "dieselTargetKw": metrics.get("dieselTargetKw"),
-            "acRenewableCurrentKw": metrics.get(
-                "acRenewableCurrentKw",
-                metric_total("acWindCurrentKw", "acPvCurrentKw"),
-            ),
-            "acRenewableTargetKw": metrics.get(
-                "acRenewableTargetKw",
-                metric_total("acWindTargetKw", "acPvTargetKw"),
-            ),
-            "dcRenewableCurrentKw": metrics.get(
-                "dcRenewableCurrentKw",
-                metric_total("dcWindCurrentKw", "dcPvCurrentKw"),
-            ),
-            "dcRenewableTargetKw": metrics.get(
-                "dcRenewableTargetKw",
-                metric_total("dcWindTargetKw", "dcPvTargetKw"),
-            ),
-            "acGridFollowingStorageCurrentKw": metrics.get("acGridFollowingStorageCurrentKw"),
-            "acGridFollowingStorageTargetKw": metrics.get("acGridFollowingStorageTargetKw"),
-            "dcGridFollowingStorageCurrentKw": metrics.get("dcGridFollowingStorageCurrentKw"),
-            "dcGridFollowingStorageTargetKw": metrics.get("dcGridFollowingStorageTargetKw"),
-            "acGridFormingStorageCurrentKw": metrics.get("acGridFormingStorageCurrentKw"),
-            "acGridFormingStorageTargetKw": metrics.get("acGridFormingStorageTargetKw"),
-            "dcGridFormingStorageCurrentKw": metrics.get("dcGridFormingStorageCurrentKw"),
-            "dcGridFormingStorageTargetKw": metrics.get("dcGridFormingStorageTargetKw"),
-            "acGridFollowingStorageSocPercent": metric_soc_percent("acGridFollowingStorageSoc"),
-            "dcGridFollowingStorageSocPercent": metric_soc_percent("dcGridFollowingStorageSoc"),
-            "acGridFormingStorageSocPercent": metric_soc_percent("acGridFormingStorageSoc"),
-            "dcGridFormingStorageSocPercent": metric_soc_percent("dcGridFormingStorageSoc"),
-            "acdcCurrentKw": metrics.get("acdcCurrentKw"),
-            "acdcTargetKw": metrics.get("acdcTargetKw"),
+            "acLoadKw": metric_value("acLoadKw"),
+            "dcLoadKw": metric_value("dcLoadKw"),
+            "dieselCurrentKw": metric_value("dieselCurrentKw", "totalDieselCurrentKw"),
+            "dieselTargetKw": metric_value("dieselTargetKw", "totalDieselTargetKw"),
+            "acRenewableCurrentKw": metric_value("acRenewableCurrentKw", "acWindCurrentKw", "acPvCurrentKw"),
+            "acRenewableTargetKw": metric_value("acRenewableTargetKw", "acWindTargetKw", "acPvTargetKw"),
+            "acWindCurrentKw": metric_value("acWindCurrentKw"),
+            "acWindTargetKw": metric_value("acWindTargetKw"),
+            "acPvCurrentKw": metric_value("acPvCurrentKw"),
+            "acPvTargetKw": metric_value("acPvTargetKw"),
+            "dcRenewableCurrentKw": metric_value("dcRenewableCurrentKw", "dcWindCurrentKw", "dcPvCurrentKw"),
+            "dcRenewableTargetKw": metric_value("dcRenewableTargetKw", "dcWindTargetKw", "dcPvTargetKw"),
+            "dcWindCurrentKw": metric_value("dcWindCurrentKw"),
+            "dcWindTargetKw": metric_value("dcWindTargetKw"),
+            "dcPvCurrentKw": metric_value("dcPvCurrentKw"),
+            "dcPvTargetKw": metric_value("dcPvTargetKw"),
+            "acGridFollowingStorageCurrentKw": metric_value("acGridFollowingStorageCurrentKw", "acGridStorageCurrentKw"),
+            "acGridFollowingStorageTargetKw": metric_value("acGridFollowingStorageTargetKw", "acGridStorageTargetKw"),
+            "dcGridFollowingStorageCurrentKw": metric_value("dcGridFollowingStorageCurrentKw", "dcGridStorageCurrentKw"),
+            "dcGridFollowingStorageTargetKw": metric_value("dcGridFollowingStorageTargetKw", "dcGridStorageTargetKw"),
+            "acGridFormingStorageCurrentKw": metric_value("acGridFormingStorageCurrentKw", "acBalanceStorageCurrentKw"),
+            "acGridFormingStorageTargetKw": metric_value("acGridFormingStorageTargetKw", "acBalanceStorageTargetKw"),
+            "dcGridFormingStorageCurrentKw": metric_value("dcGridFormingStorageCurrentKw", "dcBalanceStorageCurrentKw"),
+            "dcGridFormingStorageTargetKw": metric_value("dcGridFormingStorageTargetKw", "dcBalanceStorageTargetKw"),
+            "acGridFollowingStorageSocPercent": metric_soc_percent("acGridFollowingStorageSoc", "acGridStorageSoc"),
+            "dcGridFollowingStorageSocPercent": metric_soc_percent("dcGridFollowingStorageSoc", "dcGridStorageSoc"),
+            "acGridFormingStorageSocPercent": metric_soc_percent("acGridFormingStorageSoc", "acBalanceStorageSoc"),
+            "dcGridFormingStorageSocPercent": metric_soc_percent("dcGridFormingStorageSoc", "dcBalanceStorageSoc"),
+            "acDieselCurrentKw": metric_value("acDieselCurrentKw"),
+            "acDieselMinKw": metric_value("acDieselMinKw"),
+            "acDieselTargetKw": metric_value("acDieselTargetKw"),
+            "dcDieselCurrentKw": metric_value("dcDieselCurrentKw"),
+            "dcDieselMinKw": metric_value("dcDieselMinKw"),
+            "dcDieselTargetKw": metric_value("dcDieselTargetKw"),
+            "totalRenewableCurrentKw": metric_value("totalRenewableCurrentKw", "acRenewableCurrentKw", "dcRenewableCurrentKw"),
+            "totalRenewableTargetKw": metric_value("totalRenewableTargetKw", "acRenewableTargetKw", "dcRenewableTargetKw"),
+            "totalWindCurrentKw": metric_value("totalWindCurrentKw", "acWindCurrentKw", "dcWindCurrentKw"),
+            "totalWindTargetKw": metric_value("totalWindTargetKw", "acWindTargetKw", "dcWindTargetKw"),
+            "totalPvCurrentKw": metric_value("totalPvCurrentKw", "acPvCurrentKw", "dcPvCurrentKw"),
+            "totalPvTargetKw": metric_value("totalPvTargetKw", "acPvTargetKw", "dcPvTargetKw"),
+            "totalGridFollowingStorageCurrentKw": metric_value("totalGridFollowingStorageCurrentKw", "acGridFollowingStorageCurrentKw", "dcGridFollowingStorageCurrentKw"),
+            "totalGridFollowingStorageTargetKw": metric_value("totalGridFollowingStorageTargetKw", "acGridFollowingStorageTargetKw", "dcGridFollowingStorageTargetKw"),
+            "totalGridFollowingStorageSocPercent": metric_soc_percent("totalGridFollowingStorageSoc"),
+            "totalGridFormingStorageCurrentKw": metric_value("totalGridFormingStorageCurrentKw", "acGridFormingStorageCurrentKw", "dcGridFormingStorageCurrentKw"),
+            "totalGridFormingStorageTargetKw": metric_value("totalGridFormingStorageTargetKw", "acGridFormingStorageTargetKw", "dcGridFormingStorageTargetKw"),
+            "totalGridFormingStorageSocPercent": metric_soc_percent("totalGridFormingStorageSoc"),
+            "totalDieselCurrentKw": metric_value("totalDieselCurrentKw", "acDieselCurrentKw", "dcDieselCurrentKw"),
+            "totalDieselMinKw": metric_value("totalDieselMinKw", "acDieselMinKw", "dcDieselMinKw"),
+            "totalDieselTargetKw": metric_value("totalDieselTargetKw", "acDieselTargetKw", "dcDieselTargetKw"),
+            "totalLoadKw": metric_value("totalLoadKw", "acLoadKw", "dcLoadKw"),
+            "acdcCurrentKw": metric_value("acdcCurrentKw"),
+            "acdcTargetKw": metric_value("acdcTargetKw"),
         }
         for key in (
-            "acWindCurrentKw",
-            "acWindTargetKw",
-            "dcWindCurrentKw",
-            "dcWindTargetKw",
-            "acPvCurrentKw",
-            "acPvTargetKw",
-            "dcPvCurrentKw",
-            "dcPvTargetKw",
             "acGridStorageCurrentKw",
             "acGridStorageTargetKw",
             "acGridStorageSoc",

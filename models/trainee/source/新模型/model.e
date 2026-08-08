@@ -223,7 +223,7 @@
 # 17   直流断路器-17  dc-breaker  13      19      1       1
 # 18   直流断路器-18  dc-breaker  13      20      1       1
 # 20   直流断路器-20  dc-breaker  13      21      1       1
-# 21   直流断路器-21  dc-breaker  13      22      1       1
+# 21   直流断路器-21  dc-breaker  13      22      0       1
 # 29   直流断路器-29  dc-breaker  13      11      1       1
 # 30   直流断路器-30  dc-breaker  13      12      1       1
 # 31   直流断路器-31  dc-breaker  13      23      1       1

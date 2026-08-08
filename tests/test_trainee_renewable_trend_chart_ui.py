@@ -30,17 +30,63 @@ class TraineeRenewableTrendChartUiTest(unittest.TestCase):
         self.assertIn('id="renewableTrendWindow"', self.html)
         self.assertIn('id="renewableTrendChart"', self.html)
         expected_series = {
-            "load": "负荷功率",
-            "diesel": "柴发功率",
-            "storage": "储能功率",
-            "storageSoc": "储能SOC",
-            "renewable": "新能源功率",
-            "acdcCurrent": "变流器当前值",
-            "acdcTarget": "变流器目标值",
+            "acLoad": "交流负荷",
+            "dcLoad": "直流负荷",
+            "dieselCurrent": "柴发当前值",
+            "dieselTarget": "柴发目标值",
+            "acRenewableCurrent": "交流新能源当前值",
+            "acRenewableTarget": "交流新能源目标值",
+            "dcRenewableCurrent": "直流新能源当前值",
+            "dcRenewableTarget": "直流新能源目标值",
+            "acGridFollowingStorageCurrent": "交流跟网储能当前值",
+            "acGridFollowingStorageTarget": "交流跟网储能目标值",
+            "acGridFollowingStorageSoc": "交流跟网储能SOC",
+            "dcGridFollowingStorageCurrent": "直流跟网储能当前值",
+            "dcGridFollowingStorageTarget": "直流跟网储能目标值",
+            "dcGridFollowingStorageSoc": "直流跟网储能SOC",
+            "acGridFormingStorageCurrent": "交流构网储能当前值",
+            "acGridFormingStorageTarget": "交流构网储能目标值",
+            "acGridFormingStorageSoc": "交流构网储能SOC",
+            "dcGridFormingStorageCurrent": "直流构网储能当前值",
+            "dcGridFormingStorageTarget": "直流构网储能目标值",
+            "dcGridFormingStorageSoc": "直流构网储能SOC",
+            "acdcCurrent": "AC/DC变流器当前值",
+            "acdcTarget": "AC/DC变流器目标值",
         }
         for key, label in expected_series.items():
             self.assertIn(f'data-chart-series="{key}"', self.html)
             self.assertIn(label, self.html)
+
+    def test_curve_selector_is_a_left_multilevel_checkbox_list(self):
+        self.assertIn('id="renewableTrendWorkspace"', self.html)
+        self.assertIn('id="renewableTrendSeriesPanel"', self.html)
+        for scope, label in (("ac", "交流"), ("dc", "直流"), ("system", "系统")):
+            with self.subTest(scope=scope):
+                self.assertIn(f'data-renewable-series-scope="{scope}"', self.html)
+                self.assertIn(f'<summary>{label}</summary>', self.html)
+        self.assertGreaterEqual(
+            self.html.count('type="checkbox" data-chart-toggle="renewableTrend"'),
+            22,
+        )
+        self.assertNotIn(
+            'class="measurement-trace-legend renewable-trend-legend"',
+            self.html,
+        )
+        self.assertIn("function setChartSeriesVisibility", self.script)
+        self.assertIn("RENEWABLE_TREND_DEFAULT_VISIBLE_SERIES", self.script)
+        self.assertIn("renewableTrendSeriesAvailable", self.script)
+
+    def test_curve_selector_defaults_to_current_power_and_filters_absent_device_groups(self):
+        draw_block = self.script.split("function drawRenewableTrendChart", 1)[1].split(
+            "function renderRenewableControl",
+            1,
+        )[0]
+        self.assertIn("ensureRenewableTrendSeriesSelection(seriesDefs)", draw_block)
+        self.assertIn("renewableTrendSeriesAvailable(series, metrics)", draw_block)
+        self.assertIn("renderRenewableTrendSeriesAvailability(metrics)", draw_block)
+        self.assertIn('group: "ac-grid-following-storage"', draw_block)
+        self.assertIn('group: "dc-grid-forming-storage"', draw_block)
+        self.assertIn('group: "system-acdc"', draw_block)
 
     def test_history_is_generated_once_by_the_backend_and_mirrored_by_browser_pages(self):
         self.assertIn("def _update_trend", self.backend)
@@ -129,18 +175,33 @@ process.stdout.write(JSON.stringify(latestRenewableTrendSegment(points).map((poi
         )
         self.assertEqual(json.loads(result.stdout), [0, 1])
 
-    def test_chart_uses_left_power_axis_and_right_soc_axis(self):
+    def test_chart_uses_current_target_power_series_and_live_soc_right_axis(self):
         draw_block = self.script.split("function drawRenewableTrendChart", 1)[1].split(
             "function renderRenewableControl",
             1,
         )[0]
         self.assertIn('const chartKey = "renewableTrend"', draw_block)
         for field in (
-            "loadKw",
-            "dieselKw",
-            "storageKw",
-            "storageSocPercent",
-            "renewableKw",
+            "acLoadKw",
+            "dcLoadKw",
+            "dieselCurrentKw",
+            "dieselTargetKw",
+            "acRenewableCurrentKw",
+            "acRenewableTargetKw",
+            "dcRenewableCurrentKw",
+            "dcRenewableTargetKw",
+            "acGridFollowingStorageCurrentKw",
+            "acGridFollowingStorageTargetKw",
+            "acGridFollowingStorageSocPercent",
+            "dcGridFollowingStorageCurrentKw",
+            "dcGridFollowingStorageTargetKw",
+            "dcGridFollowingStorageSocPercent",
+            "acGridFormingStorageCurrentKw",
+            "acGridFormingStorageTargetKw",
+            "acGridFormingStorageSocPercent",
+            "dcGridFormingStorageCurrentKw",
+            "dcGridFormingStorageTargetKw",
+            "dcGridFormingStorageSocPercent",
             "acdcCurrentKw",
             "acdcTargetKw",
         ):
@@ -148,6 +209,34 @@ process.stdout.write(JSON.stringify(latestRenewableTrendSegment(points).map((poi
         self.assertIn('axis: "right"', draw_block)
         self.assertIn("drawChartCursor", draw_block)
         self.assertIn("pixelPoints.length === 1", draw_block)
+
+    def test_backend_compact_trend_keeps_all_power_targets_and_storage_soc(self):
+        for field in (
+            "acLoadKw",
+            "dcLoadKw",
+            "dieselCurrentKw",
+            "dieselTargetKw",
+            "acRenewableCurrentKw",
+            "acRenewableTargetKw",
+            "dcRenewableCurrentKw",
+            "dcRenewableTargetKw",
+            "acGridFollowingStorageCurrentKw",
+            "acGridFollowingStorageTargetKw",
+            "acGridFollowingStorageSocPercent",
+            "dcGridFollowingStorageCurrentKw",
+            "dcGridFollowingStorageTargetKw",
+            "dcGridFollowingStorageSocPercent",
+            "acGridFormingStorageCurrentKw",
+            "acGridFormingStorageTargetKw",
+            "acGridFormingStorageSocPercent",
+            "dcGridFormingStorageCurrentKw",
+            "dcGridFormingStorageTargetKw",
+            "dcGridFormingStorageSocPercent",
+            "acdcCurrentKw",
+            "acdcTargetKw",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(f'"{field}"', self.backend)
 
     def test_chart_reuses_legend_cursor_and_active_tab_redraw_systems(self):
         self.assertIn(
@@ -166,15 +255,18 @@ process.stdout.write(JSON.stringify(latestRenewableTrendSegment(points).map((poi
         )[0]
         self.assertIn("renderRenewableDetailTabs();", render_block)
 
-    def test_middle_chart_reserves_space_for_axes_and_legend_without_panel_overlap(self):
+    def test_middle_chart_reserves_space_for_axes_and_left_series_panel_without_overlap(self):
         self.assertIn('data-renewable-detail-pane="trend"', self.html)
         trend_panel_block = self.styles.split(".renewable-trend-panel {", 1)[1].split("}", 1)[0]
-        legend_block = self.styles.split(
-            ".measurement-trace-legend.renewable-trend-legend {",
+        workspace_block = self.styles.split(
+            ".renewable-trend-workspace {",
             1,
         )[1].split("}", 1)[0]
         self.assertIn("padding: 0;", trend_panel_block)
-        self.assertIn("min-height: 35px;", legend_block)
+        self.assertIn("grid-template-columns", workspace_block)
+        self.assertIn("minmax(190px, 228px)", workspace_block)
+        self.assertIn(".renewable-trend-series-panel", self.styles)
+        self.assertIn(".renewable-trend-chart-surface", self.styles)
 
 
 if __name__ == "__main__":

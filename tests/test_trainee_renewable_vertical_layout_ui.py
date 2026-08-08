@@ -74,13 +74,55 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
         self.assertIn("command_rows.extend", plan_block)
         self.assertIn("for row in diesel_rows", plan_block)
 
-    def test_current_and_target_metrics_use_requested_labels(self):
-        self.assertIn('<dt>新能源当前值</dt><dd id="renewableCurrentKw">--</dd>', self.html)
-        self.assertIn('<dt>新能源目标值</dt><dd id="renewableTargetKw">--</dd>', self.html)
+    def test_metrics_use_ac_dc_and_system_pagination_tabs(self):
+        self.assertIn('id="renewableMetricTabs"', self.html)
+        for key, label in (("ac", "交流侧"), ("dc", "直流侧"), ("system", "系统总")):
+            with self.subTest(key=key):
+                self.assertIn(f'data-renewable-metric-tab="{key}"', self.html)
+                self.assertIn(f'>{label}</button>', self.html)
+                self.assertIn(f'data-renewable-metric-pane="{key}"', self.html)
+        self.assertIn('<dt>交流新能源当前值</dt><dd id="renewableAcCurrentKw">--</dd>', self.html)
+        self.assertIn('<dt>交流新能源目标值</dt><dd id="renewableAcTargetKw">--</dd>', self.html)
+        self.assertIn('<dt>交流柴发当前值</dt><dd id="renewableAcDieselCurrentKw">--</dd>', self.html)
+        self.assertIn('<dt>交流负荷功率</dt><dd id="renewableAcLoadKw">--</dd>', self.html)
+        self.assertIn('<dt>直流新能源当前值</dt><dd id="renewableDcCurrentKw">--</dd>', self.html)
+        self.assertIn('<dt>直流新能源目标值</dt><dd id="renewableDcTargetKw">--</dd>', self.html)
+        self.assertIn('<dt>直流柴发当前值</dt><dd id="renewableDcDieselCurrentKw">--</dd>', self.html)
+        self.assertIn('<dt>直流负荷功率</dt><dd id="renewableDcLoadKw">--</dd>', self.html)
+        self.assertIn('<dt>总新能源当前值</dt><dd id="renewableTotalCurrentKw">--</dd>', self.html)
+        self.assertIn('<dt>总新能源目标值</dt><dd id="renewableTotalTargetKw">--</dd>', self.html)
+        self.assertIn('<dt>总负荷功率</dt><dd id="renewableTotalLoadKw">--</dd>', self.html)
         self.assertNotIn('<dt>可用新能源</dt>', self.html)
         self.assertNotIn('<dt>计划消纳</dt>', self.html)
-        self.assertIn("renewableCurrentKw", self.script)
-        self.assertIn("renewableTargetKw", self.script)
+        self.assertIn('metricTab: "ac"', self.script)
+        self.assertIn("function renderRenewableMetricTabs", self.script)
+        self.assertIn("renewableAcDieselCurrentKw", self.script)
+        self.assertIn("renewableDcDieselCurrentKw", self.script)
+        self.assertIn("renewableTotalCurrentKw", self.script)
+
+    def test_main_panel_replaces_individual_parameters_with_one_dialog_button(self):
+        main_panel = self.html.split('<section class="panel renewable-control-panel">', 1)[1].split(
+            '<section class="panel renewable-metrics-panel">',
+            1,
+        )[0]
+        self.assertIn('id="renewableControlParametersButton"', main_panel)
+        self.assertIn('>控制参数</button>', main_panel)
+        for input_id in (
+            "renewableControlPeriod",
+            "renewableCommandValidMinutes",
+            "renewableStepRatio",
+            "converterStepRatio",
+            "dieselDeadbandRatio",
+            "socDeadband",
+            "storagePowerDeratingButton",
+        ):
+            with self.subTest(input_id=input_id):
+                self.assertNotIn(f'id="{input_id}"', main_panel)
+                self.assertEqual(self.html.count(f'id="{input_id}"'), 1)
+        self.assertIn('id="renewableControlParametersDialog"', self.html)
+        self.assertIn('<h2 id="renewableControlParametersTitle">控制参数</h2>', self.html)
+        self.assertIn("function openRenewableControlParametersDialog", self.script)
+        self.assertIn("function closeRenewableControlParametersDialog", self.script)
 
     def test_control_logs_are_scoped_and_show_the_decision_chain(self):
         backend = (ROOT / "simu/renewable_control.py").read_text(encoding="utf-8")

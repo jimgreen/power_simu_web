@@ -1167,6 +1167,42 @@ TASK8_METRIC_KEYS = (
     "dcBalanceStorageTargetKw",
     "acBalanceStorageSoc",
     "dcBalanceStorageSoc",
+    "acRenewableCurrentKw",
+    "acRenewableTargetKw",
+    "dcRenewableCurrentKw",
+    "dcRenewableTargetKw",
+    "acGridFollowingStorageCurrentKw",
+    "acGridFollowingStorageTargetKw",
+    "acGridFollowingStorageSoc",
+    "dcGridFollowingStorageCurrentKw",
+    "dcGridFollowingStorageTargetKw",
+    "dcGridFollowingStorageSoc",
+    "acGridFormingStorageCurrentKw",
+    "acGridFormingStorageTargetKw",
+    "acGridFormingStorageSoc",
+    "dcGridFormingStorageCurrentKw",
+    "dcGridFormingStorageTargetKw",
+    "dcGridFormingStorageSoc",
+    "acDieselCurrentKw",
+    "acDieselMinKw",
+    "acDieselTargetKw",
+    "dcDieselCurrentKw",
+    "dcDieselMinKw",
+    "dcDieselTargetKw",
+    "acLoadKw",
+    "dcLoadKw",
+    "totalRenewableCurrentKw",
+    "totalRenewableTargetKw",
+    "totalGridFollowingStorageCurrentKw",
+    "totalGridFollowingStorageTargetKw",
+    "totalGridFollowingStorageSoc",
+    "totalGridFormingStorageCurrentKw",
+    "totalGridFormingStorageTargetKw",
+    "totalGridFormingStorageSoc",
+    "totalDieselCurrentKw",
+    "totalDieselMinKw",
+    "totalDieselTargetKw",
+    "totalLoadKw",
     "dcRenewableToAcKw",
     "dcTransferGroups",
 )
@@ -6712,6 +6748,25 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["dcGridStorageSoc"], 0.80)
         self.assertAlmostEqual(metrics["acBalanceStorageSoc"], 0.40)
         self.assertAlmostEqual(metrics["dcBalanceStorageSoc"], 1.20)
+        self.assertAlmostEqual(metrics["acRenewableCurrentKw"], 100.0)
+        self.assertAlmostEqual(metrics["dcRenewableCurrentKw"], 80.0)
+        self.assertAlmostEqual(metrics["acGridFollowingStorageCurrentKw"], -2.0)
+        self.assertAlmostEqual(metrics["dcGridFollowingStorageCurrentKw"], -4.0)
+        self.assertAlmostEqual(metrics["acGridFormingStorageCurrentKw"], 6.0)
+        self.assertAlmostEqual(metrics["dcGridFormingStorageCurrentKw"], -8.0)
+        self.assertAlmostEqual(metrics["acGridFollowingStorageSoc"], 0.20)
+        self.assertAlmostEqual(metrics["dcGridFollowingStorageSoc"], 0.80)
+        self.assertAlmostEqual(metrics["acGridFormingStorageSoc"], 0.40)
+        self.assertAlmostEqual(metrics["dcGridFormingStorageSoc"], 1.20)
+        self.assertAlmostEqual(metrics["acDieselCurrentKw"], 60.0)
+        self.assertAlmostEqual(metrics["dcDieselCurrentKw"], 0.0)
+        self.assertAlmostEqual(metrics["acLoadKw"], 100.0)
+        self.assertAlmostEqual(metrics["dcLoadKw"], 0.0)
+        self.assertAlmostEqual(metrics["totalRenewableCurrentKw"], 180.0)
+        self.assertAlmostEqual(metrics["totalGridFollowingStorageCurrentKw"], -6.0)
+        self.assertAlmostEqual(metrics["totalGridFormingStorageCurrentKw"], -2.0)
+        self.assertAlmostEqual(metrics["totalDieselCurrentKw"], 60.0)
+        self.assertAlmostEqual(metrics["totalLoadKw"], 100.0)
         self.assertAlmostEqual(metrics["storageCurrentKw"], -8.0)
         self.assertAlmostEqual(metrics["storageSoc"], 0.82)
         self.assertGreaterEqual(metrics["dcRenewableToAcKw"], 0.0)
@@ -6750,6 +6805,22 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertAlmostEqual(group["currentBalanceStorageKw"], -8.0)
         self.assertAlmostEqual(group["gridStorageSoc"], 0.80)
         self.assertAlmostEqual(group["balanceStorageSoc"], 1.20)
+
+    def test_side_load_metrics_preserve_signed_ac_and_dc_measurements(self):
+        snapshot = task8_metrics_snapshot()
+        add_dc_load(
+            snapshot,
+            name="dc-load-signed",
+            idx=9,
+            node=3,
+            power_kw=-12.5,
+        )
+
+        metrics = calculate_renewable_control_plan(snapshot)["metrics"]
+
+        self.assertAlmostEqual(metrics["acLoadKw"], 100.0)
+        self.assertAlmostEqual(metrics["dcLoadKw"], -12.5)
+        self.assertAlmostEqual(metrics["totalLoadKw"], 87.5)
 
     def test_task8_metrics_preserve_inactive_dc_transfer_group_diagnostics(self):
         snapshot = direct_grid_storage_snapshot(
@@ -10108,8 +10179,34 @@ class RenewableControlBackendApiTest(unittest.TestCase):
             "acdcTargetKw",
         ):
             self.assertIn(legacy_key, first)
-        for key in TASK8_METRIC_KEYS:
-            self.assertIn(key, first)
+        expected_breakdown = {
+            "acLoadKw": 100.0,
+            "dcLoadKw": 0.0,
+            "dieselCurrentKw": 60.0,
+            "dieselTargetKw": plan["metrics"]["dieselTargetKw"],
+            "acRenewableCurrentKw": 100.0,
+            "acRenewableTargetKw": plan["metrics"]["acRenewableTargetKw"],
+            "dcRenewableCurrentKw": 80.0,
+            "dcRenewableTargetKw": plan["metrics"]["dcRenewableTargetKw"],
+            "acGridFollowingStorageCurrentKw": -2.0,
+            "acGridFollowingStorageTargetKw": plan["metrics"]["acGridFollowingStorageTargetKw"],
+            "acGridFollowingStorageSocPercent": 20.0,
+            "dcGridFollowingStorageCurrentKw": -4.0,
+            "dcGridFollowingStorageTargetKw": plan["metrics"]["dcGridFollowingStorageTargetKw"],
+            "dcGridFollowingStorageSocPercent": 80.0,
+            "acGridFormingStorageCurrentKw": 6.0,
+            "acGridFormingStorageTargetKw": plan["metrics"]["acGridFormingStorageTargetKw"],
+            "acGridFormingStorageSocPercent": 40.0,
+            "dcGridFormingStorageCurrentKw": -8.0,
+            "dcGridFormingStorageTargetKw": plan["metrics"]["dcGridFormingStorageTargetKw"],
+            "dcGridFormingStorageSocPercent": 120.0,
+            "acdcCurrentKw": plan["metrics"]["acdcCurrentKw"],
+            "acdcTargetKw": plan["metrics"]["acdcTargetKw"],
+        }
+        for key, expected in expected_breakdown.items():
+            with self.subTest(key=key):
+                self.assertIn(key, first)
+                self.assertAlmostEqual(first[key], expected)
         self.assertEqual(
             first["dcTransferGroups"],
             plan["metrics"]["dcTransferGroups"],
@@ -10798,6 +10895,26 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                         "storageKw": 5.0,
                         "storageSocPercent": 50.0,
                         "renewableKw": 80.0,
+                        "acLoadKw": 70.0,
+                        "dcLoadKw": 30.0,
+                        "dieselCurrentKw": 20.0,
+                        "dieselTargetKw": 18.0,
+                        "acRenewableCurrentKw": 30.0,
+                        "acRenewableTargetKw": 32.0,
+                        "dcRenewableCurrentKw": 50.0,
+                        "dcRenewableTargetKw": 51.0,
+                        "acGridFollowingStorageCurrentKw": 1.0,
+                        "acGridFollowingStorageTargetKw": 1.5,
+                        "dcGridFollowingStorageCurrentKw": 2.0,
+                        "dcGridFollowingStorageTargetKw": 2.5,
+                        "acGridFormingStorageCurrentKw": 3.0,
+                        "acGridFormingStorageTargetKw": 3.5,
+                        "dcGridFormingStorageCurrentKw": 4.0,
+                        "dcGridFormingStorageTargetKw": 4.5,
+                        "acGridFollowingStorageSocPercent": 40.0,
+                        "dcGridFollowingStorageSocPercent": 50.0,
+                        "acGridFormingStorageSocPercent": 60.0,
+                        "dcGridFormingStorageSocPercent": 70.0,
                         "acdcCurrentKw": 10.0,
                         "acdcTargetKw": 11.0,
                         "dcTransferGroups": [{"detail": "x" * 20000}],
@@ -10813,6 +10930,26 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                         "storageKw": 6.0,
                         "storageSocPercent": 49.9,
                         "renewableKw": 81.0,
+                        "acLoadKw": 71.0,
+                        "dcLoadKw": 30.0,
+                        "dieselCurrentKw": 19.0,
+                        "dieselTargetKw": 18.0,
+                        "acRenewableCurrentKw": 31.0,
+                        "acRenewableTargetKw": 33.0,
+                        "dcRenewableCurrentKw": 50.0,
+                        "dcRenewableTargetKw": 51.0,
+                        "acGridFollowingStorageCurrentKw": 1.5,
+                        "acGridFollowingStorageTargetKw": 2.0,
+                        "dcGridFollowingStorageCurrentKw": 2.5,
+                        "dcGridFollowingStorageTargetKw": 3.0,
+                        "acGridFormingStorageCurrentKw": 3.5,
+                        "acGridFormingStorageTargetKw": 4.0,
+                        "dcGridFormingStorageCurrentKw": 4.5,
+                        "dcGridFormingStorageTargetKw": 5.0,
+                        "acGridFollowingStorageSocPercent": 39.9,
+                        "dcGridFollowingStorageSocPercent": 49.9,
+                        "acGridFormingStorageSocPercent": 59.9,
+                        "dcGridFormingStorageSocPercent": 69.9,
                         "acdcCurrentKw": 11.0,
                         "acdcTargetKw": 12.0,
                         "dcTransferGroups": [{"detail": "y" * 20000}],
@@ -10856,9 +10993,35 @@ class RenewableControlBackendApiTest(unittest.TestCase):
         )
         self.assertEqual(payload["latestTrendSampleKey"], "sample-2")
         self.assertNotIn("dcTransferGroups", payload["trend"][0])
+        for field in (
+            "acLoadKw",
+            "dcLoadKw",
+            "dieselCurrentKw",
+            "dieselTargetKw",
+            "acRenewableCurrentKw",
+            "acRenewableTargetKw",
+            "dcRenewableCurrentKw",
+            "dcRenewableTargetKw",
+            "acGridFollowingStorageCurrentKw",
+            "acGridFollowingStorageTargetKw",
+            "acGridFollowingStorageSocPercent",
+            "dcGridFollowingStorageCurrentKw",
+            "dcGridFollowingStorageTargetKw",
+            "dcGridFollowingStorageSocPercent",
+            "acGridFormingStorageCurrentKw",
+            "acGridFormingStorageTargetKw",
+            "acGridFormingStorageSocPercent",
+            "dcGridFormingStorageCurrentKw",
+            "dcGridFormingStorageTargetKw",
+            "dcGridFormingStorageSocPercent",
+            "acdcCurrentKw",
+            "acdcTargetKw",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, payload["trend"][0])
         self.assertLess(
             len(json.dumps(payload["trend"], ensure_ascii=False).encode("utf-8")),
-            2000,
+            4200,
         )
 
 

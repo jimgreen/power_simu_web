@@ -175,6 +175,144 @@ class ControlCommandValidityTest(unittest.TestCase):
             service.step()
         self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
 
+    def test_explicit_command_origin_controls_manual_hold_and_automatic_expiry(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        service.control_clock({"action": "start", "minute": 0})
+        service.apply_student_commands(
+            {
+                "command_origin": "manual",
+                "valid_for_minutes": 1,
+                "set_values": [
+                    {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 20}
+                ],
+            },
+            source="trainee-api",
+        )
+        manual_entry = service.command_history[-1]
+
+        self.assertEqual(manual_entry["command_origin"], "manual")
+        self.assertTrue(manual_entry["manual_hold"])
+        self.assertIsNone(manual_entry["expires_at_absolute_minute"])
+
+        service.apply_student_commands(
+            {
+                "command_origin": "automatic",
+                "manual_hold": True,
+                "valid_for_minutes": 1,
+                "set_values": [
+                    {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 5}
+                ],
+            },
+            source="trainee-ui",
+        )
+        automatic_entry = service.command_history[-1]
+
+        self.assertEqual(automatic_entry["command_origin"], "automatic")
+        self.assertFalse(automatic_entry["manual_hold"])
+        self.assertEqual(automatic_entry["expires_at_absolute_minute"], 1.0)
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "5")
+
+        service.clock.absolute_minute = 2
+        service.clock.minute = 2
+        service._materialize_active_control_commands(2)
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
+
+    def test_new_simulation_run_clears_automatic_commands_but_keeps_manual_commands(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        first_run = service.control_clock({"action": "start", "minute": 0})
+        service.apply_student_commands(
+            {
+                "command_origin": "manual",
+                "run_status": [
+                    {"dev_type": "ACGenerator", "dev_name": "wt01_10kw", "run_stat": 0}
+                ],
+                "set_values": [
+                    {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 20}
+                ],
+            },
+            source="trainee-ui",
+        )
+        manual_entry = service.command_history[-1]
+        service.apply_student_commands(
+            {
+                "command_origin": "automatic",
+                "valid_for_minutes": 120,
+                "run_status": [
+                    {"dev_type": "ACGenerator", "dev_name": "wt01_10kw", "run_stat": 1}
+                ],
+                "set_values": [
+                    {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 5}
+                ],
+            },
+            source="trainee-automatic-control",
+        )
+        automatic_entry = service.command_history[-1]
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "5")
+        self.assertEqual(self._run_stat(service, "ACGenerator", "wt01_10kw"), "1")
+
+        service.control_clock({"action": "stop"})
+        second_run = service.control_clock({"action": "start", "minute": 0})
+
+        self.assertNotEqual(first_run["run_id"], second_run["run_id"])
+        self.assertFalse(manual_entry.get("cancelled", False))
+        self.assertTrue(automatic_entry.get("cancelled", False))
+        self.assertEqual(automatic_entry.get("cancelled_reason"), "simulation_restart")
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
+        self.assertEqual(self._run_stat(service, "ACGenerator", "wt01_10kw"), "0")
+        effective = service.snapshot(
+            include_static=False,
+            include_runtime_logs=False,
+            include_measurements=False,
+            include_devices=False,
+            include_device_states=False,
+        )["commands"]["effective"]
+        self.assertEqual(effective, [manual_entry])
+
+    def test_zero_start_from_pause_starts_new_lifecycle_and_old_automatic_command_cannot_reactivate(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        first_run = service.control_clock({"action": "start", "minute": 100})
+        service.apply_student_commands(
+            {
+                "command_origin": "manual",
+                "set_values": [
+                    {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 20}
+                ],
+            },
+            source="trainee-ui",
+        )
+        service.apply_student_commands(
+            {
+                "command_origin": "automatic",
+                "valid_for_minutes": 120,
+                "set_values": [
+                    {"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": 5}
+                ],
+            },
+            source="trainee-automatic-control",
+        )
+        automatic_entry = service.command_history[-1]
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "5")
+
+        service.clock.step_count = 9
+        service.control_clock({"action": "pause"})
+        restarted = service.control_clock({"action": "start", "minute": 0})
+
+        self.assertEqual(restarted["run_id"], first_run["run_id"] + 1)
+        self.assertEqual(restarted["step_count"], 0)
+        self.assertTrue(automatic_entry.get("cancelled", False))
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
+
+        service.clock.absolute_minute = 100
+        service.clock.minute = 100
+        service._materialize_active_control_commands(100)
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
+
     def test_breaker_status_command_is_counted_as_materialized_remote_control(self):
         workspace, service = self._make_service_with_breaker_control()
         self.addCleanup(workspace.cleanup)

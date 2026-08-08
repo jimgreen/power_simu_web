@@ -613,32 +613,9 @@
                         <button type="button" data-renewable-loop-mode="closed" aria-pressed="false">闭环</button>
                       </div>
                     </div>
-                    <label>控制周期
-                      <select id="renewableControlPeriod">
-                        <option value="1">1秒</option>
-                        <option value="2" selected>2秒</option>
-                        <option value="5">5秒</option>
-                        <option value="10">10秒</option>
-                      </select>
-                    </label>
-                    <label>自动指令有效期(分钟)
-                      <input id="renewableCommandValidMinutes" type="number" min="0.1" step="1" value="120" />
-                    </label>
-                    <label>新能源步长(%)
-                      <input id="renewableStepRatio" type="number" min="0" max="100" step="0.1" value="3" />
-                    </label>
-                    <label>变流器步长(%)
-                      <input id="converterStepRatio" type="number" min="0" max="100" step="0.1" value="3" />
-                    </label>
-                    <label>柴发死区(%)
-                      <input id="dieselDeadbandRatio" type="number" min="0" max="100" step="0.1" value="3" />
-                    </label>
-                    <label>SOC死区(%)
-                      <input id="socDeadband" type="number" min="0" max="100" step="0.1" value="5" />
-                    </label>
-                    <div class="renewable-setting-row">
-                      <span>储能功率降额</span>
-                      <button id="storagePowerDeratingButton" type="button">配置曲线</button>
+                    <div class="renewable-setting-row renewable-parameter-launch-row">
+                      <span>运行参数</span>
+                      <button id="renewableControlParametersButton" type="button">控制参数</button>
                     </div>
                   </div>
                 </div>
@@ -650,19 +627,64 @@
                   <h2>统计指标</h2>
                   <span>实时值</span>
                 </div>
-                <dl class="renewable-metric-grid renewable-metric-strip">
-                  <div><dt>新能源当前值</dt><dd id="renewableCurrentKw">--</dd></div>
-                  <div><dt>新能源目标值</dt><dd id="renewableTargetKw">--</dd></div>
-                  <div><dt>柴油发电当前值</dt><dd id="renewableDieselCurrentKw">--</dd></div>
-                  <div><dt>柴油发电下限值</dt><dd id="renewableDieselMinKw">--</dd></div>
-                  <div><dt>柴油发电目标值</dt><dd id="renewableDieselTargetKw">--</dd></div>
-                  <div><dt>储能当前值</dt><dd id="renewableStorageCurrentKw">--</dd></div>
-                  <div><dt>储能SOC值</dt><dd id="renewableStorageSoc">--</dd></div>
-                  <div><dt>ACDC变流当前值</dt><dd id="renewableAcdcCurrentKw">--</dd></div>
-                  <div><dt>ACDC变流目标值</dt><dd id="renewableAcdcTargetKw">--</dd></div>
-                  <div><dt>负荷功率</dt><dd id="renewableLoadKw">--</dd></div>
-                  <div><dt id="renewableLastActionLabel">最近计算</dt><dd id="renewableLastSent">--</dd></div>
-                </dl>
+                <div id="renewableMetricTabs" class="renewable-metric-tabs" role="tablist" aria-label="统计指标范围">
+                  <button id="renewableMetricTabAc" type="button" class="is-active" role="tab" data-renewable-metric-tab="ac" aria-selected="true">交流侧</button>
+                  <button id="renewableMetricTabDc" type="button" role="tab" data-renewable-metric-tab="dc" aria-selected="false">直流侧</button>
+                  <button id="renewableMetricTabSystem" type="button" role="tab" data-renewable-metric-tab="system" aria-selected="false">系统总</button>
+                </div>
+                <div class="renewable-metric-panes">
+                  <section class="renewable-metric-pane is-active" role="tabpanel" data-renewable-metric-pane="ac" aria-labelledby="renewableMetricTabAc">
+                    <dl class="renewable-metric-grid">
+                      <div data-renewable-metric-group="ac-renewable"><dt>交流新能源当前值</dt><dd id="renewableAcCurrentKw">--</dd></div>
+                      <div data-renewable-metric-group="ac-renewable"><dt>交流新能源目标值</dt><dd id="renewableAcTargetKw">--</dd></div>
+                      <div data-renewable-metric-group="ac-grid-following-storage"><dt>交流跟网储能当前值</dt><dd id="renewableAcGridFollowingStorageCurrentKw">--</dd></div>
+                      <div data-renewable-metric-group="ac-grid-following-storage"><dt>交流跟网储能目标值</dt><dd id="renewableAcGridFollowingStorageTargetKw">--</dd></div>
+                      <div data-renewable-metric-group="ac-grid-following-storage"><dt>交流跟网储能SOC</dt><dd id="renewableAcGridFollowingStorageSoc">--</dd></div>
+                      <div data-renewable-metric-group="ac-grid-forming-storage"><dt>交流构网储能当前值</dt><dd id="renewableAcGridFormingStorageCurrentKw">--</dd></div>
+                      <div data-renewable-metric-group="ac-grid-forming-storage"><dt>交流构网储能目标值</dt><dd id="renewableAcGridFormingStorageTargetKw">--</dd></div>
+                      <div data-renewable-metric-group="ac-grid-forming-storage"><dt>交流构网储能SOC</dt><dd id="renewableAcGridFormingStorageSoc">--</dd></div>
+                      <div data-renewable-metric-group="ac-diesel"><dt>交流柴发当前值</dt><dd id="renewableAcDieselCurrentKw">--</dd></div>
+                      <div data-renewable-metric-group="ac-diesel"><dt>交流柴发下限值</dt><dd id="renewableAcDieselMinKw">--</dd></div>
+                      <div data-renewable-metric-group="ac-diesel"><dt>交流柴发目标值</dt><dd id="renewableAcDieselTargetKw">--</dd></div>
+                      <div data-renewable-metric-group="ac-load"><dt>交流负荷功率</dt><dd id="renewableAcLoadKw">--</dd></div>
+                    </dl>
+                  </section>
+                  <section class="renewable-metric-pane" role="tabpanel" data-renewable-metric-pane="dc" aria-labelledby="renewableMetricTabDc" hidden>
+                    <dl class="renewable-metric-grid">
+                      <div data-renewable-metric-group="dc-renewable"><dt>直流新能源当前值</dt><dd id="renewableDcCurrentKw">--</dd></div>
+                      <div data-renewable-metric-group="dc-renewable"><dt>直流新能源目标值</dt><dd id="renewableDcTargetKw">--</dd></div>
+                      <div data-renewable-metric-group="dc-grid-following-storage"><dt>直流跟网储能当前值</dt><dd id="renewableDcGridFollowingStorageCurrentKw">--</dd></div>
+                      <div data-renewable-metric-group="dc-grid-following-storage"><dt>直流跟网储能目标值</dt><dd id="renewableDcGridFollowingStorageTargetKw">--</dd></div>
+                      <div data-renewable-metric-group="dc-grid-following-storage"><dt>直流跟网储能SOC</dt><dd id="renewableDcGridFollowingStorageSoc">--</dd></div>
+                      <div data-renewable-metric-group="dc-grid-forming-storage"><dt>直流构网储能当前值</dt><dd id="renewableDcGridFormingStorageCurrentKw">--</dd></div>
+                      <div data-renewable-metric-group="dc-grid-forming-storage"><dt>直流构网储能目标值</dt><dd id="renewableDcGridFormingStorageTargetKw">--</dd></div>
+                      <div data-renewable-metric-group="dc-grid-forming-storage"><dt>直流构网储能SOC</dt><dd id="renewableDcGridFormingStorageSoc">--</dd></div>
+                      <div data-renewable-metric-group="dc-diesel"><dt>直流柴发当前值</dt><dd id="renewableDcDieselCurrentKw">--</dd></div>
+                      <div data-renewable-metric-group="dc-diesel"><dt>直流柴发下限值</dt><dd id="renewableDcDieselMinKw">--</dd></div>
+                      <div data-renewable-metric-group="dc-diesel"><dt>直流柴发目标值</dt><dd id="renewableDcDieselTargetKw">--</dd></div>
+                      <div data-renewable-metric-group="dc-load"><dt>直流负荷功率</dt><dd id="renewableDcLoadKw">--</dd></div>
+                    </dl>
+                  </section>
+                  <section class="renewable-metric-pane" role="tabpanel" data-renewable-metric-pane="system" aria-labelledby="renewableMetricTabSystem" hidden>
+                    <dl class="renewable-metric-grid">
+                      <div data-renewable-metric-group="system-renewable"><dt>总新能源当前值</dt><dd id="renewableTotalCurrentKw">--</dd></div>
+                      <div data-renewable-metric-group="system-renewable"><dt>总新能源目标值</dt><dd id="renewableTotalTargetKw">--</dd></div>
+                      <div data-renewable-metric-group="system-grid-following-storage"><dt>总跟网储能当前值</dt><dd id="renewableTotalGridFollowingStorageCurrentKw">--</dd></div>
+                      <div data-renewable-metric-group="system-grid-following-storage"><dt>总跟网储能目标值</dt><dd id="renewableTotalGridFollowingStorageTargetKw">--</dd></div>
+                      <div data-renewable-metric-group="system-grid-following-storage"><dt>总跟网储能SOC</dt><dd id="renewableTotalGridFollowingStorageSoc">--</dd></div>
+                      <div data-renewable-metric-group="system-grid-forming-storage"><dt>总构网储能当前值</dt><dd id="renewableTotalGridFormingStorageCurrentKw">--</dd></div>
+                      <div data-renewable-metric-group="system-grid-forming-storage"><dt>总构网储能目标值</dt><dd id="renewableTotalGridFormingStorageTargetKw">--</dd></div>
+                      <div data-renewable-metric-group="system-grid-forming-storage"><dt>总构网储能SOC</dt><dd id="renewableTotalGridFormingStorageSoc">--</dd></div>
+                      <div data-renewable-metric-group="system-diesel"><dt>总柴发当前值</dt><dd id="renewableTotalDieselCurrentKw">--</dd></div>
+                      <div data-renewable-metric-group="system-diesel"><dt>总柴发下限值</dt><dd id="renewableTotalDieselMinKw">--</dd></div>
+                      <div data-renewable-metric-group="system-diesel"><dt>总柴发目标值</dt><dd id="renewableTotalDieselTargetKw">--</dd></div>
+                      <div data-renewable-metric-group="system-load"><dt>总负荷功率</dt><dd id="renewableTotalLoadKw">--</dd></div>
+                      <div data-renewable-metric-group="system-acdc"><dt>ACDC变流当前值</dt><dd id="renewableAcdcCurrentKw">--</dd></div>
+                      <div data-renewable-metric-group="system-acdc"><dt>ACDC变流目标值</dt><dd id="renewableAcdcTargetKw">--</dd></div>
+                    </dl>
+                  </section>
+                </div>
+                <div class="renewable-metric-footer"><span id="renewableLastActionLabel">最近计算</span><strong id="renewableLastSent">--</strong></div>
               </section>
             </aside>
 
@@ -729,15 +751,55 @@
                       </label>
                     </div>
                   </div>
-                  <canvas id="renewableTrendChart" width="1500" height="320" aria-label="新能源控制综合功率与储能SOC趋势"></canvas>
-                  <div class="measurement-trace-legend renewable-trend-legend">
-                    <button type="button" class="chart-legend-item" data-chart-toggle="renewableTrend" data-chart-series="load" aria-pressed="true"><i class="renewable-trend-load"></i>负荷功率</button>
-                    <button type="button" class="chart-legend-item" data-chart-toggle="renewableTrend" data-chart-series="diesel" aria-pressed="true"><i class="renewable-trend-diesel"></i>柴发功率</button>
-                    <button type="button" class="chart-legend-item" data-chart-toggle="renewableTrend" data-chart-series="storage" aria-pressed="true"><i class="renewable-trend-storage"></i>储能功率</button>
-                    <button type="button" class="chart-legend-item" data-chart-toggle="renewableTrend" data-chart-series="storageSoc" aria-pressed="true"><i class="renewable-trend-soc"></i>储能SOC</button>
-                    <button type="button" class="chart-legend-item" data-chart-toggle="renewableTrend" data-chart-series="renewable" aria-pressed="true"><i class="renewable-trend-renewable"></i>新能源功率</button>
-                    <button type="button" class="chart-legend-item" data-chart-toggle="renewableTrend" data-chart-series="acdcCurrent" aria-pressed="true"><i class="renewable-trend-acdc-current"></i>变流器当前值</button>
-                    <button type="button" class="chart-legend-item" data-chart-toggle="renewableTrend" data-chart-series="acdcTarget" aria-pressed="true"><i class="renewable-trend-acdc-target"></i>变流器目标值</button>
+                  <div id="renewableTrendWorkspace" class="renewable-trend-workspace">
+                    <aside id="renewableTrendSeriesPanel" class="renewable-trend-series-panel" aria-label="曲线选择">
+                      <div class="renewable-trend-series-head">
+                        <strong>曲线</strong>
+                        <span id="renewableTrendSeriesSummary">0 / 0</span>
+                      </div>
+                      <div class="renewable-trend-series-groups">
+                        <details class="renewable-trend-series-group" data-renewable-series-scope="ac" open>
+                          <summary>交流</summary>
+                          <div class="renewable-trend-series-list">
+                            <label class="renewable-trend-series-item" data-renewable-series-group="ac-renewable"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="acRenewableCurrent" checked /><i class="renewable-trend-ac-renewable-current"></i><span>新能源当前值</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="ac-renewable"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="acRenewableTarget" /><i class="renewable-trend-ac-renewable-target"></i><span>新能源目标值</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="ac-grid-following-storage"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="acGridFollowingStorageCurrent" checked /><i class="renewable-trend-ac-grid-following-storage-current"></i><span>跟网储能当前值</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="ac-grid-following-storage"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="acGridFollowingStorageTarget" /><i class="renewable-trend-ac-grid-following-storage-target"></i><span>跟网储能目标值</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="ac-grid-following-storage"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="acGridFollowingStorageSoc" /><i class="renewable-trend-ac-grid-following-storage-soc"></i><span>跟网储能SOC</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="ac-grid-forming-storage"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="acGridFormingStorageCurrent" checked /><i class="renewable-trend-ac-grid-forming-storage-current"></i><span>构网储能当前值</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="ac-grid-forming-storage"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="acGridFormingStorageTarget" /><i class="renewable-trend-ac-grid-forming-storage-target"></i><span>构网储能目标值</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="ac-grid-forming-storage"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="acGridFormingStorageSoc" /><i class="renewable-trend-ac-grid-forming-storage-soc"></i><span>构网储能SOC</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="ac-load"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="acLoad" checked /><i class="renewable-trend-ac-load"></i><span>负荷功率</span></label>
+                          </div>
+                        </details>
+                        <details class="renewable-trend-series-group" data-renewable-series-scope="dc" open>
+                          <summary>直流</summary>
+                          <div class="renewable-trend-series-list">
+                            <label class="renewable-trend-series-item" data-renewable-series-group="dc-renewable"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="dcRenewableCurrent" checked /><i class="renewable-trend-dc-renewable-current"></i><span>新能源当前值</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="dc-renewable"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="dcRenewableTarget" /><i class="renewable-trend-dc-renewable-target"></i><span>新能源目标值</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="dc-grid-following-storage"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="dcGridFollowingStorageCurrent" checked /><i class="renewable-trend-dc-grid-following-storage-current"></i><span>跟网储能当前值</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="dc-grid-following-storage"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="dcGridFollowingStorageTarget" /><i class="renewable-trend-dc-grid-following-storage-target"></i><span>跟网储能目标值</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="dc-grid-following-storage"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="dcGridFollowingStorageSoc" /><i class="renewable-trend-dc-grid-following-storage-soc"></i><span>跟网储能SOC</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="dc-grid-forming-storage"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="dcGridFormingStorageCurrent" checked /><i class="renewable-trend-dc-grid-forming-storage-current"></i><span>构网储能当前值</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="dc-grid-forming-storage"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="dcGridFormingStorageTarget" /><i class="renewable-trend-dc-grid-forming-storage-target"></i><span>构网储能目标值</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="dc-grid-forming-storage"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="dcGridFormingStorageSoc" /><i class="renewable-trend-dc-grid-forming-storage-soc"></i><span>构网储能SOC</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="dc-load"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="dcLoad" checked /><i class="renewable-trend-dc-load"></i><span>负荷功率</span></label>
+                          </div>
+                        </details>
+                        <details class="renewable-trend-series-group" data-renewable-series-scope="system" open>
+                          <summary>系统</summary>
+                          <div class="renewable-trend-series-list">
+                            <label class="renewable-trend-series-item" data-renewable-series-group="system-diesel"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="dieselCurrent" checked /><i class="renewable-trend-diesel-current"></i><span>柴发当前值</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="system-diesel"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="dieselTarget" /><i class="renewable-trend-diesel-target"></i><span>柴发目标值</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="system-acdc"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="acdcCurrent" checked /><i class="renewable-trend-acdc-current"></i><span>AC/DC变流器当前值</span></label>
+                            <label class="renewable-trend-series-item" data-renewable-series-group="system-acdc"><input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="acdcTarget" /><i class="renewable-trend-acdc-target"></i><span>AC/DC变流器目标值</span></label>
+                          </div>
+                        </details>
+                      </div>
+                    </aside>
+                    <div class="renewable-trend-chart-surface">
+                      <canvas id="renewableTrendChart" width="1500" height="320" aria-label="新能源控制综合功率与储能SOC趋势"></canvas>
+                    </div>
                   </div>
                   </section>
 
@@ -910,6 +972,51 @@
           <button id="confirmCloneModel" class="primary" type="submit">复制</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="renewableControlParametersDialog" class="remote-control-dialog renewable-control-parameters-dialog" aria-labelledby="renewableControlParametersTitle">
+      <section class="remote-control-form">
+        <div class="remote-control-head">
+          <div>
+            <h2 id="renewableControlParametersTitle">控制参数</h2>
+            <p>新能源实时控制运行参数</p>
+          </div>
+          <button id="closeRenewableControlParametersDialog" class="dialog-close-button" type="button" aria-label="关闭控制参数窗口">×</button>
+        </div>
+        <div class="renewable-control-parameter-fields">
+          <label>控制周期
+            <select id="renewableControlPeriod">
+              <option value="1">1秒</option>
+              <option value="2" selected>2秒</option>
+              <option value="5">5秒</option>
+              <option value="10">10秒</option>
+            </select>
+          </label>
+          <label>自动指令有效期(分钟)
+            <input id="renewableCommandValidMinutes" type="number" min="0.1" step="1" value="120" />
+          </label>
+          <label>新能源步长(%)
+            <input id="renewableStepRatio" type="number" min="0" max="100" step="0.1" value="3" />
+          </label>
+          <label>变流器步长(%)
+            <input id="converterStepRatio" type="number" min="0" max="100" step="0.1" value="3" />
+          </label>
+          <label>柴发死区(%)
+            <input id="dieselDeadbandRatio" type="number" min="0" max="100" step="0.1" value="3" />
+          </label>
+          <label>SOC死区(%)
+            <input id="socDeadband" type="number" min="0" max="100" step="0.1" value="5" />
+          </label>
+          <div class="renewable-control-parameter-row">
+            <span>储能功率降额</span>
+            <button id="storagePowerDeratingButton" type="button">配置曲线</button>
+          </div>
+        </div>
+        <p class="remote-control-hint">参数修改后立即保存到学员台 WEB 后台，并供下次启动加载。</p>
+        <div class="dialog-actions">
+          <button id="cancelRenewableControlParametersDialog" type="button">关闭</button>
+        </div>
+      </section>
     </dialog>
 
     <dialog id="storagePowerDeratingDialog" class="remote-control-dialog storage-power-derating-dialog" aria-labelledby="storagePowerDeratingTitle">

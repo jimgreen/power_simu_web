@@ -317,6 +317,119 @@ def test_trainee_receive_runtime_logs_each_issue_and_stops_after_consecutive_fai
     assert "已停止接收" in script
 
 
+def test_local_trainee_web_fetch_outage_keeps_receive_mode_and_retries():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+    refresh_block = script.split("async function refreshFromTeacher", 1)[1].split(
+        "function renderSnapshot",
+        1,
+    )[0]
+
+    assert "function isTraineeWebTransportError" in script
+    assert "function recordTraineeWebTransportIssue" in script
+    assert "function finishTraineeWebTransportRecovery" in script
+    assert "isTraineeWebTransportError(_error)" in refresh_block
+    assert "recordTraineeWebTransportIssue(_error)" in refresh_block
+    assert refresh_block.index("isTraineeWebTransportError(_error)") < refresh_block.index("recordReceiveIssue(")
+
+    transport_block = script.split("function recordTraineeWebTransportIssue", 1)[1].split(
+        "function finishTraineeWebTransportRecovery",
+        1,
+    )[0]
+    assert "state.receiveTransportFailureCount += 1" in transport_block
+    assert "stopReceiveAfterPersistentIssue" not in transport_block
+    assert "setTraineeReceiveActive" not in transport_block
+    assert "不主动停止接收" in transport_block
+
+
+def test_local_trainee_web_transport_error_detection_is_narrow():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+    start = script.index("function isTraineeWebTransportError")
+    end = script.index("function recordTraineeWebTransportIssue", start)
+    helper = script[start:end]
+    node_script = f"""
+{helper}
+process.stdout.write(JSON.stringify([
+  isTraineeWebTransportError(new TypeError("Failed to fetch")),
+  isTraineeWebTransportError(new TypeError("NetworkError when attempting to fetch resource.")),
+  isTraineeWebTransportError(new Error("请求超时（30 秒）")),
+  isTraineeWebTransportError(new Error('{{"error":"模拟台未启动"}}')),
+]));
+"""
+    result = subprocess.run(["node", "-e", node_script], check=True, capture_output=True, text=True)
+    assert json.loads(result.stdout) == [True, True, False, False]
+
+
+def test_local_trainee_web_outage_state_recovers_without_consuming_teacher_failures():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+    start = script.index("function resetReceiveIssueStreak")
+    end = script.index("function stopReceiveAfterPersistentIssue", start)
+    helpers = script[start:end]
+    node_script = f"""
+const state = {{
+  receiveMode: true,
+  receiveReconnectAttempts: 2,
+  receiveTransportFailureCount: 0,
+  receiveTransportInterrupted: false,
+}};
+const logs = [];
+function receiveMaxReconnectAttempts() {{ return 3; }}
+function addRuntimeLog(...args) {{ logs.push(args); }}
+function apiErrorText(error) {{ return String(error?.message || error || ""); }}
+function renderReceiveMode(text) {{ state.renderedReceiveMode = text; }}
+{helpers}
+recordTraineeWebTransportIssue(new TypeError("Failed to fetch"));
+const interrupted = {{
+  receiveMode: state.receiveMode,
+  teacherFailures: state.receiveReconnectAttempts,
+  transportFailures: state.receiveTransportFailureCount,
+  transportInterrupted: state.receiveTransportInterrupted,
+  renderedReceiveMode: state.renderedReceiveMode,
+  logCount: logs.length,
+}};
+finishTraineeWebTransportRecovery("01:02:03");
+const recovered = {{
+  receiveMode: state.receiveMode,
+  teacherFailures: state.receiveReconnectAttempts,
+  transportFailures: state.receiveTransportFailureCount,
+  transportInterrupted: state.receiveTransportInterrupted,
+  logCount: logs.length,
+  recoveryResult: logs.at(-1)?.[2],
+}};
+process.stdout.write(JSON.stringify({{ interrupted, recovered }}));
+"""
+    result = subprocess.run(["node", "-e", node_script], check=True, capture_output=True, text=True)
+    payload = json.loads(result.stdout)
+
+    assert payload["interrupted"] == {
+        "receiveMode": True,
+        "teacherFailures": 2,
+        "transportFailures": 1,
+        "transportInterrupted": True,
+        "renderedReceiveMode": "后台重连中 1",
+        "logCount": 1,
+    }
+    assert payload["recovered"] == {
+        "receiveMode": True,
+        "teacherFailures": 2,
+        "transportFailures": 0,
+        "transportInterrupted": False,
+        "logCount": 2,
+        "recoveryResult": "后台恢复",
+    }
+
+
+def test_switching_local_models_clears_transient_receive_issue_streaks():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+    switch_block = script.split("async function setActiveModel", 1)[1].split(
+        "async function loadModels",
+        1,
+    )[0]
+
+    assert "restoreModelContext(nextId);" in switch_block
+    assert "resetReceiveIssueStreak();" in switch_block
+    assert switch_block.index("restoreModelContext(nextId);") < switch_block.index("resetReceiveIssueStreak();")
+
+
 def test_trainee_receive_runtime_warning_dialog_remains_available_for_connection_failures():
     html = (ROOT / "simu/web/trainee/index.html").read_text(encoding="utf-8")
     script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")

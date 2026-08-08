@@ -629,15 +629,45 @@ def _has_cancel_command_payload(payload: Mapping[str, Any]) -> bool:
     return bool(payload.get("cancel") is True and any(key in payload for key in ("name", "names", "commands", "items", "controls")))
 
 
-def _manual_command_holds_across_clock_lifecycle(entry_or_payload: Mapping[str, Any], source: Any = "") -> bool:
-    if bool(entry_or_payload.get("manual_hold", entry_or_payload.get("hold_until_cancelled", False))):
-        return True
+def _explicit_command_origin(entry_or_payload: Mapping[str, Any]) -> str:
     payload = entry_or_payload.get("payload") if isinstance(entry_or_payload.get("payload"), Mapping) else entry_or_payload
-    if isinstance(payload, Mapping) and isinstance(payload.get("strategy"), Mapping):
+    for candidate in (entry_or_payload, payload):
+        if not isinstance(candidate, Mapping):
+            continue
+        value = str(
+            candidate.get(
+                "command_origin",
+                candidate.get("commandOrigin", candidate.get("origin", candidate.get("priority", ""))),
+            )
+            or ""
+        ).strip().casefold()
+        if value in {"manual", "human", "operator", "人工"}:
+            return "manual"
+        if value in {"automatic", "auto", "strategy", "自动"}:
+            return "automatic"
+    return ""
+
+
+def _manual_command_holds_across_clock_lifecycle(entry_or_payload: Mapping[str, Any], source: Any = "") -> bool:
+    payload = entry_or_payload.get("payload") if isinstance(entry_or_payload.get("payload"), Mapping) else entry_or_payload
+    text = str(
+        source
+        or entry_or_payload.get("source", "")
+        or (payload.get("source", "") if isinstance(payload, Mapping) else "")
+        or ""
+    ).strip().casefold()
+    if (isinstance(payload, Mapping) and isinstance(payload.get("strategy"), Mapping)) or "renewable" in text or "strategy" in text:
         return False
-    text = str(source or entry_or_payload.get("source", "") or "").strip().casefold()
-    if "renewable" in text or "strategy" in text:
-        return False
+    explicit_origin = _explicit_command_origin(entry_or_payload)
+    if explicit_origin:
+        return explicit_origin == "manual"
+    for candidate in (entry_or_payload, payload):
+        if not isinstance(candidate, Mapping):
+            continue
+        if "manual_hold" in candidate:
+            return bool(candidate.get("manual_hold"))
+        if "hold_until_cancelled" in candidate:
+            return bool(candidate.get("hold_until_cancelled"))
     return text in {"trainee-ui", "student-ui"} or text.startswith("trainee-ui-") or text.startswith("student-ui-") or "人工" in text
 
 
@@ -2355,6 +2385,47 @@ class PolarMicrogridSimulator:
                 if dev_type and dev_name and set_type:
                     keys.add(("remote_adjustment", dev_type, dev_name, set_type))
         return keys
+
+    def _clear_automatic_commands_for_simulation_restart(
+        self,
+        *,
+        reason: str = "simulation_restart",
+    ) -> Dict[str, int]:
+        cancelled_wall_time = _now_text()
+        cancelled_simu_time = minute_to_time(self.clock.minute)
+        cancelled_absolute_minute = float(self.clock.absolute_minute)
+        cancelled_entries = 0
+        cancelled_keys: set[Tuple[str, str, str, str]] = set()
+
+        for entry in self.command_history:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("cancelled") or _command_origin(entry) != "automatic":
+                continue
+            if not self._command_entry_has_accepted_controls(entry):
+                continue
+            entry_keys = self._command_entry_control_keys(entry)
+            if not entry_keys:
+                continue
+            entry["cancelled"] = True
+            entry["cancelled_reason"] = reason
+            entry["expires_at_absolute_minute"] = cancelled_absolute_minute
+            entry["cancelled_names"] = sorted(
+                f"{dev_type}.{dev_name}.{field_name}"
+                for _kind, dev_type, dev_name, field_name in entry_keys
+            )
+            entry["cancelled_wall_time"] = cancelled_wall_time
+            entry["cancelled_simu_time"] = cancelled_simu_time
+            entry["cancelled_absolute_minute"] = cancelled_absolute_minute
+            entry["cancelled_run_id"] = int(self.clock.run_id)
+            cancelled_entries += 1
+            cancelled_keys.update(entry_keys)
+
+        return {
+            "entries": cancelled_entries,
+            "remote_controls": sum(1 for key in cancelled_keys if key[0] == "remote_control"),
+            "remote_adjustments": sum(1 for key in cancelled_keys if key[0] == "remote_adjustment"),
+        }
 
     def _delete_command_entry_controls(
         self,
@@ -4510,6 +4581,7 @@ class PolarMicrogridSimulator:
         with self.lock:
             action = str(payload.get("action", "")).lower()
             previous_state = self.clock.state
+            previous_absolute_minute = float(self.clock.absolute_minute)
             if "step_seconds" in payload:
                 step_seconds = float(_to_float(payload.get("step_seconds"), self.clock.step_minutes * 60.0) or 0.0)
                 self.clock.step_minutes = max(1e-9, step_seconds / 60.0)
@@ -4518,24 +4590,57 @@ class PolarMicrogridSimulator:
                     1e-9,
                     float(_to_float(payload.get("step_minutes"), self.clock.step_minutes) or self.clock.step_minutes),
                 )
+            requested_absolute_minute: Optional[float] = None
             if "absolute_second" in payload or "second" in payload:
                 second = float(
                     _to_float(payload.get("absolute_second", payload.get("second")), self.clock.absolute_minute * 60.0)
                     or 0.0
                 )
-                minute = max(0.0, second / 60.0)
-                self.clock.absolute_minute = minute
-                self.clock.minute = minute % 1440.0
+                requested_absolute_minute = max(0.0, second / 60.0)
             elif "minute" in payload:
-                minute = float(_to_float(payload.get("minute"), self.clock.minute) or 0.0)
-                self.clock.absolute_minute = minute
-                self.clock.minute = minute % 1440.0
+                requested_absolute_minute = max(
+                    0.0,
+                    float(_to_float(payload.get("minute"), self.clock.minute) or 0.0),
+                )
             if "speed" in payload:
                 self.clock.speed = _nearest_clock_speed(payload.get("speed"))
+            starts_new_lifecycle = action == "start" and (
+                previous_state == "stopped"
+                or (
+                    requested_absolute_minute is not None
+                    and (
+                        requested_absolute_minute <= 1e-9
+                        or requested_absolute_minute < previous_absolute_minute - 1e-9
+                    )
+                )
+            )
+            if starts_new_lifecycle:
+                cleared = self._clear_automatic_commands_for_simulation_restart()
+                if cleared["entries"]:
+                    self._write_command_history()
+                    self._append_runtime_log(
+                        "控制指令",
+                        "仿真时钟",
+                        "自动指令已清空",
+                        [
+                            f"新仿真生命周期启动前清空自动指令记录 {cleared['entries']} 条",
+                            (
+                                f"涉及遥控 {cleared['remote_controls']} 个控制点，"
+                                f"遥调 {cleared['remote_adjustments']} 个控制点"
+                            ),
+                            "人工指令继续保持，直至人工退出",
+                        ],
+                        level="ok",
+                        simu_time=minute_to_time(self.clock.minute),
+                    )
+            if requested_absolute_minute is not None:
+                self.clock.absolute_minute = requested_absolute_minute
+                self.clock.minute = requested_absolute_minute % 1440.0
             should_reset_storage_soc = False
             if action == "start":
-                if previous_state == "stopped":
+                if starts_new_lifecycle:
                     self.clock.run_id += 1
+                    self.clock.step_count = 0
                     should_reset_storage_soc = True
                 self.clock.state = "running"
             elif action == "pause":

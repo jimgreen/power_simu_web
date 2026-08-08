@@ -456,6 +456,68 @@ process.stdout.write(JSON.stringify({
         self.assertIn("updateDiagramDeviceDynamicSections", update_block)
         self.assertIn('interaction.definitionEditor?.kind === "device"', update_block)
 
+    def test_simulator_device_definition_actions_render_in_the_tooltip_header(self):
+        self.assertIn(
+            "function renderDiagramDeviceDefinitionHeadActions",
+            self.script,
+        )
+        editor_block = self.script.split(
+            "function renderDiagramDeviceDefinitionEditor",
+            1,
+        )[1].split("function renderDiagramDeviceDefinitionHeadActions", 1)[0]
+        head_actions_block = self.script.split(
+            "function renderDiagramDeviceDefinitionHeadActions",
+            1,
+        )[1].split("function renderDiagramDeviceDefinitionValueRow", 1)[0]
+        footer_block = self.script.split(
+            "function renderDiagramDeviceDefinitionFooter",
+            1,
+        )[1].split("function renderDiagramDeviceClassifiedTable", 1)[0]
+        tooltip_block = self.script.split(
+            "function renderDiagramDeviceTooltip",
+            1,
+        )[1].split("function diagramDefinitionEditPinned", 1)[0]
+
+        self.assertIn('data-diagram-definition-actions="device"', editor_block)
+        self.assertIn("diagram-definition-head-actions", editor_block)
+        self.assertIn("renderDiagramDeviceDefinitionEditor", head_actions_block)
+        self.assertIn(
+            "renderDiagramDeviceDefinitionHeadActions(data.definitionRecords, interaction)",
+            tooltip_block,
+        )
+        self.assertIn("diagram-tooltip-head-controls", tooltip_block)
+        self.assertNotIn("renderDiagramDeviceDefinitionEditor", footer_block)
+        self.assertIn("diagramDefinitionMessageHtml(interaction)", footer_block)
+        self.assertIn(".diagram-tooltip-head-controls", self.styles)
+        self.assertIn(".diagram-definition-head-actions", self.styles)
+
+    def test_simulator_measurement_definition_actions_render_in_the_tooltip_header(self):
+        editor_block = self.script.split(
+            "function renderDiagramMeasurementDefinitionEditor",
+            1,
+        )[1].split("function beginDiagramMeasurementDefinitionEdit", 1)[0]
+        summary_block = self.script.split(
+            "function renderDiagramMeasurementSummary",
+            1,
+        )[1].split("function syncDiagramMeasurementDefinitionFields", 1)[0]
+        tooltip_block = self.script.split(
+            "function renderDiagramMetricTooltip",
+            1,
+        )[1].split("function updateDiagramMetricDynamicValues", 1)[0]
+
+        self.assertIn('data-diagram-definition-actions="measurement"', editor_block)
+        self.assertIn("diagram-definition-head-actions", editor_block)
+        self.assertNotIn("renderDiagramMeasurementDefinitionEditor", summary_block)
+        self.assertIn("diagram-tooltip-head-controls", tooltip_block)
+        self.assertIn(
+            "renderDiagramMeasurementDefinitionEditor(editor, interaction)",
+            tooltip_block,
+        )
+        self.assertIn(
+            "diagramDefinitionEditorMessageHtml(interaction, editor.validationError)",
+            tooltip_block,
+        )
+
     def test_device_editor_sends_the_definition_revision(self):
         begin_block = self.script.split(
             "function beginDiagramDeviceDefinitionEdit",

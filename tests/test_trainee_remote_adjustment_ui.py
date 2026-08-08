@@ -316,6 +316,99 @@ process.stdout.write(JSON.stringify({
         )[0]
         self.assertIn("refreshRemoteAdjustmentDialog(snapshot);", render_block)
 
+    def _evaluate_current_set_value(self, snapshot):
+        lifecycle_helpers = "function manualCommandHoldsAcrossClockLifecycle" + self.script.split(
+            "function manualCommandHoldsAcrossClockLifecycle",
+            1,
+        )[1].split("function addRuntimeLog", 1)[0]
+        command_helpers = "function commandEntryMatchesControl" + self.script.split(
+            "function commandEntryMatchesControl",
+            1,
+        )[1].split("function emptyIssuedCommandInfo", 1)[0]
+        value_helpers = "function effectiveRemoteAdjustmentValue" + self.script.split(
+            "function effectiveRemoteAdjustmentValue",
+            1,
+        )[1].split("function remoteAdjustmentTypeLabel", 1)[0]
+        body = f"""
+const snapshot = {json.dumps(snapshot, ensure_ascii=False)};
+const state = {{ snapshot }};
+const pending = {{ set_values: new Map() }};
+function deviceType(dev) {{ return dev.dev_type || ""; }}
+function deviceName(dev) {{ return dev.dev_name || ""; }}
+function deviceKey(dev) {{ return `${{deviceType(dev)}}|${{deviceName(dev)}}`; }}
+const dev = {{
+  dev_type: "ACGenerator",
+  dev_name: "交流电化学储能-23",
+  set_values: {{ p_set: 10 }},
+  raw: {{ p_set: 10 }},
+}};
+process.stdout.write(JSON.stringify({{ value: currentSetValue(dev, "p_set", snapshot) }}));
+"""
+        result = subprocess.run(
+            ["node", "-e", f"{lifecycle_helpers}\n{command_helpers}\n{value_helpers}\n{body}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(result.stdout)["value"]
+
+    @staticmethod
+    def _set_value_command(value, *, origin="manual", cancelled=False):
+        manual = origin == "manual"
+        return {
+            "eligible_source": True,
+            "cancelled": cancelled,
+            "manual_hold": manual,
+            "command_origin": origin,
+            "run_id": 1,
+            "issued_absolute_minute": 5,
+            "expires_at_absolute_minute": None if manual else 120,
+            "accepted": {"run_status": 0, "set_values": 1},
+            "normalized": {
+                "run_status": [],
+                "set_values": [
+                    {
+                        "dev_type": "ACGenerator",
+                        "dev_name": "交流电化学储能-23",
+                        "set_type": "p_set",
+                        "set_value": value,
+                    }
+                ],
+            },
+            "payload": {"source": "trainee-ui" if manual else "trainee-automatic-control"},
+        }
+
+    def test_current_control_value_prefers_active_manual_command_over_static_definition(self):
+        manual = self._set_value_command(60)
+        snapshot = {
+            "clock": {"absolute_minute": 10, "run_id": 1},
+            "commands": {"history": [manual], "effective": [manual]},
+        }
+
+        self.assertEqual(self._evaluate_current_set_value(snapshot), 60)
+
+    def test_current_control_value_prefers_effective_automatic_command_over_manual_command(self):
+        manual = self._set_value_command(60)
+        automatic = self._set_value_command(35, origin="automatic")
+        snapshot = {
+            "clock": {"absolute_minute": 10, "run_id": 1},
+            "commands": {
+                "history": [manual, automatic],
+                "effective": [automatic],
+            },
+        }
+
+        self.assertEqual(self._evaluate_current_set_value(snapshot), 35)
+
+    def test_current_control_value_falls_back_to_static_definition_after_command_cancel(self):
+        cancelled = self._set_value_command(60, cancelled=True)
+        snapshot = {
+            "clock": {"absolute_minute": 10, "run_id": 1},
+            "commands": {"history": [cancelled], "effective": []},
+        }
+
+        self.assertEqual(self._evaluate_current_set_value(snapshot), 10)
+
 
 if __name__ == "__main__":
     unittest.main()

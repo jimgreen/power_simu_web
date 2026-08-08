@@ -2418,6 +2418,48 @@ def _active_load_budgets(
     return ac_total_kw, dc_totals_kw
 
 
+def _active_load_side_metrics(
+    snapshot: Mapping[str, Any],
+    measurements: Mapping[Tuple[str, str, str], MeasurementValue],
+) -> Dict[str, Any]:
+    totals = {"AC": 0.0, "DC": 0.0}
+    active_counts = {"AC": 0, "DC": 0}
+    measured_counts = {"AC": 0, "DC": 0}
+    for device in snapshot.get("devices", []) or []:
+        if not isinstance(device, Mapping):
+            continue
+        dev_type = _device_type(device)
+        side = "AC" if dev_type == "ACLoad" else "DC" if dev_type == "DCLoad" else ""
+        if not side or not _is_online(device, measurements):
+            continue
+        dead_island = _number(device.get("dead_island"), 0.0)
+        if dead_island is not None and dead_island != 0.0:
+            continue
+        active_counts[side] += 1
+        measured = _measured(
+            measurements,
+            dev_type,
+            _device_name(device),
+            ("P_LOAD", "P", "P_AC", "P_DC"),
+        )
+        if measured is None:
+            continue
+        totals[side] += measured.value
+        measured_counts[side] += 1
+
+    def side_value(side: str) -> Optional[float]:
+        if active_counts[side] == 0:
+            return 0.0
+        return totals[side] if measured_counts[side] > 0 else None
+
+    return {
+        "acLoadKw": side_value("AC"),
+        "dcLoadKw": side_value("DC"),
+        "onlineAcLoadCount": active_counts["AC"],
+        "onlineDcLoadCount": active_counts["DC"],
+    }
+
+
 def _side_aware_storage_state(
     row: Mapping[str, Any],
     settings: RenewableControlSettings,
@@ -6018,6 +6060,14 @@ def _task8_side_metrics(command_rows: Sequence[Mapping[str, Any]]) -> Dict[str, 
             and row.get("connectionSide") == side
         ]
 
+    def diesel(side: str) -> List[Mapping[str, Any]]:
+        return [
+            row
+            for row in online
+            if row.get("category") == "柴油发电"
+            and row.get("connectionSide") == side
+        ]
+
     ac_wind = renewable("AC", "wind")
     dc_wind = renewable("DC", "wind")
     ac_pv = renewable("AC", "pv")
@@ -6026,7 +6076,40 @@ def _task8_side_metrics(command_rows: Sequence[Mapping[str, Any]]) -> Dict[str, 
     dc_grid = storage("DC", "grid_following")
     ac_balance = storage("AC", "balance")
     dc_balance = storage("DC", "balance")
+    ac_diesel = diesel("AC")
+    dc_diesel = diesel("DC")
+
+    ac_renewable_current = _sum_metric([*ac_wind, *ac_pv], "currentKw")
+    ac_renewable_target = _sum_metric([*ac_wind, *ac_pv], "target")
+    dc_renewable_current = _sum_metric([*dc_wind, *dc_pv], "currentKw")
+    dc_renewable_target = _sum_metric([*dc_wind, *dc_pv], "target")
+    ac_grid_current = _sum_metric(ac_grid, "currentKw")
+    ac_grid_target = _sum_metric(ac_grid, "target")
+    dc_grid_current = _sum_metric(dc_grid, "currentKw")
+    dc_grid_target = _sum_metric(dc_grid, "target")
+    ac_balance_current = _sum_metric(ac_balance, "currentKw")
+    ac_balance_target = _sum_metric(ac_balance, "target")
+    dc_balance_current = _sum_metric(dc_balance, "currentKw")
+    dc_balance_target = _sum_metric(dc_balance, "target")
+    ac_grid_soc = _capacity_weighted_soc(ac_grid)
+    dc_grid_soc = _capacity_weighted_soc(dc_grid)
+    ac_balance_soc = _capacity_weighted_soc(ac_balance)
+    dc_balance_soc = _capacity_weighted_soc(dc_balance)
+    ac_diesel_current = _sum_metric(ac_diesel, "currentKw")
+    ac_diesel_min = _sum_metric(ac_diesel, "minKw")
+    ac_diesel_target = _sum_metric(ac_diesel, "target")
+    dc_diesel_current = _sum_metric(dc_diesel, "currentKw")
+    dc_diesel_min = _sum_metric(dc_diesel, "minKw")
+    dc_diesel_target = _sum_metric(dc_diesel, "target")
     return {
+        "onlineAcRenewableCount": len(ac_wind) + len(ac_pv),
+        "onlineDcRenewableCount": len(dc_wind) + len(dc_pv),
+        "onlineAcGridFollowingStorageCount": len(ac_grid),
+        "onlineDcGridFollowingStorageCount": len(dc_grid),
+        "onlineAcGridFormingStorageCount": len(ac_balance),
+        "onlineDcGridFormingStorageCount": len(dc_balance),
+        "onlineAcDieselCount": len(ac_diesel),
+        "onlineDcDieselCount": len(dc_diesel),
         "acWindCurrentKw": _sum_metric(ac_wind, "currentKw"),
         "acWindTargetKw": _sum_metric(ac_wind, "target"),
         "dcWindCurrentKw": _sum_metric(dc_wind, "currentKw"),
@@ -6035,26 +6118,51 @@ def _task8_side_metrics(command_rows: Sequence[Mapping[str, Any]]) -> Dict[str, 
         "acPvTargetKw": _sum_metric(ac_pv, "target"),
         "dcPvCurrentKw": _sum_metric(dc_pv, "currentKw"),
         "dcPvTargetKw": _sum_metric(dc_pv, "target"),
-        "acGridStorageCurrentKw": _sum_metric(ac_grid, "currentKw"),
-        "acGridStorageTargetKw": _sum_metric(ac_grid, "target"),
-        "acGridStorageSoc": _capacity_weighted_soc(ac_grid),
-        "dcGridStorageCurrentKw": _sum_metric(dc_grid, "currentKw"),
-        "dcGridStorageTargetKw": _sum_metric(dc_grid, "target"),
-        "dcGridStorageSoc": _capacity_weighted_soc(dc_grid),
-        "acBalanceStorageCurrentKw": _sum_metric(ac_balance, "currentKw"),
-        "acBalanceStorageTargetKw": sum(
-            _finite_number(row.get("projectedTargetKw"))
-            for row in ac_balance
-            if _number(row.get("projectedTargetKw")) is not None
-        ),
-        "dcBalanceStorageCurrentKw": _sum_metric(dc_balance, "currentKw"),
-        "dcBalanceStorageTargetKw": sum(
-            _finite_number(row.get("projectedTargetKw"))
-            for row in dc_balance
-            if _number(row.get("projectedTargetKw")) is not None
-        ),
-        "acBalanceStorageSoc": _capacity_weighted_soc(ac_balance),
-        "dcBalanceStorageSoc": _capacity_weighted_soc(dc_balance),
+        "acGridStorageCurrentKw": ac_grid_current,
+        "acGridStorageTargetKw": ac_grid_target,
+        "acGridStorageSoc": ac_grid_soc,
+        "dcGridStorageCurrentKw": dc_grid_current,
+        "dcGridStorageTargetKw": dc_grid_target,
+        "dcGridStorageSoc": dc_grid_soc,
+        "acBalanceStorageCurrentKw": ac_balance_current,
+        "acBalanceStorageTargetKw": ac_balance_target,
+        "dcBalanceStorageCurrentKw": dc_balance_current,
+        "dcBalanceStorageTargetKw": dc_balance_target,
+        "acBalanceStorageSoc": ac_balance_soc,
+        "dcBalanceStorageSoc": dc_balance_soc,
+        "acRenewableCurrentKw": ac_renewable_current,
+        "acRenewableTargetKw": ac_renewable_target,
+        "dcRenewableCurrentKw": dc_renewable_current,
+        "dcRenewableTargetKw": dc_renewable_target,
+        "acGridFollowingStorageCurrentKw": ac_grid_current,
+        "acGridFollowingStorageTargetKw": ac_grid_target,
+        "acGridFollowingStorageSoc": ac_grid_soc,
+        "dcGridFollowingStorageCurrentKw": dc_grid_current,
+        "dcGridFollowingStorageTargetKw": dc_grid_target,
+        "dcGridFollowingStorageSoc": dc_grid_soc,
+        "acGridFormingStorageCurrentKw": ac_balance_current,
+        "acGridFormingStorageTargetKw": ac_balance_target,
+        "acGridFormingStorageSoc": ac_balance_soc,
+        "dcGridFormingStorageCurrentKw": dc_balance_current,
+        "dcGridFormingStorageTargetKw": dc_balance_target,
+        "dcGridFormingStorageSoc": dc_balance_soc,
+        "acDieselCurrentKw": ac_diesel_current,
+        "acDieselMinKw": ac_diesel_min,
+        "acDieselTargetKw": ac_diesel_target,
+        "dcDieselCurrentKw": dc_diesel_current,
+        "dcDieselMinKw": dc_diesel_min,
+        "dcDieselTargetKw": dc_diesel_target,
+        "totalRenewableCurrentKw": ac_renewable_current + dc_renewable_current,
+        "totalRenewableTargetKw": ac_renewable_target + dc_renewable_target,
+        "totalGridFollowingStorageCurrentKw": ac_grid_current + dc_grid_current,
+        "totalGridFollowingStorageTargetKw": ac_grid_target + dc_grid_target,
+        "totalGridFollowingStorageSoc": _capacity_weighted_soc([*ac_grid, *dc_grid]),
+        "totalGridFormingStorageCurrentKw": ac_balance_current + dc_balance_current,
+        "totalGridFormingStorageTargetKw": ac_balance_target + dc_balance_target,
+        "totalGridFormingStorageSoc": _capacity_weighted_soc([*ac_balance, *dc_balance]),
+        "totalDieselCurrentKw": ac_diesel_current + dc_diesel_current,
+        "totalDieselMinKw": ac_diesel_min + dc_diesel_min,
+        "totalDieselTargetKw": ac_diesel_target + dc_diesel_target,
     }
 
 
@@ -8862,6 +8970,10 @@ def calculate_renewable_control_plan(
         measurements,
         resource_topology.dc_transfer_groups,
     )
+    load_side_metrics = _active_load_side_metrics(snapshot, measurements)
+    side_total_load_kw = _sum_known(
+        (load_side_metrics.get("acLoadKw"), load_side_metrics.get("dcLoadKw"))
+    )
     dc_transfer_groups_metric, dc_renewable_to_ac_kw = _dc_transfer_group_metrics(
         resource_topology,
         command_rows,
@@ -8901,6 +9013,9 @@ def calculate_renewable_control_plan(
         "onlineDcBalanceStorageCount": len(online_dc_balance_storage),
         "onlineAcGridFollowingStorageCount": len(online_ac_grid_following_storage),
         "onlineDcGridFollowingStorageCount": len(online_dc_grid_following_storage),
+        "onlineAcdcConverterCount": len(
+            [row for row in all_converter_rows if row.get("online")]
+        ),
         "acBalanceStorageCurrentKw": ac_balance_storage_current,
         "dcBalanceStorageCurrentKw": dc_balance_storage_current,
         "acGridFollowingStorageCurrentKw": ac_grid_following_storage_current,
@@ -8908,6 +9023,8 @@ def calculate_renewable_control_plan(
         "acGridFollowingStorageTargetKw": ac_grid_following_storage_target,
         "dcGridFollowingStorageTargetKw": dc_grid_following_storage_target,
         **task8_side_metrics,
+        **load_side_metrics,
+        "totalLoadKw": side_total_load_kw if side_total_load_kw is not None else load_kw,
         "dcRenewableToAcKw": dc_renewable_to_ac_kw,
         "dcTransferGroups": dc_transfer_groups_metric,
         "directStorageControlAction": direct_storage_plan["action"],
@@ -9415,6 +9532,26 @@ _COMPACT_TREND_FIELDS = (
     "storageKw",
     "storageSocPercent",
     "renewableKw",
+    "acLoadKw",
+    "dcLoadKw",
+    "dieselCurrentKw",
+    "dieselTargetKw",
+    "acRenewableCurrentKw",
+    "acRenewableTargetKw",
+    "dcRenewableCurrentKw",
+    "dcRenewableTargetKw",
+    "acGridFollowingStorageCurrentKw",
+    "acGridFollowingStorageTargetKw",
+    "acGridFollowingStorageSocPercent",
+    "dcGridFollowingStorageCurrentKw",
+    "dcGridFollowingStorageTargetKw",
+    "dcGridFollowingStorageSocPercent",
+    "acGridFormingStorageCurrentKw",
+    "acGridFormingStorageTargetKw",
+    "acGridFormingStorageSocPercent",
+    "dcGridFormingStorageCurrentKw",
+    "dcGridFormingStorageTargetKw",
+    "dcGridFormingStorageSocPercent",
     "acdcCurrentKw",
     "acdcTargetKw",
 )
@@ -10066,6 +10203,16 @@ class TraineeRenewableControlManager:
         run_id = int(_number(clock.get("run_id"), 0.0) or 0)
         step_count = int(_number(clock.get("step_count"), 0.0) or 0)
         minute = _number(clock.get("absolute_minute", clock.get("minute")), 0.0) or 0.0
+
+        def metric_total(*keys: str) -> Optional[float]:
+            values = [_number(metrics.get(key)) for key in keys]
+            finite_values = [value for value in values if value is not None and math.isfinite(value)]
+            return sum(finite_values) if finite_values else None
+
+        def metric_soc_percent(key: str) -> Optional[float]:
+            value = _number(metrics.get(key))
+            return value * 100.0 if value is not None and math.isfinite(value) else None
+
         point = {
             "sampleKey": f"{run_id}|{minute}|{clock.get('time', '')}",
             "runId": run_id,
@@ -10077,6 +10224,38 @@ class TraineeRenewableControlManager:
             "storageKw": metrics.get("storageCurrentKw"),
             "storageSocPercent": metrics.get("storageSoc") * 100 if isinstance(metrics.get("storageSoc"), (int, float)) else None,
             "renewableKw": metrics.get("renewableCurrentKw"),
+            "acLoadKw": metrics.get("acLoadKw"),
+            "dcLoadKw": metrics.get("dcLoadKw"),
+            "dieselCurrentKw": metrics.get("dieselCurrentKw"),
+            "dieselTargetKw": metrics.get("dieselTargetKw"),
+            "acRenewableCurrentKw": metrics.get(
+                "acRenewableCurrentKw",
+                metric_total("acWindCurrentKw", "acPvCurrentKw"),
+            ),
+            "acRenewableTargetKw": metrics.get(
+                "acRenewableTargetKw",
+                metric_total("acWindTargetKw", "acPvTargetKw"),
+            ),
+            "dcRenewableCurrentKw": metrics.get(
+                "dcRenewableCurrentKw",
+                metric_total("dcWindCurrentKw", "dcPvCurrentKw"),
+            ),
+            "dcRenewableTargetKw": metrics.get(
+                "dcRenewableTargetKw",
+                metric_total("dcWindTargetKw", "dcPvTargetKw"),
+            ),
+            "acGridFollowingStorageCurrentKw": metrics.get("acGridFollowingStorageCurrentKw"),
+            "acGridFollowingStorageTargetKw": metrics.get("acGridFollowingStorageTargetKw"),
+            "dcGridFollowingStorageCurrentKw": metrics.get("dcGridFollowingStorageCurrentKw"),
+            "dcGridFollowingStorageTargetKw": metrics.get("dcGridFollowingStorageTargetKw"),
+            "acGridFormingStorageCurrentKw": metrics.get("acGridFormingStorageCurrentKw"),
+            "acGridFormingStorageTargetKw": metrics.get("acGridFormingStorageTargetKw"),
+            "dcGridFormingStorageCurrentKw": metrics.get("dcGridFormingStorageCurrentKw"),
+            "dcGridFormingStorageTargetKw": metrics.get("dcGridFormingStorageTargetKw"),
+            "acGridFollowingStorageSocPercent": metric_soc_percent("acGridFollowingStorageSoc"),
+            "dcGridFollowingStorageSocPercent": metric_soc_percent("dcGridFollowingStorageSoc"),
+            "acGridFormingStorageSocPercent": metric_soc_percent("acGridFormingStorageSoc"),
+            "dcGridFormingStorageSocPercent": metric_soc_percent("dcGridFormingStorageSoc"),
             "acdcCurrentKw": metrics.get("acdcCurrentKw"),
             "acdcTargetKw": metrics.get("acdcTargetKw"),
         }

@@ -5889,13 +5889,24 @@ function diagramDefinitionInputDescriptor(field, value) {
 function renderDiagramDeviceDefinitionEditor(record, editor, interaction) {
   const canSave = editor.dirtyFields?.size > 0 && !interaction?.definitionSaving;
   return `
-    <div class="diagram-definition-actions diagram-definition-inline-actions" data-diagram-definition-actions="device">
+    <div class="diagram-definition-actions diagram-definition-head-actions" data-diagram-definition-actions="device">
       <button type="button" data-diagram-definition-cancel>取消</button>
       <button type="button" class="primary" data-diagram-definition-save="device" ${canSave ? "" : "disabled"}>
         ${interaction?.definitionSaving ? "保存中" : "保存"}
       </button>
-    </div>
-    ${diagramDefinitionEditorMessageHtml(interaction)}`;
+    </div>`;
+}
+
+function renderDiagramDeviceDefinitionHeadActions(records, interaction) {
+  const activeRecord = interaction?.definitionEditor?.kind === "device"
+    ? records.find((record) => (
+      record.blockName === interaction.definitionEditor.blockName
+      && Number(record.rowIndex) === Number(interaction.definitionEditor.rowIndex)
+    ))
+    : null;
+  return activeRecord
+    ? renderDiagramDeviceDefinitionEditor(activeRecord, interaction.definitionEditor, interaction)
+    : "";
 }
 
 function renderDiagramDeviceDefinitionValueRow(record, field, activeEditor, interaction) {
@@ -5993,14 +6004,8 @@ function renderDiagramDeviceDefinitionRecords(records, interaction) {
 }
 
 function renderDiagramDeviceDefinitionFooter(records, interaction) {
-  const activeRecord = interaction?.definitionEditor?.kind === "device"
-    ? records.find((record) => (
-      record.blockName === interaction.definitionEditor.blockName
-      && Number(record.rowIndex) === Number(interaction.definitionEditor.rowIndex)
-    ))
-    : null;
-  const content = activeRecord
-    ? renderDiagramDeviceDefinitionEditor(activeRecord, interaction.definitionEditor, interaction)
+  const content = interaction?.definitionEditor?.kind === "device"
+    ? diagramDefinitionEditorMessageHtml(interaction, interaction.definitionEditor.validationError)
     : diagramDefinitionMessageHtml(interaction);
   if (!content) return "";
   return `
@@ -6027,7 +6032,10 @@ function renderDiagramDeviceTooltip(container, hover, snapshot, interaction) {
   return `
     <div class="diagram-tooltip-head">
       <strong data-diagram-tooltip-device-name>${escapeHtml(data.title)}</strong>
-      <span>设备参数</span>
+      <div class="diagram-tooltip-head-controls">
+        <span>设备参数</span>
+        ${renderDiagramDeviceDefinitionHeadActions(data.definitionRecords, interaction)}
+      </div>
     </div>
     <div class="diagram-tooltip-body" data-diagram-device-tooltip-body>
       ${renderDiagramDeviceClassifiedTable(data, interaction)}
@@ -6758,8 +6766,7 @@ function renderDiagramMeasurementSummary(data, editor = null, interaction = null
         <dd ${measurementEditableAttr}>${weightValue}</dd>
       </div>
       ${fixedValueCell}
-    </dl>
-    ${editing ? renderDiagramMeasurementDefinitionEditor(editor, interaction) : ""}`;
+    </dl>`;
 }
 
 function syncDiagramMeasurementDefinitionFields(editor, changedField = "") {
@@ -6790,13 +6797,12 @@ function renderDiagramMeasurementDefinitionEditor(editor, interaction) {
     && !editor.validationError
     && !interaction?.definitionSaving;
   return `
-    <div class="diagram-definition-actions diagram-measurement-definition-editor" data-diagram-definition-actions="measurement">
+    <div class="diagram-definition-actions diagram-definition-head-actions diagram-measurement-definition-editor" data-diagram-definition-actions="measurement">
       <button type="button" data-diagram-definition-cancel>取消</button>
       <button type="button" class="primary" data-diagram-definition-save="measurement" ${canSave ? "" : "disabled"}>
         ${interaction?.definitionSaving ? "保存中" : "保存"}
       </button>
-    </div>
-    ${diagramDefinitionEditorMessageHtml(interaction, editor.validationError)}`;
+    </div>`;
 }
 
 function beginDiagramMeasurementDefinitionEdit(container) {
@@ -6947,10 +6953,14 @@ function renderDiagramMetricTooltip(container, hover, snapshot, interaction) {
   return `
     <div class="diagram-tooltip-head">
       <strong data-diagram-tooltip-device-name>${escapeHtml(data.deviceName)}</strong>
-      <span data-diagram-tooltip-metric-label>${escapeHtml(data.metricLabel)}</span>
+      <div class="diagram-tooltip-head-controls">
+        <span data-diagram-tooltip-metric-label>${escapeHtml(data.metricLabel)}</span>
+        ${editor ? renderDiagramMeasurementDefinitionEditor(editor, interaction) : ""}
+      </div>
     </div>
     <div class="diagram-metric-current" data-diagram-measurement-summary>
       ${renderDiagramMeasurementSummary(data, editor, interaction)}
+      ${editor ? diagramDefinitionEditorMessageHtml(interaction, editor.validationError) : ""}
     </div>
     ${!editor ? diagramDefinitionMessageHtml(interaction) : ""}
     <div class="diagram-trend-tabs" role="tablist" aria-label="量测趋势范围">

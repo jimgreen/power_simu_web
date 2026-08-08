@@ -2891,16 +2891,59 @@ body.is-vertical-splitter-dragging {
   width: 100%;
   min-width: 0;
 }
-.renewable-metric-grid {
+.renewable-metric-tabs {
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 4px 8px 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  border-bottom: 1px solid var(--line);
+  background: #f5f8f9;
+}
+.renewable-metric-tabs button {
+  min-width: 0;
+  height: 34px;
+  padding: 0 6px;
+  border-color: transparent;
+  border-bottom: 0;
+  border-radius: 5px 5px 0 0;
+  color: var(--muted);
+  background: transparent;
+  font-weight: 700;
+}
+.renewable-metric-tabs button:hover {
+  color: var(--teal-dark);
+  background: #eaf3f4;
+}
+.renewable-metric-tabs button.is-active {
+  border-color: var(--line);
+  color: var(--teal-dark);
+  background: #fff;
+  box-shadow: inset 0 -2px 0 var(--teal);
+}
+.renewable-metric-panes {
   flex: 1 1 auto;
   min-height: 0;
+  padding: 8px 2px 8px 0;
+  overflow-y: auto;
+}
+.renewable-metric-pane {
+  display: none;
+}
+.renewable-metric-pane.is-active {
+  display: block;
+}
+.renewable-metric-pane[hidden] {
+  display: none;
+}
+.renewable-metric-grid {
+  min-height: 0;
   margin: 0;
-  padding-right: 2px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-content: start;
   gap: 6px;
-  overflow-y: auto;
 }
 .renewable-metric-grid div {
   min-width: 0;
@@ -2920,6 +2963,25 @@ body.is-vertical-splitter-dragging {
   overflow-wrap: anywhere;
   font-size: 16px;
   font-weight: 700;
+}
+.renewable-metric-footer {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 7px 9px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+.renewable-metric-footer strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .renewable-status {
   min-height: 32px;
@@ -3095,37 +3157,182 @@ body.is-vertical-splitter-dragging {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.renewable-trend-panel canvas {
+.renewable-trend-workspace {
   flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(190px, 228px) minmax(0, 1fr);
+  border-top: 1px solid var(--line);
+}
+.renewable-trend-series-panel {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid var(--line);
+  background: #f7fafb;
+}
+.renewable-trend-series-head {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  background: #eef4f6;
+  color: var(--ink);
+  font-size: 12px;
+}
+.renewable-trend-series-head span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.renewable-trend-series-groups {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+.renewable-trend-series-group {
+  border-bottom: 1px solid var(--line);
+}
+.renewable-trend-series-group[hidden],
+.renewable-trend-series-item[hidden] {
+  display: none;
+}
+.renewable-trend-series-group summary {
+  min-height: 32px;
+  padding: 0 9px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: var(--teal-dark);
+  font-size: 12px;
+  font-weight: 700;
+  list-style: none;
+  user-select: none;
+}
+.renewable-trend-series-group summary::-webkit-details-marker {
+  display: none;
+}
+.renewable-trend-series-group summary::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 120ms ease;
+}
+.renewable-trend-series-group[open] summary::before {
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+.renewable-trend-series-group summary:hover {
+  background: #eaf3f4;
+}
+.renewable-trend-series-list {
+  padding: 2px 5px 6px;
+  display: grid;
+  gap: 1px;
+}
+.renewable-trend-series-item {
+  min-width: 0;
+  min-height: 29px;
+  padding: 3px 5px;
+  display: grid;
+  grid-template-columns: 15px 21px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  border-radius: 4px;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 11px;
+}
+.renewable-trend-series-item:hover,
+.renewable-trend-series-item.is-selected {
+  background: #eaf3f4;
+}
+.renewable-trend-series-item.is-hidden {
+  color: var(--muted);
+}
+.renewable-trend-series-item input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--teal);
+}
+.renewable-trend-series-item i {
+  width: 20px;
+  height: 3px;
+  display: inline-block;
+  border-radius: 999px;
+}
+.renewable-trend-series-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.renewable-trend-chart-surface {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+  background: #fcfeff;
+}
+.renewable-trend-chart-surface canvas {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
   min-height: 110px;
   border: 0;
-  border-top: 1px solid var(--line);
   border-radius: 0;
 }
-.measurement-trace-legend.renewable-trend-legend {
-  flex: 0 0 auto;
-  min-height: 35px;
-  margin: 0;
-  padding: 5px 10px;
-  gap: 8px;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  border-top: 1px solid var(--line);
-}
-.renewable-trend-legend .chart-legend-item {
-  flex: 0 0 auto;
-  height: 24px;
-}
-.renewable-trend-load { background: #c93a3a; }
-.renewable-trend-diesel { background: #b87500; }
-.renewable-trend-storage { background: #4369b2; }
-.renewable-trend-soc { background: #7a4fb3; }
-.renewable-trend-renewable { background: #23854a; }
-.renewable-trend-acdc-current { background: #0a8b8b; }
+.renewable-trend-ac-load { background: #c93a3a; }
+.renewable-trend-dc-load { background: #d66f3c; }
+.renewable-trend-diesel-current { background: #b87500; }
+.renewable-trend-ac-renewable-current { background: #23854a; }
+.renewable-trend-dc-renewable-current { background: #118b78; }
+.renewable-trend-ac-grid-following-storage-current { background: #315aa6; }
+.renewable-trend-dc-grid-following-storage-current { background: #2f80c4; }
+.renewable-trend-ac-grid-forming-storage-current { background: #7a4fb3; }
+.renewable-trend-dc-grid-forming-storage-current { background: #a15ca8; }
+.renewable-trend-diesel-target,
+.renewable-trend-ac-renewable-target,
+.renewable-trend-dc-renewable-target,
+.renewable-trend-ac-grid-following-storage-target,
+.renewable-trend-dc-grid-following-storage-target,
+.renewable-trend-ac-grid-forming-storage-target,
+.renewable-trend-dc-grid-forming-storage-target,
 .renewable-trend-acdc-target {
   height: 0 !important;
-  border-top: 3px dashed #d24f93;
   background: transparent;
+}
+.renewable-trend-diesel-target { border-top: 3px dashed #b87500; }
+.renewable-trend-ac-renewable-target { border-top: 3px dashed #23854a; }
+.renewable-trend-dc-renewable-target { border-top: 3px dashed #118b78; }
+.renewable-trend-ac-grid-following-storage-target { border-top: 3px dashed #315aa6; }
+.renewable-trend-dc-grid-following-storage-target { border-top: 3px dashed #2f80c4; }
+.renewable-trend-ac-grid-forming-storage-target { border-top: 3px dashed #7a4fb3; }
+.renewable-trend-dc-grid-forming-storage-target { border-top: 3px dashed #a15ca8; }
+.renewable-trend-ac-grid-following-storage-soc,
+.renewable-trend-dc-grid-following-storage-soc,
+.renewable-trend-ac-grid-forming-storage-soc,
+.renewable-trend-dc-grid-forming-storage-soc {
+  height: 0 !important;
+  background: transparent;
+}
+.renewable-trend-ac-grid-following-storage-soc { border-top: 3px dotted #315aa6; }
+.renewable-trend-dc-grid-following-storage-soc { border-top: 3px dotted #2f80c4; }
+.renewable-trend-ac-grid-forming-storage-soc { border-top: 3px dotted #7a4fb3; }
+.renewable-trend-dc-grid-forming-storage-soc { border-top: 3px dotted #a15ca8; }
+.renewable-trend-acdc-current { background: #0a8b8b; }
+.renewable-trend-acdc-target {
+  border-top: 3px dashed #0a8b8b;
 }
 .renewable-control-log-panel .panel-head {
   flex: 0 0 auto;
@@ -3863,6 +4070,9 @@ th {
 .receive-warning-dialog {
   width: min(680px, calc(100vw - 28px));
 }
+.renewable-control-parameters-dialog {
+  width: min(680px, calc(100vw - 28px));
+}
 .storage-power-derating-dialog {
   width: min(820px, calc(100vw - 28px));
 }
@@ -3892,6 +4102,33 @@ th {
   line-height: 1;
 }
 .dialog-close-button:hover { border-color: var(--line); background: #f5f8f9; color: var(--ink); }
+.renewable-control-parameter-fields {
+  margin: 16px 0 4px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.renewable-control-parameter-fields label,
+.renewable-control-parameter-row {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.renewable-control-parameter-fields input,
+.renewable-control-parameter-fields select,
+.renewable-control-parameter-row button {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+}
+.renewable-control-parameter-row {
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 0.7fr);
+  align-items: center;
+}
 .remote-control-summary {
   margin: 14px 0;
   display: grid;
@@ -4564,6 +4801,24 @@ canvas {
   .renewable-trend-panel {
     min-height: 360px;
   }
+  .renewable-trend-workspace {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(120px, 150px) minmax(220px, 1fr);
+  }
+  .renewable-trend-series-panel {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .renewable-trend-series-groups {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    overflow: auto;
+  }
+  .renewable-trend-series-group {
+    min-width: 170px;
+    border-right: 1px solid var(--line);
+    border-bottom: 0;
+  }
   .renewable-trend-head-meta {
     flex-wrap: wrap;
   }
@@ -4578,9 +4833,17 @@ canvas {
   .renewable-actions button {
     min-width: 0;
   }
+  .renewable-metric-panes {
+    overflow: visible;
+  }
   .renewable-metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    overflow: visible;
+  }
+  .renewable-control-parameter-fields {
+    grid-template-columns: 1fr;
+  }
+  .renewable-control-parameter-row {
+    grid-column: auto;
   }
   .overview-dashboard {
     grid-template-rows: auto auto auto;

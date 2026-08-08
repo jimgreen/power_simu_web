@@ -124,6 +124,8 @@ const state = {
   manualDefinitionChangesMessageWarning: false,
   manualDefinitionChangeSelection: new Set(),
   receiveReconnectAttempts: 0,
+  receiveTransportFailureCount: 0,
+  receiveTransportInterrupted: false,
   refreshRequestActive: false,
   receiveRequestActive: false,
   receiveStateSyncActive: false,
@@ -209,6 +211,7 @@ const state = {
     lastSentAt: "",
     lastStatus: "请选择单次计算或启动实时控制。",
     logs: [],
+    metricTab: "ac",
     strategyTab: "ac-wind",
     detailTab: "trend",
     logPage: 1,
@@ -249,6 +252,18 @@ const RENEWABLE_STRATEGY_TABS = {
   diesel: { label: "柴发", categories: new Set(["柴油发电"]) },
   converter: { label: "ACDC变流", categories: new Set(["交直流变流器"]) },
 };
+const RENEWABLE_TREND_DEFAULT_VISIBLE_SERIES = new Set([
+  "acLoad",
+  "dcLoad",
+  "dieselCurrent",
+  "acRenewableCurrent",
+  "dcRenewableCurrent",
+  "acGridFollowingStorageCurrent",
+  "dcGridFollowingStorageCurrent",
+  "acGridFormingStorageCurrent",
+  "dcGridFormingStorageCurrent",
+  "acdcCurrent",
+]);
 const TRACE_HIGH_RES_WINDOW_MINUTES = 24 * 60;
 const VIRTUAL_TABLE_ROW_HEIGHT = 34;
 const VIRTUAL_TABLE_MIN_ROWS = 220;
@@ -639,10 +654,10 @@ function setChartSeriesSelected(chartKey, seriesKey, drawFn) {
   if (typeof drawFn === "function") drawFn();
 }
 
-function toggleChartSeriesVisibility(chartKey, seriesKey, drawFn) {
+function setChartSeriesVisibility(chartKey, seriesKey, visible, drawFn) {
   if (!chartKey || !seriesKey) return;
   const hidden = chartHiddenSet(chartKey);
-  if (hidden.has(seriesKey)) hidden.delete(seriesKey);
+  if (visible) hidden.delete(seriesKey);
   else hidden.add(seriesKey);
   state.chartSeriesHidden = { ...(state.chartSeriesHidden || {}), [chartKey]: Array.from(hidden) };
   state.chartSeriesSelected = { ...(state.chartSeriesSelected || {}), [chartKey]: seriesKey };
@@ -650,12 +665,25 @@ function toggleChartSeriesVisibility(chartKey, seriesKey, drawFn) {
   if (typeof drawFn === "function") drawFn();
 }
 
+function toggleChartSeriesVisibility(chartKey, seriesKey, drawFn) {
+  setChartSeriesVisibility(chartKey, seriesKey, isChartSeriesHidden(chartKey, seriesKey), drawFn);
+}
+
 function syncChartLegendButtons(chartKey) {
-  document.querySelectorAll(`[data-chart-toggle="${chartKey}"]`).forEach((button) => {
-    const seriesKey = button.dataset.chartSeries || "";
-    button.classList.toggle("is-hidden", isChartSeriesHidden(chartKey, seriesKey));
-    button.classList.toggle("is-selected", selectedChartSeriesKey(chartKey) === seriesKey);
-    button.setAttribute("aria-pressed", isChartSeriesHidden(chartKey, seriesKey) ? "false" : "true");
+  document.querySelectorAll(`[data-chart-toggle="${chartKey}"]`).forEach((control) => {
+    const seriesKey = control.dataset.chartSeries || "";
+    const hidden = isChartSeriesHidden(chartKey, seriesKey);
+    const selected = selectedChartSeriesKey(chartKey) === seriesKey;
+    if (control.matches('input[type="checkbox"]')) {
+      control.checked = !hidden;
+      const item = control.closest(".renewable-trend-series-item");
+      item?.classList.toggle("is-hidden", hidden);
+      item?.classList.toggle("is-selected", selected);
+      return;
+    }
+    control.classList.toggle("is-hidden", hidden);
+    control.classList.toggle("is-selected", selected);
+    control.setAttribute("aria-pressed", hidden ? "false" : "true");
   });
 }
 
@@ -6517,6 +6545,57 @@ function receiveMismatchKey(messages) {
 
 function resetReceiveIssueStreak() {
   state.receiveReconnectAttempts = 0;
+  state.receiveTransportFailureCount = 0;
+  state.receiveTransportInterrupted = false;
+}
+
+function isTraineeWebTransportError(error) {
+  const name = String(error?.name || "").trim().toLowerCase();
+  const message = String(error?.message || error || "").trim().toLowerCase();
+  return name === "typeerror" && (
+    message.includes("failed to fetch")
+    || message.includes("networkerror")
+    || message.includes("network error")
+    || message.includes("network request failed")
+    || message.includes("load failed")
+  );
+}
+
+function recordTraineeWebTransportIssue(error) {
+  state.receiveTransportFailureCount += 1;
+  state.receiveTransportInterrupted = true;
+  const attempt = state.receiveTransportFailureCount;
+  const logInterval = receiveMaxReconnectAttempts();
+  if (attempt === 1 || attempt % logInterval === 0) {
+    addRuntimeLog(
+      "实时交互",
+      "学员台WEB后台 /api/trainee/snapshot",
+      "后台重连",
+      [
+        `本机学员台WEB后台暂不可用：${apiErrorText(error)}`,
+        `已连续重试 ${attempt} 次；不主动停止接收，后台恢复后自动续接`,
+      ],
+      "warn",
+      true,
+    );
+  }
+  renderReceiveMode(`后台重连中 ${attempt}`);
+}
+
+function finishTraineeWebTransportRecovery(simTime = "") {
+  if (!state.receiveTransportInterrupted) return;
+  const attempts = state.receiveTransportFailureCount;
+  state.receiveTransportFailureCount = 0;
+  state.receiveTransportInterrupted = false;
+  addRuntimeLog(
+    "实时交互",
+    "学员台WEB后台 /api/trainee/snapshot",
+    "后台恢复",
+    [`本机WEB后台访问已恢复`, `中断期间自动重试 ${attempts} 次，接收状态未被主动关闭`],
+    "ok",
+    true,
+    simTime,
+  );
 }
 
 function stopReceiveAfterPersistentIssue(result, detail = [], simTime = "") {
@@ -6593,6 +6672,7 @@ function acceptTeacherSnapshot(snapshot, epoch = state.receiveEpoch) {
   if (!state.receiveMode || epoch !== state.receiveEpoch) return false;
   state.snapshotSource = "teacher";
   const clock = snapshot.clock || {};
+  finishTraineeWebTransportRecovery(clock.time || "--");
   if (String(clock.state || "").toLowerCase() === "stopped") {
     renderSnapshot(snapshot);
     recordReceiveIssue(
@@ -6657,6 +6737,10 @@ async function attemptTeacherReconnect(epoch) {
     }
   } catch (error) {
     if (!state.receiveMode || epoch !== state.receiveEpoch) return;
+    if (isTraineeWebTransportError(error)) {
+      recordTraineeWebTransportIssue(error);
+      return;
+    }
     renderReceiveMode(`重连等待 ${attempt}/${maxAttempts}`);
   }
 }
@@ -7605,6 +7689,7 @@ async function setActiveModel(modelId, shouldRefresh = true) {
   state.activeModelId = nextId;
   localStorage.setItem("polarTraineeModelId", nextId);
   restoreModelContext(nextId);
+  resetReceiveIssueStreak();
   pending.run_status.clear();
   pending.set_values.clear();
   if (!state.receiveMode) state.frozen = false;
@@ -7751,6 +7836,11 @@ async function refreshFromTeacher(epoch = state.receiveEpoch) {
   } catch (_error) {
     if (!state.receiveMode || epoch !== state.receiveEpoch) return;
     $("connectionDot").className = "off";
+    if (isTraineeWebTransportError(_error)) {
+      $("connectionText").textContent = "后台重连";
+      recordTraineeWebTransportIssue(_error);
+      return;
+    }
     $("connectionText").textContent = "正在重连";
     const shouldContinue = recordReceiveIssue(
       "实时交互",
@@ -9776,6 +9866,7 @@ function resetRenewableControlView(modelId = state.activeModelId) {
     lastSentAt: "",
     lastStatus: "正在读取学员台后台控制状态。",
     logs: [],
+    metricTab: "ac",
     strategyTab: "ac-wind",
     logPage: 1,
     lastControlLogRenderKey: "",
@@ -10123,6 +10214,25 @@ function renewableControlLogs() {
   return Array.isArray(state.renewableControl.logs) ? state.renewableControl.logs : [];
 }
 
+function renderRenewableMetricTabs() {
+  const allowedTabs = new Set(["ac", "dc", "system"]);
+  const activeTab = allowedTabs.has(state.renewableControl.metricTab)
+    ? state.renewableControl.metricTab
+    : "ac";
+  state.renewableControl.metricTab = activeTab;
+  document.querySelectorAll("[data-renewable-metric-tab]").forEach((button) => {
+    const active = button.dataset.renewableMetricTab === activeTab;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll("[data-renewable-metric-pane]").forEach((pane) => {
+    const active = pane.dataset.renewableMetricPane === activeTab;
+    pane.hidden = !active;
+    pane.classList.toggle("is-active", active);
+  });
+}
+
 function renderRenewableDetailTabs() {
   const activeTab = state.renewableControl.detailTab === "logs" ? "logs" : "trend";
   state.renewableControl.detailTab = activeTab;
@@ -10192,6 +10302,102 @@ function renewableTrendWindowPoints() {
   ));
 }
 
+function renewableMetricCount(metrics = {}, keys = []) {
+  for (const key of keys) {
+    const raw = metrics?.[key];
+    if (raw === null || raw === undefined || raw === "") continue;
+    const value = Number(raw);
+    if (Number.isFinite(value)) return Math.max(0, value);
+  }
+  return null;
+}
+
+function renewableMetricGroupCount(metrics = {}, group = "") {
+  const directKeys = {
+    "ac-renewable": ["onlineAcRenewableCount"],
+    "dc-renewable": ["onlineDcRenewableCount"],
+    "ac-grid-following-storage": ["onlineAcGridFollowingStorageCount"],
+    "dc-grid-following-storage": ["onlineDcGridFollowingStorageCount"],
+    "ac-grid-forming-storage": ["onlineAcGridFormingStorageCount", "onlineAcBalanceStorageCount"],
+    "dc-grid-forming-storage": ["onlineDcGridFormingStorageCount", "onlineDcBalanceStorageCount"],
+    "ac-diesel": ["onlineAcDieselCount"],
+    "dc-diesel": ["onlineDcDieselCount"],
+    "ac-load": ["onlineAcLoadCount"],
+    "dc-load": ["onlineDcLoadCount"],
+    "system-acdc": ["onlineAcdcConverterCount", "storageConverterCount"],
+  };
+  if (directKeys[group]) return renewableMetricCount(metrics, directKeys[group]);
+  const aggregateGroups = {
+    "system-renewable": ["ac-renewable", "dc-renewable"],
+    "system-grid-following-storage": ["ac-grid-following-storage", "dc-grid-following-storage"],
+    "system-grid-forming-storage": ["ac-grid-forming-storage", "dc-grid-forming-storage"],
+    "system-diesel": ["ac-diesel", "dc-diesel"],
+    "system-load": ["ac-load", "dc-load"],
+  };
+  const childGroups = aggregateGroups[group];
+  if (!childGroups) return null;
+  const counts = childGroups
+    .map((childGroup) => renewableMetricGroupCount(metrics, childGroup))
+    .filter((count) => count !== null);
+  return counts.length ? counts.reduce((sum, count) => sum + count, 0) : null;
+}
+
+function renewableMetricGroupAvailable(metrics = {}, group = "") {
+  const count = renewableMetricGroupCount(metrics, group);
+  return count === null || count > 0;
+}
+
+function renderRenewableMetricAvailability(metrics = {}) {
+  document.querySelectorAll("[data-renewable-metric-group]").forEach((card) => {
+    card.hidden = !renewableMetricGroupAvailable(metrics, card.dataset.renewableMetricGroup || "");
+  });
+}
+
+function ensureRenewableTrendSeriesSelection(seriesDefs = []) {
+  const chartKey = "renewableTrend";
+  if (Object.prototype.hasOwnProperty.call(state.chartSeriesHidden || {}, chartKey)) return;
+  state.chartSeriesHidden = {
+    ...(state.chartSeriesHidden || {}),
+    [chartKey]: seriesDefs
+      .filter((series) => !RENEWABLE_TREND_DEFAULT_VISIBLE_SERIES.has(series.key))
+      .map((series) => series.key),
+  };
+}
+
+function renewableTrendSeriesAvailable(series = {}, metrics = {}) {
+  return renewableMetricGroupAvailable(metrics, series.group || "");
+}
+
+function renderRenewableTrendSeriesAvailability(metrics = {}) {
+  const chartKey = "renewableTrend";
+  const items = Array.from(document.querySelectorAll(".renewable-trend-series-item"));
+  items.forEach((item) => {
+    const group = item.dataset.renewableSeriesGroup || "";
+    const available = renewableMetricGroupAvailable(metrics, group);
+    item.hidden = !available;
+    const input = item.querySelector(`input[data-chart-toggle="${chartKey}"]`);
+    if (!input) return;
+    input.disabled = !available;
+    input.checked = !isChartSeriesHidden(chartKey, input.dataset.chartSeries || "");
+    item.classList.toggle("is-hidden", !input.checked);
+    item.classList.toggle(
+      "is-selected",
+      selectedChartSeriesKey(chartKey) === (input.dataset.chartSeries || ""),
+    );
+  });
+  document.querySelectorAll(".renewable-trend-series-group").forEach((group) => {
+    group.hidden = !Array.from(group.querySelectorAll(".renewable-trend-series-item"))
+      .some((item) => !item.hidden);
+  });
+  const availableInputs = items
+    .filter((item) => !item.hidden)
+    .map((item) => item.querySelector(`input[data-chart-toggle="${chartKey}"]`))
+    .filter(Boolean);
+  const selectedCount = availableInputs.filter((input) => input.checked).length;
+  const summary = $("renewableTrendSeriesSummary");
+  if (summary) summary.textContent = `${selectedCount} / ${availableInputs.length}`;
+}
+
 function drawRenewableTrendChart() {
   const canvas = $("renewableTrendChart");
   if (!canvas) return;
@@ -10214,15 +10420,34 @@ function drawRenewableTrendChart() {
   const range = renewableTrendWindowRange();
   const points = renewableTrendWindowPoints();
   const seriesDefs = [
-    { key: "load", field: "loadKw", label: "负荷功率", color: "#c93a3a", axis: "left", unit: "kW" },
-    { key: "diesel", field: "dieselKw", label: "柴发功率", color: "#b87500", axis: "left", unit: "kW" },
-    { key: "storage", field: "storageKw", label: "储能功率", color: "#4369b2", axis: "left", unit: "kW" },
-    { key: "storageSoc", field: "storageSocPercent", label: "储能SOC", color: "#7a4fb3", axis: "right", unit: "%" },
-    { key: "renewable", field: "renewableKw", label: "新能源功率", color: "#23854a", axis: "left", unit: "kW" },
-    { key: "acdcCurrent", field: "acdcCurrentKw", label: "变流器当前值", color: "#0a8b8b", axis: "left", unit: "kW" },
-    { key: "acdcTarget", field: "acdcTargetKw", label: "变流器目标值", color: "#d24f93", axis: "left", unit: "kW", dashed: true },
+    { key: "acLoad", field: "acLoadKw", label: "交流负荷", group: "ac-load", color: "#c93a3a", axis: "left", unit: "kW" },
+    { key: "dcLoad", field: "dcLoadKw", label: "直流负荷", group: "dc-load", color: "#d66f3c", axis: "left", unit: "kW" },
+    { key: "dieselCurrent", field: "dieselCurrentKw", label: "柴发当前值", group: "system-diesel", color: "#b87500", axis: "left", unit: "kW" },
+    { key: "dieselTarget", field: "dieselTargetKw", label: "柴发目标值", group: "system-diesel", color: "#b87500", axis: "left", unit: "kW", dashed: true },
+    { key: "acRenewableCurrent", field: "acRenewableCurrentKw", label: "交流新能源当前值", group: "ac-renewable", color: "#23854a", axis: "left", unit: "kW" },
+    { key: "acRenewableTarget", field: "acRenewableTargetKw", label: "交流新能源目标值", group: "ac-renewable", color: "#23854a", axis: "left", unit: "kW", dashed: true },
+    { key: "dcRenewableCurrent", field: "dcRenewableCurrentKw", label: "直流新能源当前值", group: "dc-renewable", color: "#118b78", axis: "left", unit: "kW" },
+    { key: "dcRenewableTarget", field: "dcRenewableTargetKw", label: "直流新能源目标值", group: "dc-renewable", color: "#118b78", axis: "left", unit: "kW", dashed: true },
+    { key: "acGridFollowingStorageCurrent", field: "acGridFollowingStorageCurrentKw", label: "交流跟网储能当前值", group: "ac-grid-following-storage", color: "#315aa6", axis: "left", unit: "kW" },
+    { key: "acGridFollowingStorageTarget", field: "acGridFollowingStorageTargetKw", label: "交流跟网储能目标值", group: "ac-grid-following-storage", color: "#315aa6", axis: "left", unit: "kW", dashed: true },
+    { key: "acGridFollowingStorageSoc", field: "acGridFollowingStorageSocPercent", label: "交流跟网储能SOC", group: "ac-grid-following-storage", color: "#315aa6", axis: "right", unit: "%", dashPattern: [2, 4] },
+    { key: "dcGridFollowingStorageCurrent", field: "dcGridFollowingStorageCurrentKw", label: "直流跟网储能当前值", group: "dc-grid-following-storage", color: "#2f80c4", axis: "left", unit: "kW" },
+    { key: "dcGridFollowingStorageTarget", field: "dcGridFollowingStorageTargetKw", label: "直流跟网储能目标值", group: "dc-grid-following-storage", color: "#2f80c4", axis: "left", unit: "kW", dashed: true },
+    { key: "dcGridFollowingStorageSoc", field: "dcGridFollowingStorageSocPercent", label: "直流跟网储能SOC", group: "dc-grid-following-storage", color: "#2f80c4", axis: "right", unit: "%", dashPattern: [2, 4] },
+    { key: "acGridFormingStorageCurrent", field: "acGridFormingStorageCurrentKw", label: "交流构网储能当前值", group: "ac-grid-forming-storage", color: "#7a4fb3", axis: "left", unit: "kW" },
+    { key: "acGridFormingStorageTarget", field: "acGridFormingStorageTargetKw", label: "交流构网储能目标值", group: "ac-grid-forming-storage", color: "#7a4fb3", axis: "left", unit: "kW", dashed: true },
+    { key: "acGridFormingStorageSoc", field: "acGridFormingStorageSocPercent", label: "交流构网储能SOC", group: "ac-grid-forming-storage", color: "#7a4fb3", axis: "right", unit: "%", dashPattern: [2, 4] },
+    { key: "dcGridFormingStorageCurrent", field: "dcGridFormingStorageCurrentKw", label: "直流构网储能当前值", group: "dc-grid-forming-storage", color: "#a15ca8", axis: "left", unit: "kW" },
+    { key: "dcGridFormingStorageTarget", field: "dcGridFormingStorageTargetKw", label: "直流构网储能目标值", group: "dc-grid-forming-storage", color: "#a15ca8", axis: "left", unit: "kW", dashed: true },
+    { key: "dcGridFormingStorageSoc", field: "dcGridFormingStorageSocPercent", label: "直流构网储能SOC", group: "dc-grid-forming-storage", color: "#a15ca8", axis: "right", unit: "%", dashPattern: [2, 4] },
+    { key: "acdcCurrent", field: "acdcCurrentKw", label: "AC/DC变流器当前值", group: "system-acdc", color: "#0a8b8b", axis: "left", unit: "kW" },
+    { key: "acdcTarget", field: "acdcTargetKw", label: "AC/DC变流器目标值", group: "system-acdc", color: "#0a8b8b", axis: "left", unit: "kW", dashed: true },
   ];
-  const visibleSeries = visibleChartSeries(chartKey, seriesDefs);
+  ensureRenewableTrendSeriesSelection(seriesDefs);
+  const metrics = state.renewableControl.lastPlan?.metrics || {};
+  const availableSeries = seriesDefs.filter((series) => renewableTrendSeriesAvailable(series, metrics));
+  const visibleSeries = visibleChartSeries(chartKey, availableSeries);
+  renderRenewableTrendSeriesAvailability(metrics);
   const visiblePowerSeries = visibleSeries.filter((series) => series.axis !== "right");
   const powerValues = points.flatMap((point) => visiblePowerSeries.map((series) => point[series.field]))
     .filter((value) => Number.isFinite(value));
@@ -10305,7 +10530,12 @@ function drawRenewableTrendChart() {
     const pixelPoints = [];
     ctx.strokeStyle = series.color;
     ctx.lineWidth = (series.key === selectedSeries ? 3.2 : 2.2) * ratio;
-    ctx.setLineDash(series.dashed ? [7 * ratio, 5 * ratio] : []);
+    const dashPattern = Array.isArray(series.dashPattern)
+      ? series.dashPattern.map((value) => value * ratio)
+      : series.dashed
+        ? [7 * ratio, 5 * ratio]
+        : [];
+    ctx.setLineDash(dashPattern);
     ctx.beginPath();
     let started = false;
     sampled.forEach(({ index, value }) => {
@@ -10336,10 +10566,46 @@ function drawRenewableTrendChart() {
   syncChartLegendButtons(chartKey);
   drawChartCursor(ctx, chartKey, canvas, plot, hitData, {
     ratio,
-    maxSeries: 8,
+    maxSeries: 10,
     timeLabel: (point) => measurementTraceTimeLabel(point.minute, range, 0, 1),
     valueFormatter: formatNumber,
   });
+}
+
+function renewableMetricTotal(metrics = {}, keys = []) {
+  const values = keys
+    .map((key) => metrics?.[key])
+    .filter((value) => value !== null && value !== undefined && value !== "")
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value));
+  return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+}
+
+function renewableMetricValue(metrics = {}, key = "", fallbackKeys = []) {
+  const raw = metrics?.[key];
+  if (raw !== null && raw !== undefined && raw !== "") {
+    const value = Number(raw);
+    if (Number.isFinite(value)) return value;
+  }
+  return renewableMetricTotal(metrics, fallbackKeys);
+}
+
+function renewableMetricPowerText(value) {
+  return Number.isFinite(value) ? `${formatNumber(value)} kW` : "--";
+}
+
+function renewableMetricSocText(value) {
+  return Number.isFinite(value) ? `${formatOverviewNumber(value * 100)}%` : "--";
+}
+
+function openRenewableControlParametersDialog() {
+  const dialog = $("renewableControlParametersDialog");
+  if (dialog && !dialog.open) dialog.showModal();
+}
+
+function closeRenewableControlParametersDialog() {
+  const dialog = $("renewableControlParametersDialog");
+  if (dialog?.open) dialog.close();
 }
 
 function renderRenewableControl(snapshot = state.snapshot || {}) {
@@ -10391,6 +10657,8 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   });
   const storagePowerDeratingButton = $("storagePowerDeratingButton");
   if (storagePowerDeratingButton) storagePowerDeratingButton.disabled = control.actionActive;
+  const controlParametersButton = $("renewableControlParametersButton");
+  if (controlParametersButton) controlParametersButton.disabled = control.actionActive;
   if (lastActionLabel) lastActionLabel.textContent = loopMode === "closed" ? "最近下发" : "最近计算";
   if (stateNode) {
     stateNode.textContent = !receiveReady
@@ -10402,24 +10670,52 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
         : "等待数据";
   }
   const metrics = plan?.metrics || {};
-  const metricPowerText = (value) => Number.isFinite(value) ? `${formatNumber(value)} kW` : "--";
   const metricText = {
-    renewableCurrentKw: `${formatNumber(metrics.renewableCurrentKw)} kW`,
-    renewableTargetKw: `${formatNumber(metrics.renewableTarget)} kW`,
-    renewableDieselCurrentKw: metricPowerText(metrics.dieselCurrentKw),
-    renewableDieselMinKw: metricPowerText(metrics.dieselMinKw),
-    renewableDieselTargetKw: metricPowerText(metrics.dieselTargetKw),
-    renewableStorageCurrentKw: metricPowerText(metrics.storageCurrentKw),
-    renewableStorageSoc: Number.isFinite(metrics.storageSoc) ? `${formatOverviewNumber(metrics.storageSoc * 100)}%` : "--",
-    renewableAcdcCurrentKw: metricPowerText(metrics.acdcCurrentKw),
-    renewableAcdcTargetKw: metricPowerText(metrics.acdcTargetKw),
-    renewableLoadKw: metricPowerText(metrics.loadKw),
+    renewableAcCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "acRenewableCurrentKw", ["acWindCurrentKw", "acPvCurrentKw"])),
+    renewableAcTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "acRenewableTargetKw", ["acWindTargetKw", "acPvTargetKw"])),
+    renewableDcCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcRenewableCurrentKw", ["dcWindCurrentKw", "dcPvCurrentKw"])),
+    renewableDcTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcRenewableTargetKw", ["dcWindTargetKw", "dcPvTargetKw"])),
+    renewableAcGridFollowingStorageCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "acGridFollowingStorageCurrentKw", ["acGridStorageCurrentKw"])),
+    renewableAcGridFollowingStorageTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "acGridFollowingStorageTargetKw", ["acGridStorageTargetKw"])),
+    renewableAcGridFollowingStorageSoc: renewableMetricSocText(renewableMetricValue(metrics, "acGridFollowingStorageSoc", ["acGridStorageSoc"])),
+    renewableDcGridFollowingStorageCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcGridFollowingStorageCurrentKw", ["dcGridStorageCurrentKw"])),
+    renewableDcGridFollowingStorageTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcGridFollowingStorageTargetKw", ["dcGridStorageTargetKw"])),
+    renewableDcGridFollowingStorageSoc: renewableMetricSocText(renewableMetricValue(metrics, "dcGridFollowingStorageSoc", ["dcGridStorageSoc"])),
+    renewableAcGridFormingStorageCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "acGridFormingStorageCurrentKw", ["acBalanceStorageCurrentKw"])),
+    renewableAcGridFormingStorageTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "acGridFormingStorageTargetKw", ["acBalanceStorageTargetKw"])),
+    renewableAcGridFormingStorageSoc: renewableMetricSocText(renewableMetricValue(metrics, "acGridFormingStorageSoc", ["acBalanceStorageSoc"])),
+    renewableDcGridFormingStorageCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcGridFormingStorageCurrentKw", ["dcBalanceStorageCurrentKw"])),
+    renewableDcGridFormingStorageTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcGridFormingStorageTargetKw", ["dcBalanceStorageTargetKw"])),
+    renewableDcGridFormingStorageSoc: renewableMetricSocText(renewableMetricValue(metrics, "dcGridFormingStorageSoc", ["dcBalanceStorageSoc"])),
+    renewableAcDieselCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "acDieselCurrentKw", ["dieselCurrentKw"])),
+    renewableAcDieselMinKw: renewableMetricPowerText(renewableMetricValue(metrics, "acDieselMinKw", ["dieselMinKw"])),
+    renewableAcDieselTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "acDieselTargetKw", ["dieselTargetKw"])),
+    renewableDcDieselCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcDieselCurrentKw")),
+    renewableDcDieselMinKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcDieselMinKw")),
+    renewableDcDieselTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcDieselTargetKw")),
+    renewableAcLoadKw: renewableMetricPowerText(metrics.acLoadKw),
+    renewableDcLoadKw: renewableMetricPowerText(metrics.dcLoadKw),
+    renewableTotalCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalRenewableCurrentKw", ["renewableCurrentKw"])),
+    renewableTotalTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalRenewableTargetKw", ["renewableTarget"])),
+    renewableTotalGridFollowingStorageCurrentKw: renewableMetricPowerText(metrics.totalGridFollowingStorageCurrentKw),
+    renewableTotalGridFollowingStorageTargetKw: renewableMetricPowerText(metrics.totalGridFollowingStorageTargetKw),
+    renewableTotalGridFollowingStorageSoc: renewableMetricSocText(metrics.totalGridFollowingStorageSoc),
+    renewableTotalGridFormingStorageCurrentKw: renewableMetricPowerText(metrics.totalGridFormingStorageCurrentKw),
+    renewableTotalGridFormingStorageTargetKw: renewableMetricPowerText(metrics.totalGridFormingStorageTargetKw),
+    renewableTotalGridFormingStorageSoc: renewableMetricSocText(metrics.totalGridFormingStorageSoc),
+    renewableTotalDieselCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalDieselCurrentKw", ["dieselCurrentKw"])),
+    renewableTotalDieselMinKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalDieselMinKw", ["dieselMinKw"])),
+    renewableTotalDieselTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalDieselTargetKw", ["dieselTargetKw"])),
+    renewableTotalLoadKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalLoadKw", ["loadKw"])),
+    renewableAcdcCurrentKw: renewableMetricPowerText(metrics.acdcCurrentKw),
+    renewableAcdcTargetKw: renewableMetricPowerText(metrics.acdcTargetKw),
     renewableLastSent: loopMode === "closed" ? control.lastSentAt || "--" : control.lastCalculatedAt || "--",
   };
   Object.entries(metricText).forEach(([id, text]) => {
     const node = $(id);
     if (node) node.textContent = text;
   });
+  renderRenewableMetricAvailability(metrics);
   const status = $("renewableControlStatus");
   if (status) {
     status.textContent = control.sending || control.actionActive
@@ -10433,6 +10729,7 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   if (summary) {
     summary.textContent = `${plan?.commands?.length || 0} 条 · ${plan?.time || "--"} · ${loopModeLabel} · ${renewableDataSourceLabel(plan?.dataQuality?.source)}`;
   }
+  renderRenewableMetricTabs();
   renderRenewableDetailTabs();
   renderRenewableStrategyTabs(plan);
   renderRenewableStrategyDiagnostics(plan);
@@ -12611,9 +12908,29 @@ function renderRunControls(devices, options = {}) {
   });
 }
 
-function currentSetValue(dev, setType) {
+function effectiveRemoteAdjustmentValue(dev, setType, snapshot = state.snapshot || {}) {
+  const entry = activeCommandEntryForControl(dev, "set_value", setType, snapshot);
+  if (!entry) return undefined;
+  const items = entry.normalized?.set_values
+    || entry.payload?.set_values
+    || entry.payload?.setValues
+    || entry.payload?.setpoints
+    || [];
+  const match = items.find((item) => (
+    item?.dev_type === deviceType(dev)
+    && item?.dev_name === deviceName(dev)
+    && item?.set_type === setType
+  ));
+  if (!match) return undefined;
+  const value = match.set_value ?? match.value;
+  return value === "" || value === undefined || value === null ? undefined : value;
+}
+
+function currentSetValue(dev, setType, snapshot = state.snapshot || {}) {
   const key = `${deviceKey(dev)}|${setType}`;
   if (pending.set_values.has(key)) return pending.set_values.get(key).set_value;
+  const effective = effectiveRemoteAdjustmentValue(dev, setType, snapshot);
+  if (effective !== undefined) return effective;
   const exact = dev.set_values?.[setType];
   if (exact !== undefined) return exact;
   const raw = dev.raw || {};
@@ -12728,7 +13045,7 @@ function remoteAdjustmentRows(devices, snapshot = state.snapshot || {}, options 
       category: "遥调",
       measurement: options.includeMeasurements === false ? null : remoteAdjustmentMeasurement(dev, setType, snapshot),
       controlValue: (() => {
-        const current = currentSetValue(dev, setType);
+        const current = currentSetValue(dev, setType, snapshot);
         return current === "" || current === undefined || current === null ? definitionRow.set_value : current;
       })(),
       issuedAt: issuedTime.wall_time,
@@ -13550,6 +13867,7 @@ document.addEventListener("click", (event) => {
   const target = event.target instanceof Element ? event.target : null;
   const chartToggle = target?.closest("[data-chart-toggle][data-chart-series]");
   if (chartToggle) {
+    if (chartToggle.matches('input[type="checkbox"]')) return;
     event.preventDefault();
     const chartKey = chartToggle.dataset.chartToggle || "";
     const seriesKey = chartToggle.dataset.chartSeries || "";
@@ -13683,7 +14001,7 @@ async function toggleReceiveMode() {
     state.receiveMode = false;
     state.frozen = true;
     state.receiveEpoch += 1;
-    state.receiveReconnectAttempts = 0;
+    resetReceiveIssueStreak();
     state.receiveRequestActive = false;
     persistActiveModelContext({ receiveMode: false, frozen: true });
     addRuntimeLog("接收模式", "模拟台实时数据", "停止接收", `冻结于 ${state.lastReceiveAt || "--"}`, "warn");
@@ -13774,6 +14092,12 @@ $("remoteAdjustmentDialog").addEventListener("click", (event) => {
 });
 $("renewableAutoToggle").addEventListener("click", toggleRenewableAuto);
 $("renewableSendOnce").addEventListener("click", runRenewableControlOnce);
+$("renewableControlParametersButton")?.addEventListener("click", openRenewableControlParametersDialog);
+$("closeRenewableControlParametersDialog")?.addEventListener("click", closeRenewableControlParametersDialog);
+$("cancelRenewableControlParametersDialog")?.addEventListener("click", closeRenewableControlParametersDialog);
+$("renewableControlParametersDialog")?.addEventListener("click", (event) => {
+  if (event.target === $("renewableControlParametersDialog")) closeRenewableControlParametersDialog();
+});
 $("storagePowerDeratingButton")?.addEventListener("click", openStoragePowerDeratingDialog);
 $("closeStoragePowerDeratingDialog")?.addEventListener("click", closeStoragePowerDeratingDialog);
 $("cancelStoragePowerDerating")?.addEventListener("click", closeStoragePowerDeratingDialog);
@@ -13802,6 +14126,14 @@ document.querySelectorAll("[data-renewable-strategy-tab]").forEach((button) => {
     if (!RENEWABLE_STRATEGY_TABS[tabKey]) return;
     state.renewableControl.strategyTab = tabKey;
     renderRenewableControl(state.snapshot || {});
+  });
+});
+document.querySelectorAll("[data-renewable-metric-tab]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const tabKey = button.dataset.renewableMetricTab || "ac";
+    if (!["ac", "dc", "system"].includes(tabKey)) return;
+    state.renewableControl.metricTab = tabKey;
+    renderRenewableMetricTabs();
   });
 });
 document.querySelectorAll("[data-renewable-detail-tab]").forEach((button) => {
@@ -13882,6 +14214,16 @@ if (renewableTrendWindow) {
     drawRenewableTrendChart();
   });
 }
+document.querySelectorAll('input[data-chart-toggle="renewableTrend"][data-chart-series]').forEach((input) => {
+  input.addEventListener("change", () => {
+    setChartSeriesVisibility(
+      "renewableTrend",
+      input.dataset.chartSeries || "",
+      input.checked,
+      drawRenewableTrendChart,
+    );
+  });
+});
 initTraceChartInteractions("measurementTrace", "measurementTraceChart", drawMeasurementTraceChart);
 initTraceChartInteractions("commandTrace", "commandTraceChart", drawCommandTraceChart);
 initTraceChartInteractions("renewableTrend", "renewableTrendChart", drawRenewableTrendChart);

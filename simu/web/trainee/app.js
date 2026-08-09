@@ -8692,8 +8692,8 @@ function overviewFlowState(category, power) {
   }
   if (category === "converter") {
     return power > 0
-      ? { status: "acToDc", flowDirection: "toDc" }
-      : { status: "dcToAc", flowDirection: "toAc" };
+      ? { status: "dcToAc", flowDirection: "toAc" }
+      : { status: "acToDc", flowDirection: "toDc" };
   }
   return power > 0
     ? { status: "generation", flowDirection: "toBus" }
@@ -10758,6 +10758,12 @@ function renewableRemoteAdjustmentPointName(row = {}) {
   return `${row.dev_type}.${row.dev_name}.${row.set_type}`;
 }
 
+function renewableRowControlPointPower(row = {}, value = null) {
+  const numeric = optionalNumber(value);
+  if (numeric === null) return null;
+  return row.set_type === "p_dc_set" ? -numeric : numeric;
+}
+
 function renewableTopologyCellText(value) {
   if (Array.isArray(value)) return value.length ? value.map((item) => renewableTopologyCellText(item)).join(" -> ") : "--";
   const text = String(value ?? "").trim();
@@ -11805,9 +11811,10 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
           const indirectControlDevices = row.indirectControlDevices;
           const indirectText = renewableIndirectControlText({ indirectControlDevices });
           const boundaryText = renewableRowBoundaryText(row);
-          const targetValue = balanceStorage
+          const currentValue = renewableRowControlPointPower(row, row.currentKw);
+          const targetValue = renewableRowControlPointPower(row, balanceStorage
             ? optionalNumber(row.projectedTargetKw)
-            : optionalNumber(row.targetKw ?? row.commandKw);
+            : optionalNumber(row.targetKw ?? row.commandKw));
           const actionDisabled = !commandable || balanceStorage;
           return `
           <tr class="${commandable && !balanceStorage ? "" : "is-muted"}">
@@ -11820,7 +11827,7 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
             <td class="renewable-topology-text" title="${escapeHtml(renewableTopologyTitle(pathText))}">${escapeHtml(pathText)}</td>
             <td class="renewable-topology-text" title="${escapeHtml(renewableTopologyTitle(topologyStatusText))}">${escapeHtml(topologyStatusText)}</td>
             <td class="renewable-topology-text" title="${escapeHtml(renewableTopologyTitle(indirectText))}">${escapeHtml(indirectText)}</td>
-            <td class="numeric-cell">${Number.isFinite(row.currentKw) ? `${formatNumber(row.currentKw)} kW` : "--"}</td>
+            <td class="numeric-cell">${Number.isFinite(currentValue) ? `${formatNumber(currentValue)} kW` : "--"}</td>
             <td class="numeric-cell" title="${escapeHtml(boundaryText)}">${escapeHtml(boundaryText)}</td>
             <td class="numeric-cell">${Number.isFinite(targetValue) ? `${formatNumber(targetValue)} kW` : "--"}</td>
             <td class="numeric-cell">${row.soc === undefined ? "--" : formatNumber(row.soc)}</td>
@@ -14312,11 +14319,10 @@ function effectiveRemoteAdjustmentValue(dev, setType, snapshot = state.snapshot 
 
 function converterUsesDcPowerSetpoint(dev) {
   const raw = dev?.raw || {};
-  const hasDcControlType = Object.prototype.hasOwnProperty.call(raw, "dc_control_type")
-    || Object.prototype.hasOwnProperty.call(dev || {}, "dc_control_type");
+  const acControlType = String(raw.ac_control_type ?? dev?.ac_control_type ?? "").trim().toUpperCase();
   const dcControlType = String(raw.dc_control_type ?? dev?.dc_control_type ?? "").trim().toUpperCase();
-  const mode = String(dev?.mode || raw.control_type || raw.mode || "").trim().toUpperCase();
-  return dcControlType === "P" || (!hasDcControlType && mode === "DCP");
+  return dcControlType === "P"
+    || (dcControlType === "NONE" && (!acControlType || acControlType === "NONE"));
 }
 
 function currentSetValue(dev, setType, snapshot = state.snapshot || {}) {
@@ -14345,8 +14351,8 @@ function currentSetValue(dev, setType, snapshot = state.snapshot || {}) {
 function remoteAdjustmentTypeLabel(setType) {
   return {
     p_set: "P有功设定",
-    p_ac_set: "交流端P有功设定",
-    p_dc_set: "直流端P有功设定",
+    p_ac_set: "ACP有功设定",
+    p_dc_set: "DCP有功设定",
     q_set: "Q无功设定",
     v_set: "V电压设定",
   }[setType] || setType;

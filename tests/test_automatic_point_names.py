@@ -7,7 +7,7 @@ from pathlib import Path
 
 import simu.server as server_module
 import simu_loop
-from simu.generate_simple_model import measurement_blocks
+from simu.generate_simple_model import measurement_blocks, model_blocks, stat_blocks
 from simu.service import PolarMicrogridSimulator
 from tests.model_fixtures import SIMPLE_MODEL_SOURCE
 
@@ -16,7 +16,102 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class AutomaticPointNamesTest(unittest.TestCase):
-    def test_generated_converter_controls_keep_only_the_active_terminal_setpoint(self):
+    def test_persisted_source_models_define_one_dcp_control_per_converter(self):
+        for source_root in (
+            ROOT / "models/simulator/source",
+            ROOT / "models/trainee/source",
+        ):
+            for model_path in sorted(source_root.rglob("model.e")):
+                model_book = server_module._book_from_text(model_path.read_text(encoding="utf-8"))
+                converter_block = model_book.data.get("DCACConverter")
+                if converter_block is None or not converter_block.data:
+                    continue
+                converter_names = {str(row["name"]) for row in converter_block.data}
+                for file_name in ("control.e", "stat.e"):
+                    definition_path = model_path.with_name(file_name)
+                    definition_book = server_module._book_from_text(
+                        definition_path.read_text(encoding="utf-8")
+                    )
+                    dcp_rows = [
+                        row
+                        for row in definition_book.data["SetValue"].data
+                        if row.get("dev_type") == "DCACConverter"
+                        and row.get("set_type") == "p_dc_set"
+                    ]
+                    with self.subTest(model=str(model_path), definition=file_name):
+                        self.assertEqual(
+                            {str(row["dev_name"]) for row in dcp_rows},
+                            converter_names,
+                        )
+                        self.assertEqual(len(dcp_rows), len(converter_names))
+
+    def test_service_load_persists_missing_dcp_controls_from_model(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            shutil.copytree(SIMPLE_MODEL_SOURCE, source)
+            service = PolarMicrogridSimulator(
+                source,
+                root / "runtime",
+                model_id="dcp-reconcile",
+                kernel=lambda _config: None,
+            )
+            converter_names = {
+                str(row["name"])
+                for row in service.definition_snapshot.model_book.data["DCACConverter"].data
+            }
+
+            for book in (service.control_book, service.source_stat_book):
+                dcp_rows = [
+                    row
+                    for row in book.data["SetValue"].data
+                    if row.get("dev_type") == "DCACConverter"
+                    and row.get("set_type") == "p_dc_set"
+                ]
+                self.assertEqual({str(row["dev_name"]) for row in dcp_rows}, converter_names)
+                self.assertEqual(len(dcp_rows), len(converter_names))
+
+            for file_name in ("control.e", "stat.e"):
+                persisted = server_module._book_from_text(
+                    (source / file_name).read_text(encoding="utf-8")
+                )
+                dcp_rows = [
+                    row
+                    for row in persisted.data["SetValue"].data
+                    if row.get("dev_type") == "DCACConverter"
+                    and row.get("set_type") == "p_dc_set"
+                ]
+                self.assertEqual({str(row["dev_name"]) for row in dcp_rows}, converter_names)
+                self.assertEqual(len(dcp_rows), len(converter_names))
+
+    def test_simple_model_generator_uses_strict_converter_schema_and_dcp_controls(self):
+        converter_header, converter_rows = next(
+            (header, rows)
+            for block_name, header, rows in model_blocks()
+            if block_name == "DCACConverter"
+        )
+        self.assertNotIn("control_type", converter_header)
+        self.assertIn("ac_control_type", converter_header)
+        self.assertIn("dc_control_type", converter_header)
+        self.assertIn("p_dc_set", converter_header)
+        self.assertTrue(all("p_dc_set" in row for row in converter_rows))
+
+        set_rows = next(
+            rows
+            for block_name, _header, rows in stat_blocks()
+            if block_name == "SetValue"
+        )
+        converter_names = {str(row["name"]) for row in converter_rows}
+        dcp_rows = [
+            row
+            for row in set_rows
+            if row.get("dev_type") == "DCACConverter"
+            and row.get("set_type") == "p_dc_set"
+        ]
+        self.assertEqual({str(row["dev_name"]) for row in dcp_rows}, converter_names)
+        self.assertEqual(len(dcp_rows), len(converter_names))
+
+    def test_generated_converter_controls_include_acp_and_dcp_points_once(self):
         model_book = server_module._book_from_text(
             """<DCACConverter>
 @ idx name ac_node dc_node ac_control_type dc_control_type p_ac_set p_dc_set run_stat
@@ -34,11 +129,91 @@ class AutomaticPointNamesTest(unittest.TestCase):
         }
 
         self.assertEqual(values[("ac-link", "p_ac_set")], -10.0)
-        self.assertNotIn(("ac-link", "p_dc_set"), values)
+        self.assertEqual(values[("ac-link", "p_dc_set")], 10.0)
         self.assertEqual(values[("dc-link", "p_dc_set")], 20.0)
         self.assertNotIn(("dc-link", "p_ac_set"), values)
         self.assertEqual(values[("dual-link", "p_dc_set")], 30.0)
         self.assertNotIn(("dual-link", "p_ac_set"), values)
+        self.assertEqual(len(values), len(rows))
+
+    def test_generated_model_requires_explicit_converter_dcp_column(self):
+        model_book = server_module._book_from_text(
+            """<DCACConverter>
+@ idx name ac_node dc_node ac_control_type dc_control_type p_ac_set q_ac_set run_stat
+# 1 acdc-link 1 2 PQ NONE -12.5 0 1
+</DCACConverter>
+"""
+        )
+
+        with self.assertRaisesRegex(ValueError, "p_dc_set"):
+            server_module._generated_model_artifacts(
+                server_module.render_ebook_aligned(model_book)
+            )
+
+    def test_generated_model_rejects_legacy_combined_converter_control_type(self):
+        model_book = server_module._book_from_text(
+            """<DCACConverter>
+@ idx name ac_node dc_node control_type p_ac_set p_dc_set q_ac_set run_stat
+# 1 legacy-link 1 2 DCP -12.5 12.5 0 1
+</DCACConverter>
+"""
+        )
+
+        with self.assertRaisesRegex(ValueError, "control_type"):
+            server_module._generated_model_artifacts(
+                server_module.render_ebook_aligned(model_book)
+            )
+
+    def test_generated_converter_dcp_is_exported_as_remote_adjustment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model_book = server_module._book_from_text(
+                """<DCACConverter>
+@ idx name ac_node dc_node ac_control_type dc_control_type p_ac_set p_dc_set q_ac_set run_stat
+# 1 acdc-link 1 2 PQ NONE -12.5 12.5 0 1
+</DCACConverter>
+"""
+            )
+            artifacts = server_module._generated_model_artifacts(
+                server_module.render_ebook_aligned(model_book)
+            )
+            source = root / "source"
+            server_module._write_generated_model_artifacts(source, artifacts)
+            service = PolarMicrogridSimulator(
+                source,
+                root / "runtime",
+                model_id="converter-dcp",
+                kernel=lambda _config: None,
+            )
+
+            control_rows = service.definitions()["control"]["SetValue"]["rows"]
+            dcp_rows = [
+                row
+                for row in control_rows
+                if row["dev_type"] == "DCACConverter"
+                and row["dev_name"] == "acdc-link"
+                and row["set_type"] == "p_dc_set"
+            ]
+            self.assertEqual(len(dcp_rows), 1)
+            self.assertEqual(float(dcp_rows[0]["set_value"]), 12.5)
+            self.assertIn(
+                "DCACConverter.acdc-link.p_dc_set",
+                service.external_control_names()["remote_adjustment_names"],
+            )
+            applied = service.apply_external_control_values(
+                {
+                    "values": {"DCACConverter.acdc-link.p_dc_set": 6.5},
+                    "manual_hold": True,
+                }
+            )
+            self.assertEqual(applied["accepted"]["remote_adjustments"], 1)
+            dcp_item = next(
+                item
+                for item in applied["control_values"]["items"]
+                if item["name"] == "DCACConverter.acdc-link.p_dc_set"
+            )
+            self.assertEqual(float(dcp_item["value"]), 6.5)
+            self.assertTrue(dcp_item["active"])
 
     def test_uploaded_model_generation_uses_device_type_in_all_measurement_names(self):
         model_book = server_module._book_from_text(

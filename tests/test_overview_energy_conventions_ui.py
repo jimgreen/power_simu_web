@@ -26,14 +26,23 @@ class OverviewEnergyConventionsUiTest(unittest.TestCase):
             "function overviewGreenGroupPower",
             "function overviewFlowPowerValue",
         )
-        flow_function = _function_block(
+        power_number_function = _function_block(
             source,
-            "function overviewFlowState",
-            "function normalizeOverviewFlowGroups",
+            "function powerSummaryNumber",
+            "const OVERVIEW_FLOW_GROUP_DEFINITIONS",
+        )
+        flow_functions = _function_block(
+            source,
+            "function overviewFallbackFlowGroups",
+            "function parsePowerFlowOverview",
         )
         node_script = f"""
 {green_functions}
-{flow_function}
+{power_number_function}
+const OVERVIEW_FLOW_GROUP_DEFINITIONS = [
+  {{ key: "acdcConverter", category: "converter", region: "bridge", color: "#0a8b8b" }},
+];
+{flow_functions}
 
 const metrics = overviewGreenMetrics({{
   flowGroups: {{
@@ -70,6 +79,15 @@ const absentDcLoad = overviewGreenMetrics({{
     diesel: {{ present: true, power: 30 }},
   }},
 }});
+const normalizedConverter = normalizeOverviewFlowGroups({{
+  acdcConverter: {{
+    power: 16,
+    targetPower: 20,
+    totalCount: 2,
+    onlineCount: 2,
+    measuredCount: 2,
+  }},
+}}, {{}}).acdcConverter;
 
 process.stdout.write(JSON.stringify({{
   metrics,
@@ -79,6 +97,7 @@ process.stdout.write(JSON.stringify({{
   absentDcLoad,
   positiveConverter: overviewFlowState("converter", 20),
   negativeConverter: overviewFlowState("converter", -20),
+  normalizedConverter,
 }}));
 """
         completed = subprocess.run(
@@ -115,12 +134,18 @@ process.stdout.write(JSON.stringify({{
                 self.assertEqual(result["absentDcLoad"]["greenPower"], 70)
                 self.assertEqual(
                     result["positiveConverter"],
-                    {"status": "acToDc", "flowDirection": "toDc"},
+                    {"status": "dcToAc", "flowDirection": "toAc"},
                 )
                 self.assertEqual(
                     result["negativeConverter"],
-                    {"status": "dcToAc", "flowDirection": "toAc"},
+                    {"status": "acToDc", "flowDirection": "toDc"},
                 )
+                self.assertEqual(result["normalizedConverter"]["power"], 16)
+                self.assertEqual(result["normalizedConverter"]["targetPower"], 20)
+                self.assertEqual(result["normalizedConverter"]["totalCount"], 2)
+                self.assertEqual(result["normalizedConverter"]["onlineCount"], 2)
+                self.assertEqual(result["normalizedConverter"]["status"], "dcToAc")
+                self.assertEqual(result["normalizedConverter"]["flowDirection"], "toAc")
 
 
 if __name__ == "__main__":

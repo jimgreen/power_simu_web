@@ -53,6 +53,10 @@ class TraineeRemoteAdjustmentUiTest(unittest.TestCase):
         self.assertIn('id="remoteAdjustmentValue"', self.html)
         self.assertIn('id="remoteAdjustmentConfirm"', self.html)
 
+    def test_converter_terminal_power_points_use_acp_and_dcp_labels(self):
+        self.assertIn('p_ac_set: "ACP有功设定"', self.script)
+        self.assertIn('p_dc_set: "DCP有功设定"', self.script)
+
     def test_command_split_keeps_remote_adjustment_rows_clickable_in_compact_viewport(self):
         command_split = self.html.split('data-vertical-split="trainee-commands"', 1)[1].split(">", 1)[0]
         self.assertIn('data-vertical-split-min-top="210"', command_split)
@@ -200,12 +204,17 @@ const explicitDcDisabled = {
     p_dc_set: 8,
   },
 };
-const legacyDcControl = {
+const doubleNone = {
   dev_type: "DCACConverter",
-  dev_name: "legacy-grid-link",
+  dev_name: "fallback-grid-link",
   set_values: {},
-  mode: "DCP",
-  raw: { p_ac_set: -6, p_dc_set: 6 },
+  mode: "P",
+  raw: {
+    ac_control_type: "NONE",
+    dc_control_type: "NONE",
+    p_ac_set: -6,
+    p_dc_set: 6,
+  },
 };
 const opaqueConverter = {
   dev_type: "opaque-equipment-class",
@@ -226,7 +235,7 @@ process.stdout.write(JSON.stringify({
   pDc: currentSetValue(dev, "p_dc_set", state.snapshot),
   generic: currentSetValue(dev, "p_set", state.snapshot),
   explicitDcDisabled: currentSetValue(explicitDcDisabled, "p_set", state.snapshot),
-  legacyDc: currentSetValue(legacyDcControl, "p_set", state.snapshot),
+  doubleNone: currentSetValue(doubleNone, "p_set", state.snapshot),
   opaque: currentSetValue(opaqueConverter, "p_set", state.snapshot),
 }));
 """
@@ -243,7 +252,7 @@ process.stdout.write(JSON.stringify({
                 "pDc": 12.5,
                 "generic": 12.5,
                 "explicitDcDisabled": -8,
-                "legacyDc": 6,
+                "doubleNone": 6,
                 "opaque": 4,
             },
         )

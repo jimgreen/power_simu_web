@@ -14,13 +14,6 @@ class DeviceControlModeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             source_dir = Path(temporary) / "source"
             shutil.copytree(SIMPLE_MODEL_SOURCE, source_dir)
-            model_path = source_dir / "model.e"
-            model_text = model_path.read_text(encoding="utf-8")
-            model_text = model_text.replace(
-                "@ idx  name          ac_node  dc_node  r1     r2     control_type  p_ac_set",
-                "@ idx  name          ac_node  dc_node  r1     r2     ac_control_type  p_ac_set",
-            )
-            model_path.write_text(model_text, encoding="utf-8")
 
             service = PolarMicrogridSimulator(
                 source_dir,
@@ -34,7 +27,7 @@ class DeviceControlModeTest(unittest.TestCase):
                 if device["dev_type"] == "DCACConverter" and device["dev_name"] == "grid_inv_acp"
             )
 
-        self.assertEqual(grid_converter["mode"], "ACP")
+        self.assertEqual(grid_converter["mode"], "PQ")
 
 
 if __name__ == "__main__":

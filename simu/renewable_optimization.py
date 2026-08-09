@@ -599,6 +599,27 @@ def _solve_island(
     feasibility = exact_balance_feasibility(normal_lower, normal_upper)
     active_lower = normal_lower
     active_upper = normal_upper
+    if not feasibility.success and any(
+        item.kind == "storage" and item.requires_safety_correction
+        for item in ordered
+    ):
+        # A forced SOC correction can turn an initially balanced island into
+        # an excess-generation state that the normal renewable down-step
+        # cannot absorb. Allow emergency curtailment down to the renewable
+        # hard minimum, but keep every other device inside its ordinary
+        # dispatch window. The resulting renewable step override is recorded
+        # below and remains visible to the caller and audit trail.
+        safety_lower = normal_lower.copy()
+        for index, item in enumerate(ordered):
+            if item.kind == "renewable" and item.safety_lower_kw is not None:
+                safety_lower[index] = item.safety_lower_kw
+        safety_feasibility = exact_balance_feasibility(
+            safety_lower,
+            normal_upper,
+        )
+        if safety_feasibility.success:
+            feasibility = safety_feasibility
+            active_lower = safety_lower
 
     renewable_indexes = [index for index, item in enumerate(ordered) if item.kind == "renewable"]
     diesel_indexes = [index for index, item in enumerate(ordered) if item.kind == "diesel"]

@@ -119,6 +119,46 @@ class TraineeRenewableStorageAcdcMetricsUiTest(unittest.TestCase):
         ):
             with self.subTest(node_id=node_id):
                 self.assertIn(node_id, render_block)
+
+    def test_converter_strategy_rows_display_the_selected_terminal_sign(self):
+        match = re.search(
+            r"function renewableRowControlPointPower\([^)]*\) \{.*?\n\}",
+            self.script,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        node_script = f"""
+function optionalNumber(value) {{
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}}
+{match.group(0)}
+process.stdout.write(JSON.stringify([
+  renewableRowControlPointPower({{ set_type: "p_ac_set" }}, -12),
+  renewableRowControlPointPower({{ set_type: "p_dc_set" }}, -12),
+  renewableRowControlPointPower({{ set_type: "p_set" }}, 8),
+]));
+"""
+        result = subprocess.run(
+            ["node", "-e", node_script],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(json.loads(result.stdout), [-12, 12, 8])
+
+        render_block = self.script.split("function renderRenewableControl", 1)[1].split(
+            "async function toggleRenewableAuto",
+            1,
+        )[0]
+        self.assertIn(
+            "const currentValue = renewableRowControlPointPower(row, row.currentKw);",
+            render_block,
+        )
+        self.assertIn(
+            "const targetValue = renewableRowControlPointPower(row, balanceStorage",
+            render_block,
+        )
         self.assertIn("renewableStorageSocMetricText", render_block)
         self.assertIn("card.dataset.renewableMetricAlways", self.script)
 

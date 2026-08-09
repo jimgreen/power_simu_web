@@ -68,6 +68,7 @@ from hybrid_lf import (  # noqa: E402
 )
 from simu.device_roles import (  # noqa: E402
     converter_active_power_setpoint_field,
+    converter_effective_control_types,
     converter_power_setpoint_fields,
 )
 from simu.model_semantics import (  # noqa: E402
@@ -267,10 +268,27 @@ def _ebook_to_efile_rows(book: EBook) -> Dict[str, Dict[str, Any]]:
             except (IndexError, ValueError):
                 lv = 0
         header = list(block.header_list)
+        serialized_rows = []
+        for row in block.data:
+            effective_row = row
+            if table_name in {"ACDCConverter", "DCACConverter"}:
+                ac_mode, dc_mode = converter_effective_control_types(row)
+                if (
+                    ac_mode != str(row.get("ac_control_type", "")).strip().upper()
+                    or dc_mode != str(row.get("dc_control_type", "")).strip().upper()
+                ):
+                    effective_row = {
+                        **row,
+                        "ac_control_type": ac_mode,
+                        "dc_control_type": dc_mode,
+                    }
+            serialized_rows.append(
+                [str(effective_row.get(column, "")) for column in header]
+            )
         rows[table_name] = {
             "table_name": table_name,
             "header_list": header,
-            "rows": [[str(row.get(column, "")) for column in header] for row in block.data],
+            "rows": serialized_rows,
             "lv": lv,
         }
     return rows
@@ -1184,11 +1202,15 @@ def _apply_set_value_row(model_book: EBook, row: dict) -> int:
     value = row.get("set_value", "")
     if value == "":
         return 0
-    return _set_row_value(
-        target,
-        _set_value_target_column(dev_type, set_type, target),
-        value,
-    )
+    target_column = _set_value_target_column(dev_type, set_type, target)
+    if target_column == "p_dc_set" and _is_converter_control_target(target):
+        changed = _set_row_value(target, target_column, value)
+        if "dc_control_type" in target:
+            changed += _set_row_value(target, "dc_control_type", "P")
+        if "ac_control_type" in target:
+            changed += _set_row_value(target, "ac_control_type", "NONE")
+        return changed
+    return _set_row_value(target, target_column, value)
 
 
 def _run_stat_by_name(stat_book: EBook) -> Dict[Tuple[str, str], str]:

@@ -53,6 +53,8 @@
 # DCACConverter  grid_inv_acp  q_set     0
 # ACLoad         load_ac_1     p_set     90
 # ACLoad         load_ac_1     q_set     30
+# DCACConverter  wt01_rect     p_dc_set  0
+# DCACConverter  grid_inv_acp  p_dc_set  45
 </SetValue>
 <StorageSoc>
 @ dev_type  idx  name   soc_curr

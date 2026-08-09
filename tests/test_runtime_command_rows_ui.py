@@ -37,6 +37,17 @@ class RuntimeCommandRowsUiTest(unittest.TestCase):
         self.assertIn("function manualCommandHoldsAcrossClockLifecycle", app_js)
         self.assertIn("renderRuntimeCommandTable", app_js)
 
+    def test_converter_terminal_power_points_use_acp_and_dcp_labels(self):
+        app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("function runtimeSetpointLabel", app_js)
+        self.assertIn('p_ac_set: "ACP有功设定值"', app_js)
+        self.assertIn('p_dc_set: "DCP有功设定值"', app_js)
+        adjustment_rows = app_js.split("function runtimeRemoteAdjustmentRows", 1)[1].split(
+            "function renderRuntimeCommandTabs",
+            1,
+        )[0]
+        self.assertIn("command: runtimeSetpointLabel(key, meta.kind)", adjustment_rows)
+
     def test_manual_runtime_commands_are_not_filtered_out_by_run_id(self):
         app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
         active_block = app_js.split("function activeCommandHistory", 1)[1].split("function runtimeCommandRefreshInfo", 1)[0]
@@ -156,11 +167,11 @@ const explicitDcDisabled = runtimeControlMeta({
   set_values: { p_ac_set: -10, p_dc_set: 10 },
   raw: { ac_control_type: "PQ", dc_control_type: "NONE" },
 });
-const legacyDcControl = runtimeControlMeta({
+const doubleNone = runtimeControlMeta({
   dev_type: "DCACConverter",
-  mode: "DCP",
+  mode: "P",
   set_values: { p_ac_set: -10, p_dc_set: 10 },
-  raw: {},
+  raw: { ac_control_type: "NONE", dc_control_type: "NONE" },
 });
 const opaqueConverter = runtimeControlMeta({
   dev_type: "opaque-equipment-class",
@@ -178,7 +189,7 @@ process.stdout.write(JSON.stringify({
   dc: dcControl.key,
   dual: dualControl.key,
   explicitDcDisabled: explicitDcDisabled.key,
-  legacyDc: legacyDcControl.key,
+  doubleNone: doubleNone.key,
   opaque: opaqueConverter.key,
 }));
 """
@@ -196,7 +207,7 @@ process.stdout.write(JSON.stringify({
                 "dc": "p_dc_set",
                 "dual": "p_dc_set",
                 "explicitDcDisabled": "p_ac_set",
-                "legacyDc": "p_dc_set",
+                "doubleNone": "p_dc_set",
                 "opaque": "p_dc_set",
             },
         )

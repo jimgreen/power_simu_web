@@ -60,7 +60,7 @@ from simu.definition_editing import (
 from simu.device_roles import (
     AC_TO_DC,
     converter_control_mode,
-    converter_power_in_ac_terminal_convention,
+    converter_power_in_dc_to_ac_convention,
     converter_power_setpoint_fields,
 )
 from simu.model_semantics import (
@@ -582,6 +582,30 @@ def _find_set_row(block: EBlock, dev_type: str, dev_name: str, set_type: str) ->
 
 def _load_book(path: Path) -> EBook:
     return EBook(path) if path.exists() else EBook({})
+
+
+def ensure_dcac_dcp_control_rows(model_book: EBook, control_book: EBook) -> int:
+    converter_block = model_book.data.get("DCACConverter")
+    if converter_block is None or "p_dc_set" not in getattr(converter_block, "header_list", []):
+        return 0
+    set_block = _ensure_block(control_book, "SetValue", STAT_HEADERS["SetValue"])
+    added = 0
+    for converter in getattr(converter_block, "data", []):
+        name = str(converter.get("name", converter.get("dev_name", ""))).strip()
+        if not name or "p_dc_set" not in converter:
+            continue
+        if _find_set_row(set_block, "DCACConverter", name, "p_dc_set") is not None:
+            continue
+        set_block.data.append(
+            {
+                "dev_type": "DCACConverter",
+                "dev_name": name,
+                "set_type": "p_dc_set",
+                "set_value": converter.get("p_dc_set", 0),
+            }
+        )
+        added += 1
+    return added
 
 
 def _active_window(
@@ -1331,12 +1355,43 @@ class PolarMicrogridSimulator:
             self._power_flow_connection_sides_cache = None
             self._measurement_delta_step_count = None
 
+    def _reconcile_source_dcp_controls_unlocked(
+        self,
+        model_book: EBook,
+        source_stat_book: EBook,
+        control_book: EBook,
+    ) -> Tuple[EBook, EBook]:
+        stat_path = Path(self.source_files["stat"])
+        control_path = Path(
+            self.source_files["control"]
+            if self.source_files["control"].exists()
+            else self.source_files["stat"]
+        )
+        same_file = stat_path.resolve() == control_path.resolve()
+        stat_added = ensure_dcac_dcp_control_rows(model_book, source_stat_book)
+        if same_file:
+            if stat_added:
+                simu_loop.write_ebook_aligned(source_stat_book, stat_path)
+            return source_stat_book, simu_loop._clone_ebook(source_stat_book)
+
+        control_added = ensure_dcac_dcp_control_rows(model_book, control_book)
+        if stat_added:
+            simu_loop.write_ebook_aligned(source_stat_book, stat_path)
+        if control_added:
+            simu_loop.write_ebook_aligned(control_book, control_path)
+        return source_stat_book, control_book
+
     def reload_definition_state(self) -> None:
         """Load source definition E files into the live calculation state."""
         model_book = _load_book(self.source_files["model"])
         self.source_stat_book = _load_book(self.source_files["stat"])
         self.control_book = _load_book(
             self.source_files["control"] if self.source_files["control"].exists() else self.source_files["stat"]
+        )
+        self.source_stat_book, self.control_book = self._reconcile_source_dcp_controls_unlocked(
+            model_book,
+            self.source_stat_book,
+            self.control_book,
         )
         self.weather_book = _load_book(
             self.source_files["weather"] if self.source_files["weather"].exists() else self.work_files["weather"]
@@ -3802,7 +3857,7 @@ class PolarMicrogridSimulator:
                                 break
                 if value is None:
                     return None
-                return converter_power_in_ac_terminal_convention(
+                return converter_power_in_dc_to_ac_convention(
                     value,
                     AC_TO_DC,
                     power_field or "p_ac_set",
@@ -4101,7 +4156,7 @@ class PolarMicrogridSimulator:
         if category == "load":
             return ("consumption", "fromBus") if power_value > 0 else ("generation", "toBus")
         if category == "converter":
-            return ("acToDc", "toDc") if power_value > 0 else ("dcToAc", "toAc")
+            return ("dcToAc", "toAc") if power_value > 0 else ("acToDc", "toDc")
         return ("generation", "toBus") if power_value > 0 else ("absorption", "fromBus")
 
     def _power_flow_summary(self, realtime_measurements: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
@@ -4116,7 +4171,7 @@ class PolarMicrogridSimulator:
         power_by_device: Dict[Tuple[str, str, str], Dict[str, float]] = {}
         soc_by_storage: Dict[str, float] = {}
         measured_converter_power_by_key: Dict[Tuple[str, str], float] = {}
-        converter_ac_terminal_power_by_key: Dict[Tuple[str, str], float] = {}
+        converter_dc_terminal_power_by_key: Dict[Tuple[str, str], float] = {}
         converter_power_values_by_key: Dict[Tuple[str, str], Dict[str, float]] = {}
 
         for item in realtime_measurements:
@@ -4166,8 +4221,8 @@ class PolarMicrogridSimulator:
             profile = profiles_by_measurement.get(converter_key)
             direction = str(profile.get("converter_direction", "")) if profile else ""
             if direction:
-                converter_ac_terminal_power_by_key[converter_key] = (
-                    converter_power_in_ac_terminal_convention(
+                converter_dc_terminal_power_by_key[converter_key] = (
+                    converter_power_in_dc_to_ac_convention(
                         raw_power,
                         direction,
                         raw_power_type,
@@ -4215,7 +4270,7 @@ class PolarMicrogridSimulator:
                         )
                     )
 
-        for converter_key, power in converter_ac_terminal_power_by_key.items():
+        for converter_key, power in converter_dc_terminal_power_by_key.items():
             profile = profiles_by_measurement.get(converter_key)
             if profile is None or not bool(profile.get("online", False)):
                 continue
@@ -4246,6 +4301,11 @@ class PolarMicrogridSimulator:
                 {
                     "category": profile.get("category", ""),
                     "side": profile.get("side", ""),
+                    "powerConvention": (
+                        "P_DC"
+                        if profile.get("category") == "converter"
+                        else ""
+                    ),
                     "controlMode": "gridForming" if "GridForming" in group_key else "gridFollowing" if "GridFollowing" in group_key else "",
                     "power": None,
                     "targetPower": None,
@@ -7618,6 +7678,11 @@ class PolarMicrogridSimulator:
             if self.source_files["control"].exists()
             else self.source_files["stat"]
         )
+        source_stat_book, control_book = self._reconcile_source_dcp_controls_unlocked(
+            model_book,
+            source_stat_book,
+            control_book,
+        )
         dev_define_book = simu_loop._capability_define_book(
             model_book,
             self._legacy_dev_define_file(),
@@ -8767,6 +8832,8 @@ class PolarMicrogridSimulator:
             "DCPVGen",
             "ACStorageGen",
             "DCStorageGen",
+            "ACDieselGen",
+            "DCDieselGen",
         )
         return {
             name: [

@@ -1,8 +1,7 @@
-"""Converter control and power-sign helpers.
+"""Explicit device-role and converter power-sign helpers.
 
-Runtime device roles come from model relations and topology. Device names and
-row-level ``dev_type`` values are protocol identifiers or display metadata;
-this module deliberately does not interpret their text as semantic roles.
+Device names are identifiers only. Runtime classification may use stable model
+relations and the explicit ``dev_type`` field, but never descriptive names.
 """
 
 from __future__ import annotations
@@ -18,6 +17,66 @@ def _control_token(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
+def canonical_generator_type(value: Any) -> str:
+    normalized = str(value or "").strip().casefold()
+    return {
+        "acgenerator": "ACGenerator",
+        "dcgenerator": "DCGenerator",
+    }.get(normalized, "")
+
+
+def device_role_from_type(value: Any) -> str:
+    """Return a semantic resource role from an explicit type value."""
+    normalized = str(value or "").strip().casefold()
+    if not normalized:
+        return ""
+    tokens = {
+        token
+        for token in re.split(r"[^a-z0-9]+", normalized)
+        if token
+    }
+    collapsed = "".join(tokens)
+    if tokens.intersection({"storage", "battery", "ess"}) or "energystorage" in collapsed:
+        return "storage"
+    if tokens.intersection({"wind", "windgen", "windgenerator", "turbine"}) or "windsource" in collapsed:
+        return "wind"
+    if tokens.intersection({"pv", "solar", "photovoltaic"}) or "pvsource" in collapsed:
+        return "pv"
+    if tokens.intersection({"diesel", "genset"}) or "dieselgenerator" in collapsed:
+        return "diesel"
+    return ""
+
+
+def converter_direction_from_type(value: Any, fallback_device_type: Any = "") -> str:
+    """Recognize compatible AC/DC converter classes with the P_AC convention."""
+    for candidate in (value, fallback_device_type):
+        collapsed = re.sub(
+            r"[^a-z0-9]+",
+            "",
+            str(candidate or "").strip().casefold(),
+        )
+        if "acdc" in collapsed or "dcac" in collapsed:
+            return AC_TO_DC
+    return ""
+
+
+def converter_role_from_type(value: Any, fallback_device_type: Any = "") -> str:
+    """Return the explicit grid/internal role without consulting a device name."""
+    if not converter_direction_from_type(value, fallback_device_type):
+        return ""
+    normalized = str(value or "").strip().casefold()
+    tokens = {
+        token
+        for token in re.split(r"[^a-z0-9]+", normalized)
+        if token
+    }
+    if device_role_from_type(value) in {"wind", "pv", "storage"}:
+        return "internal"
+    if tokens.intersection({"grid", "intertie", "boundary", "coupling", "link"}):
+        return "grid"
+    return ""
+
+
 def converter_balance_coefficients(direction: Any) -> tuple[float, float]:
     """Return converter coefficients for the AC and DC adjustment balances."""
     normalized = str(direction or "").strip().upper()
@@ -29,35 +88,51 @@ def converter_balance_coefficients(direction: Any) -> tuple[float, float]:
 def converter_control_mode(row: Mapping[str, Any]) -> str:
     """Return the active converter-side control mode.
 
-    Explicit DC-terminal control has priority over AC-terminal control, and
-    both take precedence over the legacy combined mode. ``NONE`` is a real
-    model token but not an active mode, so it must not hide a valid control
-    configured on the opposite terminal.
+    Explicit DC active-power control has priority over AC-terminal control.
+    A converter whose AC and DC modes are both disabled falls back to DC
+    active-power control so the model remains controllable through
+    ``p_dc_set``. ``DCACConverter`` no longer exposes a combined
+    ``control_type`` field.
     """
-    ac_mode = _control_token(row.get("ac_control_type"))
-    dc_mode = _control_token(row.get("dc_control_type"))
+    ac_mode, dc_mode = converter_effective_control_types(row)
     if dc_mode and dc_mode != "NONE":
         return dc_mode
     if ac_mode and ac_mode != "NONE":
         return ac_mode
-    return _control_token(row.get("control_type") or row.get("mode"))
+    return ""
+
+
+def converter_effective_control_types(row: Mapping[str, Any]) -> tuple[str, str]:
+    """Return terminal modes after applying the explicit DC-power fallback.
+
+    The load-flow kernel accepts one active-power controller per converter.
+    ``dc_control_type=P`` therefore disables AC-side power control, including
+    malformed dual-active rows. Explicit ``NONE/NONE`` (and legacy rows with
+    an explicit disabled DC side but no AC mode) use the required ``p_dc_set``
+    fallback without mutating the source model.
+    """
+    ac_mode = _control_token(row.get("ac_control_type"))
+    dc_mode = _control_token(row.get("dc_control_type"))
+    if dc_mode == "P":
+        return "NONE", "P"
+    if dc_mode == "NONE" and ac_mode in {"", "NONE"}:
+        return "NONE", "P"
+    return ac_mode, dc_mode
 
 
 def converter_active_power_setpoint_field(row: Mapping[str, Any]) -> str:
-    """Return the power setpoint, preferring an active DC-side controller."""
-    ac_mode = _control_token(row.get("ac_control_type"))
-    dc_mode = _control_token(row.get("dc_control_type"))
-    legacy_mode = _control_token(row.get("control_type") or row.get("mode"))
+    """Select the terminal power setpoint from explicit DC control state.
+
+    ``dc_control_type=P`` selects ``p_dc_set``. Explicit ``NONE/NONE`` also
+    selects ``p_dc_set``. Otherwise an explicitly disabled DC power controller
+    selects ``p_ac_set`` when the AC terminal declares an active-power-capable
+    control mode.
+    """
+    ac_mode, dc_mode = converter_effective_control_types(row)
     if dc_mode == "P":
         return "p_dc_set"
-    if "dc_control_type" in row and dc_mode in {"", "NONE"}:
+    if dc_mode in {"", "NONE"} and ac_mode in {"PQ", "PV", "PH"}:
         return "p_ac_set"
-    if ac_mode in {"PQ", "PV"}:
-        return "p_ac_set"
-    if legacy_mode in {"ACP", "DCV", "PQ", "PV"}:
-        return "p_ac_set"
-    if legacy_mode == "DCP":
-        return "p_dc_set"
     return ""
 
 

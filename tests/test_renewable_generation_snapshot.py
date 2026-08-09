@@ -9,7 +9,11 @@ import simu_loop
 from simu.generate_simple_model import write_model_dir
 from simu.renewable_control import RenewableControlSettings, calculate_renewable_control_plan
 from simu.service import PolarMicrogridSimulator
-from tests.test_trainee_renewable_backend_control import renewable_snapshot
+from tests.test_trainee_renewable_backend_control import (
+    append_model_row,
+    measurement,
+    renewable_snapshot,
+)
 
 
 class AutomaticStrategyGenerationTest(unittest.TestCase):
@@ -236,6 +240,244 @@ class BidirectionalAcdcSafetyTest(unittest.TestCase):
         self.assertLess(command_row["commandKw"], 0.0)
         self.assertEqual(command["set_type"], "p_dc_set")
         self.assertAlmostEqual(command["set_value"], -command_row["commandKw"])
+
+    def test_renewable_dispatch_uses_ac_setpoint_when_dc_control_is_none(self):
+        snapshot = renewable_snapshot()
+        converter = next(
+            row
+            for row in snapshot["devices"]
+            if row.get("dev_type") == "DCACConverter"
+            and row.get("dev_name") == "grid-converter-1"
+        )
+        converter["mode"] = "PQ"
+        converter["set_types"] = ["p_ac_set", "p_dc_set"]
+        converter["raw"].update(
+            {
+                "ac_control_type": "PQ",
+                "dc_control_type": "NONE",
+                "p_ac_set": 0,
+                "p_dc_set": 0,
+            }
+        )
+        snapshot["definitions"]["control"]["SetValue"]["rows"].append(
+            {
+                "dev_type": "DCACConverter",
+                "dev_name": "grid-converter-1",
+                "set_type": "p_dc_set",
+            }
+        )
+
+        plan = calculate_renewable_control_plan(snapshot)
+        command_row = next(
+            row
+            for row in plan["commandRows"]
+            if row.get("dev_type") == "DCACConverter"
+            and row.get("dev_name") == "grid-converter-1"
+        )
+        command = next(
+            row
+            for row in plan["commands"]
+            if row.get("dev_type") == "DCACConverter"
+            and row.get("dev_name") == "grid-converter-1"
+        )
+
+        self.assertEqual(command_row["set_type"], "p_ac_set")
+        self.assertEqual(command["set_type"], "p_ac_set")
+        self.assertAlmostEqual(command["set_value"], command_row["commandKw"])
+
+    def test_two_parallel_converters_support_all_side_control_combinations(self):
+        cases = {
+            "mixed": (("NONE", "P"), ("PQ", "NONE")),
+            "both_dc": (("NONE", "P"), ("NONE", "P")),
+            "both_ac": (("PQ", "NONE"), ("PQ", "NONE")),
+            "double_none": (("NONE", "NONE"), ("NONE", "NONE")),
+        }
+
+        for label, modes in cases.items():
+            with self.subTest(label=label):
+                snapshot = renewable_snapshot()
+                first = next(
+                    row
+                    for row in snapshot["devices"]
+                    if row.get("dev_type") == "DCACConverter"
+                    and row.get("dev_name") == "grid-converter-1"
+                )
+                first["set_types"] = ["p_ac_set", "p_dc_set"]
+                first["raw"].update(
+                    {
+                        "rated_capacity": "60",
+                        "p_ac_min": "-60",
+                        "p_ac_max": "60",
+                    }
+                )
+                second = copy.deepcopy(first)
+                second["dev_name"] = "grid-converter-2"
+                second["raw"].update(
+                    {
+                        "idx": "2",
+                        "rated_capacity": "20",
+                        "p_ac_min": "-20",
+                        "p_ac_max": "20",
+                    }
+                )
+                snapshot["devices"].append(second)
+
+                first_model = next(
+                    row
+                    for row in snapshot["definitions"]["model"]["DCACConverter"]["rows"]
+                    if row.get("name") == "grid-converter-1"
+                )
+                first_model.update(
+                    {
+                        "p_ac_min": -60,
+                        "p_ac_max": 60,
+                        "p_ac_set": -12,
+                        "p_dc_set": 12,
+                    }
+                )
+                append_model_row(
+                    snapshot,
+                    "DCACConverter",
+                    {
+                        "idx": 2,
+                        "name": "grid-converter-2",
+                        "ac_node": 2,
+                        "dc_node": 3,
+                        "ac_control_type": "PQ",
+                        "dc_control_type": "NONE",
+                        "p_ac_set": -4,
+                        "p_dc_set": 4,
+                        "p_ac_min": -20,
+                        "p_ac_max": 20,
+                        "run_stat": 1,
+                    },
+                )
+                second_model = next(
+                    row
+                    for row in snapshot["definitions"]["model"]["DCACConverter"]["rows"]
+                    if row.get("name") == "grid-converter-2"
+                )
+
+                converter_measurements = [
+                    row
+                    for row in snapshot["measurements"]["scada"]
+                    if row.get("dev_type") == "DCACConverter"
+                    and row.get("dev_name") == "grid-converter-1"
+                ]
+                self.assertEqual(len(converter_measurements), 1)
+                second_measurement = measurement(
+                    "converter-2.p",
+                    "DCACConverter",
+                    "grid-converter-2",
+                    "P_AC",
+                    -4,
+                )
+                snapshot["measurements"]["scada"].append(second_measurement)
+
+                snapshot["definitions"]["control"]["SetValue"]["rows"] = [
+                    row
+                    for row in snapshot["definitions"]["control"]["SetValue"]["rows"]
+                    if row.get("dev_type") != "DCACConverter"
+                ]
+                for device_name in ("grid-converter-1", "grid-converter-2"):
+                    for set_type in ("p_ac_set", "p_dc_set"):
+                        snapshot["definitions"]["control"]["SetValue"]["rows"].append(
+                            {
+                                "dev_type": "DCACConverter",
+                                "dev_name": device_name,
+                                "set_type": set_type,
+                            }
+                        )
+
+                for device, model_row, measured_row, mode, current_kw in zip(
+                    (first, second),
+                    (first_model, second_model),
+                    (converter_measurements[0], second_measurement),
+                    modes,
+                    (-12.0, -4.0),
+                ):
+                    ac_mode, dc_mode = mode
+                    device["mode"] = "P" if dc_mode == "P" or ac_mode == "NONE" else ac_mode
+                    device["raw"].update(
+                        {
+                            "ac_control_type": ac_mode,
+                            "dc_control_type": dc_mode,
+                            "p_ac_set": current_kw,
+                            "p_dc_set": -current_kw,
+                        }
+                    )
+                    model_row.update(
+                        {
+                            "ac_control_type": ac_mode,
+                            "dc_control_type": dc_mode,
+                            "p_ac_set": current_kw,
+                            "p_dc_set": -current_kw,
+                        }
+                    )
+                    use_dc = dc_mode == "P" or (dc_mode == "NONE" and ac_mode == "NONE")
+                    measured_row["meas_type"] = "P_DC" if use_dc else "P_AC"
+                    measured_row["value"] = -current_kw if use_dc else current_kw
+
+                plan = calculate_renewable_control_plan(snapshot)
+                converter_rows = sorted(
+                    (
+                        row
+                        for row in plan["commandRows"]
+                        if row.get("dev_type") == "DCACConverter"
+                        and row.get("dev_name") in {"grid-converter-1", "grid-converter-2"}
+                    ),
+                    key=lambda row: row["dev_name"],
+                )
+                converter_commands = {
+                    row["dev_name"]: row
+                    for row in plan["commands"]
+                    if row.get("dev_type") == "DCACConverter"
+                    and row.get("dev_name") in {"grid-converter-1", "grid-converter-2"}
+                }
+                expected_fields = [
+                    "p_dc_set"
+                    if dc_mode == "P" or (dc_mode == "NONE" and ac_mode == "NONE")
+                    else "p_ac_set"
+                    for ac_mode, dc_mode in modes
+                ]
+
+                self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
+                self.assertEqual(len(converter_rows), 2)
+                self.assertEqual([row["set_type"] for row in converter_rows], expected_fields)
+                self.assertTrue(all(row["commandable"] for row in converter_rows))
+                self.assertEqual(set(converter_commands), {"grid-converter-1", "grid-converter-2"})
+                self.assertEqual(
+                    plan["metrics"]["converterSystemPowerConvention"],
+                    "P_DC",
+                )
+                self.assertEqual(
+                    plan["metrics"]["converterSystemPositiveDirection"],
+                    "DC_TO_AC",
+                )
+                self.assertAlmostEqual(plan["metrics"]["acdcCurrentKw"], 16.0)
+                self.assertAlmostEqual(
+                    plan["metrics"]["acdcCurrentKw"],
+                    -sum(row["currentKw"] for row in converter_rows),
+                )
+                self.assertAlmostEqual(
+                    plan["metrics"]["acdcTargetKw"],
+                    -sum(row["commandKw"] for row in converter_rows),
+                )
+                self.assertGreater(plan["metrics"]["acdcTargetKw"], 0.0)
+                self.assertAlmostEqual(
+                    converter_rows[0]["commandKw"] / 60.0,
+                    converter_rows[1]["commandKw"] / 20.0,
+                    places=6,
+                )
+                for row in converter_rows:
+                    command = converter_commands[row["dev_name"]]
+                    self.assertEqual(command["set_type"], row["set_type"])
+                    expected_value = (
+                        -row["commandKw"]
+                        if row["set_type"] == "p_dc_set"
+                        else row["commandKw"]
+                    )
+                    self.assertAlmostEqual(command["set_value"], expected_value)
 
     def test_dc_terminal_control_does_not_fall_back_to_inactive_p_ac_set(self):
         snapshot = renewable_snapshot()

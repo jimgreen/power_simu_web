@@ -29,6 +29,11 @@ class SimulatorStartDialogUiTest(unittest.TestCase):
         self.assertIn("function startSimulationSecondFromDialog", script)
         self.assertIn('controlClock("start", { second })', script)
         self.assertIn("secondToTimeInput(absoluteSecond % 86400", script)
+        self.assertIn('if (simState) simState.textContent = "error";', script)
+        self.assertIn(
+            'if (solverInfo) solverInfo.textContent = "时钟控制失败";',
+            script,
+        )
 
         self.assertIn(".start-simulation-fields", styles)
         self.assertIn(".modal-field input", styles)

@@ -594,6 +594,71 @@ def _model_book_has_power_model(book: EBook) -> bool:
     return any(name in MODEL_DEVICE_BLOCKS and getattr(block, "data", []) for name, block in book.data.items())
 
 
+def _validate_dcac_converter_schema(model_book: EBook) -> None:
+    block = model_book.data.get("DCACConverter")
+    if block is None or not getattr(block, "data", []):
+        return
+    headers = set(getattr(block, "header_list", []))
+    if "control_type" in headers:
+        raise ValueError(
+            "DCACConverter 已取消 control_type，请使用 ac_control_type 和 dc_control_type"
+        )
+    required = {"ac_control_type", "dc_control_type", "p_ac_set", "p_dc_set"}
+    missing = sorted(required - headers)
+    if missing:
+        raise ValueError(
+            f"DCACConverter 缺少必需字段: {', '.join(missing)}"
+        )
+
+
+def _ensure_dcac_dcp_control_rows(model_book: EBook, control_book: EBook) -> None:
+    _validate_dcac_converter_schema(model_book)
+    converter_block = model_book.data.get("DCACConverter")
+    converter_rows = [] if converter_block is None else list(getattr(converter_block, "data", []))
+    if not converter_rows:
+        return
+
+    set_block = control_book.data.get("SetValue")
+    if set_block is None:
+        set_block = EBlock("SetValue")
+        set_block.header_list = list(STAT_HEADERS["SetValue"])
+        set_block.data = []
+        control_book.data["SetValue"] = set_block
+    required_headers = set(STAT_HEADERS["SetValue"])
+    missing_headers = sorted(required_headers - set(getattr(set_block, "header_list", [])))
+    if missing_headers:
+        raise ValueError(
+            f"control.e SetValue 缺少必需字段: {', '.join(missing_headers)}"
+        )
+
+    rows = list(getattr(set_block, "data", []))
+    for converter in converter_rows:
+        name = _row_name(converter)
+        if not name:
+            raise ValueError("DCACConverter 存在缺少 name 的设备")
+        matches = [
+            row
+            for row in rows
+            if str(row.get("dev_type", "")).strip() == "DCACConverter"
+            and str(row.get("dev_name", "")).strip() == name
+            and str(row.get("set_type", "")).strip() == "p_dc_set"
+        ]
+        if len(matches) > 1:
+            raise ValueError(
+                f"control.e 中 DCACConverter.{name}.p_dc_set 遥调定义重复"
+            )
+        if matches:
+            continue
+        row = {
+            "dev_type": "DCACConverter",
+            "dev_name": name,
+            "set_type": "p_dc_set",
+            "set_value": converter.get("p_dc_set", 0),
+        }
+        set_block.data.append(row)
+        rows.append(row)
+
+
 def _storage_source_rows(model_book: EBook) -> list[dict]:
     storage_rows: list[dict] = []
     seen: set[tuple[str, str]] = set()
@@ -631,6 +696,7 @@ def _generated_control_blocks(model_book: EBook) -> Mapping[str, tuple[Sequence[
     run_rows: list[dict[str, Any]] = []
     cb_rows: list[dict[str, Any]] = []
     set_rows: list[dict[str, Any]] = []
+    set_row_keys: set[tuple[str, str, str]] = set()
 
     for block_name, block in model_book.data.items():
         headers = set(getattr(block, "header_list", []))
@@ -667,18 +733,24 @@ def _generated_control_blocks(model_book: EBook) -> Mapping[str, tuple[Sequence[
             for set_type, source_column in SET_VALUE_COLUMN_MAP.get(block_name, ()):
                 if (
                     block_name == "DCACConverter"
-                    and set_type in {"p_ac_set", "p_dc_set", "p_set"}
+                    and set_type in {"p_ac_set", "p_set"}
                     and set_type != active_converter_power_field
                 ):
                     continue
-                if source_column not in row:
+                if source_column in row:
+                    source_value = row.get(source_column, 0)
+                else:
                     continue
+                set_row_key = (block_name, name, set_type)
+                if set_row_key in set_row_keys:
+                    continue
+                set_row_keys.add(set_row_key)
                 set_rows.append(
                     {
                         "dev_type": block_name,
                         "dev_name": name,
                         "set_type": set_type,
-                        "set_value": row.get(source_column, 0),
+                        "set_value": source_value,
                     }
                 )
 
@@ -867,6 +939,7 @@ def _generated_model_artifacts(model_text: str) -> Mapping[str, Any]:
                 )
     if not _model_book_has_power_model(model_book):
         raise ValueError("model.e 中未找到可识别的电网模型设备块")
+    _validate_dcac_converter_schema(model_book)
 
     control_blocks = _generated_control_blocks(model_book)
     return {
@@ -1020,10 +1093,14 @@ def _parse_definition_archive(data: bytes) -> Mapping[str, Any]:
         }
 
     assert model_text is not None and meas_text is not None and control_text is not None and curves_text is not None
+    model_book = _book_from_text(model_text)
+    _validate_dcac_converter_schema(model_book)
+    control_book = _book_from_text(control_text)
+    _ensure_dcac_dcp_control_rows(model_book, control_book)
     return {
         "model_text": model_text,
         "meas_text": meas_text,
-        "control_text": control_text,
+        "control_text": render_ebook_aligned(control_book),
         "curves_text": curves_text,
         "diagram_text": _normalize_diagram_svg_text(diagram_text),
         "definition_defaults": definition_defaults,
@@ -1140,11 +1217,9 @@ def make_definition_archive(service: PolarMicrogridSimulator) -> tuple[str, byte
             if has_measurement_overrides
             else meas_path.read_bytes()
         )
-        if has_device_overrides:
-            control_text = render_ebook_aligned(service.control_book)
-        else:
-            control_text = stat_path.read_text(encoding="utf-8")
-            control_text = _extract_efile_blocks(control_text, CONTROL_DEFINITION_BLOCKS) or control_text
+        export_control_book = _book_from_text(render_ebook_aligned(service.control_book))
+        _ensure_dcac_dcp_control_rows(snapshot.model_book, export_control_book)
+        control_text = render_ebook_aligned(export_control_book)
         definition_defaults = {
             "version": 1,
             "measurement_statuses": service.effective_measurement_status_defaults(),

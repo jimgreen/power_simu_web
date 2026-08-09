@@ -72,12 +72,11 @@ class ConverterControlPriorityTest(unittest.TestCase):
         self.assertEqual(float(target["p_dc_set"]), 30.0)
         self.assertEqual(float(target["p_ac_set"]), -35.0)
 
-    def test_explicit_disabled_dc_control_uses_the_ac_terminal(self):
+    def test_double_none_control_falls_back_to_the_dc_terminal(self):
         model_book = self._model_book()
         target = model_book.data["DCACConverter"].data[0]
         target["ac_control_type"] = "NONE"
         target["dc_control_type"] = "NONE"
-        target["control_type"] = "DCP"
 
         simu_loop._apply_set_value_row(
             model_book,
@@ -89,8 +88,8 @@ class ConverterControlPriorityTest(unittest.TestCase):
             },
         )
 
-        self.assertEqual(float(target["p_ac_set"]), -22.0)
-        self.assertEqual(float(target["p_dc_set"]), 10.0)
+        self.assertEqual(float(target["p_ac_set"]), -10.0)
+        self.assertEqual(float(target["p_dc_set"]), -22.0)
 
     def test_dc_terminal_commands_are_active_power_control_targets(self):
         control_book = simu_loop.EBook(
@@ -117,6 +116,26 @@ class ConverterControlPriorityTest(unittest.TestCase):
 
         self.assertIn(("DCACConverter", "grid-link"), targets)
         self.assertIn(("DCACConverter", "legacy-link"), targets)
+
+    def test_explicit_dcp_command_writes_dc_terminal_and_enables_dc_power_control(self):
+        model_book = self._model_book()
+        target = model_book.data["DCACConverter"].data[0]
+
+        changed = simu_loop._apply_set_value_row(
+            model_book,
+            {
+                "dev_type": "DCACConverter",
+                "dev_name": "grid-link",
+                "set_type": "p_dc_set",
+                "set_value": 18.0,
+            },
+        )
+
+        self.assertGreaterEqual(changed, 1)
+        self.assertEqual(float(target["p_dc_set"]), 18.0)
+        self.assertEqual(float(target["p_ac_set"]), -10.0)
+        self.assertEqual(target["ac_control_type"], "NONE")
+        self.assertEqual(target["dc_control_type"], "P")
 
 
 if __name__ == "__main__":

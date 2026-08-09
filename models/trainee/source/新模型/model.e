@@ -243,19 +243,19 @@
 # 9    储能变流器-6  dcdc-converter  20      34      V               NONE            0      0      750    1         5               5        -5       0        1.1      0.9      5        -5       0        1.1      0.9      0   0
 </DCDCConverter>
 <DCACConverter>
-@ idx  name       dev_type        ac_node  dc_node  ac_control_type  dc_control_type  p_ac_set  q_ac_set  v_ac_set  v_dc_set  run_stat  rated_capacity  ac_p_max  ac_p_min  ac_i_max  ac_v_max  ac_v_min  dc_p_max  dc_p_min  dc_i_max  dc_v_max  dc_v_min  r1   r2
-# 1    风机变流器-1    wind-acdc-converter  11       1        PH               NONE             0         0         380       750       1         10              10        -10       0         1.1       0.9       10        -10       0         1.1       0.9       0    0
-# 2    风机变流器-2    wind-acdc-converter  12       2        PH               NONE             0         0         380       750       1         10              10        -10       0         1.1       0.9       10        -10       0         1.1       0.9       0    0
-# 3    风机变流器-3    wind-acdc-converter  13       3        PH               NONE             0         0         380       750       1         10              10        -10       0         1.1       0.9       10        -10       0         1.1       0.9       0    0
-# 4    风机变流器-4    wind-acdc-converter  14       4        PH               NONE             0         0         380       750       1         10              10        -10       0         1.1       0.9       10        -10       0         1.1       0.9       0    0
-# 5    风机变流器-5    wind-acdc-converter  15       5        PH               NONE             0         0         380       750       1         10              10        -10       0         1.1       0.9       10        -10       0         1.1       0.9       0    0
-# 6    风机变流器-6    wind-acdc-converter  16       6        PH               NONE             0         0         380       750       1         10              10        -10       0         1.1       0.9       10        -10       0         1.1       0.9       0    0
-# 7    风机变流器-7    wind-acdc-converter  17       7        PH               NONE             0         0         380       750       1         10              10        -10       0         1.1       0.9       10        -10       0         1.1       0.9       0    0
-# 8    风机变流器-8    wind-acdc-converter  18       8        PH               NONE             0         0         380       750       1         10              10        -10       0         1.1       0.9       10        -10       0         1.1       0.9       0    0
-# 9    风机变流器-9    wind-acdc-converter  19       9        PH               NONE             0         0         380       750       1         10              10        -10       0         1.1       0.9       10        -10       0         1.1       0.9       0    0
-# 10   风机变流器-10   wind-acdc-converter  20       10       PH               NONE             0         0         380       750       1         10              10        -10       0         1.1       0.9       10        -10       0         1.1       0.9       0    0
-# 13   DCAC变流器-1  grid-dcac-converter  23       21       PQ               NONE             10        0         380       750       1         300             300       -300      0         1.1       0.9       300       -300      0         1.1       0.9       0.0  0.0
-# 14   DCAC变流器-2  grid-dcac-converter  25       22       PQ               NONE             10        0         380       750       1         300             300       -300      0         1.1       0.9       300       -300      0         1.1       0.9       0.0  0.0
+@ idx name dev_type ac_node dc_node ac_control_type dc_control_type p_ac_set p_dc_set q_ac_set v_ac_set v_dc_set run_stat rated_capacity ac_p_max ac_p_min ac_i_max ac_v_max ac_v_min dc_p_max dc_p_min dc_i_max dc_v_max dc_v_min r1 r2
+# 1 风机变流器-1 wind-acdc-converter 11 1 PH NONE 0 0 0 380 750 1 10 10 -10 0 1.1 0.9 10 -10 0 1.1 0.9 0 0
+# 2 风机变流器-2 wind-acdc-converter 12 2 PH NONE 0 0 0 380 750 1 10 10 -10 0 1.1 0.9 10 -10 0 1.1 0.9 0 0
+# 3 风机变流器-3 wind-acdc-converter 13 3 PH NONE 0 0 0 380 750 1 10 10 -10 0 1.1 0.9 10 -10 0 1.1 0.9 0 0
+# 4 风机变流器-4 wind-acdc-converter 14 4 PH NONE 0 0 0 380 750 1 10 10 -10 0 1.1 0.9 10 -10 0 1.1 0.9 0 0
+# 5 风机变流器-5 wind-acdc-converter 15 5 PH NONE 0 0 0 380 750 1 10 10 -10 0 1.1 0.9 10 -10 0 1.1 0.9 0 0
+# 6 风机变流器-6 wind-acdc-converter 16 6 PH NONE 0 0 0 380 750 1 10 10 -10 0 1.1 0.9 10 -10 0 1.1 0.9 0 0
+# 7 风机变流器-7 wind-acdc-converter 17 7 PH NONE 0 0 0 380 750 1 10 10 -10 0 1.1 0.9 10 -10 0 1.1 0.9 0 0
+# 8 风机变流器-8 wind-acdc-converter 18 8 PH NONE 0 0 0 380 750 1 10 10 -10 0 1.1 0.9 10 -10 0 1.1 0.9 0 0
+# 9 风机变流器-9 wind-acdc-converter 19 9 PH NONE 0 0 0 380 750 1 10 10 -10 0 1.1 0.9 10 -10 0 1.1 0.9 0 0
+# 10 风机变流器-10 wind-acdc-converter 20 10 PH NONE 0 0 0 380 750 1 10 10 -10 0 1.1 0.9 10 -10 0 1.1 0.9 0 0
+# 13 DCAC变流器-1 grid-dcac-converter 23 21 PQ NONE 10 -10 0 380 750 1 300 300 -300 0 1.1 0.9 300 -300 0 1.1 0.9 0.0 0.0
+# 14 DCAC变流器-2 grid-dcac-converter 25 22 PQ NONE 10 -10 0 380 750 1 300 300 -300 0 1.1 0.9 300 -300 0 1.1 0.9 0.0 0.0
 </DCACConverter>
 <HydroSource>
 @ idx  name             dev_type         node  run_stat

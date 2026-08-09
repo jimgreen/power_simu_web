@@ -1482,6 +1482,63 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
         )
         self.assertAlmostEqual(island.balance_delta_by_side["DC"], 0.0, places=5)
 
+    def test_exact_balance_can_relax_renewable_step_inside_safety_bounds(self):
+        topology = ResourceTopology(resources={}, dc_transfer_groups={})
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[
+                renewable(
+                    "高出力风机",
+                    side="AC",
+                    component="AC:1",
+                    current=100.0,
+                    capacity=100.0,
+                )
+            ],
+            diesel_rows=[],
+            storage_rows=[
+                storage(
+                    "严重过充储能",
+                    side="AC",
+                    component="AC:1",
+                    current=-50.0,
+                    charge=0.0,
+                    discharge=50.0,
+                    soc=1.10,
+                    soc_min=0.20,
+                    soc_max=0.90,
+                    rated_charge=50.0,
+                )
+            ],
+            converter_rows=[],
+            step_coefficient=0.1,
+            storage_step_ratio=0.1,
+            soc_deadband=0.05,
+            grid_forming_storage_protection_ratio=0.0,
+        )
+
+        self.assertTrue(result.all_success, result.islands)
+        island = result.islands[0]
+        self.assertEqual(island.status, "optimal_safety_override")
+        self.assertEqual(
+            set(island.step_override_devices),
+            {
+                ("ACGenerator", "高出力风机"),
+                ("ACGenerator", "严重过充储能"),
+            },
+        )
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "严重过充储能")],
+            5.0,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "高出力风机")],
+            45.0,
+            places=5,
+        )
+        self.assertAlmostEqual(island.balance_delta_by_side["AC"], 0.0, places=5)
+
     def test_balance_delta_keeps_island_solvable_when_soc_correction_has_no_partner(self):
         from simu.renewable_control import (
             _compact_decision_log_detail,

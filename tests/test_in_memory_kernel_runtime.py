@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import tempfile
 import unittest
 from pathlib import Path
@@ -151,8 +152,9 @@ class InMemoryKernelRuntimeTest(unittest.TestCase):
                     converter = next(
                         row
                         for row in model_book.data["DCACConverter"].data
-                        if str(row.get("dev_type", "")).casefold()
-                        == "dcac-converter"
+                        if row.get("ac_node", "") != ""
+                        and row.get("dc_node", "") != ""
+                        and str(row.get("ac_control_type", "")).upper() == "PQ"
                     )
                     converter["dev_type"] = converter_type
                     converter["p_ac_set"] = p_ac_set
@@ -194,8 +196,9 @@ class InMemoryKernelRuntimeTest(unittest.TestCase):
                     converter = next(
                         row
                         for row in converter_block.data
-                        if str(row.get("dev_type", "")).casefold()
-                        == "dcac-converter"
+                        if row.get("ac_node", "") != ""
+                        and row.get("dc_node", "") != ""
+                        and str(row.get("ac_control_type", "")).upper() == "PQ"
                     )
                     converter.update(
                         {
@@ -230,6 +233,129 @@ class InMemoryKernelRuntimeTest(unittest.TestCase):
                         p_dc_set,
                         places=6,
                     )
+
+    def test_two_parallel_dcac_converters_solve_for_all_side_control_combinations(self):
+        import simu_loop
+
+        model_path = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "simple_model" / "model.e"
+        cases = {
+            "mixed": (("NONE", "P"), ("PQ", "NONE")),
+            "both_dc": (("NONE", "P"), ("NONE", "P")),
+            "both_ac": (("PQ", "NONE"), ("PQ", "NONE")),
+            "double_none": (("NONE", "NONE"), ("NONE", "NONE")),
+        }
+
+        for label, modes in cases.items():
+            with self.subTest(label=label):
+                model_book = simu_loop.EBook(model_path)
+                converter_block = model_book.data["DCACConverter"]
+                first = next(
+                    row for row in converter_block.data if row.get("name") == "grid_inv_acp"
+                )
+                second = copy.deepcopy(first)
+                second.update({"idx": "3", "name": "grid_inv_parallel"})
+                converter_block.data.append(second)
+
+                expected_p_ac = (-9.0, -3.0)
+                for row, (ac_mode, dc_mode), target_kw in zip(
+                    (first, second), modes, expected_p_ac
+                ):
+                    row.update(
+                        {
+                            "ac_control_type": ac_mode,
+                            "dc_control_type": dc_mode,
+                            "p_ac_set": target_kw,
+                            "p_dc_set": -target_kw,
+                        }
+                    )
+
+                snapshot, _solver_info = simu_loop.solve_hybrid_snapshot_from_book(
+                    model_book,
+                    model_path,
+                )
+
+                measured_p_ac = []
+                for row, (ac_mode, dc_mode), target_kw in zip(
+                    (first, second), modes, expected_p_ac
+                ):
+                    p_ac = snapshot.value("DCACConverter", row["name"], "P_AC")
+                    p_dc = snapshot.value("DCACConverter", row["name"], "P_DC")
+                    measured_p_ac.append(p_ac)
+                    if dc_mode == "P" or (dc_mode == "NONE" and ac_mode == "NONE"):
+                        self.assertAlmostEqual(p_dc, -target_kw, places=6)
+                    else:
+                        self.assertAlmostEqual(p_ac, target_kw, places=6)
+                    self.assertLess(p_ac, 0.0)
+                    self.assertGreater(p_dc, 0.0)
+                self.assertAlmostEqual(sum(measured_p_ac), sum(expected_p_ac), delta=0.02)
+
+    def test_qinling_parallel_grid_converters_solve_for_all_side_control_combinations(self):
+        import simu_loop
+        from simu.model_semantics import grid_converter_keys
+
+        model_path = (
+            Path(__file__).resolve().parents[1]
+            / "models"
+            / "simulator"
+            / "source"
+            / "秦岭站"
+            / "model.e"
+        )
+        cases = {
+            "mixed": (("NONE", "P"), ("PQ", "NONE")),
+            "both_dc": (("NONE", "P"), ("NONE", "P")),
+            "both_ac": (("PQ", "NONE"), ("PQ", "NONE")),
+            "double_none": (("NONE", "NONE"), ("NONE", "NONE")),
+        }
+
+        for label, modes in cases.items():
+            with self.subTest(label=label):
+                model_book = simu_loop.EBook(model_path)
+                converter_keys = sorted(
+                    key
+                    for key in grid_converter_keys(model_book)
+                    if key[0] in {"ACDCConverter", "DCACConverter"}
+                )
+                self.assertEqual(len(converter_keys), 2)
+                converters = [
+                    next(
+                        row
+                        for row in model_book.data[block_name].data
+                        if str(row.get("name", "")) == device_name
+                    )
+                    for block_name, device_name in converter_keys
+                ]
+
+                expected_p_ac = (-9.0, -3.0)
+                for row, (ac_mode, dc_mode), target_kw in zip(
+                    converters,
+                    modes,
+                    expected_p_ac,
+                ):
+                    row.update(
+                        {
+                            "ac_control_type": ac_mode,
+                            "dc_control_type": dc_mode,
+                            "p_ac_set": target_kw,
+                            "p_dc_set": -target_kw,
+                        }
+                    )
+
+                snapshot, _solver_info = simu_loop.solve_hybrid_snapshot_from_book(
+                    model_book,
+                    model_path,
+                )
+
+                measured_p_dc = []
+                for row, target_kw in zip(converters, expected_p_ac):
+                    p_ac = snapshot.value("DCACConverter", row["name"], "P_AC")
+                    p_dc = snapshot.value("DCACConverter", row["name"], "P_DC")
+                    measured_p_dc.append(p_dc)
+                    self.assertAlmostEqual(p_ac, target_kw, delta=0.02)
+                    self.assertAlmostEqual(p_dc, -target_kw, delta=0.02)
+                    self.assertLess(p_ac, 0.0)
+                    self.assertGreater(p_dc, 0.0)
+                self.assertAlmostEqual(sum(measured_p_dc), 12.0, delta=0.04)
 
 
 if __name__ == "__main__":

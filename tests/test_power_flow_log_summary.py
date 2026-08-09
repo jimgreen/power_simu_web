@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import tempfile
 import unittest
 from pathlib import Path
@@ -99,7 +100,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertIn("负荷用电总功率 -90 kW", text)
         self.assertIn("储能充电总功率 5 kW", text)
 
-    def test_converter_summary_keeps_signed_p_ac_for_both_model_blocks(self):
+    def test_converter_summary_normalizes_both_model_blocks_to_p_dc(self):
         import simu_loop
 
         workspace, service = self._make_service()
@@ -164,7 +165,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         )
 
         converter_group = summary["flowGroups"]["acdcConverter"]
-        self.assertEqual(converter_group["power"], 20.5)
+        self.assertEqual(converter_group["power"], -20.5)
         self.assertEqual(converter_group["totalCount"], 2)
         self.assertEqual(converter_group["onlineCount"], 2)
         self.assertEqual(converter_group["measuredCount"], 2)
@@ -191,7 +192,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
             ]
         )
         reverse_group = reverse_summary["flowGroups"]["acdcConverter"]
-        self.assertEqual(reverse_group["power"], -20.5)
+        self.assertEqual(reverse_group["power"], 20.5)
         self.assertEqual(reverse_group["status"], "dcToAc")
         self.assertEqual(reverse_group["flowDirection"], "toAc")
 
@@ -206,7 +207,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
                 }
             ]
         )["flowGroups"]["acdcConverter"]
-        self.assertEqual(dc_terminal_fallback["power"], -7.0)
+        self.assertEqual(dc_terminal_fallback["power"], 7.0)
         self.assertEqual(dc_terminal_fallback["status"], "dcToAc")
         self.assertEqual(dc_terminal_fallback["flowDirection"], "toAc")
 
@@ -221,7 +222,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
                 }
             ]
         )["flowGroups"]["acdcConverter"]
-        self.assertEqual(reverse_dc_terminal_fallback["power"], 7.0)
+        self.assertEqual(reverse_dc_terminal_fallback["power"], -7.0)
         self.assertEqual(reverse_dc_terminal_fallback["status"], "acToDc")
         self.assertEqual(reverse_dc_terminal_fallback["flowDirection"], "toDc")
 
@@ -499,13 +500,13 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertEqual(groups["dcGridFollowingStorage"]["targetPower"], -8.0)
         self.assertEqual(groups["diesel"]["targetPower"], 70.0)
         self.assertEqual(groups["acLoad"]["targetPower"], 75.0)
-        self.assertEqual(groups["acdcConverter"]["targetPower"], -35.0)
-        self.assertEqual(groups["acdcConverter"]["power"], -34.0)
+        self.assertEqual(groups["acdcConverter"]["targetPower"], 35.0)
+        self.assertEqual(groups["acdcConverter"]["power"], 34.0)
         self.assertEqual(groups["acdcConverter"]["status"], "dcToAc")
         self.assertEqual(groups["acdcConverter"]["flowDirection"], "toAc")
         self.assertEqual(groups["dcWind"]["onlineCount"], 1)
 
-    def test_converter_target_uses_the_terminal_selected_by_control_type(self):
+    def test_converter_target_uses_the_terminal_selected_by_side_control_fields(self):
         import simu_loop
 
         workspace, service = self._make_service()
@@ -539,9 +540,89 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
             ]
         )["flowGroups"]["acdcConverter"]
 
-        self.assertEqual(group["targetPower"], -12.0)
-        self.assertEqual(group["power"], -12.0)
+        self.assertEqual(group["targetPower"], 12.0)
+        self.assertEqual(group["power"], 12.0)
         self.assertEqual(group["status"], "dcToAc")
+
+    def test_parallel_converter_summary_normalizes_all_control_mode_combinations(self):
+        import simu_loop
+        from simu.model_semantics import grid_converter_keys
+
+        cases = {
+            "mixed": (("NONE", "P"), ("PQ", "NONE")),
+            "both_dc": (("NONE", "P"), ("NONE", "P")),
+            "both_ac": (("PQ", "NONE"), ("PQ", "NONE")),
+            "double_none": (("NONE", "NONE"), ("NONE", "NONE")),
+        }
+
+        for label, modes in cases.items():
+            with self.subTest(label=label):
+                workspace, service = self._make_service()
+                self.addCleanup(workspace.cleanup)
+                source_model = service.source_model_book
+                converter_block = source_model.data["DCACConverter"]
+                grid_keys = sorted(
+                    key
+                    for key in grid_converter_keys(source_model)
+                    if key[0] == "DCACConverter"
+                )
+                self.assertEqual(len(grid_keys), 1)
+                first_name = grid_keys[0][1]
+                first = next(row for row in converter_block.data if row.get("name") == first_name)
+                second = copy.deepcopy(first)
+                second.update({"idx": "3", "name": "parallel-grid-link"})
+                converter_block.data.append(second)
+
+                effective_model = simu_loop._clone_ebook(source_model)
+                effective_rows = {
+                    row["name"]: row
+                    for row in effective_model.data["DCACConverter"].data
+                    if row.get("name") in {first_name, "parallel-grid-link"}
+                }
+                target_p_ac = (-9.0, -3.0)
+                measurements = []
+                for source_row, mode, target_kw in zip(
+                    (first, second), modes, target_p_ac
+                ):
+                    ac_mode, dc_mode = mode
+                    source_row.update(
+                        {
+                            "ac_control_type": ac_mode,
+                            "dc_control_type": dc_mode,
+                        }
+                    )
+                    effective_row = effective_rows[source_row["name"]]
+                    effective_row.update(
+                        {
+                            "ac_control_type": ac_mode,
+                            "dc_control_type": dc_mode,
+                            "p_ac_set": target_kw if dc_mode != "P" and ac_mode != "NONE" else 999.0,
+                            "p_dc_set": -target_kw if dc_mode == "P" or ac_mode == "NONE" else 999.0,
+                        }
+                    )
+                    use_dc = dc_mode == "P" or (dc_mode == "NONE" and ac_mode == "NONE")
+                    measurements.append(
+                        {
+                            "dev_type": "DCACConverter",
+                            "dev_name": source_row["name"],
+                            "meas_type": "P_DC" if use_dc else "P_AC",
+                            "value": -target_kw if use_dc else target_kw,
+                            "valid": 1,
+                        }
+                    )
+
+                service.latest_model_book = effective_model
+                service._internal_power_converter_keys_cache = None
+                group = service._power_flow_summary(measurements)["flowGroups"]["acdcConverter"]
+
+                self.assertEqual(group["totalCount"], 2)
+                self.assertEqual(group["onlineCount"], 2)
+                self.assertEqual(group["measuredCount"], 2)
+                self.assertEqual(group["powerConvention"], "P_DC")
+                self.assertAlmostEqual(group["power"], 12.0)
+                self.assertAlmostEqual(group["targetPower"], 12.0)
+                self.assertEqual(group["status"], "dcToAc")
+                self.assertEqual(group["flowDirection"], "toAc")
 
     def test_power_summary_keeps_missing_target_unknown_instead_of_copying_current_power(self):
         import simu_loop

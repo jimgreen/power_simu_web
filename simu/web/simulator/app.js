@@ -1365,8 +1365,10 @@ async function controlClock(action, payload = {}) {
     await refresh();
     return clock;
   } catch (error) {
-    $("simState").textContent = "error";
-    $("solverInfo").textContent = "时钟控制失败";
+    const simState = $("simState");
+    const solverInfo = $("solverInfo");
+    if (simState) simState.textContent = "error";
+    if (solverInfo) solverInfo.textContent = "时钟控制失败";
     throw error;
   } finally {
     setClockButtonsBusy(false);
@@ -9674,8 +9676,8 @@ function overviewFlowState(category, power) {
   }
   if (category === "converter") {
     return power > 0
-      ? { status: "acToDc", flowDirection: "toDc" }
-      : { status: "dcToAc", flowDirection: "toAc" };
+      ? { status: "dcToAc", flowDirection: "toAc" }
+      : { status: "acToDc", flowDirection: "toDc" };
   }
   return power > 0
     ? { status: "generation", flowDirection: "toBus" }
@@ -11193,12 +11195,10 @@ function runtimeControlMeta(dev) {
   const setValues = dev?.set_values || {};
   const raw = dev?.raw || {};
   const mode = String(dev?.mode || raw.control_type || raw.ctrl_mode || "").toUpperCase();
-  const hasDcControlType = Object.prototype.hasOwnProperty.call(raw, "dc_control_type")
-    || Object.prototype.hasOwnProperty.call(dev || {}, "dc_control_type");
+  const acControlType = String(raw.ac_control_type ?? dev?.ac_control_type ?? "").trim().toUpperCase();
   const dcControlType = String(raw.dc_control_type ?? dev?.dc_control_type ?? "").trim().toUpperCase();
-  const usesDcPowerSetpoint = (
-    dcControlType === "P" || (!hasDcControlType && mode === "DCP")
-  );
+  const usesDcPowerSetpoint = dcControlType === "P"
+    || (dcControlType === "NONE" && (!acControlType || acControlType === "NONE"));
   const preferred = [];
   if (mode.includes("V")) preferred.push("v_set", "v_ac_set", "v_dc_set");
   if (mode.includes("Q")) preferred.push("q_set", "q_ac_set");
@@ -11241,6 +11241,13 @@ function runtimeMetaFromSetKey(key, value) {
   if (lowerKey.startsWith("i") || lowerKey.includes("_i")) return { key, label: key, kind: "I", unit: "A", value };
   if (lowerKey === "run_stat") return { key, label: key, kind: "STAT", unit: "", value };
   return { key, label: key, kind: "P", unit: "kW", value };
+}
+
+function runtimeSetpointLabel(key, kind) {
+  return {
+    p_ac_set: "ACP有功设定值",
+    p_dc_set: "DCP有功设定值",
+  }[String(key || "").trim().toLowerCase()] || `${kind}设定值`;
 }
 
 function runtimeMeasurementTypeCandidates(dev, setKey) {
@@ -11801,7 +11808,7 @@ function runtimeRemoteAdjustmentRows(devices, measurements = state.snapshot?.mea
         category: "遥调指令",
         command_kind: "remote_adjustment",
         device: dev,
-        command: `${meta.kind}设定值`,
+        command: runtimeSetpointLabel(key, meta.kind),
         set_type: key,
         command_text: formatRuntimeSignal(meta.value, meta.unit),
         real_text: formatRuntimeSignal(pair.real, meta.unit),

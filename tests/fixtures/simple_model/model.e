@@ -56,9 +56,9 @@
 # 2    ess01_dcdc  5       6       0.005  0.005  V             0      0      300    1
 </DCDCConverter>
 <DCACConverter>
-@ idx  name          dev_type            ac_node  dc_node  r1     r2     control_type  p_ac_set  q_ac_set  v_ac_set  v_dc_set  run_stat
-# 1    wt01_rect     wind-acdc-converter  2        2        0.005  0.005  ACV           0         0         300       0         1
-# 2    grid_inv_acp  grid-acdc-converter  5        7        0.005  0.005  ACP           -45       0         0         0         1
+@ idx  name          dev_type            ac_node  dc_node  r1     r2     ac_control_type  dc_control_type  p_ac_set  p_dc_set  q_ac_set  v_ac_set  v_dc_set  run_stat
+# 1    wt01_rect     wind-acdc-converter  2        2        0.005  0.005  PH               NONE             0         0         0         300       0         1
+# 2    grid_inv_acp  grid-acdc-converter  5        7        0.005  0.005  PQ               NONE             -45       45        0         0         0         1
 </DCACConverter>
 <ACWindGen>
 @ idx  idx_acgenerator  wind_turbine_model  cut_in_wind_speed  rated_wind_speed  cut_out_wind_speed  rated_power  rotor_diameter  hub_height

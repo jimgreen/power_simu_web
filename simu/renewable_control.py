@@ -24,6 +24,7 @@ from simu.device_roles import (
     converter_balance_coefficients,
     converter_control_mode,
     converter_power_in_ac_terminal_convention,
+    converter_power_in_dc_to_ac_convention,
     converter_power_setpoint_fields,
     converter_setpoint_from_p_ac_convention,
 )
@@ -65,7 +66,7 @@ SIMULATION_MINIMUM_SPEED = default_number("simulation_minimum_speed")
 STORAGE_MINIMUM_CONTROL_HORIZON_HOURS = default_number(
     "storage_minimum_control_horizon_hours"
 )
-POWER_CONTROL_MODES = {"P", "PQ", "PV", "ACP"}
+POWER_CONTROL_MODES = {"P", "PQ", "PV", "PH", "ACP"}
 AC_DC_CONVERTER_TYPES = frozenset({"ACDCConverter", "DCACConverter"})
 RENEWABLE_PARAMETER_SPECS = (
     ("wind", "ACWindGen", "ACGenerator", "idx_acgenerator"),
@@ -145,6 +146,21 @@ def _converter_ac_balance_coefficient(row: Mapping[str, Any]) -> float:
 def _converter_ac_injection_kw(row: Mapping[str, Any], power_kw: Any) -> float:
     """Convert declared converter power into AC-side signed injection."""
     return _converter_ac_balance_coefficient(row) * _finite_number(power_kw)
+
+
+def _converter_system_power_kw(
+    row: Mapping[str, Any],
+    power_kw: Any,
+) -> Optional[float]:
+    """Convert the planner's internal P_AC value to the system P_DC convention."""
+    number = _number(power_kw)
+    if number is None:
+        return None
+    return converter_power_in_dc_to_ac_convention(
+        number,
+        _converter_direction(row),
+        "P_AC",
+    )
 
 
 def _converter_power_from_ac_injection_kw(
@@ -2106,7 +2122,7 @@ def _converter_rows(
                     f"{diagnostic}·仅保留诊断"
                     if diagnostic
                     else (
-                        f"双向并联 {mode}·P_AC正向AC→DC"
+                        f"双向并联 {mode}·系统汇总P_DC正向DC→AC"
                     )
                 ),
             }
@@ -6930,10 +6946,14 @@ def _validate_dispatch_by_ac_component(
             storage_target(row) for row in group_storage
         )
         acdc_current_kw = _sum_known(
-            row.get("currentKw") for row in group_converters
+            _converter_system_power_kw(row, row.get("currentKw"))
+            for row in group_converters
         )
         acdc_target_kw = _sum_known(
-            final_converter_targets.get(row_key(row), row.get("currentKw"))
+            _converter_system_power_kw(
+                row,
+                final_converter_targets.get(row_key(row), row.get("currentKw")),
+            )
             for row in group_converters
         )
         if any(
@@ -7642,8 +7662,14 @@ def _rebalance_dc_projection_targets(
                     "storageDeltaKw": None,
                     "localLoadKw": local_load_value_kw,
                     "locallyAbsorbedKw": None,
-                    "acdcCurrentKw": _sum_known(converter_current_values),
-                    "acdcTargetKw": _sum_known(converter_target_values),
+                    "acdcCurrentKw": _sum_known(
+                        _converter_system_power_kw(row, value)
+                        for row, value in zip(group_converters, converter_current_values)
+                    ),
+                    "acdcTargetKw": _sum_known(
+                        _converter_system_power_kw(row, value)
+                        for row, value in zip(group_converters, converter_target_values)
+                    ),
                     "acdcExportDeltaKw": None,
                     "residualKw": None,
                     "dataComplete": False,
@@ -7838,8 +7864,14 @@ def _rebalance_dc_projection_targets(
                 "storageDeltaKw": storage_delta,
                 "localLoadKw": local_load_value_kw,
                 "locallyAbsorbedKw": locally_absorbed_kw,
-                "acdcCurrentKw": sum(converter_current_values),
-                "acdcTargetKw": sum(converter_target_values),
+                "acdcCurrentKw": sum(
+                    _finite_number(_converter_system_power_kw(row, value))
+                    for row, value in zip(group_converters, converter_current_values)
+                ),
+                "acdcTargetKw": sum(
+                    _finite_number(_converter_system_power_kw(row, value))
+                    for row, value in zip(group_converters, converter_target_values)
+                ),
                 "acdcExportDeltaKw": export_delta,
                 "residualKw": residual,
                 "dataComplete": True,
@@ -10375,7 +10407,7 @@ def calculate_renewable_control_plan(
         else "feedback_pending"
     )
     aggregate_converter_values = [
-        (current_kw, target_kw)
+        (row, current_kw, target_kw)
         for row in command_rows
         if _is_grid_converter_row(row)
         and row.get("online")
@@ -10389,18 +10421,22 @@ def calculate_renewable_control_plan(
         and (target_kw := _number(row.get("commandKw"))) is not None
     ]
     aggregate_converter_current_kw = (
-        sum(current_kw for current_kw, _ in aggregate_converter_values)
+        sum(
+            _finite_number(_converter_system_power_kw(row, current_kw))
+            for row, current_kw, _target_kw in aggregate_converter_values
+        )
         if aggregate_converter_values
         else None
     )
     aggregate_converter_target_kw = sum(
-        target_kw for _, target_kw in aggregate_converter_values
+        _finite_number(_converter_system_power_kw(row, target_kw))
+        for row, _current_kw, target_kw in aggregate_converter_values
     )
     aggregate_converter_lower_limit_kw = sum(
-        _converter_signed_bounds_kw(row)[0] for row in all_converter_rows
+        -_converter_signed_bounds_kw(row)[1] for row in all_converter_rows
     )
     aggregate_converter_upper_limit_kw = sum(
-        _converter_signed_bounds_kw(row)[1] for row in all_converter_rows
+        -_converter_signed_bounds_kw(row)[0] for row in all_converter_rows
     )
     aggregate_converter_capacity_kw = sum(
         max(abs(lower_kw), abs(upper_kw))
@@ -10507,9 +10543,12 @@ def calculate_renewable_control_plan(
                 for dev_type, dev_name in optimization_result.unassigned_devices
             )
         )
-    if renewable_charge_safety_curtail_shortfall_kw > EPSILON:
+    # The pre-optimization renewable shortfall may be resolved by the unified
+    # optimizer through storage or converter targets. Warn only when the final
+    # SOC-derated storage target still remains outside its safe charging range.
+    if storage_charge_derating_residual_kw > EPSILON:
         warnings.append(
-            f"储能充电保护仍缺少 {renewable_charge_safety_curtail_shortfall_kw:.2f} kW 可调节新能源，已下发当前可实现的最大校正"
+            f"储能充电保护仍有 {storage_charge_derating_residual_kw:.2f} kW 未完成校正，已下发当前可实现的最大安全目标"
         )
     if any(row.get("conflict") for row in duplicate_commands):
         warnings.append("检测到同一遥调点存在多个候选值，已按最终校核结果去重")
@@ -10804,6 +10843,8 @@ def calculate_renewable_control_plan(
         "converterReversePowerForbidden": False,
         "converterReversePowerDetected": False,
         "converterBidirectionalEnabled": bool(all_converter_rows),
+        "converterSystemPowerConvention": "P_DC",
+        "converterSystemPositiveDirection": "DC_TO_AC",
         "converterPositiveDirection": AC_TO_DC,
         "converterDcPositiveDirection": "DC_TO_AC",
         "converterTargetLowerLimitKw": aggregate_converter_lower_limit_kw,
@@ -11001,6 +11042,16 @@ def calculate_renewable_control_plan(
     else:
         renewable_step_reason_text = "SOC上限死区内无功率调整，保持原步长"
     converter_rated_capacity_text = f"{aggregate_converter_capacity_kw:.2f}"
+    converter_current_p_dc_text = (
+        f"{-converter_current:.2f}"
+        if converter_current is not None
+        else "--"
+    )
+    converter_current_for_control_p_dc_kw = -converter_current_for_control
+    converter_target_p_dc_kw = -converter_target
+    storage_constrained_converter_target_p_dc_kw = (
+        -storage_constrained_converter_target
+    )
     if soc_above_upper_deadband:
         upper_threshold_percent = soc_upper_deadband_threshold * 100.0
         if renewable_control_action == "curtail_charge_safety":
@@ -11014,7 +11065,7 @@ def calculate_renewable_control_plan(
             soc_correction_detail = (
                 f"SOC越界校正：当前SOC {storage_soc * 100:.2f}% 高于上限+死区阈值 "
                 f"{upper_threshold_percent:.2f}%，利用柴发下调余量将ACDC目标由 "
-                f"{converter_current_for_control:.2f} kW 调至 {converter_target:.2f} kW，"
+                f"{converter_current_for_control_p_dc_kw:.2f} kW 调至 {converter_target_p_dc_kw:.2f} kW，"
                 "新能源保持，持续增加储能放电直至SOC回到阈值以下"
             )
         else:
@@ -11028,8 +11079,8 @@ def calculate_renewable_control_plan(
         lower_threshold_percent = soc_lower_deadband_threshold * 100.0
         soc_correction_detail = (
             f"SOC越界校正：当前SOC {storage_soc * 100:.2f}% 低于下限-死区阈值 "
-            f"{lower_threshold_percent:.2f}%，ACDC目标由 {converter_current_for_control:.2f} kW "
-            f"向零调整至 {converter_target:.2f} kW，新能源由 {renewable_current:.2f} kW "
+            f"{lower_threshold_percent:.2f}%，ACDC目标由 {converter_current_for_control_p_dc_kw:.2f} kW "
+            f"向零调整至 {converter_target_p_dc_kw:.2f} kW，新能源由 {renewable_current:.2f} kW "
             f"恢复至 {renewable_target:.2f} kW，在设备有功边界内促使储能补能"
         )
     else:
@@ -11076,10 +11127,10 @@ def calculate_renewable_control_plan(
         else f"柴发分区：下限 {diesel_deadband_lower_kw:.2f} kW，功率保护带上界 {diesel_deadband_upper_kw:.2f} kW（额定容量比例 {settings.diesel_power_protection_ratio * 100:.2f}%）；低于下限逐步降低ACDC送出，保护带内保持，高于保护带才允许增加ACDC送出；当前位于 {diesel_control_region} 区"
     )
     acdc_strategy_detail = (
-        f"ACDC策略：交流侧全部退运，实时 {converter_current if converter_current is not None else '--'} kW，"
-        f"跳过常规步长并将目标直接归零至 {converter_target:.2f} kW"
+        f"ACDC策略：交流侧全部退运，实时 {converter_current_p_dc_text} kW，"
+        f"跳过常规步长并将目标直接归零至 {converter_target_p_dc_kw:.2f} kW"
         if renewable_storage_island
-        else f"ACDC策略：只读取柴发分区与SOC分区，动作 {storage_control_action}；实时 {converter_current if converter_current is not None else '--'} kW，控制基准 {converter_current_for_control:.2f} kW，基础步长 {converter_base_step_kw:.2f} kW，{converter_step_reason_text}，{converter_step_application_text}，目标 {converter_target:.2f} kW"
+        else f"ACDC策略：只读取柴发分区与SOC分区，动作 {storage_control_action}；实时 {converter_current_p_dc_text} kW，控制基准 {converter_current_for_control_p_dc_kw:.2f} kW，基础步长 {converter_base_step_kw:.2f} kW，{converter_step_reason_text}，{converter_step_application_text}，目标 {converter_target_p_dc_kw:.2f} kW"
     )
     renewable_strategy_detail = (
         f"新能源策略：新能源储能孤岛中以model.e的SOC上限为满电判据；当前上限 "
@@ -11107,9 +11158,9 @@ def calculate_renewable_control_plan(
         soc_correction_detail,
         f"环境策略：风速 {observed_wind_speed if observed_wind_speed is not None else '--'}、太阳辐照度 {observed_irradiance if observed_irradiance is not None else '--'}、温度 {observed_air_temperature if observed_air_temperature is not None else '--'}；仅用于最大可发统计，不参与控制目标计算",
         f"ACDC容量边界：自动控制使用原始并联容量 {converter_rated_capacity_text} kW",
-        "ACDC符号约定：ACDC与DCAC采用相同端口符号，P_AC/P_AC_SET正向AC→DC，P_DC/P_DC_SET正向DC→AC；"
+        "ACDC符号约定：系统总功率与总目标统一采用P_DC，正向DC→AC；单台遥调仍按控制端选择P_AC_SET或P_DC_SET并转换符号；"
         f"自动控制目标范围 [{aggregate_converter_lower_limit_kw:.2f}, {aggregate_converter_upper_limit_kw:.2f}] kW",
-        f"ACDC后置校核：储能运行边界与充放电线性降额折算目标 {storage_constrained_converter_target:.2f} kW，{converter_storage_validation_text}",
+        f"ACDC后置校核：储能运行边界与充放电线性降额折算目标 {storage_constrained_converter_target_p_dc_kw:.2f} kW，{converter_storage_validation_text}",
         acdc_strategy_detail,
         f"ACDC独立预估：对应储能平衡功率由 {storage_current_for_control:.2f} kW 变为 {storage_target:.2f} kW，柴发反馈参考值 {diesel_target:.2f} kW；该值不叠加新能源动作",
         f"跟网储能直调：动作 {direct_storage_plan['action']}，从既有ACDC/直流平衡候选后的柴发偏差请求 {_finite_number(direct_storage_plan.get('requestedKw')):.2f} kW；交流跟网储能目标 {ac_grid_following_storage_target:.2f} kW，直流跟网储能目标 {dc_grid_following_storage_target:.2f} kW，直流侧仅使用同传输组ACDC增量，交流供电净影响 {direct_ac_storage_effect_kw + direct_acdc_effect_kw:.2f} kW，剩余 {_finite_number(direct_storage_plan.get('residualKw')):.2f} kW",

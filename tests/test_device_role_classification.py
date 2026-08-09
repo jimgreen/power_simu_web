@@ -227,16 +227,24 @@ class DeviceRoleClassificationTest(unittest.TestCase):
             converter_power_setpoint_fields(dual_control)[0],
             "p_dc_set",
         )
+        explicit_dc_none = {
+            "ac_control_type": "NONE",
+            "dc_control_type": "NONE",
+            "p_ac_set": -10,
+            "p_dc_set": 10,
+        }
+        self.assertEqual(converter_control_mode(explicit_dc_none), "P")
         self.assertEqual(
-            converter_power_setpoint_fields({"control_type": "DCP"})[0],
+            converter_active_power_setpoint_field(explicit_dc_none),
             "p_dc_set",
         )
         self.assertEqual(
-            converter_power_setpoint_fields(
-                {"dc_control_type": "NONE", "control_type": "DCP"}
-            )[0],
-            "p_ac_set",
+            converter_power_setpoint_fields(explicit_dc_none)[0],
+            "p_dc_set",
         )
+        legacy_only = {"control_type": "DCP", "p_ac_set": -10, "p_dc_set": 10}
+        self.assertEqual(converter_control_mode(legacy_only), "")
+        self.assertEqual(converter_active_power_setpoint_field(legacy_only), "")
         self.assertNotIn("p_ac_set", converter_power_setpoint_fields(dc_control))
 
     def test_name_and_device_type_text_do_not_create_resource_roles(self):

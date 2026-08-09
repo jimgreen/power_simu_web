@@ -9,12 +9,30 @@ from pathlib import Path
 from shutil import copytree
 from urllib.request import Request, urlopen
 
+import simu.server as server_module
 from simu.server import import_definition_archive, make_definition_archive, make_http_server
 from simu.service import MultiModelSimulator, PolarMicrogridSimulator
 from tests.model_fixtures import SIMPLE_MODEL_SOURCE
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _rewrite_definition_archive(archive_data: bytes, replacements: dict[str, bytes]) -> bytes:
+    output = BytesIO()
+    with zipfile.ZipFile(BytesIO(archive_data), mode="r") as source:
+        with zipfile.ZipFile(output, mode="w", compression=zipfile.ZIP_DEFLATED) as target:
+            for name in source.namelist():
+                target.writestr(name, replacements.get(name, source.read(name)))
+    return output.getvalue()
+
+
+def _replace_efile_block(text: str, block_name: str, replacement: str) -> str:
+    start_marker = f"<{block_name}>"
+    end_marker = f"</{block_name}>"
+    start = text.index(start_marker)
+    end = text.index(end_marker, start) + len(end_marker)
+    return text[:start] + replacement.strip() + text[end:]
 
 
 class DefinitionImportRefreshTest(unittest.TestCase):
@@ -62,6 +80,152 @@ class DefinitionImportRefreshTest(unittest.TestCase):
                 self.assertIn("weather", meas_text)
                 self.assertIn("WIND_SPEED", meas_text)
                 self.assertIn("SOLAR_IRRADIANCE", meas_text)
+
+    def test_definition_package_adds_one_dcp_control_for_each_converter(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            package_service = PolarMicrogridSimulator(
+                SIMPLE_MODEL_SOURCE,
+                Path(temporary) / "package-runtime",
+                model_id="simple",
+            )
+
+            _filename, archive = make_definition_archive(package_service)
+
+            with zipfile.ZipFile(BytesIO(archive), mode="r") as definition_archive:
+                model_text = definition_archive.read("model.e").decode("utf-8")
+                control_text = definition_archive.read("control.e").decode("utf-8")
+            model_book = package_service.definition_snapshot.model_book
+            converter_names = {
+                str(row["name"])
+                for row in model_book.data["DCACConverter"].data
+            }
+            parsed_control = server_module._book_from_text(control_text)
+            dcp_names = [
+                str(row["dev_name"])
+                for row in parsed_control.data["SetValue"].data
+                if str(row.get("dev_type")) == "DCACConverter"
+                and str(row.get("set_type")) == "p_dc_set"
+            ]
+
+            self.assertIn("p_dc_set", model_text)
+            self.assertEqual(set(dcp_names), converter_names)
+            self.assertEqual(len(dcp_names), len(converter_names))
+
+    def test_import_definition_archive_adds_missing_converter_dcp_controls(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            package_service = PolarMicrogridSimulator(
+                SIMPLE_MODEL_SOURCE,
+                temp_root / "package-runtime",
+                model_id="simple",
+            )
+            _filename, archive = make_definition_archive(package_service)
+            with zipfile.ZipFile(BytesIO(archive), mode="r") as definition_archive:
+                control_text = definition_archive.read("control.e").decode("utf-8")
+            stripped_control = "\n".join(
+                line
+                for line in control_text.splitlines()
+                if not (
+                    line.lstrip().startswith("#")
+                    and "DCACConverter" in line
+                    and "p_dc_set" in line
+                )
+            ) + "\n"
+            archive = _rewrite_definition_archive(
+                archive,
+                {"control.e": stripped_control.encode("utf-8")},
+            )
+
+            trainee_source = temp_root / "trainee-source"
+            copytree(ROOT / "models/trainee/source/默认模型", trainee_source)
+            trainee = PolarMicrogridSimulator(
+                trainee_source,
+                temp_root / "trainee-runtime",
+                model_id="trainee",
+            )
+
+            import_definition_archive(trainee, archive)
+
+            converter_names = {
+                str(row["name"])
+                for row in trainee.definition_snapshot.model_book.data["DCACConverter"].data
+            }
+            dcp_rows = [
+                row
+                for row in trainee.control_book.data["SetValue"].data
+                if str(row.get("dev_type")) == "DCACConverter"
+                and str(row.get("set_type")) == "p_dc_set"
+            ]
+            self.assertEqual({str(row["dev_name"]) for row in dcp_rows}, converter_names)
+            self.assertEqual(len(dcp_rows), len(converter_names))
+
+    def test_import_definition_archive_rejects_legacy_converter_control_type(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            package_service = PolarMicrogridSimulator(
+                SIMPLE_MODEL_SOURCE,
+                temp_root / "package-runtime",
+                model_id="simple",
+            )
+            _filename, archive = make_definition_archive(package_service)
+            with zipfile.ZipFile(BytesIO(archive), mode="r") as definition_archive:
+                model_text = definition_archive.read("model.e").decode("utf-8")
+            legacy_block = """
+<DCACConverter>
+@ idx name ac_node dc_node control_type p_ac_set p_dc_set run_stat
+# 1 legacy-link 1 1 DCP -10 10 1
+</DCACConverter>
+"""
+            model_text = _replace_efile_block(model_text, "DCACConverter", legacy_block)
+            archive = _rewrite_definition_archive(
+                archive,
+                {"model.e": model_text.encode("utf-8")},
+            )
+
+            trainee_source = temp_root / "trainee-source"
+            copytree(ROOT / "models/trainee/source/默认模型", trainee_source)
+            trainee = PolarMicrogridSimulator(
+                trainee_source,
+                temp_root / "trainee-runtime",
+                model_id="trainee",
+            )
+
+            with self.assertRaisesRegex(ValueError, "control_type"):
+                import_definition_archive(trainee, archive)
+
+    def test_import_definition_archive_requires_converter_p_dc_set(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            package_service = PolarMicrogridSimulator(
+                SIMPLE_MODEL_SOURCE,
+                temp_root / "package-runtime",
+                model_id="simple",
+            )
+            _filename, archive = make_definition_archive(package_service)
+            with zipfile.ZipFile(BytesIO(archive), mode="r") as definition_archive:
+                model_text = definition_archive.read("model.e").decode("utf-8")
+            missing_dcp_block = """
+<DCACConverter>
+@ idx name ac_node dc_node ac_control_type dc_control_type p_ac_set run_stat
+# 1 missing-dcp-link 1 1 PQ NONE -10 1
+</DCACConverter>
+"""
+            model_text = _replace_efile_block(model_text, "DCACConverter", missing_dcp_block)
+            archive = _rewrite_definition_archive(
+                archive,
+                {"model.e": model_text.encode("utf-8")},
+            )
+
+            trainee_source = temp_root / "trainee-source"
+            copytree(ROOT / "models/trainee/source/默认模型", trainee_source)
+            trainee = PolarMicrogridSimulator(
+                trainee_source,
+                temp_root / "trainee-runtime",
+                model_id="trainee",
+            )
+
+            with self.assertRaisesRegex(ValueError, "p_dc_set"):
+                import_definition_archive(trainee, archive)
 
     def test_definition_package_roundtrips_svg_diagram_and_exposes_snapshot(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -21,6 +21,7 @@ GET http://127.0.0.1:8710/api/trainee-link?model_id=秦岭站
   },
   "external_api": {
     "devices": "/api/external/devices?model_id=秦岭站",
+    "realtime_inputs": "/api/external/realtime-inputs?model_id=秦岭站",
     "telemetry_names": "/api/external/telemetry/names?model_id=秦岭站",
     "telemetry_values": "/api/external/telemetry/values?model_id=秦岭站",
     "selected_telemetry_values": "/api/external/telemetry/values/query?model_id=秦岭站",
@@ -67,6 +68,61 @@ GET /api/external/devices?model_id=秦岭站
 - `devices[].values`：该设备的全部遥测和遥信当前值。
 - `devices[].control_values`：该设备的遥调和遥控当前值。
 - `topology.nodes`、`topology.connections`：可直接用于重建拓扑关系的节点和连接表。
+
+### 3.1 实时环境与负荷输入
+
+读取字段、单位、负荷目录及下一目标曲线点：
+
+```http
+GET /api/external/realtime-inputs?model_id=秦岭站
+```
+
+提交外部实时边界：
+
+```http
+POST /api/external/realtime-inputs?model_id=秦岭站
+Content-Type: application/json
+```
+
+```json
+{
+  "weather": {
+    "wind_speed_mps": 9.6,
+    "solar_irradiance_w_m2": 650,
+    "air_temp_c": -12,
+    "air_pressure_hpa": 965,
+    "humidity_pct": 70
+  },
+  "loads": {
+    "ACLoad:交流负荷-1": 120,
+    "DCLoad:直流负荷-1": 40
+  }
+}
+```
+
+天气量也可以直接放在请求顶层。负荷还支持数组形式：
+
+```json
+{
+  "wind_speed_mps": 9.6,
+  "solar_irradiance_w_m2": 650,
+  "load_values": [
+    {"dev_type": "ACLoad", "dev_name": "交流负荷-1", "p_kw": 120},
+    {"dev_type": "DCLoad", "dev_name": "直流负荷-1", "value": 40}
+  ]
+}
+```
+
+处理规则：
+
+- 接口只在模拟台提供，学员台返回 `404`，不会把该请求代理到模拟台。
+- 请求更新 `runtime/curves.json` 中当前仿真时钟对应的下一未求解曲线点，不修改原始 `curves.json`，也不主动推进仿真时钟。
+- 下一轮常规潮流计算会读取新值；如果潮流正在计算，请求会等待该轮完成，再写入随后一轮的目标点，不会使已完成结果因曲线修订而被丢弃。
+- 负荷标准键为 `ACLoad:设备名` 或 `DCLoad:设备名`。裸设备名只有在当前模型内唯一时才接受；同名交流、直流负荷必须使用标准键。
+- 风速、太阳辐射和负荷不能为负数，湿度范围为 `0..100`，气压必须大于 `0`，所有值必须是有限数值。
+- 一帧先完整校验再写入。任一负荷不存在、名称有歧义或数值非法时，整帧返回 `400`，不做部分更新。
+
+成功响应给出 `target_absolute_minute`、`target_simu_time`、`target_index`、`target_point_number`、`curve_revision` 和 `curve_boundary`；`applies_on_next_power_flow=true` 表示该帧将在下一轮潮流中生效。
 
 ## 4. 遥测和遥信名称
 
@@ -272,6 +328,22 @@ $base = $link.teacher_api_base
 
 $names = Invoke-RestMethod -Uri ($base + $link.external_api.telemetry_names)
 $frame = Invoke-RestMethod -Uri ($base + $link.external_api.telemetry_values)
+
+$inputBody = @{
+  weather = @{
+    wind_speed_mps = 9.6
+    solar_irradiance_w_m2 = 650
+  }
+  loads = @{
+    "ACLoad:交流负荷-1" = 120
+    "DCLoad:直流负荷-1" = 40
+  }
+} | ConvertTo-Json -Depth 5
+
+$inputResult = Invoke-RestMethod -Method POST `
+  -Uri ($base + $link.external_api.realtime_inputs) `
+  -ContentType "application/json" `
+  -Body $inputBody
 
 if ($names.model_version.signature -ne $frame.model_version.signature -or
     $names.definition_signature -ne $frame.definition_signature -or

@@ -1299,6 +1299,7 @@ def make_http_server(
             command_sink=exchange.submit_commands,
         )
     renewable_control_path = "/api/trainee/renewable-control"
+    external_realtime_inputs_path = "/api/external/realtime-inputs"
 
     def captured_service_is_current(target: PolarMicrogridSimulator) -> bool:
         if hasattr(service, "service_for"):
@@ -1327,6 +1328,9 @@ def make_http_server(
         def do_GET(self) -> None:
             try:
                 path = urlparse(self.path).path
+                if path == external_realtime_inputs_path and role != "simulator":
+                    self._handle_api_get()
+                    return
                 if (
                     path in LOCAL_DEFINITION_PATHS
                     or path == LOCAL_RUNTIME_SETTINGS_PATH
@@ -1372,6 +1376,9 @@ def make_http_server(
         def do_POST(self) -> None:
             try:
                 path = urlparse(self.path).path
+                if path == external_realtime_inputs_path and role != "simulator":
+                    self._handle_api_post()
+                    return
                 if (
                     path in LOCAL_DEFINITION_PATHS
                     or path == LOCAL_RUNTIME_SETTINGS_PATH
@@ -1533,6 +1540,7 @@ def make_http_server(
             link = f"{base_url}/api/trainee-link?model_id={encoded_model_id}"
             external_api = {
                 "devices": f"/api/external/devices?model_id={encoded_model_id}",
+                "realtime_inputs": f"{external_realtime_inputs_path}?model_id={encoded_model_id}",
                 "telemetry_names": f"/api/external/telemetry/names?model_id={encoded_model_id}",
                 "telemetry_values": f"/api/external/telemetry/values?model_id={encoded_model_id}",
                 "selected_telemetry_values": f"/api/external/telemetry/values/query?model_id={encoded_model_id}",
@@ -1559,6 +1567,7 @@ def make_http_server(
                 "control_values_path": f"/api/external/controls?model_id={encoded_model_id}",
                 "control_command_path": f"/api/external/controls?model_id={encoded_model_id}",
                 "device_information_path": external_api["devices"],
+                "realtime_inputs_path": external_api["realtime_inputs"],
                 "telemetry_names_path": external_api["telemetry_names"],
                 "telemetry_values_path": external_api["telemetry_values"],
                 "selected_telemetry_values_path": external_api["selected_telemetry_values"],
@@ -1977,6 +1986,10 @@ def make_http_server(
                 self._send_json(target.latest_telemetry_values())
             elif path == "/api/external/devices":
                 self._send_json(target.external_device_information())
+            elif path == external_realtime_inputs_path:
+                if role != "simulator":
+                    raise JsonApiError(404, f"Unknown API route: {path}")
+                self._send_json(target.external_realtime_input_schema())
             elif path == "/api/external/telemetry/names":
                 self._send_json(target.external_telemetry_names())
             elif path == "/api/external/telemetry/values":
@@ -2379,6 +2392,14 @@ def make_http_server(
                     raise JsonApiError(404, f"Unknown API route: {path}")
                 try:
                     result = target.external_measurement_history(payload)
+                except ValueError as exc:
+                    raise JsonApiError(400, str(exc), target._external_response_metadata()) from exc
+                self._send_json(result)
+            elif path == external_realtime_inputs_path:
+                if role != "simulator":
+                    raise JsonApiError(404, f"Unknown API route: {path}")
+                try:
+                    result = target.apply_external_realtime_inputs(payload)
                 except ValueError as exc:
                     raise JsonApiError(400, str(exc), target._external_response_metadata()) from exc
                 self._send_json(result)

@@ -41,14 +41,22 @@ except ImportError:  # The migrated web repo can run outside the original packag
     from efile_read import EBlock, EBook
 
 try:
+    from .device_roles import converter_power_setpoint_fields
+except ImportError:  # pragma: no cover - direct module execution.
+    from simu.device_roles import converter_power_setpoint_fields
+
+try:
     from .definition_editing import (
         DefinitionRevisionConflict,
         canonical_ratio_parameter_text,
         is_ratio_parameter_field,
         is_soc_parameter_field,
+        render_ebook_aligned,
     )
+    from .point_names import automatic_point_name
     from .service import (
         DEFAULT_WEATHER,
+        DEFINITION_DEFAULTS_FILE,
         DIAGRAM_FILE_NAME,
         MEAS_HEADER,
         SIGNAL_MEASUREMENTS,
@@ -73,9 +81,12 @@ except ImportError:  # pragma: no cover - legacy package compatibility.
         canonical_ratio_parameter_text,
         is_ratio_parameter_field,
         is_soc_parameter_field,
+        render_ebook_aligned,
     )
+    from hybrid_power_system_analysis.polar_microgrid_sim.point_names import automatic_point_name
     from hybrid_power_system_analysis.polar_microgrid_sim.service import (
         DEFAULT_WEATHER,
+        DEFINITION_DEFAULTS_FILE,
         DIAGRAM_FILE_NAME,
         MEAS_HEADER,
         SIGNAL_MEASUREMENTS,
@@ -126,6 +137,7 @@ TRAINEE_LOCAL_GET_PATHS = {
     "/api/runtime-logs",
     "/api/measurements",
     "/api/measurements/delta",
+    "/api/measurement-history",
     "/api/devices",
     "/api/device-states",
     "/api/curves",
@@ -193,7 +205,7 @@ def _book_from_text(text: str) -> EBook:
     return book
 
 
-def _merge_control_definition(stat_path: Path, control_text: str, meas_text: str = "") -> None:
+def _merge_control_definition(stat_path: Path, control_text: str, model_text: str = "") -> None:
     stat_book = EBook(stat_path) if stat_path.exists() else EBook({})
     control_book = _book_from_text(control_text)
     found = False
@@ -208,19 +220,20 @@ def _merge_control_definition(stat_path: Path, control_text: str, meas_text: str
         raise ValueError("control.e must contain at least one control block")
     if control_book.data.get("StorageSoc") is None:
         stat_book.data.pop("StorageSoc", None)
-        if meas_text:
-            meas_book = _book_from_text(meas_text)
-            measurement_block = meas_book.data.get("Measurement")
-            storage_rows = []
-            for row in getattr(measurement_block, "data", []):
-                if str(row.get("dev_type", "")) != "ESS" or str(row.get("meas_type", "")).upper() != "SOC":
-                    continue
-                storage_rows.append((str(row.get("dev_name", "")), row.get("value", "0.5")))
+        if model_text:
+            storage_rows = _storage_source_rows(_book_from_text(model_text))
             if storage_rows:
                 storage_block = EBlock("StorageSoc")
                 storage_block.header_list = ["dev_type", "idx", "name", "soc_curr"]
-                for idx, (name, value) in enumerate(storage_rows, start=1):
-                    storage_block.AddRow(["ESS", str(idx), name, str(value)])
+                for row in storage_rows:
+                    storage_block.AddRow(
+                        [
+                            str(row.get("dev_type", "")),
+                            str(row.get("idx", "")),
+                            str(row.get("name", "")),
+                            str(row.get("soc_curr", 0.5)),
+                        ]
+                    )
                 stat_book.data["StorageSoc"] = storage_block
     simu_loop.write_ebook_aligned(stat_book, stat_path)
 
@@ -484,6 +497,7 @@ SET_VALUE_COLUMN_MAP = {
     "DCDCConverter": (("p_set", "p_set"), ("i_set", "i_set"), ("v_set", "v_set")),
     "DCACConverter": (
         ("p_ac_set", "p_ac_set"),
+        ("p_dc_set", "p_dc_set"),
         ("q_ac_set", "q_ac_set"),
         ("v_ac_set", "v_ac_set"),
         ("v_dc_set", "v_dc_set"),
@@ -583,10 +597,6 @@ def _model_book_has_power_model(book: EBook) -> bool:
 def _storage_source_rows(model_book: EBook) -> list[dict]:
     storage_rows: list[dict] = []
     seen: set[tuple[str, str]] = set()
-    has_structured_storage = any(
-        block_name in model_book.data
-        for block_name, _generator_type, _index_field in STORAGE_PARAMETER_SPECS
-    )
     for block_name, generator_type, index_field in STORAGE_PARAMETER_SPECS:
         generators = {
             str(row.get("idx", "")): row
@@ -614,28 +624,6 @@ def _storage_source_rows(model_book: EBook) -> list[dict]:
             )
             seen.add(key)
 
-    if has_structured_storage:
-        return storage_rows
-
-    for pos, row in enumerate(_rows(model_book, "DCGenerator"), start=1):
-        name = _row_name(row)
-        if not name or ("storage" not in str(row.get("dev_type", "")).casefold() and "储能" not in name):
-            continue
-        key = ("DCGenerator", name)
-        if key in seen:
-            continue
-        storage_rows.append(
-            {
-                "dev_type": "DCGenerator",
-                "idx": row.get("idx", pos),
-                "name": name,
-                "soc_curr": _storage_soc_value(
-                    _first_present(row, ("soc_curr", "soc", "state_of_charge"), 0.5),
-                    0.5,
-                ),
-            }
-        )
-        seen.add(key)
     return storage_rows
 
 
@@ -650,6 +638,16 @@ def _generated_control_blocks(model_book: EBook) -> Mapping[str, tuple[Sequence[
             name = _row_name(row)
             if not name:
                 continue
+            active_converter_power_field = ""
+            if block_name == "DCACConverter":
+                active_converter_power_field = next(
+                    (
+                        field
+                        for field in converter_power_setpoint_fields(row)
+                        if field in row
+                    ),
+                    "",
+                )
             if "run_stat" in headers:
                 run_rows.append(
                     {
@@ -667,6 +665,12 @@ def _generated_control_blocks(model_book: EBook) -> Mapping[str, tuple[Sequence[
                     }
                 )
             for set_type, source_column in SET_VALUE_COLUMN_MAP.get(block_name, ()):
+                if (
+                    block_name == "DCACConverter"
+                    and set_type in {"p_ac_set", "p_dc_set", "p_set"}
+                    and set_type != active_converter_power_field
+                ):
+                    continue
                 if source_column not in row:
                     continue
                 set_rows.append(
@@ -715,7 +719,7 @@ def _generated_measurement_book(
     ) -> None:
         if not dev_name:
             return
-        base_name = f"{dev_type}.{dev_name}.{str(meas_type).lower() if meas_type in {'RUN_STAT', 'STATUS'} else meas_type}"
+        base_name = automatic_point_name(dev_type, dev_name, meas_type)
         count = name_counts.get(base_name, 0)
         name_counts[base_name] = count + 1
         name = base_name if count == 0 else f"{base_name}.{count + 1}"
@@ -987,8 +991,33 @@ def _parse_definition_archive(data: bytes) -> Mapping[str, Any]:
             control_text = _read_zip_text(archive, "control.e")
             curves_text = _read_zip_text(archive, "curves.e")
             diagram_text = _read_zip_text(archive, DIAGRAM_FILE_NAME)
+            definition_defaults_text = _read_zip_text(
+                archive,
+                DEFINITION_DEFAULTS_FILE,
+                required=False,
+            )
     except zipfile.BadZipFile as exc:
         raise ValueError("Invalid definition archive") from exc
+
+    definition_defaults: Optional[Mapping[str, Any]] = None
+    if definition_defaults_text is not None:
+        try:
+            parsed_defaults = json.loads(definition_defaults_text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid {DEFINITION_DEFAULTS_FILE}") from exc
+        if not isinstance(parsed_defaults, Mapping):
+            raise ValueError(f"Invalid {DEFINITION_DEFAULTS_FILE}")
+        raw_statuses = parsed_defaults.get("measurement_statuses", {})
+        if not isinstance(raw_statuses, Mapping):
+            raise ValueError(f"Invalid {DEFINITION_DEFAULTS_FILE}: measurement_statuses must be an object")
+        definition_defaults = {
+            "version": int(_to_float(parsed_defaults.get("version"), 1) or 1),
+            "measurement_statuses": {
+                str(name): dict(value)
+                for name, value in raw_statuses.items()
+                if str(name).strip() and isinstance(value, Mapping)
+            },
+        }
 
     assert model_text is not None and meas_text is not None and control_text is not None and curves_text is not None
     return {
@@ -997,6 +1026,7 @@ def _parse_definition_archive(data: bytes) -> Mapping[str, Any]:
         "control_text": control_text,
         "curves_text": curves_text,
         "diagram_text": _normalize_diagram_svg_text(diagram_text),
+        "definition_defaults": definition_defaults,
         "curves_payload": _curves_from_definition_text(curves_text),
     }
 
@@ -1022,13 +1052,21 @@ def _apply_parsed_definition_archive_locked(
     (root / "meas.e").write_text(meas_text, encoding="utf-8", newline="")
     (root / "control.e").write_text(control_text, encoding="utf-8", newline="")
     (root / "curves.e").write_text(curves_text, encoding="utf-8", newline="")
+    definition_defaults = parsed.get("definition_defaults")
+    definition_defaults_path = root / DEFINITION_DEFAULTS_FILE
+    if isinstance(definition_defaults, Mapping):
+        _write_json_file(definition_defaults_path, definition_defaults)
+    else:
+        definition_defaults_path.unlink(missing_ok=True)
     diagram_written = _write_model_diagram(root, diagram_text, remove_when_absent=True)
     legacy_device = root / "device.e"
     if legacy_device.exists() and legacy_device.is_file():
         legacy_device.unlink()
-    _merge_control_definition(root / "stat.e", control_text, meas_text)
+    _merge_control_definition(root / "stat.e", control_text, model_text)
     _write_json_file(root / "curves.json", curves_payload)
     names = ["model.e", "meas.e", "control.e", "curves.e", "stat.e", "curves.json"]
+    if isinstance(definition_defaults, Mapping):
+        names.append(DEFINITION_DEFAULTS_FILE)
     if diagram_written:
         names.append(DIAGRAM_FILE_NAME)
     written_files.extend(str(root / name) for name in names)
@@ -1081,23 +1119,65 @@ def make_definition_archive(service: PolarMicrogridSimulator) -> tuple[str, byte
     if missing:
         raise JsonApiError(404, f"Definition file not found: {', '.join(missing)}")
 
-    control_text = stat_path.read_text(encoding="utf-8")
-    control_text = _extract_efile_blocks(control_text, CONTROL_DEFINITION_BLOCKS) or control_text
+    with service.definition_update_lock:
+        _require_active_service_instance_locked(service)
+        snapshot = service.definition_snapshot
+        manual_changes = tuple(service._manual_definition_changes.values())
+        has_device_overrides = any(item.get("kind") == "device" for item in manual_changes)
+        has_measurement_overrides = any(item.get("kind") == "measurement" for item in manual_changes)
+
+        model_data = (
+            render_ebook_aligned(snapshot.model_book).encode("utf-8")
+            if has_device_overrides
+            else model_path.read_bytes()
+        )
+        meas_data = (
+            simu_loop.render_measurement_snapshot_aligned(
+                snapshot.measurement_before,
+                snapshot.measurement_rows,
+                snapshot.measurement_after,
+            ).encode("utf-8")
+            if has_measurement_overrides
+            else meas_path.read_bytes()
+        )
+        if has_device_overrides:
+            control_text = render_ebook_aligned(service.control_book)
+        else:
+            control_text = stat_path.read_text(encoding="utf-8")
+            control_text = _extract_efile_blocks(control_text, CONTROL_DEFINITION_BLOCKS) or control_text
+        definition_defaults = {
+            "version": 1,
+            "measurement_statuses": service.effective_measurement_status_defaults(),
+        }
+        diagram_path = Path(
+            getattr(service, "source_files", {}).get(
+                "diagram",
+                service.sim_dir / DIAGRAM_FILE_NAME,
+            )
+        )
+        diagram_data = (
+            diagram_path.read_bytes()
+            if diagram_path.exists() and diagram_path.is_file()
+            else _fallback_definition_diagram_svg(service).encode("utf-8")
+        )
+
+    with service.curves_lock:
+        curves_text = _curve_definition_text(service.curves)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     model_id = getattr(service, "model_id", "model") or "model"
     archive_name = f"{model_id}_definitions_{timestamp}.zip"
 
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.write(model_path, "model.e")
-        archive.write(meas_path, "meas.e")
+        archive.writestr("model.e", model_data)
+        archive.writestr("meas.e", meas_data)
         archive.writestr("control.e", control_text.encode("utf-8"))
-        archive.writestr("curves.e", _curve_definition_text(service.curves).encode("utf-8"))
-        diagram_path = Path(getattr(service, "source_files", {}).get("diagram", service.sim_dir / DIAGRAM_FILE_NAME))
-        if diagram_path.exists() and diagram_path.is_file():
-            archive.write(diagram_path, DIAGRAM_FILE_NAME)
-        else:
-            archive.writestr(DIAGRAM_FILE_NAME, _fallback_definition_diagram_svg(service).encode("utf-8"))
+        archive.writestr("curves.e", curves_text.encode("utf-8"))
+        archive.writestr(
+            DEFINITION_DEFAULTS_FILE,
+            (json.dumps(definition_defaults, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+        )
+        archive.writestr(DIAGRAM_FILE_NAME, diagram_data)
     return archive_name, buffer.getvalue()
 
 
@@ -1195,15 +1275,24 @@ def make_http_server(
                     return
                 self._serve_static(static_root)
             except JsonApiError as exc:
-                self._send_json({"error": exc.message, **exc.details}, status=exc.status)
+                self._send_json(
+                    {"error": exc.message, **self._external_error_metadata(exc.details)},
+                    status=exc.status,
+                )
             except (
                 ServiceInstanceRetiredError,
                 TraineeExchangeLifecycleError,
                 TraineeRenewableControlLifecycleError,
             ) as exc:
-                self._send_json({"error": str(exc)}, status=409)
+                self._send_json(
+                    {"error": str(exc), **self._external_error_metadata({})},
+                    status=409,
+                )
             except Exception as exc:
-                self._send_json({"error": str(exc)}, status=500)
+                self._send_json(
+                    {"error": str(exc), **self._external_error_metadata({})},
+                    status=500,
+                )
 
         def do_POST(self) -> None:
             try:
@@ -1229,9 +1318,15 @@ def make_http_server(
                     return
                 self._handle_api_post()
             except JsonApiError as exc:
-                self._send_json({"error": exc.message, **exc.details}, status=exc.status)
+                self._send_json(
+                    {"error": exc.message, **self._external_error_metadata(exc.details)},
+                    status=exc.status,
+                )
             except Exception as exc:
-                self._send_json({"error": str(exc)}, status=500)
+                self._send_json(
+                    {"error": str(exc), **self._external_error_metadata({})},
+                    status=500,
+                )
 
         def do_PUT(self) -> None:
             self.do_POST()
@@ -1253,6 +1348,16 @@ def make_http_server(
                 except KeyError as exc:
                     raise JsonApiError(404, str(exc)) from exc
             return service  # type: ignore[return-value]
+
+        def _external_error_metadata(self, details: Mapping[str, Any]) -> Mapping[str, Any]:
+            merged = dict(details)
+            if not urlparse(self.path).path.startswith("/api/external/"):
+                return merged
+            try:
+                target = self._target_service()
+            except Exception:
+                return merged
+            return target._external_response_metadata() | merged
 
         def _reject_active_trainee_receive_model(self, payload: Mapping[str, Any], operation: str) -> None:
             if role != "trainee":
@@ -1326,12 +1431,40 @@ def make_http_server(
             except (TypeError, ValueError):
                 return None
 
+        def _measurement_indices_query(self) -> Optional[List[int]]:
+            values = parse_qs(urlparse(self.path).query).get("indices")
+            if not values:
+                return None
+            selected: List[int] = []
+            seen: set[int] = set()
+            for token in ",".join(str(value) for value in values).split(","):
+                try:
+                    index = int(token.strip())
+                except (TypeError, ValueError):
+                    continue
+                if index < 0 or index in seen:
+                    continue
+                selected.append(index)
+                seen.add(index)
+                if len(selected) >= 256:
+                    break
+            return selected
+
         def _trainee_link_payload(self, target: PolarMicrogridSimulator) -> Mapping[str, Any]:
             model = target.model_info()
             model_id = str(model.get("id", target.model_id))
             base_url = self._request_base_url()
             encoded_model_id = quote(model_id, safe="")
             link = f"{base_url}/api/trainee-link?model_id={encoded_model_id}"
+            external_api = {
+                "devices": f"/api/external/devices?model_id={encoded_model_id}",
+                "telemetry_names": f"/api/external/telemetry/names?model_id={encoded_model_id}",
+                "telemetry_values": f"/api/external/telemetry/values?model_id={encoded_model_id}",
+                "selected_telemetry_values": f"/api/external/telemetry/values/query?model_id={encoded_model_id}",
+                "measurement_history": f"/api/external/telemetry/history/query?model_id={encoded_model_id}",
+                "control_names": f"/api/external/controls/names?model_id={encoded_model_id}",
+                "control_execute": f"/api/external/controls/execute?model_id={encoded_model_id}",
+            }
             return {
                 "type": "polar-microgrid-trainee-link",
                 "version": 1,
@@ -1340,6 +1473,7 @@ def make_http_server(
                 "teacher_api_base": base_url,
                 "model_id": model_id,
                 "model_name": model.get("name", model_id),
+                "model_version": target.external_model_version(),
                 "snapshot_path": f"/api/snapshot?model_id={encoded_model_id}",
                 "command_path": f"/api/student/commands?model_id={encoded_model_id}",
                 "runtime_logs_path": f"/api/runtime-logs?model_id={encoded_model_id}",
@@ -1349,6 +1483,14 @@ def make_http_server(
                 "selected_telemetry_path": f"/api/external/telemetry/query?model_id={encoded_model_id}",
                 "control_values_path": f"/api/external/controls?model_id={encoded_model_id}",
                 "control_command_path": f"/api/external/controls?model_id={encoded_model_id}",
+                "device_information_path": external_api["devices"],
+                "telemetry_names_path": external_api["telemetry_names"],
+                "telemetry_values_path": external_api["telemetry_values"],
+                "selected_telemetry_values_path": external_api["selected_telemetry_values"],
+                "measurement_history_path": external_api["measurement_history"],
+                "control_names_path": external_api["control_names"],
+                "control_execute_path": external_api["control_execute"],
+                "external_api": external_api,
                 "shareable": True,
             }
 
@@ -1617,6 +1759,15 @@ def make_http_server(
                     )
                     if not all(required):
                         raise JsonApiError(409, "请先完成当前本地模型的模型初始化，再启动接收。")
+                    if exchange is not None:
+                        invalidate = getattr(exchange, "invalidate_model_for_service", None)
+                        if callable(invalidate):
+                            # A receive start is a new local history lifecycle. Clear
+                            # cached snapshots and measurement history before the
+                            # active flag can wake the backend polling worker.
+                            invalidate(target)
+                        elif captured_service_is_current(target):
+                            exchange.invalidate_model(target.model_id)
                 next_state = target.set_trainee_receive_state(
                     {
                         "active": active,
@@ -1740,10 +1891,25 @@ def make_http_server(
                         compact=self._truthy_query("compact"),
                     )
                 )
+            elif path == "/api/measurement-history":
+                self._send_json(
+                    target.measurement_history(
+                        indices=self._measurement_indices_query(),
+                        after_seq=self._int_query("after_seq", 0, 0, 2_000_000_000),
+                    )
+                )
             elif path == "/api/external/telemetry":
                 self._send_json(target.latest_telemetry_values())
+            elif path == "/api/external/devices":
+                self._send_json(target.external_device_information())
+            elif path == "/api/external/telemetry/names":
+                self._send_json(target.external_telemetry_names())
+            elif path == "/api/external/telemetry/values":
+                self._send_json(target.external_telemetry_frame())
             elif path == "/api/external/controls":
                 self._send_json(target.latest_control_values())
+            elif path == "/api/external/controls/names":
+                self._send_json(target.external_control_names())
             elif path == "/api/devices":
                 self._send_json({"devices": target.devices()})
             elif path == "/api/device-states":
@@ -1853,6 +2019,23 @@ def make_http_server(
                         **delta_options,
                     )
                 self._send_json(delta_payload)
+            elif path == "/api/trainee/measurement-history":
+                if exchange is None:
+                    raise JsonApiError(404, f"Unknown API route: {path}")
+                history_for_service = getattr(exchange, "measurement_history_for_service", None)
+                if callable(history_for_service):
+                    history_payload = history_for_service(
+                        target,
+                        indices=self._measurement_indices_query(),
+                        after_seq=self._int_query("after_seq", 0, 0, 2_000_000_000),
+                    )
+                else:
+                    history_payload = exchange.measurement_history(
+                        target.model_id,
+                        indices=self._measurement_indices_query(),
+                        after_seq=self._int_query("after_seq", 0, 0, 2_000_000_000),
+                    )
+                self._send_json(history_payload)
             elif path in ("/api/trainee-link", "/api/client-link"):
                 self._send_json(self._trainee_link_payload(target))
             elif path == "/api/config":
@@ -2114,8 +2297,24 @@ def make_http_server(
                 self._send_json(result)
             elif path == "/api/external/telemetry/query":
                 self._send_json(target.selected_telemetry_values(payload))
+            elif path == "/api/external/telemetry/values/query":
+                self._send_json(target.selected_external_telemetry_frame(payload))
+            elif path == "/api/external/telemetry/history/query":
+                if role != "simulator":
+                    raise JsonApiError(404, f"Unknown API route: {path}")
+                try:
+                    result = target.external_measurement_history(payload)
+                except ValueError as exc:
+                    raise JsonApiError(400, str(exc), target._external_response_metadata()) from exc
+                self._send_json(result)
             elif path == "/api/external/controls":
                 self._send_json(target.apply_external_control_values(payload))
+            elif path == "/api/external/controls/execute":
+                try:
+                    result = target.apply_external_control_frame(payload)
+                except ValueError as exc:
+                    raise JsonApiError(400, str(exc), target._external_response_metadata()) from exc
+                self._send_json(result)
             elif path == "/api/clock":
                 self._send_json(target.control_clock(payload))
             elif path == "/api/config":

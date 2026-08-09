@@ -1074,6 +1074,14 @@ class ResourceGridSideTopologyTest(unittest.TestCase):
         self.assertNotIn(("DCACConverter", "converter-a"), group_b.converter_keys)
         self.assertEqual(1, len(group_a.ac_component_ids))
         self.assertEqual(1, len(group_b.ac_component_ids))
+        self.assertEqual(
+            (group_a.ac_component_ids[0], group_a.group_id),
+            result.converter_component_ids[("DCACConverter", "converter-a")],
+        )
+        self.assertEqual(
+            (group_b.ac_component_ids[0], group_b.group_id),
+            result.converter_component_ids[("DCACConverter", "converter-b")],
+        )
 
     def test_ac_terminal_resource_uses_resolved_dc_island_transfer_group(self):
         snapshot = snapshot_with_model(

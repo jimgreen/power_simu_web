@@ -131,6 +131,26 @@ class TraineeModelInitializationTest(unittest.TestCase):
         )
 
     @staticmethod
+    def _device_row(
+        service: PolarMicrogridSimulator,
+        block_name: str,
+        name: str,
+    ) -> dict:
+        return next(
+            row
+            for row in service.definition_snapshot.model_book.data[block_name].data
+            if row.get("name") == name
+        )
+
+    @staticmethod
+    def _measurement(service: PolarMicrogridSimulator, name: str) -> dict:
+        return next(
+            row
+            for row in service.definitions()["measurement"]
+            if row.get("name") == name
+        )
+
+    @staticmethod
     def _post_json(url: str, payload: dict) -> dict:
         request = Request(
             url,
@@ -207,6 +227,211 @@ class TraineeModelInitializationTest(unittest.TestCase):
             )
             self.assertEqual((trainee.models_root / "local_a" / "model.e").read_bytes(), untouched_model)
             self.assertEqual(exchange.invalidated, ["local_b"])
+
+    def test_model_initialization_uses_simulator_effective_definitions_as_trainee_defaults(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            simulator = self._make_simulator(root)
+            trainee = self._make_trainee(root)
+            simulator_source_before = self._tree_bytes(simulator.sim_dir)
+
+            simulator.update_device_parameters(
+                {
+                    "block_name": "ACBranch",
+                    "row_key": {"idx": "2", "name": "diesel_line"},
+                    "revision": simulator.definition_snapshot.revision,
+                    "changes": {"r": 0.0025},
+                }
+            )
+            simulator.update_device_parameters(
+                {
+                    "block_name": "ACGenerator",
+                    "row_key": {"idx": "2", "name": "diesel_300kw"},
+                    "revision": simulator.definition_snapshot.revision,
+                    "changes": {"run_stat": 0, "p_set": 95},
+                }
+            )
+            simulator.update_measurement_definition(
+                {
+                    "name": "p_gen_diesel_300kw",
+                    "revision": simulator.definition_snapshot.revision,
+                    "changes": {
+                        "error_sigma": 0.02,
+                        "status": "fixed",
+                        "fixed_value": 12.5,
+                    },
+                }
+            )
+
+            simulator_server = make_http_server(("127.0.0.1", 0), simulator, role="simulator")
+            trainee_server = make_http_server(("127.0.0.1", 0), trainee, role="trainee")
+            simulator_thread = threading.Thread(target=simulator_server.serve_forever, daemon=True)
+            trainee_thread = threading.Thread(target=trainee_server.serve_forever, daemon=True)
+            simulator_thread.start()
+            trainee_thread.start()
+            try:
+                simulator_port = simulator_server.server_address[1]
+                trainee_port = trainee_server.server_address[1]
+                link = f"http://127.0.0.1:{simulator_port}/api/trainee-link?model_id=remote_model"
+                self._post_json(
+                    f"http://127.0.0.1:{trainee_port}/api/trainee/model-initialize",
+                    {"model_id": "local_b", "link": link},
+                )
+            finally:
+                trainee_server.shutdown()
+                simulator_server.shutdown()
+                trainee_server.server_close()
+                simulator_server.server_close()
+                trainee_thread.join(timeout=5)
+                simulator_thread.join(timeout=5)
+
+            local_b = trainee.service_for("local_b")
+            self.assertEqual(self._tree_bytes(simulator.sim_dir), simulator_source_before)
+            self.assertEqual(self._device_row(local_b, "ACBranch", "diesel_line")["r"], "0.0025")
+            diesel_row = self._device_row(local_b, "ACGenerator", "diesel_300kw")
+            self.assertEqual(diesel_row["run_stat"], "0")
+            self.assertEqual(diesel_row["p_set"], "95")
+            diesel_run_stat = next(
+                row
+                for row in local_b.source_stat_book.data["RunStat"].data
+                if row["dev_type"] == "ACGenerator" and row["dev_name"] == "diesel_300kw"
+            )
+            diesel_setpoint = next(
+                row
+                for row in local_b.source_stat_book.data["SetValue"].data
+                if row["dev_type"] == "ACGenerator"
+                and row["dev_name"] == "diesel_300kw"
+                and row["set_type"] == "p_set"
+            )
+            self.assertEqual(diesel_run_stat["run_stat"], "0")
+            self.assertEqual(diesel_setpoint["set_value"], "95")
+            baseline_measurement = self._measurement(local_b, "p_gen_diesel_300kw")
+            self.assertEqual(float(baseline_measurement["weight"]), 2500.0)
+            self.assertEqual(baseline_measurement["status"], "fixed")
+            self.assertEqual(float(baseline_measurement["fixed_value"]), 12.5)
+            self.assertEqual(local_b.manual_definition_changes()["count"], 0)
+            baseline_defaults = json.loads(
+                (local_b.sim_dir / "definition_defaults.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                baseline_defaults["measurement_statuses"]["p_gen_diesel_300kw"],
+                {"status": "fixed", "fixed_value": 12.5},
+            )
+            scada_row = list(
+                next(
+                    row
+                    for row in local_b.definition_snapshot.measurement_rows
+                    if row[1] == "p_gen_diesel_300kw"
+                )
+            )
+            scada_row[7] = "1"
+            local_b.latest_scada_rows = [scada_row]
+            local_b._apply_measurement_statuses(0, 0)
+            self.assertEqual(float(local_b.latest_scada_rows[0][7]), 12.5)
+            trainee_source_before_secondary_override = self._tree_bytes(local_b.sim_dir)
+
+            local_b.update_device_parameters(
+                {
+                    "block_name": "ACBranch",
+                    "row_key": {"idx": "2", "name": "diesel_line"},
+                    "revision": local_b.definition_snapshot.revision,
+                    "changes": {"r": 0.0035},
+                },
+                allow_runtime_controls=False,
+            )
+            local_b.update_measurement_definition(
+                {
+                    "name": "p_gen_diesel_300kw",
+                    "revision": local_b.definition_snapshot.revision,
+                    "changes": {"status": "zero"},
+                }
+            )
+            self.assertEqual(self._device_row(local_b, "ACBranch", "diesel_line")["r"], "0.0035")
+            self.assertEqual(self._measurement(local_b, "p_gen_diesel_300kw")["status"], "zero")
+            self.assertEqual(self._tree_bytes(local_b.sim_dir), trainee_source_before_secondary_override)
+
+            restarted = PolarMicrogridSimulator(
+                local_b.sim_dir,
+                local_b.runtime_dir,
+                kernel=lambda _config: None,
+                model_id="local_b",
+                model_name="本地模型 B",
+            )
+            self.assertEqual(self._device_row(restarted, "ACBranch", "diesel_line")["r"], "0.0035")
+            self.assertEqual(self._measurement(restarted, "p_gen_diesel_300kw")["status"], "zero")
+
+            changes = restarted.manual_definition_changes()["changes"]
+            restarted.reset_manual_definition_changes(
+                {
+                    "revision": restarted.definition_snapshot.revision,
+                    "change_ids": [item["id"] for item in changes],
+                }
+            )
+            self.assertEqual(self._device_row(restarted, "ACBranch", "diesel_line")["r"], "0.0025")
+            restored_measurement = self._measurement(restarted, "p_gen_diesel_300kw")
+            self.assertEqual(restored_measurement["status"], "fixed")
+            self.assertEqual(float(restored_measurement["fixed_value"]), 12.5)
+
+    def test_reinitialization_clears_trainee_secondary_overrides_and_uses_latest_baseline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            simulator = self._make_simulator(root)
+            trainee = self._make_trainee(root)
+
+            simulator.update_device_parameters(
+                {
+                    "block_name": "ACBranch",
+                    "row_key": {"idx": "2", "name": "diesel_line"},
+                    "revision": simulator.definition_snapshot.revision,
+                    "changes": {"r": 0.0025},
+                }
+            )
+            simulator_server = make_http_server(("127.0.0.1", 0), simulator, role="simulator")
+            trainee_server = make_http_server(("127.0.0.1", 0), trainee, role="trainee")
+            simulator_thread = threading.Thread(target=simulator_server.serve_forever, daemon=True)
+            trainee_thread = threading.Thread(target=trainee_server.serve_forever, daemon=True)
+            simulator_thread.start()
+            trainee_thread.start()
+            try:
+                simulator_port = simulator_server.server_address[1]
+                trainee_port = trainee_server.server_address[1]
+                link = f"http://127.0.0.1:{simulator_port}/api/trainee-link?model_id=remote_model"
+                initialize_url = f"http://127.0.0.1:{trainee_port}/api/trainee/model-initialize"
+                self._post_json(initialize_url, {"model_id": "local_b", "link": link})
+
+                local_b = trainee.service_for("local_b")
+                local_b.update_device_parameters(
+                    {
+                        "block_name": "ACBranch",
+                        "row_key": {"idx": "2", "name": "diesel_line"},
+                        "revision": local_b.definition_snapshot.revision,
+                        "changes": {"r": 0.0035},
+                    },
+                    allow_runtime_controls=False,
+                )
+                self.assertTrue(local_b.manual_definition_changes_file.exists())
+
+                simulator.update_device_parameters(
+                    {
+                        "block_name": "ACBranch",
+                        "row_key": {"idx": "2", "name": "diesel_line"},
+                        "revision": simulator.definition_snapshot.revision,
+                        "changes": {"r": 0.0045},
+                    }
+                )
+                self._post_json(initialize_url, {"model_id": "local_b", "link": link})
+            finally:
+                trainee_server.shutdown()
+                simulator_server.shutdown()
+                trainee_server.server_close()
+                simulator_server.server_close()
+                trainee_thread.join(timeout=5)
+                simulator_thread.join(timeout=5)
+
+            local_b = trainee.service_for("local_b")
+            self.assertEqual(self._device_row(local_b, "ACBranch", "diesel_line")["r"], "0.0045")
+            self.assertEqual(local_b.manual_definition_changes()["count"], 0)
+            self.assertFalse(local_b.manual_definition_changes_file.exists())
 
     def test_new_trainee_model_creates_an_uninitialized_name_only_slot(self):
         with tempfile.TemporaryDirectory() as temporary:

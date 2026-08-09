@@ -66,6 +66,16 @@ from hybrid_lf import (  # noqa: E402
     _build_lf_network_from_single_dc_file,
     _detect_lf_rows_kind,
 )
+from simu.device_roles import (  # noqa: E402
+    converter_active_power_setpoint_field,
+    converter_power_setpoint_fields,
+)
+from simu.model_semantics import (  # noqa: E402
+    grid_converter_keys,
+    resolve_resource_reference,
+    resource_aliases,
+    structured_resources,
+)
 
 
 DEFAULT_MODEL_FILE = SIMU_DIR / "model.e"
@@ -428,20 +438,6 @@ def _storage_soc_ratio_from_text(value, default: Optional[float] = 0.0) -> Optio
     return number
 
 
-def _rated_power_from_name(value, default: Optional[float] = None) -> Optional[float]:
-    text = str(value or "")
-    match = re.search(r"([-+]?\d+(?:\.\d+)?)\s*(mw|kw|w)\b", text, re.IGNORECASE)
-    if match is None:
-        return default
-    number = abs(float(match.group(1)))
-    unit = match.group(2).casefold()
-    if unit == "mw":
-        return number * 1000.0
-    if unit == "w":
-        return number / 1000.0
-    return number
-
-
 def _positive_numeric(value, default: Optional[float] = None) -> Optional[float]:
     number = _numeric_from_text(value, None)
     if number is None or number <= 0.0:
@@ -459,11 +455,40 @@ def _wind_rated_power_kw(row: Optional[dict], define: Optional[dict] = None, def
         capability.get("p_max"),
         source.get("rated_power"),
         source.get("p_max"),
-        source.get("p_set"),
     ):
         rated = _positive_numeric(value, None)
         if rated is not None:
             return rated
+    return float(default)
+
+
+def _pv_rated_power_kw(row: Optional[dict], define: Optional[dict] = None, default: float = 0.0) -> float:
+    source = row or {}
+    capability = define or {}
+    for value in (
+        capability.get("rated_power"),
+        capability.get("rated_capacity"),
+        capability.get("p_max"),
+        source.get("rated_capacity"),
+        source.get("rated_power"),
+        source.get("p_max"),
+    ):
+        rated = _positive_numeric(value, None)
+        if rated is not None:
+            return rated
+    module_efficiency = _ratio_from_text(capability.get("module_efficiency"), None)
+    array_area_m2 = _positive_numeric(capability.get("array_area"), None)
+    reference_irradiance = _positive_numeric(
+        capability.get("reference_irradiance"),
+        1000.0,
+    )
+    if (
+        module_efficiency is not None
+        and module_efficiency > 0.0
+        and array_area_m2 is not None
+        and reference_irradiance is not None
+    ):
+        return module_efficiency * array_area_m2 * reference_irradiance / 1000.0
     return float(default)
 
 
@@ -851,55 +876,81 @@ def _embedded_device_define_book(model_book: EBook) -> EBook:
     storage_rows: List[dict] = []
     diesel_rows: List[dict] = []
 
-    for pos, row in enumerate(_sorted_rows(_book_rows(model_book, "ACWindGen")), start=1):
-        source = ac_generators.get(str(row.get("idx_acgenerator", "")), {})
-        source_name = str(source.get("name", row.get("name", f"wind_{pos}")))
-        rated = (
-            _positive_numeric(source.get("rated_capacity"), None)
-            or _positive_numeric(row.get("rated_power"), None)
-            or _rated_power_from_name(row.get("wind_turbine_model"), None)
-            or _positive_numeric(source.get("p_max"), None)
-            or _positive_numeric(source.get("rated_power"), None)
-            or _positive_numeric(source.get("p_set"), None)
-            or 10.0
-        )
-        wind_rows.append(
-            {
-                "id": row.get("idx", pos),
-                "name": source_name,
-                "p_max": rated,
-                "p_min": 0,
-                "p_fur": 0,
-                "rated_power": rated,
-                "rated_wind_speed": _numeric_from_text(row.get("rated_wind_speed"), 15.0) or 15.0,
-                "cut_in_speed": _numeric_from_text(row.get("cut_in_wind_speed"), 5.0) or 5.0,
-                "cut_out_speed": _numeric_from_text(row.get("cut_out_wind_speed"), 30.0) or 30.0,
-            }
-        )
+    for block_name, generators, generator_type, reference_field in (
+        ("ACWindGen", ac_generators, "ACGenerator", "idx_acgenerator"),
+        ("DCWindGen", dc_generators, "DCGenerator", "idx_dcgenerator"),
+    ):
+        for pos, row in enumerate(_sorted_rows(_book_rows(model_book, block_name)), start=1):
+            source = generators.get(str(row.get(reference_field, "")))
+            if source is None:
+                continue
+            source_name = str(source.get("name", "")).strip()
+            if not source_name:
+                continue
+            rated = (
+                _positive_numeric(source.get("rated_capacity"), None)
+                or _positive_numeric(row.get("rated_power"), None)
+                or _positive_numeric(source.get("p_max"), None)
+                or _positive_numeric(source.get("rated_power"), None)
+                or _positive_numeric(source.get("p_set"), None)
+                or 10.0
+            )
+            wind_rows.append(
+                {
+                    "id": row.get("idx", pos),
+                    "name": source_name,
+                    "source_name": source_name,
+                    "dev_type": generator_type,
+                    "p_max": rated,
+                    "p_min": 0,
+                    "p_fur": 0,
+                    "rated_power": rated,
+                    "rated_wind_speed": _numeric_from_text(row.get("rated_wind_speed"), 15.0) or 15.0,
+                    "cut_in_speed": _numeric_from_text(row.get("cut_in_wind_speed"), 5.0) or 5.0,
+                    "cut_out_speed": _numeric_from_text(row.get("cut_out_wind_speed"), 30.0) or 30.0,
+                }
+            )
 
-    for pos, row in enumerate(_sorted_rows(_book_rows(model_book, "DCPVGen")), start=1):
-        source = dc_generators.get(str(row.get("idx_dcgenerator", "")), {})
-        source_name = str(source.get("name", row.get("name", f"pv_{pos}")))
-        rated = _numeric_from_text(row.get("rated_power"), None)
-        if rated is None:
-            efficiency = _efficiency_from_text(row.get("module_efficiency"), 0.2)
-            area = _numeric_from_text(row.get("array_area"), 0.0) or 0.0
-            rated = efficiency * area
-        if rated <= 0.0:
-            rated = _numeric_from_text(source.get("p_max"), None) or _numeric_from_text(source.get("p_set"), 0.0) or 0.0
-        pv_rows.append(
-            {
-                "id": row.get("idx", pos),
-                "name": source_name,
-                "p_max": rated,
-                "p_min": 0,
-                "p_fur": 0,
-                "rated_power": rated,
-                "temp_coefficient": _numeric_from_text(row.get("temp_coefficient"), 0.0) or 0.0,
-                "reference_irradiance": _numeric_from_text(row.get("reference_irradiance"), 1000.0) or 1000.0,
-                "reference_temperature": _numeric_from_text(row.get("reference_temperature"), 25.0) or 25.0,
-            }
-        )
+    for block_name, generators, generator_type, reference_field in (
+        ("ACPVGen", ac_generators, "ACGenerator", "idx_acgenerator"),
+        ("DCPVGen", dc_generators, "DCGenerator", "idx_dcgenerator"),
+    ):
+        for pos, row in enumerate(_sorted_rows(_book_rows(model_book, block_name)), start=1):
+            source = generators.get(str(row.get(reference_field, "")))
+            if source is None:
+                continue
+            source_name = str(source.get("name", "")).strip()
+            if not source_name:
+                continue
+            rated = (
+                _positive_numeric(row.get("rated_power"), None)
+                or _positive_numeric(source.get("rated_capacity"), None)
+            )
+            if rated is None:
+                efficiency = _efficiency_from_text(row.get("module_efficiency"), 0.2)
+                area = _numeric_from_text(row.get("array_area"), 0.0) or 0.0
+                rated = efficiency * area
+            if rated <= 0.0:
+                rated = (
+                    _positive_numeric(source.get("p_max"), None)
+                    or _positive_numeric(source.get("p_set"), None)
+                    or 0.0
+                )
+            pv_rows.append(
+                {
+                    "id": row.get("idx", pos),
+                    "name": source_name,
+                    "source_name": source_name,
+                    "dev_type": generator_type,
+                    "p_max": rated,
+                    "p_min": 0,
+                    "p_fur": 0,
+                    "rated_power": rated,
+                    "temp_coefficient": _numeric_from_text(row.get("temp_coefficient"), 0.0) or 0.0,
+                    "reference_irradiance": _numeric_from_text(row.get("reference_irradiance"), 1000.0) or 1000.0,
+                    "reference_temperature": _numeric_from_text(row.get("reference_temperature"), 25.0) or 25.0,
+                }
+            )
 
     generator_rows_by_type = {
         "ACGenerator": ac_generators,
@@ -935,25 +986,39 @@ def _embedded_device_define_book(model_book: EBook) -> EBook:
                 }
             )
 
-    wind_names = {row["name"] for row in wind_rows}
-    for pos, row in enumerate(_sorted_rows(_book_rows(model_book, "ACGenerator")), start=1):
-        name = str(row.get("name", ""))
-        dev_type = str(row.get("dev_type", "")).casefold()
-        if name in wind_names or "wind" in dev_type or "风" in name:
-            continue
-        if "diesel" not in name.casefold() and "柴" not in name and "source" not in dev_type:
-            continue
-        p_max = _numeric_from_text(row.get("p_max"), None) or _numeric_from_text(row.get("rated_power"), None)
-        if p_max is None or p_max <= 0.0:
-            p_max = max(_numeric_from_text(row.get("p_set"), 0.0) or 0.0, 300.0)
-        diesel_rows.append(
-            {
-                "id": row.get("idx", pos),
-                "name": name,
-                "p_max": p_max,
-                "p_min": _numeric_from_text(row.get("p_min"), 0.0) or 0.0,
-            }
-        )
+    diesel_seen: set[Tuple[str, str]] = set()
+    for block_name, generators, generator_type, reference_field in (
+        ("ACDieselGen", ac_generators, "ACGenerator", "idx_acgenerator"),
+        ("DCDieselGen", dc_generators, "DCGenerator", "idx_dcgenerator"),
+    ):
+        for pos, parameter in enumerate(_sorted_rows(_book_rows(model_book, block_name)), start=1):
+            source = generators.get(str(parameter.get(reference_field, "")))
+            if source is None:
+                continue
+            name = str(source.get("name", "")).strip()
+            key = (generator_type, name)
+            if not name or key in diesel_seen:
+                continue
+            diesel_seen.add(key)
+            p_max = (
+                _positive_numeric(parameter.get("rated_power"), None)
+                or _positive_numeric(parameter.get("p_max"), None)
+                or _positive_numeric(source.get("rated_capacity"), None)
+                or _positive_numeric(source.get("p_max"), None)
+                or _positive_numeric(source.get("rated_power"), None)
+                or _positive_numeric(source.get("p_set"), None)
+                or 0.0
+            )
+            diesel_rows.append(
+                {
+                    "id": parameter.get("idx", pos),
+                    "name": name,
+                    "source_name": name,
+                    "dev_type": generator_type,
+                    "p_max": p_max,
+                    "p_min": _numeric_from_text(parameter.get("p_min", source.get("p_min")), 0.0) or 0.0,
+                }
+            )
 
     return EBook(
         {
@@ -1024,31 +1089,54 @@ def _model_row(model_book: EBook, dev_type: str, name: str) -> Optional[dict]:
     return _rows_by_name(block).get(str(name))
 
 
-def _storage_source_name(storage_name: str) -> str:
-    return f"{storage_name}_vsrc"
-
-
-def _source_model_row(model_book: EBook, dev_type: str, name: str) -> Optional[dict]:
-    if dev_type in ("ESS", "Storage"):
-        return (
-            _model_row(model_book, "DCGenerator", _storage_source_name(name))
-            or _model_row(model_book, "DCGenerator", name)
-        )
-    return _model_row(model_book, dev_type, name)
+def _source_model_row(
+    model_book: EBook,
+    model_block: str,
+    name: str,
+    source_index: object = "",
+) -> Optional[dict]:
+    """Resolve an exact model row or one explicit parameter-table alias."""
+    target = _model_row(model_book, model_block, name)
+    if target is not None:
+        return target
+    index_text = str(source_index or "").strip()
+    candidates = []
+    for resource in structured_resources(model_book):
+        if index_text and resource.source_index != index_text:
+            continue
+        if name and name not in resource_aliases(resource):
+            continue
+        candidates.append(resource.source)
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _stat_dev_name(row: dict) -> str:
     return str(row.get("dev_name", row.get("name", "")))
 
 
+def _is_converter_control_target(row: dict) -> bool:
+    """Recognize a converter from its terminal/control structure."""
+    return bool(
+        ("ac_node" in row and "dc_node" in row)
+        or "p_ac_set" in row
+        or "p_dc_set" in row
+    )
+
+
 def _apply_setpoint_row(model_book: EBook, row: dict) -> int:
     dev_type = str(row.get("dev_type", ""))
-    target = _model_row(model_book, dev_type, _stat_dev_name(row))
+    target = _source_model_row(
+        model_book,
+        dev_type,
+        _stat_dev_name(row),
+        row.get("idx", ""),
+    )
     if target is None:
         return 0
     changed = 0
-    if dev_type == "DCACConverter":
-        mapping = {"p_set": "p_ac_set", "q_set": "q_ac_set", "v_set": "v_ac_set"}
+    if _is_converter_control_target(target):
+        power_field = converter_active_power_setpoint_field(target) or "p_ac_set"
+        mapping = {"p_set": power_field, "q_set": "q_ac_set", "v_set": "v_ac_set"}
     else:
         mapping = {"p_set": "p_set", "q_set": "q_set", "v_set": "v_set"}
     for src, dst in mapping.items():
@@ -1060,26 +1148,34 @@ def _apply_setpoint_row(model_book: EBook, row: dict) -> int:
     return changed
 
 
-def _set_value_target_column(dev_type: str, set_type: str) -> str:
-    if dev_type == "DCACConverter":
+def _set_value_target_column(dev_type: str, set_type: str, target: Optional[dict] = None) -> str:
+    del dev_type
+    target = target or {}
+    if _is_converter_control_target(target):
+        power_field = converter_active_power_setpoint_field(target or {}) or "p_ac_set"
         return {
-            "p_set": "p_ac_set",
+            "p_set": power_field,
             "q_set": "q_ac_set",
             "v_set": "v_ac_set",
             "p_ac_set": "p_ac_set",
+            "p_dc_set": "p_dc_set",
             "q_ac_set": "q_ac_set",
             "v_ac_set": "v_ac_set",
+            "v_dc_set": "v_dc_set",
         }.get(set_type, set_type)
-    if dev_type == "ACLoad":
+    if "pv0" in target or "qv0" in target:
         return {"p_set": "pv0", "q_set": "qv0", "pv0": "pv0", "qv0": "qv0"}.get(set_type, set_type)
-    if dev_type in ("ESS", "Storage"):
-        return {"p_set": "p_set", "v_set": "v_set", "i_set": "i_set"}.get(set_type, set_type)
     return set_type
 
 
 def _apply_set_value_row(model_book: EBook, row: dict) -> int:
     dev_type = str(row.get("dev_type", ""))
-    target = _source_model_row(model_book, dev_type, _stat_dev_name(row))
+    target = _source_model_row(
+        model_book,
+        dev_type,
+        _stat_dev_name(row),
+        row.get("idx", ""),
+    )
     if target is None:
         return 0
     set_type = str(row.get("set_type", ""))
@@ -1088,7 +1184,11 @@ def _apply_set_value_row(model_book: EBook, row: dict) -> int:
     value = row.get("set_value", "")
     if value == "":
         return 0
-    return _set_row_value(target, _set_value_target_column(dev_type, set_type), value)
+    return _set_row_value(
+        target,
+        _set_value_target_column(dev_type, set_type, target),
+        value,
+    )
 
 
 def _run_stat_by_name(stat_book: EBook) -> Dict[Tuple[str, str], str]:
@@ -1161,14 +1261,24 @@ def apply_dev_stat_book(model_book: EBook, stat_book: EBook) -> int:
     block = stat_book.data.get("RunStat")
     if block is not None:
         for row in block.data:
-            target = _source_model_row(model_book, str(row.get("dev_type", "")), _stat_dev_name(row))
+            target = _source_model_row(
+                model_book,
+                str(row.get("dev_type", "")),
+                _stat_dev_name(row),
+                row.get("idx", ""),
+            )
             if target is not None and row.get("run_stat", "") != "":
                 changed += _set_row_value(target, "run_stat", row.get("run_stat", ""))
 
     block = stat_book.data.get("DeviceRunStatus")
     if block is not None:
         for row in block.data:
-            target = _source_model_row(model_book, str(row.get("dev_type", "")), _stat_dev_name(row))
+            target = _source_model_row(
+                model_book,
+                str(row.get("dev_type", "")),
+                _stat_dev_name(row),
+                row.get("idx", ""),
+            )
             if target is not None and row.get("run_stat", "") != "":
                 changed += _set_row_value(target, "run_stat", row.get("run_stat", ""))
 
@@ -1206,7 +1316,7 @@ def apply_dev_stat_book(model_book: EBook, stat_book: EBook) -> int:
                 continue
             if row.get("run_stat", "") != "":
                 changed += _set_row_value(target, "run_stat", row.get("run_stat", ""))
-            if str(row.get("dev_type", "")) == "ACLoad":
+            if "pv0" in target or "qv0" in target:
                 if row.get("p_set", "") != "":
                     changed += _set_row_value(target, "pv0", row.get("p_set", ""))
                 if row.get("q_set", "") != "":
@@ -1219,23 +1329,20 @@ def apply_dev_stat_book(model_book: EBook, stat_book: EBook) -> int:
 
     block = _storage_soc_block(stat_book)
     if block is not None:
+        storage_targets = _storage_target_rows(model_book, EBook({}))
         for row in block.data:
-            storage_name = str(row.get("name", row.get("dev_name", "")))
-            target = _model_row(model_book, "DCGenerator", _storage_source_name(storage_name))
-            if target is None:
-                target = _model_row(model_book, "DCGenerator", storage_name)
-            if target is not None:
-                run_stat = row.get("run_stat", "")
-                if run_stat == "":
-                    run_stat = run_stats.get(
-                        ("ESS", storage_name),
-                        run_stats.get(
-                            ("DCGenerator", storage_name),
-                            run_stats.get(("DCGenerator", _storage_source_name(storage_name)), ""),
-                        ),
-                    )
-                if run_stat != "":
-                    changed += _set_row_value(target, "run_stat", run_stat)
+            resolved = _storage_target_for_identity(row, storage_targets)
+            if resolved is None:
+                continue
+            source_block, target, _name, _define, _pos = resolved
+            run_stat = row.get("run_stat", "")
+            if run_stat == "":
+                run_stat = run_stats.get(
+                    (source_block, str(target.get("name", ""))),
+                    "",
+                )
+            if run_stat != "":
+                changed += _set_row_value(target, "run_stat", run_stat)
     changed += _apply_real_bus_node_constraints(model_book)
     return changed
 
@@ -1263,7 +1370,12 @@ def apply_mode_book(model_book: EBook, mode_book: Optional[EBook]) -> int:
             mode_value = str(row.get("mode", row.get("control_type", row.get("ctrl_mode", ""))))
             if not dev_type or not dev_name or not mode_value:
                 continue
-            target = _source_model_row(model_book, dev_type, dev_name)
+            target = _source_model_row(
+                model_book,
+                dev_type,
+                dev_name,
+                row.get("idx", ""),
+            )
             if target is None:
                 continue
             for column in ("control_type", "mode", "ctrl_mode"):
@@ -1427,20 +1539,11 @@ def apply_load_model(model_book: EBook, dev_define: EBook, weather: Dict[str, fl
     return changed
 
 
-def _target_rows(model_book: EBook, table_name: str, prefix: Optional[str] = None, contains: Optional[str] = None) -> List[dict]:
+def _target_rows(model_book: EBook, table_name: str) -> List[dict]:
     block = model_book.data.get(table_name)
     if block is None:
         return []
-    rows = []
-    for row in block.data:
-        name = str(row.get("name", ""))
-        lower_name = name.lower()
-        if prefix is not None and not lower_name.startswith(prefix.lower()):
-            continue
-        if contains is not None and contains.lower() not in lower_name:
-            continue
-        rows.append(row)
-    return _sorted_rows(rows)
+    return _sorted_rows(list(block.data))
 
 
 def _renewable_target_rows(
@@ -1448,47 +1551,27 @@ def _renewable_target_rows(
     dev_define: EBook,
     define_table: str,
     model_tables: Sequence[str],
-    prefixes: Sequence[str],
 ) -> List[Tuple[str, dict, Optional[dict], int]]:
-    """Match renewable device definitions to model rows by name, then prefix."""
-    define_rows = _sorted_rows(_book_rows(dev_define, define_table))
-    define_by_name = {
-        str(row.get("name", "")): row
-        for row in define_rows
-        if str(row.get("name", ""))
-    }
-    define_pos_by_name = {
-        str(row.get("name", "")): pos
-        for pos, row in enumerate(define_rows)
-        if str(row.get("name", ""))
-    }
-    prefix_tuple = tuple(prefix.lower() for prefix in prefixes)
-    matched: List[Tuple[str, dict, Optional[dict], int]] = []
-    seen: set[Tuple[str, str]] = set()
-    fallback_candidates: List[Tuple[str, dict]] = []
-
-    for table_name in model_tables:
-        for row in _sorted_rows(_book_rows(model_book, table_name)):
-            name = str(row.get("name", ""))
-            key = (table_name, name)
-            if name in define_by_name:
-                matched.append((table_name, row, define_by_name[name], define_pos_by_name.get(name, len(matched))))
-                seen.add(key)
-                continue
-            if prefix_tuple and name.lower().startswith(prefix_tuple):
-                fallback_candidates.append((table_name, row))
-
-    if matched:
-        return matched
-
-    for pos, (table_name, row) in enumerate(fallback_candidates):
-        name = str(row.get("name", ""))
-        key = (table_name, name)
-        if key in seen:
-            continue
-        matched.append((table_name, row, _define_row_by_name_or_position(dev_define, define_table, name, pos), pos))
-        seen.add(key)
-    return matched
+    """Resolve capability targets only through model parameter references."""
+    technology = {
+        "wind_generator": "wind",
+        "pv_generator": "pv",
+        "diesel_generator": "diesel",
+    }.get(define_table, "")
+    if not technology:
+        return []
+    allowed_blocks = set(model_tables)
+    return [
+        (
+            resource.source_block,
+            resource.source,
+            resource.parameter,
+            position,
+        )
+        for position, resource in enumerate(structured_resources(model_book))
+        if resource.technology == technology
+        and resource.source_block in allowed_blocks
+    ]
 
 
 def _available_with_bounds(raw_available: float, define: Optional[dict]) -> float:
@@ -1522,16 +1605,21 @@ def apply_wind_limits(
         model_book,
         dev_define,
         "wind_generator",
-        ("ACGenerator",),
-        ("wt", "wind"),
+        ("ACGenerator", "DCGenerator"),
     )
     changed = 0
     active_power_controls = active_power_controls or set()
     for table_name, row, define, _pos in rows:
         rated = _wind_rated_power_kw(row, define)
         rated_speed = _safe_float((define or {}).get("rated_wind_speed", 15.0), 15.0) or 15.0
-        cut_in = _safe_float((define or {}).get("cut_in_speed", 5.0), 5.0) or 5.0
-        cut_out = _safe_float((define or {}).get("cut_out_speed", 30.0), 30.0) or 30.0
+        cut_in = _safe_float(
+            (define or {}).get("cut_in_speed", (define or {}).get("cut_in_wind_speed", 5.0)),
+            5.0,
+        ) or 5.0
+        cut_out = _safe_float(
+            (define or {}).get("cut_out_speed", (define or {}).get("cut_out_wind_speed", 30.0)),
+            30.0,
+        ) or 30.0
         available = _available_with_bounds(wind_available_power(weather["wind_speed_mps"], rated, rated_speed, cut_in, cut_out), define)
         column = "p_ac_set" if "p_ac_set" in row else "p_set"
         target = (table_name, str(row.get("name", "")))
@@ -1551,14 +1639,13 @@ def apply_pv_limits(
         model_book,
         dev_define,
         "pv_generator",
-        ("DCGenerator",),
-        ("pv", "solar"),
+        ("ACGenerator", "DCGenerator"),
     )
     changed = 0
     air_temp = weather.get("air_temp_c", 25.0)
     active_power_controls = active_power_controls or set()
     for table_name, row, define, _pos in rows:
-        rated = _safe_float((define or {}).get("rated_power", (define or {}).get("p_max", row.get("p_set", 0.0))), 0.0) or 0.0
+        rated = _pv_rated_power_kw(row, define)
         temp_coef = _safe_float((define or {}).get("temp_coefficient", 0.0), 0.0) or 0.0
         ref_irrad = _safe_float((define or {}).get("reference_irradiance", 1000.0), 1000.0) or 1000.0
         ref_temp = _safe_float((define or {}).get("reference_temperature", 25.0), 25.0) or 25.0
@@ -1572,19 +1659,26 @@ def apply_pv_limits(
 
 
 def apply_diesel_limits(model_book: EBook, dev_define: EBook) -> int:
-    rows = _target_rows(model_book, "ACGenerator", contains="diesel")
+    rows = _renewable_target_rows(
+        model_book,
+        dev_define,
+        "diesel_generator",
+        ("ACGenerator", "DCGenerator"),
+    )
     changed = 0
-    for pos, row in enumerate(rows):
-        define = _define_row_by_position(dev_define, "diesel_generator", pos)
+    for _table_name, row, define, _pos in rows:
         if not _is_running_row(row):
             changed += _set_row_value(row, "p_set", "0")
             continue
         command = _safe_float(row.get("p_set", 0.0), 0.0) or 0.0
-        if command <= 0.0:
+        p_min = _safe_float((define or {}).get("p_min", row.get("p_min")), None)
+        p_max = _safe_float((define or {}).get("p_max", row.get("p_max")), None)
+        if p_min is None or p_max is None or p_min < 0.0 or p_max < p_min:
             target = 0.0
         else:
-            p_min = _safe_float((define or {}).get("p_min", 0.0), 0.0) or 0.0
-            p_max = _safe_float((define or {}).get("p_max", command), command) or command
+            # An online diesel is either stopped through run_stat or operated
+            # inside its declared stable-power interval.  A zero/negative P
+            # request must not bypass the minimum stable generation limit.
             target = _clamp(command, p_min, p_max)
         changed += _set_row_value(row, "p_set", _format_power(target))
     return changed
@@ -1601,31 +1695,8 @@ def _storage_soc_by_name_book(stat_book: EBook) -> Tuple[Dict[str, dict], List[d
     for row in _sorted_rows(_storage_soc_rows(stat_book)):
         item = dict(row)
         storage_name = str(item.get("name", item.get("dev_name", "")))
-        item_type = _storage_generator_type(item.get("dev_type"))
-        candidate_names = _storage_identity_names(storage_name)
-        value = None
-        if item_type is not None:
-            for candidate in candidate_names:
-                value = run_stat.get((item_type, candidate))
-                if value is not None:
-                    break
-        elif _is_legacy_storage_type(item.get("dev_type")):
-            for legacy_type in ("ESS", "Storage"):
-                for candidate in candidate_names:
-                    value = run_stat.get((legacy_type, candidate))
-                    if value is not None:
-                        break
-                if value is not None:
-                    break
-            if value is None:
-                typed_values = {
-                    run_stat[(dev_type, candidate)]
-                    for dev_type in ("ACGenerator", "DCGenerator")
-                    for candidate in candidate_names
-                    if (dev_type, candidate) in run_stat
-                }
-                if len(typed_values) == 1:
-                    value = next(iter(typed_values))
+        item_type = str(item.get("dev_type", "")).strip()
+        value = run_stat.get((item_type, storage_name))
         if value is not None and item.get("run_stat", "") == "":
             item["run_stat"] = value
         rows.append(item)
@@ -1643,106 +1714,60 @@ def _storage_soc_by_name_book(stat_book: EBook) -> Tuple[Dict[str, dict], List[d
     return by_name, rows
 
 
-def _storage_generator_type(value: object) -> Optional[str]:
-    normalized = str(value or "").strip().casefold()
-    return {
-        "acgenerator": "ACGenerator",
-        "dcgenerator": "DCGenerator",
-    }.get(normalized)
-
-
-def _is_legacy_storage_type(value: object) -> bool:
-    return str(value or "").strip().casefold() in ("", "ess", "storage")
-
-
-def _storage_identity_names(*names: object) -> List[str]:
-    candidates: List[str] = []
-    for raw_name in names:
-        name = str(raw_name or "").strip()
-        if not name:
-            continue
-        candidates.append(name)
-        if name.endswith("_vsrc"):
-            candidates.append(name.removesuffix("_vsrc"))
-        else:
-            candidates.append(_storage_source_name(name))
-    return _unique_names(*candidates)
-
-
 def _storage_target_key(target: StorageTarget) -> Tuple[str, str]:
-    dev_type, row, _storage_name, _define, _pos = target
-    return dev_type, str(row.get("name", ""))
-
-
-def _storage_target_exact_name(target: StorageTarget) -> str:
-    return str(target[1].get("name", ""))
-
-
-def _storage_target_identity_names(target: StorageTarget) -> List[str]:
-    _dev_type, row, storage_name, define, _pos = target
-    return _storage_identity_names(
-        row.get("name", ""),
-        (define or {}).get("source_name", ""),
-        storage_name,
-    )
-
-
-def _storage_target_alias_names(target: StorageTarget, targets: Sequence[StorageTarget]) -> List[str]:
-    target_key = _storage_target_key(target)
-    exact_name = _storage_target_exact_name(target)
-    other_exact_names = {
-        _storage_target_exact_name(candidate)
-        for candidate in targets
-        if _storage_target_key(candidate) != target_key
-    }
-    aliases: List[str] = []
-    for name in _storage_target_identity_names(target):
-        if name == exact_name or name in other_exact_names:
-            continue
-        owners = {
-            _storage_target_key(candidate)
-            for candidate in targets
-            if name in _storage_target_identity_names(candidate)
-        }
-        if owners == {target_key}:
-            aliases.append(name)
-    return _unique_names(*aliases)
-
-
-def _storage_target_lookup_names(target: StorageTarget, targets: Sequence[StorageTarget]) -> List[str]:
-    return _unique_names(
-        _storage_target_exact_name(target),
-        *_storage_target_alias_names(target, targets),
-    )
+    source_block, row, _storage_name, _define, _pos = target
+    return source_block, str(row.get("idx", "")).strip()
 
 
 def _storage_target_for_identity(row: Mapping[str, object], targets: Sequence[StorageTarget]) -> Optional[StorageTarget]:
-    identity_type = _storage_generator_type(row.get("dev_type"))
-    if identity_type is None and not _is_legacy_storage_type(row.get("dev_type")):
+    source_block = str(row.get("dev_type", "")).strip()
+    source_index = str(row.get("idx", "")).strip()
+    name = str(row.get("name", row.get("dev_name", ""))).strip()
+    if source_block and name:
+        matches = [
+            target
+            for target in targets
+            if _storage_target_key(target)[0] == source_block
+            and name in _storage_target_lookup_names(target, targets)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+    if source_block and source_index:
+        matches = [
+            target
+            for target in targets
+            if _storage_target_key(target) == (source_block, source_index)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+    if source_index:
+        matches = [
+            target
+            for target in targets
+            if _storage_target_key(target)[1] == source_index
+        ]
+        if len(matches) == 1:
+            return matches[0]
+    if not name:
         return None
-    identity_name = str(row.get("name", row.get("dev_name", ""))).strip()
-    if not identity_name:
-        return None
-    eligible = [
+    matches = [
         target
         for target in targets
-        if (identity_type is None or target[0] == identity_type)
+        if name in _storage_target_lookup_names(target, targets)
     ]
-    exact_candidates = [
-        target
-        for target in eligible
-        if _storage_target_exact_name(target) == identity_name
-    ]
-    if len(exact_candidates) == 1:
-        return exact_candidates[0]
-    if exact_candidates:
-        return None
-    alias_candidates = [
-        target
-        for target in eligible
-        if identity_name in _storage_target_alias_names(target, targets)
-    ]
-    return alias_candidates[0] if len(alias_candidates) == 1 else None
+    return matches[0] if len(matches) == 1 else None
+
+
+def _storage_target_lookup_names(
+    target: StorageTarget,
+    targets: Sequence[StorageTarget],
+) -> List[str]:
+    del targets
+    _source_block, source, storage_name, define, _pos = target
+    aliases = [str(source.get("name", "")).strip(), str(storage_name).strip()]
+    for value in (define or {}).get("explicit_aliases", ()):  # type: ignore[union-attr]
+        aliases.append(str(value or "").strip())
+    return _unique_names(*aliases)
 
 
 def _storage_status_for_target(
@@ -1756,144 +1781,66 @@ def _storage_status_for_target(
         resolved = _storage_target_for_identity(status, targets)
         if resolved is not None and _storage_target_key(resolved) == target_key:
             return status
-    for candidate in _storage_target_lookup_names(target, targets):
-        status = status_by_name.get(candidate)
-        if status is None:
-            continue
-        resolved = _storage_target_for_identity(status, targets)
-        if resolved is not None and _storage_target_key(resolved) == target_key:
-            return status
     return None
 
 
 def _storage_target_rows(model_book: EBook, dev_define: EBook) -> List[StorageTarget]:
-    """Return dev_type, generator row, storage name, definition row, and position."""
-    generator_rows = {
-        dev_type: _sorted_rows(_book_rows(model_book, dev_type))
-        for dev_type in ("ACGenerator", "DCGenerator")
-    }
-    generator_by_name = {
-        dev_type: {str(row.get("name", "")): row for row in rows}
-        for dev_type, rows in generator_rows.items()
-    }
-    generator_entries = [
-        (dev_type, row)
-        for dev_type in ("ACGenerator", "DCGenerator")
-        for row in generator_rows[dev_type]
-    ]
-    define_rows = _sorted_rows(_book_rows(dev_define, "estorage"))
-    has_structured_storage_rows = any(
-        _book_rows(model_book, block_name)
-        for block_name in ("ACStorageGen", "DCStorageGen")
-    )
-    indexed_defines = list(enumerate(define_rows))
-    typed_defines = [
-        (pos, define, _storage_generator_type(define.get("dev_type")))
-        for pos, define in indexed_defines
-        if _storage_generator_type(define.get("dev_type")) is not None
-    ]
-    legacy_defines = [
-        (pos, define)
-        for pos, define in indexed_defines
-        if _is_legacy_storage_type(define.get("dev_type"))
-    ]
-    matched: List[StorageTarget] = []
-    seen: set[Tuple[str, str]] = set()
-
-    def add_target(dev_type: str, row: dict, define: Optional[dict], pos: int) -> bool:
-        row_name = str(row.get("name", ""))
-        key = (dev_type, row_name)
-        if not row_name or key in seen:
-            return False
-        storage_name = str((define or {}).get("name", "")).strip()
-        source_name = str((define or {}).get("source_name", "")).strip()
-        matched.append((dev_type, row, storage_name or source_name or row_name.removesuffix("_vsrc"), define, pos))
-        seen.add(key)
-        return True
-
-    def unmatched_entries(dev_type: Optional[str] = None) -> List[Tuple[str, dict]]:
-        return [
-            (candidate_type, row)
-            for candidate_type, row in generator_entries
-            if (dev_type is None or candidate_type == dev_type)
-            and (candidate_type, str(row.get("name", ""))) not in seen
-        ]
-
-    def matching_entries(entries: Sequence[Tuple[str, dict]], names: Sequence[str]) -> List[Tuple[str, dict]]:
-        wanted = set(names)
-        return [
-            (dev_type, row)
-            for dev_type, row in entries
-            if str(row.get("name", "")) in wanted
-        ]
-
-    for pos, define, explicit_type in typed_defines:
-        if explicit_type is None:
+    """Return storage targets resolved only by AC/DC storage reference rows."""
+    targets: List[StorageTarget] = []
+    for position, resource in enumerate(structured_resources(model_book)):
+        if resource.technology != "storage":
             continue
-        source_name = str(define.get("source_name", "")).strip()
-        storage_name = str(define.get("name", "")).strip()
-        row = None
-        if source_name:
-            row = generator_by_name[explicit_type].get(source_name)
-        elif storage_name:
-            row = generator_by_name[explicit_type].get(storage_name)
-            if row is None:
-                aliases = [
-                    name
-                    for name in _storage_identity_names(storage_name)
-                    if name != storage_name
-                ]
-                candidates = matching_entries(unmatched_entries(explicit_type), aliases)
-                if len(candidates) == 1:
-                    _candidate_type, row = candidates[0]
-        if row is not None:
-            add_target(explicit_type, row, define, pos)
-
-    unmatched_legacy: List[Tuple[int, dict]] = []
-    for pos, define in legacy_defines:
-        source_name = str(define.get("source_name", "")).strip()
-        storage_name = str(define.get("name", "")).strip()
-        identity_names = _unique_names(source_name, storage_name)
-        available = unmatched_entries()
-        candidates = matching_entries(available, identity_names)
-        if not candidates and identity_names:
-            aliases = _unique_names(*(
-                alias
-                for name in identity_names
-                for alias in _storage_identity_names(name)
-                if alias not in identity_names
-            ))
-            candidates = matching_entries(available, aliases)
-        if len(candidates) == 1:
-            dev_type, row = candidates[0]
-            add_target(dev_type, row, define, pos)
-        else:
-            unmatched_legacy.append((pos, define))
-
-    storage_candidates = []
-    for dev_type, row in unmatched_entries():
-        row_name = str(row.get("name", ""))
-        lower_name = row_name.casefold()
-        row_kind = str(row.get("dev_type", "")).casefold()
-        if lower_name.startswith(("ess", "storage")) or "storage" in row_kind or "储能" in row_name:
-            storage_candidates.append((dev_type, row))
-    name_counts: Dict[str, int] = {}
-    for _dev_type, row in storage_candidates:
-        row_name = str(row.get("name", ""))
-        name_counts[row_name] = name_counts.get(row_name, 0) + 1
-    storage_candidates = [
-        (dev_type, row)
-        for dev_type, row in storage_candidates
-        if name_counts.get(str(row.get("name", "")), 0) == 1
-    ]
-
-    if unmatched_legacy and len(unmatched_legacy) == len(storage_candidates):
-        for (pos, define), (dev_type, row) in zip(unmatched_legacy, storage_candidates):
-            add_target(dev_type, row, define, pos)
-    elif not define_rows and not has_structured_storage_rows:
-        for pos, (dev_type, row) in enumerate(storage_candidates):
-            add_target(dev_type, row, None, pos)
-    return matched
+        parameter = dict(resource.parameter)
+        soc_cur = _storage_soc_ratio_from_text(
+            parameter.get("state_of_charge", parameter.get("soc_curr")),
+            None,
+        )
+        soc_min = _storage_soc_ratio_from_text(
+            parameter.get("soc_lower_limit", parameter.get("soc_min")),
+            0.0,
+        )
+        soc_max = _storage_soc_ratio_from_text(
+            parameter.get("soc_upper_limit", parameter.get("soc_max")),
+            None,
+        )
+        define = {
+            **parameter,
+            "id": parameter.get("idx", position + 1),
+            "name": resource.source_name,
+            "source_name": resource.source_name,
+            "source_block": resource.source_block,
+            "source_idx": resource.source_index,
+            "explicit_aliases": resource_aliases(resource),
+            "soc_cur": 0.5 if soc_cur is None else soc_cur,
+            "soc_min": 0.0 if soc_min is None else soc_min,
+            "soc_max": 1.0 if soc_max is None else soc_max,
+            "emva": _numeric_from_text(
+                parameter.get("energy_capacity", parameter.get("emva")),
+                DEFAULT_STORAGE_CAPACITY_KWH,
+            ),
+            "charge_p_max": _numeric_from_text(
+                parameter.get("max_charge_power", parameter.get("charge_p_max")),
+                0.0,
+            ),
+            "dis_charge_p_max": _numeric_from_text(
+                parameter.get("max_discharge_power", parameter.get("dis_charge_p_max")),
+                0.0,
+            ),
+            "charge_discharge_efficiency": _efficiency_from_text(
+                parameter.get("charge_discharge_efficiency"),
+                1.0,
+            ),
+        }
+        targets.append(
+            (
+                resource.source_block,
+                resource.source,
+                resource.source_name,
+                define,
+                position,
+            )
+        )
+    return targets
 
 
 def _ensure_storage_soc_rows_book(stat_book: EBook, model_book: EBook, dev_define: EBook) -> int:
@@ -2002,62 +1949,79 @@ def apply_storage_constraints_book(
     return changed
 
 
+def apply_acdc_limits(model_book: EBook) -> int:
+    """Clamp explicit grid-intertie commands to declared bidirectional limits.
+
+    ``p_ac_set`` is positive AC-to-DC; ``p_dc_set`` has the opposite sign and
+    is positive DC-to-AC. Internal renewable/storage converters and converters
+    without an explicit grid role are not automatic-dispatch actuators, so
+    this pass leaves their setpoints untouched. An explicitly declared grid
+    converter with invalid limits fails closed at zero.
+    """
+    changed = 0
+    dispatchable_keys = grid_converter_keys(model_book)
+    for converter_type in ("ACDCConverter", "DCACConverter"):
+        for row in _target_rows(model_book, converter_type):
+            if (converter_type, str(row.get("name", "")).strip()) not in dispatchable_keys:
+                continue
+            set_field = next(
+                (
+                    field
+                    for field in converter_power_setpoint_fields(row)
+                    if field in row
+                ),
+                "",
+            )
+            if not set_field:
+                continue
+            if not _is_running_row(row):
+                changed += _set_row_value(row, set_field, "0")
+                continue
+            command = _safe_float(row.get(set_field, 0.0), 0.0) or 0.0
+            if set_field == "p_dc_set":
+                p_min = _safe_float(row.get("p_dc_min", row.get("dc_p_min")), None)
+                p_max = _safe_float(row.get("p_dc_max", row.get("dc_p_max")), None)
+                if p_min is None or p_max is None or p_min > p_max:
+                    p_ac_min = _safe_float(
+                        row.get("p_ac_min", row.get("ac_p_min")),
+                        None,
+                    )
+                    p_ac_max = _safe_float(
+                        row.get("p_ac_max", row.get("ac_p_max")),
+                        None,
+                    )
+                    if (
+                        p_ac_min is not None
+                        and p_ac_max is not None
+                        and p_ac_min <= p_ac_max
+                    ):
+                        p_min = -p_ac_max
+                        p_max = -p_ac_min
+            else:
+                p_min = _safe_float(
+                    row.get("p_ac_min", row.get("ac_p_min")),
+                    None,
+                )
+                p_max = _safe_float(
+                    row.get("p_ac_max", row.get("ac_p_max")),
+                    None,
+                )
+            if p_min is None or p_max is None or p_min > p_max:
+                target = 0.0
+            else:
+                target = _clamp(command, p_min, p_max)
+            changed += _set_row_value(row, set_field, _format_power(target))
+    return changed
+
+
 def apply_dc_export_limits(
     model_book: EBook,
-    dev_define: EBook,
+    dev_define: Optional[EBook] = None,
     efficiency: float = DEFAULT_DC_EXPORT_EFFICIENCY,
 ) -> int:
-    """Prevent a DC/AC grid inverter from exporting unavailable DC power."""
-    source_power = 0.0
-    wind_rows = _renewable_target_rows(
-        model_book,
-        dev_define,
-        "wind_generator",
-        ("ACGenerator",),
-        ("wt", "wind"),
-    )
-    for table_name, row, _define, _pos in wind_rows:
-        if table_name != "ACGenerator" or not _is_running_row(row):
-            continue
-        source_power += max(0.0, _safe_float(row.get("p_set", 0.0), 0.0) or 0.0)
-
-    pv_rows = _renewable_target_rows(
-        model_book,
-        dev_define,
-        "pv_generator",
-        ("DCGenerator",),
-        ("pv", "solar"),
-    )
-    for table_name, row, _define, _pos in pv_rows:
-        if table_name != "DCGenerator" or not _is_running_row(row):
-            continue
-        source_power += max(0.0, _safe_float(row.get("p_set", 0.0), 0.0) or 0.0)
-
-    for dev_type, row, _storage_name, _define, _pos in _storage_target_rows(model_book, dev_define):
-        if dev_type != "DCGenerator":
-            continue
-        if not _is_running_row(row):
-            continue
-        source_power += max(0.0, _safe_float(row.get("p_set", 0.0), 0.0) or 0.0)
-
-    export_rows = [
-        row
-        for row in _target_rows(model_book, "DCACConverter")
-        if "grid" in str(row.get("name", "")).lower()
-        and "inv" in str(row.get("name", "")).lower()
-        and _is_running_row(row)
-        and (_safe_float(row.get("p_ac_set", 0.0), 0.0) or 0.0) < 0.0
-    ]
-    requested_export = sum(-(_safe_float(row.get("p_ac_set", 0.0), 0.0) or 0.0) for row in export_rows)
-    if requested_export <= 0.0:
-        return 0
-    export_limit = max(0.0, source_power * _clamp(float(efficiency), 0.0, 1.0))
-    scale = min(1.0, export_limit / requested_export)
-    changed = 0
-    for row in export_rows:
-        command = _safe_float(row.get("p_ac_set", 0.0), 0.0) or 0.0
-        changed += _set_row_value(row, "p_ac_set", _format_power(command * scale))
-    return changed
+    """Compatibility entry point for the former one-way aggregate limiter."""
+    del dev_define, efficiency
+    return apply_acdc_limits(model_book)
 
 
 def apply_device_capability_limits(
@@ -2102,7 +2066,7 @@ def apply_device_capability_limits_book(
     changed += apply_pv_limits(model_book, dev_define, weather_values, active_power_controls)
     changed += apply_diesel_limits(model_book, dev_define)
     changed += apply_storage_constraints_book(model_book, status_by_name, status_rows, dev_define, period_seconds)
-    changed += apply_dc_export_limits(model_book, dev_define)
+    changed += apply_acdc_limits(model_book)
     return changed
 
 
@@ -2123,27 +2087,8 @@ def apply_weather_book(model_book: EBook, values: Mapping[str, float], dev_defin
         changed += apply_wind_limits(model_book, dev_define, values)
         changed += apply_pv_limits(model_book, dev_define, values)
         return changed
-    changed = 0
-
-    if "wind_speed_mps" in values:
-        wind_kw = format_number(_wind_power_kw(values["wind_speed_mps"]))
-        block = model_book.data.get("ACGenerator")
-        if block is not None:
-            for row in block.data:
-                if str(row.get("name", "")).lower().startswith(("wt", "wind")):
-                    changed += _set_row_value(row, "p_set", wind_kw)
-
-    if "solar_irradiance_w_m2" in values:
-        scale = max(0.0, min(1.0, values["solar_irradiance_w_m2"] / 1000.0))
-        block = model_book.data.get("DCGenerator")
-        if block is not None:
-            for row in block.data:
-                if str(row.get("name", "")).lower().startswith(("pv", "solar")):
-                    try:
-                        rated = float(row.get("p_set", 0.0))
-                    except (TypeError, ValueError):
-                        rated = 0.0
-                    changed += _set_row_value(row, "p_set", format_number(rated * scale))
+    changed = apply_wind_limits(model_book, dev_define, values)
+    changed += apply_pv_limits(model_book, dev_define, values)
 
     if "load_kw" in values:
         block = model_book.data.get("ACLoad")
@@ -2181,7 +2126,7 @@ def _active_power_control_targets_book(ctrl_book: Optional[EBook]) -> set[Tuple[
     block = ctrl_book.data.get("SetValue")
     if block is not None:
         for row in block.data:
-            if str(row.get("set_type", "")) not in ("p_set", "p_ac_set"):
+            if str(row.get("set_type", "")) not in ("p_set", "p_ac_set", "p_dc_set"):
                 continue
             if row.get("set_value", "") == "":
                 continue
@@ -2191,7 +2136,10 @@ def _active_power_control_targets_book(ctrl_book: Optional[EBook]) -> set[Tuple[
         if block is None:
             continue
         for row in block.data:
-            if row.get("p_set", row.get("p_ac_set", "")) == "":
+            if all(
+                row.get(field, "") == ""
+                for field in ("p_set", "p_ac_set", "p_dc_set")
+            ):
                 continue
             targets.add((str(row.get("dev_type", "")), _stat_dev_name(row)))
     return targets
@@ -2212,25 +2160,16 @@ def apply_yt_ctrl_book(model_book: EBook, ctrl_book: Optional[EBook]) -> int:
     if block is not None:
         for row in block.data:
             changed += _apply_set_value_row(model_book, row)
+    storage_targets = _storage_target_rows(model_book, EBook({}))
     for table_name in ("GeneratorSetpoint", "StorageSoc", "StorageStatus"):
         block = ctrl_book.data.get(table_name)
         if block is None:
             continue
         for row in block.data:
             if table_name in ("StorageSoc", "StorageStatus"):
-                ess_name = str(row.get("name", ""))
-                typed_dev_type = _storage_generator_type(row.get("dev_type"))
-                target = None
-                if typed_dev_type is not None:
-                    target = _model_row(model_book, typed_dev_type, ess_name)
-                    if target is None:
-                        target = _model_row(model_book, typed_dev_type, _storage_source_name(ess_name))
-                if target is None:
-                    target = _model_row(model_book, "DCGenerator", _storage_source_name(ess_name))
-                if target is None:
-                    target = _model_row(model_book, "ACGenerator", ess_name)
-                if target is not None and row.get("p_set", "") != "":
-                    changed += _set_row_value(target, "p_set", row["p_set"])
+                resolved = _storage_target_for_identity(row, storage_targets)
+                if resolved is not None and row.get("p_set", "") != "":
+                    changed += _set_row_value(resolved[1], "p_set", row["p_set"])
             else:
                 changed += _apply_setpoint_row(model_book, row)
     changed += apply_overlay_book(model_book, ctrl_book)
@@ -2659,7 +2598,10 @@ def _link_snapshot_terminal_objects(snapshot: Snapshot) -> None:
             dev.dc_node_obj = snapshot.dc_nodes_by_idx.get(getattr(dev, "dc_node", None))
 
 
-def _storage_soc_values(dev_stat_file: Optional[Path]) -> Dict[str, float]:
+def _storage_soc_values(
+    dev_stat_file: Optional[Path],
+    model_book: Optional[EBook] = None,
+) -> Dict[object, float]:
     if dev_stat_file is None:
         return {}
     path = Path(dev_stat_file)
@@ -2669,20 +2611,32 @@ def _storage_soc_values(dev_stat_file: Optional[Path]) -> Dict[str, float]:
         book = EBook(path)
     except Exception:
         return {}
-    return _storage_soc_values_from_book(book)
+    return _storage_soc_values_from_book(book, model_book)
 
 
-def _storage_soc_values_from_book(book: Optional[EBook]) -> Dict[str, float]:
+def _storage_soc_values_from_book(
+    book: Optional[EBook],
+    model_book: Optional[EBook] = None,
+) -> Dict[object, float]:
     if book is None:
         return {}
-    values: Dict[str, float] = {}
+    storage_resources = [
+        resource
+        for resource in structured_resources(model_book)
+        if resource.technology == "storage"
+    ] if model_book is not None else []
+    values: Dict[object, float] = {}
     for row in _storage_soc_rows(book):
+        dev_type = str(row.get("dev_type", "")).strip()
         name = str(row.get("name", row.get("dev_name", "")))
-        if not name:
-            continue
         soc = _safe_float(row.get("soc_curr", row.get("soc", "")), None)
-        if soc is not None:
-            values[name] = soc
+        if soc is None:
+            continue
+        if dev_type and name:
+            values[(dev_type, name)] = soc
+        resource_key = resolve_resource_reference(storage_resources, row)
+        if resource_key is not None:
+            values[resource_key] = soc
     return values
 
 
@@ -2724,6 +2678,22 @@ def _signal_measurement_values_from_book(book: Optional[EBook]) -> Dict[Tuple[st
     return values
 
 
+def _effective_signal_measurement_values(
+    signal_values: Optional[Mapping[Tuple[str, str, str], float]],
+    device_states: Optional[Sequence[Mapping[str, Any]]],
+) -> Dict[Tuple[str, str, str], float]:
+    """Overlay topology availability without changing administrative run state."""
+    values = dict(signal_values or {})
+    for state in device_states or ():
+        if state.get("dead_island") is not True:
+            continue
+        dev_type = str(state.get("dev_type", "")).strip()
+        dev_name = str(state.get("dev_name", state.get("name", ""))).strip()
+        if dev_type and dev_name:
+            values[(dev_type, dev_name, "RUN_STAT")] = 0.0
+    return values
+
+
 def _weather_measurement_value(meas_type: str, weather: Optional[Dict[str, float]]) -> Optional[float]:
     if weather is None:
         return None
@@ -2739,43 +2709,65 @@ def _weather_measurement_value(meas_type: str, weather: Optional[Dict[str, float
 def _measurement_value(
     snapshot,
     row: Sequence[str],
-    storage_soc: Optional[Dict[str, float]] = None,
+    storage_soc: Optional[Mapping[object, float]] = None,
     weather: Optional[Dict[str, float]] = None,
     signal_values: Optional[Dict[Tuple[str, str, str], float]] = None,
+    model_book: Optional[EBook] = None,
 ) -> Optional[float]:
     dev_type, dev_name, meas_type = row[2], row[3], row[4].upper()
     if meas_type in SIGNAL_MEASUREMENT_TYPES:
         return None if signal_values is None else signal_values.get((dev_type, dev_name, meas_type))
     if dev_type == "Environment" and dev_name == "weather":
         return _weather_measurement_value(meas_type, weather)
-    if meas_type == "I" and dev_type in GENERIC_CURRENT_BRANCH_TYPES:
+    target = (
+        _source_model_row(model_book, dev_type, dev_name)
+        if model_book is not None
+        else None
+    )
+    target_type = dev_type
+    target_name = dev_name
+    if target is not None:
+        resolved = [
+            resource.device_key
+            for resource in structured_resources(model_book)
+            if resource.source is target
+        ]
+        if len(resolved) == 1:
+            target_type, target_name = resolved[0]
+        elif _model_row(model_book, dev_type, dev_name) is not None:
+            target_type, target_name = dev_type, dev_name
+    if meas_type == "I" and target_type in GENERIC_CURRENT_BRANCH_TYPES:
         for terminal_meas_type in ("I_FROM", "I_TO"):
-            value = snapshot.value(dev_type, dev_name, terminal_meas_type)
+            value = snapshot.value(target_type, target_name, terminal_meas_type)
             number = _safe_float(value, None)
             if number is not None:
                 return number
         return None
-    if dev_type in ("ESS", "Storage"):
-        if meas_type == "SOC":
-            return None if storage_soc is None else storage_soc.get(dev_name)
-        source_name = _storage_source_name(dev_name)
-        if meas_type == "P":
-            return snapshot.value("DCGenerator", source_name, "P_GEN")
-        if meas_type == "Q":
-            return 0.0
-        if meas_type == "V":
-            return snapshot.value("DCGenerator", source_name, "V_GEN")
-        if meas_type == "I":
-            return snapshot.value("DCGenerator", source_name, "I_GEN")
-    if dev_type in ("ACGenerator", "DCGenerator") and meas_type == "SOC":
-        return None if storage_soc is None else storage_soc.get(dev_name)
-    if dev_type == "ACBreak":
-        dev = snapshot.ac_devices.get("ACBreak", {}).get(dev_name)
+    if meas_type == "SOC":
+        if storage_soc is None:
+            return None
+        for key in (
+            (dev_type, dev_name),
+            (target_type, target_name),
+            dev_name,
+            target_name,
+        ):
+            if key in storage_soc:
+                return storage_soc[key]
+        return None
+    if target_type == "ACBreak":
+        dev = snapshot.ac_devices.get("ACBreak", {}).get(target_name)
         return None if dev is None else snapshot._ac_zero_value(dev, meas_type)
-    if dev_type == "DCBreak":
-        dev = snapshot.dc_devices.get("DCBreak", {}).get(dev_name)
+    if target_type == "DCBreak":
+        dev = snapshot.dc_devices.get("DCBreak", {}).get(target_name)
         return None if dev is None else snapshot._dc_zero_value(dev, meas_type)
-    value = snapshot.value(dev_type, dev_name, meas_type)
+    if target is not None and meas_type in {"P", "Q", "V", "I"}:
+        suffix = "GEN" if target_type in {"ACGenerator", "DCGenerator"} else ""
+        target_meas_type = f"{meas_type}_{suffix}" if suffix else meas_type
+        value = snapshot.value(target_type, target_name, target_meas_type)
+        if value is not None:
+            return value
+    value = snapshot.value(target_type, target_name, meas_type)
     if value is None and (meas_type in VALUE_TYPES or meas_type in ANGLE_TYPES):
         return None
     return value
@@ -2786,22 +2778,38 @@ def build_real_rows(
     snapshot,
     dev_stat_file: Optional[Path] = None,
     weather_file: Optional[Path] = None,
+    device_states: Optional[Sequence[Mapping[str, Any]]] = None,
+    model_book: Optional[EBook] = None,
 ) -> Tuple[List[str], List[List[str]], List[str], int, int]:
     before, rows, after = parse_measurement_rows(meas_file)
-    storage_soc = _storage_soc_values(dev_stat_file)
+    storage_soc = _storage_soc_values(dev_stat_file, model_book)
     weather = _weather_values(weather_file) if weather_file is not None else None
-    signal_values = _signal_measurement_values(dev_stat_file)
-    return build_real_rows_from_data(rows, snapshot, storage_soc, weather, signal_values, before, after)
+    signal_values = _effective_signal_measurement_values(
+        _signal_measurement_values(dev_stat_file),
+        device_states,
+    )
+    return build_real_rows_from_data(
+        rows,
+        snapshot,
+        storage_soc,
+        weather,
+        signal_values,
+        before,
+        after,
+        model_book=model_book,
+    )
 
 
 def build_real_rows_from_data(
     measurement_rows: Sequence[Sequence[str]],
     snapshot,
-    storage_soc: Optional[Dict[str, float]] = None,
+    storage_soc: Optional[Mapping[object, float]] = None,
     weather: Optional[Dict[str, float]] = None,
     signal_values: Optional[Dict[Tuple[str, str, str], float]] = None,
     before: Optional[Sequence[str]] = None,
     after: Optional[Sequence[str]] = None,
+    *,
+    model_book: Optional[EBook] = None,
 ) -> Tuple[List[str], List[List[str]], List[str], int, int]:
     rows = []
     for source_row in measurement_rows:
@@ -2812,7 +2820,14 @@ def build_real_rows_from_data(
     updated = 0
     missing = 0
     for row in rows:
-        value = _measurement_value(snapshot, row, storage_soc, weather, signal_values)
+        value = _measurement_value(
+            snapshot,
+            row,
+            storage_soc,
+            weather,
+            signal_values,
+            model_book,
+        )
         if value is None:
             missing += 1
             continue
@@ -2966,8 +2981,12 @@ def run_once(
         )
         snapshot, solver_info = _solve_snapshot_from_book(solver, model_book, config.model_file)
         soc_updates = update_storage_soc_book(stat_book, model_book, config.period_seconds, dev_define, snapshot=snapshot)
-        storage_soc = _storage_soc_values_from_book(stat_book)
-        signal_values = _signal_measurement_values_from_book(stat_book)
+        storage_soc = _storage_soc_values_from_book(stat_book, model_book)
+        device_states = collect_device_operating_states(snapshot, model_book)
+        signal_values = _effective_signal_measurement_values(
+            _signal_measurement_values_from_book(stat_book),
+            device_states,
+        )
         before, real_rows, after, updated, missing = build_real_rows_from_data(
             meas_rows,
             snapshot,
@@ -2976,6 +2995,7 @@ def run_once(
             signal_values,
             meas_before,
             meas_after,
+            model_book=model_book,
         )
         scada_rows = add_noise_to_rows(real_rows, config.noise_std, rng)
         if config.write_output_files:
@@ -2992,7 +3012,7 @@ def run_once(
             measurement_definitions=[list(row) for row in meas_rows],
             real_rows=real_rows,
             scada_rows=scada_rows,
-            device_states=collect_device_operating_states(snapshot, model_book),
+            device_states=device_states,
         )
 
     work_dir = config.real_file.parent / ".simu_loop_work"
@@ -3008,12 +3028,15 @@ def run_once(
     )
     snapshot, solver_info = _solve_snapshot_from_book(solver, model_book, config.model_file)
     soc_updates = update_storage_soc(config.dev_stat_file, model_book, config.period_seconds, config.dev_define_file, snapshot=snapshot)
+    device_states = collect_device_operating_states(snapshot, model_book)
 
     before, real_rows, after, updated, missing = build_real_rows(
         config.meas_file,
         snapshot,
         config.dev_stat_file,
         config.weather_file,
+        device_states,
+        model_book,
     )
     scada_rows = add_noise_to_rows(real_rows, config.noise_std, rng)
     if config.write_output_files:
@@ -3030,7 +3053,7 @@ def run_once(
         measurement_definitions=[list(row) for row in real_rows],
         real_rows=real_rows,
         scada_rows=scada_rows,
-        device_states=collect_device_operating_states(snapshot, model_book),
+        device_states=device_states,
     )
 
 

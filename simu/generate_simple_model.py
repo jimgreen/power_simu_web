@@ -6,6 +6,11 @@ import shutil
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+try:
+    from .point_names import automatic_point_name
+except ImportError:  # pragma: no cover - direct script execution.
+    from point_names import automatic_point_name
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SIMPLE_MODEL_NAME = "\u7b80\u5355\u6a21\u578b"
@@ -81,6 +86,13 @@ def model_blocks() -> list[Block]:
             ],
         ),
         (
+            "ACRealBs",
+            ("idx", "name", "node", "run_stat", "v_max", "v_min"),
+            [
+                {"idx": 1, "name": "main_ac_bus", "node": 4, "run_stat": 1, "v_max": 1.1, "v_min": 0.9},
+            ],
+        ),
+        (
             "ACBranch",
             ("idx", "name", "i_node", "j_node", "r", "x", "b", "run_stat"),
             [
@@ -112,10 +124,24 @@ def model_blocks() -> list[Block]:
         ),
         (
             "ACGenerator",
-            ("idx", "name", "node", "control_type", "p_set", "q_set", "v_set", "alpha", "run_stat"),
+            (
+                "idx",
+                "name",
+                "dev_type",
+                "node",
+                "control_type",
+                "p_set",
+                "q_set",
+                "v_set",
+                "alpha",
+                "p_min",
+                "p_max",
+                "rated_capacity",
+                "run_stat",
+            ),
             [
-                {"idx": 1, "name": "wt01_10kw", "node": 1, "control_type": "P", "p_set": 0, "q_set": 0, "v_set": 300, "alpha": 1.0, "run_stat": 1},
-                {"idx": 2, "name": "diesel_300kw", "node": 3, "control_type": "V", "p_set": 80, "q_set": 0, "v_set": 380, "alpha": 1.0, "run_stat": 1},
+                {"idx": 1, "name": "wt01_10kw", "dev_type": "ac-wind-source", "node": 1, "control_type": "P", "p_set": 0, "q_set": 0, "v_set": 300, "alpha": 1.0, "p_min": 0, "p_max": 10, "rated_capacity": 10, "run_stat": 1},
+                {"idx": 2, "name": "diesel_300kw", "dev_type": "ac-diesel-source", "node": 3, "control_type": "V", "p_set": 80, "q_set": 0, "v_set": 380, "alpha": 1.0, "p_min": 30, "p_max": 300, "rated_capacity": 300, "run_stat": 1},
             ],
         ),
         (
@@ -132,6 +158,13 @@ def model_blocks() -> list[Block]:
             ],
         ),
         (
+            "DCRealBs",
+            ("idx", "name", "node", "run_stat", "v_max", "v_min"),
+            [
+                {"idx": 1, "name": "main_dc_bus", "node": 1, "run_stat": 1, "v_max": 1.1, "v_min": 0.9},
+            ],
+        ),
+        (
             "DCBranch",
             ("idx", "name", "i_node", "j_node", "r", "run_stat"),
             [
@@ -143,11 +176,11 @@ def model_blocks() -> list[Block]:
         ),
         (
             "DCGenerator",
-            ("idx", "name", "node", "control_type", "v_set", "p_set", "i_set", "run_stat"),
+            ("idx", "name", "dev_type", "node", "control_type", "v_set", "p_set", "i_set", "p_min", "p_max", "rated_capacity", "run_stat"),
             [
-                {"idx": 1, "name": "dc_bus_vctrl", "node": 1, "control_type": "V", "v_set": 720, "p_set": 0, "i_set": 0, "run_stat": 1},
-                {"idx": 2, "name": "pv01_vsrc", "node": 3, "control_type": "P", "v_set": 300, "p_set": 0, "i_set": 0, "run_stat": 1},
-                {"idx": 3, "name": "ess01_vsrc", "node": 5, "control_type": "P", "v_set": 300, "p_set": 0, "i_set": 0, "run_stat": 1},
+                {"idx": 1, "name": "dc_bus_vctrl", "dev_type": "dc-voltage-source", "node": 1, "control_type": "V", "v_set": 720, "p_set": 0, "i_set": 0, "p_min": -300, "p_max": 300, "rated_capacity": 300, "run_stat": 1},
+                {"idx": 2, "name": "pv01_vsrc", "dev_type": "dc-pv-source", "node": 3, "control_type": "P", "v_set": 300, "p_set": 0, "i_set": 0, "p_min": 0, "p_max": 50, "rated_capacity": 50, "run_stat": 1},
+                {"idx": 3, "name": "ess01_vsrc", "dev_type": "dc-storage", "node": 5, "control_type": "P", "v_set": 300, "p_set": 0, "i_set": 0, "p_min": -40, "p_max": 40, "rated_capacity": 40, "run_stat": 1},
             ],
         ),
         (
@@ -163,12 +196,15 @@ def model_blocks() -> list[Block]:
             (
                 "idx",
                 "name",
+                "dev_type",
                 "ac_node",
                 "dc_node",
                 "r1",
                 "r2",
                 "control_type",
                 "p_ac_set",
+                "p_ac_min",
+                "p_ac_max",
                 "q_ac_set",
                 "v_ac_set",
                 "v_dc_set",
@@ -178,12 +214,15 @@ def model_blocks() -> list[Block]:
                 {
                     "idx": 1,
                     "name": "wt01_rect",
+                    "dev_type": "wind-acdc-converter",
                     "ac_node": 2,
                     "dc_node": 2,
                     "r1": 0.005,
                     "r2": 0.005,
                     "control_type": "ACV",
                     "p_ac_set": 0,
+                    "p_ac_min": 0,
+                    "p_ac_max": 10,
                     "q_ac_set": 0,
                     "v_ac_set": 300,
                     "v_dc_set": 0,
@@ -192,12 +231,15 @@ def model_blocks() -> list[Block]:
                 {
                     "idx": 2,
                     "name": "grid_inv_acp",
+                    "dev_type": "grid-acdc-converter",
                     "ac_node": 5,
                     "dc_node": 7,
                     "r1": 0.005,
                     "r2": 0.005,
                     "control_type": "ACP",
                     "p_ac_set": -45,
+                    "p_ac_min": -50,
+                    "p_ac_max": 50,
                     "q_ac_set": 0,
                     "v_ac_set": 0,
                     "v_dc_set": 0,
@@ -223,8 +265,21 @@ def model_blocks() -> list[Block]:
             ],
         ),
         (
+            "ACDieselGen",
+            ("idx", "idx_acgenerator", "rated_power", "p_min", "p_max"),
+            [
+                {
+                    "idx": 1,
+                    "idx_acgenerator": 2,
+                    "rated_power": 300.0,
+                    "p_min": 30.0,
+                    "p_max": 300.0,
+                }
+            ],
+        ),
+        (
             "DCPVGen",
-            ("idx", "idx_dcgenerator", "pv_module_model", "module_efficiency", "array_area", "mppt_count"),
+            ("idx", "idx_dcgenerator", "pv_module_model", "module_efficiency", "array_area", "mppt_count", "rated_power"),
             [
                 {
                     "idx": 1,
@@ -233,6 +288,7 @@ def model_blocks() -> list[Block]:
                     "module_efficiency": 0.2,
                     "array_area": "250_m2",
                     "mppt_count": 1,
+                    "rated_power": 50.0,
                 }
             ],
         ),
@@ -381,11 +437,11 @@ def stat_blocks() -> list[Block]:
 def measurement_blocks() -> list[Block]:
     rows: list[dict[str, Any]] = []
 
-    def add(name: str, dev_type: str, dev_name: str, meas_type: str, weight: float = 25.0, value: float = 0.0) -> None:
+    def add(dev_type: str, dev_name: str, meas_type: str, weight: float = 25.0, value: float = 0.0) -> None:
         rows.append(
             {
                 "idx": len(rows),
-                "name": name,
+                "name": automatic_point_name(dev_type, dev_name, meas_type),
                 "dev_type": dev_type,
                 "dev_name": dev_name,
                 "meas_type": meas_type,
@@ -395,46 +451,59 @@ def measurement_blocks() -> list[Block]:
             }
         )
 
-    for node in ("wt01_src", "wt01_rect", "diesel_node", "ac_bus", "grid_inv_ac", "load_ac_1_node"):
-        add(f"v_{node}", "ACNode", node, "V", value=300 if node.startswith("wt") else 380)
-    for node in ("dc_bus_720v", "wt01_dc", "pv01_300v", "pv01_720v", "ess01_300v", "ess01_720v", "grid_inv_dc"):
-        add(f"v_{node}", "DCNode", node, "V", value=300 if "300v" in node else 720)
+    for node, voltage in (
+        ("wt01_src", 300),
+        ("wt01_rect", 300),
+        ("diesel_node", 380),
+        ("ac_bus", 380),
+        ("grid_inv_ac", 380),
+        ("load_ac_1_node", 380),
+    ):
+        add("ACNode", node, "V", value=voltage)
+    for node, voltage in (
+        ("dc_bus_720v", 720),
+        ("wt01_dc", 720),
+        ("pv01_300v", 300),
+        ("pv01_720v", 720),
+        ("ess01_300v", 300),
+        ("ess01_720v", 720),
+        ("grid_inv_dc", 720),
+    ):
+        add("DCNode", node, "V", value=voltage)
     for gen in ("wt01_10kw", "diesel_300kw"):
         for meas_type in ("P_GEN", "Q_GEN", "V_GEN", "I_GEN"):
-            add(f"{meas_type.lower()}_{gen}", "ACGenerator", gen, meas_type)
+            add("ACGenerator", gen, meas_type)
     for gen in ("dc_bus_vctrl", "pv01_vsrc", "ess01_vsrc"):
         for meas_type in ("P_GEN", "V_GEN", "I_GEN"):
-            add(f"{meas_type.lower()}_{gen}", "DCGenerator", gen, meas_type)
+            add("DCGenerator", gen, meas_type)
     for meas_type in ("P_LOAD", "Q_LOAD", "V_LOAD", "I_LOAD"):
-        add(f"{meas_type.lower()}_load_ac_1", "ACLoad", "load_ac_1", meas_type)
+        add("ACLoad", "load_ac_1", meas_type)
     for conv in ("pv01_dcdc", "ess01_dcdc"):
         for meas_type in ("P_FROM", "V_FROM", "I_FROM", "P_TO", "V_TO", "I_TO"):
-            add(f"{meas_type.lower()}_{conv}", "DCDCConverter", conv, meas_type)
+            add("DCDCConverter", conv, meas_type)
     for conv in ("wt01_rect", "grid_inv_acp"):
         for meas_type in ("P_DC", "V_DC", "I_DC", "P_AC", "Q_AC", "V_AC", "I_AC"):
-            add(f"{meas_type.lower()}_{conv}", "DCACConverter", conv, meas_type)
+            add("DCACConverter", conv, meas_type)
     for meas_type in ("P", "Q", "V", "I", "SOC"):
         add(
-            f"{meas_type.lower()}_ess01",
             "ESS",
             "ess01",
             meas_type,
             weight=10000.0 if meas_type == "SOC" else 25.0,
             value=0.55 if meas_type == "SOC" else 0.0,
         )
-    for name, meas_type, value in (
-        ("weather_wind_speed", "WIND_SPEED", 18.0),
-        ("weather_air_temp", "AIR_TEMP", -20.0),
-        ("weather_humidity", "HUMIDITY", 72.0),
-        ("weather_air_pressure", "AIR_PRESSURE", 960.0),
-        ("weather_solar_irradiance", "SOLAR_IRRADIANCE", 0.0),
+    for meas_type, value in (
+        ("WIND_SPEED", 18.0),
+        ("AIR_TEMP", -20.0),
+        ("HUMIDITY", 72.0),
+        ("AIR_PRESSURE", 960.0),
+        ("SOLAR_IRRADIANCE", 0.0),
     ):
-        add(name, "Environment", "weather", meas_type, weight=1.0, value=value)
+        add("Environment", "weather", meas_type, weight=1.0, value=value)
     for block_name, _header, stat_rows in stat_blocks():
         if block_name == "RunStat":
             for row in stat_rows:
                 add(
-                    f"{row['dev_type']}.{row['dev_name']}.run_stat",
                     row["dev_type"],
                     row["dev_name"],
                     "RUN_STAT",
@@ -444,7 +513,6 @@ def measurement_blocks() -> list[Block]:
         elif block_name == "CbOpenStat":
             for row in stat_rows:
                 add(
-                    f"{row['dev_type']}.{row['dev_name']}.status",
                     row["dev_type"],
                     row["dev_name"],
                     "STATUS",

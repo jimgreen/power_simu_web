@@ -14,21 +14,32 @@ class TraineeRenewableDieselMetricsUiTest(unittest.TestCase):
         cls.styles = (ROOT / "simu/web/trainee/styles.css").read_text(encoding="utf-8")
 
     def test_metric_tabs_show_ac_dc_and_total_diesel_current_minimum_and_target(self):
-        expected = {
-            "renewableAcDieselCurrentKw": "交流柴发当前值",
-            "renewableAcDieselMinKw": "交流柴发下限值",
-            "renewableAcDieselTargetKw": "交流柴发目标值",
-            "renewableDcDieselCurrentKw": "直流柴发当前值",
-            "renewableDcDieselMinKw": "直流柴发下限值",
-            "renewableDcDieselTargetKw": "直流柴发目标值",
-            "renewableTotalDieselCurrentKw": "总柴发当前值",
-            "renewableTotalDieselMinKw": "总柴发下限值",
-            "renewableTotalDieselTargetKw": "总柴发目标值",
-        }
-        for node_id, label in expected.items():
+        expected = (
+            ("ac-diesel", "柴发", "renewableAcDieselCurrentKw", "renewableAcDieselTargetKw"),
+            ("dc-diesel", "柴发", "renewableDcDieselCurrentKw", "renewableDcDieselTargetKw"),
+            ("system-diesel", "柴发", "renewableTotalDieselCurrentKw", "renewableTotalDieselTargetKw"),
+        )
+        for group, label, current_id, target_id in expected:
+            with self.subTest(group=group):
+                self.assertIn(
+                    f'<tr data-renewable-metric-group="{group}"><th scope="row">{label}'
+                    '<span class="renewable-metric-unit">（kW）</span></th>'
+                    f'<td id="{current_id}">--</td><td id="{target_id}">--</td></tr>',
+                    self.html,
+                )
+        for label, node_id in (
+            ("柴发下限", "renewableAcDieselMinKw"),
+            ("柴发下限", "renewableDcDieselMinKw"),
+            ("柴发下限", "renewableTotalDieselMinKw"),
+        ):
             with self.subTest(node_id=node_id):
-                self.assertIn(f'<dt>{label}</dt><dd id="{node_id}">--</dd>', self.html)
-        self.assertNotIn('<dt>柴油缺额</dt>', self.html)
+                self.assertIn(
+                    f'<th scope="row">{label}<span class="renewable-metric-unit">（kW）</span></th>'
+                    f'<td id="{node_id}">--</td>'
+                    '<td class="renewable-metric-empty">--</td>',
+                    self.html,
+                )
+        self.assertNotIn('>柴油缺额</th>', self.html)
 
     def test_backend_uses_live_diesel_power_and_model_limits(self):
         diesel_block = self.backend.split("def _diesel_rows", 1)[1].split("def _effective_step_minutes", 1)[0]
@@ -87,10 +98,19 @@ class TraineeRenewableDieselMetricsUiTest(unittest.TestCase):
             self.assertIn(node_id, render_block)
 
     def test_metric_tabs_show_signed_ac_dc_and_total_load_power(self):
-        self.assertIn('<dt>交流负荷功率</dt><dd id="renewableAcLoadKw">--</dd>', self.html)
-        self.assertIn('<dt>直流负荷功率</dt><dd id="renewableDcLoadKw">--</dd>', self.html)
-        self.assertIn('<dt>总负荷功率</dt><dd id="renewableTotalLoadKw">--</dd>', self.html)
-        self.assertNotIn('<dt>弃风弃光</dt>', self.html)
+        for label, node_id in (
+            ("负荷", "renewableAcLoadKw"),
+            ("负荷", "renewableDcLoadKw"),
+            ("负荷", "renewableTotalLoadKw"),
+        ):
+            with self.subTest(node_id=node_id):
+                self.assertIn(
+                    f'<th scope="row">{label}<span class="renewable-metric-unit">（kW）</span></th>'
+                    f'<td id="{node_id}">--</td>'
+                    '<td class="renewable-metric-empty">--</td>',
+                    self.html,
+                )
+        self.assertNotIn('>弃风弃光</th>', self.html)
         render_block = self.script.split("function renderRenewableControl", 1)[1].split(
             "async function toggleRenewableAuto",
             1,
@@ -100,12 +120,70 @@ class TraineeRenewableDieselMetricsUiTest(unittest.TestCase):
         self.assertIn('renewableTotalLoadKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalLoadKw", ["loadKw"]))', render_block)
         self.assertNotIn("renewableCurtailKw", render_block)
 
-    def test_sidebar_summary_metrics_use_tabs_and_a_compact_two_column_layout(self):
-        metric_block = self.styles.split(".renewable-metric-grid {", 1)[1].split("}", 1)[0]
+    def test_metric_units_are_kept_in_the_object_column_and_values_are_unitless(self):
+        self.assertIn('class="renewable-metric-unit">（kW）</span>', self.html)
+        self.assertIn('class="renewable-metric-unit">（%）</span>', self.html)
+        environment_block = self.html.split('class="renewable-environment-readings"', 1)[1].split(
+            "</dl>",
+            1,
+        )[0]
+        self.assertIn('<span>m/s</span>', environment_block)
+        self.assertIn('<span>W/m²</span>', environment_block)
+        self.assertIn(".renewable-metric-unit", self.styles)
+
+        helper_block = "function renewableMetricPowerText" + self.script.split(
+            "function renewableMetricPowerText",
+            1,
+        )[1].split("function renewableStorageUnavailableMetricText", 1)[0]
+        self.assertIn("return Number.isFinite(value) ? formatNumber(value) : \"--\";", helper_block)
+        self.assertIn("return Number.isFinite(value) ? formatOverviewNumber(value * 100) : \"--\";", helper_block)
+        self.assertNotIn(" kW", helper_block)
+        self.assertNotIn("}%", helper_block)
+
+        render_block = self.script.split("function renderRenewableControl", 1)[1].split(
+            "async function toggleRenewableAuto",
+            1,
+        )[0]
+        self.assertIn(
+            "renewableObservedWindSpeed: Number.isFinite(observedWindSpeed) ? formatNumber(observedWindSpeed) : \"--\"",
+            render_block,
+        )
+        self.assertIn(
+            "renewableObservedSolarIrradiance: Number.isFinite(observedSolarIrradiance) ? formatNumber(observedSolarIrradiance) : \"--\"",
+            render_block,
+        )
+
+    def test_sidebar_summary_metrics_use_tabs_and_one_three_column_table_per_tab(self):
+        metric_block = self.styles.split(".renewable-metric-table {", 1)[1].split("}", 1)[0]
         metric_panes_block = self.styles.split(".renewable-metric-panes {", 1)[1].split("}", 1)[0]
-        self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", metric_block)
+        metric_active_pane_block = self.styles.split(".renewable-metric-pane.is-active {", 1)[1].split("}", 1)[0]
+        metric_wrap_block = self.styles.split(".renewable-metric-table-wrap {", 1)[1].split("}", 1)[0]
+        self.assertIn("width: 100%;", metric_block)
+        self.assertIn("min-width: 0;", metric_block)
+        self.assertIn("max-width: 100%;", metric_block)
+        self.assertIn("height: 100%;", metric_block)
+        self.assertIn("border-collapse: collapse;", metric_block)
+        self.assertIn("table-layout: fixed;", metric_block)
+        self.assertIn("display: flex;", metric_panes_block)
+        self.assertIn("flex-direction: column;", metric_panes_block)
+        self.assertIn("overflow-x: hidden;", metric_panes_block)
         self.assertIn("overflow-y: auto;", metric_panes_block)
+        self.assertIn("display: flex;", metric_active_pane_block)
+        self.assertIn("flex-direction: column;", metric_active_pane_block)
+        self.assertIn("min-height: 100%;", metric_active_pane_block)
+        self.assertIn("flex: 1 1 auto;", metric_wrap_block)
+        self.assertIn("display: flex;", metric_wrap_block)
+        self.assertIn("overflow-x: hidden;", metric_wrap_block)
+        self.assertIn("overflow-y: auto;", metric_wrap_block)
+        self.assertNotIn("overflow-x: auto;", metric_wrap_block)
+        metric_cell_block = self.styles.split(
+            ".renewable-metric-table th,",
+            1,
+        )[1].split("}", 1)[0]
+        self.assertIn("padding: 5px 8px;", metric_cell_block)
         self.assertIn(".renewable-metric-tabs", self.styles)
+        self.assertIn(".renewable-metric-table-wrap", self.styles)
+        self.assertNotIn(".renewable-metric-grid", self.styles)
         self.assertIn('class="renewable-side-column"', self.html)
 
 

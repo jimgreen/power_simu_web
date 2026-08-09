@@ -99,19 +99,35 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertIn("负荷用电总功率 -90 kW", text)
         self.assertIn("储能充电总功率 5 kW", text)
 
-    def test_green_power_sums_signed_p_ac_and_excludes_wind_converters(self):
+    def test_converter_summary_keeps_signed_p_ac_for_both_model_blocks(self):
+        import simu_loop
+
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
 
-        wind_converter = service.source_model_book.data["DCACConverter"].data[0]
-        wind_converter["name"] = "rectifier_a"
-        service._wind_converter_names_cache = None
+        service.source_model_book.data["ACDCConverter"] = simu_loop.EBook(
+            {
+                "ACDCConverter": [
+                    {
+                        "idx": 1,
+                        "name": "grid_inv_acp",
+                        "dev_type": "grid-dcac-converter",
+                        "ac_node": 5,
+                        "dc_node": 7,
+                        "control_type": "ACP",
+                        "p_ac_set": 8.0,
+                        "run_stat": 1,
+                    }
+                ]
+            }
+        ).data["ACDCConverter"]
+        service._internal_power_converter_keys_cache = None
 
         summary = service._power_flow_summary(
             [
                 {
                     "dev_type": "DCACConverter",
-                    "dev_name": "rectifier_a",
+                    "dev_name": "wt01_rect",
                     "meas_type": "P_AC",
                     "value": 8.0,
                     "valid": 1,
@@ -120,14 +136,14 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
                     "dev_type": "DCACConverter",
                     "dev_name": "grid_inv_acp",
                     "meas_type": "P_AC",
-                    "value": -12.5,
+                    "value": 12.5,
                     "valid": 1,
                 },
                 {
-                    "dev_type": "DCACConverter",
-                    "dev_name": "grid_inv_aux",
+                    "dev_type": "ACDCConverter",
+                    "dev_name": "grid_inv_acp",
                     "meas_type": "P_AC",
-                    "value": 4.0,
+                    "value": 8.0,
                     "valid": 1,
                 },
                 {
@@ -142,20 +158,72 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
                     "dev_name": "grid_inv_invalid",
                     "meas_type": "P_AC",
                     "value": 100.0,
-                    "valid": 0,
+                    "valid": 1,
                 },
             ]
         )
 
-        self.assertEqual(summary["greenPower"], -8.5)
-        self.assertEqual(summary["counts"]["greenPowerConverter"], 2)
         converter_group = summary["flowGroups"]["acdcConverter"]
-        self.assertEqual(converter_group["power"], 12.5)
-        self.assertEqual(converter_group["totalCount"], 1)
-        self.assertEqual(converter_group["onlineCount"], 1)
-        self.assertEqual(converter_group["measuredCount"], 1)
-        self.assertEqual(converter_group["status"], "dcToAc")
-        self.assertEqual(converter_group["flowDirection"], "toAc")
+        self.assertEqual(converter_group["power"], 20.5)
+        self.assertEqual(converter_group["totalCount"], 2)
+        self.assertEqual(converter_group["onlineCount"], 2)
+        self.assertEqual(converter_group["measuredCount"], 2)
+        self.assertEqual(summary["counts"]["greenPowerConverter"], 2)
+        self.assertEqual(converter_group["status"], "acToDc")
+        self.assertEqual(converter_group["flowDirection"], "toDc")
+
+        reverse_summary = service._power_flow_summary(
+            [
+                {
+                    "dev_type": "DCACConverter",
+                    "dev_name": "grid_inv_acp",
+                    "meas_type": "P_AC",
+                    "value": -12.5,
+                    "valid": 1,
+                },
+                {
+                    "dev_type": "ACDCConverter",
+                    "dev_name": "grid_inv_acp",
+                    "meas_type": "P_AC",
+                    "value": -8.0,
+                    "valid": 1,
+                },
+            ]
+        )
+        reverse_group = reverse_summary["flowGroups"]["acdcConverter"]
+        self.assertEqual(reverse_group["power"], -20.5)
+        self.assertEqual(reverse_group["status"], "dcToAc")
+        self.assertEqual(reverse_group["flowDirection"], "toAc")
+
+        dc_terminal_fallback = service._power_flow_summary(
+            [
+                {
+                    "dev_type": "DCACConverter",
+                    "dev_name": "grid_inv_acp",
+                    "meas_type": "P_DC",
+                    "value": 7.0,
+                    "valid": 1,
+                }
+            ]
+        )["flowGroups"]["acdcConverter"]
+        self.assertEqual(dc_terminal_fallback["power"], -7.0)
+        self.assertEqual(dc_terminal_fallback["status"], "dcToAc")
+        self.assertEqual(dc_terminal_fallback["flowDirection"], "toAc")
+
+        reverse_dc_terminal_fallback = service._power_flow_summary(
+            [
+                {
+                    "dev_type": "DCACConverter",
+                    "dev_name": "grid_inv_acp",
+                    "meas_type": "P_DC",
+                    "value": -7.0,
+                    "valid": 1,
+                }
+            ]
+        )["flowGroups"]["acdcConverter"]
+        self.assertEqual(reverse_dc_terminal_fallback["power"], 7.0)
+        self.assertEqual(reverse_dc_terminal_fallback["status"], "acToDc")
+        self.assertEqual(reverse_dc_terminal_fallback["flowDirection"], "toDc")
 
     def test_snapshot_power_summary_prefers_signed_scada_without_measurement_payload(self):
         workspace, service = self._make_service()
@@ -212,7 +280,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
             [
                 {"dev_type": "ACGenerator", "dev_name": "交流风电-1", "meas_type": "P_GEN", "value": -3.0},
                 {"dev_type": "DCGenerator", "dev_name": "直流光伏-1", "meas_type": "P_GEN", "value": -4.0},
-                {"dev_type": "ACGenerator", "dev_name": "柴油发电机-1", "meas_type": "P_GEN", "value": -6.0},
+                {"dev_type": "ACGenerator", "dev_name": "交流柴油发电机-27", "meas_type": "P_GEN", "value": -6.0},
                 {"dev_type": "ACLoad", "dev_name": "交流负荷-1", "meas_type": "P_LOAD", "value": -7.0},
                 {"dev_type": "DCGenerator", "dev_name": "电化学储能-1", "meas_type": "P_GEN", "value": -5.0},
                 {"dev_type": "DCGenerator", "dev_name": "电化学储能-1", "meas_type": "SOC", "value": 1.05},
@@ -227,6 +295,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertEqual(summary["soc"], 105.0)
 
     def test_power_summary_builds_topology_aware_energy_flow_groups(self):
+        import simu_loop
         from simu.service import PolarMicrogridSimulator
 
         workspace = tempfile.TemporaryDirectory()
@@ -302,6 +371,28 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
                 },
             ]
         )
+        service.source_model_book.data["ACWindGen"].data.append(
+            {"idx": 89, "idx_acgenerator": 89, "rated_power": 25}
+        )
+        service.source_model_book.data["ACPVGen"].data.append(
+            {"idx": 90, "idx_acgenerator": 90, "rated_power": 30}
+        )
+        service.source_model_book.data["ACStorageGen"].data.extend(
+            [
+                {"idx": 91, "idx_acgenerator": 91, "energy_capacity": 50},
+                {"idx": 92, "idx_acgenerator": 92, "energy_capacity": 40},
+            ]
+        )
+        service.source_model_book.data["DCWindGen"] = simu_loop.EBook(
+            {
+                "DCWindGen": [
+                    {"idx": 90, "idx_dcgenerator": 90, "rated_power": 20}
+                ]
+            }
+        ).data["DCWindGen"]
+        service.source_model_book.data["DCStorageGen"].data.append(
+            {"idx": 91, "idx_dcgenerator": 91, "energy_capacity": 40}
+        )
 
         summary = service._power_flow_summary(
             [
@@ -319,7 +410,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
                 {"dev_type": "ACGenerator", "dev_name": "交流跟网储能测试", "meas_type": "SOC", "value": 0.85},
                 {"dev_type": "ACLoad", "dev_name": "交流负荷-1", "meas_type": "P_LOAD", "value": 10.0},
                 {"dev_type": "DCLoad", "dev_name": "直流负荷-1", "meas_type": "P_LOAD", "value": 12.0},
-                {"dev_type": "ACGenerator", "dev_name": "柴油发电机-1", "meas_type": "P_GEN", "value": 11.0},
+                {"dev_type": "ACGenerator", "dev_name": "交流柴油发电机-27", "meas_type": "P_GEN", "value": 11.0},
             ]
         )
 
@@ -354,6 +445,123 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertEqual(groups["acLoad"]["flowDirection"], "fromBus")
         self.assertEqual(groups["diesel"]["flowDirection"], "toBus")
         self.assertEqual(summary["load"], 22.0)
+        self.assertEqual(summary["greenPower"], 11.0)
+        self.assertEqual(summary["greenPowerShare"], 50.0)
+
+    def test_power_summary_exposes_effective_targets_and_renewable_max_available_power(self):
+        import simu_loop
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        effective_model = simu_loop._clone_ebook(service.source_model_book)
+        next(row for row in effective_model.data["ACGenerator"].data if row.get("name") == "wt01_10kw")["p_set"] = 6.0
+        next(row for row in effective_model.data["DCGenerator"].data if row.get("name") == "pv01_vsrc")["p_set"] = 20.0
+        next(row for row in effective_model.data["DCGenerator"].data if row.get("name") == "ess01_vsrc")["p_set"] = -8.0
+        next(row for row in effective_model.data["ACGenerator"].data if row.get("name") == "diesel_300kw")["p_set"] = 70.0
+        next(row for row in effective_model.data["ACLoad"].data if row.get("name") == "load_ac_1")["pv0"] = 75.0
+        next(row for row in effective_model.data["DCACConverter"].data if row.get("name") == "grid_inv_acp")["p_ac_set"] = -35.0
+        service.latest_model_book = effective_model
+
+        weather = service.weather_book.data["Weather"].data[0]
+        weather["wind_speed_mps"] = 15.0
+        weather["solar_irradiance_w_m2"] = 1000.0
+        weather["air_temp_c"] = 25.0
+
+        service.source_model_book.data["ACGenerator"].data.append(
+            {
+                "idx": 99,
+                "name": "offline-wind-target-must-not-count",
+                "dev_type": "wind-source",
+                "node": 1,
+                "control_type": "P",
+                "p_set": 999.0,
+                "run_stat": 0,
+            }
+        )
+
+        summary = service._power_flow_summary(
+            [
+                {"dev_type": "ACGenerator", "dev_name": "wt01_10kw", "meas_type": "P_GEN", "value": 5.5},
+                {"dev_type": "DCGenerator", "dev_name": "pv01_vsrc", "meas_type": "P_GEN", "value": 18.0},
+                {"dev_type": "DCGenerator", "dev_name": "ess01_vsrc", "meas_type": "P_GEN", "value": -7.5},
+                {"dev_type": "ACGenerator", "dev_name": "diesel_300kw", "meas_type": "P_GEN", "value": 68.0},
+                {"dev_type": "ACLoad", "dev_name": "load_ac_1", "meas_type": "P_LOAD", "value": 73.0},
+                {"dev_type": "DCACConverter", "dev_name": "grid_inv_acp", "meas_type": "P_AC", "value": -34.0},
+            ]
+        )
+        groups = summary["flowGroups"]
+
+        self.assertEqual(groups["dcWind"]["targetPower"], 6.0)
+        self.assertEqual(groups["dcWind"]["maxAvailablePower"], 10.0)
+        self.assertEqual(groups["dcSolar"]["targetPower"], 20.0)
+        self.assertEqual(groups["dcSolar"]["maxAvailablePower"], 50.0)
+        self.assertEqual(groups["dcGridFollowingStorage"]["targetPower"], -8.0)
+        self.assertEqual(groups["diesel"]["targetPower"], 70.0)
+        self.assertEqual(groups["acLoad"]["targetPower"], 75.0)
+        self.assertEqual(groups["acdcConverter"]["targetPower"], -35.0)
+        self.assertEqual(groups["acdcConverter"]["power"], -34.0)
+        self.assertEqual(groups["acdcConverter"]["status"], "dcToAc")
+        self.assertEqual(groups["acdcConverter"]["flowDirection"], "toAc")
+        self.assertEqual(groups["dcWind"]["onlineCount"], 1)
+
+    def test_converter_target_uses_the_terminal_selected_by_control_type(self):
+        import simu_loop
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        effective_model = simu_loop._clone_ebook(service.source_model_book)
+        converter = next(
+            row
+            for row in effective_model.data["DCACConverter"].data
+            if row.get("name") == "grid_inv_acp"
+        )
+        converter.update(
+            {
+                "ac_control_type": "NONE",
+                "dc_control_type": "P",
+                "p_ac_set": 999.0,
+                "p_dc_set": 12.0,
+            }
+        )
+        service.latest_model_book = effective_model
+
+        group = service._power_flow_summary(
+            [
+                {
+                    "dev_type": "DCACConverter",
+                    "dev_name": "grid_inv_acp",
+                    "meas_type": "P_DC",
+                    "value": 12.0,
+                    "valid": 1,
+                }
+            ]
+        )["flowGroups"]["acdcConverter"]
+
+        self.assertEqual(group["targetPower"], -12.0)
+        self.assertEqual(group["power"], -12.0)
+        self.assertEqual(group["status"], "dcToAc")
+
+    def test_power_summary_keeps_missing_target_unknown_instead_of_copying_current_power(self):
+        import simu_loop
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        effective_model = simu_loop._clone_ebook(service.source_model_book)
+        next(row for row in effective_model.data["ACGenerator"].data if row.get("name") == "wt01_10kw")["p_set"] = ""
+        service.latest_model_book = effective_model
+
+        summary = service._power_flow_summary(
+            [
+                {"dev_type": "ACGenerator", "dev_name": "wt01_10kw", "meas_type": "P_GEN", "value": 7.0},
+            ]
+        )
+
+        group = summary["flowGroups"]["dcWind"]
+        self.assertEqual(group["power"], 7.0)
+        self.assertIsNone(group["targetPower"])
 
     def test_power_summary_keeps_same_named_ac_and_dc_loads_separate(self):
         from simu.service import PolarMicrogridSimulator
@@ -459,6 +667,12 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
                 },
             ]
         )
+        service.source_model_book.data["ACStorageGen"].data.append(
+            {"idx": 90, "idx_acgenerator": 90, "energy_capacity": 40}
+        )
+        service.source_model_book.data["DCPVGen"].data.append(
+            {"idx": 90, "idx_dcgenerator": 90, "rated_power": 30}
+        )
 
         summary = service._power_flow_summary(
             [
@@ -503,6 +717,12 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
                     "run_stat": 1,
                     "rated_capacity": 40,
                 },
+            ]
+        )
+        service.source_model_book.data["DCStorageGen"].data.extend(
+            [
+                {"idx": 90, "idx_dcgenerator": 90, "energy_capacity": 40},
+                {"idx": 91, "idx_dcgenerator": 91, "energy_capacity": 40},
             ]
         )
         service.latest_device_states = [

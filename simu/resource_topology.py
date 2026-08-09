@@ -56,6 +56,13 @@ class ResourceTopology:
     device_component_ids: Mapping[DeviceKey, str] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    # Active AC/DC converters join one same-domain AC component and one
+    # same-domain DC component.  Keeping both endpoint component ids lets
+    # dispatch callers build hybrid topology islands and apply the converter
+    # sensitivity with the correct sign on each side.
+    converter_component_ids: Mapping[DeviceKey, Tuple[str, str]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
 
 RESOURCE_TERMINALS = {
@@ -78,6 +85,7 @@ SAME_DOMAIN_EDGES = {
 }
 
 CROSS_DOMAIN_EDGES = {
+    "ACDCConverter": (("AC", "ac_node"), ("DC", "dc_node")),
     "DCACConverter": (("AC", "ac_node"), ("DC", "dc_node")),
 }
 
@@ -92,8 +100,9 @@ _NODE_BLOCKS = {
     "DCNode": "DC",
 }
 _CONVERTER_TYPES = frozenset(
-    {"ACACConverter", "DCDCConverter", "DCACConverter"}
+    {"ACACConverter", "DCDCConverter", "ACDCConverter", "DCACConverter"}
 )
+_AC_DC_CONVERTER_TYPES = ("ACDCConverter", "DCACConverter")
 _SWITCHLIKE_TYPES = frozenset(
     dev_type
     for dev_type, (*_, switchlike) in SAME_DOMAIN_EDGES.items()
@@ -1090,16 +1099,25 @@ def _dc_transfer_groups(
         components,
     )
 
-    for row in sorted(
-        _block_rows(parsed.model, "DCACConverter"),
-        key=lambda item: (_device_name(item) or "", _row_rank(item)),
-    ):
+    converter_rows = sorted(
+        (
+            (converter_type, row)
+            for converter_type in _AC_DC_CONVERTER_TYPES
+            for row in _block_rows(parsed.model, converter_type)
+        ),
+        key=lambda item: (
+            item[0],
+            _device_name(item[1]) or "",
+            _row_rank(item[1]),
+        ),
+    )
+    for converter_type, row in converter_rows:
         dev_name = _device_name(row)
         dc_node_id = _node_id(row.get("dc_node"))
         ac_node_id = _node_id(row.get("ac_node"))
         if dev_name is None or dc_node_id is None or ac_node_id is None:
             continue
-        device_key = ("DCACConverter", dev_name)
+        device_key = (converter_type, dev_name)
         dc_node = ("DC", dc_node_id)
         ac_node = ("AC", ac_node_id)
         if (
@@ -1132,6 +1150,47 @@ def _dc_transfer_groups(
             ),
         )
     return MappingProxyType(dict(sorted(groups.items())))
+
+
+def _active_converter_component_ids(
+    parsed: _ParsedModel,
+    states: Mapping[DeviceKey, _OperatingState],
+    active_graph: _ActiveGraph,
+    components: _ActiveComponents,
+) -> Mapping[DeviceKey, Tuple[str, str]]:
+    endpoints: Dict[DeviceKey, Tuple[str, str]] = {}
+    converter_rows = sorted(
+        (
+            (converter_type, row)
+            for converter_type in _AC_DC_CONVERTER_TYPES
+            for row in _block_rows(parsed.model, converter_type)
+        ),
+        key=lambda item: (
+            item[0],
+            _device_name(item[1]) or "",
+            _row_rank(item[1]),
+        ),
+    )
+    for converter_type, row in converter_rows:
+        dev_name = _device_name(row)
+        ac_node_id = _node_id(row.get("ac_node"))
+        dc_node_id = _node_id(row.get("dc_node"))
+        if dev_name is None or ac_node_id is None or dc_node_id is None:
+            continue
+        device_key = (converter_type, dev_name)
+        ac_node = ("AC", ac_node_id)
+        dc_node = ("DC", dc_node_id)
+        if (
+            ac_node not in active_graph.active_nodes
+            or dc_node not in active_graph.active_nodes
+            or not _device_is_active(device_key, parsed, states)
+        ):
+            continue
+        ac_component_id = components.node_component_ids.get(ac_node)
+        dc_component_id = components.node_component_ids.get(dc_node)
+        if ac_component_id and dc_component_id:
+            endpoints[device_key] = (ac_component_id, dc_component_id)
+    return MappingProxyType(dict(sorted(endpoints.items())))
 
 
 def _empty_connection(resource: ResourceRef, connection_side: str) -> ResourceConnection:
@@ -1325,6 +1384,12 @@ def resolve_resource_topology(
         active_graph,
         components,
     )
+    converter_component_ids = _active_converter_component_ids(
+        parsed,
+        states,
+        active_graph,
+        components,
+    )
     device_component_ids: Dict[DeviceKey, str] = {}
     for device_key in parsed.resource_rows:
         resource = ResourceRef(
@@ -1360,4 +1425,5 @@ def resolve_resource_topology(
         resources=MappingProxyType(resolved),
         dc_transfer_groups=dc_transfer_groups,
         device_component_ids=MappingProxyType(device_component_ids),
+        converter_component_ids=converter_component_ids,
     )

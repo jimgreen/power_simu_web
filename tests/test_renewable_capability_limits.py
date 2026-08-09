@@ -264,6 +264,137 @@ class RenewableCapabilityLimitTest(unittest.TestCase):
         self.assertAlmostEqual(seen["wind"], 1.25)
         self.assertAlmostEqual(seen["pv"], 25.0)
 
+    def test_weather_clamps_structurally_linked_ac_wind_and_ac_dc_pv_after_control_overlay(self):
+        import simu_loop
+
+        source_model = simu_loop.EBook(
+            {
+                "ACGenerator": [
+                    {
+                        "idx": 24,
+                        "name": "设备-甲",
+                        "dev_type": "ac-source",
+                        "node": 34,
+                        "control_type": "PQ",
+                        "p_set": 12,
+                        "p_max": 12,
+                        "run_stat": 1,
+                        "rated_capacity": 12,
+                    },
+                    {
+                        "idx": 25,
+                        "name": "设备-乙",
+                        "dev_type": "ac-source",
+                        "node": 35,
+                        "control_type": "PV",
+                        "p_set": 20,
+                        "p_max": 20,
+                        "run_stat": 1,
+                        "rated_capacity": 20,
+                    }
+                ],
+                "DCGenerator": [
+                    {
+                        "idx": 3,
+                        "name": "设备-丙",
+                        "dev_type": "dc-source",
+                        "node": 3,
+                        "control_type": "P",
+                        "p_set": 15,
+                        "p_max": 15,
+                        "run_stat": 1,
+                        "rated_capacity": 15,
+                    }
+                ],
+                "ACWindGen": [
+                    {
+                        "idx": 1,
+                        "idx_acgenerator": 24,
+                        "wind_turbine_model": "arbitrary-model-label",
+                        "cut_in_wind_speed": 5,
+                        "rated_wind_speed": 15,
+                        "cut_out_wind_speed": 50,
+                        "rated_power": 12,
+                    }
+                ],
+                "ACPVGen": [
+                    {
+                        "idx": 1,
+                        "idx_acgenerator": 25,
+                        "pv_module_model": "Mono-550W",
+                        "module_efficiency": 0.20,
+                        "array_area": 100,
+                        "mppt_count": 1,
+                    }
+                ],
+                "DCPVGen": [
+                    {
+                        "idx": 1,
+                        "idx_dcgenerator": 3,
+                        "pv_module_model": "Mono-550W",
+                        "module_efficiency": 0.20,
+                        "array_area": 75,
+                        "mppt_count": 1,
+                    }
+                ],
+            }
+        )
+        weather_book = simu_loop.EBook(
+            {
+                "Weather": [
+                    {
+                        "time": "21:15:00",
+                        "wind_speed_mps": 10,
+                        "solar_irradiance_w_m2": 0,
+                        "air_temp_c": -25.26,
+                        "load_kw": 231.85,
+                    }
+                ]
+            }
+        )
+        control_book = simu_loop.EBook(
+            {
+                "SetValue": [
+                    {
+                        "dev_type": "ACGenerator",
+                        "dev_name": "设备-甲",
+                        "set_type": "p_set",
+                        "set_value": 12,
+                    },
+                    {
+                        "dev_type": "ACGenerator",
+                        "dev_name": "设备-乙",
+                        "set_type": "p_set",
+                        "set_value": 20,
+                    },
+                    {
+                        "dev_type": "DCGenerator",
+                        "dev_name": "设备-丙",
+                        "set_type": "p_set",
+                        "set_value": 15,
+                    },
+                ]
+            }
+        )
+
+        _changed, model_book, dev_define, _weather = simu_loop.apply_realtime_input_books(
+            source_model,
+            weather_book,
+            simu_loop.EBook({}),
+            control_book,
+            None,
+        )
+
+        pv_definitions = {
+            str(row.get("name", "")): row
+            for row in dev_define.data["pv_generator"].data
+        }
+        self.assertEqual(set(pv_definitions), {"设备-乙", "设备-丙"})
+        self.assertEqual(float(pv_definitions["设备-乙"]["rated_power"]), 20.0)
+        self.assertAlmostEqual(float(model_book.data["ACGenerator"].data[0]["p_set"]), 1.5)
+        self.assertEqual(float(model_book.data["ACGenerator"].data[1]["p_set"]), 0.0)
+        self.assertEqual(float(model_book.data["DCGenerator"].data[0]["p_set"]), 0.0)
+
     def test_wind_limit_uses_rated_capacity_and_wind_speed_thresholds(self):
         import simu_loop
 
@@ -397,6 +528,16 @@ class RenewableCapabilityLimitTest(unittest.TestCase):
                 "DCDCConverter",
                 ("idx", "name", "p_set", "run_stat"),
                 [{"idx": 1, "name": "pv01_dcdc", "p_set": 25, "run_stat": 1}],
+            )
+            + _efile_block(
+                "ACWindGen",
+                ("idx", "idx_acgenerator", "rated_power", "rated_wind_speed", "cut_in_wind_speed", "cut_out_wind_speed"),
+                [{"idx": 1, "idx_acgenerator": 1, "rated_power": 10, "rated_wind_speed": 15, "cut_in_wind_speed": 5, "cut_out_wind_speed": 50}],
+            )
+            + _efile_block(
+                "DCPVGen",
+                ("idx", "idx_dcgenerator", "rated_power", "temp_coefficient", "reference_irradiance", "reference_temperature"),
+                [{"idx": 1, "idx_dcgenerator": 1, "rated_power": 50, "temp_coefficient": 0, "reference_irradiance": 1000, "reference_temperature": 25}],
             ),
             encoding="utf-8",
         )
@@ -433,13 +574,13 @@ class RenewableCapabilityLimitTest(unittest.TestCase):
         device_file.write_text(
             _efile_block(
                 "wind_generator",
-                ("id", "name", "p_max", "p_min", "rated_power", "rated_wind_speed", "cut_in_speed", "cut_out_speed"),
-                [{"id": 1, "name": "wt01_rect", "p_max": 10, "p_min": 0, "rated_power": 10, "rated_wind_speed": 15, "cut_in_speed": 5, "cut_out_speed": 50}],
+                ("id", "name", "source_name", "dev_type", "p_max", "p_min", "rated_power", "rated_wind_speed", "cut_in_speed", "cut_out_speed"),
+                [{"id": 1, "name": "wt01_rect", "source_name": "wt01_10kw", "dev_type": "ACGenerator", "p_max": 10, "p_min": 0, "rated_power": 10, "rated_wind_speed": 15, "cut_in_speed": 5, "cut_out_speed": 50}],
             )
             + _efile_block(
                 "pv_generator",
-                ("id", "name", "p_max", "p_min", "rated_power", "temp_coefficient", "reference_irradiance", "reference_temperature"),
-                [{"id": 1, "name": "pv01_dcdc", "p_max": 50, "p_min": 0, "rated_power": 50, "temp_coefficient": 0, "reference_irradiance": 1000, "reference_temperature": 25}],
+                ("id", "name", "source_name", "dev_type", "p_max", "p_min", "rated_power", "temp_coefficient", "reference_irradiance", "reference_temperature"),
+                [{"id": 1, "name": "pv01_dcdc", "source_name": "pv01_vsrc", "dev_type": "DCGenerator", "p_max": 50, "p_min": 0, "rated_power": 50, "temp_coefficient": 0, "reference_irradiance": 1000, "reference_temperature": 25}],
             ),
             encoding="utf-8",
         )
@@ -499,16 +640,26 @@ class RenewableCapabilityLimitTest(unittest.TestCase):
             )
             + _efile_block(
                 "DCACConverter",
-                ("idx", "name", "p_ac_set", "q_ac_set", "v_ac_set", "run_stat"),
+                ("idx", "name", "ac_control_type", "p_ac_set", "q_ac_set", "v_ac_set", "run_stat"),
                 [
-                    {"idx": 1, "name": "wind_alpha_rect", "p_ac_set": 99, "q_ac_set": 0, "v_ac_set": 0, "run_stat": 1},
-                    {"idx": 2, "name": "grid_inv_acp", "p_ac_set": -45, "q_ac_set": 0, "v_ac_set": 0, "run_stat": 1},
+                    {"idx": 1, "name": "wind_alpha_rect", "ac_control_type": "PH", "p_ac_set": 99, "q_ac_set": 0, "v_ac_set": 0, "run_stat": 1},
+                    {"idx": 2, "name": "grid_inv_acp", "ac_control_type": "PQ", "p_ac_set": -45, "q_ac_set": 0, "v_ac_set": 0, "run_stat": 1},
                 ],
             )
             + _efile_block(
                 "DCDCConverter",
                 ("idx", "name", "p_set", "run_stat"),
                 [{"idx": 1, "name": "solar_alpha_dcdc", "p_set": 88, "run_stat": 1}],
+            )
+            + _efile_block(
+                "ACWindGen",
+                ("idx", "idx_acgenerator", "rated_power", "rated_wind_speed", "cut_in_wind_speed", "cut_out_wind_speed"),
+                [{"idx": 1, "idx_acgenerator": 1, "rated_power": 10, "rated_wind_speed": 15, "cut_in_wind_speed": 5, "cut_out_wind_speed": 50}],
+            )
+            + _efile_block(
+                "DCPVGen",
+                ("idx", "idx_dcgenerator", "rated_power", "temp_coefficient", "reference_irradiance", "reference_temperature"),
+                [{"idx": 1, "idx_dcgenerator": 1, "rated_power": 50, "temp_coefficient": 0, "reference_irradiance": 1000, "reference_temperature": 25}],
             ),
             encoding="utf-8",
         )
@@ -586,7 +737,10 @@ class RenewableCapabilityLimitTest(unittest.TestCase):
         self.assertAlmostEqual(seen["pv"], 25.0)
         self.assertAlmostEqual(seen["wind_converter"], 99.0)
         self.assertAlmostEqual(seen["pv_converter"], 88.0)
-        self.assertAlmostEqual(seen["grid"], -25.725)
+        # The converter has neither an explicit grid role nor physical limits.
+        # Do not infer a role from its name or reintroduce an aggregate AC/DC
+        # branch-transfer limit; leave this non-actuator setpoint untouched.
+        self.assertAlmostEqual(seen["grid"], -45.0)
 
         yt_ctrl_file.write_text(
             _efile_block(
@@ -600,7 +754,7 @@ class RenewableCapabilityLimitTest(unittest.TestCase):
 
         self.assertAlmostEqual(seen["wind"], 1.25)
         self.assertAlmostEqual(seen["pv"], 25.0)
-        self.assertAlmostEqual(seen["grid"], -25.725)
+        self.assertAlmostEqual(seen["grid"], -45.0)
 
         yt_ctrl_file.write_text(
             _efile_block(
@@ -617,7 +771,7 @@ class RenewableCapabilityLimitTest(unittest.TestCase):
 
         self.assertAlmostEqual(seen["wind"], 1.0)
         self.assertAlmostEqual(seen["pv"], 10.0)
-        self.assertAlmostEqual(seen["grid"], -10.78)
+        self.assertAlmostEqual(seen["grid"], -45.0)
 
 
 if __name__ == "__main__":

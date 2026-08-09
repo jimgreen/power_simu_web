@@ -859,14 +859,14 @@ AC renewable increment -> directly reduces AC diesel
 DC renewable increment with local DC charging room -> may recover without changing ACDC
 DC renewable increment intended for AC -> must pair with additional negative p_ac_set
 DC renewable increment with no local sink and no ACDC headroom -> must hold
-AC renewable surplus -> may charge AC storage but never DC storage
+AC renewable surplus -> may charge AC storage, or pair positive p_ac_set with DC storage charge
 ```
 
 Use two DC transfer groups and assert a renewable in group A cannot use converter or storage capacity from group B.
 
-- [ ] **Step 2: Write failing no-diesel-charging tests**
+- [ ] **Step 2: Write failing cross-side charging safety tests**
 
-Assert no grid-following storage receives a negative target unless the same cycle identifies an equal-or-larger renewable source on the same legal power path. Specifically assert `ACDC p_ac_set` never becomes positive and AC renewable surplus never appears in a DC-storage charge budget.
+Assert no grid-following storage receives a more-negative target unless the same cycle identifies an equal-or-larger renewable source on the same legal power path. A positive `p_ac_set` is allowed only when it is paired with AC renewable recovery and same-group DC storage charging, and all three increments conserve power without violating diesel or device limits.
 
 - [ ] **Step 3: Write failing balance-storage response tests**
 
@@ -888,7 +888,8 @@ DC balance storage low-SOC + discharging:
 
 DC balance storage high-SOC + charging:
   increase same-group ACDC export within headroom; if diesel/ACDC limits block
-  export, reduce same-group DC renewable. Never produce positive p_ac_set.
+  export, reduce same-group DC renewable. This protective action must not
+  increase AC-to-DC transfer.
 ```
 
 For every case assert the balance row has no `p_set` command and its `projectedTargetKw` moves in the protective direction.
@@ -951,13 +952,13 @@ paired ACDC export to AC
 
 Cap the paired ACDC-export sink by the AC side's residual acceptance after earlier AC actions: diesel down-margin, active AC net demand, AC grid-storage charging margin, and AC balance-storage charging allowance. Do not reserve ACDC export merely because converter headroom exists.
 
-For AC renewable recovery, legal sinks are AC diesel down-margin, AC grid-following storage charging, and AC balance-storage charging allowance. ACDC reverse flow is not a legal sink. If no sink exists, target stays at the current value.
+For AC renewable recovery, legal sinks are AC diesel down-margin, AC grid-following storage charging, AC balance-storage charging allowance, and a topology-valid AC-to-DC transfer with a matching DC-side sink. The converter target must remain within the converter's own signed active-power limits. If no legal sink exists, target stays at the current value.
 
 Within each side/technology/group allocation, distribute by each device's accepted margin, then perform one remainder pass only among devices that still have legal margin. Never average by device count, and never move remainder across AC/DC sides or DC transfer groups.
 
 - [ ] **Step 8: Pair DC export targets without combining device commands**
 
-When DC renewable or DC grid-storage discharge is intended for AC, reserve the same transfer amount in the group's ACDC export budget. Apply converter efficiency if the existing model exposes one; otherwise use the existing 1.0 planning convention. Emit separate renewable/storage `p_set` and converter `p_ac_set` targets. Clamp every automatic converter target to `p_ac_set <= 0.0`; if a paired action would require positive `p_ac_set`, reject that action and log `禁止ACDC倒送`.
+When DC renewable or DC grid-storage discharge is intended for AC, reserve the same transfer amount in the group's converter budget. Apply converter efficiency if the existing model exposes one; otherwise use the existing 1.0 planning convention. Emit separate renewable/storage `p_set` and converter active-power targets. Both `ACDCConverter` and `DCACConverter` use the same terminal convention: `p_ac_set` is positive AC-to-DC and negative DC-to-AC, while `p_dc_set` has the opposite sign. Clamp automatic targets only to the converter's real signed active-power limits; reject an action when its topology is invalid or its required transfer is outside those limits.
 
 - [ ] **Step 9: Apply the unified final validator and one diesel prediction**
 
@@ -1228,7 +1229,8 @@ Calculate a plan and assert programmatically:
 ```text
 resource categories match real bus topology
 no disconnected resource has a command
-no p_ac_set is positive
+every p_ac_set stays inside the device's signed limits
+positive p_ac_set is paired with equal AC renewable recovery and DC charging
 DC group A never consumes group B capacity
 balance storage has no direct p_set
 predicted diesel effect counts ACDC export once
@@ -1292,7 +1294,7 @@ Confirm `tmp_runtime_probe/` remains untouched, no source model is unintentional
 | AC/DC wind and PV plus four storage classes | Tasks 3, 5, 9 |
 | Grid-following role requires P/PQ plus valid `p_set`; balance role has no direct command | Tasks 5, 6, 7 |
 | AC storage before DC storage; later actions use only residual diesel error | Tasks 6, 7 |
-| DC resource action uses same-group ACDC export and never positive `p_ac_set` | Task 7 |
+| DC resource actions use the same-group ACDC; AC-to-DC targets require a balanced same-path sink | Task 7 |
 | Charging requires verified same-path renewable surplus; no diesel charging | Task 7 |
 | SOC linear derating, energy margin, unbounded SOC integration | Tasks 3, 4, 6, 7 |
 | Realtime signs are preserved without `abs/max/min` normalization | Tasks 2, 5, 6 |

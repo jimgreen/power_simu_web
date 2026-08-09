@@ -74,7 +74,8 @@ class LiveDefinitionHotSwapTest(unittest.TestCase):
         self.assertIsNot(before.model_book, after.model_book)
         self.assertEqual(old_row["r"], "0.001")
         self.assertEqual(new_row["r"], "0.0025")
-        self.assertEqual(persisted["r"], "0.0025")
+        self.assertEqual(persisted["r"], "0.001")
+        self.assertTrue(service.manual_definition_changes_file.is_file())
         self.assertEqual(after.revision, before.revision + 1)
         self.assertTrue(result["memory_updated"])
         self.assertTrue(result["persisted"])
@@ -175,8 +176,8 @@ class LiveDefinitionHotSwapTest(unittest.TestCase):
         )
         self.assertAlmostEqual(float(definition["weight"]), 2500.0)
         self.assertEqual(definition["valid"], 0)
-        self.assertAlmostEqual(float(persisted["weight"]), 2500.0)
-        self.assertEqual(int(float(persisted["valid"])), 0)
+        self.assertAlmostEqual(float(persisted["weight"]), 25.0)
+        self.assertEqual(int(float(persisted["valid"])), 1)
         self.assertAlmostEqual(result["record"]["error_sigma"], 0.02)
         self.assertEqual(result["record"]["valid"], 0)
 
@@ -198,7 +199,8 @@ class LiveDefinitionHotSwapTest(unittest.TestCase):
         self.assertEqual(result["record"]["fixed_value"], 12.5)
         self.assertEqual(service.local_settings["measurement_statuses"][name]["status"], "fixed")
         self.assertEqual(service.local_settings["measurement_statuses"][name]["fixed_value"], 12.5)
-        self.assertIn('"status": "fixed"', (service.settings_file).read_text(encoding="utf-8"))
+        self.assertIn('"field": "status"', service.manual_definition_changes_file.read_text(encoding="utf-8"))
+        self.assertFalse(service.settings_file.exists())
 
         reloaded = PolarMicrogridSimulator(source, _runtime, model_id="hot-swap", kernel=lambda _config: None)
         reloaded_definition = next(
@@ -386,7 +388,10 @@ class LiveDefinitionHotSwapTest(unittest.TestCase):
         self.assertNotEqual(float(first_row[5]), 400.0)
         self.assertTrue(result["memory_updated"])
         self.assertEqual(service.clock.state, "running")
-        self.assertEqual(self._tree_fingerprint(runtime), runtime_before)
+        runtime_after = self._tree_fingerprint(runtime)
+        self.assertIn("manual_overrides.json", runtime_after)
+        runtime_after.pop("manual_overrides.json")
+        self.assertEqual(runtime_after, runtime_before)
 
         release.set()
         worker.join(2)
@@ -412,7 +417,10 @@ class LiveDefinitionHotSwapTest(unittest.TestCase):
             }
         )
 
-        self.assertEqual(self._tree_fingerprint(runtime), before)
+        after = self._tree_fingerprint(runtime)
+        self.assertIn("manual_overrides.json", after)
+        after.pop("manual_overrides.json")
+        self.assertEqual(after, before)
         self.assertEqual(service.clock.state, "running")
 
     def test_persistence_failure_keeps_new_memory_snapshot_and_old_source_file(self):
@@ -427,7 +435,7 @@ class LiveDefinitionHotSwapTest(unittest.TestCase):
                 if row["name"] == "diesel_line"
             )
             observed["active_r"] = active["r"]
-            if Path(path).name == "model.e":
+            if Path(path).name == "manual_overrides.json":
                 raise OSError("disk full")
             return real_atomic_write_text(path, text)
 
@@ -450,7 +458,7 @@ class LiveDefinitionHotSwapTest(unittest.TestCase):
         self.assertEqual((source / "model.e").read_text(encoding="utf-8"), old_text)
         self.assertTrue(result["memory_updated"])
         self.assertFalse(result["persisted"])
-        self.assertIn("E 文件保存失败", result["warning"])
+        self.assertIn("人工覆盖层保存失败", result["warning"])
 
     def test_edit_response_and_static_metadata_publish_the_active_revision(self):
         _source, _runtime, service = self._make_service()

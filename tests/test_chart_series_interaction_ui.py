@@ -37,6 +37,82 @@ process.stdout.write(JSON.stringify({
         )
         return json.loads(result.stdout)
 
+    def _cursor_snapshot(self, script: str):
+        marker = "function nearestChartPoint"
+        if marker not in script:
+            self.fail("nearest chart point helper is missing")
+        source = marker + script.split(marker, 1)[1].split("function drawChartCursor", 1)[0]
+        body = r"""
+const series = [
+  {
+    key: "real",
+    points: [
+      { x: 20, y: 40, minute: 20, time: "00:20:00", value: 2 },
+      { x: 30, y: 30, minute: 30, time: "00:30:00", value: 3 },
+    ],
+  },
+  {
+    key: "scada",
+    points: [
+      { x: 20, y: 42, minute: 20, time: "00:20:00", value: 200 },
+      { x: 30, y: 32, minute: 30, time: "00:30:00", value: 300 },
+    ],
+  },
+  {
+    key: "missing",
+    points: [
+      { x: 19, y: 44, minute: 19, time: "00:19:00", value: 999 },
+    ],
+  },
+];
+const snapshot = chartCursorSnapshot(series, "real", 23);
+process.stdout.write(JSON.stringify({
+  anchor: snapshot.anchorPoint,
+  samples: snapshot.samples.map(({ series: item, point }) => ({
+    key: item.key,
+    minute: point.minute,
+    value: point.value,
+  })),
+}));
+"""
+        result = subprocess.run(
+            ["node"],
+            input=f"{source}\n{body}",
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(result.stdout)
+
+    def _trace_point_time_labels(
+        self,
+        script: str,
+        helper_name: str,
+        end_marker: str,
+        axis_helper_name: str,
+    ):
+        marker = f"function {helper_name}"
+        if marker not in script:
+            self.fail(f"{helper_name} is missing")
+        source = marker + script.split(marker, 1)[1].split(end_marker, 1)[0]
+        body = f"""
+function {axis_helper_name}(minute, range, index, lastIndex) {{
+  return index === lastIndex ? "WRONG_WINDOW_END" : `M${{minute}}`;
+}}
+process.stdout.write(JSON.stringify([
+  {helper_name}({{ minute: 20, time: "00:20:00", sim_time: "00:20:00" }}, {{}}),
+  {helper_name}({{ minute: 20 }}, {{}}),
+]));
+"""
+        result = subprocess.run(
+            ["node"],
+            input=f"{source}\n{body}",
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(result.stdout)
+
     def test_curve_pages_render_numeric_y_axis_ticks(self):
         expected_wind_labels = ["50", "40", "30", "20", "10", "0"]
         expected_temperature_labels = ["20", "4", "-12", "-28", "-44", "-60"]
@@ -91,6 +167,39 @@ process.stdout.write(JSON.stringify({
         self.assertIn("function curveDisplayLegendKeyAtPointer", self.trainee_js)
         self.assertIn("function setCurveDisplayCursorFromEvent", self.trainee_js)
         self.assertIn("drawCurveDisplayCursor", self.trainee_js)
+
+    def test_trace_cursor_snaps_time_and_values_to_one_sample_in_both_consoles(self):
+        for app, script in (
+            ("simulator", self.simulator_js),
+            ("trainee", self.trainee_js),
+        ):
+            with self.subTest(app=app):
+                snapshot = self._cursor_snapshot(script)
+                self.assertEqual(snapshot["anchor"]["minute"], 20)
+                self.assertEqual(snapshot["anchor"]["x"], 20)
+                self.assertEqual(
+                    snapshot["samples"],
+                    [
+                        {"key": "real", "minute": 20, "value": 2},
+                        {"key": "scada", "minute": 20, "value": 200},
+                    ],
+                )
+
+    def test_measurement_trace_cursor_uses_sample_time_not_window_end(self):
+        simulator_labels = self._trace_point_time_labels(
+            self.simulator_js,
+            "runtimeTracePointTimeLabel",
+            "function runtimeTraceAxisTicks",
+            "runtimeAxisTickLabel",
+        )
+        trainee_labels = self._trace_point_time_labels(
+            self.trainee_js,
+            "measurementTracePointTimeLabel",
+            "function measurementTraceAxisTicks",
+            "measurementTraceTimeLabel",
+        )
+        self.assertEqual(simulator_labels, ["00:20:00", "M20"])
+        self.assertEqual(trainee_labels, ["00:20:00", "M20"])
 
 
 if __name__ == "__main__":

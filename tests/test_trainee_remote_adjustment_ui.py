@@ -122,6 +122,7 @@ const state = { snapshot: {} };
 function deviceType(dev) { return dev.dev_type || ""; }
 function deviceName(dev) { return dev.dev_name || ""; }
 const dev = { dev_type: "DCACConverter", dev_name: "ACDC变流器-1" };
+const acdcDev = { dev_type: "ACDCConverter", dev_name: "ACDC变流器-2" };
 const snapshot = {
   measurements: {
     scada: [
@@ -132,6 +133,8 @@ const snapshot = {
     real: [
       { dev_type: "DCACConverter", dev_name: "ACDC变流器-1", meas_type: "V_DC", valid: 1, value: 750 },
       { dev_type: "DCACConverter", dev_name: "ACDC变流器-1", meas_type: "P_AC", valid: 1, value: -42.5 },
+      { dev_type: "DCACConverter", dev_name: "ACDC变流器-1", meas_type: "P_DC", valid: 1, value: 42.5 },
+      { dev_type: "ACDCConverter", dev_name: "ACDC变流器-2", meas_type: "P_DC", valid: 1, value: 9.0 },
     ],
   },
 };
@@ -139,6 +142,8 @@ process.stdout.write(JSON.stringify({
   acVoltage: remoteAdjustmentMeasurement(dev, "v_ac_set", snapshot),
   dcVoltage: remoteAdjustmentMeasurement(dev, "v_dc_set", snapshot),
   acPower: remoteAdjustmentMeasurement(dev, "p_ac_set", snapshot),
+  dcPower: remoteAdjustmentMeasurement(dev, "p_dc_set", snapshot),
+  acdcDcPower: remoteAdjustmentMeasurement(acdcDev, "p_dc_set", snapshot),
 }));
 """
         result = subprocess.run(
@@ -149,7 +154,98 @@ process.stdout.write(JSON.stringify({
         )
         self.assertEqual(
             json.loads(result.stdout),
-            {"acVoltage": 380, "dcVoltage": 750, "acPower": -42.5},
+            {
+                "acVoltage": 380,
+                "dcVoltage": 750,
+                "acPower": -42.5,
+                "dcPower": 42.5,
+                "acdcDcPower": 9.0,
+            },
+        )
+
+    def test_current_set_value_reads_exact_dc_terminal_field_from_model(self):
+        value_helpers = "function effectiveRemoteAdjustmentValue" + self.script.split(
+            "function effectiveRemoteAdjustmentValue",
+            1,
+        )[1].split("function remoteAdjustmentTypeLabel", 1)[0]
+        body = r"""
+const state = { snapshot: {} };
+const pending = { set_values: new Map() };
+function deviceType(dev) { return dev.dev_type || ""; }
+function deviceName(dev) { return dev.dev_name || ""; }
+function deviceKey(dev) { return `${deviceType(dev)}|${deviceName(dev)}`; }
+function activeCommandEntryForControl() { return null; }
+const dev = {
+  dev_type: "DCACConverter",
+  dev_name: "grid-link",
+  set_values: {},
+  mode: "PQ",
+  raw: {
+    ac_control_type: "PQ",
+    dc_control_type: "P",
+    p_set: 99,
+    p_ac_set: -12.5,
+    p_dc_set: 12.5,
+  },
+};
+const explicitDcDisabled = {
+  dev_type: "DCACConverter",
+  dev_name: "ac-grid-link",
+  set_values: {},
+  mode: "DCP",
+  raw: {
+    ac_control_type: "PQ",
+    dc_control_type: "NONE",
+    p_ac_set: -8,
+    p_dc_set: 8,
+  },
+};
+const legacyDcControl = {
+  dev_type: "DCACConverter",
+  dev_name: "legacy-grid-link",
+  set_values: {},
+  mode: "DCP",
+  raw: { p_ac_set: -6, p_dc_set: 6 },
+};
+const opaqueConverter = {
+  dev_type: "opaque-equipment-class",
+  dev_name: "opaque-grid-link",
+  set_values: {},
+  mode: "P",
+  raw: {
+    ac_node: 1,
+    dc_node: 2,
+    ac_control_type: "PQ",
+    dc_control_type: "P",
+    p_ac_set: -4,
+    p_dc_set: 4,
+  },
+};
+process.stdout.write(JSON.stringify({
+  pAc: currentSetValue(dev, "p_ac_set", state.snapshot),
+  pDc: currentSetValue(dev, "p_dc_set", state.snapshot),
+  generic: currentSetValue(dev, "p_set", state.snapshot),
+  explicitDcDisabled: currentSetValue(explicitDcDisabled, "p_set", state.snapshot),
+  legacyDc: currentSetValue(legacyDcControl, "p_set", state.snapshot),
+  opaque: currentSetValue(opaqueConverter, "p_set", state.snapshot),
+}));
+"""
+        result = subprocess.run(
+            ["node", "-e", f"{value_helpers}\n{body}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            json.loads(result.stdout),
+            {
+                "pAc": -12.5,
+                "pDc": 12.5,
+                "generic": 12.5,
+                "explicitDcDisabled": -8,
+                "legacyDc": 6,
+                "opaque": 4,
+            },
         )
 
     def test_remote_adjustment_measurement_prefers_exact_candidate_over_generic_quantity(self):

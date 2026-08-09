@@ -81,9 +81,18 @@ const runtimeSnapshot = {
   devices: [{ dev_type: "ACBreak", dev_name: "盒型开关-4", status: 0, run_stat: 1 }],
   measurements: { scada: [], real: [] },
 };
+const realOnlySnapshot = {
+  devices: [],
+  measurements: {
+    scada: [],
+    real: [{ dev_type: "ACBreak", dev_name: "盒型开关-4", meas_type: "STATUS", valid: 1, value: 1 }],
+  },
+};
 process.stdout.write(JSON.stringify({
   measured: remoteControlFeedbackValue(dev, "status", measuredSnapshot),
   runtime: remoteControlFeedbackValue(dev, "status", runtimeSnapshot),
+  realOnly: remoteControlFeedbackValue(dev, "status", realOnlySnapshot),
+  realMeasured: remoteControlMeasuredValue("ACBreak", "盒型开关-4", "status", realOnlySnapshot),
   alreadyClosed: remoteControlTargetAlreadyReached(dev, "status", 1, measuredSnapshot),
   alreadyOpen: remoteControlTargetAlreadyReached(dev, "status", 0, measuredSnapshot),
 }));
@@ -96,12 +105,14 @@ process.stdout.write(JSON.stringify({
         )
         self.assertEqual(
             json.loads(result.stdout),
-            {
-                "measured": 1,
-                "runtime": 0,
-                "alreadyClosed": True,
-                "alreadyOpen": False,
-            },
+                {
+                    "measured": 1,
+                    "runtime": 0,
+                    "realOnly": 0,
+                    "realMeasured": None,
+                    "alreadyClosed": True,
+                    "alreadyOpen": False,
+                },
         )
 
     def test_remote_control_send_checks_noop_acceptance_and_feedback(self):

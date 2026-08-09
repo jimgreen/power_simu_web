@@ -28,7 +28,10 @@ class TraceWindowOptionsUiTest(unittest.TestCase):
         trainee_js = (ROOT / "simu" / "web" / "trainee" / "app.js").read_text(encoding="utf-8")
 
         self.assertIn("function measurementTraceWindowRange()", trainee_js)
-        self.assertIn("return alignedTraceWindowRange(history, windowMinutes, fallbackMinute);", trainee_js)
+        self.assertIn(
+            'alignedTraceWindowRange(\n    history,\n    windowMinutes,\n    fallbackMinute,\n    chartPeriodOffset("measurementTrace"),\n    curveDisplayModeDurationMinutes(),\n  )',
+            trainee_js,
+        )
         self.assertIn("point.minute >= range.startMinute && point.minute <= range.endMinute", trainee_js)
         self.assertIn("((point.minute - range.startMinute) / range.windowMinutes) * plotWidth", trainee_js)
         self.assertNotIn("const minMinute = points[0].minute", trainee_js)

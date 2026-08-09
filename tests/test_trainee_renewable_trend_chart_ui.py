@@ -11,10 +11,13 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_TREND_SERIES = {
     "acRenewableCurrent": ("renewableAcCurrentKw", "acRenewableCurrentKw"),
     "acRenewableTarget": ("renewableAcTargetKw", "acRenewableTargetKw"),
+    "acRenewableMaxAvailable": ("renewableAcMaxAvailableKw", "acRenewableMaxAvailableKw"),
     "acWindCurrent": ("renewableAcWindCurrentKw", "acWindCurrentKw"),
     "acWindTarget": ("renewableAcWindTargetKw", "acWindTargetKw"),
+    "acWindMaxAvailable": ("renewableAcWindMaxAvailableKw", "acWindMaxAvailableKw"),
     "acPvCurrent": ("renewableAcPvCurrentKw", "acPvCurrentKw"),
     "acPvTarget": ("renewableAcPvTargetKw", "acPvTargetKw"),
+    "acPvMaxAvailable": ("renewableAcPvMaxAvailableKw", "acPvMaxAvailableKw"),
     "acGridFollowingStorageCurrent": ("renewableAcGridFollowingStorageCurrentKw", "acGridFollowingStorageCurrentKw"),
     "acGridFollowingStorageTarget": ("renewableAcGridFollowingStorageTargetKw", "acGridFollowingStorageTargetKw"),
     "acGridFollowingStorageSoc": ("renewableAcGridFollowingStorageSoc", "acGridFollowingStorageSocPercent"),
@@ -27,10 +30,13 @@ EXPECTED_TREND_SERIES = {
     "acLoad": ("renewableAcLoadKw", "acLoadKw"),
     "dcRenewableCurrent": ("renewableDcCurrentKw", "dcRenewableCurrentKw"),
     "dcRenewableTarget": ("renewableDcTargetKw", "dcRenewableTargetKw"),
+    "dcRenewableMaxAvailable": ("renewableDcMaxAvailableKw", "dcRenewableMaxAvailableKw"),
     "dcWindCurrent": ("renewableDcWindCurrentKw", "dcWindCurrentKw"),
     "dcWindTarget": ("renewableDcWindTargetKw", "dcWindTargetKw"),
+    "dcWindMaxAvailable": ("renewableDcWindMaxAvailableKw", "dcWindMaxAvailableKw"),
     "dcPvCurrent": ("renewableDcPvCurrentKw", "dcPvCurrentKw"),
     "dcPvTarget": ("renewableDcPvTargetKw", "dcPvTargetKw"),
+    "dcPvMaxAvailable": ("renewableDcPvMaxAvailableKw", "dcPvMaxAvailableKw"),
     "dcGridFollowingStorageCurrent": ("renewableDcGridFollowingStorageCurrentKw", "dcGridFollowingStorageCurrentKw"),
     "dcGridFollowingStorageTarget": ("renewableDcGridFollowingStorageTargetKw", "dcGridFollowingStorageTargetKw"),
     "dcGridFollowingStorageSoc": ("renewableDcGridFollowingStorageSoc", "dcGridFollowingStorageSocPercent"),
@@ -43,10 +49,13 @@ EXPECTED_TREND_SERIES = {
     "dcLoad": ("renewableDcLoadKw", "dcLoadKw"),
     "totalRenewableCurrent": ("renewableTotalCurrentKw", "totalRenewableCurrentKw"),
     "totalRenewableTarget": ("renewableTotalTargetKw", "totalRenewableTargetKw"),
+    "totalRenewableMaxAvailable": ("renewableTotalMaxAvailableKw", "totalRenewableMaxAvailableKw"),
     "totalWindCurrent": ("renewableTotalWindCurrentKw", "totalWindCurrentKw"),
     "totalWindTarget": ("renewableTotalWindTargetKw", "totalWindTargetKw"),
+    "totalWindMaxAvailable": ("renewableTotalWindMaxAvailableKw", "totalWindMaxAvailableKw"),
     "totalPvCurrent": ("renewableTotalPvCurrentKw", "totalPvCurrentKw"),
     "totalPvTarget": ("renewableTotalPvTargetKw", "totalPvTargetKw"),
+    "totalPvMaxAvailable": ("renewableTotalPvMaxAvailableKw", "totalPvMaxAvailableKw"),
     "totalGridFollowingStorageCurrent": ("renewableTotalGridFollowingStorageCurrentKw", "totalGridFollowingStorageCurrentKw"),
     "totalGridFollowingStorageTarget": ("renewableTotalGridFollowingStorageTargetKw", "totalGridFollowingStorageTargetKw"),
     "totalGridFollowingStorageSoc": ("renewableTotalGridFollowingStorageSoc", "totalGridFollowingStorageSocPercent"),
@@ -59,6 +68,8 @@ EXPECTED_TREND_SERIES = {
     "totalLoad": ("renewableTotalLoadKw", "totalLoadKw"),
     "acdcCurrent": ("renewableAcdcCurrentKw", "acdcCurrentKw"),
     "acdcTarget": ("renewableAcdcTargetKw", "acdcTargetKw"),
+    "observedWindSpeed": ("renewableObservedWindSpeed", "observedWindSpeed"),
+    "observedSolarIrradiance": ("renewableObservedSolarIrradiance", "observedSolarIrradiance"),
 }
 
 
@@ -100,11 +111,18 @@ class TraineeRenewableTrendChartUiTest(unittest.TestCase):
         self.assertEqual(len(metric_ids), len(set(metric_ids)))
 
         metric_panel = self.html.split('id="renewableMetricTabs"', 1)[1].split(
-            'class="renewable-metric-footer"',
+            'class="renewable-right-layout"',
             1,
         )[0]
-        statistic_ids = set(re.findall(r'<dd id="([^"]+)"', metric_panel))
-        self.assertEqual(statistic_ids, set(metric_ids))
+        statistic_ids = set(re.findall(r'<td id="([^"]+)"', metric_panel))
+        environment_ids = {"renewableObservedWindSpeed", "renewableObservedSolarIrradiance"}
+        self.assertTrue((set(metric_ids) - environment_ids).issubset(statistic_ids))
+        control_panel = self.html.split('<section class="panel renewable-control-panel">', 1)[1].split(
+            '<section class="panel renewable-metrics-panel">',
+            1,
+        )[0]
+        for environment_id in environment_ids:
+            self.assertIn(f'id="{environment_id}"', control_panel)
 
     def test_curve_selector_is_a_left_three_level_checkbox_tree(self):
         self.assertIn('id="renewableTrendWorkspace"', self.html)
@@ -117,10 +135,10 @@ class TraineeRenewableTrendChartUiTest(unittest.TestCase):
         for scope, label in (("ac", "交流"), ("dc", "直流"), ("system", "系统")):
             with self.subTest(scope=scope):
                 self.assertIn(f'key: "{scope}", label: "{label}"', self.script)
-        for device_label in ("新能源", "风电", "光伏", "跟网储能", "构网储能", "柴发", "负荷", "AC/DC变流器"):
+        for device_label in ("新能源", "风电", "光伏", "跟网储能", "构网储能", "柴发", "负荷", "AC/DC变流器", "环境"):
             with self.subTest(device_label=device_label):
                 self.assertIn(f'deviceLabel: "{device_label}"', self.series_block)
-        for curve_label in ("功率", "目标", "SOC", "下限"):
+        for curve_label in ("功率", "目标", "最大可发", "SOC", "下限", "风速", "太阳辐照度"):
             with self.subTest(curve_label=curve_label):
                 self.assertIn(f'curveLabel: "{curve_label}"', self.series_block)
         self.assertNotIn(
@@ -142,6 +160,73 @@ class TraineeRenewableTrendChartUiTest(unittest.TestCase):
         self.assertIn('group: "ac-grid-following-storage"', self.series_block)
         self.assertIn('group: "dc-grid-forming-storage"', self.series_block)
         self.assertIn('group: "system-acdc"', self.series_block)
+
+    def test_curve_selector_supports_keyword_selected_only_and_batch_selection(self):
+        selector_panel = self.html.split('id="renewableTrendSeriesPanel"', 1)[1].split("</aside>", 1)[0]
+        self.assertIn('id="renewableTrendSeriesFilter"', selector_panel)
+        self.assertIn('type="search"', selector_panel)
+        self.assertIn('placeholder="关键字过滤"', selector_panel)
+        self.assertIn('id="renewableTrendSelectedOnly"', selector_panel)
+        self.assertIn('id="renewableTrendClearAll"', selector_panel)
+        self.assertIn('id="renewableTrendSelectAll"', selector_panel)
+        self.assertIn('type="checkbox"', selector_panel)
+        self.assertIn('<button id="renewableTrendClearAll" type="button"', selector_panel)
+        self.assertIn('<button id="renewableTrendSelectAll" type="button"', selector_panel)
+        self.assertIn("显示选中", selector_panel)
+        self.assertIn("清空所有", selector_panel)
+        self.assertIn("选择所有", selector_panel)
+        self.assertNotIn("只显示勾选曲线", selector_panel)
+        self.assertNotIn("只显示选中曲线", selector_panel)
+
+        self.assertIn('renewableTrendSeriesFilter: ""', self.script)
+        self.assertIn("renewableTrendSelectedOnly: false", self.script)
+        self.assertIn("function applyRenewableTrendSeriesFilters", self.script)
+        self.assertIn("function renewableTrendBatchSeriesInputs", self.script)
+        self.assertIn("function setRenewableTrendBatchSeriesVisibility", self.script)
+        batch_filter_block = self.script.split(
+            "function renewableTrendBatchSeriesInputs",
+            1,
+        )[1].split("function setRenewableTrendBatchSeriesVisibility", 1)[0]
+        self.assertIn("renewableMetricGroupAvailable", batch_filter_block)
+        self.assertIn("const keywordMatches = !query || searchText.includes(query)", batch_filter_block)
+        self.assertNotIn("renewableTrendSelectedOnly", batch_filter_block)
+        self.assertIn('data-renewable-series-search="${escapeHtml(searchText)}"', self.script)
+        self.assertIn("const keywordMatches = !query || searchText.includes(query)", self.script)
+        self.assertIn("const selectionMatches = !selectedOnly || input.checked", self.script)
+        self.assertIn("item.hidden = !available || !keywordMatches || !selectionMatches", self.script)
+        self.assertIn('const renewableTrendSeriesFilter = $("renewableTrendSeriesFilter")', self.script)
+        self.assertIn('const renewableTrendSelectedOnly = $("renewableTrendSelectedOnly")', self.script)
+        self.assertIn('const renewableTrendClearAll = $("renewableTrendClearAll")', self.script)
+        self.assertIn('const renewableTrendSelectAll = $("renewableTrendSelectAll")', self.script)
+        self.assertIn("renewableTrendSeriesFilter.addEventListener(\"input\"", self.script)
+        self.assertIn("renewableTrendSelectedOnly.addEventListener(\"change\"", self.script)
+        self.assertIn("renewableTrendClearAll.addEventListener(\"click\"", self.script)
+        self.assertIn("renewableTrendSelectAll.addEventListener(\"click\"", self.script)
+        self.assertRegex(self.script, r"setRenewableTrendBatchSeriesVisibility\(\s*false")
+        self.assertRegex(self.script, r"setRenewableTrendBatchSeriesVisibility\(\s*true")
+        filter_block = self.script.split(
+            "function applyRenewableTrendSeriesFilters",
+            1,
+        )[1].split("function renderRenewableTrendSeriesAvailability", 1)[0]
+        self.assertIn("clearAllButton.disabled = batchInputs.length === 0 || batchSelectedCount === 0", filter_block)
+        self.assertIn(
+            "selectAllButton.disabled = batchInputs.length === 0 || batchSelectedCount === batchInputs.length",
+            filter_block,
+        )
+
+        for css_hook in (
+            ".renewable-trend-series-tools",
+            ".renewable-trend-series-search",
+            ".renewable-trend-series-actions",
+            ".renewable-trend-series-toggle",
+            ".renewable-trend-series-action",
+        ):
+            self.assertIn(css_hook, self.styles)
+        toggle_input_block = self.styles.split(
+            ".renewable-trend-series-toggle input {",
+            1,
+        )[1].split("}", 1)[0]
+        self.assertIn("accent-color: var(--teal);", toggle_input_block)
 
     def test_history_is_generated_once_by_the_backend_and_mirrored_by_browser_pages(self):
         self.assertIn("def _update_trend", self.backend)
@@ -239,8 +324,43 @@ process.stdout.write(JSON.stringify(latestRenewableTrendSegment(points).map((poi
         for _metric_id, field in EXPECTED_TREND_SERIES.values():
             self.assertIn(f'field: "{field}"', self.series_block)
         self.assertIn('axis: "right"', self.series_block)
+        self.assertIn('field: "observedWindSpeed"', self.series_block)
+        self.assertIn('field: "observedSolarIrradiance"', self.series_block)
+        self.assertIn("rightAxisValues", draw_block)
+        self.assertIn("rightAxisMax", draw_block)
         self.assertIn("drawChartCursor", draw_block)
         self.assertIn("pixelPoints.length === 1", draw_block)
+
+    def test_right_axis_preserves_soc_scale_and_expands_for_environment_values(self):
+        helper = "function renewableTrendRightAxisScale" + self.script.split(
+            "function renewableTrendRightAxisScale",
+            1,
+        )[1].split("function drawRenewableTrendChart", 1)[0]
+        node_script = f"""
+{helper}
+const soc = renewableTrendRightAxisScale(
+  [{{ soc: 35 }}, {{ soc: 80 }}],
+  [{{ axis: "right", field: "soc", style: "soc", unit: "%" }}],
+);
+const weather = renewableTrendRightAxisScale(
+  [{{ wind: 4.5, solar: 0 }}, {{ wind: 8, solar: 820 }}],
+  [
+    {{ axis: "right", field: "wind", style: "weather", unit: "m/s" }},
+    {{ axis: "right", field: "solar", style: "weather", unit: "W/m²" }},
+  ],
+);
+process.stdout.write(JSON.stringify({{ soc, weather }}));
+"""
+        result = subprocess.run(["node", "-e", node_script], check=True, capture_output=True, text=True)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["soc"]["min"], 0)
+        self.assertEqual(payload["soc"]["max"], 100)
+        self.assertEqual(payload["soc"]["tickSuffix"], "%")
+        self.assertIn("右轴SOC", payload["soc"]["label"])
+        self.assertEqual(payload["weather"]["min"], 0)
+        self.assertGreater(payload["weather"]["max"], 820)
+        self.assertIn("m/s", payload["weather"]["label"])
+        self.assertIn("W/m²", payload["weather"]["label"])
 
     def test_backend_compact_trend_keeps_all_power_targets_and_storage_soc(self):
         for _metric_id, field in EXPECTED_TREND_SERIES.values():

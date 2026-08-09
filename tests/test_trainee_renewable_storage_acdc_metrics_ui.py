@@ -17,52 +17,54 @@ class TraineeRenewableStorageAcdcMetricsUiTest(unittest.TestCase):
 
     def test_metric_panel_splits_storage_by_side_and_grid_role(self):
         self.assertIn('id="renewableMetricTabs"', self.html)
-        expected = {
-            "renewableAcGridFollowingStorageCurrentKw": "交流跟网储能当前值",
-            "renewableAcGridFollowingStorageTargetKw": "交流跟网储能目标值",
-            "renewableAcGridFollowingStorageSoc": "交流跟网储能SOC",
-            "renewableDcGridFollowingStorageCurrentKw": "直流跟网储能当前值",
-            "renewableDcGridFollowingStorageTargetKw": "直流跟网储能目标值",
-            "renewableDcGridFollowingStorageSoc": "直流跟网储能SOC",
-            "renewableAcGridFormingStorageCurrentKw": "交流构网储能当前值",
-            "renewableAcGridFormingStorageTargetKw": "交流构网储能目标值",
-            "renewableAcGridFormingStorageSoc": "交流构网储能SOC",
-            "renewableDcGridFormingStorageCurrentKw": "直流构网储能当前值",
-            "renewableDcGridFormingStorageTargetKw": "直流构网储能目标值",
-            "renewableDcGridFormingStorageSoc": "直流构网储能SOC",
-            "renewableTotalGridFollowingStorageCurrentKw": "总跟网储能当前值",
-            "renewableTotalGridFollowingStorageTargetKw": "总跟网储能目标值",
-            "renewableTotalGridFollowingStorageSoc": "总跟网储能SOC",
-            "renewableTotalGridFormingStorageCurrentKw": "总构网储能当前值",
-            "renewableTotalGridFormingStorageTargetKw": "总构网储能目标值",
-            "renewableTotalGridFormingStorageSoc": "总构网储能SOC",
-        }
-        for node_id, label in expected.items():
-            with self.subTest(node_id=node_id):
-                self.assertIn(f'<dt>{label}</dt><dd id="{node_id}">--</dd>', self.html)
-        self.assertIn('<dt>ACDC变流当前值</dt><dd id="renewableAcdcCurrentKw">--</dd>', self.html)
-        self.assertIn('<dt>ACDC变流目标值</dt><dd id="renewableAcdcTargetKw">--</dd>', self.html)
+        expected = (
+            ("跟网储能", "renewableAcGridFollowingStorageCurrentKw", "renewableAcGridFollowingStorageTargetKw", "renewableAcGridFollowingStorageSoc"),
+            ("跟网储能", "renewableDcGridFollowingStorageCurrentKw", "renewableDcGridFollowingStorageTargetKw", "renewableDcGridFollowingStorageSoc"),
+            ("构网储能", "renewableAcGridFormingStorageCurrentKw", "renewableAcGridFormingStorageTargetKw", "renewableAcGridFormingStorageSoc"),
+            ("构网储能", "renewableDcGridFormingStorageCurrentKw", "renewableDcGridFormingStorageTargetKw", "renewableDcGridFormingStorageSoc"),
+            ("跟网储能", "renewableTotalGridFollowingStorageCurrentKw", "renewableTotalGridFollowingStorageTargetKw", "renewableTotalGridFollowingStorageSoc"),
+            ("构网储能", "renewableTotalGridFormingStorageCurrentKw", "renewableTotalGridFormingStorageTargetKw", "renewableTotalGridFormingStorageSoc"),
+        )
+        for label, current_id, target_id, soc_id in expected:
+            with self.subTest(label=label):
+                self.assertIn(
+                    f'<th scope="row">{label}<span class="renewable-metric-unit">（kW）</span></th>'
+                    f'<td id="{current_id}">--</td>'
+                    f'<td id="{target_id}">--</td>',
+                    self.html,
+                )
+                self.assertIn(
+                    f'<th scope="row">{label}SOC<span class="renewable-metric-unit">（%）</span></th>'
+                    f'<td id="{soc_id}">--</td>'
+                    '<td class="renewable-metric-empty">--</td>',
+                    self.html,
+                )
+        self.assertIn(
+            '<th scope="row">ACDC变流<span class="renewable-metric-unit">（kW）</span></th>'
+            '<td id="renewableAcdcCurrentKw">--</td>'
+            '<td id="renewableAcdcTargetKw">--</td>',
+            self.html,
+        )
         self.assertNotIn('id="renewableStorageCurrentKw"', self.html)
         self.assertNotIn('id="renewableStorageSoc"', self.html)
 
     def test_metric_panel_adds_wind_pv_and_requested_storage_breakdowns(self):
-        expected = {
-            "renewableAcWindCurrentKw": "交流风电当前值",
-            "renewableAcWindTargetKw": "交流风电目标值",
-            "renewableAcPvCurrentKw": "交流光伏当前值",
-            "renewableAcPvTargetKw": "交流光伏目标值",
-            "renewableDcWindCurrentKw": "直流风电当前值",
-            "renewableDcWindTargetKw": "直流风电目标值",
-            "renewableDcPvCurrentKw": "直流光伏当前值",
-            "renewableDcPvTargetKw": "直流光伏目标值",
-            "renewableTotalWindCurrentKw": "总风电当前值",
-            "renewableTotalWindTargetKw": "总风电目标值",
-            "renewableTotalPvCurrentKw": "总光伏当前值",
-            "renewableTotalPvTargetKw": "总光伏目标值",
-        }
-        for node_id, label in expected.items():
-            with self.subTest(node_id=node_id):
-                self.assertIn(f'<dt>{label}</dt><dd id="{node_id}">--</dd>', self.html)
+        expected = (
+            ("风电", "renewableAcWindCurrentKw", "renewableAcWindTargetKw"),
+            ("光伏", "renewableAcPvCurrentKw", "renewableAcPvTargetKw"),
+            ("风电", "renewableDcWindCurrentKw", "renewableDcWindTargetKw"),
+            ("光伏", "renewableDcPvCurrentKw", "renewableDcPvTargetKw"),
+            ("风电", "renewableTotalWindCurrentKw", "renewableTotalWindTargetKw"),
+            ("光伏", "renewableTotalPvCurrentKw", "renewableTotalPvTargetKw"),
+        )
+        for label, current_id, target_id in expected:
+            with self.subTest(current_id=current_id):
+                self.assertIn(
+                    f'<th scope="row">{label}<span class="renewable-metric-unit">（kW）</span></th>'
+                    f'<td id="{current_id}">--</td>'
+                    f'<td id="{target_id}">--</td>',
+                    self.html,
+                )
 
         for group_name in (
             "ac-wind",
@@ -121,18 +123,18 @@ class TraineeRenewableStorageAcdcMetricsUiTest(unittest.TestCase):
         self.assertIn("card.dataset.renewableMetricAlways", self.script)
 
     def test_metric_panel_hides_whole_device_groups_without_online_members(self):
-        for group_name, expected_card_count in (
-            ("ac-grid-following-storage", 3),
-            ("dc-grid-following-storage", 3),
-            ("ac-grid-forming-storage", 3),
-            ("dc-grid-forming-storage", 3),
-            ("system-grid-following-storage", 3),
-            ("system-grid-forming-storage", 3),
+        for group_name, expected_row_count in (
+            ("ac-grid-following-storage", 2),
+            ("dc-grid-following-storage", 2),
+            ("ac-grid-forming-storage", 2),
+            ("dc-grid-forming-storage", 2),
+            ("system-grid-following-storage", 2),
+            ("system-grid-forming-storage", 2),
         ):
             with self.subTest(group_name=group_name):
                 self.assertEqual(
                     self.html.count(f'data-renewable-metric-group="{group_name}"'),
-                    expected_card_count,
+                    expected_row_count,
                 )
 
         self.assertIn("function renderRenewableMetricAvailability", self.script)
@@ -198,7 +200,7 @@ process.stdout.write(JSON.stringify({{
             {
                 "absentPower": "无此类设备",
                 "offlineSoc": "无运行设备",
-                "runningZeroPower": "0 kW",
+                "runningZeroPower": "0",
                 "legacyAbsentSoc": "无设备",
             },
         )
@@ -238,9 +240,11 @@ process.stdout.write(JSON.stringify({{
 
     def test_backend_reads_signed_storage_power_soc_efficiency_and_boundaries(self):
         storage_block = self.backend.split("def _storage_rows", 1)[1].split("def _converter_rows", 1)[0]
+        efficiency_block = self.backend.split("def _storage_efficiency", 1)[1].split("def _live_soc_ratio", 1)[0]
         self.assertIn('(\"P_GEN\", \"P\", \"P_AC\", \"P_DC\")', storage_block)
         self.assertIn("_live_soc_ratio", storage_block)
-        self.assertIn("charge_discharge_efficiency", storage_block)
+        self.assertIn("_storage_efficiency(parameter)", storage_block)
+        self.assertIn("charge_discharge_efficiency", efficiency_block)
         self.assertIn("charge_by_energy", storage_block)
         self.assertIn("discharge_by_energy", storage_block)
         self.assertIn('"currentKw"', storage_block)

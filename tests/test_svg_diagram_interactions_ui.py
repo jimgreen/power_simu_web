@@ -77,6 +77,25 @@ class SvgDiagramInteractionsUiTest(unittest.TestCase):
         )
         return json.loads(result.stdout)
 
+    def _flow_helper_source(self, script: str) -> str:
+        if "function diagramFlowResolvePower" not in script:
+            self.fail("diagram flow resolution helpers are missing")
+        flow_source = "function diagramFlowEndpointKind" + script.split(
+            "function diagramFlowEndpointKind",
+            1,
+        )[1].split("function createDiagramFlowArrow", 1)[0]
+        return f"{self._helper_source(script)}\n{flow_source}"
+
+    def _run_flow_helpers(self, script: str, body: str):
+        result = subprocess.run(
+            ["node"],
+            input=f"{self._flow_helper_source(script)}\n{body}",
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(result.stdout)
+
     def test_hour_and_day_trends_use_aligned_complete_periods(self):
         body = """
 const points = [
@@ -480,6 +499,7 @@ process.stdout.write(JSON.stringify(available ? {
   },
   measurementTypes: {
     dcdc: diagramFlowPowerMeasurementTypes("DCDCConverter"),
+    acdc: diagramFlowPowerMeasurementTypes("ACDCConverter"),
     dcac: diagramFlowPowerMeasurementTypes("DCACConverter"),
     break: diagramFlowPowerMeasurementTypes("DCBreak"),
     transformer: diagramFlowPowerMeasurementTypes("ACTransformer"),
@@ -520,6 +540,7 @@ process.stdout.write(JSON.stringify(available ? {
             },
             "measurementTypes": {
                 "dcdc": ["P_FROM", "P_TO"],
+                "acdc": ["P_AC", "P_DC"],
                 "dcac": ["P_AC", "P_DC"],
                 "break": ["P_FROM", "P_TO"],
                 "transformer": ["P_FROM", "P_TO"],
@@ -565,6 +586,133 @@ process.stdout.write(JSON.stringify(available ? {
                     "powerBindings",
                 ):
                     self.assertIn(token, flow_block)
+
+    def test_flow_power_resolution_uses_valid_nonzero_port_and_normalizes_terminal_signs(self):
+        body = """
+function flowKey(device, measType) {
+  return diagramDeviceMeasurementKey(device.devType, device.devName, measType);
+}
+function flowMaps(device, scadaRows = [], realRows = []) {
+  return {
+    scadaByDevice: new Map(scadaRows.map((row) => [flowKey(device, row.meas_type), row])),
+    realByDevice: new Map(realRows.map((row) => [flowKey(device, row.meas_type), row])),
+  };
+}
+function resolve(device, nodes, maps, orientation = diagramFlowPowerRouteOrientation(device, nodes)) {
+  const result = diagramFlowResolvePower({
+    powerBindings: [{ device, nodes, orientation, priority: 1 }],
+  }, maps);
+  return {
+    measType: result.row?.meas_type || "",
+    power: result.power,
+    valid: result.valid,
+  };
+}
+
+const intertie = { devId: "DCACConverter-13", devType: "DCACConverter", devName: "DCAC变流器-1" };
+const windConverter = { devId: "DCACConverter-1", devType: "ACDCConverter", devName: "风机变流器-1" };
+const branch = { devId: "DCBreak-29", devType: "DCBreak", devName: "直流断路器-29" };
+const dcToAcNodes = [
+  { terminal: 1, domain: "dc", key: "DC:21" },
+  { terminal: 2, domain: "ac", key: "AC:23" },
+];
+const acToDcNodes = [
+  { terminal: 1, domain: "ac", key: "AC:1" },
+  { terminal: 2, domain: "dc", key: "DC:11" },
+];
+const branchNodes = [
+  { terminal: 1, domain: "dc", key: "DC:11" },
+  { terminal: 2, domain: "dc", key: "DC:21" },
+];
+
+const converterFallback = flowMaps(intertie, [
+  { meas_type: "P_AC", value: 0, valid: 1 },
+  { meas_type: "P_DC", value: -10, valid: 1 },
+]);
+const invalidScada = flowMaps(intertie, [
+  { meas_type: "P_AC", value: 0, valid: 0 },
+  { meas_type: "P_DC", value: 0, valid: 0 },
+], [
+  { meas_type: "P_AC", value: 6, valid: 1 },
+  { meas_type: "P_DC", value: -6, valid: 1 },
+]);
+const branchFallback = flowMaps(branch, [
+  { meas_type: "P_FROM", value: 0, valid: 1 },
+  { meas_type: "P_TO", value: 7, valid: 1 },
+]);
+const converterTopology = {
+  byId: new Map([[intertie.devId, { device: intertie, nodes: dcToAcNodes }]]),
+  byNode: new Map(),
+};
+const ownBinding = diagramFlowPowerBindings(intertie, null, converterTopology)[0];
+
+process.stdout.write(JSON.stringify({
+  canonical: {
+    dcacPAc: diagramFlowCanonicalPower("P_AC", 10, "DCACConverter"),
+    acdcPAc: diagramFlowCanonicalPower("P_AC", 10, "ACDCConverter"),
+    dcacPDc: diagramFlowCanonicalPower("P_DC", -10, "DCACConverter"),
+    dcToAcPAc: diagramFlowCanonicalPower("P_AC", -10, "DCACConverter"),
+    dcToAcPDc: diagramFlowCanonicalPower("P_DC", 10, "DCACConverter"),
+    genericPAc: diagramFlowCanonicalPower("P_AC", 10),
+    pFrom: diagramFlowCanonicalPower("P_FROM", -7),
+    pTo: diagramFlowCanonicalPower("P_TO", 7),
+  },
+  routeOrientation: {
+    dcToAc: diagramFlowPowerRouteOrientation(intertie, dcToAcNodes),
+    acToDc: diagramFlowPowerRouteOrientation(windConverter, acToDcNodes),
+    branch: diagramFlowPowerRouteOrientation(branch, branchNodes),
+  },
+  converterFallback: resolve(intertie, dcToAcNodes, converterFallback),
+  converterTerminalTwo: resolve(intertie, dcToAcNodes, flowMaps(intertie, [
+    { meas_type: "P_AC", value: 10, valid: 1 },
+  ])),
+  converterTerminalOne: resolve(windConverter, acToDcNodes, flowMaps(windConverter, [
+    { meas_type: "P_AC", value: 8, valid: 1 },
+    { meas_type: "P_DC", value: -8, valid: 1 },
+  ])),
+  reversedBinding: resolve(
+    intertie,
+    dcToAcNodes,
+    converterFallback,
+    -diagramFlowPowerRouteOrientation(intertie, dcToAcNodes),
+  ),
+  branchFallback: resolve(branch, branchNodes, branchFallback),
+  realFallback: resolve(intertie, dcToAcNodes, invalidScada),
+  ownBinding: { orientation: ownBinding.orientation, nodes: ownBinding.nodes },
+}));
+"""
+        expected = {
+            "canonical": {
+                "dcacPAc": -10,
+                "acdcPAc": -10,
+                "dcacPDc": -10,
+                "dcToAcPAc": 10,
+                "dcToAcPDc": 10,
+                "genericPAc": -10,
+                "pFrom": -7,
+                "pTo": -7,
+            },
+            "routeOrientation": {"dcToAc": 1, "acToDc": -1, "branch": 1},
+            "converterFallback": {"measType": "P_DC", "power": -10, "valid": True},
+            "converterTerminalTwo": {"measType": "P_AC", "power": -10, "valid": True},
+            "converterTerminalOne": {"measType": "P_AC", "power": 8, "valid": True},
+            "reversedBinding": {"measType": "P_DC", "power": 10, "valid": True},
+            "branchFallback": {"measType": "P_TO", "power": -7, "valid": True},
+            "realFallback": {"measType": "P_AC", "power": -6, "valid": True},
+            "ownBinding": {
+                "orientation": 1,
+                "nodes": [
+                    {"terminal": 1, "domain": "dc", "key": "DC:21"},
+                    {"terminal": 2, "domain": "ac", "key": "AC:23"},
+                ],
+            },
+        }
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                self.assertEqual(
+                    self._run_flow_helpers(path.read_text(encoding="utf-8"), body),
+                    expected,
+                )
 
     def test_styles_include_noninteractive_flow_arrow_layers(self):
         required = (

@@ -23,9 +23,9 @@
 # 1    load_ac_1  6     1      90   0    0    1      30   0    0    1
 </ACLoad>
 <ACGenerator>
-@ idx  name          node  control_type  p_set  q_set  v_set  alpha  run_stat
-# 1    wt01_10kw     1     P             0      0      300    1      1
-# 2    diesel_300kw  3     V             80     0      380    1      1
+@ idx  name          dev_type          node  control_type  p_set  q_set  v_set  alpha  run_stat
+# 1    wt01_10kw     ac-wind-source    1     P             0      0      300    1      1
+# 2    diesel_300kw  ac-diesel-source  3     V             80     0      380    1      1
 </ACGenerator>
 <DCNode>
 @ idx  name         vbase  voltage  isl  run_stat
@@ -45,10 +45,10 @@
 # 4    inv_dc_line    7       1       0.001  1
 </DCBranch>
 <DCGenerator>
-@ idx  name          node  control_type  v_set  p_set  i_set  run_stat
-# 1    dc_bus_vctrl  1     V             720    0      0      1
-# 2    pv01_vsrc     3     P             300    0      0      1
-# 3    ess01_vsrc    5     P             300    0      0      1
+@ idx  name          dev_type          node  control_type  v_set  p_set  i_set  run_stat
+# 1    dc_bus_vctrl  dc-voltage-source 1     V             720    0      0      1
+# 2    pv01_vsrc     dc-pv-source      3     P             300    0      0      1
+# 3    ess01_vsrc    dc-storage        5     P             300    0      0      1
 </DCGenerator>
 <DCDCConverter>
 @ idx  name        i_node  j_node  r1     r2     control_type  p_set  i_set  v_set  run_stat
@@ -56,9 +56,9 @@
 # 2    ess01_dcdc  5       6       0.005  0.005  V             0      0      300    1
 </DCDCConverter>
 <DCACConverter>
-@ idx  name          ac_node  dc_node  r1     r2     control_type  p_ac_set  q_ac_set  v_ac_set  v_dc_set  run_stat
-# 1    wt01_rect     2        2        0.005  0.005  ACV           0         0         300       0         1
-# 2    grid_inv_acp  5        7        0.005  0.005  ACP           -45       0         0         0         1
+@ idx  name          dev_type            ac_node  dc_node  r1     r2     control_type  p_ac_set  q_ac_set  v_ac_set  v_dc_set  run_stat
+# 1    wt01_rect     wind-acdc-converter  2        2        0.005  0.005  ACV           0         0         300       0         1
+# 2    grid_inv_acp  grid-acdc-converter  5        7        0.005  0.005  ACP           -45       0         0         0         1
 </DCACConverter>
 <ACWindGen>
 @ idx  idx_acgenerator  wind_turbine_model  cut_in_wind_speed  rated_wind_speed  cut_out_wind_speed  rated_power  rotor_diameter  hub_height

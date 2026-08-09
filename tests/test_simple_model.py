@@ -50,6 +50,32 @@ class SimpleSimulatorModelTest(unittest.TestCase):
             ],
         )
 
+    def test_service_expands_dc_terminal_converter_setpoints(self):
+        from simu.service import PolarMicrogridSimulator
+
+        simulator = object.__new__(PolarMicrogridSimulator)
+        expanded = simulator._expand_set_values(
+            [
+                {
+                    "dev_type": "DCACConverter",
+                    "dev_name": "grid-link",
+                    "p_dc_set": 12.5,
+                }
+            ]
+        )
+
+        self.assertEqual(
+            expanded,
+            [
+                {
+                    "dev_type": "DCACConverter",
+                    "dev_name": "grid-link",
+                    "set_type": "p_dc_set",
+                    "set_value": 12.5,
+                }
+            ],
+        )
+
     def test_simple_model_contains_one_core_device_of_each_kind(self):
         model = self._book("model.e")
         self.assertFalse((SIMPLE_SOURCE / "device.e").exists())

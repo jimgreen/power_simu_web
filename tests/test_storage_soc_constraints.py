@@ -333,7 +333,8 @@ class StorageSocConstraintTest(unittest.TestCase):
             soc_upper_limit=0.9,
             soc_lower_limit=-1.0,
         )
-        dev_define.data["estorage"].data[0]["soc_max"] = 0.0
+        model_book.data["DCStorageGen"].data[0]["soc_upper_limit"] = 0.0
+        dev_define = simu_loop._embedded_device_define_book(model_book)
         status_by_name, status_rows = simu_loop._storage_soc_by_name_book(stat_book)
 
         simu_loop.apply_storage_constraints_book(
@@ -462,7 +463,7 @@ class StorageSocConstraintTest(unittest.TestCase):
         self.assertAlmostEqual(executed_power, 1.0)
         self.assertAlmostEqual(next_soc, 0.2)
 
-    def test_legacy_dc_storage_definition_position_fallback_remains_compatible(self):
+    def test_storage_without_structural_reference_is_not_automatically_controlled(self):
         import simu_loop
 
         model_book = _memory_book(
@@ -508,7 +509,8 @@ class StorageSocConstraintTest(unittest.TestCase):
             period_seconds=3600.0,
         )
 
-        self.assertAlmostEqual(float(model_book.data["DCGenerator"].data[0]["p_set"]), 1.0)
+        self.assertEqual(simu_loop._storage_target_rows(model_book, dev_define), [])
+        self.assertAlmostEqual(float(model_book.data["DCGenerator"].data[0]["p_set"]), 40.0)
 
     def test_ac_storage_soc_uses_actual_solved_generator_power(self):
         next_soc = self._integrate_typed_storage_soc(
@@ -723,7 +725,7 @@ class StorageSocConstraintTest(unittest.TestCase):
             with self.subTest(dev_type=dev_type):
                 self._assert_inactive_snapshot_uses_zero_power(dev_type, dead_island=True)
 
-    def test_dc_export_limits_ignore_same_named_ac_storage(self):
+    def test_dc_export_limits_use_converter_limits_not_storage_names(self):
         import simu_loop
 
         model_book = _memory_book(
@@ -732,13 +734,27 @@ class StorageSocConstraintTest(unittest.TestCase):
             ACStorageGen=[{"idx": 1, "idx_acgenerator": 1, "energy_capacity": 100}],
             DCGenerator=[{"idx": 1, "name": "shared-storage", "p_set": 40, "run_stat": 1}],
             DCStorageGen=[{"idx": 1, "idx_dcgenerator": 1, "energy_capacity": 100}],
-            DCACConverter=[{"idx": 1, "name": "grid-inv-1", "p_ac_set": -80, "run_stat": 1}],
+            ACRealBs=[{"idx": 1, "name": "ac-anchor", "node": 1, "run_stat": 1}],
+            DCRealBs=[{"idx": 1, "name": "dc-anchor", "node": 2, "run_stat": 1}],
+            DCACConverter=[
+                {
+                    "idx": 1,
+                    "name": "grid-inv-1",
+                    "ac_node": 1,
+                    "dc_node": 2,
+                    "ac_control_type": "PQ",
+                    "p_ac_set": -80,
+                    "p_ac_min": -50,
+                    "p_ac_max": 50,
+                    "run_stat": 1,
+                }
+            ],
         )
         dev_define = simu_loop._embedded_device_define_book(model_book)
 
         simu_loop.apply_dc_export_limits(model_book, dev_define, efficiency=1.0)
 
-        self.assertAlmostEqual(float(model_book.data["DCACConverter"].data[0]["p_ac_set"]), -40.0)
+        self.assertAlmostEqual(float(model_book.data["DCACConverter"].data[0]["p_ac_set"]), -50.0)
 
     def test_malformed_typed_ac_storage_definition_does_not_fallback_to_dc_storage_lookalike(self):
         import simu_loop
@@ -748,7 +764,7 @@ class StorageSocConstraintTest(unittest.TestCase):
             ACGenerator=[{"idx": 1, "name": "actual-ac-generator", "p_set": 0, "run_stat": 1}],
             ACStorageGen=[{"idx": 1, "idx_acgenerator": 999, "energy_capacity": 100}],
             DCGenerator=[{"idx": 1, "name": "storage_1", "p_set": 40, "run_stat": 1}],
-            DCACConverter=[{"idx": 1, "name": "grid-inv-1", "p_ac_set": -40, "run_stat": 1}],
+            DCACConverter=[{"idx": 1, "name": "grid-inv-1", "ac_control_type": "PQ", "p_ac_set": -40, "run_stat": 1}],
         )
         dev_define = simu_loop._embedded_device_define_book(model_book)
 
@@ -756,7 +772,7 @@ class StorageSocConstraintTest(unittest.TestCase):
         simu_loop.apply_dc_export_limits(model_book, dev_define, efficiency=1.0)
 
         self.assertEqual(targets, [])
-        self.assertAlmostEqual(float(model_book.data["DCACConverter"].data[0]["p_ac_set"]), 0.0)
+        self.assertAlmostEqual(float(model_book.data["DCACConverter"].data[0]["p_ac_set"]), -40.0)
 
     def test_malformed_embedded_ac_storage_link_does_not_target_same_domain_lookalike(self):
         import simu_loop
@@ -949,12 +965,23 @@ class StorageSocConstraintTest(unittest.TestCase):
         self.assertEqual(snapshot_powers, {("ACGenerator", "battery_vsrc"): 0.0})
         self.assertAlmostEqual(float(stat_book.data["StorageSoc"].data[0]["soc_curr"]), 0.5)
 
-    def test_mixed_typed_ac_and_positional_legacy_dc_storage_targets_are_retained(self):
+    def test_structurally_referenced_ac_and_dc_storage_targets_are_retained(self):
         import simu_loop
 
         model_book = _memory_book(
             simu_loop,
             ACGenerator=[{"idx": 1, "name": "typed-ac-storage", "p_set": 0, "run_stat": 1}],
+            ACStorageGen=[
+                {
+                    "idx": 1,
+                    "idx_acgenerator": 1,
+                    "energy_capacity": 100,
+                    "soc_upper_limit": 0.9,
+                    "soc_lower_limit": 0.2,
+                    "max_charge_power": 40,
+                    "max_discharge_power": 40,
+                }
+            ],
             DCGenerator=[
                 {
                     "idx": 1,
@@ -962,6 +989,17 @@ class StorageSocConstraintTest(unittest.TestCase):
                     "dev_type": "dc-storage",
                     "p_set": 40,
                     "run_stat": 1,
+                }
+            ],
+            DCStorageGen=[
+                {
+                    "idx": 2,
+                    "idx_dcgenerator": 1,
+                    "energy_capacity": 100,
+                    "soc_upper_limit": 0.9,
+                    "soc_lower_limit": 0.2,
+                    "max_charge_power": 40,
+                    "max_discharge_power": 40,
                 }
             ],
         )
@@ -1016,12 +1054,20 @@ class StorageSocConstraintTest(unittest.TestCase):
         )
         self.assertAlmostEqual(float(model_book.data["DCGenerator"].data[0]["p_set"]), 1.0)
 
-    def test_explicit_typed_storage_definition_wins_over_earlier_legacy_duplicate(self):
+    def test_structural_storage_definition_wins_over_external_legacy_rows(self):
         import simu_loop
 
         model_book = _memory_book(
             simu_loop,
             DCGenerator=[{"idx": 1, "name": "storage-1", "p_set": 0, "run_stat": 1}],
+            DCStorageGen=[
+                {
+                    "idx": 1,
+                    "idx_dcgenerator": 1,
+                    "energy_capacity": 100,
+                    "definition_kind": "structured",
+                }
+            ],
         )
         dev_define = _memory_book(
             simu_loop,
@@ -1048,7 +1094,7 @@ class StorageSocConstraintTest(unittest.TestCase):
         targets = simu_loop._storage_target_rows(model_book, dev_define)
 
         self.assertEqual(len(targets), 1)
-        self.assertEqual(targets[0][3]["definition_kind"], "typed")
+        self.assertEqual(targets[0][3]["definition_kind"], "structured")
 
     def test_online_storage_missing_current_power_overrides_stale_power_with_zero(self):
         import simu_loop
@@ -1257,7 +1303,34 @@ class StorageSocConstraintTest(unittest.TestCase):
             _efile_block(
                 "DCGenerator",
                 ("idx", "name", "node", "control_type", "p_set", "v_set", "i_set", "run_stat"),
-                [{"idx": 1, "name": "ess01_vsrc", "node": 1, "control_type": "P", "p_set": 0, "v_set": 300, "i_set": 0, "run_stat": 1}],
+                [{"idx": 1, "name": "storage-source", "node": 1, "control_type": "P", "p_set": 0, "v_set": 300, "i_set": 0, "run_stat": 1}],
+            )
+            + _efile_block(
+                "DCStorageGen",
+                (
+                    "idx",
+                    "idx_dcgenerator",
+                    "energy_capacity",
+                    "max_charge_power",
+                    "max_discharge_power",
+                    "state_of_charge",
+                    "soc_upper_limit",
+                    "soc_lower_limit",
+                    "charge_discharge_efficiency",
+                ),
+                [
+                    {
+                        "idx": 1,
+                        "idx_dcgenerator": 1,
+                        "energy_capacity": 100,
+                        "max_charge_power": 40,
+                        "max_discharge_power": 40,
+                        "state_of_charge": 0.5,
+                        "soc_upper_limit": 0.9,
+                        "soc_lower_limit": 0.2,
+                        "charge_discharge_efficiency": 1.0,
+                    }
+                ],
             ),
             encoding="utf-8",
         )
@@ -1265,12 +1338,12 @@ class StorageSocConstraintTest(unittest.TestCase):
             _efile_block(
                 "SetValue",
                 ("dev_type", "dev_name", "set_type", "set_value"),
-                [{"dev_type": "ESS", "dev_name": "ess01", "set_type": "p_set", "set_value": p_set}],
+                [{"dev_type": "DCGenerator", "dev_name": "storage-source", "set_type": "p_set", "set_value": p_set}],
             )
             + _efile_block(
                 "StorageSoc",
                 ("dev_type", "idx", "name", "soc_curr"),
-                [{"dev_type": "ESS", "idx": 1, "name": "ess01", "soc_curr": soc}],
+                [{"dev_type": "DCGenerator", "idx": 1, "name": "storage-source", "soc_curr": soc}],
             ),
             encoding="utf-8",
         )
@@ -1303,7 +1376,7 @@ class StorageSocConstraintTest(unittest.TestCase):
             solver_seen["p_set"] = float(row["p_set"])
             return (
                 _SolvedStorageSnapshot(
-                    {("DCGenerator", "ess01_vsrc"): {"power": solver_seen["p_set"], "run_stat": 1}}
+                    {("DCGenerator", "storage-source"): {"power": solver_seen["p_set"], "run_stat": 1}}
                 ),
                 "fake-solver",
             )
@@ -1314,7 +1387,7 @@ class StorageSocConstraintTest(unittest.TestCase):
             weather_file=root / "weather.e",
             dev_stat_file=stat_file,
             yt_ctrl_file=root / "yt_ctrl.e",
-            dev_define_file=device_file,
+            dev_define_file=None,
             real_file=real_file,
             scada_file=scada_file,
             period_seconds=period_seconds,
@@ -1461,7 +1534,7 @@ class StorageSocConstraintTest(unittest.TestCase):
             _efile_block(
                 "StorageSoc",
                 ("dev_type", "idx", "name", "soc_curr"),
-                [{"dev_type": "ESS", "idx": 1, "name": "ess01", "soc_curr": soc}],
+                [{"dev_type": "DCGenerator", "idx": 1, "name": "storage-source", "soc_curr": soc}],
             ),
             encoding="utf-8",
         )
@@ -1472,13 +1545,40 @@ class StorageSocConstraintTest(unittest.TestCase):
                 [
                     {
                         "idx": 1,
-                        "name": "ess01_vsrc",
+                        "name": "storage-source",
                         "node": 1,
                         "control_type": "P",
                         "p_set": 0,
                         "v_set": 300,
                         "i_set": 0,
                         "run_stat": 1,
+                    }
+                ],
+            )
+            + _efile_block(
+                "DCStorageGen",
+                (
+                    "idx",
+                    "idx_dcgenerator",
+                    "energy_capacity",
+                    "max_charge_power",
+                    "max_discharge_power",
+                    "state_of_charge",
+                    "soc_upper_limit",
+                    "soc_lower_limit",
+                    "charge_discharge_efficiency",
+                ),
+                [
+                    {
+                        "idx": 1,
+                        "idx_dcgenerator": 1,
+                        "energy_capacity": 100,
+                        "max_charge_power": 40,
+                        "max_discharge_power": 40,
+                        "state_of_charge": 0.5,
+                        "soc_upper_limit": 0.9,
+                        "soc_lower_limit": 0.2,
+                        "charge_discharge_efficiency": 0.9,
                     }
                 ],
             ),
@@ -1506,14 +1606,14 @@ class StorageSocConstraintTest(unittest.TestCase):
         )
         stat_book = simu_loop.EBook(stat_file)
         model_book = simu_loop.EBook(model_file)
-        dev_define = simu_loop.EBook(device_file)
+        dev_define = simu_loop._embedded_device_define_book(model_book)
 
         changed = simu_loop.update_storage_soc_book(
             stat_book,
             model_book,
             period_seconds=period_seconds,
             dev_define=dev_define,
-            storage_power_by_name={"ess01_vsrc": actual_power},
+            storage_power_by_name={("DCGenerator", "storage-source"): actual_power},
         )
 
         self.assertEqual(changed, 1)

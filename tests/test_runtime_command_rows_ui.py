@@ -121,6 +121,86 @@ class RuntimeCommandRowsUiTest(unittest.TestCase):
         self.assertIn('scada_text: formatRuntimeRemoteSignal(statusPair.scada, "status")', remote_control_block)
         self.assertNotIn('scada_text: "--"', remote_control_block)
 
+    def test_runtime_converter_meta_uses_the_power_field_selected_by_control_type(self):
+        app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        helper = "function runtimeControlMeta" + app_js.split(
+            "function runtimeControlMeta",
+            1,
+        )[1].split("function runtimeMeasurementTypeCandidates", 1)[0]
+        body = r"""
+function numberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+const acControl = runtimeControlMeta({
+  dev_type: "DCACConverter",
+  mode: "PQ",
+  set_values: { p_ac_set: -10, p_dc_set: 10 },
+  raw: { ac_control_type: "PQ", dc_control_type: "NONE" },
+});
+const dcControl = runtimeControlMeta({
+  dev_type: "DCACConverter",
+  mode: "P",
+  set_values: { p_ac_set: -10, p_dc_set: 10 },
+  raw: { ac_control_type: "NONE", dc_control_type: "P" },
+});
+const dualControl = runtimeControlMeta({
+  dev_type: "DCACConverter",
+  mode: "PQ",
+  set_values: { p_ac_set: -10, p_dc_set: 10 },
+  raw: { ac_control_type: "PQ", dc_control_type: "P" },
+});
+const explicitDcDisabled = runtimeControlMeta({
+  dev_type: "DCACConverter",
+  mode: "DCP",
+  set_values: { p_ac_set: -10, p_dc_set: 10 },
+  raw: { ac_control_type: "PQ", dc_control_type: "NONE" },
+});
+const legacyDcControl = runtimeControlMeta({
+  dev_type: "DCACConverter",
+  mode: "DCP",
+  set_values: { p_ac_set: -10, p_dc_set: 10 },
+  raw: {},
+});
+const opaqueConverter = runtimeControlMeta({
+  dev_type: "opaque-equipment-class",
+  mode: "P",
+  set_values: { p_ac_set: -10, p_dc_set: 10 },
+  raw: {
+    ac_node: 1,
+    dc_node: 2,
+    ac_control_type: "PQ",
+    dc_control_type: "P",
+  },
+});
+process.stdout.write(JSON.stringify({
+  ac: acControl.key,
+  dc: dcControl.key,
+  dual: dualControl.key,
+  explicitDcDisabled: explicitDcDisabled.key,
+  legacyDc: legacyDcControl.key,
+  opaque: opaqueConverter.key,
+}));
+"""
+        result = subprocess.run(
+            ["node", "-e", f"{helper}\n{body}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(
+            json.loads(result.stdout),
+            {
+                "ac": "p_ac_set",
+                "dc": "p_dc_set",
+                "dual": "p_dc_set",
+                "explicitDcDisabled": "p_ac_set",
+                "legacyDc": "p_dc_set",
+                "opaque": "p_dc_set",
+            },
+        )
+
     def test_remote_adjustment_rows_match_the_exact_converter_side(self):
         app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
         self.assertIn("function runtimeMeasurementTypeCandidates", app_js)
@@ -149,6 +229,7 @@ process.stdout.write(JSON.stringify({
   acVoltage: runtimeMeasurementPair(dev, { key: "v_ac_set" }),
   dcVoltage: runtimeMeasurementPair(dev, { key: "v_dc_set" }),
   acPower: runtimeMeasurementPair(dev, { key: "p_ac_set" }),
+  acdcDcCandidates: runtimeMeasurementTypeCandidates({ dev_type: "ACDCConverter" }, "p_dc_set"),
   generatorCandidates: runtimeMeasurementTypeCandidates({ dev_type: "ACGenerator" }, "p_set"),
 }));
 """
@@ -162,6 +243,8 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(payload["acVoltage"]["meas_type"], "V_AC")
         self.assertEqual(payload["dcVoltage"]["meas_type"], "V_DC")
         self.assertEqual(payload["acPower"]["real"], -42.5)
+        self.assertEqual(payload["acdcDcCandidates"][0], "P_DC")
+        self.assertIn("P_AC", payload["acdcDcCandidates"])
         self.assertEqual(payload["generatorCandidates"][0], "P_GEN")
 
 

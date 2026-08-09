@@ -32,6 +32,29 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         self.assertIn('runRenewableControlAction("set_loop_mode", { loop_mode: nextMode })', self.script)
         self.assertIn('runRenewableControlAction("run_once")', self.script)
 
+    def test_background_control_cycle_does_not_lock_foreground_actions(self):
+        render_block = self.script.split("function renderRenewableControl", 1)[1].split(
+            "async function toggleRenewableAuto",
+            1,
+        )[0]
+
+        self.assertIn("function renewableForegroundActionPending", self.script)
+        self.assertIn(
+            "const actionPending = renewableForegroundActionPending(control);",
+            render_block,
+        )
+        self.assertIn(
+            "button.disabled = actionPending || (!receiveReady && !control.enabled);",
+            render_block,
+        )
+        self.assertIn(
+            "sendOnce.disabled = actionPending || !receiveReady;",
+            render_block,
+        )
+        self.assertIn("modeButton.disabled = actionPending;", render_block)
+        self.assertIn("status.textContent = actionPending", render_block)
+        self.assertNotIn("control.sending || control.actionActive", render_block)
+
     def test_browser_does_not_calculate_or_schedule_the_control_strategy(self):
         self.assertNotIn("function calculateRenewableControlPlan", self.script)
         self.assertNotIn("function maybeRunRenewableControl", self.script)
@@ -65,7 +88,11 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             1,
         )[0]
         self.assertIn("Math.max(1", settings_block)
-        self.assertIn("interval_seconds=max(1.0", self.backend)
+        self.assertIn(
+            'MINIMUM_CONTROL_INTERVAL_SECONDS = default_number(',
+            self.backend,
+        )
+        self.assertIn("MINIMUM_CONTROL_INTERVAL_SECONDS,", self.backend)
 
     def test_automatic_command_validity_is_editable_and_persisted(self):
         self.assertIn('id="renewableCommandValidMinutes"', self.html)
@@ -79,27 +106,30 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         self.assertIn("command_valid_minutes", self.backend)
         self.assertIn('"valid_for_minutes": cycle_settings.command_valid_minutes', self.backend)
 
-    def test_strategy_steps_and_deadbands_are_editable_capacity_ratios(self):
+    def test_strategy_steps_and_power_protection_bands_are_editable_ratios(self):
         for field_id in (
             "renewableStepRatio",
-            "converterStepRatio",
-            "dieselDeadbandRatio",
+            "storageStepRatio",
+            "gridFormingStorageProtectionRatio",
+            "dieselPowerProtectionRatio",
             "socDeadband",
         ):
             self.assertIn(f'id="{field_id}"', self.html)
             self.assertIn(field_id, self.script)
         for setting_name in (
-            "diesel_deadband_ratio",
+            "storage_step_ratio",
+            "grid_forming_storage_protection_ratio",
+            "diesel_power_protection_ratio",
             "soc_deadband",
-            "converter_step_ratio",
         ):
             self.assertIn(setting_name, self.backend)
-        self.assertIn("settings.converter_step_ratio * converter_limit", self.backend)
-        self.assertIn("settings.diesel_deadband_ratio * diesel_capacity", self.backend)
+        self.assertIn(
+            "settings.diesel_power_protection_ratio * diesel_capacity",
+            self.backend,
+        )
         for removed in (
-            "storageStepRatio",
-            "storage_step_ratio",
-            "储能步长",
+            "converterStepRatio",
+            "optimizationConverterAdjustmentSquareWeight",
             "renewableNearZeroRatio",
             "renewableChargeReserveRatio",
             "renewable_near_zero_ratio",
@@ -109,7 +139,12 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         ):
             self.assertNotIn(removed, self.html)
             self.assertNotIn(removed, self.script)
-            self.assertNotIn(removed, self.backend)
+        for legacy_migration_field in (
+            "storageSwitchDeadbandKw",
+            "dieselDeadbandRatio",
+        ):
+            self.assertNotIn(legacy_migration_field, self.html)
+            self.assertIn(legacy_migration_field, self.script)
 
     def test_backend_does_not_use_dwell_or_pending_feedback_state(self):
         self.assertNotIn("def _stabilize_region", self.backend)
@@ -138,9 +173,16 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         self.assertIn("def _plan_recovery", self.backend)
         self.assertIn('"equal-margin"', self.backend)
         self.assertIn('"capacity-step"', self.backend)
-        self.assertIn("风速量测默认不参与新能源控制", self.backend)
-        self.assertIn("太阳辐照度量测默认不参与新能源控制", self.backend)
-        self.assertIn("ignored_by_control_policy", self.backend)
+        self.assertIn("仅用于最大可发统计，不参与控制目标计算", self.backend)
+        self.assertIn(
+            "风电理论可发统计缺少有效风速或设备风速参数；不影响本轮控制优化",
+            self.backend,
+        )
+        self.assertIn(
+            "光伏理论可发统计缺少有效辐照度、温度或设备参考参数；不影响本轮控制优化",
+            self.backend,
+        )
+        self.assertNotIn("ignored_by_control_policy", self.backend)
         self.assertIn("raw_converter_desired_target = converter_current_for_control", self.backend)
         self.assertIn(
             "_move_toward(converter_current_for_control, converter_desired_target, converter_step_kw)",

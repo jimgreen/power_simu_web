@@ -109,6 +109,7 @@ const state = {
   chartCursors: {},
   chartSeriesHitData: {},
   chartPlotInfo: {},
+  chartPeriodOffsets: { runtimeTrace: 0, measurementTrace: 0 },
   runtimeTraceHistory: [],
   runtimeTraceWindowMinutes: 60,
   lastRuntimeTraceKey: "",
@@ -124,6 +125,9 @@ const state = {
   measurementTraceHistory: [],
   measurementTraceWindowMinutes: 60,
   lastMeasurementTraceKey: "",
+  measurementHistoryLoaded: {},
+  measurementHistoryRequests: {},
+  measurementHistoryGeneration: 0,
   traceRunId: null,
   traceStepCount: null,
   selectedManagementModelId: "",
@@ -535,6 +539,42 @@ function nearestChartPoint(points, x) {
   return best;
 }
 
+function chartPointAtCursorAnchor(points, anchorPoint) {
+  const source = points || [];
+  const anchorTime = String(anchorPoint?.time || anchorPoint?.sim_time || "").trim();
+  if (anchorTime && anchorTime !== "--") {
+    const matchingTime = source.filter((point) => (
+      String(point?.time || point?.sim_time || "").trim() === anchorTime
+    ));
+    if (matchingTime.length) return matchingTime[matchingTime.length - 1];
+  }
+  const anchorMinute = Number(anchorPoint?.minute);
+  if (Number.isFinite(anchorMinute)) {
+    const matchingMinute = source.filter((point) => {
+      const minute = Number(point?.minute);
+      return Number.isFinite(minute) && Math.abs(minute - anchorMinute) <= 1e-9;
+    });
+    if (matchingMinute.length) return matchingMinute[matchingMinute.length - 1];
+    return null;
+  }
+  return nearestChartPoint(source, Number(anchorPoint?.x));
+}
+
+function chartCursorSnapshot(seriesData, selectedKey, cursorX) {
+  const source = seriesData || [];
+  const anchorSeries = source.find((series) => (
+    series.key === selectedKey && Array.isArray(series.points) && series.points.length
+  )) || source.find((series) => Array.isArray(series.points) && series.points.length);
+  if (!anchorSeries) return null;
+  const anchorPoint = nearestChartPoint(anchorSeries.points, cursorX);
+  if (!anchorPoint) return null;
+  const samples = source.map((series) => ({
+    series,
+    point: chartPointAtCursorAnchor(series.points, anchorPoint),
+  })).filter((item) => item.point);
+  return samples.length ? { anchorPoint, samples } : null;
+}
+
 function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) {
   const cursor = state.chartCursors?.[chartKey];
   const visibleSeries = (seriesData || []).filter((series) => !isChartSeriesHidden(chartKey, series.key));
@@ -543,14 +583,12 @@ function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) 
   const right = canvas.width - plot.right;
   const top = plot.top;
   const bottom = canvas.height - plot.bottom;
-  const x = clamp(cursor.x, left, right);
-  const y = clamp(cursor.y, top, bottom);
   const selectedKey = selectedChartSeriesKey(chartKey, visibleSeries[0]?.key || "");
-  const samples = visibleSeries
-    .map((series) => ({ series, point: nearestChartPoint(series.points, x) }))
-    .filter((item) => item.point);
-  if (!samples.length) return;
-  const mainPoint = samples.find((item) => item.series.key === selectedKey)?.point || samples[0].point;
+  const snapshot = chartCursorSnapshot(visibleSeries, selectedKey, clamp(cursor.x, left, right));
+  if (!snapshot) return;
+  const { anchorPoint: mainPoint, samples } = snapshot;
+  const x = clamp(mainPoint.x, left, right);
+  const y = clamp(mainPoint.y, top, bottom);
   const timeLabel = options.timeLabel ? options.timeLabel(mainPoint) : (mainPoint.time || "");
 
   ctx.save();
@@ -928,6 +966,10 @@ function simulationModeDayCount(mode = state.curveMode) {
   if (mode === "month") return 30;
   if (mode === "year") return 365;
   return 1;
+}
+
+function simulationModeDurationMinutes(mode = state.curveMode) {
+  return CURVE_MODES[mode]?.durationMinutes || CURVE_MODES.day.durationMinutes;
 }
 
 function isExtendedSimulationMode(mode = state.curveMode) {
@@ -2546,7 +2588,7 @@ async function retryPendingManualDefinitionChanges() {
   const requestedModelId = state.activeModelId;
   state.manualDefinitionChangesRetrying = true;
   state.manualDefinitionChangesError = "";
-  state.manualDefinitionChangesMessage = "正在重新保存 E 文件";
+  state.manualDefinitionChangesMessage = "正在重新保存人工覆盖层";
   state.manualDefinitionChangesMessageWarning = false;
   renderManualDefinitionChanges();
   try {
@@ -2597,7 +2639,7 @@ async function resetSelectedManualDefinitionChanges() {
   const requestedModelId = state.activeModelId;
   state.manualDefinitionChangesResetting = true;
   state.manualDefinitionChangesError = "";
-  state.manualDefinitionChangesMessage = "正在恢复后台定义并更新 E 文件";
+  state.manualDefinitionChangesMessage = "正在从原始 E 文件恢复默认值";
   state.manualDefinitionChangesMessageWarning = false;
   renderManualDefinitionChanges();
   try {
@@ -3569,9 +3611,12 @@ async function setActiveModel(modelId, shouldRefresh = true) {
   resetWebRuntimeSettingsState();
   restartRefreshScheduler();
   state.runtimeTraceHistory = [];
+  resetChartPeriodOffsets("runtimeTrace");
   state.lastRuntimeTraceKey = "";
   state.measurementTraceHistory = [];
+  resetChartPeriodOffsets("measurementTrace");
   state.lastMeasurementTraceKey = "";
+  resetMeasurementHistoryHydration();
   state.traceRunId = null;
   state.traceStepCount = null;
   state.selectedMeasurementKey = "";
@@ -3765,6 +3810,7 @@ const DIAGRAM_FLOW_POWER_MEASUREMENT_TYPES = Object.freeze({
   DCGENERATOR: Object.freeze(["P_GEN"]),
   ACLOAD: Object.freeze(["P_LOAD"]),
   DCLOAD: Object.freeze(["P_LOAD"]),
+  ACDCCONVERTER: Object.freeze(["P_AC", "P_DC"]),
   DCACCONVERTER: Object.freeze(["P_AC", "P_DC"]),
   DCDCCONVERTER: Object.freeze(["P_FROM", "P_TO"]),
   ACACCONVERTER: Object.freeze(["P_FROM", "P_TO"]),
@@ -3783,6 +3829,29 @@ function diagramFlowPowerMeasurementTypes(devType) {
   const type = normalizeDiagramMeasurementToken(devType);
   const specific = DIAGRAM_FLOW_POWER_MEASUREMENT_TYPES[type];
   return specific ? [...specific] : diagramMetricMeasurementTypes(devType, "activePower");
+}
+
+function diagramFlowCanonicalPower(measType, value) {
+  const power = Number(value);
+  if (!Number.isFinite(power)) return Number.NaN;
+  const type = normalizeDiagramMeasurementToken(measType);
+  if (type === "P_AC" || type === "P_TO") return -power;
+  return power;
+}
+
+function diagramFlowPowerRouteOrientation(device, nodes = []) {
+  const type = normalizeDiagramMeasurementToken(device?.devType);
+  if (type !== "ACDCCONVERTER" && type !== "DCACCONVERTER") return 1;
+  const terminalFor = (domain) => Number((nodes || []).find((item) => {
+    const nodeDomain = normalizeDiagramMeasurementToken(
+      item?.domain || String(item?.key || "").split(":", 1)[0],
+    );
+    return nodeDomain === domain;
+  })?.terminal) || 0;
+  const acTerminal = terminalFor("AC");
+  const dcTerminal = terminalFor("DC");
+  if (acTerminal === 1 && dcTerminal === 2) return -1;
+  return 1;
 }
 
 function diagramFlowInlineDeviceKind(devType) {
@@ -3911,6 +3980,54 @@ function diagramTrendPeriodRange(period = "hour", endMinute = 0) {
   };
 }
 
+function diagramTrendNavigationRange(
+  points,
+  period = "hour",
+  endMinute = null,
+  requestedOffset = 0,
+  simulationDurationMinutes = Number.POSITIVE_INFINITY,
+) {
+  let earliestHistoryMinute = Number.POSITIVE_INFINITY;
+  let latestHistoryMinute = Number.NEGATIVE_INFINITY;
+  (Array.isArray(points) ? points : []).forEach((point) => {
+    const minute = Number(point?.minute);
+    if (!Number.isFinite(minute) || !diagramTrendPointHasFiniteValue(point)) return;
+    earliestHistoryMinute = Math.min(earliestHistoryMinute, minute);
+    latestHistoryMinute = Math.max(latestHistoryMinute, minute);
+  });
+  const hasHistory = Number.isFinite(earliestHistoryMinute) && Number.isFinite(latestHistoryMinute);
+  const explicitEndMinute = endMinute === null || endMinute === undefined || endMinute === ""
+    ? null
+    : Number(endMinute);
+  const latestMinute = Number.isFinite(explicitEndMinute)
+    ? explicitEndMinute
+    : (hasHistory ? latestHistoryMinute : 0);
+  const currentRange = diagramTrendPeriodRange(period, latestMinute);
+  const earliestMinute = hasHistory ? earliestHistoryMinute : latestMinute;
+  const normalizedSimulationDuration = Number(simulationDurationMinutes);
+  const periodNavigationAllowed = !Number.isFinite(normalizedSimulationDuration)
+    || normalizedSimulationDuration <= 0
+    || currentRange.windowMinutes < normalizedSimulationDuration;
+  const minWindowOffset = periodNavigationAllowed && hasHistory
+    ? Math.min(0, Math.floor((earliestMinute - currentRange.startMinute) / currentRange.windowMinutes))
+    : 0;
+  const normalizedOffset = periodNavigationAllowed
+    ? Math.min(0, Math.trunc(Number(requestedOffset) || 0))
+    : 0;
+  const windowOffset = Math.max(minWindowOffset, normalizedOffset);
+  const startMinute = currentRange.startMinute + windowOffset * currentRange.windowMinutes;
+  return {
+    ...currentRange,
+    startMinute,
+    endMinute: startMinute + currentRange.windowMinutes,
+    currentStartMinute: currentRange.startMinute,
+    earliestMinute,
+    windowOffset,
+    minWindowOffset,
+    periodNavigationAllowed,
+  };
+}
+
 function diagramTrendPeriodLabels(period = "hour", range = {}) {
   if (period === "day") return { start: "00:00", end: "24:00" };
   const startMinute = Number(range.startMinute) || 0;
@@ -3934,7 +4051,7 @@ function diagramTrendPointHasFiniteValue(point) {
   ));
 }
 
-function diagramTrendWindowPoints(points, period = "hour", endMinute = null) {
+function diagramTrendWindowPoints(points, period = "hour", endMinute = null, requestedOffset = 0, rangeOverride = null) {
   const valid = (points || []).filter((point) => (
     Number.isFinite(Number(point?.minute)) && diagramTrendPointHasFiniteValue(point)
   ));
@@ -3945,10 +4062,11 @@ function diagramTrendWindowPoints(points, period = "hour", endMinute = null) {
   const latestMinute = Number.isFinite(explicitEndMinute)
     ? explicitEndMinute
     : Number(valid[valid.length - 1].minute);
-  const range = diagramTrendPeriodRange(period, latestMinute);
+  const range = rangeOverride || diagramTrendNavigationRange(valid, period, latestMinute, requestedOffset);
+  const visibleLatestMinute = range.windowOffset === 0 ? range.latestMinute : range.endMinute;
   return valid.filter((point) => (
     Number(point.minute) >= range.startMinute
-    && Number(point.minute) <= range.latestMinute
+    && Number(point.minute) <= visibleLatestMinute
     && Number(point.minute) < range.endMinute
   ));
 }
@@ -4438,7 +4556,7 @@ function compileDiagramDeviceIndex(container) {
     const layerType = element.closest("[device-type]")?.getAttribute("device-type") || "";
     devices.set(devId, {
       devId,
-      devType: layerType || devId.split("-", 1)[0],
+      devType: layerType,
       devName,
     });
   });
@@ -4692,11 +4810,12 @@ function diagramFlowDeviceNodes(element) {
   const domain1 = String(element.getAttribute("voltage-type-1") || baseDomain || fallbackDomain).trim();
   const domain2 = String(element.getAttribute("voltage-type-2") || baseDomain || fallbackDomain).trim();
   const nodes = [];
-  if (node1) nodes.push({ node: node1, key: diagramFlowNodeKey(node1, domain1), terminal: 1 });
-  if (node2) nodes.push({ node: node2, key: diagramFlowNodeKey(node2, domain2), terminal: 2 });
+  if (node1) nodes.push({ node: node1, key: diagramFlowNodeKey(node1, domain1), terminal: 1, domain: domain1 });
+  if (node2) nodes.push({ node: node2, key: diagramFlowNodeKey(node2, domain2), terminal: 2, domain: domain2 });
   if (!nodes.length) {
     const node = String(element.getAttribute("node") || "").trim();
-    if (node) nodes.push({ node, key: diagramFlowNodeKey(node, baseDomain || fallbackDomain), terminal: 0 });
+    const domain = baseDomain || fallbackDomain;
+    if (node) nodes.push({ node, key: diagramFlowNodeKey(node, domain), terminal: 0, domain });
   }
   return nodes;
 }
@@ -4737,10 +4856,16 @@ function diagramFlowDeviceRoute(symbol) {
 }
 
 function diagramFlowPowerBindings(device, element, topology) {
-  const own = { device, orientation: 1, priority: 1 };
+  const entry = topology?.byId?.get(String(device?.devId || ""));
+  const ownNodes = entry?.nodes || diagramFlowDeviceNodes(element);
+  const own = {
+    device,
+    nodes: ownNodes,
+    orientation: diagramFlowPowerRouteOrientation(device, ownNodes),
+    priority: 1,
+  };
   const type = normalizeDiagramMeasurementToken(device?.devType);
   if (!type.includes("BREAK") && !type.includes("SWITCH")) return [own];
-  const entry = topology?.byId?.get(String(device?.devId || ""));
   if (!entry) return [own];
   const fallbacks = [];
   entry.nodes.filter(({ terminal }) => terminal > 0).forEach(({ key, terminal }) => {
@@ -4751,7 +4876,9 @@ function diagramFlowPowerBindings(device, element, topology) {
       const neighborTerminal = neighbor.nodes.find((item) => item.key === key)?.terminal || 0;
       fallbacks.push({
         device: neighbor.device,
-        orientation: diagramFlowSeriesOrientation(terminal, neighborKind, neighborTerminal),
+        nodes: neighbor.nodes,
+        orientation: diagramFlowSeriesOrientation(terminal, neighborKind, neighborTerminal)
+          * diagramFlowPowerRouteOrientation(neighbor.device, neighbor.nodes),
         priority: 2,
       });
     });
@@ -4807,12 +4934,27 @@ function diagramFlowEdgeBinding(sourceEntry, targetEntry, topology) {
   };
 }
 
-function diagramFlowDevicePowerRow(device, measurementMaps) {
+function diagramFlowDevicePowerSample(device, measurementMaps) {
   const types = diagramFlowPowerMeasurementTypes(device?.devType);
   for (const map of [measurementMaps?.scadaByDevice, measurementMaps?.realByDevice]) {
-    for (const measType of types) {
+    const candidates = types.map((measType, order) => {
       const key = diagramDeviceMeasurementKey(device?.devType, device?.devName, measType);
-      if (map?.has(key)) return map.get(key);
+      const row = map?.get(key);
+      const rawPower = Number(row?.value);
+      const valid = Boolean(row) && Number(row.valid ?? 1) === 1 && Number.isFinite(rawPower);
+      return valid ? {
+        row,
+        power: diagramFlowCanonicalPower(
+          row?.meas_type || row?.measurement_type || measType,
+          rawPower,
+        ),
+        order,
+      } : null;
+    }).filter(Boolean);
+    if (candidates.length) {
+      return candidates.reduce((best, item) => (
+        Math.abs(item.power) > Math.abs(best.power) ? item : best
+      ));
     }
   }
   return null;
@@ -4821,13 +4963,12 @@ function diagramFlowDevicePowerRow(device, measurementMaps) {
 function diagramFlowResolvePower(record, measurementMaps) {
   const resolved = (record?.powerBindings || [{ device: record?.device, orientation: 1, priority: 1 }])
     .map((binding) => {
-      const row = diagramFlowDevicePowerRow(binding.device, measurementMaps);
-      const rawPower = Number(row?.value);
+      const sample = diagramFlowDevicePowerSample(binding.device, measurementMaps);
       return {
         binding,
-        row,
-        valid: Boolean(row) && Number(row.valid ?? 1) === 1 && Number.isFinite(rawPower),
-        power: rawPower * (Number(binding.orientation) < 0 ? -1 : 1),
+        row: sample?.row || null,
+        valid: Boolean(sample) && Number.isFinite(sample.power),
+        power: Number(sample?.power) * (Number(binding.orientation) < 0 ? -1 : 1),
       };
     })
     .filter((item) => item.valid);
@@ -5017,6 +5158,10 @@ function updateDiagramFlowArrows(container, snapshot = state.snapshot || {}, mea
     const visible = diagramFlowArrowVisibility({ power, referencePower, valid, offline });
     record.root.setAttribute("data-flow-power", valid ? String(power) : "");
     record.root.setAttribute("data-flow-binding-id", String(resolved.binding?.device?.devId || ""));
+    record.root.setAttribute(
+      "data-flow-measurement-type",
+      String(resolved.row?.meas_type || resolved.row?.measurement_type || ""),
+    );
     record.root.toggleAttribute("hidden", !visible);
     if (!visible) return;
     const size = diagramFlowArrowSize(power, referencePower);
@@ -5053,6 +5198,8 @@ function diagramInteractionState(container) {
       tooltip: null,
       tooltipPositionKey: "",
       trendPeriod: "hour",
+      trendPeriodOffsets: { hour: 0, day: 0 },
+      trendNavigationRange: null,
       trendChart: null,
       trendCursorClientX: null,
       contextMenu: null,
@@ -5080,7 +5227,7 @@ function diagramDeviceRecord(container, devId) {
   if (indexed) return indexed;
   return {
     devId: key,
-    devType: key.includes("-") ? key.split("-", 1)[0] : "",
+    devType: "",
     devName: key,
   };
 }
@@ -6199,7 +6346,7 @@ async function saveDiagramDeviceDefinitionEdit(container) {
   const updates = diagramDeviceDefinitionDirtyUpdates(editor);
   if (!updates.length) return false;
   interaction.definitionSaving = true;
-  interaction.definitionMessage = `正在更新 ${updates.length} 个参数块并保存 E 文件`;
+  interaction.definitionMessage = `正在更新 ${updates.length} 个参数块并保存人工覆盖层`;
   interaction.definitionMessageWarning = false;
   renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
   let completed = 0;
@@ -6233,10 +6380,10 @@ async function saveDiagramDeviceDefinitionEdit(container) {
     interaction.definitionEditor = null;
     interaction.definitionSaving = false;
     interaction.definitionMessage = resultWarning
-      ? (warningMessage || `${completed} 个参数块已更新，但部分持久化结果需要重试`)
+      ? (warningMessage || `${completed} 个参数块已更新，但人工覆盖层需要重试`)
       : (runtimeControlUpdated
-        ? `${completed} 个参数块、Model.e 及运行控制已保存`
-        : `${completed} 个参数块及 Model.e 已保存`);
+        ? `${completed} 个参数块及运行控制覆盖已保存`
+        : `${completed} 个参数块的人工覆盖已保存`);
     interaction.definitionMessageWarning = resultWarning;
     interaction.tooltip?.classList.remove("is-editing-definition");
     renderActiveDiagramTooltip(container, state.snapshot || {}, interaction);
@@ -6452,7 +6599,7 @@ function diagramTrendFiniteValue(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-function diagramTrendChartModel(points, period, tooltipWidth = 360, currentMinute = null, unit = "") {
+function diagramTrendChartModel(points, period, tooltipWidth = 360, currentMinute = null, unit = "", rangeOverride = null) {
   const sourcePoints = Array.isArray(points) ? points : [];
   const targetCount = Math.max(32, Math.floor(Math.max(tooltipWidth, 320) * 0.75));
   const values = sourcePoints.flatMap((point) => DIAGRAM_TREND_SERIES.flatMap((series) => {
@@ -6465,12 +6612,16 @@ function diagramTrendChartModel(points, period, tooltipWidth = 360, currentMinut
   const plot = { left: 52, right: 10, top: 20, bottom: 10 };
   const lastSourcePoint = sourcePoints[sourcePoints.length - 1] || null;
   const fallbackMinute = Number(lastSourcePoint?.minute);
-  const range = diagramTrendPeriodRange(
+  const defaultRange = diagramTrendPeriodRange(
     period,
     currentMinute !== null && currentMinute !== undefined && currentMinute !== "" && Number.isFinite(Number(currentMinute))
       ? Number(currentMinute)
       : (Number.isFinite(fallbackMinute) ? fallbackMinute : 0),
   );
+  const range = Number.isFinite(Number(rangeOverride?.startMinute))
+    && Number.isFinite(Number(rangeOverride?.endMinute))
+    ? { ...defaultRange, ...rangeOverride }
+    : defaultRange;
   const labels = diagramTrendPeriodLabels(period, range);
   const minuteSpan = Math.max(1, range.endMinute - range.startMinute);
   const valueSpan = Math.max(1e-9, axis.max - axis.min);
@@ -6556,8 +6707,30 @@ function diagramTrendAxisTicksHtml(model) {
   }).join("");
 }
 
-function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute = null, unit = "", interaction = null) {
-  const model = diagramTrendChartModel(points, period, tooltipWidth, currentMinute, unit);
+function diagramTrendNavigationState(range = {}) {
+  const periodNavigationAllowed = range.periodNavigationAllowed !== false;
+  const windowOffset = Math.min(0, Math.trunc(Number(range.windowOffset) || 0));
+  const minWindowOffset = Math.min(0, Math.trunc(Number(range.minWindowOffset) || 0));
+  return {
+    visible: periodNavigationAllowed && (minWindowOffset < 0 || windowOffset < 0),
+    previousDisabled: !periodNavigationAllowed || windowOffset <= minWindowOffset,
+    currentDisabled: !periodNavigationAllowed || windowOffset === 0,
+    nextDisabled: !periodNavigationAllowed || windowOffset >= 0,
+  };
+}
+
+function diagramTrendNavigationHtml(range = {}) {
+  const navigation = diagramTrendNavigationState(range);
+  return `
+    <div class="chart-period-navigation diagram-trend-period-navigation" data-diagram-trend-navigation${navigation.visible ? "" : " hidden"}>
+      <button type="button" data-diagram-trend-action="previous" aria-label="上一时段" title="上一时段"${navigation.previousDisabled ? " disabled" : ""}>&#8592;</button>
+      <button type="button" data-diagram-trend-action="current" aria-label="回到当前时段" title="回到当前时段"${navigation.currentDisabled ? " disabled" : ""}>&#9673;</button>
+      <button type="button" data-diagram-trend-action="next" aria-label="下一时段" title="下一时段"${navigation.nextDisabled ? " disabled" : ""}>&#8594;</button>
+    </div>`;
+}
+
+function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute = null, unit = "", interaction = null, rangeOverride = null) {
+  const model = diagramTrendChartModel(points, period, tooltipWidth, currentMinute, unit, rangeOverride);
   setDiagramTrendChartModel(interaction, model);
   return `
     <div class="diagram-trend-empty" data-diagram-trend-empty${model.empty ? "" : " hidden"}>当前分页暂无历史曲线</div>
@@ -6586,6 +6759,21 @@ function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute
       <div><span class="diagram-trend-stat-label is-scada">量测值</span><span>最小 <strong data-diagram-trend-stat-scada-min>${model.series.scada.min === null ? "--" : diagramNumberText(model.series.scada.min)}</strong></span><span>最大 <strong data-diagram-trend-stat-scada-max>${model.series.scada.max === null ? "--" : diagramNumberText(model.series.scada.max)}</strong></span><span>最新 <strong data-diagram-trend-stat-scada-latest>${model.series.scada.latest === null ? "--" : diagramNumberText(model.series.scada.latest)}</strong></span></div>
       <div><span class="diagram-trend-stat-label is-real">真值</span><span>最小 <strong data-diagram-trend-stat-real-min>${model.series.real.min === null ? "--" : diagramNumberText(model.series.real.min)}</strong></span><span>最大 <strong data-diagram-trend-stat-real-max>${model.series.real.max === null ? "--" : diagramNumberText(model.series.real.max)}</strong></span><span>最新 <strong data-diagram-trend-stat-real-latest>${model.series.real.latest === null ? "--" : diagramNumberText(model.series.real.latest)}</strong></span></div>
     </div>`;
+}
+
+function syncDiagramTrendNavigation(tooltip, range = {}) {
+  const container = tooltip?.querySelector?.("[data-diagram-trend-navigation]");
+  if (!container) return false;
+  const navigation = diagramTrendNavigationState(range);
+  container.hidden = !navigation.visible;
+  container.dataset.windowOffset = String(Number(range.windowOffset) || 0);
+  const previous = container.querySelector('[data-diagram-trend-action="previous"]');
+  const current = container.querySelector('[data-diagram-trend-action="current"]');
+  const next = container.querySelector('[data-diagram-trend-action="next"]');
+  if (previous) previous.disabled = navigation.previousDisabled;
+  if (current) current.disabled = navigation.currentDisabled;
+  if (next) next.disabled = navigation.nextDisabled;
+  return true;
 }
 
 function hideDiagramTrendCursor(interaction) {
@@ -6626,9 +6814,9 @@ function syncDiagramTrendAxisTicks(group, model) {
   return true;
 }
 
-function updateDiagramTrendChart(content, points, period, tooltipWidth, currentMinute, unit, interaction) {
+function updateDiagramTrendChart(content, points, period, tooltipWidth, currentMinute, unit, interaction, rangeOverride = null) {
   if (!content) return false;
-  const model = diagramTrendChartModel(points, period, tooltipWidth, currentMinute, unit);
+  const model = diagramTrendChartModel(points, period, tooltipWidth, currentMinute, unit, rangeOverride);
   setDiagramTrendChartModel(interaction, model);
   const empty = content.querySelector("[data-diagram-trend-empty]");
   const legend = content.querySelector("[data-diagram-trend-legend]");
@@ -6751,10 +6939,27 @@ function diagramMetricTooltipData(container, hover, snapshot, interaction) {
   const period = interaction.trendPeriod === "day" ? "day" : "hour";
   const history = diagramTrendHistorySeries(pair.scadaRow || pair.realRow || row, metricType);
   const endMinute = Number(snapshot?.clock?.absolute_minute ?? snapshot?.clock?.minute);
+  const requestedOffset = Number(interaction?.trendPeriodOffsets?.[period]) || 0;
+  const trendRange = diagramTrendNavigationRange(
+    history,
+    period,
+    Number.isFinite(endMinute) ? endMinute : null,
+    requestedOffset,
+    simulationModeDurationMinutes(),
+  );
+  if (interaction) {
+    interaction.trendPeriodOffsets = {
+      ...(interaction.trendPeriodOffsets || { hour: 0, day: 0 }),
+      [period]: trendRange.windowOffset,
+    };
+    interaction.trendNavigationRange = trendRange;
+  }
   const windowPoints = diagramTrendWindowPoints(
     history,
     period,
     Number.isFinite(endMinute) ? endMinute : null,
+    trendRange.windowOffset,
+    trendRange,
   );
   const deviceName = hover?.binding?.devName || row?.dev_name || row?.name || "动态量测";
   const metricLabel = diagramMetricLabel(metricType, row);
@@ -6764,13 +6969,13 @@ function diagramMetricTooltipData(container, hover, snapshot, interaction) {
   return {
     deviceName,
     metricLabel,
-    displayText: scadaValue === null ? "--" : diagramNumberText(scadaValue),
+    displayText: formatMeasurementDisplayValue(scadaValue, pair.row, diagramNumberText),
     scadaValue,
-    scadaText: scadaValue === null ? "--" : diagramNumberText(scadaValue),
+    scadaText: formatMeasurementDisplayValue(scadaValue, pair.row, diagramNumberText),
     realValue,
-    realText: realValue === null ? "--" : diagramNumberText(realValue),
+    realText: formatMeasurementDisplayValue(realValue, pair.row, diagramNumberText),
     deviation,
-    deviationText: deviation === null ? "--" : diagramNumberText(deviation),
+    deviationText: formatMeasurementDisplayValue(deviation, pair.row, diagramNumberText),
     valid: pair.valid,
     status: pair.status,
     statusText: validText,
@@ -6789,8 +6994,27 @@ function diagramMetricTooltipData(container, hover, snapshot, interaction) {
     measType: pair.measType,
     period,
     endMinute: Number.isFinite(endMinute) ? endMinute : null,
+    trendRange,
     windowPoints,
   };
+}
+
+function ensureDiagramMetricMeasurementHistory(container, hover, snapshot, interaction) {
+  const pair = diagramMetricMeasurementPair(hover, snapshot);
+  const row = pair.scadaRow || pair.realRow || pair.row || diagramMetricCurrentRow(container, hover, snapshot);
+  if (!row) return;
+  const hoverKey = String(hover?.key || "");
+  ensureMeasurementHistoryForRow(row).then((changed) => {
+    const current = diagramInteractionCache.get(container);
+    if (
+      changed
+      && current === interaction
+      && String(current?.hover?.key || "") === hoverKey
+      && !current?.tooltip?.hidden
+    ) {
+      refreshDiagramTooltip(container, current.snapshot || state.snapshot || {});
+    }
+  });
 }
 
 function diagramMeasurementValueWithUnit(text, unit) {
@@ -6991,7 +7215,7 @@ async function saveDiagramMeasurementDefinitionEdit(container) {
     return false;
   }
   interaction.definitionSaving = true;
-  interaction.definitionMessage = "正在更新后台定义并保存 E 文件";
+  interaction.definitionMessage = "正在更新后台定义并保存人工覆盖层";
   interaction.definitionMessageWarning = false;
   renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
   try {
@@ -7017,10 +7241,8 @@ async function saveDiagramMeasurementDefinitionEdit(container) {
     interaction.definitionSaving = false;
     const resultWarning = definitionEditResultHasWarning(result);
     interaction.definitionMessage = resultWarning
-      ? (result.warning || (result.persisted
-        ? "meas.e 已保存，但人工修改记录未保存，请重试"
-        : "后台定义已更新，但 meas.e 保存失败"))
-      : "后台定义及 meas.e 已保存";
+      ? (result.warning || "后台定义已更新，但人工覆盖层保存未完成，请重试")
+      : "后台定义及人工覆盖层已保存";
     interaction.definitionMessageWarning = resultWarning;
     interaction.tooltip?.classList.remove("is-editing-definition");
     renderActiveDiagramTooltip(container, state.snapshot || {}, interaction);
@@ -7056,9 +7278,10 @@ function renderDiagramMetricTooltip(container, hover, snapshot, interaction) {
     <div class="diagram-trend-tabs" role="tablist" aria-label="量测趋势范围">
       <button type="button" data-diagram-trend-period="hour" class="${data.period === "hour" ? "is-active" : ""}" aria-selected="${data.period === "hour"}">小时曲线</button>
       <button type="button" data-diagram-trend-period="day" class="${data.period === "day" ? "is-active" : ""}" aria-selected="${data.period === "day"}">日曲线</button>
+      ${diagramTrendNavigationHtml(data.trendRange)}
     </div>
     <div class="diagram-trend-content" data-diagram-trend-content>
-      ${diagramTrendChartHtml(data.windowPoints, data.period, interaction.tooltip?.clientWidth || 360, data.endMinute, data.unit, interaction)}
+      ${diagramTrendChartHtml(data.windowPoints, data.period, interaction.tooltip?.clientWidth || 360, data.endMinute, data.unit, interaction, data.trendRange)}
     </div>`;
 }
 
@@ -7107,6 +7330,7 @@ function updateDiagramMetricTooltip(container, hover, snapshot, interaction) {
     button.classList.toggle("is-active", selected);
     button.setAttribute("aria-selected", String(selected));
   });
+  if (!syncDiagramTrendNavigation(tooltip, data.trendRange)) return false;
   return updateDiagramTrendChart(
     content,
     data.windowPoints,
@@ -7115,6 +7339,7 @@ function updateDiagramMetricTooltip(container, hover, snapshot, interaction) {
     data.endMinute,
     data.unit,
     interaction,
+    data.trendRange,
   );
 }
 
@@ -7153,6 +7378,8 @@ function hideDiagramTooltip(container) {
   clearDiagramTooltipHide(interaction);
   interaction.hover = null;
   interaction.tooltipPositionKey = "";
+  interaction.trendPeriodOffsets = { hour: 0, day: 0 };
+  interaction.trendNavigationRange = null;
   hideDiagramTrendCursor(interaction);
   interaction.trendChart = null;
   if (interaction.tooltip) {
@@ -7189,6 +7416,9 @@ function renderActiveDiagramTooltip(container, snapshot, interaction) {
   tooltip.classList.add("is-visible");
   tooltip.classList.toggle("is-editing-definition", diagramDefinitionEditPinned(interaction));
   positionDiagramTooltip(interaction);
+  if (hover.kind === "metric") {
+    ensureDiagramMetricMeasurementHistory(container, hover, snapshot, interaction);
+  }
   return true;
 }
 
@@ -7205,6 +7435,9 @@ function refreshDiagramTooltip(container, snapshot = state.snapshot || {}) {
   const updated = interaction.hover.kind === "metric"
     ? updateDiagramMetricTooltip(container, interaction.hover, snapshot, interaction)
     : updateDiagramDeviceTooltip(container, interaction.hover, snapshot, interaction);
+  if (interaction.hover.kind === "metric") {
+    ensureDiagramMetricMeasurementHistory(container, interaction.hover, snapshot, interaction);
+  }
   if (!updated) renderActiveDiagramTooltip(container, snapshot, interaction);
 }
 
@@ -7219,6 +7452,8 @@ function resetDiagramInteractions(container) {
     interaction.hover = null;
     interaction.snapshot = null;
     interaction.tooltipPositionKey = "";
+    interaction.trendPeriodOffsets = { hour: 0, day: 0 };
+    interaction.trendNavigationRange = null;
     interaction.definitionEditor = null;
     interaction.definitionSaving = false;
     interaction.definitionMessage = "";
@@ -7427,6 +7662,10 @@ function initDiagramInteractions(container) {
       return;
     }
     clearDiagramTooltipHide(interaction);
+    if (String(interaction.hover?.key || "") !== String(nextHover.key || "")) {
+      interaction.trendPeriodOffsets = { hour: 0, day: 0 };
+      interaction.trendNavigationRange = null;
+    }
     interaction.hover = nextHover;
     if (tooltipAction === "refresh") {
       refreshDiagramTooltip(container, interaction.snapshot || state.snapshot || {});
@@ -7527,6 +7766,23 @@ function initDiagramInteractions(container) {
       } else {
         saveDiagramDeviceDefinitionEdit(container);
       }
+      return;
+    }
+    const navigationButton = target.closest("[data-diagram-trend-action]");
+    if (navigationButton && !navigationButton.disabled) {
+      const period = interaction.trendPeriod === "day" ? "day" : "hour";
+      const currentOffset = Number(interaction.trendNavigationRange?.windowOffset)
+        || Number(interaction.trendPeriodOffsets?.[period])
+        || 0;
+      const action = navigationButton.getAttribute("data-diagram-trend-action") || "";
+      const nextOffset = action === "previous"
+        ? currentOffset - 1
+        : action === "next" ? currentOffset + 1 : 0;
+      interaction.trendPeriodOffsets = {
+        ...(interaction.trendPeriodOffsets || { hour: 0, day: 0 }),
+        [period]: Math.min(0, nextOffset),
+      };
+      refreshDiagramTooltip(container, interaction.snapshot || state.snapshot || {});
       return;
     }
     const button = target.closest("[data-diagram-trend-period]");
@@ -7791,9 +8047,20 @@ function allCurveKeys() {
   return [...ENV_CURVE_KEYS, ...allLoadCurveKeys()];
 }
 
+function semanticDeviceModelBlock(dev) {
+  return String(dev?.model_block || dev?.raw?.model_block || "").trim();
+}
+
+function semanticDeviceFamily(dev) {
+  return String(dev?.device_family || "").trim().toLowerCase();
+}
+
 function curveLoadDevices() {
   const devices = (state.snapshot?.devices || [])
-    .filter((dev) => ["ACLoad", "DCLoad"].includes(dev.dev_type) && dev.dev_name)
+    .filter((dev) => (
+      semanticDeviceFamily(dev) === "load"
+      || ["ACLoad", "DCLoad"].includes(semanticDeviceModelBlock(dev))
+    ) && dev.dev_name)
     .map((dev) => ({ dev_type: dev.dev_type, dev_name: dev.dev_name }));
   const unique = new Map();
   devices.forEach((dev) => unique.set(`${dev.dev_type}|${dev.dev_name}`, dev));
@@ -9274,9 +9541,11 @@ function initRuntimeMonitor() {
     state.runtimeTraceWindowMinutes = Number(windowSelect.value) || state.runtimeTraceWindowMinutes;
     windowSelect.addEventListener("change", (event) => {
       state.runtimeTraceWindowMinutes = Number(event.target.value) || 60;
+      resetChartPeriodOffsets("runtimeTrace");
       drawRuntimeTraceChart();
     });
   }
+  initChartPeriodNavigation("runtimeTrace", runtimeTraceWindowRange, drawRuntimeTraceChart);
   initTraceChartInteractions("runtimeTrace", "runtimeTraceChart", drawRuntimeTraceChart);
   window.addEventListener("resize", drawRuntimeTraceChart);
 }
@@ -9287,9 +9556,11 @@ function initMeasurementMonitor() {
     state.measurementTraceWindowMinutes = Number(windowSelect.value) || state.measurementTraceWindowMinutes;
     windowSelect.addEventListener("change", (event) => {
       state.measurementTraceWindowMinutes = Number(event.target.value) || 60;
+      resetChartPeriodOffsets("measurementTrace");
       drawMeasurementTraceChart();
     });
   }
+  initChartPeriodNavigation("measurementTrace", measurementTraceWindowRange, drawMeasurementTraceChart);
   initTraceChartInteractions("measurementTrace", "measurementTraceChart", drawMeasurementTraceChart);
   window.addEventListener("resize", drawMeasurementTraceChart);
 }
@@ -9382,7 +9653,7 @@ function overviewFallbackFlowGroups(power) {
     acWind: { power: power.wind },
     dcSolar: { power: power.solar },
     dcGridFormingStorage: { power: power.storage, soc: power.soc },
-    acdcConverter: { power: Number.isFinite(power.greenPower) ? -power.greenPower : null },
+    acdcConverter: { power: null },
     acLoad: { power: power.load },
     diesel: { power: power.diesel },
   };
@@ -9403,8 +9674,8 @@ function overviewFlowState(category, power) {
   }
   if (category === "converter") {
     return power > 0
-      ? { status: "dcToAc", flowDirection: "toAc" }
-      : { status: "acToDc", flowDirection: "toDc" };
+      ? { status: "acToDc", flowDirection: "toDc" }
+      : { status: "dcToAc", flowDirection: "toAc" };
   }
   return power > 0
     ? { status: "generation", flowDirection: "toBus" }
@@ -9445,6 +9716,8 @@ function normalizeOverviewFlowGroups(rawGroups, power) {
       color: definition.color,
       present: totalCount > 0,
       power: groupPower,
+      targetPower: powerSummaryNumber(data.targetPower ?? fallbackData.targetPower),
+      maxAvailablePower: powerSummaryNumber(data.maxAvailablePower ?? fallbackData.maxAvailablePower),
       soc: powerSummaryNumber(data.soc ?? fallbackData.soc),
       totalCount,
       onlineCount,
@@ -9541,6 +9814,31 @@ function overviewPercentText(value) {
   return Number.isFinite(value) ? `${formatOverviewNumber(value)}%` : "--";
 }
 
+function overviewGreenGroupPower(groups, key) {
+  const group = groups?.[key];
+  if (!group || group.present === false) return 0;
+  return Number.isFinite(group.power) ? Number(group.power) : null;
+}
+
+function overviewGreenMetrics(power = {}) {
+  const groups = power.flowGroups || {};
+  const dcLoadPower = overviewGreenGroupPower(groups, "dcLoad");
+  const acLoadPower = overviewGreenGroupPower(groups, "acLoad");
+  const dieselPower = overviewGreenGroupPower(groups, "diesel");
+  if ([dcLoadPower, acLoadPower, dieselPower].some((value) => value === null)) {
+    return { loadPower: null, greenPower: null, greenPowerShare: null };
+  }
+  const loadPower = dcLoadPower + acLoadPower;
+  const greenPower = loadPower - dieselPower;
+  return {
+    loadPower,
+    greenPower,
+    greenPowerShare: Math.abs(loadPower) > 1e-9
+      ? (greenPower / loadPower) * 100.0
+      : null,
+  };
+}
+
 function overviewFlowPowerValue(value) {
   const number = Math.abs(Number(value));
   return Number.isFinite(number) ? number : 0;
@@ -9607,9 +9905,7 @@ function renderOverviewFlowGroups(power) {
     .map((definition) => groups[definition.key])
     .filter((group) => group?.present);
   const maxPower = Math.max(1, ...visibleGroups.map((group) => overviewFlowPowerValue(group.power)));
-  const greenPowerShare = Number.isFinite(power.diesel) && Number.isFinite(power.load) && Math.abs(power.load) > 1e-9
-    ? (1.0 - power.diesel / power.load) * 100.0
-    : null;
+  const { greenPowerShare } = overviewGreenMetrics(power);
 
   OVERVIEW_FLOW_GROUP_DEFINITIONS.forEach((definition) => {
     const group = groups[definition.key] || { present: false };
@@ -9622,10 +9918,23 @@ function renderOverviewFlowGroups(power) {
     node.dataset.flowDirection = group.flowDirection;
     node.dataset.operatingState = group.status;
     const powerNode = node.querySelector("[data-overview-power]");
+    const targetNode = node.querySelector("[data-overview-target]");
+    const maxAvailableNode = node.querySelector("[data-overview-max-available]");
     const metaNode = node.querySelector("[data-overview-meta]");
     if (powerNode) powerNode.textContent = overviewPowerText(group.power);
+    if (targetNode) targetNode.textContent = overviewPowerText(group.targetPower);
+    if (maxAvailableNode) maxAvailableNode.textContent = overviewPowerText(group.maxAvailablePower);
     if (metaNode) metaNode.textContent = overviewFlowGroupMeta(group);
-    node.title = `${node.querySelector("span")?.textContent || "设备"} · ${overviewFlowGroupMeta(group)}`;
+    const tooltipParts = [
+      node.querySelector("span")?.textContent || "设备",
+      `当前 ${overviewPowerText(group.power)}`,
+      `目标 ${overviewPowerText(group.targetPower)}`,
+    ];
+    if (["dcWind", "dcSolar", "acWind", "acSolar"].includes(definition.key)) {
+      tooltipParts.push(`最大可发 ${overviewPowerText(group.maxAvailablePower)}`);
+    }
+    tooltipParts.push(overviewFlowGroupMeta(group));
+    node.title = tooltipParts.join(" · ");
     const flowPower = group.flowDirection === "idle" ? 0 : group.power;
     const color = definition.category === "load" ? overviewLoadFlowColor(greenPowerShare) : definition.color;
     setOverviewFlowVisualElement(node, flowPower, maxPower, color);
@@ -10197,10 +10506,7 @@ function renderOverviewDashboard(snapshot) {
   setOverviewText("overviewLoadBoundary", overviewPowerText(boundary.loadTotal));
   setOverviewText("overviewOnlineDevices", `${onlineDevices}/${devices.length} 台`);
   setOverviewText("overviewActiveCommands", `${activeOverviewCommands.length} 条`);
-  const greenPower = Number.isFinite(power.greenPower) ? -power.greenPower : null;
-  const greenPowerShare = Number.isFinite(power.diesel) && Number.isFinite(power.load) && Math.abs(power.load) > 1e-9
-    ? (1.0 - power.diesel / power.load) * 100.0
-    : null;
+  const { greenPower, greenPowerShare } = overviewGreenMetrics(power);
   setOverviewText("overviewFlowGreenPower", overviewPowerText(greenPower));
   setOverviewText("overviewFlowGreenShare", overviewPercentText(greenPowerShare));
   renderOverviewFlowGroups(power);
@@ -10292,9 +10598,12 @@ function renderSnapshot(snapshot) {
   );
   if (traceLifecycleChanged) {
     state.runtimeTraceHistory = [];
+    resetChartPeriodOffsets("runtimeTrace");
     state.lastRuntimeTraceKey = "";
     state.measurementTraceHistory = [];
+    resetChartPeriodOffsets("measurementTrace");
     state.lastMeasurementTraceKey = "";
+    resetMeasurementHistoryHydration();
   }
   state.traceRunId = runId;
   state.traceStepCount = stepCount;
@@ -10327,6 +10636,7 @@ function renderSnapshot(snapshot) {
     ...state.modes,
   ]);
   renderActiveSimulatorPage(snapshot);
+  ensureSelectedMeasurementHistory();
 }
 
 function appendRuntimeLog(snapshot) {
@@ -10883,15 +11193,26 @@ function runtimeControlMeta(dev) {
   const setValues = dev?.set_values || {};
   const raw = dev?.raw || {};
   const mode = String(dev?.mode || raw.control_type || raw.ctrl_mode || "").toUpperCase();
+  const hasDcControlType = Object.prototype.hasOwnProperty.call(raw, "dc_control_type")
+    || Object.prototype.hasOwnProperty.call(dev || {}, "dc_control_type");
+  const dcControlType = String(raw.dc_control_type ?? dev?.dc_control_type ?? "").trim().toUpperCase();
+  const usesDcPowerSetpoint = (
+    dcControlType === "P" || (!hasDcControlType && mode === "DCP")
+  );
   const preferred = [];
   if (mode.includes("V")) preferred.push("v_set", "v_ac_set", "v_dc_set");
   if (mode.includes("Q")) preferred.push("q_set", "q_ac_set");
-  if (mode.includes("P") || mode.includes("H")) preferred.push("p_ac_set", "p_dc_set", "p_set", "pv0");
+  if (usesDcPowerSetpoint || mode.includes("P") || mode.includes("H")) {
+    preferred.push(
+      ...(usesDcPowerSetpoint
+        ? ["p_dc_set", "p_ac_set", "p_set", "pv0"]
+        : ["p_ac_set", "p_dc_set", "p_set", "pv0"]),
+    );
+  }
   preferred.push(
-    "p_ac_set",
-    "p_dc_set",
-    "p_set",
-    "pv0",
+    ...(usesDcPowerSetpoint
+      ? ["p_dc_set", "p_ac_set", "p_set", "pv0"]
+      : ["p_ac_set", "p_dc_set", "p_set", "pv0"]),
     "q_ac_set",
     "q_set",
     "qv0",
@@ -10928,7 +11249,10 @@ function runtimeMeasurementTypeCandidates(dev, setKey) {
   const measurementKey = key.endsWith("_set") ? key.slice(0, -4) : key;
   const exactType = measurementKey.toUpperCase();
   const quantity = measurementKey.split("_", 1)[0].toUpperCase();
-  const devType = String(dev?.dev_type || "").trim().toUpperCase();
+  const family = String(dev?.device_family || "").trim().toLowerCase();
+  const domains = new Set((Array.isArray(dev?.terminal_domains) ? dev.terminal_domains : [])
+    .map((value) => String(value || "").trim().toUpperCase())
+    .filter(Boolean));
   const candidates = [];
   const add = (...types) => types.forEach((type) => {
     const normalized = String(type || "").trim().toUpperCase();
@@ -10937,16 +11261,23 @@ function runtimeMeasurementTypeCandidates(dev, setKey) {
 
   if (measurementKey.includes("_")) add(exactType);
   if (measurementKey.includes("soc")) add("SOC");
-  if (devType.endsWith("GENERATOR")) {
+  if (family === "generator") {
     add(`${quantity}_GEN`);
-  } else if (devType.endsWith("LOAD")) {
+  } else if (family === "load") {
     add(`${quantity}_LOAD`);
-  } else if (devType === "DCACCONVERTER") {
+  } else if (family === "converter" && domains.has("AC") && domains.has("DC")) {
     add(`${quantity}_AC`, `${quantity}_DC`);
-  } else if (devType === "DCDCCONVERTER" || devType === "ACACCONVERTER") {
+  } else if (family === "converter") {
     add(`${quantity}_FROM`, `${quantity}_TO`);
-  } else if (devType === "ESS" || devType === "STORAGE") {
-    add(quantity, `${quantity}_GEN`, `${quantity}_FROM`, `${quantity}_TO`);
+  } else {
+    add(
+      `${quantity}_GEN`,
+      `${quantity}_LOAD`,
+      `${quantity}_AC`,
+      `${quantity}_DC`,
+      `${quantity}_FROM`,
+      `${quantity}_TO`,
+    );
   }
   add(exactType, quantity);
   return candidates;
@@ -11419,7 +11750,7 @@ function runtimeRemoteControlRows(devices, context = null, options = {}) {
         unit: "",
         meas_name: runPair.name || "",
         meas_type: runPair.meas_type || "RUN_STAT",
-        trace_label: `${dev.dev_name}.设备投退`,
+        trace_label: `${dev.dev_type}.${dev.dev_name}.设备投退`,
       };
     }),
     ...cbRows.map((definitionRow) => {
@@ -11448,7 +11779,7 @@ function runtimeRemoteControlRows(devices, context = null, options = {}) {
         unit: "",
         meas_name: statusPair.name || "",
         meas_type: statusPair.meas_type || "STATUS",
-        trace_label: `${dev.dev_name}.开关开合`,
+        trace_label: `${dev.dev_type}.${dev.dev_name}.开关开合`,
       };
     }),
   ];
@@ -11483,7 +11814,7 @@ function runtimeRemoteAdjustmentRows(devices, measurements = state.snapshot?.mea
         scada_value: pair.scada,
         signal_kind: meta.kind,
         unit: meta.unit,
-        trace_label: `${dev.dev_name}.${key}`,
+        trace_label: `${dev.dev_type}.${dev.dev_name}.${key}`,
       };
     });
 }
@@ -11779,13 +12110,13 @@ function selectedRuntimeCommandTraceRows() {
   return runtimeCommandRowsForDevices(devices, state.snapshot?.measurements || {}, context);
 }
 
-function selectedRuntimeCommandTraceSeries() {
+function selectedRuntimeCommandTraceSeries(range = runtimeTraceWindowRange()) {
   const key = state.selectedRuntimeCommandKey;
   if (!key) return null;
   const rows = selectedRuntimeCommandTraceRows();
   const row = rows.find((item) => runtimeCommandTraceKey(item) === key);
   if (!row) return null;
-  const points = runtimeTraceWindowPoints()
+  const points = runtimeTraceWindowPoints(range)
     .map((point) => {
       const signal = point.commands?.[key];
       if (!signal) return null;
@@ -11816,10 +12147,9 @@ function runtimeTraceDevicesForChart() {
   });
 }
 
-function runtimeTraceWindowPoints() {
+function runtimeTraceWindowPoints(range = runtimeTraceWindowRange()) {
   const history = state.runtimeTraceHistory || [];
   if (!history.length) return [];
-  const range = runtimeTraceWindowRange();
   return history.filter((point) => point.minute >= range.startMinute && point.minute <= range.endMinute);
 }
 
@@ -11844,26 +12174,139 @@ function traceWindowAlignmentMinutes(windowMinutes) {
   return 1440;
 }
 
-function alignedTraceWindowRange(history, windowMinutes, fallbackMinute) {
-  const alignmentMinutes = traceWindowAlignmentMinutes(windowMinutes);
-  const axisStepMinutes = traceAxisStepMinutes(windowMinutes);
-  const latestMinute = history.length ? history[history.length - 1].minute : fallbackMinute;
-  const startMinute = Math.floor(latestMinute / alignmentMinutes) * alignmentMinutes;
+function traceHistoryMinuteBounds(history, fallbackMinute = 0) {
+  let earliestMinute = Number.POSITIVE_INFINITY;
+  let latestMinute = Number.NEGATIVE_INFINITY;
+  (Array.isArray(history) ? history : []).forEach((point) => {
+    const minute = Number(point?.minute);
+    if (!Number.isFinite(minute)) return;
+    earliestMinute = Math.min(earliestMinute, minute);
+    latestMinute = Math.max(latestMinute, minute);
+  });
+  const fallback = Number.isFinite(Number(fallbackMinute)) ? Number(fallbackMinute) : 0;
+  const hasHistory = Number.isFinite(earliestMinute) && Number.isFinite(latestMinute);
+  return {
+    earliestMinute: hasHistory ? earliestMinute : fallback,
+    latestMinute: hasHistory ? latestMinute : fallback,
+    hasHistory,
+  };
+}
+
+function alignedTraceWindowRange(
+  history,
+  windowMinutes,
+  fallbackMinute,
+  requestedOffset = 0,
+  simulationDurationMinutes = Number.POSITIVE_INFINITY,
+) {
+  const minutes = Math.max(1, Number(windowMinutes) || 60);
+  const alignmentMinutes = traceWindowAlignmentMinutes(minutes);
+  const axisStepMinutes = traceAxisStepMinutes(minutes);
+  const bounds = traceHistoryMinuteBounds(history, fallbackMinute);
+  const currentStartMinute = Math.floor(bounds.latestMinute / alignmentMinutes) * alignmentMinutes;
+  const normalizedSimulationDuration = Number(simulationDurationMinutes);
+  const periodNavigationAllowed = !Number.isFinite(normalizedSimulationDuration)
+    || normalizedSimulationDuration <= 0
+    || minutes < normalizedSimulationDuration;
+  const minWindowOffset = periodNavigationAllowed && bounds.hasHistory
+    ? Math.min(0, Math.floor((bounds.earliestMinute - currentStartMinute) / minutes))
+    : 0;
+  const normalizedOffset = periodNavigationAllowed
+    ? Math.min(0, Math.trunc(Number(requestedOffset) || 0))
+    : 0;
+  const windowOffset = Math.max(minWindowOffset, normalizedOffset);
+  const startMinute = currentStartMinute + windowOffset * minutes;
   return {
     startMinute,
-    endMinute: startMinute + windowMinutes,
-    latestMinute,
-    windowMinutes,
+    endMinute: startMinute + minutes,
+    latestMinute: bounds.latestMinute,
+    earliestMinute: bounds.earliestMinute,
+    currentStartMinute,
+    windowMinutes: minutes,
     alignmentMinutes,
     axisStepMinutes,
+    windowOffset,
+    minWindowOffset,
+    periodNavigationAllowed,
   };
+}
+
+function tracePeriodNavigationState(range = {}) {
+  const periodNavigationAllowed = range.periodNavigationAllowed !== false;
+  const windowOffset = Math.min(0, Math.trunc(Number(range.windowOffset) || 0));
+  const minWindowOffset = Math.min(0, Math.trunc(Number(range.minWindowOffset) || 0));
+  return {
+    visible: periodNavigationAllowed && (minWindowOffset < 0 || windowOffset < 0),
+    previousDisabled: !periodNavigationAllowed || windowOffset <= minWindowOffset,
+    currentDisabled: !periodNavigationAllowed || windowOffset === 0,
+    nextDisabled: !periodNavigationAllowed || windowOffset >= 0,
+  };
+}
+
+function chartPeriodOffset(chartKey) {
+  return Math.min(0, Math.trunc(Number(state.chartPeriodOffsets?.[chartKey]) || 0));
+}
+
+function setChartPeriodOffset(chartKey, offset) {
+  state.chartPeriodOffsets = {
+    ...(state.chartPeriodOffsets || {}),
+    [chartKey]: Math.min(0, Math.trunc(Number(offset) || 0)),
+  };
+}
+
+function resetChartPeriodOffsets(...chartKeys) {
+  const keys = chartKeys.length ? chartKeys : Object.keys(state.chartPeriodOffsets || {});
+  keys.forEach((chartKey) => setChartPeriodOffset(chartKey, 0));
+}
+
+function syncChartPeriodNavigation(chartKey, range) {
+  const navigation = tracePeriodNavigationState(range);
+  document.querySelectorAll(`[data-chart-period-nav="${chartKey}"]`).forEach((container) => {
+    container.hidden = !navigation.visible;
+    container.dataset.windowOffset = String(Number(range?.windowOffset) || 0);
+    const previous = container.querySelector('[data-chart-period-action="previous"]');
+    const current = container.querySelector('[data-chart-period-action="current"]');
+    const next = container.querySelector('[data-chart-period-action="next"]');
+    if (previous) previous.disabled = navigation.previousDisabled;
+    if (current) current.disabled = navigation.currentDisabled;
+    if (next) next.disabled = navigation.nextDisabled;
+  });
+  return navigation;
+}
+
+function initChartPeriodNavigation(chartKey, rangeProvider, drawChart) {
+  const container = document.querySelector(`[data-chart-period-nav="${chartKey}"]`);
+  if (!container || container.dataset.periodNavigationReady === "true") return;
+  container.dataset.periodNavigationReady = "true";
+  container.addEventListener("click", (event) => {
+    const button = event.target instanceof Element
+      ? event.target.closest('[data-chart-period-action]')
+      : null;
+    if (!button || button.disabled || !container.contains(button)) return;
+    const range = rangeProvider();
+    const action = button.getAttribute("data-chart-period-action") || "";
+    const currentOffset = Number(range.windowOffset) || 0;
+    const nextOffset = action === "previous"
+      ? currentOffset - 1
+      : action === "next" ? currentOffset + 1 : 0;
+    setChartPeriodOffset(chartKey, nextOffset);
+    drawChart();
+  });
 }
 
 function runtimeTraceWindowRange() {
   const history = state.runtimeTraceHistory || [];
   const windowMinutes = Math.max(1, Number(state.runtimeTraceWindowMinutes) || 60);
   const fallbackMinute = Number(state.snapshot?.clock?.absolute_minute ?? state.snapshot?.clock?.minute ?? 0) || 0;
-  return alignedTraceWindowRange(history, windowMinutes, fallbackMinute);
+  const range = alignedTraceWindowRange(
+    history,
+    windowMinutes,
+    fallbackMinute,
+    chartPeriodOffset("runtimeTrace"),
+    simulationModeDurationMinutes(),
+  );
+  setChartPeriodOffset("runtimeTrace", range.windowOffset);
+  return range;
 }
 
 function runtimeFormatClockMinute(minute) {
@@ -11894,6 +12337,12 @@ function runtimeAxisTickLabel(minute, range, index, lastIndex) {
   const day = Math.floor(absolute / 1440);
   const clock = runtimeFormatClockMinute(absolute).slice(0, 5);
   return absolute % 1440 === 0 ? `第${day + 1}天` : `第${day + 1}天 ${clock}`;
+}
+
+function runtimeTracePointTimeLabel(point, range) {
+  const time = String(point?.sim_time || point?.time || "").trim();
+  if (time && time !== "--") return time;
+  return runtimeAxisTickLabel(point?.minute, range, -1, 0);
 }
 
 function runtimeTraceAxisTicks(range, canvasWidth) {
@@ -11951,11 +12400,12 @@ function drawRuntimeTraceChart() {
   const top = plot.top;
   const bottom = height - plot.bottom;
   state.chartPlotInfo = { ...(state.chartPlotInfo || {}), [chartKey]: plot };
-  const selectedCommandSeries = selectedRuntimeCommandTraceSeries();
-  const chartDevices = selectedCommandSeries ? [] : runtimeTraceDevicesForChart();
   const range = runtimeTraceWindowRange();
+  syncChartPeriodNavigation("runtimeTrace", range);
+  const selectedCommandSeries = selectedRuntimeCommandTraceSeries(range);
+  const chartDevices = selectedCommandSeries ? [] : runtimeTraceDevicesForChart();
   const points = selectedCommandSeries?.points
-    || runtimeTraceWindowPoints().map((point) => runtimeAggregateTracePoint(point, chartDevices));
+    || runtimeTraceWindowPoints(range).map((point) => runtimeAggregateTracePoint(point, chartDevices));
   const seriesDefs = [
     { key: "control", field: "control", label: "控制指令", color: "#b87500" },
     { key: "real", field: "real", label: "实时值", color: "#008c8c" },
@@ -12030,7 +12480,14 @@ function drawRuntimeTraceChart() {
       if (value === null) return;
       const x = xForMinute(point.minute);
       const y = yForValue(value);
-      pixelPoints.push({ x, y, minute: point.minute, time: point.time, value });
+      pixelPoints.push({
+        x,
+        y,
+        minute: point.minute,
+        time: point.sim_time || point.time,
+        sim_time: point.sim_time || point.time,
+        value,
+      });
       if (!started) {
         ctx.moveTo(x, y);
         started = true;
@@ -12046,7 +12503,7 @@ function drawRuntimeTraceChart() {
   state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: hitData };
   syncChartLegendButtons(chartKey);
   drawChartCursor(ctx, chartKey, canvas, plot, hitData, {
-    timeLabel: (point) => runtimeAxisTickLabel(point.minute, range, 0, 0),
+    timeLabel: (point) => runtimeTracePointTimeLabel(point, range),
     valueFormatter: formatMeasurementValue,
   });
   ctx.fillStyle = "#63717a";
@@ -12079,6 +12536,13 @@ function isSignalMeasurement(row) {
   return Object.prototype.hasOwnProperty.call(SIGNAL_MEASUREMENT_LABELS, String(row?.meas_type || "").toUpperCase());
 }
 
+function formatMeasurementDisplayValue(value, row = null, analogFormatter = formatMeasurementValue) {
+  if (value === null || value === undefined || value === "") return "--";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "--";
+  return isSignalMeasurement(row) ? String(Math.round(number)) : analogFormatter(number);
+}
+
 function weatherMeasurementLabel(row) {
   const type = String(row?.meas_type || "").toUpperCase();
   return WEATHER_MEASUREMENT_LABELS[type]?.label || row?.name || type || "气象";
@@ -12100,8 +12564,8 @@ function signalMeasurementOrder(row) {
 }
 
 function measurementDisplayName(row) {
-  if (isSignalMeasurement(row)) return `${row.dev_name || row.name || ""}.${signalMeasurementLabel(row)}`;
-  return isWeatherMeasurement(row) ? `气象.${weatherMeasurementLabel(row)}` : row.name;
+  if (isSignalMeasurement(row)) return `${row.dev_type || ""}.${row.dev_name || row.name || ""}.${signalMeasurementLabel(row)}`;
+  return isWeatherMeasurement(row) ? `Environment.weather.${weatherMeasurementLabel(row)}` : row.name;
 }
 
 function measurementDeviceDisplay(row) {
@@ -12212,6 +12676,8 @@ function appendMeasurementTrace(snapshot) {
     minute: Number(clock.absolute_minute ?? clock.minute ?? state.measurementTraceHistory.length) || 0,
     sim_time: clock.time || "--",
     record_time: Date.now(),
+    run_id: Number(clock.run_id ?? 0) || 0,
+    step_count: Number(clock.step_count ?? 0) || 0,
     measurements: {},
   };
   rows.forEach((row) => {
@@ -12227,9 +12693,196 @@ function appendMeasurementTrace(snapshot) {
       valid: Number(row.valid) === 1 ? 1 : 0,
     };
   });
-  state.measurementTraceHistory.push(point);
+  const history = state.measurementTraceHistory || [];
+  const latestPoint = history[history.length - 1];
+  if (latestPoint && compareMeasurementHistoryPoints(point, latestPoint) <= 0) {
+    const pointKey = measurementHistoryPointKey(point);
+    let existingIndex = -1;
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const candidate = history[index];
+      if (measurementHistoryPointKey(candidate) === pointKey) {
+        existingIndex = index;
+        break;
+      }
+      if (compareMeasurementHistoryPoints(candidate, point) < 0) break;
+    }
+    if (existingIndex < 0) return false;
+    const existing = history[existingIndex];
+    history[existingIndex] = {
+      ...existing,
+      ...point,
+      measurements: {
+        ...(existing.measurements || {}),
+        ...(point.measurements || {}),
+      },
+    };
+  } else {
+    history.push(point);
+  }
+  state.measurementTraceHistory = history;
   state.measurementTraceHistory = compactTraceHistory(state.measurementTraceHistory, state.measurementTraceWindowMinutes);
   return true;
+}
+
+function resetMeasurementHistoryHydration() {
+  state.measurementHistoryGeneration = (Number(state.measurementHistoryGeneration) || 0) + 1;
+  state.measurementHistoryLoaded = {};
+  state.measurementHistoryRequests = {};
+}
+
+function measurementHistoryDefinitions(snapshot = state.snapshot || {}) {
+  const measurementDefinitions = snapshot.measurements?.definitions;
+  if (Array.isArray(measurementDefinitions)) return measurementDefinitions;
+  const staticDefinitions = snapshot.definitions?.measurement;
+  return Array.isArray(staticDefinitions) ? staticDefinitions : [];
+}
+
+function measurementHistoryDefinitionIndex(row, definitions = measurementHistoryDefinitions()) {
+  if (!row) return -1;
+  const key = measurementKey(row);
+  return definitions.findIndex((definition) => measurementKey(definition) === key);
+}
+
+function measurementHistoryPointKey(point) {
+  return [
+    Number(point?.run_id ?? 0) || 0,
+    Number(point?.step_count ?? -1),
+    Number(point?.minute ?? 0) || 0,
+  ].join("|");
+}
+
+function compareMeasurementHistoryPoints(left, right) {
+  return (
+    (Number(left?.run_id) || 0) - (Number(right?.run_id) || 0)
+    || (Number(left?.step_count) || 0) - (Number(right?.step_count) || 0)
+    || (Number(left?.minute) || 0) - (Number(right?.minute) || 0)
+  );
+}
+
+function mergeMeasurementHistoryPayload(payload, row, definitionIndex, definitions) {
+  if (!payload || payload.encoding !== "measurement-history-arrays-v1") return false;
+  const expectedSignature = measurementDefinitionSignature(definitions);
+  if (String(payload.definition_signature || "") !== expectedSignature) {
+    throw new Error("历史量测定义顺序签名不一致，历史帧已拒绝");
+  }
+  if (Number(payload.count) !== definitions.length) {
+    throw new Error("历史量测定义长度不一致，历史帧已拒绝");
+  }
+  const currentRunId = Number(state.snapshot?.clock?.run_id ?? 0) || 0;
+  const payloadRunId = Number(payload.run_id ?? 0) || 0;
+  if (payloadRunId !== currentRunId) return false;
+  const indices = Array.isArray(payload.indices) ? payload.indices.map(Number) : [];
+  const selectedPosition = indices.indexOf(Number(definitionIndex));
+  if (selectedPosition < 0) return false;
+  const key = measurementKey(row);
+  const incoming = (payload.frames || []).map((frame) => {
+    const arrays = [frame.real_values, frame.scada_values, frame.valid_values];
+    if (arrays.some((values) => !Array.isArray(values) || values.length !== indices.length)) {
+      throw new Error("历史量测数组长度不一致，历史帧已拒绝");
+    }
+    const minute = Number(frame.absolute_minute);
+    if (!Number.isFinite(minute)) throw new Error("历史量测仿真时刻无效，历史帧已拒绝");
+    const real = numberOrNull(frame.real_values[selectedPosition]);
+    const scada = numberOrNull(frame.scada_values[selectedPosition]);
+    const validValue = frame.valid_values[selectedPosition];
+    return {
+      minute,
+      sim_time: frame.simu_time || "--",
+      record_time: frame.wall_time || "",
+      run_id: Number(frame.run_id ?? payloadRunId) || payloadRunId,
+      step_count: Number(frame.step_count ?? 0) || 0,
+      history_seq: Number(frame.seq ?? 0) || 0,
+      measurements: {
+        [key]: {
+          name: measurementDisplayName(row) || "",
+          dev_type: row.dev_type || "",
+          dev_name: row.dev_name || "",
+          meas_type: measurementTypeDisplay(row) || "",
+          unit: measurementUnit(row.meas_type),
+          value: scada ?? real,
+          real,
+          scada,
+          valid: validValue === null || validValue === undefined
+            ? (Number(row.valid) === 1 ? 1 : 0)
+            : (Number(validValue) === 1 ? 1 : 0),
+        },
+      },
+    };
+  });
+  if (!incoming.length) return false;
+
+  const merged = new Map();
+  (state.measurementTraceHistory || []).forEach((point) => {
+    merged.set(measurementHistoryPointKey(point), point);
+  });
+  incoming.forEach((point) => {
+    const pointKey = measurementHistoryPointKey(point);
+    const existing = merged.get(pointKey);
+    if (existing) {
+      existing.measurements = { ...(existing.measurements || {}), ...point.measurements };
+      if (!existing.sim_time || existing.sim_time === "--") existing.sim_time = point.sim_time;
+      if (!existing.record_time) existing.record_time = point.record_time;
+      existing.run_id = point.run_id;
+      existing.step_count = point.step_count;
+      existing.history_seq = point.history_seq;
+    } else {
+      merged.set(pointKey, point);
+    }
+  });
+  state.measurementTraceHistory = compactTraceHistory(
+    Array.from(merged.values()).sort(compareMeasurementHistoryPoints),
+    state.measurementTraceWindowMinutes,
+  );
+  return true;
+}
+
+async function ensureMeasurementHistoryForRow(row) {
+  const definitions = measurementHistoryDefinitions();
+  const definitionIndex = measurementHistoryDefinitionIndex(row, definitions);
+  if (definitionIndex < 0 || !definitions.length) return false;
+  const runId = Number(state.snapshot?.clock?.run_id ?? 0) || 0;
+  const definitionSignature = measurementDefinitionSignature(definitions);
+  const generation = Number(state.measurementHistoryGeneration) || 0;
+  const requestKey = [state.activeModelId, runId, definitionSignature, definitionIndex, generation].join("|");
+  if (state.measurementHistoryLoaded?.[requestKey]) return false;
+  if (state.measurementHistoryRequests?.[requestKey]) {
+    return state.measurementHistoryRequests[requestKey];
+  }
+  const request = api(`/api/measurement-history?indices=${definitionIndex}`)
+    .then((payload) => {
+      const currentDefinitions = measurementHistoryDefinitions();
+      const currentRunId = Number(state.snapshot?.clock?.run_id ?? 0) || 0;
+      if (
+        (Number(state.measurementHistoryGeneration) || 0) !== generation
+        ||
+        currentRunId !== runId
+        || measurementDefinitionSignature(currentDefinitions) !== definitionSignature
+      ) {
+        return false;
+      }
+      const changed = mergeMeasurementHistoryPayload(payload, row, definitionIndex, currentDefinitions);
+      state.measurementHistoryLoaded[requestKey] = true;
+      return changed;
+    })
+    .catch((error) => {
+      console.warn("历史量测加载失败", error);
+      return false;
+    })
+    .finally(() => {
+      delete state.measurementHistoryRequests[requestKey];
+    });
+  state.measurementHistoryRequests[requestKey] = request;
+  return request;
+}
+
+function ensureSelectedMeasurementHistory() {
+  const row = selectedMeasurementRow();
+  if (!row) return;
+  ensureMeasurementHistoryForRow(row).then((changed) => {
+    if (changed && measurementKey(row) === state.selectedMeasurementKey) {
+      drawMeasurementTraceChart();
+    }
+  });
 }
 
 function ensureSelectedMeasurementKey(rows, fallbackRows = []) {
@@ -12251,18 +12904,26 @@ function setSelectedMeasurementKey(key) {
   state.selectedMeasurementKey = key || "";
   renderMeasurementCompareTable();
   drawMeasurementTraceChart();
+  ensureSelectedMeasurementHistory();
 }
 
 function measurementTraceWindowRange() {
   const history = state.measurementTraceHistory || [];
   const windowMinutes = Math.max(1, Number(state.measurementTraceWindowMinutes) || 60);
   const fallbackMinute = Number(state.snapshot?.clock?.absolute_minute ?? state.snapshot?.clock?.minute ?? 0) || 0;
-  return alignedTraceWindowRange(history, windowMinutes, fallbackMinute);
+  const range = alignedTraceWindowRange(
+    history,
+    windowMinutes,
+    fallbackMinute,
+    chartPeriodOffset("measurementTrace"),
+    simulationModeDurationMinutes(),
+  );
+  setChartPeriodOffset("measurementTrace", range.windowOffset);
+  return range;
 }
 
-function measurementTraceWindowPoints(key = state.selectedMeasurementKey) {
+function measurementTraceWindowPoints(key = state.selectedMeasurementKey, range = measurementTraceWindowRange()) {
   if (!key) return [];
-  const range = measurementTraceWindowRange();
   return (state.measurementTraceHistory || [])
     .filter((point) => point.minute >= range.startMinute && point.minute <= range.endMinute)
     .map((point) => {
@@ -12301,9 +12962,10 @@ function drawMeasurementTraceChart() {
   const bottom = height - plot.bottom;
   state.chartPlotInfo = { ...(state.chartPlotInfo || {}), [chartKey]: plot };
   const range = measurementTraceWindowRange();
+  syncChartPeriodNavigation("measurementTrace", range);
   const allRows = measurementCompareRows();
   const selectedRow = selectedMeasurementRow(allRows);
-  const points = measurementTraceWindowPoints();
+  const points = measurementTraceWindowPoints(state.selectedMeasurementKey, range);
   const seriesDefs = [
     { key: "real", field: "real", label: "真值", color: "#008c8c" },
     { key: "scada", field: "scada", label: "量测值", color: "#c93a3a" },
@@ -12376,7 +13038,14 @@ function drawMeasurementTraceChart() {
       if (value === null) return;
       const x = xForMinute(point.minute);
       const y = yForValue(value);
-      pixelPoints.push({ x, y, minute: point.minute, time: point.time, value });
+      pixelPoints.push({
+        x,
+        y,
+        minute: point.minute,
+        time: point.sim_time || point.time,
+        sim_time: point.sim_time || point.time,
+        value,
+      });
       const restartPath = started && previousMinute !== null && point.minute <= previousMinute;
       if (restartPath) {
         ctx.stroke();
@@ -12397,7 +13066,7 @@ function drawMeasurementTraceChart() {
   state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: hitData };
   syncChartLegendButtons(chartKey);
   drawChartCursor(ctx, chartKey, canvas, plot, hitData, {
-    timeLabel: (point) => runtimeAxisTickLabel(point.minute, range, 0, 0),
+    timeLabel: (point) => runtimeTracePointTimeLabel(point, range),
     valueFormatter: formatMeasurementValue,
   });
   ctx.fillStyle = "#63717a";
@@ -12521,14 +13190,14 @@ function measurementCompareTableStructureKey(rows) {
 }
 
 function measurementLiveCellHtml(row, field) {
-  if (field === "real") return formatMeasurementValue(row.real_value);
-  if (field === "scada") return formatMeasurementValue(row.scada_value);
+  if (field === "real") return formatMeasurementDisplayValue(row.real_value, row);
+  if (field === "scada") return formatMeasurementDisplayValue(row.scada_value, row);
   if (field === "weight") return escapeHtml(row.weight);
   if (field === "status") {
     const valid = Number(row.valid) === 1;
     return `<span class="status-dot ${valid ? "on" : ""}"></span>${valid ? "有效" : "无效"}`;
   }
-  if (field === "diff") return row.diff === null ? "--" : formatMeasurementValue(row.diff);
+  if (field === "diff") return formatMeasurementDisplayValue(row.diff, row);
   return "";
 }
 
@@ -12709,9 +13378,9 @@ function renderMeasurementCompareTable() {
               <td>${escapeHtml(measurementDisplayName(row) || "--")}</td>
               <td>${escapeHtml(measurementDeviceDisplay(row))}</td>
               <td>${escapeHtml(measurementTypeDisplay(row) || "--")}</td>
-              <td class="numeric-cell" data-measurement-live-field="real">${formatMeasurementValue(row.real_value)}</td>
-              <td class="numeric-cell" data-measurement-live-field="scada">${formatMeasurementValue(row.scada_value)}</td>
-              <td class="numeric-cell ${diffClass}" data-measurement-live-field="diff">${row.diff === null ? "--" : formatMeasurementValue(row.diff)}</td>
+              <td class="numeric-cell" data-measurement-live-field="real">${formatMeasurementDisplayValue(row.real_value, row)}</td>
+              <td class="numeric-cell" data-measurement-live-field="scada">${formatMeasurementDisplayValue(row.scada_value, row)}</td>
+              <td class="numeric-cell ${diffClass}" data-measurement-live-field="diff">${formatMeasurementDisplayValue(row.diff, row)}</td>
               <td class="numeric-cell" data-measurement-live-field="weight">${escapeHtml(row.weight)}</td>
               <td data-measurement-live-field="status"><span class="status-dot ${Number(row.valid) === 1 ? "on" : ""}"></span>${Number(row.valid) === 1 ? "有效" : "无效"}</td>
             </tr>

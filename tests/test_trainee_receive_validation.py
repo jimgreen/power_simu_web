@@ -106,6 +106,138 @@ process.stdout.write(JSON.stringify(mergeTeacherRuntimeDevices(localDevices, rem
     assert "mergeTeacherRuntimeDevices(localDefinitions.devices, merged.devices)" in merge_block
 
 
+def test_trainee_runtime_signals_use_exact_valid_scada_measurements_without_mutating_raw_definition():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+
+    assert "function applyTraineeObservedRuntimeSignals" in script
+    helper = "function traineeRuntimeSignalKey" + script.split(
+        "function traineeRuntimeSignalKey",
+        1,
+    )[1].split("function mergeTeacherRuntimeDevices", 1)[0]
+    body = r'''
+function normalizeDiagramMeasurementToken(value) {
+  return String(value || "").trim().toUpperCase();
+}
+const snapshot = {
+  devices: [
+    { dev_type: "ACNode", dev_name: "交流风电-2", run_stat: 1, raw: { run_stat: "1" } },
+    { dev_type: "ACGenerator", dev_name: "交流风电-2", run_stat: 1, raw: { run_stat: "1" } },
+    { dev_type: "ACBreak", dev_name: "断路器-1", status: 1, raw: { status: "1" } },
+  ],
+  device_states: [
+    { dev_type: "ACNode", dev_name: "交流风电-2", run_stat: 1, dead_island: false },
+    { dev_type: "ACGenerator", dev_name: "交流风电-2", run_stat: 1, dead_island: false },
+  ],
+  measurements: {
+    real: [
+      { dev_type: "ACGenerator", dev_name: "交流风电-2", meas_type: "RUN_STAT", valid: 1, value: 1 },
+    ],
+    scada: [
+      { dev_type: "ACNode", dev_name: "交流风电-2", meas_type: "RUN_STAT", valid: 1, value: 1 },
+      { dev_type: "ACGenerator", dev_name: "交流风电-2", meas_type: "RUN_STAT", valid: 1, value: 0 },
+      { dev_type: "ACBreak", dev_name: "断路器-1", meas_type: "STATUS", valid: 1, value: 0 },
+    ],
+  },
+};
+applyTraineeObservedRuntimeSignals(snapshot);
+process.stdout.write(JSON.stringify(snapshot));
+'''
+    result = subprocess.run(
+        ["node", "-e", f"{helper}\n{body}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    snapshot = json.loads(result.stdout)
+    node, generator, breaker = snapshot["devices"]
+    assert node["run_stat"] == 1
+    assert generator["run_stat"] == 0
+    assert generator["raw"]["run_stat"] == "1"
+    assert generator["runtime_signals"]["run_stat"]["valid"] is True
+    assert breaker["status"] == 0
+    assert breaker["raw"]["status"] == "1"
+    generator_state = next(
+        item
+        for item in snapshot["device_states"]
+        if item["dev_type"] == "ACGenerator" and item["dev_name"] == "交流风电-2"
+    )
+    assert generator_state["run_stat"] == 0
+
+
+def test_trainee_runtime_signals_keep_last_valid_scada_value_when_current_measurement_is_invalid():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+
+    helper = "function traineeRuntimeSignalKey" + script.split(
+        "function traineeRuntimeSignalKey",
+        1,
+    )[1].split("function mergeTeacherRuntimeDevices", 1)[0]
+    body = r'''
+function normalizeDiagramMeasurementToken(value) {
+  return String(value || "").trim().toUpperCase();
+}
+const snapshot = {
+  devices: [
+    { dev_type: "ACGenerator", dev_name: "交流风电-2", run_stat: 1, raw: { run_stat: "1" } },
+  ],
+  device_states: [
+    { dev_type: "ACGenerator", dev_name: "交流风电-2", run_stat: 1, dead_island: false },
+  ],
+  measurements: {
+    real: [
+      { dev_type: "ACGenerator", dev_name: "交流风电-2", meas_type: "RUN_STAT", valid: 1, value: 1 },
+    ],
+    scada: [
+      { dev_type: "ACGenerator", dev_name: "交流风电-2", meas_type: "RUN_STAT", valid: 1, value: 0 },
+    ],
+  },
+};
+applyTraineeObservedRuntimeSignals(snapshot);
+snapshot.measurements.scada[0].valid = 0;
+snapshot.measurements.scada[0].value = 1;
+applyTraineeObservedRuntimeSignals(snapshot);
+process.stdout.write(JSON.stringify(snapshot));
+'''
+    result = subprocess.run(
+        ["node", "-e", f"{helper}\n{body}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    snapshot = json.loads(result.stdout)
+    device = snapshot["devices"][0]
+    assert device["run_stat"] == 0
+    assert device["runtime_signals"]["run_stat"]["valid"] is False
+    assert device["runtime_signals"]["run_stat"]["stale"] is True
+    assert snapshot["device_states"][0]["run_stat"] == 0
+
+
+def test_trainee_runtime_signal_refresh_is_wired_to_rendering_and_never_reads_real_channel():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+
+    helper = "function traineeRuntimeSignalKey" + script.split(
+        "function traineeRuntimeSignalKey",
+        1,
+    )[1].split("function mergeTeacherRuntimeDevices", 1)[0]
+    assert "measurements.real" not in helper
+    assert "runtime_signals" in script.split("function mergeTeacherRuntimeDevices", 1)[1].split(
+        "function mergeTeacherMeasurementsWithLocalDefinitions",
+        1,
+    )[0]
+    render_block = script.split("function renderSnapshot(snapshot)", 1)[1].split(
+        "function renderReceiveMode",
+        1,
+    )[0]
+    assert "applyTraineeObservedRuntimeSignals(snapshot);" in render_block
+    assert render_block.index("applyTraineeObservedRuntimeSignals(snapshot);") < render_block.index(
+        "state.snapshot = snapshot;"
+    )
+    tooltip_block = script.split("function diagramDeviceTooltipData", 1)[1].split(
+        "function diagramDeviceMeasurements",
+        1,
+    )[0]
+    assert "traineeRuntimeSignalDisplayValue" in tooltip_block
+
+
 def test_trainee_receive_keeps_local_measurement_status_while_applying_teacher_values():
     script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
 

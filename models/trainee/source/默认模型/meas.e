@@ -525,11 +525,11 @@
 # 523  DCACConverter.ACDC变流器-2.Q_AC             DCACConverter  ACDC变流器-2           Q_AC              10000.0  1      0.0
 # 524  DCACConverter.ACDC变流器-2.V_AC             DCACConverter  ACDC变流器-2           V_AC              10000.0  1      0.0
 # 525  DCACConverter.ACDC变流器-2.I_AC             DCACConverter  ACDC变流器-2           I_AC              10000.0  1      0.0
-# 526  weather_wind_speed                       Environment    weather             WIND_SPEED        1.0      1      12.0
-# 527  weather_air_temp                         Environment    weather             AIR_TEMP          1.0      1      -18.0
-# 528  weather_humidity                         Environment    weather             HUMIDITY          1.0      1      72.0
-# 529  weather_air_pressure                     Environment    weather             AIR_PRESSURE      1.0      1      960.0
-# 530  weather_solar_irradiance                 Environment    weather             SOLAR_IRRADIANCE  1.0      1      0.0
+# 526  Environment.weather.WIND_SPEED           Environment    weather             WIND_SPEED        1.0      1      12.0
+# 527  Environment.weather.AIR_TEMP             Environment    weather             AIR_TEMP          1.0      1      -18.0
+# 528  Environment.weather.HUMIDITY             Environment    weather             HUMIDITY          1.0      1      72.0
+# 529  Environment.weather.AIR_PRESSURE         Environment    weather             AIR_PRESSURE      1.0      1      960.0
+# 530  Environment.weather.SOLAR_IRRADIANCE     Environment    weather             SOLAR_IRRADIANCE  1.0      1      0.0
 # 531  ACNode.交流风电-1.run_stat                   ACNode         交流风电-1              RUN_STAT          1.0      1      1.0
 # 532  ACNode.交流风电-2.run_stat                   ACNode         交流风电-2              RUN_STAT          1.0      1      1.0
 # 533  ACNode.交流风电-3.run_stat                   ACNode         交流风电-3              RUN_STAT          1.0      1      1.0

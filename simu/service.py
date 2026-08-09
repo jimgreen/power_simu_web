@@ -56,13 +56,29 @@ from simu.definition_editing import (
     normalize_measurement_changes,
     ratio_parameter_number,
     require_definition_revision,
-    render_ebook_aligned,
+)
+from simu.device_roles import (
+    AC_TO_DC,
+    converter_control_mode,
+    converter_power_in_ac_terminal_convention,
+    converter_power_setpoint_fields,
+)
+from simu.model_semantics import (
+    device_family_from_block,
+    grid_converter_keys,
+    resolve_resource_reference,
+    resource_keys_by_alias,
+    resources_by_device_key,
+    structured_resources,
+    terminal_domains_from_block,
 )
 from simu.measurement_delta import (
     compact_measurement_delta,
     measurement_definition_signature,
     measurement_rows_by_definition_index,
 )
+from simu.measurement_history import MeasurementHistoryStore
+from simu.point_names import automatic_point_name
 from simu.power_flow_worker import PowerFlowExecution, PowerFlowTimeoutError
 from simu.web_runtime_settings import runtime_settings_payload, updated_runtime_settings_entry
 
@@ -151,15 +167,19 @@ RUNTIME_CONTROL_SETPOINT_ALIASES = {
     ("DCLoad", "pv0"): "p_set",
     ("DCLoad", "qv0"): "q_set",
 }
-STORAGE_PARAMETER_SPECS = (
-    ("ACStorageGen", "ACGenerator", "idx_acgenerator"),
-    ("DCStorageGen", "DCGenerator", "idx_dcgenerator"),
+DEFINITION_DEFAULTS_FILE = "definition_defaults.json"
+SOURCE_DEFINITION_FILES = (
+    "model.e",
+    "meas.e",
+    "stat.e",
+    "control.e",
+    "weather.e",
+    "curves.e",
+    DEFINITION_DEFAULTS_FILE,
 )
-
-SOURCE_DEFINITION_FILES = ("model.e", "meas.e", "stat.e", "control.e", "weather.e", "curves.e")
 LEGACY_RUNTIME_DEFINITION_FILES = SOURCE_DEFINITION_FILES + ("device.e",)
 DIAGRAM_FILE_NAME = "diagram.svg"
-MANUAL_DEFINITION_CHANGES_FILE = ".manual_definition_changes.json"
+MANUAL_DEFINITION_CHANGES_FILE = "manual_overrides.json"
 CONTROL_DEFINITION_BLOCKS = ("RunStat", "CbOpenStat", "SetValue", "StorageSoc")
 CLOCK_SPEED_LEVELS = (1.0, 5.0, 15.0, 30.0, 60.0, 300.0, 900.0, 1800.0, 3600.0)
 SIMULATION_MODE_CONFIGS: Dict[str, Dict[str, float | int | str]] = {
@@ -624,9 +644,71 @@ def _has_cancel_command_payload(payload: Mapping[str, Any]) -> bool:
         if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) > 0:
             return True
     action = str(payload.get("action", payload.get("operation", "")) or "").strip().casefold()
+    if action in {
+        "cancel_strategy_generation",
+        "cancel-strategy-generation",
+        "revoke_strategy_generation",
+        "revoke-strategy-generation",
+    }:
+        return True
     if action in {"cancel", "cancel_command", "cancel_commands", "取消", "取消指令"}:
         return True
     return bool(payload.get("cancel") is True and any(key in payload for key in ("name", "names", "commands", "items", "controls")))
+
+
+def _strategy_generation_metadata(payload: Mapping[str, Any]) -> Tuple[str, Any, bool]:
+    strategy = payload.get("strategy")
+    strategy_payload = strategy if isinstance(strategy, Mapping) else {}
+    strategy_id = str(
+        payload.get(
+            "strategy_id",
+            payload.get(
+                "strategyId",
+                strategy_payload.get("strategy_id", strategy_payload.get("strategyId", "")),
+            ),
+        )
+        or ""
+    ).strip()
+    generation = payload.get(
+        "generation",
+        payload.get(
+            "strategy_generation",
+            payload.get(
+                "strategyGeneration",
+                strategy_payload.get(
+                    "generation",
+                    strategy_payload.get("strategy_generation", strategy_payload.get("strategyGeneration")),
+                ),
+            ),
+        ),
+    )
+    if generation is not None and not isinstance(generation, (str, int, float)):
+        generation = str(generation)
+    if isinstance(generation, str):
+        generation = generation.strip()
+    replace_generation = bool(
+        payload.get(
+            "replace_strategy_generation",
+            payload.get(
+                "replaceStrategyGeneration",
+                strategy_payload.get(
+                    "replace_strategy_generation",
+                    strategy_payload.get("replaceStrategyGeneration", False),
+                ),
+            ),
+        )
+    )
+    return strategy_id, generation, replace_generation
+
+
+def _strategy_generation_matches(left: Any, right: Any) -> bool:
+    if left in (None, "") or right in (None, ""):
+        return False
+    left_number = _to_float(left, None)
+    right_number = _to_float(right, None)
+    if left_number is not None and right_number is not None:
+        return left_number == right_number
+    return str(left).strip() == str(right).strip()
 
 
 def _explicit_command_origin(entry_or_payload: Mapping[str, Any]) -> str:
@@ -954,6 +1036,7 @@ class PolarMicrogridSimulator:
         self._measurement_delta_definition_signature = ""
         self._measurement_delta_definition_count = 0
         self._measurement_delta_definition_revision = 0
+        self._measurement_history = MeasurementHistoryStore()
         self._last_command_response_index = 0
         self.latest_result: Dict[str, Any] = {}
         self.latest_measurements: Dict[str, Any] = {}
@@ -999,7 +1082,9 @@ class PolarMicrogridSimulator:
         self.latest_scada_rows: List[List[str]] = []
         self._fault_restore: Dict[Tuple[str, str, str], str] = {}
         self._last_scada_values: Dict[str, float] = {}
-        self._wind_converter_names_cache: Optional[Tuple[int, set[str]]] = None
+        self._internal_power_converter_keys_cache: Optional[
+            Tuple[int, set[Tuple[str, str]]]
+        ] = None
         self._power_flow_connection_sides_cache: Optional[
             Tuple[int, Tuple[Tuple[str, str, str], ...], Dict[Tuple[str, str], str]]
         ] = None
@@ -1015,6 +1100,7 @@ class PolarMicrogridSimulator:
             "curves": self.sim_dir / "curves.json",
             "curves_e": self.sim_dir / "curves.e",
             "diagram": self.sim_dir / DIAGRAM_FILE_NAME,
+            "definition_defaults": self.sim_dir / DEFINITION_DEFAULTS_FILE,
         }
         self.work_files = {
             "stat": self.work_dir / "stat.e",
@@ -1038,8 +1124,11 @@ class PolarMicrogridSimulator:
         self.commands_file = self.runtime_dir / "commands.json"
         self.runtime_logs_file = self.runtime_dir / "runtime_logs.json"
         self.trainee_receive_file = self.runtime_dir / "trainee_receive.json"
-        self.manual_definition_changes_file = self.sim_dir / MANUAL_DEFINITION_CHANGES_FILE
+        # SVG definition edits are runtime overrides.  The source E files stay
+        # immutable so an operator can always restore the model defaults.
+        self.manual_definition_changes_file = self.runtime_dir / MANUAL_DEFINITION_CHANGES_FILE
         self._manual_definition_changes: Dict[str, Dict[str, Any]] = {}
+        self._source_measurement_statuses: Dict[str, Dict[str, Any]] = {}
 
         self._load_runtime_state_from_disk()
 
@@ -1075,14 +1164,15 @@ class PolarMicrogridSimulator:
             curve_mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
         self.clock.speed = _simulation_mode_default_clock_speed(curve_mode)
         self.local_settings = self._read_local_settings()
+        self._source_measurement_statuses = self._read_source_measurement_statuses()
         self._apply_stored_system_parameters()
         self.command_history = self._read_command_history()
         self._last_command_response_index = len(self.command_history)
         self.runtime_logs = self._read_runtime_logs()
         self._runtime_log_seq = max((int(_to_float(item.get("seq"), 0) or 0) for item in self.runtime_logs), default=0)
         self.reload_definition_state()
-        self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
         self._load_manual_definition_changes()
+        self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
 
     def reset_runtime_for_model_change(self) -> Dict[str, int]:
         """Discard runtime artifacts and rebuild a clean in-memory state from source definitions."""
@@ -1107,6 +1197,7 @@ class PolarMicrogridSimulator:
                 self._measurement_delta_definition_signature = ""
                 self._measurement_delta_definition_count = 0
                 self._measurement_delta_definition_revision = 0
+                self._measurement_history.clear(preserve_definition=False)
                 self._last_command_response_index = 0
                 self.latest_result = {}
                 self.latest_measurements = {}
@@ -1176,7 +1267,7 @@ class PolarMicrogridSimulator:
             self._definition_mirror_refs = mirror_refs
             self._definition_snapshot = candidate
             self._definition_publish_epoch = epoch_after + 2
-            self._wind_converter_names_cache = None
+            self._internal_power_converter_keys_cache = None
             self._power_flow_connection_sides_cache = None
             self._measurement_delta_step_count = None
             return candidate
@@ -1236,7 +1327,7 @@ class PolarMicrogridSimulator:
                 raise
             finally:
                 self._definition_publish_epoch = epoch + 2
-            self._wind_converter_names_cache = None
+            self._internal_power_converter_keys_cache = None
             self._power_flow_connection_sides_cache = None
             self._measurement_delta_step_count = None
 
@@ -1290,6 +1381,7 @@ class PolarMicrogridSimulator:
         self._measurement_delta_definition_signature = ""
         self._measurement_delta_definition_count = 0
         self._measurement_delta_definition_revision = 0
+        self._measurement_history.clear(preserve_definition=False)
 
     def _copy_runtime_inputs(self) -> None:
         self._cleanup_legacy_runtime_definition_files()
@@ -1353,6 +1445,26 @@ class PolarMicrogridSimulator:
         if not isinstance(normalized.get("measurement_statuses"), Mapping):
             normalized["measurement_statuses"] = {}
         return normalized
+
+    def _read_source_measurement_statuses(self) -> Dict[str, Dict[str, Any]]:
+        payload = _read_json(self.source_files["definition_defaults"], {})
+        raw_statuses = payload.get("measurement_statuses", {}) if isinstance(payload, Mapping) else {}
+        if not isinstance(raw_statuses, Mapping):
+            return {}
+        statuses: Dict[str, Dict[str, Any]] = {}
+        for raw_name, raw_value in raw_statuses.items():
+            if not isinstance(raw_value, Mapping):
+                continue
+            name = str(raw_name).strip()
+            status = str(raw_value.get("status", "")).strip().casefold()
+            if not name or status not in MEASUREMENT_STATUS_TOKENS:
+                continue
+            fixed_value = _to_float(raw_value.get("fixed_value"), None)
+            statuses[name] = {
+                "status": status,
+                "fixed_value": fixed_value if status == "fixed" else None,
+            }
+        return statuses
 
     def _read_runtime_logs(self) -> List[Dict[str, Any]]:
         items = _read_json(self.runtime_logs_file, [])
@@ -1729,6 +1841,18 @@ class PolarMicrogridSimulator:
                 model_id=self.model_id,
             )
 
+    def _trace_history_limit(self, role: str = "simulator") -> int:
+        payload = runtime_settings_payload(
+            self.local_settings,
+            role,
+            model_id=self.model_id,
+        )
+        settings = payload.get("effectiveSettings", payload.get("settings", {}))
+        try:
+            return max(1, int(settings.get("trace_history_limit", 45000)))
+        except (AttributeError, TypeError, ValueError):
+            return 45000
+
     def set_web_runtime_settings(self, role: str, payload: Mapping[str, Any]) -> Dict[str, Any]:
         with self.lock:
             with self._service_instance_lifecycle_lock:
@@ -1832,112 +1956,55 @@ class PolarMicrogridSimulator:
             return False
         return math.floor((end + 1e-9) / cycle_minutes) > math.floor((start + 1e-9) / cycle_minutes)
 
-    @staticmethod
-    def _legacy_storage_target_key(
-        row: Mapping[str, Any],
-        device_keys: set[Tuple[str, str]],
-    ) -> Optional[Tuple[str, str]]:
-        name = str(row.get("name", "")).strip()
-        declared_type = str(row.get("dev_type", "")).strip()
-        source_name = str(row.get("source_name", "")).strip()
-        target_name = source_name or name
-        if not target_name:
-            return None
-        if declared_type:
-            key = (declared_type, target_name)
-            if declared_type in ("ACGenerator", "DCGenerator") and key not in device_keys:
-                return None
-            return key
-        for key in (("DCGenerator", target_name), ("DCGenerator", f"{target_name}_vsrc")):
-            if key in device_keys:
-                return key
-        return ("ESS", name) if name else None
-
     def _storage_target_aliases(self) -> Dict[str, set[Tuple[str, str]]]:
-        definition_snapshot = self.definition_snapshot
-        model_book = definition_snapshot.model_book
-        device_keys = {
-            (dev_type, str(row.get("name", "")).strip())
-            for dev_type in ("ACGenerator", "DCGenerator")
-            for row in getattr(model_book.data.get(dev_type), "data", [])
-            if str(row.get("name", "")).strip()
-        }
-        aliases: Dict[str, set[Tuple[str, str]]] = {}
-
-        def add_alias(name: str, key: Tuple[str, str]) -> None:
-            normalized = str(name or "").strip()
-            if normalized:
-                aliases.setdefault(normalized, set()).add(key)
-
-        generators_by_idx = {
-            dev_type: {
-                str(row.get("idx", "")): row
-                for row in getattr(model_book.data.get(dev_type), "data", [])
-                if str(row.get("idx", ""))
-            }
-            for dev_type in ("ACGenerator", "DCGenerator")
-        }
-        seen_structured: set[Tuple[str, str]] = set()
-        for block_name, generator_type, index_field in STORAGE_PARAMETER_SPECS:
-            for row in getattr(model_book.data.get(block_name), "data", []):
-                source = generators_by_idx[generator_type].get(str(row.get(index_field, "")))
-                if source is None:
-                    continue
-                name = str(source.get("name", "")).strip()
-                key = (generator_type, name)
-                if not name or key in seen_structured:
-                    continue
-                seen_structured.add(key)
-                add_alias(name, key)
-
-        for row in getattr(definition_snapshot.dev_define_book.data.get("estorage"), "data", []):
-            target_key = self._legacy_storage_target_key(row, device_keys)
-            if target_key is None:
-                continue
-            name = str(row.get("name", "")).strip()
-            source_name = str(row.get("source_name", "")).strip()
-            for alias_name in (
-                name,
-                source_name,
-                target_key[1],
-                name.removesuffix("_vsrc"),
-                source_name.removesuffix("_vsrc"),
-                target_key[1].removesuffix("_vsrc"),
-            ):
-                add_alias(alias_name, target_key)
-        return aliases
+        return resource_keys_by_alias(
+            self.definition_snapshot.model_book,
+            ("storage",),
+        )
 
     def _runtime_storage_soc_values(self) -> Dict[Tuple[str, str], float]:
         storage_block = self.runtime_stat_book.data.get("StorageSoc") or self.runtime_stat_book.data.get("StorageStatus")
-        typed_values: Dict[Tuple[str, str], float] = {}
-        blank_values: List[Tuple[str, float]] = []
+        resources = [
+            resource
+            for resource in structured_resources(self.definition_snapshot.model_book)
+            if resource.technology == "storage"
+        ]
+        resolved: Dict[Tuple[str, str], float] = {}
         for row in getattr(storage_block, "data", []):
-            dev_type = str(row.get("dev_type", "")).strip()
-            name = str(row.get("name", row.get("dev_name", ""))).strip()
-            if not name:
-                continue
             value = _to_float(
                 row.get("soc_curr", row.get("soc", row.get("soc_cur", 0.0))),
                 0.0,
             ) or 0.0
-            if dev_type:
-                typed_values[(dev_type, name)] = value
-            else:
-                blank_values.append((name, value))
-
-        resolved = dict(typed_values)
-        aliases = self._storage_target_aliases()
-        for name, value in blank_values:
-            targets = aliases.get(name, set())
-            if len(targets) != 1:
-                continue
-            resolved.setdefault(next(iter(targets)), value)
+            resource_key = resolve_resource_reference(resources, row)
+            if resource_key is not None:
+                resolved[resource_key] = value
         return resolved
+
+    def _storage_runtime_protocol_keys(self) -> Dict[Tuple[str, str], set[Tuple[str, str]]]:
+        resources = [
+            resource
+            for resource in structured_resources(self.definition_snapshot.model_book)
+            if resource.technology == "storage"
+        ]
+        keys_by_resource = {resource.device_key: {resource.device_key} for resource in resources}
+        storage_block = self.runtime_stat_book.data.get("StorageSoc") or self.runtime_stat_book.data.get("StorageStatus")
+        for row in getattr(storage_block, "data", []):
+            resource_key = resolve_resource_reference(resources, row)
+            dev_type = str(row.get("dev_type", "")).strip()
+            dev_name = str(row.get("name", row.get("dev_name", ""))).strip()
+            if resource_key is not None and dev_type and dev_name:
+                keys_by_resource.setdefault(resource_key, {resource_key}).add((dev_type, dev_name))
+        return keys_by_resource
 
     def _sync_latest_storage_soc_measurement_rows(self) -> None:
         soc_values = self._runtime_storage_soc_values()
         if not soc_values:
             return
+        resource_by_protocol_key = {
+            protocol_key: resource_key
+            for resource_key, protocol_keys in self._storage_runtime_protocol_keys().items()
+            for protocol_key in protocol_keys
+        }
 
         def sync_rows(rows: List[List[str]]) -> None:
             for row in rows:
@@ -1947,7 +2014,7 @@ class PolarMicrogridSimulator:
                     continue
                 dev_type = str(row[2]).strip()
                 dev_name = str(row[3]).strip()
-                key = (dev_type, dev_name)
+                key = resource_by_protocol_key.get((dev_type, dev_name), (dev_type, dev_name))
                 if key in soc_values:
                     row[7] = _number_text(soc_values[key])
 
@@ -2340,10 +2407,10 @@ class PolarMicrogridSimulator:
         if set_type or command_kind in ("remote_adjustment", "yt", "遥调"):
             if not set_type:
                 return None
-            name = raw_name or f"{dev_type}.{dev_name}.{set_type}"
+            name = raw_name or automatic_point_name(dev_type, dev_name, set_type)
             return ("remote_adjustment", dev_type, dev_name, set_type), name
         field_name = "status" if control_type == "status" else "run_stat"
-        name = raw_name or f"{dev_type}.{dev_name}.{field_name}"
+        name = raw_name or automatic_point_name(dev_type, dev_name, field_name)
         return ("remote_control", dev_type, dev_name, field_name), name
 
     def _cancel_command_targets(self, payload: Mapping[str, Any]) -> Dict[Tuple[str, str, str, str], str]:
@@ -2610,9 +2677,154 @@ class PolarMicrogridSimulator:
                 changed = True
         return changed
 
+    @staticmethod
+    def _strategy_generation_entry_metadata(entry: Mapping[str, Any]) -> Tuple[str, Any, bool]:
+        strategy_id, generation, replace_generation = _strategy_generation_metadata(entry)
+        payload = entry.get("payload")
+        if isinstance(payload, Mapping):
+            payload_strategy_id, payload_generation, payload_replace_generation = _strategy_generation_metadata(payload)
+            strategy_id = strategy_id or payload_strategy_id
+            if generation in (None, ""):
+                generation = payload_generation
+            replace_generation = replace_generation or payload_replace_generation
+        return strategy_id, generation, replace_generation
+
+    def _mark_strategy_generations_cancelled(
+        self,
+        *,
+        strategy_id: str,
+        generation: Any = None,
+        reason: str,
+        cancelled_wall_time: str,
+        cancelled_simu_time: str,
+        cancelled_absolute_minute: float,
+        require_generation_match: bool,
+    ) -> Tuple[int, set[Tuple[str, str, str, str]]]:
+        cancelled_entries = 0
+        cancelled_keys: set[Tuple[str, str, str, str]] = set()
+        for entry in self.command_history:
+            if not isinstance(entry, dict) or entry.get("cancelled"):
+                continue
+            if _command_origin(entry) != "automatic":
+                continue
+            entry_strategy_id, entry_generation, replace_generation = self._strategy_generation_entry_metadata(entry)
+            if entry_strategy_id != strategy_id:
+                continue
+            if require_generation_match and not _strategy_generation_matches(entry_generation, generation):
+                continue
+            # A strategy snapshot can legitimately contain no control points.  Keep
+            # those records cancellable, but do not reinterpret unrelated metadata
+            # as a replaceable strategy generation.
+            if not replace_generation and not self._command_entry_has_accepted_controls(entry):
+                continue
+            entry_keys = self._command_entry_control_keys(entry)
+            entry["cancelled"] = True
+            entry["cancelled_reason"] = reason
+            entry["expires_at_absolute_minute"] = cancelled_absolute_minute
+            entry["cancelled_names"] = sorted(
+                f"{dev_type}.{dev_name}.{field_name}"
+                for _kind, dev_type, dev_name, field_name in entry_keys
+            )
+            entry["cancelled_wall_time"] = cancelled_wall_time
+            entry["cancelled_simu_time"] = cancelled_simu_time
+            entry["cancelled_absolute_minute"] = cancelled_absolute_minute
+            entry["cancelled_run_id"] = int(self.clock.run_id)
+            cancelled_entries += 1
+            cancelled_keys.update(entry_keys)
+        return cancelled_entries, cancelled_keys
+
+    def _cancel_strategy_generation(
+        self,
+        payload: Mapping[str, Any],
+        source: str,
+    ) -> Dict[str, Any]:
+        strategy_id, generation, _replace_generation = _strategy_generation_metadata(payload)
+        eligible_source = _is_trainee_command_source(source)
+        current = float(self.clock.absolute_minute)
+        received_wall_time = _now_text()
+        received_simu_time = minute_to_time(self.clock.minute)
+        reason = str(payload.get("reason", payload.get("cancelled_reason", "strategy_generation_revoked")) or "").strip()
+        reason = reason or "strategy_generation_revoked"
+        cancelled_entries = 0
+        cancelled_keys: set[Tuple[str, str, str, str]] = set()
+
+        if eligible_source and strategy_id and generation not in (None, ""):
+            cancelled_entries, cancelled_keys = self._mark_strategy_generations_cancelled(
+                strategy_id=strategy_id,
+                generation=generation,
+                reason=reason,
+                cancelled_wall_time=received_wall_time,
+                cancelled_simu_time=received_simu_time,
+                cancelled_absolute_minute=current,
+                require_generation_match=True,
+            )
+
+        cancel_entry = {
+            "time": received_wall_time,
+            "received_wall_time": received_wall_time,
+            "received_simu_time": received_simu_time,
+            "received_absolute_minute": current,
+            "run_id": int(self.clock.run_id),
+            "source": source,
+            "eligible_source": eligible_source,
+            "manual_hold": False,
+            "command_origin": "automatic",
+            "issued_absolute_minute": current,
+            "expires_at_absolute_minute": current,
+            "valid_for_minutes": 0.0,
+            "strategy_id": strategy_id,
+            "generation": generation,
+            "cancelled_reason": reason,
+            "accepted": {
+                "run_status": 0,
+                "set_values": 0,
+                "cancelled_generations": cancelled_entries,
+                "ignored": 0 if eligible_source else 1,
+            },
+            "normalized": {
+                "run_status": [],
+                "set_values": [],
+                "cancel_strategy_generation": {
+                    "strategy_id": strategy_id,
+                    "generation": generation,
+                    "cancelled": cancelled_entries > 0,
+                },
+            },
+            "payload": json.loads(json.dumps(payload, ensure_ascii=False, default=str)),
+        }
+        self.command_history.append(cancel_entry)
+        self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
+        self._write_command_history()
+        self._append_runtime_log(
+            "控制指令",
+            "学员台 /api/student/commands",
+            "策略代次撤销成功" if cancelled_entries else "无可撤销策略代次",
+            [
+                f"来源 {source}",
+                f"策略 {strategy_id or '--'}，代次 {generation if generation not in (None, '') else '--'}",
+                f"撤销代次 {cancelled_entries} 个，撤销控制点 {len(cancelled_keys)} 个，原因 {reason}",
+            ],
+            level="ok" if cancelled_entries else "warn",
+        )
+        return {
+            "cancelled_generations": cancelled_entries,
+            "cancelled_controls": len(cancelled_keys),
+            "ignored": 0 if eligible_source else 1,
+            "strategy_id": strategy_id,
+            "generation": generation,
+        }
+
     def cancel_student_commands(self, payload: Mapping[str, Any], source: str = "") -> Dict[str, Any]:
         with self.lock:
             source = source or str(payload.get("source", ""))
+            action = str(payload.get("action", payload.get("operation", "")) or "").strip().casefold()
+            if action in {
+                "cancel_strategy_generation",
+                "cancel-strategy-generation",
+                "revoke_strategy_generation",
+                "revoke-strategy-generation",
+            }:
+                return self._cancel_strategy_generation(payload, source)
             eligible_source = _is_trainee_command_source(source)
             targets = self._cancel_command_targets(payload)
             origin_filter = _cancel_command_origin_filter(payload)
@@ -3202,8 +3414,7 @@ class PolarMicrogridSimulator:
                 model_book,
                 device_book,
                 "wind_generator",
-                ("ACGenerator",),
-                ("wt", "wind"),
+                ("ACGenerator", "DCGenerator"),
             ):
                 rated = simu_loop._wind_rated_power_kw(row, define)
                 rated_speed = simu_loop._safe_float((define or {}).get("rated_wind_speed", 15.0), 15.0) or 15.0
@@ -3228,10 +3439,9 @@ class PolarMicrogridSimulator:
                 model_book,
                 device_book,
                 "pv_generator",
-                ("DCGenerator",),
-                ("pv", "solar"),
+                ("ACGenerator", "DCGenerator"),
             ):
-                rated = simu_loop._safe_float((define or {}).get("rated_power", (define or {}).get("p_max", row.get("p_set", 0.0))), 0.0) or 0.0
+                rated = simu_loop._pv_rated_power_kw(row, define)
                 temp_coef = simu_loop._safe_float((define or {}).get("temp_coefficient", 0.0), 0.0) or 0.0
                 ref_irrad = simu_loop._safe_float((define or {}).get("reference_irradiance", 1000.0), 1000.0) or 1000.0
                 ref_temp = simu_loop._safe_float((define or {}).get("reference_temperature", 25.0), 25.0) or 25.0
@@ -3310,133 +3520,28 @@ class PolarMicrogridSimulator:
             for (dev_type, dev_name), values in grouped.items()
         ]
 
-    def _device_category_names(
+    def _internal_power_converter_keys(
         self,
         definition_snapshot: Optional[DefinitionSnapshot] = None,
-    ) -> Dict[str, set[str]]:
+    ) -> set[Tuple[str, str]]:
         active_snapshot = definition_snapshot or self.definition_snapshot
-        categories = {
-            "wind": set(),
-            "pv": set(),
-            "diesel": set(),
-            "load": set(),
-            "storage": set(),
-        }
-        model_book = active_snapshot.model_book
-        capability_book = active_snapshot.dev_define_book
-        for category, block_name in {
-            "wind": "wind_generator",
-            "pv": "pv_generator",
-            "diesel": "diesel_generator",
-            "storage": "estorage",
-        }.items():
-            block = capability_book.data.get(block_name)
-            if block is None:
-                continue
-            for row in block.data:
-                name = str(row.get("name", "")).strip()
-                if not name:
-                    continue
-                categories[category].add(name)
-                if category == "storage":
-                    categories[category].add(f"{name}_vsrc")
-        for row in getattr(model_book.data.get("ACLoad"), "data", []):
-            name = str(row.get("name", "")).strip()
-            if name:
-                categories["load"].add(name)
-        return categories
-
-    def _wind_converter_names(
-        self,
-        definition_snapshot: Optional[DefinitionSnapshot] = None,
-    ) -> set[str]:
-        active_snapshot = definition_snapshot or self.definition_snapshot
-        cached = self._wind_converter_names_cache
+        cached = self._internal_power_converter_keys_cache
         if cached is not None and cached[0] == active_snapshot.revision:
             return cached[1]
 
         model_book = active_snapshot.model_book
-        ac_generators = {
-            str(row.get("idx", "")): row
-            for row in getattr(model_book.data.get("ACGenerator"), "data", [])
-            if str(row.get("idx", ""))
-        }
-        wind_nodes = {
-            str(source.get("node", ""))
-            for row in getattr(model_book.data.get("ACWindGen"), "data", [])
-            if (source := ac_generators.get(str(row.get("idx_acgenerator", "")))) is not None
-            and str(source.get("node", ""))
-        }
-        adjacent_wind_nodes = set(wind_nodes)
-        for block_name in ("ACBranch", "ACZeroBranch"):
-            for row in getattr(model_book.data.get(block_name), "data", []):
-                i_node = str(row.get("i_node", ""))
-                j_node = str(row.get("j_node", ""))
-                if i_node in wind_nodes and j_node:
-                    adjacent_wind_nodes.add(j_node)
-                if j_node in wind_nodes and i_node:
-                    adjacent_wind_nodes.add(i_node)
+        boundary_keys = grid_converter_keys(model_book)
+        keys: set[Tuple[str, str]] = set()
+        for converter_type in ("ACDCConverter", "DCACConverter"):
+            for row in getattr(model_book.data.get(converter_type), "data", []):
+                name = str(row.get("name", "")).strip()
+                if name and (converter_type, name) not in boundary_keys:
+                    keys.add((converter_type, name))
 
-        names: set[str] = set()
-        for row in getattr(model_book.data.get("DCACConverter"), "data", []):
-            name = str(row.get("name", "")).strip()
-            if not name:
-                continue
-            lower_name = name.casefold()
-            lower_type = str(row.get("dev_type", "")).casefold()
-            topology_match = str(row.get("ac_node", "")) in adjacent_wind_nodes
-            explicit_match = (
-                "风机" in name
-                or "风电" in name
-                or "wind" in lower_name
-                or lower_name.startswith("wt")
-                or "wind" in lower_type
-            )
-            if topology_match or explicit_match:
-                names.add(name)
-
-        self._wind_converter_names_cache = (active_snapshot.revision, names)
-        return names
-
-    def _measurement_power_category(
-        self,
-        dev_type: str,
-        dev_name: str,
-        category_names: Mapping[str, set[str]],
-    ) -> str:
-        lower_name = dev_name.casefold()
-        storage_names = category_names["storage"]
-        wind_names = category_names["wind"]
-        pv_names = category_names["pv"]
-        diesel_names = category_names["diesel"]
-        load_names = category_names["load"]
-        if dev_type in ("ESS", "Storage"):
-            return "storage"
-        if dev_type == "DCGenerator" and (
-            dev_name in storage_names or (not storage_names and lower_name.startswith("ess"))
-        ):
-            return "storage"
-        if dev_type == "ACGenerator" and (
-            dev_name in wind_names or (not wind_names and lower_name.startswith(("wt", "wind")))
-        ):
-            return "wind"
-        if dev_type == "DCGenerator" and (
-            dev_name in pv_names or (not pv_names and lower_name.startswith(("pv", "solar")))
-        ):
-            return "pv"
-        if dev_type == "ACGenerator" and (
-            dev_name in diesel_names or (not diesel_names and ("diesel" in lower_name or "柴" in dev_name))
-        ):
-            return "diesel"
-        if dev_type.endswith("Load") and (
-            dev_name in load_names or (not load_names and ("load" in lower_name or "负荷" in dev_name))
-        ):
-            return "load"
-        return ""
+        self._internal_power_converter_keys_cache = (active_snapshot.revision, keys)
+        return keys
 
     def _canonical_power_device_name(self, category: str, dev_name: str) -> str:
-        if category == "storage" and dev_name.endswith("_vsrc"):
-            return dev_name.removesuffix("_vsrc")
         return dev_name
 
     def _preferred_power_value(self, category: str, values: Mapping[str, float]) -> Optional[float]:
@@ -3511,11 +3616,12 @@ class PolarMicrogridSimulator:
                     (0, 0) if switchlike else (0, 1),
                 )
 
-        for row in rows("DCACConverter"):
-            ac_node = node_id(row.get("ac_node"))
-            dc_node = node_id(row.get("dc_node"))
-            if ac_node and dc_node:
-                add_edge(("ac", ac_node), ("dc", dc_node), (1, 1))
+        for converter_type in ("ACDCConverter", "DCACConverter"):
+            for row in rows(converter_type):
+                ac_node = node_id(row.get("ac_node"))
+                dc_node = node_id(row.get("dc_node"))
+                if ac_node and dc_node:
+                    add_edge(("ac", ac_node), ("dc", dc_node), (1, 1))
 
         anchors: Dict[Tuple[str, str], set[str]] = {}
         for block_name, domain in (("ACRealBs", "ac"), ("DCRealBs", "dc")):
@@ -3585,8 +3691,9 @@ class PolarMicrogridSimulator:
     ) -> List[Dict[str, Any]]:
         active_snapshot = definition_snapshot or self.definition_snapshot
         model_book = active_snapshot.model_book
-        category_names = self._device_category_names(active_snapshot)
-        run_stats, _cb_status, _set_values, _soc_values = self._stat_maps()
+        resources = structured_resources(model_book)
+        run_stats, _cb_status, set_values, _soc_values = self._stat_maps()
+        storage_protocol_keys = self._storage_runtime_protocol_keys()
         latest_states = {
             (str(item.get("dev_type", "")), str(item.get("dev_name", item.get("name", "")))): item
             for item in self.latest_device_states
@@ -3596,71 +3703,16 @@ class PolarMicrogridSimulator:
         def block_rows(name: str) -> List[Mapping[str, Any]]:
             return list(getattr(model_book.data.get(name), "data", []))
 
-        generator_rows: Dict[str, Dict[str, Mapping[str, Any]]] = {}
-        for dev_type in ("ACGenerator", "DCGenerator"):
-            generator_rows[dev_type] = {
-                str(row.get("idx", "")): row
-                for row in block_rows(dev_type)
-                if str(row.get("idx", ""))
-            }
+        effective_model_book = self.latest_model_book
+        effective_rows: Dict[Tuple[str, str], Mapping[str, Any]] = {}
+        if effective_model_book is not None:
+            for block_name, block in effective_model_book.data.items():
+                for row in getattr(block, "data", []):
+                    name = str(row.get("name", "")).strip()
+                    if name:
+                        effective_rows[(str(block_name), name)] = row
 
-        referenced_categories: Dict[Tuple[str, str], str] = {}
-        storage_capacity_by_key: Dict[Tuple[str, str], float] = {}
-        reference_blocks = (
-            ("ACWindGen", "ACGenerator", "idx_acgenerator", "wind"),
-            ("DCWindGen", "DCGenerator", "idx_dcgenerator", "wind"),
-            ("ACPVGen", "ACGenerator", "idx_acgenerator", "pv"),
-            ("DCPVGen", "DCGenerator", "idx_dcgenerator", "pv"),
-            ("ACStorageGen", "ACGenerator", "idx_acgenerator", "storage"),
-            ("DCStorageGen", "DCGenerator", "idx_dcgenerator", "storage"),
-        )
-        for block_name, generator_type, index_field, category in reference_blocks:
-            for row in block_rows(block_name):
-                generator = generator_rows[generator_type].get(str(row.get(index_field, "")))
-                if generator is None:
-                    continue
-                name = str(generator.get("name", "")).strip()
-                if not name:
-                    continue
-                referenced_categories[(generator_type, name)] = category
-                if category == "storage":
-                    capacity = _to_float(
-                        row.get("energy_capacity", row.get("rated_capacity")),
-                        None,
-                    )
-                    if capacity is not None and capacity > 0:
-                        storage_capacity_by_key[(generator_type, name)] = float(capacity)
-
-        capability_storage = {
-            self._canonical_power_device_name("storage", str(row.get("name", "")).strip()): row
-            for row in getattr(active_snapshot.dev_define_book.data.get("estorage"), "data", [])
-            if str(row.get("name", "")).strip()
-        }
-
-        def contains_any(text: str, tokens: Sequence[str]) -> bool:
-            lowered = text.casefold()
-            return any(token.casefold() in lowered for token in tokens)
-
-        def generator_category(dev_type: str, row: Mapping[str, Any]) -> str:
-            name = str(row.get("name", "")).strip()
-            canonical_name = self._canonical_power_device_name("storage", name)
-            explicit = referenced_categories.get((dev_type, name), "")
-            if explicit:
-                return explicit
-            type_text = str(row.get("dev_type", ""))
-            if (
-                name in category_names["storage"]
-                or canonical_name in category_names["storage"]
-                or contains_any(type_text, ("storage", "battery", "ess", "储能"))
-            ):
-                return "storage"
-            if name in category_names["wind"] or contains_any(f"{type_text} {name}", ("wind", "风电", "风机")):
-                return "wind"
-            if name in category_names["pv"] or contains_any(f"{type_text} {name}", ("solar", "pv", "光伏")):
-                return "pv"
-            if name in category_names["diesel"] or contains_any(f"{type_text} {name}", ("diesel", "柴发", "柴油")):
-                return "diesel"
-            return ""
+        weather = simu_loop._weather_values_from_book(self.weather_book)
 
         def is_grid_forming(side: str, mode: str) -> bool:
             normalized = str(mode or "").strip().upper().replace("-", "").replace("_", "")
@@ -3683,23 +3735,157 @@ class PolarMicrogridSimulator:
             return ""
 
         def profile_state_keys(dev_type: str, name: str, category: str) -> List[Tuple[str, str]]:
-            keys = [(dev_type, name)]
+            source_key = (dev_type, name)
             if category != "storage":
-                return keys
-            canonical = self._canonical_power_device_name(category, name)
-            aliases = (
-                (dev_type, canonical),
-                ("ESS", canonical),
-                ("Storage", canonical),
-                ("DCGenerator", canonical),
-                ("DCGenerator", f"{canonical}_vsrc"),
-                ("ACGenerator", canonical),
-                ("ACGenerator", f"{canonical}_vsrc"),
-            )
-            for key in aliases:
-                if key not in keys:
-                    keys.append(key)
-            return keys
+                return [source_key]
+            return sorted(storage_protocol_keys.get(source_key, {source_key}))
+
+        def first_power_setpoint(
+            state_keys: Sequence[Tuple[str, str]],
+            fields: Sequence[str],
+        ) -> Optional[float]:
+            for state_key in state_keys:
+                values = set_values.get(state_key, {})
+                for field in fields:
+                    value = _to_float(values.get(field), None)
+                    if value is not None:
+                        return float(value)
+            return None
+
+        def target_power(
+            dev_type: str,
+            name: str,
+            category: str,
+            row: Mapping[str, Any],
+            state_keys: Sequence[Tuple[str, str]],
+        ) -> Optional[float]:
+            effective_row = effective_rows.get((dev_type, name))
+            if category == "load":
+                target_row = effective_row or row
+                pbase = _to_float(target_row.get("pbase"), 1.0)
+                if pbase is None or pbase <= 0.0:
+                    pbase = 1.0
+                if effective_row is not None:
+                    multiplier = _to_float(target_row.get("pv0", target_row.get("p_set")), None)
+                else:
+                    multiplier = first_power_setpoint(state_keys, ("p_set", "pv0"))
+                    if multiplier is None:
+                        multiplier = _to_float(target_row.get("pv0", target_row.get("p_set")), None)
+                return float(pbase) * float(multiplier) if multiplier is not None else None
+
+            if category == "converter":
+                target_row = effective_row or row
+                power_field = ""
+                value = None
+                power_fields = converter_power_setpoint_fields(target_row)
+                if effective_row is not None:
+                    for field in power_fields:
+                        value = _to_float(target_row.get(field), None)
+                        if value is not None:
+                            power_field = field
+                            break
+                else:
+                    for state_key in state_keys:
+                        values = set_values.get(state_key, {})
+                        for field in power_fields:
+                            value = _to_float(values.get(field), None)
+                            if value is not None:
+                                power_field = field
+                                break
+                        if value is not None:
+                            break
+                    if value is None:
+                        for field in power_fields:
+                            value = _to_float(target_row.get(field), None)
+                            if value is not None:
+                                power_field = field
+                                break
+                if value is None:
+                    return None
+                return converter_power_in_ac_terminal_convention(
+                    value,
+                    AC_TO_DC,
+                    power_field or "p_ac_set",
+                )
+
+            if effective_row is not None:
+                value = _to_float(
+                    effective_row.get(
+                        "p_set",
+                        effective_row.get("p_ac_set", effective_row.get("p_dc_set")),
+                    ),
+                    None,
+                )
+            else:
+                value = first_power_setpoint(state_keys, ("p_set", "p_ac_set", "p_dc_set"))
+                if value is None:
+                    value = _to_float(
+                        row.get("p_set", row.get("p_ac_set", row.get("p_dc_set"))),
+                        None,
+                    )
+            return float(value) if value is not None else None
+
+        def renewable_max_available(
+            category: str,
+            row: Mapping[str, Any],
+            parameter: Mapping[str, Any],
+        ) -> Optional[float]:
+            capability = parameter
+            if category == "wind":
+                wind_speed = _to_float(weather.get("wind_speed_mps"), None)
+                rated = _to_float(
+                    capability.get(
+                        "rated_power",
+                        capability.get("p_max", row.get("rated_capacity", row.get("p_max"))),
+                    ),
+                    None,
+                )
+                if wind_speed is None or rated is None or rated <= 0.0:
+                    return None
+                rated_speed = _to_float(capability.get("rated_wind_speed"), 15.0) or 15.0
+                cut_in = _to_float(
+                    capability.get("cut_in_wind_speed", capability.get("cut_in_speed")),
+                    5.0,
+                ) or 5.0
+                cut_out = _to_float(
+                    capability.get("cut_out_wind_speed", capability.get("cut_out_speed")),
+                    30.0,
+                ) or 30.0
+                return float(
+                    simu_loop._available_with_bounds(
+                        simu_loop.wind_available_power(wind_speed, rated, rated_speed, cut_in, cut_out),
+                        dict(capability),
+                    )
+                )
+            if category == "pv":
+                irradiance = _to_float(weather.get("solar_irradiance_w_m2"), None)
+                rated = _to_float(
+                    capability.get(
+                        "rated_power",
+                        capability.get("p_max", row.get("rated_capacity", row.get("p_max"))),
+                    ),
+                    None,
+                )
+                if irradiance is None or rated is None or rated <= 0.0:
+                    return None
+                air_temp = _to_float(weather.get("air_temp_c"), 25.0) or 25.0
+                temp_coef = _to_float(capability.get("temp_coefficient"), 0.0) or 0.0
+                ref_irrad = _to_float(capability.get("reference_irradiance"), 1000.0) or 1000.0
+                ref_temp = _to_float(capability.get("reference_temperature"), 25.0) or 25.0
+                return float(
+                    simu_loop._available_with_bounds(
+                        simu_loop.pv_available_power(
+                            irradiance,
+                            air_temp,
+                            rated,
+                            temp_coef,
+                            ref_irrad,
+                            ref_temp,
+                        ),
+                        dict(capability),
+                    )
+                )
+            return None
 
         def operating_state(
             dev_type: str,
@@ -3728,26 +3914,26 @@ class PolarMicrogridSimulator:
 
         profiles: List[Dict[str, Any]] = []
         seen_profiles: set[Tuple[str, str]] = set()
-        classified_generators: List[Tuple[str, str, Mapping[str, Any], str]] = []
-        for dev_type, native_side in (("ACGenerator", "ac"), ("DCGenerator", "dc")):
-            for row in block_rows(dev_type):
-                name = str(row.get("name", "")).strip()
-                if not name:
-                    continue
-                category = generator_category(dev_type, row)
-                if category not in {"wind", "pv", "diesel", "storage"}:
-                    continue
-                classified_generators.append((dev_type, native_side, row, category))
+        classified_generators = [
+            (
+                resource.source_block,
+                "ac" if resource.source_block == "ACGenerator" else "dc",
+                resource.source,
+                resource.technology,
+                resource.parameter,
+            )
+            for resource in resources
+        ]
 
         connection_sides = self._power_flow_connection_sides(
             [
                 (category, dev_type, str(row.get("name", "")).strip())
-                for dev_type, _native_side, row, category in classified_generators
+                for dev_type, _native_side, row, category, _parameter in classified_generators
                 if category in {"wind", "pv", "storage"}
             ],
             active_snapshot,
         )
-        for dev_type, native_side, row, category in classified_generators:
+        for dev_type, native_side, row, category, parameter in classified_generators:
             name = str(row.get("name", "")).strip()
             side = connection_sides.get((dev_type, name), native_side)
             canonical = self._canonical_power_device_name(category, name)
@@ -3763,16 +3949,13 @@ class PolarMicrogridSimulator:
                 continue
             seen_profiles.add(identity)
             run_stat, dead_island = operating_state(dev_type, name, category, row)
-            capacity = storage_capacity_by_key.get((dev_type, name))
-            if category == "storage" and capacity is None:
-                capability = capability_storage.get(canonical, {})
+            state_keys = profile_state_keys(dev_type, name, category)
+            capacity = None
+            if category == "storage":
                 capacity = _to_float(
-                    capability.get(
-                        "emva",
-                        capability.get(
-                            "energy_capacity",
-                            row.get("energy_capacity", row.get("rated_capacity")),
-                        ),
+                    parameter.get(
+                        "energy_capacity",
+                        parameter.get("rated_capacity", parameter.get("emva")),
                     ),
                     None,
                 )
@@ -3789,40 +3972,55 @@ class PolarMicrogridSimulator:
                     "dead_island": dead_island,
                     "online": run_stat != 0 and not dead_island,
                     "capacity": float(capacity) if capacity is not None and capacity > 0 else None,
-                    "state_keys": profile_state_keys(dev_type, name, category),
+                    "state_keys": state_keys,
+                    "target_power": target_power(dev_type, name, category, row, state_keys),
+                    "max_available_power": renewable_max_available(category, row, parameter),
                 }
             )
 
-        wind_converter_names = self._wind_converter_names(active_snapshot)
-        for row in block_rows("DCACConverter"):
-            name = str(row.get("name", "")).strip()
-            if not name or name in wind_converter_names:
-                continue
-            identity = ("acdcConverter", name)
-            if identity in seen_profiles:
-                continue
-            seen_profiles.add(identity)
-            run_stat, dead_island = operating_state("DCACConverter", name, "converter", row)
-            profiles.append(
-                {
-                    "dev_type": "DCACConverter",
-                    "dev_name": name,
-                    "canonical_name": name,
-                    "category": "converter",
-                    "side": "bridge",
-                    "control_mode": str(
-                        row.get("ac_control_type")
-                        or row.get("control_type")
-                        or row.get("mode", "")
-                    ),
-                    "group_key": "acdcConverter",
-                    "run_stat": run_stat,
-                    "dead_island": dead_island,
-                    "online": run_stat != 0 and not dead_island,
-                    "capacity": None,
-                    "state_keys": [("DCACConverter", name)],
-                }
-            )
+        internal_converter_keys = self._internal_power_converter_keys(active_snapshot)
+        for converter_type in ("ACDCConverter", "DCACConverter"):
+            for row in block_rows(converter_type):
+                name = str(row.get("name", "")).strip()
+                converter_key = (converter_type, name)
+                if not name or converter_key in internal_converter_keys:
+                    continue
+                identity = ("acdcConverter", f"{converter_type}\0{name}")
+                if identity in seen_profiles:
+                    continue
+                seen_profiles.add(identity)
+                run_stat, dead_island = operating_state(
+                    converter_type,
+                    name,
+                    "converter",
+                    row,
+                )
+                state_keys = [converter_key]
+                profiles.append(
+                    {
+                        "dev_type": converter_type,
+                        "dev_name": name,
+                        "canonical_name": name,
+                        "category": "converter",
+                        "side": "bridge",
+                        "control_mode": converter_control_mode(row),
+                        "converter_direction": AC_TO_DC,
+                        "group_key": "acdcConverter",
+                        "run_stat": run_stat,
+                        "dead_island": dead_island,
+                        "online": run_stat != 0 and not dead_island,
+                        "capacity": None,
+                        "state_keys": state_keys,
+                        "target_power": target_power(
+                            converter_type,
+                            name,
+                            "converter",
+                            row,
+                            state_keys,
+                        ),
+                        "max_available_power": None,
+                    }
+                )
 
         for dev_type, side in (("ACLoad", "ac"), ("DCLoad", "dc")):
             for row in block_rows(dev_type):
@@ -3835,6 +4033,7 @@ class PolarMicrogridSimulator:
                     continue
                 seen_profiles.add(identity)
                 run_stat, dead_island = operating_state(dev_type, name, "load", row)
+                state_keys = [(dev_type, name)]
                 profiles.append(
                     {
                         "dev_type": dev_type,
@@ -3848,7 +4047,9 @@ class PolarMicrogridSimulator:
                         "dead_island": dead_island,
                         "online": run_stat != 0 and not dead_island,
                         "capacity": None,
-                        "state_keys": [(dev_type, name)],
+                        "state_keys": state_keys,
+                        "target_power": target_power(dev_type, name, "load", row, state_keys),
+                        "max_available_power": None,
                     }
                 )
         return profiles
@@ -3900,13 +4101,12 @@ class PolarMicrogridSimulator:
         if category == "load":
             return ("consumption", "fromBus") if power_value > 0 else ("generation", "toBus")
         if category == "converter":
-            return ("dcToAc", "toAc") if power_value > 0 else ("acToDc", "toDc")
+            return ("acToDc", "toDc") if power_value > 0 else ("dcToAc", "toAc")
         return ("generation", "toBus") if power_value > 0 else ("absorption", "fromBus")
 
     def _power_flow_summary(self, realtime_measurements: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
         definition_snapshot = self.definition_snapshot
-        category_names = self._device_category_names(definition_snapshot)
-        wind_converter_names = self._wind_converter_names(definition_snapshot)
+        internal_converter_keys = self._internal_power_converter_keys(definition_snapshot)
         profiles = self._power_flow_device_profiles(definition_snapshot)
         (
             profiles_by_measurement,
@@ -3915,8 +4115,9 @@ class PolarMicrogridSimulator:
         ) = self._power_flow_profile_indexes(profiles)
         power_by_device: Dict[Tuple[str, str, str], Dict[str, float]] = {}
         soc_by_storage: Dict[str, float] = {}
-        green_power_by_converter: Dict[str, float] = {}
-        converter_transfer_power_by_name: Dict[str, float] = {}
+        measured_converter_power_by_key: Dict[Tuple[str, str], float] = {}
+        converter_ac_terminal_power_by_key: Dict[Tuple[str, str], float] = {}
+        converter_power_values_by_key: Dict[Tuple[str, str], Dict[str, float]] = {}
 
         for item in realtime_measurements:
             if int(_to_float(item.get("valid"), 1) or 0) != 1:
@@ -3927,26 +4128,51 @@ class PolarMicrogridSimulator:
             value = _to_float(item.get("value"), None)
             if not dev_type or not dev_name or meas_type == "" or value is None:
                 continue
-            if dev_type == "DCACConverter" and meas_type == "P_AC":
-                if dev_name not in wind_converter_names:
-                    green_power_by_converter[dev_name] = value
-                    converter_transfer_power_by_name[dev_name] = -value
-                continue
             profile = profiles_by_measurement.get((dev_type, dev_name))
+            if (
+                profile is not None
+                and profile.get("category") == "converter"
+                and meas_type in {"P_AC", "P_DC", "P"}
+            ):
+                converter_key = (dev_type, dev_name)
+                if profile is not None and converter_key not in internal_converter_keys:
+                    converter_power_values_by_key.setdefault(converter_key, {})[
+                        meas_type
+                    ] = value
+                continue
             category = str(profile.get("category", "")) if profile else ""
-            if not category:
-                category = self._measurement_power_category(dev_type, dev_name, category_names)
             if category == "storage" and meas_type == "SOC":
-                soc_by_storage[self._canonical_power_device_name(category, dev_name)] = value
+                canonical_name = str(profile.get("canonical_name", dev_name))
+                soc_by_storage[canonical_name] = value
                 continue
             if not meas_type.startswith("P"):
                 continue
             if not category:
                 continue
-            canonical_name = self._canonical_power_device_name(category, dev_name)
+            canonical_name = str(profile.get("canonical_name", dev_name))
             group_key = str(profile.get("group_key", "")) if profile else ""
             device_key = (category, canonical_name, group_key)
             power_by_device.setdefault(device_key, {})[meas_type] = value
+
+        for converter_key, values in converter_power_values_by_key.items():
+            raw_power_item = next(
+                ((key, values[key]) for key in ("P_AC", "P_DC", "P") if key in values),
+                None,
+            )
+            if raw_power_item is None:
+                continue
+            raw_power_type, raw_power = raw_power_item
+            measured_converter_power_by_key[converter_key] = raw_power
+            profile = profiles_by_measurement.get(converter_key)
+            direction = str(profile.get("converter_direction", "")) if profile else ""
+            if direction:
+                converter_ac_terminal_power_by_key[converter_key] = (
+                    converter_power_in_ac_terminal_convention(
+                        raw_power,
+                        direction,
+                        raw_power_type,
+                    )
+                )
 
         totals = {"wind": 0.0, "pv": 0.0, "diesel": 0.0, "load": 0.0}
         counts = {
@@ -3955,12 +4181,12 @@ class PolarMicrogridSimulator:
             "diesel": 0,
             "load": 0,
             "storage": 0,
-            "greenPowerConverter": len(green_power_by_converter),
+            "greenPowerConverter": len(measured_converter_power_by_key),
         }
         storage_generation = 0.0
         storage_charge = 0.0
         storage_total = 0.0
-        measured_group_devices: Dict[str, set[str]] = {}
+        measured_group_devices: Dict[str, set[Tuple[str, str]]] = {}
         group_power_totals: Dict[str, float] = {}
         for (category, dev_name, group_key), values in power_by_device.items():
             power = self._preferred_power_value(category, values)
@@ -3982,27 +4208,35 @@ class PolarMicrogridSimulator:
             if profile is not None:
                 if group_key:
                     group_power_totals[group_key] = group_power_totals.get(group_key, 0.0) + power
-                    measured_group_devices.setdefault(group_key, set()).add(dev_name)
+                    measured_group_devices.setdefault(group_key, set()).add(
+                        (
+                            str(profile.get("dev_type", "")),
+                            str(profile.get("dev_name", dev_name)),
+                        )
+                    )
 
-        for dev_name, power in converter_transfer_power_by_name.items():
-            profile = profiles_by_measurement.get(("DCACConverter", dev_name))
+        for converter_key, power in converter_ac_terminal_power_by_key.items():
+            profile = profiles_by_measurement.get(converter_key)
             if profile is None or not bool(profile.get("online", False)):
                 continue
             group_key = str(profile.get("group_key", ""))
             if not group_key:
                 continue
             group_power_totals[group_key] = group_power_totals.get(group_key, 0.0) + power
-            measured_group_devices.setdefault(group_key, set()).add(dev_name)
+            measured_group_devices.setdefault(group_key, set()).add(converter_key)
 
         soc_values = [value * 100.0 if abs(value) <= 2.0 else value for value in soc_by_storage.values()]
         soc_average = sum(soc_values) / len(soc_values) if soc_values else None
         soc_total = sum(soc_by_storage.values()) if soc_values else None
         has_power = any(counts[key] for key in ("wind", "pv", "diesel", "load", "storage"))
-        green_power = sum(green_power_by_converter.values())
         generation_total = totals["wind"] + totals["pv"] + totals["diesel"] + storage_generation
         consumption_total = totals["load"] + storage_charge
         power_difference = generation_total - consumption_total
         flow_groups: Dict[str, Dict[str, Any]] = {}
+        group_target_totals: Dict[str, float] = {}
+        group_target_counts: Dict[str, int] = {}
+        group_available_totals: Dict[str, float] = {}
+        group_available_counts: Dict[str, int] = {}
         for profile in profiles:
             group_key = str(profile.get("group_key", ""))
             if not group_key:
@@ -4014,6 +4248,8 @@ class PolarMicrogridSimulator:
                     "side": profile.get("side", ""),
                     "controlMode": "gridForming" if "GridForming" in group_key else "gridFollowing" if "GridFollowing" in group_key else "",
                     "power": None,
+                    "targetPower": None,
+                    "maxAvailablePower": None,
                     "soc": None,
                     "totalCount": 0,
                     "onlineCount": 0,
@@ -4029,8 +4265,28 @@ class PolarMicrogridSimulator:
                 group["deadIslandCount"] += 1
             else:
                 group["onlineCount"] += 1
+                target = _to_float(profile.get("target_power"), None)
+                if target is not None:
+                    group_target_totals[group_key] = group_target_totals.get(group_key, 0.0) + target
+                    group_target_counts[group_key] = group_target_counts.get(group_key, 0) + 1
+                available = _to_float(profile.get("max_available_power"), None)
+                if available is not None:
+                    group_available_totals[group_key] = group_available_totals.get(group_key, 0.0) + available
+                    group_available_counts[group_key] = group_available_counts.get(group_key, 0) + 1
 
         for group_key, group in flow_groups.items():
+            online_count = int(group.get("onlineCount", 0) or 0)
+            if online_count == 0:
+                group["targetPower"] = 0.0
+                if str(group.get("category", "")) in {"wind", "pv"}:
+                    group["maxAvailablePower"] = 0.0
+            elif group_target_counts.get(group_key, 0) == online_count:
+                group["targetPower"] = group_target_totals.get(group_key, 0.0)
+            if (
+                str(group.get("category", "")) in {"wind", "pv"}
+                and group_available_counts.get(group_key, 0) == online_count
+            ):
+                group["maxAvailablePower"] = group_available_totals.get(group_key, 0.0)
             measured_devices = measured_group_devices.get(group_key, set())
             group["measuredCount"] = len(measured_devices)
             if measured_devices:
@@ -4058,6 +4314,27 @@ class PolarMicrogridSimulator:
             status, direction = self._flow_group_status(group)
             group["status"] = status
             group["flowDirection"] = direction
+
+        def green_metric_group_power(group_key: str) -> Optional[float]:
+            group = flow_groups.get(group_key)
+            if group is None:
+                return 0.0
+            return _to_float(group.get("power"), None)
+
+        dc_load_power = green_metric_group_power("dcLoad")
+        ac_load_power = green_metric_group_power("acLoad")
+        diesel_power = green_metric_group_power("diesel")
+        if any(value is None for value in (dc_load_power, ac_load_power, diesel_power)):
+            green_power = None
+            green_power_share = None
+        else:
+            green_load_power = float(dc_load_power) + float(ac_load_power)
+            green_power = green_load_power - float(diesel_power)
+            green_power_share = (
+                green_power / green_load_power * 100.0
+                if abs(green_load_power) > 1e-9
+                else None
+            )
         return {
             "wind": totals["wind"] if counts["wind"] else None,
             "solar": totals["pv"] if counts["pv"] else None,
@@ -4066,7 +4343,8 @@ class PolarMicrogridSimulator:
             "storage": storage_total if counts["storage"] else None,
             "storageDischarge": storage_generation if counts["storage"] else None,
             "storageCharge": storage_charge if counts["storage"] else None,
-            "greenPower": green_power if counts["greenPowerConverter"] else None,
+            "greenPower": green_power,
+            "greenPowerShare": green_power_share,
             "soc": soc_average,
             "socTotal": soc_total if soc_values else None,
             "generation": generation_total if has_power else None,
@@ -4251,6 +4529,14 @@ class PolarMicrogridSimulator:
             received_simu_time = minute_to_time(self.clock.minute)
             manual_hold = _manual_command_holds_across_clock_lifecycle(payload, source)
             command_origin = "manual" if manual_hold else "automatic"
+            strategy_id, generation, replace_strategy_generation = _strategy_generation_metadata(payload)
+            complete_strategy_snapshot = bool(
+                eligible_source
+                and command_origin == "automatic"
+                and strategy_id
+                and generation not in (None, "")
+                and replace_strategy_generation
+            )
             expires_at_absolute_minute = None if manual_hold else _command_expires_at(payload, None, issued_absolute_minute)
             accepted_run = len(normalized_run_items) if eligible_source else 0
             accepted_set = len(normalized_set_items) if eligible_source else 0
@@ -4262,6 +4548,17 @@ class PolarMicrogridSimulator:
                 if expires_at_absolute_minute is None
                 else max(0.0, expires_at_absolute_minute - issued_absolute_minute)
             )
+            superseded_generations = 0
+            superseded_controls: set[Tuple[str, str, str, str]] = set()
+            if complete_strategy_snapshot:
+                superseded_generations, superseded_controls = self._mark_strategy_generations_cancelled(
+                    strategy_id=strategy_id,
+                    reason="superseded_strategy_generation",
+                    cancelled_wall_time=received_wall_time,
+                    cancelled_simu_time=received_simu_time,
+                    cancelled_absolute_minute=issued_absolute_minute,
+                    require_generation_match=False,
+                )
             command_entry = {
                 "time": received_wall_time,
                 "received_wall_time": received_wall_time,
@@ -4275,6 +4572,12 @@ class PolarMicrogridSimulator:
                 "issued_absolute_minute": issued_absolute_minute,
                 "expires_at_absolute_minute": expires_at_absolute_minute,
                 "valid_for_minutes": valid_for_minutes,
+                "strategy_id": strategy_id,
+                "generation": generation,
+                "replace_strategy_generation": replace_strategy_generation,
+                "snapshot_complete": complete_strategy_snapshot,
+                "superseded_generations": superseded_generations,
+                "superseded_controls": len(superseded_controls),
                 "accepted": accepted,
                 "normalized": {
                     "run_status": normalized_run_items if eligible_source else [],
@@ -4288,7 +4591,11 @@ class PolarMicrogridSimulator:
             self._append_runtime_log(
                 "控制指令",
                 "学员台 /api/student/commands",
-                "接受成功" if accepted_run or accepted_set else "无有效指令",
+                (
+                    "策略快照已替换"
+                    if complete_strategy_snapshot
+                    else ("接受成功" if accepted_run or accepted_set else "无有效指令")
+                ),
                 self._command_accept_detail(
                     payload,
                     source,
@@ -4308,18 +4615,20 @@ class PolarMicrogridSimulator:
         for item in items:
             if not isinstance(item, Mapping):
                 continue
-            item_dev_type = str(item.get("dev_type", item.get("type", "")))
-            item_dev_name = str(item.get("dev_name", item.get("name", "")))
-            if item_dev_type == "Storage" and item_dev_name:
-                item = {
-                    **dict(item),
-                    "dev_type": "ESS",
-                    "dev_name": item_dev_name,
-                }
             if "set_type" in item:
                 expanded.append(dict(item))
                 continue
-            for key in ("p_set", "q_set", "v_set", "p_ac_set", "q_ac_set", "v_ac_set"):
+            for key in (
+                "p_set",
+                "q_set",
+                "v_set",
+                "p_ac_set",
+                "q_ac_set",
+                "v_ac_set",
+                "p_dc_set",
+                "q_dc_set",
+                "v_dc_set",
+            ):
                 if key in item:
                     expanded.append(
                         {
@@ -4614,7 +4923,14 @@ class PolarMicrogridSimulator:
                     )
                 )
             )
-            if starts_new_lifecycle:
+            time_reset_requested = bool(
+                requested_absolute_minute is not None
+                and (
+                    requested_absolute_minute <= 1e-9
+                    or requested_absolute_minute < previous_absolute_minute - 1e-9
+                )
+            )
+            if starts_new_lifecycle or time_reset_requested:
                 cleared = self._clear_automatic_commands_for_simulation_restart()
                 if cleared["entries"]:
                     self._write_command_history()
@@ -4636,7 +4952,15 @@ class PolarMicrogridSimulator:
             if requested_absolute_minute is not None:
                 self.clock.absolute_minute = requested_absolute_minute
                 self.clock.minute = requested_absolute_minute % 1440.0
+            history_reset_requested = bool(
+                starts_new_lifecycle
+                or action == "stop"
+                or time_reset_requested
+            )
             should_reset_storage_soc = False
+            if time_reset_requested and not starts_new_lifecycle:
+                self.clock.step_count = 0
+                should_reset_storage_soc = True
             if action == "start":
                 if starts_new_lifecycle:
                     self.clock.run_id += 1
@@ -4660,6 +4984,8 @@ class PolarMicrogridSimulator:
             self.clock.minute = self.clock.absolute_minute % 1440.0
             if should_reset_storage_soc:
                 self._reset_storage_soc_to_initial()
+            if history_reset_requested:
+                self._measurement_history.clear()
             if action in ("start", "stop"):
                 self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
             if action == "step":
@@ -4775,6 +5101,12 @@ class PolarMicrogridSimulator:
                 self.clock.updated_at = time.time()
                 self._refresh_measurement_delta_state(measurements=self.latest_measurements)
                 self._measurement_delta_step_count = self.clock.step_count
+                self._measurement_history.append(
+                    self.clock.as_dict(),
+                    self.latest_measurements,
+                    definition_revision=self.definition_snapshot.revision,
+                    limit=self._trace_history_limit("simulator"),
+                )
                 return self.snapshot()
 
     def _store_kernel_measurement_rows(self, result: Optional[simu_loop.SimulationResult]) -> None:
@@ -4943,6 +5275,8 @@ class PolarMicrogridSimulator:
         statuses = self.local_settings.get("measurement_statuses", {})
         configured = statuses.get(name) if isinstance(statuses, Mapping) else None
         if not isinstance(configured, Mapping):
+            configured = self._source_measurement_statuses.get(name)
+        if not isinstance(configured, Mapping):
             status = _measurement_status_from_valid(default_valid)
             return status, None
         status = str(configured.get("status", "")).strip().casefold()
@@ -4951,10 +5285,29 @@ class PolarMicrogridSimulator:
         fixed_value = _to_float(configured.get("fixed_value"), None)
         return status, fixed_value
 
+    def effective_measurement_status_defaults(self) -> Dict[str, Dict[str, Any]]:
+        """Return non-default measurement states for a materialized definition export."""
+        with self.definition_update_lock:
+            statuses: Dict[str, Dict[str, Any]] = {}
+            for row in self.definition_snapshot.measurement_rows:
+                name = str(row[1] if len(row) > 1 else "").strip()
+                if not name:
+                    continue
+                status, fixed_value = self._measurement_status_override(row)
+                default_status = _measurement_status_from_valid(row[6] if len(row) > 6 else 1)
+                if status == default_status and fixed_value is None:
+                    continue
+                statuses[name] = {
+                    "status": status,
+                    "fixed_value": fixed_value if status == "fixed" else None,
+                }
+            return statuses
+
     def _apply_measurement_statuses(self, minute: int | float, absolute_minute: int | float) -> None:
         del minute, absolute_minute
         statuses = self.local_settings.get("measurement_statuses", {})
-        if not isinstance(statuses, Mapping) or not statuses or not self.latest_scada_rows:
+        has_local_statuses = isinstance(statuses, Mapping) and bool(statuses)
+        if not (has_local_statuses or self._source_measurement_statuses) or not self.latest_scada_rows:
             return
         rows = [list(row) for row in self.latest_scada_rows]
         changed = False
@@ -5035,12 +5388,12 @@ class PolarMicrogridSimulator:
     def _weather_measurement_rows(self, start_idx: int) -> List[Dict[str, Any]]:
         weather = self._current_weather_values()
         rows: List[Dict[str, Any]] = []
-        for offset, (weather_key, name_suffix, meas_type) in enumerate(WEATHER_MEASUREMENTS):
+        for offset, (weather_key, _name_suffix, meas_type) in enumerate(WEATHER_MEASUREMENTS):
             value = _to_float(weather.get(weather_key), None)
             rows.append(
                 {
                     "idx": start_idx + offset,
-                    "name": f"weather_{name_suffix}",
+                    "name": automatic_point_name("Environment", "weather", meas_type),
                     "dev_type": "Environment",
                     "dev_name": "weather",
                     "meas_type": meas_type,
@@ -5079,7 +5432,10 @@ class PolarMicrogridSimulator:
             number = _to_float(value, None)
             if number is not None:
                 values[(dev_type, dev_name, "STATUS")] = number
-        return values
+        return simu_loop._effective_signal_measurement_values(
+            values,
+            self.latest_device_states,
+        )
 
     def _signal_measurement_rows(self, start_idx: int) -> List[Dict[str, Any]]:
         values = self._current_signal_values()
@@ -5105,7 +5461,7 @@ class PolarMicrogridSimulator:
                     rows.append(
                         {
                             "idx": start_idx + len(rows),
-                            "name": f"{dev_type}.{dev_name}.{name_suffix}",
+                            "name": automatic_point_name(dev_type, dev_name, name_suffix),
                             "dev_type": dev_type,
                             "dev_name": dev_name,
                             "meas_type": meas_type,
@@ -5430,6 +5786,34 @@ class PolarMicrogridSimulator:
                 )
         return compact_measurement_delta(payload) if compact else payload
 
+    def measurement_history(
+        self,
+        *,
+        indices: Optional[Sequence[int]] = None,
+        after_seq: int | float = 0,
+    ) -> Dict[str, Any]:
+        """Return compact current-run history aligned to measurement order."""
+
+        with self.lock:
+            measurements = self.latest_measurements
+            if not isinstance(measurements, Mapping) or not measurements.get("definitions"):
+                measurements = self.measurements()
+            definitions = [
+                row
+                for row in measurements.get("definitions", []) or []
+                if isinstance(row, Mapping)
+            ]
+            self._measurement_history.ensure_definition(
+                definitions,
+                definition_revision=self.definition_snapshot.revision,
+            )
+            return self._measurement_history.payload(
+                indices=indices,
+                after_seq=after_seq,
+                model_id=self.model_id,
+                model_name=self.model_name,
+            )
+
     def _read_measurement_file(self, path: Path) -> List[Dict[str, Any]]:
         if not path.exists():
             return []
@@ -5443,6 +5827,7 @@ class PolarMicrogridSimulator:
         definition_snapshot = self.definition_snapshot
         model_book = definition_snapshot.model_book
         run_stats, cb_status, set_values, soc_values = self._stat_maps()
+        resources_by_key = resources_by_device_key(model_book)
         devices: List[Dict[str, Any]] = []
         device_blocks = (
             "ACGenerator",
@@ -5450,6 +5835,7 @@ class PolarMicrogridSimulator:
             "ACLoad",
             "DCLoad",
             "DCDCConverter",
+            "ACDCConverter",
             "DCACConverter",
             "ACACConverter",
             "ACBreak",
@@ -5464,21 +5850,42 @@ class PolarMicrogridSimulator:
             for row in block.data:
                 name = str(row.get("name", ""))
                 key = (dev_type, name)
+                terminal_domains = terminal_domains_from_block(dev_type)
+                resource = resources_by_key.get(key)
                 set_types = []
-                for column in ("p_set", "q_set", "v_set", "p_ac_set", "q_ac_set", "v_ac_set", "pv0", "qv0"):
+                for column in (
+                    "p_set",
+                    "q_set",
+                    "v_set",
+                    "p_ac_set",
+                    "q_ac_set",
+                    "v_ac_set",
+                    "p_dc_set",
+                    "v_dc_set",
+                    "pv0",
+                    "qv0",
+                ):
                     if column in block.header_list:
                         set_types.append(column)
                 devices.append(
                     {
                         "dev_type": dev_type,
                         "dev_name": name,
+                        "model_block": dev_type,
+                        "device_family": device_family_from_block(dev_type),
+                        "terminal_domains": list(terminal_domains),
+                        "resource_technology": resource.technology if resource else "",
                         "run_stat": int(_to_float(run_stats.get(key, row.get("run_stat", 1)), 1) or 0),
                         "status": int(_to_float(cb_status.get(key, row.get("status", 1)), 1) or 0),
                         "mode": (
-                            row.get("control_type")
-                            or row.get("ac_control_type")
-                            or row.get("dc_control_type")
-                            or row.get("mode", "")
+                            converter_control_mode(row)
+                            if set(terminal_domains) == {"AC", "DC"}
+                            else (
+                                row.get("control_type")
+                                or row.get("ac_control_type")
+                                or row.get("dc_control_type")
+                                or row.get("mode", "")
+                            )
                         ),
                         "set_types": set_types,
                         "set_values": set_values.get(key, {}),
@@ -5489,11 +5896,6 @@ class PolarMicrogridSimulator:
             (str(device.get("dev_type", "")), str(device.get("dev_name", ""))): device
             for device in devices
         }
-        storage_raw: Dict[Tuple[str, str], Dict[str, Any]] = {}
-        storage_soc_defaults: Dict[Tuple[str, str], float] = {}
-        storage_soc_aliases: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
-        legacy_storage_raw: Dict[Tuple[str, str], Dict[str, Any]] = {}
-
         def storage_soc_value(row: Mapping[str, Any], default: float = 0.0) -> float:
             value: Any = ""
             for column in ("state_of_charge", "soc_curr", "soc_cur", "soc"):
@@ -5511,123 +5913,34 @@ class PolarMicrogridSimulator:
                 )
             except ValueError:
                 return default
-
-        generator_rows_by_idx = {
-            dev_type: {
-                str(row.get("idx", "")): row
-                for row in getattr(model_book.data.get(dev_type), "data", [])
-                if str(row.get("idx", ""))
-            }
-            for dev_type in ("ACGenerator", "DCGenerator")
-        }
-        for block_name, generator_type, index_field in STORAGE_PARAMETER_SPECS:
-            parameter_block = model_book.data.get(block_name)
-            for row in getattr(parameter_block, "data", []):
-                source = generator_rows_by_idx[generator_type].get(str(row.get(index_field, "")))
-                if source is None:
-                    continue
-                name = str(source.get("name", "")).strip()
-                if not name:
-                    continue
-                key = (generator_type, name)
-                if key in storage_raw:
-                    continue
-                storage_raw[key] = {
-                    header: row.get(header, "")
-                    for header in getattr(parameter_block, "header_list", [])
-                }
-                storage_soc_defaults[key] = storage_soc_value(row)
-
-        capability_book = definition_snapshot.dev_define_book
-        storage_block = capability_book.data.get("estorage")
-        for row in getattr(storage_block, "data", []):
-            name = str(row.get("name", "")).strip()
-            if not name:
+        for resource in structured_resources(model_book):
+            if resource.technology != "storage":
                 continue
-            raw = {header: row.get(header, "") for header in storage_block.header_list}
-            declared_type = str(row.get("dev_type", "")).strip()
-            source_name = str(row.get("source_name", "")).strip()
-            target_key = self._legacy_storage_target_key(row, set(devices_by_key))
-
-            alias_names = []
-            for alias_name in (name, source_name, name.removesuffix("_vsrc"), source_name.removesuffix("_vsrc")):
-                if alias_name and alias_name not in alias_names:
-                    alias_names.append(alias_name)
-            for alias_type in ("ESS", "Storage"):
-                for alias_name in alias_names:
-                    legacy_storage_raw[(alias_type, alias_name)] = raw
-
-            if target_key is None:
-                continue
-            storage_raw[target_key] = raw | storage_raw.get(target_key, {})
-            storage_soc_defaults.setdefault(target_key, storage_soc_value(row))
-            aliases = storage_soc_aliases.setdefault(target_key, [])
-            for alias_name in alias_names:
-                for alias_type in ("ESS", "Storage", ""):
-                    alias = (alias_type, alias_name)
-                    if alias not in aliases:
-                        aliases.append(alias)
-            if declared_type:
-                declared_alias = (declared_type, name)
-                if declared_alias not in aliases:
-                    aliases.append(declared_alias)
-
-        alias_targets: Dict[Tuple[str, str], set[Tuple[str, str]]] = {}
-        for target_key, aliases in storage_soc_aliases.items():
-            for alias in aliases:
-                alias_targets.setdefault(alias, set()).add(target_key)
-
-        consumed_soc_keys: set[Tuple[str, str]] = set()
-        for key, raw in storage_raw.items():
+            key = resource.device_key
             device = devices_by_key.get(key)
             if device is None:
                 continue
-            if key in soc_values:
-                soc_value = soc_values[key]
-                consumed_soc_keys.add(key)
-            else:
-                soc_value = storage_soc_defaults.get(key, 0.0)
-                for alias in storage_soc_aliases.get(key, []):
-                    if len(alias_targets.get(alias, ())) != 1 or alias not in soc_values:
-                        continue
-                    soc_value = soc_values[alias]
-                    consumed_soc_keys.add(alias)
-                    break
+            raw = dict(resource.parameter)
+            soc_value = soc_values.get(
+                key,
+                storage_soc_value(resource.parameter),
+            )
             device["soc_curr"] = soc_value
             device["raw"] = raw | dict(device.get("raw", {})) | {"soc_curr": soc_value}
             for set_type in ("p_set", "v_set"):
                 if set_type not in device["set_types"]:
                     device["set_types"].append(set_type)
-
-        for (source_storage_type, name), soc in soc_values.items():
-            if source_storage_type not in ("ESS", "Storage"):
-                continue
-            if (source_storage_type, name) in consumed_soc_keys:
-                continue
-            if ("DCGenerator", name) in devices_by_key or ("DCGenerator", f"{name}_vsrc") in devices_by_key:
-                continue
-            storage_set_values = set_values.get(
-                (source_storage_type, name),
-                set_values.get(("DCGenerator", f"{name}_vsrc"), {}),
-            )
-            devices.append(
-                {
-                    "dev_type": source_storage_type,
-                    "dev_name": name,
-                    "run_stat": int(_to_float(run_stats.get((source_storage_type, name), 1), 1) or 0),
-                    "status": 1,
-                    "mode": "PH",
-                    "set_types": ["p_set", "v_set"],
-                    "set_values": storage_set_values,
-                    "soc_curr": soc,
-                    "raw": legacy_storage_raw.get((source_storage_type, name), {}) | {"soc_curr": soc},
-                }
-            )
         return devices
 
     def device_states(self) -> List[Dict[str, Any]]:
         """Return the compact state needed by the live SVG diagram."""
         definition_snapshot = self.definition_snapshot
+        model_blocks_by_key = {
+            (str(block_name), str(row.get("name", "")).strip()): str(block_name)
+            for block_name, block in definition_snapshot.model_book.data.items()
+            for row in getattr(block, "data", [])
+            if str(row.get("name", "")).strip()
+        }
         states: Dict[Tuple[str, str], Dict[str, Any]] = {}
         for item in self.latest_device_states:
             dev_type = str(item.get("dev_type", "")).strip()
@@ -5637,6 +5950,8 @@ class PolarMicrogridSimulator:
             states[(dev_type, dev_name)] = {
                 "dev_type": dev_type,
                 "dev_name": dev_name,
+                "model_block": str(item.get("model_block", "")).strip()
+                or model_blocks_by_key.get((dev_type, dev_name), ""),
                 "run_stat": int(_to_float(item.get("run_stat"), 1) or 0),
                 "dead_island": bool(item.get("dead_island", False)),
             }
@@ -5656,6 +5971,7 @@ class PolarMicrogridSimulator:
                     {
                         "dev_type": key[0],
                         "dev_name": key[1],
+                        "model_block": str(dev_type),
                         "run_stat": run_stat,
                         "dead_island": False,
                     },
@@ -5674,6 +5990,7 @@ class PolarMicrogridSimulator:
                 {
                     "dev_type": dev_type,
                     "dev_name": dev_name,
+                    "model_block": model_blocks_by_key.get((dev_type, dev_name), ""),
                     "run_stat": run_stat,
                     "dead_island": False,
                 },
@@ -5691,6 +6008,66 @@ class PolarMicrogridSimulator:
             "absolute_minute": self.clock.absolute_minute,
             "wall_time": _now_text(),
         }
+
+    @staticmethod
+    def _external_book_signature_payload(book: EBook) -> List[Dict[str, Any]]:
+        blocks: List[Dict[str, Any]] = []
+        for block_name, block in book.data.items():
+            headers = list(getattr(block, "header_list", []) or [])
+            blocks.append(
+                {
+                    "name": str(block_name),
+                    "headers": headers,
+                    "rows": [
+                        [_json_scalar(row.get(header, "")) for header in headers]
+                        for row in getattr(block, "data", [])
+                    ],
+                }
+            )
+        return blocks
+
+    def external_model_version(self) -> Dict[str, Any]:
+        """Return a cached content version for every external API response."""
+        snapshot = self.definition_snapshot
+        cached = getattr(self, "_external_model_version_cache", None)
+        if isinstance(cached, tuple) and len(cached) == 2 and cached[0] is snapshot:
+            return dict(cached[1])
+        canonical = json.dumps(
+            {
+                "model": self._external_book_signature_payload(snapshot.model_book),
+                "control": self._external_book_signature_payload(snapshot.dev_define_book),
+                "measurement": [list(row) for row in snapshot.measurement_rows],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        version = {
+            "schema_version": 1,
+            "revision": int(snapshot.revision),
+            "signature": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+            "algorithm": "sha256",
+        }
+        self._external_model_version_cache = (snapshot, version)
+        return dict(version)
+
+    def _external_response_metadata(self) -> Dict[str, Any]:
+        return {
+            "model_id": self.model_id,
+            "model_name": self.model_name,
+            "model_version": self.external_model_version(),
+            **self._api_time_payload(),
+        }
+
+    @staticmethod
+    def _external_names_signature(groups: Mapping[str, Sequence[str]]) -> str:
+        canonical = json.dumps(
+            {str(key): [str(name) for name in names] for key, names in groups.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def _external_update_time_fields(self, time_payload: Mapping[str, Any]) -> Dict[str, Any]:
         return {
@@ -5777,7 +6154,7 @@ class PolarMicrogridSimulator:
                 run_stat = int(_to_float(dev.get("run_stat"), 0) or 0)
                 items.append(
                     {
-                        "name": f"{dev_type}.{dev_name}.run_stat",
+                        "name": automatic_point_name(dev_type, dev_name, "run_stat"),
                         "point_type": "YX",
                         "category": "遥信",
                         "dev_type": dev_type,
@@ -5796,7 +6173,7 @@ class PolarMicrogridSimulator:
                 status = int(_to_float(dev.get("status"), 0) or 0)
                 items.append(
                     {
-                        "name": f"{dev_type}.{dev_name}.status",
+                        "name": automatic_point_name(dev_type, dev_name, "status"),
                         "point_type": "YX",
                         "category": "遥信",
                         "dev_type": dev_type,
@@ -5810,6 +6187,238 @@ class PolarMicrogridSimulator:
 
         return items
 
+    @staticmethod
+    def _external_unique_items(
+        items: Sequence[Mapping[str, Any]],
+        discriminator: str,
+        expected: str,
+    ) -> List[Mapping[str, Any]]:
+        selected: List[Mapping[str, Any]] = []
+        seen: set[str] = set()
+        for item in items:
+            if str(item.get(discriminator, "")) != expected:
+                continue
+            name = str(item.get("name", "")).strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            selected.append(item)
+        return selected
+
+    def _external_telemetry_groups(
+        self,
+    ) -> Tuple[List[Mapping[str, Any]], List[Mapping[str, Any]]]:
+        items = self._external_telemetry_catalog_items()
+        return (
+            self._external_unique_items(items, "point_type", "YC"),
+            self._external_unique_items(items, "point_type", "YX"),
+        )
+
+    def _external_telemetry_catalog_items(self) -> List[Dict[str, Any]]:
+        current_items = self._latest_telemetry_items()
+        current_by_name = {
+            str(item.get("name", "")): item
+            for item in current_items
+            if str(item.get("name", ""))
+        }
+        catalog: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw_row in self.definition_snapshot.measurement_rows:
+            row = dict(zip(MEAS_HEADER, raw_row))
+            name = str(row.get("name", "")).strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            current = current_by_name.get(name, {})
+            is_signal = self._is_signal_measurement_row(row)
+            catalog.append(
+                {
+                    "name": name,
+                    "point_type": "YX" if is_signal else "YC",
+                    "category": "遥信" if is_signal else "遥测",
+                    "dev_type": str(row.get("dev_type", "")),
+                    "dev_name": str(row.get("dev_name", "")),
+                    "meas_type": str(row.get("meas_type", "")),
+                    "value": _json_scalar(current.get("value", row.get("value"))),
+                    "valid": int(_to_float(current.get("valid", row.get("valid")), 0) or 0),
+                    "weight": _json_scalar(current.get("weight", row.get("weight", ""))),
+                }
+            )
+        for item in current_items:
+            name = str(item.get("name", "")).strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            catalog.append(dict(item))
+        return catalog
+
+    @staticmethod
+    def _external_topology_fields(parameters: Mapping[str, Any]) -> Dict[str, Any]:
+        topology: Dict[str, Any] = {}
+        for raw_name, value in parameters.items():
+            name = str(raw_name)
+            lower = name.casefold()
+            if (
+                lower == "node"
+                or lower.endswith("_node")
+                or re.fullmatch(r"idx_.+_t[12]", lower)
+            ):
+                topology[name] = _json_scalar(value)
+        return topology
+
+    def external_device_information(self) -> Dict[str, Any]:
+        """Return physical definitions enriched with topology, state, measurements and controls."""
+        snapshot = self.definition_snapshot
+        model_book = snapshot.model_book
+        runtime_devices = {
+            (str(item.get("dev_type", "")), str(item.get("dev_name", ""))): item
+            for item in self.devices()
+        }
+        runtime_states = {
+            (str(item.get("dev_type", "")), str(item.get("dev_name", ""))): item
+            for item in self.device_states()
+        }
+        telemetry_by_device: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for item in self._latest_telemetry_items():
+            key = (str(item.get("dev_type", "")), str(item.get("dev_name", "")))
+            name = str(item.get("name", "")).strip()
+            if key[0] and key[1] and name:
+                telemetry_by_device.setdefault(key, {})[name] = _json_scalar(item.get("value"))
+        for raw_row in snapshot.measurement_rows:
+            row = dict(zip(MEAS_HEADER, raw_row))
+            key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+            name = str(row.get("name", "")).strip()
+            if key[0] and key[1] and name:
+                telemetry_by_device.setdefault(key, {}).setdefault(name, _json_scalar(row.get("value")))
+        controls_by_device: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for item in self._latest_control_value_items():
+            key = (str(item.get("dev_type", "")), str(item.get("dev_name", "")))
+            name = str(item.get("name", "")).strip()
+            if key[0] and key[1] and name:
+                controls_by_device.setdefault(key, {})[name] = _json_scalar(item.get("value"))
+
+        parameter_links = (
+            ("ACWindGen", "ACGenerator", "idx_acgenerator"),
+            ("DCWindGen", "DCGenerator", "idx_dcgenerator"),
+            ("ACPVGen", "ACGenerator", "idx_acgenerator"),
+            ("DCPVGen", "DCGenerator", "idx_dcgenerator"),
+            ("ACStorageGen", "ACGenerator", "idx_acgenerator"),
+            ("DCStorageGen", "DCGenerator", "idx_dcgenerator"),
+        )
+        linked_parameters: Dict[Tuple[str, str], Dict[str, List[Dict[str, Any]]]] = {}
+        for block_name, parent_type, index_field in parameter_links:
+            parent_block = model_book.data.get(parent_type)
+            parent_by_idx = {
+                str(row.get("idx", "")): str(row.get("name", "")).strip()
+                for row in getattr(parent_block, "data", [])
+                if str(row.get("idx", "")) and str(row.get("name", "")).strip()
+            }
+            parameter_block = model_book.data.get(block_name)
+            headers = list(getattr(parameter_block, "header_list", []) or [])
+            for row in getattr(parameter_block, "data", []):
+                parent_name = parent_by_idx.get(str(row.get(index_field, "")))
+                if not parent_name:
+                    continue
+                linked_parameters.setdefault((parent_type, parent_name), {}).setdefault(block_name, []).append(
+                    {header: _json_scalar(row.get(header, "")) for header in headers}
+                )
+
+        parameter_block_names = {item[0] for item in parameter_links}
+        devices: List[Dict[str, Any]] = []
+        device_keys: set[Tuple[str, str]] = set()
+        connections: List[Dict[str, Any]] = []
+        nodes: List[Dict[str, Any]] = []
+
+        def append_device(dev_type: str, dev_name: str, parameters: Mapping[str, Any]) -> None:
+            key = (dev_type, dev_name)
+            if not dev_type or not dev_name or key in device_keys:
+                return
+            device_keys.add(key)
+            runtime = runtime_devices.get(key, {})
+            runtime_state = runtime_states.get(key, {})
+            topology = self._external_topology_fields(parameters)
+            state: Dict[str, Any] = {
+                "run_stat": int(
+                    _to_float(
+                        runtime_state.get("run_stat", runtime.get("run_stat", parameters.get("run_stat", 1))),
+                        1,
+                    )
+                    or 0
+                ),
+                "dead_island": bool(runtime_state.get("dead_island", False)),
+            }
+            if "status" in parameters or "Switch" in dev_type or "Break" in dev_type or "Valve" in dev_type:
+                state["status"] = int(_to_float(runtime.get("status", parameters.get("status", 1)), 1) or 0)
+            mode = runtime.get("mode") or parameters.get("control_type") or parameters.get("mode")
+            if mode not in (None, ""):
+                state["mode"] = str(mode)
+            if runtime.get("soc_curr", "") != "":
+                state["soc"] = _json_scalar(runtime.get("soc_curr"))
+            device_id = f"{dev_type}.{dev_name}"
+            devices.append(
+                {
+                    "id": device_id,
+                    "dev_type": dev_type,
+                    "dev_name": dev_name,
+                    "topology": topology,
+                    "parameters": {str(name): _json_scalar(value) for name, value in parameters.items()},
+                    "parameter_blocks": linked_parameters.get(key, {}),
+                    "state": state,
+                    "values": telemetry_by_device.get(key, {}),
+                    "control_values": controls_by_device.get(key, {}),
+                }
+            )
+            if topology:
+                connections.append({"device_id": device_id, "terminals": topology})
+            if dev_type in {"ACNode", "DCNode"}:
+                nodes.append(
+                    {
+                        "device_id": device_id,
+                        "network": "AC" if dev_type == "ACNode" else "DC",
+                        "idx": _json_scalar(parameters.get("idx")),
+                        "name": dev_name,
+                    }
+                )
+
+        for block_name, block in model_book.data.items():
+            if block_name in parameter_block_names or block_name in {"Model", "PowerBase", "basevoltage"}:
+                continue
+            headers = list(getattr(block, "header_list", []) or [])
+            if "name" not in headers:
+                continue
+            physical_block = (
+                "run_stat" in headers
+                or block_name in {"ACNode", "DCNode"}
+                or any(self._external_topology_fields({header: "" for header in headers}))
+            )
+            if not physical_block:
+                continue
+            for row in getattr(block, "data", []):
+                name = str(row.get("name", "")).strip()
+                if name:
+                    append_device(
+                        str(block_name),
+                        name,
+                        {header: row.get(header, "") for header in headers},
+                    )
+
+        for key, runtime in runtime_devices.items():
+            if key in device_keys:
+                continue
+            parameters = runtime.get("raw", {})
+            append_device(key[0], key[1], parameters if isinstance(parameters, Mapping) else {})
+
+        devices.sort(key=lambda item: (str(item.get("dev_type", "")), str(item.get("dev_name", ""))))
+        return {
+            **self._external_response_metadata(),
+            "device_count": len(devices),
+            "devices": devices,
+            "topology": {
+                "nodes": nodes,
+                "connections": connections,
+            },
+        }
+
     def latest_telemetry_values(self) -> Dict[str, Any]:
         """Return compact latest remote measurements and status points for external clients."""
         time_payload = self._api_time_payload()
@@ -5818,11 +6427,52 @@ class PolarMicrogridSimulator:
             for item in self._latest_telemetry_items()
         ]
         return {
-            "model_id": self.model_id,
-            "model_name": self.model_name,
-            **time_payload,
+            **self._external_response_metadata(),
             "items": items,
             "values": {item["name"]: item.get("value") for item in items},
+        }
+
+    def external_telemetry_names(self) -> Dict[str, Any]:
+        telemetry, signals = self._external_telemetry_groups()
+        telemetry_names = [str(item.get("name", "")) for item in telemetry]
+        signal_names = [str(item.get("name", "")) for item in signals]
+        signature = self._external_names_signature(
+            {
+                "telemetry_names": telemetry_names,
+                "signal_names": signal_names,
+            }
+        )
+        return {
+            **self._external_response_metadata(),
+            "definition_signature": signature,
+            "telemetry_count": len(telemetry_names),
+            "signal_count": len(signal_names),
+            "telemetry_names": telemetry_names,
+            "signal_names": signal_names,
+            "yc_names": telemetry_names,
+            "yx_names": signal_names,
+        }
+
+    def external_telemetry_frame(self) -> Dict[str, Any]:
+        telemetry, signals = self._external_telemetry_groups()
+        telemetry_names = [str(item.get("name", "")) for item in telemetry]
+        signal_names = [str(item.get("name", "")) for item in signals]
+        return {
+            **self._external_response_metadata(),
+            "definition_signature": self._external_names_signature(
+                {
+                    "telemetry_names": telemetry_names,
+                    "signal_names": signal_names,
+                }
+            ),
+            "telemetry_count": len(telemetry),
+            "signal_count": len(signals),
+            "telemetry_values": [_json_scalar(item.get("value")) for item in telemetry],
+            "signal_values": [_json_scalar(item.get("value")) for item in signals],
+            "telemetry_valid": [int(_to_float(item.get("valid"), 0) or 0) for item in telemetry],
+            "signal_valid": [int(_to_float(item.get("valid"), 0) or 0) for item in signals],
+            "yc_values": [_json_scalar(item.get("value")) for item in telemetry],
+            "yx_values": [_json_scalar(item.get("value")) for item in signals],
         }
 
     def _name_list_from_payload(self, payload: Mapping[str, Any], keys: Sequence[str]) -> List[str]:
@@ -5886,9 +6536,7 @@ class PolarMicrogridSimulator:
         telemetry = pick(yc_index, yc_names)
         signals = pick(yx_index, yx_names)
         return {
-            "model_id": self.model_id,
-            "model_name": self.model_name,
-            **time_payload,
+            **self._external_response_metadata(),
             "telemetry": telemetry,
             "signals": signals,
             "yc": telemetry,
@@ -5898,6 +6546,337 @@ class PolarMicrogridSimulator:
             "missing": {
                 "telemetry": [item["name"] for item in telemetry if not item.get("found")],
                 "signals": [item["name"] for item in signals if not item.get("found")],
+            },
+        }
+
+    def selected_external_telemetry_frame(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        telemetry_names = self._name_list_from_payload(
+            payload,
+            ("telemetry", "telemetries", "telemetry_names", "yc", "yc_names", "remote_measurements"),
+        )
+        signal_names = self._name_list_from_payload(
+            payload,
+            ("signals", "signal_names", "yx", "yx_names", "statuses", "status_names", "remote_signals"),
+        )
+        telemetry, signals = self._external_telemetry_groups()
+        telemetry_index = {str(item.get("name", "")): item for item in telemetry}
+        signal_index = {str(item.get("name", "")): item for item in signals}
+
+        def selected_rows(
+            names: Sequence[str],
+            index: Mapping[str, Mapping[str, Any]],
+        ) -> List[Dict[str, Any]]:
+            rows: List[Dict[str, Any]] = []
+            for name in names:
+                item = index.get(name)
+                rows.append(
+                    {
+                        "name": name,
+                        "value": _json_scalar(item.get("value")) if item is not None else None,
+                        "valid": int(_to_float(item.get("valid"), 0) or 0) if item is not None else 0,
+                        "found": item is not None,
+                    }
+                )
+            return rows
+
+        telemetry_rows = selected_rows(telemetry_names, telemetry_index)
+        signal_rows = selected_rows(signal_names, signal_index)
+        return {
+            **self._external_response_metadata(),
+            "telemetry_names": telemetry_names,
+            "signal_names": signal_names,
+            "telemetry_values": [item["value"] for item in telemetry_rows],
+            "signal_values": [item["value"] for item in signal_rows],
+            "telemetry_valid": [item["valid"] for item in telemetry_rows],
+            "signal_valid": [item["valid"] for item in signal_rows],
+            "telemetry_found": [item["found"] for item in telemetry_rows],
+            "signal_found": [item["found"] for item in signal_rows],
+            "yc_names": telemetry_names,
+            "yx_names": signal_names,
+            "yc_values": [item["value"] for item in telemetry_rows],
+            "yx_values": [item["value"] for item in signal_rows],
+            "missing": {
+                "telemetry": [item["name"] for item in telemetry_rows if not item["found"]],
+                "signals": [item["name"] for item in signal_rows if not item["found"]],
+            },
+        }
+
+    @staticmethod
+    def _external_history_absolute_minute(payload: Mapping[str, Any], prefix: str) -> float:
+        minute_keys = (
+            f"{prefix}_absolute_minute",
+            f"{prefix}_minute",
+        )
+        for key in minute_keys:
+            if key not in payload:
+                continue
+            value = _to_float(payload.get(key), None)
+            if value is None or not math.isfinite(value) or value < 0:
+                raise ValueError(f"{key} must be a non-negative number")
+            return float(value)
+
+        second_keys = (
+            f"{prefix}_absolute_second",
+            f"{prefix}_second",
+        )
+        for key in second_keys:
+            if key not in payload:
+                continue
+            value = _to_float(payload.get(key), None)
+            if value is None or not math.isfinite(value) or value < 0:
+                raise ValueError(f"{key} must be a non-negative number")
+            return float(value) / 60.0
+
+        key = f"{prefix}_time"
+        raw_value = payload.get(key)
+        if raw_value is None or str(raw_value).strip() == "":
+            raise ValueError(f"{key} is required")
+        if isinstance(raw_value, (int, float)) and not isinstance(raw_value, bool):
+            value = float(raw_value)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{key} must be a non-negative absolute minute or HH:MM[:SS]")
+            return value
+
+        text = str(raw_value).strip()
+        numeric = _to_float(text, None)
+        if numeric is not None and ":" not in text:
+            if not math.isfinite(numeric) or numeric < 0:
+                raise ValueError(f"{key} must be a non-negative absolute minute or HH:MM[:SS]")
+            return float(numeric)
+        match = re.fullmatch(r"(?:(\d+)\+)?(\d+):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?", text)
+        if not match:
+            raise ValueError(f"{key} must use HH:MM[:SS] or day+HH:MM[:SS]")
+        day_text, hour_text, minute_text, second_text = match.groups()
+        day = int(day_text or 0)
+        hour = int(hour_text)
+        minute_part = int(minute_text)
+        second = float(second_text or 0.0)
+        if minute_part >= 60 or second >= 60 or (day_text is not None and hour >= 24):
+            raise ValueError(f"{key} is outside the valid clock range")
+        return day * 1440.0 + hour * 60.0 + minute_part + second / 60.0
+
+    @staticmethod
+    def _external_history_interval_seconds(payload: Mapping[str, Any]) -> float:
+        raw_value: Any = None
+        for key in (
+            "interval_seconds",
+            "data_interval_seconds",
+            "sample_interval_seconds",
+            "data_interval",
+        ):
+            if key in payload:
+                raw_value = payload.get(key)
+                break
+        value = _to_float(raw_value, None)
+        if value is None or not math.isfinite(value) or value <= 0:
+            raise ValueError("interval_seconds must be a positive number")
+        return float(value)
+
+    def external_measurement_history(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        """Return sampled YC/YX history matrices for external clients."""
+
+        interval_seconds = self._external_history_interval_seconds(payload)
+        start_minute = self._external_history_absolute_minute(payload, "start")
+        end_minute = self._external_history_absolute_minute(payload, "end")
+        if end_minute < start_minute - 1e-9:
+            raise ValueError("end_time must not be earlier than start_time")
+
+        telemetry_names = self._name_list_from_payload(
+            payload,
+            ("telemetry", "telemetries", "telemetry_names", "yc", "yc_names", "remote_measurements"),
+        )
+        signal_names = self._name_list_from_payload(
+            payload,
+            ("signals", "signal_names", "yx", "yx_names", "statuses", "status_names", "remote_signals"),
+        )
+        if not telemetry_names and not signal_names:
+            raise ValueError("telemetry_names or signal_names is required")
+        if len(telemetry_names) + len(signal_names) > 256:
+            raise ValueError("at most 256 telemetry and signal names may be queried at once")
+
+        with self.lock:
+            measurements = self.latest_measurements
+            if not isinstance(measurements, Mapping) or not measurements.get("definitions"):
+                measurements = self.measurements()
+            definitions = [
+                row
+                for row in measurements.get("definitions", []) or []
+                if isinstance(row, Mapping)
+            ]
+            definition_by_name: Dict[str, Tuple[int, Mapping[str, Any]]] = {}
+            for index, row in enumerate(definitions):
+                name = str(row.get("name", "")).strip()
+                if name and name not in definition_by_name:
+                    definition_by_name[name] = (index, row)
+
+            def resolve_names(names: Sequence[str], expect_signal: bool) -> Tuple[List[bool], List[Optional[int]]]:
+                found: List[bool] = []
+                indices: List[Optional[int]] = []
+                for name in names:
+                    match = definition_by_name.get(name)
+                    accepted = bool(
+                        match is not None
+                        and self._is_signal_measurement_row(match[1]) is expect_signal
+                    )
+                    found.append(accepted)
+                    indices.append(match[0] if accepted and match is not None else None)
+                return found, indices
+
+            telemetry_found, telemetry_definition_indices = resolve_names(telemetry_names, False)
+            signal_found, signal_definition_indices = resolve_names(signal_names, True)
+            selected_indices: List[int] = []
+            for index in [*telemetry_definition_indices, *signal_definition_indices]:
+                if index is not None and index not in selected_indices:
+                    selected_indices.append(index)
+            history = self.measurement_history(indices=selected_indices)
+            metadata = self._external_response_metadata()
+            external_definition_signature = self.external_telemetry_names()["definition_signature"]
+
+        selected_positions = {
+            definition_index: position
+            for position, definition_index in enumerate(history.get("indices", []))
+        }
+        telemetry_positions = [
+            selected_positions.get(index) if index is not None else None
+            for index in telemetry_definition_indices
+        ]
+        signal_positions = [
+            selected_positions.get(index) if index is not None else None
+            for index in signal_definition_indices
+        ]
+        frames = [
+            frame
+            for frame in history.get("frames", []) or []
+            if isinstance(frame, Mapping)
+            and _to_float(frame.get("absolute_minute"), None) is not None
+        ]
+        frames.sort(
+            key=lambda frame: (
+                float(_to_float(frame.get("absolute_minute"), 0.0) or 0.0),
+                int(_to_float(frame.get("step_count"), 0) or 0),
+                int(_to_float(frame.get("seq"), 0) or 0),
+            )
+        )
+
+        interval_minutes = interval_seconds / 60.0
+        available_start = (
+            float(_to_float(frames[0].get("absolute_minute"), 0.0) or 0.0)
+            if frames
+            else None
+        )
+        available_end = (
+            float(_to_float(frames[-1].get("absolute_minute"), 0.0) or 0.0)
+            if frames
+            else None
+        )
+        effective_start = max(start_minute, available_start) if available_start is not None else None
+        effective_end = min(end_minute, available_end) if available_end is not None else None
+        sample_count = 0
+        if effective_start is not None and effective_end is not None and effective_start <= effective_end + 1e-9:
+            raw_sample_count = (effective_end - effective_start + 1e-9) / interval_minutes + 1.0
+            if not math.isfinite(raw_sample_count) or raw_sample_count > 10000:
+                raise ValueError("history query would return more than 10000 samples; increase interval_seconds")
+            sample_count = max(0, int(math.floor(raw_sample_count + 1e-9)))
+
+        absolute_minutes: List[Any] = []
+        simu_times: List[str] = []
+        source_absolute_minutes: List[Any] = []
+        source_simu_times: List[str] = []
+        source_wall_times: List[str] = []
+        telemetry_values: List[List[Any]] = []
+        signal_values: List[List[Any]] = []
+        telemetry_valid: List[List[int]] = []
+        signal_valid: List[List[int]] = []
+
+        def frame_values(
+            frame: Mapping[str, Any],
+            field: str,
+            positions: Sequence[Optional[int]],
+            *,
+            signal: bool = False,
+        ) -> List[Any]:
+            values = frame.get(field, [])
+            source = values if isinstance(values, Sequence) and not isinstance(values, (str, bytes)) else []
+            result: List[Any] = []
+            for position in positions:
+                if position is None or position >= len(source) or source[position] is None:
+                    result.append(None)
+                    continue
+                if signal:
+                    result.append(1 if float(_to_float(source[position], 0.0) or 0.0) > 0.5 else 0)
+                else:
+                    result.append(_json_scalar(source[position]))
+            return result
+
+        def frame_valid(frame: Mapping[str, Any], positions: Sequence[Optional[int]]) -> List[int]:
+            values = frame.get("valid_values", [])
+            source = values if isinstance(values, Sequence) and not isinstance(values, (str, bytes)) else []
+            return [
+                int(_to_float(source[position], 0) or 0)
+                if position is not None and position < len(source) and source[position] is not None
+                else 0
+                for position in positions
+            ]
+
+        frame_index = 0
+        for sample_index in range(sample_count):
+            target_minute = round(float(effective_start) + sample_index * interval_minutes, 9)
+            while (
+                frame_index + 1 < len(frames)
+                and float(_to_float(frames[frame_index + 1].get("absolute_minute"), 0.0) or 0.0)
+                <= target_minute + 1e-9
+            ):
+                frame_index += 1
+            frame = frames[frame_index]
+            source_minute = float(_to_float(frame.get("absolute_minute"), 0.0) or 0.0)
+            absolute_minutes.append(_json_scalar(target_minute))
+            simu_times.append(minute_to_time(target_minute))
+            source_absolute_minutes.append(_json_scalar(source_minute))
+            source_simu_times.append(str(frame.get("simu_time") or minute_to_time(source_minute)))
+            source_wall_times.append(str(frame.get("wall_time") or "--"))
+            telemetry_values.append(frame_values(frame, "scada_values", telemetry_positions))
+            signal_values.append(frame_values(frame, "scada_values", signal_positions, signal=True))
+            telemetry_valid.append(frame_valid(frame, telemetry_positions))
+            signal_valid.append(frame_valid(frame, signal_positions))
+
+        return {
+            **metadata,
+            "definition_signature": external_definition_signature,
+            "measurement_definition_signature": history.get("definition_signature", ""),
+            "run_id": int(history.get("run_id", 0) or 0),
+            "start_time": minute_to_time(start_minute),
+            "end_time": minute_to_time(end_minute),
+            "start_absolute_minute": _json_scalar(start_minute),
+            "end_absolute_minute": _json_scalar(end_minute),
+            "available_start_absolute_minute": _json_scalar(available_start),
+            "available_end_absolute_minute": _json_scalar(available_end),
+            "effective_start_absolute_minute": _json_scalar(effective_start),
+            "effective_end_absolute_minute": _json_scalar(effective_end),
+            "interval_seconds": _json_scalar(interval_seconds),
+            "value_layout": "time-major",
+            "sample_count": len(absolute_minutes),
+            "absolute_minutes": absolute_minutes,
+            "simu_times": simu_times,
+            "source_absolute_minutes": source_absolute_minutes,
+            "source_simu_times": source_simu_times,
+            "source_wall_times": source_wall_times,
+            "telemetry_count": len(telemetry_names),
+            "signal_count": len(signal_names),
+            "telemetry_names": telemetry_names,
+            "signal_names": signal_names,
+            "telemetry_found": telemetry_found,
+            "signal_found": signal_found,
+            "telemetry_values": telemetry_values,
+            "signal_values": signal_values,
+            "telemetry_valid": telemetry_valid,
+            "signal_valid": signal_valid,
+            "yc_names": telemetry_names,
+            "yx_names": signal_names,
+            "yc_values": telemetry_values,
+            "yx_values": signal_values,
+            "missing": {
+                "telemetry": [name for name, found in zip(telemetry_names, telemetry_found) if not found],
+                "signals": [name for name, found in zip(signal_names, signal_found) if not found],
             },
         }
 
@@ -5981,7 +6960,7 @@ class PolarMicrogridSimulator:
             update = self._latest_active_control_update("remote_control", dev_type, dev_name, "run_stat")
             items.append(
                 {
-                    "name": f"{dev_type}.{dev_name}.run_stat",
+                    "name": automatic_point_name(dev_type, dev_name, "run_stat"),
                     "command_kind": "remote_control",
                     "category": "遥控",
                     "dev_type": dev_type,
@@ -6008,7 +6987,7 @@ class PolarMicrogridSimulator:
             update = self._latest_active_control_update("remote_control", dev_type, dev_name, "status")
             items.append(
                 {
-                    "name": f"{dev_type}.{dev_name}.status",
+                    "name": automatic_point_name(dev_type, dev_name, "status"),
                     "command_kind": "remote_control",
                     "category": "遥控",
                     "dev_type": dev_type,
@@ -6036,7 +7015,7 @@ class PolarMicrogridSimulator:
             update = self._latest_active_control_update("remote_adjustment", dev_type, dev_name, set_type)
             items.append(
                 {
-                    "name": f"{dev_type}.{dev_name}.{set_type}",
+                    "name": automatic_point_name(dev_type, dev_name, set_type),
                     "command_kind": "remote_adjustment",
                     "category": "遥调",
                     "dev_type": dev_type,
@@ -6055,6 +7034,36 @@ class PolarMicrogridSimulator:
 
         return items
 
+    def _external_control_groups(
+        self,
+    ) -> Tuple[List[Mapping[str, Any]], List[Mapping[str, Any]]]:
+        items = self._latest_control_value_items()
+        return (
+            self._external_unique_items(items, "command_kind", "remote_adjustment"),
+            self._external_unique_items(items, "command_kind", "remote_control"),
+        )
+
+    def external_control_names(self) -> Dict[str, Any]:
+        adjustments, controls = self._external_control_groups()
+        adjustment_names = [str(item.get("name", "")) for item in adjustments]
+        control_names = [str(item.get("name", "")) for item in controls]
+        signature = self._external_names_signature(
+            {
+                "remote_adjustment_names": adjustment_names,
+                "remote_control_names": control_names,
+            }
+        )
+        return {
+            **self._external_response_metadata(),
+            "definition_signature": signature,
+            "remote_adjustment_count": len(adjustment_names),
+            "remote_control_count": len(control_names),
+            "remote_adjustment_names": adjustment_names,
+            "remote_control_names": control_names,
+            "yt_names": adjustment_names,
+            "yk_names": control_names,
+        }
+
     def latest_control_values(self) -> Dict[str, Any]:
         """Return compact current remote-control and remote-adjustment values for external clients."""
         time_payload = self._api_time_payload()
@@ -6063,9 +7072,7 @@ class PolarMicrogridSimulator:
             for item in self._latest_control_value_items()
         ]
         return {
-            "model_id": self.model_id,
-            "model_name": self.model_name,
-            **time_payload,
+            **self._external_response_metadata(),
             "items": items,
             "values": {item["name"]: item.get("value") for item in items},
         }
@@ -6128,13 +7135,23 @@ class PolarMicrogridSimulator:
                 if not set_type:
                     continue
                 set_items.append({"dev_type": dev_type, "dev_name": dev_name, "set_type": set_type, "set_value": value})
-                resolved_items.append({"name": raw_name or f"{dev_type}.{dev_name}.{set_type}", "value": _json_scalar(value)})
+                resolved_items.append(
+                    {
+                        "name": raw_name or automatic_point_name(dev_type, dev_name, set_type),
+                        "value": _json_scalar(value),
+                    }
+                )
                 continue
             field_name = "status" if control_type == "status" else "run_stat"
             run_row: Dict[str, Any] = {"dev_type": dev_type, "dev_name": dev_name}
             run_row[field_name] = value
             run_items.append(run_row)
-            resolved_items.append({"name": raw_name or f"{dev_type}.{dev_name}.{field_name}", "value": _json_scalar(value)})
+            resolved_items.append(
+                {
+                    "name": raw_name or automatic_point_name(dev_type, dev_name, field_name),
+                    "value": _json_scalar(value),
+                }
+            )
 
         return {"run_status": run_items, "set_values": set_items, "resolved_items": resolved_items}
 
@@ -6144,11 +7161,8 @@ class PolarMicrogridSimulator:
             if not _is_trainee_command_source(source):
                 source = f"trainee-{source}"
             result = self.cancel_student_commands(payload | {"source": source}, source=source)
-            time_payload = self._api_time_payload()
             return {
-                "model_id": self.model_id,
-                "model_name": self.model_name,
-                **time_payload,
+                **self._external_response_metadata(),
                 "cancelled": result["cancelled"],
                 "cancelled_items": result["cancelled_items"],
                 "control_values": self.latest_control_values(),
@@ -6167,6 +7181,11 @@ class PolarMicrogridSimulator:
             "sent_wall_time",
             "sent_simu_time",
             "sent_absolute_minute",
+            "command_origin",
+            "commandOrigin",
+            "origin",
+            "manual_hold",
+            "hold_until_cancelled",
         ):
             if key in payload:
                 command_payload[key] = payload[key]
@@ -6180,9 +7199,7 @@ class PolarMicrogridSimulator:
             for item in normalized["resolved_items"]
         ]
         return {
-            "model_id": self.model_id,
-            "model_name": self.model_name,
-            **time_payload,
+            **self._external_response_metadata(),
             "accepted": {
                 "remote_controls": result.get("run_status", 0),
                 "remote_adjustments": result.get("set_values", 0),
@@ -6190,6 +7207,150 @@ class PolarMicrogridSimulator:
             },
             "updated_items": updated_items,
             "control_values": self.latest_control_values(),
+        }
+
+    @staticmethod
+    def _external_payload_sequence(payload: Mapping[str, Any], keys: Sequence[str]) -> List[Any]:
+        for key in keys:
+            if key not in payload:
+                continue
+            value = payload.get(key)
+            if value is None:
+                return []
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                return list(value)
+            raise ValueError(f"{key} must be a list")
+        return []
+
+    def apply_external_control_frame(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        adjustment_names = [
+            str(name).strip()
+            for name in self._external_payload_sequence(
+                payload,
+                ("remote_adjustment_names", "adjustment_names", "yt_names"),
+            )
+        ]
+        adjustment_values = self._external_payload_sequence(
+            payload,
+            ("remote_adjustment_values", "adjustment_values", "yt_values"),
+        )
+        control_names = [
+            str(name).strip()
+            for name in self._external_payload_sequence(
+                payload,
+                ("remote_control_names", "control_names", "yk_names"),
+            )
+        ]
+        control_values = self._external_payload_sequence(
+            payload,
+            ("remote_control_values", "control_values", "yk_values"),
+        )
+        if len(adjustment_names) != len(adjustment_values):
+            raise ValueError("remote adjustment name/value list length mismatch")
+        if len(control_names) != len(control_values):
+            raise ValueError("remote control name/value list length mismatch")
+
+        all_definitions = self._control_name_index()
+        adjustment_definitions = {
+            name: item
+            for name, item in all_definitions.items()
+            if str(item.get("command_kind", "")) == "remote_adjustment"
+        }
+        control_definitions = {
+            name: item
+            for name, item in all_definitions.items()
+            if str(item.get("command_kind", "")) == "remote_control"
+        }
+        commands: List[Dict[str, Any]] = []
+        for name, value in zip(adjustment_names, adjustment_values):
+            if name in adjustment_definitions:
+                commands.append({"name": name, "value": value})
+        for name, value in zip(control_names, control_values):
+            if name in control_definitions:
+                commands.append({"name": name, "value": value})
+        unresolved_count = sum(name not in adjustment_definitions for name in adjustment_names) + sum(
+            name not in control_definitions for name in control_names
+        )
+
+        delegated_keys = (
+            "valid_for_minutes",
+            "valid_minutes",
+            "valid_for_seconds",
+            "expires_at_absolute_minute",
+            "expires_at_minute",
+            "sent_wall_time",
+            "sent_simu_time",
+            "sent_absolute_minute",
+            "source",
+            "command_origin",
+            "commandOrigin",
+            "origin",
+            "manual_hold",
+            "hold_until_cancelled",
+        )
+        if commands:
+            applied = self.apply_external_control_values(
+                {"commands": commands}
+                | {key: payload[key] for key in delegated_keys if key in payload}
+            )
+            accepted = dict(applied.get("accepted", {}))
+            accepted["ignored"] = int(_to_float(accepted.get("ignored"), 0) or 0) + unresolved_count
+        else:
+            applied = {
+                **self._external_response_metadata(),
+                "accepted": {
+                    "remote_controls": 0,
+                    "remote_adjustments": 0,
+                    "ignored": len(adjustment_names) + len(control_names),
+                },
+            }
+            accepted = dict(applied["accepted"])
+
+        current = self._control_name_index()
+
+        def results(
+            names: Sequence[str],
+            values: Sequence[Any],
+            definitions: Mapping[str, Mapping[str, Any]],
+        ) -> List[Dict[str, Any]]:
+            rows: List[Dict[str, Any]] = []
+            for name, requested_value in zip(names, values):
+                definition = definitions.get(name)
+                item = current.get(name, {})
+                found = definition is not None
+                active = bool(item.get("active", False)) if found else False
+                row = {
+                    "name": name,
+                    "requested_value": _json_scalar(requested_value),
+                    "value": _json_scalar(item.get("value")) if found else None,
+                    "found": found,
+                    "accepted": bool(found and active),
+                    "active": active,
+                    "reason": "" if found and active else ("unknown control name" if not found else "command not active"),
+                }
+                if found:
+                    row.update(
+                        {
+                            "updated_wall_time": item.get("updated_wall_time", "--"),
+                            "updated_simu_time": item.get("updated_simu_time", "--"),
+                            "updated_absolute_minute": _json_scalar(item.get("updated_absolute_minute")),
+                            "expires_at_absolute_minute": _json_scalar(item.get("expires_at_absolute_minute")),
+                            "command_origin": str(item.get("command_origin", "")),
+                        }
+                    )
+                rows.append(row)
+            return rows
+
+        adjustment_results = results(adjustment_names, adjustment_values, adjustment_definitions)
+        control_results = results(control_names, control_values, control_definitions)
+        return {
+            **self._external_response_metadata(),
+            "definition_signature": self.external_control_names()["definition_signature"],
+            "accepted": accepted,
+            "remote_adjustment_results": adjustment_results,
+            "remote_control_results": control_results,
+            "yt_results": adjustment_results,
+            "yk_results": control_results,
         }
 
     def _definition_row(self, block: EBlock, row_key: Any) -> Dict[str, Any]:
@@ -6269,7 +7430,7 @@ class PolarMicrogridSimulator:
 
     @staticmethod
     def _manual_change_persistence_status(persisted: bool) -> str:
-        return "已保存" if persisted else "E文件保存失败"
+        return "覆盖层已保存" if persisted else "覆盖层保存失败"
 
     def _set_manual_change_sync_state_unlocked(
         self,
@@ -6283,7 +7444,7 @@ class PolarMicrogridSimulator:
         item["persistence_status"] = self._manual_change_persistence_status(persisted)
         item["sync_status"] = "synced" if persisted else "failed"
         item["last_sync_time"] = _now_text()
-        item["last_sync_error"] = "" if persisted else str(error or "E 文件保存失败")
+        item["last_sync_error"] = "" if persisted else str(error or "人工覆盖层保存失败")
         retry_count = int(_to_float(item.get("retry_count"), 0) or 0)
         item["retry_count"] = retry_count + (1 if increment_retry else 0)
 
@@ -6336,7 +7497,7 @@ class PolarMicrogridSimulator:
             )
         )
         return {
-            "version": 4,
+            "version": 5,
             "model_id": self.model_id,
             "model_name": self.model_name,
             "source_fingerprint": source_fingerprint,
@@ -6354,6 +7515,7 @@ class PolarMicrogridSimulator:
         if not self._manual_definition_changes:
             self.manual_definition_changes_file.unlink(missing_ok=True)
             return
+        self.manual_definition_changes_file.parent.mkdir(parents=True, exist_ok=True)
         payload = self._manual_definition_changes_payload_unlocked(
             accepted_source_fingerprints=accepted_source_fingerprints,
         )
@@ -6368,7 +7530,7 @@ class PolarMicrogridSimulator:
     ) -> str:
         overrides = text_overrides or {}
         digest = hashlib.sha256()
-        for file_key in ("model", "meas"):
+        for file_key in ("model", "meas", "stat", "control"):
             path = self.source_files[file_key]
             digest.update(file_key.encode("ascii"))
             digest.update(b"\0")
@@ -6384,41 +7546,8 @@ class PolarMicrogridSimulator:
 
     def _write_ahead_manual_definition_changes_unlocked(
         self,
-        rendered_texts: Mapping[str, str],
     ) -> None:
-        file_keys = [file_key for file_key in ("model", "meas") if file_key in rendered_texts]
-        accepted_fingerprints: List[str] = []
-        # Independent atomic file replaces can stop after any subset; every reachable
-        # fingerprint must keep the pending journal valid after a crash or partial failure.
-        for mask in range(1 << len(file_keys)):
-            overrides = {
-                file_key: rendered_texts[file_key]
-                for index, file_key in enumerate(file_keys)
-                if mask & (1 << index)
-            }
-            fingerprint = self._manual_definition_source_fingerprint(overrides)
-            if fingerprint not in accepted_fingerprints:
-                accepted_fingerprints.append(fingerprint)
-        self._write_manual_definition_changes_unlocked(
-            accepted_source_fingerprints=accepted_fingerprints,
-        )
-
-    @staticmethod
-    def _manual_definition_rendered_texts(
-        snapshot: DefinitionSnapshot,
-        kinds: Iterable[str],
-    ) -> Dict[str, str]:
-        selected = set(kinds)
-        rendered: Dict[str, str] = {}
-        if "device" in selected:
-            rendered["model"] = render_ebook_aligned(snapshot.model_book)
-        if "measurement" in selected:
-            rendered["meas"] = simu_loop.render_measurement_snapshot_aligned(
-                snapshot.measurement_before,
-                snapshot.measurement_rows,
-                snapshot.measurement_after,
-            )
-        return rendered
+        self._write_manual_definition_changes_unlocked()
 
     def _clear_manual_definition_changes_unlocked(self) -> int:
         cleared = len(self._manual_definition_changes)
@@ -6429,6 +7558,7 @@ class PolarMicrogridSimulator:
     def clear_manual_definition_changes(self) -> Dict[str, Any]:
         with self._active_definition_update_guard():
             cleared = self._clear_manual_definition_changes_unlocked()
+            self._rebuild_effective_definitions_from_source_unlocked()
             return {
                 **self._manual_definition_changes_payload_unlocked(),
                 "cleared_count": cleared,
@@ -6454,12 +7584,246 @@ class PolarMicrogridSimulator:
                 {"name": item.get("measurement_name", "")},
             )
             column = {"weight": 5, "valid": 6}.get(field_name)
-            if column is None:
-                return None
-            return self._manual_change_value_text(active.measurement_rows[index][column])
+            if column is not None:
+                return self._manual_change_value_text(active.measurement_rows[index][column])
+            if field_name in {"status", "fixed_value"}:
+                status, fixed_value = self._measurement_status_override(
+                    active.measurement_rows[index]
+                )
+                return self._manual_change_value_text(
+                    status if field_name == "status" else fixed_value
+                )
+            return None
         return None
 
+    def _archive_manual_definition_changes_unlocked(self) -> Optional[Path]:
+        if not self.manual_definition_changes_file.exists():
+            return None
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+        archived = self.runtime_dir / f"manual_overrides.stale.{timestamp}.json"
+        try:
+            self.manual_definition_changes_file.replace(archived)
+        except OSError:
+            self.manual_definition_changes_file.unlink(missing_ok=True)
+            return None
+        return archived
+
+    def _source_definition_state_unlocked(
+        self,
+    ) -> Tuple[DefinitionSnapshot, EBook, EBook]:
+        model_book = _load_book(self.source_files["model"])
+        source_stat_book = _load_book(self.source_files["stat"])
+        control_book = _load_book(
+            self.source_files["control"]
+            if self.source_files["control"].exists()
+            else self.source_files["stat"]
+        )
+        dev_define_book = simu_loop._capability_define_book(
+            model_book,
+            self._legacy_dev_define_file(),
+        )
+        try:
+            measurement_before, measurement_rows, measurement_after = parse_measurement_rows(
+                self.source_files["meas"]
+            )
+        except Exception:
+            measurement_before, measurement_rows, measurement_after = [], [], []
+        snapshot = DefinitionSnapshot(
+            revision=self.definition_snapshot.revision + 1,
+            model_book=model_book,
+            dev_define_book=dev_define_book,
+            measurement_before=tuple(measurement_before),
+            measurement_rows=tuple(tuple(row) for row in measurement_rows),
+            measurement_after=tuple(measurement_after),
+        )
+        return snapshot, source_stat_book, control_book
+
+    def _apply_manual_runtime_control_overrides_unlocked(
+        self,
+        items: Sequence[Mapping[str, Any]],
+    ) -> None:
+        for item in items:
+            if item.get("kind") != "device":
+                continue
+            field_name = str(item.get("field", "")).strip().casefold()
+            block_name = str(item.get("block_name", "")).strip()
+            row_key = item.get("row_key", {})
+            if not isinstance(row_key, Mapping):
+                continue
+            dev_name = str(
+                row_key.get("name", item.get("object_name", ""))
+            ).strip()
+            if not block_name or not dev_name:
+                continue
+            current_value = item.get("current_value", "")
+            if field_name in RUNTIME_CONTROL_STATUS_FIELDS:
+                for book in (self.source_stat_book, self.control_book):
+                    self._upsert_runtime_status_value(
+                        book,
+                        block_name,
+                        dev_name,
+                        field_name,
+                        current_value,
+                    )
+                continue
+            set_type = self._runtime_control_set_type(block_name, field_name)
+            if set_type is None:
+                continue
+            for book in (self.source_stat_book, self.control_book):
+                self._upsert_runtime_setpoint_value(
+                    book,
+                    block_name,
+                    dev_name,
+                    set_type,
+                    current_value,
+                )
+
+    def _apply_manual_measurement_status_overrides_unlocked(
+        self,
+        snapshot: DefinitionSnapshot,
+        items: Sequence[Mapping[str, Any]],
+    ) -> None:
+        grouped: Dict[str, Dict[str, Any]] = {}
+        for item in items:
+            if item.get("kind") != "measurement":
+                continue
+            field_name = str(item.get("field", ""))
+            if field_name not in {"status", "fixed_value"}:
+                continue
+            measurement_name = str(item.get("measurement_name", "")).strip()
+            if measurement_name:
+                grouped.setdefault(measurement_name, {})[field_name] = item.get(
+                    "current_value",
+                    "",
+                )
+
+        statuses: Dict[str, Dict[str, Any]] = {}
+        for measurement_name, values in grouped.items():
+            try:
+                index, _record = self._measurement_definition_row(
+                    snapshot.measurement_rows,
+                    {"name": measurement_name},
+                )
+            except (KeyError, ValueError):
+                continue
+            default_status = _measurement_status_from_valid(
+                snapshot.measurement_rows[index][6]
+            )
+            status = str(values.get("status", default_status)).strip().casefold()
+            if status not in MEASUREMENT_STATUS_TOKENS:
+                status = default_status
+            fixed_value = _to_float(values.get("fixed_value"), None)
+            statuses[measurement_name] = {
+                "status": status,
+                "fixed_value": fixed_value,
+            }
+        self.local_settings["measurement_statuses"] = statuses
+
+    def _migrate_legacy_measurement_status_overrides_unlocked(self) -> bool:
+        configured_statuses = self.local_settings.get("measurement_statuses", {})
+        if not isinstance(configured_statuses, Mapping) or not configured_statuses:
+            return False
+        migrated = False
+        existing_fields = {
+            (
+                str(item.get("measurement_name", "")),
+                str(item.get("field", "")),
+            )
+            for item in self._manual_definition_changes.values()
+            if item.get("kind") == "measurement"
+        }
+        rows = self.definition_snapshot.measurement_rows
+        for measurement_name, configured in configured_statuses.items():
+            if not isinstance(configured, Mapping):
+                continue
+            name = str(measurement_name).strip()
+            if not name:
+                continue
+            try:
+                index, _record = self._measurement_definition_row(
+                    rows,
+                    {"name": name},
+                )
+            except (KeyError, ValueError):
+                continue
+            before_row = list(rows[index])
+            after_row = list(before_row)
+            default_status = _measurement_status_from_valid(before_row[6])
+            status = str(configured.get("status", default_status)).strip().casefold()
+            if status not in MEASUREMENT_STATUS_TOKENS:
+                status = default_status
+            fixed_value = _to_float(configured.get("fixed_value"), None)
+            after_row[6] = str(MEASUREMENT_STATUS_VALIDITY[status])
+            changed_fields: List[str] = []
+            if (name, "valid") not in existing_fields and not self._manual_change_values_equal(
+                before_row[6],
+                after_row[6],
+            ):
+                changed_fields.append("valid")
+            if (name, "status") not in existing_fields and status != default_status:
+                changed_fields.append("status")
+            if (
+                (name, "fixed_value") not in existing_fields
+                and status == "fixed"
+                and fixed_value is not None
+            ):
+                changed_fields.append("fixed_value")
+            if not changed_fields:
+                continue
+            self._record_measurement_manual_changes_unlocked(
+                before_row,
+                after_row,
+                changed_fields,
+                persisted=False,
+                persistence_error="正在迁移旧量测状态覆盖",
+                before_status=default_status,
+                before_fixed_value=None,
+                after_status=status,
+                after_fixed_value=fixed_value,
+            )
+            migrated = True
+
+        # Measurement status edits now live exclusively in manual_overrides.json.
+        # Keep unrelated runtime settings, but remove the legacy duplicate layer.
+        self.local_settings["measurement_statuses"] = {}
+        try:
+            _write_json(self.settings_file, self.local_settings)
+        except OSError:
+            pass
+        return migrated
+
+    def _rebuild_effective_definitions_from_source_unlocked(
+        self,
+        *,
+        materialize_controls: bool = True,
+    ) -> DefinitionSnapshot:
+        source_snapshot, source_stat_book, control_book = (
+            self._source_definition_state_unlocked()
+        )
+        old_runtime_stat_book = self.runtime_stat_book
+        self.source_stat_book = source_stat_book
+        self.control_book = control_book
+        items = list(self._manual_definition_changes.values())
+        next_snapshot, _kinds = self._snapshot_with_manual_change_values_unlocked(
+            source_snapshot,
+            items,
+        )
+        self._apply_manual_runtime_control_overrides_unlocked(items)
+        self._apply_manual_measurement_status_overrides_unlocked(next_snapshot, items)
+        self._publish_definition_snapshot(next_snapshot)
+
+        # Rebuild the effective control baseline while preserving the live SOC
+        # rows.  Active automatic/manual commands are then layered on top.
+        self.runtime_stat_book = old_runtime_stat_book
+        self.runtime_stat_book = self._base_stat_book_for_controls()
+        self._ensure_runtime_stat_book()
+        if materialize_controls:
+            self._materialize_active_control_commands(self.clock.absolute_minute)
+            self._apply_device_faults(self.clock.minute, self.clock.absolute_minute)
+        return next_snapshot
+
     def _load_manual_definition_changes(self) -> None:
+        overlay_exists = self.manual_definition_changes_file.exists()
         payload = _read_json(self.manual_definition_changes_file, {})
         accepted_fingerprints: List[str] = []
         if isinstance(payload, Mapping):
@@ -6474,12 +7838,25 @@ class PolarMicrogridSimulator:
                     if str(fingerprint).strip()
                 )
         accepted_fingerprints = list(dict.fromkeys(accepted_fingerprints))
-        if (
-            accepted_fingerprints
-            and self._manual_definition_source_fingerprint() not in accepted_fingerprints
+        current_fingerprint = self._manual_definition_source_fingerprint()
+        model_matches = not isinstance(payload, Mapping) or str(
+            payload.get("model_id", self.model_id)
+        ).strip() in {"", self.model_id}
+        if overlay_exists and (
+            not isinstance(payload, Mapping)
+            or not payload
+            or not accepted_fingerprints
         ):
             self._manual_definition_changes = {}
-            self.manual_definition_changes_file.unlink(missing_ok=True)
+            self._archive_manual_definition_changes_unlocked()
+            return
+        if accepted_fingerprints and current_fingerprint not in accepted_fingerprints:
+            self._manual_definition_changes = {}
+            self._archive_manual_definition_changes_unlocked()
+            return
+        if isinstance(payload, Mapping) and payload and not model_matches:
+            self._manual_definition_changes = {}
+            self._archive_manual_definition_changes_unlocked()
             return
         items = payload.get("changes", []) if isinstance(payload, Mapping) else []
         loaded: Dict[str, Dict[str, Any]] = {}
@@ -6494,45 +7871,45 @@ class PolarMicrogridSimulator:
                 persisted = bool(item.get("persisted", False))
                 item.setdefault("sync_status", "synced" if persisted else "failed")
                 item.setdefault("last_sync_time", str(item.get("modified_at", "")))
-                item.setdefault("last_sync_error", "" if persisted else "E 文件尚未同步")
+                item.setdefault("last_sync_error", "" if persisted else "人工覆盖层尚未同步")
                 item.setdefault("retry_count", 0)
                 loaded[change_id] = item
         self._manual_definition_changes = loaded
+        migrated_legacy_statuses = self._migrate_legacy_measurement_status_overrides_unlocked()
+        if not self._manual_definition_changes:
+            return
 
-        pending_ids = [
-            change_id
-            for change_id, item in self._manual_definition_changes.items()
-            if not bool(item.get("persisted", False))
-        ]
-        if pending_ids:
-            try:
-                self.retry_manual_definition_changes({"change_ids": pending_ids})
-            except (KeyError, OSError, ValueError):
-                pass
+        try:
+            self._rebuild_effective_definitions_from_source_unlocked(
+                materialize_controls=False,
+            )
+        except (KeyError, ValueError):
+            self._manual_definition_changes = {}
+            self._archive_manual_definition_changes_unlocked()
+            self.reload_definition_state()
+            return
 
-        reconciled = False
+        reconciled = migrated_legacy_statuses
         for change_id, item in list(self._manual_definition_changes.items()):
             try:
                 current_value = self._current_manual_change_value(item)
             except (KeyError, ValueError):
                 current_value = None
-            if current_value is None:
+            if current_value is None or not self._manual_change_values_equal(
+                current_value,
+                item.get("current_value", ""),
+            ):
                 self._manual_definition_changes.pop(change_id, None)
                 reconciled = True
                 continue
-            if bool(item.get("persisted", False)) and self._manual_change_values_equal(
-                current_value,
+            if self._manual_change_values_equal(
+                item.get("current_value", ""),
                 item.get("default_value", ""),
             ):
                 self._manual_definition_changes.pop(change_id, None)
                 reconciled = True
                 continue
-            if not self._manual_change_values_equal(current_value, item.get("current_value", "")):
-                item["current_value"] = current_value
-                if item.get("field") == "weight":
-                    item["current_error_sigma"] = self._manual_change_sigma(current_value)
-                reconciled = True
-            if bool(item.get("persisted", False)) and item.get("sync_status") != "synced":
+            if not bool(item.get("persisted", False)) or item.get("sync_status") != "synced":
                 self._set_manual_change_sync_state_unlocked(item, persisted=True)
                 reconciled = True
         if reconciled:
@@ -6658,24 +8035,34 @@ class PolarMicrogridSimulator:
                 )
                 return result
 
-            next_snapshot, kinds = self._snapshot_with_manual_change_values_unlocked(current, selected)
-            if next_snapshot is not current:
-                self._publish_definition_snapshot(next_snapshot)
-
+            self._rebuild_effective_definitions_from_source_unlocked()
+            original_changes = {
+                change_id: dict(item)
+                for change_id, item in self._manual_definition_changes.items()
+            }
+            persisted_count = 0
             for item in selected:
-                active_item = self._manual_definition_changes.get(str(item.get("id", "")))
-                if active_item is not None:
-                    self._set_manual_change_sync_state_unlocked(
-                        active_item,
-                        persisted=False,
-                        error="等待 E 文件保存",
-                    )
+                change_id = str(item.get("id", ""))
+                active_item = self._manual_definition_changes.get(change_id)
+                if active_item is None:
+                    continue
+                self._set_manual_change_sync_state_unlocked(
+                    active_item,
+                    persisted=True,
+                    increment_retry=True,
+                )
+                persisted_count += 1
+                if self._manual_change_values_equal(
+                    active_item.get("current_value", ""),
+                    active_item.get("default_value", ""),
+                ):
+                    self._manual_definition_changes.pop(change_id, None)
 
-            rendered_texts = self._manual_definition_rendered_texts(next_snapshot, kinds)
             try:
-                self._write_ahead_manual_definition_changes_unlocked(rendered_texts)
+                self._write_manual_definition_changes_unlocked()
             except OSError as exc:
-                error = f"人工修改记录保存失败，未写入 E 文件: {exc}"
+                self._manual_definition_changes = original_changes
+                error = f"人工覆盖层保存失败，请重试: {exc}"
                 for item in selected:
                     active_item = self._manual_definition_changes.get(str(item.get("id", "")))
                     if active_item is not None:
@@ -6685,77 +8072,31 @@ class PolarMicrogridSimulator:
                             error=error,
                             increment_retry=True,
                         )
-                warning = f"人工修改记录保存失败，未保存 E 文件，请重试: {exc}"
                 result = self._manual_definition_changes_payload_unlocked()
                 result.update(
                     {
                         "retried_count": len(selected),
                         "persisted_count": 0,
-                        "memory_updated": next_snapshot is not current,
+                        "memory_updated": True,
                         "persisted": False,
                         "change_record_persisted": False,
                         "static_meta": self.static_meta(),
-                        "warning": warning,
+                        "warning": error,
                     }
                 )
                 return result
-
-            errors: Dict[str, str] = {}
-            if "model" in rendered_texts:
-                try:
-                    atomic_write_text(self.source_files["model"], rendered_texts["model"])
-                except OSError as exc:
-                    errors["device"] = str(exc)
-            if "meas" in rendered_texts:
-                try:
-                    atomic_write_text(self.source_files["meas"], rendered_texts["meas"])
-                except OSError as exc:
-                    errors["measurement"] = str(exc)
-
-            persisted_count = 0
-            for change_id, item in list(self._manual_definition_changes.items()):
-                kind = str(item.get("kind", ""))
-                if kind not in kinds or bool(item.get("persisted", False)):
-                    continue
-                persisted = kind not in errors
-                self._set_manual_change_sync_state_unlocked(
-                    item,
-                    persisted=persisted,
-                    error=errors.get(kind, ""),
-                    increment_retry=True,
-                )
-                if persisted:
-                    persisted_count += 1
-                    if self._manual_change_values_equal(
-                        item.get("current_value", ""),
-                        item.get("default_value", ""),
-                    ):
-                        self._manual_definition_changes.pop(change_id, None)
-
-            warning = "；".join(
-                f"{('model.e' if kind == 'device' else 'meas.e')} 保存失败，请重试: {error}"
-                for kind, error in errors.items()
-            )
-            change_record_persisted = True
-            try:
-                self._write_manual_definition_changes_unlocked()
-            except OSError as exc:
-                change_record_persisted = False
-                warning = self._merge_definition_warning(warning, f"人工修改记录保存失败，请重试: {exc}")
 
             result = self._manual_definition_changes_payload_unlocked()
             result.update(
                 {
                     "retried_count": len(selected),
                     "persisted_count": persisted_count,
-                    "memory_updated": next_snapshot is not current,
-                    "persisted": not errors,
-                    "change_record_persisted": change_record_persisted,
+                    "memory_updated": True,
+                    "persisted": True,
+                    "change_record_persisted": True,
                     "static_meta": self.static_meta(),
                 }
             )
-            if warning:
-                result["warning"] = warning
             return result
 
     def _mark_manual_changes_persisted_unlocked(self, kind: str) -> None:
@@ -6830,6 +8171,10 @@ class PolarMicrogridSimulator:
         *,
         persisted: bool,
         persistence_error: str = "",
+        before_status: Optional[str] = None,
+        before_fixed_value: Any = None,
+        after_status: Optional[str] = None,
+        after_fixed_value: Any = None,
     ) -> None:
         after = _measurement_row_to_dict(after_row)
         measurement_name = str(after.get("name", ""))
@@ -6839,9 +8184,20 @@ class PolarMicrogridSimulator:
         raw_values = {
             "weight": (before_row[5], after_row[5]),
             "valid": (before_row[6], after_row[6]),
+            "status": (
+                before_status
+                if before_status is not None
+                else _measurement_status_from_valid(before_row[6]),
+                after_status
+                if after_status is not None
+                else _measurement_status_from_valid(after_row[6]),
+            ),
+            "fixed_value": (before_fixed_value, after_fixed_value),
         }
         now = _now_text()
         for field_name in changed_fields:
+            if field_name not in raw_values:
+                continue
             default_raw, current_raw = raw_values[field_name]
             change_id = self._manual_change_id("measurement", identity, field_name)
             existing = self._manual_definition_changes.get(change_id, {})
@@ -6862,7 +8218,12 @@ class PolarMicrogridSimulator:
                 "measurement_name": measurement_name,
                 "measurement_type": str(after.get("meas_type", "")),
                 "field": field_name,
-                "field_label": "量测误差 / 权重" if field_name == "weight" else "量测状态",
+                "field_label": {
+                    "weight": "量测误差 / 权重",
+                    "valid": "量测有效性",
+                    "status": "量测状态",
+                    "fixed_value": "量测固定值",
+                }[field_name],
                 "default_value": default_value,
                 "current_value": current_value,
                 "modified_at": now,
@@ -7089,40 +8450,28 @@ class PolarMicrogridSimulator:
             )
             self._publish_definition_snapshot(next_snapshot)
 
-            rendered_model_text = render_ebook_aligned(next_snapshot.model_book)
             runtime_control = self._sync_runtime_controls_from_device_changes_unlocked(
                 block_name,
                 row,
                 normalized_changes,
             )
-            rendered_runtime_texts: Dict[str, str] = {}
-            if runtime_control is not None:
-                rendered_runtime_texts["stat"] = render_ebook_aligned(
-                    self.source_stat_book
-                )
-                if self.source_files["control"].exists():
-                    rendered_runtime_texts["control"] = render_ebook_aligned(
-                        self.control_book
-                    )
             self._record_device_manual_changes_unlocked(
                 block_name,
                 before_row,
                 row,
                 tuple(normalized_changes),
                 persisted=False,
-                persistence_error="等待 model.e 保存",
+                persistence_error="等待人工覆盖层保存",
             )
             persisted = False
             change_record_persisted = False
-            runtime_control_persisted = True
+            runtime_control_persisted = runtime_control is None
             warning = ""
             try:
-                self._write_ahead_manual_definition_changes_unlocked(
-                    {"model": rendered_model_text},
-                )
+                self._write_ahead_manual_definition_changes_unlocked()
             except OSError as exc:
-                persistence_error = f"人工修改记录保存失败，未写入 model.e: {exc}"
-                warning = f"后台定义已更新，但人工修改记录保存失败，未保存 E 文件，请重试: {exc}"
+                persistence_error = f"人工覆盖层保存失败: {exc}"
+                warning = f"后台定义已更新，但人工覆盖层保存失败，请重试: {exc}"
                 self._record_device_manual_changes_unlocked(
                     block_name,
                     before_row,
@@ -7133,48 +8482,22 @@ class PolarMicrogridSimulator:
                 )
             else:
                 change_record_persisted = True
-                try:
-                    atomic_write_text(self.source_files["model"], rendered_model_text)
-                except OSError as exc:
-                    persistence_error = str(exc)
-                    warning = f"后台定义已更新，但 E 文件保存失败，请重试: {exc}"
-                    self._record_device_manual_changes_unlocked(
-                        block_name,
-                        before_row,
-                        row,
-                        tuple(normalized_changes),
-                        persisted=False,
-                        persistence_error=persistence_error,
-                    )
-                else:
-                    persisted = True
-                    self._mark_manual_changes_persisted_unlocked("device")
-                    runtime_errors: List[str] = []
-                    for file_key, rendered_text in rendered_runtime_texts.items():
-                        try:
-                            atomic_write_text(
-                                self.source_files[file_key],
-                                rendered_text,
-                            )
-                        except OSError as exc:
-                            runtime_errors.append(
-                                f"{self.source_files[file_key].name}: {exc}"
-                            )
-                    if runtime_errors:
-                        runtime_control_persisted = False
-                        warning = self._merge_definition_warning(
-                            warning,
-                            "运行控制 E 文件保存失败，请重试: "
-                            + "；".join(runtime_errors),
-                        )
+                pending_changes = {
+                    change_id: dict(item)
+                    for change_id, item in self._manual_definition_changes.items()
+                }
+                self._mark_manual_changes_persisted_unlocked("device")
                 try:
                     self._write_manual_definition_changes_unlocked()
                 except OSError as exc:
-                    change_record_persisted = False
-                    warning = self._merge_definition_warning(
-                        warning,
-                        f"人工修改记录保存失败，请重试: {exc}",
+                    self._manual_definition_changes = pending_changes
+                    warning = (
+                        "人工覆盖层已保存当前值，但同步状态保存失败，请重试: "
+                        f"{exc}"
                     )
+                else:
+                    persisted = True
+                    runtime_control_persisted = True
             record = {
                 header: _json_scalar(row.get(header, ""))
                 for header in block.header_list
@@ -7215,24 +8538,6 @@ class PolarMicrogridSimulator:
             normalized = normalize_measurement_changes(current_with_status, changes)
             rows[index][5] = normalized["weight"]
             rows[index][6] = normalized["valid"]
-            measurement_name = str(current_item.get("name", "")).strip()
-            configured_statuses = self.local_settings.get("measurement_statuses", {})
-            has_status_override = (
-                isinstance(configured_statuses, Mapping)
-                and measurement_name in configured_statuses
-            )
-            status_changed = (
-                "status" in changes
-                or "fixed_value" in changes
-                or (has_status_override and normalized["status"] != current_status)
-            )
-            if status_changed:
-                statuses = dict(configured_statuses) if isinstance(configured_statuses, Mapping) else {}
-                statuses[measurement_name] = {
-                    "status": normalized["status"],
-                    "fixed_value": normalized["fixed_value"],
-                }
-                self.local_settings["measurement_statuses"] = statuses
             next_snapshot = DefinitionSnapshot(
                 revision=current.revision + 1,
                 model_book=current.model_book,
@@ -7243,77 +8548,76 @@ class PolarMicrogridSimulator:
             )
             self._publish_definition_snapshot(next_snapshot)
 
-            rendered_measurement_text = simu_loop.render_measurement_snapshot_aligned(
-                next_snapshot.measurement_before,
-                next_snapshot.measurement_rows,
-                next_snapshot.measurement_after,
-            )
             changed_fields: List[str] = []
             if "weight" in changes or "error_sigma" in changes:
                 changed_fields.append("weight")
-            if "valid" in changes:
+            if "valid" in changes or "status" in changes:
                 changed_fields.append("valid")
+            if "status" in changes:
+                changed_fields.append("status")
+            if "fixed_value" in changes or (
+                "status" in changes
+                and (
+                    current_fixed_value is not None
+                    or normalized["fixed_value"] is not None
+                )
+            ):
+                changed_fields.append("fixed_value")
             self._record_measurement_manual_changes_unlocked(
                 before_row,
                 rows[index],
                 changed_fields,
                 persisted=False,
-                persistence_error="等待 meas.e 保存",
+                persistence_error="等待人工覆盖层保存",
+                before_status=current_status,
+                before_fixed_value=current_fixed_value,
+                after_status=normalized["status"],
+                after_fixed_value=normalized["fixed_value"],
+            )
+            self._apply_manual_measurement_status_overrides_unlocked(
+                next_snapshot,
+                list(self._manual_definition_changes.values()),
             )
             persisted = False
             change_record_persisted = False
             warning = ""
             try:
-                self._write_ahead_manual_definition_changes_unlocked(
-                    {"meas": rendered_measurement_text},
-                )
+                self._write_ahead_manual_definition_changes_unlocked()
             except OSError as exc:
-                persistence_error = f"人工修改记录保存失败，未写入 meas.e: {exc}"
-                warning = f"后台定义已更新，但人工修改记录保存失败，未保存 E 文件，请重试: {exc}"
+                persistence_error = f"人工覆盖层保存失败: {exc}"
+                warning = f"后台定义已更新，但人工覆盖层保存失败，请重试: {exc}"
                 self._record_measurement_manual_changes_unlocked(
                     before_row,
                     rows[index],
                     changed_fields,
                     persisted=False,
                     persistence_error=persistence_error,
+                    before_status=current_status,
+                    before_fixed_value=current_fixed_value,
+                    after_status=normalized["status"],
+                    after_fixed_value=normalized["fixed_value"],
                 )
             else:
                 change_record_persisted = True
-                try:
-                    atomic_write_text(self.source_files["meas"], rendered_measurement_text)
-                except OSError as exc:
-                    persistence_error = str(exc)
-                    warning = f"后台定义已更新，但 E 文件保存失败，请重试: {exc}"
-                    self._record_measurement_manual_changes_unlocked(
-                        before_row,
-                        rows[index],
-                        changed_fields,
-                        persisted=False,
-                        persistence_error=persistence_error,
-                    )
-                else:
-                    persisted = True
-                    self._mark_manual_changes_persisted_unlocked("measurement")
+                pending_changes = {
+                    change_id: dict(item)
+                    for change_id, item in self._manual_definition_changes.items()
+                }
+                self._mark_manual_changes_persisted_unlocked("measurement")
                 try:
                     self._write_manual_definition_changes_unlocked()
                 except OSError as exc:
-                    change_record_persisted = False
-                    warning = self._merge_definition_warning(
-                        warning,
-                        f"人工修改记录保存失败，请重试: {exc}",
+                    self._manual_definition_changes = pending_changes
+                    warning = (
+                        "人工覆盖层已保存当前值，但同步状态保存失败，请重试: "
+                        f"{exc}"
                     )
+                else:
+                    persisted = True
             record = _measurement_row_to_dict(rows[index])
             record["error_sigma"] = normalized["error_sigma"]
             record["status"] = normalized["status"]
             record["fixed_value"] = normalized["fixed_value"]
-            if status_changed:
-                try:
-                    _write_json(self.settings_file, self.local_settings)
-                except OSError as exc:
-                    warning = self._merge_definition_warning(
-                        warning,
-                        f"量测状态保存失败: {exc}",
-                    )
             result = self._definition_update_result(
                 next_snapshot,
                 record,
@@ -7342,95 +8646,56 @@ class PolarMicrogridSimulator:
             missing = [change_id for change_id in change_ids if change_id not in self._manual_definition_changes]
             if missing:
                 raise ValueError(f"Unknown manual definition change: {missing[0]}")
-            selected = [dict(self._manual_definition_changes[change_id]) for change_id in change_ids]
-
-            device_groups: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
-            measurement_groups: Dict[str, List[Dict[str, Any]]] = {}
-            for item in selected:
-                if item.get("kind") == "device":
-                    row_key = item.get("row_key", {})
-                    if not isinstance(row_key, Mapping):
-                        raise ValueError(f"Invalid device identity for manual change: {item.get('id', '')}")
-                    group_key = (
-                        str(item.get("block_name", "")),
-                        str(row_key.get("idx", "")),
-                        str(row_key.get("name", "")),
-                    )
-                    device_groups.setdefault(group_key, []).append(item)
-                elif item.get("kind") == "measurement":
-                    measurement_name = str(item.get("measurement_name", ""))
-                    measurement_groups.setdefault(measurement_name, []).append(item)
-                else:
-                    raise ValueError(f"Unknown manual change kind: {item.get('kind', '')}")
-
-            model_book = simu_loop._clone_ebook(current.model_book) if device_groups else current.model_book
-            measurement_rows = [list(row) for row in current.measurement_rows]
-            for (block_name, idx, name), items in device_groups.items():
-                block = model_book.data.get(block_name)
-                if block is None:
-                    raise ValueError(f"Unknown model block: {block_name}")
-                row_key = {key: value for key, value in (("idx", idx), ("name", name)) if value}
-                row = self._definition_row(block, row_key)
-                restore_values = {
-                    str(item.get("field", "")): item.get("default_value", "")
-                    for item in items
-                }
-                row.update(normalize_device_changes(row, restore_values))
-
-            for measurement_name, items in measurement_groups.items():
-                index, current_item = self._measurement_definition_row(
-                    measurement_rows,
-                    {"name": measurement_name},
-                )
-                restore_values = {
-                    str(item.get("field", "")): item.get("default_value", "")
-                    for item in items
-                }
-                normalized = normalize_measurement_changes(current_item, restore_values)
-                measurement_rows[index][5] = normalized["weight"]
-                measurement_rows[index][6] = normalized["valid"]
-
-            dev_define_book = (
-                simu_loop._capability_define_book(model_book, self._legacy_dev_define_file())
-                if device_groups
-                else current.dev_define_book
-            )
-            next_snapshot = DefinitionSnapshot(
-                revision=current.revision + 1,
-                model_book=model_book,
-                dev_define_book=dev_define_book,
-                measurement_before=current.measurement_before,
-                measurement_rows=tuple(tuple(row) for row in measurement_rows),
-                measurement_after=current.measurement_after,
-            )
-            self._publish_definition_snapshot(next_snapshot)
+            # Measurement validity, status and fixed value form one effective
+            # state.  Restoring one of them must not leave an impossible partial
+            # override (for example fixed status without a fixed value).
+            selected_ids = set(change_ids)
+            selected_measurements = {
+                str(item.get("measurement_name", ""))
+                for change_id, item in self._manual_definition_changes.items()
+                if change_id in selected_ids
+                and item.get("kind") == "measurement"
+                and item.get("field") in {"valid", "status", "fixed_value"}
+            }
+            for change_id, item in self._manual_definition_changes.items():
+                if (
+                    item.get("kind") == "measurement"
+                    and str(item.get("measurement_name", "")) in selected_measurements
+                    and item.get("field") in {"valid", "status", "fixed_value"}
+                ):
+                    selected_ids.add(change_id)
+            change_ids = [
+                change_id
+                for change_id in self._manual_definition_changes
+                if change_id in selected_ids
+            ]
+            selected = [
+                dict(self._manual_definition_changes[change_id])
+                for change_id in change_ids
+            ]
 
             now = _now_text()
             for item in selected:
-                change_id = str(item.get("id", ""))
-                active_item = self._manual_definition_changes.get(change_id)
-                if active_item is None:
-                    continue
-                active_item["current_value"] = self._manual_change_value_text(item.get("default_value", ""))
+                active_item = self._manual_definition_changes[str(item.get("id", ""))]
+                active_item["current_value"] = self._manual_change_value_text(
+                    active_item.get("default_value", "")
+                )
                 active_item["modified_at"] = now
                 self._set_manual_change_sync_state_unlocked(
                     active_item,
                     persisted=False,
-                    error="等待 E 文件保存",
+                    error="等待人工覆盖层保存",
                 )
                 if active_item.get("field") == "weight":
-                    active_item["current_error_sigma"] = self._manual_change_sigma(active_item["current_value"])
+                    active_item["current_error_sigma"] = self._manual_change_sigma(
+                        active_item["current_value"]
+                    )
 
-            kinds = set()
-            if device_groups:
-                kinds.add("device")
-            if measurement_groups:
-                kinds.add("measurement")
-            rendered_texts = self._manual_definition_rendered_texts(next_snapshot, kinds)
+            self._rebuild_effective_definitions_from_source_unlocked()
             try:
-                self._write_ahead_manual_definition_changes_unlocked(rendered_texts)
+                self._write_ahead_manual_definition_changes_unlocked()
             except OSError as exc:
-                error = f"人工修改记录保存失败，未写入 E 文件: {exc}"
+                error = f"后台定义已恢复，但人工覆盖层保存失败，请重试: {exc}"
                 for item in selected:
                     active_item = self._manual_definition_changes.get(str(item.get("id", "")))
                     if active_item is not None:
@@ -7449,67 +8714,42 @@ class PolarMicrogridSimulator:
                         "change_record_persisted": False,
                         "reset_ids": change_ids,
                         "static_meta": self.static_meta(),
-                        "warning": f"人工修改记录保存失败，未保存 E 文件，请重试: {exc}",
+                        "warning": error,
                     }
                 )
                 return result
 
-            errors: Dict[str, str] = {}
-            if "model" in rendered_texts:
-                try:
-                    atomic_write_text(self.source_files["model"], rendered_texts["model"])
-                except OSError as exc:
-                    errors["device"] = str(exc)
-            if "meas" in rendered_texts:
-                try:
-                    atomic_write_text(self.source_files["meas"], rendered_texts["meas"])
-                except OSError as exc:
-                    errors["measurement"] = str(exc)
-
-            for item in selected:
-                kind = str(item.get("kind", ""))
-                if kind not in errors:
+            pending_changes = {
+                change_id: dict(item)
+                for change_id, item in self._manual_definition_changes.items()
+            }
+            for change_id in change_ids:
+                active_item = self._manual_definition_changes.get(change_id)
+                if active_item is None:
                     continue
-                active_item = self._manual_definition_changes.get(str(item.get("id", "")))
-                if active_item is not None:
-                    self._set_manual_change_sync_state_unlocked(
-                        active_item,
-                        persisted=False,
-                        error=errors[kind],
-                    )
-            if "device" in kinds and "device" not in errors:
-                self._mark_manual_changes_persisted_unlocked("device")
-            if "measurement" in kinds and "measurement" not in errors:
-                self._mark_manual_changes_persisted_unlocked("measurement")
+                self._set_manual_change_sync_state_unlocked(active_item, persisted=True)
+                self._manual_definition_changes.pop(change_id, None)
 
-            persisted_count = sum(
-                1
-                for item in selected
-                if str(item.get("kind", "")) not in errors
-            )
-            warning = "；".join(
-                f"后台定义已恢复，但 {('model.e' if kind == 'device' else 'meas.e')} 保存失败，请重试: {error}"
-                for kind, error in errors.items()
-            )
-
-            change_record_persisted = True
+            warning = ""
+            persisted = True
             try:
                 self._write_manual_definition_changes_unlocked()
             except OSError as exc:
-                change_record_persisted = False
-                warning = self._merge_definition_warning(
-                    warning,
-                    f"人工修改记录保存失败，请重试: {exc}",
+                self._manual_definition_changes = pending_changes
+                persisted = False
+                warning = (
+                    "默认值已写入人工覆盖层，但清理同步状态失败，请重试: "
+                    f"{exc}"
                 )
 
             result = self._manual_definition_changes_payload_unlocked()
             result.update(
                 {
                     "reset_count": len(selected),
-                    "persisted_count": persisted_count,
+                    "persisted_count": len(selected) if persisted else 0,
                     "memory_updated": True,
-                    "persisted": not errors,
-                    "change_record_persisted": change_record_persisted,
+                    "persisted": persisted,
+                    "change_record_persisted": True,
                     "reset_ids": change_ids,
                     "static_meta": self.static_meta(),
                 }
@@ -8337,6 +9577,18 @@ class MultiModelSimulator:
         compact: bool = False,
     ) -> Dict[str, Any]:
         return self.service_for(model_id).measurement_delta(after_seq=after_seq, compact=compact)
+
+    def measurement_history(
+        self,
+        *,
+        indices: Optional[Sequence[int]] = None,
+        after_seq: int | float = 0,
+        model_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self.service_for(model_id).measurement_history(
+            indices=indices,
+            after_seq=after_seq,
+        )
 
     def runtime_logs_delta(
         self,

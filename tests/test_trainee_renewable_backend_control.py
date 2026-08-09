@@ -284,6 +284,7 @@ def add_generator_device(
     snapshot["devices"].append(
         {
             "dev_type": dev_type,
+            "model_block": dev_type,
             "dev_name": name,
             "run_stat": 1,
             "status": 1,
@@ -320,6 +321,7 @@ def renewable_snapshot() -> dict:
     devices = [
         {
             "dev_type": "ACGenerator",
+            "model_block": "ACGenerator",
             "dev_name": "wind-1",
             "run_stat": 1,
             "status": 1,
@@ -334,6 +336,7 @@ def renewable_snapshot() -> dict:
         },
         {
             "dev_type": "DCGenerator",
+            "model_block": "DCGenerator",
             "dev_name": "pv-1",
             "run_stat": 1,
             "status": 1,
@@ -348,6 +351,7 @@ def renewable_snapshot() -> dict:
         },
         {
             "dev_type": "DCGenerator",
+            "model_block": "DCGenerator",
             "dev_name": "storage-1",
             "run_stat": 1,
             "status": 1,
@@ -357,6 +361,7 @@ def renewable_snapshot() -> dict:
         },
         {
             "dev_type": "ACGenerator",
+            "model_block": "ACGenerator",
             "dev_name": "diesel-1",
             "run_stat": 1,
             "status": 1,
@@ -372,6 +377,7 @@ def renewable_snapshot() -> dict:
         },
         {
             "dev_type": "DCACConverter",
+            "model_block": "DCACConverter",
             "dev_name": "grid-converter-1",
             "run_stat": 1,
             "status": 1,
@@ -379,14 +385,18 @@ def renewable_snapshot() -> dict:
             "set_types": ["p_ac_set"],
             "raw": {
                 "idx": "1",
+                "dev_type": "grid-dcac-converter",
                 "ac_node": "2",
                 "dc_node": "3",
                 "rated_capacity": "50",
+                "p_ac_min": "-50",
+                "p_ac_max": "50",
                 "ac_control_type": "PQ",
             },
         },
         {
             "dev_type": "ACLoad",
+            "model_block": "ACLoad",
             "dev_name": "load-1",
             "run_stat": 1,
             "status": 1,
@@ -457,6 +467,14 @@ def renewable_snapshot() -> dict:
                     "state_of_charge": 50,
                     "soc_upper_limit": 90,
                     "soc_lower_limit": 20,
+                }
+            ],
+            "ACDieselGen": [
+                {
+                    "idx": 1,
+                    "idx_acgenerator": 2,
+                    "rated_power": 200,
+                    "p_min": 20,
                 }
             ],
         },
@@ -580,9 +598,12 @@ def renewable_snapshot() -> dict:
                         {
                             "idx": 1,
                             "name": "grid-converter-1",
+                            "dev_type": "grid-dcac-converter",
                             "ac_node": 2,
                             "dc_node": 3,
                             "control_type": "PQ",
+                            "p_ac_min": -50,
+                            "p_ac_max": 50,
                             "run_stat": 1,
                         }
                     ]
@@ -634,9 +655,12 @@ def add_second_dc_balance_group(
         {
             "idx": 2,
             "name": "second-group-converter",
+            "dev_type": "grid-dcac-converter",
             "dc_node": 10,
             "ac_node": 10,
             "control_type": "PQ",
+            "p_ac_min": -50,
+            "p_ac_max": 50,
             "run_stat": 1,
         },
     )
@@ -666,6 +690,7 @@ def add_second_dc_balance_group(
     snapshot["devices"].append(
         {
             "dev_type": "DCACConverter",
+            "model_block": "DCACConverter",
             "dev_name": "second-group-converter",
             "run_stat": 1,
             "status": 1,
@@ -673,9 +698,12 @@ def add_second_dc_balance_group(
             "set_types": ["p_ac_set"],
             "raw": {
                 "idx": "2",
+                "dev_type": "grid-dcac-converter",
                 "dc_node": "10",
                 "ac_node": "10",
                 "rated_capacity": "50",
+                "p_ac_min": "-50",
+                "p_ac_max": "50",
                 "ac_control_type": "PQ",
             },
         }
@@ -773,6 +801,15 @@ def direct_grid_storage_snapshot(
         and row.get("dev_name") == "grid-converter-1"
     )
     converter_device["raw"]["rated_capacity"] = str(converter_capacity_kw)
+    converter_device["raw"]["p_ac_min"] = str(-converter_capacity_kw)
+    converter_device["raw"]["p_ac_max"] = str(converter_capacity_kw)
+    converter_model = next(
+        row
+        for row in snapshot["definitions"]["model"]["DCACConverter"]["rows"]
+        if row.get("name") == "grid-converter-1"
+    )
+    converter_model["p_ac_min"] = -converter_capacity_kw
+    converter_model["p_ac_max"] = converter_capacity_kw
 
     if not dc_has_transfer_path:
         append_model_row(
@@ -965,15 +1002,19 @@ def add_second_dc_grid_storage_group(
         {
             "idx": 2,
             "name": "second-grid-storage-converter",
+            "dev_type": "grid-dcac-converter",
             "dc_node": 20,
             "ac_node": 20,
             "control_type": "PQ",
+            "p_ac_min": -converter_capacity_kw,
+            "p_ac_max": converter_capacity_kw,
             "run_stat": 1,
         },
     )
     snapshot["devices"].append(
         {
             "dev_type": "DCACConverter",
+            "model_block": "DCACConverter",
             "dev_name": "second-grid-storage-converter",
             "run_stat": 1,
             "status": 1,
@@ -981,9 +1022,12 @@ def add_second_dc_grid_storage_group(
             "set_types": ["p_ac_set"],
             "raw": {
                 "idx": "2",
+                "dev_type": "grid-dcac-converter",
                 "dc_node": "20",
                 "ac_node": "20",
                 "rated_capacity": str(converter_capacity_kw),
+                "p_ac_min": str(-converter_capacity_kw),
+                "p_ac_max": str(converter_capacity_kw),
                 "ac_control_type": "PQ",
             },
         }
@@ -1134,6 +1178,7 @@ def add_dc_load(
     snapshot["devices"].append(
         {
             "dev_type": "DCLoad",
+            "model_block": "DCLoad",
             "dev_name": name,
             "run_stat": 1,
             "status": 1,
@@ -1260,15 +1305,23 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertEqual(settings.command_valid_minutes, 120.0)
         self.assertEqual(settings.payload()["commandValidMinutes"], 120.0)
 
-    def test_converter_step_ratio_is_configurable_and_exposed(self):
+    def test_grid_following_storage_step_ratio_is_configurable_and_exposed(self):
         settings = RenewableControlSettings().updated(
             {"converterStepRatio": 0.04, "storageStepRatio": 0.25}
         )
 
-        self.assertAlmostEqual(settings.converter_step_ratio, 0.04)
-        self.assertAlmostEqual(settings.payload()["converterStepRatio"], 0.04)
-        self.assertFalse(hasattr(settings, "storage_step_ratio"))
-        self.assertNotIn("storageStepRatio", settings.payload())
+        self.assertAlmostEqual(settings.storage_step_ratio, 0.25)
+        self.assertAlmostEqual(settings.payload()["storageStepRatio"], 0.25)
+        self.assertAlmostEqual(settings.converter_step_ratio, 0.0)
+        self.assertNotIn("converterStepRatio", settings.payload())
+
+    def test_legacy_converter_step_setting_migrates_to_grid_storage_step(self):
+        settings = RenewableControlSettings().updated(
+            {"converterStepRatio": 0.04}
+        )
+
+        self.assertAlmostEqual(settings.storage_step_ratio, 0.04)
+        self.assertAlmostEqual(settings.converter_step_ratio, 0.0)
 
     def test_ac_renewable_recovery_directly_reduces_ac_diesel(self):
         plan = calculate_renewable_control_plan(
@@ -1470,21 +1523,22 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertGreaterEqual(by_name["ac-grid-storage"]["targetKw"], 0.0)
         self.assertGreaterEqual(by_name["dc-grid-storage"]["targetKw"], 0.0)
 
-    def test_all_automatic_acdc_targets_are_nonpositive(self):
-        snapshot = side_aware_recovery_snapshot(
-            diesel_power_kw=20.0,
-            converter_power_kw=10.0,
-        )
+    def test_automatic_converter_targets_use_ac_terminal_sign_and_allow_both_directions(self):
+        snapshot = renewable_snapshot()
 
         plan = calculate_renewable_control_plan(snapshot)
+        converter_commands = [
+            command
+            for command in plan["commands"]
+            if command["set_type"] == "p_ac_set"
+        ]
 
-        self.assertTrue(
-            all(
-                command["set_value"] <= 0.0
-                for command in plan["commands"]
-                if command["set_type"] == "p_ac_set"
-            )
-        )
+        self.assertTrue(converter_commands)
+        self.assertTrue(any(command["set_value"] < 0.0 for command in converter_commands))
+        self.assertFalse(plan["metrics"]["converterReversePowerForbidden"])
+        self.assertEqual(plan["metrics"]["converterPositiveDirection"], "AC_TO_DC")
+        self.assertEqual(plan["metrics"]["converterDcPositiveDirection"], "DC_TO_AC")
+        self.assertGreater(plan["metrics"]["converterTargetUpperLimitKw"], 0.0)
 
     def test_dc_group_load_budget_preserves_sign_and_excludes_dead_island_load(self):
         snapshot = renewable_snapshot()
@@ -1517,7 +1571,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
         self.assertAlmostEqual(dc_loads[group_id], -7.0)
 
-    def test_positive_acdc_realtime_correction_records_reverse_flow_prohibition(self):
+    def test_positive_acdc_realtime_uses_ac_to_dc_positive_convention(self):
         plan = calculate_renewable_control_plan(
             side_aware_recovery_snapshot(
                 diesel_power_kw=20.0,
@@ -1525,9 +1579,43 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
             )
         )
 
-        self.assertTrue(
-            any("禁止ACDC倒送" in detail for detail in plan["decisionDetail"])
+        detail = "；".join(plan["decisionDetail"])
+        self.assertIn("P_AC/P_AC_SET正向AC→DC", detail)
+        self.assertIn("P_DC/P_DC_SET正向DC→AC", detail)
+        self.assertIn("允许在设备有功上下限内双向调节", detail)
+
+    def test_converter_p_dc_measurement_is_normalized_to_p_ac_control_sign(self):
+        cases = (
+            (40.0, -40.0, "DC_TO_AC"),
+            (-40.0, 40.0, "AC_TO_DC"),
         )
+        for measured_p_dc, expected_p_ac, physical_direction in cases:
+            with self.subTest(physical_direction=physical_direction):
+                snapshot = renewable_snapshot()
+                converter_measurement = next(
+                    row
+                    for row in snapshot["measurements"]["scada"]
+                    if row["dev_type"] == "DCACConverter"
+                    and row["dev_name"] == "grid-converter-1"
+                    and row["meas_type"] == "P_AC"
+                )
+                converter_measurement["meas_type"] = "P_DC"
+                converter_measurement["value"] = measured_p_dc
+
+                plan = calculate_renewable_control_plan(snapshot)
+                converter_row = next(
+                    row
+                    for row in plan["commandRows"]
+                    if row["dev_type"] == "DCACConverter"
+                    and row["dev_name"] == "grid-converter-1"
+                )
+
+                self.assertAlmostEqual(converter_row["currentKw"], expected_p_ac)
+                self.assertAlmostEqual(plan["metrics"]["acdcCurrentKw"], expected_p_ac)
+                self.assertEqual(
+                    plan["metrics"]["converterPositiveDirection"],
+                    "AC_TO_DC",
+                )
 
     def test_dc_export_is_counted_once_in_combined_diesel_prediction(self):
         plan = calculate_renewable_control_plan(
@@ -1640,6 +1728,81 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertFalse(
             any(command["dev_name"] == "dc-balance" for command in plan["commands"])
         )
+
+    def test_ac_balance_protection_does_not_freeze_healthy_dc_renewable_recovery(self):
+        snapshot = side_aware_recovery_snapshot(
+            diesel_power_kw=20.0,
+            wind_power_kw=100.0,
+            pv_power_kw=20.0,
+            ac_storage=True,
+        )
+        add_balance_storage(
+            snapshot,
+            side="AC",
+            name="low-soc-ac-balance",
+            idx=4,
+            node=2,
+            current_kw=13.0,
+            soc=0.21,
+        )
+        add_balance_storage(
+            snapshot,
+            side="DC",
+            name="healthy-dc-balance",
+            idx=4,
+            node=3,
+            current_kw=0.0,
+            soc=0.50,
+        )
+
+        plan = calculate_renewable_control_plan(
+            snapshot,
+            RenewableControlSettings(
+                step_coefficient=0.10,
+                converter_step_ratio=0.20,
+            ),
+        )
+        by_name = {row["dev_name"]: row for row in plan["commandRows"]}
+
+        self.assertAlmostEqual(by_name["pv-1"]["commandKw"], 28.0)
+        self.assertLess(by_name["healthy-dc-balance"]["projectedTargetKw"], 0.0)
+
+    def test_dc_balance_protection_does_not_freeze_healthy_ac_renewable_recovery(self):
+        snapshot = side_aware_recovery_snapshot(
+            diesel_power_kw=20.0,
+            wind_power_kw=30.0,
+            pv_power_kw=80.0,
+        )
+        add_balance_storage(
+            snapshot,
+            side="DC",
+            name="low-soc-dc-balance",
+            idx=4,
+            node=3,
+            current_kw=20.0,
+            soc=0.21,
+        )
+        add_balance_storage(
+            snapshot,
+            side="AC",
+            name="healthy-ac-balance",
+            idx=4,
+            node=2,
+            current_kw=0.0,
+            soc=0.50,
+        )
+
+        plan = calculate_renewable_control_plan(
+            snapshot,
+            RenewableControlSettings(
+                step_coefficient=0.10,
+                converter_step_ratio=0.20,
+            ),
+        )
+        by_name = {row["dev_name"]: row for row in plan["commandRows"]}
+
+        self.assertAlmostEqual(by_name["wind-1"]["commandKw"], 40.0)
+        self.assertLess(by_name["healthy-ac-balance"]["projectedTargetKw"], 0.0)
 
     def test_dc_local_load_sink_does_not_project_recovery_into_dc_balance(self):
         snapshot = side_aware_recovery_snapshot(
@@ -2008,7 +2171,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
             all(command["set_value"] <= 0.0 for command in converter_commands)
         )
 
-    def test_positive_acdc_realtime_correction_precedes_direct_storage_dispatch(self):
+    def test_positive_acdc_realtime_is_not_forced_to_zero(self):
         plan = calculate_renewable_control_plan(
             direct_grid_storage_snapshot(converter_power_kw=10.0),
             RenewableControlSettings(converter_step_ratio=0.10),
@@ -2020,28 +2183,16 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         }
 
         self.assertAlmostEqual(by_name["grid-converter-1"]["currentKw"], 10.0)
-        self.assertAlmostEqual(by_name["grid-converter-1"]["commandKw"], 0.0)
-        self.assertAlmostEqual(by_name["ac-grid-storage"]["targetKw"], 0.0)
-        self.assertAlmostEqual(by_name["dc-grid-storage"]["targetKw"], 0.0)
-        self.assertAlmostEqual(plan["metrics"]["candidatePowerEffectKw"], 10.0)
-        self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 21.0)
-        self.assertAlmostEqual(
+        self.assertGreater(by_name["grid-converter-1"]["commandKw"], 0.0)
+        self.assertLess(by_name["grid-converter-1"]["commandKw"], 10.0)
+        self.assertTrue(by_name["grid-converter-1"]["strategyCommand"])
+        self.assertGreater(
             commands[("DCACConverter", "grid-converter-1", "p_ac_set")],
             0.0,
         )
-        self.assertFalse(
-            any(
-                command["dev_name"] in {"ac-grid-storage", "dc-grid-storage"}
-                for command in plan["commands"]
-            )
-        )
-        self.assertTrue(
-            all(
-                command["set_value"] <= 0.0
-                for command in plan["commands"]
-                if command["set_type"] == "p_ac_set"
-            )
-        )
+        self.assertGreater(by_name["ac-grid-storage"]["targetKw"], 0.0)
+        self.assertGreater(by_name["dc-grid-storage"]["targetKw"], 0.0)
+        self.assertFalse(plan["metrics"]["converterReversePowerForbidden"])
 
     def test_grid_storage_step_reuses_converter_ratio_and_larger_power_rating(self):
         step = renewable_control_module._grid_storage_step_kw(
@@ -2825,7 +2976,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertEqual(metrics["renewableControlAction"], "hold_charge_derating_while_acdc_corrects")
         self.assertAlmostEqual(metrics["renewableTarget"], 50.0)
 
-    def test_converter_automatic_target_never_requests_reverse_power(self):
+    def test_converter_automatic_target_respects_bidirectional_device_limits(self):
         cases = (
             ("low_diesel", 0.50, 10.0, 0.0, 0.0),
             ("extreme_low_soc", 0.10, 60.0, 0.0, 0.0),
@@ -2851,14 +3002,22 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
                     if row["category"] == "交直流变流器"
                 ]
 
-                self.assertTrue(plan["metrics"]["converterReversePowerForbidden"])
-                self.assertAlmostEqual(plan["metrics"]["converterTargetUpperLimitKw"], 0.0)
-                self.assertLessEqual(plan["metrics"]["acdcDesiredTargetKw"], 0.0)
-                self.assertLessEqual(plan["metrics"]["acdcTargetKw"], 0.0)
-                self.assertTrue(all(value <= 0.0 for value in converter_commands))
-                self.assertTrue(any("禁止交流侧向直流侧倒送" in line for line in plan["decisionDetail"]))
+                lower = plan["metrics"]["converterTargetLowerLimitKw"]
+                upper = plan["metrics"]["converterTargetUpperLimitKw"]
+                self.assertFalse(plan["metrics"]["converterReversePowerForbidden"])
+                self.assertEqual(plan["metrics"]["converterPositiveDirection"], "AC_TO_DC")
+                self.assertLess(lower, 0.0)
+                self.assertGreater(upper, 0.0)
+                self.assertGreaterEqual(plan["metrics"]["acdcDesiredTargetKw"], lower)
+                self.assertLessEqual(plan["metrics"]["acdcDesiredTargetKw"], upper)
+                self.assertGreaterEqual(plan["metrics"]["acdcTargetKw"], lower)
+                self.assertLessEqual(plan["metrics"]["acdcTargetKw"], upper)
+                self.assertTrue(all(lower <= value <= upper for value in converter_commands))
+                self.assertTrue(
+                    any("允许在设备有功上下限内双向调节" in line for line in plan["decisionDetail"])
+                )
 
-    def test_existing_reverse_converter_power_is_commanded_directly_to_zero(self):
+    def test_existing_positive_ac_to_dc_power_is_not_forced_to_zero(self):
         snapshot = renewable_snapshot()
         for row in snapshot["measurements"]["scada"]:
             if row["dev_name"] == "diesel-1" and row["meas_type"] == "P_GEN":
@@ -2874,9 +3033,13 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         )
 
         self.assertAlmostEqual(plan["metrics"]["acdcCurrentKw"], 12.0)
-        self.assertAlmostEqual(plan["metrics"]["acdcDesiredTargetKw"], 0.0)
-        self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], 0.0)
-        self.assertTrue(plan["metrics"]["converterHardLimitApplied"])
+        self.assertGreater(plan["metrics"]["acdcDesiredTargetKw"], 0.0)
+        self.assertGreater(plan["metrics"]["acdcTargetKw"], 0.0)
+        self.assertLessEqual(
+            plan["metrics"]["acdcTargetKw"],
+            plan["metrics"]["converterTargetUpperLimitKw"],
+        )
+        self.assertFalse(plan["metrics"]["converterReversePowerForbidden"])
 
     def test_lower_soc_deadband_reduces_export_fast_and_increases_export_slowly(self):
         settings = RenewableControlSettings(converter_step_ratio=0.10)
@@ -2917,7 +3080,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
     def test_qinling_low_soc_boundary_uses_fast_recovery_and_slow_restart(self):
         settings = RenewableControlSettings(
             converter_step_ratio=0.05,
-            diesel_deadband_ratio=0.10,
+            diesel_power_protection_ratio=0.10,
             soc_deadband=0.10,
         )
         cases = (
@@ -3026,7 +3189,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
     def test_diesel_deadband_holds_normal_actions_but_extreme_low_soc_uses_full_step(self):
         settings = RenewableControlSettings(
             converter_step_ratio=0.10,
-            diesel_deadband_ratio=0.10,
+            diesel_power_protection_ratio=0.10,
         )
         cases = (
             (
@@ -3124,6 +3287,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
                 ("wind", "ACGenerator", "wind-1"),
                 ("pv", "DCGenerator", "pv-1"),
                 ("storage", "DCGenerator", "storage-1"),
+                ("diesel", "ACGenerator", "diesel-1"),
             },
         )
         self.assertFalse(
@@ -3488,6 +3652,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
         ordered, reversed_plan = plans
         expected_refs = {
+            ("diesel", "ACGenerator", "diesel-1"),
             ("pv", "DCGenerator", "pv-1"),
             ("storage", "DCGenerator", "storage-1"),
         }
@@ -3506,7 +3671,13 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
                 for issue in ordered["dataQuality"]["issues"]
             )
         )
-        self.assertEqual(reversed_plan["metrics"], ordered["metrics"])
+        ordered_metrics = copy.deepcopy(ordered["metrics"])
+        reversed_metrics = copy.deepcopy(reversed_plan["metrics"])
+        for metrics in (ordered_metrics, reversed_metrics):
+            metrics.pop("optimizationSolveMilliseconds", None)
+            for island in metrics.get("optimizationIslands", []):
+                island.pop("solveMilliseconds", None)
+        self.assertEqual(reversed_metrics, ordered_metrics)
         self.assertEqual(reversed_plan["commands"], ordered["commands"])
         for plan in plans:
             self.assertFalse(
@@ -4164,7 +4335,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
                     any(name in issue for issue in plan["dataQuality"]["issues"])
                 )
 
-    def test_legacy_resource_uses_explicit_type_and_source_before_default(self):
+    def test_unstructured_legacy_resource_is_not_classified_from_capability_metadata(self):
         snapshot = renewable_snapshot()
         add_generator_device(
             snapshot,
@@ -4191,19 +4362,20 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         }
 
         plan = calculate_renewable_control_plan(snapshot)
-        row = next(
-            row
-            for row in plan["commandRows"]
-            if row["dev_name"] == "legacy-dc-wind-source"
+        self.assertFalse(
+            any(
+                row.get("dev_name") == "legacy-dc-wind-source"
+                for row in plan["commandRows"]
+            )
+        )
+        self.assertFalse(
+            any(
+                command.get("dev_name") == "legacy-dc-wind-source"
+                for command in plan["commands"]
+            )
         )
 
-        self.assertEqual(row["technology"], "wind")
-        self.assertEqual(row["resourceDevType"], "DCGenerator")
-        self.assertEqual(row["resourceDevName"], "legacy-dc-wind-source")
-        self.assertEqual(row["connectionSide"], "DC")
-        self.assertEqual(row["category"], "直流风电")
-
-    def test_legacy_untyped_resource_uses_default_type_but_topology_decides_side(self):
+    def test_untyped_legacy_resource_is_not_classified_from_name_or_position(self):
         snapshot = renewable_snapshot()
         append_model_row(
             snapshot,
@@ -4256,16 +4428,18 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         }
 
         plan = calculate_renewable_control_plan(snapshot)
-        row = next(
-            row
-            for row in plan["commandRows"]
-            if row["dev_name"] == "legacy-default-wind"
+        self.assertFalse(
+            any(
+                row.get("dev_name") == "legacy-default-wind"
+                for row in plan["commandRows"]
+            )
         )
-
-        self.assertEqual(row["technology"], "wind")
-        self.assertEqual(row["resourceDevType"], "ACGenerator")
-        self.assertEqual(row["connectionSide"], "DC")
-        self.assertEqual(row["category"], "直流风电")
+        self.assertFalse(
+            any(
+                command.get("dev_name") == "legacy-default-wind"
+                for command in plan["commands"]
+            )
+        )
 
     def test_ac_balance_storage_never_enters_dc_acdc_soc_state(self):
         baseline = calculate_renewable_control_plan(renewable_snapshot())
@@ -4433,6 +4607,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         snapshot["devices"].append(
             {
                 "dev_type": "DCACConverter",
+                "model_block": "DCACConverter",
                 "dev_name": "second-group-converter",
                 "run_stat": 1,
                 "status": 1,
@@ -4602,7 +4777,9 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         )
 
     def test_environment_measurements_are_ignored_by_default_control_policy(self):
-        plan = calculate_renewable_control_plan(renewable_snapshot())
+        snapshot = renewable_snapshot()
+        plan = calculate_renewable_control_plan(snapshot)
+        expected_wind_max = 100 * ((8 - 3) / (10 - 3)) ** 3
 
         self.assertEqual(plan["metrics"]["loadKw"], 100)
         self.assertIsNone(plan["weather"]["windSpeed"])
@@ -4617,9 +4794,79 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
             "ignored_by_control_policy",
         )
         self.assertFalse(plan["dataQuality"]["inputs"]["windSpeed"]["valid"])
+        self.assertAlmostEqual(plan["metrics"]["acWindMaxAvailableKw"], expected_wind_max)
+        self.assertAlmostEqual(plan["metrics"]["dcPvMaxAvailableKw"], 40.0)
+        self.assertAlmostEqual(plan["metrics"]["totalWindMaxAvailableKw"], expected_wind_max)
+        self.assertAlmostEqual(plan["metrics"]["totalPvMaxAvailableKw"], 40.0)
+        self.assertAlmostEqual(
+            plan["metrics"]["totalRenewableMaxAvailableKw"],
+            expected_wind_max + 40.0,
+        )
         self.assertGreater(plan["metrics"]["recoveryKw"], 0)
         self.assertEqual(plan["dataQuality"]["status"], "ok")
         self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
+        trend = TraineeRenewableControlManager._trend_point(plan, snapshot)
+        self.assertAlmostEqual(trend["acWindMaxAvailableKw"], expected_wind_max)
+        self.assertAlmostEqual(trend["dcPvMaxAvailableKw"], 40.0)
+        self.assertAlmostEqual(
+            trend["totalRenewableMaxAvailableKw"],
+            expected_wind_max + 40.0,
+        )
+
+    def test_environment_changes_maximum_available_statistics_but_not_control_targets(self):
+        baseline = renewable_snapshot()
+        changed = renewable_snapshot()
+        for row in changed["measurements"]["scada"]:
+            if row["meas_type"] == "WIND_SPEED":
+                row["value"] = 20
+            elif row["meas_type"] == "SOLAR_IRRADIANCE":
+                row["value"] = 900
+            elif row["meas_type"] == "AIR_TEMP":
+                row["value"] = 45
+
+        baseline_plan = calculate_renewable_control_plan(baseline)
+        changed_plan = calculate_renewable_control_plan(changed)
+
+        command_targets = lambda plan: [
+            (row["dev_type"], row["dev_name"], row["set_type"], row["set_value"])
+            for row in plan["commands"]
+        ]
+        self.assertEqual(command_targets(changed_plan), command_targets(baseline_plan))
+        self.assertNotEqual(
+            changed_plan["metrics"]["totalRenewableMaxAvailableKw"],
+            baseline_plan["metrics"]["totalRenewableMaxAvailableKw"],
+        )
+
+    def test_invalid_environment_measurements_fall_back_to_current_curve_boundary_for_display(self):
+        snapshot = renewable_snapshot()
+        for row in snapshot["measurements"]["scada"]:
+            if row["dev_type"] == "Environment":
+                row["valid"] = 0
+
+        plan = calculate_renewable_control_plan(snapshot)
+
+        self.assertEqual(plan["weather"]["observedWindSpeed"], 30)
+        self.assertEqual(plan["weather"]["observedSolarIrradiance"], 1500)
+        self.assertEqual(plan["weather"]["observedAirTemp"], 25)
+        self.assertEqual(plan["metrics"]["totalWindMaxAvailableKw"], 0)
+        self.assertEqual(plan["metrics"]["totalPvMaxAvailableKw"], 80)
+        self.assertEqual(plan["metrics"]["totalRenewableMaxAvailableKw"], 80)
+        self.assertIsNone(plan["weather"]["windSpeed"])
+        self.assertIsNone(plan["weather"]["solarIrradiance"])
+
+    def test_control_log_uses_compact_weather_and_dispatch_summary(self):
+        plan = calculate_renewable_control_plan(renewable_snapshot())
+
+        detail = renewable_control_module._compact_decision_log_detail(plan)
+
+        self.assertLessEqual(len(detail), 6)
+        joined = "；".join(detail)
+        self.assertIn("仅用于最大可发统计，不参与控制", joined)
+        self.assertIn("风电最大可发", joined)
+        self.assertIn("光伏最大可发", joined)
+        self.assertIn("新能源最大可发", joined)
+        self.assertIn("指令", joined)
+        self.assertLess(len(joined), len("；".join(plan["decisionDetail"])))
 
     def test_signed_realtime_power_values_are_preserved_for_every_control_category(self):
         snapshot = renewable_snapshot()
@@ -4646,7 +4893,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["storageCurrentKw"], -5.0)
         self.assertAlmostEqual(metrics["acdcCurrentKw"], -8.0)
         self.assertAlmostEqual(metrics["loadKw"], -7.0)
-        self.assertLess(metrics["dieselTargetKw"], 0.0)
+        self.assertGreaterEqual(metrics["dieselTargetKw"], metrics["dieselMinKw"])
 
         current_by_category = {
             row["category"]: row.get("currentKw")
@@ -4715,7 +4962,13 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
                 },
                 baseline_targets,
             )
-        self.assertTrue(any("默认不参与新能源控制" in warning for warning in baseline["warnings"]))
+        self.assertFalse(any("默认不参与新能源控制" in warning for warning in baseline["warnings"]))
+        self.assertTrue(
+            any(
+                "仅用于最大可发统计，不参与控制目标计算" in detail
+                for detail in baseline["decisionDetail"]
+            )
+        )
 
     def test_live_soc_ratio_above_one_is_preserved_and_blocks_charging(self):
         snapshot = renewable_snapshot()
@@ -5331,7 +5584,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         plan = calculate_renewable_control_plan(
             snapshot,
             RenewableControlSettings(
-                diesel_deadband_ratio=0.10,
+                diesel_power_protection_ratio=0.10,
                 converter_step_ratio=0.05,
             ),
         )
@@ -5372,7 +5625,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         plan = calculate_renewable_control_plan(
             snapshot,
             RenewableControlSettings(
-                diesel_deadband_ratio=0.10,
+                diesel_power_protection_ratio=0.10,
                 converter_step_ratio=0.05,
             ),
         )
@@ -5438,7 +5691,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         plan = calculate_renewable_control_plan(
             snapshot,
             RenewableControlSettings(
-                diesel_deadband_ratio=0.10,
+                diesel_power_protection_ratio=0.10,
                 soc_deadband=0.10,
                 converter_step_ratio=0.05,
                 step_coefficient=0.05,
@@ -5475,7 +5728,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         plan = calculate_renewable_control_plan(
             snapshot,
             RenewableControlSettings(
-                diesel_deadband_ratio=0.10,
+                diesel_power_protection_ratio=0.10,
                 soc_deadband=0.10,
                 converter_step_ratio=0.05,
                 step_coefficient=0.05,
@@ -5539,7 +5792,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
             snapshot,
             RenewableControlSettings(
                 step_coefficient=0.10,
-                storage_switch_deadband_kw=5.0,
+                grid_forming_storage_protection_ratio=0.05,
             ),
         )
         metrics = plan["metrics"]
@@ -5563,7 +5816,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
             snapshot,
             RenewableControlSettings(
                 step_coefficient=0.10,
-                storage_switch_deadband_kw=5.0,
+                grid_forming_storage_protection_ratio=0.05,
             ),
         )
         metrics = plan["metrics"]
@@ -5596,7 +5849,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
                     snapshot,
                     RenewableControlSettings(
                         step_coefficient=0.10,
-                        storage_switch_deadband_kw=5.0,
+                        grid_forming_storage_protection_ratio=0.05,
                     ),
                 )
                 metrics = plan["metrics"]
@@ -6150,7 +6403,10 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         plan = calculate_renewable_control_plan(snapshot)
 
         self.assertAlmostEqual(plan["metrics"]["storageCurrentKw"], -5.0)
-        self.assertAlmostEqual(plan["metrics"]["storageTarget"], -3.5)
+        self.assertAlmostEqual(
+            plan["metrics"]["directGridFormingDcGroups"][0]["residualKw"],
+            0.0,
+        )
         self.assertAlmostEqual(plan["metrics"]["acdcCurrentKw"], -10.0)
         self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], -11.5)
         self.assertAlmostEqual(plan["metrics"]["acdcAdjustmentKw"], -1.5)
@@ -10763,8 +11019,9 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                         "settings": {
                             "intervalSeconds": 1,
                             "renewableStepRatio": 0.10,
-                            "converterStepRatio": 0.05,
-                            "dieselDeadbandRatio": 0.04,
+                            "storageStepRatio": 0.05,
+                            "gridFormingStorageProtectionRatio": 0.06,
+                            "dieselPowerProtectionRatio": 0.04,
                             "socDeadband": 0.05,
                             "storageChargeDeratingCurve": [
                                 {"soc": 0.55, "powerRatio": 1.0},
@@ -10799,8 +11056,15 @@ class RenewableControlBackendApiTest(unittest.TestCase):
         self.assertEqual(state["loopMode"], "closed")
         self.assertEqual(state["settings"]["intervalSeconds"], 1.0)
         self.assertEqual(state["settings"]["renewableStepRatio"], 0.10)
-        self.assertEqual(state["settings"]["converterStepRatio"], 0.05)
-        self.assertEqual(state["settings"]["dieselDeadbandRatio"], 0.04)
+        self.assertEqual(state["settings"]["storageStepRatio"], 0.05)
+        self.assertEqual(
+            state["settings"]["gridFormingStorageProtectionRatio"],
+            0.06,
+        )
+        self.assertEqual(
+            state["settings"]["dieselPowerProtectionRatio"],
+            0.04,
+        )
         self.assertEqual(state["settings"]["socDeadband"], 0.05)
         self.assertEqual(
             state["settings"]["storageChargeDeratingCurve"],

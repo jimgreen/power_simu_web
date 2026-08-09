@@ -59,6 +59,88 @@ class MeasurementIncrementalRefreshUiTest(unittest.TestCase):
             self.assertIn("if (!rows.some", append_source)
             self.assertIn("state.lastMeasurementTraceKey = signature", append_source)
 
+    def test_measurement_trace_upserts_repeated_updates_for_the_same_simulation_frame(self):
+        for role in ("simulator", "trainee"):
+            script = (ROOT / "simu" / "web" / role / "app.js").read_text(encoding="utf-8")
+            append_source = "function appendMeasurementTrace(snapshot)" + script.split(
+                "function appendMeasurementTrace(snapshot)",
+                1,
+            )[1].split("function resetMeasurementHistoryHydration", 1)[0]
+            node_script = f"""
+const state = {{
+  activeModelId: "model-a",
+  measurementTraceHistory: [],
+  measurementTraceWindowMinutes: 60,
+  lastMeasurementTraceKey: "",
+}};
+const numberOrNull = (value) => Number.isFinite(Number(value)) ? Number(value) : null;
+const diagramTrendFiniteValue = numberOrNull;
+const measurementCompareRows = (measurements) => measurements.rows || [];
+const measurementKey = (row) => row.name;
+const measurementDisplayName = (row) => row.name;
+const measurementDeviceDisplay = (row) => row.dev_name;
+const measurementTypeDisplay = (row) => row.meas_type;
+const measurementUnit = () => "m/s";
+const compactTraceHistory = (history) => history;
+const measurementHistoryPointKey = (point) => [
+  Number(point?.run_id ?? 0) || 0,
+  Number(point?.step_count ?? -1),
+  Number(point?.minute ?? 0) || 0,
+].join("|");
+const compareMeasurementHistoryPoints = (left, right) => (
+  (Number(left?.run_id) || 0) - (Number(right?.run_id) || 0)
+  || (Number(left?.step_count) || 0) - (Number(right?.step_count) || 0)
+  || (Number(left?.minute) || 0) - (Number(right?.minute) || 0)
+);
+{append_source}
+const snapshot = (updated, value, minute = 32) => ({{
+  model: {{ id: "model-a" }},
+  clock: {{
+    absolute_minute: minute,
+    time: `00:${{String(minute).padStart(2, "0")}}:00`,
+    run_id: 7,
+    step_count: minute,
+  }},
+  result: {{ updated }},
+  summary: {{ scada_count: 1 }},
+  measurements: {{
+    rows: [{{
+      name: "Environment.weather.WIND_SPEED",
+      dev_type: "Environment",
+      dev_name: "weather",
+      meas_type: "WIND_SPEED",
+      real_value: value,
+      scada_value: value,
+      valid: 1,
+    }}],
+  }},
+}});
+appendMeasurementTrace(snapshot("first", 20.5));
+appendMeasurementTrace(snapshot("delta", 20.4));
+appendMeasurementTrace(snapshot("stale", 20.3, 31));
+const point = state.measurementTraceHistory[0];
+const measurement = point.measurements["Environment.weather.WIND_SPEED"];
+process.stdout.write(JSON.stringify({{
+  count: state.measurementTraceHistory.length,
+  minute: point.minute,
+  value: measurement.value ?? measurement.scada,
+}}));
+"""
+            completed = subprocess.run(
+                ["node", "-"],
+                check=True,
+                capture_output=True,
+                input=node_script,
+                text=True,
+                encoding="utf-8",
+            )
+            result = json.loads(completed.stdout)
+
+            with self.subTest(role=role):
+                self.assertEqual(result["count"], 1)
+                self.assertEqual(result["minute"], 32)
+                self.assertEqual(result["value"], 20.4)
+
     def test_array_frame_updates_by_definition_index_without_measurement_names(self):
         for role in ("simulator", "trainee"):
             script = (ROOT / "simu" / "web" / role / "app.js").read_text(encoding="utf-8")

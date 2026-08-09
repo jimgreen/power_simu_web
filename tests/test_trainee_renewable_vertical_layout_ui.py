@@ -12,14 +12,16 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
         cls.script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
         cls.styles = (ROOT / "simu/web/trainee/styles.css").read_text(encoding="utf-8")
 
-    def test_page_uses_left_sidebar_and_right_strategy_plus_tabbed_detail_workspace(self):
-        self.assertIn('class="renewable-page-layout"', self.html)
+    def test_page_uses_one_shared_horizontal_split_for_both_columns(self):
+        self.assertIn('class="renewable-page-layout vertical-split-workspace"', self.html)
         self.assertIn('class="renewable-side-column"', self.html)
+        self.assertIn('class="renewable-right-layout"', self.html)
+        self.assertNotIn('class="renewable-right-layout vertical-split-workspace"', self.html)
         self.assertIn('<h2>参数配置</h2>', self.html)
         self.assertIn('<h2>统计指标</h2>', self.html)
-        self.assertIn('class="renewable-right-layout vertical-split-workspace"', self.html)
-        self.assertIn('data-vertical-split="trainee-renewable"', self.html)
-        self.assertIn('data-vertical-splitter="trainee-renewable"', self.html)
+        self.assertEqual(self.html.count('data-vertical-split="trainee-renewable"'), 1)
+        self.assertEqual(self.html.count('data-vertical-splitter="trainee-renewable"'), 1)
+        self.assertIn('aria-label="同时调整上下两排区域高度"', self.html)
         self.assertNotIn('data-vertical-split="trainee-renewable-lower"', self.html)
         self.assertNotIn('data-vertical-splitter="trainee-renewable-lower"', self.html)
         self.assertIn('<h2>控制策略</h2>', self.html)
@@ -81,24 +83,105 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
                 self.assertIn(f'data-renewable-metric-tab="{key}"', self.html)
                 self.assertIn(f'>{label}</button>', self.html)
                 self.assertIn(f'data-renewable-metric-pane="{key}"', self.html)
-        self.assertIn('<dt>交流新能源当前值</dt><dd id="renewableAcCurrentKw">--</dd>', self.html)
-        self.assertIn('<dt>交流新能源目标值</dt><dd id="renewableAcTargetKw">--</dd>', self.html)
-        self.assertIn('<dt>交流柴发当前值</dt><dd id="renewableAcDieselCurrentKw">--</dd>', self.html)
-        self.assertIn('<dt>交流负荷功率</dt><dd id="renewableAcLoadKw">--</dd>', self.html)
-        self.assertIn('<dt>直流新能源当前值</dt><dd id="renewableDcCurrentKw">--</dd>', self.html)
-        self.assertIn('<dt>直流新能源目标值</dt><dd id="renewableDcTargetKw">--</dd>', self.html)
-        self.assertIn('<dt>直流柴发当前值</dt><dd id="renewableDcDieselCurrentKw">--</dd>', self.html)
-        self.assertIn('<dt>直流负荷功率</dt><dd id="renewableDcLoadKw">--</dd>', self.html)
-        self.assertIn('<dt>总新能源当前值</dt><dd id="renewableTotalCurrentKw">--</dd>', self.html)
-        self.assertIn('<dt>总新能源目标值</dt><dd id="renewableTotalTargetKw">--</dd>', self.html)
-        self.assertIn('<dt>总负荷功率</dt><dd id="renewableTotalLoadKw">--</dd>', self.html)
-        self.assertNotIn('<dt>可用新能源</dt>', self.html)
-        self.assertNotIn('<dt>计划消纳</dt>', self.html)
+        for group, label, current_id, target_id in (
+            ("ac-renewable", "新能源", "renewableAcCurrentKw", "renewableAcTargetKw"),
+            ("dc-renewable", "新能源", "renewableDcCurrentKw", "renewableDcTargetKw"),
+            ("system-renewable", "新能源", "renewableTotalCurrentKw", "renewableTotalTargetKw"),
+        ):
+            with self.subTest(group=group):
+                self.assertIn(
+                    f'<tr data-renewable-metric-group="{group}"><th scope="row">{label}'
+                    '<span class="renewable-metric-unit">（kW）</span></th>'
+                    f'<td id="{current_id}">--</td><td id="{target_id}">--</td></tr>',
+                    self.html,
+                )
+        for label, node_id in (
+            ("负荷", "renewableAcLoadKw"),
+            ("负荷", "renewableDcLoadKw"),
+            ("负荷", "renewableTotalLoadKw"),
+        ):
+            with self.subTest(node_id=node_id):
+                self.assertIn(
+                    f'<th scope="row">{label}<span class="renewable-metric-unit">（kW）</span></th>'
+                    f'<td id="{node_id}">--</td>'
+                    '<td class="renewable-metric-empty">--</td>',
+                    self.html,
+                )
+        self.assertNotIn('>可用新能源</th>', self.html)
+        self.assertNotIn('>计划消纳</th>', self.html)
         self.assertIn('metricTab: "ac"', self.script)
         self.assertIn("function renderRenewableMetricTabs", self.script)
         self.assertIn("renewableAcDieselCurrentKw", self.script)
         self.assertIn("renewableDcDieselCurrentKw", self.script)
         self.assertIn("renewableTotalCurrentKw", self.script)
+        for label, node_id in (
+            ("新能源最大可发", "renewableAcMaxAvailableKw"),
+            ("风电最大可发", "renewableAcWindMaxAvailableKw"),
+            ("光伏最大可发", "renewableAcPvMaxAvailableKw"),
+            ("新能源最大可发", "renewableDcMaxAvailableKw"),
+            ("风电最大可发", "renewableDcWindMaxAvailableKw"),
+            ("光伏最大可发", "renewableDcPvMaxAvailableKw"),
+            ("新能源最大可发", "renewableTotalMaxAvailableKw"),
+            ("风电最大可发", "renewableTotalWindMaxAvailableKw"),
+            ("光伏最大可发", "renewableTotalPvMaxAvailableKw"),
+        ):
+            with self.subTest(node_id=node_id):
+                self.assertIn(
+                    f'<th scope="row">{label}<span class="renewable-metric-unit">（kW）</span></th>'
+                    f'<td id="{node_id}">--</td>',
+                    self.html,
+                )
+
+    def test_metric_row_labels_do_not_repeat_the_active_scope(self):
+        expected_labels = {
+            "ac": ("新能源", "风电", "光伏", "跟网储能", "构网储能", "柴发", "负荷"),
+            "dc": ("新能源", "风电", "光伏", "跟网储能", "构网储能", "柴发", "负荷"),
+            "system": ("新能源", "风电", "光伏", "跟网储能", "构网储能", "柴发", "负荷", "ACDC变流"),
+        }
+        for key, prefix in (("ac", "交流"), ("dc", "直流"), ("system", "总")):
+            pane = self.html.split(f'data-renewable-metric-pane="{key}"', 1)[1].split(
+                "</section>",
+                1,
+            )[0]
+            with self.subTest(key=key):
+                self.assertNotIn(f'<th scope="row">{prefix}', pane)
+                for label in expected_labels[key]:
+                    self.assertIn(f'<th scope="row">{label}', pane)
+
+    def test_live_weather_values_are_shown_in_parameter_configuration(self):
+        control_panel = self.html.split('<section class="panel renewable-control-panel">', 1)[1].split(
+            '<section class="panel renewable-metrics-panel">',
+            1,
+        )[0]
+        system_pane = self.html.split('data-renewable-metric-pane="system"', 1)[1].split(
+            "</section>",
+            1,
+        )[0]
+        self.assertIn("实时风速", control_panel)
+        self.assertIn('id="renewableObservedWindSpeed"', control_panel)
+        self.assertIn("实时太阳辐照度", control_panel)
+        self.assertIn('id="renewableObservedSolarIrradiance"', control_panel)
+        self.assertNotIn('id="renewableObservedWindSpeed"', system_pane)
+        self.assertNotIn('id="renewableObservedSolarIrradiance"', system_pane)
+
+    def test_each_metric_tab_uses_one_three_column_table_and_keeps_value_ids_unique(self):
+        self.assertEqual(self.html.count('class="renewable-metric-table"'), 3)
+        self.assertEqual(self.html.count('<th scope="col">值对象</th>'), 3)
+        self.assertEqual(self.html.count('<th scope="col">实时值</th>'), 3)
+        self.assertEqual(self.html.count('<th scope="col">目标值</th>'), 3)
+        self.assertNotIn('class="renewable-metric-grid"', self.html)
+        for node_id in (
+            "renewableAcCurrentKw",
+            "renewableAcTargetKw",
+            "renewableDcCurrentKw",
+            "renewableDcTargetKw",
+            "renewableTotalCurrentKw",
+            "renewableTotalTargetKw",
+            "renewableAcdcCurrentKw",
+            "renewableAcdcTargetKw",
+        ):
+            with self.subTest(node_id=node_id):
+                self.assertEqual(self.html.count(f'id="{node_id}"'), 1)
 
     def test_main_panel_replaces_individual_parameters_with_one_dialog_button(self):
         main_panel = self.html.split('<section class="panel renewable-control-panel">', 1)[1].split(
@@ -111,8 +194,9 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
             "renewableControlPeriod",
             "renewableCommandValidMinutes",
             "renewableStepRatio",
-            "converterStepRatio",
-            "dieselDeadbandRatio",
+            "storageStepRatio",
+            "gridFormingStorageProtectionRatio",
+            "dieselPowerProtectionRatio",
             "socDeadband",
             "storagePowerDeratingButton",
         ):
@@ -123,6 +207,24 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
         self.assertIn('<h2 id="renewableControlParametersTitle">控制参数</h2>', self.html)
         self.assertIn("function openRenewableControlParametersDialog", self.script)
         self.assertIn("function closeRenewableControlParametersDialog", self.script)
+
+    def test_last_calculation_summary_belongs_to_the_parameter_panel(self):
+        control_panel = self.html.split('<section class="panel renewable-control-panel">', 1)[1].split(
+            '<section class="panel renewable-metrics-panel">',
+            1,
+        )[0]
+        metric_panel = self.html.split('<section class="panel renewable-metrics-panel">', 1)[1].split(
+            '</aside>',
+            1,
+        )[0]
+        self.assertIn('class="renewable-last-action"', control_panel)
+        self.assertIn('id="renewableLastActionLabel"', control_panel)
+        self.assertIn('id="renewableLastSent"', control_panel)
+        self.assertNotIn('id="renewableLastActionLabel"', metric_panel)
+        self.assertNotIn('id="renewableLastSent"', metric_panel)
+        last_action_block = self.styles.split(".renewable-last-action {", 1)[1].split("}", 1)[0]
+        self.assertIn("margin-top: auto;", last_action_block)
+        self.assertIn("border-top: 1px solid var(--line);", last_action_block)
 
     def test_control_logs_are_scoped_and_show_the_decision_chain(self):
         backend = (ROOT / "simu/renewable_control.py").read_text(encoding="utf-8")
@@ -153,9 +255,38 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
         self.assertIn('"trainee-renewable": 44', self.script)
         self.assertNotIn('"trainee-renewable-lower": 55', self.script)
         self.assertIn(
-            ".renewable-right-layout.vertical-split-workspace",
+            ".renewable-page-layout.vertical-split-workspace",
             self.styles,
         )
+        unified_layout_block = self.styles.split(
+            ".renewable-page-layout.vertical-split-workspace {",
+            1,
+        )[1].split("}", 1)[0]
+        self.assertIn("grid-template-rows:", unified_layout_block)
+        self.assertIn("var(--vertical-split-top, 44%)", unified_layout_block)
+        self.assertIn("row-gap: 0;", unified_layout_block)
+        flattened_columns_block = self.styles.split(
+            ".renewable-page-layout > .renewable-side-column,",
+            1,
+        )[1].split("}", 1)[0]
+        self.assertIn(".renewable-page-layout > .renewable-right-layout", flattened_columns_block)
+        self.assertIn("display: contents;", flattened_columns_block)
+        shared_splitter_block = self.styles.split(
+            ".renewable-page-layout > .renewable-right-layout > .vertical-stack-splitter {",
+            1,
+        )[1].split("}", 1)[0]
+        self.assertIn("grid-column: 1 / -1;", shared_splitter_block)
+        self.assertIn("grid-row: 2;", shared_splitter_block)
+        for selector, column, row in (
+            (".renewable-control-panel", "1", "1"),
+            (".renewable-plan-panel", "2", "1"),
+            (".renewable-metrics-panel", "1", "3"),
+            (".renewable-detail-panel", "2", "3"),
+        ):
+            with self.subTest(selector=selector):
+                block = self.styles.split(f"{selector} {{", 1)[1].split("}", 1)[0]
+                self.assertIn(f"grid-column: {column};", block)
+                self.assertIn(f"grid-row: {row};", block)
         self.assertIn('data-renewable-detail-tab="trend"', self.html)
         self.assertIn('data-renewable-detail-tab="logs"', self.html)
         self.assertIn('data-renewable-detail-pane="trend"', self.html)

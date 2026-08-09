@@ -127,6 +127,110 @@ class InMemoryKernelRuntimeTest(unittest.TestCase):
         self.assertAlmostEqual(zero_branch_power, load_power, places=6)
         self.assertAlmostEqual(breaker_power, load_power, places=6)
 
+    def test_dcac_converter_terminal_powers_follow_ac_terminal_setpoint_sign(self):
+        import simu_loop
+
+        model_path = next(
+            path
+            for path in (
+                Path(__file__).resolve().parents[1]
+                / "models"
+                / "simulator"
+                / "source"
+            ).glob("*/model.e")
+            if "dcac-converter" in path.read_text(encoding="utf-8").casefold()
+        )
+
+        for converter_type in ("dcac-converter", "acdc-converter"):
+            for p_ac_set, expected_p_dc in ((-10.0, 10.0), (10.0, -10.0)):
+                with self.subTest(
+                    converter_type=converter_type,
+                    p_ac_set=p_ac_set,
+                ):
+                    model_book = simu_loop.EBook(model_path)
+                    converter = next(
+                        row
+                        for row in model_book.data["DCACConverter"].data
+                        if str(row.get("dev_type", "")).casefold()
+                        == "dcac-converter"
+                    )
+                    converter["dev_type"] = converter_type
+                    converter["p_ac_set"] = p_ac_set
+
+                    snapshot, _solver_info = simu_loop.solve_hybrid_snapshot_from_book(
+                        model_book,
+                        model_path,
+                    )
+
+                    self.assertAlmostEqual(
+                        snapshot.value(
+                            "DCACConverter",
+                            converter["name"],
+                            "P_AC",
+                        ),
+                        p_ac_set,
+                        places=6,
+                    )
+                    self.assertAlmostEqual(
+                        snapshot.value(
+                            "DCACConverter",
+                            converter["name"],
+                            "P_DC",
+                        ),
+                        expected_p_dc,
+                        places=6,
+                    )
+
+        for converter_type in ("dcac-converter", "acdc-converter"):
+            for p_dc_set in (-10.0, 10.0):
+                with self.subTest(
+                    converter_type=converter_type,
+                    p_dc_set=p_dc_set,
+                ):
+                    model_book = simu_loop.EBook(model_path)
+                    converter_block = model_book.data["DCACConverter"]
+                    if "p_dc_set" not in converter_block.header_list:
+                        converter_block.header_list.append("p_dc_set")
+                    converter = next(
+                        row
+                        for row in converter_block.data
+                        if str(row.get("dev_type", "")).casefold()
+                        == "dcac-converter"
+                    )
+                    converter.update(
+                        {
+                            "dev_type": converter_type,
+                            "ac_control_type": "NONE",
+                            "dc_control_type": "P",
+                            "p_ac_set": 0.0,
+                            "p_dc_set": p_dc_set,
+                        }
+                    )
+
+                    snapshot, _solver_info = simu_loop.solve_hybrid_snapshot_from_book(
+                        model_book,
+                        model_path,
+                    )
+
+                    self.assertAlmostEqual(
+                        snapshot.value(
+                            "DCACConverter",
+                            converter["name"],
+                            "P_AC",
+                        ),
+                        -p_dc_set,
+                        places=6,
+                    )
+                    self.assertAlmostEqual(
+                        snapshot.value(
+                            "DCACConverter",
+                            converter["name"],
+                            "P_DC",
+                        ),
+                        p_dc_set,
+                        places=6,
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

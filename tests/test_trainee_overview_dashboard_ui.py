@@ -49,7 +49,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
             ("dcGridFollowingStorage", "直流跟网储能"),
             ("dcGridFormingStorage", "直流构网储能"),
             ("acGridFormingStorage", "交流构网储能"),
-            ("acdcConverter", "AC/DC变流器"),
+            ("acdcConverter", "DC/AC变流器"),
             ("acWind", "交流并网风电"),
             ("acSolar", "交流并网光伏"),
             ("acGridFollowingStorage", "交流跟网储能"),
@@ -156,11 +156,65 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         for obsolete_badge in (">风<", ">光<", ">储<", ">荷<", ">柴<", ">AC/DC<"):
             self.assertNotIn(obsolete_badge, overview)
 
+    def test_trainee_overview_cards_show_current_target_and_renewable_max_available_values(self):
+        renewable_groups = {"dcWind", "dcSolar", "acWind", "acSolar"}
+        for group_key in (
+            "dcWind",
+            "dcSolar",
+            "dcGridFollowingStorage",
+            "dcLoad",
+            "dcGridFormingStorage",
+            "acGridFormingStorage",
+            "acdcConverter",
+            "acWind",
+            "acSolar",
+            "acGridFollowingStorage",
+            "acLoad",
+            "diesel",
+        ):
+            card = self.html.split(f'data-overview-group="{group_key}"', 1)[1].split("</article>", 1)[0]
+            self.assertEqual(card.count("data-overview-power"), 1)
+            self.assertEqual(card.count("data-overview-target"), 1)
+            self.assertEqual(card.count("data-overview-max-available"), 1 if group_key in renewable_groups else 0)
+            self.assertIn("当前", card)
+            self.assertIn("目标", card)
+            if group_key in renewable_groups:
+                self.assertIn("最大可发", card)
+
+        normalizer = self.script.split("function normalizeOverviewFlowGroups", 1)[1].split(
+            "function parsePowerFlowOverview",
+            1,
+        )[0]
+        self.assertIn("targetPower: powerSummaryNumber(data.targetPower ?? fallbackData.targetPower)", normalizer)
+        self.assertIn(
+            "maxAvailablePower: powerSummaryNumber(data.maxAvailablePower ?? fallbackData.maxAvailablePower)",
+            normalizer,
+        )
+
+        renderer = self.script.split("function renderOverviewFlowGroups(power) {", 1)[1].split(
+            "function renderEnergyFlowVisuals",
+            1,
+        )[0]
+        self.assertNotIn("innerHTML", renderer)
+        self.assertIn('node.querySelector("[data-overview-power]")', renderer)
+        self.assertIn('node.querySelector("[data-overview-target]")', renderer)
+        self.assertIn('node.querySelector("[data-overview-max-available]")', renderer)
+        self.assertIn("overviewPowerText(group.targetPower)", renderer)
+        self.assertIn("overviewPowerText(group.maxAvailablePower)", renderer)
+        self.assertIn(".energy-device-readings {", self.styles)
+        self.assertIn(".energy-device-reading {", self.styles)
+
     def test_trainee_overview_icons_own_flow_connectors_and_keep_state_responsive_rules(self):
         left_block = self.styles.split('.energy-side-node[data-flow-side="left"] {', 1)[1].split("}", 1)[0]
         right_block = self.styles.split('.energy-side-node[data-flow-side="right"] {', 1)[1].split("}", 1)[0]
-        self.assertIn("grid-template-columns: minmax(0, 1fr) 42px;", left_block)
-        self.assertIn("grid-template-columns: 42px minmax(0, 1fr);", right_block)
+        self.assertIn(
+            "grid-template-columns: minmax(0, 1fr) var(--energy-device-icon-size);",
+            left_block,
+        )
+        self.assertIn(
+            "grid-template-columns: var(--energy-device-icon-size) minmax(0, 1fr);",
+            right_block,
+        )
         self.assertIn(".energy-device-card {", self.styles)
         self.assertIn(".energy-device-icon {", self.styles)
         self.assertIn(".energy-side-node .energy-device-icon::before", self.styles)
@@ -198,6 +252,45 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn('node.querySelector("[data-overview-power]")', renderer)
         self.assertIn('node.querySelector("[data-overview-meta]")', renderer)
 
+    def test_trainee_overview_energy_cards_expand_for_richer_readings_without_breaking_compact_height(self):
+        flow_map = self.styles.split(".energy-flow-map {", 1)[1].split("}", 1)[0]
+        self.assertIn("--energy-device-icon-size: 60px;", flow_map)
+        self.assertIn("--energy-device-icon-glyph-size: 40px;", flow_map)
+        self.assertIn("width: min(100%, 1540px);", flow_map)
+        self.assertIn(
+            "grid-template-columns: minmax(215px, 310px) 24px minmax(260px, 1fr) 24px minmax(220px, 310px);",
+            flow_map,
+        )
+
+        icon = self.styles.split(".energy-device-icon {", 1)[1].split("}", 1)[0]
+        self.assertIn("width: var(--energy-device-icon-size);", icon)
+        self.assertIn("height: var(--energy-device-icon-size);", icon)
+        icon_svg = self.styles.split(".energy-device-icon svg {", 1)[1].split("}", 1)[0]
+        self.assertIn("width: var(--energy-device-icon-glyph-size);", icon_svg)
+        self.assertIn("height: var(--energy-device-icon-glyph-size);", icon_svg)
+
+        card = self.styles.split(".energy-device-card {", 1)[1].split("}", 1)[0]
+        self.assertIn("min-height: 76px;", card)
+        self.assertIn("padding: 9px 14px;", card)
+
+        medium = self.styles.split("@container (max-height: 460px) {", 1)[1].split(
+            "@container (max-height: 360px)",
+            1,
+        )[0]
+        self.assertIn("--energy-device-icon-size: 52px;", medium)
+        self.assertIn("--energy-device-icon-glyph-size: 34px;", medium)
+        self.assertIn("min-height: 64px;", medium)
+        self.assertIn("padding: 7px 12px;", medium)
+
+        compact = self.styles.split("@container (max-height: 360px) {", 1)[1].split(
+            "@container (max-height: 320px)",
+            1,
+        )[0]
+        self.assertIn("--energy-device-icon-size: 42px;", compact)
+        self.assertIn("--energy-device-icon-glyph-size: 28px;", compact)
+        self.assertIn("min-height: 50px;", compact)
+        self.assertIn("padding: 5px 9px;", compact)
+
     def test_trainee_grid_following_storage_keeps_bus_connector_and_buses_share_extended_height(self):
         self.assertNotIn(
             ".energy-device.storage::after,\n.energy-device.storage::before {",
@@ -215,8 +308,11 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
             1,
         )[1].split("@media (max-width: 820px) {", 1)[0]
 
-        self.assertIn("height: calc(100% - 24px);", left_bus_block)
-        self.assertIn("height: calc(100% - 24px);", right_bus_block)
+        responsive_bus_height = (
+            "height: calc(100% - var(--energy-edge-inset-y) - var(--energy-edge-inset-y));"
+        )
+        self.assertIn(responsive_bus_height, left_bus_block)
+        self.assertIn(responsive_bus_height, right_bus_block)
         self.assertNotIn("height: 156px;", low_height_styles)
 
     def test_trainee_home_removes_receive_quality_panel(self):
@@ -289,7 +385,11 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
             "renderTraineeOverviewEvents",
         ):
             self.assertIn(helper, self.script)
-        self.assertIn("(1.0 - power.diesel / power.load) * 100.0", self.script)
+        self.assertIn("const loadPower = dcLoadPower + acLoadPower;", self.script)
+        self.assertIn("const greenPower = loadPower - dieselPower;", self.script)
+        self.assertIn("(greenPower / loadPower) * 100.0", self.script)
+        self.assertIn("acdcConverter: { power: null }", self.script)
+        self.assertNotIn("Number.isFinite(power.greenPower) ? -power.greenPower", self.script)
         for element_id in (
             "receiveStateText",
             "teacherSourceText",
@@ -299,6 +399,19 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         ):
             self.assertIn(f'id="{element_id}"', self.html)
         self.assertIn("renderTraineeOverviewDashboard(snapshot);", self.script)
+
+    def test_trainee_weather_display_falls_back_when_environment_scada_is_invalid(self):
+        weather_block = self.script.split("function currentWeatherLoad", 1)[1].split(
+            "function latestRuntimeLog",
+            1,
+        )[0]
+
+        self.assertIn("windMeasurement.valid && Number.isFinite(windMeasurement.value)", weather_block)
+        self.assertIn("solarMeasurement.valid && Number.isFinite(solarMeasurement.value)", weather_block)
+        self.assertIn('interpolateCurve(weather, minute, "wind_speed_mps", null)', weather_block)
+        self.assertIn('optionalNumber(boundaryPoint.wind_speed_mps)', weather_block)
+        self.assertIn('interpolateCurve(weather, minute, "solar_irradiance_w_m2", null)', weather_block)
+        self.assertIn('optionalNumber(boundaryPoint.solar_irradiance_w_m2)', weather_block)
 
     def test_trainee_home_prefers_signed_structured_realtime_power_summary(self):
         parser = self.script.split("function parsePowerFlowOverview(snapshot) {", 1)[1].split(
@@ -323,7 +436,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
             1,
         )[0]
         self.assertIn("renderOverviewFlowGroups(power)", renderer)
-        self.assertIn("const greenPower = Number.isFinite(power.greenPower) ? -power.greenPower : null;", renderer)
+        self.assertIn("const { greenPower, greenPowerShare } = overviewGreenMetrics(power);", renderer)
         self.assertIn('setOverviewText("overviewFlowGreenPower", overviewPowerText(greenPower));', renderer)
 
     def test_trainee_home_status_strip_hides_redundant_model_refresh_and_solver_items(self):
@@ -392,7 +505,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         summary_block = self.styles.split(".energy-green-share {", 1)[1].split("}", 1)[0]
         self.assertIn("position: absolute;", summary_block)
         self.assertIn("left: 50%;", summary_block)
-        self.assertIn("top: 52px;", summary_block)
+        self.assertIn("top: var(--energy-summary-top);", summary_block)
         self.assertIn("width: min(320px, 36%);", summary_block)
         self.assertIn("transform: translateX(-50%);", summary_block)
         self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", summary_block)
@@ -403,7 +516,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("border-left: 1px solid #dce8ea;", divider_block)
         self.assertNotIn("border-top:", divider_block)
         narrow_block = self.styles.split("@container (max-width: 760px) {", 1)[1].split(
-            "@container (max-height: 220px)",
+            "@container (max-height: 320px)",
             1,
         )[0]
         self.assertIn(".energy-green-share", narrow_block)
@@ -415,9 +528,9 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("top: auto;", converter_card_block)
         self.assertIn("bottom: calc(100% + 7px);", converter_card_block)
 
-        compact_styles = self.styles.split("@container (max-height: 220px) {", 1)[1]
+        compact_styles = self.styles.split("@container (max-height: 320px) {", 1)[1]
         compact_summary_block = compact_styles.split(".energy-green-share {", 1)[1].split("}", 1)[0]
-        self.assertIn("top: 4px;", compact_summary_block)
+        self.assertIn("top: var(--energy-summary-top);", compact_summary_block)
 
     def test_trainee_grid_forming_storage_stays_between_side_device_columns(self):
         block = self.styles.split(".energy-grid-forming-stack {", 1)[1].split("}", 1)[0]
@@ -459,11 +572,15 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         card_block = self.styles.split(".energy-device-card {", 1)[1].split("}", 1)[0]
         value_block = self.styles.split(".energy-device-card strong {", 1)[1].split("}", 1)[0]
 
-        self.assertIn("gap: 5px;", region_block)
-        self.assertIn("gap: 4px;", list_block)
-        self.assertIn("min-height: 50px;", card_block)
-        self.assertIn("padding: 5px 9px;", card_block)
-        self.assertIn("gap: 2px;", card_block)
+        self.assertIn("gap: var(--energy-stack-gap);", region_block)
+        self.assertIn("height: 100%;", region_block)
+        self.assertIn("justify-content: stretch;", region_block)
+        self.assertIn("gap: var(--energy-list-gap);", list_block)
+        self.assertIn("flex: 1 1 auto;", list_block)
+        self.assertIn("align-content: space-evenly;", list_block)
+        self.assertIn("min-height: 76px;", card_block)
+        self.assertIn("padding: 9px 14px;", card_block)
+        self.assertIn("gap: 4px;", card_block)
         self.assertIn("font-size: 17px;", value_block)
         self.assertIn("white-space: nowrap;", value_block)
 
@@ -511,17 +628,52 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("handleOverviewBottomSplitterKeydown", self.script)
 
     def test_trainee_home_energy_flow_stays_centered_when_bottom_height_changes(self):
-        self.assertIn(".overview-energy-board", self.styles)
-        self.assertIn("grid-template-rows: minmax(0, 1fr);", self.styles)
-        self.assertIn("place-items: center;", self.styles)
-        self.assertIn("padding: 0;", self.styles)
-        self.assertIn("border: 0;", self.styles)
-        self.assertIn("background: transparent;", self.styles)
-        self.assertIn("height: min(100%, 390px);", self.styles)
-        self.assertIn("align-self: center;", self.styles)
-        self.assertIn("container-type: size;", self.styles)
-        self.assertIn("--energy-storage-gap: 36px;", self.styles)
-        self.assertIn("--energy-storage-gap: 64px;", self.styles)
+        def css_block(selector: str, text: str = self.styles) -> str:
+            marker = f"{selector} {{"
+            start = text.index(marker)
+            end = text.index("\n}", start)
+            return text[start : end + 2]
+
+        board_block = css_block(".overview-energy-board")
+        flow_block = css_block(".energy-flow-map")
+        source_stack_block = css_block(".energy-source-stack")
+        terminal_stack_block = css_block(".energy-terminal-stack")
+        device_list_block = css_block(".energy-device-list")
+        left_bus_block = css_block(".energy-bus-rail.left")
+        right_bus_block = css_block(".energy-bus-rail.right")
+        green_summary_block = css_block(".energy-green-share")
+        forming_stack_block = css_block(".energy-grid-forming-stack")
+
+        self.assertIn("grid-template-rows: minmax(0, 1fr);", board_block)
+        self.assertIn("place-items: center;", board_block)
+        self.assertIn("padding: 0;", board_block)
+        self.assertIn("border: 0;", board_block)
+        self.assertIn("background: transparent;", board_block)
+        self.assertIn("height: 100%;", flow_block)
+        self.assertIn("align-self: center;", flow_block)
+        self.assertIn("container-type: size;", board_block)
+        self.assertIn("--energy-edge-inset-y: clamp(10px, 3.5cqh, 28px);", flow_block)
+        self.assertIn("--energy-stack-gap: clamp(4px, 1.5cqh, 12px);", flow_block)
+        self.assertIn("--energy-list-gap: clamp(3px, 1.25cqh, 10px);", flow_block)
+        self.assertIn("--energy-summary-top: clamp(4px, calc(14cqh - 20px), 120px);", flow_block)
+        self.assertIn("--energy-storage-gap: clamp(36px, calc(20cqh - 10px), 160px);", flow_block)
+        self.assertIn("gap: var(--energy-stack-gap);", source_stack_block)
+        self.assertIn("gap: var(--energy-stack-gap);", terminal_stack_block)
+        self.assertIn("height: 100%;", source_stack_block)
+        self.assertIn("height: 100%;", terminal_stack_block)
+        self.assertIn("justify-content: stretch;", source_stack_block)
+        self.assertIn("justify-content: stretch;", terminal_stack_block)
+        self.assertIn("gap: var(--energy-list-gap);", device_list_block)
+        self.assertIn("flex: 1 1 auto;", device_list_block)
+        self.assertIn("min-height: 0;", device_list_block)
+        self.assertIn("align-content: space-evenly;", device_list_block)
+        responsive_bus_height = (
+            "height: calc(100% - var(--energy-edge-inset-y) - var(--energy-edge-inset-y));"
+        )
+        self.assertIn(responsive_bus_height, left_bus_block)
+        self.assertIn(responsive_bus_height, right_bus_block)
+        self.assertIn("top: var(--energy-summary-top);", green_summary_block)
+        self.assertIn("gap: var(--energy-stack-gap);", forming_stack_block)
         self.assertIn("top: calc(var(--energy-trunk-y) + var(--energy-storage-gap));", self.styles)
         self.assertIn("width: max(22px, calc((100% - var(--energy-storage-card-width)) / 2 + 2px));", self.styles)
         self.assertIn("height: var(--flow-thickness);", self.styles)
@@ -532,9 +684,11 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertNotIn(".energy-board-head", self.styles)
         self.assertNotIn(".energy-board-meta", self.styles)
         self.assertNotIn("min-height: 340px;", self.styles)
-        self.assertIn("@container (max-height: 220px)", self.styles)
-        self.assertIn("--energy-storage-gap: 64px;", self.styles)
-        self.assertIn("--energy-trunk-y: min(50%, calc(100% - 86px));", self.styles)
+        self.assertIn("@container (max-height: 320px)", self.styles)
+        compact_styles = self.styles.split("@container (max-height: 320px) {", 1)[1]
+        self.assertNotIn("--energy-summary-top:", compact_styles.split(".energy-acdc-converter", 1)[0])
+        self.assertNotIn("--energy-storage-gap:", compact_styles.split(".energy-acdc-converter", 1)[0])
+        self.assertIn("min-height: clamp(38px, 15cqh, 50px);", self.styles)
 
     def test_trainee_short_desktop_viewports_do_not_compress_the_energy_flow_map(self):
         low_height_styles = self.styles.split(
@@ -549,7 +703,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("overflow-x: hidden;", dashboard_block)
         self.assertIn("--overview-main-min-height: 370px;", dashboard_block)
         self.assertIn("min-height: var(--overview-main-min-height);", main_grid_block)
-        self.assertIn("height: min(100%, 340px);", low_height_flow_block)
+        self.assertIn("height: 100%;", low_height_flow_block)
 
     def test_trainee_home_storage_cards_connect_horizontally_to_their_own_bus(self):
         def css_block(selector: str, text: str = self.styles) -> str:
@@ -567,8 +721,8 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         low_height_styles = self.styles[low_height_start:mobile_start]
         low_height_flow_block = css_block(".energy-flow-map", low_height_styles)
 
-        self.assertIn("--energy-trunk-y: 54%;", energy_flow_block)
-        self.assertIn("--energy-bus-inset: clamp(230px, 28%, 312px);", energy_flow_block)
+        self.assertIn("--energy-trunk-y: 55%;", energy_flow_block)
+        self.assertIn("--energy-bus-inset: clamp(255px, 29.2%, 338px);", energy_flow_block)
         self.assertIn("--energy-storage-gap:", energy_flow_block)
         self.assertIn("top: var(--energy-trunk-y);", trunk_block)
         self.assertIn("transform: translateY(-50%);", trunk_block)
@@ -578,9 +732,9 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("width: max(22px, calc((100% - var(--energy-storage-card-width)) / 2 + 2px));", storage_branch_block)
         self.assertIn("background-image: repeating-linear-gradient(", storage_branch_block)
         self.assertNotIn("bottom: calc(100% + 2px);", storage_branch_block)
-        self.assertIn("--energy-trunk-y: min(58%, calc(100% - 86px));", low_height_flow_block)
-        self.assertIn("--energy-storage-gap: 36px;", low_height_flow_block)
-        self.assertIn(".energy-green-share {\n    top: 40px;\n  }", low_height_styles)
+        self.assertIn("height: 100%;", low_height_flow_block)
+        self.assertNotIn("--energy-storage-gap: 36px;", low_height_flow_block)
+        self.assertNotIn("top: 40px;", low_height_styles)
 
     def test_trainee_topbar_removes_send_command_button(self):
         self.assertNotIn("发送指令", self.html)

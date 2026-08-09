@@ -175,6 +175,7 @@ const state = {
   chartCursors: {},
   chartSeriesHitData: {},
   chartPlotInfo: {},
+  chartPeriodOffsets: { measurementTrace: 0, commandTrace: 0, renewableTrend: 0 },
   collapsedDeviceTreeGroups: {},
   deviceTreeSearch: {},
   activeMeasurementTab: "telemetry",
@@ -182,8 +183,13 @@ const state = {
   measurementTraceHistory: [],
   measurementTraceWindowMinutes: 60,
   lastMeasurementTraceKey: "",
+  measurementHistoryLoaded: {},
+  measurementHistoryRequests: {},
+  measurementHistoryGeneration: 0,
   renewableTrendHistory: [],
   renewableTrendWindowMinutes: 60,
+  renewableTrendSeriesFilter: "",
+  renewableTrendSelectedOnly: false,
   traceRunId: null,
   traceStepCount: null,
   renewableControl: {
@@ -196,9 +202,20 @@ const state = {
     intervalSeconds: 2,
     largeStepThresholdKw: 10,
     stepCoefficient: 0.03,
-    converterStepRatio: 0.03,
-    dieselDeadbandRatio: 0.03,
+    storageStepRatio: 0.03,
+    gridFormingStorageProtectionRatio: 0.05,
+    dieselPowerProtectionRatio: 0.03,
     socDeadband: 0.05,
+    optimizationRenewableCurtailmentWeight: 1,
+    optimizationDieselOutputWeight: 1,
+    optimizationCurtailmentSquareWeight: 0.000001,
+    optimizationSourceStorageAdjustmentSquareWeight: 0.000001,
+    optimizationBalanceDeltaSquareWeight: 10000,
+    optimizationBalanceDeltaWarningKw: 1,
+    optimizationBalanceToleranceKw: 0.1,
+    optimizationBoundToleranceKw: 0.1,
+    optimizationFtol: 0.001,
+    optimizationMaxIterations: 100,
     commandValidMinutes: 120,
     storageChargeDeratingCurve: DEFAULT_STORAGE_CHARGE_DERATING_CURVE.map((point) => ({ ...point })),
     storageDischargeDeratingCurve: DEFAULT_STORAGE_DISCHARGE_DERATING_CURVE.map((point) => ({ ...point })),
@@ -260,10 +277,13 @@ const RENEWABLE_TREND_SCOPE_DEFS = [
 const RENEWABLE_TREND_SERIES_DEFS = [
   { key: "acRenewableCurrent", metricId: "renewableAcCurrentKw", field: "acRenewableCurrentKw", label: "交流新能源当前值", scope: "ac", device: "renewable", deviceLabel: "新能源", curveLabel: "功率", group: "ac-renewable", color: "#23854a", axis: "left", unit: "kW", style: "power" },
   { key: "acRenewableTarget", metricId: "renewableAcTargetKw", field: "acRenewableTargetKw", label: "交流新能源目标值", scope: "ac", device: "renewable", deviceLabel: "新能源", curveLabel: "目标", group: "ac-renewable", color: "#23854a", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "acRenewableMaxAvailable", metricId: "renewableAcMaxAvailableKw", field: "acRenewableMaxAvailableKw", label: "交流新能源最大可发", scope: "ac", device: "renewable", deviceLabel: "新能源", curveLabel: "最大可发", group: "ac-renewable", color: "#23854a", axis: "left", unit: "kW", style: "available", dashPattern: [5, 3, 1, 3] },
   { key: "acWindCurrent", metricId: "renewableAcWindCurrentKw", field: "acWindCurrentKw", label: "交流风电当前值", scope: "ac", device: "wind", deviceLabel: "风电", curveLabel: "功率", group: "ac-wind", color: "#137c72", axis: "left", unit: "kW", style: "power" },
   { key: "acWindTarget", metricId: "renewableAcWindTargetKw", field: "acWindTargetKw", label: "交流风电目标值", scope: "ac", device: "wind", deviceLabel: "风电", curveLabel: "目标", group: "ac-wind", color: "#137c72", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "acWindMaxAvailable", metricId: "renewableAcWindMaxAvailableKw", field: "acWindMaxAvailableKw", label: "交流风电最大可发", scope: "ac", device: "wind", deviceLabel: "风电", curveLabel: "最大可发", group: "ac-wind", color: "#137c72", axis: "left", unit: "kW", style: "available", dashPattern: [5, 3, 1, 3] },
   { key: "acPvCurrent", metricId: "renewableAcPvCurrentKw", field: "acPvCurrentKw", label: "交流光伏当前值", scope: "ac", device: "pv", deviceLabel: "光伏", curveLabel: "功率", group: "ac-pv", color: "#c17a00", axis: "left", unit: "kW", style: "power" },
   { key: "acPvTarget", metricId: "renewableAcPvTargetKw", field: "acPvTargetKw", label: "交流光伏目标值", scope: "ac", device: "pv", deviceLabel: "光伏", curveLabel: "目标", group: "ac-pv", color: "#c17a00", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "acPvMaxAvailable", metricId: "renewableAcPvMaxAvailableKw", field: "acPvMaxAvailableKw", label: "交流光伏最大可发", scope: "ac", device: "pv", deviceLabel: "光伏", curveLabel: "最大可发", group: "ac-pv", color: "#c17a00", axis: "left", unit: "kW", style: "available", dashPattern: [5, 3, 1, 3] },
   { key: "acGridFollowingStorageCurrent", metricId: "renewableAcGridFollowingStorageCurrentKw", field: "acGridFollowingStorageCurrentKw", label: "交流跟网储能当前值", scope: "ac", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "功率", group: "ac-grid-following-storage", color: "#315aa6", axis: "left", unit: "kW", style: "power" },
   { key: "acGridFollowingStorageTarget", metricId: "renewableAcGridFollowingStorageTargetKw", field: "acGridFollowingStorageTargetKw", label: "交流跟网储能目标值", scope: "ac", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "目标", group: "ac-grid-following-storage", color: "#315aa6", axis: "left", unit: "kW", style: "target", dashed: true },
   { key: "acGridFollowingStorageSoc", metricId: "renewableAcGridFollowingStorageSoc", field: "acGridFollowingStorageSocPercent", label: "交流跟网储能SOC", scope: "ac", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "SOC", group: "ac-grid-following-storage", color: "#315aa6", axis: "right", unit: "%", style: "soc", dashPattern: [2, 4] },
@@ -276,10 +296,13 @@ const RENEWABLE_TREND_SERIES_DEFS = [
   { key: "acLoad", metricId: "renewableAcLoadKw", field: "acLoadKw", label: "交流负荷功率", scope: "ac", device: "load", deviceLabel: "负荷", curveLabel: "功率", group: "ac-load", color: "#c93a3a", axis: "left", unit: "kW", style: "power" },
   { key: "dcRenewableCurrent", metricId: "renewableDcCurrentKw", field: "dcRenewableCurrentKw", label: "直流新能源当前值", scope: "dc", device: "renewable", deviceLabel: "新能源", curveLabel: "功率", group: "dc-renewable", color: "#118b78", axis: "left", unit: "kW", style: "power" },
   { key: "dcRenewableTarget", metricId: "renewableDcTargetKw", field: "dcRenewableTargetKw", label: "直流新能源目标值", scope: "dc", device: "renewable", deviceLabel: "新能源", curveLabel: "目标", group: "dc-renewable", color: "#118b78", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "dcRenewableMaxAvailable", metricId: "renewableDcMaxAvailableKw", field: "dcRenewableMaxAvailableKw", label: "直流新能源最大可发", scope: "dc", device: "renewable", deviceLabel: "新能源", curveLabel: "最大可发", group: "dc-renewable", color: "#118b78", axis: "left", unit: "kW", style: "available", dashPattern: [5, 3, 1, 3] },
   { key: "dcWindCurrent", metricId: "renewableDcWindCurrentKw", field: "dcWindCurrentKw", label: "直流风电当前值", scope: "dc", device: "wind", deviceLabel: "风电", curveLabel: "功率", group: "dc-wind", color: "#087f89", axis: "left", unit: "kW", style: "power" },
   { key: "dcWindTarget", metricId: "renewableDcWindTargetKw", field: "dcWindTargetKw", label: "直流风电目标值", scope: "dc", device: "wind", deviceLabel: "风电", curveLabel: "目标", group: "dc-wind", color: "#087f89", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "dcWindMaxAvailable", metricId: "renewableDcWindMaxAvailableKw", field: "dcWindMaxAvailableKw", label: "直流风电最大可发", scope: "dc", device: "wind", deviceLabel: "风电", curveLabel: "最大可发", group: "dc-wind", color: "#087f89", axis: "left", unit: "kW", style: "available", dashPattern: [5, 3, 1, 3] },
   { key: "dcPvCurrent", metricId: "renewableDcPvCurrentKw", field: "dcPvCurrentKw", label: "直流光伏当前值", scope: "dc", device: "pv", deviceLabel: "光伏", curveLabel: "功率", group: "dc-pv", color: "#d66f3c", axis: "left", unit: "kW", style: "power" },
   { key: "dcPvTarget", metricId: "renewableDcPvTargetKw", field: "dcPvTargetKw", label: "直流光伏目标值", scope: "dc", device: "pv", deviceLabel: "光伏", curveLabel: "目标", group: "dc-pv", color: "#d66f3c", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "dcPvMaxAvailable", metricId: "renewableDcPvMaxAvailableKw", field: "dcPvMaxAvailableKw", label: "直流光伏最大可发", scope: "dc", device: "pv", deviceLabel: "光伏", curveLabel: "最大可发", group: "dc-pv", color: "#d66f3c", axis: "left", unit: "kW", style: "available", dashPattern: [5, 3, 1, 3] },
   { key: "dcGridFollowingStorageCurrent", metricId: "renewableDcGridFollowingStorageCurrentKw", field: "dcGridFollowingStorageCurrentKw", label: "直流跟网储能当前值", scope: "dc", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "功率", group: "dc-grid-following-storage", color: "#2f80c4", axis: "left", unit: "kW", style: "power" },
   { key: "dcGridFollowingStorageTarget", metricId: "renewableDcGridFollowingStorageTargetKw", field: "dcGridFollowingStorageTargetKw", label: "直流跟网储能目标值", scope: "dc", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "目标", group: "dc-grid-following-storage", color: "#2f80c4", axis: "left", unit: "kW", style: "target", dashed: true },
   { key: "dcGridFollowingStorageSoc", metricId: "renewableDcGridFollowingStorageSoc", field: "dcGridFollowingStorageSocPercent", label: "直流跟网储能SOC", scope: "dc", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "SOC", group: "dc-grid-following-storage", color: "#2f80c4", axis: "right", unit: "%", style: "soc", dashPattern: [2, 4] },
@@ -292,10 +315,13 @@ const RENEWABLE_TREND_SERIES_DEFS = [
   { key: "dcLoad", metricId: "renewableDcLoadKw", field: "dcLoadKw", label: "直流负荷功率", scope: "dc", device: "load", deviceLabel: "负荷", curveLabel: "功率", group: "dc-load", color: "#d66f3c", axis: "left", unit: "kW", style: "power" },
   { key: "totalRenewableCurrent", metricId: "renewableTotalCurrentKw", field: "totalRenewableCurrentKw", label: "总新能源当前值", scope: "system", device: "renewable", deviceLabel: "新能源", curveLabel: "功率", group: "system-renewable", color: "#1f7a46", axis: "left", unit: "kW", style: "power" },
   { key: "totalRenewableTarget", metricId: "renewableTotalTargetKw", field: "totalRenewableTargetKw", label: "总新能源目标值", scope: "system", device: "renewable", deviceLabel: "新能源", curveLabel: "目标", group: "system-renewable", color: "#1f7a46", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "totalRenewableMaxAvailable", metricId: "renewableTotalMaxAvailableKw", field: "totalRenewableMaxAvailableKw", label: "总新能源最大可发", scope: "system", device: "renewable", deviceLabel: "新能源", curveLabel: "最大可发", group: "system-renewable", color: "#1f7a46", axis: "left", unit: "kW", style: "available", dashPattern: [5, 3, 1, 3] },
   { key: "totalWindCurrent", metricId: "renewableTotalWindCurrentKw", field: "totalWindCurrentKw", label: "总风电当前值", scope: "system", device: "wind", deviceLabel: "风电", curveLabel: "功率", group: "system-wind", color: "#0a7774", axis: "left", unit: "kW", style: "power" },
   { key: "totalWindTarget", metricId: "renewableTotalWindTargetKw", field: "totalWindTargetKw", label: "总风电目标值", scope: "system", device: "wind", deviceLabel: "风电", curveLabel: "目标", group: "system-wind", color: "#0a7774", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "totalWindMaxAvailable", metricId: "renewableTotalWindMaxAvailableKw", field: "totalWindMaxAvailableKw", label: "总风电最大可发", scope: "system", device: "wind", deviceLabel: "风电", curveLabel: "最大可发", group: "system-wind", color: "#0a7774", axis: "left", unit: "kW", style: "available", dashPattern: [5, 3, 1, 3] },
   { key: "totalPvCurrent", metricId: "renewableTotalPvCurrentKw", field: "totalPvCurrentKw", label: "总光伏当前值", scope: "system", device: "pv", deviceLabel: "光伏", curveLabel: "功率", group: "system-pv", color: "#ba7200", axis: "left", unit: "kW", style: "power" },
   { key: "totalPvTarget", metricId: "renewableTotalPvTargetKw", field: "totalPvTargetKw", label: "总光伏目标值", scope: "system", device: "pv", deviceLabel: "光伏", curveLabel: "目标", group: "system-pv", color: "#ba7200", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "totalPvMaxAvailable", metricId: "renewableTotalPvMaxAvailableKw", field: "totalPvMaxAvailableKw", label: "总光伏最大可发", scope: "system", device: "pv", deviceLabel: "光伏", curveLabel: "最大可发", group: "system-pv", color: "#ba7200", axis: "left", unit: "kW", style: "available", dashPattern: [5, 3, 1, 3] },
   { key: "totalGridFollowingStorageCurrent", metricId: "renewableTotalGridFollowingStorageCurrentKw", field: "totalGridFollowingStorageCurrentKw", label: "总跟网储能当前值", scope: "system", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "功率", group: "system-grid-following-storage", color: "#294f95", axis: "left", unit: "kW", style: "power" },
   { key: "totalGridFollowingStorageTarget", metricId: "renewableTotalGridFollowingStorageTargetKw", field: "totalGridFollowingStorageTargetKw", label: "总跟网储能目标值", scope: "system", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "目标", group: "system-grid-following-storage", color: "#294f95", axis: "left", unit: "kW", style: "target", dashed: true },
   { key: "totalGridFollowingStorageSoc", metricId: "renewableTotalGridFollowingStorageSoc", field: "totalGridFollowingStorageSocPercent", label: "总跟网储能SOC", scope: "system", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "SOC", group: "system-grid-following-storage", color: "#294f95", axis: "right", unit: "%", style: "soc", dashPattern: [2, 4] },
@@ -308,6 +334,8 @@ const RENEWABLE_TREND_SERIES_DEFS = [
   { key: "totalLoad", metricId: "renewableTotalLoadKw", field: "totalLoadKw", label: "总负荷功率", scope: "system", device: "load", deviceLabel: "负荷", curveLabel: "功率", group: "system-load", color: "#a93434", axis: "left", unit: "kW", style: "power" },
   { key: "acdcCurrent", metricId: "renewableAcdcCurrentKw", field: "acdcCurrentKw", label: "AC/DC变流当前值", scope: "system", device: "acdc", deviceLabel: "AC/DC变流器", curveLabel: "功率", group: "system-acdc", color: "#0a8b8b", axis: "left", unit: "kW", style: "power" },
   { key: "acdcTarget", metricId: "renewableAcdcTargetKw", field: "acdcTargetKw", label: "AC/DC变流目标值", scope: "system", device: "acdc", deviceLabel: "AC/DC变流器", curveLabel: "目标", group: "system-acdc", color: "#0a8b8b", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "observedWindSpeed", metricId: "renewableObservedWindSpeed", field: "observedWindSpeed", label: "实时风速", scope: "system", device: "environment", deviceLabel: "环境", curveLabel: "风速", group: "system-environment", color: "#3278b5", axis: "right", unit: "m/s", style: "weather" },
+  { key: "observedSolarIrradiance", metricId: "renewableObservedSolarIrradiance", field: "observedSolarIrradiance", label: "实时太阳辐照度", scope: "system", device: "environment", deviceLabel: "环境", curveLabel: "太阳辐照度", group: "system-environment", color: "#d28b16", axis: "right", unit: "W/m²", style: "weather" },
 ];
 const RENEWABLE_TREND_DEFAULT_VISIBLE_SERIES = new Set([
   "acLoad",
@@ -320,6 +348,7 @@ const RENEWABLE_TREND_DEFAULT_VISIBLE_SERIES = new Set([
   "acGridFormingStorageCurrent",
   "dcGridFormingStorageCurrent",
   "acdcCurrent",
+  "totalRenewableMaxAvailable",
 ]);
 const TRACE_HIGH_RES_WINDOW_MINUTES = 24 * 60;
 const VIRTUAL_TABLE_ROW_HEIGHT = 34;
@@ -957,6 +986,42 @@ function nearestChartPoint(points, x) {
   return best;
 }
 
+function chartPointAtCursorAnchor(points, anchorPoint) {
+  const source = points || [];
+  const anchorTime = String(anchorPoint?.time || anchorPoint?.sim_time || "").trim();
+  if (anchorTime && anchorTime !== "--") {
+    const matchingTime = source.filter((point) => (
+      String(point?.time || point?.sim_time || "").trim() === anchorTime
+    ));
+    if (matchingTime.length) return matchingTime[matchingTime.length - 1];
+  }
+  const anchorMinute = Number(anchorPoint?.minute);
+  if (Number.isFinite(anchorMinute)) {
+    const matchingMinute = source.filter((point) => {
+      const minute = Number(point?.minute);
+      return Number.isFinite(minute) && Math.abs(minute - anchorMinute) <= 1e-9;
+    });
+    if (matchingMinute.length) return matchingMinute[matchingMinute.length - 1];
+    return null;
+  }
+  return nearestChartPoint(source, Number(anchorPoint?.x));
+}
+
+function chartCursorSnapshot(seriesData, selectedKey, cursorX) {
+  const source = seriesData || [];
+  const anchorSeries = source.find((series) => (
+    series.key === selectedKey && Array.isArray(series.points) && series.points.length
+  )) || source.find((series) => Array.isArray(series.points) && series.points.length);
+  if (!anchorSeries) return null;
+  const anchorPoint = nearestChartPoint(anchorSeries.points, cursorX);
+  if (!anchorPoint) return null;
+  const samples = source.map((series) => ({
+    series,
+    point: chartPointAtCursorAnchor(series.points, anchorPoint),
+  })).filter((item) => item.point);
+  return samples.length ? { anchorPoint, samples } : null;
+}
+
 function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) {
   const cursor = state.chartCursors?.[chartKey];
   const visibleSeries = (seriesData || []).filter((series) => !isChartSeriesHidden(chartKey, series.key));
@@ -966,14 +1031,12 @@ function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) 
   const right = canvas.width - plot.right;
   const top = plot.top;
   const bottom = canvas.height - plot.bottom;
-  const x = clamp(cursor.x, left, right);
-  const y = clamp(cursor.y, top, bottom);
   const selectedKey = selectedChartSeriesKey(chartKey, visibleSeries[0]?.key || "");
-  const samples = visibleSeries
-    .map((series) => ({ series, point: nearestChartPoint(series.points, x) }))
-    .filter((item) => item.point);
-  if (!samples.length) return;
-  const mainPoint = samples.find((item) => item.series.key === selectedKey)?.point || samples[0].point;
+  const snapshot = chartCursorSnapshot(visibleSeries, selectedKey, clamp(cursor.x, left, right));
+  if (!snapshot) return;
+  const { anchorPoint: mainPoint, samples } = snapshot;
+  const x = clamp(mainPoint.x, left, right);
+  const y = clamp(mainPoint.y, top, bottom);
   const timeLabel = options.timeLabel ? options.timeLabel(mainPoint) : (mainPoint.time || "");
   const valueFormatter = options.valueFormatter || formatNumber;
   const maxSeries = Math.max(1, Number(options.maxSeries) || 6);
@@ -1537,7 +1600,7 @@ async function retryPendingManualDefinitionChanges() {
   const requestedModelId = state.activeModelId;
   state.manualDefinitionChangesRetrying = true;
   state.manualDefinitionChangesError = "";
-  state.manualDefinitionChangesMessage = "正在重新保存 E 文件";
+  state.manualDefinitionChangesMessage = "正在重新保存人工覆盖层";
   state.manualDefinitionChangesMessageWarning = false;
   renderManualDefinitionChanges();
   try {
@@ -1581,7 +1644,7 @@ async function resetSelectedManualDefinitionChanges() {
   const requestedModelId = state.activeModelId;
   state.manualDefinitionChangesResetting = true;
   state.manualDefinitionChangesError = "";
-  state.manualDefinitionChangesMessage = "正在恢复后台定义并更新 E 文件";
+  state.manualDefinitionChangesMessage = "正在从原始 E 文件恢复默认值";
   state.manualDefinitionChangesMessageWarning = false;
   renderManualDefinitionChanges();
   try {
@@ -2398,6 +2461,7 @@ const DIAGRAM_FLOW_POWER_MEASUREMENT_TYPES = Object.freeze({
   DCGENERATOR: Object.freeze(["P_GEN"]),
   ACLOAD: Object.freeze(["P_LOAD"]),
   DCLOAD: Object.freeze(["P_LOAD"]),
+  ACDCCONVERTER: Object.freeze(["P_AC", "P_DC"]),
   DCACCONVERTER: Object.freeze(["P_AC", "P_DC"]),
   DCDCCONVERTER: Object.freeze(["P_FROM", "P_TO"]),
   ACACCONVERTER: Object.freeze(["P_FROM", "P_TO"]),
@@ -2416,6 +2480,29 @@ function diagramFlowPowerMeasurementTypes(devType) {
   const type = normalizeDiagramMeasurementToken(devType);
   const specific = DIAGRAM_FLOW_POWER_MEASUREMENT_TYPES[type];
   return specific ? [...specific] : diagramMetricMeasurementTypes(devType, "activePower");
+}
+
+function diagramFlowCanonicalPower(measType, value) {
+  const power = Number(value);
+  if (!Number.isFinite(power)) return Number.NaN;
+  const type = normalizeDiagramMeasurementToken(measType);
+  if (type === "P_AC" || type === "P_TO") return -power;
+  return power;
+}
+
+function diagramFlowPowerRouteOrientation(device, nodes = []) {
+  const type = normalizeDiagramMeasurementToken(device?.devType);
+  if (type !== "ACDCCONVERTER" && type !== "DCACCONVERTER") return 1;
+  const terminalFor = (domain) => Number((nodes || []).find((item) => {
+    const nodeDomain = normalizeDiagramMeasurementToken(
+      item?.domain || String(item?.key || "").split(":", 1)[0],
+    );
+    return nodeDomain === domain;
+  })?.terminal) || 0;
+  const acTerminal = terminalFor("AC");
+  const dcTerminal = terminalFor("DC");
+  if (acTerminal === 1 && dcTerminal === 2) return -1;
+  return 1;
 }
 
 function diagramFlowInlineDeviceKind(devType) {
@@ -2546,6 +2633,54 @@ function diagramTrendPeriodRange(period = "hour", endMinute = 0) {
   };
 }
 
+function diagramTrendNavigationRange(
+  points,
+  period = "hour",
+  endMinute = null,
+  requestedOffset = 0,
+  simulationDurationMinutes = Number.POSITIVE_INFINITY,
+) {
+  let earliestHistoryMinute = Number.POSITIVE_INFINITY;
+  let latestHistoryMinute = Number.NEGATIVE_INFINITY;
+  (Array.isArray(points) ? points : []).forEach((point) => {
+    const minute = Number(point?.minute);
+    if (!Number.isFinite(minute) || !diagramTrendPointHasFiniteValue(point)) return;
+    earliestHistoryMinute = Math.min(earliestHistoryMinute, minute);
+    latestHistoryMinute = Math.max(latestHistoryMinute, minute);
+  });
+  const hasHistory = Number.isFinite(earliestHistoryMinute) && Number.isFinite(latestHistoryMinute);
+  const explicitEndMinute = endMinute === null || endMinute === undefined || endMinute === ""
+    ? null
+    : Number(endMinute);
+  const latestMinute = Number.isFinite(explicitEndMinute)
+    ? explicitEndMinute
+    : (hasHistory ? latestHistoryMinute : 0);
+  const currentRange = diagramTrendPeriodRange(period, latestMinute);
+  const earliestMinute = hasHistory ? earliestHistoryMinute : latestMinute;
+  const normalizedSimulationDuration = Number(simulationDurationMinutes);
+  const periodNavigationAllowed = !Number.isFinite(normalizedSimulationDuration)
+    || normalizedSimulationDuration <= 0
+    || currentRange.windowMinutes < normalizedSimulationDuration;
+  const minWindowOffset = periodNavigationAllowed && hasHistory
+    ? Math.min(0, Math.floor((earliestMinute - currentRange.startMinute) / currentRange.windowMinutes))
+    : 0;
+  const normalizedOffset = periodNavigationAllowed
+    ? Math.min(0, Math.trunc(Number(requestedOffset) || 0))
+    : 0;
+  const windowOffset = Math.max(minWindowOffset, normalizedOffset);
+  const startMinute = currentRange.startMinute + windowOffset * currentRange.windowMinutes;
+  return {
+    ...currentRange,
+    startMinute,
+    endMinute: startMinute + currentRange.windowMinutes,
+    currentStartMinute: currentRange.startMinute,
+    earliestMinute,
+    windowOffset,
+    minWindowOffset,
+    periodNavigationAllowed,
+  };
+}
+
 function diagramTrendPeriodLabels(period = "hour", range = {}) {
   if (period === "day") return { start: "00:00", end: "24:00" };
   const startMinute = Number(range.startMinute) || 0;
@@ -2569,7 +2704,7 @@ function diagramTrendPointHasFiniteValue(point) {
   ));
 }
 
-function diagramTrendWindowPoints(points, period = "hour", endMinute = null) {
+function diagramTrendWindowPoints(points, period = "hour", endMinute = null, requestedOffset = 0, rangeOverride = null) {
   const valid = (points || []).filter((point) => (
     Number.isFinite(Number(point?.minute)) && diagramTrendPointHasFiniteValue(point)
   ));
@@ -2580,10 +2715,11 @@ function diagramTrendWindowPoints(points, period = "hour", endMinute = null) {
   const latestMinute = Number.isFinite(explicitEndMinute)
     ? explicitEndMinute
     : Number(valid[valid.length - 1].minute);
-  const range = diagramTrendPeriodRange(period, latestMinute);
+  const range = rangeOverride || diagramTrendNavigationRange(valid, period, latestMinute, requestedOffset);
+  const visibleLatestMinute = range.windowOffset === 0 ? range.latestMinute : range.endMinute;
   return valid.filter((point) => (
     Number(point.minute) >= range.startMinute
-    && Number(point.minute) <= range.latestMinute
+    && Number(point.minute) <= visibleLatestMinute
     && Number(point.minute) < range.endMinute
   ));
 }
@@ -3073,7 +3209,7 @@ function compileDiagramDeviceIndex(container) {
     const layerType = element.closest("[device-type]")?.getAttribute("device-type") || "";
     devices.set(devId, {
       devId,
-      devType: layerType || devId.split("-", 1)[0],
+      devType: layerType,
       devName,
     });
   });
@@ -3327,11 +3463,12 @@ function diagramFlowDeviceNodes(element) {
   const domain1 = String(element.getAttribute("voltage-type-1") || baseDomain || fallbackDomain).trim();
   const domain2 = String(element.getAttribute("voltage-type-2") || baseDomain || fallbackDomain).trim();
   const nodes = [];
-  if (node1) nodes.push({ node: node1, key: diagramFlowNodeKey(node1, domain1), terminal: 1 });
-  if (node2) nodes.push({ node: node2, key: diagramFlowNodeKey(node2, domain2), terminal: 2 });
+  if (node1) nodes.push({ node: node1, key: diagramFlowNodeKey(node1, domain1), terminal: 1, domain: domain1 });
+  if (node2) nodes.push({ node: node2, key: diagramFlowNodeKey(node2, domain2), terminal: 2, domain: domain2 });
   if (!nodes.length) {
     const node = String(element.getAttribute("node") || "").trim();
-    if (node) nodes.push({ node, key: diagramFlowNodeKey(node, baseDomain || fallbackDomain), terminal: 0 });
+    const domain = baseDomain || fallbackDomain;
+    if (node) nodes.push({ node, key: diagramFlowNodeKey(node, domain), terminal: 0, domain });
   }
   return nodes;
 }
@@ -3372,10 +3509,16 @@ function diagramFlowDeviceRoute(symbol) {
 }
 
 function diagramFlowPowerBindings(device, element, topology) {
-  const own = { device, orientation: 1, priority: 1 };
+  const entry = topology?.byId?.get(String(device?.devId || ""));
+  const ownNodes = entry?.nodes || diagramFlowDeviceNodes(element);
+  const own = {
+    device,
+    nodes: ownNodes,
+    orientation: diagramFlowPowerRouteOrientation(device, ownNodes),
+    priority: 1,
+  };
   const type = normalizeDiagramMeasurementToken(device?.devType);
   if (!type.includes("BREAK") && !type.includes("SWITCH")) return [own];
-  const entry = topology?.byId?.get(String(device?.devId || ""));
   if (!entry) return [own];
   const fallbacks = [];
   entry.nodes.filter(({ terminal }) => terminal > 0).forEach(({ key, terminal }) => {
@@ -3386,7 +3529,9 @@ function diagramFlowPowerBindings(device, element, topology) {
       const neighborTerminal = neighbor.nodes.find((item) => item.key === key)?.terminal || 0;
       fallbacks.push({
         device: neighbor.device,
-        orientation: diagramFlowSeriesOrientation(terminal, neighborKind, neighborTerminal),
+        nodes: neighbor.nodes,
+        orientation: diagramFlowSeriesOrientation(terminal, neighborKind, neighborTerminal)
+          * diagramFlowPowerRouteOrientation(neighbor.device, neighbor.nodes),
         priority: 2,
       });
     });
@@ -3442,12 +3587,27 @@ function diagramFlowEdgeBinding(sourceEntry, targetEntry, topology) {
   };
 }
 
-function diagramFlowDevicePowerRow(device, measurementMaps) {
+function diagramFlowDevicePowerSample(device, measurementMaps) {
   const types = diagramFlowPowerMeasurementTypes(device?.devType);
   for (const map of [measurementMaps?.scadaByDevice, measurementMaps?.realByDevice]) {
-    for (const measType of types) {
+    const candidates = types.map((measType, order) => {
       const key = diagramDeviceMeasurementKey(device?.devType, device?.devName, measType);
-      if (map?.has(key)) return map.get(key);
+      const row = map?.get(key);
+      const rawPower = Number(row?.value);
+      const valid = Boolean(row) && Number(row.valid ?? 1) === 1 && Number.isFinite(rawPower);
+      return valid ? {
+        row,
+        power: diagramFlowCanonicalPower(
+          row?.meas_type || row?.measurement_type || measType,
+          rawPower,
+        ),
+        order,
+      } : null;
+    }).filter(Boolean);
+    if (candidates.length) {
+      return candidates.reduce((best, item) => (
+        Math.abs(item.power) > Math.abs(best.power) ? item : best
+      ));
     }
   }
   return null;
@@ -3456,13 +3616,12 @@ function diagramFlowDevicePowerRow(device, measurementMaps) {
 function diagramFlowResolvePower(record, measurementMaps) {
   const resolved = (record?.powerBindings || [{ device: record?.device, orientation: 1, priority: 1 }])
     .map((binding) => {
-      const row = diagramFlowDevicePowerRow(binding.device, measurementMaps);
-      const rawPower = Number(row?.value);
+      const sample = diagramFlowDevicePowerSample(binding.device, measurementMaps);
       return {
         binding,
-        row,
-        valid: Boolean(row) && Number(row.valid ?? 1) === 1 && Number.isFinite(rawPower),
-        power: rawPower * (Number(binding.orientation) < 0 ? -1 : 1),
+        row: sample?.row || null,
+        valid: Boolean(sample) && Number.isFinite(sample.power),
+        power: Number(sample?.power) * (Number(binding.orientation) < 0 ? -1 : 1),
       };
     })
     .filter((item) => item.valid);
@@ -3652,6 +3811,10 @@ function updateDiagramFlowArrows(container, snapshot = state.snapshot || {}, mea
     const visible = diagramFlowArrowVisibility({ power, referencePower, valid, offline });
     record.root.setAttribute("data-flow-power", valid ? String(power) : "");
     record.root.setAttribute("data-flow-binding-id", String(resolved.binding?.device?.devId || ""));
+    record.root.setAttribute(
+      "data-flow-measurement-type",
+      String(resolved.row?.meas_type || resolved.row?.measurement_type || ""),
+    );
     record.root.toggleAttribute("hidden", !visible);
     if (!visible) return;
     const size = diagramFlowArrowSize(power, referencePower);
@@ -3688,6 +3851,8 @@ function diagramInteractionState(container) {
       tooltip: null,
       tooltipPositionKey: "",
       trendPeriod: "hour",
+      trendPeriodOffsets: { hour: 0, day: 0 },
+      trendNavigationRange: null,
       trendChart: null,
       trendCursorClientX: null,
       contextMenu: null,
@@ -3715,7 +3880,7 @@ function diagramDeviceRecord(container, devId) {
   if (indexed) return indexed;
   return {
     devId: key,
-    devType: key.includes("-") ? key.split("-", 1)[0] : "",
+    devType: "",
     devName: key,
   };
 }
@@ -4439,10 +4604,12 @@ function diagramDeviceTooltipData(container, hover, snapshot) {
   const statusBinding = diagramDefinitionFieldBinding(definitionRecords, ["status"]);
   const modeBinding = diagramDefinitionFieldBinding(definitionRecords, ["control_type", "mode"]);
   const hasSwitchStatus = diagramDeviceHasSwitchStatus(definitionRecords, raw);
+  const runStatValue = traineeRuntimeSignalDisplayValue(live, "run_stat", live?.run_stat ?? raw.run_stat);
+  const switchStatusValue = traineeRuntimeSignalDisplayValue(live, "status", live?.status ?? raw.status);
   const statusRows = [
-    ["运行状态", live?.run_stat ?? raw.run_stat, "status:run_stat", runStatBinding],
+    ["运行状态", runStatValue, "status:run_stat", runStatBinding],
     ...(hasSwitchStatus
-      ? [["开关状态", live?.status ?? raw.status, "status:status", statusBinding]]
+      ? [["开关状态", switchStatusValue, "status:status", statusBinding]]
       : []),
     ["控制模式", live?.mode ?? raw.control_type ?? raw.mode, "status:mode", modeBinding],
   ];
@@ -4833,7 +5000,7 @@ async function saveDiagramDeviceDefinitionEdit(container) {
   if (!updates.length) return false;
   const requestedModelId = state.activeModelId;
   interaction.definitionSaving = true;
-  interaction.definitionMessage = `正在更新 ${updates.length} 个参数块并保存 E 文件`;
+  interaction.definitionMessage = `正在更新 ${updates.length} 个参数块并保存人工覆盖层`;
   interaction.definitionMessageWarning = false;
   renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
   let completed = 0;
@@ -4868,10 +5035,10 @@ async function saveDiagramDeviceDefinitionEdit(container) {
     interaction.definitionEditor = null;
     interaction.definitionSaving = false;
     interaction.definitionMessage = resultWarning
-      ? (warningMessage || `${completed} 个参数块已更新，但部分持久化结果需要重试`)
+      ? (warningMessage || `${completed} 个参数块已更新，但人工覆盖层需要重试`)
       : (runtimeControlUpdated
-        ? `${completed} 个参数块、Model.e 及运行控制已保存，新能源控制将从下一轮采用新参数`
-        : `${completed} 个参数块及 Model.e 已保存，新能源控制将从下一轮采用新参数`);
+        ? `${completed} 个参数块及运行控制覆盖已保存，新能源控制将从下一轮采用新参数`
+        : `${completed} 个参数块的人工覆盖已保存，新能源控制将从下一轮采用新参数`);
     interaction.definitionMessageWarning = resultWarning;
     interaction.tooltip?.classList.remove("is-editing-definition");
     renderActiveDiagramTooltip(container, state.snapshot || {}, interaction);
@@ -5082,7 +5249,7 @@ function diagramTrendFiniteValue(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-function diagramTrendChartModel(points, period, tooltipWidth = 360, currentMinute = null, unit = "") {
+function diagramTrendChartModel(points, period, tooltipWidth = 360, currentMinute = null, unit = "", rangeOverride = null) {
   const sourcePoints = Array.isArray(points) ? points : [];
   const targetCount = Math.max(32, Math.floor(Math.max(tooltipWidth, 320) * 0.75));
   const values = sourcePoints.flatMap((point) => DIAGRAM_TREND_SERIES.flatMap((series) => {
@@ -5095,12 +5262,16 @@ function diagramTrendChartModel(points, period, tooltipWidth = 360, currentMinut
   const plot = { left: 52, right: 10, top: 20, bottom: 10 };
   const lastSourcePoint = sourcePoints[sourcePoints.length - 1] || null;
   const fallbackMinute = Number(lastSourcePoint?.minute);
-  const range = diagramTrendPeriodRange(
+  const defaultRange = diagramTrendPeriodRange(
     period,
     currentMinute !== null && currentMinute !== undefined && currentMinute !== "" && Number.isFinite(Number(currentMinute))
       ? Number(currentMinute)
       : (Number.isFinite(fallbackMinute) ? fallbackMinute : 0),
   );
+  const range = Number.isFinite(Number(rangeOverride?.startMinute))
+    && Number.isFinite(Number(rangeOverride?.endMinute))
+    ? { ...defaultRange, ...rangeOverride }
+    : defaultRange;
   const labels = diagramTrendPeriodLabels(period, range);
   const minuteSpan = Math.max(1, range.endMinute - range.startMinute);
   const valueSpan = Math.max(1e-9, axis.max - axis.min);
@@ -5186,8 +5357,30 @@ function diagramTrendAxisTicksHtml(model) {
   }).join("");
 }
 
-function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute = null, unit = "", interaction = null) {
-  const model = diagramTrendChartModel(points, period, tooltipWidth, currentMinute, unit);
+function diagramTrendNavigationState(range = {}) {
+  const periodNavigationAllowed = range.periodNavigationAllowed !== false;
+  const windowOffset = Math.min(0, Math.trunc(Number(range.windowOffset) || 0));
+  const minWindowOffset = Math.min(0, Math.trunc(Number(range.minWindowOffset) || 0));
+  return {
+    visible: periodNavigationAllowed && (minWindowOffset < 0 || windowOffset < 0),
+    previousDisabled: !periodNavigationAllowed || windowOffset <= minWindowOffset,
+    currentDisabled: !periodNavigationAllowed || windowOffset === 0,
+    nextDisabled: !periodNavigationAllowed || windowOffset >= 0,
+  };
+}
+
+function diagramTrendNavigationHtml(range = {}) {
+  const navigation = diagramTrendNavigationState(range);
+  return `
+    <div class="chart-period-navigation diagram-trend-period-navigation" data-diagram-trend-navigation${navigation.visible ? "" : " hidden"}>
+      <button type="button" data-diagram-trend-action="previous" aria-label="上一时段" title="上一时段"${navigation.previousDisabled ? " disabled" : ""}>&#8592;</button>
+      <button type="button" data-diagram-trend-action="current" aria-label="回到当前时段" title="回到当前时段"${navigation.currentDisabled ? " disabled" : ""}>&#9673;</button>
+      <button type="button" data-diagram-trend-action="next" aria-label="下一时段" title="下一时段"${navigation.nextDisabled ? " disabled" : ""}>&#8594;</button>
+    </div>`;
+}
+
+function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute = null, unit = "", interaction = null, rangeOverride = null) {
+  const model = diagramTrendChartModel(points, period, tooltipWidth, currentMinute, unit, rangeOverride);
   setDiagramTrendChartModel(interaction, model);
   return `
     <div class="diagram-trend-empty" data-diagram-trend-empty${model.empty ? "" : " hidden"}>当前分页暂无历史曲线</div>
@@ -5216,6 +5409,21 @@ function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute
       <div><span class="diagram-trend-stat-label is-scada">量测值</span><span>最小 <strong data-diagram-trend-stat-scada-min>${model.series.scada.min === null ? "--" : diagramNumberText(model.series.scada.min)}</strong></span><span>最大 <strong data-diagram-trend-stat-scada-max>${model.series.scada.max === null ? "--" : diagramNumberText(model.series.scada.max)}</strong></span><span>最新 <strong data-diagram-trend-stat-scada-latest>${model.series.scada.latest === null ? "--" : diagramNumberText(model.series.scada.latest)}</strong></span></div>
       <div><span class="diagram-trend-stat-label is-real">真值</span><span>最小 <strong data-diagram-trend-stat-real-min>${model.series.real.min === null ? "--" : diagramNumberText(model.series.real.min)}</strong></span><span>最大 <strong data-diagram-trend-stat-real-max>${model.series.real.max === null ? "--" : diagramNumberText(model.series.real.max)}</strong></span><span>最新 <strong data-diagram-trend-stat-real-latest>${model.series.real.latest === null ? "--" : diagramNumberText(model.series.real.latest)}</strong></span></div>
     </div>`;
+}
+
+function syncDiagramTrendNavigation(tooltip, range = {}) {
+  const container = tooltip?.querySelector?.("[data-diagram-trend-navigation]");
+  if (!container) return false;
+  const navigation = diagramTrendNavigationState(range);
+  container.hidden = !navigation.visible;
+  container.dataset.windowOffset = String(Number(range.windowOffset) || 0);
+  const previous = container.querySelector('[data-diagram-trend-action="previous"]');
+  const current = container.querySelector('[data-diagram-trend-action="current"]');
+  const next = container.querySelector('[data-diagram-trend-action="next"]');
+  if (previous) previous.disabled = navigation.previousDisabled;
+  if (current) current.disabled = navigation.currentDisabled;
+  if (next) next.disabled = navigation.nextDisabled;
+  return true;
 }
 
 function hideDiagramTrendCursor(interaction) {
@@ -5256,9 +5464,9 @@ function syncDiagramTrendAxisTicks(group, model) {
   return true;
 }
 
-function updateDiagramTrendChart(content, points, period, tooltipWidth, currentMinute, unit, interaction) {
+function updateDiagramTrendChart(content, points, period, tooltipWidth, currentMinute, unit, interaction, rangeOverride = null) {
   if (!content) return false;
-  const model = diagramTrendChartModel(points, period, tooltipWidth, currentMinute, unit);
+  const model = diagramTrendChartModel(points, period, tooltipWidth, currentMinute, unit, rangeOverride);
   setDiagramTrendChartModel(interaction, model);
   const empty = content.querySelector("[data-diagram-trend-empty]");
   const legend = content.querySelector("[data-diagram-trend-legend]");
@@ -5381,10 +5589,27 @@ function diagramMetricTooltipData(container, hover, snapshot, interaction) {
   const period = interaction.trendPeriod === "day" ? "day" : "hour";
   const history = diagramTrendHistorySeries(pair.scadaRow || pair.realRow || row, metricType);
   const endMinute = Number(snapshot?.clock?.absolute_minute ?? snapshot?.clock?.minute);
+  const requestedOffset = Number(interaction?.trendPeriodOffsets?.[period]) || 0;
+  const trendRange = diagramTrendNavigationRange(
+    history,
+    period,
+    Number.isFinite(endMinute) ? endMinute : null,
+    requestedOffset,
+    curveDisplayModeDurationMinutes(),
+  );
+  if (interaction) {
+    interaction.trendPeriodOffsets = {
+      ...(interaction.trendPeriodOffsets || { hour: 0, day: 0 }),
+      [period]: trendRange.windowOffset,
+    };
+    interaction.trendNavigationRange = trendRange;
+  }
   const windowPoints = diagramTrendWindowPoints(
     history,
     period,
     Number.isFinite(endMinute) ? endMinute : null,
+    trendRange.windowOffset,
+    trendRange,
   );
   const deviceName = hover?.binding?.devName || row?.dev_name || row?.name || "动态量测";
   const metricLabel = diagramMetricLabel(metricType, row);
@@ -5394,13 +5619,13 @@ function diagramMetricTooltipData(container, hover, snapshot, interaction) {
   return {
     deviceName,
     metricLabel,
-    displayText: scadaValue === null ? "--" : diagramNumberText(scadaValue),
+    displayText: formatMeasurementDisplayValue(scadaValue, pair.row, diagramNumberText),
     scadaValue,
-    scadaText: scadaValue === null ? "--" : diagramNumberText(scadaValue),
+    scadaText: formatMeasurementDisplayValue(scadaValue, pair.row, diagramNumberText),
     realValue,
-    realText: realValue === null ? "--" : diagramNumberText(realValue),
+    realText: formatMeasurementDisplayValue(realValue, pair.row, diagramNumberText),
     deviation,
-    deviationText: deviation === null ? "--" : diagramNumberText(deviation),
+    deviationText: formatMeasurementDisplayValue(deviation, pair.row, diagramNumberText),
     valid: pair.valid,
     status: pair.status,
     statusText: validText,
@@ -5419,8 +5644,27 @@ function diagramMetricTooltipData(container, hover, snapshot, interaction) {
     measType: pair.measType,
     period,
     endMinute: Number.isFinite(endMinute) ? endMinute : null,
+    trendRange,
     windowPoints,
   };
+}
+
+function ensureDiagramMetricMeasurementHistory(container, hover, snapshot, interaction) {
+  const pair = diagramMetricMeasurementPair(hover, snapshot);
+  const row = pair.scadaRow || pair.realRow || pair.row || diagramMetricCurrentRow(container, hover, snapshot);
+  if (!row) return;
+  const hoverKey = String(hover?.key || "");
+  ensureMeasurementHistoryForRow(row).then((changed) => {
+    const current = diagramInteractionCache.get(container);
+    if (
+      changed
+      && current === interaction
+      && String(current?.hover?.key || "") === hoverKey
+      && !current?.tooltip?.hidden
+    ) {
+      refreshDiagramTooltip(container, current.snapshot || state.snapshot || {});
+    }
+  });
 }
 
 function diagramMeasurementValueWithUnit(text, unit) {
@@ -5619,7 +5863,7 @@ async function saveDiagramMeasurementDefinitionEdit(container) {
   }
   const requestedModelId = state.activeModelId;
   interaction.definitionSaving = true;
-  interaction.definitionMessage = "正在更新学员台后台定义并保存 E 文件";
+  interaction.definitionMessage = "正在更新学员台后台定义并保存人工覆盖层";
   interaction.definitionMessageWarning = false;
   renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
   try {
@@ -5646,10 +5890,8 @@ async function saveDiagramMeasurementDefinitionEdit(container) {
     interaction.definitionSaving = false;
     const resultWarning = definitionEditResultHasWarning(result);
     interaction.definitionMessage = resultWarning
-      ? (result.warning || (result.persisted
-        ? "meas.e 已保存，但人工修改记录未保存，请重试"
-        : "学员台后台定义已更新，但 meas.e 保存失败"))
-      : "学员台后台定义及 meas.e 已保存";
+      ? (result.warning || "学员台后台定义已更新，但人工覆盖层保存未完成，请重试")
+      : "学员台后台定义及人工覆盖层已保存";
     interaction.definitionMessageWarning = resultWarning;
     interaction.tooltip?.classList.remove("is-editing-definition");
     renderActiveDiagramTooltip(container, state.snapshot || {}, interaction);
@@ -5681,9 +5923,10 @@ function renderDiagramMetricTooltip(container, hover, snapshot, interaction) {
     <div class="diagram-trend-tabs" role="tablist" aria-label="量测趋势范围">
       <button type="button" data-diagram-trend-period="hour" class="${data.period === "hour" ? "is-active" : ""}" aria-selected="${data.period === "hour"}">小时曲线</button>
       <button type="button" data-diagram-trend-period="day" class="${data.period === "day" ? "is-active" : ""}" aria-selected="${data.period === "day"}">日曲线</button>
+      ${diagramTrendNavigationHtml(data.trendRange)}
     </div>
     <div class="diagram-trend-content" data-diagram-trend-content>
-      ${diagramTrendChartHtml(data.windowPoints, data.period, interaction.tooltip?.clientWidth || 360, data.endMinute, data.unit, interaction)}
+      ${diagramTrendChartHtml(data.windowPoints, data.period, interaction.tooltip?.clientWidth || 360, data.endMinute, data.unit, interaction, data.trendRange)}
     </div>`;
 }
 
@@ -5732,6 +5975,7 @@ function updateDiagramMetricTooltip(container, hover, snapshot, interaction) {
     button.classList.toggle("is-active", selected);
     button.setAttribute("aria-selected", String(selected));
   });
+  if (!syncDiagramTrendNavigation(tooltip, data.trendRange)) return false;
   return updateDiagramTrendChart(
     content,
     data.windowPoints,
@@ -5740,6 +5984,7 @@ function updateDiagramMetricTooltip(container, hover, snapshot, interaction) {
     data.endMinute,
     data.unit,
     interaction,
+    data.trendRange,
   );
 }
 
@@ -5778,6 +6023,8 @@ function hideDiagramTooltip(container) {
   clearDiagramTooltipHide(interaction);
   interaction.hover = null;
   interaction.tooltipPositionKey = "";
+  interaction.trendPeriodOffsets = { hour: 0, day: 0 };
+  interaction.trendNavigationRange = null;
   hideDiagramTrendCursor(interaction);
   interaction.trendChart = null;
   if (interaction.tooltip) {
@@ -5814,6 +6061,9 @@ function renderActiveDiagramTooltip(container, snapshot, interaction) {
   tooltip.classList.add("is-visible");
   tooltip.classList.toggle("is-editing-definition", diagramDefinitionEditPinned(interaction));
   positionDiagramTooltip(interaction);
+  if (hover.kind === "metric") {
+    ensureDiagramMetricMeasurementHistory(container, hover, snapshot, interaction);
+  }
   return true;
 }
 
@@ -5830,6 +6080,9 @@ function refreshDiagramTooltip(container, snapshot = state.snapshot || {}) {
   const updated = interaction.hover.kind === "metric"
     ? updateDiagramMetricTooltip(container, interaction.hover, snapshot, interaction)
     : updateDiagramDeviceTooltip(container, interaction.hover, snapshot, interaction);
+  if (interaction.hover.kind === "metric") {
+    ensureDiagramMetricMeasurementHistory(container, interaction.hover, snapshot, interaction);
+  }
   if (!updated) renderActiveDiagramTooltip(container, snapshot, interaction);
 }
 
@@ -5844,6 +6097,8 @@ function resetDiagramInteractions(container) {
     interaction.hover = null;
     interaction.snapshot = null;
     interaction.tooltipPositionKey = "";
+    interaction.trendPeriodOffsets = { hour: 0, day: 0 };
+    interaction.trendNavigationRange = null;
     interaction.definitionEditor = null;
     interaction.definitionSaving = false;
     interaction.definitionMessage = "";
@@ -6052,6 +6307,10 @@ function initDiagramInteractions(container) {
       return;
     }
     clearDiagramTooltipHide(interaction);
+    if (String(interaction.hover?.key || "") !== String(nextHover.key || "")) {
+      interaction.trendPeriodOffsets = { hour: 0, day: 0 };
+      interaction.trendNavigationRange = null;
+    }
     interaction.hover = nextHover;
     if (tooltipAction === "refresh") {
       refreshDiagramTooltip(container, interaction.snapshot || state.snapshot || {});
@@ -6159,6 +6418,23 @@ function initDiagramInteractions(container) {
       } else {
         saveDiagramDeviceDefinitionEdit(container);
       }
+      return;
+    }
+    const navigationButton = target.closest("[data-diagram-trend-action]");
+    if (navigationButton && !navigationButton.disabled) {
+      const period = interaction.trendPeriod === "day" ? "day" : "hour";
+      const currentOffset = Number(interaction.trendNavigationRange?.windowOffset)
+        || Number(interaction.trendPeriodOffsets?.[period])
+        || 0;
+      const action = navigationButton.getAttribute("data-diagram-trend-action") || "";
+      const nextOffset = action === "previous"
+        ? currentOffset - 1
+        : action === "next" ? currentOffset + 1 : 0;
+      interaction.trendPeriodOffsets = {
+        ...(interaction.trendPeriodOffsets || { hour: 0, day: 0 }),
+        [period]: Math.min(0, nextOffset),
+      };
+      refreshDiagramTooltip(container, interaction.snapshot || state.snapshot || {});
       return;
     }
     const button = target.closest("[data-diagram-trend-period]");
@@ -6450,12 +6726,124 @@ async function reloadLocalDefinitionSnapshotAfterEdit(modelId = state.activeMode
   return true;
 }
 
+function traineeRuntimeSignalKey(devType, devName, measType = "") {
+  return [
+    normalizeDiagramMeasurementToken(devType),
+    String(devName || "").trim(),
+    normalizeDiagramMeasurementToken(measType),
+  ].join("\u0000");
+}
+
+function traineeRuntimeSignalField(measType) {
+  const token = normalizeDiagramMeasurementToken(measType);
+  if (token === "RUN_STAT") return "run_stat";
+  if (token === "STATUS") return "status";
+  return "";
+}
+
+function traineeRuntimeSignalValue(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? (number > 0.5 ? 1 : 0) : null;
+}
+
+function traineeRuntimeSignalDisplayValue(device, field, fallback = "--") {
+  const signal = device?.runtime_signals?.[field];
+  if (!signal) return fallback;
+  const value = traineeRuntimeSignalValue(signal.value);
+  if (value === null) return signal.valid === false ? "--（遥信无效）" : fallback;
+  return signal.valid === false || signal.stale ? `${value}（遥信无效）` : value;
+}
+
+function applyTraineeObservedRuntimeSignals(snapshot = {}) {
+  const devices = Array.isArray(snapshot.devices) ? snapshot.devices : [];
+  const deviceStates = Array.isArray(snapshot.device_states) ? snapshot.device_states : [];
+  const scadaRows = Array.isArray(snapshot.measurements?.scada) ? snapshot.measurements.scada : [];
+  const observedByKey = new Map();
+
+  scadaRows.forEach((row) => {
+    const field = traineeRuntimeSignalField(row?.meas_type);
+    const devType = String(row?.dev_type || "").trim();
+    const devName = String(row?.dev_name || "").trim();
+    if (!field || !devType || !devName) return;
+    const value = traineeRuntimeSignalValue(row?.value);
+    const valid = Number(row?.valid ?? 1) !== 0 && value !== null;
+    observedByKey.set(traineeRuntimeSignalKey(devType, devName, row.meas_type), {
+      field,
+      value,
+      valid,
+      stale: !valid,
+      updated_simu_time: row?.updated_simu_time ?? null,
+      updated_wall_time: row?.updated_wall_time ?? null,
+      updated_absolute_minute: row?.updated_absolute_minute ?? null,
+    });
+  });
+
+  const deviceByKey = new Map();
+  devices.forEach((device) => {
+    const devType = String(device?.dev_type || "").trim();
+    const devName = String(device?.dev_name || device?.name || "").trim();
+    if (!devType || !devName) return;
+    const deviceKey = traineeRuntimeSignalKey(devType, devName);
+    deviceByKey.set(deviceKey, device);
+    const runtimeSignals = { ...(device.runtime_signals || {}) };
+
+    ["RUN_STAT", "STATUS"].forEach((measType) => {
+      const field = traineeRuntimeSignalField(measType);
+      const observed = observedByKey.get(traineeRuntimeSignalKey(devType, devName, measType));
+      const previous = runtimeSignals[field];
+      if (observed?.valid) {
+        runtimeSignals[field] = observed;
+        device[field] = observed.value;
+        return;
+      }
+      if (observed && previous && traineeRuntimeSignalValue(previous.value) !== null) {
+        runtimeSignals[field] = {
+          ...previous,
+          valid: false,
+          stale: true,
+          updated_simu_time: observed.updated_simu_time,
+          updated_wall_time: observed.updated_wall_time,
+          updated_absolute_minute: observed.updated_absolute_minute,
+        };
+        device[field] = traineeRuntimeSignalValue(previous.value);
+        return;
+      }
+      if (observed) {
+        runtimeSignals[field] = observed;
+        return;
+      }
+      if (previous && traineeRuntimeSignalValue(previous.value) !== null) {
+        device[field] = traineeRuntimeSignalValue(previous.value);
+      }
+    });
+
+    if (Object.keys(runtimeSignals).length) device.runtime_signals = runtimeSignals;
+  });
+
+  deviceStates.forEach((deviceState) => {
+    const devType = String(deviceState?.dev_type || "").trim();
+    const devName = String(deviceState?.dev_name || deviceState?.name || "").trim();
+    if (!devType || !devName) return;
+    const device = deviceByKey.get(traineeRuntimeSignalKey(devType, devName));
+    const cached = device?.runtime_signals?.run_stat;
+    const observed = observedByKey.get(traineeRuntimeSignalKey(devType, devName, "RUN_STAT"));
+    if (observed?.valid) {
+      deviceState.run_stat = observed.value;
+      return;
+    }
+    const cachedValue = traineeRuntimeSignalValue(cached?.value);
+    if (cachedValue !== null) deviceState.run_stat = cachedValue;
+  });
+
+  return snapshot;
+}
+
 function mergeTeacherRuntimeDevices(localDevices = [], remoteDevices = []) {
   const remoteByKey = new Map((remoteDevices || []).map((device) => ([
     `${String(device?.dev_type || "").trim()}\u0000${String(device?.dev_name || device?.name || "").trim()}`,
     device,
   ])));
-  const runtimeFields = ["run_stat", "status", "mode", "set_values", "soc_curr"];
+  const runtimeFields = ["run_stat", "status", "mode", "set_values", "soc_curr", "runtime_signals"];
   return (localDevices || []).map((localDevice) => {
     const key = `${String(localDevice?.dev_type || "").trim()}\u0000${String(localDevice?.dev_name || localDevice?.name || "").trim()}`;
     const remoteDevice = remoteByKey.get(key);
@@ -6911,18 +7299,27 @@ async function startReceiveMode() {
   try {
     const local = await ensureLocalDefinitionSnapshot(activeModelIdBeforeReceive);
     state.snapshot = local.snapshot;
+    state.measurementDeltaSeq = 0;
+    state.measurementTraceHistory = [];
+    resetChartPeriodOffsets("measurementTrace");
+    state.lastMeasurementTraceKey = "";
+    resetMeasurementHistoryHydration();
+    state.commandTraceHistory = [];
+    resetChartPeriodOffsets("commandTrace");
+    state.renewableTrendHistory = [];
+    resetChartPeriodOffsets("renewableTrend");
+    state.lastReceiveAt = "";
+    state.snapshotSource = "";
+    state.lastTeacherSnapshotLogKey = "";
+    persistActiveModelContext();
+    drawMeasurementTraceChart();
+    drawCommandTraceChart();
+    drawRenewableTrendChart();
     await setTraineeReceiveActive(activeModelIdBeforeReceive, true);
     state.receiveMode = true;
     state.frozen = false;
     state.receiveEpoch += 1;
     resetReceiveIssueStreak();
-    state.measurementDeltaSeq = 0;
-    state.measurementTraceHistory = [];
-    state.lastMeasurementTraceKey = "";
-    state.commandTraceHistory = [];
-    state.lastReceiveAt = "";
-    state.snapshotSource = "";
-    state.lastTeacherSnapshotLogKey = "";
     persistActiveModelContext();
     addRuntimeLog(
       "接收模式",
@@ -6971,9 +7368,13 @@ async function initializeModelFromLink() {
     resetReceiveIssueStreak();
     state.measurementDeltaSeq = 0;
     state.measurementTraceHistory = [];
+    resetChartPeriodOffsets("measurementTrace");
     state.lastMeasurementTraceKey = "";
+    resetMeasurementHistoryHydration();
     state.commandTraceHistory = [];
+    resetChartPeriodOffsets("commandTrace");
     state.renewableTrendHistory = [];
+    resetChartPeriodOffsets("renewableTrend");
     state.lastReceiveAt = "";
     state.snapshot = null;
     state.snapshotSource = "local";
@@ -7835,6 +8236,7 @@ async function setActiveModel(modelId, shouldRefresh = true) {
   state.activeModelId = nextId;
   localStorage.setItem("polarTraineeModelId", nextId);
   restoreModelContext(nextId);
+  resetMeasurementHistoryHydration();
   resetReceiveIssueStreak();
   pending.run_status.clear();
   pending.set_values.clear();
@@ -7859,6 +8261,9 @@ async function setActiveModel(modelId, shouldRefresh = true) {
   state.chartCursors = {};
   state.chartSeriesHitData = {};
   state.chartPlotInfo = {};
+  resetChartPeriodOffsets("measurementTrace");
+  resetChartPeriodOffsets("commandTrace");
+  resetChartPeriodOffsets("renewableTrend");
   state.measurementFilter = { dev_type: "all", dev_name: "" };
   state.controlFilter = { dev_type: "all", dev_name: "" };
   state.activeControlTab = "remote-control";
@@ -8001,6 +8406,7 @@ async function refreshFromTeacher(epoch = state.receiveEpoch) {
 }
 
 function renderSnapshot(snapshot) {
+  applyTraineeObservedRuntimeSignals(snapshot);
   state.snapshot = snapshot;
   if (state.snapshotSource !== "teacher" && snapshot.model?.id && snapshot.model.id !== state.activeModelId) {
     state.activeModelId = snapshot.model.id;
@@ -8015,9 +8421,13 @@ function renderSnapshot(snapshot) {
   );
   if (traceLifecycleChanged) {
     state.measurementTraceHistory = [];
+    resetChartPeriodOffsets("measurementTrace");
     state.lastMeasurementTraceKey = "";
+    resetMeasurementHistoryHydration();
     state.commandTraceHistory = [];
+    resetChartPeriodOffsets("commandTrace");
     state.renewableTrendHistory = [];
+    resetChartPeriodOffsets("renewableTrend");
     state.selectedMeasurementKey = "";
   }
   state.traceRunId = runId;
@@ -8028,6 +8438,7 @@ function renderSnapshot(snapshot) {
   syncCommandHistoryLogs(snapshot.commands?.history || []);
   updatePendingCount();
   renderActiveTraineePage(snapshot);
+  ensureSelectedMeasurementHistory();
   refreshDiagramDeviceCommandDialog(snapshot);
   refreshRemoteControlDialog(snapshot);
   refreshRemoteAdjustmentDialog(snapshot);
@@ -8175,12 +8586,12 @@ function currentWeatherLoad(snapshot = state.snapshot || {}) {
   }
   const windMeasurement = weatherMeasurementState(snapshot, "WIND_SPEED");
   const solarMeasurement = weatherMeasurementState(snapshot, "SOLAR_IRRADIANCE");
-  const windSpeed = windMeasurement.present
+  const windSpeed = windMeasurement.valid && Number.isFinite(windMeasurement.value)
     ? windMeasurement.value
     : weather.length
       ? interpolateCurve(weather, minute, "wind_speed_mps", null)
       : optionalNumber(boundaryPoint.wind_speed_mps);
-  const solarIrradiance = solarMeasurement.present
+  const solarIrradiance = solarMeasurement.valid && Number.isFinite(solarMeasurement.value)
     ? solarMeasurement.value
     : weather.length
       ? interpolateCurve(weather, minute, "solar_irradiance_w_m2", null)
@@ -8260,7 +8671,7 @@ function overviewFallbackFlowGroups(power) {
     acWind: { power: power.wind },
     dcSolar: { power: power.solar },
     dcGridFormingStorage: { power: power.storage, soc: power.soc },
-    acdcConverter: { power: Number.isFinite(power.greenPower) ? -power.greenPower : null },
+    acdcConverter: { power: null },
     acLoad: { power: power.load },
     diesel: { power: power.diesel },
   };
@@ -8281,8 +8692,8 @@ function overviewFlowState(category, power) {
   }
   if (category === "converter") {
     return power > 0
-      ? { status: "dcToAc", flowDirection: "toAc" }
-      : { status: "acToDc", flowDirection: "toDc" };
+      ? { status: "acToDc", flowDirection: "toDc" }
+      : { status: "dcToAc", flowDirection: "toAc" };
   }
   return power > 0
     ? { status: "generation", flowDirection: "toBus" }
@@ -8323,6 +8734,8 @@ function normalizeOverviewFlowGroups(rawGroups, power) {
       color: definition.color,
       present: totalCount > 0,
       power: groupPower,
+      targetPower: powerSummaryNumber(data.targetPower ?? fallbackData.targetPower),
+      maxAvailablePower: powerSummaryNumber(data.maxAvailablePower ?? fallbackData.maxAvailablePower),
       soc: powerSummaryNumber(data.soc ?? fallbackData.soc),
       totalCount,
       onlineCount,
@@ -8397,6 +8810,31 @@ function overviewPercentText(value) {
   return Number.isFinite(value) ? `${formatOverviewNumber(value)}%` : "--";
 }
 
+function overviewGreenGroupPower(groups, key) {
+  const group = groups?.[key];
+  if (!group || group.present === false) return 0;
+  return Number.isFinite(group.power) ? Number(group.power) : null;
+}
+
+function overviewGreenMetrics(power = {}) {
+  const groups = power.flowGroups || {};
+  const dcLoadPower = overviewGreenGroupPower(groups, "dcLoad");
+  const acLoadPower = overviewGreenGroupPower(groups, "acLoad");
+  const dieselPower = overviewGreenGroupPower(groups, "diesel");
+  if ([dcLoadPower, acLoadPower, dieselPower].some((value) => value === null)) {
+    return { loadPower: null, greenPower: null, greenPowerShare: null };
+  }
+  const loadPower = dcLoadPower + acLoadPower;
+  const greenPower = loadPower - dieselPower;
+  return {
+    loadPower,
+    greenPower,
+    greenPowerShare: Math.abs(loadPower) > 1e-9
+      ? (greenPower / loadPower) * 100.0
+      : null,
+  };
+}
+
 function overviewFlowPowerValue(value) {
   const number = Math.abs(Number(value));
   return Number.isFinite(number) ? number : 0;
@@ -8463,9 +8901,7 @@ function renderOverviewFlowGroups(power) {
     .map((definition) => groups[definition.key])
     .filter((group) => group?.present);
   const maxPower = Math.max(1, ...visibleGroups.map((group) => overviewFlowPowerValue(group.power)));
-  const greenPowerShare = Number.isFinite(power.diesel) && Number.isFinite(power.load) && Math.abs(power.load) > 1e-9
-    ? (1.0 - power.diesel / power.load) * 100.0
-    : null;
+  const { greenPowerShare } = overviewGreenMetrics(power);
 
   OVERVIEW_FLOW_GROUP_DEFINITIONS.forEach((definition) => {
     const group = groups[definition.key] || { present: false };
@@ -8478,10 +8914,23 @@ function renderOverviewFlowGroups(power) {
     node.dataset.flowDirection = group.flowDirection;
     node.dataset.operatingState = group.status;
     const powerNode = node.querySelector("[data-overview-power]");
+    const targetNode = node.querySelector("[data-overview-target]");
+    const maxAvailableNode = node.querySelector("[data-overview-max-available]");
     const metaNode = node.querySelector("[data-overview-meta]");
     if (powerNode) powerNode.textContent = overviewPowerText(group.power);
+    if (targetNode) targetNode.textContent = overviewPowerText(group.targetPower);
+    if (maxAvailableNode) maxAvailableNode.textContent = overviewPowerText(group.maxAvailablePower);
     if (metaNode) metaNode.textContent = overviewFlowGroupMeta(group);
-    node.title = `${node.querySelector("span")?.textContent || "设备"} · ${overviewFlowGroupMeta(group)}`;
+    const tooltipParts = [
+      node.querySelector("span")?.textContent || "设备",
+      `当前 ${overviewPowerText(group.power)}`,
+      `目标 ${overviewPowerText(group.targetPower)}`,
+    ];
+    if (["dcWind", "dcSolar", "acWind", "acSolar"].includes(definition.key)) {
+      tooltipParts.push(`最大可发 ${overviewPowerText(group.maxAvailablePower)}`);
+    }
+    tooltipParts.push(overviewFlowGroupMeta(group));
+    node.title = tooltipParts.join(" · ");
     const flowPower = group.flowDirection === "idle" ? 0 : group.power;
     const color = definition.category === "load" ? overviewLoadFlowColor(greenPowerShare) : definition.color;
     setOverviewFlowVisualElement(node, flowPower, maxPower, color);
@@ -8993,10 +9442,7 @@ function renderTraineeOverviewDashboard(snapshot) {
   setOverviewText("teacherLoad", overviewPowerText(weather.loadKw));
   setOverviewText("teacherWeatherTime", overviewClockText(snapshot));
 
-  const greenPower = Number.isFinite(power.greenPower) ? -power.greenPower : null;
-  const greenPowerShare = Number.isFinite(power.diesel) && Number.isFinite(power.load) && Math.abs(power.load) > 1e-9
-    ? (1.0 - power.diesel / power.load) * 100.0
-    : null;
+  const { greenPower, greenPowerShare } = overviewGreenMetrics(power);
   setOverviewText("overviewFlowGreenPower", overviewPowerText(greenPower));
   setOverviewText("overviewFlowGreenShare", overviewPercentText(greenPowerShare));
   renderOverviewFlowGroups(power);
@@ -9087,6 +9533,11 @@ function curveDisplayModeDayCount(mode = curveDisplayMode()) {
   return 1;
 }
 
+function curveDisplayModeDurationMinutes(snapshot = state.snapshot || {}) {
+  const mode = curveDisplayMode(snapshot);
+  return CURVE_DISPLAY_MODES[mode]?.durationMinutes || CURVE_DISPLAY_MODES.day.durationMinutes;
+}
+
 function curveDisplayModeLabel(snapshot = state.snapshot || {}) {
   return CURVE_DISPLAY_MODES[curveDisplayMode(snapshot)]?.label || CURVE_DISPLAY_MODES.day.label;
 }
@@ -9131,7 +9582,10 @@ function curveDisplayLoadName(key) {
 function curveDisplayLoads(snapshot = state.snapshot || {}) {
   const names = new Set(Object.keys(snapshot.curves?.loads || {}));
   (snapshot.devices || []).forEach((dev) => {
-    if (["ACLoad", "DCLoad"].includes(deviceType(dev)) && deviceName(dev)) {
+    if ((
+      deviceFamily(dev) === "load"
+      || ["ACLoad", "DCLoad"].includes(deviceModelBlock(dev))
+    ) && deviceName(dev)) {
       names.add(deviceName(dev));
     }
   });
@@ -9878,7 +10332,9 @@ function hideCurveDisplayCursor() {
 
 function estimateLoadFromDevices(devices) {
   return (devices || []).reduce((total, dev) => {
-    if (!["ACLoad", "DCLoad"].includes(deviceType(dev)) || !isDeviceOnline(dev)) return total;
+    const isLoad = deviceFamily(dev) === "load"
+      || ["ACLoad", "DCLoad"].includes(deviceModelBlock(dev));
+    if (!isLoad || !isDeviceOnline(dev)) return total;
     const raw = dev.raw || {};
     const values = dev.set_values || {};
     return total + toNumber(values.p_set ?? raw.pv0 ?? raw.p_set ?? 0, 0);
@@ -9920,7 +10376,7 @@ function indexedDevice(snapshot, devType, index) {
   const target = String(index ?? "").trim();
   if (!target) return null;
   return (snapshot.devices || []).find((dev) => (
-    deviceType(dev) === devType && String(deviceIndex(dev)).trim() === target
+    deviceModelBlock(dev) === devType && String(deviceIndex(dev)).trim() === target
   )) || null;
 }
 
@@ -9971,20 +10427,6 @@ function storageSocRatiosByDevice(snapshot) {
   if (linkedStorageCount) {
     return ratios;
   }
-
-  const legacyDevices = new Map((snapshot.devices || [])
-    .filter((dev) => deviceType(dev) === "ESS")
-    .map((dev) => [deviceName(dev), dev]));
-  parameterRows(snapshot, "estorage").forEach((param) => {
-    const name = parameterName(param);
-    const dev = legacyDevices.get(name);
-    const key = `ESS|${name}`;
-    const soc = liveStorageSocRatio(
-      measured.get(key) ?? dev?.soc_curr ?? dev?.raw?.soc_curr,
-      null,
-    );
-    if (Number.isFinite(soc)) ratios.set(key, soc);
-  });
   return ratios;
 }
 
@@ -10073,6 +10515,7 @@ function resetRenewableControlView(modelId = state.activeModelId) {
     lastControlLogRenderKey: "",
   });
   state.renewableTrendHistory = [];
+  if (state.chartPeriodOffsets) state.chartPeriodOffsets.renewableTrend = 0;
 }
 
 function renewableDataSourceLabel(source = "") {
@@ -10169,9 +10612,29 @@ function applyRenewableControlState(payload = {}) {
     intervalSeconds: Math.max(1, toNumber(settings.intervalSeconds, control.intervalSeconds || 2)),
     largeStepThresholdKw: Math.max(0, toNumber(settings.largeStepThresholdKw, control.largeStepThresholdKw || 10)),
     stepCoefficient: Math.max(0, toNumber(settings.renewableStepRatio ?? settings.stepCoefficient, control.stepCoefficient || 0.03)),
-    converterStepRatio: Math.max(0, toNumber(settings.converterStepRatio, control.converterStepRatio || 0.03)),
-    dieselDeadbandRatio: Math.max(0, toNumber(settings.dieselDeadbandRatio, control.dieselDeadbandRatio || 0.03)),
+    storageStepRatio: Math.max(0, toNumber(settings.storageStepRatio, control.storageStepRatio || 0.03)),
+    gridFormingStorageProtectionRatio: Math.max(0, toNumber(
+      settings.gridFormingStorageProtectionRatio
+        ?? (Number.isFinite(Number(settings.storageSwitchDeadbandKw))
+          ? Number(settings.storageSwitchDeadbandKw) / 100
+          : undefined),
+      control.gridFormingStorageProtectionRatio || 0.05,
+    )),
+    dieselPowerProtectionRatio: Math.max(0, toNumber(
+      settings.dieselPowerProtectionRatio ?? settings.dieselDeadbandRatio,
+      control.dieselPowerProtectionRatio || 0.03,
+    )),
     socDeadband: Math.max(0, toNumber(settings.socDeadband, control.socDeadband || 0.05)),
+    optimizationRenewableCurtailmentWeight: Math.max(0, toNumber(settings.optimizationRenewableCurtailmentWeight, control.optimizationRenewableCurtailmentWeight || 1)),
+    optimizationDieselOutputWeight: Math.max(0, toNumber(settings.optimizationDieselOutputWeight, control.optimizationDieselOutputWeight || 1)),
+    optimizationCurtailmentSquareWeight: Math.max(0, toNumber(settings.optimizationCurtailmentSquareWeight, control.optimizationCurtailmentSquareWeight || 0.000001)),
+    optimizationSourceStorageAdjustmentSquareWeight: Math.max(0, toNumber(settings.optimizationSourceStorageAdjustmentSquareWeight, control.optimizationSourceStorageAdjustmentSquareWeight || 0.000001)),
+    optimizationBalanceDeltaSquareWeight: Math.max(0, toNumber(settings.optimizationBalanceDeltaSquareWeight, control.optimizationBalanceDeltaSquareWeight || 10000)),
+    optimizationBalanceDeltaWarningKw: Math.max(0, toNumber(settings.optimizationBalanceDeltaWarningKw, control.optimizationBalanceDeltaWarningKw || 1)),
+    optimizationBalanceToleranceKw: Math.max(0, toNumber(settings.optimizationBalanceToleranceKw, control.optimizationBalanceToleranceKw || 0.1)),
+    optimizationBoundToleranceKw: Math.max(0, toNumber(settings.optimizationBoundToleranceKw, control.optimizationBoundToleranceKw || 0.1)),
+    optimizationFtol: Math.max(0, toNumber(settings.optimizationFtol, control.optimizationFtol || 0.001)),
+    optimizationMaxIterations: Math.max(1, Math.round(toNumber(settings.optimizationMaxIterations, control.optimizationMaxIterations || 100))),
     commandValidMinutes: Math.max(0.1, toNumber(settings.commandValidMinutes, control.commandValidMinutes || 120)),
     storageChargeDeratingCurve: normalizeStorageDeratingCurve(
       settings.storageChargeDeratingCurve,
@@ -10493,11 +10956,18 @@ function renewableTrendWindowRange() {
   const history = state.renewableTrendHistory || [];
   const windowMinutes = Math.max(1, Number(state.renewableTrendWindowMinutes) || 60);
   const fallbackMinute = Number(state.snapshot?.clock?.absolute_minute ?? state.snapshot?.clock?.minute ?? 0) || 0;
-  return alignedTraceWindowRange(history, windowMinutes, fallbackMinute);
+  const range = alignedTraceWindowRange(
+    history,
+    windowMinutes,
+    fallbackMinute,
+    chartPeriodOffset("renewableTrend"),
+    curveDisplayModeDurationMinutes(),
+  );
+  setChartPeriodOffset("renewableTrend", range.windowOffset);
+  return range;
 }
 
-function renewableTrendWindowPoints() {
-  const range = renewableTrendWindowRange();
+function renewableTrendWindowPoints(range = renewableTrendWindowRange()) {
   return (state.renewableTrendHistory || []).filter((point) => (
     point.minute >= range.startMinute && point.minute <= range.endMinute
   ));
@@ -10585,7 +11055,7 @@ function renderRenewableMetricAvailability(metrics = {}) {
 function renderRenewableTrendSeriesTree() {
   const container = $("renewableTrendSeriesGroups");
   if (!container || container.dataset.rendered === "true") return;
-  container.innerHTML = RENEWABLE_TREND_SCOPE_DEFS.map((scope) => {
+  const treeHtml = RENEWABLE_TREND_SCOPE_DEFS.map((scope) => {
     const devices = [];
     RENEWABLE_TREND_SERIES_DEFS
       .filter((series) => series.scope === scope.key)
@@ -10601,11 +11071,20 @@ function renderRenewableTrendSeriesTree() {
       const seriesHtml = device.series.map((series) => {
         const checked = RENEWABLE_TREND_DEFAULT_VISIBLE_SERIES.has(series.key) ? " checked" : "";
         const styleClass = `is-${series.style || "power"}`;
+        const searchText = [
+          scope.label,
+          device.label,
+          series.curveLabel,
+          series.label,
+          series.key,
+          series.metricId,
+        ].filter(Boolean).join(" ");
         return `
           <label
             class="renewable-trend-series-item"
             data-renewable-series-group="${escapeHtml(series.group)}"
             data-renewable-series-metric="${escapeHtml(series.metricId)}"
+            data-renewable-series-search="${escapeHtml(searchText)}"
             title="${escapeHtml(series.label)}"
           >
             <input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="${escapeHtml(series.key)}"${checked} />
@@ -10629,6 +11108,9 @@ function renderRenewableTrendSeriesTree() {
       </details>
     `;
   }).join("");
+  container.innerHTML = `${treeHtml}
+    <div id="renewableTrendSeriesEmpty" class="renewable-trend-series-empty" hidden>没有匹配的曲线</div>
+  `;
   container.dataset.rendered = "true";
 }
 
@@ -10647,14 +11129,138 @@ function renewableTrendSeriesAvailable(series = {}, metrics = {}) {
   return renewableMetricGroupAvailable(metrics, series.group || "");
 }
 
+function renewableTrendSeriesFilterText(value) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .trim()
+    .toLocaleLowerCase("zh-CN");
+}
+
+function renewableTrendBatchSeriesInputs(metrics = {}) {
+  renderRenewableTrendSeriesTree();
+  const query = renewableTrendSeriesFilterText(state.renewableTrendSeriesFilter);
+  return Array.from(document.querySelectorAll(".renewable-trend-series-item"))
+    .map((item) => {
+      const input = item.querySelector('input[data-chart-toggle="renewableTrend"]');
+      const available = renewableMetricGroupAvailable(
+        metrics,
+        item.dataset.renewableSeriesGroup || "",
+      );
+      const searchText = renewableTrendSeriesFilterText(item.dataset.renewableSeriesSearch || "");
+      const keywordMatches = !query || searchText.includes(query);
+      return input && available && keywordMatches ? input : null;
+    })
+    .filter(Boolean);
+}
+
+function setRenewableTrendBatchSeriesVisibility(visible, metrics = {}) {
+  const chartKey = "renewableTrend";
+  const inputs = renewableTrendBatchSeriesInputs(metrics);
+  if (!inputs.length) {
+    applyRenewableTrendSeriesFilters(metrics);
+    return;
+  }
+  const hidden = chartHiddenSet(chartKey);
+  inputs.forEach((input) => {
+    const seriesKey = input.dataset.chartSeries || "";
+    if (!seriesKey) return;
+    if (visible) hidden.delete(seriesKey);
+    else hidden.add(seriesKey);
+  });
+  state.chartSeriesHidden = {
+    ...(state.chartSeriesHidden || {}),
+    [chartKey]: Array.from(hidden),
+  };
+
+  const selectedKey = selectedChartSeriesKey(chartKey);
+  if (visible && (!selectedKey || hidden.has(selectedKey))) {
+    state.chartSeriesSelected = {
+      ...(state.chartSeriesSelected || {}),
+      [chartKey]: inputs[0].dataset.chartSeries || "",
+    };
+  } else if (!visible && inputs.some((input) => input.dataset.chartSeries === selectedKey)) {
+    const fallback = RENEWABLE_TREND_SERIES_DEFS.find((series) => (
+      renewableTrendSeriesAvailable(series, metrics) && !hidden.has(series.key)
+    ));
+    state.chartSeriesSelected = {
+      ...(state.chartSeriesSelected || {}),
+      [chartKey]: fallback?.key || "",
+    };
+  }
+  syncChartLegendButtons(chartKey);
+  drawRenewableTrendChart();
+}
+
+function applyRenewableTrendSeriesFilters(metrics = {}) {
+  renderRenewableTrendSeriesTree();
+  const filterInput = $("renewableTrendSeriesFilter");
+  const selectedOnlyInput = $("renewableTrendSelectedOnly");
+  const clearAllButton = $("renewableTrendClearAll");
+  const selectAllButton = $("renewableTrendSelectAll");
+  const query = renewableTrendSeriesFilterText(state.renewableTrendSeriesFilter);
+  const selectedOnly = Boolean(state.renewableTrendSelectedOnly);
+  if (filterInput && filterInput.value !== state.renewableTrendSeriesFilter) {
+    filterInput.value = state.renewableTrendSeriesFilter;
+  }
+  if (selectedOnlyInput) selectedOnlyInput.checked = selectedOnly;
+
+  const items = Array.from(document.querySelectorAll(".renewable-trend-series-item"));
+  let visibleCount = 0;
+  items.forEach((item) => {
+    const input = item.querySelector('input[data-chart-toggle="renewableTrend"]');
+    const available = renewableMetricGroupAvailable(
+      metrics,
+      item.dataset.renewableSeriesGroup || "",
+    );
+    const searchText = renewableTrendSeriesFilterText(item.dataset.renewableSeriesSearch || "");
+    if (!input) {
+      item.hidden = true;
+      return;
+    }
+    const keywordMatches = !query || searchText.includes(query);
+    const selectionMatches = !selectedOnly || input.checked;
+    item.hidden = !available || !keywordMatches || !selectionMatches;
+    if (!item.hidden) visibleCount += 1;
+  });
+
+  const batchInputs = renewableTrendBatchSeriesInputs(metrics);
+  const batchSelectedCount = batchInputs.filter((input) => input.checked).length;
+  if (clearAllButton) {
+    clearAllButton.disabled = batchInputs.length === 0 || batchSelectedCount === 0;
+  }
+  if (selectAllButton) {
+    selectAllButton.disabled = batchInputs.length === 0 || batchSelectedCount === batchInputs.length;
+  }
+
+  const filterActive = Boolean(query || selectedOnly);
+  document.querySelectorAll(".renewable-trend-series-device").forEach((device) => {
+    const hasVisibleSeries = Array.from(device.querySelectorAll(".renewable-trend-series-item"))
+      .some((item) => !item.hidden);
+    device.hidden = !hasVisibleSeries;
+    if (hasVisibleSeries && filterActive) device.open = true;
+  });
+  document.querySelectorAll(".renewable-trend-series-group").forEach((scope) => {
+    const hasVisibleDevice = Array.from(scope.querySelectorAll(".renewable-trend-series-device"))
+      .some((device) => !device.hidden);
+    scope.hidden = !hasVisibleDevice;
+    if (hasVisibleDevice && filterActive) scope.open = true;
+  });
+
+  const empty = $("renewableTrendSeriesEmpty");
+  if (empty) {
+    empty.textContent = filterActive ? "没有匹配的曲线" : "暂无可用曲线";
+    empty.hidden = visibleCount > 0;
+  }
+}
+
 function renderRenewableTrendSeriesAvailability(metrics = {}) {
   renderRenewableTrendSeriesTree();
   const chartKey = "renewableTrend";
   const items = Array.from(document.querySelectorAll(".renewable-trend-series-item"));
+  const availableInputs = [];
   items.forEach((item) => {
     const group = item.dataset.renewableSeriesGroup || "";
     const available = renewableMetricGroupAvailable(metrics, group);
-    item.hidden = !available;
     const input = item.querySelector(`input[data-chart-toggle="${chartKey}"]`);
     if (!input) return;
     input.disabled = !available;
@@ -10664,22 +11270,44 @@ function renderRenewableTrendSeriesAvailability(metrics = {}) {
       "is-selected",
       selectedChartSeriesKey(chartKey) === (input.dataset.chartSeries || ""),
     );
+    if (available) availableInputs.push(input);
   });
-  document.querySelectorAll(".renewable-trend-series-device").forEach((device) => {
-    device.hidden = !Array.from(device.querySelectorAll(".renewable-trend-series-item"))
-      .some((item) => !item.hidden);
-  });
-  document.querySelectorAll(".renewable-trend-series-group").forEach((scope) => {
-    scope.hidden = !Array.from(scope.querySelectorAll(".renewable-trend-series-device"))
-      .some((device) => !device.hidden);
-  });
-  const availableInputs = items
-    .filter((item) => !item.hidden)
-    .map((item) => item.querySelector(`input[data-chart-toggle="${chartKey}"]`))
-    .filter(Boolean);
   const selectedCount = availableInputs.filter((input) => input.checked).length;
   const summary = $("renewableTrendSeriesSummary");
   if (summary) summary.textContent = `${selectedCount} / ${availableInputs.length}`;
+  applyRenewableTrendSeriesFilters(metrics);
+}
+
+function renewableTrendRightAxisScale(points = [], visibleSeries = []) {
+  const rightSeries = visibleSeries.filter((series) => series.axis === "right");
+  const rightAxisValues = points.flatMap((point) => (
+    rightSeries.map((series) => Number(point?.[series.field]))
+  )).filter((value) => Number.isFinite(value));
+  const onlySoc = rightSeries.length > 0 && rightSeries.every((series) => series.style === "soc");
+  if (!rightSeries.length || onlySoc) {
+    return {
+      min: 0,
+      max: 100,
+      label: "右轴SOC/%",
+      tickSuffix: "%",
+      values: rightAxisValues,
+    };
+  }
+  let rightAxisMin = rightAxisValues.length ? Math.min(0, ...rightAxisValues) : 0;
+  let rightAxisMax = rightAxisValues.length ? Math.max(1, ...rightAxisValues) : 1;
+  if (rightSeries.some((series) => series.style === "soc")) rightAxisMax = Math.max(100, rightAxisMax);
+  if (Math.abs(rightAxisMax - rightAxisMin) < 1e-9) rightAxisMax = rightAxisMin + 1;
+  const padding = Math.max((rightAxisMax - rightAxisMin) * 0.08, 0.1);
+  if (rightAxisMin < 0) rightAxisMin -= padding;
+  rightAxisMax += padding;
+  const units = Array.from(new Set(rightSeries.map((series) => series.unit).filter(Boolean)));
+  return {
+    min: rightAxisMin,
+    max: rightAxisMax,
+    label: units.length ? `右轴/${units.join(" · ")}` : "右轴",
+    tickSuffix: "",
+    values: rightAxisValues,
+  };
 }
 
 function drawRenewableTrendChart() {
@@ -10702,7 +11330,8 @@ function drawRenewableTrendChart() {
   state.chartPlotInfo = { ...(state.chartPlotInfo || {}), [chartKey]: plot };
 
   const range = renewableTrendWindowRange();
-  const points = renewableTrendWindowPoints();
+  syncChartPeriodNavigation("renewableTrend", range);
+  const points = renewableTrendWindowPoints(range);
   ensureRenewableTrendSeriesSelection(RENEWABLE_TREND_SERIES_DEFS);
   const metrics = state.renewableControl.lastPlan?.metrics || {};
   const availableSeries = RENEWABLE_TREND_SERIES_DEFS.filter((series) => renewableTrendSeriesAvailable(series, metrics));
@@ -10720,6 +11349,10 @@ function drawRenewableTrendChart() {
   const powerPadding = Math.max(1, (powerMax - powerMin) * 0.08);
   powerMin -= powerPadding;
   powerMax += powerPadding;
+  const rightAxis = renewableTrendRightAxisScale(points, visibleSeries);
+  const rightAxisValues = rightAxis.values;
+  const rightAxisMin = rightAxis.min;
+  const rightAxisMax = rightAxis.max;
 
   ctx.font = `${11 * ratio}px Consolas, Microsoft YaHei, Arial`;
   for (let index = 0; index <= 4; index += 1) {
@@ -10736,14 +11369,15 @@ function drawRenewableTrendChart() {
     ctx.fillText(formatNumber(powerMax - (powerMax - powerMin) * fraction), left - 8 * ratio, y + 4 * ratio);
     ctx.fillStyle = "#76549b";
     ctx.textAlign = "left";
-    ctx.fillText(`${formatNumber(100 - fraction * 100)}%`, width - right + 8 * ratio, y + 4 * ratio);
+    const rightAxisValue = rightAxisMax - (rightAxisMax - rightAxisMin) * fraction;
+    ctx.fillText(`${formatNumber(rightAxisValue)}${rightAxis.tickSuffix}`, width - right + 8 * ratio, y + 4 * ratio);
   }
   ctx.fillStyle = "#63717a";
   ctx.textAlign = "left";
   ctx.fillText("功率/kW", 8 * ratio, 16 * ratio);
   ctx.fillStyle = "#76549b";
   ctx.textAlign = "right";
-  ctx.fillText("SOC/%", width - 8 * ratio, 16 * ratio);
+  ctx.fillText(rightAxis.label, width - 8 * ratio, 16 * ratio);
 
   const xTicks = measurementTraceAxisTicks(range, width / ratio);
   xTicks.forEach((minute, tickIndex) => {
@@ -10765,7 +11399,7 @@ function drawRenewableTrendChart() {
   });
 
   const summary = $("renewableTrendSummary");
-  if (summary) summary.textContent = `${points.length} 点 · 左轴功率 / 右轴SOC`;
+  if (summary) summary.textContent = `${points.length} 点 · 左轴功率 / ${rightAxis.label}`;
   if (!points.length || !visibleSeries.length) {
     state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: [] };
     syncChartLegendButtons(chartKey);
@@ -10778,7 +11412,8 @@ function drawRenewableTrendChart() {
 
   const xForMinute = (minute) => left + ((minute - range.startMinute) / range.windowMinutes) * plotWidth;
   const powerY = (value) => top + plotHeight - ((value - powerMin) / (powerMax - powerMin)) * plotHeight;
-  const socY = (value) => top + plotHeight - (clamp(value, 0, 100) / 100) * plotHeight;
+  const rightY = (value) => top + plotHeight
+    - ((clamp(value, rightAxisMin, rightAxisMax) - rightAxisMin) / (rightAxisMax - rightAxisMin)) * plotHeight;
   const selectedSeries = selectedChartSeriesKey(chartKey, visibleSeries[0]?.key || "");
   const hitData = [];
   visibleSeries.forEach((series) => {
@@ -10803,7 +11438,7 @@ function drawRenewableTrendChart() {
       const point = points[index];
       if (!point) return;
       const x = xForMinute(point.minute);
-      const y = series.axis === "right" ? socY(value) : powerY(value);
+      const y = series.axis === "right" ? rightY(value) : powerY(value);
       pixelPoints.push({ x, y, minute: point.minute, time: point.time, value });
       if (!started) {
         ctx.moveTo(x, y);
@@ -10827,7 +11462,7 @@ function drawRenewableTrendChart() {
   drawChartCursor(ctx, chartKey, canvas, plot, hitData, {
     ratio,
     maxSeries: 10,
-    timeLabel: (point) => measurementTraceTimeLabel(point.minute, range, 0, 1),
+    timeLabel: (point) => measurementTracePointTimeLabel(point, range),
     valueFormatter: formatNumber,
   });
 }
@@ -10851,11 +11486,11 @@ function renewableMetricValue(metrics = {}, key = "", fallbackKeys = []) {
 }
 
 function renewableMetricPowerText(value) {
-  return Number.isFinite(value) ? `${formatNumber(value)} kW` : "--";
+  return Number.isFinite(value) ? formatNumber(value) : "--";
 }
 
 function renewableMetricSocText(value) {
-  return Number.isFinite(value) ? `${formatOverviewNumber(value * 100)}%` : "--";
+  return Number.isFinite(value) ? formatOverviewNumber(value * 100) : "--";
 }
 
 function renewableStorageUnavailableMetricText(metrics = {}, group = "") {
@@ -10885,8 +11520,13 @@ function closeRenewableControlParametersDialog() {
   if (dialog?.open) dialog.close();
 }
 
+function renewableForegroundActionPending(control = state.renewableControl) {
+  return Boolean(control?.actionActive);
+}
+
 function renderRenewableControl(snapshot = state.snapshot || {}) {
   const control = state.renewableControl;
+  const actionPending = renewableForegroundActionPending(control);
   const receiveReady = Boolean(state.receiveMode && control.receiveActive && control.canRun);
   const loopMode = renewableLoopMode(control);
   const loopModeLabel = renewableLoopModeLabel(loopMode);
@@ -10900,10 +11540,10 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   const hasDecisionSnapshot = Boolean(plan);
   button.textContent = control.enabled ? "停止实时控制" : "启动实时控制";
   button.classList.toggle("is-running", control.enabled);
-  button.disabled = control.sending || control.actionActive || (!receiveReady && !control.enabled);
+  button.disabled = actionPending || (!receiveReady && !control.enabled);
   button.title = !receiveReady && !control.enabled ? "请先启动接收" : "";
   if (sendOnce) {
-    sendOnce.disabled = control.sending || control.actionActive || !receiveReady;
+    sendOnce.disabled = actionPending || !receiveReady;
     sendOnce.title = !receiveReady ? "请先启动接收" : "";
     sendOnce.textContent = loopMode === "closed" ? "单次计算下发" : "单次计算";
   }
@@ -10911,14 +11551,15 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     const active = modeButton.dataset.renewableLoopMode === loopMode;
     modeButton.classList.toggle("is-active", active);
     modeButton.setAttribute("aria-pressed", String(active));
-    modeButton.disabled = control.sending || control.actionActive;
+    modeButton.disabled = actionPending;
   });
   const periodInput = $("renewableControlPeriod");
   if (periodInput && document.activeElement !== periodInput) periodInput.value = String(control.intervalSeconds || 2);
   const ratioInputs = {
     renewableStepRatio: control.stepCoefficient,
-    converterStepRatio: control.converterStepRatio,
-    dieselDeadbandRatio: control.dieselDeadbandRatio,
+    storageStepRatio: control.storageStepRatio,
+    gridFormingStorageProtectionRatio: control.gridFormingStorageProtectionRatio,
+    dieselPowerProtectionRatio: control.dieselPowerProtectionRatio,
     socDeadband: control.socDeadband,
   };
   Object.entries(ratioInputs).forEach(([id, value]) => {
@@ -10929,7 +11570,28 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   if (commandValidInput && document.activeElement !== commandValidInput) {
     commandValidInput.value = String(control.commandValidMinutes || 120);
   }
-  [periodInput, commandValidInput, ...Object.keys(ratioInputs).map((id) => $(id))].forEach((input) => {
+  const numericInputs = {
+    optimizationRenewableCurtailmentWeight: control.optimizationRenewableCurtailmentWeight,
+    optimizationDieselOutputWeight: control.optimizationDieselOutputWeight,
+    optimizationCurtailmentSquareWeight: control.optimizationCurtailmentSquareWeight,
+    optimizationSourceStorageAdjustmentSquareWeight: control.optimizationSourceStorageAdjustmentSquareWeight,
+    optimizationBalanceDeltaSquareWeight: control.optimizationBalanceDeltaSquareWeight,
+    optimizationBalanceDeltaWarningKw: control.optimizationBalanceDeltaWarningKw,
+    optimizationBalanceToleranceKw: control.optimizationBalanceToleranceKw,
+    optimizationBoundToleranceKw: control.optimizationBoundToleranceKw,
+    optimizationFtol: control.optimizationFtol,
+    optimizationMaxIterations: control.optimizationMaxIterations,
+  };
+  Object.entries(numericInputs).forEach(([id, value]) => {
+    const input = $(id);
+    if (input && document.activeElement !== input) input.value = String(value ?? "");
+  });
+  [
+    periodInput,
+    commandValidInput,
+    ...Object.keys(ratioInputs).map((id) => $(id)),
+    ...Object.keys(numericInputs).map((id) => $(id)),
+  ].forEach((input) => {
     if (input) input.disabled = control.actionActive;
   });
   const storagePowerDeratingButton = $("storagePowerDeratingButton");
@@ -10947,21 +11609,31 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
         : "等待数据";
   }
   const metrics = plan?.metrics || {};
+  const planWeather = plan?.weather || {};
+  const snapshotWeather = currentWeatherLoad(snapshot);
+  const observedWindSpeed = optionalNumber(planWeather.observedWindSpeed) ?? snapshotWeather.windSpeed;
+  const observedSolarIrradiance = optionalNumber(planWeather.observedSolarIrradiance) ?? snapshotWeather.solarIrradiance;
   const storagePowerText = (value, group) => renewableStoragePowerMetricText(value, metrics, group);
   const storageSocText = (value, group) => renewableStorageSocMetricText(value, metrics, group);
   const metricText = {
     renewableAcCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "acRenewableCurrentKw", ["acWindCurrentKw", "acPvCurrentKw"])),
     renewableAcTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "acRenewableTargetKw", ["acWindTargetKw", "acPvTargetKw"])),
+    renewableAcMaxAvailableKw: renewableMetricPowerText(metrics.acRenewableMaxAvailableKw),
     renewableAcWindCurrentKw: renewableMetricPowerText(metrics.acWindCurrentKw),
     renewableAcWindTargetKw: renewableMetricPowerText(metrics.acWindTargetKw),
+    renewableAcWindMaxAvailableKw: renewableMetricPowerText(metrics.acWindMaxAvailableKw),
     renewableAcPvCurrentKw: renewableMetricPowerText(metrics.acPvCurrentKw),
     renewableAcPvTargetKw: renewableMetricPowerText(metrics.acPvTargetKw),
+    renewableAcPvMaxAvailableKw: renewableMetricPowerText(metrics.acPvMaxAvailableKw),
     renewableDcCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcRenewableCurrentKw", ["dcWindCurrentKw", "dcPvCurrentKw"])),
     renewableDcTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcRenewableTargetKw", ["dcWindTargetKw", "dcPvTargetKw"])),
+    renewableDcMaxAvailableKw: renewableMetricPowerText(metrics.dcRenewableMaxAvailableKw),
     renewableDcWindCurrentKw: renewableMetricPowerText(metrics.dcWindCurrentKw),
     renewableDcWindTargetKw: renewableMetricPowerText(metrics.dcWindTargetKw),
+    renewableDcWindMaxAvailableKw: renewableMetricPowerText(metrics.dcWindMaxAvailableKw),
     renewableDcPvCurrentKw: renewableMetricPowerText(metrics.dcPvCurrentKw),
     renewableDcPvTargetKw: renewableMetricPowerText(metrics.dcPvTargetKw),
+    renewableDcPvMaxAvailableKw: renewableMetricPowerText(metrics.dcPvMaxAvailableKw),
     renewableAcGridFollowingStorageCurrentKw: storagePowerText(
       renewableMetricValue(metrics, "acGridFollowingStorageCurrentKw", ["acGridStorageCurrentKw"]),
       "ac-grid-following-storage",
@@ -11020,10 +11692,13 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     renewableDcLoadKw: renewableMetricPowerText(metrics.dcLoadKw),
     renewableTotalCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalRenewableCurrentKw", ["renewableCurrentKw"])),
     renewableTotalTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalRenewableTargetKw", ["renewableTarget"])),
+    renewableTotalMaxAvailableKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalRenewableMaxAvailableKw", ["renewableMaxAvailableKw"])),
     renewableTotalWindCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalWindCurrentKw", ["acWindCurrentKw", "dcWindCurrentKw"])),
     renewableTotalWindTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalWindTargetKw", ["acWindTargetKw", "dcWindTargetKw"])),
+    renewableTotalWindMaxAvailableKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalWindMaxAvailableKw", ["windMaxAvailableKw"])),
     renewableTotalPvCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalPvCurrentKw", ["acPvCurrentKw", "dcPvCurrentKw"])),
     renewableTotalPvTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalPvTargetKw", ["acPvTargetKw", "dcPvTargetKw"])),
+    renewableTotalPvMaxAvailableKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalPvMaxAvailableKw", ["pvMaxAvailableKw"])),
     renewableTotalGridFollowingStorageCurrentKw: storagePowerText(
       metrics.totalGridFollowingStorageCurrentKw,
       "system-grid-following-storage",
@@ -11054,6 +11729,8 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     renewableTotalLoadKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalLoadKw", ["loadKw"])),
     renewableAcdcCurrentKw: renewableMetricPowerText(metrics.acdcCurrentKw),
     renewableAcdcTargetKw: renewableMetricPowerText(metrics.acdcTargetKw),
+    renewableObservedWindSpeed: Number.isFinite(observedWindSpeed) ? formatNumber(observedWindSpeed) : "--",
+    renewableObservedSolarIrradiance: Number.isFinite(observedSolarIrradiance) ? formatNumber(observedSolarIrradiance) : "--",
     renewableLastSent: loopMode === "closed" ? control.lastSentAt || "--" : control.lastCalculatedAt || "--",
   };
   Object.entries(metricText).forEach(([id, text]) => {
@@ -11063,8 +11740,8 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   renderRenewableMetricAvailability(metrics);
   const status = $("renewableControlStatus");
   if (status) {
-    status.textContent = control.sending || control.actionActive
-      ? "学员台后台正在执行控制操作..."
+    status.textContent = actionPending
+      ? "正在提交本次新能源控制操作..."
       : !receiveReady
         ? renewablePrerequisiteStatus(control)
         : control.lastStatus;
@@ -11194,9 +11871,20 @@ async function updateRenewableSettings() {
       commandValidMinutes,
       largeStepThresholdKw: state.renewableControl.largeStepThresholdKw,
       renewableStepRatio: ratio("renewableStepRatio", 3),
-      converterStepRatio: ratio("converterStepRatio", 3),
-      dieselDeadbandRatio: ratio("dieselDeadbandRatio", 3),
+      storageStepRatio: ratio("storageStepRatio", 3),
+      gridFormingStorageProtectionRatio: ratio("gridFormingStorageProtectionRatio", 5),
+      dieselPowerProtectionRatio: ratio("dieselPowerProtectionRatio", 3),
       socDeadband: ratio("socDeadband", 5),
+      optimizationRenewableCurtailmentWeight: Math.max(0, toNumber($("optimizationRenewableCurtailmentWeight")?.value, 1)),
+      optimizationDieselOutputWeight: Math.max(0, toNumber($("optimizationDieselOutputWeight")?.value, 1)),
+      optimizationCurtailmentSquareWeight: Math.max(0, toNumber($("optimizationCurtailmentSquareWeight")?.value, 0.000001)),
+      optimizationSourceStorageAdjustmentSquareWeight: Math.max(0, toNumber($("optimizationSourceStorageAdjustmentSquareWeight")?.value, 0.000001)),
+      optimizationBalanceDeltaSquareWeight: Math.max(0, toNumber($("optimizationBalanceDeltaSquareWeight")?.value, 10000)),
+      optimizationBalanceDeltaWarningKw: Math.max(0, toNumber($("optimizationBalanceDeltaWarningKw")?.value, 1)),
+      optimizationBalanceToleranceKw: Math.max(0, toNumber($("optimizationBalanceToleranceKw")?.value, 0.1)),
+      optimizationBoundToleranceKw: Math.max(0, toNumber($("optimizationBoundToleranceKw")?.value, 0.1)),
+      optimizationFtol: Math.max(0, toNumber($("optimizationFtol")?.value, 0.001)),
+      optimizationMaxIterations: Math.max(1, Math.round(toNumber($("optimizationMaxIterations")?.value, 100))),
       storageChargeDeratingCurve: state.renewableControl.storageChargeDeratingCurve,
       storageDischargeDeratingCurve: state.renewableControl.storageDischargeDeratingCurve,
     },
@@ -11343,6 +12031,14 @@ function deviceType(dev) {
   return String(dev.dev_type || dev.type || "Unknown");
 }
 
+function deviceModelBlock(dev) {
+  return String(dev?.model_block || dev?.raw?.model_block || "").trim();
+}
+
+function deviceFamily(dev) {
+  return String(dev?.device_family || "").trim().toLowerCase();
+}
+
 function deviceIndex(dev) {
   return dev.idx ?? dev.raw?.idx ?? "";
 }
@@ -11362,7 +12058,7 @@ function deviceTreeBadge(dev) {
 function devicesByType(devices) {
   const groups = new Map();
   devices.forEach((dev) => {
-    const type = deviceType(dev);
+    const type = deviceModelBlock(dev) || "Unknown";
     if (!groups.has(type)) groups.set(type, []);
     groups.get(type).push(dev);
   });
@@ -11417,7 +12113,7 @@ function deviceTreeSearchText(scope) {
 
 function deviceTreeVisibleName(item, devType = "") {
   const name = deviceName(item);
-  if ((devType || deviceType(item)) === "Environment" && name === "weather") return "气象";
+  if ((devType || deviceModelBlock(item)) === "Environment" && name === "weather") return "气象";
   return name;
 }
 
@@ -11425,6 +12121,7 @@ function deviceTreeSearchFields(item, devType = "") {
   const raw = item?.raw || {};
   return [
     devType,
+    deviceModelBlock(item),
     deviceType(item),
     deviceName(item),
     deviceTreeVisibleName(item, devType),
@@ -11925,6 +12622,13 @@ function isSignalMeasurement(row) {
   return Object.prototype.hasOwnProperty.call(SIGNAL_MEASUREMENT_LABELS, String(row?.meas_type || "").toUpperCase());
 }
 
+function formatMeasurementDisplayValue(value, row = null, analogFormatter = formatNumber) {
+  if (value === null || value === undefined || value === "") return "--";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "--";
+  return isSignalMeasurement(row) ? String(Math.round(number)) : analogFormatter(number);
+}
+
 function weatherMeasurementLabel(row) {
   const type = String(row?.meas_type || "").toUpperCase();
   return WEATHER_MEASUREMENT_LABELS[type]?.label || row?.name || type || "气象";
@@ -11946,8 +12650,8 @@ function signalMeasurementOrder(row) {
 }
 
 function measurementDisplayName(row) {
-  if (isSignalMeasurement(row)) return `${row.dev_name || row.name || ""}.${signalMeasurementLabel(row)}`;
-  return isWeatherMeasurement(row) ? `气象.${weatherMeasurementLabel(row)}` : row.name;
+  if (isSignalMeasurement(row)) return `${row.dev_type || ""}.${row.dev_name || row.name || ""}.${signalMeasurementLabel(row)}`;
+  return isWeatherMeasurement(row) ? `Environment.weather.${weatherMeasurementLabel(row)}` : row.name;
 }
 
 function measurementDeviceDisplay(row) {
@@ -12151,7 +12855,9 @@ function measurementTableStructureKey(rows) {
 }
 
 function measurementLiveCellHtml(row, field) {
-  if (field === "value") return formatNumber(row.value);
+  if (field === "real") return formatMeasurementDisplayValue(row.real_value, row);
+  if (field === "scada") return formatMeasurementDisplayValue(row.scada_value, row);
+  if (field === "diff") return formatMeasurementDisplayValue(row.diff, row);
   if (field === "status") {
     const valid = Number(row.valid) ? true : false;
     return `<span class="status-pill ${valid ? "is-ok" : "is-off"}">${valid ? "可用" : "停用"}</span>`;
@@ -12171,10 +12877,15 @@ function updateMeasurementTableLiveCells(rows) {
     tableRow.querySelectorAll("[data-measurement-live-field]").forEach((cell) => {
       const field = cell.dataset.measurementLiveField || "";
       cell.innerHTML = measurementLiveCellHtml(row, field);
-      if (field === "value") {
-        const value = Number(row.value || 0);
+      if (field === "scada") {
+        const value = Number(row.scada_value || 0);
         cell.classList.toggle("value-bad", Math.abs(value) > 10000);
         cell.classList.toggle("value-warn", Math.abs(value) > 1000 && Math.abs(value) <= 10000);
+      }
+      if (field === "diff") {
+        const diffActive = row.diff !== null && Math.abs(row.diff) >= 1e-6;
+        cell.classList.toggle("diff-active", diffActive);
+        cell.classList.toggle("diff-neutral", !diffActive);
       }
     });
   }
@@ -12245,22 +12956,25 @@ function renderMeasurements(snapshot = state.snapshot || {}) {
     <div class="measurement-type-tab-page is-active">
     <div class="virtual-table-scroll" data-virtual-table="measurement">
     <table class="measurement-compare-table">
-      <thead><tr><th>idx</th><th>量测名</th><th>设备</th><th>类型</th><th>量测值</th><th>状态</th></tr></thead>
+      <thead><tr><th>idx</th><th>量测名</th><th>设备</th><th>类型</th><th>真值</th><th>量测值</th><th>偏差</th><th>状态</th></tr></thead>
       <tbody>
-        ${renderVirtualSpacerRow(virtualRows.beforeHeight, 6)}
+        ${renderVirtualSpacerRow(virtualRows.beforeHeight, 8)}
         ${virtualRows.rows.map((item) => {
           const key = measurementKey(item);
-          const valueClass = Math.abs(Number(item.value || 0)) > 10000 ? "value-bad" : Math.abs(Number(item.value || 0)) > 1000 ? "value-warn" : "";
+          const valueClass = Math.abs(Number(item.scada_value || 0)) > 10000 ? "value-bad" : Math.abs(Number(item.scada_value || 0)) > 1000 ? "value-warn" : "";
+          const diffClass = item.diff === null || Math.abs(item.diff) < 1e-6 ? "diff-neutral" : "diff-active";
           return `<tr class="${key === state.selectedMeasurementKey ? "is-selected" : ""}" data-measurement-row-key="${escapeHtml(key)}" data-measurement-select-key="${escapeHtml(key)}">
             <td>${escapeHtml(item.idx ?? "")}</td>
             <td>${escapeHtml(measurementDisplayName(item) || "")}</td>
             <td>${escapeHtml(measurementDeviceDisplay(item))}</td>
             <td>${escapeHtml(measurementTypeDisplay(item))}</td>
-            <td class="numeric-cell ${valueClass}" data-measurement-live-field="value">${formatNumber(item.value)}</td>
+            <td class="numeric-cell" data-measurement-live-field="real">${formatMeasurementDisplayValue(item.real_value, item)}</td>
+            <td class="numeric-cell ${valueClass}" data-measurement-live-field="scada">${formatMeasurementDisplayValue(item.scada_value, item)}</td>
+            <td class="numeric-cell ${diffClass}" data-measurement-live-field="diff">${formatMeasurementDisplayValue(item.diff, item)}</td>
             <td data-measurement-live-field="status"><span class="status-pill ${Number(item.valid) ? "is-ok" : "is-off"}">${Number(item.valid) ? "可用" : "停用"}</span></td>
           </tr>`;
         }).join("")}
-        ${renderVirtualSpacerRow(virtualRows.afterHeight, 6)}
+        ${renderVirtualSpacerRow(virtualRows.afterHeight, 8)}
       </tbody>
     </table>
     </div>
@@ -12295,6 +13009,8 @@ function appendMeasurementTrace(snapshot) {
     minute: Number(clock.absolute_minute ?? clock.minute ?? state.measurementTraceHistory.length) || 0,
     time: clock.time || "--",
     sim_time: clock.time || "--",
+    run_id: Number(clock.run_id ?? 0) || 0,
+    step_count: Number(clock.step_count ?? 0) || 0,
     measurements: {},
   };
   rows.forEach((row) => {
@@ -12311,9 +13027,209 @@ function appendMeasurementTrace(snapshot) {
       label: `${measurementDeviceDisplay(row) || row.name || ""} ${measurementTypeDisplay(row) || ""}`.trim(),
     };
   });
-  state.measurementTraceHistory.push(point);
+  const history = state.measurementTraceHistory || [];
+  const latestPoint = history[history.length - 1];
+  if (latestPoint && compareMeasurementHistoryPoints(point, latestPoint) <= 0) {
+    const pointKey = measurementHistoryPointKey(point);
+    let existingIndex = -1;
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const candidate = history[index];
+      if (measurementHistoryPointKey(candidate) === pointKey) {
+        existingIndex = index;
+        break;
+      }
+      if (compareMeasurementHistoryPoints(candidate, point) < 0) break;
+    }
+    if (existingIndex < 0) return false;
+    const existing = history[existingIndex];
+    history[existingIndex] = {
+      ...existing,
+      ...point,
+      measurements: {
+        ...(existing.measurements || {}),
+        ...(point.measurements || {}),
+      },
+    };
+  } else {
+    history.push(point);
+  }
+  state.measurementTraceHistory = history;
   state.measurementTraceHistory = compactTraceHistory(state.measurementTraceHistory, state.measurementTraceWindowMinutes);
   return true;
+}
+
+function resetMeasurementHistoryHydration() {
+  state.measurementHistoryGeneration = (Number(state.measurementHistoryGeneration) || 0) + 1;
+  state.measurementHistoryLoaded = {};
+  state.measurementHistoryRequests = {};
+}
+
+function measurementHistoryDefinitions(snapshot = state.snapshot || {}) {
+  const measurementDefinitions = snapshot.measurements?.definitions;
+  if (Array.isArray(measurementDefinitions)) return measurementDefinitions;
+  const staticDefinitions = snapshot.definitions?.measurement;
+  return Array.isArray(staticDefinitions) ? staticDefinitions : [];
+}
+
+function measurementHistoryDefinitionIndex(row, definitions = measurementHistoryDefinitions()) {
+  if (!row) return -1;
+  const key = measurementKey(row);
+  return definitions.findIndex((definition) => measurementKey(definition) === key);
+}
+
+function measurementHistoryPointKey(point) {
+  return [
+    Number(point?.run_id ?? 0) || 0,
+    Number(point?.step_count ?? -1),
+    Number(point?.minute ?? 0) || 0,
+  ].join("|");
+}
+
+function compareMeasurementHistoryPoints(left, right) {
+  return (
+    (Number(left?.run_id) || 0) - (Number(right?.run_id) || 0)
+    || (Number(left?.step_count) || 0) - (Number(right?.step_count) || 0)
+    || (Number(left?.minute) || 0) - (Number(right?.minute) || 0)
+  );
+}
+
+function mergeMeasurementHistoryPayload(payload, row, definitionIndex, definitions) {
+  if (!payload || payload.encoding !== "measurement-history-arrays-v1") return false;
+  const expectedSignature = measurementDefinitionSignature(definitions);
+  if (String(payload.definition_signature || "") !== expectedSignature) {
+    throw new Error("历史量测定义顺序签名不一致，历史帧已拒绝");
+  }
+  if (Number(payload.count) !== definitions.length) {
+    throw new Error("历史量测定义长度不一致，历史帧已拒绝");
+  }
+  const currentRunId = Number(state.snapshot?.clock?.run_id ?? 0) || 0;
+  const payloadRunId = Number(payload.run_id ?? 0) || 0;
+  if (payloadRunId !== currentRunId) return false;
+  const indices = Array.isArray(payload.indices) ? payload.indices.map(Number) : [];
+  const selectedPosition = indices.indexOf(Number(definitionIndex));
+  if (selectedPosition < 0) return false;
+  const key = measurementKey(row);
+  const incoming = (payload.frames || []).map((frame) => {
+    const arrays = [frame.real_values, frame.scada_values, frame.valid_values];
+    if (arrays.some((values) => !Array.isArray(values) || values.length !== indices.length)) {
+      throw new Error("历史量测数组长度不一致，历史帧已拒绝");
+    }
+    const minute = Number(frame.absolute_minute);
+    if (!Number.isFinite(minute)) throw new Error("历史量测仿真时刻无效，历史帧已拒绝");
+    const real = diagramTrendFiniteValue(frame.real_values[selectedPosition]);
+    const scada = diagramTrendFiniteValue(frame.scada_values[selectedPosition]);
+    const validValue = frame.valid_values[selectedPosition];
+    return {
+      minute,
+      time: frame.simu_time || "--",
+      sim_time: frame.simu_time || "--",
+      record_time: frame.wall_time || "",
+      run_id: Number(frame.run_id ?? payloadRunId) || payloadRunId,
+      step_count: Number(frame.step_count ?? 0) || 0,
+      history_seq: Number(frame.seq ?? 0) || 0,
+      measurements: {
+        [key]: {
+          name: measurementDisplayName(row) || "",
+          value: scada ?? real,
+          real,
+          scada,
+          valid: validValue === null || validValue === undefined
+            ? (Number(row.valid) === 1 ? 1 : 0)
+            : (Number(validValue) === 1 ? 1 : 0),
+          dev_type: row.dev_type || "",
+          dev_name: row.dev_name || "",
+          meas_type: row.meas_type || "",
+          unit: diagramMeasurementUnit(row.meas_type),
+          label: `${measurementDeviceDisplay(row) || row.name || ""} ${measurementTypeDisplay(row) || ""}`.trim(),
+        },
+      },
+    };
+  });
+  if (!incoming.length) return false;
+
+  const merged = new Map();
+  (state.measurementTraceHistory || []).forEach((point) => {
+    merged.set(measurementHistoryPointKey(point), point);
+  });
+  incoming.forEach((point) => {
+    const pointKey = measurementHistoryPointKey(point);
+    const existing = merged.get(pointKey);
+    if (existing) {
+      existing.measurements = { ...(existing.measurements || {}), ...point.measurements };
+      if (!existing.sim_time || existing.sim_time === "--") existing.sim_time = point.sim_time;
+      if (!existing.time || existing.time === "--") existing.time = point.time;
+      if (!existing.record_time) existing.record_time = point.record_time;
+      existing.run_id = point.run_id;
+      existing.step_count = point.step_count;
+      existing.history_seq = point.history_seq;
+    } else {
+      merged.set(pointKey, point);
+    }
+  });
+  state.measurementTraceHistory = compactTraceHistory(
+    Array.from(merged.values()).sort(compareMeasurementHistoryPoints),
+    state.measurementTraceWindowMinutes,
+  );
+  return true;
+}
+
+async function ensureMeasurementHistoryForRow(row) {
+  const definitions = measurementHistoryDefinitions();
+  const definitionIndex = measurementHistoryDefinitionIndex(row, definitions);
+  if (definitionIndex < 0 || !definitions.length) return false;
+  const runId = Number(state.snapshot?.clock?.run_id ?? 0) || 0;
+  const definitionSignature = measurementDefinitionSignature(definitions);
+  const generation = Number(state.measurementHistoryGeneration) || 0;
+  const requestKey = [state.activeModelId, runId, definitionSignature, definitionIndex, generation].join("|");
+  if (state.measurementHistoryLoaded?.[requestKey]) return false;
+  if (state.measurementHistoryRequests?.[requestKey]) {
+    return state.measurementHistoryRequests[requestKey];
+  }
+  const historyPath = state.receiveMode
+    ? `/api/trainee/measurement-history?indices=${definitionIndex}`
+    : `/api/measurement-history?indices=${definitionIndex}`;
+  const request = api(historyPath)
+    .then((payload) => {
+      const currentDefinitions = measurementHistoryDefinitions();
+      const currentRunId = Number(state.snapshot?.clock?.run_id ?? 0) || 0;
+      if (
+        (Number(state.measurementHistoryGeneration) || 0) !== generation
+        ||
+        currentRunId !== runId
+        || measurementDefinitionSignature(currentDefinitions) !== definitionSignature
+      ) {
+        return false;
+      }
+      const changed = mergeMeasurementHistoryPayload(payload, row, definitionIndex, currentDefinitions);
+      state.measurementHistoryLoaded[requestKey] = true;
+      return changed;
+    })
+    .catch((error) => {
+      console.warn("历史量测加载失败", error);
+      return false;
+    })
+    .finally(() => {
+      delete state.measurementHistoryRequests[requestKey];
+    });
+  state.measurementHistoryRequests[requestKey] = request;
+  return request;
+}
+
+function selectedMeasurementHistoryRow() {
+  if (!state.selectedMeasurementKey) return null;
+  return measurementCompareRows(state.snapshot?.measurements || {}).find(
+    (row) => measurementKey(row) === state.selectedMeasurementKey,
+  ) || null;
+}
+
+function ensureSelectedMeasurementHistory() {
+  const row = selectedMeasurementHistoryRow();
+  if (!row) return;
+  ensureMeasurementHistoryForRow(row).then((changed) => {
+    if (changed && measurementKey(row) === state.selectedMeasurementKey) {
+      drawMeasurementTraceChart();
+    }
+  });
 }
 
 function traceAxisStepMinutes(windowMinutes) {
@@ -12337,32 +13253,143 @@ function traceWindowAlignmentMinutes(windowMinutes) {
   return 1440;
 }
 
-function alignedTraceWindowRange(history, windowMinutes, fallbackMinute) {
+function traceHistoryMinuteBounds(history, fallbackMinute = 0) {
+  let earliestMinute = Number.POSITIVE_INFINITY;
+  let latestMinute = Number.NEGATIVE_INFINITY;
+  (Array.isArray(history) ? history : []).forEach((point) => {
+    const minute = Number(point?.minute);
+    if (!Number.isFinite(minute)) return;
+    earliestMinute = Math.min(earliestMinute, minute);
+    latestMinute = Math.max(latestMinute, minute);
+  });
+  const fallback = Number.isFinite(Number(fallbackMinute)) ? Number(fallbackMinute) : 0;
+  const hasHistory = Number.isFinite(earliestMinute) && Number.isFinite(latestMinute);
+  return {
+    earliestMinute: hasHistory ? earliestMinute : fallback,
+    latestMinute: hasHistory ? latestMinute : fallback,
+    hasHistory,
+  };
+}
+
+function alignedTraceWindowRange(
+  history,
+  windowMinutes,
+  fallbackMinute,
+  requestedOffset = 0,
+  simulationDurationMinutes = Number.POSITIVE_INFINITY,
+) {
   const minutes = Math.max(1, Number(windowMinutes) || 60);
   const alignmentMinutes = traceWindowAlignmentMinutes(minutes);
-  const latestMinute = history.length ? history[history.length - 1].minute : fallbackMinute;
-  const startMinute = Math.floor(latestMinute / alignmentMinutes) * alignmentMinutes;
+  const bounds = traceHistoryMinuteBounds(history, fallbackMinute);
+  const currentStartMinute = Math.floor(bounds.latestMinute / alignmentMinutes) * alignmentMinutes;
+  const normalizedSimulationDuration = Number(simulationDurationMinutes);
+  const periodNavigationAllowed = !Number.isFinite(normalizedSimulationDuration)
+    || normalizedSimulationDuration <= 0
+    || minutes < normalizedSimulationDuration;
+  const minWindowOffset = periodNavigationAllowed && bounds.hasHistory
+    ? Math.min(0, Math.floor((bounds.earliestMinute - currentStartMinute) / minutes))
+    : 0;
+  const normalizedOffset = periodNavigationAllowed
+    ? Math.min(0, Math.trunc(Number(requestedOffset) || 0))
+    : 0;
+  const windowOffset = Math.max(minWindowOffset, normalizedOffset);
+  const startMinute = currentStartMinute + windowOffset * minutes;
   return {
     startMinute,
     endMinute: startMinute + minutes,
-    latestMinute,
+    latestMinute: bounds.latestMinute,
+    earliestMinute: bounds.earliestMinute,
+    currentStartMinute,
     windowMinutes: minutes,
     alignmentMinutes,
     axisStepMinutes: traceAxisStepMinutes(minutes),
+    windowOffset,
+    minWindowOffset,
+    periodNavigationAllowed,
   };
+}
+
+function tracePeriodNavigationState(range = {}) {
+  const periodNavigationAllowed = range.periodNavigationAllowed !== false;
+  const windowOffset = Math.min(0, Math.trunc(Number(range.windowOffset) || 0));
+  const minWindowOffset = Math.min(0, Math.trunc(Number(range.minWindowOffset) || 0));
+  return {
+    visible: periodNavigationAllowed && (minWindowOffset < 0 || windowOffset < 0),
+    previousDisabled: !periodNavigationAllowed || windowOffset <= minWindowOffset,
+    currentDisabled: !periodNavigationAllowed || windowOffset === 0,
+    nextDisabled: !periodNavigationAllowed || windowOffset >= 0,
+  };
+}
+
+function chartPeriodOffset(chartKey) {
+  return Math.min(0, Math.trunc(Number(state.chartPeriodOffsets?.[chartKey]) || 0));
+}
+
+function setChartPeriodOffset(chartKey, offset) {
+  state.chartPeriodOffsets = {
+    ...(state.chartPeriodOffsets || {}),
+    [chartKey]: Math.min(0, Math.trunc(Number(offset) || 0)),
+  };
+}
+
+function resetChartPeriodOffsets(...chartKeys) {
+  const keys = chartKeys.length ? chartKeys : Object.keys(state.chartPeriodOffsets || {});
+  keys.forEach((chartKey) => setChartPeriodOffset(chartKey, 0));
+}
+
+function syncChartPeriodNavigation(chartKey, range) {
+  const navigation = tracePeriodNavigationState(range);
+  document.querySelectorAll(`[data-chart-period-nav="${chartKey}"]`).forEach((container) => {
+    container.hidden = !navigation.visible;
+    container.dataset.windowOffset = String(Number(range?.windowOffset) || 0);
+    const previous = container.querySelector('[data-chart-period-action="previous"]');
+    const current = container.querySelector('[data-chart-period-action="current"]');
+    const next = container.querySelector('[data-chart-period-action="next"]');
+    if (previous) previous.disabled = navigation.previousDisabled;
+    if (current) current.disabled = navigation.currentDisabled;
+    if (next) next.disabled = navigation.nextDisabled;
+  });
+  return navigation;
+}
+
+function initChartPeriodNavigation(chartKey, rangeProvider, drawChart) {
+  const container = document.querySelector(`[data-chart-period-nav="${chartKey}"]`);
+  if (!container || container.dataset.periodNavigationReady === "true") return;
+  container.dataset.periodNavigationReady = "true";
+  container.addEventListener("click", (event) => {
+    const button = event.target instanceof Element
+      ? event.target.closest('[data-chart-period-action]')
+      : null;
+    if (!button || button.disabled || !container.contains(button)) return;
+    const range = rangeProvider();
+    const action = button.getAttribute("data-chart-period-action") || "";
+    const currentOffset = Number(range.windowOffset) || 0;
+    const nextOffset = action === "previous"
+      ? currentOffset - 1
+      : action === "next" ? currentOffset + 1 : 0;
+    setChartPeriodOffset(chartKey, nextOffset);
+    drawChart();
+  });
 }
 
 function measurementTraceWindowRange() {
   const history = state.measurementTraceHistory || [];
   const windowMinutes = Math.max(1, Number(state.measurementTraceWindowMinutes) || 60);
   const fallbackMinute = Number(state.snapshot?.clock?.absolute_minute ?? state.snapshot?.clock?.minute ?? 0) || 0;
-  return alignedTraceWindowRange(history, windowMinutes, fallbackMinute);
+  const range = alignedTraceWindowRange(
+    history,
+    windowMinutes,
+    fallbackMinute,
+    chartPeriodOffset("measurementTrace"),
+    curveDisplayModeDurationMinutes(),
+  );
+  setChartPeriodOffset("measurementTrace", range.windowOffset);
+  return range;
 }
 
-function measurementTraceWindowPoints() {
+function measurementTraceWindowPoints(range = measurementTraceWindowRange()) {
   const history = state.measurementTraceHistory || [];
   if (!history.length || !state.selectedMeasurementKey) return [];
-  const range = measurementTraceWindowRange();
   return history
     .filter((point) => point.minute >= range.startMinute && point.minute <= range.endMinute)
     .map((point) => {
@@ -12401,6 +13428,12 @@ function measurementTraceTimeLabel(minute, range, index, lastIndex) {
   const day = Math.floor(absolute / 1440);
   const clock = formatTraceClockMinute(absolute).slice(0, 5);
   return absolute % 1440 === 0 ? `第${day + 1}天` : `第${day + 1}天 ${clock}`;
+}
+
+function measurementTracePointTimeLabel(point, range) {
+  const time = String(point?.sim_time || point?.time || "").trim();
+  if (time && time !== "--") return time;
+  return measurementTraceTimeLabel(point?.minute, range, -1, 0);
 }
 
 function measurementTraceAxisTicks(range, canvasWidth) {
@@ -12456,6 +13489,7 @@ function drawMeasurementTraceChart() {
     ctx.stroke();
   }
   const range = measurementTraceWindowRange();
+  syncChartPeriodNavigation("measurementTrace", range);
   const xTicks = measurementTraceAxisTicks(range, width / ratio);
   xTicks.forEach((minute, tickIndex) => {
     const x = left + ((minute - range.startMinute) / range.windowMinutes) * plotWidth;
@@ -12471,7 +13505,7 @@ function drawMeasurementTraceChart() {
     ctx.fillText(measurementTraceTimeLabel(minute, range, tickIndex, xTicks.length - 1), x + textOffset, height - 12 * ratio);
   });
   ctx.textAlign = "left";
-  const points = measurementTraceWindowPoints();
+  const points = measurementTraceWindowPoints(range);
   const seriesDefs = [
     { key: "value", field: "value", label: "量测值", color: "#c93a3a" },
   ];
@@ -12527,7 +13561,7 @@ function drawMeasurementTraceChart() {
   syncChartLegendButtons(chartKey);
   drawChartCursor(ctx, chartKey, canvas, plot, hitData, {
     ratio,
-    timeLabel: (point) => measurementTraceTimeLabel(point.minute, range, 0, 0),
+    timeLabel: (point) => measurementTracePointTimeLabel(point, range),
     valueFormatter: formatNumber,
   });
   ctx.fillStyle = "#63717a";
@@ -12562,13 +13596,20 @@ function commandTraceWindowRange() {
   const history = state.commandTraceHistory || [];
   const windowMinutes = Math.max(1, Number(state.commandTraceWindowMinutes) || 60);
   const fallbackMinute = Number(state.snapshot?.clock?.absolute_minute ?? state.snapshot?.clock?.minute ?? 0) || 0;
-  return alignedTraceWindowRange(history, windowMinutes, fallbackMinute);
+  const range = alignedTraceWindowRange(
+    history,
+    windowMinutes,
+    fallbackMinute,
+    chartPeriodOffset("commandTrace"),
+    curveDisplayModeDurationMinutes(),
+  );
+  setChartPeriodOffset("commandTrace", range.windowOffset);
+  return range;
 }
 
-function commandTraceWindowPoints() {
+function commandTraceWindowPoints(range = commandTraceWindowRange()) {
   const history = state.commandTraceHistory || [];
   if (!history.length || !state.selectedCommandTraceKey) return [];
-  const range = commandTraceWindowRange();
   return history
     .filter((point) => point.minute >= range.startMinute && point.minute <= range.endMinute)
     .map((point) => {
@@ -12605,7 +13646,7 @@ function appendCommandTrace(snapshot) {
     point.commands[runKey] = {
       control: commandTraceNumber(control),
       actual: commandTraceNumber(dev.run_stat),
-      label: `${deviceName(dev)}.遥控投退`,
+      label: `${deviceType(dev)}.${deviceName(dev)}.遥控投退`,
       unit: "",
     };
   });
@@ -12617,7 +13658,7 @@ function appendCommandTrace(snapshot) {
     point.commands[statusKey] = {
       control: commandTraceNumber(control),
       actual: commandTraceNumber(dev.status),
-      label: `${deviceName(dev)}.遥控开合`,
+      label: `${deviceType(dev)}.${deviceName(dev)}.遥控开合`,
       unit: "",
     };
   });
@@ -12660,6 +13701,7 @@ function drawCommandTraceChart() {
     ctx.stroke();
   }
   const range = commandTraceWindowRange();
+  syncChartPeriodNavigation("commandTrace", range);
   const xTicks = measurementTraceAxisTicks(range, width / ratio);
   xTicks.forEach((minute, tickIndex) => {
     const x = left + ((minute - range.startMinute) / range.windowMinutes) * plotWidth;
@@ -12675,7 +13717,7 @@ function drawCommandTraceChart() {
     ctx.fillText(measurementTraceTimeLabel(minute, range, tickIndex, xTicks.length - 1), x + textOffset, height - 12 * ratio);
   });
   ctx.textAlign = "left";
-  const points = commandTraceWindowPoints();
+  const points = commandTraceWindowPoints(range);
   const seriesDefs = [
     { key: "control", field: "control", label: "控制值", color: "#c98820" },
     { key: "actual", field: "actual", label: "实时值", color: "#008c8c" },
@@ -12739,7 +13781,7 @@ function drawCommandTraceChart() {
   syncChartLegendButtons(chartKey);
   drawChartCursor(ctx, chartKey, canvas, plot, hitData, {
     ratio,
-    timeLabel: (point) => measurementTraceTimeLabel(point.minute, range, 0, 0),
+    timeLabel: (point) => measurementTracePointTimeLabel(point, range),
     valueFormatter: formatNumber,
   });
   ctx.fillStyle = "#63717a";
@@ -12776,18 +13818,15 @@ function remoteControlMeasuredValue(devType, devName, commandType, snapshot = st
   const targetType = String(devType || "").trim().toUpperCase();
   const targetName = String(devName || "").trim();
   const measurementType = commandType === "status" ? "STATUS" : "RUN_STAT";
-  const measurements = snapshot.measurements || {};
-  for (const rows of [measurements.scada || [], measurements.real || []]) {
-    const row = rows.find((item) => (
-      String(item?.dev_type || "").trim().toUpperCase() === targetType
-      && String(item?.dev_name || "").trim() === targetName
-      && String(item?.meas_type || "").trim().toUpperCase() === measurementType
-    ));
-    if (!row) continue;
-    if (row.valid !== undefined && row.valid !== null && row.valid !== "" && Number(row.valid) === 0) continue;
-    const value = Number(row.value);
-    if (Number.isFinite(value)) return value > 0.5 ? 1 : 0;
-  }
+  const row = (snapshot.measurements?.scada || []).find((item) => (
+    String(item?.dev_type || "").trim().toUpperCase() === targetType
+    && String(item?.dev_name || "").trim() === targetName
+    && String(item?.meas_type || "").trim().toUpperCase() === measurementType
+  ));
+  if (!row) return null;
+  if (row.valid !== undefined && row.valid !== null && row.valid !== "" && Number(row.valid) === 0) return null;
+  const value = Number(row.value);
+  if (Number.isFinite(value)) return value > 0.5 ? 1 : 0;
   return null;
 }
 
@@ -12988,7 +14027,7 @@ function remoteControlCommandRows(devices, snapshot = state.snapshot || {}) {
       ...row,
       key: `${deviceKey(row.dev)}|${row.commandType}`,
       traceKey: commandTraceRunKey(row.dev, row.commandType),
-      name: `${deviceName(row.dev)}.${remoteControlLabel(row.commandType)}`,
+      name: `${deviceType(row.dev)}.${deviceName(row.dev)}.${remoteControlLabel(row.commandType)}`,
       category: "遥控",
       issuedTime,
       commandOrigin: issuedTime.command_origin,
@@ -13009,7 +14048,7 @@ function commandTableTypeLabel(row) {
 
 function commandTableName(row) {
   if (row?.name) return row.name;
-  if (row?.commandType) return `${deviceName(row.dev)}.${remoteControlLabel(row.commandType)}`;
+  if (row?.commandType) return `${deviceType(row.dev)}.${deviceName(row.dev)}.${remoteControlLabel(row.commandType)}`;
   if (row?.setType) return remoteAdjustmentName(row.dev, row.setType);
   return "";
 }
@@ -13107,7 +14146,7 @@ function traineeRemoteControlLiveValue(row, field) {
   if (field === "cancel") {
     return traineeCommandCancelButtonHtml(
       row.cancelName || "",
-      `${deviceName(row.dev)}.${remoteControlLabel(row.commandType)}`,
+      row.name,
     );
   }
   return "";
@@ -13165,9 +14204,9 @@ function renderTraineeCommandRows(rows, activeTab = state.activeControlTab) {
       pending.run_status.has(key) ? "is-pending" : "",
       traceKey === state.selectedCommandTraceKey ? "is-selected" : "",
     ].filter(Boolean).join(" ");
-    return `<tr class="${classes}" data-trainee-command-row-key="${escapeHtml(traceKey)}" data-command-trace-key="${escapeHtml(traceKey)}" data-command-trace-label="${escapeHtml(`${deviceName(row.dev)}.${remoteControlLabel(row.commandType)}`)}" data-run-status-command="${escapeHtml(key)}" title="单击选中曲线，双击进行遥控操作">
+    return `<tr class="${classes}" data-trainee-command-row-key="${escapeHtml(traceKey)}" data-command-trace-key="${escapeHtml(traceKey)}" data-command-trace-label="${escapeHtml(row.name)}" data-run-status-command="${escapeHtml(key)}" title="单击选中曲线，双击进行遥控操作">
       <td>${escapeHtml(deviceIndex(row.dev))}</td>
-      <td>${escapeHtml(`${deviceName(row.dev)}.${remoteControlLabel(row.commandType)}`)}</td>
+      <td>${escapeHtml(row.name)}</td>
       <td>${escapeHtml(deviceName(row.dev))}</td>
       <td>${escapeHtml(deviceType(row.dev))}</td>
       <td class="run-status-command-cell" title="双击进行遥控操作" data-trainee-command-live-field="status">${traineeCommandLiveCellHtml(row, "status", activeTab)}</td>
@@ -13271,6 +14310,15 @@ function effectiveRemoteAdjustmentValue(dev, setType, snapshot = state.snapshot 
   return value === "" || value === undefined || value === null ? undefined : value;
 }
 
+function converterUsesDcPowerSetpoint(dev) {
+  const raw = dev?.raw || {};
+  const hasDcControlType = Object.prototype.hasOwnProperty.call(raw, "dc_control_type")
+    || Object.prototype.hasOwnProperty.call(dev || {}, "dc_control_type");
+  const dcControlType = String(raw.dc_control_type ?? dev?.dc_control_type ?? "").trim().toUpperCase();
+  const mode = String(dev?.mode || raw.control_type || raw.mode || "").trim().toUpperCase();
+  return dcControlType === "P" || (!hasDcControlType && mode === "DCP");
+}
+
 function currentSetValue(dev, setType, snapshot = state.snapshot || {}) {
   const key = `${deviceKey(dev)}|${setType}`;
   if (pending.set_values.has(key)) return pending.set_values.get(key).set_value;
@@ -13279,7 +14327,16 @@ function currentSetValue(dev, setType, snapshot = state.snapshot || {}) {
   const exact = dev.set_values?.[setType];
   if (exact !== undefined) return exact;
   const raw = dev.raw || {};
-  if (setType === "p_set") return raw.p_set ?? raw.p_ac_set ?? raw.pv0 ?? "";
+  if (setType === "p_set") {
+    const dcPriority = converterUsesDcPowerSetpoint(dev);
+    return dev.set_values?.p_set
+      ?? (dcPriority ? dev.set_values?.p_dc_set : dev.set_values?.p_ac_set)
+      ?? (dcPriority ? raw.p_dc_set : raw.p_ac_set)
+      ?? raw.p_set
+      ?? raw.pv0
+      ?? "";
+  }
+  if (raw[setType] !== undefined) return raw[setType];
   if (setType === "q_set") return raw.q_set ?? raw.q_ac_set ?? raw.qv0 ?? "";
   if (setType === "v_set") return raw.v_set ?? raw.v_ac_set ?? "";
   return "";
@@ -13288,13 +14345,15 @@ function currentSetValue(dev, setType, snapshot = state.snapshot || {}) {
 function remoteAdjustmentTypeLabel(setType) {
   return {
     p_set: "P有功设定",
+    p_ac_set: "交流端P有功设定",
+    p_dc_set: "直流端P有功设定",
     q_set: "Q无功设定",
     v_set: "V电压设定",
   }[setType] || setType;
 }
 
 function remoteAdjustmentName(dev, setType) {
-  return `${deviceName(dev)}.${remoteAdjustmentTypeLabel(setType)}`;
+  return `${deviceType(dev)}.${deviceName(dev)}.${remoteAdjustmentTypeLabel(setType)}`;
 }
 
 function remoteAdjustmentMeasurementTypeCandidates(dev, setType) {
@@ -13303,7 +14362,10 @@ function remoteAdjustmentMeasurementTypeCandidates(dev, setType) {
   const measurementKey = setKey.endsWith("_set") ? setKey.slice(0, -4) : setKey;
   const exactType = measurementKey.toUpperCase();
   const quantity = measurementKey.split("_", 1)[0].toUpperCase();
-  const devType = String(dev ? deviceType(dev) : "").trim().toUpperCase();
+  const family = String(dev?.device_family || "").trim().toLowerCase();
+  const domains = new Set((Array.isArray(dev?.terminal_domains) ? dev.terminal_domains : [])
+    .map((value) => String(value || "").trim().toUpperCase())
+    .filter(Boolean));
   const candidates = [];
   const add = (...types) => types.forEach((type) => {
     const normalized = String(type || "").trim().toUpperCase();
@@ -13312,16 +14374,23 @@ function remoteAdjustmentMeasurementTypeCandidates(dev, setType) {
 
   if (measurementKey.includes("_")) add(exactType);
   if (measurementKey.includes("soc")) add("SOC");
-  if (devType.endsWith("GENERATOR")) {
+  if (family === "generator") {
     add(`${quantity}_GEN`);
-  } else if (devType.endsWith("LOAD")) {
+  } else if (family === "load") {
     add(`${quantity}_LOAD`);
-  } else if (devType === "DCACCONVERTER") {
+  } else if (family === "converter" && domains.has("AC") && domains.has("DC")) {
     add(`${quantity}_AC`, `${quantity}_DC`);
-  } else if (devType === "DCDCCONVERTER" || devType === "ACACCONVERTER") {
+  } else if (family === "converter") {
     add(`${quantity}_FROM`, `${quantity}_TO`);
-  } else if (devType === "ESS" || devType === "STORAGE") {
-    add(quantity, `${quantity}_GEN`, `${quantity}_FROM`, `${quantity}_TO`);
+  } else {
+    add(
+      `${quantity}_GEN`,
+      `${quantity}_LOAD`,
+      `${quantity}_AC`,
+      `${quantity}_DC`,
+      `${quantity}_FROM`,
+      `${quantity}_TO`,
+    );
   }
   add(exactType, quantity);
   return candidates;
@@ -14274,6 +15343,7 @@ document.addEventListener("click", (event) => {
     requestAnimationFrame(() => {
       state.selectedMeasurementKey = key;
       renderMeasurements(state.snapshot || {});
+      ensureSelectedMeasurementHistory();
     });
   }
 });
@@ -14461,9 +15531,20 @@ $("renewableControlPeriod").addEventListener("change", updateRenewableSettings);
 [
   "renewableCommandValidMinutes",
   "renewableStepRatio",
-  "converterStepRatio",
-  "dieselDeadbandRatio",
+  "storageStepRatio",
+  "gridFormingStorageProtectionRatio",
+  "dieselPowerProtectionRatio",
   "socDeadband",
+  "optimizationRenewableCurtailmentWeight",
+  "optimizationDieselOutputWeight",
+  "optimizationCurtailmentSquareWeight",
+  "optimizationSourceStorageAdjustmentSquareWeight",
+  "optimizationBalanceDeltaSquareWeight",
+  "optimizationBalanceDeltaWarningKw",
+  "optimizationBalanceToleranceKw",
+  "optimizationBoundToleranceKw",
+  "optimizationFtol",
+  "optimizationMaxIterations",
 ].forEach((id) => $(id)?.addEventListener("change", updateRenewableSettings));
 document.querySelectorAll("[data-renewable-strategy-tab]").forEach((button) => {
   button.addEventListener("click", () => {
@@ -14543,12 +15624,14 @@ if (modelSelector) {
 }
 $("measurementTraceWindow").addEventListener("change", (event) => {
   state.measurementTraceWindowMinutes = Number(event.target.value) || 60;
+  resetChartPeriodOffsets("measurementTrace");
   drawMeasurementTraceChart();
 });
 const commandTraceWindow = $("commandTraceWindow");
 if (commandTraceWindow) {
   commandTraceWindow.addEventListener("change", (event) => {
     state.commandTraceWindowMinutes = Number(event.target.value) || 60;
+    resetChartPeriodOffsets("commandTrace");
     drawCommandTraceChart();
   });
 }
@@ -14556,10 +15639,46 @@ const renewableTrendWindow = $("renewableTrendWindow");
 if (renewableTrendWindow) {
   renewableTrendWindow.addEventListener("change", (event) => {
     state.renewableTrendWindowMinutes = Number(event.target.value) || 60;
+    resetChartPeriodOffsets("renewableTrend");
     drawRenewableTrendChart();
   });
 }
 renderRenewableTrendSeriesTree();
+const renewableTrendSeriesFilter = $("renewableTrendSeriesFilter");
+if (renewableTrendSeriesFilter) {
+  renewableTrendSeriesFilter.value = state.renewableTrendSeriesFilter;
+  renewableTrendSeriesFilter.addEventListener("input", (event) => {
+    state.renewableTrendSeriesFilter = event.target.value || "";
+    applyRenewableTrendSeriesFilters(state.renewableControl.lastPlan?.metrics || {});
+  });
+}
+const renewableTrendSelectedOnly = $("renewableTrendSelectedOnly");
+if (renewableTrendSelectedOnly) {
+  renewableTrendSelectedOnly.checked = state.renewableTrendSelectedOnly;
+  renewableTrendSelectedOnly.addEventListener("change", (event) => {
+    state.renewableTrendSelectedOnly = Boolean(event.target.checked);
+    applyRenewableTrendSeriesFilters(state.renewableControl.lastPlan?.metrics || {});
+  });
+}
+const renewableTrendClearAll = $("renewableTrendClearAll");
+if (renewableTrendClearAll) {
+  renewableTrendClearAll.addEventListener("click", () => {
+    setRenewableTrendBatchSeriesVisibility(
+      false,
+      state.renewableControl.lastPlan?.metrics || {},
+    );
+  });
+}
+const renewableTrendSelectAll = $("renewableTrendSelectAll");
+if (renewableTrendSelectAll) {
+  renewableTrendSelectAll.addEventListener("click", () => {
+    setRenewableTrendBatchSeriesVisibility(
+      true,
+      state.renewableControl.lastPlan?.metrics || {},
+    );
+  });
+}
+applyRenewableTrendSeriesFilters(state.renewableControl.lastPlan?.metrics || {});
 const renewableTrendSeriesPanel = $("renewableTrendSeriesPanel");
 if (renewableTrendSeriesPanel) {
   renewableTrendSeriesPanel.addEventListener("change", (event) => {
@@ -14578,6 +15697,9 @@ if (renewableTrendSeriesPanel) {
 initTraceChartInteractions("measurementTrace", "measurementTraceChart", drawMeasurementTraceChart);
 initTraceChartInteractions("commandTrace", "commandTraceChart", drawCommandTraceChart);
 initTraceChartInteractions("renewableTrend", "renewableTrendChart", drawRenewableTrendChart);
+initChartPeriodNavigation("measurementTrace", measurementTraceWindowRange, drawMeasurementTraceChart);
+initChartPeriodNavigation("commandTrace", commandTraceWindowRange, drawCommandTraceChart);
+initChartPeriodNavigation("renewableTrend", renewableTrendWindowRange, drawRenewableTrendChart);
 const curveDisplayChart = $("curveDisplayChart");
 if (curveDisplayChart) {
   let lastCurveDisplayPointerDownAt = 0;

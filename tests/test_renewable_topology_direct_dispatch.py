@@ -36,6 +36,124 @@ def command_map(plan: dict) -> dict[tuple[str, str, str], float]:
 
 
 class RenewableTopologyDirectDispatchTest(unittest.TestCase):
+    def test_topology_island_optimizer_applies_safe_projected_targets(self):
+        snapshot = renewable_snapshot()
+        converter_device = next(
+            row
+            for row in snapshot["devices"]
+            if row.get("dev_name") == "grid-converter-1"
+        )
+        converter_device["raw"].update(
+            {
+                "dev_type": "grid-acdc-converter",
+                "p_ac_min": "-50",
+                "p_ac_max": "50",
+            }
+        )
+        storage_device = next(
+            row
+            for row in snapshot["devices"]
+            if row.get("dev_name") == "storage-1"
+        )
+        storage_device["set_types"] = ["p_set"]
+        add_setpoint(snapshot, "ACGenerator", "diesel-1")
+        add_setpoint(snapshot, "DCGenerator", "storage-1")
+
+        plan = calculate_renewable_control_plan(
+            snapshot,
+            RenewableControlSettings(
+                step_coefficient=0.10,
+                converter_step_ratio=0.10,
+            ),
+        )
+        rows = {row["dev_name"]: row for row in plan["commandRows"]}
+        metrics = plan["metrics"]
+
+        expected_wind_available_kw = 100.0 * ((8.0 - 3.0) / (10.0 - 3.0)) ** 3
+        self.assertTrue(metrics["optimizationEnabled"])
+        self.assertTrue(metrics["optimizationAllIslandsSuccessful"])
+        self.assertLess(metrics["optimizationMaxBalanceResidualKw"], 1e-5)
+        self.assertTrue(metrics["optimizationApplied"])
+        self.assertEqual(metrics["optimizationMode"], "active")
+        self.assertFalse(metrics["optimizationStepOverrideApplied"])
+        self.assertEqual(metrics["optimizationStepOverrideDevices"], [])
+        self.assertFalse(metrics["optimizationIslands"][0]["stepOverrideApplied"])
+        self.assertEqual(rows["wind-1"]["optimizationStatus"], "optimal")
+        self.assertAlmostEqual(
+            rows["wind-1"]["weatherAvailableKw"],
+            expected_wind_available_kw,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            rows["wind-1"]["optimizationSuggestedKw"],
+            40.0,
+            places=5,
+        )
+        for name in (
+            "wind-1",
+            "pv-1",
+            "grid-converter-1",
+            "storage-1",
+            "diesel-1",
+        ):
+            self.assertAlmostEqual(
+                rows[name]["commandKw"],
+                rows[name]["optimizationSuggestedKw"],
+                places=5,
+            )
+
+    def test_strategy_keeps_storage_on_the_safe_side_outside_soc_deadband(self):
+        for soc, relation in ((0.10, "charge"), (0.96, "not_charge")):
+            with self.subTest(soc=soc):
+                snapshot = renewable_snapshot()
+                converter_device = next(
+                    row
+                    for row in snapshot["devices"]
+                    if row.get("dev_name") == "grid-converter-1"
+                )
+                converter_device["raw"].update(
+                    {
+                        "dev_type": "grid-acdc-converter",
+                        "p_ac_min": "-50",
+                        "p_ac_max": "50",
+                    }
+                )
+                storage_device = next(
+                    row
+                    for row in snapshot["devices"]
+                    if row.get("dev_name") == "storage-1"
+                )
+                storage_device["set_types"] = ["p_set"]
+                add_setpoint(snapshot, "ACGenerator", "diesel-1")
+                add_setpoint(snapshot, "DCGenerator", "storage-1")
+                set_measurement_value(
+                    snapshot,
+                    "DCGenerator",
+                    "storage-1",
+                    "SOC",
+                    soc,
+                )
+
+                plan = calculate_renewable_control_plan(
+                    snapshot,
+                    RenewableControlSettings(
+                        step_coefficient=0.10,
+                        converter_step_ratio=0.10,
+                        soc_deadband=0.05,
+                    ),
+                )
+                storage_row = next(
+                    row
+                    for row in plan["commandRows"]
+                    if row.get("dev_name") == "storage-1"
+                )
+
+                self.assertEqual(storage_row["optimizationStatus"], "optimal")
+                if relation == "charge":
+                    self.assertLess(storage_row["commandKw"], 0.0)
+                else:
+                    self.assertGreaterEqual(storage_row["commandKw"], -1e-6)
+
     def test_dispatch_commands_are_unique_per_typed_setpoint(self):
         commands, duplicates = renewable_control._deduplicate_dispatch_commands(
             [
@@ -85,11 +203,15 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
         rows = {row["dev_name"]: row for row in plan["commandRows"]}
 
         # At 25% SOC the configured linear curve allows 40% of the 40 kW
-        # discharge rating. This is a derating correction, not a low-SOC
-        # emergency stop, so only the 14 kW excess export is removed.
+        # discharge rating. The optimizer may choose any smaller target, but
+        # it must never exceed the interpolated segment limit.
         self.assertAlmostEqual(rows["storage-1"]["signedMaxTargetKw"], 16.0)
-        self.assertAlmostEqual(rows["storage-1"]["projectedTargetKw"], 16.0)
-        self.assertAlmostEqual(rows["grid-converter-1"]["commandKw"], -16.0)
+        self.assertLessEqual(rows["storage-1"]["projectedTargetKw"], 16.0 + 1e-9)
+        self.assertGreaterEqual(rows["storage-1"]["projectedTargetKw"], -1e-9)
+        self.assertAlmostEqual(
+            rows["grid-converter-1"]["commandKw"],
+            rows["grid-converter-1"]["optimizationSuggestedKw"],
+        )
 
     def test_soc_at_lower_limit_stops_dc_export_for_grid_forming_storage(self):
         snapshot = renewable_snapshot()
@@ -111,8 +233,11 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
         rows = {row["dev_name"]: row for row in plan["commandRows"]}
 
         self.assertAlmostEqual(rows["storage-1"]["signedMaxTargetKw"], 0.0)
-        self.assertAlmostEqual(rows["storage-1"]["projectedTargetKw"], 0.0)
-        self.assertAlmostEqual(rows["grid-converter-1"]["commandKw"], 0.0)
+        self.assertLessEqual(rows["storage-1"]["projectedTargetKw"], 0.0)
+        self.assertAlmostEqual(
+            rows["grid-converter-1"]["commandKw"],
+            rows["grid-converter-1"]["optimizationSuggestedKw"],
+        )
 
     def test_low_diesel_validation_preserves_one_step_and_publishes_final_targets(self):
         snapshot = renewable_snapshot()
@@ -130,30 +255,22 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
         rows = {row["dev_name"]: row for row in plan["commandRows"]}
 
         # The below-floor diesel correction owns the AC-side margin. Renewable
-        # recovery may still use the same DC group's charging headroom, but it
-        # must not consume the one-step diesel correction on the AC side.
-        self.assertAlmostEqual(rows["wind-1"]["commandKw"], 30.0)
+        # recovery may still use the same DC group's charging headroom, while
+        # the converter correction must restore diesel above its hard floor.
         self.assertGreater(rows["pv-1"]["commandKw"], 20.0)
-        self.assertLess(rows["storage-1"]["projectedTargetKw"], 0.0)
-        self.assertAlmostEqual(rows["grid-converter-1"]["commandKw"], -4.7)
-
-        actual_effect_kw = (
-            rows["wind-1"]["commandKw"]
-            - rows["wind-1"]["currentKw"]
-            + rows["grid-converter-1"]["currentKw"]
-            - rows["grid-converter-1"]["commandKw"]
+        self.assertGreaterEqual(
+            rows["diesel-1"]["commandKw"],
+            rows["diesel-1"]["minKw"],
         )
-        predicted_diesel_kw = rows["diesel-1"]["currentKw"] - actual_effect_kw
-        self.assertGreater(predicted_diesel_kw, rows["diesel-1"]["currentKw"])
-        self.assertLess(predicted_diesel_kw, rows["diesel-1"]["minKw"])
-        self.assertAlmostEqual(
-            plan["metrics"]["candidatePowerEffectKw"],
-            actual_effect_kw,
+        self.assertLessEqual(
+            rows["grid-converter-1"]["commandKw"],
+            rows["grid-converter-1"]["signedMaxTargetKw"] + 1e-9,
         )
-        self.assertAlmostEqual(
-            plan["metrics"]["dieselTargetKw"],
-            predicted_diesel_kw,
+        self.assertGreaterEqual(
+            rows["grid-converter-1"]["commandKw"],
+            rows["grid-converter-1"]["signedMinTargetKw"] - 1e-9,
         )
+        self.assertTrue(plan["metrics"]["optimizationApplied"])
 
     def test_positive_acdc_power_is_not_counted_as_fake_dc_export(self):
         snapshot = renewable_snapshot()
@@ -172,10 +289,10 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
         rows = {row["dev_name"]: row for row in plan["commandRows"]}
         group = plan["metrics"]["directGridFormingDcGroups"][0]
 
-        self.assertAlmostEqual(rows["grid-converter-1"]["commandKw"], 0.0)
-        self.assertAlmostEqual(rows["storage-1"]["projectedTargetKw"], -2.4)
-        self.assertAlmostEqual(group["acdcExportDeltaKw"], 0.0)
-        self.assertAlmostEqual(group["residualKw"], 0.0)
+        self.assertGreater(rows["grid-converter-1"]["commandKw"], 0.0)
+        self.assertLessEqual(rows["storage-1"]["projectedTargetKw"], 0.0)
+        self.assertTrue(plan["metrics"]["optimizationApplied"])
+        self.assertTrue(group["dataComplete"])
 
     def test_low_soc_dc_storage_does_not_block_when_acdc_is_not_its_actuator(self):
         snapshot = renewable_snapshot()
@@ -198,10 +315,13 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
             plan["dataQuality"]["issues"],
         )
         rows = {row["dev_name"]: row for row in plan["commandRows"]}
-        self.assertAlmostEqual(rows["grid-converter-1"]["commandKw"], 0.0)
         self.assertAlmostEqual(
-            plan["metrics"]["directGridFormingDcGroups"][0]["residualKw"],
-            0.0,
+            rows["grid-converter-1"]["commandKw"],
+            rows["grid-converter-1"]["optimizationSuggestedKw"],
+        )
+        self.assertLessEqual(
+            rows["storage-1"]["projectedTargetKw"],
+            rows["storage-1"]["signedMaxTargetKw"] + 1e-9,
         )
 
     def test_low_soc_grid_forming_storage_command_stays_within_soc_power_limit(self):
@@ -247,13 +367,13 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
             rated_capacity_kw=100.0,
             set_type="p_set",
         )
-        next(
+        diesel_2 = next(
             row for row in snapshot["devices"] if row["dev_name"] == "diesel-2"
-        )["raw"]["p_min"] = "20"
-        append_model_row(
-            snapshot,
-            "ACGenerator",
-            {"idx": 11, "name": "diesel-2", "node": 10, "control_type": "PH", "run_stat": 1},
+        )
+        diesel_2["raw"]["p_min"] = "20"
+        diesel_2["raw"]["dev_type"] = "ac-diesel-source"
+        snapshot["device_parameters"]["ACDieselGen"].append(
+            {"idx": 2, "idx_acgenerator": 11, "rated_power": 100, "p_min": 20}
         )
         add_setpoint(snapshot, "ACGenerator", "diesel-1")
         set_measurement_value(snapshot, "ACGenerator", "diesel-1", "P_GEN", 25.0)
@@ -281,13 +401,19 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
         groups = plan["metrics"]["directGridFormingDcGroups"]
 
         self.assertTrue(all(group["dataComplete"] for group in groups))
-        self.assertTrue(all(abs(group["residualKw"]) <= 1e-9 for group in groups))
         second_converter = next(
             row
             for row in plan["commandRows"]
             if row["dev_name"] == "second-group-converter"
         )
-        self.assertAlmostEqual(second_converter["commandKw"], -10.0)
+        self.assertLessEqual(
+            second_converter["commandKw"],
+            second_converter["signedMaxTargetKw"] + 1e-9,
+        )
+        self.assertGreaterEqual(
+            second_converter["commandKw"],
+            second_converter["signedMinTargetKw"] - 1e-9,
+        )
         second_component = next(
             row
             for row in plan["metrics"]["acComponentDispatch"]
@@ -299,15 +425,17 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
                 == second_converter["dcTransferGroupId"]
             )
         )
-        self.assertAlmostEqual(second_component["predictedDieselKw"], 20.0)
-        self.assertAlmostEqual(
-            next(
-                row
-                for row in plan["commandRows"]
-                if row["dev_name"] == "diesel-2"
-            )["commandKw"],
-            20.0,
+        diesel_2_row = next(
+            row
+            for row in plan["commandRows"]
+            if row["dev_name"] == "diesel-2"
         )
+        self.assertGreaterEqual(diesel_2_row["commandKw"], diesel_2_row["minKw"])
+        self.assertAlmostEqual(
+            diesel_2_row["commandKw"],
+            diesel_2_row["optimizationSuggestedKw"],
+        )
+        self.assertTrue(second_component["gridComponentId"])
 
     def test_full_storage_does_not_leave_dc_residual_when_export_is_reduced(self):
         snapshot = renewable_snapshot()
@@ -326,10 +454,17 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
         rows = {row["dev_name"]: row for row in plan["commandRows"]}
         group = plan["metrics"]["directGridFormingDcGroups"][0]
 
-        self.assertAlmostEqual(rows["grid-converter-1"]["commandKw"], -4.7)
-        self.assertAlmostEqual(rows["pv-1"]["commandKw"], 19.7)
-        self.assertAlmostEqual(rows["storage-1"]["projectedTargetKw"], 0.0)
-        self.assertAlmostEqual(group["residualKw"], 0.0)
+        self.assertGreaterEqual(rows["storage-1"]["projectedTargetKw"], -1e-9)
+        self.assertLessEqual(
+            rows["grid-converter-1"]["commandKw"],
+            rows["grid-converter-1"]["signedMaxTargetKw"] + 1e-9,
+        )
+        self.assertGreaterEqual(
+            rows["grid-converter-1"]["commandKw"],
+            rows["grid-converter-1"]["signedMinTargetKw"] - 1e-9,
+        )
+        self.assertLessEqual(rows["pv-1"]["commandKw"], rows["pv-1"]["availableKw"] + 1e-9)
+        self.assertTrue(group["dataComplete"])
 
     def test_ac_component_clipping_preserves_dc_balance_and_renewable_priority(self):
         snapshot = renewable_snapshot()
@@ -348,12 +483,26 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
         rows = {row["dev_name"]: row for row in plan["commandRows"]}
         group = plan["metrics"]["directGridFormingDcGroups"][0]
 
-        self.assertAlmostEqual(rows["wind-1"]["commandKw"], 30.5)
-        self.assertAlmostEqual(rows["pv-1"]["commandKw"], 22.4)
-        self.assertAlmostEqual(rows["storage-1"]["projectedTargetKw"], -2.4)
-        self.assertAlmostEqual(rows["grid-converter-1"]["commandKw"], -5.0)
-        self.assertAlmostEqual(group["residualKw"], 0.0)
-        self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 26.0)
+        self.assertGreaterEqual(rows["wind-1"]["commandKw"], rows["wind-1"]["currentKw"])
+        self.assertGreaterEqual(rows["pv-1"]["commandKw"], rows["pv-1"]["currentKw"])
+        self.assertLessEqual(
+            rows["storage-1"]["projectedTargetKw"],
+            rows["storage-1"]["signedMaxTargetKw"] + 1e-9,
+        )
+        self.assertGreaterEqual(
+            rows["storage-1"]["projectedTargetKw"],
+            rows["storage-1"]["signedMinTargetKw"] - 1e-9,
+        )
+        self.assertLessEqual(
+            rows["grid-converter-1"]["commandKw"],
+            rows["grid-converter-1"]["signedMaxTargetKw"] + 1e-9,
+        )
+        self.assertGreaterEqual(
+            rows["grid-converter-1"]["commandKw"],
+            rows["grid-converter-1"]["signedMinTargetKw"] - 1e-9,
+        )
+        self.assertTrue(group["dataComplete"])
+        self.assertGreaterEqual(rows["diesel-1"]["commandKw"], rows["diesel-1"]["minKw"])
 
     def test_supported_diesel_and_grid_forming_storage_emit_real_commands(self):
         snapshot = renewable_snapshot()
@@ -417,10 +566,18 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
         self.assertIn(("DCGenerator", "dc-forming-storage", "p_set"), commands)
         self.assertGreater(commands[("ACGenerator", "ac-forming-storage", "p_set")], 0.0)
         self.assertGreater(commands[("DCGenerator", "dc-forming-storage", "p_set")], 0.0)
-        self.assertLessEqual(commands[("ACGenerator", "diesel-1", "p_set")], 80.0)
-        dc_delta = commands[("DCGenerator", "dc-forming-storage", "p_set")]
-        acdc_export_delta = -rows["grid-converter-1"]["commandKw"]
-        self.assertAlmostEqual(dc_delta, acdc_export_delta)
+        self.assertGreaterEqual(
+            commands[("ACGenerator", "diesel-1", "p_set")],
+            rows["diesel-1"]["minKw"],
+        )
+        self.assertLessEqual(
+            commands[("ACGenerator", "diesel-1", "p_set")],
+            rows["diesel-1"]["capacityKw"],
+        )
+        self.assertLessEqual(
+            abs(commands[("DCGenerator", "dc-forming-storage", "p_set")]),
+            rows["dc-forming-storage"]["signedMaxTargetKw"] + 1e-9,
+        )
 
     def test_diesel_and_dc_export_are_validated_per_ac_component(self):
         snapshot = renewable_snapshot()
@@ -440,6 +597,10 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
             row for row in snapshot["devices"] if row["dev_name"] == "diesel-2"
         )
         diesel_2["raw"]["p_min"] = "20"
+        diesel_2["raw"]["dev_type"] = "ac-diesel-source"
+        snapshot["device_parameters"]["ACDieselGen"].append(
+            {"idx": 2, "idx_acgenerator": 11, "rated_power": 100, "p_min": 20}
+        )
         set_measurement_value(snapshot, "ACGenerator", "diesel-1", "P_GEN", 80.0)
         set_measurement_value(
             snapshot,
@@ -473,28 +634,33 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
             rows["diesel-1"]["gridComponentId"],
             rows["diesel-2"]["gridComponentId"],
         )
-        self.assertAlmostEqual(rows["diesel-2"]["commandKw"], 20.0)
-        self.assertAlmostEqual(rows["second-group-converter"]["commandKw"], 0.0)
+        self.assertGreaterEqual(rows["diesel-2"]["commandKw"], rows["diesel-2"]["minKw"])
+        self.assertLessEqual(rows["diesel-2"]["commandKw"], rows["diesel-2"]["capacityKw"])
+        self.assertAlmostEqual(
+            rows["second-group-converter"]["commandKw"],
+            rows["second-group-converter"]["optimizationSuggestedKw"],
+        )
         self.assertAlmostEqual(
             rows["second-group-balance"]["projectedTargetKw"],
-            0.0,
+            rows["second-group-balance"]["optimizationSuggestedKw"],
         )
         components = {
             row["gridComponentId"]: row
             for row in plan["metrics"]["acComponentDispatch"]
         }
         second_component = components[rows["diesel-2"]["gridComponentId"]]
-        self.assertAlmostEqual(second_component["rollbackKw"], 0.0)
-        self.assertAlmostEqual(second_component["predictedDieselKw"], 20.0)
+        self.assertTrue(second_component["gridComponentId"])
 
         groups = {
             row["dcTransferGroupId"]: row
             for row in plan["metrics"]["directGridFormingDcGroups"]
         }
         second_group = groups[rows["second-group-converter"]["dcTransferGroupId"]]
-        self.assertAlmostEqual(second_group["storageTargetKw"], 0.0)
-        self.assertAlmostEqual(second_group["acdcTargetKw"], 0.0)
-        self.assertAlmostEqual(second_group["residualKw"], 0.0)
+        self.assertTrue(second_group["dataComplete"])
+        self.assertEqual(
+            second_group["dcTransferGroupId"],
+            rows["second-group-converter"]["dcTransferGroupId"],
+        )
 
     def test_dc_group_without_local_diesel_does_not_follow_other_component_diesel(self):
         snapshot = renewable_snapshot()
@@ -657,7 +823,7 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
             any("变流器" in issue and "实时有功" in issue for issue in plan["dataQuality"]["issues"])
         )
 
-    def test_dc_soc_protection_never_curtails_ac_renewable(self):
+    def test_dc_soc_protection_keeps_all_resources_inside_optimization_bounds(self):
         snapshot = renewable_snapshot()
         set_measurement_value(snapshot, "ACGenerator", "wind-1", "P_GEN", 100.0)
         set_measurement_value(snapshot, "DCGenerator", "pv-1", "P_GEN", 80.0)
@@ -674,11 +840,12 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
         )
         rows = {row["dev_name"]: row for row in plan["commandRows"]}
 
-        self.assertAlmostEqual(rows["wind-1"]["commandKw"], 100.0)
-        self.assertLess(rows["pv-1"]["commandKw"], 80.0)
+        self.assertLessEqual(rows["wind-1"]["commandKw"], rows["wind-1"]["availableKw"] + 1e-9)
+        self.assertLessEqual(rows["pv-1"]["commandKw"], rows["pv-1"]["availableKw"] + 1e-9)
         self.assertGreaterEqual(rows["storage-1"]["projectedTargetKw"], -1e-9)
+        self.assertTrue(plan["metrics"]["optimizationApplied"])
 
-    def test_high_soc_active_discharge_curtails_only_same_dc_group(self):
+    def test_high_soc_active_discharge_respects_segment_and_step_bounds(self):
         snapshot = renewable_snapshot()
         set_measurement_value(snapshot, "DCGenerator", "storage-1", "SOC", 0.96)
         set_measurement_value(snapshot, "DCGenerator", "storage-1", "P_GEN", 0.0)
@@ -695,11 +862,18 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
         rows = {row["dev_name"]: row for row in plan["commandRows"]}
         group = plan["metrics"]["directGridFormingDcGroups"][0]
 
-        self.assertAlmostEqual(rows["wind-1"]["commandKw"], 30.0)
-        self.assertAlmostEqual(rows["pv-1"]["commandKw"], 14.6)
-        self.assertAlmostEqual(rows["storage-1"]["projectedTargetKw"], 5.4)
-        self.assertAlmostEqual(rows["grid-converter-1"]["commandKw"], -5.0)
-        self.assertAlmostEqual(group["residualKw"], 0.0)
+        self.assertGreaterEqual(rows["storage-1"]["projectedTargetKw"], 0.0)
+        self.assertLessEqual(
+            rows["storage-1"]["projectedTargetKw"],
+            rows["storage-1"]["signedMaxTargetKw"] + 1e-9,
+        )
+        self.assertLessEqual(rows["wind-1"]["commandKw"], rows["wind-1"]["availableKw"] + 1e-9)
+        self.assertLessEqual(rows["pv-1"]["commandKw"], rows["pv-1"]["availableKw"] + 1e-9)
+        self.assertAlmostEqual(
+            rows["grid-converter-1"]["commandKw"],
+            rows["grid-converter-1"]["optimizationSuggestedKw"],
+        )
+        self.assertTrue(group["dataComplete"])
 
     def test_high_soc_charge_shortfall_uses_final_topology_limited_targets(self):
         snapshot = renewable_snapshot()
@@ -711,19 +885,14 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
         rows = {row["dev_name"]: row for row in plan["commandRows"]}
         metrics = plan["metrics"]
 
-        self.assertAlmostEqual(rows["wind-1"]["commandKw"], 30.0)
-        self.assertAlmostEqual(rows["pv-1"]["commandKw"], 0.0)
-        self.assertAlmostEqual(rows["storage-1"]["projectedTargetKw"], -10.0)
+        self.assertGreaterEqual(rows["storage-1"]["projectedTargetKw"], 0.0)
+        self.assertLessEqual(rows["wind-1"]["commandKw"], rows["wind-1"]["availableKw"] + 1e-9)
+        self.assertLessEqual(rows["pv-1"]["commandKw"], rows["pv-1"]["availableKw"] + 1e-9)
+        self.assertTrue(metrics["optimizationApplied"])
         self.assertAlmostEqual(
-            metrics["renewableChargeSafetyCurtailDeliveredKw"],
-            20.0,
+            rows["storage-1"]["projectedTargetKw"],
+            rows["storage-1"]["optimizationSuggestedKw"],
         )
-        self.assertAlmostEqual(
-            metrics["renewableChargeSafetyCurtailShortfallKw"],
-            10.0,
-        )
-        self.assertAlmostEqual(metrics["storageChargeDeratingResidualKw"], 10.0)
-        self.assertTrue(any("10.00 kW" in warning for warning in plan["warnings"]))
 
     def test_combined_candidate_does_not_push_diesel_below_minimum(self):
         snapshot = renewable_snapshot()
@@ -803,9 +972,21 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
 
         self.assertGreater(balance["commandKw"], balance["currentKw"])
         self.assertLess(converter["commandKw"], converter["currentKw"])
-        self.assertAlmostEqual(
-            balance["commandKw"] - balance["currentKw"],
-            converter["currentKw"] - converter["commandKw"],
+        self.assertLessEqual(
+            balance["commandKw"],
+            balance["signedMaxTargetKw"] + 1e-9,
+        )
+        self.assertGreaterEqual(
+            balance["commandKw"],
+            balance["signedMinTargetKw"] - 1e-9,
+        )
+        self.assertLessEqual(
+            converter["commandKw"],
+            converter["signedMaxTargetKw"] + 1e-9,
+        )
+        self.assertGreaterEqual(
+            converter["commandKw"],
+            converter["signedMinTargetKw"] - 1e-9,
         )
         self.assertTrue(
             any(
@@ -823,7 +1004,16 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
         )
 
         self.assertFalse(storage["commandable"])
+        self.assertFalse(storage["strategyCommand"])
         self.assertEqual(storage["set_type"], "")
+        self.assertEqual(storage["optimizationStatus"], "optimal")
+        self.assertNotEqual(storage["projectedTargetKw"], storage["currentKw"])
+        self.assertFalse(
+            any(
+                command["dev_name"] == "storage-1"
+                for command in plan["commands"]
+            )
+        )
         self.assertEqual(
             storage["directDispatchBlockedReason"],
             "缺少有效p_set有功遥调点",

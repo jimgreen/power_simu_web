@@ -69,384 +69,353 @@ symbol{overflow:visible}
   <title>交流风力发电机</title>
   <g transform="rotate(0) scale(-1 1)">
   <g transform="scale(1.5)"><g fill="#ffffff" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="0" cy="0" r="6"></circle><path d="M 0 0 L 0 -18 M 0 0 L 16 10 M 0 0 L -16 10"></path><path d="M 0 6 V 22"></path></g></g>
-  
+
   <g transform="translate(-79 -3.008)">
   <line x1="-46" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.4" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_ACGenerator_ac-wind-source_default_2" viewBox="-75 -47 150 94" overflow="visible">
   <title>交流风力发电机</title>
   <g transform="rotate(0) scale(1 1)">
   <g transform="scale(1.5)"><g fill="#ffffff" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="0" cy="0" r="6"></circle><path d="M 0 0 L 0 -18 M 0 0 L 16 10 M 0 0 L -16 10"></path><path d="M 0 6 V 22"></path></g></g>
-  
+
   <g transform="translate(79 0)">
   <line x1="-46" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.4" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
-  </g>
-</symbol>
-<symbol id="symbol_ACGenerator_ac-source_default" viewBox="-75 -50 150 100" overflow="visible">
-  <title>交流电源</title>
-  <g transform="rotate(0) scale(-1 1)">
-  <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="0" cy="0" r="24.666666666666668" fill="#eff6ff"></circle><path d="M -14.306666666666667 1 C -8.633333333333333 -9.36, -2.96 -9.36, 0 1 C 3.453333333333334 11.36, 9.373333333333333 11.36, 14.8 1"></path><path d="M 14.306666666666667 -18.746666666666666 L 23.68 -18.746666666666666 L 17.76 -6.906666666666668 L 26.640000000000004 -6.906666666666668"></path></g></g>
-  <g transform="scale(1.5)"><g transform="translate(33.66667 -10.36) matrix(-1 0 0 1 0 0)"><text x="0" y="0" fill="currentColor" stroke="none" font-size="10" font-weight="800" text-anchor="middle">AC</text></g></g>
-  <g transform="translate(79 0)">
-  <line x1="42" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
-</g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_DCACConverter_acdc-converter_default" viewBox="-75 -44 150 88" overflow="visible">
   <title>ACDC变流器</title>
   <g transform="rotate(0) scale(1 1)">
   <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="-42" y="-21.333333333333332" width="84" height="42.666666666666664" rx="6" fill="#ecfeff"></rect><path d="M -41 0 C -38 -9, -33 -9, -30 0 C -27 9, -22 9, -19 0"></path><g><path d="M 22 -7 H 36 M 25 7 H 33"></path><path d="M 29 -7 V 7" stroke-width="1.4"></path></g><path d="M -7 0 H 7 M 2 -5 L 7 0 L 2 5"></path></g></g>
-  
+
   <g transform="translate(-87 0)">
   <line x1="24" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.2" stroke-linecap="round"/>
 </g>
 <g transform="translate(87 0)">
   <line x1="-24" y1="0" x2="0" y2="0" stroke="#0891b2" stroke-width="2.2" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
-  </g>
-</symbol>
-<symbol id="symbol_DCACConverter_acdc-converter_default_2" viewBox="-75 -44 150 88" overflow="visible">
-  <title>ACDC变流器</title>
-  <g transform="rotate(180) scale(1 1)">
-  <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="-42" y="-21.333333333333332" width="84" height="42.666666666666664" rx="6" fill="#ecfeff"></rect><path d="M -41 0 C -38 -9, -33 -9, -30 0 C -27 9, -22 9, -19 0"></path><g><path d="M 22 -7 H 36 M 25 7 H 33"></path><path d="M 29 -7 V 7" stroke-width="1.4"></path></g><path d="M -7 0 H 7 M 2 -5 L 7 0 L 2 5"></path></g></g>
-  
-  <g transform="translate(-87 0)">
-  <line x1="24" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.2" stroke-linecap="round"/>
-</g>
-<g transform="translate(87 0)">
-  <line x1="-24" y1="0" x2="0" y2="0" stroke="#0891b2" stroke-width="2.2" stroke-linecap="round"/>
-</g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_DCBreak_dc-breaker_state_0" viewBox="-75 -48 150 96" overflow="visible">
   <title>直流断路器</title>
   <g transform="rotate(0) scale(1 1)">
   <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="-42" y1="0" x2="-20" y2="0"></line><line x1="20" y1="0" x2="42" y2="0"></line><rect x="-20" y="-15" width="40" height="30" rx="5" fill="#eef2ff"></rect><path d="M -10 -8 V 8 M 10 -8 V 8"></path><path d="M -8 8 L 8 -8"></path></g></g>
-  
+
   <g transform="translate(-79 0)">
   <line x1="16" y1="0" x2="0" y2="0" stroke="#0891b2" stroke-width="2.5" stroke-linecap="round"/>
 </g>
 <g transform="translate(79 0)">
   <line x1="-16" y1="0" x2="0" y2="0" stroke="#0891b2" stroke-width="2.5" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_DCBreak_dc-breaker_state_1" viewBox="-75 -48 150 96" overflow="visible">
   <title>直流断路器</title>
   <g transform="rotate(0) scale(1 1)">
   <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="-42" y1="0" x2="-20" y2="0"></line><line x1="20" y1="0" x2="42" y2="0"></line><rect x="-20" y="-15" width="40" height="30" rx="5" fill="#eef2ff"></rect><path d="M -10 -8 V 8 M 10 -8 V 8"></path><path d="M -10 0 H 10"></path></g></g>
-  
+
   <g transform="translate(-79 0)">
   <line x1="16" y1="0" x2="0" y2="0" stroke="#0891b2" stroke-width="2.5" stroke-linecap="round"/>
 </g>
 <g transform="translate(79 0)">
   <line x1="-16" y1="0" x2="0" y2="0" stroke="#0891b2" stroke-width="2.5" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_DCBreak_dc-breaker_state_0_2" viewBox="-75 -48 150 96" overflow="visible">
   <title>直流断路器</title>
   <g transform="rotate(90) scale(1 1)">
   <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="-42" y1="0" x2="-20" y2="0"></line><line x1="20" y1="0" x2="42" y2="0"></line><rect x="-20" y="-15" width="40" height="30" rx="5" fill="#eef2ff"></rect><path d="M -10 -8 V 8 M 10 -8 V 8"></path><path d="M -8 8 L 8 -8"></path></g></g>
-  
+
   <g transform="translate(-79 0)">
   <line x1="16" y1="0" x2="0" y2="0" stroke="#0891b2" stroke-width="2.5" stroke-linecap="round"/>
 </g>
 <g transform="translate(79 0)">
   <line x1="-16" y1="0" x2="0" y2="0" stroke="#0891b2" stroke-width="2.5" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_DCBreak_dc-breaker_state_1_2" viewBox="-75 -48 150 96" overflow="visible">
   <title>直流断路器</title>
   <g transform="rotate(90) scale(1 1)">
   <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="-42" y1="0" x2="-20" y2="0"></line><line x1="20" y1="0" x2="42" y2="0"></line><rect x="-20" y="-15" width="40" height="30" rx="5" fill="#eef2ff"></rect><path d="M -10 -8 V 8 M 10 -8 V 8"></path><path d="M -10 0 H 10"></path></g></g>
-  
+
   <g transform="translate(-79 0)">
   <line x1="16" y1="0" x2="0" y2="0" stroke="#0891b2" stroke-width="2.5" stroke-linecap="round"/>
 </g>
 <g transform="translate(79 0)">
   <line x1="-16" y1="0" x2="0" y2="0" stroke="#0891b2" stroke-width="2.5" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_DCRealBs_dc-bus-vertical_default" viewBox="-75 -18 150 36" overflow="visible">
   <title>直流母线（竖向）</title>
   <g transform="rotate(90) scale(11.66667 1)">
   <g transform="scale(1.5)"><rect class="bus-glyph" x="-50" y="-4" width="100" height="8" fill="currentColor" stroke="currentColor" stroke-width="0"></rect></g>
-  
-  
-  
-  
-  
-  
+
+
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_ACBranch_ac-routable-line_default" viewBox="-75 -18 150 36" overflow="visible">
   <title>交流线路（自适应）</title>
   <g transform="rotate(0) scale(1 1)">
   <g class="routable-line-device-glyph" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M -67.5 0 L 67.5 0"></path></g>
-  
-  
-  
-  
-  
-  
+
+
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_ACBranch_ac-routable-line_default_2" viewBox="-75 -18 150 36" overflow="visible">
   <title>交流线路（自适应）</title>
   <g transform="rotate(0) scale(1 1)">
   <g class="routable-line-device-glyph" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M -67.8 -0.3 L 68.2 -0.3 L 68.2 0.7"></path></g>
-  
-  
-  
-  
-  
-  
+
+
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_ACBranch_ac-routable-line_default_3" viewBox="-75 -18 150 36" overflow="visible">
   <title>交流线路（自适应）</title>
   <g transform="rotate(0) scale(1 1)">
   <g class="routable-line-device-glyph" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M -27 -151.5 L 1 -151.5 L 55 -151.5 L 55 151.5 L 27 151.5"></path></g>
-  
-  
-  
-  
-  
-  
+
+
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_DCGenerator_dc-pv-source_default" viewBox="-75 -47 150 94" overflow="visible">
   <title>直流光伏发电机</title>
   <g transform="rotate(0) scale(1 1)">
   <g transform="scale(1.5)"><g fill="#ffffff" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><path d="M -22 -12 H 22 V 14 H -22 Z"></path><path d="M -7 -12 V 14 M 8 -12 V 14 M -22 1 H 22"></path><path d="M 0 -22 V -17 M -18 -20 L -14 -16 M 18 -20 L 14 -16"></path></g></g>
-  
+
   <g transform="translate(79 0)">
   <line x1="-46" y1="0" x2="0" y2="0" stroke="hsl(345 72% 42%)" stroke-width="2.2" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_DCGenerator_dc-storage_default" viewBox="-75 -47 150 94" overflow="visible">
   <title>直流电化学储能</title>
   <g transform="rotate(180) scale(1 1)">
   <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="-28" y="-16" width="56" height="32" rx="4" fill="#f0fdf4"></rect><rect x="28" y="-7.04" width="6" height="14.08" rx="1.5" fill="#f0fdf4"></rect><path d="M -9.333333333333332 -11 V 11"></path><path d="M 9.333333333333336 -11 V 11"></path><path d="M -21 0 H -13 M 13 0 H 21 M 17 -4 V 4"></path></g></g>
-  
+
   <g transform="translate(79 0)">
   <line x1="-28" y1="0" x2="0" y2="0" stroke="#dc2626" stroke-width="2.4" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_DCDCConverter_dcdc-converter_default" viewBox="-75 -44 150 88" overflow="visible">
   <title>DCDC变流器</title>
   <g transform="rotate(0) scale(1 1)">
   <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="-42" y="-21.333333333333332" width="84" height="42.666666666666664" rx="6" fill="#ecfeff"></rect><g><path d="M -40 -7 H -26 M -37 7 H -29"></path><path d="M -33 -7 V 7" stroke-width="1.4"></path></g><g><path d="M 22 -7 H 36 M 25 7 H 33"></path><path d="M 29 -7 V 7" stroke-width="1.4"></path></g><path d="M -7 0 H 7 M 2 -5 L 7 0 L 2 5"></path><g class="converter-terminal-order-markers" stroke-width="1.4"><g transform="translate(-30 -15.33333) matrix(1 0 0 1 0 0)"><path d="M -1.4875 -1.9125 L 0 -3.825 V 3.825 M -2.04 3.825 H 2.04"></path></g><g transform="translate(30 -15.33333) matrix(1 0 0 1 0 0)"><path d="M -2.55 -1.87 C -2.21 -3.995, 2.55 -3.995, 2.55 -1.53 C 2.55 0.17, 1.19 1.02, -2.55 3.825 H 2.55"></path></g></g></g></g>
-  
+
   <g transform="translate(-87 0)">
   <line x1="24" y1="0" x2="0" y2="0" stroke="hsl(345 72% 42%)" stroke-width="2.2" stroke-linecap="round"/>
 </g>
 <g transform="translate(87 0)">
   <line x1="-24" y1="0" x2="0" y2="0" stroke="#0891b2" stroke-width="2.2" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_DCDCConverter_dcdc-converter_default_2" viewBox="-75 -44 150 88" overflow="visible">
   <title>DCDC变流器</title>
   <g transform="rotate(0) scale(1 1)">
   <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="-42" y="-21.333333333333332" width="84" height="42.666666666666664" rx="6" fill="#ecfeff"></rect><g><path d="M -40 -7 H -26 M -37 7 H -29"></path><path d="M -33 -7 V 7" stroke-width="1.4"></path></g><g><path d="M 22 -7 H 36 M 25 7 H 33"></path><path d="M 29 -7 V 7" stroke-width="1.4"></path></g><path d="M -7 0 H 7 M 2 -5 L 7 0 L 2 5"></path><g class="converter-terminal-order-markers" stroke-width="1.4"><g transform="translate(-30 -15.33333) matrix(1 0 0 1 0 0)"><path d="M -1.4875 -1.9125 L 0 -3.825 V 3.825 M -2.04 3.825 H 2.04"></path></g><g transform="translate(30 -15.33333) matrix(1 0 0 1 0 0)"><path d="M -2.55 -1.87 C -2.21 -3.995, 2.55 -3.995, 2.55 -1.53 C 2.55 0.17, 1.19 1.02, -2.55 3.825 H 2.55"></path></g></g></g></g>
-  
+
   <g transform="translate(-87 0)">
   <line x1="24" y1="0" x2="0" y2="0" stroke="#0891b2" stroke-width="2.2" stroke-linecap="round"/>
 </g>
 <g transform="translate(87 0)">
   <line x1="-24" y1="0" x2="0" y2="0" stroke="#dc2626" stroke-width="2.2" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_DCBranch_dc-routable-line_default" viewBox="-75 -18 150 36" overflow="visible">
   <title>直流线路（自适应）</title>
   <g transform="rotate(0) scale(1 1)">
   <g class="routable-line-device-glyph" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M -67.5 0 L -39.5 0 L 39.5 0 L 67.5 0"></path></g>
-  
-  
-  
-  
-  
-  
+
+
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_DCBranch_dc-routable-line_default_2" viewBox="-75 -18 150 36" overflow="visible">
   <title>直流线路（自适应）</title>
   <g transform="rotate(0) scale(1 1)">
   <g class="routable-line-device-glyph" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M -89 -63 L 89 -63 L 89 63"></path></g>
-  
-  
-  
-  
-  
-  
+
+
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_ACBreak_ac-breaker_state_0" viewBox="-75 -48 150 96" overflow="visible">
   <title>交流断路器</title>
   <g transform="rotate(0) scale(1 1)">
   <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="-42" y1="0" x2="-20" y2="0"></line><line x1="20" y1="0" x2="42" y2="0"></line><rect x="-20" y="-15" width="40" height="30" rx="5" fill="#eef2ff"></rect><path d="M -10 -8 V 8 M 10 -8 V 8"></path><path d="M -8 8 L 8 -8"></path></g></g>
-  
+
   <g transform="translate(-79 0)">
   <line x1="16" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
 </g>
 <g transform="translate(79 0)">
   <line x1="-16" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_ACBreak_ac-breaker_state_1" viewBox="-75 -48 150 96" overflow="visible">
   <title>交流断路器</title>
   <g transform="rotate(0) scale(1 1)">
   <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="-42" y1="0" x2="-20" y2="0"></line><line x1="20" y1="0" x2="42" y2="0"></line><rect x="-20" y="-15" width="40" height="30" rx="5" fill="#eef2ff"></rect><path d="M -10 -8 V 8 M 10 -8 V 8"></path><path d="M -10 0 H 10"></path></g></g>
-  
+
   <g transform="translate(-79 0)">
   <line x1="16" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
 </g>
 <g transform="translate(79 0)">
   <line x1="-16" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_ACBreak_ac-box-breaker_state_0" viewBox="-75 -38 150 76" overflow="visible">
   <title>盒型开关</title>
   <g transform="rotate(0) scale(1 1)">
   <g transform="scale(1.5)"><g class="box-breaker-glyph" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><line x1="-42" y1="0" x2="-21" y2="0"></line><line x1="21" y1="0" x2="42" y2="0"></line><rect x="-21" y="-10" width="42" height="20" rx="2" fill="#ffffff"></rect></g></g>
-  
+
   <g transform="translate(-79 0)">
   <line x1="16" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
 </g>
 <g transform="translate(79 0)">
   <line x1="-16" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_ACBreak_ac-box-breaker_state_1" viewBox="-75 -38 150 76" overflow="visible">
   <title>盒型开关</title>
   <g transform="rotate(0) scale(1 1)">
   <g transform="scale(1.5)"><g class="box-breaker-glyph" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><line x1="-42" y1="0" x2="-21" y2="0"></line><line x1="21" y1="0" x2="42" y2="0"></line><rect x="-21" y="-10" width="42" height="20" rx="2" fill="currentColor"></rect></g></g>
-  
+
   <g transform="translate(-79 0)">
   <line x1="16" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
 </g>
 <g transform="translate(79 0)">
   <line x1="-16" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_ACRealBs_ac-bus-vertical_default" viewBox="-75 -18 150 36" overflow="visible">
   <title>交流母线（竖向）</title>
   <g transform="rotate(90) scale(8.97333 1)">
   <g transform="scale(1.5)"><rect class="bus-glyph" x="-50" y="-4" width="100" height="8" fill="currentColor" stroke="currentColor" stroke-width="0"></rect></g>
-  
-  
-  
-  
-  
-  
+
+
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_ACLoad_ac-load_default" viewBox="-75 -51 150 102" overflow="visible">
   <title>交流负荷</title>
   <g transform="rotate(270) scale(1 1)">
   <g transform="scale(1.5)"><g class="electric-load-glyph" fill="#ffffff" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"><path d="M -22.22222222222222 -15.11111111111111 L 22.22222222222222 -15.11111111111111 L 0 15.11111111111111 Z"></path></g></g>
-  
+
   <g transform="translate(0 -55)">
   <line x1="0" y1="32.33333" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_ACZeroBranch_ac-zero-routable-branch_default" viewBox="-75 -18 150 36" overflow="visible">
   <title>交流零阻抗支路（自适应）</title>
   <g transform="rotate(0) scale(1 1)">
   <g class="routable-line-device-glyph" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M -126.5 0 L -98.5 0 L 98.5 0 L 126.5 0"></path></g>
-  
-  
-  
-  
-  
-  
+
+
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_AcE2Hydro_ac-electrolyzer_default" viewBox="-75 -43 150 86" overflow="visible">
@@ -460,10 +429,10 @@ symbol{overflow:visible}
 <g transform="translate(87 0)">
   <line x1="-21" y1="0" x2="0" y2="0" stroke="#7c3aed" stroke-width="2.3" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_HydroStorage_hydrogen-tank-container_default" viewBox="-75 -35 150 70" overflow="visible">
@@ -471,11 +440,11 @@ symbol{overflow:visible}
   <g transform="rotate(0) scale(1.67737 1.67737)">
   <g transform="scale(1.5)"><g fill="none" stroke="#7c3aed" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="-50" y="-23.333333333333332" width="100" height="46.666666666666664" rx="2" fill="#faf5ff"></rect><path d="M -42 -23.333333333333332 V 23.333333333333332 M 42 -23.333333333333332 V 23.333333333333332"></path><path d="M -41 -9.333333333333332 H 41 M -41 0.6666666666666679 H 41 M -41 10.666666666666668 H 41"></path><path d="M -32 -15.333333333333332 V 15.333333333333332 M 32 -15.333333333333332 V 15.333333333333332" opacity="0.65"></path></g></g>
   <g transform="scale(1.5)"><g transform="translate(0 4) matrix(1 0 0 1 0 0)"><text x="0" y="0" fill="#7c3aed" stroke="none" font-size="12" font-weight="800" text-anchor="middle" dominant-baseline="middle">H2</text></g></g>
-  
-  
-  
-  
-  
+
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_Hydro2DcE_dc-fuel-cell_default" viewBox="-75 -43 150 86" overflow="visible">
@@ -489,80 +458,111 @@ symbol{overflow:visible}
 <g transform="translate(87 0)">
   <line x1="-22.5" y1="0" x2="0" y2="0" stroke="#7c3aed" stroke-width="2.3" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_DCLoad_dc-load_default" viewBox="-75 -51 150 102" overflow="visible">
   <title>直流负荷</title>
   <g transform="rotate(0) scale(1 1)">
   <g transform="scale(1.5)"><g class="electric-load-glyph" fill="#ffffff" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"><path d="M -22.22222222222222 -15.11111111111111 L 22.22222222222222 -15.11111111111111 L 0 15.11111111111111 Z"></path></g></g>
-  
+
   <g transform="translate(0 -55)">
   <line x1="0" y1="32.33333" x2="0" y2="0" stroke="#0891b2" stroke-width="2.5" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_ACGenerator_ac-storage_default" viewBox="-75 -47 150 94" overflow="visible">
   <title>交流电化学储能</title>
   <g transform="rotate(180) scale(1 1)">
   <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="-28" y="-16" width="56" height="32" rx="4" fill="#f0fdf4"></rect><rect x="28" y="-7.04" width="6" height="14.08" rx="1.5" fill="#f0fdf4"></rect><path d="M -9.333333333333332 -11 V 11"></path><path d="M 9.333333333333336 -11 V 11"></path><path d="M -21 0 H -13 M 13 0 H 21 M 17 -4 V 4"></path></g></g>
-  
+
   <g transform="translate(79 0)">
   <line x1="-28" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.4" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_ACGenerator_ac-wind-source_default_3" viewBox="-75 -47 150 94" overflow="visible">
   <title>交流风力发电机</title>
   <g transform="rotate(0) scale(1 1)">
   <g transform="scale(1.5)"><g fill="#ffffff" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="0" cy="0" r="6"></circle><path d="M 0 0 L 0 -18 M 0 0 L 16 10 M 0 0 L -16 10"></path><path d="M 0 6 V 22"></path></g></g>
-  
+
   <g transform="translate(-79 -3.008)">
   <line x1="46" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.4" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_ACGenerator_ac-pv-source_default" viewBox="-75 -47 150 94" overflow="visible">
   <title>交流光伏发电机</title>
   <g transform="rotate(0) scale(1 1)">
   <g transform="scale(1.5)"><g fill="#ffffff" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><path d="M -22 -12 H 22 V 14 H -22 Z"></path><path d="M -7 -12 V 14 M 8 -12 V 14 M -22 1 H 22"></path><path d="M 0 -22 V -17 M -18 -20 L -14 -16 M 18 -20 L 14 -16"></path></g></g>
-  
+
   <g transform="translate(-79 0)">
   <line x1="46" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.2" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
   </g>
 </symbol>
 <symbol id="symbol_ACGenerator_ac-storage_default_2" viewBox="-75 -47 150 94" overflow="visible">
   <title>交流电化学储能</title>
   <g transform="rotate(0) scale(1 1)">
   <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="-28" y="-16" width="56" height="32" rx="4" fill="#f0fdf4"></rect><rect x="28" y="-7.04" width="6" height="14.08" rx="1.5" fill="#f0fdf4"></rect><path d="M -9.333333333333332 -11 V 11"></path><path d="M 9.333333333333336 -11 V 11"></path><path d="M -21 0 H -13 M 13 0 H 21 M 17 -4 V 4"></path></g></g>
-  
+
   <g transform="translate(79 0)">
   <line x1="-28" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.4" stroke-linecap="round"/>
 </g>
-  
-  
-  
-  
+
+
+
+
+  </g>
+</symbol>
+<symbol id="symbol_ACGenerator_ac-diesel-source_default" viewBox="-75 -47 150 94" overflow="visible">
+  <title>交流柴油发电机</title>
+  <g transform="rotate(0) scale(1 1)">
+  <g transform="scale(1.5)"><g class="diesel-source-glyph" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><rect x="-28" y="-12" width="56" height="32" rx="5" fill="#fff7ed"></rect><circle cx="-17" cy="4" r="7" fill="#fff7ed"></circle><path d="M -6 -5 H 18 M -6 13 H 14"></path><path d="M -21 20 V 26 H 22 V 20"></path><path d="M 19 -12 V -26 H 27"></path><path d="M 27 -28 C 32 -34, 39 -33, 42 -39" stroke-width="1.6"></path><path d="M -3 -16 L 7 -16 L 1 -4 H 10 L -4 15 L 1 -4 H -7 Z" fill="#fff7ed"></path></g></g>
+
+  <g transform="translate(-79 0)">
+  <line x1="46" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.3" stroke-linecap="round"/>
+</g>
+
+
+
+
+  </g>
+</symbol>
+<symbol id="symbol_DCACConverter_dcac-converter_default" viewBox="-75 -44 150 88" overflow="visible">
+  <title>DCAC变流器</title>
+  <g transform="rotate(0) scale(1 1)">
+  <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="-42" y="-21.333333333333332" width="84" height="42.666666666666664" rx="6" fill="#ecfeff"></rect><g><path d="M -40 -7 H -26 M -37 7 H -29"></path><path d="M -33 -7 V 7" stroke-width="1.4"></path></g><path d="M 18 0 C 21 -9, 26 -9, 29 0 C 32 9, 37 9, 40 0"></path><path d="M -7 0 H 7 M 2 -5 L 7 0 L 2 5"></path></g></g>
+
+  <g transform="translate(-87 0)">
+  <line x1="24" y1="0" x2="0" y2="0" stroke="#0891b2" stroke-width="2.2" stroke-linecap="round"/>
+</g>
+<g transform="translate(87 0)">
+  <line x1="-24" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.2" stroke-linecap="round"/>
+</g>
+
+
+
+
   </g>
 </symbol>
 </defs>
@@ -597,7 +597,7 @@ symbol{overflow:visible}
 <path id="edge-19" class="ldcv750" source-dev-id="DCBreak-18" target-dev-id="DCRealBs-1" d="M 910 556 L 882 556 L 830 556 L 798 556" fill="none" stroke="#0891b2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
 <path id="edge-20" class="ldcv750" source-dev-id="DCBreak-29" target-dev-id="DCRealBs-1" d="M 910 1065 L 882 1065 L 830 1065 L 798 1065" fill="none" stroke="#0891b2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
 <path id="edge-21" class="ldcv750" source-dev-id="DCBreak-30" target-dev-id="DCRealBs-1" d="M 910 1257 L 882 1257 L 830 1257 L 798 1257" fill="none" stroke="#0891b2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-22" class="lkv380" source-dev-id="ACBreak-1" target-dev-id="ACRealBs-1" d="M 1400 1065 L 1428 1065 L 1709 1065 L 1737 1065" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-22" class="lkv380" source-dev-id="ACBreak-1" target-dev-id="ACRealBs-1" d="M 1400 1065 L 1428 1065 L 1705 1065 L 1737 1065" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
 <path id="edge-23" class="lkv380" source-dev-id="ACBreak-2" target-dev-id="ACRealBs-1" d="M 1400 1257 L 1428 1257 L 1705 1257 L 1705 1259 L 1737 1259" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
 <path id="edge-24" class="lkv380" source-dev-id="ACBreak-3" target-dev-id="ACRealBs-1" d="M 1810 696 L 1782 696 L 1765 696 L 1737 696" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
 <path id="edge-25" class="lkv380" source-dev-id="ACBreak-4" target-dev-id="ACRealBs-1" d="M 1810 827 L 1782 827 L 1765 827 L 1737 827" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
@@ -610,17 +610,17 @@ symbol{overflow:visible}
 <path id="edge-31" source-dev-id="Hydro2DcE-1" target-dev-id="HydroStorage-1" d="M 1246 1925 L 1246 1954 L 1352 1954" fill="none" stroke="#7c3aed" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
 <line class="export-boundary-bus-internal-connector" source-dev-id="Hydro2DcE-1" target-dev-id="HydroStorage-1" x1="1352" y1="1954" x2="1369" y2="1954" stroke="#7c3aed" stroke-width="4.026" stroke-linecap="round"/>
 <path id="edge-32" class="ldcv750" source-dev-id="DCBreak-31" target-dev-id="DCRealBs-1" d="M 910 1467 L 882 1467 L 830 1467 L 798 1467" fill="none" stroke="#0891b2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-33" class="lkv380" source-dev-id="ACGenerator-11" target-dev-id="ACBreak-3" d="M 2039 696 L 2011 696 L 1996 696 L 1968 696" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-34" class="lkv380" source-dev-id="ACGenerator-12" target-dev-id="ACBreak-4" d="M 2039 827 L 2011 827 L 1996 827 L 1968 827" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-35" class="lkv380" source-dev-id="ACGenerator-13" target-dev-id="ACBreak-5" d="M 2039 953 L 2011 953 L 1996 953 L 1968 953" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-36" class="lkv380" source-dev-id="ACGenerator-14" target-dev-id="ACBreak-6" d="M 2039 1065 L 2011 1065 L 1996 1065 L 1968 1065" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-37" class="ldcv750" source-dev-id="DCBreak-33" target-dev-id="DCLoad-1" d="M 949 1673 L 1039 1673 L 1039 1750" fill="none" stroke="#0891b2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-38" class="lkv380" source-dev-id="ACBreak-10" target-dev-id="ACRealBs-1" d="M 1810 550 L 1782 550 L 1769 550 L 1737 550" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-39" class="lkv380" source-dev-id="ACGenerator-23" target-dev-id="ACBreak-10" d="M 2039 550 L 2011 550 L 1996 550 L 1968 550" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-40" class="lkv380" source-dev-id="ACBreak-11" target-dev-id="ACRealBs-1" d="M 1810 426 L 1737 426" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-41" class="lkv380" source-dev-id="ACGenerator-24" target-dev-id="ACBreak-11" d="M 2039 426 L 2011 426 L 1996 426 L 1968 426" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-42" class="lkv380" source-dev-id="ACBreak-12" target-dev-id="ACRealBs-1" d="M 1810 1492 L 1782 1492 L 1769 1492 L 1737 1492" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-43" class="lkv380" source-dev-id="ACGenerator-25" target-dev-id="ACBreak-12" d="M 2039 1492 L 2011 1492 L 1996 1492 L 1968 1492" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-33" class="ldcv750" source-dev-id="DCBreak-33" target-dev-id="DCLoad-1" d="M 949 1673 L 1039 1673 L 1039 1750" fill="none" stroke="#0891b2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-34" class="lkv380" source-dev-id="ACBreak-10" target-dev-id="ACRealBs-1" d="M 1810 550 L 1782 550 L 1769 550 L 1737 550" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-35" class="lkv380" source-dev-id="ACGenerator-23" target-dev-id="ACBreak-10" d="M 2039 550 L 2011 550 L 1996 550 L 1968 550" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-36" class="lkv380" source-dev-id="ACBreak-11" target-dev-id="ACRealBs-1" d="M 1810 426 L 1737 426" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-37" class="lkv380" source-dev-id="ACGenerator-24" target-dev-id="ACBreak-11" d="M 2039 426 L 2011 426 L 1996 426 L 1968 426" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-38" class="lkv380" source-dev-id="ACBreak-12" target-dev-id="ACRealBs-1" d="M 1810 1492 L 1782 1492 L 1769 1492 L 1737 1492" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-39" class="lkv380" source-dev-id="ACGenerator-25" target-dev-id="ACBreak-12" d="M 2039 1492 L 2011 1492 L 1996 1492 L 1968 1492" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-40" class="lkv380" source-dev-id="ACGenerator-27" target-dev-id="ACBreak-3" d="M 2039 696 L 2011 696 L 1996 696 L 1968 696" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-41" class="lkv380" source-dev-id="ACGenerator-30" target-dev-id="ACBreak-6" d="M 2044 1065 L 2016 1065 L 1996 1065 L 1968 1065" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-42" class="lkv380" source-dev-id="ACGenerator-29" target-dev-id="ACBreak-5" d="M 2044 953 L 2016 953 L 1996 953 L 1968 953" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-43" class="lkv380" source-dev-id="ACGenerator-28" target-dev-id="ACBreak-4" d="M 2044 827 L 2016 827 L 1996 827 L 1968 827" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
 </g>
 <g id="ACGenerator_Layer" device-type="ACGenerator">
 <use id="ACGenerator-1" class="kv380" layer-id="layer-default" idx="1" name="交流风电-1" dev-id="ACGenerator-1" dev-kind="ac-wind-source" node="1" voltage-type="ac" vbase="380" href="#symbol_ACGenerator_ac-wind-source_default" x="85" y="127" width="150" height="94"/>
@@ -633,70 +633,70 @@ symbol{overflow:visible}
 <use id="ACGenerator-8" class="kv380" layer-id="layer-default" idx="8" name="交流风电-8" dev-id="ACGenerator-8" dev-kind="ac-wind-source" node="8" voltage-type="ac" vbase="380" href="#symbol_ACGenerator_ac-wind-source_default_2" x="85" y="1018" width="150" height="94"/>
 <use id="ACGenerator-9" class="kv380" layer-id="layer-default" idx="9" name="交流风电-9" dev-id="ACGenerator-9" dev-kind="ac-wind-source" node="9" voltage-type="ac" vbase="380" href="#symbol_ACGenerator_ac-wind-source_default_2" x="85" y="1148" width="150" height="94"/>
 <use id="ACGenerator-10" class="kv380" layer-id="layer-default" idx="10" name="交流风电-10" dev-id="ACGenerator-10" dev-kind="ac-wind-source" node="10" voltage-type="ac" vbase="380" href="#symbol_ACGenerator_ac-wind-source_default_2" x="85" y="1266" width="150" height="94"/>
-<use id="ACGenerator-11" class="kv380" layer-id="layer-default" idx="11" name="柴油发电机-1" dev-id="ACGenerator-11" dev-kind="ac-source" node="11" voltage-type="ac" vbase="380" href="#symbol_ACGenerator_ac-source_default" x="2043" y="646" width="150" height="100"/>
-<use id="ACGenerator-12" class="kv380" layer-id="layer-default" idx="12" name="柴油发电机-2" dev-id="ACGenerator-12" dev-kind="ac-source" node="12" voltage-type="ac" vbase="380" href="#symbol_ACGenerator_ac-source_default" x="2043" y="777" width="150" height="100"/>
-<use id="ACGenerator-13" class="kv380" layer-id="layer-default" idx="13" name="柴油发电机-3" dev-id="ACGenerator-13" dev-kind="ac-source" node="13" voltage-type="ac" vbase="380" href="#symbol_ACGenerator_ac-source_default" x="2043" y="903" width="150" height="100"/>
-<use id="ACGenerator-14" class="kv380" layer-id="layer-default" idx="14" name="柴油发电机-4" dev-id="ACGenerator-14" dev-kind="ac-source" node="14" voltage-type="ac" vbase="380" href="#symbol_ACGenerator_ac-source_default" x="2043" y="1015" width="150" height="100"/>
 <use id="ACGenerator-23" class="kv380" layer-id="layer-default" idx="23" name="交流电化学储能-23" dev-id="ACGenerator-23" dev-kind="ac-storage" node="33" voltage-type="ac" vbase="380" href="#symbol_ACGenerator_ac-storage_default" x="2043" y="503" width="150" height="94"/>
 <use id="ACGenerator-24" class="kv380" layer-id="layer-default" idx="24" name="交流风力发电机-24" dev-id="ACGenerator-24" dev-kind="ac-wind-source" node="34" voltage-type="ac" vbase="380" href="#symbol_ACGenerator_ac-wind-source_default_3" x="2043" y="382" width="150" height="94"/>
 <use id="ACGenerator-25" class="kv380" layer-id="layer-default" idx="25" name="交流光伏发电机-25" dev-id="ACGenerator-25" dev-kind="ac-pv-source" node="35" voltage-type="ac" vbase="380" href="#symbol_ACGenerator_ac-pv-source_default" x="2043" y="1445" width="150" height="94"/>
 <use id="ACGenerator-26" class="kv380" layer-id="layer-default" idx="26" name="交流电化学储能-26" dev-id="ACGenerator-26" dev-kind="ac-storage" node="36" voltage-type="ac" vbase="380" href="#symbol_ACGenerator_ac-storage_default_2" x="1425" y="1364" width="150" height="94"/>
+<use id="ACGenerator-27" class="kv380" layer-id="layer-default" idx="27" name="交流柴油发电机-27" dev-id="ACGenerator-27" dev-kind="ac-diesel-source" node="26" voltage-type="ac" vbase="380" href="#symbol_ACGenerator_ac-diesel-source_default" x="2043" y="649" width="150" height="94"/>
+<use id="ACGenerator-28" class="kv380" layer-id="layer-default" idx="28" name="交流柴油发电机-28" dev-id="ACGenerator-28" dev-kind="ac-diesel-source" node="27" voltage-type="ac" vbase="380" href="#symbol_ACGenerator_ac-diesel-source_default" x="2048" y="780" width="150" height="94"/>
+<use id="ACGenerator-29" class="kv380" layer-id="layer-default" idx="29" name="交流柴油发电机-29" dev-id="ACGenerator-29" dev-kind="ac-diesel-source" node="28" voltage-type="ac" vbase="380" href="#symbol_ACGenerator_ac-diesel-source_default" x="2048" y="906" width="150" height="94"/>
+<use id="ACGenerator-30" class="kv380" layer-id="layer-default" idx="30" name="交流柴油发电机-30" dev-id="ACGenerator-30" dev-kind="ac-diesel-source" node="29" voltage-type="ac" vbase="380" href="#symbol_ACGenerator_ac-diesel-source_default" x="2048" y="1018" width="150" height="94"/>
 </g>
 <g id="DCACConverter_Layer" device-type="DCACConverter">
-<use id="DCACConverter-1" class="kv380" layer-id="layer-default" idx="1" name="风机变流器-1" dev-id="DCACConverter-1" dev-kind="acdc-converter" node-1="15" node-2="1" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="130" width="150" height="88"/>
-<use id="DCACConverter-2" class="kv380" layer-id="layer-default" idx="2" name="风机变流器-2" dev-id="DCACConverter-2" dev-kind="acdc-converter" node-1="16" node-2="2" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="253" width="150" height="88"/>
-<use id="DCACConverter-3" class="kv380" layer-id="layer-default" idx="3" name="风机变流器-3" dev-id="DCACConverter-3" dev-kind="acdc-converter" node-1="17" node-2="3" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="350" width="150" height="88"/>
-<use id="DCACConverter-4" class="kv380" layer-id="layer-default" idx="4" name="风机变流器-4" dev-id="DCACConverter-4" dev-kind="acdc-converter" node-1="18" node-2="4" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="512" width="150" height="88"/>
-<use id="DCACConverter-5" class="kv380" layer-id="layer-default" idx="5" name="风机变流器-5" dev-id="DCACConverter-5" dev-kind="acdc-converter" node-1="19" node-2="5" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="652" width="150" height="88"/>
-<use id="DCACConverter-6" class="kv380" layer-id="layer-default" idx="6" name="风机变流器-6" dev-id="DCACConverter-6" dev-kind="acdc-converter" node-1="20" node-2="6" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="783" width="150" height="88"/>
-<use id="DCACConverter-7" class="kv380" layer-id="layer-default" idx="7" name="风机变流器-7" dev-id="DCACConverter-7" dev-kind="acdc-converter" node-1="21" node-2="7" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="909" width="150" height="88"/>
-<use id="DCACConverter-8" class="kv380" layer-id="layer-default" idx="8" name="风机变流器-8" dev-id="DCACConverter-8" dev-kind="acdc-converter" node-1="22" node-2="8" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="1021" width="150" height="88"/>
-<use id="DCACConverter-9" class="kv380" layer-id="layer-default" idx="9" name="风机变流器-9" dev-id="DCACConverter-9" dev-kind="acdc-converter" node-1="23" node-2="9" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="1151" width="150" height="88"/>
-<use id="DCACConverter-10" class="kv380" layer-id="layer-default" idx="10" name="风机变流器-10" dev-id="DCACConverter-10" dev-kind="acdc-converter" node-1="24" node-2="10" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="1269" width="150" height="88"/>
-<use id="DCACConverter-11" class="kv380" layer-id="layer-default" idx="11" name="ACDC变流器-1" dev-id="DCACConverter-11" dev-kind="acdc-converter" node-1="25" node-2="11" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default_2" x="1080" y="1021" width="150" height="88"/>
-<use id="DCACConverter-12" class="kv380" layer-id="layer-default" idx="12" name="ACDC变流器-2" dev-id="DCACConverter-12" dev-kind="acdc-converter" node-1="26" node-2="12" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default_2" x="1080" y="1213" width="150" height="88"/>
+<use id="DCACConverter-1" class="kv380" layer-id="layer-default" idx="1" name="风机变流器-1" dev-id="DCACConverter-1" dev-kind="acdc-converter" node-1="11" node-2="1" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="130" width="150" height="88"/>
+<use id="DCACConverter-2" class="kv380" layer-id="layer-default" idx="2" name="风机变流器-2" dev-id="DCACConverter-2" dev-kind="acdc-converter" node-1="12" node-2="2" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="253" width="150" height="88"/>
+<use id="DCACConverter-3" class="kv380" layer-id="layer-default" idx="3" name="风机变流器-3" dev-id="DCACConverter-3" dev-kind="acdc-converter" node-1="13" node-2="3" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="350" width="150" height="88"/>
+<use id="DCACConverter-4" class="kv380" layer-id="layer-default" idx="4" name="风机变流器-4" dev-id="DCACConverter-4" dev-kind="acdc-converter" node-1="14" node-2="4" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="512" width="150" height="88"/>
+<use id="DCACConverter-5" class="kv380" layer-id="layer-default" idx="5" name="风机变流器-5" dev-id="DCACConverter-5" dev-kind="acdc-converter" node-1="15" node-2="5" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="652" width="150" height="88"/>
+<use id="DCACConverter-6" class="kv380" layer-id="layer-default" idx="6" name="风机变流器-6" dev-id="DCACConverter-6" dev-kind="acdc-converter" node-1="16" node-2="6" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="783" width="150" height="88"/>
+<use id="DCACConverter-7" class="kv380" layer-id="layer-default" idx="7" name="风机变流器-7" dev-id="DCACConverter-7" dev-kind="acdc-converter" node-1="17" node-2="7" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="909" width="150" height="88"/>
+<use id="DCACConverter-8" class="kv380" layer-id="layer-default" idx="8" name="风机变流器-8" dev-id="DCACConverter-8" dev-kind="acdc-converter" node-1="18" node-2="8" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="1021" width="150" height="88"/>
+<use id="DCACConverter-9" class="kv380" layer-id="layer-default" idx="9" name="风机变流器-9" dev-id="DCACConverter-9" dev-kind="acdc-converter" node-1="19" node-2="9" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="1151" width="150" height="88"/>
+<use id="DCACConverter-10" class="kv380" layer-id="layer-default" idx="10" name="风机变流器-10" dev-id="DCACConverter-10" dev-kind="acdc-converter" node-1="20" node-2="10" voltage-type-1="ac" vbase-1="380" voltage-type-2="dc" vbase-2="750" href="#symbol_DCACConverter_acdc-converter_default" x="386" y="1269" width="150" height="88"/>
+<use id="DCACConverter-13" class="dcv750" layer-id="layer-default" idx="13" name="DCAC变流器-1" dev-id="DCACConverter-13" dev-kind="dcac-converter" node-1="21" node-2="23" voltage-type-1="dc" vbase-1="750" voltage-type-2="ac" vbase-2="380" href="#symbol_DCACConverter_dcac-converter_default" x="1080" y="1021" width="150" height="88"/>
+<use id="DCACConverter-14" class="dcv750" layer-id="layer-default" idx="14" name="DCAC变流器-2" dev-id="DCACConverter-14" dev-kind="dcac-converter" node-1="22" node-2="25" voltage-type-1="dc" vbase-1="750" voltage-type-2="ac" vbase-2="380" href="#symbol_DCACConverter_dcac-converter_default" x="1080" y="1213" width="150" height="88"/>
 </g>
 <g id="DCBreak_Layer" device-type="DCBreak">
-<use id="DCBreak-1" class="dcv750" layer-id="layer-default" idx="1" name="直流断路器-1" dev-id="DCBreak-1" dev-kind="dc-breaker" node-1="1" node-2="13" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="126" width="150" height="96"/>
-<use id="DCBreak-2" class="dcv750" layer-id="layer-default" idx="2" name="直流断路器-2" dev-id="DCBreak-2" dev-kind="dc-breaker" node-1="2" node-2="13" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="249" width="150" height="96"/>
-<use id="DCBreak-3" class="dcv750" layer-id="layer-default" idx="3" name="直流断路器-3" dev-id="DCBreak-3" dev-kind="dc-breaker" node-1="3" node-2="13" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="346" width="150" height="96"/>
-<use id="DCBreak-4" class="dcv750" layer-id="layer-default" idx="4" name="直流断路器-4" dev-id="DCBreak-4" dev-kind="dc-breaker" node-1="4" node-2="13" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="508" width="150" height="96"/>
-<use id="DCBreak-5" class="dcv750" layer-id="layer-default" idx="5" name="直流断路器-5" dev-id="DCBreak-5" dev-kind="dc-breaker" node-1="5" node-2="13" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="648" width="150" height="96"/>
-<use id="DCBreak-6" class="dcv750" layer-id="layer-default" idx="6" name="直流断路器-6" dev-id="DCBreak-6" dev-kind="dc-breaker" node-1="6" node-2="13" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="779" width="150" height="96"/>
-<use id="DCBreak-7" class="dcv750" layer-id="layer-default" idx="7" name="直流断路器-7" dev-id="DCBreak-7" dev-kind="dc-breaker" node-1="7" node-2="13" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="905" width="150" height="96"/>
-<use id="DCBreak-8" class="dcv750" layer-id="layer-default" idx="8" name="直流断路器-8" dev-id="DCBreak-8" dev-kind="dc-breaker" node-1="8" node-2="13" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="1017" width="150" height="96"/>
-<use id="DCBreak-9" class="dcv750" layer-id="layer-default" idx="9" name="直流断路器-9" dev-id="DCBreak-9" dev-kind="dc-breaker" node-1="9" node-2="13" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="1147" width="150" height="96"/>
-<use id="DCBreak-11" class="dcv750" layer-id="layer-default" idx="11" name="直流断路器-11" dev-id="DCBreak-11" dev-kind="dc-breaker" node-1="10" node-2="13" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="1265" width="150" height="96"/>
-<use id="DCBreak-12" class="dcv750" layer-id="layer-default" idx="12" name="直流断路器-12" dev-id="DCBreak-12" dev-kind="dc-breaker" node-1="14" node-2="13" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="1419" width="150" height="96"/>
-<use id="DCBreak-13" class="dcv750" layer-id="layer-default" idx="13" name="直流断路器-13" dev-id="DCBreak-13" dev-kind="dc-breaker" node-1="15" node-2="13" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="1550" width="150" height="96"/>
-<use id="DCBreak-14" class="dcv750" layer-id="layer-default" idx="14" name="直流断路器-14" dev-id="DCBreak-14" dev-kind="dc-breaker" node-1="16" node-2="13" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="1689" width="150" height="96"/>
-<use id="DCBreak-15" class="dcv750" layer-id="layer-default" idx="15" name="直流断路器-15" dev-id="DCBreak-15" dev-kind="dc-breaker" node-1="13" node-2="17" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="914" y="126" width="150" height="96"/>
-<use id="DCBreak-16" class="dcv750" layer-id="layer-default" idx="16" name="直流断路器-16" dev-id="DCBreak-16" dev-kind="dc-breaker" node-1="13" node-2="18" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="914" y="249" width="150" height="96"/>
-<use id="DCBreak-17" class="dcv750" layer-id="layer-default" idx="17" name="直流断路器-17" dev-id="DCBreak-17" dev-kind="dc-breaker" node-1="13" node-2="19" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="914" y="388" width="150" height="96"/>
-<use id="DCBreak-18" class="dcv750" layer-id="layer-default" idx="18" name="直流断路器-18" dev-id="DCBreak-18" dev-kind="dc-breaker" node-1="13" node-2="20" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="914" y="508" width="150" height="96"/>
-<use id="DCBreak-20" class="dcv750" layer-id="layer-default" idx="20" name="直流断路器-20" dev-id="DCBreak-20" dev-kind="dc-breaker" node-1="13" node-2="21" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="914" y="648" width="150" height="96"/>
-<use id="DCBreak-21" class="dcv750" layer-id="layer-default" idx="21" name="直流断路器-21" dev-id="DCBreak-21" dev-kind="dc-breaker" node-1="13" node-2="22" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="914" y="779" width="150" height="96"/>
-<use id="DCBreak-29" class="dcv750" layer-id="layer-default" idx="29" name="直流断路器-29" dev-id="DCBreak-29" dev-kind="dc-breaker" node-1="13" node-2="11" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="914" y="1017" width="150" height="96"/>
-<use id="DCBreak-30" class="dcv750" layer-id="layer-default" idx="30" name="直流断路器-30" dev-id="DCBreak-30" dev-kind="dc-breaker" node-1="13" node-2="12" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="914" y="1209" width="150" height="96"/>
-<use id="DCBreak-31" class="dcv750" layer-id="layer-default" idx="31" name="直流断路器-31" dev-id="DCBreak-31" dev-kind="dc-breaker" node-1="13" node-2="23" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="914" y="1419" width="150" height="96"/>
+<use id="DCBreak-1" class="dcv750" layer-id="layer-default" idx="1" name="直流断路器-1" dev-id="DCBreak-1" dev-kind="dc-breaker" node-1="1" node-2="11" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="126" width="150" height="96"/>
+<use id="DCBreak-2" class="dcv750" layer-id="layer-default" idx="2" name="直流断路器-2" dev-id="DCBreak-2" dev-kind="dc-breaker" node-1="2" node-2="11" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="249" width="150" height="96"/>
+<use id="DCBreak-3" class="dcv750" layer-id="layer-default" idx="3" name="直流断路器-3" dev-id="DCBreak-3" dev-kind="dc-breaker" node-1="3" node-2="11" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="346" width="150" height="96"/>
+<use id="DCBreak-4" class="dcv750" layer-id="layer-default" idx="4" name="直流断路器-4" dev-id="DCBreak-4" dev-kind="dc-breaker" node-1="4" node-2="11" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="508" width="150" height="96"/>
+<use id="DCBreak-5" class="dcv750" layer-id="layer-default" idx="5" name="直流断路器-5" dev-id="DCBreak-5" dev-kind="dc-breaker" node-1="5" node-2="11" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="648" width="150" height="96"/>
+<use id="DCBreak-6" class="dcv750" layer-id="layer-default" idx="6" name="直流断路器-6" dev-id="DCBreak-6" dev-kind="dc-breaker" node-1="6" node-2="11" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="779" width="150" height="96"/>
+<use id="DCBreak-7" class="dcv750" layer-id="layer-default" idx="7" name="直流断路器-7" dev-id="DCBreak-7" dev-kind="dc-breaker" node-1="7" node-2="11" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="905" width="150" height="96"/>
+<use id="DCBreak-8" class="dcv750" layer-id="layer-default" idx="8" name="直流断路器-8" dev-id="DCBreak-8" dev-kind="dc-breaker" node-1="8" node-2="11" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="1017" width="150" height="96"/>
+<use id="DCBreak-9" class="dcv750" layer-id="layer-default" idx="9" name="直流断路器-9" dev-id="DCBreak-9" dev-kind="dc-breaker" node-1="9" node-2="11" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="1147" width="150" height="96"/>
+<use id="DCBreak-11" class="dcv750" layer-id="layer-default" idx="11" name="直流断路器-11" dev-id="DCBreak-11" dev-kind="dc-breaker" node-1="10" node-2="11" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="1265" width="150" height="96"/>
+<use id="DCBreak-12" class="dcv750" layer-id="layer-default" idx="12" name="直流断路器-12" dev-id="DCBreak-12" dev-kind="dc-breaker" node-1="12" node-2="11" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="1419" width="150" height="96"/>
+<use id="DCBreak-13" class="dcv750" layer-id="layer-default" idx="13" name="直流断路器-13" dev-id="DCBreak-13" dev-kind="dc-breaker" node-1="13" node-2="11" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="1550" width="150" height="96"/>
+<use id="DCBreak-14" class="dcv750" layer-id="layer-default" idx="14" name="直流断路器-14" dev-id="DCBreak-14" dev-kind="dc-breaker" node-1="14" node-2="11" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="552" y="1689" width="150" height="96"/>
+<use id="DCBreak-15" class="dcv750" layer-id="layer-default" idx="15" name="直流断路器-15" dev-id="DCBreak-15" dev-kind="dc-breaker" node-1="11" node-2="15" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="914" y="126" width="150" height="96"/>
+<use id="DCBreak-16" class="dcv750" layer-id="layer-default" idx="16" name="直流断路器-16" dev-id="DCBreak-16" dev-kind="dc-breaker" node-1="11" node-2="16" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="914" y="249" width="150" height="96"/>
+<use id="DCBreak-17" class="dcv750" layer-id="layer-default" idx="17" name="直流断路器-17" dev-id="DCBreak-17" dev-kind="dc-breaker" node-1="11" node-2="17" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="914" y="388" width="150" height="96"/>
+<use id="DCBreak-18" class="dcv750" layer-id="layer-default" idx="18" name="直流断路器-18" dev-id="DCBreak-18" dev-kind="dc-breaker" node-1="11" node-2="18" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="914" y="508" width="150" height="96"/>
+<use id="DCBreak-20" class="dcv750" layer-id="layer-default" idx="20" name="直流断路器-20" dev-id="DCBreak-20" dev-kind="dc-breaker" node-1="11" node-2="19" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="914" y="648" width="150" height="96"/>
+<use id="DCBreak-21" class="dcv750" layer-id="layer-default" idx="21" name="直流断路器-21" dev-id="DCBreak-21" dev-kind="dc-breaker" node-1="11" node-2="20" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="914" y="779" width="150" height="96"/>
+<use id="DCBreak-29" class="dcv750" layer-id="layer-default" idx="29" name="直流断路器-29" dev-id="DCBreak-29" dev-kind="dc-breaker" node-1="11" node-2="21" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="914" y="1017" width="150" height="96"/>
+<use id="DCBreak-30" class="dcv750" layer-id="layer-default" idx="30" name="直流断路器-30" dev-id="DCBreak-30" dev-kind="dc-breaker" node-1="11" node-2="22" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="914" y="1209" width="150" height="96"/>
+<use id="DCBreak-31" class="dcv750" layer-id="layer-default" idx="31" name="直流断路器-31" dev-id="DCBreak-31" dev-kind="dc-breaker" node-1="11" node-2="23" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="914" y="1419" width="150" height="96"/>
 <use id="DCBreak-32" class="dcv750" layer-id="layer-default" idx="32" name="直流断路器-32" dev-id="DCBreak-32" dev-kind="dc-breaker" node-1="24" node-2="25" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1_2" x="1171" y="1624" width="150" height="96"/>
-<use id="DCBreak-33" class="dcv750" layer-id="layer-default" idx="33" name="直流断路器-33" dev-id="DCBreak-33" dev-kind="dc-breaker" node-1="13" node-2="38" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="795" y="1625" width="150" height="96"/>
+<use id="DCBreak-33" class="dcv750" layer-id="layer-default" idx="33" name="直流断路器-33" dev-id="DCBreak-33" dev-kind="dc-breaker" node-1="11" node-2="38" voltage-type="dc" vbase="750" href="#symbol_DCBreak_dc-breaker_state_1" x="795" y="1625" width="150" height="96"/>
 </g>
 <g id="DCRealBs_Layer" device-type="DCRealBs">
-<use id="DCRealBs-1" class="dcv750" layer-id="layer-default" idx="1" name="直流母线（竖向）-1" dev-id="DCRealBs-1" dev-kind="dc-bus-vertical" node="13" voltage-type="dc" vbase="750" href="#symbol_DCRealBs_dc-bus-vertical_default" x="723" y="935" width="150" height="36"/>
+<use id="DCRealBs-1" class="dcv750" layer-id="layer-default" idx="1" name="直流母线（竖向）-1" dev-id="DCRealBs-1" dev-kind="dc-bus-vertical" node="11" voltage-type="dc" vbase="750" href="#symbol_DCRealBs_dc-bus-vertical_default" x="723" y="935" width="150" height="36"/>
 </g>
 <g id="ACBranch_Layer" device-type="ACBranch">
-<use id="ACBranch-20" class="kv380" layer-id="layer-default" idx="20" name="交流线路（自适应）-20" dev-id="ACBranch-20" dev-kind="ac-routable-line" node-1="1" node-2="15" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default" x="232" y="156" width="150" height="36"/>
-<use id="ACBranch-21" class="kv380" layer-id="layer-default" idx="21" name="交流线路（自适应）-21" dev-id="ACBranch-21" dev-kind="ac-routable-line" node-1="2" node-2="16" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_2" x="232" y="279" width="150" height="36"/>
-<use id="ACBranch-22" class="kv380" layer-id="layer-default" idx="22" name="交流线路（自适应）-22" dev-id="ACBranch-22" dev-kind="ac-routable-line" node-1="3" node-2="17" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_2" x="232" y="376" width="150" height="36"/>
-<use id="ACBranch-23" class="kv380" layer-id="layer-default" idx="23" name="交流线路（自适应）-23" dev-id="ACBranch-23" dev-kind="ac-routable-line" node-1="4" node-2="18" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_2" x="232" y="538" width="150" height="36"/>
-<use id="ACBranch-24" class="kv380" layer-id="layer-default" idx="24" name="交流线路（自适应）-24" dev-id="ACBranch-24" dev-kind="ac-routable-line" node-1="5" node-2="19" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_2" x="232" y="678" width="150" height="36"/>
-<use id="ACBranch-25" class="kv380" layer-id="layer-default" idx="25" name="交流线路（自适应）-25" dev-id="ACBranch-25" dev-kind="ac-routable-line" node-1="6" node-2="20" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_2" x="232" y="809" width="150" height="36"/>
-<use id="ACBranch-26" class="kv380" layer-id="layer-default" idx="26" name="交流线路（自适应）-26" dev-id="ACBranch-26" dev-kind="ac-routable-line" node-1="7" node-2="21" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_2" x="232" y="935" width="150" height="36"/>
-<use id="ACBranch-27" class="kv380" layer-id="layer-default" idx="27" name="交流线路（自适应）-27" dev-id="ACBranch-27" dev-kind="ac-routable-line" node-1="8" node-2="22" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_2" x="232" y="1047" width="150" height="36"/>
-<use id="ACBranch-28" class="kv380" layer-id="layer-default" idx="28" name="交流线路（自适应）-28" dev-id="ACBranch-28" dev-kind="ac-routable-line" node-1="9" node-2="23" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_2" x="232" y="1177" width="150" height="36"/>
-<use id="ACBranch-29" class="kv380" layer-id="layer-default" idx="29" name="交流线路（自适应）-29" dev-id="ACBranch-29" dev-kind="ac-routable-line" node-1="10" node-2="24" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_2" x="232" y="1295" width="150" height="36"/>
-<use id="ACBranch-30" class="kv380" layer-id="layer-default" idx="30" name="交流线路（自适应）-30" dev-id="ACBranch-30" dev-kind="ac-routable-line" node-1="27" node-2="28" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_3" x="1920" y="1758.5" width="150" height="36"/>
+<use id="ACBranch-20" class="kv380" layer-id="layer-default" idx="20" name="交流线路（自适应）-20" dev-id="ACBranch-20" dev-kind="ac-routable-line" node-1="1" node-2="11" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default" x="232" y="156" width="150" height="36"/>
+<use id="ACBranch-21" class="kv380" layer-id="layer-default" idx="21" name="交流线路（自适应）-21" dev-id="ACBranch-21" dev-kind="ac-routable-line" node-1="2" node-2="12" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_2" x="232" y="279" width="150" height="36"/>
+<use id="ACBranch-22" class="kv380" layer-id="layer-default" idx="22" name="交流线路（自适应）-22" dev-id="ACBranch-22" dev-kind="ac-routable-line" node-1="3" node-2="13" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_2" x="232" y="376" width="150" height="36"/>
+<use id="ACBranch-23" class="kv380" layer-id="layer-default" idx="23" name="交流线路（自适应）-23" dev-id="ACBranch-23" dev-kind="ac-routable-line" node-1="4" node-2="14" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_2" x="232" y="538" width="150" height="36"/>
+<use id="ACBranch-24" class="kv380" layer-id="layer-default" idx="24" name="交流线路（自适应）-24" dev-id="ACBranch-24" dev-kind="ac-routable-line" node-1="5" node-2="15" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_2" x="232" y="678" width="150" height="36"/>
+<use id="ACBranch-25" class="kv380" layer-id="layer-default" idx="25" name="交流线路（自适应）-25" dev-id="ACBranch-25" dev-kind="ac-routable-line" node-1="6" node-2="16" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_2" x="232" y="809" width="150" height="36"/>
+<use id="ACBranch-26" class="kv380" layer-id="layer-default" idx="26" name="交流线路（自适应）-26" dev-id="ACBranch-26" dev-kind="ac-routable-line" node-1="7" node-2="17" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_2" x="232" y="935" width="150" height="36"/>
+<use id="ACBranch-27" class="kv380" layer-id="layer-default" idx="27" name="交流线路（自适应）-27" dev-id="ACBranch-27" dev-kind="ac-routable-line" node-1="8" node-2="18" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_2" x="232" y="1047" width="150" height="36"/>
+<use id="ACBranch-28" class="kv380" layer-id="layer-default" idx="28" name="交流线路（自适应）-28" dev-id="ACBranch-28" dev-kind="ac-routable-line" node-1="9" node-2="19" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_2" x="232" y="1177" width="150" height="36"/>
+<use id="ACBranch-29" class="kv380" layer-id="layer-default" idx="29" name="交流线路（自适应）-29" dev-id="ACBranch-29" dev-kind="ac-routable-line" node-1="10" node-2="20" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_2" x="232" y="1295" width="150" height="36"/>
+<use id="ACBranch-30" class="kv380" layer-id="layer-default" idx="30" name="交流线路（自适应）-30" dev-id="ACBranch-30" dev-kind="ac-routable-line" node-1="21" node-2="22" voltage-type="ac" vbase="380" href="#symbol_ACBranch_ac-routable-line_default_3" x="1920" y="1758.5" width="150" height="36"/>
 </g>
 <g id="DCGenerator_Layer" device-type="DCGenerator">
 <use id="DCGenerator-1" class="dcv400" layer-id="layer-default" idx="1" name="直流光伏-1" dev-id="DCGenerator-1" dev-kind="dc-pv-source" node="26" voltage-type="dc" vbase="400" href="#symbol_DCGenerator_dc-pv-source_default" x="85" y="1420" width="150" height="94"/>
@@ -710,15 +710,15 @@ symbol{overflow:visible}
 <use id="DCGenerator-9" class="dcv500" layer-id="layer-default" idx="9" name="电化学储能-6" dev-id="DCGenerator-9" dev-kind="dc-storage" node="34" voltage-type="dc" vbase="500" href="#symbol_DCGenerator_dc-storage_default" x="1246" y="780" width="150" height="94"/>
 </g>
 <g id="DCDCConverter_Layer" device-type="DCDCConverter">
-<use id="DCDCConverter-1" class="dcv400" layer-id="layer-default" idx="1" name="光伏变流器-1" dev-id="DCDCConverter-1" dev-kind="dcdc-converter" node-1="35" node-2="14" voltage-type-1="dc" vbase-1="400" voltage-type-2="dc" vbase-2="750" href="#symbol_DCDCConverter_dcdc-converter_default" x="386" y="1423" width="150" height="88"/>
-<use id="DCDCConverter-2" class="dcv400" layer-id="layer-default" idx="2" name="光伏变流器-2" dev-id="DCDCConverter-2" dev-kind="dcdc-converter" node-1="36" node-2="15" voltage-type-1="dc" vbase-1="400" voltage-type-2="dc" vbase-2="750" href="#symbol_DCDCConverter_dcdc-converter_default" x="386" y="1554" width="150" height="88"/>
-<use id="DCDCConverter-3" class="dcv400" layer-id="layer-default" idx="3" name="光伏变流器-3" dev-id="DCDCConverter-3" dev-kind="dcdc-converter" node-1="37" node-2="16" voltage-type-1="dc" vbase-1="400" voltage-type-2="dc" vbase-2="750" href="#symbol_DCDCConverter_dcdc-converter_default" x="386" y="1693" width="150" height="88"/>
-<use id="DCDCConverter-4" class="dcv750" layer-id="layer-default" idx="4" name="储能变流器-1" dev-id="DCDCConverter-4" dev-kind="dcdc-converter" node-1="17" node-2="29" voltage-type-1="dc" vbase-1="750" voltage-type-2="dc" vbase-2="500" href="#symbol_DCDCConverter_dcdc-converter_default_2" x="1080" y="130" width="150" height="88"/>
-<use id="DCDCConverter-5" class="dcv750" layer-id="layer-default" idx="5" name="储能变流器-2" dev-id="DCDCConverter-5" dev-kind="dcdc-converter" node-1="18" node-2="30" voltage-type-1="dc" vbase-1="750" voltage-type-2="dc" vbase-2="500" href="#symbol_DCDCConverter_dcdc-converter_default_2" x="1080" y="253" width="150" height="88"/>
-<use id="DCDCConverter-6" class="dcv750" layer-id="layer-default" idx="6" name="储能变流器-3" dev-id="DCDCConverter-6" dev-kind="dcdc-converter" node-1="19" node-2="31" voltage-type-1="dc" vbase-1="750" voltage-type-2="dc" vbase-2="500" href="#symbol_DCDCConverter_dcdc-converter_default_2" x="1080" y="392" width="150" height="88"/>
-<use id="DCDCConverter-7" class="dcv750" layer-id="layer-default" idx="7" name="储能变流器-4" dev-id="DCDCConverter-7" dev-kind="dcdc-converter" node-1="20" node-2="32" voltage-type-1="dc" vbase-1="750" voltage-type-2="dc" vbase-2="500" href="#symbol_DCDCConverter_dcdc-converter_default_2" x="1080" y="512" width="150" height="88"/>
-<use id="DCDCConverter-8" class="dcv750" layer-id="layer-default" idx="8" name="储能变流器-5" dev-id="DCDCConverter-8" dev-kind="dcdc-converter" node-1="21" node-2="33" voltage-type-1="dc" vbase-1="750" voltage-type-2="dc" vbase-2="500" href="#symbol_DCDCConverter_dcdc-converter_default_2" x="1080" y="652" width="150" height="88"/>
-<use id="DCDCConverter-9" class="dcv750" layer-id="layer-default" idx="9" name="储能变流器-6" dev-id="DCDCConverter-9" dev-kind="dcdc-converter" node-1="22" node-2="34" voltage-type-1="dc" vbase-1="750" voltage-type-2="dc" vbase-2="500" href="#symbol_DCDCConverter_dcdc-converter_default_2" x="1080" y="783" width="150" height="88"/>
+<use id="DCDCConverter-1" class="dcv400" layer-id="layer-default" idx="1" name="光伏变流器-1" dev-id="DCDCConverter-1" dev-kind="dcdc-converter" node-1="35" node-2="12" voltage-type-1="dc" vbase-1="400" voltage-type-2="dc" vbase-2="750" href="#symbol_DCDCConverter_dcdc-converter_default" x="386" y="1423" width="150" height="88"/>
+<use id="DCDCConverter-2" class="dcv400" layer-id="layer-default" idx="2" name="光伏变流器-2" dev-id="DCDCConverter-2" dev-kind="dcdc-converter" node-1="36" node-2="13" voltage-type-1="dc" vbase-1="400" voltage-type-2="dc" vbase-2="750" href="#symbol_DCDCConverter_dcdc-converter_default" x="386" y="1554" width="150" height="88"/>
+<use id="DCDCConverter-3" class="dcv400" layer-id="layer-default" idx="3" name="光伏变流器-3" dev-id="DCDCConverter-3" dev-kind="dcdc-converter" node-1="37" node-2="14" voltage-type-1="dc" vbase-1="400" voltage-type-2="dc" vbase-2="750" href="#symbol_DCDCConverter_dcdc-converter_default" x="386" y="1693" width="150" height="88"/>
+<use id="DCDCConverter-4" class="dcv750" layer-id="layer-default" idx="4" name="储能变流器-1" dev-id="DCDCConverter-4" dev-kind="dcdc-converter" node-1="15" node-2="29" voltage-type-1="dc" vbase-1="750" voltage-type-2="dc" vbase-2="500" href="#symbol_DCDCConverter_dcdc-converter_default_2" x="1080" y="130" width="150" height="88"/>
+<use id="DCDCConverter-5" class="dcv750" layer-id="layer-default" idx="5" name="储能变流器-2" dev-id="DCDCConverter-5" dev-kind="dcdc-converter" node-1="16" node-2="30" voltage-type-1="dc" vbase-1="750" voltage-type-2="dc" vbase-2="500" href="#symbol_DCDCConverter_dcdc-converter_default_2" x="1080" y="253" width="150" height="88"/>
+<use id="DCDCConverter-6" class="dcv750" layer-id="layer-default" idx="6" name="储能变流器-3" dev-id="DCDCConverter-6" dev-kind="dcdc-converter" node-1="17" node-2="31" voltage-type-1="dc" vbase-1="750" voltage-type-2="dc" vbase-2="500" href="#symbol_DCDCConverter_dcdc-converter_default_2" x="1080" y="392" width="150" height="88"/>
+<use id="DCDCConverter-7" class="dcv750" layer-id="layer-default" idx="7" name="储能变流器-4" dev-id="DCDCConverter-7" dev-kind="dcdc-converter" node-1="18" node-2="32" voltage-type-1="dc" vbase-1="750" voltage-type-2="dc" vbase-2="500" href="#symbol_DCDCConverter_dcdc-converter_default_2" x="1080" y="512" width="150" height="88"/>
+<use id="DCDCConverter-8" class="dcv750" layer-id="layer-default" idx="8" name="储能变流器-5" dev-id="DCDCConverter-8" dev-kind="dcdc-converter" node-1="19" node-2="33" voltage-type-1="dc" vbase-1="750" voltage-type-2="dc" vbase-2="500" href="#symbol_DCDCConverter_dcdc-converter_default_2" x="1080" y="652" width="150" height="88"/>
+<use id="DCDCConverter-9" class="dcv750" layer-id="layer-default" idx="9" name="储能变流器-6" dev-id="DCDCConverter-9" dev-kind="dcdc-converter" node-1="20" node-2="34" voltage-type-1="dc" vbase-1="750" voltage-type-2="dc" vbase-2="500" href="#symbol_DCDCConverter_dcdc-converter_default_2" x="1080" y="783" width="150" height="88"/>
 </g>
 <g id="DCBranch_Layer" device-type="DCBranch">
 <use id="DCBranch-1" class="dcv400" layer-id="layer-default" idx="1" name="光伏直流线路-1" dev-id="DCBranch-1" dev-kind="dc-routable-line" node-1="26" node-2="35" voltage-type="dc" vbase="400" href="#symbol_DCBranch_dc-routable-line_default" x="232" y="1449" width="150" height="36"/>
@@ -727,22 +727,22 @@ symbol{overflow:visible}
 <use id="DCBranch-4" class="dcv750" layer-id="layer-default" idx="4" name="燃料电池直流线路-1" dev-id="DCBranch-4" dev-kind="dc-routable-line" node-1="23" node-2="24" voltage-type="dc" vbase="750" href="#symbol_DCBranch_dc-routable-line_default_2" x="1082" y="1512" width="150" height="36"/>
 </g>
 <g id="ACBreak_Layer" device-type="ACBreak">
-<use id="ACBreak-1" class="kv380" layer-id="layer-default" idx="1" name="交流断路器-1" dev-id="ACBreak-1" dev-kind="ac-breaker" node-1="25" node-2="29" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-breaker_state_1" x="1246" y="1017" width="150" height="96"/>
-<use id="ACBreak-2" class="kv380" layer-id="layer-default" idx="2" name="交流断路器-2" dev-id="ACBreak-2" dev-kind="ac-breaker" node-1="26" node-2="29" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-breaker_state_1" x="1246" y="1209" width="150" height="96"/>
-<use id="ACBreak-3" class="kv380" layer-id="layer-default" idx="3" name="盒型开关-3" dev-id="ACBreak-3" dev-kind="ac-box-breaker" node-1="29" node-2="11" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1814" y="658" width="150" height="76"/>
-<use id="ACBreak-4" class="kv380" layer-id="layer-default" idx="4" name="盒型开关-4" dev-id="ACBreak-4" dev-kind="ac-box-breaker" node-1="29" node-2="12" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1814" y="789" width="150" height="76"/>
-<use id="ACBreak-5" class="kv380" layer-id="layer-default" idx="5" name="盒型开关-5" dev-id="ACBreak-5" dev-kind="ac-box-breaker" node-1="29" node-2="13" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1814" y="915" width="150" height="76"/>
-<use id="ACBreak-6" class="kv380" layer-id="layer-default" idx="6" name="盒型开关-6" dev-id="ACBreak-6" dev-kind="ac-box-breaker" node-1="29" node-2="14" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1814" y="1027" width="150" height="76"/>
-<use id="ACBreak-7" class="kv380" layer-id="layer-default" idx="7" name="盒型开关-7" dev-id="ACBreak-7" dev-kind="ac-box-breaker" node-1="29" node-2="30" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1814" y="1241" width="150" height="76"/>
-<use id="ACBreak-8" class="kv380" layer-id="layer-default" idx="8" name="盒型开关-8" dev-id="ACBreak-8" dev-kind="ac-box-breaker" node-1="29" node-2="27" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1814" y="1587" width="150" height="76"/>
-<use id="ACBreak-9" class="kv380" layer-id="layer-default" idx="9" name="盒型开关-9" dev-id="ACBreak-9" dev-kind="ac-box-breaker" node-1="31" node-2="28" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1868" y="1890" width="150" height="76"/>
-<use id="ACBreak-10" class="kv380" layer-id="layer-default" idx="10" name="盒型开关-10" dev-id="ACBreak-10" dev-kind="ac-box-breaker" node-1="29" node-2="33" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1814" y="512" width="150" height="76"/>
-<use id="ACBreak-11" class="kv380" layer-id="layer-default" idx="11" name="盒型开关-11" dev-id="ACBreak-11" dev-kind="ac-box-breaker" node-1="29" node-2="34" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1814" y="388" width="150" height="76"/>
-<use id="ACBreak-12" class="kv380" layer-id="layer-default" idx="12" name="盒型开关-12" dev-id="ACBreak-12" dev-kind="ac-box-breaker" node-1="29" node-2="35" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1814" y="1454" width="150" height="76"/>
-<use id="ACBreak-13" class="kv380" layer-id="layer-default" idx="13" name="盒型开关-13" dev-id="ACBreak-13" dev-kind="ac-box-breaker" node-1="36" node-2="29" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1583" y="1373" width="150" height="76"/>
+<use id="ACBreak-1" class="kv380" layer-id="layer-default" idx="1" name="交流断路器-1" dev-id="ACBreak-1" dev-kind="ac-breaker" node-1="23" node-2="24" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-breaker_state_1" x="1246" y="1017" width="150" height="96"/>
+<use id="ACBreak-2" class="kv380" layer-id="layer-default" idx="2" name="交流断路器-2" dev-id="ACBreak-2" dev-kind="ac-breaker" node-1="25" node-2="24" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-breaker_state_1" x="1246" y="1209" width="150" height="96"/>
+<use id="ACBreak-3" class="kv380" layer-id="layer-default" idx="3" name="盒型开关-3" dev-id="ACBreak-3" dev-kind="ac-box-breaker" node-1="24" node-2="26" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1814" y="658" width="150" height="76"/>
+<use id="ACBreak-4" class="kv380" layer-id="layer-default" idx="4" name="盒型开关-4" dev-id="ACBreak-4" dev-kind="ac-box-breaker" node-1="24" node-2="27" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1814" y="789" width="150" height="76"/>
+<use id="ACBreak-5" class="kv380" layer-id="layer-default" idx="5" name="盒型开关-5" dev-id="ACBreak-5" dev-kind="ac-box-breaker" node-1="24" node-2="28" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1814" y="915" width="150" height="76"/>
+<use id="ACBreak-6" class="kv380" layer-id="layer-default" idx="6" name="盒型开关-6" dev-id="ACBreak-6" dev-kind="ac-box-breaker" node-1="24" node-2="29" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1814" y="1027" width="150" height="76"/>
+<use id="ACBreak-7" class="kv380" layer-id="layer-default" idx="7" name="盒型开关-7" dev-id="ACBreak-7" dev-kind="ac-box-breaker" node-1="24" node-2="30" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1814" y="1241" width="150" height="76"/>
+<use id="ACBreak-8" class="kv380" layer-id="layer-default" idx="8" name="盒型开关-8" dev-id="ACBreak-8" dev-kind="ac-box-breaker" node-1="24" node-2="21" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1814" y="1587" width="150" height="76"/>
+<use id="ACBreak-9" class="kv380" layer-id="layer-default" idx="9" name="盒型开关-9" dev-id="ACBreak-9" dev-kind="ac-box-breaker" node-1="31" node-2="22" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1868" y="1890" width="150" height="76"/>
+<use id="ACBreak-10" class="kv380" layer-id="layer-default" idx="10" name="盒型开关-10" dev-id="ACBreak-10" dev-kind="ac-box-breaker" node-1="24" node-2="33" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1814" y="512" width="150" height="76"/>
+<use id="ACBreak-11" class="kv380" layer-id="layer-default" idx="11" name="盒型开关-11" dev-id="ACBreak-11" dev-kind="ac-box-breaker" node-1="24" node-2="34" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1814" y="388" width="150" height="76"/>
+<use id="ACBreak-12" class="kv380" layer-id="layer-default" idx="12" name="盒型开关-12" dev-id="ACBreak-12" dev-kind="ac-box-breaker" node-1="24" node-2="35" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1814" y="1454" width="150" height="76"/>
+<use id="ACBreak-13" class="kv380" layer-id="layer-default" idx="13" name="盒型开关-13" dev-id="ACBreak-13" dev-kind="ac-box-breaker" node-1="36" node-2="24" voltage-type="ac" vbase="380" href="#symbol_ACBreak_ac-box-breaker_state_1" x="1583" y="1373" width="150" height="76"/>
 </g>
 <g id="ACRealBs_Layer" device-type="ACRealBs">
-<use id="ACRealBs-1" class="kv380" layer-id="layer-default" idx="1" name="交流母线（竖向）-1" dev-id="ACRealBs-1" dev-kind="ac-bus-vertical" node="29" voltage-type="ac" vbase="380" href="#symbol_ACRealBs_ac-bus-vertical_default" x="1662" y="1047" width="150" height="36"/>
+<use id="ACRealBs-1" class="kv380" layer-id="layer-default" idx="1" name="交流母线（竖向）-1" dev-id="ACRealBs-1" dev-kind="ac-bus-vertical" node="24" voltage-type="ac" vbase="380" href="#symbol_ACRealBs_ac-bus-vertical_default" x="1662" y="1047" width="150" height="36"/>
 </g>
 <g id="ACLoad_Layer" device-type="ACLoad">
 <use id="ACLoad-1" class="kv380" layer-id="layer-default" idx="1" name="交流负荷-1" dev-id="ACLoad-1" dev-kind="ac-load" node="32" voltage-type="ac" vbase="380" href="#symbol_ACLoad_ac-load_default" x="2201" y="1228" width="150" height="102"/>
@@ -773,10 +773,6 @@ symbol{overflow:visible}
 <text id="label_ACGenerator-8" layer-id="layer-default" dev-id="ACGenerator-8" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="160" y="1130" text-anchor="middle" style="writing-mode: horizontal-tb;">交流风电-8</text>
 <text id="label_ACGenerator-9" layer-id="layer-default" dev-id="ACGenerator-9" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="160" y="1260" text-anchor="middle" style="writing-mode: horizontal-tb;">交流风电-9</text>
 <text id="label_ACGenerator-10" layer-id="layer-default" dev-id="ACGenerator-10" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="160" y="1378" text-anchor="middle" style="writing-mode: horizontal-tb;">交流风电-10</text>
-<text id="label_ACGenerator-11" layer-id="layer-default" dev-id="ACGenerator-11" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="2118" y="764" text-anchor="middle" style="writing-mode: horizontal-tb;">柴油发电机-1</text>
-<text id="label_ACGenerator-12" layer-id="layer-default" dev-id="ACGenerator-12" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="2118" y="895" text-anchor="middle" style="writing-mode: horizontal-tb;">柴油发电机-2</text>
-<text id="label_ACGenerator-13" layer-id="layer-default" dev-id="ACGenerator-13" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="2118" y="1021" text-anchor="middle" style="writing-mode: horizontal-tb;">柴油发电机-3</text>
-<text id="label_ACGenerator-14" layer-id="layer-default" dev-id="ACGenerator-14" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="2118" y="1133" text-anchor="middle" style="writing-mode: horizontal-tb;">柴油发电机-4</text>
 <text id="label_DCACConverter-1" layer-id="layer-default" dev-id="DCACConverter-1" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="461" y="236" text-anchor="middle" style="writing-mode: horizontal-tb;">风机变流器-1</text>
 <text id="label_DCACConverter-2" layer-id="layer-default" dev-id="DCACConverter-2" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="461" y="359" text-anchor="middle" style="writing-mode: horizontal-tb;">风机变流器-2</text>
 <text id="label_DCACConverter-3" layer-id="layer-default" dev-id="DCACConverter-3" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="461" y="456" text-anchor="middle" style="writing-mode: horizontal-tb;">风机变流器-3</text>
@@ -787,8 +783,6 @@ symbol{overflow:visible}
 <text id="label_DCACConverter-8" layer-id="layer-default" dev-id="DCACConverter-8" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="461" y="1127" text-anchor="middle" style="writing-mode: horizontal-tb;">风机变流器-8</text>
 <text id="label_DCACConverter-9" layer-id="layer-default" dev-id="DCACConverter-9" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="461" y="1257" text-anchor="middle" style="writing-mode: horizontal-tb;">风机变流器-9</text>
 <text id="label_DCACConverter-10" layer-id="layer-default" dev-id="DCACConverter-10" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="461" y="1375" text-anchor="middle" style="writing-mode: horizontal-tb;">风机变流器-10</text>
-<text id="label_DCACConverter-11" layer-id="layer-default" dev-id="DCACConverter-11" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="1155" y="1127" text-anchor="middle" style="writing-mode: horizontal-tb;">ACDC变流器-1</text>
-<text id="label_DCACConverter-12" layer-id="layer-default" dev-id="DCACConverter-12" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="1155" y="1319" text-anchor="middle" style="writing-mode: horizontal-tb;">ACDC变流器-2</text>
 <text id="label_DCBreak-1" layer-id="layer-default" dev-id="DCBreak-1" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="627" y="240" text-anchor="middle" style="writing-mode: horizontal-tb;">直流断路器-1</text>
 <text id="label_DCBreak-2" layer-id="layer-default" dev-id="DCBreak-2" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="627" y="363" text-anchor="middle" style="writing-mode: horizontal-tb;">直流断路器-2</text>
 <text id="label_DCBreak-3" layer-id="layer-default" dev-id="DCBreak-3" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="627" y="460" text-anchor="middle" style="writing-mode: horizontal-tb;">直流断路器-3</text>
@@ -871,6 +865,12 @@ symbol{overflow:visible}
 <text id="label_ACGenerator-25" layer-id="layer-default" dev-id="ACGenerator-25" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="2118" y="1557" text-anchor="middle" style="writing-mode: horizontal-tb;">交流光伏发电机-25</text>
 <text id="label_ACGenerator-26" layer-id="layer-default" dev-id="ACGenerator-26" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="1500" y="1476" text-anchor="middle" style="writing-mode: horizontal-tb;">交流电化学储能-26</text>
 <text id="label_ACBreak-13" layer-id="layer-default" dev-id="ACBreak-13" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="1658" y="1467" text-anchor="middle" style="writing-mode: horizontal-tb;">盒型开关-13</text>
+<text id="label_ACGenerator-27" layer-id="layer-default" dev-id="ACGenerator-27" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="2118" y="761" text-anchor="middle" style="writing-mode: horizontal-tb;">交流柴油发电机-27</text>
+<text id="label_ACGenerator-28" layer-id="layer-default" dev-id="ACGenerator-28" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="2123" y="892" text-anchor="middle" style="writing-mode: horizontal-tb;">交流柴油发电机-28</text>
+<text id="label_ACGenerator-29" layer-id="layer-default" dev-id="ACGenerator-29" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="2123" y="1018" text-anchor="middle" style="writing-mode: horizontal-tb;">交流柴油发电机-29</text>
+<text id="label_ACGenerator-30" layer-id="layer-default" dev-id="ACGenerator-30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="2123" y="1130" text-anchor="middle" style="writing-mode: horizontal-tb;">交流柴油发电机-30</text>
+<text id="label_DCACConverter-13" layer-id="layer-default" dev-id="DCACConverter-13" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="1155" y="1127" text-anchor="middle" style="writing-mode: horizontal-tb;">DCAC变流器-1</text>
+<text id="label_DCACConverter-14" layer-id="layer-default" dev-id="DCACConverter-14" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none" paint-order="stroke" stroke="rgba(255,255,255,0.85)" stroke-width="3" stroke-linejoin="round" x="1155" y="1319" text-anchor="middle" style="writing-mode: horizontal-tb;">DCAC变流器-2</text>
 </g>
 <g id="Measurement_Layer">
 <g class="mg" layer-id="layer-default" transform="translate(75 836)" dev="ACGenerator-6">
@@ -892,22 +892,6 @@ symbol{overflow:visible}
 <g class="mg" layer-id="layer-default" transform="translate(72 1324)" dev="ACGenerator-10">
   <rect x="-42.54" y="-40" width="85.08" height="80" rx="4" fill="transparent" stroke="#64748b" stroke-width="0"/>
   <text x="-35.54" y="-30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>P</tspan><tspan id="mv-ACGenerator-10-activePower-0" class="mv" mt="activePower" dx="5.04">--</tspan><tspan dx="5.04">MW</tspan></text><text x="-35.54" y="-10" dominant-baseline="middle" fill="#475569" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>Q</tspan><tspan id="mv-ACGenerator-10-reactivePower-1" class="mv" mt="reactivePower" dx="5.04">--</tspan><tspan dx="5.04">Mvar</tspan></text><text x="-35.54" y="10" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>U</tspan><tspan id="mv-ACGenerator-10-voltage-2" class="mv" mt="voltage" dx="5.04">--</tspan><tspan dx="5.04">kV</tspan></text><text x="-35.54" y="30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>f</tspan><tspan id="mv-ACGenerator-10-frequency-3" class="mv" mt="frequency" dx="5.04">--</tspan><tspan dx="5.04">Hz</tspan></text>
-</g>
-<g class="mg" layer-id="layer-default" transform="translate(2263 697)" dev="ACGenerator-11">
-  <rect x="-42.54" y="-40" width="85.08" height="80" rx="4" fill="transparent" stroke="#64748b" stroke-width="0"/>
-  <text x="-35.54" y="-30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>P</tspan><tspan id="mv-ACGenerator-11-activePower-0" class="mv" mt="activePower" dx="5.04">--</tspan><tspan dx="5.04">MW</tspan></text><text x="-35.54" y="-10" dominant-baseline="middle" fill="#475569" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>Q</tspan><tspan id="mv-ACGenerator-11-reactivePower-1" class="mv" mt="reactivePower" dx="5.04">--</tspan><tspan dx="5.04">Mvar</tspan></text><text x="-35.54" y="10" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>U</tspan><tspan id="mv-ACGenerator-11-voltage-2" class="mv" mt="voltage" dx="5.04">--</tspan><tspan dx="5.04">kV</tspan></text><text x="-35.54" y="30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>f</tspan><tspan id="mv-ACGenerator-11-frequency-3" class="mv" mt="frequency" dx="5.04">--</tspan><tspan dx="5.04">Hz</tspan></text>
-</g>
-<g class="mg" layer-id="layer-default" transform="translate(2257 815)" dev="ACGenerator-12">
-  <rect x="-42.54" y="-40" width="85.08" height="80" rx="4" fill="transparent" stroke="#64748b" stroke-width="0"/>
-  <text x="-35.54" y="-30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>P</tspan><tspan id="mv-ACGenerator-12-activePower-0" class="mv" mt="activePower" dx="5.04">--</tspan><tspan dx="5.04">MW</tspan></text><text x="-35.54" y="-10" dominant-baseline="middle" fill="#475569" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>Q</tspan><tspan id="mv-ACGenerator-12-reactivePower-1" class="mv" mt="reactivePower" dx="5.04">--</tspan><tspan dx="5.04">Mvar</tspan></text><text x="-35.54" y="10" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>U</tspan><tspan id="mv-ACGenerator-12-voltage-2" class="mv" mt="voltage" dx="5.04">--</tspan><tspan dx="5.04">kV</tspan></text><text x="-35.54" y="30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>f</tspan><tspan id="mv-ACGenerator-12-frequency-3" class="mv" mt="frequency" dx="5.04">--</tspan><tspan dx="5.04">Hz</tspan></text>
-</g>
-<g class="mg" layer-id="layer-default" transform="translate(2251 943)" dev="ACGenerator-13">
-  <rect x="-42.54" y="-40" width="85.08" height="80" rx="4" fill="transparent" stroke="#64748b" stroke-width="0"/>
-  <text x="-35.54" y="-30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>P</tspan><tspan id="mv-ACGenerator-13-activePower-0" class="mv" mt="activePower" dx="5.04">--</tspan><tspan dx="5.04">MW</tspan></text><text x="-35.54" y="-10" dominant-baseline="middle" fill="#475569" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>Q</tspan><tspan id="mv-ACGenerator-13-reactivePower-1" class="mv" mt="reactivePower" dx="5.04">--</tspan><tspan dx="5.04">Mvar</tspan></text><text x="-35.54" y="10" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>U</tspan><tspan id="mv-ACGenerator-13-voltage-2" class="mv" mt="voltage" dx="5.04">--</tspan><tspan dx="5.04">kV</tspan></text><text x="-35.54" y="30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>f</tspan><tspan id="mv-ACGenerator-13-frequency-3" class="mv" mt="frequency" dx="5.04">--</tspan><tspan dx="5.04">Hz</tspan></text>
-</g>
-<g class="mg" layer-id="layer-default" transform="translate(2255 1079)" dev="ACGenerator-14">
-  <rect x="-42.54" y="-40" width="85.08" height="80" rx="4" fill="transparent" stroke="#64748b" stroke-width="0"/>
-  <text x="-35.54" y="-30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>P</tspan><tspan id="mv-ACGenerator-14-activePower-0" class="mv" mt="activePower" dx="5.04">--</tspan><tspan dx="5.04">MW</tspan></text><text x="-35.54" y="-10" dominant-baseline="middle" fill="#475569" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>Q</tspan><tspan id="mv-ACGenerator-14-reactivePower-1" class="mv" mt="reactivePower" dx="5.04">--</tspan><tspan dx="5.04">Mvar</tspan></text><text x="-35.54" y="10" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>U</tspan><tspan id="mv-ACGenerator-14-voltage-2" class="mv" mt="voltage" dx="5.04">--</tspan><tspan dx="5.04">kV</tspan></text><text x="-35.54" y="30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>f</tspan><tspan id="mv-ACGenerator-14-frequency-3" class="mv" mt="frequency" dx="5.04">--</tspan><tspan dx="5.04">Hz</tspan></text>
 </g>
 <g class="mg" layer-id="layer-default" transform="translate(461 285)" dev="DCACConverter-1">
   <rect x="-36" y="-30" width="72" height="60" rx="4" fill="transparent" stroke="#64748b" stroke-width="0"/>
@@ -948,14 +932,6 @@ symbol{overflow:visible}
 <g class="mg" layer-id="layer-default" transform="translate(461 1424)" dev="DCACConverter-10">
   <rect x="-36" y="-30" width="72" height="60" rx="4" fill="transparent" stroke="#64748b" stroke-width="0"/>
   <text x="-29" y="-20" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>P</tspan><tspan id="mv-DCACConverter-10-activePower-0" class="mv" mt="activePower" dx="5.04">--</tspan><tspan dx="5.04">MW</tspan></text><text x="-29" y="0" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>U</tspan><tspan id="mv-DCACConverter-10-voltage-1" class="mv" mt="voltage" dx="5.04">--</tspan><tspan dx="5.04">kV</tspan></text><text x="-29" y="20" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>I</tspan><tspan id="mv-DCACConverter-10-current-2" class="mv" mt="current" dx="5.04">--</tspan><tspan dx="5.04">A</tspan></text>
-</g>
-<g class="mg" layer-id="layer-default" transform="translate(1155 1176)" dev="DCACConverter-11">
-  <rect x="-36" y="-30" width="72" height="60" rx="4" fill="transparent" stroke="#64748b" stroke-width="0"/>
-  <text x="-29" y="-20" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>P</tspan><tspan id="mv-DCACConverter-11-activePower-0" class="mv" mt="activePower" dx="5.04">--</tspan><tspan dx="5.04">MW</tspan></text><text x="-29" y="0" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>U</tspan><tspan id="mv-DCACConverter-11-voltage-1" class="mv" mt="voltage" dx="5.04">--</tspan><tspan dx="5.04">kV</tspan></text><text x="-29" y="20" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>I</tspan><tspan id="mv-DCACConverter-11-current-2" class="mv" mt="current" dx="5.04">--</tspan><tspan dx="5.04">A</tspan></text>
-</g>
-<g class="mg" layer-id="layer-default" transform="translate(1155 1368)" dev="DCACConverter-12">
-  <rect x="-36" y="-30" width="72" height="60" rx="4" fill="transparent" stroke="#64748b" stroke-width="0"/>
-  <text x="-29" y="-20" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>P</tspan><tspan id="mv-DCACConverter-12-activePower-0" class="mv" mt="activePower" dx="5.04">--</tspan><tspan dx="5.04">MW</tspan></text><text x="-29" y="0" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>U</tspan><tspan id="mv-DCACConverter-12-voltage-1" class="mv" mt="voltage" dx="5.04">--</tspan><tspan dx="5.04">kV</tspan></text><text x="-29" y="20" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>I</tspan><tspan id="mv-DCACConverter-12-current-2" class="mv" mt="current" dx="5.04">--</tspan><tspan dx="5.04">A</tspan></text>
 </g>
 <g class="mg" layer-id="layer-default" transform="translate(627 279)" dev="DCBreak-1">
   <rect x="-36" y="-20" width="72" height="40" rx="4" fill="transparent" stroke="#64748b" stroke-width="0"/>
@@ -1304,6 +1280,22 @@ symbol{overflow:visible}
 <g class="mg" layer-id="layer-default" transform="translate(1658 1506)" dev="ACBreak-13">
   <rect x="-36" y="-20" width="72" height="40" rx="4" fill="transparent" stroke="#64748b" stroke-width="0"/>
   <text x="-29" y="-10" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>状态</tspan><tspan id="mv-ACBreak-13-status-0" class="mv" mt="status" dx="5.04">--</tspan></text><text x="-29" y="10" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>I</tspan><tspan id="mv-ACBreak-13-current-1" class="mv" mt="current" dx="5.04">--</tspan><tspan dx="5.04">A</tspan></text>
+</g>
+<g class="mg" layer-id="layer-default" transform="translate(2260 690)" dev="ACGenerator-27">
+  <rect x="-42.54" y="-40" width="85.08" height="80" rx="4" fill="transparent" stroke="#64748b" stroke-width="0"/>
+  <text x="-35.54" y="-30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>P</tspan><tspan id="mv-ACGenerator-27-activePower-0" class="mv" mt="activePower" dx="5.04">--</tspan><tspan dx="5.04">MW</tspan></text><text x="-35.54" y="-10" dominant-baseline="middle" fill="#475569" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>Q</tspan><tspan id="mv-ACGenerator-27-reactivePower-1" class="mv" mt="reactivePower" dx="5.04">--</tspan><tspan dx="5.04">Mvar</tspan></text><text x="-35.54" y="10" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>U</tspan><tspan id="mv-ACGenerator-27-voltage-2" class="mv" mt="voltage" dx="5.04">--</tspan><tspan dx="5.04">kV</tspan></text><text x="-35.54" y="30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>f</tspan><tspan id="mv-ACGenerator-27-frequency-3" class="mv" mt="frequency" dx="5.04">--</tspan><tspan dx="5.04">Hz</tspan></text>
+</g>
+<g class="mg" layer-id="layer-default" transform="translate(2258 830)" dev="ACGenerator-28">
+  <rect x="-42.54" y="-40" width="85.08" height="80" rx="4" fill="transparent" stroke="#64748b" stroke-width="0"/>
+  <text x="-35.54" y="-30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>P</tspan><tspan id="mv-ACGenerator-28-activePower-0" class="mv" mt="activePower" dx="5.04">--</tspan><tspan dx="5.04">MW</tspan></text><text x="-35.54" y="-10" dominant-baseline="middle" fill="#475569" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>Q</tspan><tspan id="mv-ACGenerator-28-reactivePower-1" class="mv" mt="reactivePower" dx="5.04">--</tspan><tspan dx="5.04">Mvar</tspan></text><text x="-35.54" y="10" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>U</tspan><tspan id="mv-ACGenerator-28-voltage-2" class="mv" mt="voltage" dx="5.04">--</tspan><tspan dx="5.04">kV</tspan></text><text x="-35.54" y="30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>f</tspan><tspan id="mv-ACGenerator-28-frequency-3" class="mv" mt="frequency" dx="5.04">--</tspan><tspan dx="5.04">Hz</tspan></text>
+</g>
+<g class="mg" layer-id="layer-default" transform="translate(2254 955)" dev="ACGenerator-29">
+  <rect x="-42.54" y="-40" width="85.08" height="80" rx="4" fill="transparent" stroke="#64748b" stroke-width="0"/>
+  <text x="-35.54" y="-30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>P</tspan><tspan id="mv-ACGenerator-29-activePower-0" class="mv" mt="activePower" dx="5.04">--</tspan><tspan dx="5.04">MW</tspan></text><text x="-35.54" y="-10" dominant-baseline="middle" fill="#475569" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>Q</tspan><tspan id="mv-ACGenerator-29-reactivePower-1" class="mv" mt="reactivePower" dx="5.04">--</tspan><tspan dx="5.04">Mvar</tspan></text><text x="-35.54" y="10" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>U</tspan><tspan id="mv-ACGenerator-29-voltage-2" class="mv" mt="voltage" dx="5.04">--</tspan><tspan dx="5.04">kV</tspan></text><text x="-35.54" y="30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>f</tspan><tspan id="mv-ACGenerator-29-frequency-3" class="mv" mt="frequency" dx="5.04">--</tspan><tspan dx="5.04">Hz</tspan></text>
+</g>
+<g class="mg" layer-id="layer-default" transform="translate(2261 1071)" dev="ACGenerator-30">
+  <rect x="-42.54" y="-40" width="85.08" height="80" rx="4" fill="transparent" stroke="#64748b" stroke-width="0"/>
+  <text x="-35.54" y="-30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>P</tspan><tspan id="mv-ACGenerator-30-activePower-0" class="mv" mt="activePower" dx="5.04">--</tspan><tspan dx="5.04">MW</tspan></text><text x="-35.54" y="-10" dominant-baseline="middle" fill="#475569" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>Q</tspan><tspan id="mv-ACGenerator-30-reactivePower-1" class="mv" mt="reactivePower" dx="5.04">--</tspan><tspan dx="5.04">Mvar</tspan></text><text x="-35.54" y="10" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>U</tspan><tspan id="mv-ACGenerator-30-voltage-2" class="mv" mt="voltage" dx="5.04">--</tspan><tspan dx="5.04">kV</tspan></text><text x="-35.54" y="30" dominant-baseline="middle" fill="#334155" font-family="Arial" font-size="14" font-weight="500" font-style="normal" text-decoration="none"><tspan>f</tspan><tspan id="mv-ACGenerator-30-frequency-3" class="mv" mt="frequency" dx="5.04">--</tspan><tspan dx="5.04">Hz</tspan></text>
 </g>
 </g>
 <g id="Other_Layer">

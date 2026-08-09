@@ -23,6 +23,7 @@ try:
         measurement_row_index,
         measurement_rows_by_definition_index,
     )
+    from .measurement_history import MeasurementHistoryStore
 except ImportError:  # pragma: no cover - legacy package compatibility.
     from measurement_delta import (
         MeasurementArrayMismatchError,
@@ -32,6 +33,7 @@ except ImportError:  # pragma: no cover - legacy package compatibility.
         measurement_row_index,
         measurement_rows_by_definition_index,
     )
+    from measurement_history import MeasurementHistoryStore
 
 
 CONTROL_STATIC_FIELDS = ("definitions", "settings", "device_parameters")
@@ -199,6 +201,7 @@ class _ExchangeState:
     remote_measurement_delta_seq: int = 0
     measurement_delta_state: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     measurement_delta_history: list[Dict[str, Any]] = field(default_factory=list)
+    measurement_history: MeasurementHistoryStore = field(default_factory=MeasurementHistoryStore)
     accepted_measurement_frame_count: int = 0
     rejected_measurement_frame_count: int = 0
     last_accepted_measurement_seq: int = 0
@@ -844,6 +847,7 @@ class TraineeRealtimeExchange:
     ) -> Optional[int]:
         runtime_settings = self._runtime_settings_for_service(service)
         history_limit = max(1, int(runtime_settings["measurement_delta_history_limit"]))
+        trace_history_limit = max(1, int(runtime_settings.get("trace_history_limit", 45000)))
         published_at = float(received_at if received_at is not None else time.time())
         runtime = dict(snapshot) if snapshot_owned else copy.deepcopy(dict(snapshot))
         remote_measurements = runtime.get("measurements")
@@ -917,6 +921,16 @@ class TraineeRealtimeExchange:
                     ]
                     state.measurement_delta_state = current_measurements
             state.runtime_snapshot = runtime
+            history_measurements = runtime.get("measurements")
+            history_clock = runtime.get("clock")
+            if isinstance(history_measurements, Mapping) and isinstance(history_clock, Mapping):
+                state.measurement_history.append(
+                    history_clock,
+                    history_measurements,
+                    definition_revision=self._definition_revision(service),
+                    limit=trace_history_limit,
+                    wall_time=datetime.fromtimestamp(published_at).isoformat(timespec="seconds"),
+                )
             state.received_at = published_at
             state.last_success_at = published_at
             state.last_error = ""
@@ -1477,6 +1491,63 @@ class TraineeRealtimeExchange:
             )
         return compact_measurement_delta(payload) if compact else payload
 
+    def measurement_history(
+        self,
+        model_id: Optional[str],
+        *,
+        indices: Optional[Sequence[int]] = None,
+        after_seq: int | float = 0,
+    ) -> Dict[str, Any]:
+        return self.measurement_history_for_service(
+            self._service_for(model_id),
+            indices=indices,
+            after_seq=after_seq,
+        )
+
+    def measurement_history_for_service(
+        self,
+        service: Any,
+        *,
+        indices: Optional[Sequence[int]] = None,
+        after_seq: int | float = 0,
+    ) -> Dict[str, Any]:
+        state = self._state_for_request_service(service)
+        with state.lock:
+            runtime = state.runtime_snapshot or {}
+            measurements = runtime.get("measurements")
+            definitions = (
+                list(measurements.get("definitions", []))
+                if isinstance(measurements, Mapping)
+                else []
+            )
+            history = state.measurement_history
+        if not definitions:
+            local = service.snapshot(
+                include_static=True,
+                include_runtime_logs=False,
+                include_measurements=False,
+                include_devices=False,
+                include_device_states=False,
+                include_commands=False,
+                static_fields=["definitions"],
+            )
+            local_definitions = local.get("definitions")
+            definitions = (
+                list(local_definitions.get("measurement", []))
+                if isinstance(local_definitions, Mapping)
+                else []
+            )
+        history.ensure_definition(
+            [row for row in definitions if isinstance(row, Mapping)],
+            definition_revision=self._definition_revision(service),
+        )
+        return history.payload(
+            indices=indices,
+            after_seq=after_seq,
+            model_id=str(getattr(service, "model_id", "default")),
+            model_name=str(getattr(service, "model_name", "")),
+        )
+
     def submit_commands(
         self,
         model_id: Optional[str],
@@ -1680,6 +1751,7 @@ class TraineeRealtimeExchange:
             state.remote_measurement_delta_seq = 0
             state.measurement_delta_state = {}
             state.measurement_delta_history = []
+            state.measurement_history.clear(preserve_definition=False)
             state.accepted_measurement_frame_count = 0
             state.rejected_measurement_frame_count = 0
             state.last_accepted_measurement_seq = 0
@@ -1937,6 +2009,9 @@ class TraineeRealtimeExchange:
             self._enter_unique_lock(stack, state.lock, entered)
             state.next_refresh_at_monotonic = 0.0
             state.measurement_delta_history = state.measurement_delta_history[-history_limit:]
+            state.measurement_history.trim(
+                max(1, int(runtime_settings.get("trace_history_limit", 45000)))
+            )
         self._wake_event.set()
         return True
 
@@ -1957,6 +2032,7 @@ class TraineeRealtimeExchange:
             state.remote_measurement_delta_seq = 0
             state.measurement_delta_state = {}
             state.measurement_delta_history = []
+            state.measurement_history.clear(preserve_definition=False)
             state.accepted_measurement_frame_count = 0
             state.rejected_measurement_frame_count = 0
             state.last_accepted_measurement_seq = 0
@@ -1993,6 +2069,7 @@ class TraineeRealtimeExchange:
             state.remote_measurement_delta_seq = 0
             state.measurement_delta_state = {}
             state.measurement_delta_history = []
+            state.measurement_history.clear(preserve_definition=False)
             state.accepted_measurement_frame_count = 0
             state.rejected_measurement_frame_count = 0
             state.last_accepted_measurement_seq = 0

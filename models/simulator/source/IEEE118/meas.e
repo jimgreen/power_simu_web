@@ -1766,11 +1766,11 @@
 # 1764  ACTransformer.Transformer_68-116.P_TO      ACTransformer  Transformer_68-116  P_TO              10000.0  1      0.0
 # 1765  ACTransformer.Transformer_68-116.Q_TO      ACTransformer  Transformer_68-116  Q_TO              10000.0  1      0.0
 # 1766  ACTransformer.Transformer_68-116.I         ACTransformer  Transformer_68-116  I                 10000.0  1      0.0
-# 1767  weather_wind_speed                         Environment    weather             WIND_SPEED        1.0      1      12.0
-# 1768  weather_air_temp                           Environment    weather             AIR_TEMP          1.0      1      -18.0
-# 1769  weather_humidity                           Environment    weather             HUMIDITY          1.0      1      72.0
-# 1770  weather_air_pressure                       Environment    weather             AIR_PRESSURE      1.0      1      960.0
-# 1771  weather_solar_irradiance                   Environment    weather             SOLAR_IRRADIANCE  1.0      1      0.0
+# 1767  Environment.weather.WIND_SPEED             Environment    weather             WIND_SPEED        1.0      1      12.0
+# 1768  Environment.weather.AIR_TEMP               Environment    weather             AIR_TEMP          1.0      1      -18.0
+# 1769  Environment.weather.HUMIDITY               Environment    weather             HUMIDITY          1.0      1      72.0
+# 1770  Environment.weather.AIR_PRESSURE           Environment    weather             AIR_PRESSURE      1.0      1      960.0
+# 1771  Environment.weather.SOLAR_IRRADIANCE       Environment    weather             SOLAR_IRRADIANCE  1.0      1      0.0
 # 1772  ACNode.Bus_1.run_stat                      ACNode         Bus_1               RUN_STAT          1.0      1      1.0
 # 1773  ACNode.Bus_2.run_stat                      ACNode         Bus_2               RUN_STAT          1.0      1      1.0
 # 1774  ACNode.Bus_3.run_stat                      ACNode         Bus_3               RUN_STAT          1.0      1      1.0

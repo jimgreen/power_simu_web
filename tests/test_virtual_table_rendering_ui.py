@@ -36,7 +36,7 @@ class VirtualTableRenderingUiTest(unittest.TestCase):
         self.assertIn('data-virtual-table="measurement"', script)
         self.assertIn("const virtualRows = virtualTableWindow(\"measurement\", rows)", script)
         self.assertIn("virtualRows.rows.map((item)", script)
-        self.assertIn("renderVirtualSpacerRow(virtualRows.beforeHeight, 6)", script)
+        self.assertIn("renderVirtualSpacerRow(virtualRows.beforeHeight, 8)", script)
         self.assertIn(".virtual-table-scroll", style)
         self.assertIn(".virtual-table-spacer", style)
 

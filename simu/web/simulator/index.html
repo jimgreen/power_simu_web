@@ -137,7 +137,11 @@
                         <article class="energy-device wind energy-side-node" data-overview-group="dcWind" data-flow-side="left" data-flow-active="false" data-flow-direction="idle" hidden>
                           <div class="energy-device-card">
                             <span>直流并网风电</span>
-                            <strong data-overview-power>--</strong>
+                            <div class="energy-device-readings">
+                              <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
+                              <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
+                              <div class="energy-device-reading"><span>最大可发</span><strong data-overview-max-available>--</strong></div>
+                            </div>
                             <small data-overview-meta>等待量测</small>
                           </div>
                           <div class="energy-device-icon" role="img" aria-label="风力发电机">
@@ -147,7 +151,11 @@
                         <article class="energy-device solar energy-side-node" data-overview-group="dcSolar" data-flow-side="left" data-flow-active="false" data-flow-direction="idle" hidden>
                           <div class="energy-device-card">
                             <span>直流并网光伏</span>
-                            <strong data-overview-power>--</strong>
+                            <div class="energy-device-readings">
+                              <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
+                              <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
+                              <div class="energy-device-reading"><span>最大可发</span><strong data-overview-max-available>--</strong></div>
+                            </div>
                             <small data-overview-meta>等待量测</small>
                           </div>
                           <div class="energy-device-icon" role="img" aria-label="光伏阵列">
@@ -157,7 +165,10 @@
                         <article class="energy-device storage energy-side-node" data-overview-group="dcGridFollowingStorage" data-flow-side="left" data-flow-active="false" data-flow-direction="idle" hidden>
                           <div class="energy-device-card">
                             <span>直流跟网储能</span>
-                            <strong data-overview-power>--</strong>
+                            <div class="energy-device-readings">
+                              <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
+                              <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
+                            </div>
                             <small data-overview-meta>等待量测</small>
                           </div>
                           <div class="energy-device-icon" role="img" aria-label="电池储能">
@@ -167,7 +178,10 @@
                         <article class="energy-device load energy-side-node" data-overview-group="dcLoad" data-flow-side="left" data-flow-active="false" data-flow-direction="idle" hidden>
                           <div class="energy-device-card">
                             <span>直流负荷</span>
-                            <strong data-overview-power>--</strong>
+                            <div class="energy-device-readings">
+                              <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
+                              <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
+                            </div>
                             <small data-overview-meta>等待量测</small>
                           </div>
                           <div class="energy-device-icon" role="img" aria-label="电气负荷">
@@ -195,12 +209,15 @@
                       </div>
                     </article>
                     <article class="energy-device converter energy-acdc-converter" data-overview-group="acdcConverter" data-flow-side="center" data-flow-active="false" data-flow-direction="idle" hidden>
-                      <div class="energy-device-icon energy-converter-icon" role="img" aria-label="AC/DC变流器">
+                      <div class="energy-device-icon energy-converter-icon" role="img" aria-label="DC/AC变流器">
                         <svg aria-hidden="true" viewBox="0 0 36 36"><use href="#energy-icon-acdc-converter"></use></svg>
                       </div>
                       <div class="energy-device-card energy-converter-card">
-                        <span>AC/DC变流器</span>
-                        <strong data-overview-power>--</strong>
+                        <span>DC/AC变流器</span>
+                        <div class="energy-device-readings">
+                          <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
+                          <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
+                        </div>
                         <small data-overview-meta>等待量测</small>
                       </div>
                     </article>
@@ -216,7 +233,10 @@
                             </div>
                             <div class="energy-device-card">
                               <span>直流构网储能</span>
-                              <strong data-overview-power>--</strong>
+                              <div class="energy-device-readings">
+                                <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
+                                <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
+                              </div>
                               <small data-overview-meta>等待量测</small>
                             </div>
                           </article>
@@ -226,7 +246,10 @@
                           <article class="energy-device storage" data-overview-group="acGridFormingStorage" data-flow-side="center" data-flow-active="false" data-flow-direction="idle" hidden>
                             <div class="energy-device-card">
                               <span>交流构网储能</span>
-                              <strong data-overview-power>--</strong>
+                              <div class="energy-device-readings">
+                                <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
+                                <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
+                              </div>
                               <small data-overview-meta>等待量测</small>
                             </div>
                             <div class="energy-device-icon" role="img" aria-label="交流构网电池储能">
@@ -250,7 +273,11 @@
                           </div>
                           <div class="energy-device-card">
                             <span>交流并网风电</span>
-                            <strong data-overview-power>--</strong>
+                            <div class="energy-device-readings">
+                              <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
+                              <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
+                              <div class="energy-device-reading"><span>最大可发</span><strong data-overview-max-available>--</strong></div>
+                            </div>
                             <small data-overview-meta>等待量测</small>
                           </div>
                         </article>
@@ -260,7 +287,11 @@
                           </div>
                           <div class="energy-device-card">
                             <span>交流并网光伏</span>
-                            <strong data-overview-power>--</strong>
+                            <div class="energy-device-readings">
+                              <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
+                              <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
+                              <div class="energy-device-reading"><span>最大可发</span><strong data-overview-max-available>--</strong></div>
+                            </div>
                             <small data-overview-meta>等待量测</small>
                           </div>
                         </article>
@@ -270,7 +301,10 @@
                           </div>
                           <div class="energy-device-card">
                             <span>交流跟网储能</span>
-                            <strong data-overview-power>--</strong>
+                            <div class="energy-device-readings">
+                              <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
+                              <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
+                            </div>
                             <small data-overview-meta>等待量测</small>
                           </div>
                         </article>
@@ -280,7 +314,10 @@
                           </div>
                           <div class="energy-device-card">
                             <span>交流负荷</span>
-                            <strong data-overview-power>--</strong>
+                            <div class="energy-device-readings">
+                              <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
+                              <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
+                            </div>
                             <small data-overview-meta>等待量测</small>
                           </div>
                         </article>
@@ -290,7 +327,10 @@
                           </div>
                           <div class="energy-device-card">
                             <span>柴油发电</span>
-                            <strong data-overview-power>--</strong>
+                            <div class="energy-device-readings">
+                              <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
+                              <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
+                            </div>
                             <small data-overview-meta>等待量测</small>
                           </div>
                         </article>
@@ -899,6 +939,11 @@
                 <div class="panel-head">
                   <h2>控制跟踪曲线</h2>
                   <div class="panel-actions">
+                    <div class="chart-period-navigation" data-chart-period-nav="runtimeTrace" hidden aria-label="控制跟踪曲线时段导航">
+                      <button type="button" data-chart-period-action="previous" aria-label="上一时段" title="上一时段">&#8592;</button>
+                      <button type="button" data-chart-period-action="current" aria-label="回到当前时段" title="回到当前时段">&#9673;</button>
+                      <button type="button" data-chart-period-action="next" aria-label="下一时段" title="下一时段">&#8594;</button>
+                    </div>
                     <label class="compact-field">时间窗口
                       <select id="runtimeTraceWindow">
                         <option value="15">15分钟</option>
@@ -1004,6 +1049,11 @@
                 <div class="panel-head">
                   <h2>测点跟踪曲线</h2>
                   <div class="panel-actions">
+                    <div class="chart-period-navigation" data-chart-period-nav="measurementTrace" hidden aria-label="测点跟踪曲线时段导航">
+                      <button type="button" data-chart-period-action="previous" aria-label="上一时段" title="上一时段">&#8592;</button>
+                      <button type="button" data-chart-period-action="current" aria-label="回到当前时段" title="回到当前时段">&#9673;</button>
+                      <button type="button" data-chart-period-action="next" aria-label="下一时段" title="下一时段">&#8594;</button>
+                    </div>
                     <label class="compact-field">时间窗口
                       <select id="measurementTraceWindow">
                         <option value="15">15分钟</option>

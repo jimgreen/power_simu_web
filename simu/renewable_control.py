@@ -845,6 +845,9 @@ class RenewableControlSettings:
     storage_step_ratio: float = default_number(
         "grid_following_storage_step_ratio"
     )
+    storage_soc_correction_step_scale: float = default_number(
+        "storage_soc_correction_step_scale"
+    )
     grid_forming_storage_protection_ratio: float = default_number(
         "grid_forming_storage_protection_ratio"
     )
@@ -910,6 +913,11 @@ class RenewableControlSettings:
             large_step_threshold_kw=max(0.0, float(self.large_step_threshold_kw)),
             step_coefficient=max(0.0, float(self.step_coefficient)),
             storage_step_ratio=storage_step_ratio,
+            storage_soc_correction_step_scale=_clamp(
+                float(self.storage_soc_correction_step_scale),
+                0.0,
+                1.0,
+            ),
             grid_forming_storage_protection_ratio=_clamp(
                 float(self.grid_forming_storage_protection_ratio),
                 0.0,
@@ -984,6 +992,10 @@ class RenewableControlSettings:
                 "storageStepRatePerMinute",
                 "storageStepRatio",
                 "gridFollowingStorageStepRatio",
+            ),
+            "storage_soc_correction_step_scale": (
+                "storage_soc_correction_step_scale",
+                "storageSocCorrectionStepScale",
             ),
             "grid_forming_storage_protection_ratio": (
                 "grid_forming_storage_protection_ratio",
@@ -1113,6 +1125,7 @@ class RenewableControlSettings:
             "renewableStepRatePerMinute": self.step_coefficient,
             "storageStepRatio": self.storage_step_ratio,
             "storageStepRatePerMinute": self.storage_step_ratio,
+            "storageSocCorrectionStepScale": self.storage_soc_correction_step_scale,
             "gridFormingStorageProtectionRatio": self.grid_forming_storage_protection_ratio,
             "dieselPowerProtectionRatio": self.diesel_power_protection_ratio,
             "socDeadband": self.soc_deadband,
@@ -8275,10 +8288,11 @@ def _optimization_decision_detail(
             "低SOC不再另设目标必须为零的独立规则"
         ),
         (
-            f"SOC越界约束：SOC低于下限-{settings.soc_deadband * 100:.2f}%时强制至少充电一步，"
-            f"SOC高于上限+{settings.soc_deadband * 100:.2f}%时强制至少放电一步；"
-            f"跟网储能一步按设备功率容量的{settings.storage_step_ratio * 100:.2f}%计算；"
-            "柴发、构网储能和AC/DC变流器不受步长约束"
+            f"SOC越界约束：SOC低于下限-{settings.soc_deadband * 100:.2f}%或高于上限+"
+            f"{settings.soc_deadband * 100:.2f}%时，强制充放电校正量取配置储能步长的"
+            f"{settings.storage_soc_correction_step_scale * 100:.2f}%；"
+            f"跟网储能单周期最大调节量按设备功率容量的{settings.storage_step_ratio * 100:.2f}%计算；"
+            "柴发、构网储能和AC/DC变流器不受普通步长约束"
         ),
         (
             "步长可行性：先严格使用单周期普通步长；仅当SOC或设备保护边界"
@@ -10334,6 +10348,9 @@ def calculate_renewable_control_plan(
         step_coefficient=settings.step_coefficient,
         converter_step_ratio=settings.converter_step_ratio,
         storage_step_ratio=settings.storage_step_ratio,
+        storage_soc_correction_step_scale=(
+            settings.storage_soc_correction_step_scale
+        ),
         diesel_power_protection_ratio=(
             settings.diesel_power_protection_ratio
         ),

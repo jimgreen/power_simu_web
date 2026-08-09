@@ -253,6 +253,7 @@ def _storage_variable(
     row: Mapping[str, Any],
     grid_forming_protection_ratio: float,
     storage_step_ratio: float,
+    storage_soc_correction_step_scale: float,
     soc_deadband: float,
 ) -> Optional[_Variable]:
     state_eligible = bool(
@@ -336,19 +337,28 @@ def _storage_variable(
         if explicit_step_kw is not None
         else max(0.0, storage_step_ratio) * rated_power
     )
+    correction_step_kw = step_kw * max(0.0, storage_soc_correction_step_scale)
     soc = _number(row.get("soc"))
     soc_min = _number(row.get("socMin"))
     soc_max = _number(row.get("socMax"))
     forced_direction = ""
     if soc is not None and soc_min is not None and soc < soc_min - soc_deadband - EPSILON:
-        forced_charge_kw = min(step_kw, max(0.0, -safety_lower))
+        forced_charge_kw = min(
+            correction_step_kw,
+            max(0.0, -safety_lower),
+        )
         if forced_charge_kw > EPSILON:
             safety_upper = min(safety_upper, -forced_charge_kw)
+            safety_lower = max(safety_lower, -forced_charge_kw)
             forced_direction = "charge"
     elif soc is not None and soc_max is not None and soc > soc_max + soc_deadband + EPSILON:
-        forced_discharge_kw = min(step_kw, max(0.0, safety_upper))
+        forced_discharge_kw = min(
+            correction_step_kw,
+            max(0.0, safety_upper),
+        )
         if forced_discharge_kw > EPSILON:
             safety_lower = max(safety_lower, forced_discharge_kw)
+            safety_upper = min(safety_upper, forced_discharge_kw)
             forced_direction = "discharge"
     if safety_lower > safety_upper + EPSILON:
         return None
@@ -1268,6 +1278,9 @@ def optimize_topology_islands(
     storage_step_ratio: float = default_number(
         "grid_following_storage_step_ratio"
     ),
+    storage_soc_correction_step_scale: float = default_number(
+        "storage_soc_correction_step_scale"
+    ),
     diesel_power_protection_ratio: float = default_number(
         "diesel_power_protection_ratio"
     ),
@@ -1290,6 +1303,10 @@ def optimize_topology_islands(
     step_coefficient = max(0.0, float(step_coefficient))
     converter_step_ratio = max(0.0, float(converter_step_ratio))
     storage_step_ratio = max(0.0, float(storage_step_ratio))
+    storage_soc_correction_step_scale = min(
+        1.0,
+        max(0.0, float(storage_soc_correction_step_scale)),
+    )
     diesel_power_protection_ratio = min(
         MAXIMUM_POWER_PROTECTION_RATIO,
         max(0.0, float(diesel_power_protection_ratio)),
@@ -1353,6 +1370,7 @@ def optimize_topology_islands(
             row,
             grid_forming_storage_protection_ratio,
             storage_step_ratio,
+            storage_soc_correction_step_scale,
             soc_deadband,
         )
         if variable is not None:

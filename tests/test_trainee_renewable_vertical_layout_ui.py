@@ -195,6 +195,7 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
             "renewableCommandValidMinutes",
             "renewableStepRatio",
             "storageStepRatio",
+            "storageSocCorrectionStepScale",
             "gridFormingStorageProtectionRatio",
             "dieselPowerProtectionRatio",
             "socDeadband",

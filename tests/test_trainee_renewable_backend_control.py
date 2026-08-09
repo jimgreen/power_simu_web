@@ -11022,6 +11022,7 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                             "intervalSeconds": 1,
                             "renewableStepRatio": 0.10,
                             "storageStepRatio": 0.05,
+                            "storageSocCorrectionStepScale": 0.20,
                             "gridFormingStorageProtectionRatio": 0.06,
                             "dieselPowerProtectionRatio": 0.04,
                             "socDeadband": 0.05,
@@ -11059,6 +11060,10 @@ class RenewableControlBackendApiTest(unittest.TestCase):
         self.assertEqual(state["settings"]["intervalSeconds"], 1.0)
         self.assertEqual(state["settings"]["renewableStepRatio"], 0.10)
         self.assertEqual(state["settings"]["storageStepRatio"], 0.05)
+        self.assertEqual(
+            state["settings"]["storageSocCorrectionStepScale"],
+            0.20,
+        )
         self.assertEqual(
             state["settings"]["gridFormingStorageProtectionRatio"],
             0.06,

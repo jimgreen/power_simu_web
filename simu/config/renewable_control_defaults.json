@@ -8,6 +8,7 @@
   "large_step_threshold_kw": 10.0,
   "renewable_step_ratio": 0.03,
   "grid_following_storage_step_ratio": 0.03,
+  "storage_soc_correction_step_scale": 0.2,
   "legacy_converter_step_ratio": 0.0,
   "grid_forming_storage_protection_ratio": 0.05,
   "diesel_power_protection_ratio": 0.03,

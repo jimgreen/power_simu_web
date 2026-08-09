@@ -132,11 +132,13 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
     def test_strategy_steps_and_power_protection_bands_are_editable_ratios(self):
         self.assertIn("新能源步长(%/仿真分钟)", self.html)
         self.assertIn("跟网储能步长(%/仿真分钟)", self.html)
+        self.assertIn("SOC越界步长倍率(%)", self.html)
         self.assertIn("renewableStepRatePerMinute", self.script)
         self.assertIn("storageStepRatePerMinute", self.script)
         for field_id in (
             "renewableStepRatio",
             "storageStepRatio",
+            "storageSocCorrectionStepScale",
             "gridFormingStorageProtectionRatio",
             "dieselPowerProtectionRatio",
             "socDeadband",
@@ -145,6 +147,7 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             self.assertIn(field_id, self.script)
         for setting_name in (
             "storage_step_ratio",
+            "storage_soc_correction_step_scale",
             "grid_forming_storage_protection_ratio",
             "diesel_power_protection_ratio",
             "soc_deadband",

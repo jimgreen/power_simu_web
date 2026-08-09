@@ -204,6 +204,7 @@ const state = {
     largeStepThresholdKw: 10,
     stepCoefficient: 0.03,
     storageStepRatio: 0.03,
+    storageSocCorrectionStepScale: 0.2,
     gridFormingStorageProtectionRatio: 0.05,
     dieselPowerProtectionRatio: 0.03,
     socDeadband: 0.05,
@@ -10642,6 +10643,10 @@ function applyRenewableControlState(payload = {}) {
       settings.storageStepRatePerMinute ?? settings.storageStepRatio,
       control.storageStepRatio || 0.03,
     )),
+    storageSocCorrectionStepScale: Math.max(0, toNumber(
+      settings.storageSocCorrectionStepScale,
+      control.storageSocCorrectionStepScale || 0.2,
+    )),
     gridFormingStorageProtectionRatio: Math.max(0, toNumber(
       settings.gridFormingStorageProtectionRatio
         ?? (Number.isFinite(Number(settings.storageSwitchDeadbandKw))
@@ -11551,6 +11556,7 @@ function populateRenewableControlParameters(control = state.renewableControl) {
   const ratioInputs = {
     renewableStepRatio: control.stepCoefficient,
     storageStepRatio: control.storageStepRatio,
+    storageSocCorrectionStepScale: control.storageSocCorrectionStepScale,
     gridFormingStorageProtectionRatio: control.gridFormingStorageProtectionRatio,
     dieselPowerProtectionRatio: control.dieselPowerProtectionRatio,
     socDeadband: control.socDeadband,
@@ -11633,6 +11639,7 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   const ratioInputs = {
     renewableStepRatio: control.stepCoefficient,
     storageStepRatio: control.storageStepRatio,
+    storageSocCorrectionStepScale: control.storageSocCorrectionStepScale,
     gridFormingStorageProtectionRatio: control.gridFormingStorageProtectionRatio,
     dieselPowerProtectionRatio: control.dieselPowerProtectionRatio,
     socDeadband: control.socDeadband,
@@ -11954,6 +11961,7 @@ async function updateRenewableSettings() {
       largeStepThresholdKw: state.renewableControl.largeStepThresholdKw,
       renewableStepRatePerMinute: ratio("renewableStepRatio", 3),
       storageStepRatePerMinute: ratio("storageStepRatio", 3),
+      storageSocCorrectionStepScale: ratio("storageSocCorrectionStepScale", 20),
       gridFormingStorageProtectionRatio: ratio("gridFormingStorageProtectionRatio", 5),
       dieselPowerProtectionRatio: ratio("dieselPowerProtectionRatio", 3),
       socDeadband: ratio("socDeadband", 5),

@@ -123,13 +123,16 @@ class RenewableControlParameterizationTest(unittest.TestCase):
             {
                 "renewableStepRatePerMinute": 0.04,
                 "storageStepRatePerMinute": 0.02,
+                "storageSocCorrectionStepScale": 0.25,
             }
         )
 
         self.assertEqual(settings.step_coefficient, 0.04)
         self.assertEqual(settings.storage_step_ratio, 0.02)
+        self.assertEqual(settings.storage_soc_correction_step_scale, 0.25)
         self.assertEqual(settings.payload()["renewableStepRatePerMinute"], 0.04)
         self.assertEqual(settings.payload()["storageStepRatePerMinute"], 0.02)
+        self.assertEqual(settings.payload()["storageSocCorrectionStepScale"], 0.25)
 
     def test_control_plan_uses_live_simulator_timing_for_step_rates(self):
         from tests.test_trainee_renewable_backend_control import renewable_snapshot
@@ -158,6 +161,44 @@ class RenewableControlParameterizationTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["storageStepRatePerMinute"], 0.02)
         self.assertAlmostEqual(metrics["renewableEffectiveDecisionStepRatio"], 0.30)
         self.assertAlmostEqual(metrics["storageEffectiveDecisionStepRatio"], 0.20)
+
+    def test_control_plan_uses_twenty_percent_step_for_grid_forming_soc_correction(self):
+        from tests.test_trainee_renewable_backend_control import renewable_snapshot
+
+        snapshot = renewable_snapshot()
+        snapshot["system_parameters"] = {
+            "effective_step_minutes": 5.0,
+            "compute_interval_seconds": 1.0,
+        }
+        snapshot["simulation_timing"] = {
+            "simulation_step_seconds": 300.0,
+            "simulation_period_seconds": 1.0,
+        }
+        for row in snapshot["measurements"]["scada"]:
+            if row["dev_name"] == "storage-1" and row["meas_type"] == "SOC":
+                row["value"] = 0.951
+            elif row["dev_name"] == "storage-1" and row["meas_type"] == "P_GEN":
+                row["value"] = 0.0
+
+        plan = calculate_renewable_control_plan(
+            snapshot,
+            RenewableControlSettings(
+                interval_seconds=2.0,
+                storage_step_ratio=0.03,
+                grid_forming_storage_protection_ratio=0.0,
+                soc_deadband=0.05,
+            ),
+        )
+        row = next(
+            item
+            for item in plan["commandRows"]
+            if item.get("technology") == "storage"
+        )
+
+        expected_correction_kw = 40.0 * 0.30 * 0.20
+        self.assertEqual(row["controlHorizonMinutes"], 10.0)
+        self.assertAlmostEqual(row["commandKw"], expected_correction_kw, places=5)
+        self.assertFalse(row["strategyCommand"])
 
     def test_power_protection_bands_are_persisted_as_ratios(self):
         settings = RenewableControlSettings().updated(
@@ -507,6 +548,10 @@ class RenewableControlParameterizationTest(unittest.TestCase):
 
         self.assertIn("构网储能功率保护带(%)", html)
         self.assertIn('id="gridFormingStorageProtectionRatio"', html)
+        self.assertIn(
+            'id="storageSocCorrectionStepScale" type="number" min="0" max="100" step="0.1" value="20"',
+            html,
+        )
         self.assertIn("柴发功率保护带(%)", html)
         self.assertIn('id="dieselPowerProtectionRatio"', html)
         self.assertNotIn('id="storageSwitchDeadbandKw"', html)

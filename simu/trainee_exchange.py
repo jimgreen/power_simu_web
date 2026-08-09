@@ -100,6 +100,7 @@ class TraineeControlGeneration:
     receive_epoch: int
     connection_signature: Tuple[Any, ...]
     definition_revision: int
+    runtime_revision: int
 
 
 @dataclass(frozen=True)
@@ -596,6 +597,7 @@ class TraineeRealtimeExchange:
             receive_epoch=state.receive_epoch,
             connection_signature=self._connection_signature(service),
             definition_revision=self._definition_revision(service),
+            runtime_revision=state.revision,
         )
 
     @staticmethod

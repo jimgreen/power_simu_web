@@ -8514,7 +8514,7 @@ class RenewableControlBackendApiTest(unittest.TestCase):
             any(item["result"] == "计算完成" for item in controller_state["logs"])
         )
 
-    def test_runtime_snapshot_revision_change_during_manual_run_does_not_cancel_cycle(self):
+    def test_runtime_snapshot_revision_change_during_manual_run_cancels_cycle(self):
         original_calculate = renewable_control_module.calculate_renewable_control_plan
         with tempfile.TemporaryDirectory() as temporary:
             receive_state = {
@@ -8584,15 +8584,15 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                 manager.close()
 
         self.assertEqual(receive_state["revision"], 11)
-        self.assertEqual(len(dispatched), 1)
-        self.assertIsNotNone(controller_state["lastPlan"])
-        self.assertNotEqual(controller_state["lastCalculatedAt"], "")
-        self.assertNotEqual(controller_state["lastDispatchedClockKey"], "")
-        self.assertIn("已向学员台指令入口提交", controller_state["status"])
-        self.assertTrue(
+        self.assertEqual(dispatched, [])
+        self.assertIsNone(controller_state["lastPlan"])
+        self.assertEqual(controller_state["lastCalculatedAt"], "")
+        self.assertEqual(controller_state["lastDispatchedClockKey"], "")
+        self.assertNotIn("已向学员台指令入口提交", controller_state["status"])
+        self.assertFalse(
             any(item["result"] == "计算完成" for item in controller_state["logs"])
         )
-        self.assertTrue(
+        self.assertFalse(
             any(item["result"] == "下发成功" for item in controller_state["logs"])
         )
 

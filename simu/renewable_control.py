@@ -11736,6 +11736,7 @@ class TraineeRenewableControlManager:
             bool(status.get("ready")),
             int(_number(status.get("receiveEpoch", status.get("connectionEpoch")), 0.0) or 0),
             tuple(signature),
+            int(_number(status.get("revision"), 0.0) or 0),
         )
 
     def _receive_state_signature(self, model_id: Optional[str]) -> Tuple[Any, ...]:
@@ -11810,6 +11811,7 @@ class TraineeRenewableControlManager:
             int(getattr(generation, "receive_epoch", 0)),
             tuple(getattr(generation, "connection_signature", ())),
             int(getattr(generation, "definition_revision", 0)),
+            int(getattr(generation, "runtime_revision", 0)),
         )
 
     def _control_snapshot(self, model_id: Optional[str]) -> TraineeControlSnapshot:

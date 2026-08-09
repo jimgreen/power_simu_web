@@ -1086,7 +1086,7 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
         self.assertGreater(retargeted["receiveEpoch"], ready["receiveEpoch"])
         self.assertGreater(invalidated["receiveEpoch"], retargeted["receiveEpoch"])
 
-    def test_control_generation_guard_ignores_normal_telemetry_publication(self):
+    def test_control_generation_guard_rejects_new_runtime_telemetry_publication(self):
         service = self.make_service()
         configure_receive(service)
         runtime = service.snapshot(include_static=True, include_runtime_logs=False)
@@ -1115,9 +1115,9 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
             connection_signature=exchange._connection_signature(service),
         )
 
-        self.assertEqual(exchange.control_generation("trainee-local"), generation)
+        self.assertNotEqual(exchange.control_generation("trainee-local"), generation)
         with exchange.control_generation_guard("trainee-local", generation) as valid:
-            self.assertTrue(valid)
+            self.assertFalse(valid)
 
     def test_control_generation_guard_rejects_receive_model_and_definition_changes(self):
         invalidators = (

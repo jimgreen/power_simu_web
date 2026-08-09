@@ -873,6 +873,23 @@ def _weather_values_from_book(book: Optional[EBook]) -> Dict[str, float]:
     return values
 
 
+def _load_power_targets_from_book(book: Optional[EBook]) -> List[dict]:
+    if book is None:
+        return []
+    block = book.data.get("LoadPower")
+    if block is None:
+        return []
+    targets: List[dict] = []
+    for row in block.data:
+        dev_type = str(row.get("dev_type", "")).strip()
+        dev_name = str(row.get("dev_name", "")).strip()
+        p_kw = _safe_float(row.get("p_kw"), None)
+        if dev_type not in {"ACLoad", "DCLoad"} or not dev_name or p_kw is None:
+            continue
+        targets.append({"dev_type": dev_type, "dev_name": dev_name, "p_kw": max(0.0, p_kw)})
+    return targets
+
+
 def _book_rows(book: EBook, table_name: str) -> List[dict]:
     block = book.data.get(table_name)
     return [] if block is None else list(block.data)
@@ -1554,6 +1571,40 @@ def apply_load_model(model_book: EBook, dev_define: EBook, weather: Dict[str, fl
     return changed
 
 
+def apply_load_power_targets(model_book: EBook, targets: Sequence[Mapping[str, object]]) -> int:
+    """Apply per-device AC/DC load powers captured from the live curve editor."""
+
+    changed = 0
+    for target in targets:
+        block_name = str(target.get("dev_type", "")).strip()
+        load_name = str(target.get("dev_name", "")).strip()
+        desired_p = _safe_float(target.get("p_kw"), None)
+        if block_name not in {"ACLoad", "DCLoad"} or not load_name or desired_p is None:
+            continue
+        block = model_book.data.get(block_name)
+        if block is None:
+            continue
+        row = next((item for item in block.data if str(item.get("name", "")) == load_name), None)
+        if row is None:
+            continue
+
+        desired_p = max(0.0, desired_p)
+        if block_name == "ACLoad":
+            current_p, current_q, _pbase, _qbase = _load_power(row)
+            reactive_ratio = current_q / current_p if abs(current_p) > 1e-12 else 0.0
+            pbase, base_changed = _load_write_base(row, "pbase")
+            changed += base_changed
+            changed += _set_row_value(row, "pv0", _format_power(desired_p / pbase))
+            qbase, base_changed = _load_write_base(row, "qbase")
+            changed += base_changed
+            changed += _set_row_value(row, "qv0", _format_power(desired_p * reactive_ratio / qbase))
+        else:
+            pbase, base_changed = _load_write_base(row, "pbase")
+            changed += base_changed
+            changed += _set_row_value(row, "pv0", _format_power(desired_p / pbase))
+    return changed
+
+
 def _target_rows(model_book: EBook, table_name: str) -> List[dict]:
     block = model_book.data.get(table_name)
     if block is None:
@@ -2069,6 +2120,8 @@ def apply_device_capability_limits_book(
     dev_define: EBook,
     period_seconds: float = DEFAULT_PERIOD_SECONDS,
     active_power_controls: Optional[set[Tuple[str, str]]] = None,
+    *,
+    apply_load_curves: bool = True,
 ) -> int:
     if not dev_define.data:
         return 0
@@ -2076,7 +2129,8 @@ def apply_device_capability_limits_book(
     _ensure_storage_soc_rows_book(stat_book, model_book, dev_define)
     status_by_name, status_rows = _storage_soc_by_name_book(stat_book)
     changed = 0
-    changed += apply_load_model(model_book, dev_define, weather_values)
+    if apply_load_curves:
+        changed += apply_load_model(model_book, dev_define, weather_values)
     changed += apply_wind_limits(model_book, dev_define, weather_values, active_power_controls)
     changed += apply_pv_limits(model_book, dev_define, weather_values, active_power_controls)
     changed += apply_diesel_limits(model_book, dev_define)
@@ -2091,21 +2145,28 @@ def apply_weather_file(model_book: EBook, weather_file: Path, dev_define_file: O
     return apply_weather_book(model_book, values, dev_define)
 
 
-def apply_weather_book(model_book: EBook, values: Mapping[str, float], dev_define: Optional[EBook] = None) -> int:
+def apply_weather_book(
+    model_book: EBook,
+    values: Mapping[str, float],
+    dev_define: Optional[EBook] = None,
+    *,
+    apply_load_curves: bool = True,
+) -> int:
     if not values:
         return 0
     dev_define = dev_define or EBook({})
     values = dict(values)
     if dev_define.data:
         changed = 0
-        changed += apply_load_model(model_book, dev_define, values)
+        if apply_load_curves:
+            changed += apply_load_model(model_book, dev_define, values)
         changed += apply_wind_limits(model_book, dev_define, values)
         changed += apply_pv_limits(model_book, dev_define, values)
         return changed
     changed = apply_wind_limits(model_book, dev_define, values)
     changed += apply_pv_limits(model_book, dev_define, values)
 
-    if "load_kw" in values:
+    if apply_load_curves and "load_kw" in values:
         block = model_book.data.get("ACLoad")
         if block is not None and block.data:
             base_loads = []
@@ -2422,12 +2483,19 @@ def apply_realtime_input_books(
     stat_book = dev_stat_book or EBook({})
     ctrl_book = yt_ctrl_book or EBook({})
     weather_values = _weather_values_from_book(weather_book)
+    load_power_targets = _load_power_targets_from_book(weather_book)
     dev_define = dev_define_book or _capability_define_book(model_book, None)
     active_power_controls = _active_power_control_targets_book(ctrl_book)
     changed = 0
     changed += apply_dev_stat_book(model_book, stat_book)
     changed += apply_mode_book(model_book, mode_book)
-    changed += apply_weather_book(model_book, weather_values, dev_define)
+    changed += apply_weather_book(
+        model_book,
+        weather_values,
+        dev_define,
+        apply_load_curves=not load_power_targets,
+    )
+    changed += apply_load_power_targets(model_book, load_power_targets)
     changed += apply_yt_ctrl_book(model_book, ctrl_book)
     changed += apply_device_capability_limits_book(
         model_book,
@@ -2436,6 +2504,7 @@ def apply_realtime_input_books(
         dev_define,
         period_seconds,
         active_power_controls,
+        apply_load_curves=not load_power_targets,
     )
     return changed, model_book, dev_define, weather_values
 

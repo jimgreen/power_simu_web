@@ -94,6 +94,8 @@ WEATHER_HEADER = (
     "load_kw",
 )
 
+RUNTIME_LOAD_POWER_HEADER = ("dev_type", "dev_name", "p_kw")
+
 MEAS_HEADER = ("idx", "name", "dev_type", "dev_name", "meas_type", "weight", "valid", "value")
 
 DEFAULT_WEATHER: Dict[str, Optional[float]] = {
@@ -1051,6 +1053,7 @@ class PolarMicrogridSimulator:
         # Curve definitions change only through explicit editing APIs. Keep their
         # short read lock separate from the long-running power-flow calculation lock.
         self.curves_lock = threading.RLock()
+        self._curve_revision = 0
         self.command_history: List[Dict[str, Any]] = []
         self.runtime_logs: List[Dict[str, Any]] = []
         self._runtime_log_seq = 0
@@ -1186,6 +1189,7 @@ class PolarMicrogridSimulator:
         self.reload_definition_state()
         with self.curves_lock:
             self.curves = self._read_curves()
+            self._curve_revision += 1
             curve_mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
         self.clock.speed = _simulation_mode_default_clock_speed(curve_mode)
         self.local_settings = self._read_local_settings()
@@ -4720,6 +4724,7 @@ class PolarMicrogridSimulator:
             self.clock.minute = self.clock.absolute_minute % 1440
             self.clock.updated_at = time.time()
             _write_json(self.curves_file, self.curves)
+            self._curve_revision += 1
             return {"weather_points": len(weather_points), "load_devices": len(loads), "mode": mode}
 
     def curves_summary(self) -> Dict[str, Any]:
@@ -4889,6 +4894,7 @@ class PolarMicrogridSimulator:
             self.clock.minute = self.clock.absolute_minute % 1440
             self.clock.updated_at = time.time()
             _write_json(self.curves_file, self.curves)
+            self._curve_revision += 1
             return {
                 "updated": updated,
                 "mode": mode,
@@ -5051,6 +5057,7 @@ class PolarMicrogridSimulator:
                 start_run_id = self.clock.run_id
                 start_step_count = self.clock.step_count
                 definition_revision = self.definition_snapshot.revision
+                curve_revision = self._curve_revision
                 self._prepare_runtime_inputs(minute, absolute_minute)
                 config = self._make_config(period_seconds=period_seconds)
 
@@ -5087,6 +5094,7 @@ class PolarMicrogridSimulator:
                 stale = (
                     not self.service_instance_active()
                     or self.definition_snapshot.revision != definition_revision
+                    or self._curve_revision != curve_revision
                     or self.clock.run_id != start_run_id
                     or self.clock.step_count != start_step_count
                     or abs(float(self.clock.absolute_minute) - float(absolute_minute)) > 1e-9
@@ -5169,19 +5177,12 @@ class PolarMicrogridSimulator:
             row[key] = _number_text(
                 _interpolate(self.curves.get("weather", []), target_minute, key, default, period_minutes=period_minutes)
             )
-        load_total = 0.0
-        load_seen = False
-        loads = self.curves.get("loads", {})
-        load_details: List[Tuple[str, float]] = []
-        if isinstance(loads, Mapping):
-            for load_name, points in loads.items():
-                value = _interpolate(points, target_minute, "p_kw", float("nan"), period_minutes=period_minutes)
-                if value == value:
-                    load_total += value
-                    load_seen = True
-                    load_details.append((str(load_name), value))
+        load_targets = self._current_load_power_targets(float(target_minute), period_minutes)
+        load_total = sum(float(target["p_kw"]) for target in load_targets)
+        load_seen = bool(load_targets)
+        load_details = [(str(target["dev_name"]), float(target["p_kw"])) for target in load_targets]
         row["load_kw"] = _number_text(load_total if load_seen else self.weather_defaults.get("load_kw", 0.0))
-        self._write_weather_row(row)
+        self._write_weather_row(row, load_targets=load_targets)
         self._append_environment_load_log(
             minute,
             float(target_minute),
@@ -5191,12 +5192,69 @@ class PolarMicrogridSimulator:
             load_seen=load_seen,
         )
 
-    def _write_weather_row(self, row: Mapping[str, Any]) -> None:
+    def _current_load_power_targets(
+        self,
+        target_minute: float,
+        period_minutes: float,
+    ) -> List[Dict[str, Any]]:
+        loads = self.curves.get("loads", {})
+        if not isinstance(loads, Mapping):
+            return []
+
+        model_book = self.definition_snapshot.model_book
+        model_targets: Dict[str, List[Tuple[str, str]]] = {}
+        for block_name in ("ACLoad", "DCLoad"):
+            block = model_book.data.get(block_name)
+            if block is None:
+                continue
+            for model_row in block.data:
+                name = str(model_row.get("name", "")).strip()
+                if name:
+                    model_targets.setdefault(name, []).append((block_name, name))
+
+        targets: List[Dict[str, Any]] = []
+        for raw_name, points in loads.items():
+            curve_name = str(raw_name).strip()
+            if not curve_name:
+                continue
+            explicit_type = ""
+            model_name = curve_name
+            prefix, separator, suffix = curve_name.partition(":")
+            if separator and prefix in {"ACLoad", "DCLoad"}:
+                explicit_type = prefix
+                model_name = suffix.strip()
+            matches = model_targets.get(model_name, [])
+            if explicit_type:
+                matches = [match for match in matches if match[0] == explicit_type]
+            value = _interpolate(points, target_minute, "p_kw", float("nan"), period_minutes=period_minutes)
+            if value != value:
+                continue
+            for block_name, dev_name in matches:
+                targets.append(
+                    {
+                        "dev_type": block_name,
+                        "dev_name": dev_name,
+                        "p_kw": max(0.0, float(value)),
+                    }
+                )
+        return targets
+
+    def _write_weather_row(
+        self,
+        row: Mapping[str, Any],
+        *,
+        load_targets: Sequence[Mapping[str, Any]] = (),
+    ) -> None:
         clean = {
             header: UNKNOWN_WEATHER_VALUE if row.get(header, "") is None else row.get(header, "")
             for header in WEATHER_HEADER
         }
-        self.weather_book = _make_book({"Weather": (WEATHER_HEADER, [clean])})
+        blocks: Dict[str, Tuple[Sequence[str], Sequence[Mapping[str, Any]]]] = {
+            "Weather": (WEATHER_HEADER, [clean])
+        }
+        if load_targets:
+            blocks["LoadPower"] = (RUNTIME_LOAD_POWER_HEADER, load_targets)
+        self.weather_book = _make_book(blocks)
 
     def _apply_device_faults(self, minute: int | float, absolute_minute: int | float) -> None:
         book = self.runtime_stat_book

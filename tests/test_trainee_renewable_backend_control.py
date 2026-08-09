@@ -454,6 +454,8 @@ def renewable_snapshot() -> dict:
                     "module_efficiency": 0.2,
                     "array_area": 400,
                     "reference_irradiance": 1000,
+                    "reference_temperature": 25,
+                    "temp_coefficient": -0.004,
                 }
             ],
             "DCStorageGen": [
@@ -4776,24 +4778,24 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
             )
         )
 
-    def test_environment_measurements_are_ignored_by_default_control_policy(self):
+    def test_environment_measurements_drive_availability_statistics_not_control_targets(self):
         snapshot = renewable_snapshot()
         plan = calculate_renewable_control_plan(snapshot)
         expected_wind_max = 100 * ((8 - 3) / (10 - 3)) ** 3
 
         self.assertEqual(plan["metrics"]["loadKw"], 100)
-        self.assertIsNone(plan["weather"]["windSpeed"])
-        self.assertIsNone(plan["weather"]["solarIrradiance"])
-        self.assertIsNone(plan["weather"]["airTemp"])
+        self.assertEqual(plan["weather"]["windSpeed"], 8)
+        self.assertEqual(plan["weather"]["solarIrradiance"], 500)
+        self.assertEqual(plan["weather"]["airTemp"], 25)
         self.assertEqual(plan["weather"]["observedWindSpeed"], 8)
         self.assertEqual(plan["weather"]["observedSolarIrradiance"], 500)
         self.assertEqual(plan["weather"]["observedAirTemp"], 25)
         self.assertEqual(plan["dataQuality"]["inputs"]["load"]["source"], "scada")
         self.assertEqual(
             plan["dataQuality"]["inputs"]["windSpeed"]["source"],
-            "ignored_by_control_policy",
+            "scada_or_curve_boundary",
         )
-        self.assertFalse(plan["dataQuality"]["inputs"]["windSpeed"]["valid"])
+        self.assertTrue(plan["dataQuality"]["inputs"]["windSpeed"]["valid"])
         self.assertAlmostEqual(plan["metrics"]["acWindMaxAvailableKw"], expected_wind_max)
         self.assertAlmostEqual(plan["metrics"]["dcPvMaxAvailableKw"], 40.0)
         self.assertAlmostEqual(plan["metrics"]["totalWindMaxAvailableKw"], expected_wind_max)
@@ -4851,8 +4853,8 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertEqual(plan["metrics"]["totalWindMaxAvailableKw"], 0)
         self.assertEqual(plan["metrics"]["totalPvMaxAvailableKw"], 80)
         self.assertEqual(plan["metrics"]["totalRenewableMaxAvailableKw"], 80)
-        self.assertIsNone(plan["weather"]["windSpeed"])
-        self.assertIsNone(plan["weather"]["solarIrradiance"])
+        self.assertEqual(plan["weather"]["windSpeed"], 30)
+        self.assertEqual(plan["weather"]["solarIrradiance"], 1500)
 
     def test_control_log_uses_compact_weather_and_dispatch_summary(self):
         plan = calculate_renewable_control_plan(renewable_snapshot())

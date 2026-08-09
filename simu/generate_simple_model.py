@@ -285,7 +285,18 @@ def model_blocks() -> list[Block]:
         ),
         (
             "DCPVGen",
-            ("idx", "idx_dcgenerator", "pv_module_model", "module_efficiency", "array_area", "mppt_count", "rated_power"),
+            (
+                "idx",
+                "idx_dcgenerator",
+                "pv_module_model",
+                "module_efficiency",
+                "array_area",
+                "mppt_count",
+                "rated_power",
+                "reference_irradiance",
+                "reference_temperature",
+                "temp_coefficient",
+            ),
             [
                 {
                     "idx": 1,
@@ -295,6 +306,9 @@ def model_blocks() -> list[Block]:
                     "array_area": "250_m2",
                     "mppt_count": 1,
                     "rated_power": 50.0,
+                    "reference_irradiance": 1000.0,
+                    "reference_temperature": 25.0,
+                    "temp_coefficient": -0.004,
                 }
             ],
         ),

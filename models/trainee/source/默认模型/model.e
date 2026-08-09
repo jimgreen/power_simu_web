@@ -244,10 +244,10 @@
 # 10   10               WT-5MW              3                  12                35                  6               10
 </ACWindGen>
 <DCPVGen>
-@ idx  idx_dcgenerator  pv_module_model  module_efficiency  array_area  mppt_count
-# 1    1                Mono-550W        0.25               200         25
-# 2    2                Mono-550W        0.25               200         25
-# 3    3                Mono-550W        0.25               200         25
+@ idx  idx_dcgenerator  pv_module_model  module_efficiency  array_area  mppt_count  reference_irradiance  reference_temperature  temp_coefficient
+# 1    1                Mono-550W        0.25               200         25          1000                  25                     -0.004
+# 2    2                Mono-550W        0.25               200         25          1000                  25                     -0.004
+# 3    3                Mono-550W        0.25               200         25          1000                  25                     -0.004
 </DCPVGen>
 <DCStorageGen>
 @ idx  idx_dcgenerator  storage_technology  battery_rack_count  energy_capacity  charge_discharge_efficiency  max_charge_power  max_discharge_power  state_of_charge  soc_upper_limit  soc_lower_limit

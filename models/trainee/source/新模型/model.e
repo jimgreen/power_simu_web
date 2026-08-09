@@ -292,10 +292,10 @@
 # 11   24               WT-5MW              3                  12                25                  170             110
 </ACWindGen>
 <DCPVGen>
-@ idx  idx_dcgenerator  pv_module_model  module_efficiency  array_area  mppt_count
-# 1    1                Mono-550W        0.25               200         25
-# 2    2                Mono-550W        0.25               200         25
-# 3    3                Mono-550W        0.25               200         25
+@ idx  idx_dcgenerator  pv_module_model  module_efficiency  array_area  mppt_count  reference_irradiance  reference_temperature  temp_coefficient
+# 1    1                Mono-550W        0.25               200         25          1000                  25                     -0.004
+# 2    2                Mono-550W        0.25               200         25          1000                  25                     -0.004
+# 3    3                Mono-550W        0.25               200         25          1000                  25                     -0.004
 </DCPVGen>
 <DCStorageGen>
 @ idx  idx_dcgenerator  storage_technology  battery_rack_count  energy_capacity  charge_discharge_efficiency  max_charge_power  max_discharge_power  state_of_charge  soc_upper_limit  soc_lower_limit
@@ -312,8 +312,8 @@
 # 2    26               lithium             20                  100              0.9                          100               100                  0.5              0.9              0.1
 </ACStorageGen>
 <ACPVGen>
-@ idx  idx_acgenerator  pv_module_model  module_efficiency  array_area  mppt_count
-# 1    25               Mono-550W        0.213              100000      100
+@ idx  idx_acgenerator  pv_module_model  module_efficiency  array_area  mppt_count  reference_irradiance  reference_temperature  temp_coefficient
+# 1    25               Mono-550W        0.213              100000      100         1000                  25                     -0.004
 </ACPVGen>
 <ACDieselGen>
 @ idx  idx_acgenerator  diesel_unit_model  fuel_grade  specific_fuel_consumption  fuel_tank_capacity  rated_speed  start_time

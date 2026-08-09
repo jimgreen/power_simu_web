@@ -97,6 +97,52 @@ class PvReferenceParametersTest(unittest.TestCase):
         self.assertIsNotNone(available_kw)
         self.assertAlmostEqual(available_kw, 50.0)
 
+    def test_control_pv_max_available_matches_simulator_irradiance_basis(self):
+        available_kw = _renewable_weather_available_kw(
+            "pv",
+            {
+                "reference_irradiance": 1000,
+                "reference_temperature": 25,
+                "temperature_coefficient": -0.004,
+            },
+            170,
+            wind_speed=None,
+            solar_irradiance=719.3,
+            air_temperature=-13.0,
+        )
+
+        self.assertIsNotNone(available_kw)
+        self.assertAlmostEqual(available_kw, 122.281, places=3)
+
+    def test_weather_available_power_never_exceeds_rated_capacity(self):
+        pv_available_kw = _renewable_weather_available_kw(
+            "pv",
+            {
+                "reference_irradiance": 1000,
+                "reference_temperature": 25,
+                "temp_coefficient": 0.0,
+            },
+            100,
+            wind_speed=None,
+            solar_irradiance=1500,
+            air_temperature=25,
+        )
+        wind_available_kw = _renewable_weather_available_kw(
+            "wind",
+            {
+                "cut_in_wind_speed": 3,
+                "rated_wind_speed": 12,
+                "cut_out_wind_speed": 25,
+            },
+            100,
+            wind_speed=20,
+            solar_irradiance=None,
+            air_temperature=None,
+        )
+
+        self.assertEqual(pv_available_kw, 100.0)
+        self.assertEqual(wind_available_kw, 100.0)
+
 
 if __name__ == "__main__":
     unittest.main()

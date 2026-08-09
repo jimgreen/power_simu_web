@@ -80,6 +80,7 @@ from simu.measurement_delta import (
 from simu.measurement_history import MeasurementHistoryStore
 from simu.point_names import automatic_point_name
 from simu.power_flow_worker import PowerFlowExecution, PowerFlowTimeoutError
+from simu.renewable_capability import renewable_weather_available_kw
 from simu.web_runtime_settings import runtime_settings_payload, updated_runtime_settings_entry
 
 
@@ -1829,6 +1830,13 @@ class PolarMicrogridSimulator:
             "clock_step_minutes": self.clock.step_minutes,
             "effective_step_seconds": effective_step_minutes * 60.0,
             "effective_step_minutes": effective_step_minutes,
+        }
+
+    def simulation_timing(self) -> Dict[str, float]:
+        parameters = self.system_parameters()
+        return {
+            "simulation_step_seconds": float(parameters["effective_step_seconds"]),
+            "simulation_period_seconds": float(self.compute_interval_seconds),
         }
 
     def set_system_parameters(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
@@ -3885,62 +3893,29 @@ class PolarMicrogridSimulator:
             row: Mapping[str, Any],
             parameter: Mapping[str, Any],
         ) -> Optional[float]:
-            capability = parameter
-            if category == "wind":
-                wind_speed = _to_float(weather.get("wind_speed_mps"), None)
-                rated = _to_float(
-                    capability.get(
-                        "rated_power",
-                        capability.get("p_max", row.get("rated_capacity", row.get("p_max"))),
+            rated = _to_float(
+                parameter.get(
+                    "rated_power",
+                    parameter.get(
+                        "p_max",
+                        row.get("rated_capacity", row.get("p_max")),
                     ),
+                ),
+                None,
+            )
+            if rated is None:
+                return None
+            return renewable_weather_available_kw(
+                category,
+                parameter,
+                rated,
+                wind_speed=_to_float(weather.get("wind_speed_mps"), None),
+                solar_irradiance=_to_float(
+                    weather.get("solar_irradiance_w_m2"),
                     None,
-                )
-                if wind_speed is None or rated is None or rated <= 0.0:
-                    return None
-                rated_speed = _to_float(capability.get("rated_wind_speed"), 15.0) or 15.0
-                cut_in = _to_float(
-                    capability.get("cut_in_wind_speed", capability.get("cut_in_speed")),
-                    5.0,
-                ) or 5.0
-                cut_out = _to_float(
-                    capability.get("cut_out_wind_speed", capability.get("cut_out_speed")),
-                    30.0,
-                ) or 30.0
-                return float(
-                    simu_loop._available_with_bounds(
-                        simu_loop.wind_available_power(wind_speed, rated, rated_speed, cut_in, cut_out),
-                        dict(capability),
-                    )
-                )
-            if category == "pv":
-                irradiance = _to_float(weather.get("solar_irradiance_w_m2"), None)
-                rated = _to_float(
-                    capability.get(
-                        "rated_power",
-                        capability.get("p_max", row.get("rated_capacity", row.get("p_max"))),
-                    ),
-                    None,
-                )
-                if irradiance is None or rated is None or rated <= 0.0:
-                    return None
-                air_temp = _to_float(weather.get("air_temp_c"), 25.0) or 25.0
-                temp_coef = _to_float(capability.get("temp_coefficient"), 0.0) or 0.0
-                ref_irrad = _to_float(capability.get("reference_irradiance"), 1000.0) or 1000.0
-                ref_temp = _to_float(capability.get("reference_temperature"), 25.0) or 25.0
-                return float(
-                    simu_loop._available_with_bounds(
-                        simu_loop.pv_available_power(
-                            irradiance,
-                            air_temp,
-                            rated,
-                            temp_coef,
-                            ref_irrad,
-                            ref_temp,
-                        ),
-                        dict(capability),
-                    )
-                )
-            return None
+                ),
+                air_temperature=_to_float(weather.get("air_temp_c"), None),
+            )
 
         def operating_state(
             dev_type: str,
@@ -9100,6 +9075,7 @@ class PolarMicrogridSimulator:
             "model": self.model_info(),
             "clock": self.clock.as_dict(),
             "system_parameters": self.system_parameters(),
+            "simulation_timing": self.simulation_timing(),
             "static_meta": self.static_meta(),
             "curve_boundary": self.curve_boundary(),
             "result": self.latest_result,

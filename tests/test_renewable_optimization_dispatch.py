@@ -1265,7 +1265,7 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
             places=4,
         )
 
-    def test_weather_availability_is_statistical_only_while_soc_bounds_remain_hard(self):
+    def test_weather_availability_is_statistical_only_while_capacity_is_hard(self):
         topology = ResourceTopology(resources={}, dc_transfer_groups={})
         wind = renewable(
             "风机",
@@ -1321,6 +1321,174 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
         self.assertAlmostEqual(
             result.targets[("ACGenerator", "满电储能")],
             0.0,
+            places=5,
+        )
+
+    def test_zero_weather_availability_does_not_enter_optimizer_constraints(self):
+        topology = ResourceTopology(resources={}, dc_transfer_groups={})
+        pv = renewable(
+            "光伏",
+            side="AC",
+            component="AC:1",
+            current=0.0,
+            capacity=100.0,
+        )
+        pv["technology"] = "pv"
+        pv["weatherAvailableKnown"] = True
+        pv["weatherAvailableKw"] = 0.0
+
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[pv],
+            diesel_rows=[
+                diesel(
+                    "柴发",
+                    component="AC:1",
+                    current=50.0,
+                    minimum=0.0,
+                    maximum=100.0,
+                )
+            ],
+            storage_rows=[],
+            converter_rows=[],
+            step_coefficient=0.5,
+            diesel_power_protection_ratio=0.0,
+        )
+
+        self.assertTrue(result.all_success)
+        self.assertEqual(
+            result.available_by_renewable[("ACGenerator", "光伏")],
+            50.0,
+        )
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "光伏")],
+            50.0,
+            places=5,
+        )
+
+    def test_step_limited_optimizer_availability_ignores_weather_reference(self):
+        topology = ResourceTopology(resources={}, dc_transfer_groups={})
+        wind = renewable(
+            "风机",
+            side="AC",
+            component="AC:1",
+            current=4.0,
+            capacity=100.0,
+        )
+        wind["weatherAvailableKnown"] = True
+        wind["weatherAvailableKw"] = 50.0
+
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[wind],
+            diesel_rows=[
+                diesel(
+                    "柴发",
+                    component="AC:1",
+                    current=50.0,
+                    minimum=0.0,
+                    maximum=100.0,
+                )
+            ],
+            storage_rows=[],
+            converter_rows=[],
+            step_coefficient=0.1,
+            diesel_power_protection_ratio=0.0,
+        )
+
+        self.assertTrue(result.all_success)
+        self.assertAlmostEqual(
+            result.available_by_renewable[("ACGenerator", "风机")],
+            14.0,
+        )
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "风机")],
+            14.0,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            result.curtailment_by_renewable[("ACGenerator", "风机")],
+            0.0,
+            places=5,
+        )
+
+    def test_renewable_target_never_exceeds_rated_capacity(self):
+        topology = ResourceTopology(resources={}, dc_transfer_groups={})
+        wind = renewable(
+            "风机",
+            side="AC",
+            component="AC:1",
+            current=95.0,
+            capacity=100.0,
+        )
+        wind["weatherAvailableKnown"] = True
+        wind["weatherAvailableKw"] = 150.0
+
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[wind],
+            diesel_rows=[
+                diesel(
+                    "柴发",
+                    component="AC:1",
+                    current=50.0,
+                    minimum=0.0,
+                    maximum=100.0,
+                )
+            ],
+            storage_rows=[],
+            converter_rows=[],
+            step_coefficient=0.5,
+            diesel_power_protection_ratio=0.0,
+        )
+
+        self.assertTrue(result.all_success)
+        self.assertEqual(
+            result.available_by_renewable[("ACGenerator", "风机")],
+            100.0,
+        )
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "风机")],
+            100.0,
+            places=5,
+        )
+
+    def test_missing_weather_availability_preserves_step_limited_fallback(self):
+        topology = ResourceTopology(resources={}, dc_transfer_groups={})
+        wind = renewable(
+            "风机",
+            side="AC",
+            component="AC:1",
+            current=4.0,
+            capacity=100.0,
+        )
+
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[wind],
+            diesel_rows=[
+                diesel(
+                    "柴发",
+                    component="AC:1",
+                    current=50.0,
+                    minimum=0.0,
+                    maximum=100.0,
+                )
+            ],
+            storage_rows=[],
+            converter_rows=[],
+            step_coefficient=0.5,
+            diesel_power_protection_ratio=0.0,
+        )
+
+        self.assertTrue(result.all_success)
+        self.assertAlmostEqual(
+            result.available_by_renewable[("ACGenerator", "风机")],
+            54.0,
+        )
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "风机")],
+            54.0,
             places=5,
         )
 

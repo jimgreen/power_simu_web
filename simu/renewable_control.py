@@ -30,6 +30,9 @@ from simu.device_roles import (
 )
 from simu.control_config import default_derating_curve, default_integer, default_number
 from simu.model_semantics import grid_converter_keys as structured_grid_converter_keys
+from simu.renewable_capability import (
+    renewable_weather_available_kw as _renewable_weather_available_kw,
+)
 from simu.renewable_optimization import (
     RenewableDispatchOptimizationResult,
     optimize_topology_islands,
@@ -54,7 +57,6 @@ MINIMUM_COMMAND_VALID_MINUTES = default_number(
 MAXIMUM_POWER_PROTECTION_RATIO = default_number(
     "maximum_power_protection_ratio"
 )
-WIND_POWER_CURVE_EXPONENT = default_number("wind_power_curve_exponent")
 SIMULATION_DEFAULT_STEP_MINUTES = default_number(
     "simulation_default_step_minutes"
 )
@@ -192,6 +194,78 @@ def _positive(values: Iterable[Any], default: float = 0.0) -> float:
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
     return min(maximum, max(minimum, value))
+
+
+def _decision_step_ratio(
+    rate_per_simulation_minute: Any,
+    *,
+    simulation_step_seconds: Any,
+    simulation_period_seconds: Any,
+    control_interval_seconds: Any,
+) -> float:
+    rate = max(0.0, _finite_number(rate_per_simulation_minute))
+    simulation_step = _number(simulation_step_seconds)
+    simulation_period = _number(simulation_period_seconds)
+    control_interval = _number(control_interval_seconds)
+    if (
+        simulation_step is None
+        or simulation_step <= 0.0
+        or simulation_period is None
+        or simulation_period <= 0.0
+        or control_interval is None
+        or control_interval <= 0.0
+    ):
+        return rate
+    return max(
+        0.0,
+        rate
+        * simulation_step
+        / simulation_period
+        * control_interval
+        / 60.0,
+    )
+
+
+def _snapshot_simulation_timing(
+    snapshot: Mapping[str, Any],
+) -> Tuple[Optional[float], Optional[float], bool]:
+    timing = (
+        snapshot.get("simulation_timing")
+        if isinstance(snapshot.get("simulation_timing"), Mapping)
+        else {}
+    )
+    parameters = (
+        snapshot.get("system_parameters")
+        if isinstance(snapshot.get("system_parameters"), Mapping)
+        else {}
+    )
+    clock = snapshot.get("clock") if isinstance(snapshot.get("clock"), Mapping) else {}
+
+    simulation_step_seconds = _number(timing.get("simulation_step_seconds"))
+    if simulation_step_seconds is None or simulation_step_seconds <= 0.0:
+        simulation_step_seconds = _number(parameters.get("effective_step_seconds"))
+    if simulation_step_seconds is None or simulation_step_seconds <= 0.0:
+        effective_step_minutes = _number(parameters.get("effective_step_minutes"))
+        if effective_step_minutes is not None and effective_step_minutes > 0.0:
+            simulation_step_seconds = effective_step_minutes * 60.0
+    if simulation_step_seconds is None or simulation_step_seconds <= 0.0:
+        simulation_step_seconds = _number(clock.get("effective_step_seconds"))
+    if simulation_step_seconds is None or simulation_step_seconds <= 0.0:
+        effective_step_minutes = _number(clock.get("effective_step_minutes"))
+        if effective_step_minutes is not None and effective_step_minutes > 0.0:
+            simulation_step_seconds = effective_step_minutes * 60.0
+
+    simulation_period_seconds = _number(timing.get("simulation_period_seconds"))
+    if simulation_period_seconds is None or simulation_period_seconds <= 0.0:
+        simulation_period_seconds = _number(parameters.get("compute_interval_seconds"))
+
+    known = bool(
+        simulation_step_seconds is not None
+        and simulation_step_seconds > 0.0
+        and simulation_period_seconds is not None
+        and simulation_period_seconds > 0.0
+    )
+    return simulation_step_seconds, simulation_period_seconds, known
 
 
 def _ratio(value: Any, default: Optional[float]) -> Optional[float]:
@@ -899,9 +973,15 @@ class RenewableControlSettings:
             "soc_min": ("soc_min", "socMin"),
             "soc_max": ("soc_max", "socMax"),
             "large_step_threshold_kw": ("large_step_threshold_kw", "largeStepThresholdKw"),
-            "step_coefficient": ("step_coefficient", "stepCoefficient", "renewableStepRatio"),
+            "step_coefficient": (
+                "step_coefficient",
+                "stepCoefficient",
+                "renewableStepRatePerMinute",
+                "renewableStepRatio",
+            ),
             "storage_step_ratio": (
                 "storage_step_ratio",
+                "storageStepRatePerMinute",
                 "storageStepRatio",
                 "gridFollowingStorageStepRatio",
             ),
@@ -970,6 +1050,7 @@ class RenewableControlSettings:
             name in payload
             for name in (
                 "storage_step_ratio",
+                "storageStepRatePerMinute",
                 "storageStepRatio",
                 "gridFollowingStorageStepRatio",
             )
@@ -1029,7 +1110,9 @@ class RenewableControlSettings:
             "largeStepThresholdKw": self.large_step_threshold_kw,
             "stepCoefficient": self.step_coefficient,
             "renewableStepRatio": self.step_coefficient,
+            "renewableStepRatePerMinute": self.step_coefficient,
             "storageStepRatio": self.storage_step_ratio,
+            "storageStepRatePerMinute": self.storage_step_ratio,
             "gridFormingStorageProtectionRatio": self.grid_forming_storage_protection_ratio,
             "dieselPowerProtectionRatio": self.diesel_power_protection_ratio,
             "socDeadband": self.soc_deadband,
@@ -1112,76 +1195,6 @@ def _observed_environment_value(
     if measurement is not None and math.isfinite(measurement.value):
         return measurement.value
     return _curve_boundary_value(snapshot, boundary_key)
-
-
-def _renewable_weather_available_kw(
-    technology: str,
-    parameter: Mapping[str, Any],
-    capacity_kw: float,
-    *,
-    wind_speed: Optional[float],
-    solar_irradiance: Optional[float],
-    air_temperature: Optional[float],
-) -> Optional[float]:
-    capacity = max(0.0, _finite_number(capacity_kw))
-    if capacity <= EPSILON:
-        return None
-    if technology == "wind":
-        if wind_speed is None or not math.isfinite(wind_speed):
-            return None
-        cut_in = _number(
-            parameter.get("cut_in_wind_speed", parameter.get("cut_in_speed"))
-        )
-        rated_speed = _number(parameter.get("rated_wind_speed"))
-        cut_out = _number(
-            parameter.get("cut_out_wind_speed", parameter.get("cut_out_speed"))
-        )
-        if (
-            cut_in is None
-            or rated_speed is None
-            or cut_out is None
-            or cut_in < 0.0
-            or rated_speed <= cut_in
-            or cut_out <= rated_speed
-        ):
-            return None
-        speed = max(0.0, float(wind_speed))
-        if speed < cut_in or speed >= cut_out:
-            return 0.0
-        if speed >= rated_speed:
-            return capacity
-        ratio = (speed - cut_in) / max(EPSILON, rated_speed - cut_in)
-        return min(capacity, capacity * ratio**WIND_POWER_CURVE_EXPONENT)
-    if technology == "pv":
-        if solar_irradiance is None or not math.isfinite(solar_irradiance):
-            return None
-        reference_irradiance = _number(parameter.get("reference_irradiance"))
-        reference_temperature = _number(parameter.get("reference_temperature"))
-        temperature_coefficient = _number(
-            parameter.get(
-                "temp_coefficient",
-                parameter.get("temperature_coefficient"),
-            )
-        )
-        if (
-            reference_irradiance is None
-            or reference_irradiance <= 0.0
-            or reference_temperature is None
-            or temperature_coefficient is None
-        ):
-            return None
-        temperature = (
-            float(air_temperature)
-            if air_temperature is not None and math.isfinite(air_temperature)
-            else reference_temperature
-        )
-        available = capacity * max(0.0, float(solar_irradiance)) / reference_irradiance
-        available *= max(
-            0.0,
-            1.0 + temperature_coefficient * (temperature - reference_temperature),
-        )
-        return min(capacity, max(0.0, available))
-    return None
 
 
 def _load_boundary(
@@ -1367,7 +1380,6 @@ def _renewable_rows(
             and set_type
             and recovery_ready
             and signed_baseline_valid
-            and capacity_baseline_valid
         )
 
         if not topology_valid:
@@ -1400,7 +1412,7 @@ def _renewable_rows(
             if planning_current is None
             else "实时有功为负·保持原值"
             if not signed_baseline_valid
-            else "实时有功超过容量·保持原值"
+            else "实时有功超过容量·校正至额定上限"
             if not capacity_baseline_valid
             else "可控"
         )
@@ -1426,7 +1438,6 @@ def _renewable_rows(
                     max(0.0, capacity - (planning_current or 0.0))
                     if recovery_ready
                     and signed_baseline_valid
-                    and capacity_baseline_valid
                     else 0.0
                 ),
                 "commandable": commandable,
@@ -8324,7 +8335,33 @@ def calculate_renewable_control_plan(
     data_source: str = "remote",
     snapshot_age_seconds: float = 0.0,
 ) -> Dict[str, Any]:
-    settings = (settings or RenewableControlSettings()).normalized()
+    configured_settings = (settings or RenewableControlSettings()).normalized()
+    (
+        simulation_step_seconds,
+        simulation_period_seconds,
+        simulation_timing_known,
+    ) = _snapshot_simulation_timing(snapshot)
+    if simulation_timing_known:
+        renewable_effective_decision_step_ratio = _decision_step_ratio(
+            configured_settings.step_coefficient,
+            simulation_step_seconds=simulation_step_seconds,
+            simulation_period_seconds=simulation_period_seconds,
+            control_interval_seconds=configured_settings.interval_seconds,
+        )
+        storage_effective_decision_step_ratio = _decision_step_ratio(
+            configured_settings.storage_step_ratio,
+            simulation_step_seconds=simulation_step_seconds,
+            simulation_period_seconds=simulation_period_seconds,
+            control_interval_seconds=configured_settings.interval_seconds,
+        )
+    else:
+        renewable_effective_decision_step_ratio = configured_settings.step_coefficient
+        storage_effective_decision_step_ratio = configured_settings.storage_step_ratio
+    settings = replace(
+        configured_settings,
+        step_coefficient=renewable_effective_decision_step_ratio,
+        storage_step_ratio=storage_effective_decision_step_ratio,
+    )
     quality = _Quality(data_source, snapshot_age_seconds)
     measurements = _measurement_index(snapshot)
     load_kw = _load_boundary(snapshot, measurements, quality)
@@ -10535,7 +10572,7 @@ def calculate_renewable_control_plan(
         for row in renewable_rows
     ):
         warnings.append(
-            "光伏理论可发统计缺少有效辐照度、温度或设备参考参数；不影响本轮控制优化"
+            "光伏理论可发统计缺少有效辐照度或设备参考参数；不影响本轮控制优化"
         )
     warnings.extend(
         _optimization_balance_delta_warnings(optimization_result)
@@ -10868,6 +10905,9 @@ def calculate_renewable_control_plan(
         "converterBaseStepKw": None,
         "converterStepLimited": False,
         "gridFollowingStorageStepRatio": settings.storage_step_ratio,
+        "gridFollowingStorageStepRatePerMinute": configured_settings.storage_step_ratio,
+        "storageStepRatePerMinute": configured_settings.storage_step_ratio,
+        "storageEffectiveDecisionStepRatio": storage_effective_decision_step_ratio,
         "converterStepDirection": converter_step_direction,
         "converterExportStepDirection": converter_export_step_direction,
         "converterSlowIncrease": converter_slow_export_increase,
@@ -10913,6 +10953,12 @@ def calculate_renewable_control_plan(
         "renewableControlAction": renewable_control_action,
         "renewableCapacityKw": renewable_capacity,
         "renewableStepRatio": settings.step_coefficient,
+        "renewableStepRatePerMinute": configured_settings.step_coefficient,
+        "renewableEffectiveDecisionStepRatio": renewable_effective_decision_step_ratio,
+        "simulationStepSeconds": simulation_step_seconds,
+        "simulationPeriodSeconds": simulation_period_seconds,
+        "controlIntervalSeconds": configured_settings.interval_seconds,
+        "simulationTimingKnown": simulation_timing_known,
         "renewableStepDirection": renewable_step_direction,
         "renewableRecoveryStepScale": renewable_recovery_step_scale,
         "renewableRecoveryBoundaryScale": renewable_recovery_boundary_scale,
@@ -11175,7 +11221,21 @@ def calculate_renewable_control_plan(
         f"ACDC独立预估：对应储能平衡功率由 {storage_current_for_control:.2f} kW 变为 {storage_target:.2f} kW，柴发反馈参考值 {diesel_target:.2f} kW；该值不叠加新能源动作",
         f"跟网储能直调：动作 {direct_storage_plan['action']}，从既有ACDC/直流平衡候选后的柴发偏差请求 {_finite_number(direct_storage_plan.get('requestedKw')):.2f} kW；交流跟网储能目标 {ac_grid_following_storage_target:.2f} kW，直流跟网储能目标 {dc_grid_following_storage_target:.2f} kW，直流侧仅使用同传输组ACDC增量，交流供电净影响 {direct_ac_storage_effect_kw + direct_acdc_effect_kw:.2f} kW，剩余 {_finite_number(direct_storage_plan.get('residualKw')):.2f} kW",
         renewable_strategy_detail,
-        f"新能源目标：当前 {renewable_current:.2f} kW，储能当前 {storage_current_for_control:.2f} kW、构网储能功率保护带 {settings.grid_forming_storage_protection_ratio * 100:.2f}%（充电侧 {grid_forming_storage_charge_protection_kw:.2f} kW）、超出保护带 {renewable_storage_charge_excess_kw:.2f} kW；基础单步比例 {settings.step_coefficient * 100:.2f}%，{renewable_step_reason_text}，实际按 {renewable_step_scale * 100:.1f}% 即 {renewable_effective_step_ratio * 100:.2f}% 调节，目标 {renewable_target:.2f} kW",
+        (
+            f"调节率换算：新能源 {configured_settings.step_coefficient * 100:.2f}%/仿真分钟、"
+            f"跟网储能 {configured_settings.storage_step_ratio * 100:.2f}%/仿真分钟；"
+            f"模拟台仿真步长 {simulation_step_seconds:.6g} s、仿真周期 {simulation_period_seconds:.6g} s、"
+            f"学员台控制周期 {configured_settings.interval_seconds:.6g} s；本次最大调节比例分别为 "
+            f"{renewable_effective_decision_step_ratio * 100:.2f}%、"
+            f"{storage_effective_decision_step_ratio * 100:.2f}%"
+            if simulation_timing_known
+            else (
+                f"调节率换算：快照缺少有效仿真步长或仿真周期，按兼容模式将配置值直接作为本次比例；"
+                f"新能源 {renewable_effective_decision_step_ratio * 100:.2f}%，"
+                f"跟网储能 {storage_effective_decision_step_ratio * 100:.2f}%"
+            )
+        ),
+        f"新能源目标：当前 {renewable_current:.2f} kW，储能当前 {storage_current_for_control:.2f} kW、构网储能功率保护带 {settings.grid_forming_storage_protection_ratio * 100:.2f}%（充电侧 {grid_forming_storage_charge_protection_kw:.2f} kW）、超出保护带 {renewable_storage_charge_excess_kw:.2f} kW；本次换算后最大比例 {settings.step_coefficient * 100:.2f}%，{renewable_step_reason_text}，实际按 {renewable_step_scale * 100:.1f}% 即 {renewable_effective_step_ratio * 100:.2f}% 调节，目标 {renewable_target:.2f} kW",
         f"负荷功率仅用于展示：当前 {load_kw:.2f} kW，不参与新能源、储能、变流器或柴发目标计算",
         f"独立边界检查与统一保护校核：ACDC目标已按设备有功上下限、model.e中的SOC运行边界、储能剩余能量和分段线性充放电降额校核；常规动作遵守步长，充电超限时保护校核可直接消除超限；新能源恢复量同时受充电降额剩余空间约束",
         *[f"数据告警：{issue}" for issue in quality_payload["issues"]],
@@ -12848,6 +12908,7 @@ class TraineeRenewableControlManager:
                 serialized_trend = copy.deepcopy(trend)
             return {
                 "modelId": state.model_id,
+                "controllerInstanceId": state.service_instance_id,
                 "enabled": state.enabled,
                 "loopMode": state.loop_mode,
                 "sending": state.sending,

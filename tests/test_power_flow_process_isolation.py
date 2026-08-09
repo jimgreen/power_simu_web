@@ -41,6 +41,47 @@ class PowerFlowProcessIsolationTest(unittest.TestCase):
         self.assertIsNotNone(outcome.runtime_stat_book)
         self.assertGreaterEqual(outcome.compute_seconds, 0.0)
 
+    def test_process_runner_preserves_ph_converter_topology_across_cycles(self):
+        from simu.power_flow_worker import PowerFlowProcessRunner
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        runner = PowerFlowProcessRunner(max_workers=1)
+        self.addCleanup(runner.close)
+        config = service._make_config(period_seconds=1.0)
+
+        expected_online = {
+            ("ACGenerator", "wt01_10kw"),
+            ("ACBranch", "wt01_cable"),
+            ("ACNode", "wt01_src"),
+            ("ACNode", "wt01_rect"),
+            ("DCACConverter", "wt01_rect"),
+            ("DCNode", "wt01_dc"),
+        }
+        worker_pid = None
+        for _cycle in range(3):
+            outcome = runner.run(config)
+            if worker_pid is None:
+                worker_pid = outcome.worker_pid
+            self.assertEqual(outcome.worker_pid, worker_pid)
+
+            converter = next(
+                row
+                for row in outcome.result.model_book.data["DCACConverter"].data
+                if row.get("name") == "wt01_rect"
+            )
+            self.assertEqual(converter["ac_control_type"], "PH")
+            self.assertEqual(converter["dc_control_type"], "NONE")
+
+            states = {
+                (row["dev_type"], row["dev_name"]): row
+                for row in outcome.result.device_states
+            }
+            for key in expected_online:
+                self.assertIn(key, states)
+                self.assertEqual(states[key]["run_stat"], 1)
+                self.assertFalse(states[key]["dead_island"], key)
+
     def test_service_releases_its_state_lock_while_waiting_for_the_kernel_worker(self):
         from simu.power_flow_worker import PowerFlowExecution
 

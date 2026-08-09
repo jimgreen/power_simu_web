@@ -160,6 +160,10 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
         service = self.make_service()
         configure_receive(service)
         runtime = service.snapshot(include_static=True, include_runtime_logs=False)
+        runtime["simulation_timing"] = {
+            "simulation_step_seconds": 300.0,
+            "simulation_period_seconds": 1.0,
+        }
         urls = []
 
         def request_json(url, **_kwargs):
@@ -182,6 +186,55 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
         self.assertIn("measurement_after_seq=0", urls[0])
         self.assertIn("measurement_compact=1", urls[0])
         self.assertIn("command_history=0", urls[0])
+        self.assertEqual(
+            view.snapshot["simulation_timing"],
+            runtime["simulation_timing"],
+        )
+
+    def test_refresh_updates_simulation_timing_on_every_runtime_cycle(self):
+        service = self.make_service()
+        configure_receive(service)
+        runtime = service.snapshot(include_static=True, include_runtime_logs=False)
+        timing_frames = [
+            {
+                "simulation_step_seconds": 300.0,
+                "simulation_period_seconds": 1.0,
+            },
+            {
+                "simulation_step_seconds": 60.0,
+                "simulation_period_seconds": 0.5,
+            },
+        ]
+
+        def request_json(_url, **_kwargs):
+            payload = copy.deepcopy(runtime)
+            payload["simulation_timing"] = timing_frames.pop(0)
+            return payload
+
+        exchange = TraineeRealtimeExchange(
+            service,
+            request_json=request_json,
+            start_worker=False,
+        )
+        self.addCleanup(exchange.close)
+
+        first = exchange.refresh_once("trainee-local")
+        second = exchange.refresh_once("trainee-local")
+
+        self.assertEqual(
+            first.snapshot["simulation_timing"],
+            {
+                "simulation_step_seconds": 300.0,
+                "simulation_period_seconds": 1.0,
+            },
+        )
+        self.assertEqual(
+            second.snapshot["simulation_timing"],
+            {
+                "simulation_step_seconds": 60.0,
+                "simulation_period_seconds": 0.5,
+            },
+        )
 
     def test_refresh_rejects_a_bad_measurement_array_without_advancing_or_publishing(self):
         service = self.make_service()

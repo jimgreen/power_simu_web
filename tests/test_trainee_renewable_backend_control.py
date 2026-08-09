@@ -6289,7 +6289,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertFalse(power_plan["dataQuality"]["dispatchAllowed"])
         self.assertTrue(any("变流器" in issue and "实时有功" in issue for issue in power_plan["dataQuality"]["issues"]))
 
-    def test_scada_noise_near_rated_capacity_preserves_planning_baseline_without_quality_warning(self):
+    def test_scada_noise_near_rated_capacity_is_corrected_to_rated_limit(self):
         snapshot = renewable_snapshot()
         wind_device = next(row for row in snapshot["devices"] if row["dev_name"] == "wind-1")
         wind_device["raw"]["rated_capacity"] = "10.1"
@@ -6307,18 +6307,18 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
         self.assertAlmostEqual(wind_row["currentKw"], 10.12)
         self.assertAlmostEqual(wind_row["planningCurrentKw"], 10.12)
-        self.assertAlmostEqual(wind_row["commandKw"], 10.12)
-        self.assertFalse(wind_row["commandable"])
-        self.assertFalse(wind_row["strategyCommand"])
+        self.assertLessEqual(wind_row["commandKw"], 10.1)
+        self.assertTrue(wind_row["commandable"])
+        self.assertTrue(wind_row["strategyCommand"])
         self.assertIn("超过容量", wind_row["statusLabel"])
-        self.assertFalse(
+        self.assertTrue(
             any(command["dev_name"] == "wind-1" for command in plan["commands"])
         )
-        self.assertEqual(plan["dataQuality"]["status"], "ok")
+        self.assertEqual(plan["dataQuality"]["status"], "degraded")
         self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
-        self.assertFalse(any("风电wind-1" in issue and "额定容量" in issue for issue in plan["dataQuality"]["issues"]))
+        self.assertTrue(any("风电wind-1" in issue and "额定容量" in issue for issue in plan["dataQuality"]["issues"]))
 
-    def test_material_generation_overcapacity_remains_quality_warning(self):
+    def test_material_generation_overcapacity_is_corrected_and_remains_quality_warning(self):
         snapshot = renewable_snapshot()
         wind_device = next(row for row in snapshot["devices"] if row["dev_name"] == "wind-1")
         wind_device["raw"]["rated_capacity"] = "10.1"
@@ -6336,11 +6336,11 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
         self.assertAlmostEqual(wind_row["currentKw"], 10.5)
         self.assertAlmostEqual(wind_row["planningCurrentKw"], 10.5)
-        self.assertAlmostEqual(wind_row["commandKw"], 10.5)
-        self.assertFalse(wind_row["commandable"])
-        self.assertFalse(wind_row["strategyCommand"])
+        self.assertLessEqual(wind_row["commandKw"], 10.1)
+        self.assertTrue(wind_row["commandable"])
+        self.assertTrue(wind_row["strategyCommand"])
         self.assertIn("超过容量", wind_row["statusLabel"])
-        self.assertFalse(
+        self.assertTrue(
             any(command["dev_name"] == "wind-1" for command in plan["commands"])
         )
         self.assertEqual(plan["dataQuality"]["status"], "degraded")

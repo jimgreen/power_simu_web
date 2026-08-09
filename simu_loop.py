@@ -1203,13 +1203,6 @@ def _apply_set_value_row(model_book: EBook, row: dict) -> int:
     if value == "":
         return 0
     target_column = _set_value_target_column(dev_type, set_type, target)
-    if target_column == "p_dc_set" and _is_converter_control_target(target):
-        changed = _set_row_value(target, target_column, value)
-        if "dc_control_type" in target:
-            changed += _set_row_value(target, "dc_control_type", "P")
-        if "ac_control_type" in target:
-            changed += _set_row_value(target, "ac_control_type", "NONE")
-        return changed
     return _set_row_value(target, target_column, value)
 
 

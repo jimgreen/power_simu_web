@@ -103,6 +103,37 @@ class InMemoryKernelRuntimeTest(unittest.TestCase):
 
         self.assertEqual(values["ESS.ess01.p_set"], 22.5)
 
+    def test_runtime_dc_setpoint_rows_preserve_ph_converter_topology(self):
+        workspace, _source, _runtime, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        expected_online = {
+            ("ACGenerator", "wt01_10kw"),
+            ("ACBranch", "wt01_cable"),
+            ("ACNode", "wt01_src"),
+            ("ACNode", "wt01_rect"),
+            ("DCACConverter", "wt01_rect"),
+            ("DCNode", "wt01_dc"),
+        }
+        for _cycle in range(3):
+            snapshot = service.step(advance_seconds=1.0)
+            converter = next(
+                row
+                for row in service.latest_model_book.data["DCACConverter"].data
+                if row.get("name") == "wt01_rect"
+            )
+            self.assertEqual(converter["ac_control_type"], "PH")
+            self.assertEqual(converter["dc_control_type"], "NONE")
+
+            states = {
+                (row["dev_type"], row["dev_name"]): row
+                for row in snapshot["device_states"]
+            }
+            for key in expected_online:
+                self.assertIn(key, states)
+                self.assertEqual(states[key]["run_stat"], 1)
+                self.assertFalse(states[key]["dead_island"], key)
+
     def test_in_memory_solver_reconstructs_contracted_ideal_edge_flows(self):
         import simu_loop
 

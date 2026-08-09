@@ -194,6 +194,7 @@ const state = {
   traceStepCount: null,
   renewableControl: {
     modelId: "",
+    controllerInstanceId: "",
     enabled: false,
     receiveActive: false,
     canRun: false,
@@ -10495,6 +10496,7 @@ function resetRenewableControlView(modelId = state.activeModelId) {
   const control = state.renewableControl;
   Object.assign(control, {
     modelId: modelId || "",
+    controllerInstanceId: "",
     enabled: false,
     receiveActive: false,
     canRun: false,
@@ -10588,11 +10590,30 @@ function mergeRenewableControlLogDelta(current = [], incoming = [], reset = fals
     .slice(0, 300);
 }
 
+function resetRenewableControlHistoryForLifecycle(control = state.renewableControl) {
+  control.logs = [];
+  control.revision = -1;
+  control.logPage = 1;
+  control.lastControlLogRenderKey = "";
+  state.renewableTrendHistory = [];
+  if (state.chartPeriodOffsets) state.chartPeriodOffsets.renewableTrend = 0;
+}
+
 function applyRenewableControlState(payload = {}) {
   if (!payload || typeof payload !== "object") return false;
   const control = state.renewableControl;
+  const incomingControllerInstanceId = String(
+    payload.controllerInstanceId || control.controllerInstanceId || "",
+  );
+  const controllerLifecycleChanged = Boolean(
+    incomingControllerInstanceId
+    && control.controllerInstanceId
+    && incomingControllerInstanceId !== control.controllerInstanceId,
+  );
   const incomingRevision = Number(payload.revision);
   if (
+    !controllerLifecycleChanged
+    &&
     payload.modelId
     && control.modelId === payload.modelId
     && Number.isFinite(incomingRevision)
@@ -10600,9 +10621,11 @@ function applyRenewableControlState(payload = {}) {
   ) {
     return false;
   }
+  if (controllerLifecycleChanged) resetRenewableControlHistoryForLifecycle(control);
   const settings = payload.settings && typeof payload.settings === "object" ? payload.settings : {};
   Object.assign(control, {
     modelId: String(payload.modelId || state.activeModelId || ""),
+    controllerInstanceId: incomingControllerInstanceId,
     enabled: Boolean(payload.enabled),
     receiveActive: Boolean(payload.receiveActive),
     canRun: Boolean(payload.canRun),
@@ -10611,8 +10634,14 @@ function applyRenewableControlState(payload = {}) {
     sending: Boolean(payload.sending),
     intervalSeconds: Math.max(1, toNumber(settings.intervalSeconds, control.intervalSeconds || 2)),
     largeStepThresholdKw: Math.max(0, toNumber(settings.largeStepThresholdKw, control.largeStepThresholdKw || 10)),
-    stepCoefficient: Math.max(0, toNumber(settings.renewableStepRatio ?? settings.stepCoefficient, control.stepCoefficient || 0.03)),
-    storageStepRatio: Math.max(0, toNumber(settings.storageStepRatio, control.storageStepRatio || 0.03)),
+    stepCoefficient: Math.max(0, toNumber(
+      settings.renewableStepRatePerMinute ?? settings.renewableStepRatio ?? settings.stepCoefficient,
+      control.stepCoefficient || 0.03,
+    )),
+    storageStepRatio: Math.max(0, toNumber(
+      settings.storageStepRatePerMinute ?? settings.storageStepRatio,
+      control.storageStepRatio || 0.03,
+    )),
     gridFormingStorageProtectionRatio: Math.max(0, toNumber(
       settings.gridFormingStorageProtectionRatio
         ?? (Number.isFinite(Number(settings.storageSwitchDeadbandKw))
@@ -11516,9 +11545,46 @@ function renewableStorageSocMetricText(value, metrics = {}, group = "") {
   return renewableStorageUnavailableMetricText(metrics, group) || renewableMetricSocText(value);
 }
 
+function populateRenewableControlParameters(control = state.renewableControl) {
+  const periodInput = $("renewableControlPeriod");
+  if (periodInput) periodInput.value = String(control.intervalSeconds || 2);
+  const ratioInputs = {
+    renewableStepRatio: control.stepCoefficient,
+    storageStepRatio: control.storageStepRatio,
+    gridFormingStorageProtectionRatio: control.gridFormingStorageProtectionRatio,
+    dieselPowerProtectionRatio: control.dieselPowerProtectionRatio,
+    socDeadband: control.socDeadband,
+  };
+  Object.entries(ratioInputs).forEach(([id, value]) => {
+    const input = $(id);
+    if (input) input.value = String(Number(value || 0) * 100);
+  });
+  const commandValidInput = $("renewableCommandValidMinutes");
+  if (commandValidInput) commandValidInput.value = String(control.commandValidMinutes || 120);
+  const numericInputs = {
+    optimizationRenewableCurtailmentWeight: control.optimizationRenewableCurtailmentWeight,
+    optimizationDieselOutputWeight: control.optimizationDieselOutputWeight,
+    optimizationCurtailmentSquareWeight: control.optimizationCurtailmentSquareWeight,
+    optimizationSourceStorageAdjustmentSquareWeight: control.optimizationSourceStorageAdjustmentSquareWeight,
+    optimizationBalanceDeltaSquareWeight: control.optimizationBalanceDeltaSquareWeight,
+    optimizationBalanceDeltaWarningKw: control.optimizationBalanceDeltaWarningKw,
+    optimizationBalanceToleranceKw: control.optimizationBalanceToleranceKw,
+    optimizationBoundToleranceKw: control.optimizationBoundToleranceKw,
+    optimizationFtol: control.optimizationFtol,
+    optimizationMaxIterations: control.optimizationMaxIterations,
+  };
+  Object.entries(numericInputs).forEach(([id, value]) => {
+    const input = $(id);
+    if (input) input.value = String(value ?? "");
+  });
+}
+
 function openRenewableControlParametersDialog() {
   const dialog = $("renewableControlParametersDialog");
-  if (dialog && !dialog.open) dialog.showModal();
+  if (dialog && !dialog.open) {
+    populateRenewableControlParameters();
+    dialog.showModal();
+  }
 }
 
 function closeRenewableControlParametersDialog() {
@@ -11560,7 +11626,10 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     modeButton.disabled = actionPending;
   });
   const periodInput = $("renewableControlPeriod");
-  if (periodInput && document.activeElement !== periodInput) periodInput.value = String(control.intervalSeconds || 2);
+  const parameterDialogOpen = Boolean($("renewableControlParametersDialog")?.open);
+  if (!parameterDialogOpen && periodInput && document.activeElement !== periodInput) {
+    periodInput.value = String(control.intervalSeconds || 2);
+  }
   const ratioInputs = {
     renewableStepRatio: control.stepCoefficient,
     storageStepRatio: control.storageStepRatio,
@@ -11570,10 +11639,12 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   };
   Object.entries(ratioInputs).forEach(([id, value]) => {
     const input = $(id);
-    if (input && document.activeElement !== input) input.value = String(Number(value || 0) * 100);
+    if (!parameterDialogOpen && input && document.activeElement !== input) {
+      input.value = String(Number(value || 0) * 100);
+    }
   });
   const commandValidInput = $("renewableCommandValidMinutes");
-  if (commandValidInput && document.activeElement !== commandValidInput) {
+  if (!parameterDialogOpen && commandValidInput && document.activeElement !== commandValidInput) {
     commandValidInput.value = String(control.commandValidMinutes || 120);
   }
   const numericInputs = {
@@ -11590,7 +11661,9 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   };
   Object.entries(numericInputs).forEach(([id, value]) => {
     const input = $(id);
-    if (input && document.activeElement !== input) input.value = String(value ?? "");
+    if (!parameterDialogOpen && input && document.activeElement !== input) {
+      input.value = String(value ?? "");
+    }
   });
   [
     periodInput,
@@ -11602,6 +11675,8 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   });
   const storagePowerDeratingButton = $("storagePowerDeratingButton");
   if (storagePowerDeratingButton) storagePowerDeratingButton.disabled = control.actionActive;
+  const saveControlParametersButton = $("saveRenewableControlParameters");
+  if (saveControlParametersButton) saveControlParametersButton.disabled = control.actionActive;
   const controlParametersButton = $("renewableControlParametersButton");
   if (controlParametersButton) controlParametersButton.disabled = control.actionActive;
   if (lastActionLabel) lastActionLabel.textContent = loopMode === "closed" ? "最近下发" : "最近计算";
@@ -11872,13 +11947,13 @@ async function updateRenewableSettings() {
   const intervalSeconds = Math.max(1, toNumber($("renewableControlPeriod")?.value, 2));
   const commandValidMinutes = Math.max(0.1, toNumber($("renewableCommandValidMinutes")?.value, 120));
   const ratio = (id, fallbackPercent) => Math.max(0, toNumber($(id)?.value, fallbackPercent)) / 100;
-  await runRenewableControlAction("update_settings", {
+  return runRenewableControlAction("update_settings", {
     settings: {
       intervalSeconds,
       commandValidMinutes,
       largeStepThresholdKw: state.renewableControl.largeStepThresholdKw,
-      renewableStepRatio: ratio("renewableStepRatio", 3),
-      storageStepRatio: ratio("storageStepRatio", 3),
+      renewableStepRatePerMinute: ratio("renewableStepRatio", 3),
+      storageStepRatePerMinute: ratio("storageStepRatio", 3),
       gridFormingStorageProtectionRatio: ratio("gridFormingStorageProtectionRatio", 5),
       dieselPowerProtectionRatio: ratio("dieselPowerProtectionRatio", 3),
       socDeadband: ratio("socDeadband", 5),
@@ -11896,6 +11971,11 @@ async function updateRenewableSettings() {
       storageDischargeDeratingCurve: state.renewableControl.storageDischargeDeratingCurve,
     },
   });
+}
+
+async function saveRenewableControlParameters() {
+  const response = await updateRenewableSettings();
+  if (response) closeRenewableControlParametersDialog();
 }
 
 function storagePowerDeratingRowHtml(direction, point, index) {
@@ -15516,6 +15596,7 @@ $("renewableSendOnce").addEventListener("click", runRenewableControlOnce);
 $("renewableControlParametersButton")?.addEventListener("click", openRenewableControlParametersDialog);
 $("closeRenewableControlParametersDialog")?.addEventListener("click", closeRenewableControlParametersDialog);
 $("cancelRenewableControlParametersDialog")?.addEventListener("click", closeRenewableControlParametersDialog);
+$("saveRenewableControlParameters")?.addEventListener("click", saveRenewableControlParameters);
 $("renewableControlParametersDialog")?.addEventListener("click", (event) => {
   if (event.target === $("renewableControlParametersDialog")) closeRenewableControlParametersDialog();
 });
@@ -15533,25 +15614,6 @@ $("storagePowerDeratingDialog")?.addEventListener("input", () => {
 document.querySelectorAll("[data-renewable-loop-mode]").forEach((button) => {
   button.addEventListener("click", () => setRenewableLoopMode(button.dataset.renewableLoopMode));
 });
-$("renewableControlPeriod").addEventListener("change", updateRenewableSettings);
-[
-  "renewableCommandValidMinutes",
-  "renewableStepRatio",
-  "storageStepRatio",
-  "gridFormingStorageProtectionRatio",
-  "dieselPowerProtectionRatio",
-  "socDeadband",
-  "optimizationRenewableCurtailmentWeight",
-  "optimizationDieselOutputWeight",
-  "optimizationCurtailmentSquareWeight",
-  "optimizationSourceStorageAdjustmentSquareWeight",
-  "optimizationBalanceDeltaSquareWeight",
-  "optimizationBalanceDeltaWarningKw",
-  "optimizationBalanceToleranceKw",
-  "optimizationBoundToleranceKw",
-  "optimizationFtol",
-  "optimizationMaxIterations",
-].forEach((id) => $(id)?.addEventListener("change", updateRenewableSettings));
 document.querySelectorAll("[data-renewable-strategy-tab]").forEach((button) => {
   button.addEventListener("click", () => {
     const tabKey = button.dataset.renewableStrategyTab || "ac-wind";

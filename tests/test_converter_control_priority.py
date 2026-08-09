@@ -117,9 +117,11 @@ class ConverterControlPriorityTest(unittest.TestCase):
         self.assertIn(("DCACConverter", "grid-link"), targets)
         self.assertIn(("DCACConverter", "legacy-link"), targets)
 
-    def test_explicit_dcp_command_writes_dc_terminal_and_enables_dc_power_control(self):
+    def test_explicit_dc_terminal_command_preserves_declared_control_modes(self):
         model_book = self._model_book()
         target = model_book.data["DCACConverter"].data[0]
+        target["ac_control_type"] = "PH"
+        target["dc_control_type"] = "NONE"
 
         changed = simu_loop._apply_set_value_row(
             model_book,
@@ -131,11 +133,11 @@ class ConverterControlPriorityTest(unittest.TestCase):
             },
         )
 
-        self.assertGreaterEqual(changed, 1)
+        self.assertEqual(changed, 1)
         self.assertEqual(float(target["p_dc_set"]), 18.0)
         self.assertEqual(float(target["p_ac_set"]), -10.0)
-        self.assertEqual(target["ac_control_type"], "NONE")
-        self.assertEqual(target["dc_control_type"], "P")
+        self.assertEqual(target["ac_control_type"], "PH")
+        self.assertEqual(target["dc_control_type"], "NONE")
 
 
 if __name__ == "__main__":

@@ -106,7 +106,34 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         self.assertIn("command_valid_minutes", self.backend)
         self.assertIn('"valid_for_minutes": cycle_settings.command_valid_minutes', self.backend)
 
+    def test_control_parameters_require_explicit_save_confirmation(self):
+        dialog = self.html.split('id="renewableControlParametersDialog"', 1)[1].split(
+            '</dialog>',
+            1,
+        )[0]
+        event_bindings = self.script.split(
+            '$("renewableControlParametersButton")?.addEventListener',
+            1,
+        )[1].split(
+            'document.querySelectorAll("[data-renewable-strategy-tab]")',
+            1,
+        )[0]
+
+        self.assertIn('id="saveRenewableControlParameters"', dialog)
+        self.assertIn('class="primary" type="button">保存</button>', dialog)
+        self.assertIn('修改后点击保存', dialog)
+        self.assertIn("async function saveRenewableControlParameters", self.script)
+        self.assertIn(
+            '$("saveRenewableControlParameters")?.addEventListener("click", saveRenewableControlParameters);',
+            event_bindings,
+        )
+        self.assertNotIn('addEventListener("change", updateRenewableSettings)', event_bindings)
+
     def test_strategy_steps_and_power_protection_bands_are_editable_ratios(self):
+        self.assertIn("新能源步长(%/仿真分钟)", self.html)
+        self.assertIn("跟网储能步长(%/仿真分钟)", self.html)
+        self.assertIn("renewableStepRatePerMinute", self.script)
+        self.assertIn("storageStepRatePerMinute", self.script)
         for field_id in (
             "renewableStepRatio",
             "storageStepRatio",
@@ -179,7 +206,7 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             self.backend,
         )
         self.assertIn(
-            "光伏理论可发统计缺少有效辐照度、温度或设备参考参数；不影响本轮控制优化",
+            "光伏理论可发统计缺少有效辐照度或设备参考参数；不影响本轮控制优化",
             self.backend,
         )
         self.assertNotIn("ignored_by_control_policy", self.backend)

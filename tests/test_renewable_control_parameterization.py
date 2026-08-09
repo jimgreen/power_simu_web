@@ -5,7 +5,11 @@ import unittest
 from pathlib import Path
 
 from simu.control_config import default_integer, default_number
-from simu.renewable_control import RenewableControlSettings
+from simu.renewable_control import (
+    RenewableControlSettings,
+    _decision_step_ratio,
+    calculate_renewable_control_plan,
+)
 from simu.renewable_optimization import optimize_topology_islands
 from simu.resource_topology import ResourceTopology
 
@@ -94,6 +98,67 @@ def converter(name: str, *, capacity: float) -> dict:
 
 
 class RenewableControlParameterizationTest(unittest.TestCase):
+    def test_step_rate_is_scaled_by_simulation_timing_and_control_period(self):
+        self.assertAlmostEqual(
+            _decision_step_ratio(
+                0.03,
+                simulation_step_seconds=300.0,
+                simulation_period_seconds=1.0,
+                control_interval_seconds=2.0,
+            ),
+            0.30,
+        )
+        self.assertAlmostEqual(
+            _decision_step_ratio(
+                0.03,
+                simulation_step_seconds=60.0,
+                simulation_period_seconds=1.0,
+                control_interval_seconds=5.0,
+            ),
+            0.15,
+        )
+
+    def test_step_rate_settings_export_explicit_per_minute_fields(self):
+        settings = RenewableControlSettings().updated(
+            {
+                "renewableStepRatePerMinute": 0.04,
+                "storageStepRatePerMinute": 0.02,
+            }
+        )
+
+        self.assertEqual(settings.step_coefficient, 0.04)
+        self.assertEqual(settings.storage_step_ratio, 0.02)
+        self.assertEqual(settings.payload()["renewableStepRatePerMinute"], 0.04)
+        self.assertEqual(settings.payload()["storageStepRatePerMinute"], 0.02)
+
+    def test_control_plan_uses_live_simulator_timing_for_step_rates(self):
+        from tests.test_trainee_renewable_backend_control import renewable_snapshot
+
+        snapshot = renewable_snapshot()
+        snapshot["simulation_timing"] = {
+            "simulation_step_seconds": 300.0,
+            "simulation_period_seconds": 1.0,
+        }
+
+        plan = calculate_renewable_control_plan(
+            snapshot,
+            RenewableControlSettings(
+                interval_seconds=2.0,
+                step_coefficient=0.03,
+                storage_step_ratio=0.02,
+            ),
+        )
+        metrics = plan["metrics"]
+
+        self.assertTrue(metrics["simulationTimingKnown"])
+        self.assertEqual(metrics["simulationStepSeconds"], 300.0)
+        self.assertEqual(metrics["simulationPeriodSeconds"], 1.0)
+        self.assertEqual(metrics["controlIntervalSeconds"], 2.0)
+        self.assertAlmostEqual(metrics["renewableStepRatePerMinute"], 0.03)
+        self.assertAlmostEqual(metrics["storageStepRatePerMinute"], 0.02)
+        self.assertAlmostEqual(metrics["renewableEffectiveDecisionStepRatio"], 0.30)
+        self.assertAlmostEqual(metrics["storageEffectiveDecisionStepRatio"], 0.20)
+
     def test_power_protection_bands_are_persisted_as_ratios(self):
         settings = RenewableControlSettings().updated(
             {

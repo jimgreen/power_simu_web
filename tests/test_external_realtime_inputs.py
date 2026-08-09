@@ -172,6 +172,296 @@ class ExternalRealtimeInputsTest(unittest.TestCase):
             {"ACLoad:load_ac_1": 81.0, "DCLoad:load_dc_1": 23.0},
         )
 
+    def test_single_point_accepts_and_reports_explicit_count_and_interval(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        result = service.apply_external_realtime_inputs(
+            {
+                "point_count": 1,
+                "point_interval_seconds": 60,
+                "wind_speed_mps": 13,
+            }
+        )
+
+        self.assertEqual(result["update_mode"], "single_point")
+        self.assertEqual(result["input_point_count"], 1)
+        self.assertEqual(result["point_interval_seconds"], 60.0)
+
+    def test_single_point_start_time_selects_the_curve_point_by_timestamp(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        before = copy.deepcopy(service.curves)
+
+        result = service.apply_external_realtime_inputs(
+            {
+                "start_time": "00:02:00",
+                "point_count": 1,
+                "point_interval_minutes": 1,
+                "wind_speed_mps": 19,
+            }
+        )
+
+        self.assertEqual(result["target_index"], 2)
+        self.assertEqual(service.curves["weather"][2]["wind_speed_mps"], 19.0)
+        self.assertEqual(service.curves["weather"][0], before["weather"][0])
+
+    def test_multiple_points_update_only_requested_indices_and_feed_the_kernel(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        before = copy.deepcopy(service.curves)
+
+        result = service.apply_external_realtime_inputs(
+            {
+                "start_time": "00:00:00",
+                "point_count": 2,
+                "point_interval_minutes": 1,
+                "points": [
+                    {
+                        "target_index": 0,
+                        "weather": {
+                            "wind_speed_mps": 8.5,
+                            "solar_irradiance_w_m2": 320,
+                        },
+                        "loads": {"ACLoad:load_ac_1": 51},
+                    },
+                    {
+                        "target_time": "00:01:00",
+                        "weather": {
+                            "wind_speed_mps": 12.5,
+                            "solar_irradiance_w_m2": 520,
+                        },
+                        "loads": {"ACLoad:load_ac_1": 58},
+                    },
+                ]
+            }
+        )
+
+        self.assertEqual(result["update_mode"], "points")
+        self.assertEqual(result["updated_indices"], [0, 1])
+        self.assertEqual(result["updated_point_count"], 2)
+        self.assertEqual(service.curves["weather"][2], before["weather"][2])
+        self.assertEqual(service.curves["loads"]["load_ac_1"][2], before["loads"]["load_ac_1"][2])
+        self.assertEqual(service.curves["weather"][0]["wind_speed_mps"], 8.5)
+        self.assertEqual(service.curves["weather"][1]["solar_irradiance_w_m2"], 520.0)
+
+        model_book, weather = self._effective_inputs(service, 1.0)
+        self.assertEqual(weather["wind_speed_mps"], 12.5)
+        self.assertEqual(weather["solar_irradiance_w_m2"], 520.0)
+        self.assertAlmostEqual(self._load_power(model_book, "ACLoad", "load_ac_1"), 58.0)
+
+    def test_multiple_points_without_targets_follow_start_time_and_interval(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        result = service.apply_external_realtime_inputs(
+            {
+                "start_time": "00:01:00",
+                "point_count": 2,
+                "point_interval_seconds": 60,
+                "points": [
+                    {"wind_speed_mps": 15, "loads": {"ACLoad:load_ac_1": 71}},
+                    {"wind_speed_mps": 16, "loads": {"ACLoad:load_ac_1": 72}},
+                ],
+            }
+        )
+
+        self.assertEqual(result["updated_indices"], [1, 2])
+        self.assertEqual(service.curves["weather"][1]["wind_speed_mps"], 15.0)
+        self.assertEqual(service.curves["weather"][2]["wind_speed_mps"], 16.0)
+        self.assertEqual(service.curves["loads"]["load_ac_1"][2]["p_kw"], 72.0)
+
+    def test_multiple_points_can_use_an_integer_multiple_of_curve_interval(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        before = copy.deepcopy(service.curves)
+
+        result = service.apply_external_realtime_inputs(
+            {
+                "start_time": "00:00:00",
+                "point_count": 2,
+                "point_interval_minutes": 2,
+                "points": [
+                    {"wind_speed_mps": 21},
+                    {"wind_speed_mps": 23},
+                ],
+            }
+        )
+
+        self.assertEqual(result["curve_step_count"], 2)
+        self.assertEqual(result["updated_indices"], [0, 2])
+        self.assertEqual(service.curves["weather"][1], before["weather"][1])
+        self.assertEqual(service.curves["weather"][2]["wind_speed_mps"], 23.0)
+
+    def test_series_updates_full_weather_and_load_curves_in_one_request(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        result = service.apply_external_realtime_inputs(
+            {
+                "start_time": "00:00:00",
+                "point_count": 3,
+                "point_interval_minutes": 1,
+                "series": {
+                    "weather": {
+                        "wind_speed_mps": [8, 9, 10],
+                        "solar_irradiance_w_m2": [200, 300, 400],
+                    },
+                    "loads": {
+                        "ACLoad:load_ac_1": [50, 60, 70],
+                        "DCLoad:load_dc_1": [20, 25, 30],
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(result["update_mode"], "series")
+        self.assertEqual(result["updated_indices"], [0, 1, 2])
+        self.assertEqual(result["updated_weather_fields"], ["solar_irradiance_w_m2", "wind_speed_mps"])
+        self.assertEqual(result["updated_loads"], ["ACLoad:load_ac_1", "DCLoad:load_dc_1"])
+        self.assertEqual(
+            [point["wind_speed_mps"] for point in service.curves["weather"]],
+            [8.0, 9.0, 10.0],
+        )
+        self.assertEqual(
+            [point["p_kw"] for point in service.curves["loads"]["load_ac_1"]],
+            [50.0, 60.0, 70.0],
+        )
+
+        model_book, weather = self._effective_inputs(service, 1.0)
+        self.assertEqual(weather["wind_speed_mps"], 9.0)
+        self.assertAlmostEqual(self._load_power(model_book, "ACLoad", "load_ac_1"), 60.0)
+        self.assertAlmostEqual(self._load_power(model_book, "DCLoad", "load_dc_1"), 25.0)
+
+    def test_flat_series_can_patch_a_contiguous_curve_segment(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        before = copy.deepcopy(service.curves)
+
+        result = service.apply_external_realtime_inputs(
+            {
+                "start_time": "00:01:00",
+                "point_count": 2,
+                "point_interval_minutes": 1,
+                "series": {
+                    "wind_speed_mps": [17, 18],
+                    "load:DCLoad:load_dc_1": [31, 32],
+                },
+            }
+        )
+
+        self.assertEqual(result["updated_indices"], [1, 2])
+        self.assertEqual(service.curves["weather"][0], before["weather"][0])
+        self.assertEqual(service.curves["loads"]["load_dc_1"][0], before["loads"]["load_dc_1"][0])
+        self.assertEqual(service.curves["weather"][2]["wind_speed_mps"], 18.0)
+        self.assertEqual(service.curves["loads"]["load_dc_1"][1]["p_kw"], 31.0)
+
+    def test_invalid_multi_point_or_series_request_is_rejected_atomically(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        invalid_payloads = (
+            {
+                "start_time": "00:00:00",
+                "point_count": 2,
+                "point_interval_minutes": 1,
+                "points": [
+                    {
+                        "target_index": 0,
+                        "wind_speed_mps": 10,
+                        "loads": {"ACLoad:load_ac_1": 20},
+                    },
+                    {
+                        "target_index": 1,
+                        "wind_speed_mps": 11,
+                        "loads": {"ACLoad:missing": 20},
+                    },
+                ]
+            },
+            {
+                "start_time": "00:00:00",
+                "point_count": 3,
+                "point_interval_minutes": 1,
+                "series": {
+                    "weather": {"wind_speed_mps": [8, -1, 10]},
+                }
+            },
+            {
+                "start_time": "00:02:00",
+                "point_count": 2,
+                "point_interval_minutes": 1,
+                "series": {"solar_irradiance_w_m2": [100, 200]},
+            },
+            {
+                "start_time": "00:00:00",
+                "point_count": 3,
+                "point_interval_minutes": 1,
+                "points": [
+                    {"wind_speed_mps": 8},
+                    {"wind_speed_mps": 9},
+                ],
+            },
+            {
+                "start_time": "00:00:00",
+                "point_count": 2,
+                "point_interval_minutes": 1.5,
+                "series": {"wind_speed_mps": [8, 9]},
+            },
+            {
+                "start_time": "00:00:00",
+                "point_count": 2,
+                "point_interval_minutes": 1,
+                "series": {
+                    "wind_speed_mps": [8, 9],
+                    "solar_irradiance_w_m2": [100],
+                },
+            },
+            {
+                "points": [
+                    {"wind_speed_mps": 8},
+                    {"wind_speed_mps": 9},
+                ],
+            },
+            {
+                "start_time": "00:00:00",
+                "point_count": 2,
+                "point_interval_minutes": 1,
+                "points": [
+                    {"wind_speed_mps": 8, "loads": {"ACLoad:load_ac_1": 40}},
+                    {"wind_speed_mps": 9},
+                ],
+            },
+            {
+                "start_time": "00:00:30",
+                "point_count": 2,
+                "point_interval_minutes": 1,
+                "points": [
+                    {"wind_speed_mps": 8},
+                    {"wind_speed_mps": 9},
+                ],
+            },
+            {
+                "start_time": "00:01:00",
+                "start_index": 0,
+                "point_count": 2,
+                "point_interval_minutes": 1,
+                "points": [
+                    {"wind_speed_mps": 8},
+                    {"wind_speed_mps": 9},
+                ],
+            },
+        )
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                before = copy.deepcopy(service.curves)
+                before_revision = service._curve_revision
+                before_file = service.curves_file.read_bytes()
+                with self.assertRaises(ValueError):
+                    service.apply_external_realtime_inputs(payload)
+                self.assertEqual(service.curves, before)
+                self.assertEqual(service._curve_revision, before_revision)
+                self.assertEqual(service.curves_file.read_bytes(), before_file)
+
     def test_invalid_frame_is_rejected_atomically(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
@@ -263,6 +553,13 @@ class ExternalRealtimeInputsTest(unittest.TestCase):
             {"ACLoad:load_ac_1", "DCLoad:load_dc_1"},
         )
         self.assertEqual(schema["target_point"]["absolute_minute"], service.clock.absolute_minute)
+        self.assertEqual(
+            set(schema["request_formats"]),
+            {"single_point", "multiple_points", "series"},
+        )
+        self.assertEqual(schema["curve_contract"]["point_count"], 3)
+        self.assertEqual(schema["curve_contract"]["point_interval_seconds"], 60.0)
+        self.assertIn("start_time", schema["curve_contract"]["start_fields"])
 
     def test_update_waits_for_in_flight_solve_and_targets_the_following_point(self):
         started = threading.Event()
@@ -321,6 +618,30 @@ class ExternalRealtimeInputsTest(unittest.TestCase):
         self.assertAlmostEqual(self._load_power(outcome.result.model_book, "ACLoad", "load_ac_1"), 77.0)
         self.assertAlmostEqual(self._load_power(outcome.result.model_book, "DCLoad", "load_dc_1"), 21.0)
 
+    def test_series_boundary_survives_power_flow_process_isolation(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        runner = PowerFlowProcessRunner(max_workers=1)
+        self.addCleanup(runner.close)
+        service.clock.absolute_minute = 1.0
+        service.clock.minute = 1.0
+        service.apply_external_realtime_inputs(
+            {
+                "start_time": "00:00:00",
+                "point_count": 3,
+                "point_interval_minutes": 1,
+                "series": {
+                    "wind_speed_mps": [11, 12, 13],
+                    "load:ACLoad:load_ac_1": [61, 62, 63],
+                }
+            }
+        )
+
+        service._prepare_runtime_inputs(1.0, 1.0)
+        outcome = runner.run(service._make_config(period_seconds=60.0))
+
+        self.assertAlmostEqual(self._load_power(outcome.result.model_book, "ACLoad", "load_ac_1"), 62.0)
+
     def test_http_schema_update_and_trainee_link_advertisement(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
@@ -350,6 +671,49 @@ class ExternalRealtimeInputsTest(unittest.TestCase):
         self.assertEqual(schema["loads"][0]["dev_type"], "ACLoad")
         self.assertEqual(result["loads"]["ACLoad:load_ac_1"], 66.0)
         self.assertEqual(service.curves["weather"][0]["wind_speed_mps"], 11.0)
+
+    def test_http_accepts_multiple_points_and_series_payloads(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        server = make_http_server(("127.0.0.1", 0), service, role="simulator")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            path = f"/api/external/realtime-inputs?model_id={service.model_id}"
+            points_result = self._request_json(
+                base + path,
+                payload={
+                    "start_time": "00:00:00",
+                    "point_count": 2,
+                    "point_interval_minutes": 1,
+                    "points": [
+                        {"target_index": 0, "wind_speed_mps": 20},
+                        {"target_index": 1, "wind_speed_mps": 21},
+                    ]
+                },
+                method="POST",
+            )
+            series_result = self._request_json(
+                base + path,
+                payload={
+                    "start_time": "00:00:00",
+                    "point_count": 3,
+                    "point_interval_seconds": 60,
+                    "series": {
+                        "loads": {"ACLoad:load_ac_1": [80, 81, 82]},
+                    }
+                },
+                method="POST",
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        self.assertEqual(points_result["update_mode"], "points")
+        self.assertEqual(points_result["updated_indices"], [0, 1])
+        self.assertEqual(series_result["update_mode"], "series")
+        self.assertEqual(service.curves["loads"]["load_ac_1"][2]["p_kw"], 82.0)
 
     def test_http_validation_error_includes_model_metadata_and_does_not_apply(self):
         workspace, service = self._make_service()

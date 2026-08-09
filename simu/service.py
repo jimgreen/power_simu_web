@@ -4940,6 +4940,38 @@ class PolarMicrogridSimulator:
             raise ValueError(f"{field} 必须是有限数值")
         return float(number)
 
+    @staticmethod
+    def _external_load_lookup(
+        catalog: Sequence[Mapping[str, str]],
+    ) -> Tuple[Dict[str, Mapping[str, str]], Dict[str, List[str]]]:
+        by_key = {str(item["key"]): item for item in catalog}
+        by_name: Dict[str, List[str]] = {}
+        for item in catalog:
+            by_name.setdefault(str(item["dev_name"]), []).append(str(item["key"]))
+        return by_key, by_name
+
+    @staticmethod
+    def _resolve_external_load_key(
+        raw_key: Any,
+        by_key: Mapping[str, Mapping[str, str]],
+        by_name: Mapping[str, Sequence[str]],
+    ) -> str:
+        key = str(raw_key or "").strip()
+        if not key:
+            raise ValueError("负荷输入缺少设备名称")
+        if key in by_key:
+            return key
+        if ":" in key:
+            raise ValueError(f"负荷 {key} 在当前模型中不存在")
+        matches = list(by_name.get(key, []))
+        if not matches:
+            raise ValueError(f"负荷 {key} 在当前模型中不存在")
+        if len(matches) > 1:
+            raise ValueError(
+                f"负荷名称 {key} 不唯一，请使用 ACLoad:{key} 或 DCLoad:{key}"
+            )
+        return matches[0]
+
     def _normalize_external_realtime_weather(self, payload: Mapping[str, Any]) -> Dict[str, float]:
         raw_weather = payload.get("weather", {})
         if raw_weather in (None, ""):
@@ -4971,29 +5003,12 @@ class PolarMicrogridSimulator:
         payload: Mapping[str, Any],
         catalog: Sequence[Mapping[str, str]],
     ) -> Dict[str, float]:
-        by_key = {str(item["key"]): item for item in catalog}
-        by_name: Dict[str, List[str]] = {}
-        for item in catalog:
-            by_name.setdefault(str(item["dev_name"]), []).append(str(item["key"]))
+        by_key, by_name = self._external_load_lookup(catalog)
 
         values: Dict[str, float] = {}
 
         def resolve_key(raw_key: Any) -> str:
-            key = str(raw_key or "").strip()
-            if not key:
-                raise ValueError("负荷输入缺少设备名称")
-            if key in by_key:
-                return key
-            if ":" in key:
-                raise ValueError(f"负荷 {key} 在当前模型中不存在")
-            matches = by_name.get(key, [])
-            if not matches:
-                raise ValueError(f"负荷 {key} 在当前模型中不存在")
-            if len(matches) > 1:
-                raise ValueError(
-                    f"负荷名称 {key} 不唯一，请使用 ACLoad:{key} 或 DCLoad:{key}"
-                )
-            return matches[0]
+            return self._resolve_external_load_key(raw_key, by_key, by_name)
 
         def add(raw_key: Any, raw_value: Any) -> None:
             key = resolve_key(raw_key)
@@ -5048,7 +5063,10 @@ class PolarMicrogridSimulator:
         add_items(payload.get("load_values"), "load_values")
         return values
 
-    def _external_realtime_target_locked(self) -> Dict[str, Any]:
+    def _external_realtime_target_locked(
+        self,
+        target_absolute_minute: Optional[float] = None,
+    ) -> Dict[str, Any]:
         mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
         default_step = _simulation_mode_curve_step_minutes(mode)
         step_minutes = float(_to_float(self.curves.get("time_step_minutes"), default_step) or default_step)
@@ -5075,7 +5093,10 @@ class PolarMicrogridSimulator:
                 default=0,
             )
         point_count = point_count or weather_count or load_point_count or default_point_count
-        target_absolute_minute = float(_to_float(self.clock.absolute_minute, 0.0) or 0.0)
+        if target_absolute_minute is None:
+            target_absolute_minute = float(_to_float(self.clock.absolute_minute, 0.0) or 0.0)
+        else:
+            target_absolute_minute = float(target_absolute_minute)
         if weather_count >= point_count:
             target_index = self._curve_point_index(target_absolute_minute, period_minutes) - 1
         else:
@@ -5096,6 +5117,570 @@ class PolarMicrogridSimulator:
             "point_minute": point_minute,
         }
 
+    def _external_realtime_target_for_time_locked(
+        self,
+        absolute_minute: float,
+        field_label: str,
+    ) -> Dict[str, Any]:
+        target = self._external_realtime_target_locked(absolute_minute)
+        period_minutes = float(target["period_minutes"])
+        point_delta = abs(
+            (absolute_minute % period_minutes)
+            - float(target["point_minute"])
+        )
+        point_delta = min(point_delta, max(0.0, period_minutes - point_delta))
+        tolerance = max(1e-9, float(target["time_step_minutes"]) * 1e-9)
+        if point_delta > tolerance:
+            raise ValueError(f"{field_label} 必须落在当前曲线采样网格上")
+        return target
+
+    @staticmethod
+    def _external_integer_field(
+        payload: Mapping[str, Any],
+        keys: Sequence[str],
+        *,
+        required: bool,
+        default: Optional[int] = None,
+        minimum: int = 0,
+    ) -> Optional[int]:
+        selected_key = next((key for key in keys if key in payload), "")
+        if not selected_key:
+            if required:
+                raise ValueError(f"{keys[0]} 为必填整数参数")
+            return default
+        raw_value = payload.get(selected_key)
+        if isinstance(raw_value, bool):
+            raise ValueError(f"{selected_key} 必须是整数")
+        number = _to_float(raw_value, None)
+        if number is None or not math.isfinite(number) or int(number) != number:
+            raise ValueError(f"{selected_key} 必须是整数")
+        value = int(number)
+        if value < minimum:
+            raise ValueError(f"{selected_key} 不能小于 {minimum}")
+        return value
+
+    def _external_input_contract_locked(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        expected_count: int,
+        batch: bool,
+    ) -> Dict[str, Any]:
+        has_count = "point_count" in payload
+        interval_keys = [
+            key
+            for key in (
+                "point_interval_seconds",
+                "point_interval_minutes",
+                "data_interval_seconds",
+                "data_interval_minutes",
+            )
+            if key in payload
+        ]
+        if batch and not has_count:
+            raise ValueError("point_count 为批量输入必填参数")
+        if batch and not interval_keys:
+            raise ValueError("point_interval_seconds 或 point_interval_minutes 为批量输入必填参数")
+        if not batch and (has_count or interval_keys) and not (has_count and interval_keys):
+            raise ValueError("单点输入显式定义数据契约时，point_count 和数据点间隔必须同时提供")
+        if len(interval_keys) > 1:
+            raise ValueError("数据点间隔只能使用 seconds 或 minutes 中的一种")
+
+        point_count = self._external_integer_field(
+            payload,
+            ("point_count",),
+            required=batch or has_count,
+            default=1,
+            minimum=1,
+        )
+        if point_count != expected_count:
+            raise ValueError(
+                f"point_count={point_count} 与实际数据点数量 {expected_count} 不一致"
+            )
+
+        curve_target = self._external_realtime_target_locked()
+        curve_interval_minutes = float(curve_target["time_step_minutes"])
+        if interval_keys:
+            interval_key = interval_keys[0]
+            interval_value = self._external_finite_number(interval_key, payload.get(interval_key))
+            if interval_value <= 0:
+                raise ValueError(f"{interval_key} 必须大于 0")
+            interval_minutes = interval_value / 60.0 if interval_key.endswith("seconds") else interval_value
+        else:
+            interval_minutes = curve_interval_minutes
+        interval_ratio = interval_minutes / curve_interval_minutes
+        curve_step_count = int(round(interval_ratio))
+        tolerance = max(1e-9, abs(interval_ratio) * 1e-9)
+        if curve_step_count < 1 or abs(interval_ratio - curve_step_count) > tolerance:
+            raise ValueError(
+                "数据点间隔必须是当前曲线采样间隔 "
+                f"{format_number(curve_interval_minutes * 60.0)} 秒的正整数倍"
+            )
+        return {
+            "point_count": int(point_count or 0),
+            "point_interval_minutes": interval_minutes,
+            "point_interval_seconds": interval_minutes * 60.0,
+            "curve_step_count": curve_step_count,
+        }
+
+    def _external_target_from_index_locked(
+        self,
+        target_index: int,
+        *,
+        reference_absolute_minute: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        current = self._external_realtime_target_locked()
+        point_count = int(current["point_count"])
+        if target_index < 0 or target_index >= point_count:
+            raise ValueError(
+                f"目标曲线索引 {target_index} 越界，允许范围为 0..{point_count - 1}"
+            )
+        point_minute = target_index * float(current["time_step_minutes"])
+        weather = self.curves.get("weather", [])
+        if (
+            isinstance(weather, Sequence)
+            and not isinstance(weather, (str, bytes))
+            and len(weather) > target_index
+            and isinstance(weather[target_index], Mapping)
+        ):
+            point_minute = float(
+                _to_float(weather[target_index].get("minute"), point_minute) or point_minute
+            )
+        reference = (
+            float(reference_absolute_minute)
+            if reference_absolute_minute is not None
+            else float(current["absolute_minute"])
+        )
+        period_minutes = float(current["period_minutes"])
+        cycle_start = math.floor(reference / period_minutes) * period_minutes
+        absolute_minute = cycle_start + point_minute
+        return {
+            **current,
+            "absolute_minute": absolute_minute,
+            "simu_time": minute_to_time(absolute_minute),
+            "index": target_index,
+            "point_number": target_index + 1,
+            "point_minute": point_minute,
+        }
+
+    def _external_batch_start_target_locked(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        index_keys = ("start_index", "start_point_index")
+        point_number_keys = ("start_point_number",)
+        has_index = any(key in payload for key in index_keys)
+        has_point_number = any(key in payload for key in point_number_keys)
+        has_time = any(
+            key in payload
+            for key in (
+                "start_absolute_minute",
+                "start_minute",
+                "start_absolute_second",
+                "start_second",
+                "start_time",
+            )
+        )
+        if not has_time:
+            raise ValueError(
+                "批量输入必须提供起始点时刻 start_time、start_absolute_minute 或 start_absolute_second"
+            )
+
+        index_target: Optional[Dict[str, Any]] = None
+        if has_index:
+            target_index = self._external_integer_field(
+                payload,
+                index_keys,
+                required=True,
+                minimum=0,
+            )
+            index_target = self._external_target_from_index_locked(int(target_index or 0))
+        elif has_point_number:
+            point_number = self._external_integer_field(
+                payload,
+                point_number_keys,
+                required=True,
+                minimum=1,
+            )
+            index_target = self._external_target_from_index_locked(int(point_number or 1) - 1)
+
+        time_target: Optional[Dict[str, Any]] = None
+        if has_time:
+            absolute_minute = self._external_history_absolute_minute(payload, "start")
+            time_target = self._external_realtime_target_for_time_locked(
+                absolute_minute,
+                "起始点时刻",
+            )
+
+        if index_target is not None and time_target is not None:
+            if int(index_target["index"]) != int(time_target["index"]):
+                raise ValueError("起始点索引与起始点时刻不一致")
+        return time_target or self._external_realtime_target_locked()
+
+    def _external_point_target_locked(
+        self,
+        payload: Mapping[str, Any],
+        expected_index: int,
+        expected_absolute_minute: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        has_index = any(key in payload for key in ("target_index", "index"))
+        has_point_number = any(key in payload for key in ("target_point_number", "point_number"))
+        has_time = any(
+            key in payload
+            for key in (
+                "target_absolute_minute",
+                "target_minute",
+                "target_absolute_second",
+                "target_second",
+                "target_time",
+            )
+        )
+        target = (
+            self._external_realtime_target_locked(expected_absolute_minute)
+            if expected_absolute_minute is not None
+            else self._external_target_from_index_locked(expected_index)
+        )
+        explicit_targets: List[Dict[str, Any]] = []
+        if has_index:
+            index = self._external_integer_field(
+                payload,
+                ("target_index", "index"),
+                required=True,
+                minimum=0,
+            )
+            explicit_targets.append(self._external_target_from_index_locked(int(index or 0)))
+        if has_point_number:
+            point_number = self._external_integer_field(
+                payload,
+                ("target_point_number", "point_number"),
+                required=True,
+                minimum=1,
+            )
+            explicit_targets.append(
+                self._external_target_from_index_locked(int(point_number or 1) - 1)
+            )
+        if has_time:
+            absolute_minute = self._external_history_absolute_minute(payload, "target")
+            if (
+                expected_absolute_minute is not None
+                and abs(absolute_minute - expected_absolute_minute) > 1e-9
+            ):
+                raise ValueError(
+                    "多点输入目标时刻不连续："
+                    f"期望 {format_number(expected_absolute_minute)} 分钟，"
+                    f"收到 {format_number(absolute_minute)} 分钟"
+                )
+            explicit_targets.append(
+                self._external_realtime_target_for_time_locked(
+                    absolute_minute,
+                    "目标时刻",
+                )
+            )
+        for explicit in explicit_targets:
+            if int(explicit["index"]) != expected_index:
+                raise ValueError(
+                    f"多点输入目标不连续：期望索引 {expected_index}，收到 {explicit['index']}"
+                )
+            target = explicit
+        return target
+
+    def _normalize_external_realtime_request_locked(
+        self,
+        payload: Mapping[str, Any],
+        catalog: Sequence[Mapping[str, str]],
+    ) -> Dict[str, Any]:
+        has_points = "points" in payload
+        has_series = "series" in payload
+        if has_points and has_series:
+            raise ValueError("points 和 series 不能在同一请求中同时出现")
+
+        current_target = self._external_realtime_target_locked()
+        curve_point_count = int(current_target["point_count"])
+        operations: List[Dict[str, Any]] = []
+        updated_weather_fields: set[str] = set()
+        updated_loads: set[str] = set()
+
+        if has_points:
+            raw_points = payload.get("points")
+            if not isinstance(raw_points, Sequence) or isinstance(raw_points, (str, bytes)):
+                raise ValueError("points 必须是非空数组")
+            points = list(raw_points)
+            if not points:
+                raise ValueError("points 必须是非空数组")
+            if any(not isinstance(item, Mapping) for item in points):
+                raise ValueError("points 数组项必须是对象")
+            contract = self._external_input_contract_locked(
+                payload,
+                expected_count=len(points),
+                batch=True,
+            )
+            start_target = self._external_batch_start_target_locked(payload)
+            start_index = int(start_target["index"])
+            curve_step_count = int(contract["curve_step_count"])
+            final_index = start_index + (len(points) - 1) * curve_step_count
+            if final_index >= curve_point_count:
+                raise ValueError(
+                    "起始点、point_count 和数据点间隔共同确定的结束时刻超出曲线范围"
+                )
+            field_signature: Optional[Tuple[Tuple[str, ...], Tuple[str, ...]]] = None
+            for offset, raw_item in enumerate(points):
+                item = raw_item if isinstance(raw_item, Mapping) else {}
+                expected_index = start_index + offset * curve_step_count
+                expected_absolute_minute = (
+                    float(start_target["absolute_minute"])
+                    + offset * float(contract["point_interval_minutes"])
+                )
+                target = self._external_point_target_locked(
+                    item,
+                    expected_index,
+                    expected_absolute_minute,
+                )
+                weather_values = self._normalize_external_realtime_weather(item)
+                load_values = self._normalize_external_realtime_loads(item, catalog)
+                if not weather_values and not load_values:
+                    raise ValueError(f"points[{offset}] 至少提供一个天气量或负荷值")
+                signature = (
+                    tuple(sorted(weather_values)),
+                    tuple(sorted(load_values)),
+                )
+                if field_signature is None:
+                    field_signature = signature
+                elif signature != field_signature:
+                    raise ValueError("points 中每个数据点的天气字段和负荷字段必须完整且一致")
+                updated_weather_fields.update(weather_values)
+                updated_loads.update(load_values)
+                operations.append(
+                    {
+                        "target": target,
+                        "weather": weather_values,
+                        "loads": load_values,
+                    }
+                )
+            return {
+                "update_mode": "points",
+                "contract": contract,
+                "start_target": start_target,
+                "operations": operations,
+                "updated_weather_fields": sorted(updated_weather_fields),
+                "updated_loads": sorted(updated_loads),
+            }
+
+        if has_series:
+            raw_series = payload.get("series")
+            if not isinstance(raw_series, Mapping):
+                raise ValueError("series 必须是对象")
+            nested_weather = raw_series.get("weather", {})
+            nested_loads = raw_series.get("loads", {})
+            if nested_weather in (None, ""):
+                nested_weather = {}
+            if nested_loads in (None, ""):
+                nested_loads = {}
+            if not isinstance(nested_weather, Mapping):
+                raise ValueError("series.weather 必须是对象")
+            if not isinstance(nested_loads, Mapping):
+                raise ValueError("series.loads 必须是对象")
+
+            raw_weather_series: Dict[str, Any] = dict(nested_weather)
+            raw_load_series: Dict[str, Any] = dict(nested_loads)
+            for raw_key, raw_values in raw_series.items():
+                key = str(raw_key)
+                if key in {"weather", "loads"}:
+                    continue
+                if key in EXTERNAL_REALTIME_WEATHER_FIELD_SET:
+                    if key in raw_weather_series:
+                        raise ValueError(f"series 中重复定义 {key}")
+                    raw_weather_series[key] = raw_values
+                elif key.startswith("load:"):
+                    load_key = key.replace("load:", "", 1)
+                    if load_key in raw_load_series:
+                        raise ValueError(f"series 中重复定义负荷 {load_key}")
+                    raw_load_series[load_key] = raw_values
+                else:
+                    raise ValueError(f"series 包含不支持的曲线字段: {key}")
+            if not raw_weather_series and not raw_load_series:
+                raise ValueError("series 至少提供一条天气或负荷曲线")
+
+            declared_count = self._external_integer_field(
+                payload,
+                ("point_count",),
+                required=True,
+                minimum=1,
+            )
+            contract = self._external_input_contract_locked(
+                payload,
+                expected_count=int(declared_count or 0),
+                batch=True,
+            )
+            point_count = int(contract["point_count"])
+            start_target = self._external_batch_start_target_locked(payload)
+            start_index = int(start_target["index"])
+            curve_step_count = int(contract["curve_step_count"])
+            final_index = start_index + (point_count - 1) * curve_step_count
+            if final_index >= curve_point_count:
+                raise ValueError(
+                    "起始点、point_count 和数据点间隔共同确定的结束时刻超出曲线范围"
+                )
+
+            weather_series: Dict[str, List[float]] = {}
+            for raw_key, raw_values in raw_weather_series.items():
+                key = str(raw_key)
+                if key not in EXTERNAL_REALTIME_WEATHER_FIELD_SET:
+                    raise ValueError(f"series.weather 包含不支持的字段: {key}")
+                if not isinstance(raw_values, Sequence) or isinstance(raw_values, (str, bytes)):
+                    raise ValueError(f"series.{key} 必须是数组")
+                values = list(raw_values)
+                if len(values) != point_count:
+                    raise ValueError(
+                        f"series.{key} 长度 {len(values)} 与 point_count={point_count} 不一致"
+                    )
+                weather_series[key] = [
+                    self._normalize_external_realtime_weather({key: value})[key]
+                    for value in values
+                ]
+                updated_weather_fields.add(key)
+
+            by_key, by_name = self._external_load_lookup(catalog)
+            load_series: Dict[str, List[float]] = {}
+            for raw_key, raw_values in raw_load_series.items():
+                canonical_key = self._resolve_external_load_key(raw_key, by_key, by_name)
+                if canonical_key in load_series:
+                    raise ValueError(f"series 中重复定义负荷 {canonical_key}")
+                if not isinstance(raw_values, Sequence) or isinstance(raw_values, (str, bytes)):
+                    raise ValueError(f"series 负荷 {canonical_key} 必须是数组")
+                values = list(raw_values)
+                if len(values) != point_count:
+                    raise ValueError(
+                        f"series 负荷 {canonical_key} 长度 {len(values)} 与 point_count={point_count} 不一致"
+                    )
+                normalized_values: List[float] = []
+                for value in values:
+                    number = self._external_finite_number(canonical_key, value)
+                    if number < 0:
+                        raise ValueError(f"{canonical_key} 不能小于 0")
+                    normalized_values.append(number)
+                load_series[canonical_key] = normalized_values
+                updated_loads.add(canonical_key)
+
+            for offset in range(point_count):
+                absolute_minute = (
+                    float(start_target["absolute_minute"])
+                    + offset * float(contract["point_interval_minutes"])
+                )
+                target = self._external_realtime_target_for_time_locked(
+                    absolute_minute,
+                    f"第 {offset + 1} 个数据点时刻",
+                )
+                expected_index = start_index + offset * curve_step_count
+                if int(target["index"]) != expected_index:
+                    raise ValueError(
+                        f"第 {offset + 1} 个数据点时刻未映射到预期曲线索引 {expected_index}"
+                    )
+                operations.append(
+                    {
+                        "target": target,
+                        "weather": {
+                            key: values[offset]
+                            for key, values in weather_series.items()
+                        },
+                        "loads": {
+                            key: values[offset]
+                            for key, values in load_series.items()
+                        },
+                    }
+                )
+            return {
+                "update_mode": "series",
+                "contract": contract,
+                "start_target": start_target,
+                "operations": operations,
+                "updated_weather_fields": sorted(updated_weather_fields),
+                "updated_loads": sorted(updated_loads),
+            }
+
+        contract = self._external_input_contract_locked(
+            payload,
+            expected_count=1,
+            batch=False,
+        )
+        weather_values = self._normalize_external_realtime_weather(payload)
+        load_values = self._normalize_external_realtime_loads(payload, catalog)
+        if not weather_values and not load_values:
+            raise ValueError("至少提供一个天气量或负荷值")
+
+        target = current_target
+        has_start_time = any(
+            key in payload
+            for key in (
+                "start_absolute_minute",
+                "start_minute",
+                "start_absolute_second",
+                "start_second",
+                "start_time",
+            )
+        )
+        if has_start_time:
+            start_minute = self._external_history_absolute_minute(payload, "start")
+            target = self._external_realtime_target_for_time_locked(
+                start_minute,
+                "起始点时刻",
+            )
+        if any(
+            key in payload
+            for key in (
+                "target_absolute_minute",
+                "target_minute",
+                "target_absolute_second",
+                "target_second",
+                "target_time",
+            )
+        ):
+            target_minute = self._external_history_absolute_minute(payload, "target")
+            explicit_target = self._external_realtime_target_for_time_locked(
+                target_minute,
+                "目标时刻",
+            )
+            if has_start_time and int(explicit_target["index"]) != int(target["index"]):
+                raise ValueError("单点输入的起始时刻与目标时刻不一致")
+            target = explicit_target
+        elif any(key in payload for key in ("target_index", "index")):
+            target_index = self._external_integer_field(
+                payload,
+                ("target_index", "index"),
+                required=True,
+                minimum=0,
+            )
+            explicit_target = self._external_target_from_index_locked(int(target_index or 0))
+            if has_start_time and int(explicit_target["index"]) != int(target["index"]):
+                raise ValueError("单点输入的起始时刻与目标索引不一致")
+            target = explicit_target
+        elif any(key in payload for key in ("target_point_number", "point_number")):
+            point_number = self._external_integer_field(
+                payload,
+                ("target_point_number", "point_number"),
+                required=True,
+                minimum=1,
+            )
+            explicit_target = self._external_target_from_index_locked(int(point_number or 1) - 1)
+            if has_start_time and int(explicit_target["index"]) != int(target["index"]):
+                raise ValueError("单点输入的起始时刻与目标点号不一致")
+            target = explicit_target
+        target = self._external_point_target_locked(
+            payload,
+            int(target["index"]),
+            float(target["absolute_minute"]),
+        )
+        return {
+            "update_mode": "single_point",
+            "contract": contract,
+            "start_target": target,
+            "operations": [
+                {
+                    "target": target,
+                    "weather": weather_values,
+                    "loads": load_values,
+                }
+            ],
+            "updated_weather_fields": sorted(weather_values),
+            "updated_loads": sorted(load_values),
+        }
+
     def external_realtime_input_schema(self) -> Dict[str, Any]:
         with self.lock, self.curves_lock:
             target = self._external_realtime_target_locked()
@@ -5110,7 +5695,39 @@ class PolarMicrogridSimulator:
                 ],
                 "loads": load_catalog,
                 "target_point": target,
+                "curve_contract": {
+                    "point_count": target["point_count"],
+                    "point_interval_minutes": target["time_step_minutes"],
+                    "point_interval_seconds": float(target["time_step_minutes"]) * 60.0,
+                    "start_fields": [
+                        "start_time",
+                        "start_absolute_minute",
+                        "start_absolute_second",
+                    ],
+                    "start_time_is_authoritative": True,
+                    "batch_requires_start_time_count_and_interval": True,
+                    "interval_must_be_curve_step_multiple": True,
+                    "series_lengths_must_equal_point_count": True,
+                    "point_fields_must_be_complete_and_consistent": True,
+                },
+                "request_formats": {
+                    "single_point": {
+                        "description": "未提供时标时写入下一未求解点；也可显式提供起始时刻",
+                        "legacy_without_contract_supported": True,
+                    },
+                    "multiple_points": {
+                        "container": "points",
+                        "required": ["start_time", "point_count", "point_interval_seconds|minutes"],
+                    },
+                    "series": {
+                        "container": "series",
+                        "required": ["start_time", "point_count", "point_interval_seconds|minutes"],
+                    },
+                },
                 "example_request": {
+                    "start_time": target["simu_time"],
+                    "point_count": 1,
+                    "point_interval_seconds": float(target["time_step_minutes"]) * 60.0,
                     "weather": {
                         "wind_speed_mps": 9.6,
                         "solar_irradiance_w_m2": 650,
@@ -5132,15 +5749,11 @@ class PolarMicrogridSimulator:
         with self._step_lock:
             with self.lock, self.curves_lock:
                 catalog = self._external_load_catalog()
-                weather_values = self._normalize_external_realtime_weather(payload)
-                load_values = self._normalize_external_realtime_loads(payload, catalog)
-                if not weather_values and not load_values:
-                    raise ValueError("至少提供一个天气量或负荷值")
-
-                target = self._external_realtime_target_locked()
-                point_count = int(target["point_count"])
-                step_minutes = float(target["time_step_minutes"])
-                target_index = int(target["index"])
+                normalized = self._normalize_external_realtime_request_locked(payload, catalog)
+                operations = list(normalized["operations"])
+                current_target = self._external_realtime_target_locked()
+                point_count = int(current_target["point_count"])
+                step_minutes = float(current_target["time_step_minutes"])
                 weather_points = self.curves.get("weather")
                 if not isinstance(weather_points, list):
                     weather_points = []
@@ -5148,18 +5761,13 @@ class PolarMicrogridSimulator:
                 while len(weather_points) < point_count:
                     index = len(weather_points)
                     weather_points.append({"minute": index * step_minutes, **DEFAULT_WEATHER})
-                if not isinstance(weather_points[target_index], dict):
-                    weather_points[target_index] = {"minute": target_index * step_minutes, **DEFAULT_WEATHER}
-                weather_points[target_index].setdefault("minute", target_index * step_minutes)
-                for key, value in weather_values.items():
-                    weather_points[target_index][key] = value
 
                 catalog_by_name: Dict[str, List[str]] = {}
                 for item in catalog:
                     catalog_by_name.setdefault(item["dev_name"], []).append(item["key"])
-                applied_loads: Dict[str, float] = {}
                 configured_loads = self.curves.get("loads", {})
-                for canonical_key, value in load_values.items():
+                curve_key_by_load: Dict[str, str] = {}
+                for canonical_key in normalized["updated_loads"]:
                     _dev_type, dev_name = canonical_key.split(":", 1)
                     curve_key = canonical_key
                     if isinstance(configured_loads, Mapping):
@@ -5167,52 +5775,126 @@ class PolarMicrogridSimulator:
                             curve_key = canonical_key
                         elif dev_name in configured_loads and len(catalog_by_name.get(dev_name, [])) == 1:
                             curve_key = dev_name
-                    loads = self.curves.get("loads")
-                    if not isinstance(loads, dict):
-                        loads = {}
-                        self.curves["loads"] = loads
+                    curve_key_by_load[canonical_key] = curve_key
+
+                load_points_by_key: Dict[str, List[Dict[str, Any]]] = {}
+                loads = self.curves.get("loads")
+                if not isinstance(loads, dict):
+                    loads = {}
+                    self.curves["loads"] = loads
+                for canonical_key, curve_key in curve_key_by_load.items():
                     points = loads.get(curve_key)
                     if not isinstance(points, list):
                         points = []
                         loads[curve_key] = points
                     while len(points) < point_count:
                         index = len(points)
-                        points.append({"minute": index * step_minutes, "p_kw": DEFAULT_WEATHER["load_kw"]})
-                    if not isinstance(points[target_index], dict):
-                        points[target_index] = {
+                        points.append(
+                            {
+                                "minute": index * step_minutes,
+                                "p_kw": DEFAULT_WEATHER["load_kw"],
+                            }
+                        )
+                    load_points_by_key[canonical_key] = points
+
+                point_results: List[Dict[str, Any]] = []
+                updated_indices: set[int] = set()
+                for operation in operations:
+                    target = operation["target"]
+                    target_index = int(target["index"])
+                    updated_indices.add(target_index)
+                    if not isinstance(weather_points[target_index], dict):
+                        weather_points[target_index] = {
                             "minute": target_index * step_minutes,
-                            "p_kw": points[target_index],
+                            **DEFAULT_WEATHER,
                         }
-                    points[target_index].setdefault("minute", target_index * step_minutes)
-                    points[target_index]["p_kw"] = value
-                    applied_loads[canonical_key] = value
+                    weather_points[target_index].setdefault(
+                        "minute",
+                        target_index * step_minutes,
+                    )
+                    for key, value in operation["weather"].items():
+                        weather_points[target_index][key] = value
+                    for canonical_key, value in operation["loads"].items():
+                        points = load_points_by_key[canonical_key]
+                        if not isinstance(points[target_index], dict):
+                            points[target_index] = {
+                                "minute": target_index * step_minutes,
+                                "p_kw": points[target_index],
+                            }
+                        points[target_index].setdefault(
+                            "minute",
+                            target_index * step_minutes,
+                        )
+                        points[target_index]["p_kw"] = value
+                    if normalized["update_mode"] != "series":
+                        point_results.append(
+                            {
+                                "target_absolute_minute": target["absolute_minute"],
+                                "target_simu_time": target["simu_time"],
+                                "target_index": target_index,
+                                "target_point_number": target["point_number"],
+                                "weather": operation["weather"],
+                                "loads": operation["loads"],
+                            }
+                        )
 
                 _write_json(self.curves_file, self.curves)
                 self._curve_revision += 1
+                sorted_indices = sorted(updated_indices)
+                start_target = normalized["start_target"]
+                end_target = operations[-1]["target"]
+                applies_on_next_power_flow = int(current_target["index"]) in updated_indices
                 self._append_runtime_log(
                     "外部实时输入",
                     "weather / load curves",
-                    "已写入下一潮流点",
+                    "已按时标写入曲线",
                     [
-                        f"目标累计分钟 {format_number(target['absolute_minute'])}，仿真时刻 {target['simu_time']}，曲线点 {target['point_number']}",
-                        "天气 " + ("，".join(f"{key}={format_number(value)}" for key, value in weather_values.items()) or "未更新"),
-                        "负荷 " + ("，".join(f"{key}={format_number(value)} kW" for key, value in applied_loads.items()) or "未更新"),
-                        "下一轮常规潮流计算将读取该边界；接口未主动推进仿真时钟",
+                        f"输入模式 {normalized['update_mode']}，起始时刻 {start_target['simu_time']}，结束时刻 {end_target['simu_time']}",
+                        f"数据点 {normalized['contract']['point_count']} 个，间隔 {format_number(normalized['contract']['point_interval_seconds'])} 秒，更新曲线点 {len(sorted_indices)} 个",
+                        "天气字段 " + ("，".join(normalized["updated_weather_fields"]) or "未更新"),
+                        "负荷字段 " + ("，".join(normalized["updated_loads"]) or "未更新"),
+                        "已更新运行曲线；潮流后台将在对应仿真时刻读取，接口未主动推进仿真时钟",
                     ],
                     level="ok",
-                    simu_time=str(target["simu_time"]),
+                    simu_time=str(start_target["simu_time"]),
                 )
+                legacy_operation = operations[0]
+                legacy_target = legacy_operation["target"]
                 return {
                     **self._external_response_metadata(),
-                    "target_absolute_minute": target["absolute_minute"],
-                    "target_simu_time": target["simu_time"],
-                    "target_index": target_index,
-                    "target_point_number": target["point_number"],
-                    "target_curve_minute": target["point_minute"],
-                    "weather": weather_values,
-                    "loads": applied_loads,
+                    "update_mode": normalized["update_mode"],
+                    "input_point_count": normalized["contract"]["point_count"],
+                    "point_interval_minutes": normalized["contract"]["point_interval_minutes"],
+                    "point_interval_seconds": normalized["contract"]["point_interval_seconds"],
+                    "curve_step_count": normalized["contract"]["curve_step_count"],
+                    "start_absolute_minute": start_target["absolute_minute"],
+                    "start_simu_time": start_target["simu_time"],
+                    "start_index": start_target["index"],
+                    "end_absolute_minute": end_target["absolute_minute"],
+                    "end_simu_time": end_target["simu_time"],
+                    "end_index": end_target["index"],
+                    "target_absolute_minute": legacy_target["absolute_minute"],
+                    "target_simu_time": legacy_target["simu_time"],
+                    "target_index": legacy_target["index"],
+                    "target_point_number": legacy_target["point_number"],
+                    "target_curve_minute": legacy_target["point_minute"],
+                    "weather": legacy_operation["weather"] if normalized["update_mode"] == "single_point" else {},
+                    "loads": legacy_operation["loads"] if normalized["update_mode"] == "single_point" else {},
+                    "point_results": point_results,
+                    "updated_indices": sorted_indices,
+                    "updated_point_numbers": [index + 1 for index in sorted_indices],
+                    "updated_point_count": len(sorted_indices),
+                    "updated_weather_fields": normalized["updated_weather_fields"],
+                    "updated_loads": normalized["updated_loads"],
+                    "covers_full_curve": bool(
+                        int(start_target["index"]) == 0
+                        and int(normalized["contract"]["curve_step_count"]) == 1
+                        and int(normalized["contract"]["point_count"]) == point_count
+                    ),
                     "curve_revision": self._curve_revision,
-                    "applies_on_next_power_flow": True,
+                    "applies_on_next_power_flow": applies_on_next_power_flow,
+                    "applies_to_power_flow_backend": True,
+                    "next_power_flow_target": current_target,
                     "curve_boundary": self.curve_boundary(),
                 }
 

@@ -84,8 +84,13 @@ POST /api/external/realtime-inputs?model_id=秦岭站
 Content-Type: application/json
 ```
 
+单点输入：
+
 ```json
 {
+  "start_time": "00:10:00",
+  "point_count": 1,
+  "point_interval_seconds": 60,
   "weather": {
     "wind_speed_mps": 9.6,
     "solar_irradiance_w_m2": 650,
@@ -100,29 +105,64 @@ Content-Type: application/json
 }
 ```
 
-天气量也可以直接放在请求顶层。负荷还支持数组形式：
+兼容旧版单点请求：不提供起始时标、点数和间隔时，默认更新当前仿真时钟对应的下一未求解点。新接入程序应显式提供完整数据契约。
+
+多点输入采用 `points` 数组。数组顺序与时刻顺序一致，每个点必须包含相同的天气字段和负荷字段：
 
 ```json
 {
-  "wind_speed_mps": 9.6,
-  "solar_irradiance_w_m2": 650,
-  "load_values": [
-    {"dev_type": "ACLoad", "dev_name": "交流负荷-1", "p_kw": 120},
-    {"dev_type": "DCLoad", "dev_name": "直流负荷-1", "value": 40}
+  "start_time": "00:10:00",
+  "point_count": 2,
+  "point_interval_minutes": 1,
+  "points": [
+    {
+      "weather": {"wind_speed_mps": 9.6, "solar_irradiance_w_m2": 650},
+      "loads": {"ACLoad:交流负荷-1": 120}
+    },
+    {
+      "weather": {"wind_speed_mps": 9.8, "solar_irradiance_w_m2": 670},
+      "loads": {"ACLoad:交流负荷-1": 125}
+    }
   ]
 }
 ```
 
+整段或整条曲线采用 `series`。每条数组长度必须等于 `point_count`：
+
+```json
+{
+  "start_time": "00:00:00",
+  "point_count": 3,
+  "point_interval_seconds": 60,
+  "series": {
+    "weather": {
+      "wind_speed_mps": [8.0, 8.2, 8.5],
+      "solar_irradiance_w_m2": [0, 20, 50]
+    },
+    "loads": {
+      "ACLoad:交流负荷-1": [100, 105, 110],
+      "DCLoad:直流负荷-1": [30, 32, 35]
+    }
+  }
+}
+```
+
+`series` 也支持扁平键，例如 `"wind_speed_mps": [...]` 和 `"load:ACLoad:交流负荷-1": [...]`。负荷单点还支持 `load_values` 数组形式。
+
 处理规则：
 
 - 接口只在模拟台提供，学员台返回 `404`，不会把该请求代理到模拟台。
-- 请求更新 `runtime/curves.json` 中当前仿真时钟对应的下一未求解曲线点，不修改原始 `curves.json`，也不主动推进仿真时钟。
-- 下一轮常规潮流计算会读取新值；如果潮流正在计算，请求会等待该轮完成，再写入随后一轮的目标点，不会使已完成结果因曲线修订而被丢弃。
+- 批量输入必须定义 `start_time`、`start_absolute_minute` 或 `start_absolute_second`。时标是曲线定位的权威依据，后续点时刻按“起始时刻 + 点序号 × 数据点间隔”计算。
+- `start_time` 支持 `HH:MM[:SS]` 和 `天数+HH:MM[:SS]`。起始时刻必须落在当前曲线采样网格上；可选 `start_index` 仅用于一致性校验，不能替代时标。
+- 批量输入必须定义正整数 `point_count`，并定义且只能定义一种间隔：`point_interval_seconds` 或 `point_interval_minutes`。间隔必须是 GET 接口返回的当前曲线采样间隔的正整数倍；每个数据点按计算出的实际时刻定位曲线点。
+- `points` 数组长度必须等于 `point_count`，并且每个点的天气字段、负荷字段集合必须一致。`series` 中每条数组长度也必须等于 `point_count`。
+- 请求按时刻更新 `runtime/curves.json` 中对应曲线点，不修改原始 `curves.json`，也不主动推进仿真时钟。
+- 对应仿真时刻到达后，常规潮流计算会读取新值；如果潮流正在计算，请求会等待该轮完成后再一次性写入，不会使已完成结果因曲线修订而被丢弃。
 - 负荷标准键为 `ACLoad:设备名` 或 `DCLoad:设备名`。裸设备名只有在当前模型内唯一时才接受；同名交流、直流负荷必须使用标准键。
 - 风速、太阳辐射和负荷不能为负数，湿度范围为 `0..100`，气压必须大于 `0`，所有值必须是有限数值。
-- 一帧先完整校验再写入。任一负荷不存在、名称有歧义或数值非法时，整帧返回 `400`，不做部分更新。
+- 一帧先完成时标、间隔、点数、数组长度、字段完整性、设备名称和数值范围校验，再执行一次写入。任一项不合规时，整帧返回 `400`，不做部分更新。
 
-成功响应给出 `target_absolute_minute`、`target_simu_time`、`target_index`、`target_point_number`、`curve_revision` 和 `curve_boundary`；`applies_on_next_power_flow=true` 表示该帧将在下一轮潮流中生效。
+成功响应给出 `update_mode`、`input_point_count`、`point_interval_seconds`、`start_simu_time`、`end_simu_time`、`updated_indices`、`curve_revision` 和 `curve_boundary`。`applies_on_next_power_flow=true` 表示更新范围包含下一未求解点；其他未来时刻的数据会在仿真时钟到达对应时刻时生效。
 
 ## 4. 遥测和遥信名称
 
@@ -330,6 +370,9 @@ $names = Invoke-RestMethod -Uri ($base + $link.external_api.telemetry_names)
 $frame = Invoke-RestMethod -Uri ($base + $link.external_api.telemetry_values)
 
 $inputBody = @{
+  start_time = "00:00:00"
+  point_count = 1
+  point_interval_seconds = 60
   weather = @{
     wind_speed_mps = 9.6
     solar_irradiance_w_m2 = 650

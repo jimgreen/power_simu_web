@@ -8067,7 +8067,17 @@ def _apply_optimization_targets(
             continue
         key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
         current = _number(row.get("planningCurrentKw", row.get("currentKw")))
-        target = _number(result.targets.get(key))
+        optimization_target = _number(result.targets.get(key))
+        target = optimization_target
+        if optimization_target is not None and _is_grid_converter_row(row):
+            # Optimizer targets are positive DC-to-AC. Command rows retain the
+            # P_AC convention until dispatch selects p_ac_set or p_dc_set.
+            row["optimizationSuggestedSystemKw"] = optimization_target
+            target = converter_power_in_ac_terminal_convention(
+                optimization_target,
+                _converter_direction(row),
+                "P_DC",
+            )
         row["optimizationIslandId"] = island_by_device.get(key, "")
         row["optimizationStatus"] = (
             "optimal"

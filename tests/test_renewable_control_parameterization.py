@@ -205,8 +205,8 @@ class RenewableControlParameterizationTest(unittest.TestCase):
 
         first = result.targets[("DCACConverter", "变流器1")]
         second = result.targets[("DCACConverter", "变流器2")]
-        self.assertAlmostEqual(first, -10.0, places=4)
-        self.assertAlmostEqual(second, -20.0, places=4)
+        self.assertAlmostEqual(first, 10.0, places=4)
+        self.assertAlmostEqual(second, 20.0, places=4)
         self.assertAlmostEqual(first / 100.0, second / 200.0, places=6)
 
     def test_parallel_converters_share_ac_to_dc_transfer_by_capacity(self):
@@ -243,8 +243,8 @@ class RenewableControlParameterizationTest(unittest.TestCase):
 
         first = result.targets[("DCACConverter", "变流器1")]
         second = result.targets[("DCACConverter", "变流器2")]
-        self.assertAlmostEqual(first, 10.0, places=4)
-        self.assertAlmostEqual(second, 20.0, places=4)
+        self.assertAlmostEqual(first, -10.0, places=4)
+        self.assertAlmostEqual(second, -20.0, places=4)
         self.assertAlmostEqual(first / 100.0, second / 200.0, places=6)
 
     def test_converter_adjustment_square_term_is_not_configurable(self):

@@ -361,11 +361,11 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
             20.0,
             places=5,
         )
-        # DC source +10 kW requires p_ac_set -10 kW for DC-to-AC transfer.
+        # Converter targets use the system convention: positive is DC-to-AC.
         # The AC-side injection then replaces 10 kW of diesel generation.
         self.assertAlmostEqual(
             result.targets[("DCACConverter", "联络变流器")],
-            -10.0,
+            10.0,
             places=5,
         )
         self.assertAlmostEqual(
@@ -375,7 +375,7 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
         )
         self.assertLess(result.max_balance_residual_kw, 1e-5)
 
-    def test_dcac_type_uses_the_same_p_ac_terminal_direction(self):
+    def test_dcac_type_uses_the_same_positive_dc_to_ac_direction(self):
         topology = ResourceTopology(
             resources={},
             dc_transfer_groups={},
@@ -425,7 +425,7 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
         )
         self.assertAlmostEqual(
             result.targets[("DCACConverter", "DCAC联络变流器")],
-            -10.0,
+            10.0,
             places=5,
         )
         self.assertAlmostEqual(
@@ -434,7 +434,7 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
             places=5,
         )
 
-    def test_negative_p_ac_dc_to_ac_target_is_not_clamped_to_zero(self):
+    def test_positive_dc_to_ac_target_is_not_clamped_to_zero(self):
         topology = ResourceTopology(
             resources={},
             dc_transfer_groups={},
@@ -464,7 +464,7 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
         self.assertTrue(result.all_success, result.islands)
         self.assertAlmostEqual(
             result.targets[("DCACConverter", "双向联络变流器")],
-            -10.0,
+            10.0,
             places=5,
         )
         self.assertAlmostEqual(
@@ -603,6 +603,610 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
         # remaining island surplus while preserving zero adjustment balance.
         self.assertAlmostEqual(
             result.targets[("ACGenerator", "交流储能")], 50.0, places=4
+        )
+
+    def test_storage_balancing_removes_unforced_same_side_circulation(self):
+        topology = ResourceTopology(resources={}, dc_transfer_groups={})
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[],
+            diesel_rows=[],
+            storage_rows=[
+                storage(
+                    "低SOC跟网储能",
+                    side="AC",
+                    component="AC:1",
+                    current=-40.0,
+                    charge=100.0,
+                    discharge=100.0,
+                    soc=0.30,
+                ),
+                storage(
+                    "高SOC构网储能",
+                    side="AC",
+                    component="AC:1",
+                    current=60.0,
+                    charge=100.0,
+                    discharge=100.0,
+                    role="balance",
+                    soc=0.70,
+                    state_eligible=True,
+                ),
+            ],
+            converter_rows=[],
+            storage_step_ratio=1.0,
+            grid_forming_storage_protection_ratio=0.0,
+        )
+
+        self.assertTrue(result.all_success, result.islands)
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "低SOC跟网储能")],
+            0.0,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "高SOC构网储能")],
+            20.0,
+            places=5,
+        )
+
+    def test_storage_balancing_prioritizes_low_soc_for_net_charging(self):
+        topology = ResourceTopology(resources={}, dc_transfer_groups={})
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[],
+            diesel_rows=[],
+            storage_rows=[
+                storage(
+                    "低SOC储能",
+                    side="DC",
+                    component="DC:1",
+                    current=-10.0,
+                    charge=100.0,
+                    discharge=100.0,
+                    soc=0.30,
+                ),
+                storage(
+                    "高SOC储能",
+                    side="DC",
+                    component="DC:1",
+                    current=-30.0,
+                    charge=100.0,
+                    discharge=100.0,
+                    soc=0.70,
+                ),
+            ],
+            converter_rows=[],
+            storage_step_ratio=1.0,
+        )
+
+        self.assertTrue(result.all_success, result.islands)
+        self.assertAlmostEqual(
+            result.targets[("DCGenerator", "低SOC储能")],
+            -40.0,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            result.targets[("DCGenerator", "高SOC储能")],
+            0.0,
+            places=5,
+        )
+
+    def test_storage_balancing_uses_converter_for_island_wide_soc_priority(self):
+        topology = ResourceTopology(
+            resources={},
+            dc_transfer_groups={},
+            converter_component_ids={
+                ("DCACConverter", "联络变流器"): ("AC:1", "DC:1")
+            },
+        )
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[],
+            diesel_rows=[],
+            storage_rows=[
+                storage(
+                    "交流低SOC储能",
+                    side="AC",
+                    component="AC:1",
+                    current=-40.0,
+                    charge=100.0,
+                    discharge=100.0,
+                    soc=0.30,
+                ),
+                storage(
+                    "直流高SOC储能",
+                    side="DC",
+                    component="DC:1",
+                    current=60.0,
+                    charge=100.0,
+                    discharge=100.0,
+                    soc=0.70,
+                ),
+            ],
+            converter_rows=[
+                converter(
+                    "联络变流器",
+                    current=0.0,
+                    minimum=-100.0,
+                    maximum=100.0,
+                )
+            ],
+            storage_step_ratio=1.0,
+        )
+
+        self.assertTrue(result.all_success, result.islands)
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "交流低SOC储能")],
+            0.0,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            result.targets[("DCGenerator", "直流高SOC储能")],
+            20.0,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            result.targets[("DCACConverter", "联络变流器")],
+            -40.0,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            result.islands[0].balance_delta_by_side["AC"],
+            0.0,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            result.islands[0].balance_delta_by_side["DC"],
+            0.0,
+            places=5,
+        )
+
+    def test_storage_balancing_preserves_forced_soc_directions(self):
+        topology = ResourceTopology(resources={}, dc_transfer_groups={})
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[],
+            diesel_rows=[],
+            storage_rows=[
+                storage(
+                    "强制充电储能",
+                    side="AC",
+                    component="AC:1",
+                    current=0.0,
+                    charge=50.0,
+                    discharge=50.0,
+                    soc=0.05,
+                    soc_min=0.20,
+                    soc_max=0.90,
+                ),
+                storage(
+                    "强制放电储能",
+                    side="AC",
+                    component="AC:1",
+                    current=0.0,
+                    charge=50.0,
+                    discharge=50.0,
+                    soc=1.00,
+                    soc_min=0.20,
+                    soc_max=0.90,
+                ),
+            ],
+            converter_rows=[],
+            storage_step_ratio=0.1,
+            soc_deadband=0.05,
+            grid_forming_storage_protection_ratio=0.0,
+        )
+
+        self.assertTrue(result.all_success, result.islands)
+        self.assertLessEqual(
+            result.targets[("ACGenerator", "强制充电储能")],
+            -5.0 + 1e-6,
+        )
+        self.assertGreaterEqual(
+            result.targets[("ACGenerator", "强制放电储能")],
+            5.0 - 1e-6,
+        )
+
+    def test_storage_balancing_adjusts_parallel_converters_by_capacity(self):
+        topology = ResourceTopology(
+            resources={},
+            dc_transfer_groups={},
+            converter_component_ids={
+                ("DCACConverter", "联络变流器一"): ("AC:1", "DC:1"),
+                ("DCACConverter", "联络变流器二"): ("AC:1", "DC:1"),
+            },
+        )
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[],
+            diesel_rows=[],
+            storage_rows=[
+                storage(
+                    "交流低SOC储能",
+                    side="AC",
+                    component="AC:1",
+                    current=-40.0,
+                    charge=100.0,
+                    discharge=100.0,
+                    soc=0.30,
+                ),
+                storage(
+                    "直流高SOC储能",
+                    side="DC",
+                    component="DC:1",
+                    current=60.0,
+                    charge=100.0,
+                    discharge=100.0,
+                    soc=0.70,
+                ),
+            ],
+            converter_rows=[
+                converter(
+                    "联络变流器一",
+                    current=0.0,
+                    minimum=-100.0,
+                    maximum=100.0,
+                    capacity=25.0,
+                ),
+                converter(
+                    "联络变流器二",
+                    current=0.0,
+                    minimum=-100.0,
+                    maximum=100.0,
+                    capacity=75.0,
+                ),
+            ],
+            storage_step_ratio=1.0,
+        )
+
+        self.assertTrue(result.all_success, result.islands)
+        self.assertAlmostEqual(
+            result.targets[("DCACConverter", "联络变流器一")],
+            -10.0,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            result.targets[("DCACConverter", "联络变流器二")],
+            -30.0,
+            places=5,
+        )
+
+    def test_storage_balancing_reduces_circulation_within_step_limits(self):
+        topology = ResourceTopology(resources={}, dc_transfer_groups={})
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[],
+            diesel_rows=[],
+            storage_rows=[
+                storage(
+                    "低SOC储能",
+                    side="AC",
+                    component="AC:1",
+                    current=-40.0,
+                    charge=100.0,
+                    discharge=100.0,
+                    soc=0.30,
+                ),
+                storage(
+                    "高SOC储能",
+                    side="AC",
+                    component="AC:1",
+                    current=60.0,
+                    charge=100.0,
+                    discharge=100.0,
+                    soc=0.70,
+                ),
+            ],
+            converter_rows=[],
+            storage_step_ratio=0.1,
+        )
+
+        self.assertTrue(result.all_success, result.islands)
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "低SOC储能")],
+            -30.0,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "高SOC储能")],
+            50.0,
+            places=5,
+        )
+
+    def test_storage_balancing_allocates_three_unit_charging_by_soc(self):
+        topology = ResourceTopology(resources={}, dc_transfer_groups={})
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[],
+            diesel_rows=[],
+            storage_rows=[
+                storage(
+                    "低SOC储能",
+                    side="AC",
+                    component="AC:1",
+                    current=-10.0,
+                    charge=25.0,
+                    discharge=25.0,
+                    soc=0.20,
+                ),
+                storage(
+                    "中SOC储能",
+                    side="AC",
+                    component="AC:1",
+                    current=-20.0,
+                    charge=25.0,
+                    discharge=25.0,
+                    soc=0.50,
+                ),
+                storage(
+                    "高SOC储能",
+                    side="AC",
+                    component="AC:1",
+                    current=-10.0,
+                    charge=25.0,
+                    discharge=25.0,
+                    soc=0.80,
+                ),
+            ],
+            converter_rows=[],
+            storage_step_ratio=1.0,
+        )
+
+        self.assertTrue(result.all_success, result.islands)
+        self.assertAlmostEqual(result.targets[("ACGenerator", "低SOC储能")], -25.0)
+        self.assertAlmostEqual(result.targets[("ACGenerator", "中SOC储能")], -15.0)
+        self.assertAlmostEqual(result.targets[("ACGenerator", "高SOC储能")], 0.0)
+
+    def test_storage_balancing_allocates_three_unit_discharge_by_soc(self):
+        topology = ResourceTopology(resources={}, dc_transfer_groups={})
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[],
+            diesel_rows=[],
+            storage_rows=[
+                storage(
+                    "低SOC储能",
+                    side="DC",
+                    component="DC:1",
+                    current=10.0,
+                    charge=25.0,
+                    discharge=25.0,
+                    soc=0.20,
+                ),
+                storage(
+                    "中SOC储能",
+                    side="DC",
+                    component="DC:1",
+                    current=20.0,
+                    charge=25.0,
+                    discharge=25.0,
+                    soc=0.50,
+                ),
+                storage(
+                    "高SOC储能",
+                    side="DC",
+                    component="DC:1",
+                    current=10.0,
+                    charge=25.0,
+                    discharge=25.0,
+                    soc=0.80,
+                ),
+            ],
+            converter_rows=[],
+            storage_step_ratio=1.0,
+        )
+
+        self.assertTrue(result.all_success, result.islands)
+        self.assertAlmostEqual(result.targets[("DCGenerator", "高SOC储能")], 25.0)
+        self.assertAlmostEqual(result.targets[("DCGenerator", "中SOC储能")], 15.0)
+        self.assertAlmostEqual(result.targets[("DCGenerator", "低SOC储能")], 0.0)
+
+    def test_storage_balancing_uses_available_converter_capacity_partially(self):
+        topology = ResourceTopology(
+            resources={},
+            dc_transfer_groups={},
+            converter_component_ids={
+                ("DCACConverter", "受限联络变流器"): ("AC:1", "DC:1")
+            },
+        )
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[],
+            diesel_rows=[],
+            storage_rows=[
+                storage(
+                    "交流低SOC储能",
+                    side="AC",
+                    component="AC:1",
+                    current=-40.0,
+                    charge=100.0,
+                    discharge=100.0,
+                    soc=0.30,
+                ),
+                storage(
+                    "直流高SOC储能",
+                    side="DC",
+                    component="DC:1",
+                    current=60.0,
+                    charge=100.0,
+                    discharge=100.0,
+                    soc=0.70,
+                ),
+            ],
+            converter_rows=[
+                converter(
+                    "受限联络变流器",
+                    current=0.0,
+                    minimum=-20.0,
+                    maximum=20.0,
+                )
+            ],
+            storage_step_ratio=1.0,
+        )
+
+        self.assertTrue(result.all_success, result.islands)
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "交流低SOC储能")],
+            -20.0,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            result.targets[("DCGenerator", "直流高SOC储能")],
+            40.0,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            result.targets[("DCACConverter", "受限联络变流器")],
+            -20.0,
+            places=5,
+        )
+
+    def test_storage_balancing_keeps_topology_islands_independent(self):
+        topology = ResourceTopology(resources={}, dc_transfer_groups={})
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[],
+            diesel_rows=[],
+            storage_rows=[
+                storage(
+                    "一岛低SOC储能",
+                    side="AC",
+                    component="AC:1",
+                    current=-40.0,
+                    charge=100.0,
+                    discharge=100.0,
+                    soc=0.30,
+                ),
+                storage(
+                    "一岛高SOC储能",
+                    side="AC",
+                    component="AC:1",
+                    current=60.0,
+                    charge=100.0,
+                    discharge=100.0,
+                    soc=0.70,
+                ),
+                storage(
+                    "二岛低SOC储能",
+                    side="AC",
+                    component="AC:2",
+                    current=-60.0,
+                    charge=100.0,
+                    discharge=100.0,
+                    soc=0.30,
+                ),
+                storage(
+                    "二岛高SOC储能",
+                    side="AC",
+                    component="AC:2",
+                    current=40.0,
+                    charge=100.0,
+                    discharge=100.0,
+                    soc=0.70,
+                ),
+            ],
+            converter_rows=[],
+            storage_step_ratio=1.0,
+        )
+
+        self.assertTrue(result.all_success, result.islands)
+        self.assertEqual(len(result.islands), 2)
+        self.assertAlmostEqual(result.targets[("ACGenerator", "一岛低SOC储能")], 0.0)
+        self.assertAlmostEqual(result.targets[("ACGenerator", "一岛高SOC储能")], 20.0)
+        self.assertAlmostEqual(result.targets[("ACGenerator", "二岛低SOC储能")], -20.0)
+        self.assertAlmostEqual(result.targets[("ACGenerator", "二岛高SOC储能")], 0.0)
+
+    def test_storage_balancing_places_unknown_soc_after_known_soc(self):
+        topology = ResourceTopology(resources={}, dc_transfer_groups={})
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[],
+            diesel_rows=[],
+            storage_rows=[
+                storage(
+                    "已知低SOC储能",
+                    side="AC",
+                    component="AC:1",
+                    current=-5.0,
+                    charge=100.0,
+                    discharge=100.0,
+                    soc=0.30,
+                ),
+                storage(
+                    "SOC缺失储能",
+                    side="AC",
+                    component="AC:1",
+                    current=-15.0,
+                    charge=100.0,
+                    discharge=100.0,
+                    soc=None,
+                ),
+            ],
+            converter_rows=[],
+            storage_step_ratio=1.0,
+        )
+
+        self.assertTrue(result.all_success, result.islands)
+        self.assertAlmostEqual(result.targets[("ACGenerator", "已知低SOC储能")], -20.0)
+        self.assertAlmostEqual(result.targets[("ACGenerator", "SOC缺失储能")], 0.0)
+
+    def test_storage_balancing_separates_forced_action_from_flexible_priority(self):
+        topology = ResourceTopology(resources={}, dc_transfer_groups={})
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[],
+            diesel_rows=[],
+            storage_rows=[
+                storage(
+                    "强制充电储能",
+                    side="AC",
+                    component="AC:1",
+                    current=0.0,
+                    charge=50.0,
+                    discharge=50.0,
+                    soc=0.05,
+                    soc_min=0.20,
+                    soc_max=0.90,
+                ),
+                storage(
+                    "普通低SOC储能",
+                    side="AC",
+                    component="AC:1",
+                    current=0.0,
+                    charge=50.0,
+                    discharge=50.0,
+                    soc=0.30,
+                ),
+                storage(
+                    "普通高SOC储能",
+                    side="AC",
+                    component="AC:1",
+                    current=0.0,
+                    charge=50.0,
+                    discharge=50.0,
+                    soc=0.80,
+                ),
+            ],
+            converter_rows=[],
+            storage_step_ratio=0.1,
+            soc_deadband=0.05,
+            grid_forming_storage_protection_ratio=0.0,
+        )
+
+        self.assertTrue(result.all_success, result.islands)
+        self.assertLessEqual(
+            result.targets[("ACGenerator", "强制充电储能")],
+            -5.0 + 1e-6,
+        )
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "普通低SOC储能")],
+            0.0,
+            places=5,
+        )
+        self.assertGreaterEqual(
+            result.targets[("ACGenerator", "普通高SOC储能")],
+            5.0 - 1e-6,
         )
 
     def test_quadratic_curtailment_term_shares_curtailment_between_units(self):
@@ -1259,7 +1863,7 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
             result.targets[("DCGenerator", "直流风机")], 20.0, places=5
         )
         self.assertAlmostEqual(
-            result.targets[("DCACConverter", "联络变流器")], -10.0, places=5
+            result.targets[("DCACConverter", "联络变流器")], 10.0, places=5
         )
         self.assertAlmostEqual(
             result.targets[("ACGenerator", "柴发")], 70.0, places=5
@@ -1471,9 +2075,9 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
         self.assertGreaterEqual(
             result.targets[("DCGenerator", "严重过充储能")], 5.0 - 1e-6
         )
-        self.assertLessEqual(
+        self.assertGreaterEqual(
             result.targets[("DCACConverter", "联络变流器")],
-            -55.0 + 1e-6,
+            55.0 - 1e-6,
         )
         self.assertAlmostEqual(
             result.targets[("ACGenerator", "柴发")],
@@ -1712,7 +2316,7 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
         island = result.islands[0]
         self.assertAlmostEqual(
             result.targets[("DCACConverter", "联络变流器")],
-            5.0,
+            -5.0,
             places=5,
         )
         self.assertAlmostEqual(island.balance_delta_by_side["DC"], 0.0, places=5)

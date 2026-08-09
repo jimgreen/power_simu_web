@@ -101,6 +101,11 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
                 rows[name]["optimizationSuggestedKw"],
                 places=5,
             )
+        self.assertAlmostEqual(
+            rows["grid-converter-1"]["optimizationSuggestedSystemKw"],
+            -rows["grid-converter-1"]["optimizationSuggestedKw"],
+            places=5,
+        )
 
     def test_strategy_keeps_storage_on_the_safe_side_outside_soc_deadband(self):
         for soc, relation in ((0.10, "charge"), (0.96, "not_charge")):

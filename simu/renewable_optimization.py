@@ -13,6 +13,7 @@ from .control_config import default_integer, default_number
 from .device_roles import (
     AC_TO_DC,
     converter_balance_coefficients,
+    converter_power_in_dc_to_ac_convention,
 )
 from .resource_topology import DeviceKey, ResourceTopology
 
@@ -89,6 +90,8 @@ class _Variable:
     safety_upper_kw: Optional[float] = None
     requires_safety_correction: bool = False
     normal_step_kw: float = 0.0
+    storage_soc: Optional[float] = None
+    storage_forced_direction: str = ""
 
 
 @dataclass(frozen=True)
@@ -336,14 +339,17 @@ def _storage_variable(
     soc = _number(row.get("soc"))
     soc_min = _number(row.get("socMin"))
     soc_max = _number(row.get("socMax"))
+    forced_direction = ""
     if soc is not None and soc_min is not None and soc < soc_min - soc_deadband - EPSILON:
         forced_charge_kw = min(step_kw, max(0.0, -safety_lower))
         if forced_charge_kw > EPSILON:
             safety_upper = min(safety_upper, -forced_charge_kw)
+            forced_direction = "charge"
     elif soc is not None and soc_max is not None and soc > soc_max + soc_deadband + EPSILON:
         forced_discharge_kw = min(step_kw, max(0.0, safety_upper))
         if forced_discharge_kw > EPSILON:
             safety_lower = max(safety_lower, forced_discharge_kw)
+            forced_direction = "discharge"
     if safety_lower > safety_upper + EPSILON:
         return None
 
@@ -386,7 +392,165 @@ def _storage_variable(
             or current > safety_upper + EPSILON
         ),
         normal_step_kw=normal_step_kw,
+        storage_soc=soc,
+        storage_forced_direction=forced_direction,
     )
+
+
+def _rebalance_storage_targets_by_soc(
+    values: np.ndarray,
+    variables: Sequence[_Variable],
+    lower: np.ndarray,
+    upper: np.ndarray,
+    balance_matrix: np.ndarray,
+    parallel_matrix: np.ndarray,
+    tolerance_kw: float,
+    optimization_ftol: float,
+    optimization_max_iterations: int,
+) -> np.ndarray:
+    """Redistribute island storage by SOC and let grid converters rebalance sides."""
+
+    original = np.asarray(values, dtype=float).copy()
+    tolerance = max(EPSILON, float(tolerance_kw))
+    storage_indexes = [
+        index for index, item in enumerate(variables) if item.kind == "storage"
+    ]
+    if len(storage_indexes) < 2:
+        return original
+    forced_indexes = [
+        index
+        for index in storage_indexes
+        if variables[index].storage_forced_direction
+    ]
+    flexible_indexes = [
+        index
+        for index in storage_indexes
+        if not variables[index].storage_forced_direction
+    ]
+    if not flexible_indexes:
+        return original
+
+    def priority(index: int, *, charging: bool) -> Tuple[Any, ...]:
+        item = variables[index]
+        soc = item.storage_soc
+        if soc is None or not math.isfinite(soc):
+            return (1, 0.0, item.key)
+        return (0, soc if charging else -soc, item.key)
+
+    storage_total_kw = float(np.sum(original[storage_indexes]))
+    forced_total_kw = float(np.sum(original[forced_indexes]))
+    flexible_total_kw = storage_total_kw - forced_total_kw
+    desired = original.copy()
+    candidate = {
+        index: min(max(0.0, float(lower[index])), float(upper[index]))
+        for index in flexible_indexes
+    }
+    remaining_kw = flexible_total_kw - sum(candidate.values())
+
+    if remaining_kw > tolerance:
+        for index in sorted(
+            flexible_indexes,
+            key=lambda item_index: priority(item_index, charging=False),
+        ):
+            headroom_kw = max(0.0, float(upper[index]) - candidate[index])
+            allocation_kw = min(remaining_kw, headroom_kw)
+            candidate[index] += allocation_kw
+            remaining_kw -= allocation_kw
+            if remaining_kw <= tolerance:
+                break
+    elif remaining_kw < -tolerance:
+        charge_request_kw = -remaining_kw
+        for index in sorted(
+            flexible_indexes,
+            key=lambda item_index: priority(item_index, charging=True),
+        ):
+            headroom_kw = max(0.0, candidate[index] - float(lower[index]))
+            allocation_kw = min(charge_request_kw, headroom_kw)
+            candidate[index] -= allocation_kw
+            charge_request_kw -= allocation_kw
+            if charge_request_kw <= tolerance:
+                break
+        remaining_kw = -charge_request_kw
+
+    if abs(remaining_kw) > tolerance:
+        return original
+    for index, target_kw in candidate.items():
+        desired[index] = target_kw
+    if np.max(np.abs(desired[storage_indexes] - original[storage_indexes])) <= tolerance:
+        return original
+
+    projection_lower = original.copy()
+    projection_upper = original.copy()
+    adjustable_indexes = set(flexible_indexes)
+    adjustable_indexes.update(
+        index for index, item in enumerate(variables) if item.kind == "converter"
+    )
+    for index in adjustable_indexes:
+        projection_lower[index] = lower[index]
+        projection_upper[index] = upper[index]
+
+    storage_total_row = np.zeros(len(variables), dtype=float)
+    storage_total_row[storage_indexes] = 1.0
+    equality_rows = [balance_matrix, storage_total_row.reshape(1, -1)]
+    equality_rhs = [balance_matrix @ original, np.array([storage_total_kw])]
+    if parallel_matrix.shape[0]:
+        equality_rows.append(parallel_matrix)
+        equality_rhs.append(np.zeros(parallel_matrix.shape[0], dtype=float))
+    full_matrix = np.vstack(equality_rows)
+    full_rhs = np.concatenate(equality_rhs)
+    constraint_matrix, constraint_rhs = _independent_equality_rows(
+        full_matrix,
+        full_rhs,
+    )
+
+    flexible_array = np.array(flexible_indexes, dtype=int)
+
+    def objective(projected: np.ndarray) -> float:
+        delta = projected[flexible_array] - desired[flexible_array]
+        return float(np.dot(delta, delta))
+
+    def gradient(projected: np.ndarray) -> np.ndarray:
+        result = np.zeros(len(variables), dtype=float)
+        result[flexible_array] = 2.0 * (
+            projected[flexible_array] - desired[flexible_array]
+        )
+        return result
+
+    constraints = ()
+    if constraint_matrix.shape[0]:
+        constraints = (
+            {
+                "type": "eq",
+                "fun": lambda projected: constraint_matrix @ projected
+                - constraint_rhs,
+                "jac": lambda _projected: constraint_matrix,
+            },
+        )
+    projection = minimize(
+        objective,
+        original,
+        jac=gradient,
+        bounds=list(zip(projection_lower.tolist(), projection_upper.tolist())),
+        constraints=constraints,
+        method="SLSQP",
+        options={
+            "ftol": optimization_ftol,
+            "maxiter": optimization_max_iterations,
+            "disp": False,
+        },
+    )
+    projected = np.asarray(getattr(projection, "x", original), dtype=float)
+    if projected.shape != original.shape or not np.all(np.isfinite(projected)):
+        return original
+    projected = np.clip(projected, projection_lower, projection_upper)
+    equality_error = (
+        float(np.max(np.abs(constraint_matrix @ projected - constraint_rhs)))
+        if constraint_matrix.shape[0]
+        else 0.0
+    )
+    if not projection.success or equality_error > tolerance:
+        return original
+    return projected
 
 
 def _converter_variable(
@@ -394,30 +558,58 @@ def _converter_variable(
     topology: ResourceTopology,
     converter_step_ratio: float,
 ) -> Optional[_Variable]:
+    """Build a converter variable using positive DC-to-AC system power."""
+
     del converter_step_ratio
     if not row.get("online") or not row.get("commandable"):
         return None
     key = _device_key(row)
     endpoints = topology.converter_component_ids.get(key)
-    current = _number(row.get("currentKw"))
-    minimum = _number(row.get("signedMinTargetKw"))
-    maximum = _number(row.get("signedMaxTargetKw"))
+    current_p_ac = _number(row.get("currentKw"))
+    minimum_p_ac = _number(row.get("signedMinTargetKw"))
+    maximum_p_ac = _number(row.get("signedMaxTargetKw"))
+    if (
+        endpoints is None
+        or current_p_ac is None
+        or minimum_p_ac is None
+        or maximum_p_ac is None
+        or minimum_p_ac > maximum_p_ac
+        or not all(key)
+    ):
+        return None
     try:
-        ac_balance_coefficient, dc_balance_coefficient = (
+        # Runtime rows use the P_AC terminal convention. The optimizer exposes
+        # one system convention instead: positive DC-to-AC, negative AC-to-DC.
+        p_ac_ac_coefficient, p_ac_dc_coefficient = (
             converter_balance_coefficients(AC_TO_DC)
+        )
+        current = converter_power_in_dc_to_ac_convention(
+            current_p_ac,
+            AC_TO_DC,
+            "P_AC",
+        )
+        converted_limits = (
+            converter_power_in_dc_to_ac_convention(
+                minimum_p_ac,
+                AC_TO_DC,
+                "P_AC",
+            ),
+            converter_power_in_dc_to_ac_convention(
+                maximum_p_ac,
+                AC_TO_DC,
+                "P_AC",
+            ),
         )
     except ValueError:
         return None
+    minimum = min(converted_limits)
+    maximum = max(converted_limits)
+    ac_balance_coefficient = -p_ac_ac_coefficient
+    dc_balance_coefficient = -p_ac_dc_coefficient
     if (
-        endpoints is None
-        or current is None
-        or minimum is None
-        or maximum is None
-        or minimum > maximum
-        or abs(abs(ac_balance_coefficient) - 1.0) > EPSILON
+        abs(abs(ac_balance_coefficient) - 1.0) > EPSILON
         or abs(abs(dc_balance_coefficient) - 1.0) > EPSILON
         or abs(ac_balance_coefficient + dc_balance_coefficient) > EPSILON
-        or not all(key)
     ):
         return None
     lower = minimum
@@ -976,6 +1168,19 @@ def _solve_island(
             iterations=int(getattr(solved, "nit", 0) or 0) if solved is not None else 0,
             solve_seconds=time.perf_counter() - started,
         )
+
+    values = _rebalance_storage_targets_by_soc(
+        values,
+        ordered,
+        active_lower,
+        active_upper,
+        matrix,
+        parallel_matrix,
+        max(balance_tolerance_kw, bound_tolerance_kw),
+        optimization_ftol,
+        optimization_max_iterations,
+    )
+    solved_balance_delta = balance_delta(values)
 
     values[np.abs(values) < OPTIMIZATION_ZERO_SNAP_TOLERANCE_KW] = 0.0
     solved_balance_delta[

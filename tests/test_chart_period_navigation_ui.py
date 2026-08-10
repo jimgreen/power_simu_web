@@ -85,6 +85,9 @@ process.stdout.write(JSON.stringify({
   fullCycle,
   currentPoints: diagramTrendWindowPoints(points, "hour", 605, 0).map((point) => point.minute),
   previousPoints: diagramTrendWindowPoints(points, "hour", 605, -1).map((point) => point.minute),
+  currentValues: diagramTrendWindowPoints(points, "hour", 605, 0).map((point) => point.value),
+  previousValues: diagramTrendWindowPoints(points, "hour", 605, -1).map((point) => point.value),
+  currentDataCount: traceWindowDataPointCount(diagramTrendWindowPoints(points, "hour", 605, 0)),
   currentNavigation: diagramTrendNavigationState(current),
   previousNavigation: diagramTrendNavigationState(previous),
   fullCycleNavigation: diagramTrendNavigationState(fullCycle),
@@ -183,8 +186,11 @@ process.stdout.write(JSON.stringify({
                 self.assertEqual(payload["current"]["startMinute"], 600)
                 self.assertEqual(payload["current"]["minWindowOffset"], -1)
                 self.assertEqual(payload["previous"]["startMinute"], 540)
-                self.assertEqual(payload["currentPoints"], [605])
-                self.assertEqual(payload["previousPoints"], [595])
+                self.assertEqual(payload["currentPoints"], [600, 605])
+                self.assertEqual(payload["previousPoints"], [540, 595])
+                self.assertEqual(payload["currentValues"], [1, 2])
+                self.assertEqual(payload["previousValues"], [1, 1])
+                self.assertEqual(payload["currentDataCount"], 1)
                 self.assertTrue(payload["currentNavigation"]["visible"])
                 self.assertTrue(payload["previousNavigation"]["previousDisabled"])
                 self.assertFalse(payload["previousNavigation"]["nextDisabled"])
@@ -197,6 +203,20 @@ process.stdout.write(JSON.stringify({
         self.assertIn("function curveDisplayModeDurationMinutes", self.trainee_js)
         self.assertGreaterEqual(self.simulator_js.count("simulationModeDurationMinutes()"), 3)
         self.assertGreaterEqual(self.trainee_js.count("curveDisplayModeDurationMinutes()"), 4)
+
+    def test_all_partial_window_curves_add_a_left_boundary_anchor(self):
+        expectations = (
+            ("simulator", self.simulator_js, 4),
+            ("trainee", self.trainee_js, 5),
+        )
+        for app, script, minimum_uses in expectations:
+            with self.subTest(app=app):
+                self.assertIn("function traceWindowPointsWithBoundaryAnchors", script)
+                self.assertIn("__boundaryAnchor", script)
+                self.assertGreaterEqual(
+                    script.count("traceWindowPointsWithBoundaryAnchors("),
+                    minimum_uses,
+                )
 
     def test_navigation_controls_have_compact_stable_styles(self):
         for app, styles in (("simulator", self.simulator_css), ("trainee", self.trainee_css)):

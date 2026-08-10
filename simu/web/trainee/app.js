@@ -2390,6 +2390,43 @@ function sanitizeDiagramSvg(svgText) {
 }
 
 const DIAGRAM_TREND_WINDOWS = Object.freeze({ hour: 60, day: 24 * 60 });
+
+function traceWindowBoundaryPoint(point, minute) {
+  const boundary = { ...point, minute, __boundaryAnchor: true };
+  ["time", "sim_time", "simu_time"].forEach((field) => {
+    if (Object.prototype.hasOwnProperty.call(boundary, field)) boundary[field] = "";
+  });
+  return boundary;
+}
+
+function traceWindowPointsWithBoundaryAnchors(points, range = {}, options = {}) {
+  const startMinute = Number(range.startMinute);
+  const defaultEndMinute = Number(range.endMinute);
+  const requestedEndMinute = Number(options.endMinute);
+  const endMinute = Number.isFinite(requestedEndMinute) ? requestedEndMinute : defaultEndMinute;
+  if (!Number.isFinite(startMinute) || !Number.isFinite(endMinute) || endMinute < startMinute) return [];
+  const includeEnd = options.includeEnd !== false;
+  const source = (Array.isArray(points) ? points : [])
+    .filter((point) => Number.isFinite(Number(point?.minute)))
+    .slice()
+    .sort((left, right) => Number(left.minute) - Number(right.minute));
+  const visible = source.filter((point) => {
+    const minute = Number(point.minute);
+    return minute >= startMinute && (includeEnd ? minute <= endMinute : minute < endMinute);
+  });
+  if (!visible.length) return [];
+  const firstMinute = Number(visible[0].minute);
+  if (firstMinute > startMinute + 1e-9) {
+    const previous = [...source].reverse().find((point) => Number(point.minute) < startMinute);
+    visible.unshift(traceWindowBoundaryPoint(previous || visible[0], startMinute));
+  }
+  return visible;
+}
+
+function traceWindowDataPointCount(points) {
+  return (Array.isArray(points) ? points : []).filter((point) => !point?.__boundaryAnchor).length;
+}
+
 const DIAGRAM_DISPLAY_PREFERENCES_KEY = "trainee.svgDisplayPreferences.v1";
 const DIAGRAM_DISPLAY_PREFERENCES_DEFAULTS = Object.freeze({
   measurements: true,
@@ -2755,11 +2792,10 @@ function diagramTrendWindowPoints(points, period = "hour", endMinute = null, req
     : Number(valid[valid.length - 1].minute);
   const range = rangeOverride || diagramTrendNavigationRange(valid, period, latestMinute, requestedOffset);
   const visibleLatestMinute = range.windowOffset === 0 ? range.latestMinute : range.endMinute;
-  return valid.filter((point) => (
-    Number(point.minute) >= range.startMinute
-    && Number(point.minute) <= visibleLatestMinute
-    && Number(point.minute) < range.endMinute
-  ));
+  return traceWindowPointsWithBoundaryAnchors(valid, range, {
+    endMinute: visibleLatestMinute,
+    includeEnd: visibleLatestMinute < range.endMinute,
+  });
 }
 
 function diagramSampleTrendPoints(points, targetCount = 160) {
@@ -11214,9 +11250,7 @@ function renewableTrendWindowRange() {
 }
 
 function renewableTrendWindowPoints(range = renewableTrendWindowRange()) {
-  return (state.renewableTrendHistory || []).filter((point) => (
-    point.minute >= range.startMinute && point.minute <= range.endMinute
-  ));
+  return traceWindowPointsWithBoundaryAnchors(state.renewableTrendHistory || [], range);
 }
 
 function renewableMetricCount(metrics = {}, keys = []) {
@@ -11645,7 +11679,7 @@ function drawRenewableTrendChart() {
   });
 
   const summary = $("renewableTrendSummary");
-  if (summary) summary.textContent = `${points.length} 点 · 左轴功率 / ${rightAxis.label}`;
+  if (summary) summary.textContent = `${traceWindowDataPointCount(points)} 点 · 左轴功率 / ${rightAxis.label}`;
   if (!points.length || !visibleSeries.length) {
     state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: [] };
     syncChartLegendButtons(chartKey);
@@ -13691,14 +13725,14 @@ function measurementTraceWindowRange() {
 function measurementTraceWindowPoints(range = measurementTraceWindowRange()) {
   const history = state.measurementTraceHistory || [];
   if (!history.length || !state.selectedMeasurementKey) return [];
-  return history
-    .filter((point) => point.minute >= range.startMinute && point.minute <= range.endMinute)
+  const points = history
     .map((point) => {
       const item = point.measurements[state.selectedMeasurementKey];
       if (!item || !Number.isFinite(item.value)) return null;
       return { minute: point.minute, time: point.time, value: item.value, label: item.label };
     })
     .filter(Boolean);
+  return traceWindowPointsWithBoundaryAnchors(points, range);
 }
 
 function formatTraceClockMinute(minute) {
@@ -13869,7 +13903,7 @@ function drawMeasurementTraceChart() {
   ctx.font = `${12 * ratio}px Consolas, Microsoft YaHei, Arial`;
   ctx.fillText(formatNumber(maxValue), 8 * ratio, top + 4 * ratio);
   ctx.fillText(formatNumber(minValue), 8 * ratio, top + plotHeight);
-  $("measurementTraceSummary").textContent = `${points[points.length - 1].label || "测点"} · ${points.length} 点`;
+  $("measurementTraceSummary").textContent = `${points[points.length - 1].label || "测点"} · ${traceWindowDataPointCount(points)} 点`;
 }
 
 function commandTraceRunKey(dev, commandType = "run_stat") {
@@ -13911,8 +13945,7 @@ function commandTraceWindowRange() {
 function commandTraceWindowPoints(range = commandTraceWindowRange()) {
   const history = state.commandTraceHistory || [];
   if (!history.length || !state.selectedCommandTraceKey) return [];
-  return history
-    .filter((point) => point.minute >= range.startMinute && point.minute <= range.endMinute)
+  const points = history
     .map((point) => {
       const item = point.commands?.[state.selectedCommandTraceKey];
       if (!item) return null;
@@ -13928,6 +13961,7 @@ function commandTraceWindowPoints(range = commandTraceWindowRange()) {
       };
     })
     .filter(Boolean);
+  return traceWindowPointsWithBoundaryAnchors(points, range);
 }
 
 function appendCommandTrace(snapshot) {
@@ -14026,7 +14060,7 @@ function drawCommandTraceChart() {
   const visibleSeries = visibleChartSeries(chartKey, seriesDefs);
   const values = points.flatMap((point) => visibleSeries.map((series) => point[series.field]))
     .filter((value) => value !== null && Number.isFinite(value));
-  $("commandTraceSummary").textContent = `${selectedCommandTraceLabel()} · ${points.length} 点`;
+  $("commandTraceSummary").textContent = `${selectedCommandTraceLabel()} · ${traceWindowDataPointCount(points)} 点`;
   if (!state.selectedCommandTraceKey || !points.length || !visibleSeries.length || !values.length) {
     state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: [] };
     syncChartLegendButtons(chartKey);

@@ -309,7 +309,7 @@ process.stdout.write(JSON.stringify({
                 self.assertEqual(payload["points"][0]["scada"], 51)
                 self.assertEqual(payload["points"][0]["real"], 50)
                 self.assertIsNone(payload["points"][2]["real"])
-                self.assertEqual(payload["windowPointCount"], 3)
+                self.assertEqual(payload["windowPointCount"], 4)
                 self.assertEqual(payload["scadaLatest"], 47)
                 self.assertEqual(payload["realLatest"], 48)
                 self.assertTrue(payload["scadaPolyline"])

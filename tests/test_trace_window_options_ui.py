@@ -32,7 +32,7 @@ class TraceWindowOptionsUiTest(unittest.TestCase):
             'alignedTraceWindowRange(\n    history,\n    windowMinutes,\n    fallbackMinute,\n    chartPeriodOffset("measurementTrace"),\n    curveDisplayModeDurationMinutes(),\n  )',
             trainee_js,
         )
-        self.assertIn("point.minute >= range.startMinute && point.minute <= range.endMinute", trainee_js)
+        self.assertIn("traceWindowPointsWithBoundaryAnchors(points, range)", trainee_js)
         self.assertIn("((point.minute - range.startMinute) / range.windowMinutes) * plotWidth", trainee_js)
         self.assertNotIn("const minMinute = points[0].minute", trainee_js)
         self.assertNotIn("maxMinute - minMinute", trainee_js)

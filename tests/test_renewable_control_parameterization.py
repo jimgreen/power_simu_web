@@ -134,6 +134,25 @@ class RenewableControlParameterizationTest(unittest.TestCase):
         self.assertEqual(settings.payload()["storageStepRatePerMinute"], 0.02)
         self.assertEqual(settings.payload()["storageSocCorrectionStepScale"], 0.25)
 
+    def test_soc_correction_step_scale_is_clamped_to_ten_through_one_hundred_percent(self):
+        below = RenewableControlSettings().updated(
+            {"storageSocCorrectionStepScale": 0.0}
+        )
+        above = RenewableControlSettings().updated(
+            {"storageSocCorrectionStepScale": 2.0}
+        )
+
+        self.assertEqual(below.storage_soc_correction_step_scale, 0.10)
+        self.assertEqual(above.storage_soc_correction_step_scale, 1.0)
+        self.assertEqual(
+            below.payload()["storageSocCorrectionStepScale"],
+            0.10,
+        )
+        self.assertEqual(
+            above.payload()["storageSocCorrectionStepScale"],
+            1.0,
+        )
+
     def test_control_plan_uses_live_simulator_timing_for_step_rates(self):
         from tests.test_trainee_renewable_backend_control import renewable_snapshot
 
@@ -162,7 +181,7 @@ class RenewableControlParameterizationTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["renewableEffectiveDecisionStepRatio"], 0.30)
         self.assertAlmostEqual(metrics["storageEffectiveDecisionStepRatio"], 0.20)
 
-    def test_control_plan_uses_twenty_percent_step_for_grid_forming_soc_correction(self):
+    def test_control_plan_scales_grid_forming_soc_correction_with_violation_energy(self):
         from tests.test_trainee_renewable_backend_control import renewable_snapshot
 
         snapshot = renewable_snapshot()
@@ -195,9 +214,59 @@ class RenewableControlParameterizationTest(unittest.TestCase):
             if item.get("technology") == "storage"
         )
 
-        expected_correction_kw = 40.0 * 0.30 * 0.20
+        energy_correction_kw = (
+            (0.951 - 0.90) * 100.0 * 0.95 / (10.0 / 60.0)
+        )
+        expected_step_kw = 40.0 * 0.30
+        expected_correction_kw = min(
+            expected_step_kw,
+            max(expected_step_kw * 0.20, energy_correction_kw),
+        )
         self.assertEqual(row["controlHorizonMinutes"], 10.0)
         self.assertAlmostEqual(row["commandKw"], expected_correction_kw, places=5)
+        self.assertFalse(row["strategyCommand"])
+
+    def test_control_plan_limits_severe_grid_forming_soc_correction_to_one_step(self):
+        from tests.test_trainee_renewable_backend_control import renewable_snapshot
+
+        snapshot = renewable_snapshot()
+        snapshot["system_parameters"] = {
+            "effective_step_minutes": 5.0,
+            "compute_interval_seconds": 1.0,
+        }
+        snapshot["simulation_timing"] = {
+            "simulation_step_seconds": 300.0,
+            "simulation_period_seconds": 1.0,
+        }
+        for measurement in snapshot["measurements"]["scada"]:
+            if measurement["dev_name"] == "storage-1" and measurement["meas_type"] == "SOC":
+                measurement["value"] = 1.6762
+            elif measurement["dev_name"] == "storage-1" and measurement["meas_type"] == "P_GEN":
+                measurement["value"] = 8.85
+
+        plan = calculate_renewable_control_plan(
+            snapshot,
+            RenewableControlSettings(
+                interval_seconds=2.0,
+                storage_step_ratio=0.03,
+                grid_forming_storage_protection_ratio=0.0,
+                soc_deadband=0.05,
+            ),
+        )
+        row = next(
+            item
+            for item in plan["commandRows"]
+            if item.get("technology") == "storage"
+        )
+
+        expected_step_kw = 40.0 * 0.30
+        self.assertEqual(row["controlHorizonMinutes"], 10.0)
+        self.assertAlmostEqual(row["currentKw"], 8.85, places=5)
+        self.assertAlmostEqual(
+            row["commandKw"],
+            8.85 + expected_step_kw,
+            places=5,
+        )
         self.assertFalse(row["strategyCommand"])
 
     def test_power_protection_bands_are_persisted_as_ratios(self):
@@ -549,7 +618,7 @@ class RenewableControlParameterizationTest(unittest.TestCase):
         self.assertIn("构网储能功率保护带(%)", html)
         self.assertIn('id="gridFormingStorageProtectionRatio"', html)
         self.assertIn(
-            'id="storageSocCorrectionStepScale" type="number" min="0" max="100" step="0.1" value="20"',
+            'id="storageSocCorrectionStepScale" type="number" min="10" max="100" step="0.1" value="20"',
             html,
         )
         self.assertIn("柴发功率保护带(%)", html)
@@ -564,6 +633,14 @@ class RenewableControlParameterizationTest(unittest.TestCase):
         self.assertIn('id="optimizationBoundToleranceKw" type="number" min="0" step="0.1" value="0.1"', html)
         self.assertIn('id="optimizationFtol" type="number" min="0" step="0.001" value="0.001"', html)
         self.assertIn('id="optimizationMaxIterations" type="number" min="1" step="1" value="100"', html)
+
+        script = (ROOT / "simu" / "web" / "trainee" / "app.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'storageSocCorrectionStepScale: ratio("storageSocCorrectionStepScale", 20, 10, 100)',
+            script,
+        )
 
 
 if __name__ == "__main__":

@@ -10729,10 +10729,10 @@ function applyRenewableControlState(payload = {}) {
       settings.storageStepRatePerMinute ?? settings.storageStepRatio,
       control.storageStepRatio || 0.03,
     )),
-    storageSocCorrectionStepScale: Math.max(0, toNumber(
+    storageSocCorrectionStepScale: Math.min(1, Math.max(0.1, toNumber(
       settings.storageSocCorrectionStepScale,
       control.storageSocCorrectionStepScale || 0.2,
-    )),
+    ))),
     gridFormingStorageProtectionRatio: Math.max(0, toNumber(
       settings.gridFormingStorageProtectionRatio
         ?? (Number.isFinite(Number(settings.storageSwitchDeadbandKw))
@@ -12167,9 +12167,9 @@ async function updateRenewableSettings() {
       largeStepThresholdKw: state.renewableControl.largeStepThresholdKw,
       renewableStepRatePerMinute: ratio("renewableStepRatio", 3),
       storageStepRatePerMinute: ratio("storageStepRatio", 3),
-      storageSocCorrectionStepScale: ratio("storageSocCorrectionStepScale", 20),
-      gridFormingStorageProtectionRatio: ratio("gridFormingStorageProtectionRatio", 5),
-      dieselPowerProtectionRatio: ratio("dieselPowerProtectionRatio", 3),
+      storageSocCorrectionStepScale: ratio("storageSocCorrectionStepScale", 20, 10, 100),
+      gridFormingStorageProtectionRatio: ratio("gridFormingStorageProtectionRatio", 5, 0, 50),
+      dieselPowerProtectionRatio: ratio("dieselPowerProtectionRatio", 3, 0, 50),
       socDeadband: ratio("socDeadband", 5),
       optimizationRenewableCurtailmentWeight: Math.max(0, toNumber($("optimizationRenewableCurtailmentWeight")?.value, 1)),
       optimizationDieselOutputWeight: Math.max(0, toNumber($("optimizationDieselOutputWeight")?.value, 1)),

@@ -808,7 +808,7 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
             1.0 - 1e-6,
         )
 
-    def test_low_soc_grid_forming_storage_absorbs_renewable_before_curtailment(self):
+    def test_low_soc_grid_forming_storage_absorption_is_limited_to_one_step(self):
         for side in ("AC", "DC"):
             with self.subTest(side=side):
                 component = f"{side}:1"
@@ -851,13 +851,15 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
                 )
 
                 self.assertTrue(result.all_success, result.islands)
-                self.assertGreater(
+                self.assertAlmostEqual(
                     result.targets[(dev_type, f"{side}可用新能源")],
-                    40.0,
+                    5.0,
+                    places=5,
                 )
-                self.assertLess(
+                self.assertAlmostEqual(
                     result.targets[(dev_type, f"{side}低SOC构网储能")],
-                    -40.0,
+                    -5.0,
+                    places=5,
                 )
 
     def test_direct_grid_forming_pass_preserves_ac_to_dc_converter_target(self):
@@ -2125,7 +2127,7 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
             result.targets[("ACGenerator", "柴发")], 70.0, places=5
         )
 
-    def test_soc_below_lower_guard_uses_twenty_percent_of_storage_step(self):
+    def test_soc_below_lower_guard_uses_correction_between_minimum_and_step(self):
         topology = ResourceTopology(resources={}, dc_transfer_groups={})
         result = optimize_topology_islands(
             topology,
@@ -2161,14 +2163,16 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
         )
 
         self.assertTrue(result.all_success, result.islands)
+        storage_target = result.targets[("ACGenerator", "低SOC储能")]
+        self.assertGreaterEqual(storage_target, -5.0 - 1e-6)
+        self.assertLessEqual(storage_target, -1.0 + 1e-6)
         self.assertAlmostEqual(
-            result.targets[("ACGenerator", "低SOC储能")], -1.0, places=5
-        )
-        self.assertAlmostEqual(
-            result.targets[("ACGenerator", "柴发")], 51.0, places=5
+            result.targets[("ACGenerator", "柴发")] + storage_target,
+            50.0,
+            places=5,
         )
 
-    def test_soc_above_upper_guard_uses_twenty_percent_of_storage_step(self):
+    def test_soc_above_upper_guard_uses_correction_between_minimum_and_step(self):
         topology = ResourceTopology(resources={}, dc_transfer_groups={})
         result = optimize_topology_islands(
             topology,
@@ -2204,17 +2208,16 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
         )
 
         self.assertTrue(result.all_success, result.islands)
+        storage_target = result.targets[("ACGenerator", "高SOC储能")]
+        self.assertGreaterEqual(storage_target, 1.0 - 1e-6)
+        self.assertLessEqual(storage_target, 5.0 + 1e-6)
         self.assertAlmostEqual(
-            result.targets[("ACGenerator", "高SOC储能")], 1.0, places=5
-        )
-        self.assertAlmostEqual(
-            result.targets[("ACGenerator", "柴发")]
-            + result.targets[("ACGenerator", "高SOC储能")],
+            result.targets[("ACGenerator", "柴发")] + storage_target,
             50.0,
             places=5,
         )
 
-    def test_grid_forming_high_soc_correction_uses_twenty_percent_of_storage_step(self):
+    def test_grid_forming_high_soc_correction_uses_violation_energy_within_step_bounds(self):
         topology = ResourceTopology(resources={}, dc_transfer_groups={})
         high_soc_storage = storage(
             "高SOC构网储能",
@@ -2245,8 +2248,8 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
                     "直流风机",
                     side="DC",
                     component="DC:1",
-                    current=10.0,
-                    capacity=10.0,
+                    current=20.0,
+                    capacity=20.0,
                 )
             ],
             diesel_rows=[],
@@ -2258,7 +2261,9 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
             grid_forming_storage_protection_ratio=0.0,
         )
 
-        expected_correction_kw = 60.0 * 0.30 * 0.20
+        expected_correction_kw = (
+            (0.951 - 0.90) * 60.0 * 0.95 / (10.0 / 60.0)
+        )
         self.assertTrue(result.all_success, result.islands)
         self.assertAlmostEqual(
             result.targets[("DCGenerator", "高SOC构网储能")],
@@ -2268,11 +2273,11 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
         self.assertAlmostEqual(
             result.targets[("DCGenerator", "直流风机")]
             + result.targets[("DCGenerator", "高SOC构网储能")],
-            10.0,
+            20.0,
             places=5,
         )
 
-    def test_grid_forming_low_soc_correction_uses_twenty_percent_of_storage_step(self):
+    def test_grid_forming_low_soc_correction_scales_with_violation_energy(self):
         topology = ResourceTopology(resources={}, dc_transfer_groups={})
         low_soc_storage = storage(
             "低SOC构网储能",
@@ -2317,7 +2322,13 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
             grid_forming_storage_protection_ratio=0.0,
         )
 
-        expected_correction_kw = -(60.0 * 0.30 * 0.20)
+        energy_correction_kw = (
+            (0.20 - 0.149) * 60.0 / (0.95 * (10.0 / 60.0))
+        )
+        expected_correction_kw = -min(
+            60.0 * 0.30,
+            max(60.0 * 0.30 * 0.20, energy_correction_kw),
+        )
         self.assertTrue(result.all_success, result.islands)
         self.assertAlmostEqual(
             result.targets[("ACGenerator", "低SOC构网储能")],
@@ -2330,6 +2341,237 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
             10.0,
             places=5,
         )
+
+    def test_severe_high_soc_grid_forming_storage_limits_discharge_to_one_step(self):
+        topology = ResourceTopology(resources={}, dc_transfer_groups={})
+        high_soc_storage = storage(
+            "严重过充构网储能",
+            side="AC",
+            component="AC:1",
+            current=8.85,
+            charge=100.0,
+            discharge=100.0,
+            role="balance",
+            soc=1.6762,
+            soc_min=0.20,
+            soc_max=0.95,
+            rated_charge=100.0,
+            rated_discharge=100.0,
+            commandable=False,
+            state_eligible=True,
+        )
+        high_soc_storage.update(
+            capacityKwh=100.0,
+            controlHorizonMinutes=5.0,
+            efficiency=0.90,
+        )
+
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[
+                renewable(
+                    "可弃新能源",
+                    side="AC",
+                    component="AC:1",
+                    current=95.0,
+                    capacity=95.0,
+                )
+            ],
+            diesel_rows=[],
+            storage_rows=[high_soc_storage],
+            converter_rows=[],
+            step_coefficient=1.0,
+            storage_step_ratio=0.30,
+            storage_soc_correction_step_scale=0.20,
+            soc_deadband=0.05,
+            grid_forming_storage_protection_ratio=0.05,
+        )
+
+        self.assertTrue(result.all_success, result.islands)
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "严重过充构网储能")],
+            38.85,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "可弃新能源")],
+            65.0,
+            places=5,
+        )
+        self.assertLess(result.max_balance_residual_kw, 1e-5)
+
+    def test_soc_correction_uses_configured_step_fraction_as_minimum(self):
+        topology = ResourceTopology(resources={}, dc_transfer_groups={})
+        high_soc_storage = storage(
+            "轻度过充构网储能",
+            side="AC",
+            component="AC:1",
+            current=0.0,
+            charge=100.0,
+            discharge=100.0,
+            role="balance",
+            soc=0.951,
+            soc_min=0.20,
+            soc_max=0.90,
+            rated_charge=100.0,
+            rated_discharge=100.0,
+            commandable=False,
+            state_eligible=True,
+        )
+        high_soc_storage.update(
+            capacityKwh=1.0,
+            controlHorizonMinutes=10.0,
+            efficiency=0.90,
+        )
+
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[
+                renewable(
+                    "可弃新能源",
+                    side="AC",
+                    component="AC:1",
+                    current=6.0,
+                    capacity=6.0,
+                )
+            ],
+            diesel_rows=[],
+            storage_rows=[high_soc_storage],
+            converter_rows=[],
+            step_coefficient=1.0,
+            storage_step_ratio=0.30,
+            storage_soc_correction_step_scale=0.20,
+            soc_deadband=0.05,
+            grid_forming_storage_protection_ratio=0.0,
+        )
+
+        self.assertTrue(result.all_success, result.islands)
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "轻度过充构网储能")],
+            6.0,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "可弃新能源")],
+            0.0,
+            places=5,
+        )
+
+    def test_optimizer_clamps_soc_correction_step_fraction_to_ten_percent(self):
+        topology = ResourceTopology(resources={}, dc_transfer_groups={})
+        high_soc_storage = storage(
+            "越界倍率下限构网储能",
+            side="AC",
+            component="AC:1",
+            current=0.0,
+            charge=100.0,
+            discharge=100.0,
+            role="balance",
+            soc=0.951,
+            soc_min=0.20,
+            soc_max=0.90,
+            rated_charge=100.0,
+            rated_discharge=100.0,
+            commandable=False,
+            state_eligible=True,
+        )
+        high_soc_storage.update(
+            capacityKwh=1.0,
+            controlHorizonMinutes=10.0,
+            efficiency=0.90,
+        )
+
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[
+                renewable(
+                    "可弃新能源",
+                    side="AC",
+                    component="AC:1",
+                    current=3.0,
+                    capacity=3.0,
+                )
+            ],
+            diesel_rows=[],
+            storage_rows=[high_soc_storage],
+            converter_rows=[],
+            step_coefficient=1.0,
+            storage_step_ratio=0.30,
+            storage_soc_correction_step_scale=0.0,
+            soc_deadband=0.05,
+            grid_forming_storage_protection_ratio=0.0,
+        )
+
+        self.assertTrue(result.all_success, result.islands)
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "越界倍率下限构网储能")],
+            3.0,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "可弃新能源")],
+            0.0,
+            places=5,
+        )
+
+    def test_severe_low_soc_grid_forming_storage_limits_charge_to_one_step(self):
+        topology = ResourceTopology(resources={}, dc_transfer_groups={})
+        low_soc_storage = storage(
+            "严重欠充构网储能",
+            side="AC",
+            component="AC:1",
+            current=0.0,
+            charge=100.0,
+            discharge=100.0,
+            role="balance",
+            soc=-0.50,
+            soc_min=0.20,
+            soc_max=0.95,
+            rated_charge=100.0,
+            rated_discharge=100.0,
+            commandable=False,
+            state_eligible=True,
+        )
+        low_soc_storage.update(
+            capacityKwh=100.0,
+            controlHorizonMinutes=5.0,
+            efficiency=0.90,
+        )
+
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[],
+            diesel_rows=[
+                diesel(
+                    "柴发",
+                    component="AC:1",
+                    current=50.0,
+                    minimum=0.0,
+                    maximum=100.0,
+                )
+            ],
+            storage_rows=[low_soc_storage],
+            converter_rows=[],
+            step_coefficient=1.0,
+            storage_step_ratio=0.30,
+            storage_soc_correction_step_scale=0.20,
+            soc_deadband=0.05,
+            diesel_power_protection_ratio=0.0,
+            grid_forming_storage_protection_ratio=0.05,
+        )
+
+        self.assertTrue(result.all_success, result.islands)
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "严重欠充构网储能")],
+            -30.0,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            result.targets[("ACGenerator", "柴发")],
+            80.0,
+            places=5,
+        )
+        self.assertLess(result.max_balance_residual_kw, 1e-5)
 
     def test_low_soc_safety_correction_can_use_unstepped_diesel_balance(self):
         topology = ResourceTopology(resources={}, dc_transfer_groups={})
@@ -2373,9 +2615,10 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
             island.step_override_devices,
             (("ACGenerator", "严重过放储能"),),
         )
-        self.assertLessEqual(
+        self.assertAlmostEqual(
             result.targets[("ACGenerator", "严重过放储能")],
-            -1.0 + 1e-6,
+            0.0,
+            places=5,
         )
         self.assertAlmostEqual(
             result.targets[("ACGenerator", "柴发")]
@@ -2445,16 +2688,19 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
                 ("DCGenerator", "严重过充储能"),
             },
         )
-        self.assertGreaterEqual(
-            result.targets[("DCGenerator", "严重过充储能")], 1.0 - 1e-6
+        self.assertAlmostEqual(
+            result.targets[("DCGenerator", "严重过充储能")],
+            0.0,
+            places=5,
         )
-        self.assertGreaterEqual(
+        self.assertAlmostEqual(
             result.targets[("DCACConverter", "联络变流器")],
-            51.0 - 1e-6,
+            50.0,
+            places=5,
         )
         self.assertAlmostEqual(
             result.targets[("ACGenerator", "柴发")],
-            29.0,
+            30.0,
             places=5,
         )
         self.assertAlmostEqual(island.balance_delta_by_side["DC"], 0.0, places=5)
@@ -2506,12 +2752,12 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
         )
         self.assertAlmostEqual(
             result.targets[("ACGenerator", "严重过充储能")],
-            1.0,
+            0.0,
             places=5,
         )
         self.assertAlmostEqual(
             result.targets[("ACGenerator", "高出力风机")],
-            49.0,
+            50.0,
             places=5,
         )
         self.assertAlmostEqual(island.balance_delta_by_side["AC"], 0.0, places=5)
@@ -2534,7 +2780,7 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
                 "rated_charge": None,
                 "rated_discharge": 50.0,
                 "relation": "charge",
-                "expected_residual": -51.0,
+                "expected_residual": -50.0,
             },
             {
                 "name": "孤立高SOC储能",
@@ -2545,7 +2791,7 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
                 "rated_charge": 50.0,
                 "rated_discharge": None,
                 "relation": "discharge",
-                "expected_residual": 51.0,
+                "expected_residual": 50.0,
             },
         )
         for case in cases:
@@ -2588,9 +2834,9 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
                     (("DCGenerator", case["name"]),),
                 )
                 if case["relation"] == "charge":
-                    self.assertLessEqual(target, -1.0 + 1e-6)
+                    self.assertAlmostEqual(target, 0.0, places=5)
                 else:
-                    self.assertGreaterEqual(target, 1.0 - 1e-6)
+                    self.assertAlmostEqual(target, 0.0, places=5)
                 self.assertAlmostEqual(
                     island.balance_residual_by_component["DC"],
                     case["expected_residual"],

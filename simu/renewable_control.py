@@ -989,7 +989,7 @@ class RenewableControlSettings:
             storage_step_ratio=storage_step_ratio,
             storage_soc_correction_step_scale=_clamp(
                 float(self.storage_soc_correction_step_scale),
-                0.0,
+                0.10,
                 1.0,
             ),
             grid_forming_storage_protection_ratio=_clamp(
@@ -8395,10 +8395,14 @@ def _optimization_decision_detail(
         ),
         (
             f"SOC越界约束：SOC低于下限-{settings.soc_deadband * 100:.2f}%或高于上限+"
-            f"{settings.soc_deadband * 100:.2f}%时，强制充放电校正量取配置储能步长的"
-            f"{settings.storage_soc_correction_step_scale * 100:.2f}%；"
+            f"{settings.soc_deadband * 100:.2f}%时，先按越限能量折算纠偏功率；纠偏功率"
+            f"最小值为有效储能步长的{settings.storage_soc_correction_step_scale * 100:.2f}%，"
+            "最大值为一个有效储能步长，再据此限制每轮目标变化；若当前仍处于禁止充电或禁止放电区，"
+            "则优先投影到硬安全边界；严重越限通过多轮连续纠偏逐步逼近设备保护带内的"
+            "最大安全功率；"
             f"跟网储能单周期最大调节量按设备功率容量的{settings.storage_step_ratio * 100:.2f}%计算；"
-            "柴发、构网储能和AC/DC变流器不受普通步长约束"
+            "构网储能正常配平不受普通步长约束，但SOC越界纠偏受上述储能步长约束；"
+            "柴发和AC/DC变流器不受普通步长约束"
         ),
         (
             "步长可行性：先严格使用单周期普通步长；仅当SOC或设备保护边界"

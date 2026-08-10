@@ -356,29 +356,81 @@ def _storage_variable(
         if explicit_step_kw is not None
         else max(0.0, storage_step_ratio) * rated_power
     )
-    correction_step_kw = step_kw * max(0.0, storage_soc_correction_step_scale)
+    correction_scale = min(
+        1.0,
+        max(0.10, storage_soc_correction_step_scale),
+    )
+    correction_step_kw = step_kw * correction_scale
     soc = _number(row.get("soc"))
     soc_min = _number(row.get("socMin"))
     soc_max = _number(row.get("socMax"))
+    capacity_kwh = _number(row.get("capacityKwh"))
+    efficiency = _number(row.get("efficiency"))
+    horizon_minutes = _number(row.get("controlHorizonMinutes"))
+    horizon_hours = (
+        horizon_minutes / 60.0
+        if horizon_minutes is not None and horizon_minutes > EPSILON
+        else None
+    )
+
+    def violation_correction_kw(boundary: Optional[float], *, charge: bool) -> float:
+        minimum_correction_kw = correction_step_kw
+        if (
+            soc is None
+            or boundary is None
+            or capacity_kwh is None
+            or capacity_kwh <= EPSILON
+            or efficiency is None
+            or efficiency <= EPSILON
+            or horizon_hours is None
+        ):
+            return minimum_correction_kw
+        violation = max(0.0, boundary - soc if charge else soc - boundary)
+        energy_correction_kw = (
+            violation * capacity_kwh / (efficiency * horizon_hours)
+            if charge
+            else violation * capacity_kwh * efficiency / horizon_hours
+        )
+        return min(
+            step_kw,
+            max(minimum_correction_kw, energy_correction_kw),
+        )
+
+    def step_limited_target_kw(desired_kw: float) -> float:
+        if desired_kw > current:
+            stepped_kw = min(desired_kw, current + step_kw)
+        else:
+            stepped_kw = max(desired_kw, current - step_kw)
+        # Hard power/SOC bounds remain stronger than the ordinary step. This
+        # immediately stops charging above the SOC ceiling or discharging
+        # below the SOC floor, then subsequent cycles continue by one step.
+        return min(safety_upper, max(safety_lower, stepped_kw))
+
     forced_direction = ""
-    # The correction step is a minimum safe-direction response, not an exact
-    # setpoint. Keep the remaining safe headroom available so low-SOC storage
-    # can absorb renewable surplus and high-SOC storage can discharge further.
+    forced_boundary_kw: Optional[float] = None
+    # First calculate the desired correction from the energy outside the SOC
+    # boundary, then move the target by at most one configured storage step.
+    # Repeated control cycles therefore accelerate severe correction without
+    # issuing a single oversized setpoint jump.
     if soc is not None and soc_min is not None and soc < soc_min - soc_deadband - EPSILON:
         forced_charge_kw = min(
-            correction_step_kw,
+            violation_correction_kw(soc_min, charge=True),
             max(0.0, -safety_lower),
         )
         if forced_charge_kw > EPSILON:
-            safety_upper = min(safety_upper, -forced_charge_kw)
+            desired_charge_target_kw = current - forced_charge_kw
+            forced_boundary_kw = step_limited_target_kw(desired_charge_target_kw)
             forced_direction = "charge"
     elif soc is not None and soc_max is not None and soc > soc_max + soc_deadband + EPSILON:
         forced_discharge_kw = min(
-            correction_step_kw,
+            violation_correction_kw(soc_max, charge=False),
             max(0.0, safety_upper),
         )
         if forced_discharge_kw > EPSILON:
-            safety_lower = max(safety_lower, forced_discharge_kw)
+            desired_discharge_target_kw = current + forced_discharge_kw
+            forced_boundary_kw = step_limited_target_kw(
+                desired_discharge_target_kw
+            )
             forced_direction = "discharge"
     if safety_lower > safety_upper + EPSILON:
         return None
@@ -388,10 +440,28 @@ def _storage_variable(
     # live point is already outside the range, project directly back to the
     # nearest safe boundary instead of preserving an unsafe value merely to
     # satisfy the ordinary step limit.
-    if row.get("role") == "balance":
+    step_lower = max(safety_lower, current - step_kw)
+    step_upper = min(safety_upper, current + step_kw)
+    if forced_boundary_kw is not None and step_lower > step_upper + EPSILON:
+        # The live point is already on the forbidden side of a hard SOC/power
+        # boundary. Project to that boundary immediately; only the subsequent
+        # movement deeper into the corrective direction is step-limited.
+        projected_kw = min(safety_upper, max(safety_lower, current))
+        lower = projected_kw
+        upper = projected_kw
+        normal_step_kw = step_kw
+    elif forced_direction == "charge" and forced_boundary_kw is not None:
+        lower = step_lower
+        upper = min(step_upper, forced_boundary_kw)
+        normal_step_kw = step_kw
+    elif forced_direction == "discharge" and forced_boundary_kw is not None:
+        lower = max(step_lower, forced_boundary_kw)
+        upper = step_upper
+        normal_step_kw = step_kw
+    elif row.get("role") == "balance":
         # Grid-forming storage is a balancing source. It is constrained by
-        # its guarded power range and SOC limits, but not by the ordinary
-        # single-cycle adjustment step.
+        # its guarded power range and SOC limits. Normal balancing is not
+        # step-limited, but the forced SOC branch above is step-limited.
         lower = safety_lower
         upper = safety_upper
         normal_step_kw = math.inf
@@ -418,7 +488,11 @@ def _storage_variable(
         safety_lower_kw=safety_lower,
         safety_upper_kw=safety_upper,
         requires_safety_correction=bool(
-            current < safety_lower - EPSILON
+            (
+                forced_boundary_kw is not None
+                and (current < lower - EPSILON or current > upper + EPSILON)
+            )
+            or current < safety_lower - EPSILON
             or current > safety_upper + EPSILON
         ),
         normal_step_kw=normal_step_kw,
@@ -1372,7 +1446,7 @@ def optimize_topology_islands(
     storage_step_ratio = max(0.0, float(storage_step_ratio))
     storage_soc_correction_step_scale = min(
         1.0,
-        max(0.0, float(storage_soc_correction_step_scale)),
+        max(0.10, float(storage_soc_correction_step_scale)),
     )
     diesel_power_protection_ratio = min(
         MAXIMUM_POWER_PROTECTION_RATIO,

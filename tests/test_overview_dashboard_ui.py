@@ -338,6 +338,8 @@ class OverviewDashboardUiTest(unittest.TestCase):
         )[0]
         self.assertIn("--energy-device-icon-size: 52px;", medium)
         self.assertIn("--energy-device-icon-glyph-size: 34px;", medium)
+        self.assertIn("--energy-summary-top: clamp(24px, 12cqh, 58px);", medium)
+        self.assertIn("--energy-storage-gap: clamp(28px, 13cqh, 58px);", medium)
         self.assertIn("min-height: 64px;", medium)
         self.assertIn("padding: 7px 12px;", medium)
 
@@ -708,8 +710,8 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("--energy-edge-inset-y: clamp(10px, 3.5cqh, 28px);", energy_flow_block)
         self.assertIn("--energy-stack-gap: clamp(4px, 1.5cqh, 12px);", energy_flow_block)
         self.assertIn("--energy-list-gap: clamp(3px, 1.25cqh, 10px);", energy_flow_block)
-        self.assertIn("--energy-summary-top: clamp(4px, calc(14cqh - 20px), 120px);", energy_flow_block)
-        self.assertIn("--energy-storage-gap: clamp(36px, calc(20cqh - 10px), 160px);", energy_flow_block)
+        self.assertIn("--energy-summary-top: clamp(40px, 17cqh, 140px);", energy_flow_block)
+        self.assertIn("--energy-storage-gap: clamp(34px, 14cqh, 112px);", energy_flow_block)
         self.assertIn("min-height: 0;", energy_board_block)
         self.assertIn("place-items: center;", energy_board_block)
         self.assertIn("container-type: size;", energy_board_block)

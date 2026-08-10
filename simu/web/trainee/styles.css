@@ -988,8 +988,8 @@ body.is-vertical-splitter-dragging {
   --energy-edge-inset-y: clamp(10px, 3.5cqh, 28px);
   --energy-stack-gap: clamp(4px, 1.5cqh, 12px);
   --energy-list-gap: clamp(3px, 1.25cqh, 10px);
-  --energy-summary-top: clamp(4px, calc(14cqh - 20px), 120px);
-  --energy-storage-gap: clamp(36px, calc(20cqh - 10px), 160px);
+  --energy-summary-top: clamp(40px, 17cqh, 140px);
+  --energy-storage-gap: clamp(34px, 14cqh, 112px);
   position: relative;
   width: min(100%, 1540px);
   min-height: 0;
@@ -1869,6 +1869,8 @@ body.is-vertical-splitter-dragging {
   .energy-flow-map {
     --energy-device-icon-size: 52px;
     --energy-device-icon-glyph-size: 34px;
+    --energy-summary-top: clamp(24px, 12cqh, 58px);
+    --energy-storage-gap: clamp(28px, 13cqh, 58px);
   }
   .energy-device-card {
     min-height: 64px;

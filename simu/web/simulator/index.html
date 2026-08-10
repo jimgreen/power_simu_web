@@ -741,6 +741,25 @@
                       </td>
                       <td>%</td>
                     </tr>
+                    <tr>
+                      <td>
+                        <strong>遥调指令响应系数</strong>
+                        <small>每个仿真周期按“目标值 × 系数 + 当前潮流值 × (1 - 系数)”生成潮流边界</small>
+                      </td>
+                      <td id="currentRemoteAdjustmentResponseRatio" class="numeric-cell">0.5</td>
+                      <td>
+                        <input
+                          id="parameterRemoteAdjustmentResponseRatio"
+                          name="remote_adjustment_response_ratio"
+                          type="number"
+                          min="0.01"
+                          max="1"
+                          step="0.01"
+                          value="0.5"
+                        />
+                      </td>
+                      <td>比例</td>
+                    </tr>
                   </tbody>
                 </table>
               </form>
@@ -828,6 +847,7 @@
                 <div><dt>推进步长</dt><dd id="parameterEffectiveStep">--</dd></div>
                 <div><dt>计算周期</dt><dd id="parameterComputePeriod">--</dd></div>
                 <div><dt>SOC初始值</dt><dd id="parameterStorageInitialSocState">--</dd></div>
+                <div><dt>遥调响应系数</dt><dd id="parameterRemoteAdjustmentResponseRatioState">--</dd></div>
                 <div><dt>WEB参数模型</dt><dd id="runtimeParameterModelName">--</dd></div>
                 <div><dt>最后保存</dt><dd id="runtimeParameterUpdatedAt">--</dd></div>
               </dl>

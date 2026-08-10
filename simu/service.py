@@ -245,6 +245,7 @@ RUNTIME_LOG_JOURNAL_ENTRY_LIMIT = 64
 RUNTIME_LOG_JOURNAL_BYTE_LIMIT = 256 * 1024
 DEFAULT_COMPUTE_INTERVAL_SECONDS = 1.0
 DEFAULT_STORAGE_INITIAL_SOC = 0.5
+DEFAULT_REMOTE_ADJUSTMENT_RESPONSE_RATIO = 0.5
 LOG_DECIMAL_PATTERN = re.compile(r"(?<![\w:])[-+]?\d+\.\d+(?:e[-+]?\d+)?(?![\w:])", re.IGNORECASE)
 
 
@@ -393,6 +394,16 @@ def _storage_initial_soc(value: Any, default: float = DEFAULT_STORAGE_INITIAL_SO
     if not math.isfinite(soc):
         soc = default
     return min(1.0, max(0.0, float(soc)))
+
+
+def _remote_adjustment_response_ratio(
+    value: Any,
+    default: float = DEFAULT_REMOTE_ADJUSTMENT_RESPONSE_RATIO,
+) -> float:
+    ratio = _to_float(value, default)
+    if ratio is None or not math.isfinite(ratio):
+        ratio = default
+    return min(1.0, max(0.01, float(ratio)))
 
 
 def _next_clock_speed(value: Any) -> float:
@@ -1083,6 +1094,9 @@ class PolarMicrogridSimulator:
         self._initial_compute_interval_seconds = _compute_interval_seconds(compute_interval_seconds)
         self.compute_interval_seconds = self._initial_compute_interval_seconds
         self.storage_initial_soc = DEFAULT_STORAGE_INITIAL_SOC
+        self.remote_adjustment_response_ratio = DEFAULT_REMOTE_ADJUSTMENT_RESPONSE_RATIO
+        self._remote_adjustment_execution: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        self._remote_adjustment_cycle_seq = 0
         self.noise_std = noise_std
         self.random_seed = random_seed
         self.clock = ClockState()
@@ -1287,6 +1301,9 @@ class PolarMicrogridSimulator:
 
                 self.compute_interval_seconds = self._initial_compute_interval_seconds
                 self.storage_initial_soc = DEFAULT_STORAGE_INITIAL_SOC
+                self.remote_adjustment_response_ratio = DEFAULT_REMOTE_ADJUSTMENT_RESPONSE_RATIO
+                self._remote_adjustment_execution = {}
+                self._remote_adjustment_cycle_seq = 0
                 self.clock = ClockState()
                 self.command_history = []
                 self._command_history_persisted_signature = None
@@ -1958,6 +1975,14 @@ class PolarMicrogridSimulator:
                 params.get("storage_initial_soc", params.get("initial_storage_soc")),
                 self.storage_initial_soc,
             )
+        if "remote_adjustment_response_ratio" in params or "adjustment_response_ratio" in params:
+            self.remote_adjustment_response_ratio = _remote_adjustment_response_ratio(
+                params.get(
+                    "remote_adjustment_response_ratio",
+                    params.get("adjustment_response_ratio"),
+                ),
+                self.remote_adjustment_response_ratio,
+            )
 
     def _apply_mode_default_clock_speed(self, mode: str, *, persist: bool) -> None:
         self.clock.step_minutes = 1.0 / 60.0
@@ -1976,6 +2001,7 @@ class PolarMicrogridSimulator:
             "clock_speed": _nearest_clock_speed(self.clock.speed),
             "compute_interval_seconds": self.compute_interval_seconds,
             "storage_initial_soc": self.storage_initial_soc,
+            "remote_adjustment_response_ratio": self.remote_adjustment_response_ratio,
             "clock_step_seconds": self.clock.step_minutes * 60.0,
             "clock_step_minutes": self.clock.step_minutes,
             "effective_step_seconds": effective_step_minutes * 60.0,
@@ -2014,6 +2040,14 @@ class PolarMicrogridSimulator:
                     payload.get("storage_initial_soc", payload.get("initial_storage_soc")),
                     self.storage_initial_soc,
                 )
+            if "remote_adjustment_response_ratio" in payload or "adjustment_response_ratio" in payload:
+                self.remote_adjustment_response_ratio = _remote_adjustment_response_ratio(
+                    payload.get(
+                        "remote_adjustment_response_ratio",
+                        payload.get("adjustment_response_ratio"),
+                    ),
+                    self.remote_adjustment_response_ratio,
+                )
 
             effective_step = _effective_clock_step(self.clock.step_minutes, self.clock.speed)
             self.clock.absolute_minute = _align_minute_to_step(self.clock.absolute_minute, effective_step)
@@ -2027,6 +2061,7 @@ class PolarMicrogridSimulator:
                     "clock_speed": self.clock.speed,
                     "compute_interval_seconds": self.compute_interval_seconds,
                     "storage_initial_soc": self.storage_initial_soc,
+                    "remote_adjustment_response_ratio": self.remote_adjustment_response_ratio,
                 }
             )
             self.local_settings["system_parameters"] = params
@@ -2039,6 +2074,7 @@ class PolarMicrogridSimulator:
                     f"仿真步长/加速比 x{format_number(self.clock.speed)}",
                     f"仿真周期 {format_number(self.compute_interval_seconds)} s",
                     f"储能SOC初始值 {format_number(self.storage_initial_soc * 100.0)}%",
+                    f"遥调指令响应系数 {format_number(self.remote_adjustment_response_ratio)}",
                     f"每次计算推进 {format_number(effective_step * 60.0)} s",
                 ],
                 level="ok",
@@ -2566,6 +2602,190 @@ class PolarMicrogridSimulator:
             simu_loop.write_ebook_aligned(book, self.files["stat"])
         self._write_active_yt_ctrl_file(active_set_rows, persist=persist)
         return {"active_commands": len(active_entries), "run_status": applied_run, "set_values": applied_set}
+
+    def _active_remote_adjustment_keys(self, absolute_minute: int | float) -> set[Tuple[str, str, str]]:
+        allowed_set_keys = self._defined_set_control_keys()
+        active_keys: set[Tuple[str, str, str]] = set()
+        for command in self._active_control_command_entries(absolute_minute):
+            normalized = command.get("normalized", {})
+            set_items = normalized.get("set_values", []) if isinstance(normalized, Mapping) else []
+            if not isinstance(set_items, Sequence) or isinstance(set_items, (str, bytes)):
+                continue
+            for item in set_items:
+                if not isinstance(item, Mapping):
+                    continue
+                key = (
+                    str(item.get("dev_type", "")),
+                    str(item.get("dev_name", "")),
+                    str(item.get("set_type", "")),
+                )
+                if key in allowed_set_keys:
+                    active_keys.add(key)
+        return active_keys
+
+    @staticmethod
+    def _set_value_from_book(book: EBook, key: Tuple[str, str, str]) -> Optional[float]:
+        block = book.data.get("SetValue")
+        if block is None:
+            return None
+        row = _find_set_row(block, *key)
+        if row is None:
+            return None
+        value = _to_float(row.get("set_value"), None)
+        return float(value) if value is not None and math.isfinite(value) else None
+
+    def _model_control_row(self, dev_type: str, dev_name: str) -> Optional[Mapping[str, Any]]:
+        block = self.definition_snapshot.model_book.data.get(dev_type)
+        if block is None:
+            return None
+        return next(
+            (
+                row
+                for row in getattr(block, "data", [])
+                if str(row.get("name", "")).strip() == dev_name
+            ),
+            None,
+        )
+
+    def _remote_adjustment_measurement_types(self, key: Tuple[str, str, str]) -> Tuple[str, ...]:
+        dev_type, dev_name, set_type = key
+        target_row = self._model_control_row(dev_type, dev_name)
+        resolved_type = set_type
+        if target_row is not None:
+            resolved_type = simu_loop._set_value_target_column(dev_type, set_type, dict(target_row))
+
+        direct_types = {
+            "p_ac_set": ("P_AC",),
+            "p_dc_set": ("P_DC",),
+            "q_ac_set": ("Q_AC",),
+            "q_dc_set": ("Q_DC",),
+            "v_ac_set": ("V_AC",),
+            "v_dc_set": ("V_DC",),
+            "p_from_set": ("P_FROM",),
+            "q_from_set": ("Q_FROM",),
+            "v_from_set": ("V_FROM",),
+            "p_to_set": ("P_TO",),
+            "q_to_set": ("Q_TO",),
+            "v_to_set": ("V_TO",),
+        }
+        if resolved_type in direct_types:
+            return direct_types[resolved_type]
+        if resolved_type in {"pv0", "p_set"}:
+            if dev_type in {"ACGenerator", "DCGenerator"}:
+                return ("P_GEN", "P")
+            if dev_type in {"ACLoad", "DCLoad"}:
+                return ("P_LOAD", "P")
+            if dev_type == "ESS":
+                return ("P", "P_GEN")
+            if dev_type in {"DCDCConverter", "ACACConverter"}:
+                return ("P_FROM", "P_TO", "P")
+            return ("P", "P_GEN", "P_LOAD")
+        if resolved_type in {"qv0", "q_set"}:
+            if dev_type == "ACGenerator":
+                return ("Q_GEN", "Q")
+            if dev_type == "ACLoad":
+                return ("Q_LOAD", "Q")
+            if dev_type == "ESS":
+                return ("Q", "Q_GEN")
+            return ("Q", "Q_GEN", "Q_LOAD")
+        if resolved_type == "v_set":
+            if dev_type in {"ACGenerator", "DCGenerator"}:
+                return ("V_GEN", "V")
+            if dev_type in {"ACLoad", "DCLoad"}:
+                return ("V_LOAD", "V")
+            if dev_type in {"DCDCConverter", "ACACConverter"}:
+                return ("V_TO", "V_FROM", "V")
+            return ("V", "V_GEN", "V_LOAD")
+        if resolved_type == "i_set":
+            if dev_type in {"ACGenerator", "DCGenerator"}:
+                return ("I_GEN", "I")
+            if dev_type in {"ACLoad", "DCLoad"}:
+                return ("I_LOAD", "I")
+            return ("I", "I_FROM", "I_TO")
+        return (resolved_type.removesuffix("_set").upper(),)
+
+    def _latest_true_remote_adjustment_value(self, key: Tuple[str, str, str]) -> Optional[float]:
+        dev_type, dev_name, _set_type = key
+        candidates: Dict[str, float] = {}
+        for raw_row in self.latest_real_rows:
+            row = _measurement_row_to_dict(raw_row)
+            if str(row.get("dev_type", "")) != dev_type or str(row.get("dev_name", "")) != dev_name:
+                continue
+            if int(_to_float(row.get("valid"), 1) or 0) != 1:
+                continue
+            meas_type = str(row.get("meas_type", "")).upper()
+            value = _to_float(row.get("value"), None)
+            if meas_type and value is not None and math.isfinite(value):
+                candidates[meas_type] = float(value)
+        for meas_type in self._remote_adjustment_measurement_types(key):
+            if meas_type in candidates:
+                return candidates[meas_type]
+        return None
+
+    @staticmethod
+    def _write_boundary_set_value(book: EBook, key: Tuple[str, str, str], value: float) -> None:
+        block = _ensure_block(book, "SetValue", STAT_HEADERS["SetValue"])
+        row = _find_set_row(block, *key)
+        if row is None:
+            row = {
+                "dev_type": key[0],
+                "dev_name": key[1],
+                "set_type": key[2],
+                "set_value": "",
+            }
+            block.data.append(row)
+        row["set_value"] = _number_text(value)
+
+    def _remote_adjustment_boundary_books(
+        self,
+        absolute_minute: int | float,
+        cycle_token: int,
+    ) -> Tuple[EBook, EBook]:
+        stat_book = simu_loop._clone_ebook(self.runtime_stat_book)
+        yt_ctrl_book = simu_loop._clone_ebook(self.yt_ctrl_book)
+        active_keys = self._active_remote_adjustment_keys(absolute_minute)
+        tracked_keys = active_keys | set(self._remote_adjustment_execution)
+        response_ratio = self.remote_adjustment_response_ratio
+
+        for key in sorted(tracked_keys):
+            target = self._set_value_from_book(self.runtime_stat_book, key)
+            if target is None:
+                self._remote_adjustment_execution.pop(key, None)
+                continue
+
+            state = self._remote_adjustment_execution.get(key)
+            if state is None:
+                fallback = self._set_value_from_book(self.source_stat_book, key)
+                current = self._latest_true_remote_adjustment_value(key)
+                if current is None:
+                    current = target if fallback is None else fallback
+                state = {"executed_value": float(current), "last_cycle_token": None}
+                self._remote_adjustment_execution[key] = state
+
+            if state.get("last_cycle_token") != cycle_token:
+                current = self._latest_true_remote_adjustment_value(key)
+                if current is None:
+                    current = float(state.get("executed_value", target))
+                tolerance = max(1e-9, abs(target) * 1e-9)
+                if abs(target - current) <= tolerance or response_ratio >= 1.0:
+                    executed = target
+                else:
+                    executed = target * response_ratio + current * (1.0 - response_ratio)
+                    if abs(target - executed) <= tolerance:
+                        executed = target
+                state["executed_value"] = float(executed)
+                state["target_value"] = float(target)
+                state["last_cycle_token"] = cycle_token
+
+            executed_value = float(state.get("executed_value", target))
+            self._write_boundary_set_value(stat_book, key, executed_value)
+            if key in active_keys or self._set_value_from_book(yt_ctrl_book, key) is not None:
+                self._write_boundary_set_value(yt_ctrl_book, key, executed_value)
+
+            if key not in active_keys and math.isclose(executed_value, target, rel_tol=1e-9, abs_tol=1e-9):
+                self._remote_adjustment_execution.pop(key, None)
+
+        return stat_book, yt_ctrl_book
 
     def _cancel_command_input_items(self, payload: Mapping[str, Any]) -> List[Any]:
         collected: List[Any] = []
@@ -3263,7 +3483,23 @@ class PolarMicrogridSimulator:
                 "deleted_items": deleted_items,
             }
 
-    def _make_config(self, period_seconds: Optional[float] = None) -> simu_loop.SimulationConfig:
+    def _merge_execution_runtime_stat_book(self, execution_book: EBook) -> None:
+        incoming_storage = execution_book.data.get("StorageSoc") or execution_book.data.get("StorageStatus")
+        if incoming_storage is None:
+            return
+        current_storage = _ensure_block(self.runtime_stat_book, "StorageSoc", STAT_HEADERS["StorageSoc"])
+        current_storage.data = self._merge_runtime_storage_soc(
+            current_storage.data,
+            incoming_storage.data,
+        )
+
+    def _make_config(
+        self,
+        period_seconds: Optional[float] = None,
+        *,
+        dev_stat_book: Optional[EBook] = None,
+        yt_ctrl_book: Optional[EBook] = None,
+    ) -> simu_loop.SimulationConfig:
         definition_snapshot = self.definition_snapshot
         if self._measurement_bindings_cache_revision != definition_snapshot.revision:
             self._measurement_bindings_cache = simu_loop.compile_measurement_bindings(
@@ -3293,8 +3529,8 @@ class PolarMicrogridSimulator:
             meas_rows=[list(row) for row in definition_snapshot.measurement_rows],
             meas_after=list(definition_snapshot.measurement_after),
             weather_book=simu_loop._clone_ebook(self.weather_book),
-            dev_stat_book=simu_loop._clone_ebook(self.runtime_stat_book),
-            yt_ctrl_book=simu_loop._clone_ebook(self.yt_ctrl_book),
+            dev_stat_book=simu_loop._clone_ebook(dev_stat_book or self.runtime_stat_book),
+            yt_ctrl_book=simu_loop._clone_ebook(yt_ctrl_book or self.yt_ctrl_book),
             dev_define_book=definition_snapshot.dev_define_book,
             mode_book=simu_loop._clone_ebook(self.mode_book) if self.mode_book is not None else None,
             measurement_bindings=self._measurement_bindings_cache,
@@ -6269,8 +6505,17 @@ class PolarMicrogridSimulator:
                 start_step_count = self.clock.step_count
                 definition_revision = self.definition_snapshot.revision
                 curve_revision = self._curve_revision
-                self._prepare_runtime_inputs(minute, absolute_minute)
-                config = self._make_config(period_seconds=period_seconds)
+                self._remote_adjustment_cycle_seq += 1
+                boundary_stat_book, boundary_yt_ctrl_book = self._prepare_runtime_inputs(
+                    minute,
+                    absolute_minute,
+                    remote_adjustment_cycle_token=self._remote_adjustment_cycle_seq,
+                )
+                config = self._make_config(
+                    period_seconds=period_seconds,
+                    dev_stat_book=boundary_stat_book,
+                    yt_ctrl_book=boundary_yt_ctrl_book,
+                )
 
             execution_started = time.perf_counter()
             try:
@@ -6324,7 +6569,7 @@ class PolarMicrogridSimulator:
                     return None
 
                 if execution.runtime_stat_book is not None:
-                    self.runtime_stat_book = execution.runtime_stat_book
+                    self._merge_execution_runtime_stat_book(execution.runtime_stat_book)
                 kernel_result = execution.result
                 self._record_compute_execution(execution)
                 self.latest_model_book = getattr(kernel_result, "model_book", None)
@@ -6387,11 +6632,24 @@ class PolarMicrogridSimulator:
         if changed:
             self._invalidate_measurement_delta_cache()
 
-    def _prepare_runtime_inputs(self, minute: int | float, absolute_minute: int | float) -> None:
+    def _prepare_runtime_inputs(
+        self,
+        minute: int | float,
+        absolute_minute: int | float,
+        *,
+        remote_adjustment_cycle_token: Optional[int] = None,
+    ) -> Tuple[EBook, EBook]:
+        if remote_adjustment_cycle_token is None:
+            self._remote_adjustment_cycle_seq += 1
+            remote_adjustment_cycle_token = self._remote_adjustment_cycle_seq
         self._write_current_weather(minute, absolute_minute)
         self._materialize_active_control_commands(absolute_minute)
         self._apply_device_faults(minute, absolute_minute)
         self._write_modes_file()
+        return self._remote_adjustment_boundary_books(
+            absolute_minute,
+            remote_adjustment_cycle_token,
+        )
 
     def _write_current_weather(self, minute: int | float, absolute_minute: int | float | None = None) -> None:
         curve_mode = _normalize_simulation_mode(self.curves.get("mode", "day"))

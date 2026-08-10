@@ -152,7 +152,12 @@ const state = {
   measurementDeltaRequestActive: false,
   embeddedMeasurementDeltaReceived: false,
   measurementArrayWarning: "",
-  systemParameters: { clock_speed: 1, compute_interval_seconds: 1, storage_initial_soc: 0.5 },
+  systemParameters: {
+    clock_speed: 1,
+    compute_interval_seconds: 1,
+    storage_initial_soc: 0.5,
+    remote_adjustment_response_ratio: 0.5,
+  },
   systemParametersDirty: false,
   systemParametersSaving: false,
   webRuntimeSettings: { ...WEB_RUNTIME_FALLBACKS },
@@ -1087,6 +1092,10 @@ function snapshotSystemParameters(snapshot = state.snapshot || {}) {
     clock_speed: clockSpeed,
     compute_interval_seconds: parameterNumber(params.compute_interval_seconds, 1),
     storage_initial_soc: Math.max(0, Math.min(1, parameterNumber(params.storage_initial_soc, 0.5))),
+    remote_adjustment_response_ratio: Math.max(
+      0.01,
+      Math.min(1, parameterNumber(params.remote_adjustment_response_ratio, 0.5)),
+    ),
     clock_step_seconds: clockStepSeconds,
     clock_step_minutes: parameterNumber(params.clock_step_minutes ?? clock.step_minutes, clockStepSeconds / 60),
     effective_step_seconds: parameterNumber(
@@ -1106,9 +1115,13 @@ function renderSystemParameters(snapshot = state.snapshot) {
   const currentSpeed = $("currentClockSpeed");
   const currentInterval = $("currentComputeInterval");
   const currentStorageInitialSoc = $("currentStorageInitialSoc");
+  const currentRemoteAdjustmentResponseRatio = $("currentRemoteAdjustmentResponseRatio");
   if (currentSpeed) currentSpeed.textContent = `x${parameterText(params.clock_speed, 1)}`;
   if (currentInterval) currentInterval.textContent = `${parameterText(params.compute_interval_seconds, 2)} s`;
   if (currentStorageInitialSoc) currentStorageInitialSoc.textContent = parameterPercentText(params.storage_initial_soc, 2);
+  if (currentRemoteAdjustmentResponseRatio) {
+    currentRemoteAdjustmentResponseRatio.textContent = parameterText(params.remote_adjustment_response_ratio, 2);
+  }
 
   const form = $("systemParameterForm");
   const isEditing = Boolean(form?.contains(document.activeElement));
@@ -1116,9 +1129,13 @@ function renderSystemParameters(snapshot = state.snapshot) {
     const speedInput = $("parameterClockSpeed");
     const intervalInput = $("parameterComputeInterval");
     const storageInitialSocInput = $("parameterStorageInitialSoc");
+    const remoteAdjustmentResponseRatioInput = $("parameterRemoteAdjustmentResponseRatio");
     if (speedInput) speedInput.value = String(params.clock_speed);
     if (intervalInput) intervalInput.value = parameterText(params.compute_interval_seconds, 2);
     if (storageInitialSocInput) storageInitialSocInput.value = parameterPercentInputText(params.storage_initial_soc, 2);
+    if (remoteAdjustmentResponseRatioInput) {
+      remoteAdjustmentResponseRatioInput.value = parameterText(params.remote_adjustment_response_ratio, 2);
+    }
   }
 
   const summary = $("systemParameterSummary");
@@ -1127,7 +1144,7 @@ function renderSystemParameters(snapshot = state.snapshot) {
       ? "保存中"
       : state.systemParametersDirty
         ? "有未保存修改"
-        : `x${parameterText(params.clock_speed, 1)} · ${parameterText(params.compute_interval_seconds, 2)} s · SOC ${parameterPercentText(params.storage_initial_soc, 2)}`;
+        : `x${parameterText(params.clock_speed, 1)} · ${parameterText(params.compute_interval_seconds, 2)} s · SOC ${parameterPercentText(params.storage_initial_soc, 2)} · 遥调 ${parameterText(params.remote_adjustment_response_ratio, 2)}`;
   }
 
   const modelName = snapshot?.model?.name || snapshot?.model?.id || state.activeModelId || "--";
@@ -1144,6 +1161,7 @@ function renderSystemParameters(snapshot = state.snapshot) {
     parameterEffectiveStep: formatClockDuration(params.effective_step_seconds),
     parameterComputePeriod: `${parameterText(params.compute_interval_seconds, 2)} s`,
     parameterStorageInitialSocState: parameterPercentText(params.storage_initial_soc, 2),
+    parameterRemoteAdjustmentResponseRatioState: parameterText(params.remote_adjustment_response_ratio, 2),
   };
   Object.entries(values).forEach(([id, text]) => {
     const node = $(id);
@@ -1171,6 +1189,16 @@ function systemParameterPayload() {
           $("parameterStorageInitialSoc")?.value,
           (state.systemParameters.storage_initial_soc ?? 0.5) * 100,
         ) / 100,
+      ),
+    ),
+    remote_adjustment_response_ratio: Math.max(
+      0.01,
+      Math.min(
+        1,
+        parameterNumber(
+          $("parameterRemoteAdjustmentResponseRatio")?.value,
+          state.systemParameters.remote_adjustment_response_ratio ?? 0.5,
+        ),
       ),
     ),
   };
@@ -3838,7 +3866,12 @@ async function setActiveModel(modelId, shouldRefresh = true) {
   state.runtimeLogTotal = 0;
   state.lastRuntimeLogKey = "";
   state.measurementDeltaSeq = 0;
-  state.systemParameters = { clock_speed: 1, compute_interval_seconds: 1, storage_initial_soc: 0.5 };
+  state.systemParameters = {
+    clock_speed: 1,
+    compute_interval_seconds: 1,
+    storage_initial_soc: 0.5,
+    remote_adjustment_response_ratio: 0.5,
+  };
   state.systemParametersDirty = false;
   state.systemParametersSaving = false;
   resetWebRuntimeSettingsState();
@@ -14650,7 +14683,12 @@ $("manualDefinitionChangesTable").addEventListener("change", (event) => {
   const changeId = target.dataset.manualChangeId || "";
   if (changeId) toggleManualDefinitionChange(changeId, target.checked);
 });
-["parameterClockSpeed", "parameterComputeInterval", "parameterStorageInitialSoc"].forEach((id) => {
+[
+  "parameterClockSpeed",
+  "parameterComputeInterval",
+  "parameterStorageInitialSoc",
+  "parameterRemoteAdjustmentResponseRatio",
+].forEach((id) => {
   const element = $(id);
   if (element) element.addEventListener("input", markSystemParametersDirty);
 });

@@ -7,7 +7,6 @@ from pathlib import Path
 from simu.control_config import default_integer, default_number
 from simu.renewable_control import (
     RenewableControlSettings,
-    _decision_step_ratio,
     calculate_renewable_control_plan,
 )
 from simu.renewable_optimization import optimize_topology_islands
@@ -98,31 +97,11 @@ def converter(name: str, *, capacity: float) -> dict:
 
 
 class RenewableControlParameterizationTest(unittest.TestCase):
-    def test_step_rate_is_scaled_by_simulation_timing_and_control_period(self):
-        self.assertAlmostEqual(
-            _decision_step_ratio(
-                0.03,
-                simulation_step_seconds=300.0,
-                simulation_period_seconds=1.0,
-                control_interval_seconds=2.0,
-            ),
-            0.30,
-        )
-        self.assertAlmostEqual(
-            _decision_step_ratio(
-                0.03,
-                simulation_step_seconds=60.0,
-                simulation_period_seconds=1.0,
-                control_interval_seconds=5.0,
-            ),
-            0.15,
-        )
-
-    def test_step_rate_settings_export_explicit_per_minute_fields(self):
+    def test_step_settings_export_fixed_per_decision_fields(self):
         settings = RenewableControlSettings().updated(
             {
-                "renewableStepRatePerMinute": 0.04,
-                "storageStepRatePerMinute": 0.02,
+                "renewableStepRatio": 0.04,
+                "storageStepRatio": 0.02,
                 "storageSocCorrectionStepScale": 0.25,
             }
         )
@@ -130,9 +109,24 @@ class RenewableControlParameterizationTest(unittest.TestCase):
         self.assertEqual(settings.step_coefficient, 0.04)
         self.assertEqual(settings.storage_step_ratio, 0.02)
         self.assertEqual(settings.storage_soc_correction_step_scale, 0.25)
-        self.assertEqual(settings.payload()["renewableStepRatePerMinute"], 0.04)
-        self.assertEqual(settings.payload()["storageStepRatePerMinute"], 0.02)
+        self.assertEqual(settings.payload()["renewableStepRatio"], 0.04)
+        self.assertEqual(settings.payload()["storageStepRatio"], 0.02)
         self.assertEqual(settings.payload()["storageSocCorrectionStepScale"], 0.25)
+        self.assertNotIn("renewableStepRatePerMinute", settings.payload())
+        self.assertNotIn("storageStepRatePerMinute", settings.payload())
+
+    def test_legacy_per_minute_step_fields_are_only_accepted_as_input_aliases(self):
+        settings = RenewableControlSettings().updated(
+            {
+                "renewableStepRatePerMinute": 0.04,
+                "storageStepRatePerMinute": 0.02,
+            }
+        )
+
+        self.assertEqual(settings.step_coefficient, 0.04)
+        self.assertEqual(settings.storage_step_ratio, 0.02)
+        self.assertNotIn("renewableStepRatePerMinute", settings.payload())
+        self.assertNotIn("storageStepRatePerMinute", settings.payload())
 
     def test_soc_correction_step_scale_is_clamped_to_ten_through_one_hundred_percent(self):
         below = RenewableControlSettings().updated(
@@ -153,7 +147,7 @@ class RenewableControlParameterizationTest(unittest.TestCase):
             1.0,
         )
 
-    def test_control_plan_uses_live_simulator_timing_for_step_rates(self):
+    def test_control_plan_keeps_steps_fixed_when_simulation_timing_changes(self):
         from tests.test_trainee_renewable_backend_control import renewable_snapshot
 
         snapshot = renewable_snapshot()
@@ -172,14 +166,16 @@ class RenewableControlParameterizationTest(unittest.TestCase):
         )
         metrics = plan["metrics"]
 
-        self.assertTrue(metrics["simulationTimingKnown"])
-        self.assertEqual(metrics["simulationStepSeconds"], 300.0)
-        self.assertEqual(metrics["simulationPeriodSeconds"], 1.0)
         self.assertEqual(metrics["controlIntervalSeconds"], 2.0)
-        self.assertAlmostEqual(metrics["renewableStepRatePerMinute"], 0.03)
-        self.assertAlmostEqual(metrics["storageStepRatePerMinute"], 0.02)
-        self.assertAlmostEqual(metrics["renewableEffectiveDecisionStepRatio"], 0.30)
-        self.assertAlmostEqual(metrics["storageEffectiveDecisionStepRatio"], 0.20)
+        self.assertAlmostEqual(metrics["renewableStepRatio"], 0.03)
+        self.assertAlmostEqual(metrics["gridFollowingStorageStepRatio"], 0.02)
+        self.assertAlmostEqual(metrics["renewableEffectiveDecisionStepRatio"], 0.03)
+        self.assertAlmostEqual(metrics["storageEffectiveDecisionStepRatio"], 0.02)
+        self.assertNotIn("renewableStepRatePerMinute", metrics)
+        self.assertNotIn("storageStepRatePerMinute", metrics)
+        self.assertNotIn("simulationStepSeconds", metrics)
+        self.assertNotIn("simulationPeriodSeconds", metrics)
+        self.assertNotIn("simulationTimingKnown", metrics)
 
     def test_control_plan_scales_grid_forming_soc_correction_with_violation_energy(self):
         from tests.test_trainee_renewable_backend_control import renewable_snapshot
@@ -217,7 +213,7 @@ class RenewableControlParameterizationTest(unittest.TestCase):
         energy_correction_kw = (
             (0.951 - 0.90) * 100.0 * 0.95 / (10.0 / 60.0)
         )
-        expected_step_kw = 40.0 * 0.30
+        expected_step_kw = 40.0 * 0.03
         expected_correction_kw = min(
             expected_step_kw,
             max(expected_step_kw * 0.20, energy_correction_kw),
@@ -259,7 +255,7 @@ class RenewableControlParameterizationTest(unittest.TestCase):
             if item.get("technology") == "storage"
         )
 
-        expected_step_kw = 40.0 * 0.30
+        expected_step_kw = 40.0 * 0.03
         self.assertEqual(row["controlHorizonMinutes"], 10.0)
         self.assertAlmostEqual(row["currentKw"], 8.85, places=5)
         self.assertAlmostEqual(

@@ -130,11 +130,11 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         self.assertNotIn('addEventListener("change", updateRenewableSettings)', event_bindings)
 
     def test_strategy_steps_and_power_protection_bands_are_editable_ratios(self):
-        self.assertIn("新能源步长(%/仿真分钟)", self.html)
-        self.assertIn("跟网储能步长(%/仿真分钟)", self.html)
+        self.assertIn("新能源步长(%/次决策)", self.html)
+        self.assertIn("跟网储能步长(%/次决策)", self.html)
         self.assertIn("SOC越界步长倍率(%)", self.html)
-        self.assertIn("renewableStepRatePerMinute", self.script)
-        self.assertIn("storageStepRatePerMinute", self.script)
+        self.assertNotIn("renewableStepRatePerMinute", self.script)
+        self.assertNotIn("storageStepRatePerMinute", self.script)
         for field_id in (
             "renewableStepRatio",
             "storageStepRatio",

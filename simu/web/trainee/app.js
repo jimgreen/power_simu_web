@@ -10758,11 +10758,11 @@ function applyRenewableControlState(payload = {}) {
     intervalSeconds: Math.max(1, toNumber(settings.intervalSeconds, control.intervalSeconds || 2)),
     largeStepThresholdKw: Math.max(0, toNumber(settings.largeStepThresholdKw, control.largeStepThresholdKw || 10)),
     stepCoefficient: Math.max(0, toNumber(
-      settings.renewableStepRatePerMinute ?? settings.renewableStepRatio ?? settings.stepCoefficient,
+      settings.renewableStepRatio ?? settings.stepCoefficient,
       control.stepCoefficient || 0.03,
     )),
     storageStepRatio: Math.max(0, toNumber(
-      settings.storageStepRatePerMinute ?? settings.storageStepRatio,
+      settings.storageStepRatio,
       control.storageStepRatio || 0.03,
     )),
     storageSocCorrectionStepScale: Math.min(1, Math.max(0.1, toNumber(
@@ -12199,8 +12199,8 @@ async function updateRenewableSettings() {
       intervalSeconds,
       commandValidMinutes,
       largeStepThresholdKw: state.renewableControl.largeStepThresholdKw,
-      renewableStepRatePerMinute: ratio("renewableStepRatio", 3),
-      storageStepRatePerMinute: ratio("storageStepRatio", 3),
+      renewableStepRatio: ratio("renewableStepRatio", 3),
+      storageStepRatio: ratio("storageStepRatio", 3),
       storageSocCorrectionStepScale: ratio("storageSocCorrectionStepScale", 20, 10, 100),
       gridFormingStorageProtectionRatio: ratio("gridFormingStorageProtectionRatio", 5, 0, 50),
       dieselPowerProtectionRatio: ratio("dieselPowerProtectionRatio", 3, 0, 50),

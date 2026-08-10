@@ -270,78 +270,6 @@ def _clamp(value: float, minimum: float, maximum: float) -> float:
     return min(maximum, max(minimum, value))
 
 
-def _decision_step_ratio(
-    rate_per_simulation_minute: Any,
-    *,
-    simulation_step_seconds: Any,
-    simulation_period_seconds: Any,
-    control_interval_seconds: Any,
-) -> float:
-    rate = max(0.0, _finite_number(rate_per_simulation_minute))
-    simulation_step = _number(simulation_step_seconds)
-    simulation_period = _number(simulation_period_seconds)
-    control_interval = _number(control_interval_seconds)
-    if (
-        simulation_step is None
-        or simulation_step <= 0.0
-        or simulation_period is None
-        or simulation_period <= 0.0
-        or control_interval is None
-        or control_interval <= 0.0
-    ):
-        return rate
-    return max(
-        0.0,
-        rate
-        * simulation_step
-        / simulation_period
-        * control_interval
-        / 60.0,
-    )
-
-
-def _snapshot_simulation_timing(
-    snapshot: Mapping[str, Any],
-) -> Tuple[Optional[float], Optional[float], bool]:
-    timing = (
-        snapshot.get("simulation_timing")
-        if isinstance(snapshot.get("simulation_timing"), Mapping)
-        else {}
-    )
-    parameters = (
-        snapshot.get("system_parameters")
-        if isinstance(snapshot.get("system_parameters"), Mapping)
-        else {}
-    )
-    clock = snapshot.get("clock") if isinstance(snapshot.get("clock"), Mapping) else {}
-
-    simulation_step_seconds = _number(timing.get("simulation_step_seconds"))
-    if simulation_step_seconds is None or simulation_step_seconds <= 0.0:
-        simulation_step_seconds = _number(parameters.get("effective_step_seconds"))
-    if simulation_step_seconds is None or simulation_step_seconds <= 0.0:
-        effective_step_minutes = _number(parameters.get("effective_step_minutes"))
-        if effective_step_minutes is not None and effective_step_minutes > 0.0:
-            simulation_step_seconds = effective_step_minutes * 60.0
-    if simulation_step_seconds is None or simulation_step_seconds <= 0.0:
-        simulation_step_seconds = _number(clock.get("effective_step_seconds"))
-    if simulation_step_seconds is None or simulation_step_seconds <= 0.0:
-        effective_step_minutes = _number(clock.get("effective_step_minutes"))
-        if effective_step_minutes is not None and effective_step_minutes > 0.0:
-            simulation_step_seconds = effective_step_minutes * 60.0
-
-    simulation_period_seconds = _number(timing.get("simulation_period_seconds"))
-    if simulation_period_seconds is None or simulation_period_seconds <= 0.0:
-        simulation_period_seconds = _number(parameters.get("compute_interval_seconds"))
-
-    known = bool(
-        simulation_step_seconds is not None
-        and simulation_step_seconds > 0.0
-        and simulation_period_seconds is not None
-        and simulation_period_seconds > 0.0
-    )
-    return simulation_step_seconds, simulation_period_seconds, known
-
-
 def _ratio(value: Any, default: Optional[float]) -> Optional[float]:
     number = _number(value)
     if number is None:
@@ -1196,9 +1124,7 @@ class RenewableControlSettings:
             "largeStepThresholdKw": self.large_step_threshold_kw,
             "stepCoefficient": self.step_coefficient,
             "renewableStepRatio": self.step_coefficient,
-            "renewableStepRatePerMinute": self.step_coefficient,
             "storageStepRatio": self.storage_step_ratio,
-            "storageStepRatePerMinute": self.storage_step_ratio,
             "storageSocCorrectionStepScale": self.storage_soc_correction_step_scale,
             "gridFormingStorageProtectionRatio": self.grid_forming_storage_protection_ratio,
             "dieselPowerProtectionRatio": self.diesel_power_protection_ratio,
@@ -8461,32 +8387,9 @@ def calculate_renewable_control_plan(
 ) -> Dict[str, Any]:
     plan_started = time.perf_counter()
     configured_settings = (settings or RenewableControlSettings()).normalized()
-    (
-        simulation_step_seconds,
-        simulation_period_seconds,
-        simulation_timing_known,
-    ) = _snapshot_simulation_timing(snapshot)
-    if simulation_timing_known:
-        renewable_effective_decision_step_ratio = _decision_step_ratio(
-            configured_settings.step_coefficient,
-            simulation_step_seconds=simulation_step_seconds,
-            simulation_period_seconds=simulation_period_seconds,
-            control_interval_seconds=configured_settings.interval_seconds,
-        )
-        storage_effective_decision_step_ratio = _decision_step_ratio(
-            configured_settings.storage_step_ratio,
-            simulation_step_seconds=simulation_step_seconds,
-            simulation_period_seconds=simulation_period_seconds,
-            control_interval_seconds=configured_settings.interval_seconds,
-        )
-    else:
-        renewable_effective_decision_step_ratio = configured_settings.step_coefficient
-        storage_effective_decision_step_ratio = configured_settings.storage_step_ratio
-    settings = replace(
-        configured_settings,
-        step_coefficient=renewable_effective_decision_step_ratio,
-        storage_step_ratio=storage_effective_decision_step_ratio,
-    )
+    renewable_effective_decision_step_ratio = configured_settings.step_coefficient
+    storage_effective_decision_step_ratio = configured_settings.storage_step_ratio
+    settings = configured_settings
     quality = _Quality(data_source, snapshot_age_seconds)
     measurements = _measurement_index(snapshot)
     load_kw = _load_boundary(snapshot, measurements, quality)
@@ -11041,8 +10944,6 @@ def calculate_renewable_control_plan(
         "converterBaseStepKw": None,
         "converterStepLimited": False,
         "gridFollowingStorageStepRatio": settings.storage_step_ratio,
-        "gridFollowingStorageStepRatePerMinute": configured_settings.storage_step_ratio,
-        "storageStepRatePerMinute": configured_settings.storage_step_ratio,
         "storageEffectiveDecisionStepRatio": storage_effective_decision_step_ratio,
         "converterStepDirection": converter_step_direction,
         "converterExportStepDirection": converter_export_step_direction,
@@ -11089,12 +10990,8 @@ def calculate_renewable_control_plan(
         "renewableControlAction": renewable_control_action,
         "renewableCapacityKw": renewable_capacity,
         "renewableStepRatio": settings.step_coefficient,
-        "renewableStepRatePerMinute": configured_settings.step_coefficient,
         "renewableEffectiveDecisionStepRatio": renewable_effective_decision_step_ratio,
-        "simulationStepSeconds": simulation_step_seconds,
-        "simulationPeriodSeconds": simulation_period_seconds,
         "controlIntervalSeconds": configured_settings.interval_seconds,
-        "simulationTimingKnown": simulation_timing_known,
         "renewableStepDirection": renewable_step_direction,
         "renewableRecoveryStepScale": renewable_recovery_step_scale,
         "renewableRecoveryBoundaryScale": renewable_recovery_boundary_scale,
@@ -11358,20 +11255,11 @@ def calculate_renewable_control_plan(
         f"跟网储能直调：动作 {direct_storage_plan['action']}，从既有ACDC/直流平衡候选后的柴发偏差请求 {_finite_number(direct_storage_plan.get('requestedKw')):.2f} kW；交流跟网储能目标 {ac_grid_following_storage_target:.2f} kW，直流跟网储能目标 {dc_grid_following_storage_target:.2f} kW，直流侧仅使用同传输组ACDC增量，交流供电净影响 {direct_ac_storage_effect_kw + direct_acdc_effect_kw:.2f} kW，剩余 {_finite_number(direct_storage_plan.get('residualKw')):.2f} kW",
         renewable_strategy_detail,
         (
-            f"调节率换算：新能源 {configured_settings.step_coefficient * 100:.2f}%/仿真分钟、"
-            f"跟网储能 {configured_settings.storage_step_ratio * 100:.2f}%/仿真分钟；"
-            f"模拟台仿真步长 {simulation_step_seconds:.6g} s、仿真周期 {simulation_period_seconds:.6g} s、"
-            f"学员台控制周期 {configured_settings.interval_seconds:.6g} s；本次最大调节比例分别为 "
-            f"{renewable_effective_decision_step_ratio * 100:.2f}%、"
-            f"{storage_effective_decision_step_ratio * 100:.2f}%"
-            if simulation_timing_known
-            else (
-                f"调节率换算：快照缺少有效仿真步长或仿真周期，按兼容模式将配置值直接作为本次比例；"
-                f"新能源 {renewable_effective_decision_step_ratio * 100:.2f}%，"
-                f"跟网储能 {storage_effective_decision_step_ratio * 100:.2f}%"
-            )
+            f"固定决策步长：新能源 {renewable_effective_decision_step_ratio * 100:.2f}%/次决策、"
+            f"跟网储能 {storage_effective_decision_step_ratio * 100:.2f}%/次决策；"
+            f"不按仿真步长、仿真周期或控制周期换算放大"
         ),
-        f"新能源目标：当前 {renewable_current:.2f} kW，储能当前 {storage_current_for_control:.2f} kW、构网储能功率保护带 {settings.grid_forming_storage_protection_ratio * 100:.2f}%（充电侧 {grid_forming_storage_charge_protection_kw:.2f} kW）、超出保护带 {renewable_storage_charge_excess_kw:.2f} kW；本次换算后最大比例 {settings.step_coefficient * 100:.2f}%，{renewable_step_reason_text}，实际按 {renewable_step_scale * 100:.1f}% 即 {renewable_effective_step_ratio * 100:.2f}% 调节，目标 {renewable_target:.2f} kW",
+        f"新能源目标：当前 {renewable_current:.2f} kW，储能当前 {storage_current_for_control:.2f} kW、构网储能功率保护带 {settings.grid_forming_storage_protection_ratio * 100:.2f}%（充电侧 {grid_forming_storage_charge_protection_kw:.2f} kW）、超出保护带 {renewable_storage_charge_excess_kw:.2f} kW；本次固定最大比例 {settings.step_coefficient * 100:.2f}%，{renewable_step_reason_text}，实际按 {renewable_step_scale * 100:.1f}% 即 {renewable_effective_step_ratio * 100:.2f}% 调节，目标 {renewable_target:.2f} kW",
         f"负荷功率仅用于展示：当前 {load_kw:.2f} kW，不参与新能源、储能、变流器或柴发目标计算",
         f"独立边界检查与统一保护校核：ACDC目标已按设备有功上下限、model.e中的SOC运行边界、储能剩余能量和分段线性充放电降额校核；常规动作遵守步长，充电超限时保护校核可直接消除超限；新能源恢复量同时受充电降额剩余空间约束",
         *[f"数据告警：{issue}" for issue in quality_payload["issues"]],

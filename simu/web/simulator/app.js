@@ -23,7 +23,6 @@ const WEB_RUNTIME_FALLBACKS = {
   frontend_request_timeout_seconds: 30,
   runtime_log_page_size: 20,
   runtime_log_cache_limit: 300,
-  trace_history_limit: 45000,
   curve_request_timeout_seconds: 8,
   runtime_log_delta_batch_size: 200,
   runtime_log_history_batch_size: 120,
@@ -33,7 +32,6 @@ const WEB_RUNTIME_CURRENT_IDS = {
   frontend_request_timeout_seconds: "currentWebRuntimeFrontendRequestTimeout",
   runtime_log_page_size: "currentWebRuntimeLogPageSize",
   runtime_log_cache_limit: "currentWebRuntimeLogCacheLimit",
-  trace_history_limit: "currentWebRuntimeTraceHistoryLimit",
   curve_request_timeout_seconds: "currentWebRuntimeCurveRequestTimeout",
   runtime_log_delta_batch_size: "currentWebRuntimeLogDeltaBatchSize",
   runtime_log_history_batch_size: "currentWebRuntimeLogHistoryBatchSize",
@@ -217,10 +215,6 @@ function curveRequestTimeoutMs() {
   return Math.max(1000, activeRuntimeSetting("curve_request_timeout_seconds") * 1000);
 }
 
-function traceHistoryLimit() {
-  return Math.max(1000, Math.round(activeRuntimeSetting("trace_history_limit")));
-}
-
 function pageIsHidden() {
   return document.visibilityState === "hidden";
 }
@@ -278,7 +272,6 @@ const ENV_CURVE_KEYS = ["wind_speed_mps", "solar_irradiance_w_m2", "air_temp_c"]
 const LOAD_CURVE_META = { label: "负荷", color: "#c93a3a", min: 0, max: 500, digits: 2, unit: "kW" };
 const LOAD_CURVE_COLORS = ["#c93a3a", "#8a4fbf", "#23854a", "#d16300", "#4369b2", "#0a8b8b"];
 const CURVE_PLOT = { left: 58, right: 24, top: 46, bottom: 34 };
-const TRACE_HIGH_RES_WINDOW_MINUTES = 24 * 60;
 const VIRTUAL_TABLE_ROW_HEIGHT = 34;
 const VIRTUAL_TABLE_MIN_ROWS = 220;
 const VIRTUAL_TABLE_BUFFER_ROWS = 12;
@@ -393,24 +386,8 @@ function sampleCurvePointsForCanvas(values, canvasWidth, density = 1.5) {
     .map(([index, value]) => ({ index, value }));
 }
 
-function compactTraceHistory(history, visibleWindowMinutes = 24 * 60) {
-  const historyLimit = traceHistoryLimit();
-  if (!Array.isArray(history) || history.length <= historyLimit) return history || [];
-  const latestMinute = Number(history[history.length - 1]?.minute ?? 0) || 0;
-  const highResStart = latestMinute - Math.max(TRACE_HIGH_RES_WINDOW_MINUTES, Number(visibleWindowMinutes) || 0);
-  const recent = [];
-  const archived = new Map();
-  const bucketMinutes = Math.max(5, Math.ceil(Math.max(1, latestMinute - highResStart) / 1200));
-  history.forEach((point) => {
-    const minute = Number(point?.minute ?? 0) || 0;
-    if (minute >= highResStart) {
-      recent.push(point);
-      return;
-    }
-    const bucket = Math.floor(minute / bucketMinutes);
-    archived.set(bucket, point);
-  });
-  return [...archived.values(), ...recent].slice(-historyLimit);
+function compactTraceHistory(history) {
+  return Array.isArray(history) ? history : [];
 }
 
 function virtualTableWindow(key, rows, options = {}) {
@@ -3995,7 +3972,7 @@ function traceWindowPointsWithBoundaryAnchors(points, range = {}, options = {}) 
   const firstMinute = Number(visible[0].minute);
   if (firstMinute > startMinute + 1e-9) {
     const previous = [...source].reverse().find((point) => Number(point.minute) < startMinute);
-    visible.unshift(traceWindowBoundaryPoint(previous || visible[0], startMinute));
+    if (previous) visible.unshift(traceWindowBoundaryPoint(previous, startMinute));
   }
   return visible;
 }

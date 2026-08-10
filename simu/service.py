@@ -2090,18 +2090,6 @@ class PolarMicrogridSimulator:
                 model_id=self.model_id,
             )
 
-    def _trace_history_limit(self, role: str = "simulator") -> int:
-        payload = runtime_settings_payload(
-            self.local_settings,
-            role,
-            model_id=self.model_id,
-        )
-        settings = payload.get("effectiveSettings", payload.get("settings", {}))
-        try:
-            return max(1, int(settings.get("trace_history_limit", 45000)))
-        except (AttributeError, TypeError, ValueError):
-            return 45000
-
     def set_web_runtime_settings(self, role: str, payload: Mapping[str, Any]) -> Dict[str, Any]:
         with self.lock:
             with self._service_instance_lifecycle_lock:
@@ -6611,7 +6599,6 @@ class PolarMicrogridSimulator:
                     self.clock.as_dict(),
                     self.latest_measurements,
                     definition_revision=self.definition_snapshot.revision,
-                    limit=self._trace_history_limit("simulator"),
                 )
                 if return_snapshot:
                     return self.snapshot()

@@ -79,6 +79,18 @@ class MeasurementHistoryTest(unittest.TestCase):
         service.control_clock({"action": "stop"})
         self.assertEqual(service.measurement_history(indices=[0])["frames"], [])
 
+    def test_simulator_production_history_keeps_the_complete_current_run(self):
+        service = self._make_service()
+        self._seed_measurements(service, 10.0, 9.5)
+        service.control_clock({"action": "start"})
+
+        for _ in range(4):
+            service.step(advance_minutes=1)
+
+        payload = service.measurement_history(indices=[0])
+
+        self.assertEqual([frame["step_count"] for frame in payload["frames"]], [1, 2, 3, 4])
+
     def test_history_store_deduplicates_a_step_and_enforces_the_ring_limit(self):
         from simu.measurement_history import MeasurementHistoryStore
 
@@ -144,7 +156,6 @@ class MeasurementHistoryTest(unittest.TestCase):
                     "time": "--",
                 },
                 measurements,
-                limit=45000,
             )
 
         payload = store.payload(indices=[0])

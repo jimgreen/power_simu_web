@@ -19,7 +19,6 @@ class WebRuntimeSettingsUiTest(unittest.TestCase):
             "webRuntimeFrontendRequestTimeout",
             "webRuntimeLogPageSize",
             "webRuntimeLogCacheLimit",
-            "webRuntimeTraceHistoryLimit",
             "webRuntimeCurveRequestTimeout",
             "webRuntimeLogDeltaBatchSize",
             "webRuntimeLogHistoryBatchSize",
@@ -45,7 +44,6 @@ class WebRuntimeSettingsUiTest(unittest.TestCase):
             "webRuntimeFrontendRequestTimeout",
             "webRuntimeLogPageSize",
             "webRuntimeLogCacheLimit",
-            "webRuntimeTraceHistoryLimit",
             "webRuntimeBackendRefresh",
             "webRuntimeBackendRequestTimeout",
             "webRuntimeFrameAgeLimit",
@@ -79,6 +77,7 @@ class WebRuntimeSettingsUiTest(unittest.TestCase):
             self.assertIn("runtimeParameterModelName", script)
             self.assertNotIn("const API_REQUEST_TIMEOUT_MS = 30000", script)
             self.assertNotIn("const TRACE_HISTORY_LIMIT = 45000", script)
+            self.assertNotIn("trace_history_limit", script)
 
         self.assertIn('activeRuntimeSetting("curve_request_timeout_seconds")', scripts["simulator"])
         self.assertIn('activeRuntimeSetting("runtime_log_delta_batch_size")', scripts["simulator"])

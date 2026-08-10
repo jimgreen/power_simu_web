@@ -26,7 +26,6 @@ COMMON_RUNTIME_SETTING_SPECS: Dict[str, RuntimeSettingSpec] = {
     "frontend_request_timeout_seconds": RuntimeSettingSpec(30.0, 1.0, 300.0),
     "runtime_log_page_size": RuntimeSettingSpec(20, 5, 200, "integer"),
     "runtime_log_cache_limit": RuntimeSettingSpec(300, 50, 5000, "integer"),
-    "trace_history_limit": RuntimeSettingSpec(45000, 1000, 200000, "integer"),
 }
 
 ROLE_RUNTIME_SETTING_SPECS: Dict[str, Dict[str, RuntimeSettingSpec]] = {

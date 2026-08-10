@@ -126,7 +126,7 @@ class MeasurementHistoryStore:
         measurements: Mapping[str, Any],
         *,
         definition_revision: int = 0,
-        limit: int = 45000,
+        limit: Optional[int] = None,
         wall_time: Optional[str] = None,
     ) -> bool:
         definitions = [
@@ -256,7 +256,8 @@ class MeasurementHistoryStore:
             chunk.scada_values.extend(scada_values)
             chunk.valid_values.extend(valid_values)
             self._frame_count += 1
-            self._trim_unlocked(max(1, int(limit)))
+            if limit is not None:
+                self._trim_unlocked(max(1, int(limit)))
             return True
 
     def _last_frame_unlocked(self) -> Optional[Dict[str, Any]]:

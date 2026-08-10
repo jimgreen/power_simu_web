@@ -953,7 +953,6 @@ class TraineeRealtimeExchange:
     ) -> Optional[int]:
         runtime_settings = self._runtime_settings_for_service(service)
         history_limit = max(1, int(runtime_settings["measurement_delta_history_limit"]))
-        trace_history_limit = max(1, int(runtime_settings.get("trace_history_limit", 45000)))
         published_at = float(received_at if received_at is not None else time.time())
         runtime = dict(snapshot) if snapshot_owned else copy.deepcopy(dict(snapshot))
         remote_measurements = runtime.get("measurements")
@@ -1034,7 +1033,6 @@ class TraineeRealtimeExchange:
                     history_clock,
                     history_measurements,
                     definition_revision=self._definition_revision(service),
-                    limit=trace_history_limit,
                     wall_time=datetime.fromtimestamp(published_at).isoformat(timespec="seconds"),
                 )
             state.received_at = published_at
@@ -2355,9 +2353,6 @@ class TraineeRealtimeExchange:
             self._enter_unique_lock(stack, state.lock, entered)
             state.next_refresh_at_monotonic = 0.0
             state.measurement_delta_history = state.measurement_delta_history[-history_limit:]
-            state.measurement_history.trim(
-                max(1, int(runtime_settings.get("trace_history_limit", 45000)))
-            )
         self._wake_event.set()
         return True
 

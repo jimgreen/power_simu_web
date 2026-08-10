@@ -117,6 +117,7 @@ STORAGE_PARAMETER_SPECS = (
 GRID_FOLLOWING_STORAGE_MODES = {"P", "PQ"}
 BALANCE_STORAGE_MODES = {"SLACK", "V", "VF", "V/F", "PH"}
 RENEWABLE_CONTROL_STATE_FILE = "renewable_control.json"
+RENEWABLE_CONTROL_TREND_FILE = "renewable_control_trend.jsonl"
 DEFAULT_STORAGE_CHARGE_DERATING_CURVE = default_derating_curve(
     "storage_charge_derating_curve"
 )
@@ -11562,6 +11563,9 @@ class _ControllerState:
 class _TrendCandidate:
     trend: List[Dict[str, Any]]
     trend_normalized: bool
+    persistence_reset: bool = False
+    persistence_replace_last: bool = False
+    persistence_point: Optional[Dict[str, Any]] = None
 
 
 class TraineeRenewableControlManager:
@@ -11583,6 +11587,7 @@ class TraineeRenewableControlManager:
         self._states: Dict[str, _ControllerState] = {}
         self._states_by_service_instance: Dict[str, _ControllerState] = {}
         self._states_lock = threading.RLock()
+        self._trend_persistence_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._close_lock = threading.Lock()
@@ -11662,6 +11667,109 @@ class TraineeRenewableControlManager:
     def _persistence_path_for_service(service: Any) -> Optional[Path]:
         runtime_dir = getattr(service, "runtime_dir", None)
         return Path(runtime_dir) / RENEWABLE_CONTROL_STATE_FILE if runtime_dir else None
+
+    @staticmethod
+    def _trend_persistence_path_for_service(service: Any) -> Optional[Path]:
+        runtime_dir = getattr(service, "runtime_dir", None)
+        return Path(runtime_dir) / RENEWABLE_CONTROL_TREND_FILE if runtime_dir else None
+
+    def _load_trend_for_service(self, service: Any) -> List[Dict[str, Any]]:
+        path = self._trend_persistence_path_for_service(service)
+        if path is None or not path.exists():
+            return []
+        points: List[Dict[str, Any]] = []
+        try:
+            with self._trend_persistence_lock:
+                lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        parsed_count = 0
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                point = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(point, Mapping):
+                continue
+            parsed_count += 1
+            normalized = dict(point)
+            if points and self._trend_lifecycle_changed(points[-1], normalized):
+                points = []
+            sample_key = str(normalized.get("sampleKey", ""))
+            if points and sample_key and str(points[-1].get("sampleKey", "")) == sample_key:
+                points[-1] = normalized
+            else:
+                points.append(normalized)
+        latest_segment = self._latest_trend_segment(points)
+        if parsed_count != len(latest_segment):
+            payload = "".join(
+                f"{json.dumps(point, ensure_ascii=False, separators=(',', ':'), default=str)}\n"
+                for point in latest_segment
+            )
+            try:
+                with self._trend_persistence_lock:
+                    path.write_text(payload, encoding="utf-8")
+            except OSError:
+                pass
+        return latest_segment
+
+    @staticmethod
+    def _replace_last_trend_record(path: Path, payload: str) -> None:
+        encoded = payload.encode("utf-8")
+        with path.open("r+b") as stream:
+            stream.seek(0, 2)
+            size = stream.tell()
+            if size <= 0:
+                stream.write(encoded)
+                return
+            position = size - 1
+            while position >= 0:
+                stream.seek(position)
+                if stream.read(1) not in (b"\r", b"\n"):
+                    break
+                position -= 1
+            while position >= 0:
+                stream.seek(position)
+                if stream.read(1) == b"\n":
+                    position += 1
+                    break
+                position -= 1
+            line_start = max(0, position)
+            stream.seek(line_start)
+            stream.write(encoded)
+            stream.truncate()
+
+    def _persist_trend_candidate_for_service(
+        self,
+        service: Any,
+        candidate: _TrendCandidate,
+    ) -> None:
+        if candidate.persistence_point is None:
+            return
+        path = self._trend_persistence_path_for_service(service)
+        if path is None:
+            return
+        points = candidate.trend if candidate.persistence_reset else [candidate.persistence_point]
+        payload = "".join(
+            f"{json.dumps(point, ensure_ascii=False, separators=(',', ':'), default=str)}\n"
+            for point in points
+        )
+        try:
+            with self._trend_persistence_lock:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if candidate.persistence_reset:
+                    path.write_text(payload, encoding="utf-8")
+                elif candidate.persistence_replace_last and path.exists():
+                    self._replace_last_trend_record(path, payload)
+                else:
+                    with path.open("a", encoding="utf-8") as stream:
+                        stream.write(payload)
+        except OSError:
+            # Trend persistence must not interrupt realtime control. The complete
+            # in-memory history remains available for the current WEB process.
+            return
 
     def _persistence_path(self, model_id: Optional[str]) -> Optional[Path]:
         return self._persistence_path_for_service(self._service_for(model_id))
@@ -11811,11 +11919,14 @@ class TraineeRenewableControlManager:
             state = self._states_by_service_instance.get(service_instance_id)
         if state is None:
             settings, loop_mode = self._load_configuration_for_service(service)
+            persisted_trend = self._load_trend_for_service(service)
             candidate = _ControllerState(
                 normalized,
                 service_instance_id,
                 settings=settings,
                 loop_mode=loop_mode,
+                trend=persisted_trend,
+                trend_normalized=bool(persisted_trend),
             )
             with self._states_lock:
                 state = self._states_by_service_instance.setdefault(
@@ -12513,7 +12624,6 @@ class TraineeRenewableControlManager:
             state.trend[-1] = point
         else:
             state.trend.append(point)
-        state.trend = state.trend[-45000:]
 
     def _stage_trend(
         self,
@@ -12522,11 +12632,39 @@ class TraineeRenewableControlManager:
         snapshot: Mapping[str, Any],
     ) -> _TrendCandidate:
         with state.lock:
+            previous_trend = state.trend
+            previous_length = len(previous_trend)
+            previous_last = copy.deepcopy(previous_trend[-1]) if previous_trend else None
+            was_normalized = state.trend_normalized
             candidate = _TrendCandidate(
-                trend=copy.deepcopy(state.trend),
+                trend=copy.deepcopy(previous_trend),
                 trend_normalized=state.trend_normalized,
             )
         self._update_trend(candidate, plan, snapshot)
+        current_last = candidate.trend[-1] if candidate.trend else None
+        lifecycle_reset = bool(
+            previous_last is not None
+            and current_last is not None
+            and self._trend_lifecycle_changed(previous_last, current_last)
+        )
+        normalized_reset = bool(
+            not was_normalized
+            and len(self._latest_trend_segment(previous_trend)) < previous_length
+        )
+        changed = bool(
+            len(candidate.trend) != previous_length
+            or previous_last != current_last
+        )
+        candidate.persistence_reset = lifecycle_reset or normalized_reset
+        candidate.persistence_replace_last = bool(
+            changed
+            and not candidate.persistence_reset
+            and previous_last is not None
+            and current_last is not None
+            and str(previous_last.get("sampleKey", ""))
+            == str(current_last.get("sampleKey", ""))
+        )
+        candidate.persistence_point = copy.deepcopy(current_last) if changed and current_last is not None else None
         return candidate
 
     def _command_payload(
@@ -12824,6 +12962,7 @@ class TraineeRenewableControlManager:
                     state,
                     clear_sending=False,
                 )
+            self._persist_trend_candidate_for_service(service, trend_candidate)
         finally:
             if cycle_plan is not None:
                 cycle_phases["cycleTotalMs"] = self._elapsed_milliseconds(
@@ -13178,6 +13317,7 @@ class TraineeRenewableControlManager:
                     state,
                     clear_sending=True,
                 )
+            self._persist_trend_candidate_for_service(service, trend_candidate)
             for entry in committed_runtime_logs:
                 self._persist_runtime_log(state, entry)
 
@@ -13370,7 +13510,13 @@ class TraineeRenewableControlManager:
                 ]
             )
 
+            requested_controller_instance_id = str(after_controller_instance_id or "")
             requested_sample_key = str(after_trend_sample_key or "")
+            if (
+                requested_controller_instance_id
+                and requested_controller_instance_id != state.service_instance_id
+            ):
+                requested_sample_key = ""
             trend_reset = not requested_sample_key
             trend = state.trend
             if requested_sample_key:

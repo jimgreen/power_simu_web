@@ -26,7 +26,6 @@ const WEB_RUNTIME_FALLBACKS = {
   frontend_request_timeout_seconds: 30,
   runtime_log_page_size: 20,
   runtime_log_cache_limit: 300,
-  trace_history_limit: 45000,
   backend_refresh_seconds: 1,
   backend_request_timeout_seconds: 8,
   frame_age_limit_seconds: 15,
@@ -40,7 +39,6 @@ const WEB_RUNTIME_CURRENT_IDS = {
   frontend_request_timeout_seconds: "currentWebRuntimeFrontendRequestTimeout",
   runtime_log_page_size: "currentWebRuntimeLogPageSize",
   runtime_log_cache_limit: "currentWebRuntimeLogCacheLimit",
-  trace_history_limit: "currentWebRuntimeTraceHistoryLimit",
   backend_refresh_seconds: "currentWebRuntimeBackendRefresh",
   backend_request_timeout_seconds: "currentWebRuntimeBackendRequestTimeout",
   frame_age_limit_seconds: "currentWebRuntimeFrameAgeLimit",
@@ -373,7 +371,6 @@ const RENEWABLE_TREND_DEFAULT_VISIBLE_SERIES = new Set([
   "acdcCurrent",
   "totalRenewableMaxAvailable",
 ]);
-const TRACE_HIGH_RES_WINDOW_MINUTES = 24 * 60;
 const VIRTUAL_TABLE_ROW_HEIGHT = 34;
 const VIRTUAL_TABLE_MIN_ROWS = 220;
 const VIRTUAL_TABLE_BUFFER_ROWS = 12;
@@ -468,10 +465,6 @@ function syncRenewableControlPeriodConstraints() {
 
 function frontendRequestTimeoutMs() {
   return Math.max(1000, activeRuntimeSetting("frontend_request_timeout_seconds") * 1000);
-}
-
-function traceHistoryLimit() {
-  return Math.max(1000, Math.round(activeRuntimeSetting("trace_history_limit")));
 }
 
 function receiveStateSyncIntervalMs() {
@@ -913,24 +906,8 @@ function sampleCurvePointsForCanvas(values, canvasWidth, density = 1.5) {
     .map(([index, value]) => ({ index, value }));
 }
 
-function compactTraceHistory(history, visibleWindowMinutes = 24 * 60) {
-  const historyLimit = traceHistoryLimit();
-  if (!Array.isArray(history) || history.length <= historyLimit) return history || [];
-  const latestMinute = Number(history[history.length - 1]?.minute ?? 0) || 0;
-  const highResStart = latestMinute - Math.max(TRACE_HIGH_RES_WINDOW_MINUTES, Number(visibleWindowMinutes) || 0);
-  const recent = [];
-  const archived = new Map();
-  const bucketMinutes = Math.max(5, Math.ceil(Math.max(1, latestMinute - highResStart) / 1200));
-  history.forEach((point) => {
-    const minute = Number(point?.minute ?? 0) || 0;
-    if (minute >= highResStart) {
-      recent.push(point);
-      return;
-    }
-    const bucket = Math.floor(minute / bucketMinutes);
-    archived.set(bucket, point);
-  });
-  return [...archived.values(), ...recent].slice(-historyLimit);
+function compactTraceHistory(history) {
+  return Array.isArray(history) ? history : [];
 }
 
 function virtualTableWindow(key, rows, options = {}) {
@@ -2839,7 +2816,7 @@ function traceWindowPointsWithBoundaryAnchors(points, range = {}, options = {}) 
   const firstMinute = Number(visible[0].minute);
   if (firstMinute > startMinute + 1e-9) {
     const previous = [...source].reverse().find((point) => Number(point.minute) < startMinute);
-    visible.unshift(traceWindowBoundaryPoint(previous || visible[0], startMinute));
+    if (previous) visible.unshift(traceWindowBoundaryPoint(previous, startMinute));
   }
   return visible;
 }

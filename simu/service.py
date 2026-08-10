@@ -18,6 +18,7 @@ import shutil
 import threading
 import time
 import uuid
+from bisect import bisect_left
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -972,31 +973,58 @@ def _interpolate(
     *,
     period_minutes: float = 1440.0,
 ) -> Optional[float]:
-    pairs = []
+    series = _compile_interpolation_series(points, key, period_minutes)
+    return _interpolate_compiled_series(
+        series,
+        minute,
+        default,
+        period_minutes=period_minutes,
+    )
+
+
+def _compile_interpolation_series(
+    points: Sequence[Mapping[str, Any]],
+    key: str,
+    period_minutes: float,
+) -> Tuple[Tuple[float, ...], Tuple[float, ...]]:
+    pairs: List[Tuple[float, float]] = []
     for point in points:
         value = _to_float(point.get(key), None)
         if value is None:
             continue
         pairs.append((float(point.get("minute", 0)) % period_minutes, value))
-    if not pairs:
-        return default
     pairs.sort(key=lambda item: item[0])
+    return (
+        tuple(item[0] for item in pairs),
+        tuple(item[1] for item in pairs),
+    )
+
+
+def _interpolate_compiled_series(
+    series: Tuple[Sequence[float], Sequence[float]],
+    minute: int | float,
+    default: Optional[float],
+    *,
+    period_minutes: float = 1440.0,
+) -> Optional[float]:
+    minutes, values = series
+    if not minutes:
+        return default
     m = float(minute % period_minutes)
-    if len(pairs) == 1:
-        return pairs[0][1]
-    if m < pairs[0][0]:
-        prev_m, prev_v = pairs[-1][0] - period_minutes, pairs[-1][1]
-        next_m, next_v = pairs[0]
+    if len(minutes) == 1:
+        return values[0]
+    # Match the legacy linear scan: an exact timestamp, including duplicate
+    # timestamps, uses the first point at that timestamp.
+    position = bisect_left(minutes, m)
+    if position == 0:
+        prev_m, prev_v = minutes[-1] - period_minutes, values[-1]
+        next_m, next_v = minutes[0], values[0]
+    elif position >= len(minutes):
+        prev_m, prev_v = minutes[-1], values[-1]
+        next_m, next_v = minutes[0] + period_minutes, values[0]
     else:
-        prev_m, prev_v = pairs[-1]
-        next_m, next_v = pairs[0][0] + period_minutes, pairs[0][1]
-        for idx in range(len(pairs) - 1):
-            left_m, left_v = pairs[idx]
-            right_m, right_v = pairs[idx + 1]
-            if left_m <= m <= right_m:
-                prev_m, prev_v = left_m, left_v
-                next_m, next_v = right_m, right_v
-                break
+        prev_m, prev_v = minutes[position - 1], values[position - 1]
+        next_m, next_v = minutes[position], values[position]
     span = next_m - prev_m
     if span <= 1e-9:
         return prev_v
@@ -1071,6 +1099,18 @@ class PolarMicrogridSimulator:
         self._curve_revision = 0
         self._curve_boundary_cache_key: Optional[Tuple[Any, ...]] = None
         self._curve_boundary_cache_value: Optional[Dict[str, Any]] = None
+        self._compiled_curve_revision = -1
+        self._compiled_curve_series_cache: Dict[
+            Tuple[int, str, float],
+            Tuple[Tuple[float, ...], Tuple[float, ...]],
+        ] = {}
+        self._load_curve_target_cache_key: Optional[Tuple[int, int]] = None
+        self._load_curve_target_cache_value: Dict[
+            str,
+            Tuple[int, Tuple[Tuple[str, str], ...]],
+        ] = {}
+        self._measurement_bindings_cache_revision = -1
+        self._measurement_bindings_cache: Tuple[simu_loop.MeasurementBinding, ...] = ()
         self._latest_power_summary_cache_key: Optional[Tuple[Any, ...]] = None
         self._latest_power_summary_cache_value: Optional[Dict[str, Any]] = None
         self._device_runtime_frame_cache_key: Optional[Tuple[Any, ...]] = None
@@ -3225,6 +3265,12 @@ class PolarMicrogridSimulator:
 
     def _make_config(self, period_seconds: Optional[float] = None) -> simu_loop.SimulationConfig:
         definition_snapshot = self.definition_snapshot
+        if self._measurement_bindings_cache_revision != definition_snapshot.revision:
+            self._measurement_bindings_cache = simu_loop.compile_measurement_bindings(
+                definition_snapshot.measurement_rows,
+                definition_snapshot.model_book,
+            )
+            self._measurement_bindings_cache_revision = definition_snapshot.revision
         return simu_loop.SimulationConfig(
             model_file=self.files["model"],
             meas_file=self.files["meas"],
@@ -3251,6 +3297,7 @@ class PolarMicrogridSimulator:
             yt_ctrl_book=simu_loop._clone_ebook(self.yt_ctrl_book),
             dev_define_book=definition_snapshot.dev_define_book,
             mode_book=simu_loop._clone_ebook(self.mode_book) if self.mode_book is not None else None,
+            measurement_bindings=self._measurement_bindings_cache,
         )
 
     def _execute_kernel(self, config: simu_loop.SimulationConfig) -> PowerFlowExecution:
@@ -6353,7 +6400,13 @@ class PolarMicrogridSimulator:
         row = {"time": minute_to_time(minute)}
         for key, default in self.weather_defaults.items():
             row[key] = _number_text(
-                _interpolate(self.curves.get("weather", []), target_minute, key, default, period_minutes=period_minutes)
+                self._interpolate_curve_series(
+                    self.curves.get("weather", []),
+                    target_minute,
+                    key,
+                    default,
+                    period_minutes=period_minutes,
+                )
             )
         load_targets = self._current_load_power_targets(float(target_minute), period_minutes)
         load_total = sum(float(target["p_kw"]) for target in load_targets)
@@ -6370,14 +6423,37 @@ class PolarMicrogridSimulator:
             load_seen=load_seen,
         )
 
-    def _current_load_power_targets(
+    def _interpolate_curve_series(
         self,
-        target_minute: float,
+        points: Sequence[Mapping[str, Any]],
+        minute: int | float,
+        key: str,
+        default: Optional[float],
+        *,
         period_minutes: float,
-    ) -> List[Dict[str, Any]]:
-        loads = self.curves.get("loads", {})
-        if not isinstance(loads, Mapping):
-            return []
+    ) -> Optional[float]:
+        if self._compiled_curve_revision != self._curve_revision:
+            self._compiled_curve_revision = self._curve_revision
+            self._compiled_curve_series_cache.clear()
+            self._load_curve_target_cache_key = None
+            self._load_curve_target_cache_value = {}
+        cache_key = (id(points), str(key), float(period_minutes))
+        series = self._compiled_curve_series_cache.get(cache_key)
+        if series is None:
+            series = _compile_interpolation_series(points, key, period_minutes)
+            self._compiled_curve_series_cache[cache_key] = series
+        return _interpolate_compiled_series(
+            series,
+            minute,
+            default,
+            period_minutes=period_minutes,
+        )
+
+    def _load_curve_targets(self) -> Dict[str, Tuple[int, Tuple[Tuple[str, str], ...]]]:
+        definition_revision = self.definition_snapshot.revision
+        cache_key = (definition_revision, self._curve_revision)
+        if self._load_curve_target_cache_key == cache_key:
+            return self._load_curve_target_cache_value
 
         model_book = self.definition_snapshot.model_book
         model_targets: Dict[str, List[Tuple[str, str]]] = {}
@@ -6390,26 +6466,57 @@ class PolarMicrogridSimulator:
                 if name:
                     model_targets.setdefault(name, []).append((block_name, name))
 
+        resolved: Dict[str, Tuple[int, Tuple[Tuple[str, str], ...]]] = {}
+        loads = self.curves.get("loads", {})
+        if isinstance(loads, Mapping):
+            for raw_name in loads:
+                curve_name = str(raw_name).strip()
+                if not curve_name:
+                    continue
+                explicit_type = ""
+                model_name = curve_name
+                prefix, separator, suffix = curve_name.partition(":")
+                if separator and prefix in {"ACLoad", "DCLoad"}:
+                    explicit_type = prefix
+                    model_name = suffix.strip()
+                matches = model_targets.get(model_name, [])
+                if explicit_type:
+                    matches = [match for match in matches if match[0] == explicit_type]
+                resolved[curve_name] = (
+                    1 if explicit_type else 0,
+                    tuple(matches),
+                )
+        self._load_curve_target_cache_key = cache_key
+        self._load_curve_target_cache_value = resolved
+        return resolved
+
+    def _current_load_power_targets(
+        self,
+        target_minute: float,
+        period_minutes: float,
+    ) -> List[Dict[str, Any]]:
+        loads = self.curves.get("loads", {})
+        if not isinstance(loads, Mapping):
+            return []
+
+        curve_targets = self._load_curve_targets()
         targets_by_device: Dict[Tuple[str, str], Tuple[int, Dict[str, Any]]] = {}
         for raw_name, points in loads.items():
             curve_name = str(raw_name).strip()
             if not curve_name:
                 continue
-            explicit_type = ""
-            model_name = curve_name
-            prefix, separator, suffix = curve_name.partition(":")
-            if separator and prefix in {"ACLoad", "DCLoad"}:
-                explicit_type = prefix
-                model_name = suffix.strip()
-            matches = model_targets.get(model_name, [])
-            if explicit_type:
-                matches = [match for match in matches if match[0] == explicit_type]
-            value = _interpolate(points, target_minute, "p_kw", float("nan"), period_minutes=period_minutes)
+            priority, matches = curve_targets.get(curve_name, (0, ()))
+            value = self._interpolate_curve_series(
+                points,
+                target_minute,
+                "p_kw",
+                float("nan"),
+                period_minutes=period_minutes,
+            )
             if value != value:
                 continue
             for block_name, dev_name in matches:
                 key = (block_name, dev_name)
-                priority = 1 if explicit_type else 0
                 current = targets_by_device.get(key)
                 if current is not None and current[0] > priority:
                     continue
@@ -10328,7 +10435,13 @@ class PolarMicrogridSimulator:
             point_count = len(weather)
         index = max(0, self._curve_point_index(target_minute, period_minutes) - 1)
         point = {
-            key: _interpolate(weather, target_minute, key, default, period_minutes=period_minutes)
+            key: self._interpolate_curve_series(
+                weather,
+                target_minute,
+                key,
+                default,
+                period_minutes=period_minutes,
+            )
             for key, default in self.weather_defaults.items()
             if key != "load_kw"
         }
@@ -10339,7 +10452,13 @@ class PolarMicrogridSimulator:
             for points in loads.values():
                 if not isinstance(points, Sequence) or isinstance(points, (str, bytes)):
                     continue
-                value = _interpolate(points, target_minute, "p_kw", float("nan"), period_minutes=period_minutes)
+                value = self._interpolate_curve_series(
+                    points,
+                    target_minute,
+                    "p_kw",
+                    float("nan"),
+                    period_minutes=period_minutes,
+                )
                 if value == value:
                     load_total += value
                     load_count += 1

@@ -6,8 +6,10 @@ import math
 import threading
 import time
 from array import array
+from collections import deque
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Deque, Dict, Mapping, Optional, Sequence
 
 from .measurement_delta import (
     measurement_definition_signature,
@@ -18,6 +20,24 @@ from .measurement_delta import (
 MEASUREMENT_HISTORY_ENCODING = "measurement-history-arrays-v1"
 _MISSING_NUMBER = float("nan")
 _MISSING_VALID = 255
+_HISTORY_CHUNK_FRAME_CAPACITY = 256
+
+
+@dataclass
+class _HistoryChunk:
+    frames: list[Dict[str, Any]]
+    real_values: array
+    scada_values: array
+    valid_values: bytearray
+    start_frame: int = 0
+
+    @classmethod
+    def empty(cls) -> "_HistoryChunk":
+        return cls([], array("d"), array("d"), bytearray())
+
+    @property
+    def active_frame_count(self) -> int:
+        return max(0, len(self.frames) - self.start_frame)
 
 
 def _number_or_nan(value: Any) -> float:
@@ -50,7 +70,7 @@ def _float_value(value: Any, default: float = 0.0) -> float:
 
 
 class MeasurementHistoryStore:
-    """Store one model's current-run history in compact flat numeric arrays.
+    """Store one model's current-run history in chunked numeric arrays.
 
     Measurement identity is never repeated in a frame. Values are aligned to the
     current definition order and queried by positional index. The flat arrays
@@ -65,10 +85,8 @@ class MeasurementHistoryStore:
         self._definition_revision = 0
         self._run_id: Optional[int] = None
         self._next_seq = 0
-        self._frames: list[Dict[str, Any]] = []
-        self._real_values = array("d")
-        self._scada_values = array("d")
-        self._valid_values = bytearray()
+        self._chunks: Deque[_HistoryChunk] = deque()
+        self._frame_count = 0
 
     def _clear_unlocked(self, *, preserve_definition: bool) -> None:
         signature = self._definition_signature if preserve_definition else ""
@@ -79,10 +97,8 @@ class MeasurementHistoryStore:
         self._definition_revision = revision
         self._run_id = None
         self._next_seq = 0
-        self._frames = []
-        self._real_values = array("d")
-        self._scada_values = array("d")
-        self._valid_values = bytearray()
+        self._chunks = deque()
+        self._frame_count = 0
 
     def clear(self, *, preserve_definition: bool = True) -> None:
         with self._lock:
@@ -171,7 +187,7 @@ class MeasurementHistoryStore:
                 self._definition_signature
                 and self._definition_signature != signature
             )
-            previous = self._frames[-1] if self._frames else None
+            previous = self._last_frame_unlocked()
             lifecycle_changed = bool(
                 self._run_id is not None
                 and (
@@ -187,6 +203,7 @@ class MeasurementHistoryStore:
             )
             if definition_changed or lifecycle_changed:
                 self._clear_unlocked(preserve_definition=False)
+                previous = None
 
             self._definition_signature = signature
             self._definition_count = count
@@ -198,17 +215,19 @@ class MeasurementHistoryStore:
                 return False
 
             duplicate = bool(
-                self._frames
-                and int(self._frames[-1]["run_id"]) == run_id
-                and int(self._frames[-1]["step_count"]) == step_count
-                and abs(float(self._frames[-1]["absolute_minute"]) - absolute_minute) <= 1e-9
+                previous is not None
+                and int(previous["run_id"]) == run_id
+                and int(previous["step_count"]) == step_count
+                and abs(float(previous["absolute_minute"]) - absolute_minute) <= 1e-9
             )
             if duplicate:
-                offset = (len(self._frames) - 1) * count
-                self._real_values[offset : offset + count] = real_values
-                self._scada_values[offset : offset + count] = scada_values
-                self._valid_values[offset : offset + count] = valid_values
-                self._frames[-1].update(
+                chunk = self._chunks[-1]
+                position = len(chunk.frames) - 1
+                offset = position * count
+                chunk.real_values[offset : offset + count] = real_values
+                chunk.scada_values[offset : offset + count] = scada_values
+                chunk.valid_values[offset : offset + count] = valid_values
+                chunk.frames[-1].update(
                     {
                         "simu_time": str(clock.get("time") or "--"),
                         "wall_time": frame_wall_time,
@@ -217,7 +236,13 @@ class MeasurementHistoryStore:
                 return False
 
             self._next_seq += 1
-            self._frames.append(
+            if (
+                not self._chunks
+                or len(self._chunks[-1].frames) >= _HISTORY_CHUNK_FRAME_CAPACITY
+            ):
+                self._chunks.append(_HistoryChunk.empty())
+            chunk = self._chunks[-1]
+            chunk.frames.append(
                 {
                     "seq": self._next_seq,
                     "run_id": run_id,
@@ -227,25 +252,55 @@ class MeasurementHistoryStore:
                     "wall_time": frame_wall_time,
                 }
             )
-            self._real_values.extend(real_values)
-            self._scada_values.extend(scada_values)
-            self._valid_values.extend(valid_values)
+            chunk.real_values.extend(real_values)
+            chunk.scada_values.extend(scada_values)
+            chunk.valid_values.extend(valid_values)
+            self._frame_count += 1
             self._trim_unlocked(max(1, int(limit)))
             return True
 
+    def _last_frame_unlocked(self) -> Optional[Dict[str, Any]]:
+        if not self._chunks:
+            return None
+        return self._chunks[-1].frames[-1]
+
+    def _first_frame_unlocked(self) -> Optional[Dict[str, Any]]:
+        if not self._chunks:
+            return None
+        chunk = self._chunks[0]
+        if chunk.start_frame >= len(chunk.frames):
+            return None
+        return chunk.frames[chunk.start_frame]
+
     def _trim_unlocked(self, limit: int) -> None:
-        overflow = len(self._frames) - limit
-        if overflow <= 0:
-            return
-        value_count = overflow * self._definition_count
-        del self._frames[:overflow]
-        del self._real_values[:value_count]
-        del self._scada_values[:value_count]
-        del self._valid_values[:value_count]
+        overflow = self._frame_count - limit
+        while overflow > 0 and self._chunks:
+            chunk = self._chunks[0]
+            drop_count = min(overflow, chunk.active_frame_count)
+            chunk.start_frame += drop_count
+            self._frame_count -= drop_count
+            overflow -= drop_count
+            if chunk.start_frame >= len(chunk.frames):
+                self._chunks.popleft()
 
     def trim(self, limit: int) -> None:
         with self._lock:
             self._trim_unlocked(max(1, int(limit)))
+
+    def storage_diagnostics(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "layout": "chunked-ring-v1",
+                "frame_count": self._frame_count,
+                "chunk_count": len(self._chunks),
+                "allocated_frame_slots": sum(
+                    len(chunk.frames) for chunk in self._chunks
+                ),
+                "discarded_prefix_frames": sum(
+                    chunk.start_frame for chunk in self._chunks
+                ),
+                "chunk_frame_capacity": _HISTORY_CHUNK_FRAME_CAPACITY,
+            }
 
     def payload(
         self,
@@ -272,49 +327,47 @@ class MeasurementHistoryStore:
                         selected.append(index)
                         seen.add(index)
 
-            latest_seq = int(self._frames[-1]["seq"]) if self._frames else 0
-            oldest_seq = int(self._frames[0]["seq"]) if self._frames else 0
+            latest_frame = self._last_frame_unlocked()
+            oldest_frame = self._first_frame_unlocked()
+            latest_seq = int(latest_frame["seq"]) if latest_frame is not None else 0
+            oldest_seq = int(oldest_frame["seq"]) if oldest_frame is not None else 0
             reset = bool(
                 after <= 0
                 or after > latest_seq
                 or (oldest_seq and after < oldest_seq - 1)
             )
-            source_frames = (
-                self._frames
-                if reset
-                else [frame for frame in self._frames if int(frame["seq"]) > after]
-            )
-            frame_positions = (
-                range(len(self._frames))
-                if reset
-                else (
-                    position
-                    for position, frame in enumerate(self._frames)
-                    if int(frame["seq"]) > after
-                )
-            )
             frames: list[Dict[str, Any]] = []
-            for position, frame in zip(frame_positions, source_frames):
-                base = position * count
-                frames.append(
-                    {
-                        **frame,
-                        "real_values": [
-                            _number_or_none(self._real_values[base + index])
-                            for index in selected
-                        ],
-                        "scada_values": [
-                            _number_or_none(self._scada_values[base + index])
-                            for index in selected
-                        ],
-                        "valid_values": [
-                            None
-                            if self._valid_values[base + index] == _MISSING_VALID
-                            else int(self._valid_values[base + index])
-                            for index in selected
-                        ],
-                    }
-                )
+            for chunk in self._chunks:
+                if (
+                    not reset
+                    and chunk.frames
+                    and int(chunk.frames[-1]["seq"]) <= after
+                ):
+                    continue
+                for position in range(chunk.start_frame, len(chunk.frames)):
+                    frame = chunk.frames[position]
+                    if not reset and int(frame["seq"]) <= after:
+                        continue
+                    base = position * count
+                    frames.append(
+                        {
+                            **frame,
+                            "real_values": [
+                                _number_or_none(chunk.real_values[base + index])
+                                for index in selected
+                            ],
+                            "scada_values": [
+                                _number_or_none(chunk.scada_values[base + index])
+                                for index in selected
+                            ],
+                            "valid_values": [
+                                None
+                                if chunk.valid_values[base + index] == _MISSING_VALID
+                                else int(chunk.valid_values[base + index])
+                                for index in selected
+                            ],
+                        }
+                    )
             return {
                 "encoding": MEASUREMENT_HISTORY_ENCODING,
                 "model_id": str(model_id),

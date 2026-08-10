@@ -157,6 +157,97 @@ class MeasurementHistoryTest(unittest.TestCase):
             [10048, 10049, 10050],
         )
 
+    def test_history_store_uses_chunked_ring_storage_without_head_array_deletes(self):
+        from simu.measurement_history import MeasurementHistoryStore
+
+        definition = {
+            "idx": 1,
+            "name": "m1",
+            "dev_type": "Device",
+            "dev_name": "d1",
+            "meas_type": "P",
+            "valid": 1,
+        }
+        measurements = {
+            "definitions": [definition],
+            "real": [{**definition, "value": 1.0}],
+            "scada": [{**definition, "value": 1.0}],
+        }
+        store = MeasurementHistoryStore()
+
+        for step in range(1, 701):
+            store.append(
+                {
+                    "run_id": 1,
+                    "step_count": step,
+                    "absolute_minute": float(step),
+                    "time": "--",
+                },
+                measurements,
+                limit=300,
+            )
+
+        diagnostics = store.storage_diagnostics()
+        payload = store.payload(indices=[0])
+
+        self.assertEqual(diagnostics["layout"], "chunked-ring-v1")
+        self.assertEqual(diagnostics["frame_count"], 300)
+        self.assertLessEqual(diagnostics["allocated_frame_slots"], 555)
+        self.assertEqual(payload["oldest_seq"], 401)
+        self.assertEqual(payload["latest_seq"], 700)
+        self.assertEqual(len(payload["frames"]), 300)
+
+    def test_definition_change_at_same_clock_step_starts_a_new_history(self):
+        from simu.measurement_history import MeasurementHistoryStore
+
+        store = MeasurementHistoryStore()
+        clock = {
+            "run_id": 1,
+            "step_count": 1,
+            "absolute_minute": 1.0,
+            "time": "00:01",
+        }
+        first_definition = {
+            "idx": 1,
+            "name": "m1",
+            "dev_type": "Device",
+            "dev_name": "d1",
+            "meas_type": "P",
+            "valid": 1,
+        }
+        second_definition = {
+            **first_definition,
+            "name": "m2",
+            "meas_type": "Q",
+        }
+
+        self.assertTrue(
+            store.append(
+                clock,
+                {
+                    "definitions": [first_definition],
+                    "real": [{**first_definition, "value": 1.0}],
+                    "scada": [{**first_definition, "value": 1.0}],
+                },
+            )
+        )
+        self.assertTrue(
+            store.append(
+                clock,
+                {
+                    "definitions": [second_definition],
+                    "real": [{**second_definition, "value": 2.0}],
+                    "scada": [{**second_definition, "value": 2.0}],
+                },
+            )
+        )
+
+        payload = store.payload(indices=[0])
+        self.assertEqual(payload["oldest_seq"], 1)
+        self.assertEqual(payload["latest_seq"], 1)
+        self.assertEqual(len(payload["frames"]), 1)
+        self.assertEqual(payload["frames"][0]["real_values"], [2.0])
+
     def test_trainee_backend_accumulates_received_history_and_resets_on_remote_run_change(self):
         from simu.trainee_exchange import TraineeRealtimeExchange
 

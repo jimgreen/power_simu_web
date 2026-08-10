@@ -108,6 +108,13 @@ LOGGER = logging.getLogger("SimulationLoop")
 
 
 @dataclass(frozen=True)
+class MeasurementBinding:
+    target_type: str
+    target_name: str
+    target_present: bool = False
+
+
+@dataclass(frozen=True)
 class SimulationConfig:
     model_file: Path
     meas_file: Path
@@ -134,6 +141,7 @@ class SimulationConfig:
     yt_ctrl_book: Optional[EBook] = None
     dev_define_book: Optional[EBook] = None
     mode_book: Optional[EBook] = None
+    measurement_bindings: Optional[Tuple[MeasurementBinding, ...]] = None
 
 
 @dataclass(frozen=True)
@@ -1143,6 +1151,52 @@ def _source_model_row(
             continue
         candidates.append(resource.source)
     return candidates[0] if len(candidates) == 1 else None
+
+
+def compile_measurement_bindings(
+    measurement_rows: Sequence[Sequence[str]],
+    model_book: Optional[EBook],
+) -> Tuple[MeasurementBinding, ...]:
+    if model_book is None:
+        return tuple(
+            MeasurementBinding(str(row[2]), str(row[3]), False)
+            for row in measurement_rows
+        )
+
+    model_rows_by_key: Dict[Tuple[str, str], dict] = {}
+    for block_name, block in model_book.data.items():
+        for model_row in getattr(block, "data", []):
+            name = str(model_row.get("name", ""))
+            if name:
+                model_rows_by_key[(str(block_name), name)] = model_row
+
+    resources = structured_resources(model_book)
+    resource_key_by_source_id = {
+        id(resource.source): resource.device_key
+        for resource in resources
+    }
+    alias_sources: Dict[str, Dict[int, dict]] = {}
+    for resource in resources:
+        for alias in resource_aliases(resource):
+            alias_sources.setdefault(alias, {})[id(resource.source)] = resource.source
+
+    bindings: List[MeasurementBinding] = []
+    for row in measurement_rows:
+        dev_type = str(row[2]) if len(row) > 2 else ""
+        dev_name = str(row[3]) if len(row) > 3 else ""
+        target = model_rows_by_key.get((dev_type, dev_name))
+        if target is None:
+            candidates = list(alias_sources.get(dev_name, {}).values())
+            target = candidates[0] if len(candidates) == 1 else None
+        target_key = resource_key_by_source_id.get(id(target)) if target is not None else None
+        bindings.append(
+            MeasurementBinding(
+                target_type=target_key[0] if target_key is not None else dev_type,
+                target_name=target_key[1] if target_key is not None else dev_name,
+                target_present=target is not None,
+            )
+        )
+    return tuple(bindings)
 
 
 def _stat_dev_name(row: dict) -> str:
@@ -2797,29 +2851,37 @@ def _measurement_value(
     weather: Optional[Dict[str, float]] = None,
     signal_values: Optional[Dict[Tuple[str, str, str], float]] = None,
     model_book: Optional[EBook] = None,
+    binding: Optional[MeasurementBinding] = None,
 ) -> Optional[float]:
     dev_type, dev_name, meas_type = row[2], row[3], row[4].upper()
     if meas_type in SIGNAL_MEASUREMENT_TYPES:
         return None if signal_values is None else signal_values.get((dev_type, dev_name, meas_type))
     if dev_type == "Environment" and dev_name == "weather":
         return _weather_measurement_value(meas_type, weather)
-    target = (
-        _source_model_row(model_book, dev_type, dev_name)
-        if model_book is not None
-        else None
-    )
-    target_type = dev_type
-    target_name = dev_name
-    if target is not None:
-        resolved = [
-            resource.device_key
-            for resource in structured_resources(model_book)
-            if resource.source is target
-        ]
-        if len(resolved) == 1:
-            target_type, target_name = resolved[0]
-        elif _model_row(model_book, dev_type, dev_name) is not None:
-            target_type, target_name = dev_type, dev_name
+    target_present = False
+    if binding is not None:
+        target_type = binding.target_type
+        target_name = binding.target_name
+        target_present = binding.target_present
+    else:
+        target = (
+            _source_model_row(model_book, dev_type, dev_name)
+            if model_book is not None
+            else None
+        )
+        target_type = dev_type
+        target_name = dev_name
+        target_present = target is not None
+        if target is not None:
+            resolved = [
+                resource.device_key
+                for resource in structured_resources(model_book)
+                if resource.source is target
+            ]
+            if len(resolved) == 1:
+                target_type, target_name = resolved[0]
+            elif _model_row(model_book, dev_type, dev_name) is not None:
+                target_type, target_name = dev_type, dev_name
     if meas_type == "I" and target_type in GENERIC_CURRENT_BRANCH_TYPES:
         for terminal_meas_type in ("I_FROM", "I_TO"):
             value = snapshot.value(target_type, target_name, terminal_meas_type)
@@ -2845,7 +2907,7 @@ def _measurement_value(
     if target_type == "DCBreak":
         dev = snapshot.dc_devices.get("DCBreak", {}).get(target_name)
         return None if dev is None else snapshot._dc_zero_value(dev, meas_type)
-    if target is not None and meas_type in {"P", "Q", "V", "I"}:
+    if target_present and meas_type in {"P", "Q", "V", "I"}:
         suffix = "GEN" if target_type in {"ACGenerator", "DCGenerator"} else ""
         target_meas_type = f"{meas_type}_{suffix}" if suffix else meas_type
         value = snapshot.value(target_type, target_name, target_meas_type)
@@ -2894,6 +2956,7 @@ def build_real_rows_from_data(
     after: Optional[Sequence[str]] = None,
     *,
     model_book: Optional[EBook] = None,
+    measurement_bindings: Optional[Sequence[MeasurementBinding]] = None,
 ) -> Tuple[List[str], List[List[str]], List[str], int, int]:
     rows = []
     for source_row in measurement_rows:
@@ -2903,7 +2966,10 @@ def build_real_rows_from_data(
         rows.append(row[: len(MEAS_HEADER)])
     updated = 0
     missing = 0
-    for row in rows:
+    bindings = tuple(measurement_bindings or compile_measurement_bindings(rows, model_book))
+    if len(bindings) != len(rows):
+        raise ValueError("Measurement binding count does not match measurement rows")
+    for row, binding in zip(rows, bindings):
         value = _measurement_value(
             snapshot,
             row,
@@ -2911,6 +2977,7 @@ def build_real_rows_from_data(
             weather,
             signal_values,
             model_book,
+            binding,
         )
         if value is None:
             missing += 1
@@ -3080,6 +3147,7 @@ def run_once(
             meas_before,
             meas_after,
             model_book=model_book,
+            measurement_bindings=config.measurement_bindings,
         )
         scada_rows = add_noise_to_rows(real_rows, config.noise_std, rng)
         if config.write_output_files:

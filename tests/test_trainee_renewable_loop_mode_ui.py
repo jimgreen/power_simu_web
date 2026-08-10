@@ -44,7 +44,7 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             render_block,
         )
         self.assertIn(
-            "button.disabled = actionPending || (!receiveReady && !control.enabled);",
+            "button.disabled = actionPending || (!receiveReady && !control.desiredEnabled);",
             render_block,
         )
         self.assertIn(

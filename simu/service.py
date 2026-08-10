@@ -1278,10 +1278,9 @@ class PolarMicrogridSimulator:
         self.local_settings = self._read_local_settings()
         self._source_measurement_statuses = self._read_source_measurement_statuses()
         self._apply_stored_system_parameters()
+        self.command_history = self._read_command_history()
         if self.clear_commands_on_start_and_reset:
-            self._clear_command_history()
-        else:
-            self.command_history = self._read_command_history()
+            self._remove_automatic_command_history_for_restart()
         self._last_command_response_index = len(self.command_history)
         self.runtime_logs = self._read_runtime_logs()
         self._runtime_log_seq = max((int(_to_float(item.get("seq"), 0) or 0) for item in self.runtime_logs), default=0)
@@ -1957,6 +1956,31 @@ class PolarMicrogridSimulator:
         _write_json(self.commands_file, [])
         self._command_history_persisted_signature = self._command_history_signature([])
         return cleared
+
+    def _remove_automatic_command_history_for_restart(self) -> Dict[str, int]:
+        acknowledged_ids = {id(item) for item in self.command_history[: self._last_command_response_index]}
+        retained: List[Dict[str, Any]] = []
+        removed_keys: set[Tuple[str, str, str, str]] = set()
+        removed_entries = 0
+        for entry in self.command_history:
+            if _command_origin(entry) == "manual":
+                retained.append(entry)
+                continue
+            removed_entries += 1
+            removed_keys.update(self._command_entry_control_keys(entry))
+
+        if removed_entries:
+            self.command_history = retained
+            self._last_command_response_index = sum(
+                1 for item in self.command_history if id(item) in acknowledged_ids
+            )
+        self._write_command_history()
+
+        return {
+            "entries": removed_entries,
+            "remote_controls": sum(1 for key in removed_keys if key[0] == "remote_control"),
+            "remote_adjustments": sum(1 for key in removed_keys if key[0] == "remote_adjustment"),
+        }
 
     def _apply_stored_system_parameters(self) -> None:
         params = self.local_settings.get("system_parameters", {})
@@ -3168,6 +3192,15 @@ class PolarMicrogridSimulator:
         source: str,
     ) -> Dict[str, Any]:
         strategy_id, generation, _replace_generation = _strategy_generation_metadata(payload)
+        cancel_all_raw = payload.get(
+            "cancel_all_generations",
+            payload.get("cancelAllGenerations", False),
+        )
+        cancel_all_generations = bool(
+            cancel_all_raw is True
+            or str(cancel_all_raw or "").strip().casefold()
+            in {"1", "true", "yes", "on"}
+        )
         eligible_source = _is_trainee_command_source(source)
         current = float(self.clock.absolute_minute)
         received_wall_time = _now_text()
@@ -3177,7 +3210,9 @@ class PolarMicrogridSimulator:
         cancelled_entries = 0
         cancelled_keys: set[Tuple[str, str, str, str]] = set()
 
-        if eligible_source and strategy_id and generation not in (None, ""):
+        if eligible_source and strategy_id and (
+            cancel_all_generations or generation not in (None, "")
+        ):
             cancelled_entries, cancelled_keys = self._mark_strategy_generations_cancelled(
                 strategy_id=strategy_id,
                 generation=generation,
@@ -3185,7 +3220,7 @@ class PolarMicrogridSimulator:
                 cancelled_wall_time=received_wall_time,
                 cancelled_simu_time=received_simu_time,
                 cancelled_absolute_minute=current,
-                require_generation_match=True,
+                require_generation_match=not cancel_all_generations,
             )
 
         cancel_entry = {
@@ -3203,6 +3238,7 @@ class PolarMicrogridSimulator:
             "valid_for_minutes": 0.0,
             "strategy_id": strategy_id,
             "generation": generation,
+            "cancel_all_generations": cancel_all_generations,
             "cancelled_reason": reason,
             "accepted": {
                 "run_status": 0,
@@ -3216,6 +3252,7 @@ class PolarMicrogridSimulator:
                 "cancel_strategy_generation": {
                     "strategy_id": strategy_id,
                     "generation": generation,
+                    "cancel_all_generations": cancel_all_generations,
                     "cancelled": cancelled_entries > 0,
                 },
             },
@@ -3230,7 +3267,11 @@ class PolarMicrogridSimulator:
             "策略代次撤销成功" if cancelled_entries else "无可撤销策略代次",
             [
                 f"来源 {source}",
-                f"策略 {strategy_id or '--'}，代次 {generation if generation not in (None, '') else '--'}",
+                (
+                    f"策略 {strategy_id or '--'}，全部代次"
+                    if cancel_all_generations
+                    else f"策略 {strategy_id or '--'}，代次 {generation if generation not in (None, '') else '--'}"
+                ),
                 f"撤销代次 {cancelled_entries} 个，撤销控制点 {len(cancelled_keys)} 个，原因 {reason}",
             ],
             level="ok" if cancelled_entries else "warn",
@@ -3241,6 +3282,7 @@ class PolarMicrogridSimulator:
             "ignored": 0 if eligible_source else 1,
             "strategy_id": strategy_id,
             "generation": generation,
+            "cancel_all_generations": cancel_all_generations,
         }
 
     def cancel_student_commands(self, payload: Mapping[str, Any], source: str = "") -> Dict[str, Any]:
@@ -4148,6 +4190,11 @@ class PolarMicrogridSimulator:
         resources = structured_resources(model_book)
         run_stats, _cb_status, set_values, _soc_values = self._stat_maps()
         storage_protocol_keys = self._storage_runtime_protocol_keys()
+        active_adjustment_values: Dict[Tuple[str, str, str], float] = {}
+        for key in self._active_remote_adjustment_keys(float(self.clock.absolute_minute)):
+            value = self._set_value_from_book(self.runtime_stat_book, key)
+            if value is not None:
+                active_adjustment_values[key] = value
         latest_states = {
             (str(item.get("dev_type", "")), str(item.get("dev_name", item.get("name", "")))): item
             for item in self.latest_device_states
@@ -4206,6 +4253,17 @@ class PolarMicrogridSimulator:
                         return float(value)
             return None
 
+        def first_active_power_setpoint(
+            state_keys: Sequence[Tuple[str, str]],
+            fields: Sequence[str],
+        ) -> Optional[Tuple[str, float]]:
+            for state_key in state_keys:
+                for field in fields:
+                    value = active_adjustment_values.get((state_key[0], state_key[1], field))
+                    if value is not None:
+                        return field, float(value)
+            return None
+
         def target_power(
             dev_type: str,
             name: str,
@@ -4219,7 +4277,10 @@ class PolarMicrogridSimulator:
                 pbase = _to_float(target_row.get("pbase"), 1.0)
                 if pbase is None or pbase <= 0.0:
                     pbase = 1.0
-                if effective_row is not None:
+                active_power = first_active_power_setpoint(state_keys, ("p_set", "pv0"))
+                if active_power is not None:
+                    multiplier = active_power[1]
+                elif effective_row is not None:
                     multiplier = _to_float(target_row.get("pv0", target_row.get("p_set")), None)
                 else:
                     multiplier = first_power_setpoint(state_keys, ("p_set", "pv0"))
@@ -4232,7 +4293,10 @@ class PolarMicrogridSimulator:
                 power_field = ""
                 value = None
                 power_fields = converter_power_setpoint_fields(target_row)
-                if effective_row is not None:
+                active_power = first_active_power_setpoint(state_keys, power_fields)
+                if active_power is not None:
+                    power_field, value = active_power
+                elif effective_row is not None:
                     for field in power_fields:
                         value = _to_float(target_row.get(field), None)
                         if value is not None:
@@ -4262,7 +4326,13 @@ class PolarMicrogridSimulator:
                     power_field or "p_ac_set",
                 )
 
-            if effective_row is not None:
+            active_power = first_active_power_setpoint(
+                state_keys,
+                ("p_set", "p_ac_set", "p_dc_set"),
+            )
+            if active_power is not None:
+                value = active_power[1]
+            elif effective_row is not None:
                 value = _to_float(
                     effective_row.get(
                         "p_set",
@@ -6376,26 +6446,26 @@ class PolarMicrogridSimulator:
                     or requested_absolute_minute < previous_absolute_minute - 1e-9
                 )
             )
-            clear_all_commands = bool(
+            remove_automatic_command_history = bool(
                 self.clear_commands_on_start_and_reset
                 and (starts_new_lifecycle or action == "stop" or time_reset_requested)
             )
             commands_cleared = False
-            if clear_all_commands:
-                cleared = self._clear_command_history()
+            if remove_automatic_command_history:
+                cleared = self._remove_automatic_command_history_for_restart()
                 commands_cleared = True
                 if cleared["entries"]:
                     self._append_runtime_log(
                         "控制指令",
                         "仿真时钟",
-                        "命令历史已清零",
+                        "自动指令已清空",
                         [
-                            f"模拟台重启或归零前清空控制指令记录 {cleared['entries']} 条",
+                            f"模拟台重启或归零前清空自动指令记录 {cleared['entries']} 条",
                             (
                                 f"涉及遥控 {cleared['remote_controls']} 个控制点，"
                                 f"遥调 {cleared['remote_adjustments']} 个控制点"
                             ),
-                            "commands.json 已重置为空数组，当前控制边界恢复模型默认值",
+                            "人工指令继续保持，人工界面修改不受影响",
                         ],
                         level="ok",
                         simu_time=minute_to_time(self.clock.minute),

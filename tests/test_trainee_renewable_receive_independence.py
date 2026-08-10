@@ -130,6 +130,39 @@ def test_renewable_control_buttons_require_active_receive_mode():
     assert "canRun: false" in reset_block
 
 
+def test_renewable_ui_distinguishes_running_waiting_and_explicit_stop_states():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+    html = (ROOT / "simu/web/trainee/index.html").read_text(encoding="utf-8")
+    state_block = script.split("renewableControl: {", 1)[1].split(
+        "overviewBottomHeight",
+        1,
+    )[0]
+    apply_block = script.split("function applyRenewableControlState", 1)[1].split(
+        "async function refreshRenewableControlState",
+        1,
+    )[0]
+    render_block = script.split("function renderRenewableControl(snapshot", 1)[1].split(
+        "async function toggleRenewableAuto",
+        1,
+    )[0]
+    toggle_block = script.split("async function toggleRenewableAuto", 1)[1].split(
+        "async function runRenewableControlOnce",
+        1,
+    )[0]
+
+    assert "desiredEnabled: false" in state_block
+    assert "resumePending: false" in state_block
+    assert 'class="renewable-backend-state"' in html
+    assert "后台运行状态" in html
+    assert 'id="renewableControlState"' in html
+    assert "desiredEnabled: Boolean(payload.desiredEnabled)" in apply_block
+    assert "resumePending: Boolean(payload.resumePending)" in apply_block
+    assert 'button.textContent = control.desiredEnabled ? "停止实时控制" : "启动实时控制"' in render_block
+    assert '"等待接收后恢复"' in render_block
+    assert '"已停止"' in render_block
+    assert 'const action = state.renewableControl.desiredEnabled ? "stop" : "start"' in toggle_block
+
+
 def test_receive_api_immediately_notifies_the_backend_controller():
     server = (ROOT / "simu/server.py").read_text(encoding="utf-8")
     receive_block = server.split("def _handle_trainee_receive", 1)[1].split(
@@ -159,5 +192,8 @@ class TraineeRenewableReceiveRecoveryUiContractTest(unittest.TestCase):
         )[0]
 
         self.assertIn("!receiveReady", status_block)
+        self.assertIn("control.resumePending", status_block)
+        self.assertIn("control.lastStatus", status_block)
         self.assertIn("renewablePrerequisiteStatus(control)", status_block)
-        self.assertIn(": control.lastStatus;", status_block)
+        self.assertIn('status.classList.toggle("is-ok", control.enabled)', status_block)
+        self.assertIn('status.classList.toggle("is-warning", control.resumePending)', status_block)

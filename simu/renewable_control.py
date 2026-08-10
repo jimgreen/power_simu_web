@@ -49,6 +49,7 @@ from simu.trainee_exchange import TraineeControlSnapshot
 
 
 EPSILON = 1e-9
+RENEWABLE_CONTROL_STRATEGY_ID = "renewable_priority"
 DEFAULT_TRAINEE_BACKEND_REFRESH_SECONDS = 1.0
 CONTROL_INTERVAL_MULTIPLE_TOLERANCE = 1e-8
 MINIMUM_CONTROL_INTERVAL_SECONDS = default_number(
@@ -11430,6 +11431,7 @@ def _decision_log_level(plan: Mapping[str, Any]) -> str:
 
 
 _RENEWABLE_READY_IDLE_STATUS = "请选择单次计算或启动实时控制。"
+_RENEWABLE_AUTO_RESUMED_STATUS = "接收已就绪，新能源实时控制已自动恢复。"
 _USER_CONTROL_BUSY_WAIT_SECONDS = 30.0
 _COMPACT_TREND_FIELDS = (
     "sampleKey",
@@ -11529,6 +11531,7 @@ class _ControllerState:
     service_instance_id: str
     settings: RenewableControlSettings = field(default_factory=RenewableControlSettings)
     enabled: bool = False
+    desired_enabled: bool = False
     loop_mode: str = "open"
     operation_epoch: int = 0
     sending: bool = False
@@ -11540,6 +11543,9 @@ class _ControllerState:
     last_clock_key: str = ""
     last_dispatched_clock_key: str = ""
     last_dispatched_generation_key: Tuple[Any, ...] = ()
+    strategy_generation_active: bool = False
+    strategy_cancel_pending: bool = False
+    strategy_cancel_operation_epoch: int = 0
     pending_dispatch_clock_key: str = ""
     pending_dispatch_generation_key: Tuple[Any, ...] = ()
     last_auto_started: float = 0.0
@@ -11854,36 +11860,47 @@ class TraineeRenewableControlManager:
         self._wake_worker()
         return True
 
-    def _load_configuration_for_service(self, service: Any) -> Tuple[RenewableControlSettings, str]:
+    def _load_configuration_for_service(
+        self,
+        service: Any,
+    ) -> Tuple[RenewableControlSettings, str, bool]:
         path = self._persistence_path_for_service(service)
         if path is None or not path.exists():
-            return RenewableControlSettings(), "open"
+            return RenewableControlSettings(), "open", False
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
-            return RenewableControlSettings(), "open"
+            return RenewableControlSettings(), "open", False
         if not isinstance(payload, Mapping):
-            return RenewableControlSettings(), "open"
+            return RenewableControlSettings(), "open", False
         settings_payload = payload.get("settings")
         settings = RenewableControlSettings().updated(
             settings_payload if isinstance(settings_payload, Mapping) else payload
         )
         loop_mode = "closed" if str(payload.get("loopMode", payload.get("loop_mode", "open"))).lower() == "closed" else "open"
-        return settings, loop_mode
+        desired_enabled = bool(
+            payload.get(
+                "desiredEnabled",
+                payload.get("desired_enabled", False),
+            )
+        )
+        return settings, loop_mode, desired_enabled
 
     def _persist_configuration(
         self,
         service: Any,
         settings: RenewableControlSettings,
         loop_mode: str,
+        desired_enabled: bool,
     ) -> None:
         path = self._persistence_path_for_service(service)
         if path is None:
             raise RuntimeError("当前模型没有可用的运行目录，无法持久化新能源控制参数")
         payload = {
-            "version": 1,
+            "version": 2,
             "modelId": str(getattr(service, "model_id", "default")),
             "loopMode": "closed" if loop_mode == "closed" else "open",
+            "desiredEnabled": bool(desired_enabled),
             "settings": settings.payload(),
         }
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -11918,13 +11935,31 @@ class TraineeRenewableControlManager:
                 return state
             state = self._states_by_service_instance.get(service_instance_id)
         if state is None:
-            settings, loop_mode = self._load_configuration_for_service(service)
+            settings, loop_mode, desired_enabled = self._load_configuration_for_service(
+                service
+            )
             persisted_trend = self._load_trend_for_service(service)
+            prerequisite = self._receive_prerequisite_for_service(service)
+            enabled = bool(desired_enabled and prerequisite["canRun"])
+            if enabled:
+                status = _RENEWABLE_AUTO_RESUMED_STATUS
+            elif desired_enabled:
+                prerequisite_status = str(
+                    prerequisite.get("prerequisiteStatus") or "接收尚未就绪。"
+                ).rstrip("。")
+                status = (
+                    f"{prerequisite_status}；新能源实时控制将在接收就绪后自动恢复。"
+                )
+            else:
+                status = _RENEWABLE_READY_IDLE_STATUS
             candidate = _ControllerState(
                 normalized,
                 service_instance_id,
                 settings=settings,
+                enabled=enabled,
+                desired_enabled=desired_enabled,
                 loop_mode=loop_mode,
+                status=status,
                 trend=persisted_trend,
                 trend_normalized=bool(persisted_trend),
             )
@@ -11933,6 +11968,8 @@ class TraineeRenewableControlManager:
                     service_instance_id,
                     candidate,
                 )
+            if state is candidate and state.enabled:
+                self._wake_worker()
         with self._states_lock:
             self._states[normalized] = state
             return state
@@ -12146,7 +12183,19 @@ class TraineeRenewableControlManager:
                         self._require_active_service_for_state_locked(service, state)
                     return self._serialize_for_service(service, state)
                 state.enabled = False
-                state.status = str(prerequisite["prerequisiteStatus"])
+                prerequisite_status = str(
+                    prerequisite["prerequisiteStatus"] or "接收尚未就绪。"
+                ).rstrip("。")
+                state.status = (
+                    (
+                        "接收已停止；"
+                        if not prerequisite.get("receiveActive")
+                        else ""
+                    )
+                    + f"{prerequisite_status}；新能源实时控制将在接收就绪后自动恢复。"
+                    if state.desired_enabled
+                    else str(prerequisite["prerequisiteStatus"])
+                )
                 if record_log:
                     runtime_log_entry = self._append_log(
                         state,
@@ -12189,23 +12238,66 @@ class TraineeRenewableControlManager:
             with (service_lock if service_lock is not None else nullcontext()):
                 self._require_active_service_for_state_locked(service, state)
                 if prerequisite["canRun"]:
-                    if not state.enabled and _stale_receive_prerequisite_status(state.status):
+                    if state.desired_enabled and not state.enabled:
+                        state.enabled = True
+                        state.operation_epoch += 1
+                        state.last_auto_started = 0.0
+                        state.last_preview_started = 0.0
+                        state.status = _RENEWABLE_AUTO_RESUMED_STATUS
+                        runtime_log_entry = self._append_log(
+                            state,
+                            "策略控制",
+                            "自动恢复",
+                            state.status,
+                            level="ok",
+                            simu_time=(
+                                state.last_plan.get("time", "--")
+                                if state.last_plan
+                                else "--"
+                            ),
+                            persist_runtime=False,
+                        )
+                        state.revision += 1
+                    elif not state.enabled and _stale_receive_prerequisite_status(state.status):
                         state.status = _RENEWABLE_READY_IDLE_STATUS
                         state.revision += 1
                 elif state.enabled:
                     state.enabled = False
                     state.operation_epoch += 1
-                    state.status = "接收已停止，新能源实时控制同步停止。"
+                    prerequisite_status = str(
+                        prerequisite.get("prerequisiteStatus") or "接收已停止。"
+                    ).rstrip("。")
+                    state.status = (
+                        f"接收已停止；{prerequisite_status}；新能源实时控制已暂停，"
+                        "将在接收就绪后自动恢复。"
+                        if state.desired_enabled
+                        else "接收已停止，新能源实时控制同步停止。"
+                    )
                     runtime_log_entry = self._append_log(
                         state,
                         "策略控制",
-                        "接收联动停止",
+                        "接收联动暂停" if state.desired_enabled else "接收联动停止",
                         state.status,
                         level="warn",
                         simu_time=state.last_plan.get("time", "--") if state.last_plan else "--",
                         persist_runtime=False,
                     )
                     state.revision += 1
+                elif state.desired_enabled:
+                    prerequisite_status = str(
+                        prerequisite.get("prerequisiteStatus") or "接收尚未就绪。"
+                    ).rstrip("。")
+                    next_status = (
+                        (
+                            "接收已停止；"
+                            if not prerequisite.get("receiveActive")
+                            else ""
+                        )
+                        + f"{prerequisite_status}；新能源实时控制将在接收就绪后自动恢复。"
+                    )
+                    if state.status != next_status:
+                        state.status = next_status
+                        state.revision += 1
         if runtime_log_entry is not None:
             self._persist_runtime_log_for_service(service, state, runtime_log_entry)
         self._wake_worker()
@@ -12682,8 +12774,18 @@ class TraineeRenewableControlManager:
         metrics_payload = _json_safe_copy(metrics)
         cycle_settings = settings if settings is not None else state.settings
         cycle_loop_mode = loop_mode if loop_mode is not None else state.loop_mode
+        strategy_generation = str(plan.get("clockKey", "") or "").strip()
+        if not strategy_generation:
+            strategy_generation = "|".join(
+                str(clock.get(key, "") or "")
+                for key in ("run_id", "step_count", "absolute_minute", "time")
+            )
         return {
             "source": "trainee-renewable-priority-backend",
+            "command_origin": "automatic",
+            "strategy_id": RENEWABLE_CONTROL_STRATEGY_ID,
+            "generation": strategy_generation,
+            "replace_strategy_generation": True,
             "valid_for_minutes": cycle_settings.command_valid_minutes,
             "sent_wall_time": _now_text(),
             "sent_simu_time": str(clock.get("time", "")),
@@ -12692,6 +12794,9 @@ class TraineeRenewableControlManager:
             "command_rows": copy.deepcopy(plan.get("commandRows", [])),
             "strategy": {
                 "name": "renewable_priority",
+                "strategy_id": RENEWABLE_CONTROL_STRATEGY_ID,
+                "generation": strategy_generation,
+                "replace_strategy_generation": True,
                 "loop_mode": cycle_loop_mode,
                 "trigger": trigger,
                 "time": plan.get("time"),
@@ -13195,7 +13300,7 @@ class TraineeRenewableControlManager:
                         should_dispatch = (
                             allow_dispatch
                             and cycle_loop_mode == "closed"
-                            and bool(commands)
+                            and bool(commands or state.strategy_generation_active)
                         )
                         if should_dispatch and not dispatch_prerequisite["canDispatch"]:
                             state.status = str(
@@ -13347,6 +13452,11 @@ class TraineeRenewableControlManager:
                         if dispatch_clock_key:
                             state.last_dispatched_clock_key = dispatch_clock_key
                             state.last_dispatched_generation_key = dispatch_generation_key
+                        if commands:
+                            # Treat a transport-started non-empty generation as
+                            # potentially active even when the response becomes
+                            # ambiguous. An explicit stop will then revoke it.
+                            state.strategy_generation_active = True
                         if (
                             state.pending_dispatch_clock_key == dispatch_clock_key
                             and state.pending_dispatch_generation_key == dispatch_generation_key
@@ -13436,6 +13546,7 @@ class TraineeRenewableControlManager:
                             )
                             if generation_valid and controller_valid:
                                 state.last_sent_at = _now_text()
+                                state.strategy_generation_active = bool(commands)
                                 state.status = f"已向学员台指令入口提交 {accepted} 条遥调指令。"
                                 if record_log:
                                     response_runtime_logs.append(
@@ -13476,6 +13587,7 @@ class TraineeRenewableControlManager:
                     )
                 state.revision += 1
             state.run_lock.release()
+            self._drain_pending_strategy_cancel(service, state)
         return self._serialize_for_service(service, state)
 
     def _serialize_current_lifecycle(self, state: _ControllerState) -> Dict[str, Any]:
@@ -13560,6 +13672,15 @@ class TraineeRenewableControlManager:
                 "modelId": state.model_id,
                 "controllerInstanceId": state.service_instance_id,
                 "enabled": state.enabled,
+                "desiredEnabled": state.desired_enabled,
+                "resumePending": bool(state.desired_enabled and not state.enabled),
+                "runState": (
+                    "running"
+                    if state.enabled
+                    else "resume_pending"
+                    if state.desired_enabled
+                    else "stopped"
+                ),
                 "loopMode": state.loop_mode,
                 "sending": state.sending,
                 "settings": state.settings.payload(),
@@ -13769,6 +13890,126 @@ class TraineeRenewableControlManager:
                         raise
         return True
 
+    def _execute_pending_strategy_cancel(
+        self,
+        service: Any,
+        state: _ControllerState,
+        stop_operation_epoch: int,
+    ) -> None:
+        with state.lock:
+            cancel_allowed = bool(
+                state.strategy_cancel_pending
+                and state.strategy_cancel_operation_epoch == stop_operation_epoch
+                and state.operation_epoch == stop_operation_epoch
+                and not state.enabled
+                and self._service_instance_id(service) == state.service_instance_id
+            )
+            if not cancel_allowed:
+                if state.strategy_cancel_operation_epoch == stop_operation_epoch:
+                    state.strategy_cancel_pending = False
+                return
+            state.strategy_cancel_pending = False
+
+        cancel_payload = {
+            "source": "trainee-renewable-priority-backend",
+            "command_origin": "automatic",
+            "action": "cancel_strategy_generation",
+            "strategy_id": RENEWABLE_CONTROL_STRATEGY_ID,
+            "cancel_all_generations": True,
+            "reason": "controller_stopped",
+        }
+        runtime_log_entry = None
+        try:
+            cancel_result = self._submit_commands_for_service(
+                service,
+                state,
+                cancel_payload,
+            )
+        except Exception as exc:
+            with state.lock:
+                if (
+                    state.operation_epoch == stop_operation_epoch
+                    and not state.enabled
+                ):
+                    state.status = (
+                        "实时控制已停止，但自动指令撤销失败："
+                        f"{exc}；残留指令将在有效期结束后退出。"
+                    )
+                    runtime_log_entry = self._append_log(
+                        state,
+                        "策略控制",
+                        "自动指令撤销失败",
+                        state.status,
+                        level="error",
+                        simu_time=(
+                            state.last_plan.get("time", "--")
+                            if state.last_plan
+                            else "--"
+                        ),
+                        persist_runtime=False,
+                    )
+                    state.revision += 1
+        else:
+            cancelled_generations = int(
+                _number(cancel_result.get("cancelled_generations"), 0.0) or 0
+            ) if isinstance(cancel_result, Mapping) else 0
+            cancelled_controls = int(
+                _number(cancel_result.get("cancelled_controls"), 0.0) or 0
+            ) if isinstance(cancel_result, Mapping) else 0
+            with state.lock:
+                if (
+                    state.operation_epoch == stop_operation_epoch
+                    and not state.enabled
+                ):
+                    state.strategy_generation_active = False
+                    state.status = (
+                        "实时控制已在学员台后台停止，已撤销自动指令。"
+                    )
+                    runtime_log_entry = self._append_log(
+                        state,
+                        "策略控制",
+                        "自动指令撤销",
+                        (
+                            f"撤销策略代次 {cancelled_generations} 个，"
+                            f"控制点 {cancelled_controls} 个。"
+                        ),
+                        level="ok",
+                        simu_time=(
+                            state.last_plan.get("time", "--")
+                            if state.last_plan
+                            else "--"
+                        ),
+                        persist_runtime=False,
+                    )
+                    state.revision += 1
+        if runtime_log_entry is not None:
+            self._persist_runtime_log_for_service(
+                service,
+                state,
+                runtime_log_entry,
+            )
+
+    def _drain_pending_strategy_cancel(
+        self,
+        service: Any,
+        state: _ControllerState,
+    ) -> bool:
+        with state.lock:
+            if not state.strategy_cancel_pending:
+                return False
+            stop_operation_epoch = state.strategy_cancel_operation_epoch
+        if not state.run_lock.acquire(blocking=False):
+            return False
+        try:
+            self._execute_pending_strategy_cancel(
+                service,
+                state,
+                stop_operation_epoch,
+            )
+        finally:
+            state.run_lock.release()
+        return True
+
     def apply_action(self, model_id: Optional[str], payload: Mapping[str, Any]) -> Dict[str, Any]:
         service = self._service_for(model_id)
         state = self._state_for_service(service)
@@ -13797,7 +14038,12 @@ class TraineeRenewableControlManager:
                         service,
                         next_settings.interval_seconds,
                     )
-                    self._persist_configuration(service, next_settings, state.loop_mode)
+                    self._persist_configuration(
+                        service,
+                        next_settings,
+                        state.loop_mode,
+                        state.desired_enabled,
+                    )
                     if next_settings != state.settings:
                         state.operation_epoch += 1
                     state.settings = next_settings
@@ -13816,7 +14062,12 @@ class TraineeRenewableControlManager:
                 with (service_lock if service_lock is not None else nullcontext()):
                     self._require_active_service_for_state_locked(service, state)
                     previous = state.loop_mode
-                    self._persist_configuration(service, state.settings, next_mode)
+                    self._persist_configuration(
+                        service,
+                        state.settings,
+                        next_mode,
+                        state.desired_enabled,
+                    )
                     if next_mode != previous:
                         state.operation_epoch += 1
                     state.loop_mode = next_mode
@@ -13837,6 +14088,24 @@ class TraineeRenewableControlManager:
             self._wake_worker()
             return self._serialize_for_service(service, state)
         if action == "start":
+            start_operation_epoch = 0
+            with state.lock:
+                service_lock = getattr(service, "lock", None)
+                with (service_lock if service_lock is not None else nullcontext()):
+                    self._require_active_service_for_state_locked(service, state)
+                    self._validate_control_interval_for_service(
+                        service,
+                        state.settings.interval_seconds,
+                    )
+                    self._persist_configuration(
+                        service,
+                        state.settings,
+                        state.loop_mode,
+                        True,
+                    )
+                    state.operation_epoch += 1
+                    start_operation_epoch = state.operation_epoch
+                    state.desired_enabled = True
             blocked = self._reject_without_receive_for_service(
                 service,
                 state,
@@ -13847,30 +14116,34 @@ class TraineeRenewableControlManager:
             if blocked is not None:
                 return blocked
             runtime_log_entry = None
+            start_cancelled = False
             with state.lock:
                 service_lock = getattr(service, "lock", None)
                 with (service_lock if service_lock is not None else nullcontext()):
                     self._require_active_service_for_state_locked(service, state)
-                    self._validate_control_interval_for_service(
-                        service,
-                        state.settings.interval_seconds,
-                    )
-                    state.operation_epoch += 1
-                    state.enabled = True
-                    cycle_started_at = time.monotonic()
-                    state.last_auto_started = cycle_started_at
-                    state.last_preview_started = cycle_started_at
-                    state.status = f"{'闭环' if state.loop_mode == 'closed' else '开环'}实时控制已在学员台后台启动。"
-                    runtime_log_entry = self._append_log(
-                        state,
-                        "策略控制",
-                        "启动",
-                        state.status,
-                        level="ok",
-                        simu_time=state.last_plan.get("time", "--") if state.last_plan else "--",
-                        persist_runtime=False,
-                    )
-                    state.revision += 1
+                    if (
+                        state.operation_epoch != start_operation_epoch
+                        or not state.desired_enabled
+                    ):
+                        start_cancelled = True
+                    else:
+                        state.enabled = True
+                        cycle_started_at = time.monotonic()
+                        state.last_auto_started = cycle_started_at
+                        state.last_preview_started = cycle_started_at
+                        state.status = f"{'闭环' if state.loop_mode == 'closed' else '开环'}实时控制已在学员台后台启动。"
+                        runtime_log_entry = self._append_log(
+                            state,
+                            "策略控制",
+                            "启动",
+                            state.status,
+                            level="ok",
+                            simu_time=state.last_plan.get("time", "--") if state.last_plan else "--",
+                            persist_runtime=False,
+                        )
+                        state.revision += 1
+            if start_cancelled:
+                return self._serialize_for_service(service, state)
             if runtime_log_entry is not None:
                 self._persist_runtime_log_for_service(service, state, runtime_log_entry)
             result = self._run_once_for_service(
@@ -13885,14 +14158,39 @@ class TraineeRenewableControlManager:
             return result
         if action == "stop":
             runtime_log_entry = None
+            stop_operation_epoch = 0
             with state.lock:
                 service_lock = getattr(service, "lock", None)
                 with (service_lock if service_lock is not None else nullcontext()):
                     self._require_active_service_for_state_locked(service, state)
                     was_enabled = state.enabled
                     state.operation_epoch += 1
+                    stop_operation_epoch = state.operation_epoch
                     state.enabled = False
-                    state.status = "实时控制已在学员台后台停止。"
+                    state.desired_enabled = False
+                    persistence_error = ""
+                    try:
+                        self._persist_configuration(
+                            service,
+                            state.settings,
+                            state.loop_mode,
+                            False,
+                        )
+                    except RuntimeError as exc:
+                        persistence_error = str(exc)
+                    state.strategy_cancel_pending = state.strategy_generation_active
+                    state.strategy_cancel_operation_epoch = (
+                        stop_operation_epoch
+                        if state.strategy_cancel_pending
+                        else 0
+                    )
+                    state.status = (
+                        "实时控制已在学员台后台停止，正在撤销自动指令。"
+                        if state.strategy_cancel_pending
+                        else "实时控制已在学员台后台停止。"
+                    )
+                    if persistence_error:
+                        state.status += f" 停止状态持久化失败：{persistence_error}"
                     if was_enabled:
                         runtime_log_entry = self._append_log(
                             state,
@@ -13906,6 +14204,7 @@ class TraineeRenewableControlManager:
                     state.revision += 1
             if runtime_log_entry is not None:
                 self._persist_runtime_log_for_service(service, state, runtime_log_entry)
+            self._drain_pending_strategy_cancel(service, state)
             self._wake_worker()
             return self._serialize_for_service(service, state)
         if action in {"run_once", "calculate"}:
@@ -13954,12 +14253,19 @@ class TraineeRenewableControlManager:
             except (KeyError, RuntimeError):
                 continue
             if not receive_prerequisite["canRun"]:
-                if state.enabled:
+                if state.enabled or state.desired_enabled:
                     try:
                         self.receive_state_changed_for_service(target)
                     except RuntimeError:
                         pass
                 continue
+            with state.lock:
+                resume_requested = bool(state.desired_enabled and not state.enabled)
+            if resume_requested:
+                try:
+                    self.receive_state_changed_for_service(target)
+                except RuntimeError:
+                    continue
             collection_interval_seconds = max(
                 0.01,
                 self._collection_interval_seconds_for_service(target),
@@ -14001,9 +14307,19 @@ class TraineeRenewableControlManager:
                 except ValueError as exc:
                     with state.lock:
                         state.enabled = False
+                        state.desired_enabled = False
                         state.operation_epoch += 1
                         state.status = f"实时控制已停止：{exc}"
                         state.revision += 1
+                        try:
+                            self._persist_configuration(
+                                target,
+                                state.settings,
+                                state.loop_mode,
+                                False,
+                            )
+                        except RuntimeError as persist_exc:
+                            state.status += f" 停止状态持久化失败：{persist_exc}"
                     continue
                 submitted = self._submit_background_cycle(
                     state,

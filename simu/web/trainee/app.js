@@ -213,6 +213,9 @@ const state = {
     modelId: "",
     controllerInstanceId: "",
     enabled: false,
+    desiredEnabled: false,
+    resumePending: false,
+    runState: "stopped",
     receiveActive: false,
     canRun: false,
     prerequisiteStatus: "请先启动接收。",
@@ -7724,7 +7727,7 @@ function stopReceiveAfterPersistentIssue(result, detail = [], simTime = "") {
     true,
     simTime,
   );
-  noteRenewableReceiveInterruption("连续接收异常，新能源实时控制已同步停止。");
+  noteRenewableReceiveInterruption("连续接收异常，新能源实时控制已暂停，接收恢复后将自动恢复。");
   renderReceiveMode(result || "接收异常");
   openReceiveWarningDialog(
     `${result || "接收异常"}，已停止接收`,
@@ -11104,6 +11107,9 @@ function resetRenewableControlView(modelId = state.activeModelId) {
     modelId: modelId || "",
     controllerInstanceId: "",
     enabled: false,
+    desiredEnabled: false,
+    resumePending: false,
+    runState: "stopped",
     receiveActive: false,
     canRun: false,
     prerequisiteStatus: "请先启动接收。",
@@ -11247,6 +11253,15 @@ function applyRenewableControlState(payload = {}) {
     modelId: String(payload.modelId || state.activeModelId || ""),
     controllerInstanceId: incomingControllerInstanceId,
     enabled: Boolean(payload.enabled),
+    desiredEnabled: Boolean(payload.desiredEnabled),
+    resumePending: Boolean(payload.resumePending),
+    runState: ["running", "resume_pending", "stopped"].includes(payload.runState)
+      ? payload.runState
+      : payload.enabled
+        ? "running"
+        : payload.desiredEnabled
+          ? "resume_pending"
+          : "stopped",
     receiveActive: Boolean(payload.receiveActive),
     canRun: Boolean(payload.canRun),
     prerequisiteStatus: payload.prerequisiteStatus || "",
@@ -12383,10 +12398,11 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   const summary = $("renewableCommandSummary");
   const lastActionLabel = $("renewableLastActionLabel");
   const hasDecisionSnapshot = Boolean(plan);
-  button.textContent = control.enabled ? "停止实时控制" : "启动实时控制";
+  button.textContent = control.desiredEnabled ? "停止实时控制" : "启动实时控制";
   button.classList.toggle("is-running", control.enabled);
-  button.disabled = actionPending || (!receiveReady && !control.enabled);
-  button.title = !receiveReady && !control.enabled ? "请先启动接收" : "";
+  button.classList.toggle("is-pending", control.resumePending);
+  button.disabled = actionPending || (!receiveReady && !control.desiredEnabled);
+  button.title = !receiveReady && !control.desiredEnabled ? "请先启动接收" : "";
   if (sendOnce) {
     sendOnce.disabled = actionPending || !receiveReady;
     sendOnce.title = !receiveReady ? "请先启动接收" : "";
@@ -12456,13 +12472,15 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   if (controlParametersButton) controlParametersButton.disabled = control.actionActive;
   if (lastActionLabel) lastActionLabel.textContent = loopMode === "closed" ? "最近下发" : "最近计算";
   if (stateNode) {
-    stateNode.textContent = !receiveReady
-      ? "等待接收"
-      : control.enabled
-      ? `${loopModeLabel}运行`
-      : hasDecisionSnapshot
-        ? `${loopModeLabel}待命`
-        : "等待数据";
+    const backendRunState = control.runState || (
+      control.enabled ? "running" : control.desiredEnabled ? "resume_pending" : "stopped"
+    );
+    stateNode.dataset.state = backendRunState;
+    stateNode.textContent = backendRunState === "running"
+      ? `${loopModeLabel}实时控制运行中`
+      : backendRunState === "resume_pending"
+        ? "等待接收后恢复"
+        : "已停止";
   }
   const metrics = plan?.metrics || {};
   const planWeather = plan?.weather || {};
@@ -12599,9 +12617,12 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     status.textContent = actionPending
       ? "正在提交本次新能源控制操作..."
       : !receiveReady
-        ? renewablePrerequisiteStatus(control)
+        ? control.resumePending
+          ? control.lastStatus
+          : renewablePrerequisiteStatus(control)
         : control.lastStatus;
-    status.classList.toggle("is-ok", control.enabled || Boolean(control.lastCalculatedAt) || Boolean(control.lastSentAt));
+    status.classList.toggle("is-ok", control.enabled);
+    status.classList.toggle("is-warning", control.resumePending);
     status.classList.toggle("is-error", !hasDecisionSnapshot && control.enabled);
   }
   if (summary) {
@@ -12691,12 +12712,12 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
 }
 
 async function toggleRenewableAuto() {
-  if (!state.renewableControl.enabled && !state.receiveMode) {
+  if (!state.renewableControl.desiredEnabled && !state.receiveMode) {
     state.renewableControl.lastStatus = "请先启动接收，再启动新能源实时控制。";
     renderRenewableControl(state.snapshot || {});
     return;
   }
-  const action = state.renewableControl.enabled ? "stop" : "start";
+  const action = state.renewableControl.desiredEnabled ? "stop" : "start";
   await runRenewableControlAction(action);
 }
 
@@ -16287,7 +16308,7 @@ async function toggleReceiveMode() {
     state.receiveRequestActive = false;
     persistActiveModelContext({ receiveMode: false, frozen: true }, true);
     addRuntimeLog("接收模式", "模拟台实时数据", "停止接收", `冻结于 ${state.lastReceiveAt || "--"}`, "warn");
-    noteRenewableReceiveInterruption("连续接收已停止，新能源实时控制已同步停止。");
+    noteRenewableReceiveInterruption("连续接收已停止，新能源实时控制已暂停，接收恢复后将自动恢复。");
     renderReceiveMode();
     return;
   }

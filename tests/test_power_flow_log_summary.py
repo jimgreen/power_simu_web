@@ -506,6 +506,149 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertEqual(groups["acdcConverter"]["flowDirection"], "toAc")
         self.assertEqual(groups["dcWind"]["onlineCount"], 1)
 
+    def test_homepage_target_holds_active_adjustment_while_effective_boundary_moves(self):
+        import simu_loop
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        effective_model = simu_loop._clone_ebook(service.source_model_book)
+        wind = next(
+            row
+            for row in effective_model.data["ACGenerator"].data
+            if row.get("name") == "wt01_10kw"
+        )
+        wind["p_set"] = 6.0
+        service.latest_model_book = effective_model
+
+        result = service.apply_student_commands(
+            {
+                "command_origin": "automatic",
+                "valid_for_minutes": 2,
+                "set_values": [
+                    {
+                        "dev_type": "ACGenerator",
+                        "dev_name": "wt01_10kw",
+                        "set_type": "p_set",
+                        "set_value": 9.0,
+                    }
+                ],
+            },
+            source="trainee-automatic-control",
+        )
+        self.assertEqual(result["set_values"], 1)
+
+        measurements = [
+            {
+                "dev_type": "ACGenerator",
+                "dev_name": "wt01_10kw",
+                "meas_type": "P_GEN",
+                "value": 5.5,
+                "valid": 1,
+            }
+        ]
+        self.assertEqual(
+            service._power_flow_summary(measurements)["flowGroups"]["dcWind"]["targetPower"],
+            9.0,
+        )
+
+        wind["p_set"] = 7.5
+        self.assertEqual(
+            service._power_flow_summary(measurements)["flowGroups"]["dcWind"]["targetPower"],
+            9.0,
+        )
+
+        service.apply_student_commands(
+            {
+                "command_origin": "automatic",
+                "valid_for_minutes": 2,
+                "set_values": [
+                    {
+                        "dev_type": "ACGenerator",
+                        "dev_name": "wt01_10kw",
+                        "set_type": "p_set",
+                        "set_value": 8.0,
+                    }
+                ],
+            },
+            source="trainee-automatic-control",
+        )
+        self.assertEqual(
+            service._power_flow_summary(measurements)["flowGroups"]["dcWind"]["targetPower"],
+            8.0,
+        )
+
+        service.clock.absolute_minute = 3.0
+        self.assertEqual(
+            service._power_flow_summary(measurements)["flowGroups"]["dcWind"]["targetPower"],
+            7.5,
+        )
+
+    def test_homepage_converter_target_holds_active_terminal_adjustment(self):
+        import simu_loop
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        effective_model = simu_loop._clone_ebook(service.source_model_book)
+        converter = next(
+            row
+            for row in effective_model.data["DCACConverter"].data
+            if row.get("name") == "grid_inv_acp"
+        )
+        converter.update(
+            {
+                "ac_control_type": "NONE",
+                "dc_control_type": "P",
+                "p_ac_set": 999.0,
+                "p_dc_set": 12.0,
+            }
+        )
+        service.latest_model_book = effective_model
+
+        result = service.apply_student_commands(
+            {
+                "command_origin": "automatic",
+                "valid_for_minutes": 2,
+                "set_values": [
+                    {
+                        "dev_type": "DCACConverter",
+                        "dev_name": "grid_inv_acp",
+                        "set_type": "p_dc_set",
+                        "set_value": 20.0,
+                    }
+                ],
+            },
+            source="trainee-automatic-control",
+        )
+        self.assertEqual(result["set_values"], 1)
+
+        measurements = [
+            {
+                "dev_type": "DCACConverter",
+                "dev_name": "grid_inv_acp",
+                "meas_type": "P_DC",
+                "value": 11.0,
+                "valid": 1,
+            }
+        ]
+        self.assertEqual(
+            service._power_flow_summary(measurements)["flowGroups"]["acdcConverter"]["targetPower"],
+            20.0,
+        )
+
+        converter["p_dc_set"] = 15.0
+        self.assertEqual(
+            service._power_flow_summary(measurements)["flowGroups"]["acdcConverter"]["targetPower"],
+            20.0,
+        )
+
+        service.clock.absolute_minute = 3.0
+        self.assertEqual(
+            service._power_flow_summary(measurements)["flowGroups"]["acdcConverter"]["targetPower"],
+            15.0,
+        )
+
     def test_converter_target_uses_the_terminal_selected_by_side_control_fields(self):
         import simu_loop
 

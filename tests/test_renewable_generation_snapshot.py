@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import copy
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import simu_loop
 from simu.generate_simple_model import write_model_dir
@@ -11,6 +13,7 @@ from simu.renewable_control import RenewableControlSettings, calculate_renewable
 from simu.service import PolarMicrogridSimulator
 from tests.test_trainee_renewable_backend_control import (
     append_model_row,
+    make_control_manager,
     measurement,
     renewable_snapshot,
 )
@@ -111,6 +114,173 @@ class AutomaticStrategyGenerationTest(unittest.TestCase):
             service.command_history[-1]["cancelled_reason"],
             "controller_stopped",
         )
+
+    def test_controller_stop_can_cancel_all_generations_without_tracking_one_generation(self):
+        service = self._service()
+        for generation, value in ((11, 20), (12, 30)):
+            service.apply_student_commands(
+                {
+                    "command_origin": "automatic",
+                    "strategy_id": "renewable_priority",
+                    "generation": generation,
+                    "replace_strategy_generation": True,
+                    "set_values": [
+                        {
+                            "dev_type": "ESS",
+                            "dev_name": "ess01",
+                            "set_type": "p_set",
+                            "set_value": value,
+                        }
+                    ],
+                },
+                source="trainee-renewable-priority-backend",
+            )
+
+        result = service.apply_student_commands(
+            {
+                "action": "cancel_strategy_generation",
+                "strategy_id": "renewable_priority",
+                "cancel_all_generations": True,
+                "reason": "controller_stopped",
+            },
+            source="trainee-renewable-priority-backend",
+        )
+
+        self.assertEqual(result["cancelled_generations"], 1)
+        self.assertEqual(self._ess_value(service), "10")
+        self.assertEqual(
+            service.command_history[-2]["cancelled_reason"],
+            "controller_stopped",
+        )
+
+
+class RenewableControllerCommandLifecycleTest(unittest.TestCase):
+    @staticmethod
+    def _service(runtime_dir):
+        service = type("ControlService", (), {})()
+        service.model_id = "shared"
+        service.runtime_dir = Path(runtime_dir)
+        service.lock = threading.RLock()
+        return service
+
+    @staticmethod
+    def _plan(clock_key: str, commands):
+        return {
+            "time": clock_key,
+            "clockKey": clock_key,
+            "metrics": {},
+            "commands": copy.deepcopy(commands),
+            "commandRows": [],
+            "dataQuality": {"dispatchAllowed": True},
+        }
+
+    def test_dispatch_uses_replaceable_generation_and_stop_revokes_all_generations(self):
+        dispatched = []
+
+        def command_sink(model_id, payload):
+            dispatched.append((model_id, copy.deepcopy(payload)))
+            if payload.get("action") == "cancel_strategy_generation":
+                return {"cancelled_generations": 1, "cancelled_controls": 1}
+            return {"set_values": len(payload.get("set_values", []))}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            manager = make_control_manager(
+                self._service(temporary),
+                command_sink=command_sink,
+            )
+            state = manager._state_for("shared")
+            state.loop_mode = "closed"
+            state.enabled = True
+            plan = self._plan(
+                "1|10|00:10:00",
+                [
+                    {
+                        "dev_type": "ESS",
+                        "dev_name": "ess01",
+                        "set_type": "p_set",
+                        "set_value": 20.0,
+                    }
+                ],
+            )
+            try:
+                with patch(
+                    "simu.renewable_control.calculate_renewable_control_plan",
+                    return_value=plan,
+                ):
+                    manager.run_once(
+                        "shared",
+                        trigger="auto",
+                        allow_dispatch=True,
+                        record_log=False,
+                    )
+                    stopped = manager.apply_action("shared", {"action": "stop"})
+            finally:
+                manager.close()
+
+        self.assertEqual(len(dispatched), 2)
+        command_payload = dispatched[0][1]
+        self.assertEqual(command_payload["command_origin"], "automatic")
+        self.assertEqual(command_payload["strategy_id"], "renewable_priority")
+        self.assertEqual(command_payload["generation"], "1|10|00:10:00")
+        self.assertTrue(command_payload["replace_strategy_generation"])
+        cancel_payload = dispatched[1][1]
+        self.assertEqual(cancel_payload["action"], "cancel_strategy_generation")
+        self.assertEqual(cancel_payload["strategy_id"], "renewable_priority")
+        self.assertTrue(cancel_payload["cancel_all_generations"])
+        self.assertEqual(cancel_payload["reason"], "controller_stopped")
+        self.assertFalse(stopped["enabled"])
+        self.assertIn("已撤销自动指令", stopped["status"])
+
+    def test_empty_closed_loop_plan_replaces_previous_nonempty_generation_once(self):
+        dispatched = []
+
+        def command_sink(model_id, payload):
+            dispatched.append((model_id, copy.deepcopy(payload)))
+            return {"set_values": len(payload.get("set_values", []))}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            manager = make_control_manager(
+                self._service(temporary),
+                command_sink=command_sink,
+            )
+            state = manager._state_for("shared")
+            state.loop_mode = "closed"
+            state.enabled = True
+            plans = [
+                self._plan(
+                    "1|20|00:20:00",
+                    [
+                        {
+                            "dev_type": "ESS",
+                            "dev_name": "ess01",
+                            "set_type": "p_set",
+                            "set_value": 20.0,
+                        }
+                    ],
+                ),
+                self._plan("1|21|00:21:00", []),
+                self._plan("1|22|00:22:00", []),
+            ]
+            try:
+                with patch(
+                    "simu.renewable_control.calculate_renewable_control_plan",
+                    side_effect=plans,
+                ):
+                    for _ in plans:
+                        manager.run_once(
+                            "shared",
+                            trigger="auto",
+                            allow_dispatch=True,
+                            record_log=False,
+                        )
+            finally:
+                manager.close()
+
+        self.assertEqual(len(dispatched), 2)
+        self.assertEqual(len(dispatched[0][1]["set_values"]), 1)
+        self.assertEqual(dispatched[1][1]["set_values"], [])
+        self.assertEqual(dispatched[1][1]["generation"], "1|21|00:21:00")
+        self.assertTrue(dispatched[1][1]["replace_strategy_generation"])
 
 
 class BidirectionalAcdcSafetyTest(unittest.TestCase):

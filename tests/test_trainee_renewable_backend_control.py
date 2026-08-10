@@ -8090,7 +8090,7 @@ class RenewableControlBackendApiTest(unittest.TestCase):
         self.assertIn("启动接收", controller_state["status"])
         self.assertEqual(controller_state["lastCalculatedAt"], "")
 
-    def test_receive_recovery_clears_stale_prerequisite_status_without_running_control(self):
+    def test_requested_realtime_control_waits_for_receive_then_resumes(self):
         with tempfile.TemporaryDirectory() as temporary:
             receive_state = {
                 "active": False,
@@ -8119,14 +8119,28 @@ class RenewableControlBackendApiTest(unittest.TestCase):
             dispatched = []
             manager = make_control_manager(
                 services,
-                snapshot_provider=lambda model_id: snapshot_calls.append(model_id),
+                snapshot_provider=lambda model_id: snapshot_calls.append(model_id) or ready_view(
+                    renewable_snapshot()
+                ),
                 receive_status_provider=mutable_receive_status(receive_state),
                 command_sink=lambda model_id, payload: dispatched.append((model_id, payload)) or {},
             )
             try:
+                manager.apply_action(
+                    "shared",
+                    {"action": "set_loop_mode", "loop_mode": "closed"},
+                )
                 blocked = manager.apply_action("shared", {"action": "start"})
                 self.assertFalse(blocked["enabled"])
+                self.assertTrue(blocked["desiredEnabled"])
+                self.assertTrue(blocked["resumePending"])
                 self.assertIn("启动接收", blocked["status"])
+                persisted = json.loads(
+                    (Path(temporary) / "renewable_control.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertTrue(persisted["desiredEnabled"])
 
                 receive_state.update({
                     "active": True,
@@ -8135,18 +8149,22 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                     "signature": ("learner", 2),
                 })
                 recovered = manager.receive_state_changed("shared")
+                manager._run_worker_iteration(now=time.monotonic())
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline and not dispatched:
+                    time.sleep(0.01)
             finally:
                 manager.close()
 
         self.assertTrue(recovered["receiveActive"])
         self.assertTrue(recovered["ready"])
         self.assertTrue(recovered["canRun"])
-        self.assertFalse(recovered["enabled"])
-        self.assertEqual(recovered["status"], "请选择单次计算或启动实时控制。")
-        self.assertEqual(recovered["lastCalculatedAt"], "")
-        self.assertEqual(recovered["lastSentAt"], "")
-        self.assertEqual(snapshot_calls, [])
-        self.assertEqual(dispatched, [])
+        self.assertTrue(recovered["enabled"])
+        self.assertTrue(recovered["desiredEnabled"])
+        self.assertFalse(recovered["resumePending"])
+        self.assertIn("自动恢复", recovered["status"])
+        self.assertEqual(snapshot_calls, ["shared"])
+        self.assertEqual(len(dispatched), 1)
 
     def test_receive_recovery_preserves_meaningful_non_prerequisite_status(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -8198,7 +8216,7 @@ class RenewableControlBackendApiTest(unittest.TestCase):
         self.assertEqual(snapshot_calls, [])
         self.assertEqual(dispatched, [])
 
-    def test_receive_recovery_clears_receive_stop_status_without_resuming_controller(self):
+    def test_temporary_receive_stop_preserves_intent_and_resumes_controller(self):
         with tempfile.TemporaryDirectory() as temporary:
             receive_state = {
                 "active": True,
@@ -8224,15 +8242,32 @@ class RenewableControlBackendApiTest(unittest.TestCase):
             )()
             snapshot_calls = []
             dispatched = []
+            active_snapshot = renewable_snapshot()
+
+            def snapshot_provider(model_id):
+                snapshot_calls.append(model_id)
+                return ready_view(
+                    active_snapshot,
+                    revision=receive_state["revision"],
+                    signature=receive_state["signature"],
+                )
+
             manager = make_control_manager(
                 services,
-                snapshot_provider=lambda model_id: snapshot_calls.append(model_id) or ready_view(renewable_snapshot()),
+                snapshot_provider=snapshot_provider,
                 receive_status_provider=mutable_receive_status(receive_state),
                 command_sink=lambda model_id, payload: dispatched.append((model_id, payload)) or {},
             )
             try:
+                manager.apply_action(
+                    "shared",
+                    {"action": "set_loop_mode", "loop_mode": "closed"},
+                )
                 started = manager.apply_action("shared", {"action": "start"})
                 self.assertTrue(started["enabled"])
+                self.assertTrue(started["desiredEnabled"])
+                snapshot_calls.clear()
+                dispatched.clear()
                 receive_state.update({
                     "active": False,
                     "ready": False,
@@ -8241,8 +8276,9 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                 })
                 stopped = manager.receive_state_changed("shared")
                 self.assertFalse(stopped["enabled"])
+                self.assertTrue(stopped["desiredEnabled"])
+                self.assertTrue(stopped["resumePending"])
                 self.assertIn("接收已停止", stopped["status"])
-                snapshot_count_after_stop = len(snapshot_calls)
 
                 receive_state.update({
                     "active": True,
@@ -8250,17 +8286,29 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                     "revision": 3,
                     "signature": ("learner", 3),
                 })
+                active_snapshot["clock"].update({
+                    "time": "00:01:00",
+                    "minute": 1,
+                    "absolute_minute": 1,
+                    "step_count": 1,
+                })
                 recovered = manager.receive_state_changed("shared")
+                manager._run_worker_iteration(now=time.monotonic())
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline and not dispatched:
+                    time.sleep(0.01)
             finally:
                 manager.close()
 
         self.assertTrue(recovered["receiveActive"])
         self.assertTrue(recovered["ready"])
         self.assertTrue(recovered["canRun"])
-        self.assertFalse(recovered["enabled"])
-        self.assertEqual(recovered["status"], "请选择单次计算或启动实时控制。")
-        self.assertEqual(len(snapshot_calls), snapshot_count_after_stop)
-        self.assertEqual(dispatched, [])
+        self.assertTrue(recovered["enabled"])
+        self.assertTrue(recovered["desiredEnabled"])
+        self.assertFalse(recovered["resumePending"])
+        self.assertIn("自动恢复", recovered["status"])
+        self.assertEqual(snapshot_calls, ["shared"])
+        self.assertEqual(len(dispatched), 1)
 
     def test_ready_preview_after_active_waiting_receive_clears_stale_prerequisite_status(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -9172,6 +9220,7 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                 temporary,
             )
             exchange.request_json = blocking_transport
+            manager.command_sink = exchange.submit_commands
             state = manager._state_for("shared")
             state.loop_mode = "closed"
             state.enabled = True
@@ -9203,10 +9252,19 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                 manager.close()
                 exchange.close()
 
-        self.assertEqual(len(transport_calls), 1)
+        self.assertEqual(len(transport_calls), 2)
+        self.assertIsNone(transport_calls[0][1]["payload"].get("action"))
+        self.assertEqual(
+            transport_calls[1][1]["payload"].get("action"),
+            "cancel_strategy_generation",
+        )
         self.assertFalse(controller_state["enabled"])
-        self.assertEqual(controller_state["status"], stop_status)
-        self.assertEqual(controller_state["logs"], stop_logs)
+        self.assertIn("正在撤销自动指令", stop_status)
+        self.assertIn("已撤销自动指令", controller_state["status"])
+        self.assertTrue(stop_logs)
+        self.assertTrue(
+            any(item["result"] == "自动指令撤销" for item in controller_state["logs"])
+        )
         self.assertEqual(controller_state["lastSentAt"], "prior-sent")
         self.assertFalse(
             any(item["result"] in {"下发成功", "下发失败"} for item in controller_state["logs"])
@@ -10090,7 +10148,7 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                     state.run_lock.release()
                 exchange.close()
 
-    def test_active_controller_stops_when_receive_state_becomes_inactive(self):
+    def test_active_controller_pauses_when_receive_state_becomes_inactive(self):
         with tempfile.TemporaryDirectory() as temporary:
             receive_state = {
                 "active": True,
@@ -10138,10 +10196,12 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                 manager.close()
 
         self.assertFalse(controller_state["enabled"])
+        self.assertTrue(controller_state["desiredEnabled"])
+        self.assertTrue(controller_state["resumePending"])
         self.assertFalse(controller_state["receiveActive"])
         self.assertIn("接收已停止", controller_state["status"])
         self.assertTrue(
-            any("新能源实时控制同步停止" in item["detail"] for item in controller_state["logs"])
+            any("新能源实时控制已暂停" in item["detail"] for item in controller_state["logs"])
         )
 
     def test_receive_stop_during_snapshot_fetch_cancels_the_control_cycle(self):
@@ -11088,6 +11148,313 @@ class RenewableControlBackendApiTest(unittest.TestCase):
             ],
         )
         self.assertNotIn("converterSocPowerLimits", state["settings"])
+
+    def test_realtime_control_desired_state_survives_web_restart_and_runs_again(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime_dir = Path(temporary)
+            snapshot = renewable_snapshot()
+
+            def make_services():
+                target = type(
+                    "TargetService",
+                    (),
+                    {
+                        "model_id": "shared",
+                        "runtime_dir": runtime_dir,
+                    },
+                )()
+                services = type(
+                    "Services",
+                    (),
+                    {
+                        "service_for": lambda self, _model_id: target,
+                        "iter_services": lambda self: [target],
+                    },
+                )()
+                return services
+
+            first_dispatches = []
+            first_manager = make_control_manager(
+                make_services(),
+                snapshot=snapshot,
+                command_sink=lambda model_id, payload: first_dispatches.append(
+                    (model_id, copy.deepcopy(payload))
+                ) or {},
+            )
+            try:
+                first_manager.apply_action(
+                    "shared",
+                    {"action": "set_loop_mode", "loop_mode": "closed"},
+                )
+                started = first_manager.apply_action("shared", {"action": "start"})
+                self.assertTrue(started["enabled"])
+                self.assertTrue(started["desiredEnabled"])
+            finally:
+                first_manager.close()
+
+            persisted = json.loads(
+                (runtime_dir / "renewable_control.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(persisted["desiredEnabled"])
+
+            resumed_dispatches = []
+            resumed_manager = make_control_manager(
+                make_services(),
+                snapshot=snapshot,
+                command_sink=lambda model_id, payload: resumed_dispatches.append(
+                    (model_id, copy.deepcopy(payload))
+                ) or {},
+            )
+            try:
+                resumed = resumed_manager.state("shared")
+                self.assertTrue(resumed["enabled"])
+                self.assertTrue(resumed["desiredEnabled"])
+                self.assertFalse(resumed["resumePending"])
+                self.assertIn("自动恢复", resumed["status"])
+
+                resumed_manager._run_worker_iteration(now=time.monotonic())
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline and not resumed_dispatches:
+                    time.sleep(0.01)
+            finally:
+                resumed_manager.close()
+
+        self.assertEqual(len(first_dispatches), 1)
+        self.assertEqual(len(resumed_dispatches), 1)
+
+    def test_web_restart_waits_for_receive_and_resumes_when_receive_returns(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime_dir = Path(temporary)
+            receive_state = {
+                "active": True,
+                "ready": True,
+                "revision": 1,
+                "signature": ("learner", 1),
+            }
+            active_snapshot = renewable_snapshot()
+
+            def make_services():
+                target = type(
+                    "TargetService",
+                    (),
+                    {
+                        "model_id": "shared",
+                        "runtime_dir": runtime_dir,
+                    },
+                )()
+                return type(
+                    "Services",
+                    (),
+                    {
+                        "service_for": lambda self, _model_id: target,
+                        "iter_services": lambda self: [target],
+                    },
+                )()
+
+            def snapshot_provider(_model_id):
+                return ready_view(
+                    active_snapshot,
+                    revision=receive_state["revision"],
+                    signature=receive_state["signature"],
+                )
+
+            first_manager = make_control_manager(
+                make_services(),
+                snapshot_provider=snapshot_provider,
+                receive_status_provider=mutable_receive_status(receive_state),
+            )
+            try:
+                first_manager.apply_action(
+                    "shared",
+                    {"action": "set_loop_mode", "loop_mode": "closed"},
+                )
+                first_manager.apply_action("shared", {"action": "start"})
+            finally:
+                first_manager.close()
+
+            receive_state.update({
+                "active": False,
+                "ready": False,
+                "revision": 2,
+                "signature": ("learner", 2),
+            })
+            resumed_dispatches = []
+            resumed_manager = make_control_manager(
+                make_services(),
+                snapshot_provider=snapshot_provider,
+                receive_status_provider=mutable_receive_status(receive_state),
+                command_sink=lambda model_id, payload: resumed_dispatches.append(
+                    (model_id, copy.deepcopy(payload))
+                ) or {},
+            )
+            try:
+                waiting = resumed_manager.state("shared")
+                self.assertFalse(waiting["enabled"])
+                self.assertTrue(waiting["desiredEnabled"])
+                self.assertTrue(waiting["resumePending"])
+                self.assertEqual(waiting["runState"], "resume_pending")
+
+                receive_state.update({
+                    "active": True,
+                    "ready": True,
+                    "revision": 3,
+                    "signature": ("learner", 3),
+                })
+                active_snapshot["clock"].update({
+                    "time": "00:01:00",
+                    "minute": 1,
+                    "absolute_minute": 1,
+                    "step_count": 1,
+                })
+                recovered = resumed_manager.receive_state_changed("shared")
+                resumed_manager._run_worker_iteration(now=time.monotonic())
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline and not resumed_dispatches:
+                    time.sleep(0.01)
+            finally:
+                resumed_manager.close()
+
+        self.assertTrue(recovered["enabled"])
+        self.assertTrue(recovered["desiredEnabled"])
+        self.assertFalse(recovered["resumePending"])
+        self.assertEqual(recovered["runState"], "running")
+        self.assertEqual(len(resumed_dispatches), 1)
+
+    def test_explicit_stop_clears_desired_state_and_prevents_restart_recovery(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime_dir = Path(temporary)
+            target = type(
+                "TargetService",
+                (),
+                {
+                    "model_id": "shared",
+                    "runtime_dir": runtime_dir,
+                },
+            )()
+            services = type(
+                "Services",
+                (),
+                {
+                    "service_for": lambda self, _model_id: target,
+                    "iter_services": lambda self: [target],
+                },
+            )()
+            manager = make_control_manager(services)
+            try:
+                manager.apply_action(
+                    "shared",
+                    {"action": "set_loop_mode", "loop_mode": "closed"},
+                )
+                manager.apply_action("shared", {"action": "start"})
+                stopped = manager.apply_action("shared", {"action": "stop"})
+                self.assertFalse(stopped["enabled"])
+                self.assertFalse(stopped["desiredEnabled"])
+                self.assertFalse(stopped["resumePending"])
+            finally:
+                manager.close()
+
+            persisted = json.loads(
+                (runtime_dir / "renewable_control.json").read_text(encoding="utf-8")
+            )
+            self.assertFalse(persisted["desiredEnabled"])
+
+            reloaded_dispatches = []
+            reloaded_target = type(
+                "TargetService",
+                (),
+                {
+                    "model_id": "shared",
+                    "runtime_dir": runtime_dir,
+                },
+            )()
+            reloaded_services = type(
+                "Services",
+                (),
+                {
+                    "service_for": lambda self, _model_id: reloaded_target,
+                    "iter_services": lambda self: [reloaded_target],
+                },
+            )()
+            reloaded_manager = make_control_manager(
+                reloaded_services,
+                command_sink=lambda model_id, payload: reloaded_dispatches.append(
+                    (model_id, copy.deepcopy(payload))
+                ) or {},
+            )
+            try:
+                reloaded = reloaded_manager.state("shared")
+                reloaded_manager._run_worker_iteration(now=time.monotonic())
+                time.sleep(0.05)
+            finally:
+                reloaded_manager.close()
+
+        self.assertFalse(reloaded["enabled"])
+        self.assertFalse(reloaded["desiredEnabled"])
+        self.assertFalse(reloaded["resumePending"])
+        self.assertEqual(reloaded_dispatches, [])
+
+    def test_explicit_stop_during_start_intent_prevents_late_reenable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            target = type(
+                "TargetService",
+                (),
+                {
+                    "model_id": "shared",
+                    "runtime_dir": Path(temporary),
+                },
+            )()
+            services = type(
+                "Services",
+                (),
+                {
+                    "service_for": lambda self, _model_id: target,
+                    "iter_services": lambda self: [target],
+                },
+            )()
+            manager = make_control_manager(services)
+            entered_reject = threading.Event()
+            release_reject = threading.Event()
+            original_reject = manager._reject_without_receive_for_service
+
+            def blocked_reject(*args, **kwargs):
+                entered_reject.set()
+                self.assertTrue(release_reject.wait(timeout=2.0))
+                return original_reject(*args, **kwargs)
+
+            manager._reject_without_receive_for_service = blocked_reject
+            start_result = {}
+            start_thread = threading.Thread(
+                target=lambda: start_result.setdefault(
+                    "state",
+                    manager.apply_action("shared", {"action": "start"}),
+                )
+            )
+            try:
+                start_thread.start()
+                self.assertTrue(entered_reject.wait(timeout=2.0))
+                stopped = manager.apply_action("shared", {"action": "stop"})
+                release_reject.set()
+                start_thread.join(timeout=2.0)
+                self.assertFalse(start_thread.is_alive())
+                final_state = manager.state("shared")
+            finally:
+                release_reject.set()
+                start_thread.join(timeout=2.0)
+                manager.close()
+
+            persisted = json.loads(
+                (Path(temporary) / "renewable_control.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertFalse(stopped["enabled"])
+        self.assertFalse(stopped["desiredEnabled"])
+        self.assertFalse(start_result["state"]["enabled"])
+        self.assertFalse(start_result["state"]["desiredEnabled"])
+        self.assertFalse(final_state["enabled"])
+        self.assertFalse(final_state["desiredEnabled"])
+        self.assertFalse(persisted["desiredEnabled"])
 
     def test_legacy_persisted_converter_soc_limits_are_ignored_on_reload(self):
         with tempfile.TemporaryDirectory() as temporary:

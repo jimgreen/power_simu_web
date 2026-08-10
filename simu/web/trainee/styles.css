@@ -3160,6 +3160,12 @@ body.is-vertical-splitter-dragging {
   border-color: var(--red);
   color: #fff;
 }
+
+.renewable-auto-button.is-pending {
+  border-color: #bd7300;
+  background: #fff7e8;
+  color: #8a5100;
+}
 .renewable-settings {
   margin-top: 0;
   display: grid;
@@ -3406,10 +3412,49 @@ body.is-vertical-splitter-dragging {
   font-size: 12px;
   line-height: 18px;
 }
+
+.renewable-backend-state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  margin-top: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #f7f9fb;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.renewable-backend-state strong {
+  color: var(--text);
+  font-weight: 700;
+  text-align: right;
+}
+
+.renewable-backend-state strong[data-state="running"] {
+  color: var(--green);
+}
+
+.renewable-backend-state strong[data-state="resume_pending"] {
+  color: #a35f00;
+}
+
+.renewable-backend-state strong[data-state="stopped"] {
+  color: var(--red);
+}
 .renewable-status.is-ok {
   border-color: rgba(36, 138, 75, 0.24);
   background: #eef9f2;
   color: var(--green);
+}
+
+.renewable-status.is-warning {
+  border-color: rgba(189, 115, 0, 0.28);
+  background: #fff7e8;
+  color: #8a5100;
 }
 .renewable-status.is-error {
   border-color: rgba(201, 58, 58, 0.24);

@@ -119,10 +119,11 @@ process.stdout.write(JSON.stringify([
         self.assertIn('return ["overview", "history"].includes(page);', script)
         self.assertIn("teacherMeasurementDeltaAddress", script)
         self.assertIn("function refreshMeasurementDelta", script)
-        self.assertIn("let snapshot = mergeSnapshot(state.snapshot, await api(snapshotPollPath(page)))", script)
+        self.assertIn("applyDeviceRuntimePayload(state.snapshot, await api(snapshotPollPath(page)))", script)
         self.assertIn("ensureLocalDefinitionSnapshot", script)
         self.assertIn("mergeTeacherSnapshotWithLocalDefinitions", script)
-        self.assertIn("const remoteSnapshot = await teacherSnapshotApi(page)", script)
+        self.assertIn("await teacherSnapshotApi(page)", script)
+        self.assertIn("applyDeviceRuntimePayload", script)
 
     def test_static_snapshot_merge_drops_previous_model_or_changed_revision_fields(self):
         simulator_script = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")

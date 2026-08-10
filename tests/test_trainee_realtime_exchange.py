@@ -2516,6 +2516,52 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
         self.assertIn("frameIdentity", payload)
         self.assertIn("consecutiveFailures", payload)
 
+    def test_trainee_snapshot_endpoint_reuses_compact_device_runtime_by_signature(self):
+        service = self.make_service()
+        configure_receive(service)
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+        exchange.publish_runtime_snapshot(
+            service.model_id,
+            service.snapshot(include_static=True, include_runtime_logs=False),
+            connection_signature=exchange._connection_signature(service),
+        )
+        server = make_http_server(
+            ("127.0.0.1", 0),
+            service,
+            role="trainee",
+            trainee_exchange=exchange,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = (
+                f"http://127.0.0.1:{server.server_address[1]}/api/trainee/snapshot"
+                f"?model_id={service.model_id}&measurements=0&static=0&static_meta=0"
+                "&devices=1&device_states=1&device_runtime_compact=1"
+            )
+            with urlopen(base, timeout=5) as response:
+                first = json.loads(response.read().decode("utf-8"))
+            with urlopen(
+                f"{base}&after_device_runtime_signature={first['device_runtime_signature']}",
+                timeout=5,
+            ) as response:
+                second = json.loads(response.read().decode("utf-8"))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(5)
+
+        self.assertNotIn("devices", first)
+        self.assertNotIn("device_states", first)
+        self.assertIn("device_runtime", first)
+        self.assertEqual(
+            first["device_runtime_signature"],
+            first["device_runtime"]["runtime_signature"],
+        )
+        self.assertEqual(second["device_runtime_signature"], first["device_runtime_signature"])
+        self.assertNotIn("device_runtime", second)
+
     def test_server_closes_control_consumer_before_exchange_provider(self):
         service = self.make_service()
         closed = []

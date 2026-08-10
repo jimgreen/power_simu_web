@@ -17,6 +17,7 @@ const VERTICAL_SPLIT_MIN_TOP_PX = 120;
 const VERTICAL_SPLIT_MIN_BOTTOM_PX = 120;
 const STATIC_CACHE_STORAGE_KEY = "polarSimulatorStaticCacheV2";
 const STATIC_CACHE_MODEL_LIMIT = 4;
+const HIDDEN_REFRESH_INTERVAL_MS = 10000;
 const WEB_RUNTIME_FALLBACKS = {
   frontend_refresh_seconds: 1,
   frontend_request_timeout_seconds: 30,
@@ -165,6 +166,17 @@ const state = {
   webRuntimeDirty: false,
   webRuntimeError: "",
   frontendRefreshTimerId: null,
+  deviceRuntimeSignature: "",
+  deviceRuntimeNeedsFullRefresh: false,
+  deviceRuntimeWarning: "",
+  frontendDiagnostics: {
+    requestCount: 0,
+    responseBytes: 0,
+    requestDurationMs: 0,
+    snapshotRequestCount: 0,
+    snapshotResponseBytes: 0,
+    snapshotRenderCount: 0,
+  },
   overviewBottomHeight: overviewInitialBottomHeight(),
   overviewBottomSplitDrag: null,
   overviewBottomColumnRatio: overviewInitialBottomColumnRatio(),
@@ -174,6 +186,7 @@ const state = {
   virtualTables: {},
   virtualTableScrollRaf: {},
 };
+window.__polarFrontendDiagnostics = state.frontendDiagnostics;
 
 const $ = (id) => document.getElementById(id);
 const deviceTreeRenderKeys = new WeakMap();
@@ -203,9 +216,17 @@ function traceHistoryLimit() {
   return Math.max(1000, Math.round(activeRuntimeSetting("trace_history_limit")));
 }
 
-function scheduleNextRefresh() {
+function pageIsHidden() {
+  return document.visibilityState === "hidden";
+}
+
+function refreshSchedulerIntervalMs() {
+  return pageIsHidden() ? HIDDEN_REFRESH_INTERVAL_MS : frontendRefreshIntervalMs();
+}
+
+function scheduleNextRefresh(delayMs = refreshSchedulerIntervalMs()) {
   if (state.frontendRefreshTimerId) clearTimeout(state.frontendRefreshTimerId);
-  state.frontendRefreshTimerId = setTimeout(runRefreshScheduler, frontendRefreshIntervalMs());
+  state.frontendRefreshTimerId = setTimeout(runRefreshScheduler, Math.max(0, delayMs));
 }
 
 function restartRefreshScheduler() {
@@ -214,10 +235,12 @@ function restartRefreshScheduler() {
 
 async function runRefreshScheduler() {
   state.frontendRefreshTimerId = null;
+  const startedAtMs = Date.now();
   try {
     await refresh();
   } finally {
-    scheduleNextRefresh();
+    const elapsedMs = Date.now() - startedAtMs;
+    scheduleNextRefresh(Math.max(0, refreshSchedulerIntervalMs() - elapsedMs));
   }
 }
 
@@ -2357,6 +2380,18 @@ function modelScopedPath(path) {
   return `${path}${separator}model_id=${encodeURIComponent(state.activeModelId)}`;
 }
 
+function recordFrontendRequestDiagnostics(path, response, durationMs) {
+  const diagnostics = state.frontendDiagnostics;
+  const responseBytes = Math.max(0, Number(response?.headers?.get?.("Content-Length")) || 0);
+  diagnostics.requestCount += 1;
+  diagnostics.responseBytes += responseBytes;
+  diagnostics.requestDurationMs += Math.max(0, Number(durationMs) || 0);
+  if (/\/api\/snapshot(?:\?|$)/.test(String(path || ""))) {
+    diagnostics.snapshotRequestCount += 1;
+    diagnostics.snapshotResponseBytes += responseBytes;
+  }
+}
+
 async function api(path, options = {}) {
   const {
     modelScoped = true,
@@ -2365,6 +2400,7 @@ async function api(path, options = {}) {
     ...fetchOptions
   } = options;
   const targetPath = modelScoped ? modelScopedPath(path) : path;
+  const requestStartedAtMs = performance.now();
   const controller = new AbortController();
   const boundedTimeout = Math.max(0, Number(timeoutMs) || 0);
   let timedOut = false;
@@ -2385,6 +2421,11 @@ async function api(path, options = {}) {
       signal: controller.signal,
       headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) },
     });
+    recordFrontendRequestDiagnostics(
+      targetPath,
+      response,
+      performance.now() - requestStartedAtMs,
+    );
     if (!response.ok) throw new Error(await response.text());
     return response.json();
   } catch (error) {
@@ -2711,6 +2752,7 @@ const STATIC_SNAPSHOT_KEYS_BY_PAGE = {
 };
 
 const CACHEABLE_STATIC_KEYS = STATIC_SNAPSHOT_KEYS.filter((key) => key !== "curves");
+let staticCacheStoreMemory = null;
 
 function staticSnapshotKeysForPage(page = currentPageName()) {
   return STATIC_SNAPSHOT_KEYS_BY_PAGE[page] || STATIC_SNAPSHOT_KEYS;
@@ -2729,16 +2771,19 @@ function staticMetaMatches(left, right) {
 }
 
 function readStaticCacheStore() {
+  if (staticCacheStoreMemory) return staticCacheStoreMemory;
   try {
     const raw = localStorage.getItem(STATIC_CACHE_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : {};
-    return parsed && typeof parsed === "object" ? parsed : {};
+    staticCacheStoreMemory = parsed && typeof parsed === "object" ? parsed : {};
   } catch (_error) {
-    return {};
+    staticCacheStoreMemory = {};
   }
+  return staticCacheStoreMemory;
 }
 
 function writeStaticCacheStore(store) {
+  staticCacheStoreMemory = store;
   try {
     localStorage.setItem(STATIC_CACHE_STORAGE_KEY, JSON.stringify(store));
     return true;
@@ -2751,6 +2796,14 @@ function pruneStaticCacheStore(store) {
   const entries = Object.entries(store || {})
     .sort((left, right) => Number(right[1]?.updatedAt || 0) - Number(left[1]?.updatedAt || 0));
   return Object.fromEntries(entries.slice(0, STATIC_CACHE_MODEL_LIMIT));
+}
+
+function staticCacheEntryMatchesSnapshot(entry, snapshot, requiredKeys) {
+  if (!entry?.fields) return false;
+  return requiredKeys.every((key) => (
+    entry.fields[key]
+    && staticMetaMatches(entry.fields[key].meta, snapshot.static_meta?.[key])
+  ));
 }
 
 function restoreStaticSnapshotCache(snapshot, page = currentPageName()) {
@@ -2780,13 +2833,18 @@ function persistStaticSnapshotCache(snapshot, page = currentPageName()) {
   if (!requiredKeys.length) return;
   const store = readStaticCacheStore();
   const entry = store[snapshot.model.id] || { fields: {} };
+  if (staticCacheEntryMatchesSnapshot(entry, snapshot, requiredKeys)) return;
   const fields = { ...(entry.fields || {}) };
+  let changed = false;
   requiredKeys.forEach((key) => {
+    if (fields[key] && staticMetaMatches(fields[key].meta, snapshot.static_meta[key])) return;
     fields[key] = {
       meta: snapshot.static_meta[key],
       value: snapshot[key],
     };
+    changed = true;
   });
+  if (!changed) return;
   store[snapshot.model.id] = { updatedAt: Date.now(), fields };
   if (writeStaticCacheStore(pruneStaticCacheStore(store))) return;
   requiredKeys.forEach((key) => {
@@ -2822,6 +2880,157 @@ function pageNeedsCommands(page = currentPageName()) {
 
 function pageNeedsCommandHistory(page = currentPageName()) {
   return page === "runtime";
+}
+
+const DEVICE_RUNTIME_ENCODING = "device-runtime-arrays-v1";
+
+function deviceRuntimeIdentity(row = {}) {
+  return [
+    String(row.dev_type || "").trim(),
+    String(row.dev_name || row.name || "").trim(),
+  ];
+}
+
+function orderedDeviceRuntimeRows(rows, label) {
+  if (!Array.isArray(rows)) throw new Error(`${label} is not an array`);
+  const ordered = rows.filter((row) => row && typeof row === "object").slice().sort((left, right) => {
+    const leftKey = deviceRuntimeIdentity(left);
+    const rightKey = deviceRuntimeIdentity(right);
+    if (leftKey[0] < rightKey[0]) return -1;
+    if (leftKey[0] > rightKey[0]) return 1;
+    if (leftKey[1] < rightKey[1]) return -1;
+    if (leftKey[1] > rightKey[1]) return 1;
+    return 0;
+  });
+  const identities = ordered.map((row) => deviceRuntimeIdentity(row));
+  if (identities.some(([devType, devName]) => !devType || !devName)) {
+    throw new Error(`${label} contains an empty device identity`);
+  }
+  const unique = new Set(identities.map(([devType, devName]) => `${devType}\u0000${devName}`));
+  if (unique.size !== identities.length) throw new Error(`${label} contains duplicate device identities`);
+  return ordered;
+}
+
+function deviceRuntimeOrderSignature(rows, label) {
+  const encoder = new TextEncoder();
+  let checksum = 0x811c9dc5;
+  orderedDeviceRuntimeRows(rows, label).forEach((row) => {
+    const [devType, devName] = deviceRuntimeIdentity(row);
+    encoder.encode(`${devType}\u001e${devName}\u001f`).forEach((value) => {
+      checksum ^= value;
+      checksum = Math.imul(checksum, 0x01000193) >>> 0;
+    });
+  });
+  return `${rows.length}:${checksum.toString(16).padStart(8, "0")}`;
+}
+
+function validatedDeviceRuntimeCount(payload, name, expected) {
+  if (Number(payload?.[name]) !== expected) {
+    throw new Error(`${name} mismatch: expected ${expected}, received ${payload?.[name]}`);
+  }
+}
+
+function validatedDeviceRuntimeArray(payload, name, expected) {
+  const values = payload?.[name];
+  if (!Array.isArray(values) || values.length !== expected) {
+    throw new Error(`${name} length mismatch: expected ${expected}, received ${Array.isArray(values) ? values.length : -1}`);
+  }
+  return values;
+}
+
+function rejectDeviceRuntimeFrame(incoming, message) {
+  state.deviceRuntimeSignature = "";
+  state.deviceRuntimeNeedsFullRefresh = true;
+  state.deviceRuntimeWarning = message;
+  console.warn(`设备运行帧已拒绝，下一周期重取完整设备数据：${message}`);
+  const rejected = { ...(incoming || {}) };
+  delete rejected.device_runtime;
+  delete rejected.device_runtime_signature;
+  return rejected;
+}
+
+function applyDeviceRuntimePayload(previous, incoming) {
+  if (!incoming || typeof incoming !== "object") return incoming;
+  const advertisedSignature = String(incoming.device_runtime_signature || "").trim();
+  const frame = incoming.device_runtime;
+  if (!advertisedSignature) {
+    if (incoming.devices !== undefined || incoming.device_states !== undefined) {
+      state.deviceRuntimeSignature = "";
+      state.deviceRuntimeNeedsFullRefresh = false;
+      state.deviceRuntimeWarning = "";
+    }
+    return incoming;
+  }
+  if (!frame || typeof frame !== "object") {
+    if (state.deviceRuntimeSignature && advertisedSignature === state.deviceRuntimeSignature) return incoming;
+    return rejectDeviceRuntimeFrame(incoming, "设备运行签名变化但未携带运行帧");
+  }
+  try {
+    if (String(frame.encoding || "") !== DEVICE_RUNTIME_ENCODING) {
+      throw new Error(`unsupported encoding ${frame.encoding || "--"}`);
+    }
+    if (String(frame.runtime_signature || "") !== advertisedSignature) {
+      throw new Error("advertised runtime signature mismatch");
+    }
+    const baseDevices = Array.isArray(incoming.devices) ? incoming.devices : previous?.devices;
+    if (!Array.isArray(baseDevices)) throw new Error("missing base device definitions");
+    const deviceCount = baseDevices.length;
+    const stateCount = Number(frame.state_count);
+    validatedDeviceRuntimeCount(frame, "device_count", deviceCount);
+    if (!Number.isInteger(stateCount) || stateCount < 0) throw new Error("invalid state_count");
+    if (String(frame.device_signature || "") !== deviceRuntimeOrderSignature(baseDevices, "devices")) {
+      throw new Error("device signature mismatch");
+    }
+    const runStats = validatedDeviceRuntimeArray(frame, "device_run_stats", deviceCount);
+    const statuses = validatedDeviceRuntimeArray(frame, "device_statuses", deviceCount);
+    const modes = validatedDeviceRuntimeArray(frame, "device_modes", deviceCount);
+    const setValues = validatedDeviceRuntimeArray(frame, "device_set_values", deviceCount);
+    const socPresent = validatedDeviceRuntimeArray(frame, "device_soc_present", deviceCount);
+    const socValues = validatedDeviceRuntimeArray(frame, "device_soc_values", deviceCount);
+    const stateRunStats = validatedDeviceRuntimeArray(frame, "state_run_stats", stateCount);
+    const stateDeadIslands = validatedDeviceRuntimeArray(frame, "state_dead_islands", stateCount);
+
+    const decodedDevices = baseDevices.map((row) => ({ ...row, set_values: { ...(row?.set_values || {}) } }));
+    orderedDeviceRuntimeRows(decodedDevices, "devices").forEach((row, index) => {
+      row.run_stat = runStats[index];
+      row.status = statuses[index];
+      row.mode = modes[index];
+      row.set_values = setValues[index] && typeof setValues[index] === "object"
+        ? { ...setValues[index] }
+        : {};
+      if (socPresent[index]) row.soc_curr = socValues[index];
+    });
+
+    const baseStates = Array.isArray(incoming.device_states) ? incoming.device_states : previous?.device_states;
+    let decodedStates = null;
+    if (Array.isArray(baseStates)) {
+      validatedDeviceRuntimeCount(frame, "state_count", baseStates.length);
+      if (String(frame.state_signature || "") !== deviceRuntimeOrderSignature(baseStates, "device_states")) {
+        throw new Error("device state signature mismatch");
+      }
+      decodedStates = baseStates.map((row) => ({ ...row }));
+      orderedDeviceRuntimeRows(decodedStates, "device_states").forEach((row, index) => {
+        row.run_stat = stateRunStats[index];
+        row.dead_island = Boolean(stateDeadIslands[index]);
+      });
+    }
+
+    const applied = { ...incoming, devices: decodedDevices };
+    if (decodedStates) applied.device_states = decodedStates;
+    delete applied.device_runtime;
+    state.deviceRuntimeSignature = advertisedSignature;
+    state.deviceRuntimeNeedsFullRefresh = false;
+    state.deviceRuntimeWarning = "";
+    return applied;
+  } catch (error) {
+    return rejectDeviceRuntimeFrame(incoming, error?.message || String(error));
+  }
+}
+
+function canUseCompactDeviceRuntime(page = currentPageName()) {
+  if (!pageNeedsDevices(page) || state.deviceRuntimeNeedsFullRefresh) return false;
+  if (!Array.isArray(state.snapshot?.devices)) return false;
+  return !pageNeedsDeviceStates(page) || Array.isArray(state.snapshot?.device_states);
 }
 
 function mergeSnapshot(previous, incoming) {
@@ -2864,10 +3073,19 @@ function snapshotPollPath(page = currentPageName(), forceStaticKeys = null) {
         : []
     );
   const params = new URLSearchParams();
+  const compactDeviceRuntime = !Array.isArray(forceStaticKeys) && canUseCompactDeviceRuntime(page);
   params.set("logs", "0");
   params.set("measurements", "0");
   params.set("devices", pageNeedsDevices(page) ? "1" : "0");
   params.set("device_states", pageNeedsDeviceStates(page) ? "1" : "0");
+  if (compactDeviceRuntime) {
+    params.set("devices", "0");
+    params.set("device_states", "0");
+    params.set("device_runtime_compact", "1");
+    if (state.deviceRuntimeSignature) {
+      params.set("after_device_runtime_signature", state.deviceRuntimeSignature);
+    }
+  }
   params.set("commands", pageNeedsCommands(page) ? "1" : "0");
   if (pageNeedsCommands(page) && state.snapshot?.command_signature) {
     params.set("after_command_signature", state.snapshot.command_signature);
@@ -3252,14 +3470,17 @@ async function refreshMeasurementDelta(renderNow = false) {
 
 async function refreshSnapshotPayload(page = currentPageName()) {
   state.embeddedMeasurementDeltaReceived = false;
-  const incoming = await api(snapshotPollPath(page));
+  const incoming = applyDeviceRuntimePayload(state.snapshot, await api(snapshotPollPath(page)));
   let embeddedMeasurementDelta = incoming?.measurement_delta || null;
   if (incoming?.measurement_delta) delete incoming.measurement_delta;
   let snapshot = mergeSnapshot(state.snapshot, incoming);
   snapshot = restoreStaticSnapshotCache(snapshot, page);
   let requiredStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
   if (requiredStaticKeys.length) {
-    const staticIncoming = await api(snapshotPollPath(page, requiredStaticKeys));
+    const staticIncoming = applyDeviceRuntimePayload(
+      snapshot,
+      await api(snapshotPollPath(page, requiredStaticKeys)),
+    );
     if (staticIncoming?.measurement_delta) {
       embeddedMeasurementDelta = staticIncoming.measurement_delta;
       delete staticIncoming.measurement_delta;
@@ -3600,6 +3821,9 @@ async function setActiveModel(modelId, shouldRefresh = true) {
   cancelCurveRequests();
   state.activeModelId = nextId;
   state.selectedManagementModelId = nextId;
+  state.deviceRuntimeSignature = "";
+  state.deviceRuntimeNeedsFullRefresh = false;
+  state.deviceRuntimeWarning = "";
   localStorage.setItem("polarSimulatorModelId", nextId);
   invalidateManualDefinitionChanges();
   state.snapshot = null;
@@ -10651,6 +10875,7 @@ function renderActiveSimulatorPage(snapshot = state.snapshot, force = false) {
 }
 
 function renderSnapshot(snapshot) {
+  state.frontendDiagnostics.snapshotRenderCount += 1;
   if (snapshot.model?.id && snapshot.model.id !== state.activeModelId) {
     state.activeModelId = snapshot.model.id;
   }
@@ -12547,6 +12772,7 @@ function drawRuntimeTraceChart() {
     ctx.lineWidth = series.key === selectedSeries ? widthScale + 1.2 : widthScale;
     ctx.beginPath();
     let started = false;
+    let previousY = Number.NaN;
     points.forEach((point) => {
       const value = numberOrNull(point[series.field]);
       if (value === null) return;
@@ -12563,9 +12789,13 @@ function drawRuntimeTraceChart() {
       if (!started) {
         ctx.moveTo(x, y);
         started = true;
+      } else if (series.key === "control") {
+        ctx.lineTo(x, previousY);
+        if (Math.abs(y - previousY) > 1e-9) ctx.lineTo(x, y);
       } else {
         ctx.lineTo(x, y);
       }
+      previousY = y;
     });
     if (started) ctx.stroke();
     hitData.push({ ...series, unit, points: pixelPoints });
@@ -14643,6 +14873,9 @@ document.addEventListener("input", (event) => {
   if (event.target.dataset.measField !== undefined && event.target.tagName === "INPUT") {
     updateMeasurementFault(Number(event.target.dataset.measIndex), event.target.dataset.measField, event.target.value, false);
   }
+});
+document.addEventListener("visibilitychange", () => {
+  scheduleNextRefresh(pageIsHidden() ? HIDDEN_REFRESH_INTERVAL_MS : 0);
 });
 generateCurves(0);
 initCurveEditor();

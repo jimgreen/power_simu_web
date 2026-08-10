@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import gzip
+import http.client
 import tempfile
 import threading
 import unittest
@@ -672,6 +673,78 @@ class IncrementalRuntimeDataApiTest(unittest.TestCase):
         self.assertEqual(encoding, "gzip")
         self.assertIn("Accept-Encoding", vary or "")
         self.assertEqual(payload["encoding"], "measurement-arrays-v1")
+
+    def test_static_assets_use_memory_cache_gzip_etag_and_revalidate_after_file_change(self):
+        from simu.server import make_http_server
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        static_root = Path(workspace.name) / "web"
+        static_root.mkdir()
+        asset = static_root / "app.js"
+        original = ("const performancePayload = 'original';\n" * 128).encode("utf-8")
+        asset.write_bytes(original)
+
+        server = make_http_server(
+            ("127.0.0.1", 0),
+            service,
+            role="simulator",
+            static_root=static_root,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        port = server.server_address[1]
+
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        connection.request("GET", "/app.js", headers={"Accept-Encoding": "gzip"})
+        response = connection.getresponse()
+        compressed = response.read()
+        etag = response.getheader("ETag")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.getheader("Content-Encoding"), "gzip")
+        self.assertEqual(response.getheader("Cache-Control"), "no-cache")
+        self.assertIn("Accept-Encoding", response.getheader("Vary") or "")
+        self.assertTrue(etag)
+        self.assertEqual(gzip.decompress(compressed), original)
+        connection.close()
+
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        connection.request(
+            "GET",
+            "/app.js",
+            headers={"Accept-Encoding": "gzip", "If-None-Match": etag},
+        )
+        response = connection.getresponse()
+        self.assertEqual(response.status, 304)
+        self.assertEqual(response.read(), b"")
+        self.assertEqual(response.getheader("ETag"), etag)
+        connection.close()
+
+        updated = ("const performancePayload = 'updated';\n" * 128).encode("utf-8")
+        asset.write_bytes(updated)
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        connection.request(
+            "GET",
+            "/app.js",
+            headers={"Accept-Encoding": "gzip", "If-None-Match": etag},
+        )
+        response = connection.getresponse()
+        refreshed = response.read()
+        self.assertEqual(response.status, 200)
+        self.assertNotEqual(response.getheader("ETag"), etag)
+        self.assertEqual(gzip.decompress(refreshed), updated)
+        connection.close()
+
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        connection.request("GET", "/api/snapshot?lite=1&measurements=0&devices=0")
+        response = connection.getresponse()
+        response.read()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.getheader("Cache-Control"), "no-store")
+        connection.close()
 
     def test_http_incremental_endpoints(self):
         from simu.server import make_http_server

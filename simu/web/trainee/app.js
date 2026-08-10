@@ -19,6 +19,7 @@ const VERTICAL_SPLIT_MIN_TOP_PX = 120;
 const VERTICAL_SPLIT_MIN_BOTTOM_PX = 120;
 const STATIC_CACHE_STORAGE_KEY = "polarTraineeStaticCacheV2";
 const STATIC_CACHE_MODEL_LIMIT = 4;
+const HIDDEN_REFRESH_INTERVAL_MS = 10000;
 const MODEL_CONTEXT_PERSIST_INTERVAL_MS = 5000;
 const WEB_RUNTIME_FALLBACKS = {
   frontend_refresh_seconds: 1,
@@ -260,7 +261,20 @@ const state = {
   webRuntimeDirty: false,
   webRuntimeError: "",
   frontendRefreshTimerId: null,
+  deviceRuntimeSignature: "",
+  deviceRuntimeNeedsFullRefresh: false,
+  deviceRuntimeWarning: "",
+  frontendDiagnostics: {
+    requestCount: 0,
+    responseBytes: 0,
+    requestDurationMs: 0,
+    snapshotRequestCount: 0,
+    snapshotResponseBytes: 0,
+    snapshotRenderCount: 0,
+    renewableRenderCount: 0,
+  },
 };
+window.__polarFrontendDiagnostics = state.frontendDiagnostics;
 const pending = { run_status: new Map(), set_values: new Map() };
 let modelContextPersistTimerId = null;
 let lastModelContextPersistAtMs = 0;
@@ -407,6 +421,51 @@ function frontendRefreshIntervalMs() {
   return Math.max(200, activeRuntimeSetting("frontend_refresh_seconds") * 1000);
 }
 
+function backendDataRefreshIntervalMs() {
+  return Math.max(100, activeRuntimeSetting("backend_refresh_seconds") * 1000);
+}
+
+function renewableCollectionIntervalSeconds(values = state.webRuntimeSettings) {
+  const configured = Number(values?.backend_refresh_seconds);
+  return Number.isFinite(configured) && configured > 0
+    ? configured
+    : Math.max(0.1, activeRuntimeSetting("backend_refresh_seconds"));
+}
+
+function renewableControlIntervalError(controlSeconds, collectionSeconds) {
+  const control = Number(controlSeconds);
+  const collection = Number(collectionSeconds);
+  if (!Number.isFinite(collection) || collection <= 0) {
+    return "采集周期（后台数据刷新周期）必须大于 0 秒。";
+  }
+  if (!Number.isFinite(control) || control <= collection) {
+    return `控制周期必须大于采集周期 ${runtimeSettingDisplay(collection)} s。`;
+  }
+  const ratio = control / collection;
+  const multiple = Math.round(ratio);
+  if (multiple < 2 || Math.abs(ratio - multiple) > 1e-8) {
+    return `控制周期必须是采集周期 ${runtimeSettingDisplay(collection)} s 的整数倍。`;
+  }
+  return "";
+}
+
+function minimumRenewableControlIntervalSeconds(collectionSeconds) {
+  const collection = Math.max(0.1, Number(collectionSeconds) || 1);
+  const multiple = Math.max(2, Math.ceil((1 - 1e-8) / collection));
+  return Number((collection * multiple).toFixed(12));
+}
+
+function syncRenewableControlPeriodConstraints() {
+  const input = $("renewableControlPeriod");
+  if (!input) return;
+  const collection = renewableCollectionIntervalSeconds(
+    state.webRuntimeDirty ? state.webRuntimeDraft : state.webRuntimeSettings,
+  );
+  input.min = String(minimumRenewableControlIntervalSeconds(collection));
+  input.step = String(collection);
+  input.setCustomValidity(renewableControlIntervalError(input.value, collection));
+}
+
 function frontendRequestTimeoutMs() {
   return Math.max(1000, activeRuntimeSetting("frontend_request_timeout_seconds") * 1000);
 }
@@ -423,7 +482,18 @@ function receiveMaxReconnectAttempts() {
   return Math.max(1, Math.round(activeRuntimeSetting("receive_max_reconnect_attempts")));
 }
 
-function scheduleNextRefresh(delayMs = frontendRefreshIntervalMs()) {
+function pageIsHidden() {
+  return document.visibilityState === "hidden";
+}
+
+function refreshSchedulerIntervalMs() {
+  if (pageIsHidden()) return HIDDEN_REFRESH_INTERVAL_MS;
+  return state.receiveMode
+    ? backendDataRefreshIntervalMs()
+    : frontendRefreshIntervalMs();
+}
+
+function scheduleNextRefresh(delayMs = refreshSchedulerIntervalMs()) {
   if (state.frontendRefreshTimerId) clearTimeout(state.frontendRefreshTimerId);
   state.frontendRefreshTimerId = setTimeout(runRefreshScheduler, Math.max(0, delayMs));
 }
@@ -439,7 +509,7 @@ async function runRefreshScheduler() {
     await refresh();
   } finally {
     const elapsedMs = Date.now() - startedAtMs;
-    scheduleNextRefresh(Math.max(0, frontendRefreshIntervalMs() - elapsedMs));
+    scheduleNextRefresh(Math.max(0, refreshSchedulerIntervalMs() - elapsedMs));
   }
 }
 
@@ -1241,6 +1311,18 @@ function teacherScopedPath(path) {
   return `${path}${separator}model_id=${encodeURIComponent(state.activeModelId)}`;
 }
 
+function recordFrontendRequestDiagnostics(path, response, durationMs) {
+  const diagnostics = state.frontendDiagnostics;
+  const responseBytes = Math.max(0, Number(response?.headers?.get?.("Content-Length")) || 0);
+  diagnostics.requestCount += 1;
+  diagnostics.responseBytes += responseBytes;
+  diagnostics.requestDurationMs += Math.max(0, Number(durationMs) || 0);
+  if (/\/api\/(?:trainee\/)?snapshot(?:\?|$)/.test(String(path || ""))) {
+    diagnostics.snapshotRequestCount += 1;
+    diagnostics.snapshotResponseBytes += responseBytes;
+  }
+}
+
 async function api(path, options = {}) {
   const {
     modelScoped = true,
@@ -1249,6 +1331,7 @@ async function api(path, options = {}) {
     ...fetchOptions
   } = options;
   const targetPath = modelScoped ? modelScopedPath(path) : path;
+  const requestStartedAtMs = performance.now();
   const controller = new AbortController();
   const boundedTimeout = Math.max(0, Number(timeoutMs) || 0);
   let timedOut = false;
@@ -1269,6 +1352,11 @@ async function api(path, options = {}) {
       signal: controller.signal,
       headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) },
     });
+    recordFrontendRequestDiagnostics(
+      targetPath,
+      response,
+      performance.now() - requestStartedAtMs,
+    );
     if (!response.ok) throw new Error(await response.text());
     return response.json();
   } catch (error) {
@@ -1313,6 +1401,12 @@ function renderWebRuntimeSettings() {
     const constraint = state.webRuntimeConstraints?.[name] || {};
     if (constraint.min !== undefined) input.min = String(constraint.min);
     if (constraint.max !== undefined) input.max = String(constraint.max);
+    if (name === "backend_refresh_seconds") {
+      input.setCustomValidity(renewableControlIntervalError(
+        state.renewableControl.intervalSeconds,
+        value,
+      ));
+    }
     input.disabled = state.webRuntimeLoading || state.webRuntimeSaving;
   });
   Object.entries(WEB_RUNTIME_CURRENT_IDS).forEach(([name, id]) => {
@@ -1352,6 +1446,7 @@ function renderWebRuntimeSettings() {
   if (saveButton) saveButton.disabled = !state.webRuntimeDirty || state.webRuntimeLoading || state.webRuntimeSaving;
   if (undoButton) undoButton.disabled = !state.webRuntimeDirty || state.webRuntimeLoading || state.webRuntimeSaving;
   if (defaultsButton) defaultsButton.disabled = state.webRuntimeLoading || state.webRuntimeSaving;
+  syncRenewableControlPeriodConstraints();
 }
 
 function applyWebRuntimeSettings() {
@@ -1406,11 +1501,29 @@ function updateWebRuntimeDraft(input) {
     [name]: Number.isFinite(value) ? value : input.value,
   };
   state.webRuntimeDirty = true;
+  if (name === "backend_refresh_seconds") {
+    const error = renewableControlIntervalError(
+      state.renewableControl.intervalSeconds,
+      value,
+    );
+    input.setCustomValidity(error);
+  }
   renderWebRuntimeSettings();
 }
 
 async function saveWebRuntimeSettings() {
   if (state.webRuntimeSaving || !state.webRuntimeDirty) return;
+  const collectionInterval = renewableCollectionIntervalSeconds(state.webRuntimeDraft);
+  const intervalError = renewableControlIntervalError(
+    state.renewableControl.intervalSeconds,
+    collectionInterval,
+  );
+  if (intervalError) {
+    state.webRuntimeError = intervalError;
+    runtimeParameterElement("webRuntimeBackendRefresh")?.reportValidity?.();
+    renderWebRuntimeSettings();
+    return;
+  }
   state.webRuntimeSaving = true;
   state.webRuntimeError = "";
   renderWebRuntimeSettings();
@@ -1736,6 +1849,7 @@ const STATIC_SNAPSHOT_KEYS_BY_PAGE = {
   "history": [],
 };
 const CACHEABLE_STATIC_KEYS = STATIC_SNAPSHOT_KEYS.filter((key) => key !== "curves");
+let staticCacheStoreMemory = null;
 
 function staticSnapshotKeysForPage(page = currentPageName()) {
   return STATIC_SNAPSHOT_KEYS_BY_PAGE[page] || STATIC_SNAPSHOT_KEYS;
@@ -1767,16 +1881,19 @@ function staticCacheModelKey(snapshot = state.snapshot || {}) {
 }
 
 function readStaticCacheStore() {
+  if (staticCacheStoreMemory) return staticCacheStoreMemory;
   try {
     const raw = localStorage.getItem(STATIC_CACHE_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : {};
-    return parsed && typeof parsed === "object" ? parsed : {};
+    staticCacheStoreMemory = parsed && typeof parsed === "object" ? parsed : {};
   } catch (_error) {
-    return {};
+    staticCacheStoreMemory = {};
   }
+  return staticCacheStoreMemory;
 }
 
 function writeStaticCacheStore(store) {
+  staticCacheStoreMemory = store;
   try {
     localStorage.setItem(STATIC_CACHE_STORAGE_KEY, JSON.stringify(store));
     return true;
@@ -1798,6 +1915,14 @@ function pruneStaticCacheStore(store) {
   const entries = Object.entries(store || {})
     .sort((left, right) => Number(right[1]?.updatedAt || 0) - Number(left[1]?.updatedAt || 0));
   return Object.fromEntries(entries.slice(0, STATIC_CACHE_MODEL_LIMIT));
+}
+
+function staticCacheEntryMatchesSnapshot(entry, snapshot, requiredKeys) {
+  if (!entry?.fields) return false;
+  return requiredKeys.every((key) => (
+    entry.fields[key]
+    && staticMetaMatches(entry.fields[key].meta, snapshot.static_meta?.[key])
+  ));
 }
 
 function restoreStaticSnapshotCache(snapshot, page = currentPageName()) {
@@ -1831,13 +1956,18 @@ function persistStaticSnapshotCache(snapshot, page = currentPageName()) {
   if (!requiredKeys.length) return;
   const store = readStaticCacheStore();
   const entry = store[cacheKey] || { fields: {} };
+  if (staticCacheEntryMatchesSnapshot(entry, snapshot, requiredKeys)) return;
   const fields = { ...(entry.fields || {}) };
+  let changed = false;
   requiredKeys.forEach((key) => {
+    if (fields[key] && staticMetaMatches(fields[key].meta, snapshot.static_meta[key])) return;
     fields[key] = {
       meta: snapshot.static_meta[key],
       value: snapshot[key],
     };
+    changed = true;
   });
+  if (!changed) return;
   store[cacheKey] = { updatedAt: Date.now(), fields };
   if (writeStaticCacheStore(pruneStaticCacheStore(store))) return;
   requiredKeys.forEach((key) => {
@@ -1905,6 +2035,157 @@ function pageNeedsCommandHistory(page = currentPageName()) {
   return page === "commands";
 }
 
+const DEVICE_RUNTIME_ENCODING = "device-runtime-arrays-v1";
+
+function deviceRuntimeIdentity(row = {}) {
+  return [
+    String(row.dev_type || "").trim(),
+    String(row.dev_name || row.name || "").trim(),
+  ];
+}
+
+function orderedDeviceRuntimeRows(rows, label) {
+  if (!Array.isArray(rows)) throw new Error(`${label} is not an array`);
+  const ordered = rows.filter((row) => row && typeof row === "object").slice().sort((left, right) => {
+    const leftKey = deviceRuntimeIdentity(left);
+    const rightKey = deviceRuntimeIdentity(right);
+    if (leftKey[0] < rightKey[0]) return -1;
+    if (leftKey[0] > rightKey[0]) return 1;
+    if (leftKey[1] < rightKey[1]) return -1;
+    if (leftKey[1] > rightKey[1]) return 1;
+    return 0;
+  });
+  const identities = ordered.map((row) => deviceRuntimeIdentity(row));
+  if (identities.some(([devType, devName]) => !devType || !devName)) {
+    throw new Error(`${label} contains an empty device identity`);
+  }
+  const unique = new Set(identities.map(([devType, devName]) => `${devType}\u0000${devName}`));
+  if (unique.size !== identities.length) throw new Error(`${label} contains duplicate device identities`);
+  return ordered;
+}
+
+function deviceRuntimeOrderSignature(rows, label) {
+  const encoder = new TextEncoder();
+  let checksum = 0x811c9dc5;
+  orderedDeviceRuntimeRows(rows, label).forEach((row) => {
+    const [devType, devName] = deviceRuntimeIdentity(row);
+    encoder.encode(`${devType}\u001e${devName}\u001f`).forEach((value) => {
+      checksum ^= value;
+      checksum = Math.imul(checksum, 0x01000193) >>> 0;
+    });
+  });
+  return `${rows.length}:${checksum.toString(16).padStart(8, "0")}`;
+}
+
+function validatedDeviceRuntimeCount(payload, name, expected) {
+  if (Number(payload?.[name]) !== expected) {
+    throw new Error(`${name} mismatch: expected ${expected}, received ${payload?.[name]}`);
+  }
+}
+
+function validatedDeviceRuntimeArray(payload, name, expected) {
+  const values = payload?.[name];
+  if (!Array.isArray(values) || values.length !== expected) {
+    throw new Error(`${name} length mismatch: expected ${expected}, received ${Array.isArray(values) ? values.length : -1}`);
+  }
+  return values;
+}
+
+function rejectDeviceRuntimeFrame(incoming, message) {
+  state.deviceRuntimeSignature = "";
+  state.deviceRuntimeNeedsFullRefresh = true;
+  state.deviceRuntimeWarning = message;
+  console.warn(`设备运行帧已拒绝，下一周期重取完整设备数据：${message}`);
+  const rejected = { ...(incoming || {}) };
+  delete rejected.device_runtime;
+  delete rejected.device_runtime_signature;
+  return rejected;
+}
+
+function applyDeviceRuntimePayload(previous, incoming) {
+  if (!incoming || typeof incoming !== "object") return incoming;
+  const advertisedSignature = String(incoming.device_runtime_signature || "").trim();
+  const frame = incoming.device_runtime;
+  if (!advertisedSignature) {
+    if (incoming.devices !== undefined || incoming.device_states !== undefined) {
+      state.deviceRuntimeSignature = "";
+      state.deviceRuntimeNeedsFullRefresh = false;
+      state.deviceRuntimeWarning = "";
+    }
+    return incoming;
+  }
+  if (!frame || typeof frame !== "object") {
+    if (state.deviceRuntimeSignature && advertisedSignature === state.deviceRuntimeSignature) return incoming;
+    return rejectDeviceRuntimeFrame(incoming, "设备运行签名变化但未携带运行帧");
+  }
+  try {
+    if (String(frame.encoding || "") !== DEVICE_RUNTIME_ENCODING) {
+      throw new Error(`unsupported encoding ${frame.encoding || "--"}`);
+    }
+    if (String(frame.runtime_signature || "") !== advertisedSignature) {
+      throw new Error("advertised runtime signature mismatch");
+    }
+    const baseDevices = Array.isArray(incoming.devices) ? incoming.devices : previous?.devices;
+    if (!Array.isArray(baseDevices)) throw new Error("missing base device definitions");
+    const deviceCount = baseDevices.length;
+    const stateCount = Number(frame.state_count);
+    validatedDeviceRuntimeCount(frame, "device_count", deviceCount);
+    if (!Number.isInteger(stateCount) || stateCount < 0) throw new Error("invalid state_count");
+    if (String(frame.device_signature || "") !== deviceRuntimeOrderSignature(baseDevices, "devices")) {
+      throw new Error("device signature mismatch");
+    }
+    const runStats = validatedDeviceRuntimeArray(frame, "device_run_stats", deviceCount);
+    const statuses = validatedDeviceRuntimeArray(frame, "device_statuses", deviceCount);
+    const modes = validatedDeviceRuntimeArray(frame, "device_modes", deviceCount);
+    const setValues = validatedDeviceRuntimeArray(frame, "device_set_values", deviceCount);
+    const socPresent = validatedDeviceRuntimeArray(frame, "device_soc_present", deviceCount);
+    const socValues = validatedDeviceRuntimeArray(frame, "device_soc_values", deviceCount);
+    const stateRunStats = validatedDeviceRuntimeArray(frame, "state_run_stats", stateCount);
+    const stateDeadIslands = validatedDeviceRuntimeArray(frame, "state_dead_islands", stateCount);
+
+    const decodedDevices = baseDevices.map((row) => ({ ...row, set_values: { ...(row?.set_values || {}) } }));
+    orderedDeviceRuntimeRows(decodedDevices, "devices").forEach((row, index) => {
+      row.run_stat = runStats[index];
+      row.status = statuses[index];
+      row.mode = modes[index];
+      row.set_values = setValues[index] && typeof setValues[index] === "object"
+        ? { ...setValues[index] }
+        : {};
+      if (socPresent[index]) row.soc_curr = socValues[index];
+    });
+
+    const baseStates = Array.isArray(incoming.device_states) ? incoming.device_states : previous?.device_states;
+    let decodedStates = null;
+    if (Array.isArray(baseStates)) {
+      validatedDeviceRuntimeCount(frame, "state_count", baseStates.length);
+      if (String(frame.state_signature || "") !== deviceRuntimeOrderSignature(baseStates, "device_states")) {
+        throw new Error("device state signature mismatch");
+      }
+      decodedStates = baseStates.map((row) => ({ ...row }));
+      orderedDeviceRuntimeRows(decodedStates, "device_states").forEach((row, index) => {
+        row.run_stat = stateRunStats[index];
+        row.dead_island = Boolean(stateDeadIslands[index]);
+      });
+    }
+
+    const applied = { ...incoming, devices: decodedDevices };
+    if (decodedStates) applied.device_states = decodedStates;
+    delete applied.device_runtime;
+    state.deviceRuntimeSignature = advertisedSignature;
+    state.deviceRuntimeNeedsFullRefresh = false;
+    state.deviceRuntimeWarning = "";
+    return applied;
+  } catch (error) {
+    return rejectDeviceRuntimeFrame(incoming, error?.message || String(error));
+  }
+}
+
+function canUseCompactDeviceRuntime(page = currentPageName()) {
+  if (!pageNeedsDevices(page) || state.deviceRuntimeNeedsFullRefresh) return false;
+  if (!Array.isArray(state.snapshot?.devices)) return false;
+  return !pageNeedsDeviceStates(page) || Array.isArray(state.snapshot?.device_states);
+}
+
 function snapshotPollPath(page = currentPageName(), forceStaticKeys = null) {
   if (!Array.isArray(forceStaticKeys) && state.snapshot?.static_meta) {
     state.snapshot = restoreStaticSnapshotCache(state.snapshot, page);
@@ -1919,9 +2200,18 @@ function snapshotPollPath(page = currentPageName(), forceStaticKeys = null) {
         : staticSnapshotKeysForPage(page)
     );
   const params = new URLSearchParams();
+  const compactDeviceRuntime = !Array.isArray(forceStaticKeys) && canUseCompactDeviceRuntime(page);
   params.set("measurements", "0");
   params.set("devices", pageNeedsDevices(page) ? "1" : "0");
   params.set("device_states", pageNeedsDeviceStates(page) ? "1" : "0");
+  if (compactDeviceRuntime) {
+    params.set("devices", "0");
+    params.set("device_states", "0");
+    params.set("device_runtime_compact", "1");
+    if (state.deviceRuntimeSignature) {
+      params.set("after_device_runtime_signature", state.deviceRuntimeSignature);
+    }
+  }
   params.set("commands", pageNeedsCommands(page) ? "1" : "0");
   if (pageNeedsCommands(page) && state.snapshot?.command_signature) {
     params.set("after_command_signature", state.snapshot.command_signature);
@@ -1976,9 +2266,18 @@ function teacherReceiveAddress() {
 function teacherSnapshotPollAddress(page = currentPageName(), forceStaticKeys = null) {
   void forceStaticKeys;
   const params = new URLSearchParams();
+  const compactDeviceRuntime = canUseCompactDeviceRuntime(page);
   params.set("measurements", "0");
-  params.set("devices", "0");
+  params.set("devices", pageNeedsDevices(page) ? "1" : "0");
   params.set("device_states", pageNeedsDeviceStates(page) ? "1" : "0");
+  if (compactDeviceRuntime) {
+    params.set("devices", "1");
+    params.set("device_states", "1");
+    params.set("device_runtime_compact", "1");
+    if (state.deviceRuntimeSignature) {
+      params.set("after_device_runtime_signature", state.deviceRuntimeSignature);
+    }
+  }
   params.set("commands", pageNeedsCommands(page) ? "1" : "0");
   if (pageNeedsCommands(page) && state.snapshot?.command_signature) {
     params.set("after_command_signature", state.snapshot.command_signature);
@@ -7348,7 +7647,10 @@ async function attemptTeacherReconnect(epoch) {
   renderReceiveMode(`重连中 ${attempt}/${maxAttempts}`);
   try {
     await ensureLocalDefinitionSnapshot(state.activeModelId);
-    const remoteSnapshot = await teacherSnapshotApi(currentPageName());
+    const remoteSnapshot = applyDeviceRuntimePayload(
+      state.snapshot,
+      await teacherSnapshotApi(currentPageName()),
+    );
     if (!state.receiveMode || epoch !== state.receiveEpoch) return;
     state.embeddedMeasurementDeltaReceived = false;
     const embeddedMeasurementDelta = remoteSnapshot?.measurement_delta || null;
@@ -8334,6 +8636,9 @@ async function setActiveModel(modelId, shouldRefresh = true) {
   persistActiveModelContext({}, true);
   const nextId = modelId || state.models[0]?.id || "";
   state.activeModelId = nextId;
+  state.deviceRuntimeSignature = "";
+  state.deviceRuntimeNeedsFullRefresh = false;
+  state.deviceRuntimeWarning = "";
   localStorage.setItem("polarTraineeModelId", nextId);
   restoreModelContext(nextId);
   resetMeasurementHistoryHydration();
@@ -8401,13 +8706,19 @@ async function loadModels() {
 
 async function refreshLocalSnapshotPayload(page = currentPageName()) {
   state.embeddedMeasurementDeltaReceived = false;
-  let snapshot = mergeSnapshot(state.snapshot, await api(snapshotPollPath(page)));
+  let snapshot = mergeSnapshot(
+    state.snapshot,
+    applyDeviceRuntimePayload(state.snapshot, await api(snapshotPollPath(page))),
+  );
   let embeddedMeasurementDelta = snapshot?.measurement_delta || null;
   if (snapshot?.measurement_delta) delete snapshot.measurement_delta;
   snapshot = restoreStaticSnapshotCache(snapshot, page);
   let missingStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
   if (missingStaticKeys.length) {
-    const staticIncoming = await api(snapshotPollPath(page, missingStaticKeys));
+    const staticIncoming = applyDeviceRuntimePayload(
+      snapshot,
+      await api(snapshotPollPath(page, missingStaticKeys)),
+    );
     if (staticIncoming?.measurement_delta) {
       embeddedMeasurementDelta = staticIncoming.measurement_delta;
       delete staticIncoming.measurement_delta;
@@ -8429,7 +8740,6 @@ async function refresh() {
   await syncActiveReceiveStateBeforeRefresh();
   if (state.receiveMode) {
     await refreshFromTeacher(state.receiveEpoch);
-    if (currentPageName() === "renewable") await refreshRenewableControlState({ preview: false });
     return;
   }
   const page = currentPageName();
@@ -8453,13 +8763,16 @@ async function refresh() {
     $("connectionDot").className = "ok";
     $("connectionText").textContent = "在线";
     state.snapshotSource = "local";
+    if (page === "renewable") {
+      await refreshRenewableControlState({ preview: false, render: false });
+    }
     renderSnapshot(snapshot);
   } catch (_error) {
     $("connectionDot").className = "off";
     $("connectionText").textContent = "离线";
+    if (page === "renewable") await refreshRenewableControlState({ preview: false });
   } finally {
     state.refreshRequestActive = false;
-    if (currentPageName() === "renewable") await refreshRenewableControlState({ preview: false });
   }
 }
 
@@ -8469,7 +8782,10 @@ async function refreshFromTeacher(epoch = state.receiveEpoch) {
   try {
     const page = currentPageName();
     await ensureLocalDefinitionSnapshot(state.activeModelId);
-    const remoteSnapshot = await teacherSnapshotApi(page);
+    const remoteSnapshot = applyDeviceRuntimePayload(
+      state.snapshot,
+      await teacherSnapshotApi(page),
+    );
     state.embeddedMeasurementDeltaReceived = false;
     const embeddedMeasurementDelta = remoteSnapshot?.measurement_delta || null;
     if (remoteSnapshot?.measurement_delta) delete remoteSnapshot.measurement_delta;
@@ -8482,6 +8798,9 @@ async function refreshFromTeacher(epoch = state.receiveEpoch) {
     }
     if (pageNeedsMeasurementDelta(page) && !state.embeddedMeasurementDeltaReceived) {
       await refreshMeasurementDelta(false);
+    }
+    if (page === "renewable") {
+      await refreshRenewableControlState({ preview: false, render: false });
     }
     acceptTeacherSnapshot(state.snapshot, epoch);
   } catch (_error) {
@@ -8506,6 +8825,7 @@ async function refreshFromTeacher(epoch = state.receiveEpoch) {
 }
 
 function renderSnapshot(snapshot) {
+  state.frontendDiagnostics.snapshotRenderCount += 1;
   applyTraineeObservedRuntimeSignals(snapshot);
   state.snapshot = snapshot;
   if (state.snapshotSource !== "teacher" && snapshot.model?.id && snapshot.model.id !== state.activeModelId) {
@@ -11713,6 +12033,7 @@ function drawRenewableTrendChart() {
     ctx.setLineDash(dashPattern);
     ctx.beginPath();
     let started = false;
+    let previousY = Number.NaN;
     sampled.forEach(({ index, value }) => {
       if (!Number.isFinite(value)) return;
       const point = points[index];
@@ -11723,9 +12044,13 @@ function drawRenewableTrendChart() {
       if (!started) {
         ctx.moveTo(x, y);
         started = true;
+      } else if (series.style === "target") {
+        ctx.lineTo(x, previousY);
+        if (Math.abs(y - previousY) > 1e-9) ctx.lineTo(x, y);
       } else {
         ctx.lineTo(x, y);
       }
+      previousY = y;
     });
     if (started) ctx.stroke();
     ctx.setLineDash([]);
@@ -11793,6 +12118,7 @@ function renewableStorageSocMetricText(value, metrics = {}, group = "") {
 function populateRenewableControlParameters(control = state.renewableControl) {
   const periodInput = $("renewableControlPeriod");
   if (periodInput) periodInput.value = String(control.intervalSeconds || 2);
+  syncRenewableControlPeriodConstraints();
   const ratioInputs = {
     renewableStepRatio: control.stepCoefficient,
     storageStepRatio: control.storageStepRatio,
@@ -11843,6 +12169,7 @@ function renewableForegroundActionPending(control = state.renewableControl) {
 }
 
 function renderRenewableControl(snapshot = state.snapshot || {}) {
+  state.frontendDiagnostics.renewableRenderCount += 1;
   const control = state.renewableControl;
   const actionPending = renewableForegroundActionPending(control);
   const receiveReady = Boolean(state.receiveMode && control.receiveActive && control.canRun);
@@ -11875,6 +12202,7 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   const parameterDialogOpen = Boolean($("renewableControlParametersDialog")?.open);
   if (!parameterDialogOpen && periodInput && document.activeElement !== periodInput) {
     periodInput.value = String(control.intervalSeconds || 2);
+    syncRenewableControlPeriodConstraints();
   }
   const ratioInputs = {
     renewableStepRatio: control.stepCoefficient,
@@ -12191,9 +12519,27 @@ async function setRenewableLoopMode(mode) {
 }
 
 async function updateRenewableSettings() {
-  const intervalSeconds = Math.max(1, toNumber($("renewableControlPeriod")?.value, 2));
+  const periodInput = $("renewableControlPeriod");
+  const intervalSeconds = toNumber(periodInput?.value, 2);
+  const collectionIntervalSeconds = renewableCollectionIntervalSeconds();
+  const intervalError = renewableControlIntervalError(
+    intervalSeconds,
+    collectionIntervalSeconds,
+  );
+  periodInput?.setCustomValidity?.(intervalError);
+  if (intervalError) {
+    state.renewableControl.lastStatus = intervalError;
+    periodInput?.reportValidity?.();
+    renderRenewableControl(state.snapshot || {});
+    return null;
+  }
   const commandValidMinutes = Math.max(0.1, toNumber($("renewableCommandValidMinutes")?.value, 120));
-  const ratio = (id, fallbackPercent) => Math.max(0, toNumber($(id)?.value, fallbackPercent)) / 100;
+  const ratio = (id, fallbackPercent, minimumPercent = 0, maximumPercent = 100) => (
+    Math.min(
+      maximumPercent,
+      Math.max(minimumPercent, toNumber($(id)?.value, fallbackPercent)),
+    ) / 100
+  );
   return runRenewableControlAction("update_settings", {
     settings: {
       intervalSeconds,
@@ -14095,6 +14441,7 @@ function drawCommandTraceChart() {
     ctx.lineWidth = (series.key === selectedSeries ? widthScale + 1 : widthScale) * ratio;
     ctx.beginPath();
     let started = false;
+    let previousY = Number.NaN;
     points.forEach((point) => {
       const value = point[series.field];
       if (value === null || !Number.isFinite(value)) return;
@@ -14104,9 +14451,13 @@ function drawCommandTraceChart() {
       if (!started) {
         ctx.moveTo(x, y);
         started = true;
+      } else if (series.key === "control") {
+        ctx.lineTo(x, previousY);
+        if (Math.abs(y - previousY) > 1e-9) ctx.lineTo(x, y);
       } else {
         ctx.lineTo(x, y);
       }
+      previousY = y;
     });
     if (started) ctx.stroke();
     hitData.push({ ...series, unit, points: pixelPoints });
@@ -15827,6 +16178,7 @@ $("renewableControlParametersButton")?.addEventListener("click", openRenewableCo
 $("closeRenewableControlParametersDialog")?.addEventListener("click", closeRenewableControlParametersDialog);
 $("cancelRenewableControlParametersDialog")?.addEventListener("click", closeRenewableControlParametersDialog);
 $("saveRenewableControlParameters")?.addEventListener("click", saveRenewableControlParameters);
+$("renewableControlPeriod")?.addEventListener("input", syncRenewableControlPeriodConstraints);
 $("renewableControlParametersDialog")?.addEventListener("click", (event) => {
   if (event.target === $("renewableControlParametersDialog")) closeRenewableControlParametersDialog();
 });
@@ -16048,6 +16400,9 @@ window.addEventListener("resize", () => {
   drawCommandTraceChart();
   drawRenewableTrendChart();
   drawCurveDisplay(state.snapshot || {});
+});
+document.addEventListener("visibilitychange", () => {
+  scheduleNextRefresh(pageIsHidden() ? HIDDEN_REFRESH_INTERVAL_MS : 0);
 });
 
 initOverviewBottomSplitter();

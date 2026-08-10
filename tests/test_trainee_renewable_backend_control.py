@@ -10119,7 +10119,7 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                 services,
                 receive_status_provider=mutable_receive_status(receive_state),
             )
-            manager._state_for("shared").settings = RenewableControlSettings(interval_seconds=1)
+            manager._state_for("shared").settings = RenewableControlSettings(interval_seconds=2)
             try:
                 started = manager.apply_action("shared", {"action": "start"})
                 self.assertTrue(started["enabled"])
@@ -11019,7 +11019,7 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                     {
                         "action": "update_settings",
                         "settings": {
-                            "intervalSeconds": 1,
+                            "intervalSeconds": 2,
                             "renewableStepRatio": 0.10,
                             "storageStepRatio": 0.05,
                             "storageSocCorrectionStepScale": 0.20,
@@ -11057,7 +11057,7 @@ class RenewableControlBackendApiTest(unittest.TestCase):
 
         self.assertFalse(state["enabled"])
         self.assertEqual(state["loopMode"], "closed")
-        self.assertEqual(state["settings"]["intervalSeconds"], 1.0)
+        self.assertEqual(state["settings"]["intervalSeconds"], 2.0)
         self.assertEqual(state["settings"]["renewableStepRatio"], 0.10)
         self.assertEqual(state["settings"]["storageStepRatio"], 0.05)
         self.assertEqual(

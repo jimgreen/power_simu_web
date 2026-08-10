@@ -49,6 +49,8 @@ from simu.trainee_exchange import TraineeControlSnapshot
 
 
 EPSILON = 1e-9
+DEFAULT_TRAINEE_BACKEND_REFRESH_SECONDS = 1.0
+CONTROL_INTERVAL_MULTIPLE_TOLERANCE = 1e-8
 MINIMUM_CONTROL_INTERVAL_SECONDS = default_number(
     "minimum_control_interval_seconds"
 )
@@ -64,6 +66,37 @@ SIMULATION_DEFAULT_STEP_MINUTES = default_number(
 SIMULATION_MINIMUM_STEP_MINUTES = default_number(
     "simulation_minimum_step_minutes"
 )
+
+
+def _control_interval_multiple(
+    control_interval_seconds: Any,
+    collection_interval_seconds: Any,
+) -> int:
+    try:
+        control_interval = float(control_interval_seconds)
+        collection_interval = float(collection_interval_seconds)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("采集周期和控制周期必须为有效数字。") from exc
+    if not math.isfinite(collection_interval) or collection_interval <= 0.0:
+        raise ValueError("采集周期（后台数据刷新周期）必须大于 0 秒。")
+    if not math.isfinite(control_interval) or control_interval <= collection_interval:
+        raise ValueError(
+            f"控制周期 {control_interval:g} 秒必须大于采集周期（后台数据刷新周期）"
+            f"{collection_interval:g} 秒。"
+        )
+    ratio = control_interval / collection_interval
+    multiple = int(round(ratio))
+    if multiple < 2 or not math.isclose(
+        ratio,
+        float(multiple),
+        rel_tol=CONTROL_INTERVAL_MULTIPLE_TOLERANCE,
+        abs_tol=CONTROL_INTERVAL_MULTIPLE_TOLERANCE,
+    ):
+        raise ValueError(
+            f"控制周期 {control_interval:g} 秒必须是采集周期（后台数据刷新周期）"
+            f"{collection_interval:g} 秒的整数倍。"
+        )
+    return multiple
 SIMULATION_DEFAULT_SPEED = default_number("simulation_default_speed")
 SIMULATION_MINIMUM_SPEED = default_number("simulation_minimum_speed")
 STORAGE_MINIMUM_CONTROL_HORIZON_HOURS = default_number(
@@ -11550,6 +11583,7 @@ class TraineeRenewableControlManager:
         self._states_by_service_instance: Dict[str, _ControllerState] = {}
         self._states_lock = threading.RLock()
         self._stop_event = threading.Event()
+        self._wake_event = threading.Event()
         self._close_lock = threading.Lock()
         self._background_submit_lock = threading.Lock()
         self._closed = False
@@ -11569,6 +11603,7 @@ class TraineeRenewableControlManager:
             with self._background_submit_lock:
                 self._closed = True
             self._stop_event.set()
+            self._wake_worker()
             if self._worker and self._worker.is_alive():
                 self._worker.join()
             # Provider/transport calls have finite timeouts and run without broad
@@ -11586,6 +11621,9 @@ class TraineeRenewableControlManager:
             for state in states:
                 with state.lock:
                     state.background_cycle_pending = False
+
+    def _wake_worker(self) -> None:
+        self._wake_event.set()
 
     def _service_for(self, model_id: Optional[str]) -> Any:
         if hasattr(self.services, "service_for"):
@@ -11626,6 +11664,86 @@ class TraineeRenewableControlManager:
 
     def _persistence_path(self, model_id: Optional[str]) -> Optional[Path]:
         return self._persistence_path_for_service(self._service_for(model_id))
+
+    @staticmethod
+    def _runtime_settings_for_service(service: Any) -> Mapping[str, Any]:
+        getter = getattr(service, "web_runtime_settings", None)
+        if not callable(getter):
+            return {}
+        try:
+            payload = getter("trainee")
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(payload, Mapping):
+            return {}
+        settings = payload.get("effectiveSettings", payload.get("settings", {}))
+        return settings if isinstance(settings, Mapping) else {}
+
+    def _collection_interval_seconds_for_service(self, service: Any) -> float:
+        settings = self._runtime_settings_for_service(service)
+        try:
+            interval = float(
+                settings.get(
+                    "backend_refresh_seconds",
+                    DEFAULT_TRAINEE_BACKEND_REFRESH_SECONDS,
+                )
+            )
+        except (TypeError, ValueError):
+            interval = DEFAULT_TRAINEE_BACKEND_REFRESH_SECONDS
+        if not math.isfinite(interval) or interval <= 0.0:
+            return DEFAULT_TRAINEE_BACKEND_REFRESH_SECONDS
+        return interval
+
+    def _validate_control_interval_for_service(
+        self,
+        service: Any,
+        control_interval_seconds: float,
+        *,
+        collection_interval_seconds: Optional[float] = None,
+    ) -> int:
+        collection_interval = (
+            self._collection_interval_seconds_for_service(service)
+            if collection_interval_seconds is None
+            else float(collection_interval_seconds)
+        )
+        return _control_interval_multiple(
+            control_interval_seconds,
+            collection_interval,
+        )
+
+    def validate_runtime_settings_update_for_service(
+        self,
+        service: Any,
+        payload: Mapping[str, Any],
+    ) -> None:
+        values = payload.get("settings", {})
+        if not isinstance(values, Mapping):
+            return
+        state = self._state_for_live_service(service)
+        collection_interval = self._collection_interval_seconds_for_service(service)
+        if "backend_refresh_seconds" in values:
+            try:
+                collection_interval = float(values["backend_refresh_seconds"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("后台数据刷新周期必须为有效数字。") from exc
+        with state.lock:
+            control_interval = state.settings.interval_seconds
+        self._validate_control_interval_for_service(
+            service,
+            control_interval,
+            collection_interval_seconds=collection_interval,
+        )
+
+    def runtime_settings_changed_for_service(self, service: Any) -> bool:
+        try:
+            state = self._state_for_live_service(service)
+        except RuntimeError:
+            return False
+        with state.lock:
+            state.last_preview_started = 0.0
+            state.revision += 1
+        self._wake_worker()
+        return True
 
     def _load_configuration_for_service(self, service: Any) -> Tuple[RenewableControlSettings, str]:
         path = self._persistence_path_for_service(service)
@@ -11930,6 +12048,7 @@ class TraineeRenewableControlManager:
                 state.revision += 1
         if runtime_log_entry is not None:
             self._persist_runtime_log_for_service(service, state, runtime_log_entry)
+        self._wake_worker()
         return self._serialize_for_service(service, state)
 
     def _reject_without_receive(
@@ -11977,6 +12096,7 @@ class TraineeRenewableControlManager:
                     state.revision += 1
         if runtime_log_entry is not None:
             self._persist_runtime_log_for_service(service, state, runtime_log_entry)
+        self._wake_worker()
         return self._serialize_for_service(service, state)
 
     def receive_state_changed(self, model_id: Optional[str]) -> Dict[str, Any]:
@@ -11991,6 +12111,7 @@ class TraineeRenewableControlManager:
                 self._states.pop(state.model_id, None)
             if self._states_by_service_instance.get(state.service_instance_id) is state:
                 self._states_by_service_instance.pop(state.service_instance_id, None)
+        self._wake_worker()
 
     def remove_model_for_service(self, service: Any) -> bool:
         """Cancel and remove only the controller lifecycle for this service."""
@@ -13298,7 +13419,14 @@ class TraineeRenewableControlManager:
             "after_controller_instance_id": after_controller_instance_id,
         }
         now = time.monotonic()
-        if refresh and not state.enabled and now - state.last_preview_started >= 0.9:
+        collection_interval_seconds = self._collection_interval_seconds_for_service(
+            service
+        )
+        if (
+            refresh
+            and not state.enabled
+            and now - state.last_preview_started >= collection_interval_seconds
+        ):
             with state.lock:
                 service_lock = getattr(service, "lock", None)
                 with (service_lock if service_lock is not None else nullcontext()):
@@ -13329,6 +13457,7 @@ class TraineeRenewableControlManager:
             finally:
                 with state.lock:
                     state.background_cycle_pending = False
+                self._wake_worker()
 
         with self._background_submit_lock:
             if self._closed or self._stop_event.is_set():
@@ -13365,13 +13494,33 @@ class TraineeRenewableControlManager:
                 service_lock = getattr(service, "lock", None)
                 with (service_lock if service_lock is not None else nullcontext()):
                     self._require_active_service_for_state_locked(service, state)
+                    requested_interval = next(
+                        (
+                            settings_payload[key]
+                            for key in ("interval_seconds", "intervalSeconds")
+                            if key in settings_payload
+                        ),
+                        state.settings.interval_seconds,
+                    )
+                    self._validate_control_interval_for_service(
+                        service,
+                        float(requested_interval),
+                    )
                     next_settings = state.settings.updated(settings_payload)
+                    control_multiple = self._validate_control_interval_for_service(
+                        service,
+                        next_settings.interval_seconds,
+                    )
                     self._persist_configuration(service, next_settings, state.loop_mode)
                     if next_settings != state.settings:
                         state.operation_epoch += 1
                     state.settings = next_settings
-                    state.status = "新能源实时控制参数已更新并持久化。"
+                    state.status = (
+                        "新能源实时控制参数已更新并持久化；"
+                        f"控制周期为采集周期的 {control_multiple} 倍。"
+                    )
                     state.revision += 1
+            self._wake_worker()
             return self._serialize_for_service(service, state)
         if action in {"set_loop_mode", "loop_mode"}:
             next_mode = "closed" if str(payload.get("loop_mode", payload.get("loopMode", "open"))).lower() == "closed" else "open"
@@ -13399,6 +13548,7 @@ class TraineeRenewableControlManager:
                 self._persist_runtime_log_for_service(service, state, runtime_log_entry)
             except Exception:
                 pass
+            self._wake_worker()
             return self._serialize_for_service(service, state)
         if action == "start":
             blocked = self._reject_without_receive_for_service(
@@ -13415,9 +13565,15 @@ class TraineeRenewableControlManager:
                 service_lock = getattr(service, "lock", None)
                 with (service_lock if service_lock is not None else nullcontext()):
                     self._require_active_service_for_state_locked(service, state)
+                    self._validate_control_interval_for_service(
+                        service,
+                        state.settings.interval_seconds,
+                    )
                     state.operation_epoch += 1
                     state.enabled = True
-                    state.last_auto_started = 0.0
+                    cycle_started_at = time.monotonic()
+                    state.last_auto_started = cycle_started_at
+                    state.last_preview_started = cycle_started_at
                     state.status = f"{'闭环' if state.loop_mode == 'closed' else '开环'}实时控制已在学员台后台启动。"
                     runtime_log_entry = self._append_log(
                         state,
@@ -13431,7 +13587,7 @@ class TraineeRenewableControlManager:
                     state.revision += 1
             if runtime_log_entry is not None:
                 self._persist_runtime_log_for_service(service, state, runtime_log_entry)
-            return self._run_once_for_service(
+            result = self._run_once_for_service(
                 service,
                 state,
                 trigger="start",
@@ -13439,6 +13595,8 @@ class TraineeRenewableControlManager:
                 record_log=True,
                 raise_on_retired=True,
             )
+            self._wake_worker()
+            return result
         if action == "stop":
             runtime_log_entry = None
             with state.lock:
@@ -13462,9 +13620,10 @@ class TraineeRenewableControlManager:
                     state.revision += 1
             if runtime_log_entry is not None:
                 self._persist_runtime_log_for_service(service, state, runtime_log_entry)
+            self._wake_worker()
             return self._serialize_for_service(service, state)
         if action in {"run_once", "calculate"}:
-            return self._run_once_for_service(
+            result = self._run_once_for_service(
                 service,
                 state,
                 trigger="manual",
@@ -13472,8 +13631,10 @@ class TraineeRenewableControlManager:
                 record_log=True,
                 raise_on_retired=True,
             )
+            self._wake_worker()
+            return result
         if action in {"refresh", "preview"}:
-            return self._run_once_for_service(
+            result = self._run_once_for_service(
                 service,
                 state,
                 trigger="preview",
@@ -13481,81 +13642,133 @@ class TraineeRenewableControlManager:
                 record_log=False,
                 raise_on_retired=True,
             )
+            self._wake_worker()
+            return result
         return self._serialize_for_service(service, state)
+
+    def _run_worker_iteration(self, *, now: Optional[float] = None) -> float:
+        iteration_now = time.monotonic() if now is None else float(now)
+        next_deadlines: List[float] = []
+        enumeration_succeeded = True
+        try:
+            services = (
+                list(self.services.iter_services())
+                if hasattr(self.services, "iter_services")
+                else [self.services]
+            )
+        except Exception:
+            services = []
+            enumeration_succeeded = False
+        for target in services:
+            if not self._service_is_current_registry_instance(target):
+                continue
+            try:
+                state = self._state_for_live_service(target)
+                receive_prerequisite = self._receive_prerequisite_for_service(target)
+            except (KeyError, RuntimeError):
+                continue
+            if not receive_prerequisite["canRun"]:
+                if state.enabled:
+                    try:
+                        self.receive_state_changed_for_service(target)
+                    except RuntimeError:
+                        pass
+                continue
+            collection_interval_seconds = max(
+                0.01,
+                self._collection_interval_seconds_for_service(target),
+            )
+            with state.lock:
+                cycle_idle = (
+                    not state.sending
+                    and not state.background_cycle_pending
+                    and not state.run_lock.locked()
+                )
+                enabled = state.enabled
+                control_interval_seconds = max(
+                    MINIMUM_CONTROL_INTERVAL_SECONDS,
+                    float(state.settings.interval_seconds),
+                )
+                collection_deadline = (
+                    state.last_preview_started + collection_interval_seconds
+                )
+                control_deadline = (
+                    state.last_auto_started + control_interval_seconds
+                    if enabled
+                    else math.inf
+                )
+            if not cycle_idle:
+                continue
+            next_deadline = min(collection_deadline, control_deadline)
+            if iteration_now < next_deadline:
+                next_deadlines.append(next_deadline)
+                continue
+            control_due = enabled and iteration_now >= control_deadline
+            collection_due = iteration_now >= collection_deadline
+            if control_due:
+                try:
+                    self._validate_control_interval_for_service(
+                        target,
+                        control_interval_seconds,
+                        collection_interval_seconds=collection_interval_seconds,
+                    )
+                except ValueError as exc:
+                    with state.lock:
+                        state.enabled = False
+                        state.operation_epoch += 1
+                        state.status = f"实时控制已停止：{exc}"
+                        state.revision += 1
+                    continue
+                submitted = self._submit_background_cycle(
+                    state,
+                    timestamp_attr="last_auto_started",
+                    timestamp=iteration_now,
+                    callback=self._run_once_for_service,
+                    args=(target, state),
+                    kwargs={
+                        "trigger": "auto",
+                        "allow_dispatch": True,
+                        "record_log": True,
+                        "raise_on_retired": False,
+                    },
+                    service=target,
+                )
+                if submitted:
+                    with state.lock:
+                        state.last_preview_started = iteration_now
+            elif collection_due:
+                self._submit_background_cycle(
+                    state,
+                    timestamp_attr="last_preview_started",
+                    timestamp=iteration_now,
+                    callback=self._collect_once_for_service,
+                    args=(target, state),
+                    kwargs={"raise_on_retired": False},
+                    service=target,
+                )
+        if enumeration_succeeded:
+            with self._states_lock:
+                states = list(self._states_by_service_instance.values())
+            for state in states:
+                try:
+                    current = self._service_for(state.model_id)
+                except KeyError:
+                    current = None
+                if (
+                    current is not None
+                    and self._service_instance_id(current) == state.service_instance_id
+                ):
+                    continue
+                self._retire_state(state)
+        if not next_deadlines:
+            return 1.0
+        deadline_now = time.monotonic() if now is None else iteration_now
+        return max(0.01, min(1.0, min(next_deadlines) - deadline_now))
 
     def _worker_loop(self) -> None:
         while not self._stop_event.is_set():
-            now = time.monotonic()
-            enumeration_succeeded = True
-            try:
-                services = list(self.services.iter_services()) if hasattr(self.services, "iter_services") else [self.services]
-            except Exception:
-                services = []
-                enumeration_succeeded = False
-            for target in services:
-                if not self._service_is_current_registry_instance(target):
-                    continue
-                try:
-                    state = self._state_for_live_service(target)
-                    receive_prerequisite = self._receive_prerequisite_for_service(target)
-                except (KeyError, RuntimeError):
-                    continue
-                if not receive_prerequisite["canRun"]:
-                    if state.enabled:
-                        try:
-                            self.receive_state_changed_for_service(target)
-                        except RuntimeError:
-                            pass
-                    continue
-                with state.lock:
-                    cycle_idle = (
-                        not state.sending
-                        and not state.background_cycle_pending
-                        and not state.run_lock.locked()
-                    )
-                    control_due = state.enabled and cycle_idle and now - state.last_auto_started >= state.settings.interval_seconds
-                    monitor_due = (
-                        not state.enabled
-                        and cycle_idle
-                        and now - state.last_preview_started >= state.settings.interval_seconds
-                    )
-                if control_due:
-                    self._submit_background_cycle(
-                        state,
-                        timestamp_attr="last_auto_started",
-                        timestamp=now,
-                        callback=self._run_once_for_service,
-                        args=(target, state),
-                        kwargs={
-                            "trigger": "auto",
-                            "allow_dispatch": True,
-                            "record_log": True,
-                            "raise_on_retired": False,
-                        },
-                        service=target,
-                    )
-                elif monitor_due:
-                    self._submit_background_cycle(
-                        state,
-                        timestamp_attr="last_preview_started",
-                        timestamp=now,
-                        callback=self._collect_once_for_service,
-                        args=(target, state),
-                        kwargs={"raise_on_retired": False},
-                        service=target,
-                    )
-            if enumeration_succeeded:
-                with self._states_lock:
-                    states = list(self._states_by_service_instance.values())
-                for state in states:
-                    try:
-                        current = self._service_for(state.model_id)
-                    except KeyError:
-                        current = None
-                    if (
-                        current is not None
-                        and self._service_instance_id(current) == state.service_instance_id
-                    ):
-                        continue
-                    self._retire_state(state)
-            self._stop_event.wait(0.1)
+            self._wake_event.clear()
+            wait_seconds = self._run_worker_iteration()
+            if self._stop_event.wait(0):
+                break
+            self._wake_event.wait(wait_seconds)

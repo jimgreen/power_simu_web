@@ -207,12 +207,41 @@ class WebRuntimeSettingsApiTest(unittest.TestCase):
         status, saved = self.request_json(
             f"{base}/api/runtime-settings?model_id=trainee-a",
             method="POST",
-            payload={"settings": {"backend_refresh_seconds": 2.0}},
+            payload={"settings": {"backend_refresh_seconds": 0.5}},
         )
 
         self.assertEqual(status, 200)
         self.assertEqual(saved["role"], "trainee")
-        self.assertEqual(saved["settings"]["backend_refresh_seconds"], 2.0)
+        self.assertEqual(saved["settings"]["backend_refresh_seconds"], 0.5)
+
+    def test_trainee_backend_refresh_period_must_divide_control_period(self):
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        service = self.make_service(Path(workspace.name), "trainee-period")
+        base = self.start_server(service, role="trainee")
+        url = f"{base}/api/runtime-settings?model_id=trainee-period"
+
+        for invalid_period in (2.0, 0.75):
+            with self.subTest(invalid_period=invalid_period):
+                with self.assertRaises(HTTPError) as context:
+                    self.request_json(
+                        url,
+                        method="POST",
+                        payload={
+                            "settings": {
+                                "backend_refresh_seconds": invalid_period,
+                            }
+                        },
+                    )
+                self.assertEqual(context.exception.code, 400)
+
+        status, saved = self.request_json(
+            url,
+            method="POST",
+            payload={"settings": {"backend_refresh_seconds": 0.5}},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(saved["settings"]["backend_refresh_seconds"], 0.5)
 
     def test_trainee_health_endpoint_reports_the_local_process_instead_of_proxying(self):
         workspace = tempfile.TemporaryDirectory()

@@ -940,12 +940,12 @@
                 <table class="system-parameter-table web-runtime-parameter-table">
                   <thead><tr><th>参数名称</th><th>当前值</th><th>设置值</th><th>单位</th></tr></thead>
                   <tbody>
-                    <tr><td><strong>前端数据刷新周期</strong><small>页面轮询完成后等待时长</small></td><td id="currentWebRuntimeFrontendRefresh" class="numeric-cell">1</td><td><input id="webRuntimeFrontendRefresh" type="number" min="0.2" max="60" step="0.1" data-runtime-setting="frontend_refresh_seconds" /></td><td>s</td></tr>
+                    <tr><td><strong>前端数据刷新周期</strong><small>未启动接收时页面轮询完成后的等待时长</small></td><td id="currentWebRuntimeFrontendRefresh" class="numeric-cell">1</td><td><input id="webRuntimeFrontendRefresh" type="number" min="0.2" max="60" step="0.1" data-runtime-setting="frontend_refresh_seconds" /></td><td>s</td></tr>
                     <tr><td><strong>前端请求超时</strong><small>学员台页面 API 最长等待</small></td><td id="currentWebRuntimeFrontendRequestTimeout" class="numeric-cell">30</td><td><input id="webRuntimeFrontendRequestTimeout" type="number" min="1" max="300" step="1" data-runtime-setting="frontend_request_timeout_seconds" /></td><td>s</td></tr>
                     <tr><td><strong>运行日志分页条数</strong><small>每页展示的日志数量</small></td><td id="currentWebRuntimeLogPageSize" class="numeric-cell">20</td><td><input id="webRuntimeLogPageSize" type="number" min="5" max="200" step="1" data-runtime-setting="runtime_log_page_size" /></td><td>条</td></tr>
                     <tr><td><strong>运行日志缓存上限</strong><small>浏览器内保留的日志数量</small></td><td id="currentWebRuntimeLogCacheLimit" class="numeric-cell">300</td><td><input id="webRuntimeLogCacheLimit" type="number" min="50" max="5000" step="10" data-runtime-setting="runtime_log_cache_limit" /></td><td>条</td></tr>
                     <tr><td><strong>趋势历史保留点数</strong><small>曲线最大历史点数</small></td><td id="currentWebRuntimeTraceHistoryLimit" class="numeric-cell">45000</td><td><input id="webRuntimeTraceHistoryLimit" type="number" min="1000" max="200000" step="1000" data-runtime-setting="trace_history_limit" /></td><td>点</td></tr>
-                    <tr><td><strong>后台数据刷新周期</strong><small>学员台后台从模拟台拉取数据周期</small></td><td id="currentWebRuntimeBackendRefresh" class="numeric-cell">1</td><td><input id="webRuntimeBackendRefresh" type="number" min="0.1" max="60" step="0.1" data-runtime-setting="backend_refresh_seconds" /></td><td>s</td></tr>
+                    <tr><td><strong>后台数据刷新周期</strong><small>模拟台采集、学员台接收和新能源趋势采样周期</small></td><td id="currentWebRuntimeBackendRefresh" class="numeric-cell">1</td><td><input id="webRuntimeBackendRefresh" type="number" min="0.1" max="60" step="0.1" data-runtime-setting="backend_refresh_seconds" /></td><td>s</td></tr>
                     <tr><td><strong>后台请求超时</strong><small>实时交换请求最长等待</small></td><td id="currentWebRuntimeBackendRequestTimeout" class="numeric-cell">8</td><td><input id="webRuntimeBackendRequestTimeout" type="number" min="1" max="300" step="1" data-runtime-setting="backend_request_timeout_seconds" /></td><td>s</td></tr>
                     <tr><td><strong>数据帧超时上限</strong><small>超过后阻断闭环下发</small></td><td id="currentWebRuntimeFrameAgeLimit" class="numeric-cell">15</td><td><input id="webRuntimeFrameAgeLimit" type="number" min="1" max="3600" step="1" data-runtime-setting="frame_age_limit_seconds" /></td><td>s</td></tr>
                     <tr><td><strong>同帧持续上限</strong><small>同一仿真帧持续过久判定冻结</small></td><td id="currentWebRuntimeSameFrameLimit" class="numeric-cell">30</td><td><input id="webRuntimeSameFrameLimit" type="number" min="1" max="3600" step="1" data-runtime-setting="same_frame_limit_seconds" /></td><td>s</td></tr>
@@ -1069,13 +1069,8 @@
           <button id="closeRenewableControlParametersDialog" class="dialog-close-button" type="button" aria-label="关闭控制参数窗口">×</button>
         </div>
         <div class="renewable-control-parameter-fields">
-          <label>控制周期
-            <select id="renewableControlPeriod">
-              <option value="1">1秒</option>
-              <option value="2" selected>2秒</option>
-              <option value="5">5秒</option>
-              <option value="10">10秒</option>
-            </select>
+          <label>控制周期(s)
+            <input id="renewableControlPeriod" type="number" min="2" step="1" value="2" />
           </label>
           <label>自动指令有效期(分钟)
             <input id="renewableCommandValidMinutes" type="number" min="0.1" step="1" value="120" />

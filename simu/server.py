@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import gzip
+import hashlib
 import html
 import json
 import math
@@ -50,6 +51,11 @@ try:
     from .command_frame import command_payload_signature
 except ImportError:  # pragma: no cover - direct module execution.
     from simu.command_frame import command_payload_signature
+
+try:
+    from .device_runtime_frame import compact_device_runtime_frame
+except ImportError:  # pragma: no cover - direct module execution.
+    from simu.device_runtime_frame import compact_device_runtime_frame
 
 try:
     from .definition_editing import (
@@ -1379,6 +1385,48 @@ def make_http_server(
         )
     renewable_control_path = "/api/trainee/renewable-control"
     external_realtime_inputs_path = "/api/external/realtime-inputs"
+    static_asset_cache: dict[Path, dict[str, Any]] = {}
+    static_asset_cache_lock = threading.RLock()
+
+    def load_static_asset(target: Path) -> dict[str, Any]:
+        stat = target.stat()
+        with static_asset_cache_lock:
+            cached = static_asset_cache.get(target)
+            if (
+                cached
+                and cached["mtime_ns"] == stat.st_mtime_ns
+                and cached["size"] == stat.st_size
+            ):
+                return cached
+
+        data = target.read_bytes()
+        content_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        compressible = (
+            content_type.startswith("text/")
+            or content_type
+            in {
+                "application/javascript",
+                "application/json",
+                "application/xml",
+                "image/svg+xml",
+            }
+        )
+        gzip_data = b""
+        if compressible and len(data) >= 512:
+            candidate = gzip.compress(data, compresslevel=1, mtime=0)
+            if len(candidate) + 32 < len(data):
+                gzip_data = candidate
+        loaded = {
+            "mtime_ns": stat.st_mtime_ns,
+            "size": stat.st_size,
+            "content_type": content_type,
+            "data": data,
+            "gzip_data": gzip_data,
+            "etag": f'"{hashlib.sha256(data).hexdigest()}"',
+        }
+        with static_asset_cache_lock:
+            static_asset_cache[target] = loaded
+        return loaded
 
     def captured_service_is_current(target: PolarMicrogridSimulator) -> bool:
         if hasattr(service, "service_for"):
@@ -1805,6 +1853,8 @@ def make_http_server(
                 "command_history",
                 "static",
                 "static_meta",
+                "device_runtime_compact",
+                "after_device_runtime_signature",
             )
             return {key: values[key][0] for key in allowed if values.get(key)}
 
@@ -2216,6 +2266,26 @@ def make_http_server(
                     snapshot_payload["command_signature"] = command_signature
                     if after_command_signature == command_signature:
                         snapshot_payload.pop("commands", None)
+                if self._truthy_query("device_runtime_compact"):
+                    device_runtime_frame = compact_device_runtime_frame(
+                        snapshot_payload.get("devices", []),
+                        snapshot_payload.get("device_states", []),
+                        definition_revision=target.definition_snapshot.revision,
+                    )
+                    device_runtime_signature = str(
+                        device_runtime_frame.get("runtime_signature", "")
+                    ).strip()
+                    after_device_runtime_signature = str(
+                        (
+                            trainee_snapshot_query.get("after_device_runtime_signature")
+                            or [""]
+                        )[0]
+                    ).strip()
+                    snapshot_payload.pop("devices", None)
+                    snapshot_payload.pop("device_states", None)
+                    snapshot_payload["device_runtime_signature"] = device_runtime_signature
+                    if after_device_runtime_signature != device_runtime_signature:
+                        snapshot_payload["device_runtime"] = device_runtime_frame
                 self._send_json(snapshot_payload)
             elif path == "/api/trainee/measurements/delta":
                 if exchange is None:
@@ -2291,7 +2361,14 @@ def make_http_server(
             if path == renewable_control_path:
                 if role != "trainee" or renewable_manager is None:
                     raise JsonApiError(404, f"Unknown API route: {path}")
-                self._send_json(renewable_manager.apply_action(self._request_model_id(payload), payload))
+                try:
+                    result = renewable_manager.apply_action(
+                        self._request_model_id(payload),
+                        payload,
+                    )
+                except ValueError as exc:
+                    raise JsonApiError(400, str(exc)) from exc
+                self._send_json(result)
                 return
             if path == "/api/trainee/model-initialize":
                 self._handle_trainee_model_initialize(payload)
@@ -2553,6 +2630,11 @@ def make_http_server(
                 self._send_json(target.set_system_parameters(payload))
             elif path == LOCAL_RUNTIME_SETTINGS_PATH:
                 try:
+                    if role == "trainee" and renewable_manager is not None:
+                        renewable_manager.validate_runtime_settings_update_for_service(
+                            target,
+                            payload,
+                        )
                     result = target.set_web_runtime_settings(role, payload)
                 except ServiceInstanceRetiredError as exc:
                     raise JsonApiError(409, str(exc)) from exc
@@ -2570,6 +2652,8 @@ def make_http_server(
                         notify = getattr(exchange, "runtime_settings_changed", None)
                         if callable(notify):
                             notify(target.model_id)
+                if role == "trainee" and renewable_manager is not None:
+                    renewable_manager.runtime_settings_changed_for_service(target)
                 self._send_json(result)
             elif path == "/api/runtime-logs/clear":
                 self._send_json(target.clear_runtime_logs())
@@ -2613,11 +2697,25 @@ def make_http_server(
                 target = root / "index.html"
             if not target.exists():
                 raise JsonApiError(404, f"Static file not found: {rel}")
-            content_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
-            data = target.read_bytes()
+            asset = load_static_asset(target)
+            etag = str(asset["etag"])
+            accepted_encodings = self.headers.get("Accept-Encoding", "").lower()
+            use_gzip = bool(asset["gzip_data"] and "gzip" in accepted_encodings)
+            data = asset["gzip_data"] if use_gzip else asset["data"]
+            if self.headers.get("If-None-Match", "").strip() == etag:
+                self.send_response(304)
+                self._cors(cache_control="no-cache")
+                self.send_header("ETag", etag)
+                self.send_header("Vary", "Accept-Encoding")
+                self.end_headers()
+                return
             self.send_response(200)
-            self._cors()
-            self.send_header("Content-Type", content_type)
+            self._cors(cache_control="no-cache")
+            self.send_header("Content-Type", str(asset["content_type"]))
+            self.send_header("ETag", etag)
+            self.send_header("Vary", "Accept-Encoding")
+            if use_gzip:
+                self.send_header("Content-Encoding", "gzip")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -2696,11 +2794,11 @@ def make_http_server(
                 }
             )
 
-        def _cors(self) -> None:
+        def _cors(self, *, cache_control: str = "no-store") -> None:
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", cache_control)
 
     class ManagedThreadingHTTPServer(ThreadingHTTPServer):
         _trainee_exchange_closed = False

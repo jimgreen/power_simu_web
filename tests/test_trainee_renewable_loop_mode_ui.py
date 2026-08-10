@@ -76,23 +76,28 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         self.assertIn("not state.sending", self.backend)
         self.assertIn("not state.background_cycle_pending", self.backend)
         self.assertIn("not state.run_lock.locked()", self.backend)
-        self.assertIn("state.enabled and cycle_idle", self.backend)
-        self.assertIn('state.settings.interval_seconds', self.backend)
+        self.assertIn("control_due = enabled", self.backend)
+        self.assertIn("collection_due =", self.backend)
+        self.assertIn("_collection_interval_seconds_for_service", self.backend)
+        self.assertIn("state.settings.interval_seconds", self.backend)
         self.assertIn('"开环未下发"', self.backend)
         self.assertIn('"下发成功"', self.backend)
 
-    def test_realtime_control_period_can_be_as_short_as_one_second(self):
-        self.assertIn('<option value="1">1秒</option>', self.html)
+    def test_control_period_is_larger_integer_multiple_of_collection_period(self):
+        self.assertIn('id="renewableControlPeriod" type="number"', self.html)
         settings_block = self.script.split("async function updateRenewableSettings", 1)[1].split(
             "function renderClock",
             1,
         )[0]
-        self.assertIn("Math.max(1", settings_block)
+        self.assertIn("renewableControlIntervalError", settings_block)
+        self.assertIn("collectionIntervalSeconds", settings_block)
         self.assertIn(
             'MINIMUM_CONTROL_INTERVAL_SECONDS = default_number(',
             self.backend,
         )
-        self.assertIn("MINIMUM_CONTROL_INTERVAL_SECONDS,", self.backend)
+        self.assertIn("def _control_interval_multiple(", self.backend)
+        self.assertIn("控制周期", self.backend)
+        self.assertIn("整数倍", self.backend)
 
     def test_automatic_command_validity_is_editable_and_persisted(self):
         self.assertIn('id="renewableCommandValidMinutes"', self.html)

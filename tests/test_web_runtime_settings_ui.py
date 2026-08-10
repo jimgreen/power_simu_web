@@ -30,7 +30,7 @@ class WebRuntimeSettingsUiTest(unittest.TestCase):
         ):
             self.assertIn(f'id="{element_id}"', html)
 
-    def test_trainee_has_parameter_page_between_manual_changes_and_logs(self):
+    def test_trainee_parameter_page_separates_backend_and_web_runtime_groups(self):
         html = (ROOT / "simu" / "web" / "trainee" / "index.html").read_text(encoding="utf-8")
 
         manual_index = html.index('data-nav-page="manual-changes"')
@@ -39,25 +39,36 @@ class WebRuntimeSettingsUiTest(unittest.TestCase):
         self.assertLess(manual_index, parameter_index)
         self.assertLess(parameter_index, history_index)
         self.assertIn('data-page="parameters"', html)
+        self.assertLess(html.index("后台运行参数"), html.index("WEB 运行参数"))
         for element_id in (
+            "backendRuntimeParameterForm",
+            "backendRuntimeRefresh",
+            "backendRuntimeRequestTimeout",
+            "backendRuntimeFrameAgeLimit",
+            "backendRuntimeSameFrameLimit",
+            "backendRuntimeReconnectAttempts",
+            "backendRuntimeMeasurementDeltaHistoryLimit",
+            "saveBackendRuntimeParameters",
+            "undoBackendRuntimeParameters",
+            "restoreBackendRuntimeParameterDefaults",
+            "backendRuntimeParameterSummary",
+            "webRuntimeParameterForm",
             "webRuntimeFrontendRefresh",
             "webRuntimeFrontendRequestTimeout",
             "webRuntimeLogPageSize",
             "webRuntimeLogCacheLimit",
-            "webRuntimeBackendRefresh",
-            "webRuntimeBackendRequestTimeout",
-            "webRuntimeFrameAgeLimit",
-            "webRuntimeSameFrameLimit",
             "webRuntimeReceiveStateSync",
-            "webRuntimeReconnectAttempts",
-            "webRuntimeMeasurementDeltaHistoryLimit",
             "saveRuntimeParameters",
             "undoRuntimeParameters",
             "restoreRuntimeParameterDefaults",
             "runtimeParameterModelName",
             "runtimeParameterUpdatedAt",
+            "backendRuntimeParameterState",
+            "webRuntimeParameterState",
         ):
             self.assertIn(f'id="{element_id}"', html)
+
+        self.assertNotIn('id="webRuntimeBackendRefresh"', html)
 
     def test_both_frontends_load_save_reset_and_apply_model_scoped_settings(self):
         scripts = {
@@ -86,6 +97,11 @@ class WebRuntimeSettingsUiTest(unittest.TestCase):
 
         self.assertIn('activeRuntimeSetting("receive_state_sync_seconds")', scripts["trainee"])
         self.assertIn('activeRuntimeSetting("receive_max_reconnect_attempts")', scripts["trainee"])
+        self.assertIn("const RUNTIME_PARAMETER_GROUPS", scripts["trainee"])
+        self.assertIn('async function saveWebRuntimeSettings(group = "web")', scripts["trainee"])
+        self.assertIn("runtimeParameterGroupValues(pendingDraft, group)", scripts["trainee"])
+        self.assertIn('saveWebRuntimeSettings("backend")', scripts["trainee"])
+        self.assertIn('saveWebRuntimeSettings("web")', scripts["trainee"])
         self.assertNotIn("const RECEIVE_STATE_SYNC_INTERVAL_MS = 5000", scripts["trainee"])
         self.assertNotIn("const RECEIVE_MAX_RECONNECT_ATTEMPTS = 3", scripts["trainee"])
 

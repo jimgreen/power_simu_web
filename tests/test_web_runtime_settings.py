@@ -89,6 +89,36 @@ class WebRuntimeSettingsTest(unittest.TestCase):
             2.5,
         )
 
+    def test_trainee_backend_and_web_groups_save_independently(self):
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        service = self.make_service(Path(workspace.name), "trainee-groups")
+
+        backend_saved = service.set_web_runtime_settings(
+            "trainee",
+            {
+                "settings": {
+                    "backend_refresh_seconds": 0.5,
+                    "frame_age_limit_seconds": 20,
+                }
+            },
+        )
+        web_saved = service.set_web_runtime_settings(
+            "trainee",
+            {
+                "settings": {
+                    "frontend_refresh_seconds": 2.5,
+                    "runtime_log_page_size": 35,
+                }
+            },
+        )
+
+        self.assertEqual(backend_saved["settings"]["backend_refresh_seconds"], 0.5)
+        self.assertEqual(web_saved["settings"]["backend_refresh_seconds"], 0.5)
+        self.assertEqual(web_saved["settings"]["frame_age_limit_seconds"], 20.0)
+        self.assertEqual(web_saved["settings"]["frontend_refresh_seconds"], 2.5)
+        self.assertEqual(web_saved["settings"]["runtime_log_page_size"], 35)
+
     def test_invalid_update_is_rejected_without_partial_save(self):
         workspace = tempfile.TemporaryDirectory()
         self.addCleanup(workspace.cleanup)

@@ -22,7 +22,7 @@ class TraineeCollectionPeriodAndTargetCurveUiTest(unittest.TestCase):
 
     def test_parameter_page_exposes_backend_data_refresh_period(self):
         self.assertIn("后台数据刷新周期", self.html)
-        self.assertIn('id="webRuntimeBackendRefresh"', self.html)
+        self.assertIn('id="backendRuntimeRefresh"', self.html)
         self.assertIn('data-runtime-setting="backend_refresh_seconds"', self.html)
         self.assertIn("新能源趋势采样周期", self.html)
 

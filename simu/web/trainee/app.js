@@ -39,14 +39,31 @@ const WEB_RUNTIME_CURRENT_IDS = {
   frontend_request_timeout_seconds: "currentWebRuntimeFrontendRequestTimeout",
   runtime_log_page_size: "currentWebRuntimeLogPageSize",
   runtime_log_cache_limit: "currentWebRuntimeLogCacheLimit",
-  backend_refresh_seconds: "currentWebRuntimeBackendRefresh",
-  backend_request_timeout_seconds: "currentWebRuntimeBackendRequestTimeout",
-  frame_age_limit_seconds: "currentWebRuntimeFrameAgeLimit",
-  same_frame_limit_seconds: "currentWebRuntimeSameFrameLimit",
+  backend_refresh_seconds: "currentBackendRuntimeRefresh",
+  backend_request_timeout_seconds: "currentBackendRuntimeRequestTimeout",
+  frame_age_limit_seconds: "currentBackendRuntimeFrameAgeLimit",
+  same_frame_limit_seconds: "currentBackendRuntimeSameFrameLimit",
   receive_state_sync_seconds: "currentWebRuntimeReceiveStateSync",
-  receive_max_reconnect_attempts: "currentWebRuntimeReconnectAttempts",
-  measurement_delta_history_limit: "currentWebRuntimeMeasurementDeltaHistoryLimit",
+  receive_max_reconnect_attempts: "currentBackendRuntimeReconnectAttempts",
+  measurement_delta_history_limit: "currentBackendRuntimeMeasurementDeltaHistoryLimit",
 };
+const RUNTIME_PARAMETER_GROUPS = Object.freeze({
+  backend: Object.freeze([
+    "backend_refresh_seconds",
+    "backend_request_timeout_seconds",
+    "frame_age_limit_seconds",
+    "same_frame_limit_seconds",
+    "receive_max_reconnect_attempts",
+    "measurement_delta_history_limit",
+  ]),
+  web: Object.freeze([
+    "frontend_refresh_seconds",
+    "frontend_request_timeout_seconds",
+    "runtime_log_page_size",
+    "runtime_log_cache_limit",
+    "receive_state_sync_seconds",
+  ]),
+});
 const DEFAULT_STORAGE_CHARGE_DERATING_CURVE = Object.freeze([
   { soc: 0.60, powerRatio: 1.00 },
   { soc: 0.70, powerRatio: 0.50 },
@@ -255,9 +272,9 @@ const state = {
   webRuntimeUpdatedAt: "",
   webRuntimeLoadedModelId: "",
   webRuntimeLoading: false,
-  webRuntimeSaving: false,
-  webRuntimeDirty: false,
-  webRuntimeError: "",
+  webRuntimeSavingGroup: "",
+  webRuntimeDirtyGroups: { backend: false, web: false },
+  webRuntimeErrors: { load: "", backend: "", web: "" },
   frontendRefreshTimerId: null,
   deviceRuntimeSignature: "",
   deviceRuntimeNeedsFullRefresh: false,
@@ -414,6 +431,21 @@ function activeRuntimeSetting(name) {
   return Number(WEB_RUNTIME_FALLBACKS[name]) || 0;
 }
 
+function runtimeParameterGroup(name) {
+  return Object.entries(RUNTIME_PARAMETER_GROUPS)
+    .find(([, names]) => names.includes(name))?.[0] || "";
+}
+
+function runtimeParameterGroupDirty(group) {
+  return Boolean(state.webRuntimeDirtyGroups?.[group]);
+}
+
+function runtimeParameterGroupValues(values, group) {
+  return Object.fromEntries(
+    (RUNTIME_PARAMETER_GROUPS[group] || []).map((name) => [name, values?.[name]]),
+  );
+}
+
 function frontendRefreshIntervalMs() {
   return Math.max(200, activeRuntimeSetting("frontend_refresh_seconds") * 1000);
 }
@@ -456,7 +488,7 @@ function syncRenewableControlPeriodConstraints() {
   const input = $("renewableControlPeriod");
   if (!input) return;
   const collection = renewableCollectionIntervalSeconds(
-    state.webRuntimeDirty ? state.webRuntimeDraft : state.webRuntimeSettings,
+    runtimeParameterGroupDirty("backend") ? state.webRuntimeDraft : state.webRuntimeSettings,
   );
   input.min = String(minimumRenewableControlIntervalSeconds(collection));
   input.step = String(collection);
@@ -1479,9 +1511,9 @@ function resetWebRuntimeSettingsState() {
   state.webRuntimeUpdatedAt = "";
   state.webRuntimeLoadedModelId = "";
   state.webRuntimeLoading = false;
-  state.webRuntimeSaving = false;
-  state.webRuntimeDirty = false;
-  state.webRuntimeError = "";
+  state.webRuntimeSavingGroup = "";
+  state.webRuntimeDirtyGroups = { backend: false, web: false };
+  state.webRuntimeErrors = { load: "", backend: "", web: "" };
 }
 
 function runtimeSettingDisplay(value) {
@@ -1490,11 +1522,20 @@ function runtimeSettingDisplay(value) {
   return Number.isInteger(number) ? String(number) : String(Number(number.toFixed(3)));
 }
 
+function runtimeParameterGroupStatus(group) {
+  if (state.webRuntimeLoading) return "加载中";
+  if (state.webRuntimeSavingGroup === group) return "保存中";
+  const error = state.webRuntimeErrors?.[group] || state.webRuntimeErrors?.load || "";
+  if (error) return `失败：${error}`;
+  return runtimeParameterGroupDirty(group) ? "有未保存修改" : "已生效";
+}
+
 function renderWebRuntimeSettings() {
   const root = state.pageSections?.parameters || document;
-  const values = state.webRuntimeDirty ? state.webRuntimeDraft : state.webRuntimeSettings;
   root.querySelectorAll?.("[data-runtime-setting]").forEach((input) => {
     const name = input.dataset.runtimeSetting || "";
+    const group = runtimeParameterGroup(name);
+    const values = runtimeParameterGroupDirty(group) ? state.webRuntimeDraft : state.webRuntimeSettings;
     const value = Number(values?.[name]);
     if (Number.isFinite(value) && document.activeElement !== input) input.value = String(value);
     const constraint = state.webRuntimeConstraints?.[name] || {};
@@ -1506,7 +1547,7 @@ function renderWebRuntimeSettings() {
         value,
       ));
     }
-    input.disabled = state.webRuntimeLoading || state.webRuntimeSaving;
+    input.disabled = state.webRuntimeLoading || Boolean(state.webRuntimeSavingGroup);
   });
   Object.entries(WEB_RUNTIME_CURRENT_IDS).forEach(([name, id]) => {
     const node = runtimeParameterElement(id);
@@ -1519,32 +1560,49 @@ function renderWebRuntimeSettings() {
     runtimeParameterUpdatedAt: state.webRuntimeUpdatedAt || "尚未保存（使用默认值）",
     runtimeParameterFrontendRefreshState: `${runtimeSettingDisplay(activeRuntimeSetting("frontend_refresh_seconds"))} s`,
     runtimeParameterBackendRefreshState: `${runtimeSettingDisplay(activeRuntimeSetting("backend_refresh_seconds"))} s`,
-    runtimeParameterRequestTimeoutState: `${runtimeSettingDisplay(activeRuntimeSetting("frontend_request_timeout_seconds"))} / ${runtimeSettingDisplay(activeRuntimeSetting("backend_request_timeout_seconds"))} s`,
+    runtimeParameterFrontendTimeoutState: `${runtimeSettingDisplay(activeRuntimeSetting("frontend_request_timeout_seconds"))} s`,
+    runtimeParameterBackendTimeoutState: `${runtimeSettingDisplay(activeRuntimeSetting("backend_request_timeout_seconds"))} s`,
     runtimeParameterReceiveState: state.receiveMode ? "正在接收" : "未启动接收",
   };
   Object.entries(valuesById).forEach(([id, text]) => {
     const node = runtimeParameterElement(id);
     if (node) node.textContent = text;
   });
-  const summary = runtimeParameterElement("runtimeParameterSummary");
-  const status = state.webRuntimeSaving
-    ? "保存中"
-    : state.webRuntimeLoading
-      ? "加载中"
-      : state.webRuntimeError
-        ? `加载失败：${state.webRuntimeError}`
-        : state.webRuntimeDirty
-          ? "有未保存修改"
-          : "已生效";
-  if (summary) summary.textContent = status;
+  const backendStatus = runtimeParameterGroupStatus("backend");
+  const webStatus = runtimeParameterGroupStatus("web");
+  const backendSummary = runtimeParameterElement("backendRuntimeParameterSummary");
+  const webSummary = runtimeParameterElement("runtimeParameterSummary");
+  if (backendSummary) backendSummary.textContent = backendStatus;
+  if (webSummary) webSummary.textContent = webStatus;
+  const backendState = runtimeParameterElement("backendRuntimeParameterState");
+  const webState = runtimeParameterElement("webRuntimeParameterState");
+  if (backendState) backendState.textContent = backendStatus;
+  if (webState) webState.textContent = webStatus;
   const stateNode = runtimeParameterElement("runtimeParameterState");
-  if (stateNode) stateNode.textContent = status;
-  const saveButton = runtimeParameterElement("saveRuntimeParameters");
-  const undoButton = runtimeParameterElement("undoRuntimeParameters");
-  const defaultsButton = runtimeParameterElement("restoreRuntimeParameterDefaults");
-  if (saveButton) saveButton.disabled = !state.webRuntimeDirty || state.webRuntimeLoading || state.webRuntimeSaving;
-  if (undoButton) undoButton.disabled = !state.webRuntimeDirty || state.webRuntimeLoading || state.webRuntimeSaving;
-  if (defaultsButton) defaultsButton.disabled = state.webRuntimeLoading || state.webRuntimeSaving;
+  if (stateNode) stateNode.textContent = `后台：${backendStatus} · WEB：${webStatus}`;
+
+  const saving = Boolean(state.webRuntimeSavingGroup);
+  const buttonGroups = {
+    backend: {
+      save: "saveBackendRuntimeParameters",
+      undo: "undoBackendRuntimeParameters",
+      defaults: "restoreBackendRuntimeParameterDefaults",
+    },
+    web: {
+      save: "saveRuntimeParameters",
+      undo: "undoRuntimeParameters",
+      defaults: "restoreRuntimeParameterDefaults",
+    },
+  };
+  Object.entries(buttonGroups).forEach(([group, ids]) => {
+    const dirty = runtimeParameterGroupDirty(group);
+    const saveButton = runtimeParameterElement(ids.save);
+    const undoButton = runtimeParameterElement(ids.undo);
+    const defaultsButton = runtimeParameterElement(ids.defaults);
+    if (saveButton) saveButton.disabled = !dirty || state.webRuntimeLoading || saving;
+    if (undoButton) undoButton.disabled = !dirty || state.webRuntimeLoading || saving;
+    if (defaultsButton) defaultsButton.disabled = state.webRuntimeLoading || saving;
+  });
   syncRenewableControlPeriodConstraints();
 }
 
@@ -1566,7 +1624,7 @@ async function loadWebRuntimeSettings(force = false) {
     return state.webRuntimeSettings;
   }
   state.webRuntimeLoading = true;
-  state.webRuntimeError = "";
+  state.webRuntimeErrors = { load: "", backend: "", web: "" };
   renderWebRuntimeSettings();
   try {
     const payload = await api("/api/runtime-settings", { timeoutMs: frontendRequestTimeoutMs() });
@@ -1577,11 +1635,11 @@ async function loadWebRuntimeSettings(force = false) {
     state.webRuntimeDraft = { ...state.webRuntimeSettings };
     state.webRuntimeUpdatedAt = payload.updatedAt || "";
     state.webRuntimeLoadedModelId = modelId;
-    state.webRuntimeDirty = false;
+    state.webRuntimeDirtyGroups = { backend: false, web: false };
     applyWebRuntimeSettings();
     return payload;
   } catch (error) {
-    if (modelId === state.activeModelId) state.webRuntimeError = apiErrorText(error);
+    if (modelId === state.activeModelId) state.webRuntimeErrors.load = apiErrorText(error);
     return null;
   } finally {
     if (modelId === state.activeModelId) {
@@ -1593,13 +1651,15 @@ async function loadWebRuntimeSettings(force = false) {
 
 function updateWebRuntimeDraft(input) {
   const name = input?.dataset?.runtimeSetting || "";
-  if (!name) return;
+  const group = runtimeParameterGroup(name);
+  if (!name || !group) return;
   const value = Number(input.value);
   state.webRuntimeDraft = {
     ...state.webRuntimeDraft,
     [name]: Number.isFinite(value) ? value : input.value,
   };
-  state.webRuntimeDirty = true;
+  state.webRuntimeDirtyGroups = { ...state.webRuntimeDirtyGroups, [group]: true };
+  state.webRuntimeErrors = { ...state.webRuntimeErrors, [group]: "" };
   if (name === "backend_refresh_seconds") {
     const error = renewableControlIntervalError(
       state.renewableControl.intervalSeconds,
@@ -1610,54 +1670,72 @@ function updateWebRuntimeDraft(input) {
   renderWebRuntimeSettings();
 }
 
-async function saveWebRuntimeSettings() {
-  if (state.webRuntimeSaving || !state.webRuntimeDirty) return;
-  const collectionInterval = renewableCollectionIntervalSeconds(state.webRuntimeDraft);
-  const intervalError = renewableControlIntervalError(
-    state.renewableControl.intervalSeconds,
-    collectionInterval,
-  );
-  if (intervalError) {
-    state.webRuntimeError = intervalError;
-    runtimeParameterElement("webRuntimeBackendRefresh")?.reportValidity?.();
-    renderWebRuntimeSettings();
-    return;
+async function saveWebRuntimeSettings(group = "web") {
+  if (!RUNTIME_PARAMETER_GROUPS[group] || state.webRuntimeSavingGroup || !runtimeParameterGroupDirty(group)) return;
+  if (group === "backend") {
+    const collectionInterval = renewableCollectionIntervalSeconds(state.webRuntimeDraft);
+    const intervalError = renewableControlIntervalError(
+      state.renewableControl.intervalSeconds,
+      collectionInterval,
+    );
+    if (intervalError) {
+      state.webRuntimeErrors = { ...state.webRuntimeErrors, backend: intervalError };
+      runtimeParameterElement("backendRuntimeRefresh")?.reportValidity?.();
+      renderWebRuntimeSettings();
+      return;
+    }
   }
-  state.webRuntimeSaving = true;
-  state.webRuntimeError = "";
+  const pendingDraft = { ...state.webRuntimeDraft };
+  state.webRuntimeSavingGroup = group;
+  state.webRuntimeErrors = { ...state.webRuntimeErrors, [group]: "" };
   renderWebRuntimeSettings();
   try {
     const payload = await api("/api/runtime-settings", {
       method: "POST",
-      body: JSON.stringify({ settings: state.webRuntimeDraft }),
+      body: JSON.stringify({ settings: runtimeParameterGroupValues(pendingDraft, group) }),
     });
     state.webRuntimeSettings = { ...WEB_RUNTIME_FALLBACKS, ...(payload.settings || {}) };
     state.webRuntimeDefaults = { ...WEB_RUNTIME_FALLBACKS, ...(payload.defaults || {}) };
     state.webRuntimeConstraints = payload.constraints || {};
     state.webRuntimeDraft = { ...state.webRuntimeSettings };
+    Object.keys(RUNTIME_PARAMETER_GROUPS).forEach((otherGroup) => {
+      if (otherGroup === group || !runtimeParameterGroupDirty(otherGroup)) return;
+      Object.assign(
+        state.webRuntimeDraft,
+        runtimeParameterGroupValues(pendingDraft, otherGroup),
+      );
+    });
     state.webRuntimeUpdatedAt = payload.updatedAt || "";
     state.webRuntimeLoadedModelId = state.activeModelId;
-    state.webRuntimeDirty = false;
+    state.webRuntimeDirtyGroups = { ...state.webRuntimeDirtyGroups, [group]: false };
     applyWebRuntimeSettings();
   } catch (error) {
-    state.webRuntimeError = apiErrorText(error);
+    state.webRuntimeErrors = { ...state.webRuntimeErrors, [group]: apiErrorText(error) };
   } finally {
-    state.webRuntimeSaving = false;
+    state.webRuntimeSavingGroup = "";
     renderWebRuntimeSettings();
   }
 }
 
-function undoWebRuntimeSettings() {
-  state.webRuntimeDraft = { ...state.webRuntimeSettings };
-  state.webRuntimeDirty = false;
-  state.webRuntimeError = "";
+function undoWebRuntimeSettings(group = "web") {
+  if (!RUNTIME_PARAMETER_GROUPS[group]) return;
+  state.webRuntimeDraft = {
+    ...state.webRuntimeDraft,
+    ...runtimeParameterGroupValues(state.webRuntimeSettings, group),
+  };
+  state.webRuntimeDirtyGroups = { ...state.webRuntimeDirtyGroups, [group]: false };
+  state.webRuntimeErrors = { ...state.webRuntimeErrors, [group]: "" };
   renderWebRuntimeSettings();
 }
 
-function restoreWebRuntimeDefaults() {
-  state.webRuntimeDraft = { ...state.webRuntimeDefaults };
-  state.webRuntimeDirty = true;
-  state.webRuntimeError = "";
+function restoreWebRuntimeDefaults(group = "web") {
+  if (!RUNTIME_PARAMETER_GROUPS[group]) return;
+  state.webRuntimeDraft = {
+    ...state.webRuntimeDraft,
+    ...runtimeParameterGroupValues(state.webRuntimeDefaults, group),
+  };
+  state.webRuntimeDirtyGroups = { ...state.webRuntimeDirtyGroups, [group]: true };
+  state.webRuntimeErrors = { ...state.webRuntimeErrors, [group]: "" };
   renderWebRuntimeSettings();
 }
 
@@ -16356,9 +16434,12 @@ $("renewableControlLogPager")?.addEventListener("click", (event) => {
   renderRenewableControlLogs();
 });
 $("clearRuntimeLogs").addEventListener("click", clearTraineeRuntimeLogs);
-$("saveRuntimeParameters").addEventListener("click", saveWebRuntimeSettings);
-$("undoRuntimeParameters").addEventListener("click", undoWebRuntimeSettings);
-$("restoreRuntimeParameterDefaults").addEventListener("click", restoreWebRuntimeDefaults);
+$("saveBackendRuntimeParameters").addEventListener("click", () => saveWebRuntimeSettings("backend"));
+$("undoBackendRuntimeParameters").addEventListener("click", () => undoWebRuntimeSettings("backend"));
+$("restoreBackendRuntimeParameterDefaults").addEventListener("click", () => restoreWebRuntimeDefaults("backend"));
+$("saveRuntimeParameters").addEventListener("click", () => saveWebRuntimeSettings("web"));
+$("undoRuntimeParameters").addEventListener("click", () => undoWebRuntimeSettings("web"));
+$("restoreRuntimeParameterDefaults").addEventListener("click", () => restoreWebRuntimeDefaults("web"));
 document.querySelectorAll("[data-runtime-setting]").forEach((input) => {
   input.addEventListener("input", () => updateWebRuntimeDraft(input));
 });

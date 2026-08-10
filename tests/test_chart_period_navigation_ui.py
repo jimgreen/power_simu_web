@@ -187,9 +187,9 @@ process.stdout.write(JSON.stringify({
                 self.assertEqual(payload["current"]["minWindowOffset"], -1)
                 self.assertEqual(payload["previous"]["startMinute"], 540)
                 self.assertEqual(payload["currentPoints"], [600, 605])
-                self.assertEqual(payload["previousPoints"], [540, 595])
+                self.assertEqual(payload["previousPoints"], [595])
                 self.assertEqual(payload["currentValues"], [1, 2])
-                self.assertEqual(payload["previousValues"], [1, 1])
+                self.assertEqual(payload["previousValues"], [1])
                 self.assertEqual(payload["currentDataCount"], 1)
                 self.assertTrue(payload["currentNavigation"]["visible"])
                 self.assertTrue(payload["previousNavigation"]["previousDisabled"])
@@ -204,7 +204,7 @@ process.stdout.write(JSON.stringify({
         self.assertGreaterEqual(self.simulator_js.count("simulationModeDurationMinutes()"), 3)
         self.assertGreaterEqual(self.trainee_js.count("curveDisplayModeDurationMinutes()"), 4)
 
-    def test_all_partial_window_curves_add_a_left_boundary_anchor(self):
+    def test_partial_window_curves_only_anchor_from_a_real_prior_sample(self):
         expectations = (
             ("simulator", self.simulator_js, 4),
             ("trainee", self.trainee_js, 5),
@@ -213,6 +213,8 @@ process.stdout.write(JSON.stringify({
             with self.subTest(app=app):
                 self.assertIn("function traceWindowPointsWithBoundaryAnchors", script)
                 self.assertIn("__boundaryAnchor", script)
+                self.assertIn("if (previous) visible.unshift", script)
+                self.assertNotIn("previous || visible[0]", script)
                 self.assertGreaterEqual(
                     script.count("traceWindowPointsWithBoundaryAnchors("),
                     minimum_uses,

@@ -2230,10 +2230,15 @@ body.is-vertical-splitter-dragging {
   display: flex;
   flex-direction: column;
 }
-.system-parameter-form {
-  flex: 1;
-  min-height: 0;
+.parameter-table-panel {
   overflow: auto;
+}
+.system-parameter-form {
+  flex: 0 0 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
 }
@@ -2281,6 +2286,31 @@ body.is-vertical-splitter-dragging {
   border: 1px solid var(--line);
   border-radius: 6px;
   text-align: right;
+}
+.runtime-parameter-head {
+  margin-top: 14px;
+  padding: 12px 0 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+}
+.runtime-parameter-head > div:first-child {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.runtime-parameter-head h2 {
+  font-size: 16px;
+}
+.runtime-parameter-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.backend-runtime-parameter-table input,
+.web-runtime-parameter-table input {
+  width: 100%;
 }
 .parameter-state-list {
   margin: 0;

@@ -928,6 +928,31 @@
             <section class="panel parameter-table-panel">
               <div class="panel-head">
                 <div class="panel-title-group">
+                  <h2>后台运行参数</h2>
+                  <span id="backendRuntimeParameterSummary">待加载</span>
+                </div>
+                <div class="panel-actions">
+                  <button id="restoreBackendRuntimeParameterDefaults" type="button">恢复默认</button>
+                  <button id="undoBackendRuntimeParameters" type="button">撤销修改</button>
+                  <button id="saveBackendRuntimeParameters" class="primary" type="button">保存</button>
+                </div>
+              </div>
+              <form id="backendRuntimeParameterForm" class="system-parameter-form backend-runtime-parameter-form">
+                <table class="system-parameter-table backend-runtime-parameter-table">
+                  <thead><tr><th>参数名称</th><th>当前值</th><th>设置值</th><th>单位</th></tr></thead>
+                  <tbody>
+                    <tr><td><strong>后台数据刷新周期</strong><small>学员台接收、后台处理和新能源趋势采样周期</small></td><td id="currentBackendRuntimeRefresh" class="numeric-cell">1</td><td><input id="backendRuntimeRefresh" type="number" min="0.1" max="60" step="0.1" data-runtime-setting="backend_refresh_seconds" /></td><td>s</td></tr>
+                    <tr><td><strong>后台请求超时</strong><small>与模拟台进行实时数据交换的单次最长等待</small></td><td id="currentBackendRuntimeRequestTimeout" class="numeric-cell">8</td><td><input id="backendRuntimeRequestTimeout" type="number" min="1" max="300" step="1" data-runtime-setting="backend_request_timeout_seconds" /></td><td>s</td></tr>
+                    <tr><td><strong>数据帧超时上限</strong><small>接收数据超过该时长后阻断闭环控制下发</small></td><td id="currentBackendRuntimeFrameAgeLimit" class="numeric-cell">15</td><td><input id="backendRuntimeFrameAgeLimit" type="number" min="1" max="3600" step="1" data-runtime-setting="frame_age_limit_seconds" /></td><td>s</td></tr>
+                    <tr><td><strong>同帧持续上限</strong><small>同一仿真数据帧持续过久时判定接收冻结</small></td><td id="currentBackendRuntimeSameFrameLimit" class="numeric-cell">30</td><td><input id="backendRuntimeSameFrameLimit" type="number" min="1" max="3600" step="1" data-runtime-setting="same_frame_limit_seconds" /></td><td>s</td></tr>
+                    <tr><td><strong>连续异常保护次数</strong><small>连续接收异常达到该次数后停止接收并告警</small></td><td id="currentBackendRuntimeReconnectAttempts" class="numeric-cell">3</td><td><input id="backendRuntimeReconnectAttempts" type="number" min="1" max="20" step="1" data-runtime-setting="receive_max_reconnect_attempts" /></td><td>次</td></tr>
+                    <tr><td><strong>量测增量历史上限</strong><small>学员台后台为增量同步保留的量测变更批次数</small></td><td id="currentBackendRuntimeMeasurementDeltaHistoryLimit" class="numeric-cell">200</td><td><input id="backendRuntimeMeasurementDeltaHistoryLimit" type="number" min="10" max="5000" step="10" data-runtime-setting="measurement_delta_history_limit" /></td><td>批</td></tr>
+                  </tbody>
+                </table>
+              </form>
+
+              <div class="runtime-parameter-head">
+                <div>
                   <h2>WEB 运行参数</h2>
                   <span id="runtimeParameterSummary">待加载</span>
                 </div>
@@ -942,16 +967,10 @@
                   <thead><tr><th>参数名称</th><th>当前值</th><th>设置值</th><th>单位</th></tr></thead>
                   <tbody>
                     <tr><td><strong>前端数据刷新周期</strong><small>未启动接收时页面轮询完成后的等待时长</small></td><td id="currentWebRuntimeFrontendRefresh" class="numeric-cell">1</td><td><input id="webRuntimeFrontendRefresh" type="number" min="0.2" max="60" step="0.1" data-runtime-setting="frontend_refresh_seconds" /></td><td>s</td></tr>
-                    <tr><td><strong>前端请求超时</strong><small>学员台页面 API 最长等待</small></td><td id="currentWebRuntimeFrontendRequestTimeout" class="numeric-cell">30</td><td><input id="webRuntimeFrontendRequestTimeout" type="number" min="1" max="300" step="1" data-runtime-setting="frontend_request_timeout_seconds" /></td><td>s</td></tr>
-                    <tr><td><strong>运行日志分页条数</strong><small>每页展示的日志数量</small></td><td id="currentWebRuntimeLogPageSize" class="numeric-cell">20</td><td><input id="webRuntimeLogPageSize" type="number" min="5" max="200" step="1" data-runtime-setting="runtime_log_page_size" /></td><td>条</td></tr>
-                    <tr><td><strong>运行日志缓存上限</strong><small>浏览器内保留的日志数量</small></td><td id="currentWebRuntimeLogCacheLimit" class="numeric-cell">300</td><td><input id="webRuntimeLogCacheLimit" type="number" min="50" max="5000" step="10" data-runtime-setting="runtime_log_cache_limit" /></td><td>条</td></tr>
-                    <tr><td><strong>后台数据刷新周期</strong><small>模拟台采集、学员台接收和新能源趋势采样周期</small></td><td id="currentWebRuntimeBackendRefresh" class="numeric-cell">1</td><td><input id="webRuntimeBackendRefresh" type="number" min="0.1" max="60" step="0.1" data-runtime-setting="backend_refresh_seconds" /></td><td>s</td></tr>
-                    <tr><td><strong>后台请求超时</strong><small>实时交换请求最长等待</small></td><td id="currentWebRuntimeBackendRequestTimeout" class="numeric-cell">8</td><td><input id="webRuntimeBackendRequestTimeout" type="number" min="1" max="300" step="1" data-runtime-setting="backend_request_timeout_seconds" /></td><td>s</td></tr>
-                    <tr><td><strong>数据帧超时上限</strong><small>超过后阻断闭环下发</small></td><td id="currentWebRuntimeFrameAgeLimit" class="numeric-cell">15</td><td><input id="webRuntimeFrameAgeLimit" type="number" min="1" max="3600" step="1" data-runtime-setting="frame_age_limit_seconds" /></td><td>s</td></tr>
-                    <tr><td><strong>同帧持续上限</strong><small>同一仿真帧持续过久判定冻结</small></td><td id="currentWebRuntimeSameFrameLimit" class="numeric-cell">30</td><td><input id="webRuntimeSameFrameLimit" type="number" min="1" max="3600" step="1" data-runtime-setting="same_frame_limit_seconds" /></td><td>s</td></tr>
-                    <tr><td><strong>接收状态同步周期</strong><small>前端读取后台接收状态周期</small></td><td id="currentWebRuntimeReceiveStateSync" class="numeric-cell">5</td><td><input id="webRuntimeReceiveStateSync" type="number" min="0.5" max="60" step="0.5" data-runtime-setting="receive_state_sync_seconds" /></td><td>s</td></tr>
-                    <tr><td><strong>连续异常保护次数</strong><small>达到后停止接收并告警</small></td><td id="currentWebRuntimeReconnectAttempts" class="numeric-cell">3</td><td><input id="webRuntimeReconnectAttempts" type="number" min="1" max="20" step="1" data-runtime-setting="receive_max_reconnect_attempts" /></td><td>次</td></tr>
-                    <tr><td><strong>量测增量历史上限</strong><small>后台保留的量测变更批次数</small></td><td id="currentWebRuntimeMeasurementDeltaHistoryLimit" class="numeric-cell">200</td><td><input id="webRuntimeMeasurementDeltaHistoryLimit" type="number" min="10" max="5000" step="10" data-runtime-setting="measurement_delta_history_limit" /></td><td>批</td></tr>
+                    <tr><td><strong>前端请求超时</strong><small>学员台页面调用本地 WEB API 的最长等待</small></td><td id="currentWebRuntimeFrontendRequestTimeout" class="numeric-cell">30</td><td><input id="webRuntimeFrontendRequestTimeout" type="number" min="1" max="300" step="1" data-runtime-setting="frontend_request_timeout_seconds" /></td><td>s</td></tr>
+                    <tr><td><strong>运行日志分页条数</strong><small>运行日志页面每页展示的记录数量</small></td><td id="currentWebRuntimeLogPageSize" class="numeric-cell">20</td><td><input id="webRuntimeLogPageSize" type="number" min="5" max="200" step="1" data-runtime-setting="runtime_log_page_size" /></td><td>条</td></tr>
+                    <tr><td><strong>运行日志缓存上限</strong><small>浏览器内存中保留的运行日志数量</small></td><td id="currentWebRuntimeLogCacheLimit" class="numeric-cell">300</td><td><input id="webRuntimeLogCacheLimit" type="number" min="50" max="5000" step="10" data-runtime-setting="runtime_log_cache_limit" /></td><td>条</td></tr>
+                    <tr><td><strong>接收状态同步周期</strong><small>WEB 前端读取学员台后台接收状态的周期</small></td><td id="currentWebRuntimeReceiveStateSync" class="numeric-cell">5</td><td><input id="webRuntimeReceiveStateSync" type="number" min="0.5" max="60" step="0.5" data-runtime-setting="receive_state_sync_seconds" /></td><td>s</td></tr>
                   </tbody>
                 </table>
               </form>
@@ -961,9 +980,12 @@
               <dl class="parameter-state-list">
                 <div><dt>当前模型</dt><dd id="runtimeParameterModelName">--</dd></div>
                 <div><dt>最后保存</dt><dd id="runtimeParameterUpdatedAt">--</dd></div>
+                <div><dt>后台参数</dt><dd id="backendRuntimeParameterState">--</dd></div>
+                <div><dt>WEB参数</dt><dd id="webRuntimeParameterState">--</dd></div>
                 <div><dt>前端刷新</dt><dd id="runtimeParameterFrontendRefreshState">--</dd></div>
                 <div><dt>后台刷新</dt><dd id="runtimeParameterBackendRefreshState">--</dd></div>
-                <div><dt>请求超时</dt><dd id="runtimeParameterRequestTimeoutState">--</dd></div>
+                <div><dt>前端超时</dt><dd id="runtimeParameterFrontendTimeoutState">--</dd></div>
+                <div><dt>后台超时</dt><dd id="runtimeParameterBackendTimeoutState">--</dd></div>
                 <div><dt>接收状态</dt><dd id="runtimeParameterReceiveState">--</dd></div>
               </dl>
             </section>

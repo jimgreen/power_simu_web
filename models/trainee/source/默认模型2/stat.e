@@ -10,10 +10,6 @@
 # ACNode         交流风电-8              1
 # ACNode         交流风电-9              1
 # ACNode         交流风电-10             1
-# ACNode         柴油发电机-1             1
-# ACNode         柴油发电机-2             1
-# ACNode         柴油发电机-3             1
-# ACNode         柴油发电机-4             1
 # ACNode         风机变流器-1             1
 # ACNode         风机变流器-2             1
 # ACNode         风机变流器-3             1
@@ -24,11 +20,15 @@
 # ACNode         风机变流器-8             1
 # ACNode         风机变流器-9             1
 # ACNode         风机变流器-10            1
-# ACNode         ACDC变流器-1           1
-# ACNode         ACDC变流器-2           1
 # ACNode         交流线路（自适应）-30        1
 # ACNode         交流线路（自适应）-30        1
+# ACNode         DCAC变流器-1           1
 # ACNode         交流母线（竖向）-1          1
+# ACNode         DCAC变流器-2           1
+# ACNode         交流柴油发电机-27          1
+# ACNode         交流柴油发电机-28          1
+# ACNode         交流柴油发电机-29          1
+# ACNode         交流柴油发电机-30          1
 # ACNode         盒型开关-7              1
 # ACNode         盒型开关-9              1
 # ACNode         交流负荷-1              1
@@ -60,14 +60,14 @@
 # ACGenerator    交流风电-8              1
 # ACGenerator    交流风电-9              1
 # ACGenerator    交流风电-10             1
-# ACGenerator    柴油发电机-1             1
-# ACGenerator    柴油发电机-2             1
-# ACGenerator    柴油发电机-3             1
-# ACGenerator    柴油发电机-4             1
 # ACGenerator    交流电化学储能-23          1
 # ACGenerator    交流风力发电机-24          1
 # ACGenerator    交流光伏发电机-25          1
 # ACGenerator    交流电化学储能-26          1
+# ACGenerator    交流柴油发电机-27          1
+# ACGenerator    交流柴油发电机-28          1
+# ACGenerator    交流柴油发电机-29          1
+# ACGenerator    交流柴油发电机-30          1
 # ACZeroBranch   交流零阻抗支路（自适应）-1      1
 # ACBreak        交流断路器-1             1
 # ACBreak        交流断路器-2             1
@@ -92,8 +92,6 @@
 # DCNode         风机变流器-8             1
 # DCNode         风机变流器-9             1
 # DCNode         风机变流器-10            1
-# DCNode         ACDC变流器-1           1
-# DCNode         ACDC变流器-2           1
 # DCNode         直流母线（竖向）-1          1
 # DCNode         光伏变流器-1             1
 # DCNode         光伏变流器-2             1
@@ -104,6 +102,8 @@
 # DCNode         储能变流器-4             1
 # DCNode         储能变流器-5             1
 # DCNode         储能变流器-6             1
+# DCNode         DCAC变流器-1           1
+# DCNode         DCAC变流器-2           1
 # DCNode         直流断路器-31            1
 # DCNode         直流断路器-32            1
 # DCNode         直流断路器-32            1
@@ -179,8 +179,8 @@
 # DCACConverter  风机变流器-8             1
 # DCACConverter  风机变流器-9             1
 # DCACConverter  风机变流器-10            1
-# DCACConverter  ACDC变流器-1           1
-# DCACConverter  ACDC变流器-2           1
+# DCACConverter  DCAC变流器-1           1
+# DCACConverter  DCAC变流器-2           1
 # HydroSource    交流电制氢-1_氢能设备端氢源     1
 # HydroLoad      直流燃料电池-1_氢能设备端氢荷    1
 # HydroStorage   集装格式储氢罐-1           1
@@ -223,18 +223,6 @@
 # ACGenerator    交流风电-10             p_set     3.0
 # ACGenerator    交流风电-10             q_set     0.5
 # ACGenerator    交流风电-10             v_set     380
-# ACGenerator    柴油发电机-1             p_set     0
-# ACGenerator    柴油发电机-1             q_set     0
-# ACGenerator    柴油发电机-1             v_set     380
-# ACGenerator    柴油发电机-2             p_set     0
-# ACGenerator    柴油发电机-2             q_set     0
-# ACGenerator    柴油发电机-2             v_set     380
-# ACGenerator    柴油发电机-3             p_set     0
-# ACGenerator    柴油发电机-3             q_set     0
-# ACGenerator    柴油发电机-3             v_set     380
-# ACGenerator    柴油发电机-4             p_set     0
-# ACGenerator    柴油发电机-4             q_set     0
-# ACGenerator    柴油发电机-4             v_set     380
 # ACGenerator    交流电化学储能-23          p_set     0.0
 # ACGenerator    交流电化学储能-23          q_set     0.0
 # ACGenerator    交流电化学储能-23          v_set     380
@@ -247,6 +235,18 @@
 # ACGenerator    交流电化学储能-26          p_set     0.0
 # ACGenerator    交流电化学储能-26          q_set     0.0
 # ACGenerator    交流电化学储能-26          v_set     380
+# ACGenerator    交流柴油发电机-27          p_set     0
+# ACGenerator    交流柴油发电机-27          q_set     0
+# ACGenerator    交流柴油发电机-27          v_set     380
+# ACGenerator    交流柴油发电机-28          p_set     0
+# ACGenerator    交流柴油发电机-28          q_set     0
+# ACGenerator    交流柴油发电机-28          v_set     380
+# ACGenerator    交流柴油发电机-29          p_set     0
+# ACGenerator    交流柴油发电机-29          q_set     0
+# ACGenerator    交流柴油发电机-29          v_set     380
+# ACGenerator    交流柴油发电机-30          p_set     0
+# ACGenerator    交流柴油发电机-30          q_set     0
+# ACGenerator    交流柴油发电机-30          v_set     380
 # DCGenerator    直流光伏-1              p_set     5.0
 # DCGenerator    直流光伏-1              v_set     400
 # DCGenerator    直流光伏-1              i_set     0.0
@@ -305,65 +305,65 @@
 # DCDCConverter  储能变流器-6             i_set     0
 # DCDCConverter  储能变流器-6             v_set     750
 # DCACConverter  风机变流器-1             p_ac_set  0
-# DCACConverter 风机变流器-1 p_dc_set 0
+# DCACConverter  风机变流器-1             p_dc_set  0
 # DCACConverter  风机变流器-1             q_ac_set  0
 # DCACConverter  风机变流器-1             v_ac_set  380
 # DCACConverter  风机变流器-1             v_dc_set  750
 # DCACConverter  风机变流器-2             p_ac_set  0
-# DCACConverter 风机变流器-2 p_dc_set 0
+# DCACConverter  风机变流器-2             p_dc_set  0
 # DCACConverter  风机变流器-2             q_ac_set  0
 # DCACConverter  风机变流器-2             v_ac_set  380
 # DCACConverter  风机变流器-2             v_dc_set  750
 # DCACConverter  风机变流器-3             p_ac_set  0
-# DCACConverter 风机变流器-3 p_dc_set 0
+# DCACConverter  风机变流器-3             p_dc_set  0
 # DCACConverter  风机变流器-3             q_ac_set  0
 # DCACConverter  风机变流器-3             v_ac_set  380
 # DCACConverter  风机变流器-3             v_dc_set  750
 # DCACConverter  风机变流器-4             p_ac_set  0
-# DCACConverter 风机变流器-4 p_dc_set 0
+# DCACConverter  风机变流器-4             p_dc_set  0
 # DCACConverter  风机变流器-4             q_ac_set  0
 # DCACConverter  风机变流器-4             v_ac_set  380
 # DCACConverter  风机变流器-4             v_dc_set  750
 # DCACConverter  风机变流器-5             p_ac_set  0
-# DCACConverter 风机变流器-5 p_dc_set 0
+# DCACConverter  风机变流器-5             p_dc_set  0
 # DCACConverter  风机变流器-5             q_ac_set  0
 # DCACConverter  风机变流器-5             v_ac_set  380
 # DCACConverter  风机变流器-5             v_dc_set  750
 # DCACConverter  风机变流器-6             p_ac_set  0
-# DCACConverter 风机变流器-6 p_dc_set 0
+# DCACConverter  风机变流器-6             p_dc_set  0
 # DCACConverter  风机变流器-6             q_ac_set  0
 # DCACConverter  风机变流器-6             v_ac_set  380
 # DCACConverter  风机变流器-6             v_dc_set  750
 # DCACConverter  风机变流器-7             p_ac_set  0
-# DCACConverter 风机变流器-7 p_dc_set 0
+# DCACConverter  风机变流器-7             p_dc_set  0
 # DCACConverter  风机变流器-7             q_ac_set  0
 # DCACConverter  风机变流器-7             v_ac_set  380
 # DCACConverter  风机变流器-7             v_dc_set  750
 # DCACConverter  风机变流器-8             p_ac_set  0
-# DCACConverter 风机变流器-8 p_dc_set 0
+# DCACConverter  风机变流器-8             p_dc_set  0
 # DCACConverter  风机变流器-8             q_ac_set  0
 # DCACConverter  风机变流器-8             v_ac_set  380
 # DCACConverter  风机变流器-8             v_dc_set  750
 # DCACConverter  风机变流器-9             p_ac_set  0
-# DCACConverter 风机变流器-9 p_dc_set 0
+# DCACConverter  风机变流器-9             p_dc_set  0
 # DCACConverter  风机变流器-9             q_ac_set  0
 # DCACConverter  风机变流器-9             v_ac_set  380
 # DCACConverter  风机变流器-9             v_dc_set  750
 # DCACConverter  风机变流器-10            p_ac_set  0
-# DCACConverter 风机变流器-10 p_dc_set 0
+# DCACConverter  风机变流器-10            p_dc_set  0
 # DCACConverter  风机变流器-10            q_ac_set  0
 # DCACConverter  风机变流器-10            v_ac_set  380
 # DCACConverter  风机变流器-10            v_dc_set  750
-# DCACConverter  ACDC变流器-1           p_ac_set  0
-# DCACConverter ACDC变流器-1 p_dc_set 0
-# DCACConverter  ACDC变流器-1           q_ac_set  0
-# DCACConverter  ACDC变流器-1           v_ac_set  380
-# DCACConverter  ACDC变流器-1           v_dc_set  750
-# DCACConverter  ACDC变流器-2           p_ac_set  0
-# DCACConverter ACDC变流器-2 p_dc_set 0
-# DCACConverter  ACDC变流器-2           q_ac_set  0
-# DCACConverter  ACDC变流器-2           v_ac_set  380
-# DCACConverter  ACDC变流器-2           v_dc_set  750
+# DCACConverter  DCAC变流器-1           p_ac_set  0
+# DCACConverter  DCAC变流器-1           p_dc_set  0
+# DCACConverter  DCAC变流器-1           q_ac_set  0
+# DCACConverter  DCAC变流器-1           v_ac_set  380
+# DCACConverter  DCAC变流器-1           v_dc_set  750
+# DCACConverter  DCAC变流器-2           p_ac_set  0
+# DCACConverter  DCAC变流器-2           p_dc_set  0
+# DCACConverter  DCAC变流器-2           q_ac_set  0
+# DCACConverter  DCAC变流器-2           v_ac_set  380
+# DCACConverter  DCAC变流器-2           v_dc_set  750
 </SetValue>
 <StorageSoc>
 @ dev_type     idx  name        soc_curr
@@ -408,7 +408,7 @@
 # DCBreak   直流断路器-16  1
 # DCBreak   直流断路器-17  1
 # DCBreak   直流断路器-18  1
-# DCBreak   直流断路器-20  1
+# DCBreak   直流断路器-20  0
 # DCBreak   直流断路器-21  1
 # DCBreak   直流断路器-29  1
 # DCBreak   直流断路器-30  1

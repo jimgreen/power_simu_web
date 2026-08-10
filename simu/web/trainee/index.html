@@ -814,6 +814,7 @@
                 <div id="renewableDetailTabs" class="renewable-detail-tabs" role="tablist" aria-label="新能源控制曲线与日志">
                   <button type="button" class="is-active" role="tab" data-renewable-detail-tab="trend" aria-selected="true">曲线</button>
                   <button type="button" role="tab" data-renewable-detail-tab="logs" aria-selected="false">日志</button>
+                  <button type="button" role="tab" data-renewable-detail-tab="performance" aria-selected="false">性能</button>
                 </div>
                 <div class="renewable-detail-body">
                   <section class="renewable-detail-pane renewable-trend-panel is-active" data-renewable-detail-pane="trend" role="tabpanel">
@@ -883,6 +884,17 @@
                   </div>
                   <div id="renewableControlLogTable" class="runtime-log-wrap renewable-control-log-wrap"></div>
                   <div id="renewableControlLogPager" class="runtime-log-pager" aria-label="控制日志分页"></div>
+                  </section>
+
+                  <section class="renewable-detail-pane renewable-performance-panel" data-renewable-detail-pane="performance" role="tabpanel" hidden>
+                    <div class="panel-head">
+                      <h2>控制周期性能</h2>
+                      <span id="renewablePerformanceSummary">0 个周期</span>
+                    </div>
+                    <div class="renewable-performance-body">
+                      <div id="renewableSolverDiagnostics" class="renewable-solver-diagnostics"></div>
+                      <div id="renewablePerformanceTable" class="renewable-performance-table-wrap"></div>
+                    </div>
                   </section>
                 </div>
               </section>

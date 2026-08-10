@@ -808,6 +808,94 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
             1.0 - 1e-6,
         )
 
+    def test_low_soc_grid_forming_storage_absorbs_renewable_before_curtailment(self):
+        for side in ("AC", "DC"):
+            with self.subTest(side=side):
+                component = f"{side}:1"
+                dev_type = "ACGenerator" if side == "AC" else "DCGenerator"
+                topology = ResourceTopology(resources={}, dc_transfer_groups={})
+                result = optimize_topology_islands(
+                    topology,
+                    renewable_rows=[
+                        renewable(
+                            f"{side}可用新能源",
+                            side=side,
+                            component=component,
+                            current=0.0,
+                            capacity=50.0,
+                        )
+                    ],
+                    diesel_rows=[],
+                    storage_rows=[
+                        storage(
+                            f"{side}低SOC构网储能",
+                            side=side,
+                            component=component,
+                            current=0.0,
+                            charge=50.0,
+                            discharge=50.0,
+                            role="balance",
+                            soc=0.0211 if side == "AC" else -0.0625,
+                            soc_min=0.20,
+                            soc_max=0.90,
+                            commandable=False,
+                            state_eligible=True,
+                        )
+                    ],
+                    converter_rows=[],
+                    step_coefficient=1.0,
+                    storage_step_ratio=0.1,
+                    storage_soc_correction_step_scale=0.2,
+                    soc_deadband=0.05,
+                    grid_forming_storage_protection_ratio=0.05,
+                )
+
+                self.assertTrue(result.all_success, result.islands)
+                self.assertGreater(
+                    result.targets[(dev_type, f"{side}可用新能源")],
+                    40.0,
+                )
+                self.assertLess(
+                    result.targets[(dev_type, f"{side}低SOC构网储能")],
+                    -40.0,
+                )
+
+    def test_direct_grid_forming_pass_preserves_ac_to_dc_converter_target(self):
+        from simu.renewable_control import (
+            RenewableControlSettings,
+            _plan_direct_grid_forming_dispatch,
+        )
+
+        converter_row = {
+            "dev_type": "DCACConverter",
+            "dev_name": "联络变流器",
+            "commandable": True,
+            "currentKw": 10.0,
+            "transferCapacityKw": 50.0,
+            "signedMinTargetKw": -50.0,
+            "signedMaxTargetKw": 50.0,
+            "dcTransferGroupId": "DC:1",
+        }
+        plan = _plan_direct_grid_forming_dispatch(
+            renewable_rows=[],
+            storage_rows=[],
+            converter_rows=[converter_row],
+            renewable_targets={},
+            grid_storage_targets={},
+            converter_targets={("DCACConverter", "联络变流器"): 15.0},
+            projected_balance_targets={},
+            settings=RenewableControlSettings(converter_step_ratio=1.0),
+            diesel_current_kw=80.0,
+            diesel_min_kw=70.0,
+            diesel_deadband_upper_kw=79.0,
+            enabled=False,
+        )
+
+        self.assertAlmostEqual(
+            plan["converterTargets"][("DCACConverter", "联络变流器")],
+            15.0,
+        )
+
     def test_storage_balancing_adjusts_parallel_converters_by_capacity(self):
         topology = ResourceTopology(
             resources={},

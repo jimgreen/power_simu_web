@@ -9,6 +9,7 @@ import html
 import json
 import math
 import mimetypes
+import os
 import re
 import threading
 import time
@@ -44,6 +45,11 @@ try:
     from .device_roles import converter_power_setpoint_fields
 except ImportError:  # pragma: no cover - direct module execution.
     from simu.device_roles import converter_power_setpoint_fields
+
+try:
+    from .command_frame import command_payload_signature
+except ImportError:  # pragma: no cover - direct module execution.
+    from simu.command_frame import command_payload_signature
 
 try:
     from .definition_editing import (
@@ -129,6 +135,7 @@ LOCAL_DEFINITION_PATHS = DEFINITION_EDIT_PATHS | {MANUAL_DEFINITION_CHANGES_PATH
 LOCAL_RUNTIME_SETTINGS_PATH = "/api/runtime-settings"
 SIMULATOR_COMMAND_DELETE_PATH = "/api/simulator/commands/delete"
 TRAINEE_LOCAL_GET_PATHS = {
+    "/api/health",
     "/api/config",
     "/api/models",
     "/api/snapshot",
@@ -144,6 +151,80 @@ TRAINEE_LOCAL_GET_PATHS = {
     "/api/settings",
     "/api/export-definitions",
 }
+
+PROCESS_STARTED_MONOTONIC = time.monotonic()
+
+
+def _current_process_memory() -> dict[str, Optional[float]]:
+    working_set_bytes: Optional[int] = None
+    private_bytes: Optional[int] = None
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class ProcessMemoryCountersEx(ctypes.Structure):
+                _fields_ = [
+                    ("cb", wintypes.DWORD),
+                    ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                    ("PrivateUsage", ctypes.c_size_t),
+                ]
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            psapi = ctypes.WinDLL("psapi", use_last_error=True)
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            psapi.GetProcessMemoryInfo.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(ProcessMemoryCountersEx),
+                wintypes.DWORD,
+            ]
+            psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+            counters = ProcessMemoryCountersEx()
+            counters.cb = ctypes.sizeof(counters)
+            process = kernel32.GetCurrentProcess()
+            if psapi.GetProcessMemoryInfo(
+                process,
+                ctypes.byref(counters),
+                counters.cb,
+            ):
+                working_set_bytes = int(counters.WorkingSetSize)
+                private_bytes = int(counters.PrivateUsage)
+        except (AttributeError, OSError, TypeError, ValueError):
+            pass
+    divisor = 1024.0 * 1024.0
+    return {
+        "working_set_mb": round(working_set_bytes / divisor, 3) if working_set_bytes is not None else None,
+        "private_mb": round(private_bytes / divisor, 3) if private_bytes is not None else None,
+    }
+
+
+def _process_health_payload() -> dict[str, Any]:
+    try:
+        from . import NUMERIC_THREAD_ENV_NAMES
+    except ImportError:  # pragma: no cover - direct module execution.
+        from simu import NUMERIC_THREAD_ENV_NAMES
+
+    return {
+        "pid": os.getpid(),
+        "uptime_seconds": round(max(0.0, time.monotonic() - PROCESS_STARTED_MONOTONIC), 3),
+        "cpu_seconds": round(time.process_time(), 3),
+        "python_threads": threading.active_count(),
+        "logical_processors": os.cpu_count() or 1,
+        **_current_process_memory(),
+        "numeric_thread_limit": int(os.environ.get("POWER_SIMU_NUMERIC_THREADS", "1") or 1),
+        "numeric_thread_limits": {
+            name: str(os.environ.get(name, ""))
+            for name in NUMERIC_THREAD_ENV_NAMES
+        },
+    }
 TRAINEE_LOCAL_POST_PATHS = {
     "/api/models/create",
     "/api/models/update-definitions",
@@ -1723,6 +1804,7 @@ def make_http_server(
                 "commands",
                 "command_history",
                 "static",
+                "static_meta",
             )
             return {key: values[key][0] for key in allowed if values.get(key)}
 
@@ -1776,6 +1858,7 @@ def make_http_server(
                         if target.trainee_receive_state().get("active"):
                             raise JsonApiError(409, "当前模型正在接收中，不能执行模型初始化。")
                         imported = _apply_parsed_definition_archive_locked(target, parsed_archive)
+                        target._clear_command_history()
                         receive_state = target.set_trainee_receive_state(
                             {
                                 "initialized": True,
@@ -1886,6 +1969,7 @@ def make_http_server(
                 health = {
                     "ok": True,
                     "role": role,
+                    "process": _process_health_payload(),
                     "compute": dict(getattr(target, "latest_compute", {}) or {}),
                 }
                 runner = getattr(target, "kernel_runner", None)
@@ -1908,6 +1992,13 @@ def make_http_server(
                     ),
                     "after_trend_sample_key": str(
                         (renewable_query.get("after_trend_sample_key") or [""])[0]
+                    ),
+                    "after_plan_revision": self._optional_int_query("after_plan_revision"),
+                    "after_performance_revision": self._optional_int_query(
+                        "after_performance_revision"
+                    ),
+                    "after_controller_instance_id": str(
+                        (renewable_query.get("after_controller_instance_id") or [""])[0]
                     ),
                 }
                 state_for_service = getattr(renewable_manager, "state_for_service", None)
@@ -1933,18 +2024,36 @@ def make_http_server(
                 self._send_json(target.manual_definition_changes())
             elif path == "/api/snapshot":
                 lite = self._truthy_query("lite")
+                compact_device_runtime = self._truthy_query("device_runtime_compact")
                 include_static, static_fields = self._static_query(default_include_static=not lite)
                 default_log_limit = 20 if lite else 300
+                log_limit = self._int_query("log_limit", default_log_limit)
+                include_runtime_logs = not (
+                    self._falsey_query("logs") or self._falsey_query("runtime_logs")
+                )
+                runtime_log_after_seq = self._optional_int_query("runtime_log_after_seq")
+                snapshot_query = parse_qs(urlparse(self.path).query)
+                after_command_signature = str(
+                    (snapshot_query.get("after_command_signature") or [""])[0]
+                ).strip()
+                after_device_runtime_signature = str(
+                    (snapshot_query.get("after_device_runtime_signature") or [""])[0]
+                ).strip()
                 snapshot_payload = target.snapshot(
                     include_static=include_static,
-                    runtime_log_limit=self._int_query("log_limit", default_log_limit),
-                    include_runtime_logs=not (
-                        self._falsey_query("logs") or self._falsey_query("runtime_logs")
+                    runtime_log_limit=log_limit,
+                    include_runtime_logs=(
+                        include_runtime_logs and runtime_log_after_seq is None
                     ),
                     include_measurements=not self._falsey_query("measurements"),
+                    include_static_meta=not self._falsey_query("static_meta"),
                     static_fields=static_fields,
-                    include_devices=not self._falsey_query("devices"),
-                    include_device_states=not self._falsey_query("device_states"),
+                    include_devices=(
+                        not compact_device_runtime and not self._falsey_query("devices")
+                    ),
+                    include_device_states=(
+                        not compact_device_runtime and not self._falsey_query("device_states")
+                    ),
                     include_commands=not self._falsey_query("commands"),
                     include_command_history=not self._falsey_query("command_history"),
                 )
@@ -1954,6 +2063,25 @@ def make_http_server(
                         after_seq=max(0, measurement_after_seq),
                         compact=self._truthy_query("measurement_compact"),
                     )
+                if include_runtime_logs and runtime_log_after_seq is not None:
+                    snapshot_payload["runtime_logs_delta"] = target.runtime_logs_delta(
+                        after_seq=max(0, runtime_log_after_seq),
+                        limit=log_limit,
+                    )
+                commands_payload = snapshot_payload.get("commands")
+                if isinstance(commands_payload, Mapping):
+                    command_signature = command_payload_signature(commands_payload)
+                    snapshot_payload["command_signature"] = command_signature
+                    if after_command_signature == command_signature:
+                        snapshot_payload.pop("commands", None)
+                if compact_device_runtime:
+                    device_runtime_frame = target.device_runtime_frame()
+                    device_runtime_signature = str(
+                        device_runtime_frame.get("runtime_signature", "")
+                    ).strip()
+                    snapshot_payload["device_runtime_signature"] = device_runtime_signature
+                    if after_device_runtime_signature != device_runtime_signature:
+                        snapshot_payload["device_runtime"] = device_runtime_frame
                 self._send_json(snapshot_payload)
             elif path == "/api/runtime-logs":
                 self._send_json(
@@ -2078,6 +2206,16 @@ def make_http_server(
                             target.model_id,
                             **delta_options,
                         )
+                trainee_snapshot_query = parse_qs(urlparse(self.path).query)
+                after_command_signature = str(
+                    (trainee_snapshot_query.get("after_command_signature") or [""])[0]
+                ).strip()
+                commands_payload = snapshot_payload.get("commands")
+                if isinstance(commands_payload, Mapping):
+                    command_signature = command_payload_signature(commands_payload)
+                    snapshot_payload["command_signature"] = command_signature
+                    if after_command_signature == command_signature:
+                        snapshot_payload.pop("commands", None)
                 self._send_json(snapshot_payload)
             elif path == "/api/trainee/measurements/delta":
                 if exchange is None:
@@ -2591,7 +2729,7 @@ def make_http_server(
 
 
 def _advance_clock_if_due(service: PolarMicrogridSimulator, last_step: float) -> float:
-    clock = service.snapshot()["clock"]
+    clock = service.clock_state()
     now = time.monotonic()
     if clock["state"] != "running":
         return now
@@ -2602,7 +2740,7 @@ def _advance_clock_if_due(service: PolarMicrogridSimulator, last_step: float) ->
     speed = max(1.0, float(clock.get("speed", 1) or 1))
     advance_seconds = max(1e-9, float(clock.get("effective_step_seconds", speed) or speed))
     try:
-        service.step(advance_seconds=advance_seconds)
+        service.step(advance_seconds=advance_seconds, return_snapshot=False)
     except Exception:
         service.control_clock({"action": "pause"})
     return time.monotonic()
@@ -2696,6 +2834,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         compute_interval_seconds=args.compute_interval_seconds,
         models_dir=models_dir,
         kernel_runner=None,
+        runtime_role=args.role,
     )
     server = make_http_server(
         (args.host, port),

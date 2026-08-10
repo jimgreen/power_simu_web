@@ -63,6 +63,7 @@ from simu.device_roles import (
     converter_power_in_dc_to_ac_convention,
     converter_power_setpoint_fields,
 )
+from simu.device_runtime_frame import compact_device_runtime_frame
 from simu.model_semantics import (
     device_family_from_block,
     grid_converter_keys,
@@ -238,6 +239,9 @@ SIMULATION_MODE_CONFIGS: Dict[str, Dict[str, float | int | str]] = {
 }
 DEFAULT_CONTROL_VALID_MINUTES = 120.0
 COMMAND_HISTORY_RECENT_LIMIT = 200
+RUNTIME_LOG_HISTORY_LIMIT = 500
+RUNTIME_LOG_JOURNAL_ENTRY_LIMIT = 64
+RUNTIME_LOG_JOURNAL_BYTE_LIMIT = 256 * 1024
 DEFAULT_COMPUTE_INTERVAL_SECONDS = 1.0
 DEFAULT_STORAGE_INITIAL_SOC = 0.5
 LOG_DECIMAL_PATTERN = re.compile(r"(?<![\w:])[-+]?\d+\.\d+(?:e[-+]?\d+)?(?![\w:])", re.IGNORECASE)
@@ -1036,12 +1040,14 @@ class PolarMicrogridSimulator:
         compute_interval_seconds: float = DEFAULT_COMPUTE_INTERVAL_SECONDS,
         model_id: str = "default",
         model_name: str = "",
+        clear_commands_on_start_and_reset: bool = False,
     ) -> None:
         self.sim_dir = Path(sim_dir).resolve()
         self.runtime_dir = Path(runtime_dir).resolve()
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.model_id = _safe_model_id(model_id)
         self.model_name = model_name or self.model_id
+        self.clear_commands_on_start_and_reset = bool(clear_commands_on_start_and_reset)
         self.service_instance_id = uuid.uuid4().hex
         self.kernel = kernel or simu_loop.run_once
         self.kernel_runner = kernel_runner
@@ -1063,13 +1069,25 @@ class PolarMicrogridSimulator:
         # short read lock separate from the long-running power-flow calculation lock.
         self.curves_lock = threading.RLock()
         self._curve_revision = 0
+        self._curve_boundary_cache_key: Optional[Tuple[Any, ...]] = None
+        self._curve_boundary_cache_value: Optional[Dict[str, Any]] = None
+        self._latest_power_summary_cache_key: Optional[Tuple[Any, ...]] = None
+        self._latest_power_summary_cache_value: Optional[Dict[str, Any]] = None
+        self._device_runtime_frame_cache_key: Optional[Tuple[Any, ...]] = None
+        self._device_runtime_frame_cache_value: Optional[Dict[str, Any]] = None
         self.command_history: List[Dict[str, Any]] = []
+        self._command_history_persisted_signature: Optional[str] = None
         self.runtime_logs: List[Dict[str, Any]] = []
         self._runtime_log_seq = 0
+        self._runtime_log_persistence_lock = threading.RLock()
+        self._runtime_log_journal_entry_count = 0
+        self.runtime_log_journal_entry_limit = RUNTIME_LOG_JOURNAL_ENTRY_LIMIT
+        self.runtime_log_journal_byte_limit = RUNTIME_LOG_JOURNAL_BYTE_LIMIT
         self._measurement_delta_seq = 0
         self._measurement_delta_state: Dict[str, Dict[str, Any]] = {}
         self._measurement_delta_history: List[Dict[str, Any]] = []
         self._measurement_delta_step_count: Optional[int] = None
+        self._measurement_delta_runtime_marker: Optional[Tuple[Any, ...]] = None
         self._measurement_delta_definition_signature = ""
         self._measurement_delta_definition_count = 0
         self._measurement_delta_definition_revision = 0
@@ -1161,6 +1179,7 @@ class PolarMicrogridSimulator:
         self.settings_file = self.runtime_dir / "local_settings.json"
         self.commands_file = self.runtime_dir / "commands.json"
         self.runtime_logs_file = self.runtime_dir / "runtime_logs.json"
+        self.runtime_logs_journal_file = self.runtime_dir / "runtime_logs.jsonl"
         self.trainee_receive_file = self.runtime_dir / "trainee_receive.json"
         # SVG definition edits are runtime overrides.  The source E files stay
         # immutable so an operator can always restore the model defaults.
@@ -1205,7 +1224,10 @@ class PolarMicrogridSimulator:
         self.local_settings = self._read_local_settings()
         self._source_measurement_statuses = self._read_source_measurement_statuses()
         self._apply_stored_system_parameters()
-        self.command_history = self._read_command_history()
+        if self.clear_commands_on_start_and_reset:
+            self._clear_command_history()
+        else:
+            self.command_history = self._read_command_history()
         self._last_command_response_index = len(self.command_history)
         self.runtime_logs = self._read_runtime_logs()
         self._runtime_log_seq = max((int(_to_float(item.get("seq"), 0) or 0) for item in self.runtime_logs), default=0)
@@ -1227,12 +1249,15 @@ class PolarMicrogridSimulator:
                 self.storage_initial_soc = DEFAULT_STORAGE_INITIAL_SOC
                 self.clock = ClockState()
                 self.command_history = []
+                self._command_history_persisted_signature = None
                 self.runtime_logs = []
                 self._runtime_log_seq = 0
+                self._runtime_log_journal_entry_count = 0
                 self._measurement_delta_seq = 0
                 self._measurement_delta_state = {}
                 self._measurement_delta_history = []
                 self._measurement_delta_step_count = None
+                self._measurement_delta_runtime_marker = None
                 self._measurement_delta_definition_signature = ""
                 self._measurement_delta_definition_count = 0
                 self._measurement_delta_definition_revision = 0
@@ -1537,13 +1562,58 @@ class PolarMicrogridSimulator:
         return statuses
 
     def _read_runtime_logs(self) -> List[Dict[str, Any]]:
-        items = _read_json(self.runtime_logs_file, [])
-        if not isinstance(items, list):
-            return []
-        return [item for item in items[-500:] if isinstance(item, dict)]
+        snapshot = _read_json(self.runtime_logs_file, [])
+        snapshot_rows = snapshot if isinstance(snapshot, list) else []
+        journal_rows: List[Dict[str, Any]] = []
+        if self.runtime_logs_journal_file.exists():
+            try:
+                journal_lines = self.runtime_logs_journal_file.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                journal_lines = []
+            for line in journal_lines:
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(item, dict):
+                    journal_rows.append(item)
+        self._runtime_log_journal_entry_count = len(journal_rows)
+
+        legacy_rows: List[Dict[str, Any]] = []
+        sequenced_rows: Dict[int, Dict[str, Any]] = {}
+        for item in [*snapshot_rows, *journal_rows]:
+            if not isinstance(item, dict):
+                continue
+            seq = int(_to_float(item.get("seq"), 0) or 0)
+            if seq > 0:
+                sequenced_rows[seq] = item
+            else:
+                legacy_rows.append(item)
+        merged = [*legacy_rows, *(sequenced_rows[seq] for seq in sorted(sequenced_rows))]
+        return merged[-RUNTIME_LOG_HISTORY_LIMIT:]
 
     def _write_runtime_logs(self) -> None:
-        _write_json(self.runtime_logs_file, self.runtime_logs[-500:])
+        with self._runtime_log_persistence_lock:
+            _write_json(self.runtime_logs_file, self.runtime_logs[-RUNTIME_LOG_HISTORY_LIMIT:])
+            if self.runtime_logs_journal_file.exists():
+                self.runtime_logs_journal_file.unlink()
+            self._runtime_log_journal_entry_count = 0
+
+    def _append_runtime_log_journal(self, entry: Mapping[str, Any]) -> None:
+        with self._runtime_log_persistence_lock:
+            if not self.runtime_logs_file.exists():
+                _write_json(self.runtime_logs_file, [])
+            self.runtime_logs_journal_file.parent.mkdir(parents=True, exist_ok=True)
+            with self.runtime_logs_journal_file.open("a", encoding="utf-8", newline="\n") as stream:
+                stream.write(json.dumps(dict(entry), ensure_ascii=False, separators=(",", ":")))
+                stream.write("\n")
+            self._runtime_log_journal_entry_count += 1
+            journal_size = self.runtime_logs_journal_file.stat().st_size
+            if (
+                self._runtime_log_journal_entry_count >= self.runtime_log_journal_entry_limit
+                or journal_size >= self.runtime_log_journal_byte_limit
+            ):
+                self._write_runtime_logs()
 
     def _default_trainee_receive_state(self) -> Dict[str, Any]:
         return {
@@ -1775,7 +1845,13 @@ class PolarMicrogridSimulator:
             history = compacted
         if changed:
             _write_json(self.commands_file, history)
+        self._command_history_persisted_signature = self._command_history_signature(history)
         return history
+
+    @staticmethod
+    def _command_history_signature(history: Sequence[Mapping[str, Any]]) -> str:
+        encoded = json.dumps(history, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
     def _preserve_command_history_entry(self, item: Mapping[str, Any]) -> bool:
         return (
@@ -1803,7 +1879,27 @@ class PolarMicrogridSimulator:
 
     def _write_command_history(self) -> None:
         self._trim_command_history()
+        signature = self._command_history_signature(self.command_history)
+        if signature == self._command_history_persisted_signature and self.commands_file.exists():
+            return
         _write_json(self.commands_file, self.command_history)
+        self._command_history_persisted_signature = signature
+
+    def _clear_command_history(self) -> Dict[str, int]:
+        control_keys: set[Tuple[str, str, str, str]] = set()
+        for entry in self.command_history:
+            if isinstance(entry, Mapping):
+                control_keys.update(self._command_entry_control_keys(entry))
+        cleared = {
+            "entries": len(self.command_history),
+            "remote_controls": sum(1 for key in control_keys if key[0] == "remote_control"),
+            "remote_adjustments": sum(1 for key in control_keys if key[0] == "remote_adjustment"),
+        }
+        self.command_history = []
+        self._last_command_response_index = 0
+        _write_json(self.commands_file, [])
+        self._command_history_persisted_signature = self._command_history_signature([])
+        return cleared
 
     def _apply_stored_system_parameters(self) -> None:
         params = self.local_settings.get("system_parameters", {})
@@ -2083,7 +2179,10 @@ class PolarMicrogridSimulator:
             for protocol_key in protocol_keys
         }
 
+        changed = False
+
         def sync_rows(rows: List[List[str]]) -> None:
+            nonlocal changed
             for row in rows:
                 if len(row) < len(MEAS_HEADER):
                     continue
@@ -2093,11 +2192,16 @@ class PolarMicrogridSimulator:
                 dev_name = str(row[3]).strip()
                 key = resource_by_protocol_key.get((dev_type, dev_name), (dev_type, dev_name))
                 if key in soc_values:
-                    row[7] = _number_text(soc_values[key])
+                    value = _number_text(soc_values[key])
+                    if row[7] != value:
+                        row[7] = value
+                        changed = True
 
         sync_rows(self.latest_real_rows)
         sync_rows(self.latest_scada_rows)
-        if self.latest_measurements:
+        if changed:
+            self._invalidate_measurement_delta_cache()
+        if changed and self.latest_measurements:
             self.latest_measurements = self.measurements()
 
     def _base_stat_book_for_controls(self) -> EBook:
@@ -3189,9 +3293,9 @@ class PolarMicrogridSimulator:
         level: str = "info",
         simu_time: Optional[str] = None,
     ) -> None:
-        self._runtime_log_seq += 1
-        self.runtime_logs.append(
-            {
+        with self._runtime_log_persistence_lock:
+            self._runtime_log_seq += 1
+            entry = {
                 "seq": self._runtime_log_seq,
                 "wall_time": _now_text(),
                 "simu_time": simu_time or minute_to_time(self.clock.minute),
@@ -3201,15 +3305,16 @@ class PolarMicrogridSimulator:
                 "detail": _format_log_detail(detail),
                 "level": level,
             }
-        )
-        self.runtime_logs = self.runtime_logs[-500:]
-        self._write_runtime_logs()
+            self.runtime_logs.append(entry)
+            self.runtime_logs = self.runtime_logs[-RUNTIME_LOG_HISTORY_LIMIT:]
+            self._append_runtime_log_journal(entry)
 
     def clear_runtime_logs(self) -> Dict[str, int]:
-        count = len(self.runtime_logs)
-        self.runtime_logs = []
-        self._runtime_log_seq = 0
-        self._write_runtime_logs()
+        with self._runtime_log_persistence_lock:
+            count = len(self.runtime_logs)
+            self.runtime_logs = []
+            self._runtime_log_seq = 0
+            self._write_runtime_logs()
         return {"cleared": count}
 
     def runtime_logs_delta(
@@ -4416,6 +4521,24 @@ class PolarMicrogridSimulator:
         self,
         measurements: Mapping[str, Sequence[Mapping[str, Any]]],
     ) -> Dict[str, Any]:
+        cache_key: Optional[Tuple[Any, ...]] = None
+        if measurements is self.latest_measurements:
+            cache_key = (
+                id(measurements),
+                self.definition_snapshot.revision,
+                self.clock.step_count,
+                float(self.clock.absolute_minute),
+                id(self.runtime_stat_book),
+                id(self.latest_model_book),
+                id(self.latest_device_states),
+                id(self.weather_book),
+            )
+            if (
+                cache_key == self._latest_power_summary_cache_key
+                and self._latest_power_summary_cache_value is not None
+            ):
+                return self._latest_power_summary_cache_value
+
         empty_summary = self._power_flow_summary([])
         for source in ("scada", "real"):
             rows = measurements.get(source, [])
@@ -4423,8 +4546,14 @@ class PolarMicrogridSimulator:
                 continue
             summary = self._power_flow_summary(rows)
             if any(summary["counts"].values()):
-                return {"source": source, **summary}
-        return {"source": "", **empty_summary}
+                result = {"source": source, **summary}
+                break
+        else:
+            result = {"source": "", **empty_summary}
+        if cache_key is not None:
+            self._latest_power_summary_cache_key = cache_key
+            self._latest_power_summary_cache_value = result
+        return result
 
     def _power_flow_summary_lines(self, real_measurements: Sequence[Mapping[str, Any]]) -> List[str]:
         summary = self._power_flow_summary(real_measurements)
@@ -5902,6 +6031,7 @@ class PolarMicrogridSimulator:
 
     def set_local_settings(self, payload: Mapping[str, Any]) -> Dict[str, int]:
         with self.lock:
+            measurement_cache_changed = False
             aliases = {
                 "device_faults": ("device_faults", "deviceFaults", "faults"),
                 "measurement_faults": ("measurement_faults", "measurementFaults", "meas_faults"),
@@ -5913,10 +6043,16 @@ class PolarMicrogridSimulator:
                     if name in payload:
                         value = payload.get(name) or []
                         if target_key == "measurement_statuses":
-                            self.local_settings[target_key] = dict(value) if isinstance(value, Mapping) else {}
+                            normalized_value = dict(value) if isinstance(value, Mapping) else {}
                         else:
-                            self.local_settings[target_key] = list(value) if isinstance(value, Sequence) else []
+                            normalized_value = list(value) if isinstance(value, Sequence) else []
+                        if self.local_settings.get(target_key) != normalized_value:
+                            self.local_settings[target_key] = normalized_value
+                            if target_key in {"measurement_faults", "measurement_statuses"}:
+                                measurement_cache_changed = True
                         break
+            if measurement_cache_changed:
+                self._invalidate_measurement_delta_cache()
             _write_json(self.settings_file, self.local_settings)
             return {
                 "device_faults": len(self.local_settings.get("device_faults", [])),
@@ -5969,7 +6105,31 @@ class PolarMicrogridSimulator:
                     or requested_absolute_minute < previous_absolute_minute - 1e-9
                 )
             )
-            if starts_new_lifecycle or time_reset_requested:
+            clear_all_commands = bool(
+                self.clear_commands_on_start_and_reset
+                and (starts_new_lifecycle or action == "stop" or time_reset_requested)
+            )
+            commands_cleared = False
+            if clear_all_commands:
+                cleared = self._clear_command_history()
+                commands_cleared = True
+                if cleared["entries"]:
+                    self._append_runtime_log(
+                        "控制指令",
+                        "仿真时钟",
+                        "命令历史已清零",
+                        [
+                            f"模拟台重启或归零前清空控制指令记录 {cleared['entries']} 条",
+                            (
+                                f"涉及遥控 {cleared['remote_controls']} 个控制点，"
+                                f"遥调 {cleared['remote_adjustments']} 个控制点"
+                            ),
+                            "commands.json 已重置为空数组，当前控制边界恢复模型默认值",
+                        ],
+                        level="ok",
+                        simu_time=minute_to_time(self.clock.minute),
+                    )
+            elif starts_new_lifecycle or time_reset_requested:
                 cleared = self._clear_automatic_commands_for_simulation_restart()
                 if cleared["entries"]:
                     self._write_command_history()
@@ -6025,11 +6185,16 @@ class PolarMicrogridSimulator:
                 self._reset_storage_soc_to_initial()
             if history_reset_requested:
                 self._measurement_history.clear()
-            if action in ("start", "stop"):
+            if action in ("start", "stop") or commands_cleared:
                 self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
             if action == "step":
                 return self.step(advance_minutes=effective_step)["clock"]
             self.clock.updated_at = time.time()
+            return self.clock.as_dict()
+
+    def clock_state(self) -> Dict[str, Any]:
+        """Return only the scheduler clock state without assembling a service snapshot."""
+        with self.lock:
             return self.clock.as_dict()
 
     def step(
@@ -6037,7 +6202,8 @@ class PolarMicrogridSimulator:
         advance_minutes: Optional[int | float] = None,
         *,
         advance_seconds: Optional[int | float] = None,
-    ) -> Dict[str, Any]:
+        return_snapshot: bool = True,
+    ) -> Optional[Dict[str, Any]]:
         with self._step_lock:
             with self.lock:
                 if advance_seconds is not None:
@@ -6106,7 +6272,9 @@ class PolarMicrogridSimulator:
                 if stale:
                     self._record_compute_execution(execution, status="discarded")
                     self.clock.updated_at = time.time()
-                    return self.snapshot()
+                    if return_snapshot:
+                        return self.snapshot()
+                    return None
 
                 if execution.runtime_stat_book is not None:
                     self.runtime_stat_book = execution.runtime_stat_book
@@ -6153,17 +6321,24 @@ class PolarMicrogridSimulator:
                     definition_revision=self.definition_snapshot.revision,
                     limit=self._trace_history_limit("simulator"),
                 )
-                return self.snapshot()
+                if return_snapshot:
+                    return self.snapshot()
+                return None
 
     def _store_kernel_measurement_rows(self, result: Optional[simu_loop.SimulationResult]) -> None:
         if result is None:
             return
         real_rows = getattr(result, "real_rows", None)
         scada_rows = getattr(result, "scada_rows", None)
+        changed = False
         if real_rows is not None:
             self.latest_real_rows = [list(row) for row in real_rows]
+            changed = True
         if scada_rows is not None:
             self.latest_scada_rows = [list(row) for row in scada_rows]
+            changed = True
+        if changed:
+            self._invalidate_measurement_delta_cache()
 
     def _prepare_runtime_inputs(self, minute: int | float, absolute_minute: int | float) -> None:
         self._write_current_weather(minute, absolute_minute)
@@ -6366,6 +6541,7 @@ class PolarMicrogridSimulator:
                 changed = True
         if changed:
             self.latest_scada_rows = rows
+            self._invalidate_measurement_delta_cache()
 
     def _measurement_status_override(self, row: Mapping[str, Any] | Sequence[Any]) -> Tuple[str, Optional[float]]:
         if isinstance(row, Mapping):
@@ -6428,6 +6604,7 @@ class PolarMicrogridSimulator:
                 changed = True
         if changed:
             self.latest_scada_rows = rows
+            self._invalidate_measurement_delta_cache()
 
     def _measurement_matches(self, row: Sequence[str], fault: Mapping[str, Any]) -> bool:
         name, dev_type, dev_name, meas_type = row[1], row[2], row[3], row[4]
@@ -6767,6 +6944,24 @@ class PolarMicrogridSimulator:
             item.get("fixed_value"),
         )
 
+    def _measurement_delta_runtime_state_marker(self) -> Tuple[Any, ...]:
+        def values(rows: Sequence[Sequence[Any]]) -> Tuple[Any, ...]:
+            return tuple(row[7] if len(row) > 7 else None for row in rows)
+
+        return (
+            id(self.latest_measurements),
+            id(self.latest_result),
+            id(self.latest_device_states),
+            id(self.latest_real_rows),
+            id(self.latest_scada_rows),
+            values(self.latest_real_rows),
+            values(self.latest_scada_rows),
+        )
+
+    def _invalidate_measurement_delta_cache(self) -> None:
+        self._measurement_delta_step_count = None
+        self._measurement_delta_runtime_marker = None
+
     def _refresh_measurement_delta_state(
         self,
         measurements: Optional[Mapping[str, Sequence[Mapping[str, Any]]]] = None,
@@ -6815,6 +7010,8 @@ class PolarMicrogridSimulator:
         self._measurement_delta_definition_signature = definition_signature
         self._measurement_delta_definition_count = len(definitions)
         self._measurement_delta_definition_revision = self.definition_snapshot.revision
+        self._measurement_delta_step_count = self.clock.step_count
+        self._measurement_delta_runtime_marker = self._measurement_delta_runtime_state_marker()
         return current
 
     def measurement_delta(self, after_seq: int | float = 0, *, compact: bool = False) -> Dict[str, Any]:
@@ -6824,9 +7021,14 @@ class PolarMicrogridSimulator:
         except (TypeError, ValueError):
             after = 0
         with self.lock:
-            if (
+            cache_valid = (
                 self._measurement_delta_step_count == self.clock.step_count
-                and self._measurement_delta_state
+                and self._measurement_delta_definition_revision == self.definition_snapshot.revision
+                and self._measurement_delta_runtime_marker is not None
+            )
+            if cache_valid and (
+                self._measurement_delta_runtime_marker
+                == self._measurement_delta_runtime_state_marker()
             ):
                 current = self._measurement_delta_state
             else:
@@ -7102,6 +7304,41 @@ class PolarMicrogridSimulator:
                 state["dead_island"] = False
 
         return [states[key] for key in sorted(states)]
+
+    def device_runtime_frame(self) -> Dict[str, Any]:
+        with self.lock:
+            cache_key = (
+                self.definition_snapshot.revision,
+                self.clock.step_count,
+                id(self.runtime_stat_book),
+                id(self.latest_model_book),
+                id(self.latest_device_states),
+                id(self.mode_book),
+                id(self.yt_ctrl_book),
+                tuple(
+                    (
+                        str(item.get("dev_type", "")),
+                        str(item.get("dev_name", item.get("name", ""))),
+                        item.get("run_stat"),
+                        bool(item.get("dead_island", False)),
+                    )
+                    for item in self.latest_device_states
+                    if isinstance(item, Mapping)
+                ),
+            )
+            if (
+                cache_key == self._device_runtime_frame_cache_key
+                and self._device_runtime_frame_cache_value is not None
+            ):
+                return self._device_runtime_frame_cache_value
+            frame = compact_device_runtime_frame(
+                self.devices(),
+                self.device_states(),
+                definition_revision=self.definition_snapshot.revision,
+            )
+            self._device_runtime_frame_cache_key = cache_key
+            self._device_runtime_frame_cache_value = frame
+            return frame
 
     def _api_time_payload(self) -> Dict[str, Any]:
         return {
@@ -10070,12 +10307,19 @@ class PolarMicrogridSimulator:
         }
 
     def curve_boundary(self) -> Dict[str, Any]:
+        target_minute = float(_to_float(self.clock.absolute_minute, 0.0) or 0.0)
+        cache_key = (self._curve_revision, target_minute, id(self.curves))
+        if (
+            cache_key == self._curve_boundary_cache_key
+            and self._curve_boundary_cache_value is not None
+        ):
+            return self._curve_boundary_cache_value
+
         curve_mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
         default_step = _simulation_mode_curve_step_minutes(curve_mode)
         default_point_count = _simulation_mode_point_count(curve_mode)
         step_minutes = float(_to_float(self.curves.get("time_step_minutes"), default_step) or default_step)
         period_minutes = _simulation_mode_duration_minutes(curve_mode)
-        target_minute = float(_to_float(self.clock.absolute_minute, 0.0) or 0.0)
         weather = self.curves.get("weather", [])
         if not isinstance(weather, Sequence) or isinstance(weather, (str, bytes)):
             weather = []
@@ -10099,7 +10343,7 @@ class PolarMicrogridSimulator:
                 if value == value:
                     load_total += value
                     load_count += 1
-        return {
+        result = {
             "mode": curve_mode,
             "time_step_minutes": step_minutes,
             "point_count": point_count or default_point_count,
@@ -10109,6 +10353,9 @@ class PolarMicrogridSimulator:
             "load_total": load_total,
             "load_count": load_count,
         }
+        self._curve_boundary_cache_key = cache_key
+        self._curve_boundary_cache_value = result
+        return result
 
     def snapshot(
         self,
@@ -10117,6 +10364,7 @@ class PolarMicrogridSimulator:
         *,
         include_runtime_logs: bool = True,
         include_measurements: bool = True,
+        include_static_meta: bool = True,
         static_fields: Optional[Sequence[str]] = None,
         include_devices: bool = True,
         include_device_states: bool = True,
@@ -10137,19 +10385,20 @@ class PolarMicrogridSimulator:
         except (TypeError, ValueError):
             log_limit = 300
         logs = self.runtime_logs[-log_limit:] if log_limit else []
-        summary_measurements = measurements if include_measurements else dict(self.latest_measurements or {})
+        summary_measurements = measurements if include_measurements else (self.latest_measurements or {})
         snapshot = {
             "model": self.model_info(),
             "clock": self.clock.as_dict(),
             "system_parameters": self.system_parameters(),
             "simulation_timing": self.simulation_timing(),
-            "static_meta": self.static_meta(),
             "curve_boundary": self.curve_boundary(),
             "result": self.latest_result,
             "compute": dict(self.latest_compute),
             "summary": self._summary(summary_measurements),
             "power_summary": self._latest_power_summary(summary_measurements),
         }
+        if include_static_meta:
+            snapshot["static_meta"] = self.static_meta()
         if include_commands:
             recent_commands = self.command_history[-50:]
             recent_ids = {id(entry) for entry in recent_commands}
@@ -10241,6 +10490,7 @@ class MultiModelSimulator:
         random_seed: Optional[int] = None,
         models_root: str | Path | None = None,
         directory_backed: bool = False,
+        runtime_role: str = "",
     ) -> None:
         self.runtime_dir = Path(runtime_dir).resolve()
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -10248,6 +10498,8 @@ class MultiModelSimulator:
         self.models_root = Path(models_root).resolve() if models_root else self._infer_models_root(normalized_specs)
         self.models_root.mkdir(parents=True, exist_ok=True)
         self.directory_backed = directory_backed
+        self.runtime_role = str(runtime_role or "").strip().lower()
+        self.clear_commands_on_start_and_reset = self.runtime_role == "simulator"
         self.kernel = kernel
         self.kernel_runner = kernel_runner
         self.period_seconds = period_seconds
@@ -10271,6 +10523,7 @@ class MultiModelSimulator:
                 random_seed=random_seed,
                 model_id=spec.model_id,
                 model_name=spec.name,
+                clear_commands_on_start_and_reset=self.clear_commands_on_start_and_reset,
             )
             self._services[spec.model_id] = service
             if not self.default_model_id:
@@ -10323,6 +10576,7 @@ class MultiModelSimulator:
         noise_std: Optional[float] = None,
         random_seed: Optional[int] = None,
         models_dir: str | Path | None = None,
+        runtime_role: str = "",
     ) -> "MultiModelSimulator":
         root = Path(sim_dir).resolve()
         models_root = Path(models_dir).resolve() if models_dir else root / "models"
@@ -10338,6 +10592,7 @@ class MultiModelSimulator:
             random_seed=random_seed,
             models_root=models_root,
             directory_backed=True,
+            runtime_role=runtime_role,
         )
 
     @staticmethod
@@ -10406,6 +10661,7 @@ class MultiModelSimulator:
             random_seed=self.random_seed,
             model_id=spec.model_id,
             model_name=spec.name,
+            clear_commands_on_start_and_reset=self.clear_commands_on_start_and_reset,
         )
 
     @staticmethod
@@ -10658,6 +10914,7 @@ class MultiModelSimulator:
         *,
         include_runtime_logs: bool = True,
         include_measurements: bool = True,
+        include_static_meta: bool = True,
         static_fields: Optional[Sequence[str]] = None,
         include_devices: bool = True,
         include_device_states: bool = True,
@@ -10669,6 +10926,7 @@ class MultiModelSimulator:
             runtime_log_limit=runtime_log_limit,
             include_runtime_logs=include_runtime_logs,
             include_measurements=include_measurements,
+            include_static_meta=include_static_meta,
             static_fields=static_fields,
             include_devices=include_devices,
             include_device_states=include_device_states,
@@ -10721,6 +10979,9 @@ class MultiModelSimulator:
 
     def device_states(self, model_id: Optional[str] = None) -> List[Dict[str, Any]]:
         return self.service_for(model_id).device_states()
+
+    def device_runtime_frame(self, model_id: Optional[str] = None) -> Dict[str, Any]:
+        return self.service_for(model_id).device_runtime_frame()
 
     def apply_student_commands(self, payload: Mapping[str, Any], source: str = "", model_id: Optional[str] = None) -> Dict[str, int]:
         return self.service_for(model_id).apply_student_commands(payload, source=source)

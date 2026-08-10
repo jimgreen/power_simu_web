@@ -4,6 +4,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 MODE_CASES = {
@@ -88,6 +89,38 @@ class SimulationClockModesTest(unittest.TestCase):
         clock = service.snapshot()["clock"]
         self.assertAlmostEqual(clock["absolute_second"], 5, places=6)
         self.assertAlmostEqual(clock["effective_step_seconds"], 5, places=6)
+
+    def test_worker_probe_and_due_step_do_not_build_full_snapshot(self):
+        from simu.server import _advance_clock_if_due
+
+        service = self.create_service()
+        service.set_system_parameters({"clock_speed": 1, "compute_interval_seconds": 0.1})
+        service.control_clock({"action": "start"})
+        original_steps = service.clock_state()["step_count"]
+
+        with patch.object(
+            service,
+            "snapshot",
+            side_effect=AssertionError("clock worker must not build a full snapshot"),
+        ) as snapshot:
+            _advance_clock_if_due(service, time.monotonic() - 1)
+
+        self.assertEqual(snapshot.call_count, 0)
+        self.assertEqual(service.clock_state()["step_count"], original_steps + 1)
+
+    def test_background_step_can_skip_snapshot_response(self):
+        service = self.create_service()
+
+        with patch.object(
+            service,
+            "snapshot",
+            side_effect=AssertionError("background step must not build a full snapshot"),
+        ) as snapshot:
+            result = service.step(advance_seconds=1, return_snapshot=False)
+
+        self.assertIsNone(result)
+        self.assertEqual(snapshot.call_count, 0)
+        self.assertEqual(service.clock_state()["step_count"], 1)
 
     def test_clock_speed_controls_cover_all_confirmed_ratios(self):
         service = self.create_service()

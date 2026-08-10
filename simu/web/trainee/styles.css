@@ -3858,6 +3858,94 @@ body.is-vertical-splitter-dragging {
 .renewable-control-log-panel .panel-head {
   flex: 0 0 auto;
 }
+.renewable-performance-panel {
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+.renewable-performance-panel .panel-head {
+  flex: 0 0 auto;
+  margin: 0;
+}
+.renewable-performance-body {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+.renewable-solver-diagnostics {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: #f7faf9;
+}
+.renewable-solver-diagnostic-grid {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(110px, 1fr));
+  gap: 6px 14px;
+}
+.renewable-solver-diagnostic-grid > div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+}
+.renewable-solver-diagnostic-grid dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+.renewable-solver-diagnostic-grid dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-weight: 700;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.renewable-solver-diagnostic-grid dd.is-ok {
+  color: var(--teal-dark);
+}
+.renewable-solver-diagnostic-grid dd.is-error {
+  color: var(--danger);
+}
+.renewable-performance-table-wrap {
+  min-height: 0;
+  overflow: auto;
+}
+.renewable-performance-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+.renewable-performance-table th,
+.renewable-performance-table td {
+  height: 30px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+  white-space: nowrap;
+}
+.renewable-performance-table th:first-child {
+  width: 34%;
+  text-align: left;
+}
+.renewable-performance-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--muted);
+  background: #f5f8f9;
+}
+.renewable-performance-table tbody tr.is-total th,
+.renewable-performance-table tbody tr.is-total td {
+  color: var(--teal-dark);
+  background: #eef7f5;
+  font-weight: 700;
+}
 .renewable-control-log-wrap {
   min-height: 0;
 }
@@ -5374,6 +5462,9 @@ canvas {
   .renewable-trend-head-meta strong {
     width: 100%;
     text-align: right;
+  }
+  .renewable-solver-diagnostic-grid {
+    grid-template-columns: repeat(2, minmax(110px, 1fr));
   }
   .renewable-actions {
     display: grid;

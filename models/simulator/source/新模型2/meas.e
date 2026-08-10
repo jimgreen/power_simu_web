@@ -578,11 +578,11 @@
 # 576  DCACConverter.DCAC变流器-2.Q_AC             DCACConverter  DCAC变流器-2           Q_AC              10000.0  1      0.0
 # 577  DCACConverter.DCAC变流器-2.V_AC             DCACConverter  DCAC变流器-2           V_AC              10000.0  1      0.0
 # 578  DCACConverter.DCAC变流器-2.I_AC             DCACConverter  DCAC变流器-2           I_AC              10000.0  1      0.0
-# 579  Environment.weather.WIND_SPEED           Environment    weather             WIND_SPEED        1.0      1      12.0
+# 579  Environment.weather.WIND_SPEED           Environment    weather             WIND_SPEED        1.0      0      0.0
 # 580  Environment.weather.AIR_TEMP             Environment    weather             AIR_TEMP          1.0      1      -18.0
 # 581  Environment.weather.HUMIDITY             Environment    weather             HUMIDITY          1.0      1      72.0
 # 582  Environment.weather.AIR_PRESSURE         Environment    weather             AIR_PRESSURE      1.0      1      960.0
-# 583  Environment.weather.SOLAR_IRRADIANCE     Environment    weather             SOLAR_IRRADIANCE  1.0      1      0.0
+# 583  Environment.weather.SOLAR_IRRADIANCE     Environment    weather             SOLAR_IRRADIANCE  1.0      0      0.0
 # 584  ACNode.交流风电-1.run_stat                   ACNode         交流风电-1              RUN_STAT          1.0      1      1.0
 # 585  ACNode.交流风电-2.run_stat                   ACNode         交流风电-2              RUN_STAT          1.0      1      1.0
 # 586  ACNode.交流风电-3.run_stat                   ACNode         交流风电-3              RUN_STAT          1.0      1      1.0
@@ -794,7 +794,7 @@
 # 792  DCBreak.直流断路器-16.status                  DCBreak        直流断路器-16            STATUS            1.0      1      1.0
 # 793  DCBreak.直流断路器-17.status                  DCBreak        直流断路器-17            STATUS            1.0      1      1.0
 # 794  DCBreak.直流断路器-18.status                  DCBreak        直流断路器-18            STATUS            1.0      1      1.0
-# 795  DCBreak.直流断路器-20.status                  DCBreak        直流断路器-20            STATUS            1.0      1      0.0
+# 795  DCBreak.直流断路器-20.status                  DCBreak        直流断路器-20            STATUS            1.0      1      1.0
 # 796  DCBreak.直流断路器-21.status                  DCBreak        直流断路器-21            STATUS            1.0      1      1.0
 # 797  DCBreak.直流断路器-29.status                  DCBreak        直流断路器-29            STATUS            1.0      1      1.0
 # 798  DCBreak.直流断路器-30.status                  DCBreak        直流断路器-30            STATUS            1.0      1      1.0

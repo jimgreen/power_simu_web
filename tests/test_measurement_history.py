@@ -117,6 +117,46 @@ class MeasurementHistoryTest(unittest.TestCase):
         self.assertEqual([frame["step_count"] for frame in payload["frames"]], [3, 4])
         self.assertEqual([frame["seq"] for frame in payload["frames"]], [3, 4])
 
+    def test_history_store_keeps_full_resolution_beyond_ten_thousand_frames(self):
+        from simu.measurement_history import MeasurementHistoryStore
+
+        definition = {
+            "idx": 1,
+            "name": "m1",
+            "dev_type": "Device",
+            "dev_name": "d1",
+            "meas_type": "P",
+            "valid": 1,
+        }
+        measurements = {
+            "definitions": [definition],
+            "real": [{**definition, "value": 1.0}],
+            "scada": [{**definition, "value": 1.0}],
+        }
+        store = MeasurementHistoryStore()
+
+        for step in range(1, 10051):
+            store.append(
+                {
+                    "run_id": 1,
+                    "step_count": step,
+                    "absolute_minute": step / 60.0,
+                    "time": "--",
+                },
+                measurements,
+                limit=45000,
+            )
+
+        payload = store.payload(indices=[0])
+
+        self.assertEqual(len(payload["frames"]), 10050)
+        self.assertEqual(payload["oldest_seq"], 1)
+        self.assertEqual(payload["latest_seq"], 10050)
+        self.assertEqual(
+            [frame["step_count"] for frame in payload["frames"][-3:]],
+            [10048, 10049, 10050],
+        )
+
     def test_trainee_backend_accumulates_received_history_and_resets_on_remote_run_change(self):
         from simu.trainee_exchange import TraineeRealtimeExchange
 

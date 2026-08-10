@@ -115,6 +115,15 @@ class IslandOptimizationResult:
     step_override_applied: bool
     step_override_devices: Tuple[DeviceKey, ...]
     iterations: int
+    variable_count: int
+    constraint_count: int
+    equality_constraint_count: int
+    inequality_constraint_count: int
+    bound_count: int
+    build_seconds: float
+    solver_seconds: float
+    storage_balance_seconds: float
+    postprocess_seconds: float
     solve_seconds: float
 
 
@@ -128,6 +137,16 @@ class RenewableDispatchOptimizationResult:
     all_success: bool
     max_balance_residual_kw: float
     balance_delta_warning_kw: float
+    iterations: int
+    variable_count: int
+    constraint_count: int
+    equality_constraint_count: int
+    inequality_constraint_count: int
+    bound_count: int
+    build_seconds: float
+    solver_seconds: float
+    storage_balance_seconds: float
+    postprocess_seconds: float
     solve_seconds: float
 
 
@@ -342,6 +361,9 @@ def _storage_variable(
     soc_min = _number(row.get("socMin"))
     soc_max = _number(row.get("socMax"))
     forced_direction = ""
+    # The correction step is a minimum safe-direction response, not an exact
+    # setpoint. Keep the remaining safe headroom available so low-SOC storage
+    # can absorb renewable surplus and high-SOC storage can discharge further.
     if soc is not None and soc_min is not None and soc < soc_min - soc_deadband - EPSILON:
         forced_charge_kw = min(
             correction_step_kw,
@@ -349,7 +371,6 @@ def _storage_variable(
         )
         if forced_charge_kw > EPSILON:
             safety_upper = min(safety_upper, -forced_charge_kw)
-            safety_lower = max(safety_lower, -forced_charge_kw)
             forced_direction = "charge"
     elif soc is not None and soc_max is not None and soc > soc_max + soc_deadband + EPSILON:
         forced_discharge_kw = min(
@@ -358,7 +379,6 @@ def _storage_variable(
         )
         if forced_discharge_kw > EPSILON:
             safety_lower = max(safety_lower, forced_discharge_kw)
-            safety_upper = min(safety_upper, forced_discharge_kw)
             forced_direction = "discharge"
     if safety_lower > safety_upper + EPSILON:
         return None
@@ -700,6 +720,7 @@ def _solve_island(
     )
     count = len(ordered)
     if count == 0:
+        total_seconds = time.perf_counter() - started
         return IslandOptimizationResult(
             island_id=island_id,
             component_ids=component_ids,
@@ -720,7 +741,16 @@ def _solve_island(
             step_override_applied=False,
             step_override_devices=(),
             iterations=0,
-            solve_seconds=time.perf_counter() - started,
+            variable_count=0,
+            constraint_count=0,
+            equality_constraint_count=0,
+            inequality_constraint_count=0,
+            bound_count=0,
+            build_seconds=total_seconds,
+            solver_seconds=0.0,
+            storage_balance_seconds=0.0,
+            postprocess_seconds=0.0,
+            solve_seconds=total_seconds,
         )
 
     balance_sides = tuple(
@@ -771,6 +801,11 @@ def _solve_island(
         else np.zeros((0, count), dtype=float)
     )
     parallel_rhs = np.zeros(parallel_matrix.shape[0], dtype=float)
+    equality_constraint_count = len(balance_sides) + int(parallel_matrix.shape[0])
+    inequality_constraint_count = 0
+    bound_count = count
+    build_seconds = time.perf_counter() - started
+    solver_started = time.perf_counter()
 
     def combined_equalities(
         balance_matrix: np.ndarray,
@@ -1155,7 +1190,9 @@ def _solve_island(
         active_upper,
         feasibility.x if feasibility.success else None,
     )
+    solver_seconds = time.perf_counter() - solver_started
     if not success:
+        total_seconds = time.perf_counter() - started
         return IslandOptimizationResult(
             island_id=island_id,
             component_ids=component_ids,
@@ -1176,9 +1213,22 @@ def _solve_island(
             step_override_applied=False,
             step_override_devices=(),
             iterations=int(getattr(solved, "nit", 0) or 0) if solved is not None else 0,
-            solve_seconds=time.perf_counter() - started,
+            variable_count=count,
+            constraint_count=equality_constraint_count + inequality_constraint_count,
+            equality_constraint_count=equality_constraint_count,
+            inequality_constraint_count=inequality_constraint_count,
+            bound_count=bound_count,
+            build_seconds=build_seconds,
+            solver_seconds=solver_seconds,
+            storage_balance_seconds=0.0,
+            postprocess_seconds=max(
+                0.0,
+                total_seconds - build_seconds - solver_seconds,
+            ),
+            solve_seconds=total_seconds,
         )
 
+    storage_balance_started = time.perf_counter()
     values = _rebalance_storage_targets_by_soc(
         values,
         ordered,
@@ -1190,6 +1240,7 @@ def _solve_island(
         optimization_ftol,
         optimization_max_iterations,
     )
+    storage_balance_seconds = time.perf_counter() - storage_balance_started
     solved_balance_delta = balance_delta(values)
 
     values[np.abs(values) < OPTIMIZATION_ZERO_SNAP_TOLERANCE_KW] = 0.0
@@ -1242,6 +1293,7 @@ def _solve_island(
             f"{message}; max(delta_ac, delta_dc)="
             f"{max_balance_delta_kw:.6g} kW"
         )
+    total_seconds = time.perf_counter() - started
     return IslandOptimizationResult(
         island_id=island_id,
         component_ids=component_ids,
@@ -1262,7 +1314,22 @@ def _solve_island(
         step_override_applied=step_override_applied,
         step_override_devices=step_override_devices,
         iterations=int(getattr(solved, "nit", 0) or 0),
-        solve_seconds=time.perf_counter() - started,
+        variable_count=count,
+        constraint_count=equality_constraint_count + inequality_constraint_count,
+        equality_constraint_count=equality_constraint_count,
+        inequality_constraint_count=inequality_constraint_count,
+        bound_count=bound_count,
+        build_seconds=build_seconds,
+        solver_seconds=solver_seconds,
+        storage_balance_seconds=storage_balance_seconds,
+        postprocess_seconds=max(
+            0.0,
+            total_seconds
+            - build_seconds
+            - solver_seconds
+            - storage_balance_seconds,
+        ),
+        solve_seconds=total_seconds,
     )
 
 
@@ -1403,6 +1470,7 @@ def optimize_topology_islands(
         root = components.find(component_id)
         variables_by_root.setdefault(root, []).append(item)
 
+    outer_build_seconds = time.perf_counter() - started
     island_results = tuple(
         _solve_island(
             tuple(sorted(components_by_root[root])),
@@ -1442,6 +1510,14 @@ def optimize_topology_islands(
         ),
         default=0.0,
     )
+    total_seconds = time.perf_counter() - started
+    build_seconds = outer_build_seconds + sum(
+        island.build_seconds for island in island_results
+    )
+    solver_seconds = sum(island.solver_seconds for island in island_results)
+    storage_balance_seconds = sum(
+        island.storage_balance_seconds for island in island_results
+    )
     return RenewableDispatchOptimizationResult(
         targets=targets,
         available_by_renewable=available_by_renewable,
@@ -1453,5 +1529,25 @@ def optimize_topology_islands(
         and not unassigned,
         max_balance_residual_kw=max_residual,
         balance_delta_warning_kw=balance_delta_warning_kw,
-        solve_seconds=time.perf_counter() - started,
+        iterations=sum(island.iterations for island in island_results),
+        variable_count=sum(island.variable_count for island in island_results),
+        constraint_count=sum(island.constraint_count for island in island_results),
+        equality_constraint_count=sum(
+            island.equality_constraint_count for island in island_results
+        ),
+        inequality_constraint_count=sum(
+            island.inequality_constraint_count for island in island_results
+        ),
+        bound_count=sum(island.bound_count for island in island_results),
+        build_seconds=build_seconds,
+        solver_seconds=solver_seconds,
+        storage_balance_seconds=storage_balance_seconds,
+        postprocess_seconds=max(
+            0.0,
+            total_seconds
+            - build_seconds
+            - solver_seconds
+            - storage_balance_seconds,
+        ),
+        solve_seconds=total_seconds,
     )

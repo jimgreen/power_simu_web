@@ -108,7 +108,7 @@ process.stdout.write(JSON.stringify({ closeCalls, remoteControlCalls, remoteAdju
             },
         )
 
-    def test_successful_svg_device_command_refreshes_parent_dialog(self):
+    def test_successful_svg_device_command_keeps_parent_dialog_open(self):
         self.assertIn("function refreshDiagramDeviceCommandDialog", self.script)
         refresh_block = self.script.split(
             "function refreshDiagramDeviceCommandDialog",
@@ -127,10 +127,10 @@ process.stdout.write(JSON.stringify({ closeCalls, remoteControlCalls, remoteAdju
             "async function sendRemoteAdjustmentCommand()",
             1,
         )[1].split("function handleTreeClick", 1)[0]
+        self.assertIn("closeRemoteControlDialog();", remote_control_block)
+        self.assertIn("closeRemoteAdjustmentDialog();", remote_adjustment_block)
         for command_block in (remote_control_block, remote_adjustment_block):
-            refresh_position = command_block.index("await refresh();")
-            dialog_refresh_position = command_block.index("refreshDiagramDeviceCommandDialog();")
-            self.assertGreater(dialog_refresh_position, refresh_position)
+            self.assertNotIn("closeDiagramDeviceCommandDialog();", command_block)
 
     def test_open_svg_device_command_dialog_tracks_realtime_snapshot(self):
         render_block = self.script.split("function renderSnapshot(snapshot)", 1)[1].split(

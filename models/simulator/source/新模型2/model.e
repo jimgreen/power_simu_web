@@ -222,7 +222,7 @@
 # 16   直流断路器-16  dc-breaker  11      16      1       1         1600            1600
 # 17   直流断路器-17  dc-breaker  11      17      1       1         1600            1600
 # 18   直流断路器-18  dc-breaker  11      18      1       1         1600            1600
-# 20   直流断路器-20  dc-breaker  11      19      0       1         1600            1600
+# 20   直流断路器-20  dc-breaker  11      19      1       1         1600            1600
 # 21   直流断路器-21  dc-breaker  11      20      1       1         1600            1600
 # 29   直流断路器-29  dc-breaker  11      21      1       1         1600            1600
 # 30   直流断路器-30  dc-breaker  11      22      1       1         1600            1600
@@ -308,8 +308,8 @@
 </DCStorageGen>
 <ACStorageGen>
 @ idx  idx_acgenerator  storage_technology  battery_rack_count  energy_capacity  charge_discharge_efficiency  max_charge_power  max_discharge_power  state_of_charge  soc_upper_limit  soc_lower_limit
-# 1    23               lithium             20                  200              0.9                          100               100                  0.5              0.95             0.2
-# 2    26               lithium             20                  100              0.9                          100               100                  0.5              0.95             0.2
+# 1    23               lithium             20                  200              0.9                          100               100                  0.5              0.9              0.2
+# 2    26               lithium             20                  100              0.9                          100               100                  0.5              0.9              0.2
 </ACStorageGen>
 <ACPVGen>
 @ idx  idx_acgenerator  pv_module_model  module_efficiency  array_area  mppt_count  reference_irradiance  reference_temperature  temperature_coefficient

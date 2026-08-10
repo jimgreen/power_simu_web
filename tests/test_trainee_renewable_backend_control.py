@@ -11462,6 +11462,73 @@ class RenewableControlBackendApiTest(unittest.TestCase):
             4200,
         )
 
+    def test_compact_incremental_state_omits_unchanged_last_plan(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root = root / "source"
+            model_root = source_root / "shared"
+            model_root.mkdir(parents=True)
+            for source in SIMPLE_MODEL_SOURCE.iterdir():
+                if source.is_file():
+                    (model_root / source.name).write_bytes(source.read_bytes())
+            services = MultiModelSimulator(
+                [SimulationModelSpec("shared", model_root, "Shared")],
+                runtime_dir=root / "runtime",
+                models_root=source_root,
+                kernel=lambda _config: None,
+            )
+            manager = make_control_manager(services)
+            controller = manager._state_for("shared")
+            with controller.lock:
+                controller.last_plan = {"time": "00:01:00", "detail": "x" * 10000}
+                controller.plan_revision = 1
+            server = make_http_server(
+                ("127.0.0.1", 0),
+                services,
+                role="trainee",
+                renewable_control_manager=manager,
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_address[1]}"
+                path = "/api/trainee/renewable-control?model_id=shared&compact=1"
+                with urlopen(f"{base}{path}", timeout=5) as response:
+                    first = json.loads(response.read().decode("utf-8"))
+
+                cursor_path = (
+                    f"{path}&after_plan_revision={first['planRevision']}"
+                    f"&after_controller_instance_id={first['controllerInstanceId']}"
+                )
+                with urlopen(f"{base}{cursor_path}", timeout=5) as response:
+                    unchanged = json.loads(response.read().decode("utf-8"))
+
+                retired_cursor_path = (
+                    f"{path}&after_plan_revision={first['planRevision']}"
+                    "&after_controller_instance_id=retired-controller"
+                )
+                with urlopen(f"{base}{retired_cursor_path}", timeout=5) as response:
+                    new_lifecycle = json.loads(response.read().decode("utf-8"))
+
+                with controller.lock:
+                    controller.last_plan = {"time": "00:02:00", "detail": "y" * 10000}
+                    controller.plan_revision += 1
+                with urlopen(f"{base}{cursor_path}", timeout=5) as response:
+                    changed = json.loads(response.read().decode("utf-8"))
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+                manager.close()
+
+        self.assertEqual(first["planRevision"], 1)
+        self.assertEqual(first["lastPlan"]["time"], "00:01:00")
+        self.assertEqual(unchanged["planRevision"], 1)
+        self.assertNotIn("lastPlan", unchanged)
+        self.assertEqual(new_lifecycle["lastPlan"]["time"], "00:01:00")
+        self.assertEqual(changed["planRevision"], 2)
+        self.assertEqual(changed["lastPlan"]["time"], "00:02:00")
+
 
 if __name__ == "__main__":
     unittest.main()

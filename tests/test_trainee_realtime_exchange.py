@@ -135,6 +135,51 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
             22.0,
         )
 
+    def test_control_snapshot_caches_local_static_projection_by_definition_revision(self):
+        service = self.make_service()
+        runtime = service.snapshot(
+            include_static=True,
+            include_runtime_logs=False,
+            include_measurements=True,
+            include_devices=True,
+            include_commands=False,
+        )
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+        exchange.publish_runtime_snapshot("trainee-local", runtime, received_at=time.time())
+
+        original_snapshot = service.snapshot
+        snapshot_calls = []
+
+        def counting_snapshot(**kwargs):
+            snapshot_calls.append(dict(kwargs))
+            return original_snapshot(**kwargs)
+
+        service.snapshot = counting_snapshot
+
+        first = exchange.control_snapshot("trainee-local")
+        second = exchange.control_snapshot("trainee-local")
+
+        self.assertEqual(len(snapshot_calls), 1)
+        self.assertEqual(first.snapshot, second.snapshot)
+        self.assertIsNot(first.snapshot, second.snapshot)
+
+        service.update_device_parameters(
+            {
+                "block_name": "ACWindGen",
+                "row_key": {"idx": "1"},
+                "revision": service.definition_snapshot.revision,
+                "changes": {"rated_power": 33},
+            }
+        )
+        updated = exchange.control_snapshot("trainee-local")
+
+        self.assertEqual(len(snapshot_calls), 2)
+        self.assertEqual(
+            float(updated.snapshot["device_parameters"]["ACWindGen"][0]["rated_power"]),
+            33.0,
+        )
+
     def test_control_snapshot_returns_a_copy_of_cached_runtime_data(self):
         service = self.make_service()
         runtime = service.snapshot(
@@ -185,11 +230,419 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
         self.assertIn("measurements=0", urls[0])
         self.assertIn("measurement_after_seq=0", urls[0])
         self.assertIn("measurement_compact=1", urls[0])
+        self.assertIn("devices=0", urls[0])
+        self.assertIn("device_states=0", urls[0])
+        self.assertIn("device_runtime_compact=1", urls[0])
         self.assertIn("command_history=0", urls[0])
+        self.assertNotIn("runtime_log_after_seq", urls[0])
         self.assertEqual(
             view.snapshot["simulation_timing"],
             runtime["simulation_timing"],
         )
+
+    def test_refresh_uses_runtime_log_cursor_after_full_tail_and_merges_new_rows(self):
+        service = self.make_service()
+        configure_receive(service)
+        runtime = service.snapshot(include_static=False, include_runtime_logs=False)
+        first_logs = [
+            {"seq": 1, "result": "第一条"},
+            {"seq": 2, "result": "第二条"},
+        ]
+        urls = []
+
+        def request_json(url, **_kwargs):
+            urls.append(url)
+            payload = copy.deepcopy(runtime)
+            if len(urls) == 1:
+                payload["runtime_logs"] = copy.deepcopy(first_logs)
+            else:
+                payload["runtime_logs_delta"] = {
+                    "items": [{"seq": 3, "result": "第三条"}],
+                    "latest_seq": 3,
+                    "oldest_seq": 1,
+                    "total": 3,
+                    "reset": False,
+                }
+            return payload
+
+        exchange = TraineeRealtimeExchange(
+            service,
+            request_json=request_json,
+            start_worker=False,
+        )
+        self.addCleanup(exchange.close)
+
+        first = exchange.refresh_once(service.model_id)
+        second = exchange.refresh_once(service.model_id)
+        diagnostics = exchange.receive_status(service.model_id)
+
+        self.assertNotIn("runtime_log_after_seq", urls[0])
+        self.assertIn("runtime_log_after_seq=2", urls[1])
+        self.assertEqual(first.snapshot["runtime_logs"], first_logs)
+        self.assertEqual(
+            [row["result"] for row in second.snapshot["runtime_logs"]],
+            ["第一条", "第二条", "第三条"],
+        )
+        self.assertEqual(diagnostics["remoteRuntimeLogSeq"], 3)
+
+    def test_refresh_runtime_log_reset_replaces_cached_tail(self):
+        service = self.make_service()
+        configure_receive(service)
+        runtime = service.snapshot(include_static=False, include_runtime_logs=False)
+        responses = [
+            {
+                **copy.deepcopy(runtime),
+                "runtime_logs": [
+                    {"seq": 4, "result": "旧日志4"},
+                    {"seq": 5, "result": "旧日志5"},
+                ],
+            },
+            {
+                **copy.deepcopy(runtime),
+                "runtime_logs_delta": {
+                    "items": [{"seq": 1, "result": "清空后的新日志"}],
+                    "latest_seq": 1,
+                    "oldest_seq": 1,
+                    "total": 1,
+                    "reset": True,
+                },
+            },
+        ]
+        exchange = TraineeRealtimeExchange(
+            service,
+            request_json=lambda _url, **_kwargs: copy.deepcopy(responses.pop(0)),
+            start_worker=False,
+        )
+        self.addCleanup(exchange.close)
+
+        exchange.refresh_once(service.model_id)
+        current = exchange.refresh_once(service.model_id)
+
+        self.assertEqual(
+            current.snapshot["runtime_logs"],
+            [{"seq": 1, "result": "清空后的新日志"}],
+        )
+        self.assertEqual(exchange.receive_status(service.model_id)["remoteRuntimeLogSeq"], 1)
+
+    def test_runtime_log_cursor_advances_only_to_last_received_page_row(self):
+        service = self.make_service()
+        configure_receive(service)
+        runtime = service.snapshot(include_static=False, include_runtime_logs=False)
+        responses = [
+            {
+                **copy.deepcopy(runtime),
+                "runtime_logs": [{"seq": 1, "result": "第一条"}],
+            },
+            {
+                **copy.deepcopy(runtime),
+                "runtime_logs_delta": {
+                    "items": [
+                        {"seq": 2, "result": "第二条"},
+                        {"seq": 3, "result": "第三条"},
+                    ],
+                    "latest_seq": 5,
+                    "oldest_seq": 1,
+                    "total": 5,
+                    "reset": False,
+                },
+            },
+        ]
+        urls = []
+
+        def request_json(url, **_kwargs):
+            urls.append(url)
+            return copy.deepcopy(responses.pop(0))
+
+        exchange = TraineeRealtimeExchange(
+            service,
+            request_json=request_json,
+            start_worker=False,
+        )
+        self.addCleanup(exchange.close)
+
+        exchange.refresh_once(service.model_id)
+        exchange.refresh_once(service.model_id)
+
+        self.assertEqual(exchange.receive_status(service.model_id)["remoteRuntimeLogSeq"], 3)
+        self.assertIn("runtime_log_after_seq=1", urls[1])
+
+    def test_bad_runtime_log_delta_does_not_advance_cursor_or_publish(self):
+        service = self.make_service()
+        configure_receive(service)
+        runtime = service.snapshot(include_static=False, include_runtime_logs=False)
+        responses = [
+            {
+                **copy.deepcopy(runtime),
+                "runtime_logs": [{"seq": 1, "result": "有效日志"}],
+            },
+            {
+                **copy.deepcopy(runtime),
+                "runtime_logs_delta": {
+                    "items": [{"result": "缺少序号"}],
+                    "latest_seq": 2,
+                    "reset": False,
+                },
+            },
+        ]
+        exchange = TraineeRealtimeExchange(
+            service,
+            request_json=lambda _url, **_kwargs: copy.deepcopy(responses.pop(0)),
+            start_worker=False,
+        )
+        self.addCleanup(exchange.close)
+
+        first = exchange.refresh_once(service.model_id)
+        second = exchange.refresh_once(service.model_id)
+        diagnostics = exchange.receive_status(service.model_id)
+
+        self.assertEqual(second.revision, first.revision)
+        self.assertEqual(second.snapshot["runtime_logs"], first.snapshot["runtime_logs"])
+        self.assertEqual(diagnostics["remoteRuntimeLogSeq"], 1)
+        self.assertIn("运行日志增量", diagnostics["error"])
+
+    def test_non_object_runtime_log_delta_does_not_publish(self):
+        service = self.make_service()
+        configure_receive(service)
+        runtime = service.snapshot(include_static=False, include_runtime_logs=False)
+        responses = [
+            {**copy.deepcopy(runtime), "runtime_logs": [{"seq": 1, "result": "有效日志"}]},
+            {**copy.deepcopy(runtime), "runtime_logs_delta": ["invalid"]},
+        ]
+        exchange = TraineeRealtimeExchange(
+            service,
+            request_json=lambda _url, **_kwargs: copy.deepcopy(responses.pop(0)),
+            start_worker=False,
+        )
+        self.addCleanup(exchange.close)
+
+        first = exchange.refresh_once(service.model_id)
+        second = exchange.refresh_once(service.model_id)
+
+        self.assertEqual(second.revision, first.revision)
+        self.assertEqual(second.snapshot["runtime_logs"], first.snapshot["runtime_logs"])
+        self.assertIn("运行日志增量", exchange.receive_status(service.model_id)["error"])
+
+    def test_refresh_uses_command_signature_cursor_and_preserves_unchanged_commands(self):
+        from simu.command_frame import command_payload_signature
+
+        service = self.make_service()
+        configure_receive(service)
+        runtime = service.snapshot(
+            include_static=False,
+            include_runtime_logs=False,
+            include_commands=False,
+        )
+        commands = {
+            "history": [],
+            "effective": [{"command_id": "manual-1", "value": 12.0}],
+        }
+        signature = command_payload_signature(commands)
+        urls = []
+
+        def request_json(url, **_kwargs):
+            urls.append(url)
+            payload = copy.deepcopy(runtime)
+            payload["command_signature"] = signature
+            if len(urls) == 1:
+                payload["commands"] = copy.deepcopy(commands)
+            return payload
+
+        exchange = TraineeRealtimeExchange(
+            service,
+            request_json=request_json,
+            start_worker=False,
+        )
+        self.addCleanup(exchange.close)
+
+        first = exchange.refresh_once(service.model_id)
+        second = exchange.refresh_once(service.model_id)
+        diagnostics = exchange.receive_status(service.model_id)
+
+        self.assertNotIn("after_command_signature", urls[0])
+        self.assertIn(f"after_command_signature={signature}", urls[1])
+        self.assertEqual(first.snapshot["commands"], commands)
+        self.assertEqual(second.snapshot["commands"], commands)
+        self.assertEqual(diagnostics["remoteCommandSignature"], signature)
+
+    def test_bad_command_signature_does_not_advance_or_publish(self):
+        from simu.command_frame import command_payload_signature
+
+        service = self.make_service()
+        configure_receive(service)
+        runtime = service.snapshot(
+            include_static=False,
+            include_runtime_logs=False,
+            include_commands=False,
+        )
+        commands = {"history": [], "effective": [{"command_id": "valid"}]}
+        signature = command_payload_signature(commands)
+        responses = [
+            {
+                **copy.deepcopy(runtime),
+                "commands": copy.deepcopy(commands),
+                "command_signature": signature,
+            },
+            {
+                **copy.deepcopy(runtime),
+                "commands": {"history": [], "effective": [{"command_id": "tampered"}]},
+                "command_signature": signature,
+            },
+        ]
+        exchange = TraineeRealtimeExchange(
+            service,
+            request_json=lambda _url, **_kwargs: copy.deepcopy(responses.pop(0)),
+            start_worker=False,
+        )
+        self.addCleanup(exchange.close)
+
+        first = exchange.refresh_once(service.model_id)
+        second = exchange.refresh_once(service.model_id)
+        diagnostics = exchange.receive_status(service.model_id)
+
+        self.assertEqual(second.revision, first.revision)
+        self.assertEqual(second.snapshot["commands"], commands)
+        self.assertEqual(diagnostics["remoteCommandSignature"], signature)
+        self.assertIn("指令签名", diagnostics["error"])
+
+    def test_refresh_once_decodes_compact_device_runtime_before_publish(self):
+        from simu.device_runtime_frame import compact_device_runtime_frame
+
+        service = self.make_service()
+        configure_receive(service)
+        remote_devices = service.devices()
+        remote_states = service.device_states()
+        remote_devices[0]["run_stat"] = 0
+        remote_states[0]["dead_island"] = True
+        runtime = service.snapshot(
+            include_static=False,
+            include_runtime_logs=False,
+            include_measurements=False,
+            include_devices=False,
+            include_device_states=False,
+            include_commands=False,
+        )
+        runtime["device_runtime"] = compact_device_runtime_frame(
+            remote_devices,
+            remote_states,
+            definition_revision=service.definition_snapshot.revision,
+        )
+        exchange = TraineeRealtimeExchange(
+            service,
+            request_json=lambda _url, **_kwargs: copy.deepcopy(runtime),
+            start_worker=False,
+        )
+        self.addCleanup(exchange.close)
+
+        view = exchange.refresh_once(service.model_id)
+
+        self.assertTrue(view.ready)
+        self.assertNotIn("device_runtime", view.snapshot)
+        self.assertEqual(view.snapshot["devices"][0]["run_stat"], 0)
+        state_by_key = {
+            (row["dev_type"], row["dev_name"]): row
+            for row in view.snapshot["device_states"]
+        }
+        first_state = remote_states[0]
+        self.assertTrue(
+            state_by_key[(first_state["dev_type"], first_state["dev_name"])]["dead_island"]
+        )
+
+    def test_refresh_once_reuses_unchanged_device_runtime_by_signature_cursor(self):
+        from simu.device_runtime_frame import compact_device_runtime_frame
+
+        service = self.make_service()
+        configure_receive(service)
+        remote_devices = service.devices()
+        remote_states = service.device_states()
+        remote_devices[0]["run_stat"] = 0
+        frame = compact_device_runtime_frame(
+            remote_devices,
+            remote_states,
+            definition_revision=service.definition_snapshot.revision,
+        )
+        first_delta = service.measurement_delta(after_seq=0, compact=True)
+        unchanged_delta = service.measurement_delta(
+            after_seq=first_delta["seq"],
+            compact=True,
+        )
+        runtime = service.snapshot(
+            include_static=False,
+            include_runtime_logs=False,
+            include_measurements=False,
+            include_devices=False,
+            include_device_states=False,
+            include_commands=False,
+        )
+        urls = []
+
+        def request_json(url, **_kwargs):
+            urls.append(url)
+            payload = copy.deepcopy(runtime)
+            payload["measurement_delta"] = copy.deepcopy(
+                first_delta if len(urls) == 1 else unchanged_delta
+            )
+            payload["device_runtime_signature"] = frame["runtime_signature"]
+            if len(urls) == 1:
+                payload["device_runtime"] = copy.deepcopy(frame)
+            return payload
+
+        exchange = TraineeRealtimeExchange(
+            service,
+            request_json=request_json,
+            start_worker=False,
+        )
+        self.addCleanup(exchange.close)
+
+        first = exchange.refresh_once(service.model_id)
+        second = exchange.refresh_once(service.model_id)
+        diagnostics = exchange.receive_status(service.model_id)
+
+        self.assertTrue(first.ready)
+        self.assertTrue(second.ready)
+        self.assertIn(
+            f"after_device_runtime_signature={frame['runtime_signature']}",
+            urls[1],
+        )
+        self.assertEqual(second.snapshot["devices"][0]["run_stat"], 0)
+        self.assertEqual(
+            diagnostics["remoteDeviceRuntimeSignature"],
+            frame["runtime_signature"],
+        )
+
+    def test_refresh_once_rejects_bad_device_frame_and_preserves_last_snapshot(self):
+        from simu.device_runtime_frame import compact_device_runtime_frame
+
+        service = self.make_service()
+        configure_receive(service)
+        baseline = service.snapshot(include_static=False, include_runtime_logs=False)
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+        exchange.publish_runtime_snapshot(service.model_id, baseline, received_at=time.time())
+        previous = exchange.control_snapshot(service.model_id)
+
+        bad_runtime = service.snapshot(
+            include_static=False,
+            include_runtime_logs=False,
+            include_measurements=False,
+            include_devices=False,
+            include_device_states=False,
+            include_commands=False,
+        )
+        bad_runtime["device_runtime"] = compact_device_runtime_frame(
+            service.devices(),
+            service.device_states(),
+            definition_revision=service.definition_snapshot.revision,
+        )
+        bad_runtime["device_runtime"]["state_dead_islands"].pop()
+        exchange.request_json = lambda _url, **_kwargs: copy.deepcopy(bad_runtime)
+
+        current = exchange.refresh_once(service.model_id)
+        diagnostics = exchange.receive_status(service.model_id)
+
+        self.assertTrue(current.ready)
+        self.assertEqual(current.revision, previous.revision)
+        self.assertEqual(current.snapshot["clock"], previous.snapshot["clock"])
+        self.assertIn("state_dead_islands length mismatch", diagnostics["error"])
 
     def test_refresh_updates_simulation_timing_on_every_runtime_cycle(self):
         service = self.make_service()
@@ -316,6 +769,17 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
         self.assertEqual(rejected["lastRejectedMeasurementSeq"], good_frame["seq"] + 1)
         self.assertIn("定义顺序签名缺失", rejected["lastRejectedMeasurementReason"])
         self.assertEqual(rejected["remoteMeasurementSeq"], good_frame["seq"])
+        for key in (
+            "requestDurationSeconds",
+            "refreshProcessingDurationSeconds",
+            "refreshPublishDurationSeconds",
+            "refreshTotalDurationSeconds",
+        ):
+            with self.subTest(key=key):
+                self.assertIn(key, accepted)
+                self.assertGreaterEqual(accepted[key], 0.0)
+                self.assertIn(key, rejected)
+                self.assertGreaterEqual(rejected[key], 0.0)
 
     def test_published_measurements_align_values_by_index_instead_of_measurement_name(self):
         service = self.make_service()
@@ -1076,6 +1540,11 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
             runtime,
             connection_signature=exchange._connection_signature(service),
         )
+        state = exchange._state_for_service(service)
+        with state.lock:
+            state.remote_measurement_delta_seq = 7
+            state.remote_runtime_log_seq = 8
+            state.remote_command_signature = "command-signature"
         ready = exchange.receive_status("trainee-local")
 
         service.set_trainee_receive_state({"teacher_model_id": "replacement"})
@@ -1085,6 +1554,9 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
 
         self.assertGreater(retargeted["receiveEpoch"], ready["receiveEpoch"])
         self.assertGreater(invalidated["receiveEpoch"], retargeted["receiveEpoch"])
+        self.assertEqual(invalidated["remoteMeasurementSeq"], 0)
+        self.assertEqual(invalidated["remoteRuntimeLogSeq"], 0)
+        self.assertEqual(invalidated["remoteCommandSignature"], "")
 
     def test_control_generation_guard_rejects_new_runtime_telemetry_publication(self):
         service = self.make_service()

@@ -68,15 +68,22 @@ class TraineeRemoteAdjustmentUiTest(unittest.TestCase):
         self.assertIn("sendRemoteAdjustmentCommand", self.script)
         self.assertIn("set_values: [command]", self.script)
 
-    def test_successful_remote_adjustment_keeps_dialog_open_for_next_command(self):
+    def test_successful_remote_adjustment_closes_only_top_operation_dialog(self):
         success_block = self.script.split("async function sendRemoteAdjustmentCommand()", 1)[1].split(
             "} catch (error)",
             1,
         )[0]
-        self.assertNotIn("closeRemoteAdjustmentDialog();", success_block)
-        self.assertIn("state.remoteAdjustmentSending = false;", success_block)
-        self.assertIn('$("remoteAdjustmentConfirm").disabled = false;', success_block)
-        self.assertIn('$("remoteAdjustmentConfirm").textContent = "继续下发";', success_block)
+        self.assertIn("closeRemoteAdjustmentDialog();", success_block)
+        self.assertNotIn("closeDiagramDeviceCommandDialog();", success_block)
+        self.assertNotIn('$("remoteAdjustmentConfirm").textContent = "继续下发";', success_block)
+
+    def test_failed_remote_adjustment_keeps_dialog_open_for_retry(self):
+        failure_block = self.script.split("async function sendRemoteAdjustmentCommand()", 1)[1].split(
+            "} catch (error)",
+            1,
+        )[1].split("function handleTreeClick", 1)[0]
+        self.assertNotIn("closeRemoteAdjustmentDialog();", failure_block)
+        self.assertIn('$("remoteAdjustmentConfirm").textContent = "重新下发";', failure_block)
 
     def test_manual_commands_are_marked_hold_until_cancelled_without_expiry(self):
         self.assertIn("function manualCommandHoldPayload", self.script)

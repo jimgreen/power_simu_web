@@ -107,6 +107,7 @@ class EmbeddedPowerFlowRuntimeTest(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertIsNone(discover.call_args.kwargs["kernel_runner"])
+        self.assertEqual(discover.call_args.kwargs["runtime_role"], "simulator")
 
 
 if __name__ == "__main__":

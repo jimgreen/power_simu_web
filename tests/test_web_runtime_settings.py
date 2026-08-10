@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -212,6 +213,31 @@ class WebRuntimeSettingsApiTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(saved["role"], "trainee")
         self.assertEqual(saved["settings"]["backend_refresh_seconds"], 2.0)
+
+    def test_trainee_health_endpoint_reports_the_local_process_instead_of_proxying(self):
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        root = Path(workspace.name)
+        simulator = self.make_service(root / "simulator", "health-simulator")
+        trainee = self.make_service(root / "trainee", "health-trainee")
+        simulator_base = self.start_server(simulator, role="simulator")
+        trainee_base = self.start_server(
+            trainee,
+            role="trainee",
+            sim_url=simulator_base,
+        )
+
+        _, simulator_health = self.request_json(f"{simulator_base}/api/health")
+        _, trainee_health = self.request_json(f"{trainee_base}/api/health")
+
+        self.assertEqual(simulator_health["role"], "simulator")
+        self.assertEqual(trainee_health["role"], "trainee")
+        self.assertEqual(trainee_health["process"]["pid"], os.getpid())
+        self.assertIn("working_set_mb", trainee_health["process"])
+        self.assertIn("numeric_thread_limits", trainee_health["process"])
+        if os.name == "nt":
+            self.assertGreater(trainee_health["process"]["working_set_mb"], 0)
+            self.assertGreater(trainee_health["process"]["private_mb"], 0)
 
     def test_api_returns_400_and_keeps_previous_values_for_invalid_payload(self):
         workspace = tempfile.TemporaryDirectory()

@@ -389,9 +389,20 @@ def test_trainee_receive_never_requests_remote_static_definitions():
     )[0]
 
     assert 'params.set("static", "0");' in block
+    assert 'params.set("static_meta", "0");' in block
     assert 'params.set("lite", "1");' in block
     assert "requiredStaticKeys" not in block
     assert "staticSnapshotMissingKeys" not in block
+
+
+def test_backend_receive_poll_omits_remote_static_metadata():
+    source = (ROOT / "simu/trainee_exchange.py").read_text(encoding="utf-8")
+    block = source.split("def refresh_once_for_service", 1)[1].split(
+        "def notify_receive_state_changed_for_service",
+        1,
+    )[0]
+
+    assert "static_meta=0" in block
 
 
 def test_frozen_trainee_bootstraps_missing_page_snapshot_before_short_circuit():

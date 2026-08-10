@@ -2869,6 +2869,9 @@ function snapshotPollPath(page = currentPageName(), forceStaticKeys = null) {
   params.set("devices", pageNeedsDevices(page) ? "1" : "0");
   params.set("device_states", pageNeedsDeviceStates(page) ? "1" : "0");
   params.set("commands", pageNeedsCommands(page) ? "1" : "0");
+  if (pageNeedsCommands(page) && state.snapshot?.command_signature) {
+    params.set("after_command_signature", state.snapshot.command_signature);
+  }
   params.set("command_history", pageNeedsCommandHistory(page) ? "1" : "0");
   if (pageNeedsMeasurementDelta(page)) {
     params.set("measurement_after_seq", String(state.measurementDeltaSeq || 0));
@@ -3573,9 +3576,13 @@ function renderModelSelector() {
   if (!selector) return;
   state.models = normalizeModels(state.models);
   const models = state.models.length ? state.models : [{ id: state.activeModelId || "", name: "默认模型" }];
-  selector.innerHTML = models.map((model) => `
-    <option value="${escapeHtml(model.id)}">${escapeHtml(model.name || model.id)}</option>
-  `).join("");
+  const modelOptionsKey = JSON.stringify(models.map((model) => [model.id, model.name || model.id]));
+  if (selector.dataset.modelOptionsKey !== modelOptionsKey) {
+    selector.innerHTML = models.map((model) => `
+      <option value="${escapeHtml(model.id)}">${escapeHtml(model.name || model.id)}</option>
+    `).join("");
+    selector.dataset.modelOptionsKey = modelOptionsKey;
+  }
   selector.value = state.activeModelId || models[0]?.id || "";
   selector.disabled = models.length <= 1;
   const active = models.find((model) => model.id === selector.value) || models[0] || {};
@@ -4546,6 +4553,7 @@ function setDiagramElementValue(element, row, metricType = "") {
 
 const diagramDeviceIndexCache = new WeakMap();
 const diagramMetricBindingCache = new WeakMap();
+const diagramRealtimeBindingCache = new WeakMap();
 const diagramInteractionCache = new WeakMap();
 const diagramViewportCache = new WeakMap();
 
@@ -4593,6 +4601,25 @@ function diagramMetricBindings(container) {
   if (!bindings) {
     bindings = compileDiagramMetricBindings(container);
     diagramMetricBindingCache.set(container, bindings);
+  }
+  return bindings;
+}
+
+function diagramRealtimeBindings(container) {
+  let bindings = diagramRealtimeBindingCache.get(container);
+  if (!bindings) {
+    const named = (attribute) => [...container.querySelectorAll(`[${attribute}]`)].map((element) => ({
+      element,
+      name: element.getAttribute(attribute),
+    }));
+    bindings = {
+      measurements: named("data-meas-name"),
+      scada: named("data-scada-name"),
+      real: named("data-real-name"),
+      controls: named("data-control-name"),
+      metrics: diagramMetricBindings(container),
+    };
+    diagramRealtimeBindingCache.set(container, bindings);
   }
   return bindings;
 }
@@ -7477,6 +7504,7 @@ function resetDiagramInteractions(container) {
   container.querySelectorAll(".is-diagram-selected").forEach((element) => element.classList.remove("is-diagram-selected"));
   diagramDeviceIndexCache.delete(container);
   diagramMetricBindingCache.delete(container);
+  diagramRealtimeBindingCache.delete(container);
   diagramViewportCache.delete(container);
 }
 
@@ -7842,22 +7870,23 @@ function updateDiagramRealtimeBindings(container = $("modelDiagramCanvas"), snap
   const measurementMaps = diagramMeasurementMaps(snapshot);
   updateDiagramSwitchVisualStates(container, measurementMaps);
   const maps = { ...measurementMaps, controls: diagramControlMap(snapshot) };
-  container.querySelectorAll("[data-meas-name]").forEach((element) => {
+  const bindings = diagramRealtimeBindings(container);
+  bindings.measurements.forEach(({ element, name }) => {
     setDiagramElementValue(
       element,
-      diagramBindingValue(element.getAttribute("data-meas-name"), maps, diagramDisplayPreferences.measurementSource),
+      diagramBindingValue(name, maps, diagramDisplayPreferences.measurementSource),
     );
   });
-  container.querySelectorAll("[data-scada-name]").forEach((element) => {
-    setDiagramElementValue(element, diagramBindingValue(element.getAttribute("data-scada-name"), maps, "scada"));
+  bindings.scada.forEach(({ element, name }) => {
+    setDiagramElementValue(element, diagramBindingValue(name, maps, "scada"));
   });
-  container.querySelectorAll("[data-real-name]").forEach((element) => {
-    setDiagramElementValue(element, diagramBindingValue(element.getAttribute("data-real-name"), maps, "real"));
+  bindings.real.forEach(({ element, name }) => {
+    setDiagramElementValue(element, diagramBindingValue(name, maps, "real"));
   });
-  container.querySelectorAll("[data-control-name]").forEach((element) => {
-    setDiagramElementValue(element, diagramBindingValue(element.getAttribute("data-control-name"), maps, "control"));
+  bindings.controls.forEach(({ element, name }) => {
+    setDiagramElementValue(element, diagramBindingValue(name, maps, "control"));
   });
-  diagramMetricBindings(container).forEach((binding) => {
+  bindings.metrics.forEach((binding) => {
     setDiagramElementValue(
       binding.element,
       diagramMetricBindingValue(binding, maps, diagramDisplayPreferences.measurementSource),

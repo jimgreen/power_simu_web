@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 from urllib.request import Request, urlopen
 
 
@@ -73,6 +74,108 @@ class IncrementalRuntimeDataApiTest(unittest.TestCase):
         self.assertEqual(len(second["items"]), 1)
         self.assertEqual(second["items"][0]["name"], first["items"][0]["name"])
         self.assertEqual(second["items"][0]["scada_value"], 2.5)
+
+    def test_measurement_delta_reuses_cached_state_within_the_same_simulation_step(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        service.latest_real_rows = [list(row) for row in service.measurement_rows]
+        service.latest_scada_rows = [list(row) for row in service.measurement_rows]
+
+        with mock.patch.object(
+            service,
+            "_refresh_measurement_delta_state",
+            wraps=service._refresh_measurement_delta_state,
+        ) as refresh:
+            first = service.measurement_delta(after_seq=0, compact=True)
+            second = service.measurement_delta(after_seq=first["seq"], compact=True)
+
+        self.assertEqual(refresh.call_count, 1)
+        self.assertEqual(second["seq"], first["seq"])
+        self.assertFalse(second["frame"])
+
+    def test_measurement_delta_cache_is_invalidated_by_definition_publication(self):
+        from simu.definition_editing import DefinitionSnapshot
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        service.latest_real_rows = [list(row) for row in service.measurement_rows]
+        service.latest_scada_rows = [list(row) for row in service.measurement_rows]
+
+        with mock.patch.object(
+            service,
+            "_refresh_measurement_delta_state",
+            wraps=service._refresh_measurement_delta_state,
+        ) as refresh:
+            first = service.measurement_delta(after_seq=0, compact=True)
+            current = service.definition_snapshot
+            service._publish_definition_snapshot(
+                DefinitionSnapshot(
+                    revision=current.revision + 1,
+                    model_book=current.model_book,
+                    dev_define_book=current.dev_define_book,
+                    measurement_before=current.measurement_before,
+                    measurement_rows=current.measurement_rows,
+                    measurement_after=current.measurement_after,
+                )
+            )
+            service.measurement_delta(after_seq=first["seq"], compact=True)
+
+        self.assertEqual(refresh.call_count, 2)
+
+    def test_measurement_delta_cache_is_invalidated_by_measurement_settings(self):
+        for setting_name, value in (
+            (
+                "measurement_statuses",
+                {"ESS.ess01.SOC": {"status": "zero", "fixed_value": None}},
+            ),
+            (
+                "measurement_faults",
+                [{"target": "ESS.ess01.SOC", "fault_type": "zero"}],
+            ),
+        ):
+            with self.subTest(setting_name=setting_name):
+                workspace, service = self._make_service()
+                self.addCleanup(workspace.cleanup)
+                service.latest_real_rows = [list(row) for row in service.measurement_rows]
+                service.latest_scada_rows = [list(row) for row in service.measurement_rows]
+                with mock.patch.object(
+                    service,
+                    "_refresh_measurement_delta_state",
+                    wraps=service._refresh_measurement_delta_state,
+                ) as refresh:
+                    first = service.measurement_delta(after_seq=0, compact=True)
+                    service.set_local_settings({setting_name: value})
+                    service.measurement_delta(after_seq=first["seq"], compact=True)
+
+                self.assertEqual(refresh.call_count, 2)
+
+    def test_measurement_delta_cache_is_invalidated_by_storage_soc_sync(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        service.latest_real_rows = [list(row) for row in service.measurement_rows]
+        service.latest_scada_rows = [list(row) for row in service.measurement_rows]
+        soc_index = next(
+            index
+            for index, row in enumerate(service.measurement_rows)
+            if str(row[4]).upper() == "SOC"
+        )
+
+        with mock.patch.object(
+            service,
+            "_refresh_measurement_delta_state",
+            wraps=service._refresh_measurement_delta_state,
+        ) as refresh:
+            first = service.measurement_delta(after_seq=0)
+            storage_block = service.runtime_stat_book.data.get("StorageSoc")
+            self.assertIsNotNone(storage_block)
+            storage_block.data[0]["soc_curr"] = "0.61"
+            service._sync_latest_storage_soc_measurement_rows()
+            second = service.measurement_delta(after_seq=first["seq"])
+
+        self.assertEqual(refresh.call_count, 2)
+        self.assertGreater(second["seq"], first["seq"])
+        self.assertEqual(second["items"][0]["name"], service.measurement_rows[soc_index][1])
+        self.assertEqual(second["items"][0]["scada_value"], 0.61)
 
     def test_compact_measurement_delta_uses_ordered_value_arrays_and_shared_timestamps(self):
         workspace, service = self._make_service()
@@ -264,6 +367,283 @@ class IncrementalRuntimeDataApiTest(unittest.TestCase):
         self.assertNotIn("measurements", payload)
         self.assertEqual(payload["measurement_delta"]["encoding"], "measurement-arrays-v1")
         self.assertGreaterEqual(len(payload["measurement_delta"]["scada_values"]), 1)
+
+    def test_snapshot_can_embed_runtime_log_delta_without_full_log_tail(self):
+        from simu.server import make_http_server
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        service._append_runtime_log("测试", "目标", "第一条", "详情1")
+        first_seq = service.runtime_logs[-1]["seq"]
+        service._append_runtime_log("测试", "目标", "第二条", "详情2")
+        server = make_http_server(("127.0.0.1", 0), service, role="simulator")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        port = server.server_address[1]
+        path = (
+            "/api/snapshot?lite=1&logs=1&log_limit=20"
+            f"&runtime_log_after_seq={first_seq}"
+        )
+        with urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertNotIn("runtime_logs", payload)
+        self.assertEqual(
+            [item["result"] for item in payload["runtime_logs_delta"]["items"]],
+            ["第二条"],
+        )
+        self.assertEqual(
+            payload["runtime_logs_delta"]["latest_seq"],
+            service.runtime_logs[-1]["seq"],
+        )
+
+    def test_snapshot_omits_unchanged_commands_after_signature_cursor(self):
+        from simu.server import make_http_server
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        server = make_http_server(("127.0.0.1", 0), service, role="simulator")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        port = server.server_address[1]
+        base = (
+            f"http://127.0.0.1:{port}/api/snapshot"
+            "?lite=1&logs=0&measurements=0&devices=0&device_states=0"
+            "&commands=1&command_history=0&static_meta=0"
+        )
+        with urlopen(base, timeout=5) as response:
+            first = json.loads(response.read().decode("utf-8"))
+        with urlopen(
+            f"{base}&after_command_signature={first['command_signature']}",
+            timeout=5,
+        ) as response:
+            second = json.loads(response.read().decode("utf-8"))
+
+        self.assertIn("commands", first)
+        self.assertTrue(first["command_signature"])
+        self.assertNotIn("commands", second)
+        self.assertEqual(second["command_signature"], first["command_signature"])
+
+        service.command_history.append(
+            {
+                "time": "2026-08-10T12:00:00",
+                "source": "trainee-ui",
+                "eligible_source": True,
+                "manual_hold": True,
+                "accepted": {"run_status": 0, "set_values": 1, "ignored": 0},
+                "normalized": {
+                    "run_status": [],
+                    "set_values": [
+                        {
+                            "dev_type": "ACGenerator",
+                            "dev_name": "wt01_10kw",
+                            "set_type": "p_set",
+                            "set_value": 6.0,
+                        }
+                    ],
+                },
+                "payload": {"source": "trainee-ui"},
+            }
+        )
+        with urlopen(
+            f"{base}&after_command_signature={first['command_signature']}",
+            timeout=5,
+        ) as response:
+            changed = json.loads(response.read().decode("utf-8"))
+
+        self.assertIn("commands", changed)
+        self.assertNotEqual(changed["command_signature"], first["command_signature"])
+        self.assertEqual(len(changed["commands"]["effective"]), 1)
+
+    def test_trainee_snapshot_omits_unchanged_commands_after_signature_cursor(self):
+        from simu.server import make_http_server
+        from simu.trainee_exchange import TraineeRealtimeExchange
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        service.set_trainee_receive_state(
+            {
+                "initialized": True,
+                "active": True,
+                "interaction_link": "http://teacher.invalid/api/trainee-link?model_id=teacher",
+                "teacher_api_base": "http://teacher.invalid",
+                "snapshot_path": "/api/snapshot?model_id=teacher",
+                "command_path": "/api/student/commands?model_id=teacher",
+                "teacher_model_id": "teacher",
+            }
+        )
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+        exchange.publish_runtime_snapshot(
+            service.model_id,
+            service.snapshot(include_static=False, include_runtime_logs=False),
+        )
+        server = make_http_server(
+            ("127.0.0.1", 0),
+            service,
+            role="trainee",
+            trainee_exchange=exchange,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        port = server.server_address[1]
+        base = (
+            f"http://127.0.0.1:{port}/api/trainee/snapshot"
+            "?logs=0&measurements=0&devices=0&device_states=0"
+            "&commands=1&command_history=0&static=0&static_meta=0"
+        )
+        with urlopen(base, timeout=5) as response:
+            first = json.loads(response.read().decode("utf-8"))
+        with urlopen(
+            f"{base}&after_command_signature={first['command_signature']}",
+            timeout=5,
+        ) as response:
+            second = json.loads(response.read().decode("utf-8"))
+
+        self.assertIn("commands", first)
+        self.assertNotIn("commands", second)
+        self.assertEqual(second["command_signature"], first["command_signature"])
+
+    def test_snapshot_can_embed_compact_device_runtime_without_device_names(self):
+        from simu.device_runtime_frame import apply_device_runtime_frame
+        from simu.server import make_http_server
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        full_devices = service.devices()
+        full_states = service.device_states()
+        server = make_http_server(("127.0.0.1", 0), service, role="simulator")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        port = server.server_address[1]
+        path = (
+            "/api/snapshot?lite=1&logs=0&measurements=0&commands=0&static=0"
+            "&devices=0&device_states=0&device_runtime_compact=1"
+        )
+        with urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        frame = payload["device_runtime"]
+        frame_text = json.dumps(frame, ensure_ascii=False, separators=(",", ":"))
+        decoded_devices, decoded_states = apply_device_runtime_frame(
+            full_devices,
+            full_states,
+            frame,
+        )
+        full_size = len(
+            json.dumps(
+                {"devices": full_devices, "device_states": full_states},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        compact_size = len(frame_text.encode("utf-8"))
+
+        self.assertNotIn("devices", payload)
+        self.assertNotIn("device_states", payload)
+        self.assertEqual(frame["encoding"], "device-runtime-arrays-v1")
+        self.assertTrue(frame["runtime_signature"])
+        self.assertEqual(payload["device_runtime_signature"], frame["runtime_signature"])
+        self.assertNotIn(full_devices[0]["dev_name"], frame_text)
+        self.assertEqual(len(decoded_devices), len(full_devices))
+        self.assertEqual(len(decoded_states), len(full_states))
+        self.assertLess(compact_size, full_size * 0.25)
+
+    def test_snapshot_omits_unchanged_compact_device_runtime_after_signature_cursor(self):
+        from simu.server import make_http_server
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        server = make_http_server(("127.0.0.1", 0), service, role="simulator")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        port = server.server_address[1]
+        base = (
+            f"http://127.0.0.1:{port}/api/snapshot"
+            "?lite=1&logs=0&measurements=0&commands=0&static=0"
+            "&devices=0&device_states=0&device_runtime_compact=1"
+        )
+        with urlopen(base, timeout=5) as response:
+            first = json.loads(response.read().decode("utf-8"))
+        with urlopen(
+            f"{base}&after_device_runtime_signature={first['device_runtime_signature']}",
+            timeout=5,
+        ) as response:
+            second = json.loads(response.read().decode("utf-8"))
+
+        self.assertIn("device_runtime", first)
+        self.assertNotIn("device_runtime", second)
+        self.assertEqual(
+            second["device_runtime_signature"],
+            first["device_runtime_signature"],
+        )
+
+    def test_device_runtime_frame_rejects_length_mismatch_atomically(self):
+        from simu.device_runtime_frame import (
+            DeviceRuntimeFrameMismatchError,
+            apply_device_runtime_frame,
+            compact_device_runtime_frame,
+        )
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        devices = service.devices()
+        states = service.device_states()
+        frame = compact_device_runtime_frame(
+            devices,
+            states,
+            definition_revision=service.definition_snapshot.revision,
+        )
+        frame["device_run_stats"] = frame["device_run_stats"][:-1]
+        original_devices = copy.deepcopy(devices)
+        original_states = copy.deepcopy(states)
+
+        with self.assertRaises(DeviceRuntimeFrameMismatchError):
+            apply_device_runtime_frame(devices, states, frame)
+
+        self.assertEqual(devices, original_devices)
+        self.assertEqual(states, original_states)
+
+    def test_device_runtime_frame_rejects_a_runtime_signature_mismatch_atomically(self):
+        from simu.device_runtime_frame import (
+            DeviceRuntimeFrameMismatchError,
+            apply_device_runtime_frame,
+            compact_device_runtime_frame,
+        )
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        devices = service.devices()
+        states = service.device_states()
+        frame = compact_device_runtime_frame(
+            devices,
+            states,
+            definition_revision=service.definition_snapshot.revision,
+        )
+        frame["device_run_stats"][0] = 0
+        original_devices = copy.deepcopy(devices)
+        original_states = copy.deepcopy(states)
+
+        with self.assertRaisesRegex(DeviceRuntimeFrameMismatchError, "runtime signature mismatch"):
+            apply_device_runtime_frame(devices, states, frame)
+
+        self.assertEqual(devices, original_devices)
+        self.assertEqual(states, original_states)
 
     def test_json_api_uses_gzip_when_the_client_accepts_it(self):
         from simu.server import make_http_server

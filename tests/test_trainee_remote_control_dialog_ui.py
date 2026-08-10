@@ -128,15 +128,22 @@ process.stdout.write(JSON.stringify({
         self.assertIn("当前已经是", send_block)
         self.assertIn("未重复下发", send_block)
 
-    def test_successful_remote_control_keeps_dialog_open_for_next_command(self):
+    def test_successful_remote_control_closes_only_top_operation_dialog(self):
         success_block = self.script.split("async function sendRemoteControlCommand()", 1)[1].split(
             "} catch (error)",
             1,
         )[0]
-        self.assertNotIn("closeRemoteControlDialog();", success_block)
-        self.assertIn("state.remoteControlSending = false;", success_block)
-        self.assertIn('$("remoteControlConfirm").disabled = false;', success_block)
-        self.assertIn('feedback.confirmed ? "继续下发" : "检查后重试"', success_block)
+        self.assertIn("closeRemoteControlDialog();", success_block)
+        self.assertNotIn("closeDiagramDeviceCommandDialog();", success_block)
+        self.assertNotIn('feedback.confirmed ? "继续下发" : "检查后重试"', success_block)
+
+    def test_failed_remote_control_keeps_dialog_open_for_retry(self):
+        failure_block = self.script.split("async function sendRemoteControlCommand()", 1)[1].split(
+            "} catch (error)",
+            1,
+        )[1].split("function findRemoteAdjustmentByKey", 1)[0]
+        self.assertNotIn("closeRemoteControlDialog();", failure_block)
+        self.assertIn('$("remoteControlConfirm").textContent = "重新下发";', failure_block)
 
     def test_remote_control_current_state_prefers_live_signal_measurement(self):
         self.assertIn("function remoteControlMeasuredValue", self.script)

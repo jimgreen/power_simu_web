@@ -167,6 +167,22 @@ class TraineeModelInitializationTest(unittest.TestCase):
             simulator = self._make_simulator(root)
             trainee = self._make_trainee(root)
             untouched_model = (trainee.models_root / "local_a" / "model.e").read_bytes()
+            local_b_before_initialize = trainee.service_for("local_b")
+            command_result = local_b_before_initialize.apply_student_commands(
+                {
+                    "set_values": [
+                        {
+                            "dev_type": "ESS",
+                            "dev_name": "ess01",
+                            "set_type": "p_set",
+                            "set_value": 20,
+                        }
+                    ]
+                },
+                source="trainee-ui",
+            )
+            self.assertEqual(command_result["set_values"], 1)
+            self.assertTrue(local_b_before_initialize.command_history)
             exchange = RecordingExchange()
             renewable = RecordingRenewableManager()
 
@@ -200,6 +216,11 @@ class TraineeModelInitializationTest(unittest.TestCase):
 
             local_b = trainee.service_for("local_b")
             receive_state = local_b.trainee_receive_state()
+            self.assertEqual(local_b.command_history, [])
+            self.assertEqual(
+                json.loads(local_b.commands_file.read_text(encoding="utf-8")),
+                [],
+            )
             self.assertEqual(payload["model"]["id"], "local_b")
             self.assertEqual(payload["selected_model_id"], "local_b")
             self.assertEqual(payload["active_model_id"], "local_a")

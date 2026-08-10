@@ -19,6 +19,7 @@ const VERTICAL_SPLIT_MIN_TOP_PX = 120;
 const VERTICAL_SPLIT_MIN_BOTTOM_PX = 120;
 const STATIC_CACHE_STORAGE_KEY = "polarTraineeStaticCacheV2";
 const STATIC_CACHE_MODEL_LIMIT = 4;
+const MODEL_CONTEXT_PERSIST_INTERVAL_MS = 5000;
 const WEB_RUNTIME_FALLBACKS = {
   frontend_refresh_seconds: 1,
   frontend_request_timeout_seconds: 30,
@@ -225,7 +226,10 @@ const state = {
     requestActive: false,
     actionActive: false,
     revision: -1,
+    planRevision: -1,
+    performanceRevision: -1,
     lastPlan: null,
+    performanceDiagnostics: null,
     lastCalculatedAt: "",
     lastSentAt: "",
     lastStatus: "请选择单次计算或启动实时控制。",
@@ -258,6 +262,9 @@ const state = {
   frontendRefreshTimerId: null,
 };
 const pending = { run_status: new Map(), set_values: new Map() };
+let modelContextPersistTimerId = null;
+let lastModelContextPersistAtMs = 0;
+let lastPersistedModelContextsJson = localStorage.getItem(MODEL_CONTEXTS_STORAGE_KEY) || "";
 const RENEWABLE_CONTROL_LOG_PAGE_SIZE = 8;
 const RENEWABLE_STRATEGY_TABS = {
   "ac-wind": { label: "交流风电", categories: new Set(["交流风电"]) },
@@ -521,7 +528,11 @@ function persistModelContextsToStorage() {
   Object.entries(state.modelContexts || {}).forEach(([key, context]) => {
     payload[key] = serializableModelContext(context || {});
   });
-  localStorage.setItem(MODEL_CONTEXTS_STORAGE_KEY, JSON.stringify(payload));
+  const serialized = JSON.stringify(payload);
+  if (serialized === lastPersistedModelContextsJson) return false;
+  localStorage.setItem(MODEL_CONTEXTS_STORAGE_KEY, serialized);
+  lastPersistedModelContextsJson = serialized;
+  return true;
 }
 
 function captureActiveModelContext(overrides = {}) {
@@ -558,11 +569,29 @@ function captureActiveModelContext(overrides = {}) {
   };
 }
 
-function persistActiveModelContext(overrides = {}) {
+function flushModelContextPersistence() {
+  if (modelContextPersistTimerId !== null) {
+    window.clearTimeout(modelContextPersistTimerId);
+    modelContextPersistTimerId = null;
+  }
+  persistModelContextsToStorage();
+  lastModelContextPersistAtMs = Date.now();
+}
+
+function persistActiveModelContext(overrides = {}, immediate = false) {
   if (!state.activeModelId) return;
   state.modelContexts[contextKey()] = captureActiveModelContext(overrides);
-  persistModelContextsToStorage();
+  if (immediate) {
+    flushModelContextPersistence();
+    return;
+  }
+  if (modelContextPersistTimerId !== null) return;
+  const elapsed = Date.now() - lastModelContextPersistAtMs;
+  const delay = Math.max(0, MODEL_CONTEXT_PERSIST_INTERVAL_MS - elapsed);
+  modelContextPersistTimerId = window.setTimeout(flushModelContextPersistence, delay);
 }
+
+window.addEventListener("pagehide", flushModelContextPersistence);
 
 function restoreModelContext(modelId = state.activeModelId) {
   const context = activeModelContext(modelId);
@@ -1186,7 +1215,7 @@ function showPage(page, updateHash = true) {
   }
   requestAnimationFrame(() => {
     renderActiveTraineePage(state.snapshot || {}, true);
-    if (target === "renewable") refreshRenewableControlState({ preview: true });
+    if (target === "renewable") refreshRenewableControlState({ preview: false });
   });
 }
 
@@ -1894,6 +1923,9 @@ function snapshotPollPath(page = currentPageName(), forceStaticKeys = null) {
   params.set("devices", pageNeedsDevices(page) ? "1" : "0");
   params.set("device_states", pageNeedsDeviceStates(page) ? "1" : "0");
   params.set("commands", pageNeedsCommands(page) ? "1" : "0");
+  if (pageNeedsCommands(page) && state.snapshot?.command_signature) {
+    params.set("after_command_signature", state.snapshot.command_signature);
+  }
   params.set("command_history", pageNeedsCommandHistory(page) ? "1" : "0");
   if (pageNeedsMeasurementDelta(page)) {
     params.set("measurement_after_seq", String(state.measurementDeltaSeq || 0));
@@ -1948,6 +1980,9 @@ function teacherSnapshotPollAddress(page = currentPageName(), forceStaticKeys = 
   params.set("devices", "0");
   params.set("device_states", pageNeedsDeviceStates(page) ? "1" : "0");
   params.set("commands", pageNeedsCommands(page) ? "1" : "0");
+  if (pageNeedsCommands(page) && state.snapshot?.command_signature) {
+    params.set("after_command_signature", state.snapshot.command_signature);
+  }
   params.set("command_history", pageNeedsCommandHistory(page) ? "1" : "0");
   if (pageNeedsMeasurementDelta(page)) {
     params.set("measurement_after_seq", String(state.measurementDeltaSeq || 0));
@@ -1956,6 +1991,7 @@ function teacherSnapshotPollAddress(page = currentPageName(), forceStaticKeys = 
   if (pageNeedsRuntimeLogs(page)) params.set("log_limit", String(snapshotLogLimit(page)));
   else params.set("logs", "0");
   params.set("static", "0");
+  params.set("static_meta", "0");
   params.set("lite", "1");
   return `/api/trainee/snapshot?${params.toString()}`;
 }
@@ -3199,6 +3235,7 @@ function setDiagramElementValue(element, row, metricType = "") {
 
 const diagramDeviceIndexCache = new WeakMap();
 const diagramMetricBindingCache = new WeakMap();
+const diagramRealtimeBindingCache = new WeakMap();
 const diagramInteractionCache = new WeakMap();
 const diagramViewportCache = new WeakMap();
 
@@ -3246,6 +3283,25 @@ function diagramMetricBindings(container) {
   if (!bindings) {
     bindings = compileDiagramMetricBindings(container);
     diagramMetricBindingCache.set(container, bindings);
+  }
+  return bindings;
+}
+
+function diagramRealtimeBindings(container) {
+  let bindings = diagramRealtimeBindingCache.get(container);
+  if (!bindings) {
+    const named = (attribute) => [...container.querySelectorAll(`[${attribute}]`)].map((element) => ({
+      element,
+      name: element.getAttribute(attribute),
+    }));
+    bindings = {
+      measurements: named("data-meas-name"),
+      scada: named("data-scada-name"),
+      real: named("data-real-name"),
+      controls: named("data-control-name"),
+      metrics: diagramMetricBindings(container),
+    };
+    diagramRealtimeBindingCache.set(container, bindings);
   }
   return bindings;
 }
@@ -6122,6 +6178,7 @@ function resetDiagramInteractions(container) {
   container.querySelectorAll(".is-diagram-selected").forEach((element) => element.classList.remove("is-diagram-selected"));
   diagramDeviceIndexCache.delete(container);
   diagramMetricBindingCache.delete(container);
+  diagramRealtimeBindingCache.delete(container);
   diagramViewportCache.delete(container);
 }
 
@@ -6496,22 +6553,23 @@ function updateDiagramRealtimeBindings(container = $("modelDiagramCanvas"), snap
   const measurementMaps = diagramMeasurementMaps(snapshot);
   updateDiagramSwitchVisualStates(container, measurementMaps);
   const maps = { ...measurementMaps, controls: diagramControlMap(snapshot) };
-  container.querySelectorAll("[data-meas-name]").forEach((element) => {
+  const bindings = diagramRealtimeBindings(container);
+  bindings.measurements.forEach(({ element, name }) => {
     setDiagramElementValue(
       element,
-      diagramBindingValue(element.getAttribute("data-meas-name"), maps, diagramDisplayPreferences.measurementSource),
+      diagramBindingValue(name, maps, diagramDisplayPreferences.measurementSource),
     );
   });
-  container.querySelectorAll("[data-scada-name]").forEach((element) => {
-    setDiagramElementValue(element, diagramBindingValue(element.getAttribute("data-scada-name"), maps, "scada"));
+  bindings.scada.forEach(({ element, name }) => {
+    setDiagramElementValue(element, diagramBindingValue(name, maps, "scada"));
   });
-  container.querySelectorAll("[data-real-name]").forEach((element) => {
-    setDiagramElementValue(element, diagramBindingValue(element.getAttribute("data-real-name"), maps, "real"));
+  bindings.real.forEach(({ element, name }) => {
+    setDiagramElementValue(element, diagramBindingValue(name, maps, "real"));
   });
-  container.querySelectorAll("[data-control-name]").forEach((element) => {
-    setDiagramElementValue(element, diagramBindingValue(element.getAttribute("data-control-name"), maps, "control"));
+  bindings.controls.forEach(({ element, name }) => {
+    setDiagramElementValue(element, diagramBindingValue(name, maps, "control"));
   });
-  diagramMetricBindings(container).forEach((binding) => {
+  bindings.metrics.forEach((binding) => {
     setDiagramElementValue(
       binding.element,
       diagramMetricBindingValue(binding, maps, diagramDisplayPreferences.measurementSource),
@@ -6921,7 +6979,7 @@ function applyTeacherConnection(connection) {
   state.teacherMeasurementDeltaPath = connection.measurementDeltaPath;
   state.teacherDefinitionArchivePath = connection.definitionArchivePath;
   state.measurementDeltaSeq = 0;
-  persistActiveModelContext();
+  persistActiveModelContext({}, true);
 }
 
 function sortedUnique(values) {
@@ -7141,7 +7199,7 @@ function stopReceiveAfterPersistentIssue(result, detail = [], simTime = "") {
   state.frozen = true;
   state.receiveEpoch += 1;
   state.receiveRequestActive = false;
-  persistActiveModelContext({ receiveMode: false, frozen: true });
+  persistActiveModelContext({ receiveMode: false, frozen: true }, true);
   setTraineeReceiveActive(state.activeModelId, false).catch((error) => {
     addRuntimeLog("接收模式", "学员台服务端", "保存保护状态失败", apiErrorText(error), "warn");
   });
@@ -7313,7 +7371,7 @@ async function startReceiveMode() {
     state.lastReceiveAt = "";
     state.snapshotSource = "";
     state.lastTeacherSnapshotLogKey = "";
-    persistActiveModelContext();
+    persistActiveModelContext({}, true);
     drawMeasurementTraceChart();
     drawCommandTraceChart();
     drawRenewableTrendChart();
@@ -7322,7 +7380,7 @@ async function startReceiveMode() {
     state.frozen = false;
     state.receiveEpoch += 1;
     resetReceiveIssueStreak();
-    persistActiveModelContext();
+    persistActiveModelContext({}, true);
     addRuntimeLog(
       "接收模式",
       "模拟台实时链路",
@@ -7385,7 +7443,7 @@ async function initializeModelFromLink() {
     invalidateManualDefinitionChanges();
     state.lastTeacherSnapshotLogKey = "";
     clearStaticSnapshotCacheForModel(activeModelIdBeforeInitialize);
-    persistActiveModelContext();
+    persistActiveModelContext({}, true);
     renderModelSelector();
     if ($("modelManagementDialog")?.open) renderModelManagementList();
     const localSnapshot = await refreshLocalSnapshotPayload(currentPageName());
@@ -8218,9 +8276,13 @@ function renderModelSelector() {
   const models = [...localModels, ...externalModel];
   let activeModelId = state.activeModelId || models[0]?.id || "";
   if (selector) {
-    selector.innerHTML = models.map((model) => `
-      <option value="${escapeHtml(model.id)}">${escapeHtml(model.name || model.id)}</option>
-    `).join("");
+    const modelOptionsKey = JSON.stringify(models.map((model) => [model.id, model.name || model.id]));
+    if (selector.dataset.modelOptionsKey !== modelOptionsKey) {
+      selector.innerHTML = models.map((model) => `
+        <option value="${escapeHtml(model.id)}">${escapeHtml(model.name || model.id)}</option>
+      `).join("");
+      selector.dataset.modelOptionsKey = modelOptionsKey;
+    }
     selector.value = activeModelId;
     selector.disabled = models.length <= 1;
     activeModelId = selector.value;
@@ -8233,7 +8295,7 @@ function renderModelSelector() {
 }
 
 async function setActiveModel(modelId, shouldRefresh = true) {
-  persistActiveModelContext();
+  persistActiveModelContext({}, true);
   const nextId = modelId || state.models[0]?.id || "";
   state.activeModelId = nextId;
   localStorage.setItem("polarTraineeModelId", nextId);
@@ -8331,14 +8393,14 @@ async function refresh() {
   await syncActiveReceiveStateBeforeRefresh();
   if (state.receiveMode) {
     await refreshFromTeacher(state.receiveEpoch);
-    if (currentPageName() === "renewable") await refreshRenewableControlState({ preview: true });
+    if (currentPageName() === "renewable") await refreshRenewableControlState({ preview: false });
     return;
   }
   const page = currentPageName();
   const bootstrapFrozenSnapshot = frozenSnapshotNeedsBootstrap(state.snapshot, page);
   if (state.frozen && !bootstrapFrozenSnapshot) {
     renderReceiveMode();
-    if (currentPageName() === "renewable") await refreshRenewableControlState({ preview: true });
+    if (currentPageName() === "renewable") await refreshRenewableControlState({ preview: false });
     return;
   }
   if (state.refreshRequestActive) return;
@@ -8361,7 +8423,7 @@ async function refresh() {
     $("connectionText").textContent = "离线";
   } finally {
     state.refreshRequestActive = false;
-    if (currentPageName() === "renewable") await refreshRenewableControlState({ preview: true });
+    if (currentPageName() === "renewable") await refreshRenewableControlState({ preview: false });
   }
 }
 
@@ -10453,6 +10515,16 @@ function renewableControlApiPath(preview = false) {
     0,
   );
   if (latestLogSeq > 0) params.set("after_log_seq", String(latestLogSeq));
+  const planRevision = Number(state.renewableControl.planRevision);
+  const performanceRevision = Number(state.renewableControl.performanceRevision);
+  const controllerInstanceId = String(state.renewableControl.controllerInstanceId || "");
+  if (Number.isFinite(planRevision) && planRevision >= 0 && controllerInstanceId) {
+    params.set("after_plan_revision", String(planRevision));
+    params.set("after_controller_instance_id", controllerInstanceId);
+  }
+  if (Number.isFinite(performanceRevision) && performanceRevision >= 0 && controllerInstanceId) {
+    params.set("after_performance_revision", String(performanceRevision));
+  }
   const latestTrendSampleKey = String(
     state.renewableTrendHistory?.[state.renewableTrendHistory.length - 1]?.sampleKey || "",
   );
@@ -10507,7 +10579,10 @@ function resetRenewableControlView(modelId = state.activeModelId) {
     requestActive: false,
     actionActive: false,
     revision: -1,
+    planRevision: -1,
+    performanceRevision: -1,
     lastPlan: null,
+    performanceDiagnostics: null,
     lastCalculatedAt: "",
     lastSentAt: "",
     lastStatus: "正在读取学员台后台控制状态。",
@@ -10594,6 +10669,10 @@ function mergeRenewableControlLogDelta(current = [], incoming = [], reset = fals
 function resetRenewableControlHistoryForLifecycle(control = state.renewableControl) {
   control.logs = [];
   control.revision = -1;
+  control.planRevision = -1;
+  control.performanceRevision = -1;
+  control.lastPlan = null;
+  control.performanceDiagnostics = null;
   control.logPage = 1;
   control.lastControlLogRenderKey = "";
   state.renewableTrendHistory = [];
@@ -10612,6 +10691,13 @@ function applyRenewableControlState(payload = {}) {
     && incomingControllerInstanceId !== control.controllerInstanceId,
   );
   const incomingRevision = Number(payload.revision);
+  const incomingPlanRevision = Number(payload.planRevision);
+  const incomingPerformanceRevision = Number(payload.performanceRevision);
+  const hasLastPlan = Object.prototype.hasOwnProperty.call(payload, "lastPlan");
+  const hasPerformanceDiagnostics = Object.prototype.hasOwnProperty.call(
+    payload,
+    "performanceDiagnostics",
+  );
   if (
     !controllerLifecycleChanged
     &&
@@ -10680,7 +10766,12 @@ function applyRenewableControlState(payload = {}) {
       control.storageDischargeDeratingCurve || DEFAULT_STORAGE_DISCHARGE_DERATING_CURVE,
       "discharge",
     ),
-    lastPlan: payload.lastPlan || null,
+    planRevision: Number.isFinite(incomingPlanRevision)
+      ? incomingPlanRevision
+      : control.planRevision,
+    performanceRevision: Number.isFinite(incomingPerformanceRevision)
+      ? incomingPerformanceRevision
+      : control.performanceRevision,
     lastCalculatedAt: payload.lastCalculatedAt || "",
     lastSentAt: payload.lastSentAt || "",
     lastStatus: payload.status || "学员台后台控制状态已同步。",
@@ -10691,6 +10782,10 @@ function applyRenewableControlState(payload = {}) {
       payload.logsReset !== false,
     ),
   });
+  if (hasLastPlan) control.lastPlan = payload.lastPlan || null;
+  if (hasPerformanceDiagnostics) {
+    control.performanceDiagnostics = payload.performanceDiagnostics || null;
+  }
   state.renewableTrendHistory = mergeRenewableTrendDelta(
     state.renewableTrendHistory,
     payload.trend,
@@ -10938,7 +11033,10 @@ function renderRenewableMetricTabs() {
 }
 
 function renderRenewableDetailTabs() {
-  const activeTab = state.renewableControl.detailTab === "logs" ? "logs" : "trend";
+  const requestedTab = state.renewableControl.detailTab;
+  const activeTab = ["trend", "logs", "performance"].includes(requestedTab)
+    ? requestedTab
+    : "trend";
   state.renewableControl.detailTab = activeTab;
   document.querySelectorAll("[data-renewable-detail-tab]").forEach((button) => {
     const active = button.dataset.renewableDetailTab === activeTab;
@@ -10953,9 +11051,117 @@ function renderRenewableDetailTabs() {
   });
   if (activeTab === "logs") {
     renderRenewableControlLogs();
+  } else if (activeTab === "performance") {
+    renderRenewablePerformanceDiagnostics();
   } else {
     requestAnimationFrame(drawRenewableTrendChart);
   }
+}
+
+function renewablePerformanceMsText(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "--";
+  if (number < 1) return `${number.toFixed(3)} ms`;
+  if (number < 100) return `${number.toFixed(2)} ms`;
+  return `${number.toFixed(1)} ms`;
+}
+
+function renderRenewablePerformanceDiagnostics() {
+  const summary = $("renewablePerformanceSummary");
+  const solverNode = $("renewableSolverDiagnostics");
+  const tableNode = $("renewablePerformanceTable");
+  if (!summary || !solverNode || !tableNode) return;
+  const diagnostics = state.renewableControl.performanceDiagnostics;
+  const sampleCount = Number(diagnostics?.sampleCount) || 0;
+  summary.textContent = `${sampleCount} 个周期 · 窗口 ${Number(diagnostics?.historyLimit) || 120}`;
+  if (!sampleCount || !diagnostics?.latest) {
+    solverNode.innerHTML = "";
+    tableNode.innerHTML = '<div class="empty-state compact">暂无控制周期性能数据</div>';
+    return;
+  }
+
+  const latest = diagnostics.latest || {};
+  const solver = latest.solver && typeof latest.solver === "object" ? latest.solver : {};
+  const islandCount = Number(solver.islandCount) || 0;
+  const solvedIslandCount = Number(solver.solvedIslandCount) || 0;
+  const unassignedDeviceCount = Number(solver.unassignedDeviceCount) || 0;
+  const dispatchText = !latest.dispatchAttempted
+    ? "未下发"
+    : latest.dispatchSuccess === true
+      ? "成功"
+      : latest.dispatchSuccess === false
+        ? "失败"
+        : "处理中";
+  const solverStatus = unassignedDeviceCount > 0
+    ? "存在未分配设备"
+    : islandCount <= 0
+    ? "无优化问题"
+    : solver.success === false
+      ? "失败"
+      : "成功";
+  solverNode.innerHTML = `
+    <dl class="renewable-solver-diagnostic-grid">
+      <div><dt>求解状态</dt><dd class="${solver.success === false ? "is-error" : "is-ok"}">${escapeHtml(solverStatus)}</dd></div>
+      <div><dt>求解迭代</dt><dd>${Math.max(0, Number(solver.iterations) || 0)}</dd></div>
+      <div><dt>拓扑岛</dt><dd>${solvedIslandCount} / ${islandCount}</dd></div>
+      <div><dt>变量</dt><dd>${Math.max(0, Number(solver.variableCount) || 0)}</dd></div>
+      <div><dt>约束</dt><dd>${Math.max(0, Number(solver.constraintCount) || 0)}</dd></div>
+      <div><dt>边界</dt><dd>${Math.max(0, Number(solver.boundCount) || 0)}</dd></div>
+      <div><dt>未分配设备</dt><dd class="${unassignedDeviceCount > 0 ? "is-error" : ""}">${Math.max(0, unassignedDeviceCount)}</dd></div>
+      <div><dt>指令下发</dt><dd>${escapeHtml(dispatchText)}</dd></div>
+      <div><dt>仿真时刻</dt><dd>${escapeHtml(latest.simulationTime || "--")}</dd></div>
+    </dl>
+  `;
+
+  const labels = {
+    exchangeRequestMs: "实时帧 HTTP 请求",
+    exchangeProcessingMs: "实时帧合并处理",
+    exchangePublishMs: "实时帧快照发布",
+    exchangeTotalMs: "实时通信总耗时",
+    snapshotReceiveMs: "快照接收",
+    snapshotValidationMs: "快照校验与复制",
+    inputProcessingMs: "量测与输入整理",
+    topologyAnalysisMs: "拓扑分析",
+    strategyPreparationMs: "优化前策略准备",
+    optimizationBuildMs: "优化问题构建",
+    optimizationSolveMs: "SciPy 求解",
+    storageBalanceMs: "储能均衡",
+    optimizationPostprocessMs: "优化结果后处理",
+    optimizationTotalMs: "优化器总耗时",
+    strategyPostprocessMs: "策略与指令后处理",
+    strategyComputeMs: "控制计划计算总计",
+    trendPostprocessMs: "趋势数据整理",
+    commandSerializeMs: "指令序列化",
+    commandDispatchMs: "指令下发通信",
+    cycleTotalMs: "控制周期总耗时",
+  };
+  const order = Object.keys(labels);
+  const phaseStats = diagnostics.phaseStats && typeof diagnostics.phaseStats === "object"
+    ? diagnostics.phaseStats
+    : {};
+  const rows = order
+    .filter((key) => phaseStats[key])
+    .map((key) => {
+      const item = phaseStats[key] || {};
+      return `
+        <tr class="${["exchangeTotalMs", "optimizationTotalMs", "strategyComputeMs", "cycleTotalMs"].includes(key) ? "is-total" : ""}">
+          <th scope="row">${escapeHtml(labels[key])}</th>
+          <td>${renewablePerformanceMsText(item.latestMs)}</td>
+          <td>${renewablePerformanceMsText(item.p50Ms)}</td>
+          <td>${renewablePerformanceMsText(item.p95Ms)}</td>
+          <td>${renewablePerformanceMsText(item.maxMs)}</td>
+        </tr>
+      `;
+    })
+    .join("");
+  tableNode.innerHTML = rows
+    ? `
+      <table class="renewable-performance-table">
+        <thead><tr><th>阶段</th><th>最新</th><th>P50</th><th>P95</th><th>最大</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `
+    : '<div class="empty-state compact">当前周期没有可统计的分项耗时</div>';
 }
 
 function renderRenewableControlLogs() {
@@ -15165,7 +15371,6 @@ async function sendRemoteControlCommand() {
     pending.run_status.delete(`${deviceKey(dev)}|${commandType}`);
     updatePendingCount();
     await refresh();
-    state.remoteControlSending = false;
     addRuntimeLog(
       "模拟台响应",
       targetName,
@@ -15175,17 +15380,7 @@ async function sendRemoteControlCommand() {
         : `${deviceName(dev)} → ${requestedText}；接受 ${acceptance.accepted} 条，但状态反馈尚未到位`,
       feedback.confirmed ? "ok" : "warn",
     );
-    if ($("remoteControlDialog")?.open) {
-      $("remoteControlConfirm").disabled = false;
-      $("remoteControlConfirm").textContent = feedback.confirmed ? "继续下发" : "检查后重试";
-      $("remoteControlHint").textContent = feedback.confirmed
-        ? `${deviceName(dev)} 已执行为${requestedText}，反馈确认完成。`
-        : `${deviceName(dev)} 指令已接受，但尚未收到${requestedText}状态反馈。`;
-      $("remoteControlHint").className = feedback.confirmed
-        ? "remote-control-hint is-ok"
-        : "remote-control-hint is-warn";
-    }
-    refreshDiagramDeviceCommandDialog();
+    closeRemoteControlDialog();
   } catch (error) {
     state.remoteControlSending = false;
     $("remoteControlConfirm").disabled = false;
@@ -15287,14 +15482,7 @@ async function sendRemoteAdjustmentCommand() {
     pending.set_values.delete(row.key);
     updatePendingCount();
     await refresh();
-    state.remoteAdjustmentSending = false;
-    if ($("remoteAdjustmentDialog")?.open) {
-      $("remoteAdjustmentConfirm").disabled = false;
-      $("remoteAdjustmentConfirm").textContent = "继续下发";
-      $("remoteAdjustmentHint").textContent = `${row.name} 已下发，可继续修改控制值。`;
-      $("remoteAdjustmentHint").className = "remote-control-hint";
-    }
-    refreshDiagramDeviceCommandDialog();
+    closeRemoteAdjustmentDialog();
   } catch (error) {
     state.remoteAdjustmentSending = false;
     $("remoteAdjustmentConfirm").disabled = false;
@@ -15512,7 +15700,7 @@ async function toggleReceiveMode() {
     state.receiveEpoch += 1;
     resetReceiveIssueStreak();
     state.receiveRequestActive = false;
-    persistActiveModelContext({ receiveMode: false, frozen: true });
+    persistActiveModelContext({ receiveMode: false, frozen: true }, true);
     addRuntimeLog("接收模式", "模拟台实时数据", "停止接收", `冻结于 ${state.lastReceiveAt || "--"}`, "warn");
     noteRenewableReceiveInterruption("连续接收已停止，新能源实时控制已同步停止。");
     renderReceiveMode();
@@ -15640,7 +15828,10 @@ document.querySelectorAll("[data-renewable-metric-tab]").forEach((button) => {
 });
 document.querySelectorAll("[data-renewable-detail-tab]").forEach((button) => {
   button.addEventListener("click", () => {
-    state.renewableControl.detailTab = button.dataset.renewableDetailTab === "logs" ? "logs" : "trend";
+    const tab = button.dataset.renewableDetailTab || "trend";
+    state.renewableControl.detailTab = ["trend", "logs", "performance"].includes(tab)
+      ? tab
+      : "trend";
     renderRenewableDetailTabs();
   });
 });

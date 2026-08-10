@@ -12,12 +12,13 @@ import math
 import re
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, ContextManager, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
+from typing import Any, Callable, ContextManager, Deque, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from simu.device_roles import (
     AC_TO_DC,
@@ -92,6 +93,79 @@ DEFAULT_STORAGE_DISCHARGE_DERATING_CURVE = default_derating_curve(
 DEFAULT_GRID_FOLLOWING_STORAGE_STEP_RATIO = default_number(
     "grid_following_storage_step_ratio"
 )
+CYCLE_PERFORMANCE_HISTORY_LIMIT = 120
+
+
+def _performance_percentile(values: Sequence[float], percentile: float) -> float:
+    ordered = sorted(float(value) for value in values if math.isfinite(float(value)))
+    if not ordered:
+        return 0.0
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * min(1.0, max(0.0, float(percentile)))
+    lower_index = int(math.floor(position))
+    upper_index = int(math.ceil(position))
+    if lower_index == upper_index:
+        return ordered[lower_index]
+    fraction = position - lower_index
+    return ordered[lower_index] + (
+        ordered[upper_index] - ordered[lower_index]
+    ) * fraction
+
+
+class _CyclePerformanceWindow:
+    """Bounded completed-cycle timings used by the trainee diagnostics UI."""
+
+    def __init__(self, limit: int = CYCLE_PERFORMANCE_HISTORY_LIMIT) -> None:
+        self.limit = max(1, int(limit))
+        self.samples: Deque[Dict[str, Any]] = deque(maxlen=self.limit)
+        self.revision = 0
+
+    def record(self, sample: Mapping[str, Any]) -> None:
+        self.samples.append(_json_safe_copy(dict(sample)))
+        self.revision += 1
+
+    def payload(self) -> Dict[str, Any]:
+        samples = list(self.samples)
+        latest = copy.deepcopy(samples[-1]) if samples else None
+        phase_names = sorted(
+            {
+                str(name)
+                for sample in samples
+                for name in (
+                    sample.get("phasesMs", {}).keys()
+                    if isinstance(sample.get("phasesMs"), Mapping)
+                    else ()
+                )
+            }
+        )
+        phase_stats: Dict[str, Dict[str, Any]] = {}
+        for name in phase_names:
+            values = [
+                float(value)
+                for sample in samples
+                for value in [
+                    sample.get("phasesMs", {}).get(name)
+                    if isinstance(sample.get("phasesMs"), Mapping)
+                    else None
+                ]
+                if isinstance(value, (int, float)) and math.isfinite(float(value))
+            ]
+            if not values:
+                continue
+            phase_stats[name] = {
+                "sampleCount": len(values),
+                "latestMs": values[-1],
+                "p50Ms": _performance_percentile(values, 0.50),
+                "p95Ms": _performance_percentile(values, 0.95),
+                "maxMs": max(values),
+            }
+        return {
+            "historyLimit": self.limit,
+            "sampleCount": len(samples),
+            "latest": latest,
+            "phaseStats": phase_stats,
+        }
 
 
 def _now_text() -> str:
@@ -5569,14 +5643,14 @@ def _plan_direct_grid_forming_dispatch(
         )
     }
     converter_target_map = {
-        (str(row.get("dev_type", "")), str(row.get("dev_name", ""))): min(
-            0.0,
-            _finite_number(
+        (str(row.get("dev_type", "")), str(row.get("dev_name", ""))): (
+            _clamp_converter_target_kw(
+                row,
                 converter_targets.get(
                     (str(row.get("dev_type", "")), str(row.get("dev_name", ""))),
                     row.get("currentKw"),
-                )
-            ),
+                ),
+            )
         )
         for row in converter_rows
         if _number(row.get("currentKw")) is not None
@@ -5696,42 +5770,14 @@ def _plan_direct_grid_forming_dispatch(
     converter_states: List[MutableMapping[str, Any]] = []
     for row in sorted(converter_rows, key=_converter_row_sort_key):
         key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
-        current_kw = _number(row.get("currentKw"))
-        target_kw = converter_target_map.get(key)
-        capacity_kw = _number(row.get("transferCapacityKw"))
-        if current_kw is None or target_kw is None:
+        state = _converter_direct_state(
+            row,
+            converter_target_map.get(key, row.get("currentKw")),
+            settings,
+        )
+        if state.get("currentKw") is None or state.get("targetKw") is None:
             continue
-        step_kw = (
-            settings.converter_step_ratio * capacity_kw
-            if capacity_kw is not None and capacity_kw > EPSILON
-            else 0.0
-        )
-        used_step_kw = abs(target_kw - current_kw)
-        remaining_step_kw = max(0.0, step_kw - used_step_kw)
-        converter_states.append(
-            {
-                "row": row,
-                "key": key,
-                "groupId": str(row.get("dcTransferGroupId", "")),
-                "currentKw": current_kw,
-                "targetKw": target_kw,
-                "exportMarginKw": (
-                    min(
-                        max(0.0, (capacity_kw or 0.0) + target_kw),
-                        remaining_step_kw,
-                    )
-                    if row.get("commandable")
-                    and capacity_kw is not None
-                    and capacity_kw > EPSILON
-                    else 0.0
-                ),
-                "exportReductionMarginKw": (
-                    min(max(0.0, -target_kw), remaining_step_kw)
-                    if row.get("commandable")
-                    else 0.0
-                ),
-            }
-        )
+        converter_states.append({**state, "key": key})
 
     def sync_candidate_states() -> None:
         for state in renewable_states:
@@ -6068,8 +6114,8 @@ def _plan_direct_grid_forming_dispatch(
             converter_allocations,
         ):
             state = candidate["state"]
-            state["targetKw"] = min(
-                0.0,
+            state["targetKw"] = _clamp_converter_target_kw(
+                state["row"],
                 _finite_number(state.get("targetKw")) + allocation_kw,
             )
         remaining_kw = max(0.0, remaining_kw - sum(converter_allocations))
@@ -8205,6 +8251,18 @@ def _optimization_metrics(
             island.max_balance_delta_kw > result.balance_delta_warning_kw
             for island in result.islands
         ),
+        "optimizationIterations": result.iterations,
+        "optimizationVariableCount": result.variable_count,
+        "optimizationConstraintCount": result.constraint_count,
+        "optimizationEqualityConstraintCount": result.equality_constraint_count,
+        "optimizationInequalityConstraintCount": result.inequality_constraint_count,
+        "optimizationBoundCount": result.bound_count,
+        "optimizationBuildMilliseconds": result.build_seconds * 1000.0,
+        "optimizationSolverMilliseconds": result.solver_seconds * 1000.0,
+        "optimizationStorageBalanceMilliseconds": (
+            result.storage_balance_seconds * 1000.0
+        ),
+        "optimizationPostprocessMilliseconds": result.postprocess_seconds * 1000.0,
         "optimizationSolveMilliseconds": result.solve_seconds * 1000.0,
         "optimizationStepOverrideApplied": any(
             island.step_override_applied for island in result.islands
@@ -8253,7 +8311,55 @@ def _optimization_metrics(
                     for dev_type, dev_name in island.step_override_devices
                 ],
                 "iterations": island.iterations,
+                "variableCount": island.variable_count,
+                "constraintCount": island.constraint_count,
+                "equalityConstraintCount": island.equality_constraint_count,
+                "inequalityConstraintCount": island.inequality_constraint_count,
+                "boundCount": island.bound_count,
+                "buildMilliseconds": island.build_seconds * 1000.0,
+                "solverMilliseconds": island.solver_seconds * 1000.0,
+                "storageBalanceMilliseconds": (
+                    island.storage_balance_seconds * 1000.0
+                ),
+                "postprocessMilliseconds": island.postprocess_seconds * 1000.0,
                 "solveMilliseconds": island.solve_seconds * 1000.0,
+            }
+            for island in result.islands
+        ],
+    }
+
+
+def _optimization_performance_diagnostics(
+    result: RenewableDispatchOptimizationResult,
+) -> Dict[str, Any]:
+    solved_islands = sum(1 for island in result.islands if island.success)
+    statuses = {str(island.status) for island in result.islands}
+    if result.unassigned_devices:
+        statuses.add("unassigned_devices")
+    return {
+        "success": result.all_success,
+        "status": ",".join(sorted(statuses)) if statuses else "no_problem",
+        "iterations": result.iterations,
+        "variableCount": result.variable_count,
+        "constraintCount": result.constraint_count,
+        "equalityConstraintCount": result.equality_constraint_count,
+        "inequalityConstraintCount": result.inequality_constraint_count,
+        "boundCount": result.bound_count,
+        "unassignedDeviceCount": len(result.unassigned_devices),
+        "islandCount": len(result.islands),
+        "solvedIslandCount": solved_islands,
+        "failedIslandCount": len(result.islands) - solved_islands,
+        "maxBalanceResidualKw": result.max_balance_residual_kw,
+        "islands": [
+            {
+                "islandId": island.island_id,
+                "success": island.success,
+                "status": island.status,
+                "iterations": island.iterations,
+                "variableCount": island.variable_count,
+                "constraintCount": island.constraint_count,
+                "boundCount": island.bound_count,
+                "solveMs": island.solve_seconds * 1000.0,
             }
             for island in result.islands
         ],
@@ -8349,6 +8455,7 @@ def calculate_renewable_control_plan(
     data_source: str = "remote",
     snapshot_age_seconds: float = 0.0,
 ) -> Dict[str, Any]:
+    plan_started = time.perf_counter()
     configured_settings = (settings or RenewableControlSettings()).normalized()
     (
         simulation_step_seconds,
@@ -8438,10 +8545,14 @@ def calculate_renewable_control_plan(
         )
         for row in diesel_rows
     ]
+    topology_started = time.perf_counter()
+    input_processing_seconds = topology_started - plan_started
     resource_topology = resolve_resource_topology(
         snapshot,
         (*resource_refs, *diesel_refs),
     )
+    topology_finished = time.perf_counter()
+    topology_analysis_seconds = topology_finished - topology_started
     converter_group_ids = {
         converter_key: group_id
         for group_id, group in resource_topology.dc_transfer_groups.items()
@@ -10339,6 +10450,8 @@ def calculate_renewable_control_plan(
         for row in diagnostic_converter_rows
     )
 
+    optimization_started = time.perf_counter()
+    strategy_preparation_seconds = optimization_started - topology_finished
     optimization_result = optimize_topology_islands(
         resource_topology,
         renewable_rows=renewable_rows,
@@ -10379,6 +10492,8 @@ def calculate_renewable_control_plan(
         optimization_ftol=settings.optimization_ftol,
         optimization_max_iterations=settings.optimization_max_iterations,
     )
+    optimization_finished = time.perf_counter()
+    optimization_total_seconds = optimization_finished - optimization_started
     # The optimizer owns the final per-device targets. Its variable bounds
     # already combine topology eligibility, physical limits, SOC segmented
     # limits, one-cycle maximum deltas, deadband guards and SOC emergency
@@ -11265,6 +11380,29 @@ def calculate_renewable_control_plan(
             settings,
         )
     )
+    plan_finished = time.perf_counter()
+    performance_diagnostics = {
+        "phasesMs": {
+            "inputProcessingMs": input_processing_seconds * 1000.0,
+            "topologyAnalysisMs": topology_analysis_seconds * 1000.0,
+            "strategyPreparationMs": strategy_preparation_seconds * 1000.0,
+            "optimizationBuildMs": optimization_result.build_seconds * 1000.0,
+            "optimizationSolveMs": optimization_result.solver_seconds * 1000.0,
+            "storageBalanceMs": (
+                optimization_result.storage_balance_seconds * 1000.0
+            ),
+            "optimizationPostprocessMs": (
+                optimization_result.postprocess_seconds * 1000.0
+            ),
+            "optimizationTotalMs": optimization_total_seconds * 1000.0,
+            "strategyPostprocessMs": (
+                plan_finished - optimization_finished
+            )
+            * 1000.0,
+            "planTotalMs": (plan_finished - plan_started) * 1000.0,
+        },
+        "solver": _optimization_performance_diagnostics(optimization_result),
+    }
     return {
         "clockKey": clock_key,
         "time": time_text,
@@ -11286,6 +11424,7 @@ def calculate_renewable_control_plan(
         "metrics": metrics,
         "dataQuality": quality_payload,
         "decisionDetail": decision_detail,
+        "performanceDiagnostics": performance_diagnostics,
     }
 
 
@@ -11479,11 +11618,16 @@ class _ControllerState:
     last_auto_started: float = 0.0
     last_preview_started: float = 0.0
     background_cycle_pending: bool = False
+    plan_revision: int = 0
     revision: int = 0
     log_seq: int = 0
     logs: List[Dict[str, Any]] = field(default_factory=list)
     trend: List[Dict[str, Any]] = field(default_factory=list)
     trend_normalized: bool = False
+    performance: _CyclePerformanceWindow = field(
+        default_factory=_CyclePerformanceWindow,
+        repr=False,
+    )
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     run_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -12324,6 +12468,86 @@ class TraineeRenewableControlManager:
             payload,
         )
 
+    @staticmethod
+    def _elapsed_milliseconds(started: float) -> float:
+        return max(0.0, (time.perf_counter() - started) * 1000.0)
+
+    @staticmethod
+    def _snapshot_for_calculation(view: TraineeControlSnapshot) -> Dict[str, Any]:
+        if bool(getattr(view, "snapshot_isolated", False)):
+            return view.snapshot
+        return copy.deepcopy(dict(view.snapshot))
+
+    @staticmethod
+    def _plan_performance_diagnostics(plan: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+        if not isinstance(plan, Mapping):
+            return {}
+        diagnostics = plan.get("performanceDiagnostics")
+        return diagnostics if isinstance(diagnostics, Mapping) else {}
+
+    def _record_cycle_performance_locked(
+        self,
+        state: _ControllerState,
+        *,
+        trigger: str,
+        phases_ms: Mapping[str, Any],
+        plan: Mapping[str, Any],
+        dispatch_attempted: bool,
+        dispatch_success: Optional[bool],
+    ) -> None:
+        plan_diagnostics = self._plan_performance_diagnostics(plan)
+        plan_phases = (
+            plan_diagnostics.get("phasesMs")
+            if isinstance(plan_diagnostics.get("phasesMs"), Mapping)
+            else {}
+        )
+        normalized_phases = {
+            str(name): max(0.0, float(value))
+            for name, value in {**plan_phases, **dict(phases_ms)}.items()
+            if isinstance(value, (int, float)) and math.isfinite(float(value))
+        }
+        solver = (
+            _json_safe_copy(plan_diagnostics.get("solver"))
+            if isinstance(plan_diagnostics.get("solver"), Mapping)
+            else {}
+        )
+        solver_success = solver.get("success")
+        state.performance.record(
+            {
+                "wallTime": _now_text(),
+                "simulationTime": str(plan.get("time", "--")),
+                "clockKey": str(plan.get("clockKey", "")),
+                "trigger": str(trigger or "manual"),
+                "success": bool(solver_success is not False),
+                "dispatchAttempted": bool(dispatch_attempted),
+                "dispatchSuccess": dispatch_success,
+                "phasesMs": normalized_phases,
+                "solver": solver,
+            }
+        )
+
+    def _exchange_performance_phases_for_service(
+        self,
+        service: Any,
+    ) -> Dict[str, float]:
+        try:
+            status = self._receive_status_for_service(service)
+        except Exception:
+            return {}
+        seconds_by_phase = {
+            "exchangeRequestMs": status.get("requestDurationSeconds"),
+            "exchangeProcessingMs": status.get(
+                "refreshProcessingDurationSeconds"
+            ),
+            "exchangePublishMs": status.get("refreshPublishDurationSeconds"),
+            "exchangeTotalMs": status.get("refreshTotalDurationSeconds"),
+        }
+        return {
+            name: max(0.0, float(value) * 1000.0)
+            for name, value in seconds_by_phase.items()
+            if isinstance(value, (int, float)) and math.isfinite(float(value))
+        }
+
     def collect_once(self, model_id: Optional[str]) -> Dict[str, Any]:
         """Refresh the shared plan and trend without changing or dispatching control state."""
         service = self._service_for(model_id)
@@ -12355,6 +12579,9 @@ class TraineeRenewableControlManager:
         receive_signature = self._receive_state_signature_for_service(service)
         if not state.run_lock.acquire(blocking=False):
             return self._serialize_for_service(service, state, **response_options)
+        cycle_started = time.perf_counter()
+        cycle_phases: Dict[str, float] = {}
+        cycle_plan: Optional[Dict[str, Any]] = None
         try:
             with state.lock:
                 service_lock = getattr(service, "lock", None)
@@ -12368,9 +12595,13 @@ class TraineeRenewableControlManager:
                         return self._serialize_for_service(service, state)
                 operation_epoch = state.operation_epoch
                 cycle_settings = state.settings
+            snapshot_receive_started = time.perf_counter()
             try:
                 view = self._control_snapshot_for_service(service)
             except RuntimeError:
+                cycle_phases["snapshotReceiveMs"] = self._elapsed_milliseconds(
+                    snapshot_receive_started
+                )
                 if not self._service_lifecycle_valid(service, state):
                     return self._serialize_cancelled_cycle(
                         service,
@@ -12378,13 +12609,17 @@ class TraineeRenewableControlManager:
                         clear_sending=False,
                     )
                 raise
+            cycle_phases["snapshotReceiveMs"] = self._elapsed_milliseconds(
+                snapshot_receive_started
+            )
+            snapshot_validation_started = time.perf_counter()
             if not self._view_matches_controller_state(view, state):
                 return self._serialize_cancelled_cycle(
                     service,
                     state,
                     clear_sending=False,
                 )
-            snapshot = copy.deepcopy(dict(view.snapshot))
+            snapshot = self._snapshot_for_calculation(view)
             source = view.source
             age = view.age_seconds
             blocked = self._reject_without_receive_for_service(
@@ -12402,13 +12637,25 @@ class TraineeRenewableControlManager:
                     state,
                     clear_sending=False,
                 )
+            cycle_phases["snapshotValidationMs"] = self._elapsed_milliseconds(
+                snapshot_validation_started
+            )
+            strategy_compute_started = time.perf_counter()
             plan = calculate_renewable_control_plan(
                 snapshot,
                 cycle_settings,
                 data_source=source,
                 snapshot_age_seconds=age,
             )
+            cycle_plan = plan
+            cycle_phases["strategyComputeMs"] = self._elapsed_milliseconds(
+                strategy_compute_started
+            )
+            trend_started = time.perf_counter()
             trend_candidate = self._stage_trend(state, plan, snapshot)
+            cycle_phases["trendPostprocessMs"] = self._elapsed_milliseconds(
+                trend_started
+            )
             committed = False
             with state.lock:
                 with self._candidate_generation_guard(
@@ -12422,6 +12669,7 @@ class TraineeRenewableControlManager:
                         and self._service_instance_id(service) == state.service_instance_id
                     ):
                         state.last_plan = plan
+                        state.plan_revision += 1
                         state.last_calculated_at = _now_text()
                         state.last_clock_key = str(plan.get("clockKey", ""))
                         state.trend = trend_candidate.trend
@@ -12437,6 +12685,23 @@ class TraineeRenewableControlManager:
                     clear_sending=False,
                 )
         finally:
+            if cycle_plan is not None:
+                cycle_phases["cycleTotalMs"] = self._elapsed_milliseconds(
+                    cycle_started
+                )
+                cycle_phases.update(
+                    self._exchange_performance_phases_for_service(service)
+                )
+                with state.lock:
+                    self._record_cycle_performance_locked(
+                        state,
+                        trigger="preview",
+                        phases_ms=cycle_phases,
+                        plan=cycle_plan,
+                        dispatch_attempted=False,
+                        dispatch_success=None,
+                    )
+                    state.revision += 1
             state.run_lock.release()
         return self._serialize_for_service(service, state, **response_options)
 
@@ -12495,6 +12760,11 @@ class TraineeRenewableControlManager:
                     raise_on_retired=raise_on_retired,
                 )
             return self._serialize_for_service(service, state)
+        cycle_started = time.perf_counter()
+        cycle_phases: Dict[str, float] = {}
+        cycle_plan: Optional[Dict[str, Any]] = None
+        dispatch_attempted = False
+        dispatch_success: Optional[bool] = None
         try:
             blocked = self._reject_without_receive_for_service(
                 service,
@@ -12523,9 +12793,13 @@ class TraineeRenewableControlManager:
                     return self._serialize_for_service(service, state)
                 state.sending = True
                 state.revision += 1
+            snapshot_receive_started = time.perf_counter()
             try:
                 view = self._control_snapshot_for_service(service)
             except RuntimeError:
+                cycle_phases["snapshotReceiveMs"] = self._elapsed_milliseconds(
+                    snapshot_receive_started
+                )
                 if not self._service_lifecycle_valid(service, state):
                     return self._serialize_cancelled_cycle(
                         service,
@@ -12533,13 +12807,17 @@ class TraineeRenewableControlManager:
                         clear_sending=True,
                     )
                 raise
+            cycle_phases["snapshotReceiveMs"] = self._elapsed_milliseconds(
+                snapshot_receive_started
+            )
+            snapshot_validation_started = time.perf_counter()
             if not self._view_matches_controller_state(view, state):
                 return self._serialize_cancelled_cycle(
                     service,
                     state,
                     clear_sending=True,
                 )
-            snapshot = copy.deepcopy(dict(view.snapshot))
+            snapshot = self._snapshot_for_calculation(view)
             source = view.source
             age = view.age_seconds
             fetch_error = view.error
@@ -12560,13 +12838,25 @@ class TraineeRenewableControlManager:
                     state,
                     clear_sending=True,
                 )
+            cycle_phases["snapshotValidationMs"] = self._elapsed_milliseconds(
+                snapshot_validation_started
+            )
+            strategy_compute_started = time.perf_counter()
             plan = calculate_renewable_control_plan(
                 snapshot,
                 cycle_settings,
                 data_source=source,
                 snapshot_age_seconds=age,
             )
+            cycle_plan = plan
+            cycle_phases["strategyComputeMs"] = self._elapsed_milliseconds(
+                strategy_compute_started
+            )
+            trend_started = time.perf_counter()
             trend_candidate = self._stage_trend(state, plan, snapshot)
+            cycle_phases["trendPostprocessMs"] = self._elapsed_milliseconds(
+                trend_started
+            )
             commands = plan.get("commands") if isinstance(plan.get("commands"), Sequence) else []
             quality = plan.get("dataQuality") if isinstance(plan.get("dataQuality"), Mapping) else {}
             dispatch_prerequisite = self._receive_prerequisite_for_service(service)
@@ -12592,6 +12882,7 @@ class TraineeRenewableControlManager:
                         committed = False
                     else:
                         state.last_plan = plan
+                        state.plan_revision += 1
                         state.last_calculated_at = _now_text()
                         state.last_clock_key = str(plan.get("clockKey", ""))
                         state.trend = trend_candidate.trend
@@ -12646,6 +12937,7 @@ class TraineeRenewableControlManager:
                                     )
                                 )
                         elif should_dispatch:
+                            command_serialize_started = time.perf_counter()
                             payload = self._command_payload(
                                 state,
                                 plan,
@@ -12653,6 +12945,9 @@ class TraineeRenewableControlManager:
                                 trigger,
                                 settings=cycle_settings,
                                 loop_mode=cycle_loop_mode,
+                            )
+                            cycle_phases["commandSerializeMs"] = (
+                                self._elapsed_milliseconds(command_serialize_started)
                             )
                             dispatch_clock_key = str(plan.get("clockKey", "")).strip()
                             duplicate_dispatch = bool(
@@ -12736,6 +13031,8 @@ class TraineeRenewableControlManager:
             if dispatch_claimed and dispatch_payload is not None:
                 response_runtime_logs: List[Dict[str, Any]] = []
                 transport_started = False
+                dispatch_attempted = True
+                command_dispatch_started = time.perf_counter()
 
                 def mark_transport_started() -> None:
                     nonlocal transport_started
@@ -12780,6 +13077,7 @@ class TraineeRenewableControlManager:
                             on_transport_start=mark_transport_started,
                         )
                 except Exception as exc:
+                    dispatch_success = False
                     with state.lock:
                         if (
                             not transport_started
@@ -12821,6 +13119,7 @@ class TraineeRenewableControlManager:
                                         )
                                     )
                 else:
+                    dispatch_success = True
                     accepted = (
                         int(_number(result.get("set_values"), len(commands)) or 0)
                         if isinstance(result, Mapping)
@@ -12857,11 +13156,31 @@ class TraineeRenewableControlManager:
                                             persist_runtime=False,
                                         )
                                     )
+                finally:
+                    cycle_phases["commandDispatchMs"] = (
+                        self._elapsed_milliseconds(command_dispatch_started)
+                    )
                 for entry in response_runtime_logs:
                     self._persist_runtime_log(state, entry)
         finally:
+            if cycle_plan is not None:
+                cycle_phases["cycleTotalMs"] = self._elapsed_milliseconds(
+                    cycle_started
+                )
+                cycle_phases.update(
+                    self._exchange_performance_phases_for_service(service)
+                )
             with state.lock:
                 state.sending = False
+                if cycle_plan is not None:
+                    self._record_cycle_performance_locked(
+                        state,
+                        trigger=trigger,
+                        phases_ms=cycle_phases,
+                        plan=cycle_plan,
+                        dispatch_attempted=dispatch_attempted,
+                        dispatch_success=dispatch_success,
+                    )
                 state.revision += 1
             state.run_lock.release()
         return self._serialize_for_service(service, state)
@@ -12881,6 +13200,9 @@ class TraineeRenewableControlManager:
         compact: bool = False,
         after_log_seq: int = 0,
         after_trend_sample_key: str = "",
+        after_plan_revision: Optional[int] = None,
+        after_performance_revision: Optional[int] = None,
+        after_controller_instance_id: str = "",
     ) -> Dict[str, Any]:
         with state.lock:
             requested_log_seq = max(0, int(after_log_seq or 0))
@@ -12925,7 +13247,17 @@ class TraineeRenewableControlManager:
                 ]
             else:
                 serialized_trend = copy.deepcopy(trend)
-            return {
+            plan_cursor_matches = (
+                after_plan_revision is not None
+                and int(after_plan_revision) == state.plan_revision
+                and str(after_controller_instance_id or "") == state.service_instance_id
+            )
+            performance_cursor_matches = (
+                after_performance_revision is not None
+                and int(after_performance_revision) == state.performance.revision
+                and str(after_controller_instance_id or "") == state.service_instance_id
+            )
+            payload = {
                 "modelId": state.model_id,
                 "controllerInstanceId": state.service_instance_id,
                 "enabled": state.enabled,
@@ -12933,7 +13265,8 @@ class TraineeRenewableControlManager:
                 "sending": state.sending,
                 "settings": state.settings.payload(),
                 "status": state.status,
-                "lastPlan": copy.deepcopy(state.last_plan),
+                "planRevision": state.plan_revision,
+                "performanceRevision": state.performance.revision,
                 "lastCalculatedAt": state.last_calculated_at,
                 "lastSentAt": state.last_sent_at,
                 "lastDispatchedClockKey": state.last_dispatched_clock_key,
@@ -12947,6 +13280,11 @@ class TraineeRenewableControlManager:
                 "latestTrendSampleKey": str(state.trend[-1].get("sampleKey", "")) if state.trend else "",
                 **prerequisite,
             }
+            if not plan_cursor_matches:
+                payload["lastPlan"] = copy.deepcopy(state.last_plan)
+            if not performance_cursor_matches:
+                payload["performanceDiagnostics"] = state.performance.payload()
+            return payload
 
     def _serialize_for_service(
         self,
@@ -12956,6 +13294,9 @@ class TraineeRenewableControlManager:
         compact: bool = False,
         after_log_seq: int = 0,
         after_trend_sample_key: str = "",
+        after_plan_revision: Optional[int] = None,
+        after_performance_revision: Optional[int] = None,
+        after_controller_instance_id: str = "",
     ) -> Dict[str, Any]:
         prerequisite = self._receive_prerequisite_for_service(service)
         return self._serialize_with_prerequisite(
@@ -12964,6 +13305,9 @@ class TraineeRenewableControlManager:
             compact=compact,
             after_log_seq=after_log_seq,
             after_trend_sample_key=after_trend_sample_key,
+            after_plan_revision=after_plan_revision,
+            after_performance_revision=after_performance_revision,
+            after_controller_instance_id=after_controller_instance_id,
         )
 
     def _serialize(
@@ -12973,6 +13317,9 @@ class TraineeRenewableControlManager:
         compact: bool = False,
         after_log_seq: int = 0,
         after_trend_sample_key: str = "",
+        after_plan_revision: Optional[int] = None,
+        after_performance_revision: Optional[int] = None,
+        after_controller_instance_id: str = "",
     ) -> Dict[str, Any]:
         try:
             service = self._service_for(state.model_id)
@@ -12998,6 +13345,9 @@ class TraineeRenewableControlManager:
                 compact=compact,
                 after_log_seq=after_log_seq,
                 after_trend_sample_key=after_trend_sample_key,
+                after_plan_revision=after_plan_revision,
+                after_performance_revision=after_performance_revision,
+                after_controller_instance_id=after_controller_instance_id,
             )
         return self._serialize_for_service(
             service,
@@ -13005,6 +13355,9 @@ class TraineeRenewableControlManager:
             compact=compact,
             after_log_seq=after_log_seq,
             after_trend_sample_key=after_trend_sample_key,
+            after_plan_revision=after_plan_revision,
+            after_performance_revision=after_performance_revision,
+            after_controller_instance_id=after_controller_instance_id,
         )
 
     def state(
@@ -13015,6 +13368,9 @@ class TraineeRenewableControlManager:
         compact: bool = False,
         after_log_seq: int = 0,
         after_trend_sample_key: str = "",
+        after_plan_revision: Optional[int] = None,
+        after_performance_revision: Optional[int] = None,
+        after_controller_instance_id: str = "",
     ) -> Dict[str, Any]:
         service = self._service_for(model_id)
         return self.state_for_service(
@@ -13023,6 +13379,9 @@ class TraineeRenewableControlManager:
             compact=compact,
             after_log_seq=after_log_seq,
             after_trend_sample_key=after_trend_sample_key,
+            after_plan_revision=after_plan_revision,
+            after_performance_revision=after_performance_revision,
+            after_controller_instance_id=after_controller_instance_id,
         )
 
     def state_for_service(
@@ -13033,12 +13392,18 @@ class TraineeRenewableControlManager:
         compact: bool = False,
         after_log_seq: int = 0,
         after_trend_sample_key: str = "",
+        after_plan_revision: Optional[int] = None,
+        after_performance_revision: Optional[int] = None,
+        after_controller_instance_id: str = "",
     ) -> Dict[str, Any]:
         state = self._state_for_live_service(service)
         serialization_options = {
             "compact": compact,
             "after_log_seq": after_log_seq,
             "after_trend_sample_key": after_trend_sample_key,
+            "after_plan_revision": after_plan_revision,
+            "after_performance_revision": after_performance_revision,
+            "after_controller_instance_id": after_controller_instance_id,
         }
         now = time.monotonic()
         if refresh and not state.enabled and now - state.last_preview_started >= 0.9:

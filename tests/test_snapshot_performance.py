@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from urllib.request import urlopen
 
 
@@ -156,6 +157,106 @@ class SnapshotPerformanceTest(unittest.TestCase):
         self.assertNotIn("devices", payload)
         self.assertNotIn("commands", payload)
 
+    def test_snapshot_can_omit_static_meta_without_touching_the_filesystem(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        with patch.object(service, "static_meta", side_effect=AssertionError("static metadata read")):
+            payload = service.snapshot(
+                include_static=False,
+                include_static_meta=False,
+                include_runtime_logs=False,
+                include_measurements=False,
+                include_devices=False,
+                include_device_states=False,
+                include_commands=False,
+            )
+
+        self.assertNotIn("static_meta", payload)
+        self.assertIn("clock", payload)
+        self.assertIn("curve_boundary", payload)
+
+    def test_curve_boundary_reuses_interpolation_until_curve_or_clock_changes(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        service.set_curves(
+            {
+                "mode": "day",
+                "time_step_minutes": 1,
+                "point_count": 2,
+                "weather": [
+                    {"minute": 0, "wind_speed_mps": 1, "solar_irradiance_w_m2": 10, "air_temp_c": -20},
+                    {"minute": 1, "wind_speed_mps": 2, "solar_irradiance_w_m2": 20, "air_temp_c": -19},
+                ],
+                "loads": {},
+            }
+        )
+
+        with patch.object(service, "_curve_point_index", wraps=service._curve_point_index) as point_index:
+            first = service.curve_boundary()
+            second = service.curve_boundary()
+            first_call_count = point_index.call_count
+            service.clock.absolute_minute = 1
+            third = service.curve_boundary()
+
+        self.assertEqual(first, second)
+        self.assertEqual(first_call_count, 1)
+        self.assertEqual(point_index.call_count, 2)
+        self.assertNotEqual(first["target_minute"], third["target_minute"])
+
+    def test_latest_power_summary_reuses_the_current_measurement_snapshot(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        service.latest_real_rows = [list(row) for row in service.measurement_rows]
+        service.latest_scada_rows = [list(row) for row in service.measurement_rows]
+        service.latest_measurements = service.measurements()
+
+        with patch.object(service, "_power_flow_summary", wraps=service._power_flow_summary) as summarize:
+            first = service._latest_power_summary(service.latest_measurements)
+            first_call_count = summarize.call_count
+            second = service._latest_power_summary(service.latest_measurements)
+
+        self.assertEqual(first, second)
+        self.assertGreater(first_call_count, 0)
+        self.assertEqual(summarize.call_count, first_call_count)
+
+    def test_latest_power_summary_cache_is_invalidated_by_a_new_measurement_snapshot(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        service.latest_real_rows = [list(row) for row in service.measurement_rows]
+        service.latest_scada_rows = [list(row) for row in service.measurement_rows]
+        service.latest_measurements = service.measurements()
+
+        with patch.object(service, "_power_flow_summary", wraps=service._power_flow_summary) as summarize:
+            service._latest_power_summary(service.latest_measurements)
+            first_call_count = summarize.call_count
+            service.latest_scada_rows[0][7] = "12.5"
+            service.latest_measurements = service.measurements()
+            service._latest_power_summary(service.latest_measurements)
+
+        self.assertGreater(summarize.call_count, first_call_count)
+
+    def test_device_runtime_frame_reuses_the_same_runtime_step(self):
+        from simu.service import compact_device_runtime_frame
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        with patch(
+            "simu.service.compact_device_runtime_frame",
+            wraps=compact_device_runtime_frame,
+        ) as compact:
+            first = service.device_runtime_frame()
+            second = service.device_runtime_frame()
+            first_call_count = compact.call_count
+            service.clock.step_count += 1
+            third = service.device_runtime_frame()
+
+        self.assertEqual(first, second)
+        self.assertEqual(first_call_count, 1)
+        self.assertEqual(compact.call_count, 2)
+        self.assertEqual(first["runtime_signature"], third["runtime_signature"])
+
     def test_snapshot_http_endpoint_supports_omitting_devices_and_commands(self):
         from simu.server import make_http_server
 
@@ -178,6 +279,25 @@ class SnapshotPerformanceTest(unittest.TestCase):
         self.assertNotIn("measurements", payload)
         self.assertNotIn("devices", payload)
         self.assertNotIn("commands", payload)
+
+    def test_snapshot_http_endpoint_supports_omitting_static_meta(self):
+        from simu.server import make_http_server
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        server = make_http_server(("127.0.0.1", 0), service, role="simulator")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        port = server.server_address[1]
+        path = "/api/snapshot?lite=1&static_meta=0&logs=0&measurements=0&devices=0&commands=0"
+        with urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertNotIn("static_meta", payload)
+        self.assertIn("clock", payload)
 
     def test_snapshot_can_keep_effective_commands_without_repeating_recent_history(self):
         workspace, service = self._make_service()
@@ -242,6 +362,23 @@ class SnapshotPerformanceTest(unittest.TestCase):
         self.assertIn("commands", payload)
         self.assertEqual(payload["commands"]["history"], [])
         self.assertIn("effective", payload["commands"])
+
+    def test_unchanged_command_history_is_not_written_repeatedly(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        service.command_history = [
+            {
+                "source": "performance-test",
+                "normalized": {"run_status": [], "set_values": []},
+            }
+        ]
+
+        with patch("simu.service._write_json", wraps=__import__("simu.service", fromlist=["_write_json"])._write_json) as write_json:
+            service._write_command_history()
+            service._write_command_history()
+
+        command_writes = [call for call in write_json.call_args_list if call.args[0] == service.commands_file]
+        self.assertEqual(len(command_writes), 1)
 
 
 if __name__ == "__main__":

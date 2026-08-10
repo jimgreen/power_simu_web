@@ -84,3 +84,23 @@ def test_controller_lifecycle_reset_clears_stale_logs_and_trend_cursors():
     assert "control.revision = -1" in reset_block
     assert "state.renewableTrendHistory = []" in reset_block
     assert "control.lastControlLogRenderKey = \"\"" in reset_block
+
+
+def test_browser_uses_cached_renewable_state_and_plan_revision_cursor():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+    state_block = script.split("renewableControl: {", 1)[1].split("overviewBottomHeight", 1)[0]
+    path_block = script.split("function renewableControlApiPath", 1)[1].split(
+        "function storageDeratingRatio",
+        1,
+    )[0]
+    apply_block = script.split("function applyRenewableControlState", 1)[1].split(
+        "async function refreshRenewableControlState",
+        1,
+    )[0]
+
+    assert "planRevision: -1" in state_block
+    assert 'params.set("after_plan_revision"' in path_block
+    assert 'params.set("after_controller_instance_id"' in path_block
+    assert 'Object.prototype.hasOwnProperty.call(payload, "lastPlan")' in apply_block
+    assert "control.lastPlan = payload.lastPlan || null" in apply_block
+    assert "refreshRenewableControlState({ preview: true })" not in script

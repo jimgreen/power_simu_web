@@ -1080,12 +1080,13 @@ class PolarMicrogridSimulator:
         self.latest_model_book: Optional[EBook] = None
         self.latest_device_states: List[Dict[str, Any]] = []
         self.latest_compute: Dict[str, Any] = {
-            "mode": "process" if kernel_runner is not None else "in_process",
+            "mode": "process" if kernel_runner is not None else "embedded",
             "http_pid": os.getpid(),
-            "worker_pid": 0,
+            "worker_pid": 0 if kernel_runner is not None else os.getpid(),
             "compute_ms": 0.0,
             "round_trip_ms": 0.0,
             "status": "idle",
+            "resident_model": kernel_runner is None,
         }
         self.source_model_book = EBook({})
         self.source_stat_book = EBook({})
@@ -3160,7 +3161,7 @@ class PolarMicrogridSimulator:
             worker_pid=os.getpid(),
             compute_seconds=elapsed,
             round_trip_seconds=elapsed,
-            mode="in_process",
+            mode="embedded",
         )
 
     def _record_compute_execution(self, execution: PowerFlowExecution, status: str = "ok") -> None:
@@ -3171,6 +3172,7 @@ class PolarMicrogridSimulator:
             "compute_ms": round(max(0.0, execution.compute_seconds) * 1000.0, 3),
             "round_trip_ms": round(max(0.0, execution.round_trip_seconds) * 1000.0, 3),
             "status": status,
+            "resident_model": execution.mode == "embedded",
         }
 
     def _legacy_dev_define_file(self) -> Optional[Path]:
@@ -6065,12 +6067,17 @@ class PolarMicrogridSimulator:
                 compute_status = "timeout" if isinstance(exc, PowerFlowTimeoutError) else "failed"
                 with self.lock:
                     self.latest_compute = {
-                        "mode": "process" if self.kernel_runner is not None else "in_process",
+                        "mode": "process" if self.kernel_runner is not None else "embedded",
                         "http_pid": os.getpid(),
-                        "worker_pid": int(self.latest_compute.get("worker_pid", 0) or 0),
+                        "worker_pid": (
+                            int(self.latest_compute.get("worker_pid", 0) or 0)
+                            if self.kernel_runner is not None
+                            else os.getpid()
+                        ),
                         "compute_ms": round(elapsed * 1000.0, 3),
                         "round_trip_ms": round(elapsed * 1000.0, 3),
                         "status": compute_status,
+                        "resident_model": self.kernel_runner is None,
                     }
                     self.latest_result = {
                         "solver_info": "failed",

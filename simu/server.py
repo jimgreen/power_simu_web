@@ -73,7 +73,6 @@ try:
         TraineeRenewableControlLifecycleError,
         TraineeRenewableControlManager,
     )
-    from .power_flow_worker import PowerFlowProcessRunner
     from .trainee_exchange import TraineeExchangeLifecycleError, TraineeRealtimeExchange
 except ImportError:  # pragma: no cover - legacy package compatibility.
     from hybrid_power_system_analysis.polar_microgrid_sim.definition_editing import (
@@ -103,7 +102,6 @@ except ImportError:  # pragma: no cover - legacy package compatibility.
         TraineeRenewableControlLifecycleError,
         TraineeRenewableControlManager,
     )
-    from power_flow_worker import PowerFlowProcessRunner
     from trainee_exchange import TraineeExchangeLifecycleError, TraineeRealtimeExchange
 
 try:
@@ -2672,14 +2670,14 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--power-flow-workers",
         type=int,
-        default=1,
-        help="Load-flow worker process count; use 0 only for in-process debugging.",
+        default=0,
+        help="Deprecated compatibility option; load flow is always embedded in simu_loop.",
     )
     parser.add_argument(
         "--power-flow-timeout-seconds",
         type=float,
         default=30.0,
-        help="Terminate and rebuild the load-flow worker after this many seconds.",
+        help="Deprecated compatibility option retained for existing launch scripts.",
     )
     return parser.parse_args(argv)
 
@@ -2690,28 +2688,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     sim_dir = Path(args.sim_dir).resolve()
     runtime_dir = Path(args.runtime_dir).resolve() if args.runtime_dir else _default_runtime_dir(sim_dir, args.role)
     models_dir = Path(args.models_dir).resolve() if args.models_dir else _default_models_dir(sim_dir, args.role)
-    power_flow_runner = (
-        PowerFlowProcessRunner(
-            max_workers=args.power_flow_workers,
-            timeout_seconds=args.power_flow_timeout_seconds,
-        )
-        if args.power_flow_workers > 0
-        else None
+    service = MultiModelSimulator.discover(
+        sim_dir=sim_dir,
+        runtime_dir=runtime_dir,
+        noise_std=args.noise_std,
+        random_seed=args.seed,
+        compute_interval_seconds=args.compute_interval_seconds,
+        models_dir=models_dir,
+        kernel_runner=None,
     )
-    try:
-        service = MultiModelSimulator.discover(
-            sim_dir=sim_dir,
-            runtime_dir=runtime_dir,
-            noise_std=args.noise_std,
-            random_seed=args.seed,
-            compute_interval_seconds=args.compute_interval_seconds,
-            models_dir=models_dir,
-            kernel_runner=power_flow_runner,
-        )
-    except Exception:
-        if power_flow_runner is not None:
-            power_flow_runner.close()
-        raise
     server = make_http_server(
         (args.host, port),
         service,
@@ -2725,6 +2710,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"runtime dir: {runtime_dir}")
     print(f"models dir: {service.models_root}")
     print(f"models: {', '.join(item['id'] for item in service.models())}")
+    print("power-flow mode: embedded in simu_loop, resident model")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

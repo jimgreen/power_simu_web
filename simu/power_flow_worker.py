@@ -1,4 +1,4 @@
-"""Run load-flow calculations outside the HTTP service process."""
+"""Legacy opt-in process runner; production WEB services run embedded."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def _run_power_flow(config: simu_loop.SimulationConfig) -> PowerFlowExecution:
 
 
 class PowerFlowProcessRunner:
-    """Shared, restartable process pool used by all models in one WEB role."""
+    """Restartable compatibility runner retained for isolated tests and tools."""
 
     def __init__(self, max_workers: int = 1, *, timeout_seconds: float = 30.0) -> None:
         self.max_workers = max(1, int(max_workers))

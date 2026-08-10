@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from unittest.mock import patch
 
 import pytest
 
@@ -179,5 +180,138 @@ def test_runtime_setting_change_reschedules_collection_immediately(tmp_path):
     try:
         assert manager.runtime_settings_changed_for_service(service)
         assert state.last_preview_started == 0.0
+    finally:
+        manager.close()
+
+
+def test_preview_collection_refreshes_current_values_but_holds_control_targets(tmp_path):
+    snapshots = [
+        {
+            "clock": {
+                "run_id": 1,
+                "step_count": index,
+                "absolute_minute": float(index),
+                "time": f"00:{index:02d}:00",
+            },
+            "sample": index,
+        }
+        for index in range(5)
+    ]
+    snapshot_index = 0
+
+    service = _Service(tmp_path, collection_interval_seconds=1.0)
+
+    def snapshot_provider(_model_id):
+        return TraineeControlSnapshot(
+            snapshot=snapshots[snapshot_index],
+            source="trainee-live",
+            age_seconds=0.0,
+            error=None,
+            receive_active=True,
+            ready=True,
+            revision=1,
+            connection_signature=("learner", 1),
+        )
+
+    manager = TraineeRenewableControlManager(
+        _Registry(service),
+        snapshot_provider=snapshot_provider,
+        receive_status_provider=_ready_status,
+        command_sink=lambda _model_id, _payload: {},
+        start_worker=False,
+    )
+
+    def calculate(snapshot, _settings, **_kwargs):
+        sample = snapshot["sample"]
+        return {
+            "time": snapshot["clock"]["time"],
+            "clockKey": f"clock-{sample}",
+            "metrics": {
+                "acGridFollowingStorageCurrentKw": 10.0 + sample,
+                "acGridFollowingStorageTargetKw": 20.0 + sample,
+                "totalGridFollowingStorageCurrentKw": 10.0 + sample,
+                "totalGridFollowingStorageTargetKw": 20.0 + sample,
+            },
+            "commands": [
+                {
+                    "dev_type": "ESS",
+                    "dev_name": "ess01",
+                    "set_type": "p_set",
+                    "set_value": 20.0 + sample,
+                }
+            ],
+            "commandRows": [
+                {
+                    "dev_type": "ESS",
+                    "dev_name": "ess01",
+                    "set_type": "p_set",
+                    "currentKw": 10.0 + sample,
+                    "targetKw": 20.0 + sample,
+                    "commandKw": 20.0 + sample,
+                    "strategyCommand": True,
+                }
+            ],
+            "dataQuality": {"dispatchAllowed": True},
+        }
+
+    try:
+        with patch("simu.renewable_control.calculate_renewable_control_plan", side_effect=calculate):
+            first_decision = manager.run_once(
+                "shared",
+                trigger="manual",
+                allow_dispatch=False,
+                record_log=False,
+            )
+            assert first_decision["lastPlan"]["metrics"]["acGridFollowingStorageTargetKw"] == 20.0
+
+            snapshot_index = 1
+            first_preview = manager.collect_once("shared")
+            snapshot_index = 2
+            second_preview = manager.collect_once("shared")
+
+            assert first_preview["lastPlan"]["metrics"]["acGridFollowingStorageCurrentKw"] == 11.0
+            assert second_preview["lastPlan"]["metrics"]["acGridFollowingStorageCurrentKw"] == 12.0
+            assert first_preview["lastPlan"]["metrics"]["acGridFollowingStorageTargetKw"] == 20.0
+            assert second_preview["lastPlan"]["metrics"]["acGridFollowingStorageTargetKw"] == 20.0
+            assert second_preview["lastPlan"]["commandRows"][0]["currentKw"] == 12.0
+            assert second_preview["lastPlan"]["commandRows"][0]["targetKw"] == 20.0
+            assert second_preview["lastPlan"]["commandRows"][0]["commandKw"] == 20.0
+            assert second_preview["lastPlan"]["commands"][0]["set_value"] == 20.0
+            assert [point["acGridFollowingStorageCurrentKw"] for point in second_preview["trend"]] == [
+                10.0,
+                11.0,
+                12.0,
+            ]
+            assert [point["acGridFollowingStorageTargetKw"] for point in second_preview["trend"]] == [
+                20.0,
+                20.0,
+                20.0,
+            ]
+
+            snapshot_index = 3
+            manual_preview = manager.run_once(
+                "shared",
+                trigger="preview",
+                allow_dispatch=False,
+                record_log=False,
+            )
+            assert manual_preview["lastPlan"]["metrics"]["acGridFollowingStorageCurrentKw"] == 13.0
+            assert manual_preview["lastPlan"]["metrics"]["acGridFollowingStorageTargetKw"] == 20.0
+            assert manual_preview["lastPlan"]["commandRows"][0]["currentKw"] == 13.0
+            assert manual_preview["lastPlan"]["commandRows"][0]["targetKw"] == 20.0
+            assert manual_preview["lastPlan"]["commands"][0]["set_value"] == 20.0
+            assert manual_preview["trend"][-1]["acGridFollowingStorageTargetKw"] == 20.0
+
+            snapshot_index = 4
+            next_decision = manager.run_once(
+                "shared",
+                trigger="manual",
+                allow_dispatch=False,
+                record_log=False,
+            )
+            assert next_decision["lastPlan"]["metrics"]["acGridFollowingStorageTargetKw"] == 24.0
+            assert next_decision["lastPlan"]["commandRows"][0]["targetKw"] == 24.0
+            assert next_decision["lastPlan"]["commands"][0]["set_value"] == 24.0
+            assert next_decision["trend"][-1]["acGridFollowingStorageTargetKw"] == 24.0
     finally:
         manager.close()

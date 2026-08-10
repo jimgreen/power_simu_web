@@ -3846,8 +3846,74 @@ body.is-vertical-splitter-dragging {
   min-width: 0;
   min-height: 0;
   display: flex;
+  flex-direction: column;
   overflow: hidden;
   background: #fcfeff;
+}
+.renewable-trend-inline-legend {
+  flex: 0 0 auto;
+  max-height: 56px;
+  padding: 6px 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 5px 14px;
+  overflow: auto;
+  border-bottom: 1px solid #dce6ea;
+  background: #f7fafb;
+}
+.renewable-trend-inline-legend[hidden] {
+  display: none;
+}
+.renewable-trend-inline-legend-item {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #40525a;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.renewable-trend-inline-legend-swatch {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 3px;
+  display: inline-block;
+  background: var(--renewable-series-color, var(--teal));
+}
+.renewable-trend-inline-legend-swatch.is-target,
+.renewable-trend-inline-legend-swatch.is-available,
+.renewable-trend-inline-legend-swatch.is-soc,
+.renewable-trend-inline-legend-swatch.is-limit {
+  height: 0;
+  background: transparent;
+}
+.renewable-trend-inline-legend-swatch.is-target {
+  border-top: 3px dashed var(--renewable-series-color, var(--teal));
+}
+.renewable-trend-inline-legend-swatch.is-available {
+  height: 3px;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--renewable-series-color, var(--teal)) 0 6px,
+    transparent 6px 9px,
+    var(--renewable-series-color, var(--teal)) 9px 10px,
+    transparent 10px 13px
+  );
+}
+.renewable-trend-inline-legend-swatch.is-soc {
+  border-top: 3px dotted var(--renewable-series-color, var(--teal));
+}
+.renewable-trend-inline-legend-swatch.is-limit {
+  height: 3px;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--renewable-series-color, var(--teal)) 0 8px,
+    transparent 8px 11px,
+    var(--renewable-series-color, var(--teal)) 11px 13px,
+    transparent 13px 17px
+  );
 }
 .renewable-trend-chart-surface canvas {
   flex: 1 1 auto;

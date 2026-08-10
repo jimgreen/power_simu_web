@@ -331,6 +331,112 @@ process.stdout.write(JSON.stringify(latestRenewableTrendSegment(points).map((poi
         self.assertIn("drawChartCursor", draw_block)
         self.assertIn("pixelPoints.length === 1", draw_block)
 
+    def test_chart_renders_an_adaptive_legend_for_visible_series(self):
+        self.assertIn('id="renewableTrendLegend"', self.html)
+        self.assertIn('class="renewable-trend-inline-legend"', self.html)
+        self.assertIn("function renderRenewableTrendLegend", self.script)
+        draw_block = self.script.split("function drawRenewableTrendChart", 1)[1].split(
+            "function renewableMetricTotal",
+            1,
+        )[0]
+        self.assertIn("renderRenewableTrendLegend(visibleSeries)", draw_block)
+        legend_block = self.script.split("function renderRenewableTrendLegend", 1)[1].split(
+            "function drawRenewableTrendChart",
+            1,
+        )[0]
+        self.assertIn("series.label", legend_block)
+        self.assertIn("series.style", legend_block)
+        self.assertIn("--renewable-series-color", legend_block)
+        for css_hook in (
+            ".renewable-trend-inline-legend",
+            ".renewable-trend-inline-legend-item",
+            ".renewable-trend-inline-legend-swatch",
+            ".renewable-trend-inline-legend-swatch.is-target",
+            ".renewable-trend-inline-legend-swatch.is-available",
+            ".renewable-trend-inline-legend-swatch.is-soc",
+            ".renewable-trend-inline-legend-swatch.is-limit",
+        ):
+            self.assertIn(css_hook, self.styles)
+
+    def test_renewable_cursor_labels_align_with_each_series_point(self):
+        draw_block = self.script.split("function drawRenewableTrendChart", 1)[1].split(
+            "function renewableMetricTotal",
+            1,
+        )[0]
+        self.assertIn("inlineSeriesLabels: true", draw_block)
+        self.assertIn("function drawInlineChartCursorLabels", self.script)
+        helper_block = self.script.split("function drawInlineChartCursorLabels", 1)[1].split(
+            "function drawChartCursor",
+            1,
+        )[0]
+        self.assertIn("point.y", helper_block)
+        self.assertIn("series.label", helper_block)
+        self.assertIn("series.color", helper_block)
+        self.assertIn("valueFormatter(point.value)", helper_block)
+        self.assertIn("series.unit", helper_block)
+        self.assertIn("rightSpace", helper_block)
+        self.assertIn("leftSpace", helper_block)
+        self.assertIn("rightSpace >= label.width", helper_block)
+
+    def test_renewable_cursor_removes_shared_tooltip_but_generic_cursor_keeps_it(self):
+        cursor_block = self.script.split("function drawChartCursor", 1)[1].split(
+            "function initTraceChartInteractions",
+            1,
+        )[0]
+        self.assertIn("options.inlineSeriesLabels", cursor_block)
+        self.assertIn("drawInlineChartCursorLabels", cursor_block)
+        self.assertIn("ctx.roundRect(tooltipX", cursor_block)
+        self.assertIn("if (options.inlineSeriesLabels)", cursor_block)
+        self.assertIn("return", cursor_block)
+
+    def test_inline_cursor_uses_right_side_when_left_space_is_insufficient(self):
+        helper = "function drawInlineChartCursorLabels" + self.script.split(
+            "function drawInlineChartCursorLabels",
+            1,
+        )[1].split("function drawChartCursor", 1)[0]
+        node_script = f"""
+const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
+{helper}
+const fillTexts = [];
+const context = {{
+  font: "",
+  textAlign: "left",
+  textBaseline: "middle",
+  globalAlpha: 1,
+  lineWidth: 1,
+  strokeStyle: "",
+  fillStyle: "",
+  measureText(text) {{ return {{ width: String(text).length * 7 }}; }},
+  beginPath() {{}},
+  moveTo() {{}},
+  lineTo() {{}},
+  stroke() {{}},
+  arc() {{}},
+  fill() {{}},
+  strokeText() {{}},
+  fillText(text, x, y) {{ fillTexts.push({{ text, x, y }}); }},
+}};
+const samples = [
+  {{ series: {{ label: "交流构网储能SOC", color: "#7a4fb3", unit: "%" }}, point: {{ x: 80, y: 100, value: 50.268 }} }},
+  {{ series: {{ label: "直流构网储能SOC", color: "#a15ca8", unit: "%" }}, point: {{ x: 80, y: 104, value: 50.856 }} }},
+  {{ series: {{ label: "总新能源最大可发", color: "#1f7a46", unit: "kW" }}, point: {{ x: 80, y: 108, value: 315.7 }} }},
+];
+drawInlineChartCursorLabels(
+  context,
+  {{ width: 900 }},
+  {{ left: 60, right: 60, top: 30, bottom: 30 }},
+  80,
+  samples,
+  {{ ratio: 1, maxSeries: 10, timeLabel: "00:18:00", valueFormatter: (value) => String(value) }},
+);
+process.stdout.write(JSON.stringify(fillTexts.filter((item) => !item.text.startsWith("时刻:"))));
+"""
+        result = subprocess.run(["node", "-e", node_script], check=True, capture_output=True, text=True)
+        labels = json.loads(result.stdout)
+        self.assertEqual(len(labels), 3)
+        self.assertEqual([label["y"] for label in labels], [100, 104, 108])
+        self.assertTrue(all(label["x"] > 80 for label in labels))
+
     def test_right_axis_preserves_soc_scale_and_expands_for_environment_values(self):
         helper = "function renewableTrendRightAxisScale" + self.script.split(
             "function renewableTrendRightAxisScale",

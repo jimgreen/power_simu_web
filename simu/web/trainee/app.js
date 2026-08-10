@@ -1123,6 +1123,115 @@ function chartCursorSnapshot(seriesData, selectedKey, cursorX) {
   return samples.length ? { anchorPoint, samples } : null;
 }
 
+function drawInlineChartCursorLabels(ctx, canvas, plot, x, samples, options = {}) {
+  const ratio = options.ratio || 1;
+  const left = plot.left;
+  const right = canvas.width - plot.right;
+  const top = plot.top;
+  const valueFormatter = options.valueFormatter || formatNumber;
+  const maxSeries = Math.max(1, Number(options.maxSeries) || 10);
+  const labelHeight = 18 * ratio;
+  const labelGap = 12 * ratio;
+  const laneGap = 8 * ratio;
+  ctx.font = `${11 * ratio}px Microsoft YaHei, Arial`;
+  const labels = samples.slice(0, maxSeries).map(({ series, point }) => {
+    const valueText = `${valueFormatter(point.value)}${series.unit ? ` ${series.unit}` : ""}`;
+    const text = `${series.label}: ${valueText}`;
+    return {
+      series,
+      point,
+      text,
+      width: ctx.measureText(text).width + 18 * ratio,
+    };
+  });
+  if (!labels.length) return;
+
+  const maxLabelWidth = Math.max(...labels.map((label) => label.width));
+  const laneStride = maxLabelWidth + laneGap;
+  const rightSpace = right - x - labelGap;
+  const leftSpace = x - left - labelGap;
+  const occupiedLanes = { left: [], right: [] };
+
+  const findPlacement = (label, side) => {
+    const availableSpace = side === "right" ? rightSpace : leftSpace;
+    if (availableSpace < label.width) return null;
+    const laneCount = Math.max(1, Math.floor((availableSpace + laneGap) / laneStride));
+    for (let lane = 0; lane < laneCount; lane += 1) {
+      const laneYs = occupiedLanes[side][lane] || [];
+      if (laneYs.some((previousY) => Math.abs(previousY - label.point.y) < labelHeight + 2 * ratio)) continue;
+      const labelX = side === "right"
+        ? x + labelGap + lane * laneStride
+        : x - labelGap - label.width - lane * laneStride;
+      if (labelX < left + 2 * ratio || labelX + label.width > right - 2 * ratio) continue;
+      occupiedLanes[side][lane] = [...laneYs, label.point.y];
+      return { side, labelX };
+    }
+    return null;
+  };
+
+  const placements = labels.map((label) => {
+    const rightFits = rightSpace >= label.width;
+    const leftFits = leftSpace >= label.width;
+    const preferredSide = rightFits && !leftFits
+      ? "right"
+      : leftFits && !rightFits
+        ? "left"
+        : rightSpace >= leftSpace
+          ? "right"
+          : "left";
+    const secondarySide = preferredSide === "right" ? "left" : "right";
+    const placement = findPlacement(label, preferredSide) || findPlacement(label, secondarySide);
+    if (placement) return { ...label, ...placement };
+    const fallbackSide = rightSpace >= label.width || rightSpace >= leftSpace ? "right" : "left";
+    const unclampedX = fallbackSide === "right" ? x + labelGap : x - labelGap - label.width;
+    return {
+      ...label,
+      side: fallbackSide,
+      labelX: clamp(unclampedX, left + 2 * ratio, right - label.width - 2 * ratio),
+    };
+  });
+
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  placements.forEach(({ series, point, text, side, labelX }) => {
+    const connectorStartX = point.x + (side === "right" ? 6 : -6) * ratio;
+    const connectorEndX = side === "right" ? labelX - 3 * ratio : labelX + ctx.measureText(text).width + 17 * ratio;
+    ctx.strokeStyle = series.color;
+    ctx.globalAlpha = 0.72;
+    ctx.lineWidth = 1 * ratio;
+    ctx.beginPath();
+    ctx.moveTo(connectorStartX, point.y);
+    ctx.lineTo(connectorEndX, point.y);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    ctx.fillStyle = series.color;
+    ctx.beginPath();
+    ctx.arc(labelX + 5 * ratio, point.y, 3 * ratio, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.lineWidth = 3 * ratio;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.96)";
+    ctx.strokeText(text, labelX + 12 * ratio, point.y);
+    ctx.fillStyle = "#24373f";
+    ctx.fillText(text, labelX + 12 * ratio, point.y);
+  });
+
+  const timeLabel = String(options.timeLabel || "").trim();
+  if (timeLabel) {
+    const text = `时刻: ${timeLabel}`;
+    ctx.font = `${11 * ratio}px Consolas, Microsoft YaHei, Arial`;
+    const textWidth = ctx.measureText(text).width;
+    const preferredX = x + labelGap + textWidth <= right ? x + labelGap : x - labelGap - textWidth;
+    const textX = clamp(preferredX, left + 2 * ratio, right - textWidth - 2 * ratio);
+    const textY = top + 11 * ratio;
+    ctx.lineWidth = 3 * ratio;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.98)";
+    ctx.strokeText(text, textX, textY);
+    ctx.fillStyle = "#344b54";
+    ctx.fillText(text, textX, textY);
+  }
+}
+
 function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) {
   const cursor = state.chartCursors?.[chartKey];
   const visibleSeries = (seriesData || []).filter((series) => !isChartSeriesHidden(chartKey, series.key));
@@ -1149,8 +1258,10 @@ function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) 
   ctx.beginPath();
   ctx.moveTo(x, top);
   ctx.lineTo(x, bottom);
-  ctx.moveTo(left, y);
-  ctx.lineTo(right, y);
+  if (!options.inlineSeriesLabels) {
+    ctx.moveTo(left, y);
+    ctx.lineTo(right, y);
+  }
   ctx.stroke();
   ctx.setLineDash([]);
 
@@ -1163,6 +1274,17 @@ function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) 
     ctx.fill();
     ctx.stroke();
   });
+
+  if (options.inlineSeriesLabels) {
+    drawInlineChartCursorLabels(ctx, canvas, plot, x, samples, {
+      ratio,
+      maxSeries,
+      timeLabel,
+      valueFormatter,
+    });
+    ctx.restore();
+    return;
+  }
 
   ctx.font = `${12 * ratio}px Microsoft YaHei, Arial`;
   const lines = [
@@ -11910,6 +12032,27 @@ function renewableTrendRightAxisScale(points = [], visibleSeries = []) {
   };
 }
 
+function renderRenewableTrendLegend(visibleSeries = []) {
+  const legend = $("renewableTrendLegend");
+  if (!legend) return;
+  const fragment = document.createDocumentFragment();
+  visibleSeries.forEach((series) => {
+    const item = document.createElement("span");
+    item.className = "renewable-trend-inline-legend-item";
+    item.style.setProperty("--renewable-series-color", series.color || "#23854a");
+    item.title = series.label;
+    const swatch = document.createElement("i");
+    swatch.className = `renewable-trend-inline-legend-swatch${series.style ? ` is-${series.style}` : ""}`;
+    swatch.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.textContent = series.label;
+    item.append(swatch, label);
+    fragment.appendChild(item);
+  });
+  legend.replaceChildren(fragment);
+  legend.hidden = !visibleSeries.length;
+}
+
 function drawRenewableTrendChart() {
   const canvas = $("renewableTrendChart");
   if (!canvas) return;
@@ -11936,6 +12079,7 @@ function drawRenewableTrendChart() {
   const metrics = state.renewableControl.lastPlan?.metrics || {};
   const availableSeries = RENEWABLE_TREND_SERIES_DEFS.filter((series) => renewableTrendSeriesAvailable(series, metrics));
   const visibleSeries = visibleChartSeries(chartKey, availableSeries);
+  renderRenewableTrendLegend(visibleSeries);
   renderRenewableTrendSeriesAvailability(metrics);
   const visiblePowerSeries = visibleSeries.filter((series) => series.axis !== "right");
   const powerValues = points.flatMap((point) => visiblePowerSeries.map((series) => point[series.field]))
@@ -12067,6 +12211,7 @@ function drawRenewableTrendChart() {
   drawChartCursor(ctx, chartKey, canvas, plot, hitData, {
     ratio,
     maxSeries: 10,
+    inlineSeriesLabels: true,
     timeLabel: (point) => measurementTracePointTimeLabel(point, range),
     valueFormatter: formatNumber,
   });

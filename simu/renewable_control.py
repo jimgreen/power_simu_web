@@ -11533,6 +11533,7 @@ class _ControllerState:
     sending: bool = False
     status: str = _RENEWABLE_READY_IDLE_STATUS
     last_plan: Optional[Dict[str, Any]] = None
+    effective_target_snapshot: Optional[Dict[str, Any]] = None
     last_calculated_at: str = ""
     last_sent_at: str = ""
     last_clock_key: str = ""
@@ -12360,6 +12361,120 @@ class TraineeRenewableControlManager:
         return point
 
     @staticmethod
+    def _command_row_target_key(row: Mapping[str, Any], index: int) -> Tuple[str, ...]:
+        identity = tuple(
+            str(row.get(key, "")).strip()
+            for key in ("dev_type", "dev_name", "set_type")
+        )
+        return identity if any(identity) else ("index", str(index))
+
+    @classmethod
+    def _capture_effective_targets(cls, plan: Mapping[str, Any]) -> Dict[str, Any]:
+        metrics = plan.get("metrics") if isinstance(plan.get("metrics"), Mapping) else {}
+        rows = plan.get("commandRows")
+        command_rows = (
+            rows
+            if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes))
+            else []
+        )
+        commands = plan.get("commands")
+        return {
+            "metrics": {
+                str(key): _json_safe_copy(value)
+                for key, value in metrics.items()
+                if "target" in str(key).casefold()
+            },
+            "commands": _json_safe_copy(
+                commands
+                if isinstance(commands, Sequence) and not isinstance(commands, (str, bytes))
+                else []
+            ),
+            "commandRows": {
+                cls._command_row_target_key(row, index): {
+                    key: _json_safe_copy(row.get(key))
+                    for key in (
+                        "commandKw",
+                        "targetKw",
+                        "projectedTargetKw",
+                        "recoveryKw",
+                        "strategyCommand",
+                    )
+                    if key in row
+                }
+                for index, row in enumerate(command_rows)
+                if isinstance(row, Mapping)
+            },
+        }
+
+    @classmethod
+    def _plan_with_effective_targets(
+        cls,
+        plan: Mapping[str, Any],
+        effective_target_snapshot: Optional[Mapping[str, Any]],
+    ) -> Dict[str, Any]:
+        if effective_target_snapshot is None:
+            return dict(plan)
+        metrics = plan.get("metrics") if isinstance(plan.get("metrics"), Mapping) else {}
+        effective_target_metrics = effective_target_snapshot.get("metrics")
+        if not isinstance(effective_target_metrics, Mapping):
+            effective_target_metrics = {}
+        published_metrics = {
+            str(key): value
+            for key, value in metrics.items()
+            if "target" not in str(key).casefold()
+        }
+        published_metrics.update(
+            {
+                str(key): _json_safe_copy(value)
+                for key, value in effective_target_metrics.items()
+            }
+        )
+        published_plan = dict(plan)
+        published_plan["metrics"] = published_metrics
+        published_plan["commands"] = _json_safe_copy(
+            effective_target_snapshot.get("commands", [])
+        )
+        rows = plan.get("commandRows")
+        command_rows = (
+            rows
+            if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes))
+            else []
+        )
+        effective_command_rows = effective_target_snapshot.get("commandRows")
+        if not isinstance(effective_command_rows, Mapping):
+            effective_command_rows = {}
+        published_rows: List[Dict[str, Any]] = []
+        held_fields = {
+            "commandKw",
+            "targetKw",
+            "projectedTargetKw",
+            "recoveryKw",
+            "strategyCommand",
+        }
+        for index, row in enumerate(command_rows):
+            if not isinstance(row, Mapping):
+                continue
+            published_row = {
+                str(key): value
+                for key, value in row.items()
+                if key not in held_fields
+            }
+            target_fields = effective_command_rows.get(
+                cls._command_row_target_key(row, index),
+                {},
+            )
+            if isinstance(target_fields, Mapping):
+                published_row.update(
+                    {
+                        str(key): _json_safe_copy(value)
+                        for key, value in target_fields.items()
+                    }
+                )
+            published_rows.append(published_row)
+        published_plan["commandRows"] = published_rows
+        return published_plan
+
+    @staticmethod
     def _trend_lifecycle_changed(previous: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
         previous_run_id = int(_number(previous.get("runId"), 0.0) or 0)
         current_run_id = int(_number(current.get("runId"), 0.0) or 0)
@@ -12664,8 +12779,18 @@ class TraineeRenewableControlManager:
             cycle_phases["strategyComputeMs"] = self._elapsed_milliseconds(
                 strategy_compute_started
             )
+            with state.lock:
+                effective_target_snapshot = (
+                    state.effective_target_snapshot
+                    if state.effective_target_snapshot is not None
+                    else self._capture_effective_targets(plan)
+                )
+            published_plan = self._plan_with_effective_targets(
+                plan,
+                effective_target_snapshot,
+            )
             trend_started = time.perf_counter()
-            trend_candidate = self._stage_trend(state, plan, snapshot)
+            trend_candidate = self._stage_trend(state, published_plan, snapshot)
             cycle_phases["trendPostprocessMs"] = self._elapsed_milliseconds(
                 trend_started
             )
@@ -12681,7 +12806,9 @@ class TraineeRenewableControlManager:
                         and state.operation_epoch == operation_epoch
                         and self._service_instance_id(service) == state.service_instance_id
                     ):
-                        state.last_plan = plan
+                        if state.effective_target_snapshot is None:
+                            state.effective_target_snapshot = effective_target_snapshot
+                        state.last_plan = published_plan
                         state.plan_revision += 1
                         state.last_calculated_at = _now_text()
                         state.last_clock_key = str(plan.get("clockKey", ""))
@@ -12865,8 +12992,19 @@ class TraineeRenewableControlManager:
             cycle_phases["strategyComputeMs"] = self._elapsed_milliseconds(
                 strategy_compute_started
             )
+            publishes_control_targets = trigger != "preview"
+            with state.lock:
+                effective_target_snapshot = (
+                    self._capture_effective_targets(plan)
+                    if publishes_control_targets or state.effective_target_snapshot is None
+                    else state.effective_target_snapshot
+                )
+            published_plan = self._plan_with_effective_targets(
+                plan,
+                effective_target_snapshot,
+            )
             trend_started = time.perf_counter()
-            trend_candidate = self._stage_trend(state, plan, snapshot)
+            trend_candidate = self._stage_trend(state, published_plan, snapshot)
             cycle_phases["trendPostprocessMs"] = self._elapsed_milliseconds(
                 trend_started
             )
@@ -12894,7 +13032,9 @@ class TraineeRenewableControlManager:
                     if not generation_valid or not controller_valid:
                         committed = False
                     else:
-                        state.last_plan = plan
+                        if publishes_control_targets or state.effective_target_snapshot is None:
+                            state.effective_target_snapshot = effective_target_snapshot
+                        state.last_plan = published_plan
                         state.plan_revision += 1
                         state.last_calculated_at = _now_text()
                         state.last_clock_key = str(plan.get("clockKey", ""))

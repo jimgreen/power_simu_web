@@ -66,7 +66,7 @@ class RemoteAdjustmentResponseTest(unittest.TestCase):
         )
         self.assertEqual(result["set_values"], 1)
 
-    def test_default_response_uses_half_target_and_half_current_boundary_each_cycle(self):
+    def test_default_response_uses_seventy_percent_of_remaining_error_each_cycle(self):
         workspace, service, boundaries = self._make_service()
         self.addCleanup(workspace.cleanup)
 
@@ -78,13 +78,13 @@ class RemoteAdjustmentResponseTest(unittest.TestCase):
         )
         service.step()
         first = boundaries[-1]
-        self.assertAlmostEqual(self._book_set_value(first["stat"], "ESS", "ess01", "p_set"), 15.0)
-        self.assertAlmostEqual(self._book_set_value(first["yt"], "ESS", "ess01", "p_set"), 15.0)
+        self.assertAlmostEqual(self._book_set_value(first["stat"], "ESS", "ess01", "p_set"), 17.0)
+        self.assertAlmostEqual(self._book_set_value(first["yt"], "ESS", "ess01", "p_set"), 17.0)
 
         service.step()
         second = boundaries[-1]
-        self.assertAlmostEqual(self._book_set_value(second["stat"], "ESS", "ess01", "p_set"), 17.5)
-        self.assertAlmostEqual(self._book_set_value(second["yt"], "ESS", "ess01", "p_set"), 17.5)
+        self.assertAlmostEqual(self._book_set_value(second["stat"], "ESS", "ess01", "p_set"), 19.1)
+        self.assertAlmostEqual(self._book_set_value(second["yt"], "ESS", "ess01", "p_set"), 19.1)
 
     def test_response_uses_latest_true_power_flow_value_when_available(self):
         workspace, service, boundaries = self._make_service()
@@ -96,7 +96,7 @@ class RemoteAdjustmentResponseTest(unittest.TestCase):
 
         self.assertAlmostEqual(
             self._book_set_value(boundaries[-1]["stat"], "ESS", "ess01", "p_set"),
-            13.0,
+            15.8,
         )
 
     def test_changed_target_reverses_gradually_from_last_executed_boundary(self):
@@ -105,12 +105,12 @@ class RemoteAdjustmentResponseTest(unittest.TestCase):
 
         self._send_adjustment(service, 20)
         service.step()
-        self.assertAlmostEqual(self._book_set_value(boundaries[-1]["stat"], "ESS", "ess01", "p_set"), 15.0)
+        self.assertAlmostEqual(self._book_set_value(boundaries[-1]["stat"], "ESS", "ess01", "p_set"), 17.0)
 
         self._send_adjustment(service, 0)
         service.step()
 
-        self.assertAlmostEqual(self._book_set_value(boundaries[-1]["stat"], "ESS", "ess01", "p_set"), 7.5)
+        self.assertAlmostEqual(self._book_set_value(boundaries[-1]["stat"], "ESS", "ess01", "p_set"), 5.1)
 
     def test_automatic_override_and_manual_resume_both_use_gradual_boundaries(self):
         workspace, service, boundaries = self._make_service()
@@ -118,7 +118,7 @@ class RemoteAdjustmentResponseTest(unittest.TestCase):
 
         self._send_adjustment(service, 20)
         service.step()
-        self.assertAlmostEqual(self._book_set_value(boundaries[-1]["stat"], "ESS", "ess01", "p_set"), 15.0)
+        self.assertAlmostEqual(self._book_set_value(boundaries[-1]["stat"], "ESS", "ess01", "p_set"), 17.0)
 
         result = service.apply_student_commands(
             {
@@ -132,12 +132,12 @@ class RemoteAdjustmentResponseTest(unittest.TestCase):
         )
         self.assertEqual(result["set_values"], 1)
         service.step()
-        self.assertAlmostEqual(self._book_set_value(boundaries[-1]["stat"], "ESS", "ess01", "p_set"), 7.5)
+        self.assertAlmostEqual(self._book_set_value(boundaries[-1]["stat"], "ESS", "ess01", "p_set"), 5.1)
 
         service.clock.absolute_minute = 2.0
         service.clock.minute = 2.0
         service.step()
-        self.assertAlmostEqual(self._book_set_value(boundaries[-1]["stat"], "ESS", "ess01", "p_set"), 13.75)
+        self.assertAlmostEqual(self._book_set_value(boundaries[-1]["stat"], "ESS", "ess01", "p_set"), 15.53)
         self.assertEqual(
             service.latest_control_values()["values"]["ESS.ess01.p_set"],
             20,
@@ -164,7 +164,7 @@ class RemoteAdjustmentResponseTest(unittest.TestCase):
                 "grid_inv_acp",
                 "p_dc_set",
             ),
-            35.0,
+            47.0,
         )
 
     def test_remote_control_status_remains_immediate(self):
@@ -216,6 +216,7 @@ class RemoteAdjustmentResponseTest(unittest.TestCase):
         self.assertIn('id="parameterRemoteAdjustmentResponseRatio"', html)
         self.assertIn("遥调指令响应系数", html)
         self.assertIn("remote_adjustment_response_ratio", app)
+        self.assertIn("remote_adjustment_response_ratio: 0.7", app)
 
 
 if __name__ == "__main__":

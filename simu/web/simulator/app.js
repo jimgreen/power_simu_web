@@ -156,7 +156,7 @@ const state = {
     clock_speed: 1,
     compute_interval_seconds: 1,
     storage_initial_soc: 0.5,
-    remote_adjustment_response_ratio: 0.5,
+    remote_adjustment_response_ratio: 0.7,
   },
   systemParametersDirty: false,
   systemParametersSaving: false,
@@ -1094,7 +1094,7 @@ function snapshotSystemParameters(snapshot = state.snapshot || {}) {
     storage_initial_soc: Math.max(0, Math.min(1, parameterNumber(params.storage_initial_soc, 0.5))),
     remote_adjustment_response_ratio: Math.max(
       0.01,
-      Math.min(1, parameterNumber(params.remote_adjustment_response_ratio, 0.5)),
+      Math.min(1, parameterNumber(params.remote_adjustment_response_ratio, 0.7)),
     ),
     clock_step_seconds: clockStepSeconds,
     clock_step_minutes: parameterNumber(params.clock_step_minutes ?? clock.step_minutes, clockStepSeconds / 60),
@@ -1197,7 +1197,7 @@ function systemParameterPayload() {
         1,
         parameterNumber(
           $("parameterRemoteAdjustmentResponseRatio")?.value,
-          state.systemParameters.remote_adjustment_response_ratio ?? 0.5,
+          state.systemParameters.remote_adjustment_response_ratio ?? 0.7,
         ),
       ),
     ),
@@ -3870,7 +3870,7 @@ async function setActiveModel(modelId, shouldRefresh = true) {
     clock_speed: 1,
     compute_interval_seconds: 1,
     storage_initial_soc: 0.5,
-    remote_adjustment_response_ratio: 0.5,
+    remote_adjustment_response_ratio: 0.7,
   };
   state.systemParametersDirty = false;
   state.systemParametersSaving = false;

@@ -35,7 +35,7 @@ class MeasurementHistoryUiTest(unittest.TestCase):
 
         clear_trace = start_receive.index("state.measurementTraceHistory = [];")
         reset_hydration = start_receive.index("resetMeasurementHistoryHydration();")
-        persist_cleared_context = start_receive.index("persistActiveModelContext();")
+        persist_cleared_context = start_receive.index("persistActiveModelContext({}, true);")
         redraw_measurement_history = start_receive.index("drawMeasurementTraceChart();")
         redraw_command_history = start_receive.index("drawCommandTraceChart();")
         redraw_renewable_history = start_receive.index("drawRenewableTrendChart();")

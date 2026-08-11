@@ -485,7 +485,14 @@ def _measurement_delta_items(
         definitions,
         measurements.get("scada") or [],
     )
-    clock = snapshot.get("clock") if isinstance(snapshot.get("clock"), Mapping) else {}
+    measurement_clock = snapshot.get("measurement_clock")
+    clock = (
+        measurement_clock
+        if isinstance(measurement_clock, Mapping) and measurement_clock
+        else snapshot.get("clock")
+        if isinstance(snapshot.get("clock"), Mapping)
+        else {}
+    )
     simu_time = str(clock.get("time") or "--")
     absolute_minute = clock.get("absolute_minute")
     wall_time = (
@@ -526,7 +533,7 @@ def _measurement_delta_items(
 def _runtime_frame_identity(snapshot: Mapping[str, Any]) -> Tuple[Tuple[str, str], ...]:
     clock = snapshot.get("clock") if isinstance(snapshot.get("clock"), Mapping) else {}
     identity: list[Tuple[str, str]] = []
-    for field_name in ("run_id", "step_count", "absolute_minute", "minute", "time"):
+    for field_name in ("state", "run_id", "step_count", "absolute_minute", "minute", "time"):
         value = clock.get(field_name, snapshot.get(field_name))
         if value is None or str(value).strip() == "":
             continue
@@ -975,6 +982,7 @@ class TraineeRealtimeExchange:
                 )
             measurement_snapshot = {
                 "clock": runtime.get("clock"),
+                "measurement_clock": runtime.get("measurement_clock"),
                 "measurements": merged_measurements,
             }
             current_measurements = _measurement_delta_items(
@@ -1027,7 +1035,7 @@ class TraineeRealtimeExchange:
                     state.measurement_delta_state = current_measurements
             state.runtime_snapshot = runtime
             history_measurements = runtime.get("measurements")
-            history_clock = runtime.get("clock")
+            history_clock = runtime.get("measurement_clock") or runtime.get("clock")
             if isinstance(history_measurements, Mapping) and isinstance(history_clock, Mapping):
                 state.measurement_history.append(
                     history_clock,
@@ -1243,6 +1251,7 @@ class TraineeRealtimeExchange:
         now = time.time()
         with state.lock:
             ready = state.runtime_snapshot is not None
+            runtime_snapshot = state.runtime_snapshot
             received_at = state.received_at
             error = state.last_error
             revision = state.revision
@@ -1280,20 +1289,31 @@ class TraineeRealtimeExchange:
             last_command_success_at = state.last_command_success_at
             last_command_duration = state.last_command_duration_seconds
             last_command_error = state.last_command_error
+        runtime_clock = (
+            runtime_snapshot.get("clock")
+            if isinstance(runtime_snapshot, Mapping)
+            and isinstance(runtime_snapshot.get("clock"), Mapping)
+            else {}
+        )
+        simulation_state = str(runtime_clock.get("state") or "").strip().casefold()
+        simulation_paused = bool(ready and simulation_state == "paused")
         age = max(0.0, now - received_at) if received_at else 0.0
         same_frame_duration = max(0.0, now - frame_changed_at) if frame_changed_at else 0.0
         frame_too_old = bool(
             ready
+            and not simulation_paused
             and frame_age_limit > 0.0
             and age > frame_age_limit
         )
         frame_frozen = bool(
             ready
+            and not simulation_paused
             and frame_identity
             and same_frame_limit > 0.0
             and same_frame_duration > same_frame_limit
         )
-        can_calculate = active and ready
+        can_run = active and ready
+        can_calculate = can_run and not simulation_paused
         can_dispatch = can_calculate and not error and not frame_too_old and not frame_frozen
         if not active:
             message = "请先启动接收。"
@@ -1301,8 +1321,10 @@ class TraineeRealtimeExchange:
             message = "学员台正在等待第一份实时数据。"
         else:
             message = ""
-        if not can_calculate:
+        if not can_run:
             dispatch_status = message
+        elif simulation_paused:
+            dispatch_status = ""
         elif error:
             dispatch_status = f"实时数据接收异常，闭环下发已阻断：{error}"
         elif frame_too_old:
@@ -1314,9 +1336,12 @@ class TraineeRealtimeExchange:
         return {
             "receiveActive": active,
             "ready": ready,
-            "canRun": can_calculate,
+            "canRun": can_run,
             "canCalculate": can_calculate,
             "canDispatch": can_dispatch,
+            "simulationState": simulation_state,
+            "simulationPaused": simulation_paused,
+            "controlFrozen": simulation_paused,
             "prerequisiteStatus": message,
             "dispatchStatus": dispatch_status,
             "revision": revision,
@@ -1627,7 +1652,14 @@ class TraineeRealtimeExchange:
                                 by_key[key] = item
                     item_refs = list(by_key.values())
             runtime = state.runtime_snapshot or {}
-            clock = runtime.get("clock") if isinstance(runtime.get("clock"), Mapping) else {}
+            measurement_clock = runtime.get("measurement_clock")
+            clock = (
+                measurement_clock
+                if isinstance(measurement_clock, Mapping) and measurement_clock
+                else runtime.get("clock")
+                if isinstance(runtime.get("clock"), Mapping)
+                else {}
+            )
             clock_time = str(clock.get("time") or "--")
             absolute_minute = clock.get("absolute_minute")
             runtime_measurements = runtime.get("measurements")
@@ -1656,6 +1688,7 @@ class TraineeRealtimeExchange:
             "simu_time": clock_time,
             "absolute_minute": absolute_minute,
             "wall_time": wall_time,
+            "measurement_clock": copy.deepcopy(dict(clock)),
             "seq": seq,
             "oldestSeq": oldest_seq,
             "receiveEpoch": receive_epoch,

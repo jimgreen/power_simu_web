@@ -76,28 +76,33 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         self.assertIn("not state.sending", self.backend)
         self.assertIn("not state.background_cycle_pending", self.backend)
         self.assertIn("not state.run_lock.locked()", self.backend)
-        self.assertIn("control_due = enabled", self.backend)
+        self.assertIn("control_clock = self._simulation_control_clock(", self.backend)
+        self.assertIn("control_due = self._simulation_control_due_locked(", self.backend)
         self.assertIn("collection_due =", self.backend)
         self.assertIn("_collection_interval_seconds_for_service", self.backend)
         self.assertIn("state.settings.interval_seconds", self.backend)
         self.assertIn('"开环未下发"', self.backend)
         self.assertIn('"下发成功"', self.backend)
 
-    def test_control_period_is_larger_integer_multiple_of_collection_period(self):
+    def test_control_period_uses_simulation_clock_seconds(self):
         self.assertIn('id="renewableControlPeriod" type="number"', self.html)
+        self.assertIn("自动控制周期（仿真秒）", self.html)
         settings_block = self.script.split("async function updateRenewableSettings", 1)[1].split(
             "function renderClock",
             1,
         )[0]
-        self.assertIn("renewableControlIntervalError", settings_block)
-        self.assertIn("collectionIntervalSeconds", settings_block)
+        self.assertIn("renewableSimulationControlIntervalError", settings_block)
+        self.assertIn("simulationIntervalSeconds", settings_block)
+        self.assertNotIn("collectionIntervalSeconds", settings_block)
         self.assertIn(
             'MINIMUM_CONTROL_INTERVAL_SECONDS = default_number(',
             self.backend,
         )
-        self.assertIn("def _control_interval_multiple(", self.backend)
-        self.assertIn("控制周期", self.backend)
-        self.assertIn("整数倍", self.backend)
+        self.assertIn('"minimum_simulation_control_interval_seconds"', self.backend)
+        self.assertIn('default_number("simulation_control_interval_seconds")', self.backend)
+        self.assertIn("def _simulation_control_interval_seconds(", self.backend)
+        self.assertIn("仿真秒", self.backend)
+        self.assertNotIn("def _control_interval_multiple(", self.backend)
 
     def test_automatic_command_validity_is_editable_and_persisted(self):
         self.assertIn('id="renewableCommandValidMinutes"', self.html)

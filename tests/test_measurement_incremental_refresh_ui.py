@@ -58,6 +58,7 @@ class MeasurementIncrementalRefreshUiTest(unittest.TestCase):
             self.assertIn("const rows = measurementCompareRows(snapshot.measurements || {})", append_source)
             self.assertIn("if (!rows.some", append_source)
             self.assertIn("state.lastMeasurementTraceKey = signature", append_source)
+            self.assertIn("snapshot.measurement_clock", append_source)
 
     def test_measurement_trace_upserts_repeated_updates_for_the_same_simulation_frame(self):
         for role in ("simulator", "trainee"):
@@ -75,6 +76,7 @@ const state = {{
 }};
 const numberOrNull = (value) => Number.isFinite(Number(value)) ? Number(value) : null;
 const diagramTrendFiniteValue = numberOrNull;
+const isSimulationPausedSnapshot = () => false;
 const measurementCompareRows = (measurements) => measurements.rows || [];
 const measurementKey = (row) => row.name;
 const measurementDisplayName = (row) => row.name;
@@ -93,11 +95,17 @@ const compareMeasurementHistoryPoints = (left, right) => (
   || (Number(left?.minute) || 0) - (Number(right?.minute) || 0)
 );
 {append_source}
-const snapshot = (updated, value, minute = 32) => ({{
+const snapshot = (updated, value, minute = 32, measurementMinute = minute) => ({{
   model: {{ id: "model-a" }},
   clock: {{
     absolute_minute: minute,
     time: `00:${{String(minute).padStart(2, "0")}}:00`,
+    run_id: 7,
+    step_count: minute,
+  }},
+  measurement_clock: {{
+    absolute_minute: measurementMinute,
+    time: `00:${{String(measurementMinute).padStart(2, "0")}}:00`,
     run_id: 7,
     step_count: minute,
   }},
@@ -115,8 +123,8 @@ const snapshot = (updated, value, minute = 32) => ({{
     }}],
   }},
 }});
-appendMeasurementTrace(snapshot("first", 20.5));
-appendMeasurementTrace(snapshot("delta", 20.4));
+appendMeasurementTrace(snapshot("first", 20.5, 33, 32));
+appendMeasurementTrace(snapshot("delta", 20.4, 33, 32));
 appendMeasurementTrace(snapshot("stale", 20.3, 31));
 const point = state.measurementTraceHistory[0];
 const measurement = point.measurements["Environment.weather.WIND_SPEED"];

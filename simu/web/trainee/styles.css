@@ -109,6 +109,7 @@ h1 {
 }
 #connectionDot.ok { background: var(--green); }
 #connectionDot.off { background: var(--red); }
+#connectionDot.frozen { background: var(--muted); }
 .model-toolbar {
   min-width: 0;
   max-width: none;

@@ -1149,6 +1149,7 @@ class PolarMicrogridSimulator:
         self._last_command_response_index = 0
         self.latest_result: Dict[str, Any] = {}
         self.latest_measurements: Dict[str, Any] = {}
+        self.latest_measurement_clock: Dict[str, Any] = {}
         self.latest_model_book: Optional[EBook] = None
         self.latest_device_states: List[Dict[str, Any]] = []
         self.latest_compute: Dict[str, Any] = {
@@ -1321,6 +1322,7 @@ class PolarMicrogridSimulator:
                 self._last_command_response_index = 0
                 self.latest_result = {}
                 self.latest_measurements = {}
+                self.latest_measurement_clock = {}
                 self.latest_model_book = None
                 self.latest_device_states = []
                 self.latest_real_rows = []
@@ -1525,6 +1527,7 @@ class PolarMicrogridSimulator:
             "real": [],
             "scada": [],
         }
+        self.latest_measurement_clock = {}
         self._measurement_delta_seq = 0
         self._measurement_delta_state = {}
         self._measurement_delta_history = []
@@ -1974,6 +1977,7 @@ class PolarMicrogridSimulator:
             self._last_command_response_index = sum(
                 1 for item in self.command_history if id(item) in acknowledged_ids
             )
+        self._force_control_targets_after_automatic_removal(removed_keys)
         self._write_command_history()
 
         return {
@@ -1981,6 +1985,19 @@ class PolarMicrogridSimulator:
             "remote_controls": sum(1 for key in removed_keys if key[0] == "remote_control"),
             "remote_adjustments": sum(1 for key in removed_keys if key[0] == "remote_adjustment"),
         }
+
+    def _force_control_targets_after_automatic_removal(
+        self,
+        control_keys: Iterable[Tuple[str, str, str, str]],
+    ) -> None:
+        for kind, dev_type, dev_name, field_name in control_keys:
+            if kind != "remote_adjustment":
+                continue
+            key = (dev_type, dev_name, field_name)
+            self._remote_adjustment_execution[key] = {
+                "force_target_once": True,
+                "last_cycle_token": None,
+            }
 
     def _apply_stored_system_parameters(self) -> None:
         params = self.local_settings.get("system_parameters", {})
@@ -2414,6 +2431,12 @@ class PolarMicrogridSimulator:
         expires = _to_float(item.get("expires_at_absolute_minute"), None)
         if issued is None or expires is None:
             return False
+        if _command_origin(item) == "automatic":
+            cycle_minutes = float(self._simulation_cycle_minutes())
+            issued_cycle = math.floor((issued + 1e-9) / cycle_minutes)
+            current_cycle = math.floor((current + 1e-9) / cycle_minutes)
+            if issued_cycle != current_cycle:
+                return False
         return current < expires and (manual_hold or issued <= current)
 
     def _command_entry_has_accepted_controls(self, item: Mapping[str, Any]) -> bool:
@@ -2774,7 +2797,11 @@ class PolarMicrogridSimulator:
                 state = {"executed_value": float(current), "last_cycle_token": None}
                 self._remote_adjustment_execution[key] = state
 
-            if state.get("last_cycle_token") != cycle_token:
+            if state.pop("force_target_once", False):
+                state["executed_value"] = float(target)
+                state["target_value"] = float(target)
+                state["last_cycle_token"] = cycle_token
+            elif state.get("last_cycle_token") != cycle_token:
                 current = self._latest_true_remote_adjustment_value(key)
                 if current is None:
                     current = float(state.get("executed_value", target))
@@ -2940,6 +2967,8 @@ class PolarMicrogridSimulator:
             entry["cancelled_run_id"] = int(self.clock.run_id)
             cancelled_entries += 1
             cancelled_keys.update(entry_keys)
+
+        self._force_control_targets_after_automatic_removal(cancelled_keys)
 
         return {
             "entries": cancelled_entries,
@@ -5058,6 +5087,12 @@ class PolarMicrogridSimulator:
                 and replace_strategy_generation
             )
             expires_at_absolute_minute = None if manual_hold else _command_expires_at(payload, None, issued_absolute_minute)
+            if expires_at_absolute_minute is not None and command_origin == "automatic":
+                cycle_minutes = float(self._simulation_cycle_minutes())
+                cycle_end = (
+                    math.floor((issued_absolute_minute + 1e-9) / cycle_minutes) + 1
+                ) * cycle_minutes
+                expires_at_absolute_minute = min(expires_at_absolute_minute, cycle_end)
             accepted_run = len(normalized_run_items) if eligible_source else 0
             accepted_set = len(normalized_set_items) if eligible_source else 0
             requested_count = len(requested_run_items) + len(requested_set_items)
@@ -6526,7 +6561,8 @@ class PolarMicrogridSimulator:
                 self._reset_storage_soc_to_initial()
             if history_reset_requested:
                 self._measurement_history.clear()
-            if action in ("start", "stop") or commands_cleared:
+                self.latest_measurement_clock = {}
+            if action in ("start", "stop") or commands_cleared or time_reset_requested:
                 self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
             if action == "step":
                 return self.step(advance_minutes=effective_step)["clock"]
@@ -6640,6 +6676,11 @@ class PolarMicrogridSimulator:
                 self._apply_measurement_faults(minute, absolute_minute)
                 self._apply_measurement_statuses(minute, absolute_minute)
                 self.latest_measurements = self.measurements()
+                measurement_updated_at = time.time()
+                measurement_clock = self.clock.as_dict()
+                measurement_clock["step_count"] = self.clock.step_count + 1
+                measurement_clock["updated_at"] = measurement_updated_at
+                self.latest_measurement_clock = measurement_clock
                 result_dict = self._kernel_result_dict(kernel_result)
                 self.latest_result = result_dict
                 command_response_lines = self._collect_command_response_lines(result_dict)
@@ -6662,11 +6703,42 @@ class PolarMicrogridSimulator:
                 self.clock.step_count += 1
                 if crossed_cycle_start:
                     self._reset_storage_soc_to_initial()
-                self.clock.updated_at = time.time()
-                self._refresh_measurement_delta_state(measurements=self.latest_measurements)
+                    if self.clear_commands_on_start_and_reset:
+                        cleared = self._remove_automatic_command_history_for_restart()
+                    else:
+                        cleared = self._clear_automatic_commands_for_simulation_restart(
+                            reason="simulation_cycle_reset",
+                        )
+                        if cleared["entries"]:
+                            self._write_command_history()
+                    self._materialize_active_control_commands(
+                        self.clock.absolute_minute,
+                        persist=True,
+                    )
+                    if cleared["entries"]:
+                        self._append_runtime_log(
+                            "控制指令",
+                            "仿真时钟",
+                            "周期归零自动指令已清空",
+                            [
+                                f"新仿真周期开始前清空自动指令记录 {cleared['entries']} 条",
+                                (
+                                    f"涉及遥控 {cleared['remote_controls']} 个控制点，"
+                                    f"遥调 {cleared['remote_adjustments']} 个控制点"
+                                ),
+                                "人工指令继续保持，自动指令对潮流边界的影响已撤销",
+                            ],
+                            level="ok",
+                            simu_time=minute_to_time(self.clock.minute),
+                        )
+                self.clock.updated_at = measurement_updated_at
+                self._refresh_measurement_delta_state(
+                    measurements=self.latest_measurements,
+                    measurement_clock=measurement_clock,
+                )
                 self._measurement_delta_step_count = self.clock.step_count
                 self._measurement_history.append(
-                    self.clock.as_dict(),
+                    measurement_clock,
                     self.latest_measurements,
                     definition_revision=self.definition_snapshot.revision,
                 )
@@ -7326,12 +7398,13 @@ class PolarMicrogridSimulator:
     def _measurement_delta_current_items(
         self,
         measurements: Optional[Mapping[str, Sequence[Mapping[str, Any]]]] = None,
+        measurement_clock: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Dict[str, Any]]:
         measurements = dict(measurements or self.measurements())
         definitions = measurements.get("definitions") or measurements.get("scada") or measurements.get("real") or []
         real_rows = measurement_rows_by_definition_index(definitions, measurements.get("real", []) or [])
         scada_rows = measurement_rows_by_definition_index(definitions, measurements.get("scada", []) or [])
-        time_payload = self._api_time_payload()
+        time_payload = self._api_time_payload(measurement_clock)
         items: Dict[str, Dict[str, Any]] = {}
         for index, definition in enumerate(definitions):
             key = str(index)
@@ -7387,8 +7460,10 @@ class PolarMicrogridSimulator:
     def _refresh_measurement_delta_state(
         self,
         measurements: Optional[Mapping[str, Sequence[Mapping[str, Any]]]] = None,
+        measurement_clock: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Dict[str, Any]]:
         measurement_payload = dict(measurements or self.measurements())
+        sample_clock = dict(measurement_clock or self.latest_measurement_clock or self.clock.as_dict())
         definitions = [
             row
             for row in measurement_payload.get("definitions", []) or []
@@ -7396,7 +7471,10 @@ class PolarMicrogridSimulator:
         ]
         definition_signature = measurement_definition_signature(definitions)
         definition_changed = definition_signature != self._measurement_delta_definition_signature
-        current = self._measurement_delta_current_items(measurement_payload)
+        current = self._measurement_delta_current_items(
+            measurement_payload,
+            measurement_clock=sample_clock,
+        )
         previous = self._measurement_delta_state
         changed_keys: List[str] = []
         removed_keys = [key for key in previous if key not in current]
@@ -7416,7 +7494,7 @@ class PolarMicrogridSimulator:
                 {
                     "name": str(previous.get(key, {}).get("name", key)),
                     "deleted": True,
-                    **self._external_update_time_fields(self._api_time_payload()),
+                    **self._external_update_time_fields(self._api_time_payload(sample_clock)),
                 }
                 for key in removed_keys
             )
@@ -7496,7 +7574,8 @@ class PolarMicrogridSimulator:
             payload = {
                 "model_id": self.model_id,
                 "model_name": self.model_name,
-                **self._api_time_payload(),
+                **self._api_time_payload(self.latest_measurement_clock or self.clock.as_dict()),
+                "measurement_clock": dict(self.latest_measurement_clock or self.clock.as_dict()),
                 "seq": self._measurement_delta_seq,
                 "items": items,
                 "reset": reset,
@@ -7762,11 +7841,17 @@ class PolarMicrogridSimulator:
             self._device_runtime_frame_cache_value = frame
             return frame
 
-    def _api_time_payload(self) -> Dict[str, Any]:
+    def _api_time_payload(self, clock: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+        source = clock if isinstance(clock, Mapping) else self.clock.as_dict()
+        absolute_minute = _to_float(source.get("absolute_minute", source.get("minute")), 0.0) or 0.0
+        minute = _to_float(source.get("minute"), None)
+        if minute is None:
+            minute = absolute_minute % 1440.0
+        time_text = str(source.get("time") or minute_to_time(minute))
         return {
-            "time": minute_to_time(self.clock.minute),
-            "simu_time": minute_to_time(self.clock.minute),
-            "absolute_minute": self.clock.absolute_minute,
+            "time": time_text,
+            "simu_time": time_text,
+            "absolute_minute": absolute_minute,
             "wall_time": _now_text(),
         }
 
@@ -10823,6 +10908,7 @@ class PolarMicrogridSimulator:
         snapshot = {
             "model": self.model_info(),
             "clock": self.clock.as_dict(),
+            "measurement_clock": dict(self.latest_measurement_clock),
             "system_parameters": self.system_parameters(),
             "simulation_timing": self.simulation_timing(),
             "curve_boundary": self.curve_boundary(),

@@ -163,6 +163,41 @@ def test_renewable_ui_distinguishes_running_waiting_and_explicit_stop_states():
     assert 'const action = state.renewableControl.desiredEnabled ? "stop" : "start"' in toggle_block
 
 
+def test_simulator_pause_is_rendered_as_a_neutral_frozen_state_without_trace_growth():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+    accept_block = script.split("function acceptTeacherSnapshot", 1)[1].split(
+        "async function attemptTeacherReconnect",
+        1,
+    )[0]
+    receive_block = script.split("function renderReceiveMode", 1)[1].split(
+        "function curveMinute",
+        1,
+    )[0]
+    command_trace_block = script.split("function appendCommandTrace", 1)[1].split(
+        "function drawCommandTraceChart",
+        1,
+    )[0]
+    render_control_block = script.split("function renderRenewableControl(snapshot", 1)[1].split(
+        "async function toggleRenewableAuto",
+        1,
+    )[0]
+    prerequisite_block = script.split("function renewablePrerequisiteStatus", 1)[1].split(
+        "function renewableTrendLifecycleChanged",
+        1,
+    )[0]
+
+    assert "isSimulationPausedSnapshot(snapshot)" in accept_block
+    assert "recordReceiveIssue" not in accept_block.split("if (isSimulationPausedSnapshot(snapshot))", 1)[1].split(
+        "if (String(clock.state", 1
+    )[0]
+    assert "模拟台暂停，已冻结" in receive_block
+    assert "isSimulationPausedSnapshot(snapshot)" in command_trace_block
+    assert '"frozen"' in render_control_block
+    assert "control.controlFrozen" in render_control_block
+    assert "control.controlFrozen" in prerequisite_block
+    assert "模拟台暂停，学员台保持冻结" in prerequisite_block
+
+
 def test_receive_api_immediately_notifies_the_backend_controller():
     server = (ROOT / "simu/server.py").read_text(encoding="utf-8")
     receive_block = server.split("def _handle_trainee_receive", 1)[1].split(

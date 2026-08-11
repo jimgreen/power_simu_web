@@ -1,6 +1,6 @@
 {
-  "interval_seconds": 2.0,
-  "minimum_control_interval_seconds": 1.0,
+  "simulation_control_interval_seconds": 2.0,
+  "minimum_simulation_control_interval_seconds": 1.0,
   "minimum_command_valid_minutes": 0.1,
   "soc_min": 0.1,
   "soc_max": 0.9,

@@ -36,6 +36,9 @@ const clampedPast = alignedTraceWindowRange(crossingHistory, 60, 605, -99);
 const contained = alignedTraceWindowRange(containedHistory, 60, 605, 0);
 const deepPast = alignedTraceWindowRange(deepHistory, 60, 605, -2);
 const fullCycle = alignedTraceWindowRange(crossingHistory, 60, 605, -1, 60);
+const previousCycleHistory = [{ minute: 12922 }, { minute: 12963 }];
+const cycleBoundary = alignedTraceWindowRange(previousCycleHistory, 60, 12960, -1, 1440);
+const currentCycle = alignedTraceWindowRange(previousCycleHistory, 60, 12963, -1, 1440);
 process.stdout.write(JSON.stringify({
   current,
   previous,
@@ -44,6 +47,8 @@ process.stdout.write(JSON.stringify({
   contained,
   deepPast,
   fullCycle,
+  cycleBoundary,
+  currentCycle,
   currentNavigation: tracePeriodNavigationState(current),
   previousNavigation: tracePeriodNavigationState(previous),
   containedNavigation: tracePeriodNavigationState(contained),
@@ -79,10 +84,20 @@ const points = [
 const current = diagramTrendNavigationRange(points, "hour", 605, 0);
 const previous = diagramTrendNavigationRange(points, "hour", 605, -1);
 const fullCycle = diagramTrendNavigationRange(points, "hour", 605, -1, 60);
+const previousCyclePoints = [
+  { minute: 12922, value: 1 },
+  { minute: 12963, value: 2 },
+];
+const cycleBoundary = diagramTrendNavigationRange(previousCyclePoints, "hour", 12960, -1, 1440);
+const currentCycle = diagramTrendNavigationRange(previousCyclePoints, "hour", 12963, -1, 1440);
 process.stdout.write(JSON.stringify({
   current,
   previous,
   fullCycle,
+  cycleBoundary,
+  currentCycle,
+  cycleBoundaryPoints: diagramTrendWindowPoints(previousCyclePoints, "hour", 12960, -1, cycleBoundary).map((point) => point.minute),
+  currentCyclePoints: diagramTrendWindowPoints(previousCyclePoints, "hour", 12963, -1, currentCycle).map((point) => point.minute),
   currentPoints: diagramTrendWindowPoints(points, "hour", 605, 0).map((point) => point.minute),
   previousPoints: diagramTrendWindowPoints(points, "hour", 605, -1).map((point) => point.minute),
   currentValues: diagramTrendWindowPoints(points, "hour", 605, 0).map((point) => point.value),
@@ -152,6 +167,11 @@ process.stdout.write(JSON.stringify({
                 self.assertEqual(payload["fullCycle"]["windowOffset"], 0)
                 self.assertEqual(payload["fullCycle"]["minWindowOffset"], 0)
                 self.assertFalse(payload["fullCycleNavigation"]["visible"])
+                self.assertEqual(payload["cycleBoundary"]["startMinute"], 12960)
+                self.assertEqual(payload["cycleBoundary"]["minWindowOffset"], 0)
+                self.assertEqual(payload["cycleBoundary"]["windowOffset"], 0)
+                self.assertEqual(payload["currentCycle"]["startMinute"], 12960)
+                self.assertEqual(payload["currentCycle"]["minWindowOffset"], 0)
                 self.assertTrue(payload["fullCycleNavigation"]["previousDisabled"])
                 self.assertTrue(payload["fullCycleNavigation"]["currentDisabled"])
                 self.assertTrue(payload["fullCycleNavigation"]["nextDisabled"])
@@ -186,9 +206,9 @@ process.stdout.write(JSON.stringify({
                 self.assertEqual(payload["current"]["startMinute"], 600)
                 self.assertEqual(payload["current"]["minWindowOffset"], -1)
                 self.assertEqual(payload["previous"]["startMinute"], 540)
-                self.assertEqual(payload["currentPoints"], [600, 605])
+                self.assertEqual(payload["currentPoints"], [605])
                 self.assertEqual(payload["previousPoints"], [595])
-                self.assertEqual(payload["currentValues"], [1, 2])
+                self.assertEqual(payload["currentValues"], [2])
                 self.assertEqual(payload["previousValues"], [1])
                 self.assertEqual(payload["currentDataCount"], 1)
                 self.assertTrue(payload["currentNavigation"]["visible"])
@@ -197,6 +217,12 @@ process.stdout.write(JSON.stringify({
                 self.assertFalse(payload["fullCycle"]["periodNavigationAllowed"])
                 self.assertEqual(payload["fullCycle"]["windowOffset"], 0)
                 self.assertFalse(payload["fullCycleNavigation"]["visible"])
+                self.assertEqual(payload["cycleBoundary"]["startMinute"], 12960)
+                self.assertEqual(payload["cycleBoundary"]["minWindowOffset"], 0)
+                self.assertEqual(payload["cycleBoundaryPoints"], [])
+                self.assertEqual(payload["currentCycle"]["startMinute"], 12960)
+                self.assertEqual(payload["currentCycle"]["minWindowOffset"], 0)
+                self.assertEqual(payload["currentCyclePoints"], [12963])
 
     def test_navigation_uses_the_active_simulation_cycle_as_its_upper_bound(self):
         self.assertIn("function simulationModeDurationMinutes", self.simulator_js)
@@ -204,19 +230,18 @@ process.stdout.write(JSON.stringify({
         self.assertGreaterEqual(self.simulator_js.count("simulationModeDurationMinutes()"), 3)
         self.assertGreaterEqual(self.trainee_js.count("curveDisplayModeDurationMinutes()"), 4)
 
-    def test_partial_window_curves_only_anchor_from_a_real_prior_sample(self):
+    def test_partial_window_curves_never_copy_a_prior_sample_to_the_window_start(self):
         expectations = (
             ("simulator", self.simulator_js, 4),
             ("trainee", self.trainee_js, 5),
         )
         for app, script, minimum_uses in expectations:
             with self.subTest(app=app):
-                self.assertIn("function traceWindowPointsWithBoundaryAnchors", script)
-                self.assertIn("__boundaryAnchor", script)
-                self.assertIn("if (previous) visible.unshift", script)
-                self.assertNotIn("previous || visible[0]", script)
+                self.assertIn("function traceWindowRealPoints", script)
+                self.assertNotIn("traceWindowBoundaryPoint", script)
+                self.assertNotIn("__boundaryAnchor", script)
                 self.assertGreaterEqual(
-                    script.count("traceWindowPointsWithBoundaryAnchors("),
+                    script.count("traceWindowRealPoints("),
                     minimum_uses,
                 )
 

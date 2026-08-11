@@ -26,14 +26,16 @@ class TraineeCollectionPeriodAndTargetCurveUiTest(unittest.TestCase):
         self.assertIn('data-runtime-setting="backend_refresh_seconds"', self.html)
         self.assertIn("新能源趋势采样周期", self.html)
 
-    def test_control_period_is_numeric_and_validated_against_collection_period(self):
+    def test_control_period_is_labeled_and_validated_as_simulation_seconds(self):
         self.assertIn(
             'id="renewableControlPeriod" type="number"',
             self.html,
         )
-        self.assertIn("function renewableControlIntervalError", self.script)
-        self.assertIn("control <= collection", self.script)
-        self.assertIn("Math.round(ratio)", self.script)
+        self.assertIn("自动控制周期（仿真秒）", self.html)
+        self.assertIn("function renewableSimulationControlIntervalError", self.script)
+        self.assertIn("simulationIntervalSeconds", self.script)
+        self.assertNotIn("control <= collection", self.script)
+        self.assertNotIn("Math.round(ratio)", self.script)
         self.assertIn(
             'activeRuntimeSetting("backend_refresh_seconds")',
             self.script,

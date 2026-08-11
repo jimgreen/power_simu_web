@@ -82,6 +82,9 @@ class FakeRenewableManager:
         self.receive_changes.append(model_id)
         return {"modelId": model_id}
 
+    def validate_runtime_settings_update_for_service(self, service, payload):
+        return None
+
     def remove_model_for_service(self, service):
         self.removed_services.append(service)
 

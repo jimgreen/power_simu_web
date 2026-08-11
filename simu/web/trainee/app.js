@@ -216,6 +216,8 @@ const state = {
     desiredEnabled: false,
     resumePending: false,
     runState: "stopped",
+    controlFrozen: false,
+    simulationPaused: false,
     receiveActive: false,
     canRun: false,
     prerequisiteStatus: "请先启动接收。",
@@ -457,45 +459,18 @@ function backendDataRefreshIntervalMs() {
   return Math.max(100, activeRuntimeSetting("backend_refresh_seconds") * 1000);
 }
 
-function renewableCollectionIntervalSeconds(values = state.webRuntimeSettings) {
-  const configured = Number(values?.backend_refresh_seconds);
-  return Number.isFinite(configured) && configured > 0
-    ? configured
-    : Math.max(0.1, activeRuntimeSetting("backend_refresh_seconds"));
-}
-
-function renewableControlIntervalError(controlSeconds, collectionSeconds) {
+function renewableSimulationControlIntervalError(controlSeconds) {
   const control = Number(controlSeconds);
-  const collection = Number(collectionSeconds);
-  if (!Number.isFinite(collection) || collection <= 0) {
-    return "采集周期（后台数据刷新周期）必须大于 0 秒。";
-  }
-  if (!Number.isFinite(control) || control <= collection) {
-    return `控制周期必须大于采集周期 ${runtimeSettingDisplay(collection)} s。`;
-  }
-  const ratio = control / collection;
-  const multiple = Math.round(ratio);
-  if (multiple < 2 || Math.abs(ratio - multiple) > 1e-8) {
-    return `控制周期必须是采集周期 ${runtimeSettingDisplay(collection)} s 的整数倍。`;
-  }
+  if (!Number.isFinite(control) || control < 1) return "自动控制周期必须不少于 1 仿真秒。";
   return "";
-}
-
-function minimumRenewableControlIntervalSeconds(collectionSeconds) {
-  const collection = Math.max(0.1, Number(collectionSeconds) || 1);
-  const multiple = Math.max(2, Math.ceil((1 - 1e-8) / collection));
-  return Number((collection * multiple).toFixed(12));
 }
 
 function syncRenewableControlPeriodConstraints() {
   const input = $("renewableControlPeriod");
   if (!input) return;
-  const collection = renewableCollectionIntervalSeconds(
-    runtimeParameterGroupDirty("backend") ? state.webRuntimeDraft : state.webRuntimeSettings,
-  );
-  input.min = String(minimumRenewableControlIntervalSeconds(collection));
-  input.step = String(collection);
-  input.setCustomValidity(renewableControlIntervalError(input.value, collection));
+  input.min = "1";
+  input.step = "0.1";
+  input.setCustomValidity(renewableSimulationControlIntervalError(input.value));
 }
 
 function frontendRequestTimeoutMs() {
@@ -1544,12 +1519,6 @@ function renderWebRuntimeSettings() {
     const constraint = state.webRuntimeConstraints?.[name] || {};
     if (constraint.min !== undefined) input.min = String(constraint.min);
     if (constraint.max !== undefined) input.max = String(constraint.max);
-    if (name === "backend_refresh_seconds") {
-      input.setCustomValidity(renewableControlIntervalError(
-        state.renewableControl.intervalSeconds,
-        value,
-      ));
-    }
     input.disabled = state.webRuntimeLoading || Boolean(state.webRuntimeSavingGroup);
   });
   Object.entries(WEB_RUNTIME_CURRENT_IDS).forEach(([name, id]) => {
@@ -1606,7 +1575,6 @@ function renderWebRuntimeSettings() {
     if (undoButton) undoButton.disabled = !dirty || state.webRuntimeLoading || saving;
     if (defaultsButton) defaultsButton.disabled = state.webRuntimeLoading || saving;
   });
-  syncRenewableControlPeriodConstraints();
 }
 
 function applyWebRuntimeSettings() {
@@ -1663,31 +1631,11 @@ function updateWebRuntimeDraft(input) {
   };
   state.webRuntimeDirtyGroups = { ...state.webRuntimeDirtyGroups, [group]: true };
   state.webRuntimeErrors = { ...state.webRuntimeErrors, [group]: "" };
-  if (name === "backend_refresh_seconds") {
-    const error = renewableControlIntervalError(
-      state.renewableControl.intervalSeconds,
-      value,
-    );
-    input.setCustomValidity(error);
-  }
   renderWebRuntimeSettings();
 }
 
 async function saveWebRuntimeSettings(group = "web") {
   if (!RUNTIME_PARAMETER_GROUPS[group] || state.webRuntimeSavingGroup || !runtimeParameterGroupDirty(group)) return;
-  if (group === "backend") {
-    const collectionInterval = renewableCollectionIntervalSeconds(state.webRuntimeDraft);
-    const intervalError = renewableControlIntervalError(
-      state.renewableControl.intervalSeconds,
-      collectionInterval,
-    );
-    if (intervalError) {
-      state.webRuntimeErrors = { ...state.webRuntimeErrors, backend: intervalError };
-      runtimeParameterElement("backendRuntimeRefresh")?.reportValidity?.();
-      renderWebRuntimeSettings();
-      return;
-    }
-  }
   const pendingDraft = { ...state.webRuntimeDraft };
   state.webRuntimeSavingGroup = group;
   state.webRuntimeErrors = { ...state.webRuntimeErrors, [group]: "" };
@@ -2703,6 +2651,9 @@ function appendMeasurementTraceAfterDelta(changed) {
 
 function applyMeasurementDelta(payload) {
   if (!payload || !state.snapshot) return false;
+  if (payload.measurement_clock && typeof payload.measurement_clock === "object") {
+    state.snapshot.measurement_clock = { ...payload.measurement_clock };
+  }
   const measurements = state.snapshot.measurements || {};
   state.snapshot.measurements = measurements;
   const definitions = measurements.definitions || state.snapshot.definitions?.measurement || [];
@@ -2870,15 +2821,7 @@ function sanitizeDiagramSvg(svgText) {
 
 const DIAGRAM_TREND_WINDOWS = Object.freeze({ hour: 60, day: 24 * 60 });
 
-function traceWindowBoundaryPoint(point, minute) {
-  const boundary = { ...point, minute, __boundaryAnchor: true };
-  ["time", "sim_time", "simu_time"].forEach((field) => {
-    if (Object.prototype.hasOwnProperty.call(boundary, field)) boundary[field] = "";
-  });
-  return boundary;
-}
-
-function traceWindowPointsWithBoundaryAnchors(points, range = {}, options = {}) {
+function traceWindowRealPoints(points, range = {}, options = {}) {
   const startMinute = Number(range.startMinute);
   const defaultEndMinute = Number(range.endMinute);
   const requestedEndMinute = Number(options.endMinute);
@@ -2889,21 +2832,14 @@ function traceWindowPointsWithBoundaryAnchors(points, range = {}, options = {}) 
     .filter((point) => Number.isFinite(Number(point?.minute)))
     .slice()
     .sort((left, right) => Number(left.minute) - Number(right.minute));
-  const visible = source.filter((point) => {
+  return source.filter((point) => {
     const minute = Number(point.minute);
     return minute >= startMinute && (includeEnd ? minute <= endMinute : minute < endMinute);
   });
-  if (!visible.length) return [];
-  const firstMinute = Number(visible[0].minute);
-  if (firstMinute > startMinute + 1e-9) {
-    const previous = [...source].reverse().find((point) => Number(point.minute) < startMinute);
-    if (previous) visible.unshift(traceWindowBoundaryPoint(previous, startMinute));
-  }
-  return visible;
 }
 
 function traceWindowDataPointCount(points) {
-  return (Array.isArray(points) ? points : []).filter((point) => !point?.__boundaryAnchor).length;
+  return Array.isArray(points) ? points.length : 0;
 }
 
 const DIAGRAM_DISPLAY_PREFERENCES_KEY = "trainee.svgDisplayPreferences.v1";
@@ -3210,8 +3146,13 @@ function diagramTrendNavigationRange(
     ? explicitEndMinute
     : (hasHistory ? latestHistoryMinute : 0);
   const currentRange = diagramTrendPeriodRange(period, latestMinute);
-  const earliestMinute = hasHistory ? earliestHistoryMinute : latestMinute;
   const normalizedSimulationDuration = Number(simulationDurationMinutes);
+  const cycleStartMinute = Number.isFinite(normalizedSimulationDuration) && normalizedSimulationDuration > 0
+    ? Math.floor((latestMinute + 1e-9) / normalizedSimulationDuration) * normalizedSimulationDuration
+    : Number.NEGATIVE_INFINITY;
+  const earliestMinute = hasHistory
+    ? Math.max(earliestHistoryMinute, cycleStartMinute)
+    : latestMinute;
   const periodNavigationAllowed = !Number.isFinite(normalizedSimulationDuration)
     || normalizedSimulationDuration <= 0
     || currentRange.windowMinutes < normalizedSimulationDuration;
@@ -3271,7 +3212,7 @@ function diagramTrendWindowPoints(points, period = "hour", endMinute = null, req
     : Number(valid[valid.length - 1].minute);
   const range = rangeOverride || diagramTrendNavigationRange(valid, period, latestMinute, requestedOffset);
   const visibleLatestMinute = range.windowOffset === 0 ? range.latestMinute : range.endMinute;
-  return traceWindowPointsWithBoundaryAnchors(valid, range, {
+  return traceWindowRealPoints(valid, range, {
     endMinute: visibleLatestMinute,
     includeEnd: visibleLatestMinute < range.endMinute,
   });
@@ -7777,11 +7718,22 @@ function validateTeacherSnapshotDefinitions(snapshot, result = "定义不一致"
   return false;
 }
 
+function isSimulationPausedSnapshot(snapshot = state.snapshot) {
+  return String(snapshot?.clock?.state || "").trim().toLowerCase() === "paused";
+}
+
 function acceptTeacherSnapshot(snapshot, epoch = state.receiveEpoch) {
   if (!state.receiveMode || epoch !== state.receiveEpoch) return false;
   state.snapshotSource = "teacher";
   const clock = snapshot.clock || {};
   finishTraineeWebTransportRecovery(clock.time || "--");
+  if (isSimulationPausedSnapshot(snapshot)) {
+    resetReceiveIssueStreak();
+    state.lastReceiveAt = new Date().toLocaleTimeString();
+    renderSnapshot(snapshot);
+    renderReceiveMode();
+    return true;
+  }
   if (String(clock.state || "").toLowerCase() === "stopped") {
     renderSnapshot(snapshot);
     recordReceiveIssue(
@@ -9053,6 +9005,7 @@ function renderReceiveMode(extraText = "") {
   const teacherModelDisplayName = $("teacherModelDisplayName");
   const connectionDot = $("connectionDot");
   const connectionText = $("connectionText");
+  const simulationPaused = Boolean(state.receiveMode && isSimulationPausedSnapshot(state.snapshot));
   if (button) {
     button.textContent = state.receiveMode ? "停止接收" : "启动接收";
     button.disabled = !state.receiveMode && !state.modelInitialized;
@@ -9064,12 +9017,14 @@ function renderReceiveMode(extraText = "") {
     initializeButton.title = state.receiveMode ? "停止接收后才能重新初始化模型" : "";
   }
   if (connectionDot && connectionText) {
-    connectionDot.className = extraText ? "off" : state.receiveMode ? "ok" : state.frozen ? "" : "ok";
-    connectionText.textContent = extraText || (state.receiveMode ? "接收中" : state.frozen ? "已冻结" : "在线");
+    connectionDot.className = extraText ? "off" : simulationPaused ? "frozen" : state.receiveMode ? "ok" : state.frozen ? "" : "ok";
+    connectionText.textContent = extraText || (simulationPaused ? "模拟台暂停，已冻结" : state.receiveMode ? "接收中" : state.frozen ? "已冻结" : "在线");
   }
   if (stateText) {
-    const label = state.receiveMode
-      ? "运行接收"
+    const label = simulationPaused
+      ? "已冻结"
+      : state.receiveMode
+        ? "运行接收"
       : state.frozen
         ? "已冻结"
         : state.modelInitialized
@@ -11110,6 +11065,8 @@ function resetRenewableControlView(modelId = state.activeModelId) {
     desiredEnabled: false,
     resumePending: false,
     runState: "stopped",
+    controlFrozen: false,
+    simulationPaused: false,
     receiveActive: false,
     canRun: false,
     prerequisiteStatus: "请先启动接收。",
@@ -11143,6 +11100,9 @@ function renewableDataSourceLabel(source = "") {
 }
 
 function renewablePrerequisiteStatus(control = {}) {
+  if (control.controlFrozen) {
+    return "模拟台暂停，学员台保持冻结；恢复后将继续原运行状态。";
+  }
   if (control.prerequisiteStatus) return control.prerequisiteStatus;
   return control.receiveActive
     ? "学员台正在等待第一份实时数据。"
@@ -11255,19 +11215,24 @@ function applyRenewableControlState(payload = {}) {
     enabled: Boolean(payload.enabled),
     desiredEnabled: Boolean(payload.desiredEnabled),
     resumePending: Boolean(payload.resumePending),
-    runState: ["running", "resume_pending", "stopped"].includes(payload.runState)
+    runState: ["running", "frozen", "resume_pending", "stopped"].includes(payload.runState)
       ? payload.runState
       : payload.enabled
         ? "running"
         : payload.desiredEnabled
           ? "resume_pending"
           : "stopped",
+    controlFrozen: Boolean(payload.controlFrozen),
+    simulationPaused: Boolean(payload.simulationPaused),
     receiveActive: Boolean(payload.receiveActive),
     canRun: Boolean(payload.canRun),
     prerequisiteStatus: payload.prerequisiteStatus || "",
     loopMode: payload.loopMode === "closed" ? "closed" : "open",
     sending: Boolean(payload.sending),
-    intervalSeconds: Math.max(1, toNumber(settings.intervalSeconds, control.intervalSeconds || 2)),
+    intervalSeconds: Math.max(1, toNumber(
+      settings.simulationIntervalSeconds ?? settings.intervalSeconds,
+      control.intervalSeconds || 2,
+    )),
     largeStepThresholdKw: Math.max(0, toNumber(settings.largeStepThresholdKw, control.largeStepThresholdKw || 10)),
     stepCoefficient: Math.max(0, toNumber(
       settings.renewableStepRatio ?? settings.stepCoefficient,
@@ -11762,7 +11727,7 @@ function renewableTrendWindowRange() {
 }
 
 function renewableTrendWindowPoints(range = renewableTrendWindowRange()) {
-  return traceWindowPointsWithBoundaryAnchors(state.renewableTrendHistory || [], range);
+  return traceWindowRealPoints(state.renewableTrendHistory || [], range);
 }
 
 function renewableMetricCount(metrics = {}, keys = []) {
@@ -12387,7 +12352,12 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   state.frontendDiagnostics.renewableRenderCount += 1;
   const control = state.renewableControl;
   const actionPending = renewableForegroundActionPending(control);
-  const receiveReady = Boolean(state.receiveMode && control.receiveActive && control.canRun);
+  const receiveReady = Boolean(
+    state.receiveMode
+    && control.receiveActive
+    && control.canRun
+    && !control.controlFrozen
+  );
   const loopMode = renewableLoopMode(control);
   const loopModeLabel = renewableLoopModeLabel(loopMode);
   const plan = control.lastPlan;
@@ -12478,6 +12448,8 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     stateNode.dataset.state = backendRunState;
     stateNode.textContent = backendRunState === "running"
       ? `${loopModeLabel}实时控制运行中`
+      : backendRunState === "frozen"
+        ? "模拟台暂停，学员台已冻结"
       : backendRunState === "resume_pending"
         ? "等待接收后恢复"
         : "已停止";
@@ -12742,11 +12714,7 @@ async function setRenewableLoopMode(mode) {
 async function updateRenewableSettings() {
   const periodInput = $("renewableControlPeriod");
   const intervalSeconds = toNumber(periodInput?.value, 2);
-  const collectionIntervalSeconds = renewableCollectionIntervalSeconds();
-  const intervalError = renewableControlIntervalError(
-    intervalSeconds,
-    collectionIntervalSeconds,
-  );
+  const intervalError = renewableSimulationControlIntervalError(intervalSeconds);
   periodInput?.setCustomValidity?.(intervalError);
   if (intervalError) {
     state.renewableControl.lastStatus = intervalError;
@@ -12763,7 +12731,7 @@ async function updateRenewableSettings() {
   );
   return runRenewableControlAction("update_settings", {
     settings: {
-      intervalSeconds,
+      simulationIntervalSeconds: intervalSeconds,
       commandValidMinutes,
       largeStepThresholdKw: state.renewableControl.largeStepThresholdKw,
       renewableStepRatio: ratio("renewableStepRatio", 3),
@@ -13886,7 +13854,11 @@ function renderMeasurements(snapshot = state.snapshot || {}) {
 }
 
 function appendMeasurementTrace(snapshot) {
-  const clock = snapshot.clock || {};
+  const sampledClock = snapshot.measurement_clock;
+  const clock = sampledClock && Number(sampledClock.step_count ?? 0) > 0
+    ? sampledClock
+    : snapshot.clock || {};
+  if (isSimulationPausedSnapshot(snapshot)) return false;
   if (Number(clock.step_count ?? 0) <= 0) return false;
   const rows = measurementCompareRows(snapshot.measurements || {});
   if (!rows.some((row) => (
@@ -14183,13 +14155,21 @@ function alignedTraceWindowRange(
   const minutes = Math.max(1, Number(windowMinutes) || 60);
   const alignmentMinutes = traceWindowAlignmentMinutes(minutes);
   const bounds = traceHistoryMinuteBounds(history, fallbackMinute);
-  const currentStartMinute = Math.floor(bounds.latestMinute / alignmentMinutes) * alignmentMinutes;
+  const fallback = Number.isFinite(Number(fallbackMinute)) ? Number(fallbackMinute) : bounds.latestMinute;
+  const latestMinute = Math.max(bounds.latestMinute, fallback);
+  const currentStartMinute = Math.floor(latestMinute / alignmentMinutes) * alignmentMinutes;
   const normalizedSimulationDuration = Number(simulationDurationMinutes);
+  const cycleStartMinute = Number.isFinite(normalizedSimulationDuration) && normalizedSimulationDuration > 0
+    ? Math.floor((latestMinute + 1e-9) / normalizedSimulationDuration) * normalizedSimulationDuration
+    : Number.NEGATIVE_INFINITY;
+  const earliestMinute = bounds.hasHistory
+    ? Math.max(bounds.earliestMinute, cycleStartMinute)
+    : latestMinute;
   const periodNavigationAllowed = !Number.isFinite(normalizedSimulationDuration)
     || normalizedSimulationDuration <= 0
     || minutes < normalizedSimulationDuration;
   const minWindowOffset = periodNavigationAllowed && bounds.hasHistory
-    ? Math.min(0, Math.floor((bounds.earliestMinute - currentStartMinute) / minutes))
+    ? Math.min(0, Math.floor((earliestMinute - currentStartMinute) / minutes))
     : 0;
   const normalizedOffset = periodNavigationAllowed
     ? Math.min(0, Math.trunc(Number(requestedOffset) || 0))
@@ -14199,8 +14179,8 @@ function alignedTraceWindowRange(
   return {
     startMinute,
     endMinute: startMinute + minutes,
-    latestMinute: bounds.latestMinute,
-    earliestMinute: bounds.earliestMinute,
+    latestMinute,
+    earliestMinute,
     currentStartMinute,
     windowMinutes: minutes,
     alignmentMinutes,
@@ -14299,7 +14279,7 @@ function measurementTraceWindowPoints(range = measurementTraceWindowRange()) {
       return { minute: point.minute, time: point.time, value: item.value, label: item.label };
     })
     .filter(Boolean);
-  return traceWindowPointsWithBoundaryAnchors(points, range);
+  return traceWindowRealPoints(points, range);
 }
 
 function formatTraceClockMinute(minute) {
@@ -14528,11 +14508,12 @@ function commandTraceWindowPoints(range = commandTraceWindowRange()) {
       };
     })
     .filter(Boolean);
-  return traceWindowPointsWithBoundaryAnchors(points, range);
+  return traceWindowRealPoints(points, range);
 }
 
 function appendCommandTrace(snapshot) {
   const clock = snapshot.clock || {};
+  if (isSimulationPausedSnapshot(snapshot)) return false;
   if (Number(clock.step_count ?? 0) <= 0) return;
   const devices = controlDefinitionDevices(snapshot);
   const point = {

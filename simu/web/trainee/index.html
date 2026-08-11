@@ -1094,8 +1094,8 @@
           <button id="closeRenewableControlParametersDialog" class="dialog-close-button" type="button" aria-label="关闭控制参数窗口">×</button>
         </div>
         <div class="renewable-control-parameter-fields">
-          <label>控制周期(s)
-            <input id="renewableControlPeriod" type="number" min="2" step="1" value="2" />
+          <label>自动控制周期（仿真秒）
+            <input id="renewableControlPeriod" type="number" min="1" step="0.1" value="2" title="按仿真时钟累计，仿真暂停时停止计时" />
           </label>
           <label>自动指令有效期(分钟)
             <input id="renewableCommandValidMinutes" type="number" min="0.1" step="1" value="120" />

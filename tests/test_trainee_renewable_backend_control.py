@@ -5922,7 +5922,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         plan = calculate_renewable_control_plan(
             snapshot,
             RenewableControlSettings(
-                interval_seconds=2,
+                interval_seconds=600,
                 storage_charge_derating_curve=((0.0, 1.0), (1.0, 1.0)),
             ),
         )
@@ -8050,6 +8050,201 @@ class RenewableControlBackendApiTest(unittest.TestCase):
         self.assertFalse(controller_state["canDispatch"])
         self.assertIn("冻结", controller_state["status"])
 
+    def test_paused_simulator_freezes_controller_without_calculation_logs_or_dispatch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            target = type(
+                "TargetService",
+                (),
+                {
+                    "model_id": "shared",
+                    "runtime_dir": Path(temporary),
+                },
+            )()
+            services = type(
+                "Services",
+                (),
+                {
+                    "service_for": lambda self, _model_id: target,
+                    "iter_services": lambda self: [target],
+                },
+            )()
+            receive_state = {"paused": True}
+
+            def receive_status(_model_id):
+                paused = receive_state["paused"]
+                return {
+                    "receiveActive": True,
+                    "ready": True,
+                    "canRun": True,
+                    "canCalculate": not paused,
+                    "canDispatch": not paused,
+                    "simulationPaused": paused,
+                    "controlFrozen": paused,
+                    "revision": 1,
+                    "receiveEpoch": 0,
+                    "connectionSignature": ["learner", 1],
+                    "prerequisiteStatus": "",
+                    "dispatchStatus": "",
+                }
+
+            dispatched = []
+            manager = make_control_manager(
+                services,
+                snapshot=renewable_snapshot(),
+                receive_status_provider=receive_status,
+                command_sink=lambda model_id, payload: dispatched.append((model_id, payload)) or {},
+            )
+            state = manager._state_for("shared")
+            state.loop_mode = "closed"
+            state.enabled = True
+            state.desired_enabled = True
+            state.last_plan = {"time": "prior", "commands": []}
+            state.last_calculated_at = "prior-calculated"
+            state.last_sent_at = "prior-sent"
+            state.logs = [{"seq": 1, "detail": "prior", "level": "ok"}]
+            try:
+                with patch.object(
+                    renewable_control_module,
+                    "calculate_renewable_control_plan",
+                    wraps=renewable_control_module.calculate_renewable_control_plan,
+                ) as calculate:
+                    paused = manager.run_once(
+                        "shared",
+                        trigger="auto",
+                        allow_dispatch=True,
+                        record_log=True,
+                    )
+                    calculate.assert_not_called()
+
+                self.assertTrue(paused["enabled"])
+                self.assertTrue(paused["desiredEnabled"])
+                self.assertFalse(paused["resumePending"])
+                self.assertEqual(paused["runState"], "frozen")
+                self.assertTrue(paused["controlFrozen"])
+                self.assertEqual(paused["lastPlan"], {"time": "prior", "commands": []})
+                self.assertEqual(paused["lastCalculatedAt"], "prior-calculated")
+                self.assertEqual(paused["lastSentAt"], "prior-sent")
+                self.assertEqual(paused["logs"], [{"seq": 1, "detail": "prior", "level": "ok"}])
+                self.assertEqual(dispatched, [])
+
+                receive_state["paused"] = False
+                with patch.object(
+                    renewable_control_module,
+                    "calculate_renewable_control_plan",
+                    wraps=renewable_control_module.calculate_renewable_control_plan,
+                ) as calculate:
+                    resumed = manager.run_once(
+                        "shared",
+                        trigger="auto",
+                        allow_dispatch=False,
+                        record_log=False,
+                    )
+                    self.assertEqual(calculate.call_count, 1)
+                self.assertTrue(resumed["enabled"])
+                self.assertEqual(resumed["runState"], "running")
+                self.assertFalse(resumed["controlFrozen"])
+                self.assertNotEqual(resumed["lastCalculatedAt"], "prior-calculated")
+            finally:
+                manager.close()
+
+    def test_worker_submits_no_background_cycles_during_pause_and_resumes_normally(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            active_snapshot = renewable_snapshot()
+            active_snapshot["clock"].update({
+                "state": "paused",
+                "step_count": 0,
+                "absolute_second": 0.0,
+                "absolute_minute": 0.0,
+            })
+            target = type(
+                "TargetService",
+                (),
+                {
+                    "model_id": "shared",
+                    "runtime_dir": Path(temporary),
+                },
+            )()
+            services = type(
+                "Services",
+                (),
+                {
+                    "service_for": lambda self, _model_id: target,
+                    "iter_services": lambda self: [target],
+                },
+            )()
+            receive_state = {"paused": True}
+
+            def receive_status(_model_id):
+                paused = receive_state["paused"]
+                return {
+                    "receiveActive": True,
+                    "ready": True,
+                    "canRun": True,
+                    "canCalculate": not paused,
+                    "canDispatch": not paused,
+                    "simulationPaused": paused,
+                    "controlFrozen": paused,
+                    "revision": 1,
+                    "receiveEpoch": 0,
+                    "connectionSignature": ["learner", 1],
+                    "prerequisiteStatus": "",
+                    "dispatchStatus": "",
+                }
+
+            manager = make_control_manager(
+                services,
+                snapshot=active_snapshot,
+                receive_status_provider=receive_status,
+            )
+            state = manager._state_for("shared")
+            state.enabled = True
+            state.desired_enabled = True
+            state.settings = RenewableControlSettings(interval_seconds=2.0)
+            state.last_preview_started = 0.0
+            try:
+                with patch.object(manager, "_submit_background_cycle", return_value=True) as submit:
+                    manager._run_worker_iteration(now=100.0)
+                    submit.assert_not_called()
+
+                    receive_state["paused"] = False
+                    active_snapshot["clock"]["state"] = "running"
+                    manager._run_worker_iteration(now=101.0)
+                    auto_calls = [
+                        call
+                        for call in submit.call_args_list
+                        if call.kwargs["timestamp_attr"] == "last_auto_started"
+                    ]
+                    self.assertEqual(auto_calls, [])
+
+                    active_snapshot["clock"].update({
+                        "step_count": 1,
+                        "absolute_second": 1.0,
+                        "absolute_minute": 1.0 / 60.0,
+                    })
+                    manager._run_worker_iteration(now=102.0)
+                    auto_calls = [
+                        call
+                        for call in submit.call_args_list
+                        if call.kwargs["timestamp_attr"] == "last_auto_started"
+                    ]
+                    self.assertEqual(auto_calls, [])
+
+                    active_snapshot["clock"].update({
+                        "step_count": 2,
+                        "absolute_second": 2.0,
+                        "absolute_minute": 2.0 / 60.0,
+                    })
+                    manager._run_worker_iteration(now=103.0)
+                    auto_calls = [
+                        call
+                        for call in submit.call_args_list
+                        if call.kwargs["timestamp_attr"] == "last_auto_started"
+                    ]
+                    self.assertEqual(len(auto_calls), 1)
+                    self.assertEqual(auto_calls[0].kwargs["kwargs"]["trigger"], "auto")
+            finally:
+                manager.close()
+
     def test_realtime_control_start_requires_active_receive_state(self):
         with tempfile.TemporaryDirectory() as temporary:
             receive_state = {
@@ -8117,10 +8312,13 @@ class RenewableControlBackendApiTest(unittest.TestCase):
             )()
             snapshot_calls = []
             dispatched = []
+            active_snapshot = renewable_snapshot()
             manager = make_control_manager(
                 services,
                 snapshot_provider=lambda model_id: snapshot_calls.append(model_id) or ready_view(
-                    renewable_snapshot()
+                    active_snapshot,
+                    revision=receive_state["revision"],
+                    signature=receive_state["signature"],
                 ),
                 receive_status_provider=mutable_receive_status(receive_state),
                 command_sink=lambda model_id, payload: dispatched.append((model_id, payload)) or {},
@@ -8149,7 +8347,22 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                     "signature": ("learner", 2),
                 })
                 recovered = manager.receive_state_changed("shared")
-                manager._run_worker_iteration(now=time.monotonic())
+                iteration_now = time.monotonic()
+                manager._run_worker_iteration(now=iteration_now)
+                deadline = time.monotonic() + 2.0
+                while (
+                    time.monotonic() < deadline
+                    and manager._state_for("shared").background_cycle_pending
+                ):
+                    time.sleep(0.01)
+                self.assertEqual(dispatched, [])
+
+                active_snapshot["clock"].update({
+                    "step_count": 1,
+                    "absolute_second": active_snapshot["clock"]["absolute_minute"] * 60.0 + 2.0,
+                    "absolute_minute": active_snapshot["clock"]["absolute_minute"] + 2.0 / 60.0,
+                })
+                manager._run_worker_iteration(now=iteration_now + 1.0)
                 deadline = time.monotonic() + 2.0
                 while time.monotonic() < deadline and not dispatched:
                     time.sleep(0.01)
@@ -8163,7 +8376,7 @@ class RenewableControlBackendApiTest(unittest.TestCase):
         self.assertTrue(recovered["desiredEnabled"])
         self.assertFalse(recovered["resumePending"])
         self.assertIn("自动恢复", recovered["status"])
-        self.assertEqual(snapshot_calls, ["shared"])
+        self.assertEqual(snapshot_calls, ["shared", "shared"])
         self.assertEqual(len(dispatched), 1)
 
     def test_receive_recovery_preserves_meaningful_non_prerequisite_status(self):
@@ -8290,10 +8503,28 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                     "time": "00:01:00",
                     "minute": 1,
                     "absolute_minute": 1,
+                    "absolute_second": 60,
                     "step_count": 1,
                 })
                 recovered = manager.receive_state_changed("shared")
-                manager._run_worker_iteration(now=time.monotonic())
+                iteration_now = time.monotonic()
+                manager._run_worker_iteration(now=iteration_now)
+                deadline = time.monotonic() + 2.0
+                while (
+                    time.monotonic() < deadline
+                    and manager._state_for("shared").background_cycle_pending
+                ):
+                    time.sleep(0.01)
+                self.assertEqual(dispatched, [])
+
+                active_snapshot["clock"].update({
+                    "time": "00:01:02",
+                    "minute": 1 + 2.0 / 60.0,
+                    "absolute_minute": 1 + 2.0 / 60.0,
+                    "absolute_second": 62,
+                    "step_count": 2,
+                })
+                manager._run_worker_iteration(now=iteration_now + 1.0)
                 deadline = time.monotonic() + 2.0
                 while time.monotonic() < deadline and not dispatched:
                     time.sleep(0.01)
@@ -8307,7 +8538,7 @@ class RenewableControlBackendApiTest(unittest.TestCase):
         self.assertTrue(recovered["desiredEnabled"])
         self.assertFalse(recovered["resumePending"])
         self.assertIn("自动恢复", recovered["status"])
-        self.assertEqual(snapshot_calls, ["shared"])
+        self.assertEqual(snapshot_calls, ["shared", "shared"])
         self.assertEqual(len(dispatched), 1)
 
     def test_ready_preview_after_active_waiting_receive_clears_stale_prerequisite_status(self):
@@ -11212,7 +11443,21 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                 self.assertFalse(resumed["resumePending"])
                 self.assertIn("自动恢复", resumed["status"])
 
-                resumed_manager._run_worker_iteration(now=time.monotonic())
+                iteration_now = time.monotonic()
+                resumed_manager._run_worker_iteration(now=iteration_now)
+                deadline = time.monotonic() + 2.0
+                while (
+                    time.monotonic() < deadline
+                    and resumed_manager._state_for("shared").background_cycle_pending
+                ):
+                    time.sleep(0.01)
+                self.assertEqual(resumed_dispatches, [])
+                snapshot["clock"].update({
+                    "step_count": 1,
+                    "absolute_second": snapshot["clock"]["absolute_minute"] * 60.0 + 2.0,
+                    "absolute_minute": snapshot["clock"]["absolute_minute"] + 2.0 / 60.0,
+                })
+                resumed_manager._run_worker_iteration(now=iteration_now + 1.0)
                 deadline = time.monotonic() + 2.0
                 while time.monotonic() < deadline and not resumed_dispatches:
                     time.sleep(0.01)
@@ -11304,10 +11549,28 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                     "time": "00:01:00",
                     "minute": 1,
                     "absolute_minute": 1,
+                    "absolute_second": 60,
                     "step_count": 1,
                 })
                 recovered = resumed_manager.receive_state_changed("shared")
-                resumed_manager._run_worker_iteration(now=time.monotonic())
+                iteration_now = time.monotonic()
+                resumed_manager._run_worker_iteration(now=iteration_now)
+                deadline = time.monotonic() + 2.0
+                while (
+                    time.monotonic() < deadline
+                    and resumed_manager._state_for("shared").background_cycle_pending
+                ):
+                    time.sleep(0.01)
+                self.assertEqual(resumed_dispatches, [])
+
+                active_snapshot["clock"].update({
+                    "time": "00:01:02",
+                    "minute": 1 + 2.0 / 60.0,
+                    "absolute_minute": 1 + 2.0 / 60.0,
+                    "absolute_second": 62,
+                    "step_count": 2,
+                })
+                resumed_manager._run_worker_iteration(now=iteration_now + 1.0)
                 deadline = time.monotonic() + 2.0
                 while time.monotonic() < deadline and not resumed_dispatches:
                     time.sleep(0.01)

@@ -2430,6 +2430,59 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
         self.assertTrue(recovered["canDispatch"])
         self.assertFalse(recovered["frameFrozen"])
 
+    def test_paused_simulator_is_a_normal_frozen_state_and_recovers_without_alarm(self):
+        service = self.make_service()
+        configure_receive(service)
+        runtime = service.snapshot(include_static=True, include_runtime_logs=False)
+        runtime["clock"]["state"] = "paused"
+        exchange = TraineeRealtimeExchange(
+            service,
+            start_worker=False,
+            frame_age_limit_seconds=10.0,
+            same_frame_limit_seconds=0.01,
+        )
+        self.addCleanup(exchange.close)
+
+        exchange.publish_runtime_snapshot(
+            service.model_id,
+            runtime,
+            connection_signature=exchange._connection_signature(service),
+        )
+        time.sleep(0.02)
+        exchange.publish_runtime_snapshot(
+            service.model_id,
+            runtime,
+            connection_signature=exchange._connection_signature(service),
+        )
+
+        paused = exchange.receive_status(service.model_id)
+        self.assertTrue(paused["receiveActive"])
+        self.assertTrue(paused["ready"])
+        self.assertTrue(paused["canRun"])
+        self.assertFalse(paused["canCalculate"])
+        self.assertFalse(paused["canDispatch"])
+        self.assertTrue(paused["simulationPaused"])
+        self.assertTrue(paused["controlFrozen"])
+        self.assertFalse(paused["frameTooOld"])
+        self.assertFalse(paused["frameFrozen"])
+        self.assertEqual(paused["dispatchStatus"], "")
+        self.assertEqual(paused["error"], "")
+
+        resumed = copy.deepcopy(runtime)
+        resumed["clock"]["state"] = "running"
+        exchange.publish_runtime_snapshot(
+            service.model_id,
+            resumed,
+            connection_signature=exchange._connection_signature(service),
+        )
+
+        recovered = exchange.receive_status(service.model_id)
+        self.assertFalse(recovered["simulationPaused"])
+        self.assertFalse(recovered["controlFrozen"])
+        self.assertTrue(recovered["canCalculate"])
+        self.assertTrue(recovered["canDispatch"])
+        self.assertFalse(recovered["frameFrozen"])
+
     def test_receive_status_does_not_build_a_full_control_snapshot(self):
         service = self.make_service()
         configure_receive(service)

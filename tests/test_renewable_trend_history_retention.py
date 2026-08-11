@@ -8,7 +8,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from simu.renewable_control import TraineeRenewableControlManager
+from simu.renewable_control import (
+    RenewableControlSettings,
+    TraineeRenewableControlManager,
+    calculate_renewable_control_plan,
+)
 from tests.test_trainee_renewable_backend_control import (
     make_control_manager,
     ready_view,
@@ -75,6 +79,45 @@ class RenewableTrendHistoryRetentionTest(unittest.TestCase):
         self.assertEqual(len(state.trend), 4)
         self.assertEqual(state.trend[0]["minute"], 0.0)
         self.assertEqual(state.trend[-1]["minute"], 3.0)
+
+    def test_plan_trend_and_command_generation_use_the_measurement_sample_clock(self):
+        snapshot = renewable_snapshot()
+        snapshot["clock"].update(
+            {
+                "run_id": 1,
+                "step_count": 10,
+                "minute": 0,
+                "absolute_minute": 1440,
+                "time": "00:00:00",
+            }
+        )
+        snapshot["measurement_clock"] = {
+            **snapshot["clock"],
+            "minute": 1439,
+            "absolute_minute": 1439,
+            "time": "23:59:00",
+        }
+
+        plan = calculate_renewable_control_plan(snapshot)
+        manager = object.__new__(TraineeRenewableControlManager)
+        trend_point = manager._trend_point(plan, snapshot)
+        payload = manager._command_payload(
+            SimpleNamespace(
+                settings=RenewableControlSettings(),
+                loop_mode="closed_loop",
+            ),
+            plan,
+            snapshot,
+            "test",
+        )
+
+        self.assertEqual(plan["time"], "23:59:00")
+        self.assertEqual(plan["clockKey"], "1|1439|23:59:00")
+        self.assertEqual(plan["weather"]["minute"], 1439)
+        self.assertEqual(trend_point["minute"], 1439)
+        self.assertEqual(trend_point["time"], "23:59:00")
+        self.assertEqual(payload["sent_absolute_minute"], 1439)
+        self.assertEqual(payload["sent_simu_time"], "23:59:00")
 
     def test_recomputed_simulation_instant_replaces_persisted_tail_without_duplicate_line(self):
         with tempfile.TemporaryDirectory() as temporary:

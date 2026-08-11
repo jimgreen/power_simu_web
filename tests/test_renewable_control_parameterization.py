@@ -167,6 +167,8 @@ class RenewableControlParameterizationTest(unittest.TestCase):
         metrics = plan["metrics"]
 
         self.assertEqual(metrics["controlIntervalSeconds"], 2.0)
+        self.assertEqual(metrics["simulationControlIntervalSeconds"], 2.0)
+        self.assertEqual(metrics["controlIntervalClock"], "simulation")
         self.assertAlmostEqual(metrics["renewableStepRatio"], 0.03)
         self.assertAlmostEqual(metrics["gridFollowingStorageStepRatio"], 0.02)
         self.assertAlmostEqual(metrics["renewableEffectiveDecisionStepRatio"], 0.03)
@@ -198,7 +200,7 @@ class RenewableControlParameterizationTest(unittest.TestCase):
         plan = calculate_renewable_control_plan(
             snapshot,
             RenewableControlSettings(
-                interval_seconds=2.0,
+                interval_seconds=600.0,
                 storage_step_ratio=0.03,
                 grid_forming_storage_protection_ratio=0.0,
                 soc_deadband=0.05,
@@ -243,7 +245,7 @@ class RenewableControlParameterizationTest(unittest.TestCase):
         plan = calculate_renewable_control_plan(
             snapshot,
             RenewableControlSettings(
-                interval_seconds=2.0,
+                interval_seconds=600.0,
                 storage_step_ratio=0.03,
                 grid_forming_storage_protection_ratio=0.0,
                 soc_deadband=0.05,

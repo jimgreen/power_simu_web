@@ -51,9 +51,8 @@ from simu.trainee_exchange import TraineeControlSnapshot
 EPSILON = 1e-9
 RENEWABLE_CONTROL_STRATEGY_ID = "renewable_priority"
 DEFAULT_TRAINEE_BACKEND_REFRESH_SECONDS = 1.0
-CONTROL_INTERVAL_MULTIPLE_TOLERANCE = 1e-8
 MINIMUM_CONTROL_INTERVAL_SECONDS = default_number(
-    "minimum_control_interval_seconds"
+    "minimum_simulation_control_interval_seconds"
 )
 MINIMUM_COMMAND_VALID_MINUTES = default_number(
     "minimum_command_valid_minutes"
@@ -69,35 +68,22 @@ SIMULATION_MINIMUM_STEP_MINUTES = default_number(
 )
 
 
-def _control_interval_multiple(
-    control_interval_seconds: Any,
-    collection_interval_seconds: Any,
-) -> int:
+def _simulation_control_interval_seconds(value: Any) -> float:
     try:
-        control_interval = float(control_interval_seconds)
-        collection_interval = float(collection_interval_seconds)
+        interval = float(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError("采集周期和控制周期必须为有效数字。") from exc
-    if not math.isfinite(collection_interval) or collection_interval <= 0.0:
-        raise ValueError("采集周期（后台数据刷新周期）必须大于 0 秒。")
-    if not math.isfinite(control_interval) or control_interval <= collection_interval:
-        raise ValueError(
-            f"控制周期 {control_interval:g} 秒必须大于采集周期（后台数据刷新周期）"
-            f"{collection_interval:g} 秒。"
-        )
-    ratio = control_interval / collection_interval
-    multiple = int(round(ratio))
-    if multiple < 2 or not math.isclose(
-        ratio,
-        float(multiple),
-        rel_tol=CONTROL_INTERVAL_MULTIPLE_TOLERANCE,
-        abs_tol=CONTROL_INTERVAL_MULTIPLE_TOLERANCE,
+        raise ValueError("自动控制周期必须为有效的仿真秒数。") from exc
+    if (
+        not math.isfinite(interval)
+        or interval < MINIMUM_CONTROL_INTERVAL_SECONDS
     ):
         raise ValueError(
-            f"控制周期 {control_interval:g} 秒必须是采集周期（后台数据刷新周期）"
-            f"{collection_interval:g} 秒的整数倍。"
+            "自动控制周期必须不少于 "
+            f"{MINIMUM_CONTROL_INTERVAL_SECONDS:g} 仿真秒。"
         )
-    return multiple
+    return interval
+
+
 SIMULATION_DEFAULT_SPEED = default_number("simulation_default_speed")
 SIMULATION_MINIMUM_SPEED = default_number("simulation_minimum_speed")
 STORAGE_MINIMUM_CONTROL_HORIZON_HOURS = default_number(
@@ -874,7 +860,8 @@ def _runtime_mode(snapshot: Mapping[str, Any], device: Mapping[str, Any]) -> str
 
 @dataclass(frozen=True)
 class RenewableControlSettings:
-    interval_seconds: float = default_number("interval_seconds")
+    # Simulation-clock seconds between automatic control decisions.
+    interval_seconds: float = default_number("simulation_control_interval_seconds")
     soc_min: float = default_number("soc_min")
     soc_max: float = default_number("soc_max")
     large_step_threshold_kw: float = default_number("large_step_threshold_kw")
@@ -1014,7 +1001,12 @@ class RenewableControlSettings:
 
     def updated(self, payload: Mapping[str, Any]) -> "RenewableControlSettings":
         aliases = {
-            "interval_seconds": ("interval_seconds", "intervalSeconds"),
+            "interval_seconds": (
+                "simulation_interval_seconds",
+                "simulationIntervalSeconds",
+                "interval_seconds",
+                "intervalSeconds",
+            ),
             "soc_min": ("soc_min", "socMin"),
             "soc_max": ("soc_max", "socMax"),
             "large_step_threshold_kw": ("large_step_threshold_kw", "largeStepThresholdKw"),
@@ -1153,6 +1145,7 @@ class RenewableControlSettings:
 
     def payload(self) -> Dict[str, Any]:
         return {
+            "simulationIntervalSeconds": self.interval_seconds,
             "intervalSeconds": self.interval_seconds,
             "socMin": self.soc_min,
             "socMax": self.soc_max,
@@ -1660,13 +1653,24 @@ def _annotate_diesel_topology(
             row["statusLabel"] = "拓扑无效·禁止自动控制"
 
 
+def _measurement_sample_clock(snapshot: Mapping[str, Any]) -> Mapping[str, Any]:
+    measurement_clock = snapshot.get("measurement_clock")
+    if (
+        isinstance(measurement_clock, Mapping)
+        and (_number(measurement_clock.get("step_count"), 0.0) or 0.0) > 0.0
+    ):
+        return measurement_clock
+    clock = snapshot.get("clock")
+    return clock if isinstance(clock, Mapping) else {}
+
+
 def _effective_step_minutes(snapshot: Mapping[str, Any]) -> float:
     parameters = snapshot.get("system_parameters")
     if isinstance(parameters, Mapping):
         effective = _number(parameters.get("effective_step_minutes"))
         if effective is not None and effective > 0:
             return effective
-    clock = snapshot.get("clock") if isinstance(snapshot.get("clock"), Mapping) else {}
+    clock = _measurement_sample_clock(snapshot)
     step = max(
         SIMULATION_MINIMUM_STEP_MINUTES,
         _number(
@@ -1688,15 +1692,14 @@ def _storage_control_horizon_minutes(
     settings: RenewableControlSettings,
 ) -> float:
     effective_step = _effective_step_minutes(snapshot)
-    parameters = snapshot.get("system_parameters")
-    compute_interval = (
-        _number(parameters.get("compute_interval_seconds"))
-        if isinstance(parameters, Mapping)
-        else None
+    effective_step_seconds = effective_step * 60.0
+    interval_seconds = _simulation_control_interval_seconds(
+        settings.interval_seconds
     )
-    if compute_interval is None or compute_interval <= 0:
-        return effective_step
-    simulator_steps = max(1, int(math.ceil(settings.interval_seconds / compute_interval)))
+    simulator_steps = max(
+        1,
+        int(math.ceil(interval_seconds / effective_step_seconds)),
+    )
     return effective_step * simulator_steps
 
 
@@ -10697,7 +10700,7 @@ def calculate_renewable_control_plan(
         for row in online_renewable
         if row.get("commandable") and _finite_number(row.get("capacityKw")) > _finite_number(row.get("currentKw")) + EPSILON
     )
-    clock = snapshot.get("clock") if isinstance(snapshot.get("clock"), Mapping) else {}
+    clock = _measurement_sample_clock(snapshot)
     time_text = str(clock.get("time", "--"))
     run_id = int(_number(clock.get("run_id"), 0.0) or 0)
     clock_key = f"{run_id}|{clock.get('absolute_minute', clock.get('minute', ''))}|{time_text}"
@@ -11026,7 +11029,9 @@ def calculate_renewable_control_plan(
         "renewableCapacityKw": renewable_capacity,
         "renewableStepRatio": settings.step_coefficient,
         "renewableEffectiveDecisionStepRatio": renewable_effective_decision_step_ratio,
+        "simulationControlIntervalSeconds": configured_settings.interval_seconds,
         "controlIntervalSeconds": configured_settings.interval_seconds,
+        "controlIntervalClock": "simulation",
         "renewableStepDirection": renewable_step_direction,
         "renewableRecoveryStepScale": renewable_recovery_step_scale,
         "renewableRecoveryBoundaryScale": renewable_recovery_boundary_scale,
@@ -11550,6 +11555,10 @@ class _ControllerState:
     pending_dispatch_generation_key: Tuple[Any, ...] = ()
     last_auto_started: float = 0.0
     last_preview_started: float = 0.0
+    control_clock_run_id: Optional[int] = None
+    control_clock_anchor_second: Optional[float] = None
+    control_clock_last_second: Optional[float] = None
+    control_clock_last_step_count: Optional[int] = None
     background_cycle_pending: bool = False
     plan_revision: int = 0
     revision: int = 0
@@ -11572,6 +11581,14 @@ class _TrendCandidate:
     persistence_reset: bool = False
     persistence_replace_last: bool = False
     persistence_point: Optional[Dict[str, Any]] = None
+
+
+@dataclass(frozen=True)
+class _SimulationControlClock:
+    state: str
+    run_id: int
+    step_count: int
+    absolute_second: float
 
 
 class TraineeRenewableControlManager:
@@ -11809,45 +11826,28 @@ class TraineeRenewableControlManager:
             return DEFAULT_TRAINEE_BACKEND_REFRESH_SECONDS
         return interval
 
-    def _validate_control_interval_for_service(
-        self,
-        service: Any,
-        control_interval_seconds: float,
-        *,
-        collection_interval_seconds: Optional[float] = None,
-    ) -> int:
-        collection_interval = (
-            self._collection_interval_seconds_for_service(service)
-            if collection_interval_seconds is None
-            else float(collection_interval_seconds)
-        )
-        return _control_interval_multiple(
-            control_interval_seconds,
-            collection_interval,
-        )
+    @staticmethod
+    def _validate_simulation_control_interval(
+        control_interval_seconds: Any,
+    ) -> float:
+        return _simulation_control_interval_seconds(control_interval_seconds)
 
     def validate_runtime_settings_update_for_service(
         self,
         service: Any,
         payload: Mapping[str, Any],
     ) -> None:
+        self._state_for_live_service(service)
         values = payload.get("settings", {})
         if not isinstance(values, Mapping):
             return
-        state = self._state_for_live_service(service)
-        collection_interval = self._collection_interval_seconds_for_service(service)
         if "backend_refresh_seconds" in values:
             try:
                 collection_interval = float(values["backend_refresh_seconds"])
             except (TypeError, ValueError) as exc:
                 raise ValueError("后台数据刷新周期必须为有效数字。") from exc
-        with state.lock:
-            control_interval = state.settings.interval_seconds
-        self._validate_control_interval_for_service(
-            service,
-            control_interval,
-            collection_interval_seconds=collection_interval,
-        )
+            if not math.isfinite(collection_interval) or collection_interval <= 0.0:
+                raise ValueError("后台数据刷新周期必须大于 0 系统秒。")
 
     def runtime_settings_changed_for_service(self, service: Any) -> bool:
         try:
@@ -12054,6 +12054,7 @@ class TraineeRenewableControlManager:
         return (
             bool(status.get("receiveActive")),
             bool(status.get("ready")),
+            bool(status.get("controlFrozen") or status.get("simulationPaused")),
             int(_number(status.get("receiveEpoch", status.get("connectionEpoch")), 0.0) or 0),
             tuple(signature),
             int(_number(status.get("revision"), 0.0) or 0),
@@ -12061,6 +12062,20 @@ class TraineeRenewableControlManager:
 
     def _receive_state_signature(self, model_id: Optional[str]) -> Tuple[Any, ...]:
         return self._receive_state_signature_for_service(self._service_for(model_id))
+
+    @classmethod
+    def _receive_state_signature_for_view(
+        cls,
+        view: TraineeControlSnapshot,
+    ) -> Tuple[Any, ...]:
+        return (
+            bool(view.receive_active),
+            bool(view.ready),
+            cls._snapshot_simulation_paused(view.snapshot),
+            int(view.receive_epoch),
+            tuple(view.connection_signature),
+            int(view.revision),
+        )
 
     def _candidate_generation_guard(
         self,
@@ -12090,8 +12105,12 @@ class TraineeRenewableControlManager:
         status = self._receive_status_for_service(service)
         active = bool(status.get("receiveActive"))
         ready = bool(status.get("ready"))
-        can_calculate = active and ready and bool(
-            status.get("canCalculate", status.get("canRun", True))
+        control_frozen = bool(
+            status.get("controlFrozen") or status.get("simulationPaused")
+        )
+        can_run = active and ready and bool(status.get("canRun", True))
+        can_calculate = can_run and not control_frozen and bool(
+            status.get("canCalculate", True)
         )
         can_dispatch = can_calculate and bool(status.get("canDispatch", can_calculate))
         if not active:
@@ -12105,13 +12124,104 @@ class TraineeRenewableControlManager:
             "receiveActive": active,
             "receiveConfigured": active,
             "ready": ready,
-            "canRun": can_calculate,
+            "canRun": can_run,
             "canCalculate": can_calculate,
             "canDispatch": can_dispatch,
+            "controlFrozen": control_frozen,
+            "simulationPaused": control_frozen,
             "prerequisiteStatus": message,
-            "dispatchStatus": str(status.get("dispatchStatus") or "") if not can_dispatch else "",
+            "dispatchStatus": (
+                ""
+                if control_frozen
+                else str(status.get("dispatchStatus") or "")
+                if not can_dispatch
+                else ""
+            ),
         })
         return normalized
+
+    @staticmethod
+    def _snapshot_simulation_paused(snapshot: Mapping[str, Any]) -> bool:
+        clock = snapshot.get("clock") if isinstance(snapshot.get("clock"), Mapping) else {}
+        return str(clock.get("state") or "").strip().casefold() == "paused"
+
+    @staticmethod
+    def _simulation_control_clock(
+        snapshot: Mapping[str, Any],
+    ) -> Optional[_SimulationControlClock]:
+        clock = snapshot.get("clock")
+        if not isinstance(clock, Mapping):
+            return None
+        absolute_second = _number(clock.get("absolute_second"))
+        if absolute_second is None:
+            absolute_minute = _number(
+                clock.get("absolute_minute", clock.get("minute"))
+            )
+            if absolute_minute is None:
+                return None
+            absolute_second = absolute_minute * 60.0
+        if not math.isfinite(absolute_second):
+            return None
+        return _SimulationControlClock(
+            state=str(clock.get("state") or "running").strip().casefold(),
+            run_id=int(_number(clock.get("run_id"), 0.0) or 0),
+            step_count=int(_number(clock.get("step_count"), 0.0) or 0),
+            absolute_second=float(absolute_second),
+        )
+
+    @staticmethod
+    def _simulation_control_due_locked(
+        state: _ControllerState,
+        clock: Optional[_SimulationControlClock],
+        interval_seconds: float,
+    ) -> bool:
+        if clock is None or clock.state != "running":
+            return False
+        lifecycle_changed = bool(
+            state.control_clock_run_id is not None
+            and (
+                clock.run_id != state.control_clock_run_id
+                or (
+                    state.control_clock_last_step_count is not None
+                    and clock.step_count < state.control_clock_last_step_count
+                )
+                or (
+                    state.control_clock_last_second is not None
+                    and clock.absolute_second
+                    < state.control_clock_last_second - EPSILON
+                )
+                or (
+                    state.control_clock_last_step_count is not None
+                    and state.control_clock_last_second is not None
+                    and clock.step_count == state.control_clock_last_step_count
+                    and clock.absolute_second
+                    > state.control_clock_last_second + EPSILON
+                )
+            )
+        )
+        if state.control_clock_anchor_second is None or lifecycle_changed:
+            state.control_clock_run_id = clock.run_id
+            state.control_clock_anchor_second = clock.absolute_second
+            state.control_clock_last_second = clock.absolute_second
+            state.control_clock_last_step_count = clock.step_count
+            return False
+        state.control_clock_run_id = clock.run_id
+        state.control_clock_last_second = clock.absolute_second
+        state.control_clock_last_step_count = clock.step_count
+        return (
+            clock.absolute_second - state.control_clock_anchor_second
+            >= max(MINIMUM_CONTROL_INTERVAL_SECONDS, interval_seconds) - EPSILON
+        )
+
+    @staticmethod
+    def _mark_simulation_control_started_locked(
+        state: _ControllerState,
+        clock: _SimulationControlClock,
+    ) -> None:
+        state.control_clock_run_id = clock.run_id
+        state.control_clock_anchor_second = clock.absolute_second
+        state.control_clock_last_second = clock.absolute_second
+        state.control_clock_last_step_count = clock.step_count
 
     def _receive_prerequisite(self, model_id: Optional[str]) -> Dict[str, Any]:
         return self._receive_prerequisite_for_service(self._service_for(model_id))
@@ -12449,7 +12559,7 @@ class TraineeRenewableControlManager:
     def _trend_point(plan: Mapping[str, Any], snapshot: Mapping[str, Any]) -> Dict[str, Any]:
         metrics = plan.get("metrics") if isinstance(plan.get("metrics"), Mapping) else {}
         weather = plan.get("weather") if isinstance(plan.get("weather"), Mapping) else {}
-        clock = snapshot.get("clock") if isinstance(snapshot.get("clock"), Mapping) else {}
+        clock = _measurement_sample_clock(snapshot)
         run_id = int(_number(clock.get("run_id"), 0.0) or 0)
         step_count = int(_number(clock.get("step_count"), 0.0) or 0)
         minute = _number(clock.get("absolute_minute", clock.get("minute")), 0.0) or 0.0
@@ -12770,7 +12880,7 @@ class TraineeRenewableControlManager:
         loop_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         metrics = plan.get("metrics") if isinstance(plan.get("metrics"), Mapping) else {}
-        clock = snapshot.get("clock") if isinstance(snapshot.get("clock"), Mapping) else {}
+        clock = _measurement_sample_clock(snapshot)
         metrics_payload = _json_safe_copy(metrics)
         cycle_settings = settings if settings is not None else state.settings
         cycle_loop_mode = loop_mode if loop_mode is not None else state.loop_mode
@@ -12936,6 +13046,8 @@ class TraineeRenewableControlManager:
         *,
         raise_on_retired: bool,
         serialization_options: Optional[Mapping[str, Any]] = None,
+        snapshot_view: Optional[TraineeControlSnapshot] = None,
+        expected_receive_signature: Optional[Tuple[Any, ...]] = None,
     ) -> Dict[str, Any]:
         response_options = dict(serialization_options or {})
         blocked = self._reject_without_receive_for_service(
@@ -12947,7 +13059,14 @@ class TraineeRenewableControlManager:
         )
         if blocked is not None:
             return blocked
+        if self._receive_prerequisite_for_service(service).get("controlFrozen"):
+            return self._serialize_for_service(service, state, **response_options)
         receive_signature = self._receive_state_signature_for_service(service)
+        if (
+            expected_receive_signature is not None
+            and receive_signature != expected_receive_signature
+        ):
+            return self._serialize_for_service(service, state, **response_options)
         if not state.run_lock.acquire(blocking=False):
             return self._serialize_for_service(service, state, **response_options)
         cycle_started = time.perf_counter()
@@ -12967,19 +13086,22 @@ class TraineeRenewableControlManager:
                 operation_epoch = state.operation_epoch
                 cycle_settings = state.settings
             snapshot_receive_started = time.perf_counter()
-            try:
-                view = self._control_snapshot_for_service(service)
-            except RuntimeError:
-                cycle_phases["snapshotReceiveMs"] = self._elapsed_milliseconds(
-                    snapshot_receive_started
-                )
-                if not self._service_lifecycle_valid(service, state):
-                    return self._serialize_cancelled_cycle(
-                        service,
-                        state,
-                        clear_sending=False,
+            if snapshot_view is None:
+                try:
+                    view = self._control_snapshot_for_service(service)
+                except RuntimeError:
+                    cycle_phases["snapshotReceiveMs"] = self._elapsed_milliseconds(
+                        snapshot_receive_started
                     )
-                raise
+                    if not self._service_lifecycle_valid(service, state):
+                        return self._serialize_cancelled_cycle(
+                            service,
+                            state,
+                            clear_sending=False,
+                        )
+                    raise
+            else:
+                view = snapshot_view
             cycle_phases["snapshotReceiveMs"] = self._elapsed_milliseconds(
                 snapshot_receive_started
             )
@@ -12991,6 +13113,8 @@ class TraineeRenewableControlManager:
                     clear_sending=False,
                 )
             snapshot = self._snapshot_for_calculation(view)
+            if self._snapshot_simulation_paused(snapshot):
+                return self._serialize_for_service(service, state, **response_options)
             source = view.source
             age = view.age_seconds
             blocked = self._reject_without_receive_for_service(
@@ -13117,6 +13241,8 @@ class TraineeRenewableControlManager:
         allow_dispatch: bool,
         record_log: bool,
         raise_on_retired: bool,
+        snapshot_view: Optional[TraineeControlSnapshot] = None,
+        expected_receive_signature: Optional[Tuple[Any, ...]] = None,
     ) -> Dict[str, Any]:
         blocked = self._reject_without_receive_for_service(
             service,
@@ -13127,7 +13253,14 @@ class TraineeRenewableControlManager:
         )
         if blocked is not None:
             return blocked
+        if self._receive_prerequisite_for_service(service).get("controlFrozen"):
+            return self._serialize_for_service(service, state)
         receive_signature = self._receive_state_signature_for_service(service)
+        if (
+            expected_receive_signature is not None
+            and receive_signature != expected_receive_signature
+        ):
+            return self._serialize_for_service(service, state)
         wait_for_running_cycle = trigger in {"manual", "start"}
         if wait_for_running_cycle:
             acquired = state.run_lock.acquire(timeout=_USER_CONTROL_BUSY_WAIT_SECONDS)
@@ -13178,19 +13311,22 @@ class TraineeRenewableControlManager:
                 state.sending = True
                 state.revision += 1
             snapshot_receive_started = time.perf_counter()
-            try:
-                view = self._control_snapshot_for_service(service)
-            except RuntimeError:
-                cycle_phases["snapshotReceiveMs"] = self._elapsed_milliseconds(
-                    snapshot_receive_started
-                )
-                if not self._service_lifecycle_valid(service, state):
-                    return self._serialize_cancelled_cycle(
-                        service,
-                        state,
-                        clear_sending=True,
+            if snapshot_view is None:
+                try:
+                    view = self._control_snapshot_for_service(service)
+                except RuntimeError:
+                    cycle_phases["snapshotReceiveMs"] = self._elapsed_milliseconds(
+                        snapshot_receive_started
                     )
-                raise
+                    if not self._service_lifecycle_valid(service, state):
+                        return self._serialize_cancelled_cycle(
+                            service,
+                            state,
+                            clear_sending=True,
+                        )
+                    raise
+            else:
+                view = snapshot_view
             cycle_phases["snapshotReceiveMs"] = self._elapsed_milliseconds(
                 snapshot_receive_started
             )
@@ -13202,6 +13338,12 @@ class TraineeRenewableControlManager:
                     clear_sending=True,
                 )
             snapshot = self._snapshot_for_calculation(view)
+            if self._snapshot_simulation_paused(snapshot):
+                return self._serialize_cancelled_cycle(
+                    service,
+                    state,
+                    clear_sending=True,
+                )
             source = view.source
             age = view.age_seconds
             fetch_error = view.error
@@ -13668,6 +13810,7 @@ class TraineeRenewableControlManager:
                 and int(after_performance_revision) == state.performance.revision
                 and str(after_controller_instance_id or "") == state.service_instance_id
             )
+            control_frozen = bool(prerequisite.get("controlFrozen"))
             payload = {
                 "modelId": state.model_id,
                 "controllerInstanceId": state.service_instance_id,
@@ -13675,7 +13818,9 @@ class TraineeRenewableControlManager:
                 "desiredEnabled": state.desired_enabled,
                 "resumePending": bool(state.desired_enabled and not state.enabled),
                 "runState": (
-                    "running"
+                    "frozen"
+                    if control_frozen and state.enabled
+                    else "running"
                     if state.enabled
                     else "resume_pending"
                     if state.desired_enabled
@@ -13684,7 +13829,11 @@ class TraineeRenewableControlManager:
                 "loopMode": state.loop_mode,
                 "sending": state.sending,
                 "settings": state.settings.payload(),
-                "status": state.status,
+                "status": (
+                    "模拟台已暂停，学员台保持冻结；恢复后将继续原运行状态。"
+                    if control_frozen
+                    else state.status
+                ),
                 "planRevision": state.plan_revision,
                 "performanceRevision": state.performance.revision,
                 "lastCalculatedAt": state.last_calculated_at,
@@ -14024,18 +14173,21 @@ class TraineeRenewableControlManager:
                     requested_interval = next(
                         (
                             settings_payload[key]
-                            for key in ("interval_seconds", "intervalSeconds")
+                            for key in (
+                                "simulation_interval_seconds",
+                                "simulationIntervalSeconds",
+                                "interval_seconds",
+                                "intervalSeconds",
+                            )
                             if key in settings_payload
                         ),
                         state.settings.interval_seconds,
                     )
-                    self._validate_control_interval_for_service(
-                        service,
-                        float(requested_interval),
+                    self._validate_simulation_control_interval(
+                        requested_interval,
                     )
                     next_settings = state.settings.updated(settings_payload)
-                    control_multiple = self._validate_control_interval_for_service(
-                        service,
+                    self._validate_simulation_control_interval(
                         next_settings.interval_seconds,
                     )
                     self._persist_configuration(
@@ -14049,7 +14201,8 @@ class TraineeRenewableControlManager:
                     state.settings = next_settings
                     state.status = (
                         "新能源实时控制参数已更新并持久化；"
-                        f"控制周期为采集周期的 {control_multiple} 倍。"
+                        "自动控制周期为 "
+                        f"{next_settings.interval_seconds:g} 仿真秒。"
                     )
                     state.revision += 1
             self._wake_worker()
@@ -14093,8 +14246,7 @@ class TraineeRenewableControlManager:
                 service_lock = getattr(service, "lock", None)
                 with (service_lock if service_lock is not None else nullcontext()):
                     self._require_active_service_for_state_locked(service, state)
-                    self._validate_control_interval_for_service(
-                        service,
+                    self._validate_simulation_control_interval(
                         state.settings.interval_seconds,
                     )
                     self._persist_configuration(
@@ -14144,8 +14296,47 @@ class TraineeRenewableControlManager:
                         state.revision += 1
             if start_cancelled:
                 return self._serialize_for_service(service, state)
+            defer_initial_cycle = False
+            try:
+                start_view = self._control_snapshot_for_service(service)
+            except (KeyError, RuntimeError):
+                start_view = None
+            if (
+                start_view is not None
+                and self._view_matches_controller_state(start_view, state)
+            ):
+                start_clock = self._simulation_control_clock(start_view.snapshot)
+                if start_clock is not None:
+                    with state.lock:
+                        if (
+                            state.operation_epoch == start_operation_epoch
+                            and state.desired_enabled
+                            and state.enabled
+                        ):
+                            self._mark_simulation_control_started_locked(
+                                state,
+                                start_clock,
+                            )
+                            defer_initial_cycle = bool(
+                                start_clock.state != "running"
+                                or (
+                                    start_clock.step_count <= 0
+                                    and start_clock.absolute_second <= EPSILON
+                                )
+                            )
+                            if defer_initial_cycle:
+                                state.status = (
+                                    f"{'闭环' if state.loop_mode == 'closed' else '开环'}"
+                                    "实时控制已启动；仿真数据归零后的控制周期已从 0 重新计数。"
+                                )
+                                if runtime_log_entry is not None:
+                                    runtime_log_entry["detail"] = state.status
+                                state.revision += 1
             if runtime_log_entry is not None:
                 self._persist_runtime_log_for_service(service, state, runtime_log_entry)
+            if defer_initial_cycle:
+                self._wake_worker()
+                return self._serialize_for_service(service, state)
             result = self._run_once_for_service(
                 service,
                 state,
@@ -14153,6 +14344,7 @@ class TraineeRenewableControlManager:
                 allow_dispatch=True,
                 record_log=True,
                 raise_on_retired=True,
+                snapshot_view=start_view,
             )
             self._wake_worker()
             return result
@@ -14252,6 +14444,9 @@ class TraineeRenewableControlManager:
                 receive_prerequisite = self._receive_prerequisite_for_service(target)
             except (KeyError, RuntimeError):
                 continue
+            if receive_prerequisite.get("controlFrozen"):
+                next_deadlines.append(iteration_now + 1.0)
+                continue
             if not receive_prerequisite["canRun"]:
                 if state.enabled or state.desired_enabled:
                     try:
@@ -14284,25 +14479,45 @@ class TraineeRenewableControlManager:
                 collection_deadline = (
                     state.last_preview_started + collection_interval_seconds
                 )
-                control_deadline = (
-                    state.last_auto_started + control_interval_seconds
-                    if enabled
-                    else math.inf
-                )
             if not cycle_idle:
                 continue
-            next_deadline = min(collection_deadline, control_deadline)
-            if iteration_now < next_deadline:
+            control_clock: Optional[_SimulationControlClock] = None
+            control_view: Optional[TraineeControlSnapshot] = None
+            control_receive_signature: Optional[Tuple[Any, ...]] = None
+            control_due = False
+            if enabled:
+                try:
+                    control_view = self._control_snapshot_for_service(target)
+                except (KeyError, RuntimeError):
+                    control_view = None
+                if (
+                    control_view is not None
+                    and self._view_matches_controller_state(control_view, state)
+                ):
+                    control_clock = self._simulation_control_clock(
+                        control_view.snapshot
+                    )
+                    control_receive_signature = self._receive_state_signature_for_view(
+                        control_view
+                    )
+                    with state.lock:
+                        if state.enabled:
+                            control_due = self._simulation_control_due_locked(
+                                state,
+                                control_clock,
+                                control_interval_seconds,
+                            )
+            collection_due = iteration_now >= collection_deadline
+            if not control_due and not collection_due:
+                next_deadline = collection_deadline
+                if enabled:
+                    next_deadline = min(next_deadline, iteration_now + 1.0)
                 next_deadlines.append(next_deadline)
                 continue
-            control_due = enabled and iteration_now >= control_deadline
-            collection_due = iteration_now >= collection_deadline
             if control_due:
                 try:
-                    self._validate_control_interval_for_service(
-                        target,
+                    self._validate_simulation_control_interval(
                         control_interval_seconds,
-                        collection_interval_seconds=collection_interval_seconds,
                     )
                 except ValueError as exc:
                     with state.lock:
@@ -14332,11 +14547,18 @@ class TraineeRenewableControlManager:
                         "allow_dispatch": True,
                         "record_log": True,
                         "raise_on_retired": False,
+                        "snapshot_view": control_view,
+                        "expected_receive_signature": control_receive_signature,
                     },
                     service=target,
                 )
                 if submitted:
                     with state.lock:
+                        if control_clock is not None:
+                            self._mark_simulation_control_started_locked(
+                                state,
+                                control_clock,
+                            )
                         state.last_preview_started = iteration_now
             elif collection_due:
                 self._submit_background_cycle(
@@ -14345,7 +14567,11 @@ class TraineeRenewableControlManager:
                     timestamp=iteration_now,
                     callback=self._collect_once_for_service,
                     args=(target, state),
-                    kwargs={"raise_on_retired": False},
+                    kwargs={
+                        "raise_on_retired": False,
+                        "snapshot_view": control_view,
+                        "expected_receive_signature": control_receive_signature,
+                    },
                     service=target,
                 )
         if enumeration_succeeded:

@@ -3390,6 +3390,9 @@ function appendMeasurementTraceAfterDelta(changed) {
 
 function applyMeasurementDelta(payload) {
   if (!payload || !state.snapshot) return false;
+  if (payload.measurement_clock && typeof payload.measurement_clock === "object") {
+    state.snapshot.measurement_clock = { ...payload.measurement_clock };
+  }
   const measurements = state.snapshot.measurements || {};
   state.snapshot.measurements = measurements;
   const definitions = measurements.definitions || state.snapshot.definitions?.measurement || [];
@@ -3945,15 +3948,7 @@ function sanitizeDiagramSvg(svgText) {
 
 const DIAGRAM_TREND_WINDOWS = Object.freeze({ hour: 60, day: 24 * 60 });
 
-function traceWindowBoundaryPoint(point, minute) {
-  const boundary = { ...point, minute, __boundaryAnchor: true };
-  ["time", "sim_time", "simu_time"].forEach((field) => {
-    if (Object.prototype.hasOwnProperty.call(boundary, field)) boundary[field] = "";
-  });
-  return boundary;
-}
-
-function traceWindowPointsWithBoundaryAnchors(points, range = {}, options = {}) {
+function traceWindowRealPoints(points, range = {}, options = {}) {
   const startMinute = Number(range.startMinute);
   const defaultEndMinute = Number(range.endMinute);
   const requestedEndMinute = Number(options.endMinute);
@@ -3964,21 +3959,14 @@ function traceWindowPointsWithBoundaryAnchors(points, range = {}, options = {}) 
     .filter((point) => Number.isFinite(Number(point?.minute)))
     .slice()
     .sort((left, right) => Number(left.minute) - Number(right.minute));
-  const visible = source.filter((point) => {
+  return source.filter((point) => {
     const minute = Number(point.minute);
     return minute >= startMinute && (includeEnd ? minute <= endMinute : minute < endMinute);
   });
-  if (!visible.length) return [];
-  const firstMinute = Number(visible[0].minute);
-  if (firstMinute > startMinute + 1e-9) {
-    const previous = [...source].reverse().find((point) => Number(point.minute) < startMinute);
-    if (previous) visible.unshift(traceWindowBoundaryPoint(previous, startMinute));
-  }
-  return visible;
 }
 
 function traceWindowDataPointCount(points) {
-  return (Array.isArray(points) ? points : []).filter((point) => !point?.__boundaryAnchor).length;
+  return Array.isArray(points) ? points.length : 0;
 }
 
 const DIAGRAM_DISPLAY_PREFERENCES_KEY = "simulator.svgDisplayPreferences.v1";
@@ -4283,8 +4271,13 @@ function diagramTrendNavigationRange(
     ? explicitEndMinute
     : (hasHistory ? latestHistoryMinute : 0);
   const currentRange = diagramTrendPeriodRange(period, latestMinute);
-  const earliestMinute = hasHistory ? earliestHistoryMinute : latestMinute;
   const normalizedSimulationDuration = Number(simulationDurationMinutes);
+  const cycleStartMinute = Number.isFinite(normalizedSimulationDuration) && normalizedSimulationDuration > 0
+    ? Math.floor((latestMinute + 1e-9) / normalizedSimulationDuration) * normalizedSimulationDuration
+    : Number.NEGATIVE_INFINITY;
+  const earliestMinute = hasHistory
+    ? Math.max(earliestHistoryMinute, cycleStartMinute)
+    : latestMinute;
   const periodNavigationAllowed = !Number.isFinite(normalizedSimulationDuration)
     || normalizedSimulationDuration <= 0
     || currentRange.windowMinutes < normalizedSimulationDuration;
@@ -4344,7 +4337,7 @@ function diagramTrendWindowPoints(points, period = "hour", endMinute = null, req
     : Number(valid[valid.length - 1].minute);
   const range = rangeOverride || diagramTrendNavigationRange(valid, period, latestMinute, requestedOffset);
   const visibleLatestMinute = range.windowOffset === 0 ? range.latestMinute : range.endMinute;
-  return traceWindowPointsWithBoundaryAnchors(valid, range, {
+  return traceWindowRealPoints(valid, range, {
     endMinute: visibleLatestMinute,
     includeEnd: visibleLatestMinute < range.endMinute,
   });
@@ -11739,7 +11732,10 @@ function runtimeCommandRowsForDevices(devices, measurements = state.snapshot?.me
 }
 
 function appendRuntimeTrace(snapshot) {
-  const clock = snapshot.clock || {};
+  const sampledClock = snapshot.measurement_clock;
+  const clock = sampledClock && Number(sampledClock.step_count ?? 0) > 0
+    ? sampledClock
+    : snapshot.clock || {};
   if (Number(clock.step_count ?? 0) <= 0) return;
   const result = snapshot.result || {};
   const summary = snapshot.summary || {};
@@ -12457,7 +12453,7 @@ function runtimeTraceDevicesForChart() {
 function runtimeTraceWindowPoints(range = runtimeTraceWindowRange()) {
   const history = state.runtimeTraceHistory || [];
   if (!history.length) return [];
-  return traceWindowPointsWithBoundaryAnchors(history, range);
+  return traceWindowRealPoints(history, range);
 }
 
 function traceAxisStepMinutes(windowMinutes) {
@@ -12510,13 +12506,21 @@ function alignedTraceWindowRange(
   const alignmentMinutes = traceWindowAlignmentMinutes(minutes);
   const axisStepMinutes = traceAxisStepMinutes(minutes);
   const bounds = traceHistoryMinuteBounds(history, fallbackMinute);
-  const currentStartMinute = Math.floor(bounds.latestMinute / alignmentMinutes) * alignmentMinutes;
+  const fallback = Number.isFinite(Number(fallbackMinute)) ? Number(fallbackMinute) : bounds.latestMinute;
+  const latestMinute = Math.max(bounds.latestMinute, fallback);
+  const currentStartMinute = Math.floor(latestMinute / alignmentMinutes) * alignmentMinutes;
   const normalizedSimulationDuration = Number(simulationDurationMinutes);
+  const cycleStartMinute = Number.isFinite(normalizedSimulationDuration) && normalizedSimulationDuration > 0
+    ? Math.floor((latestMinute + 1e-9) / normalizedSimulationDuration) * normalizedSimulationDuration
+    : Number.NEGATIVE_INFINITY;
+  const earliestMinute = bounds.hasHistory
+    ? Math.max(bounds.earliestMinute, cycleStartMinute)
+    : latestMinute;
   const periodNavigationAllowed = !Number.isFinite(normalizedSimulationDuration)
     || normalizedSimulationDuration <= 0
     || minutes < normalizedSimulationDuration;
   const minWindowOffset = periodNavigationAllowed && bounds.hasHistory
-    ? Math.min(0, Math.floor((bounds.earliestMinute - currentStartMinute) / minutes))
+    ? Math.min(0, Math.floor((earliestMinute - currentStartMinute) / minutes))
     : 0;
   const normalizedOffset = periodNavigationAllowed
     ? Math.min(0, Math.trunc(Number(requestedOffset) || 0))
@@ -12526,8 +12530,8 @@ function alignedTraceWindowRange(
   return {
     startMinute,
     endMinute: startMinute + minutes,
-    latestMinute: bounds.latestMinute,
-    earliestMinute: bounds.earliestMinute,
+    latestMinute,
+    earliestMinute,
     currentStartMinute,
     windowMinutes: minutes,
     alignmentMinutes,
@@ -12963,7 +12967,10 @@ function measurementUnit(measType) {
 }
 
 function appendMeasurementTrace(snapshot) {
-  const clock = snapshot.clock || {};
+  const sampledClock = snapshot.measurement_clock;
+  const clock = sampledClock && Number(sampledClock.step_count ?? 0) > 0
+    ? sampledClock
+    : snapshot.clock || {};
   if (Number(clock.step_count ?? 0) <= 0) return false;
   const rows = measurementCompareRows(snapshot.measurements || {});
   if (!rows.some((row) => (
@@ -13249,7 +13256,7 @@ function measurementTraceWindowPoints(key = state.selectedMeasurementKey, range 
       };
     })
     .filter(Boolean);
-  return traceWindowPointsWithBoundaryAnchors(points, range);
+  return traceWindowRealPoints(points, range);
 }
 
 function resizeMeasurementTraceCanvas() {

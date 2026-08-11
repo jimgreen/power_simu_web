@@ -59,6 +59,40 @@ class MeasurementHistoryTest(unittest.TestCase):
             json.dumps(payload, ensure_ascii=False),
         )
 
+    def test_simulator_measurement_sample_keeps_the_computed_time_across_cycle_boundary(self):
+        service = self._make_service()
+        self._seed_measurements(service, 23.59, 23.5)
+        service.control_clock({"action": "start", "minute": 1439})
+
+        snapshot = service.step(advance_minutes=1)
+
+        self.assertEqual(snapshot["clock"]["absolute_minute"], 1440)
+        self.assertEqual(snapshot["clock"]["time"], "00:00:00")
+        self.assertEqual(snapshot["measurement_clock"]["absolute_minute"], 1439)
+        self.assertEqual(snapshot["measurement_clock"]["time"], "23:59:00")
+        self.assertEqual(snapshot["measurement_clock"]["step_count"], 1)
+
+        history = service.measurement_history(indices=[0])
+        self.assertEqual(len(history["frames"]), 1)
+        self.assertEqual(history["frames"][0]["absolute_minute"], 1439)
+        self.assertEqual(history["frames"][0]["simu_time"], "23:59:00")
+        self.assertEqual(history["frames"][0]["real_values"], [23.59])
+
+        delta = service.measurement_delta(after_seq=0, compact=True)
+        self.assertEqual(delta["absolute_minute"], 1439)
+        self.assertEqual(delta["simu_time"], "23:59:00")
+        self.assertEqual(delta["measurement_clock"]["absolute_minute"], 1439)
+
+        self._seed_measurements(service, 0.0, 0.0)
+        service.step(advance_minutes=1)
+        next_history = service.measurement_history(indices=[0])
+        self.assertEqual(
+            [frame["absolute_minute"] for frame in next_history["frames"]],
+            [1439, 1440],
+        )
+        self.assertEqual(next_history["frames"][-1]["simu_time"], "00:00:00")
+        self.assertEqual(next_history["frames"][-1]["real_values"], [0.0])
+
     def test_simulator_clock_restart_and_time_regression_clear_old_history(self):
         service = self._make_service()
         self._seed_measurements(service, 10.0, 9.5)
@@ -294,6 +328,36 @@ class MeasurementHistoryTest(unittest.TestCase):
         reset_history = exchange.measurement_history(service.model_id, indices=[0])
         self.assertEqual(reset_history["run_id"], 4)
         self.assertEqual(len(reset_history["frames"]), 1)
+
+    def test_trainee_history_prefers_remote_measurement_clock_over_advanced_clock(self):
+        from simu.trainee_exchange import TraineeRealtimeExchange
+
+        service = self._make_service("trainee-local")
+        self._seed_measurements(service, 23.59, 23.5)
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+
+        snapshot = service.snapshot(include_static=False, include_runtime_logs=False)
+        snapshot["clock"].update(
+            {"run_id": 7, "step_count": 1, "absolute_minute": 1440.0, "minute": 0.0, "time": "00:00:00"}
+        )
+        snapshot["measurement_clock"] = {
+            **snapshot["clock"],
+            "absolute_minute": 1439.0,
+            "minute": 1439.0,
+            "time": "23:59:00",
+        }
+
+        exchange.publish_runtime_snapshot(service.model_id, snapshot, received_at=time.time())
+
+        history = exchange.measurement_history(service.model_id, indices=[0])
+        self.assertEqual(len(history["frames"]), 1)
+        self.assertEqual(history["frames"][0]["absolute_minute"], 1439.0)
+        self.assertEqual(history["frames"][0]["simu_time"], "23:59:00")
+        delta = exchange.measurement_delta(service.model_id, after_seq=0, compact=True)
+        self.assertEqual(delta["absolute_minute"], 1439.0)
+        self.assertEqual(delta["simu_time"], "23:59:00")
+        self.assertEqual(delta["measurement_clock"]["absolute_minute"], 1439.0)
 
     def test_simulator_and_trainee_history_http_endpoints_return_backend_samples(self):
         from simu.server import make_http_server

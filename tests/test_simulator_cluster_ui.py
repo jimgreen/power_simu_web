@@ -15,6 +15,49 @@ def test_simulator_header_has_selected_model_service_start_stop_control():
     assert '"/api/simulator-services/stop"' in script
 
 
+def test_interaction_link_sits_between_service_control_and_simulation_mode():
+    html = (ROOT / "simu/web/simulator/index.html").read_text(encoding="utf-8")
+    styles = (ROOT / "simu/web/simulator/styles.css").read_text(encoding="utf-8")
+
+    service_position = html.index('class="model-service-control"')
+    service_toggle_position = html.index('id="modelServiceToggle"')
+    service_state_position = html.index('id="modelServiceState"')
+    interaction_link_position = html.index('id="traineeLinkButton"')
+    simulation_mode_position = html.index('class="simulation-mode-switcher"')
+
+    assert service_position < service_toggle_position < service_state_position
+    assert service_position < interaction_link_position < simulation_mode_position
+    interaction_link_styles = styles.split(".trainee-link-button {", 1)[1].split("}", 1)[0]
+    assert "margin-right: 12px;" in interaction_link_styles
+
+
+def test_stopped_model_service_disables_and_grays_dependent_header_controls():
+    script = (ROOT / "simu/web/simulator/app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "simu/web/simulator/styles.css").read_text(encoding="utf-8")
+
+    assert "function modelServiceDependentControlsDisabled()" in script
+    availability_block = script.split(
+        "function renderModelServiceDependentControls", 1
+    )[1].split("\n}", 1)[0]
+    assert 'classList.toggle("is-model-service-stopped", controlsDisabled)' in availability_block
+    assert "traineeLinkButton.disabled = controlsDisabled" in availability_block
+    assert 'traineeLinkButton.setAttribute("aria-disabled"' in availability_block
+    assert "modelServiceToggle" not in availability_block
+
+    clock_block = script.split("function clockControlButtonUnavailable", 1)[1].split("\n}", 1)[0]
+    assert "state.clockControlOperationActive" in clock_block
+    assert "modelServiceDependentControlsDisabled()" in clock_block
+    assert "clockControlButtonDisabled(action, clockState)" in clock_block
+
+    mode_block = script.split("function renderCurveModeControls", 1)[1].split("\n}", 1)[0]
+    assert "const controlsDisabled = modelServiceDependentControlsDisabled();" in mode_block
+    assert "selector.disabled = modeLocked || controlsDisabled" in mode_block
+
+    assert ".topbar.is-model-service-stopped .trainee-link-button" in styles
+    assert ".topbar.is-model-service-stopped .simulation-mode-switcher" in styles
+    assert ".topbar.is-model-service-stopped .top-clock-strip" in styles
+
+
 def test_simulator_frontend_uses_proxy_for_control_plane_and_child_for_model_data():
     script = (ROOT / "simu/web/simulator/app.js").read_text(encoding="utf-8")
 

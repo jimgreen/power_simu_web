@@ -30,9 +30,10 @@
             <span id="activeModelName">默认模型</span>
           </label>
           <div class="model-service-control" aria-label="选中模型模拟服务">
-            <span id="modelServiceState" class="model-service-state" data-state="stopped">已停止</span>
             <button id="modelServiceToggle" class="model-service-toggle" type="button">启动</button>
+            <span id="modelServiceState" class="model-service-state" data-state="stopped">已停止</span>
           </div>
+          <button id="traineeLinkButton" class="trainee-link-button" type="button">交互链接</button>
           <label class="simulation-mode-switcher"><span>仿真模式</span>
             <select id="simulationModeSelector" title="选择时、日、周、月或年仿真">
               <option value="hour">时仿真</option>
@@ -42,7 +43,6 @@
               <option value="year">年仿真</option>
             </select>
           </label>
-          <button id="traineeLinkButton" class="trainee-link-button" type="button">交互链接</button>
         </div>
         <div class="clock-strip top-clock-strip" aria-label="当前时钟">
           <div class="clock-readout top-clock-readout">

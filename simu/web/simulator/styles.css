@@ -199,6 +199,7 @@ html[data-simulator-ui-mode="direct"] .model-switcher span {
 .model-import-button,
 .trainee-link-button {
   height: 32px;
+  margin-right: 12px;
   padding: 0 10px;
   white-space: nowrap;
   color: var(--teal-dark);
@@ -771,6 +772,32 @@ html[data-simulator-ui-mode="direct"] .model-switcher span {
 .topbar-clock-controls .icon-button svg {
   width: 20px;
   height: 20px;
+}
+
+.topbar.is-model-service-stopped .trainee-link-button,
+.topbar.is-model-service-stopped .simulation-mode-switcher,
+.topbar.is-model-service-stopped .top-clock-strip {
+  color: #8d999e;
+  opacity: 0.64;
+}
+.topbar.is-model-service-stopped .trainee-link-button,
+.topbar.is-model-service-stopped .simulation-mode-switcher select,
+.topbar.is-model-service-stopped .clock-readout,
+.topbar.is-model-service-stopped .topbar-clock-controls .icon-button {
+  border-color: var(--line);
+  background: #f3f6f7;
+  color: #829198;
+  box-shadow: none;
+}
+.topbar.is-model-service-stopped .clock-readout strong,
+.topbar.is-model-service-stopped .overview-clock-control-label span,
+.topbar.is-model-service-stopped .overview-clock-control-label strong {
+  color: #829198;
+}
+.topbar.is-model-service-stopped .trainee-link-button:disabled,
+.topbar.is-model-service-stopped .simulation-mode-switcher select:disabled,
+.topbar.is-model-service-stopped .topbar-clock-controls .icon-button:disabled {
+  cursor: not-allowed;
 }
 
 @media (max-width: 1500px) and (min-width: 821px) {

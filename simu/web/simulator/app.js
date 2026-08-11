@@ -51,6 +51,7 @@ const state = {
   modelsLoaded: false,
   serviceSuggestion: { host: "127.0.0.1", port: 8711 },
   modelServiceOperationActive: false,
+  clockControlOperationActive: false,
   serviceCatalogLastLoadedAt: 0,
   activeModelId: localStorage.getItem("polarSimulatorModelId") || "",
   manualDefinitionChanges: [],
@@ -1021,6 +1022,28 @@ function clockControlButtonDisabled(action, clockState) {
   return false;
 }
 
+function clockControlButtonUnavailable(action, clockState) {
+  return (
+    state.clockControlOperationActive
+    || modelServiceDependentControlsDisabled()
+    || clockControlButtonDisabled(action, clockState)
+  );
+}
+
+function renderClockControlAvailability(clockState = "") {
+  const resolvedClockState = (
+    clockState
+    || document.querySelector(".clock-readout")?.dataset.clockState
+    || state.snapshot?.clock?.state
+    || "stopped"
+  );
+  document.querySelectorAll("[data-clock]").forEach((button) => {
+    const action = button.dataset.clock;
+    button.disabled = clockControlButtonUnavailable(action, resolvedClockState);
+    button.setAttribute("aria-disabled", button.disabled ? "true" : "false");
+  });
+}
+
 function renderClock(clock) {
   if (!clock) return;
   $("simState").textContent = clock.state || "stopped";
@@ -1043,9 +1066,8 @@ function renderClock(clock) {
     if (["start", "pause", "stop"].includes(action)) {
       button.setAttribute("aria-pressed", isActive ? "true" : "false");
     }
-    button.disabled = clockControlButtonDisabled(action, clock.state || "stopped");
-    button.setAttribute("aria-disabled", button.disabled ? "true" : "false");
   });
+  renderClockControlAvailability(clock.state || "stopped");
   renderCurveModeControls();
 }
 
@@ -1389,10 +1411,11 @@ function restoreWebRuntimeDefaults() {
 }
 
 function setClockButtonsBusy(isBusy) {
+  state.clockControlOperationActive = Boolean(isBusy);
   document.querySelectorAll("[data-clock]").forEach((button) => {
-    button.disabled = isBusy;
     button.classList.toggle("is-busy", isBusy);
   });
+  renderClockControlAvailability();
 }
 
 async function controlClock(action, payload = {}) {
@@ -2558,6 +2581,26 @@ function activeModelServiceRunning() {
   }
   const service = activeModelService();
   return service.state === "running" && service.healthy !== false && Boolean(service.base_url);
+}
+
+function modelServiceDependentControlsDisabled() {
+  return !activeModelServiceRunning();
+}
+
+function renderModelServiceDependentControls() {
+  const controlsDisabled = modelServiceDependentControlsDisabled();
+  const topbar = document.querySelector(".topbar");
+  if (topbar) topbar.classList.toggle("is-model-service-stopped", controlsDisabled);
+
+  const traineeLinkButton = $("traineeLinkButton");
+  if (traineeLinkButton) {
+    traineeLinkButton.disabled = controlsDisabled;
+    traineeLinkButton.setAttribute("aria-disabled", controlsDisabled ? "true" : "false");
+    traineeLinkButton.title = controlsDisabled ? "请先启动选中模型的模拟服务" : "生成学员台交互链接";
+  }
+
+  renderCurveModeControls();
+  renderClockControlAvailability();
 }
 
 function recordFrontendRequestDiagnostics(path, response, durationMs) {
@@ -3939,7 +3982,10 @@ function modelServiceStateLabel(service = activeModelService()) {
 }
 
 function renderModelServiceControl() {
-  if (directSimulatorServiceMode) return;
+  if (directSimulatorServiceMode) {
+    renderModelServiceDependentControls();
+    return;
+  }
   const service = activeModelService();
   const stateElement = $("modelServiceState");
   const button = $("modelServiceToggle");
@@ -3949,6 +3995,7 @@ function renderModelServiceControl() {
     stateElement.dataset.state = serviceState;
     stateElement.title = service.error || service.base_url || "";
   }
+  renderModelServiceDependentControls();
   if (!button) return;
   const running = serviceState === "running";
   button.textContent = running ? "停止" : "启动";
@@ -9045,7 +9092,7 @@ async function ensureCurveSeriesLoaded(keys = selectedCurveKeys()) {
 }
 
 async function switchSimulationMode(mode) {
-  if (simulationModeLocked()) return;
+  if (modelServiceDependentControlsDisabled() || simulationModeLocked()) return;
   const selector = $("simulationModeSelector");
   if (selector) selector.disabled = true;
   try {
@@ -9061,18 +9108,23 @@ async function switchSimulationMode(mode) {
 
 function renderCurveModeControls() {
   const modeLocked = simulationModeLocked();
+  const controlsDisabled = modelServiceDependentControlsDisabled();
   document.querySelectorAll("[data-curve-mode]").forEach((button) => {
     const active = button.dataset.curveMode === state.curveMode;
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-pressed", active ? "true" : "false");
-    button.disabled = modeLocked;
-    button.title = modeLocked ? "请先停止仿真，再切换仿真模式" : "";
+    button.disabled = modeLocked || controlsDisabled;
+    button.title = controlsDisabled
+      ? "请先启动选中模型的模拟服务"
+      : modeLocked ? "请先停止仿真，再切换仿真模式" : "";
   });
   const selector = $("simulationModeSelector");
   if (selector) {
     selector.value = state.curveMode;
-    selector.disabled = modeLocked;
-    selector.title = modeLocked ? "请先停止仿真，再切换仿真模式" : "选择时、日、周、月或年仿真";
+    selector.disabled = modeLocked || controlsDisabled;
+    selector.title = controlsDisabled
+      ? "请先启动选中模型的模拟服务"
+      : modeLocked ? "请先停止仿真，再切换仿真模式" : "选择时、日、周、月或年仿真";
   }
   if (state.snapshot?.clock) renderClockTextOnly(state.snapshot.clock);
 }

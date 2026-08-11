@@ -12,6 +12,7 @@ from simu.qinling_strategy_audit import (
     _parallel_converter_check,
     build_inventory,
     load_qinling_snapshot,
+    resolve_qinling_model_dir,
     run_audit,
     write_audit_outputs,
 )
@@ -53,13 +54,15 @@ class QinlingStrategyAuditTest(unittest.TestCase):
             self.assertEqual(float(raw["p_max"]), expected)
         for resource in self.inventory.by_technology("diesel"):
             raw = resource.device["raw"]
-            self.assertEqual(float(raw["p_min"]), 0.0)
+            self.assertEqual(float(raw["p_min"]), 70.0)
             self.assertEqual(float(raw["p_max"]), 300.0)
             self.assertEqual(float(resource.parameter["rated_power"]), 300.0)
+            self.assertEqual(float(resource.parameter["p_min"]), 70.0)
+            self.assertEqual(float(resource.parameter["p_max"]), 300.0)
         self.assertEqual(len(by_key), 27)
 
     def test_service_snapshot_includes_diesel_parameter_relations(self):
-        model_dir = ROOT / "models" / "simulator" / "source" / "\u79e6\u5cad\u7ad9"
+        model_dir = resolve_qinling_model_dir(ROOT)
         with tempfile.TemporaryDirectory() as runtime_dir:
             service = PolarMicrogridSimulator(
                 model_dir,
@@ -142,6 +145,28 @@ class QinlingStrategyAuditTest(unittest.TestCase):
         )
 
         self.assertEqual(result.status, STATUS_FAIL)
+        self.assertIn("12.500", result.detail)
+
+    def test_optimization_balance_checker_accepts_minimum_slack_with_warning(self):
+        result = _optimization_balance_check(
+            {
+                "metrics": {
+                    "optimizationMaxBalanceResidualKw": 12.5,
+                    "optimizationIslands": [
+                        {
+                            "status": "optimal_safety_override_with_balance_slack",
+                            "maxBalanceDeltaKw": 12.5,
+                        }
+                    ],
+                },
+                "warnings": [
+                    "优化岛x在设备物理与安全边界内无法精确配平，"
+                    "按最小功率平衡松弛继续形成策略"
+                ],
+            }
+        )
+
+        self.assertEqual(result.status, STATUS_PASS)
         self.assertIn("12.500", result.detail)
 
     def test_output_names_and_csv_columns_follow_actual_scenario_count(self):

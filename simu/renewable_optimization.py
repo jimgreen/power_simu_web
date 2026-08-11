@@ -103,6 +103,8 @@ class IslandOptimizationResult:
     status: str
     message: str
     target_by_device: Mapping[DeviceKey, float]
+    active_lower_by_device: Mapping[DeviceKey, float]
+    active_upper_by_device: Mapping[DeviceKey, float]
     balance_residual_by_component: Mapping[str, float]
     objective_value: Optional[float]
     renewable_curtailment_kw: float
@@ -408,6 +410,7 @@ def _storage_variable(
 
     forced_direction = ""
     forced_boundary_kw: Optional[float] = None
+    forced_direct_reversal = False
     # First calculate the desired correction from the energy outside the SOC
     # boundary, then move the target by at most one configured storage step.
     # Repeated control cycles therefore accelerate severe correction without
@@ -418,8 +421,18 @@ def _storage_variable(
             max(0.0, -safety_lower),
         )
         if forced_charge_kw > EPSILON:
-            desired_charge_target_kw = current - forced_charge_kw
-            forced_boundary_kw = step_limited_target_kw(desired_charge_target_kw)
+            if current >= -EPSILON:
+                # A storage unit below its SOC floor must cross from
+                # discharging/idle directly into charging in this control
+                # cycle. The corrective target magnitude itself is bounded
+                # by the configured fraction of one step and one full step.
+                forced_boundary_kw = -forced_charge_kw
+                forced_direct_reversal = True
+            else:
+                desired_charge_target_kw = current - forced_charge_kw
+                forced_boundary_kw = step_limited_target_kw(
+                    desired_charge_target_kw
+                )
             forced_direction = "charge"
     elif soc is not None and soc_max is not None and soc > soc_max + soc_deadband + EPSILON:
         forced_discharge_kw = min(
@@ -427,10 +440,16 @@ def _storage_variable(
             max(0.0, safety_upper),
         )
         if forced_discharge_kw > EPSILON:
-            desired_discharge_target_kw = current + forced_discharge_kw
-            forced_boundary_kw = step_limited_target_kw(
-                desired_discharge_target_kw
-            )
+            if current <= EPSILON:
+                # Symmetrically, a unit above its SOC ceiling must cross from
+                # charging/idle directly into positive discharge this cycle.
+                forced_boundary_kw = forced_discharge_kw
+                forced_direct_reversal = True
+            else:
+                desired_discharge_target_kw = current + forced_discharge_kw
+                forced_boundary_kw = step_limited_target_kw(
+                    desired_discharge_target_kw
+                )
             forced_direction = "discharge"
     if safety_lower > safety_upper + EPSILON:
         return None
@@ -442,7 +461,15 @@ def _storage_variable(
     # satisfy the ordinary step limit.
     step_lower = max(safety_lower, current - step_kw)
     step_upper = min(safety_upper, current + step_kw)
-    if forced_boundary_kw is not None and step_lower > step_upper + EPSILON:
+    if forced_direct_reversal and forced_direction == "charge":
+        lower = max(safety_lower, -step_kw)
+        upper = min(safety_upper, forced_boundary_kw)
+        normal_step_kw = step_kw
+    elif forced_direct_reversal and forced_direction == "discharge":
+        lower = max(safety_lower, forced_boundary_kw)
+        upper = min(safety_upper, step_kw)
+        normal_step_kw = step_kw
+    elif forced_boundary_kw is not None and step_lower > step_upper + EPSILON:
         # The live point is already on the forbidden side of a hard SOC/power
         # boundary. Project to that boundary immediately; only the subsequent
         # movement deeper into the corrective direction is step-limited.
@@ -769,6 +796,58 @@ def _island_id(component_ids: Sequence[str]) -> str:
     return f"HYBRID:{hashlib.sha256(payload).hexdigest()[:16]}"
 
 
+def _blocked_island_result(
+    component_ids: Tuple[str, ...],
+    variables: Sequence[_Variable],
+    reason: str,
+) -> IslandOptimizationResult:
+    ordered = sorted(
+        variables,
+        key=lambda item: (
+            {"renewable": 0, "diesel": 1, "storage": 2, "converter": 3}.get(
+                item.kind,
+                9,
+            ),
+            item.key,
+        ),
+    )
+    return IslandOptimizationResult(
+        island_id=_island_id(component_ids),
+        component_ids=component_ids,
+        device_keys=tuple(item.key for item in ordered),
+        success=False,
+        status="blocked",
+        message=reason,
+        target_by_device={},
+        active_lower_by_device={item.key: item.lower_kw for item in ordered},
+        active_upper_by_device={item.key: item.upper_kw for item in ordered},
+        balance_residual_by_component={},
+        objective_value=0.0,
+        renewable_curtailment_kw=0.0,
+        diesel_target_kw=sum(
+            item.current_kw for item in ordered if item.kind == "diesel"
+        ),
+        curtailment_square_weight=0.0,
+        adjustment_square_weight=0.0,
+        balance_delta_square_weight=0.0,
+        balance_delta_by_side={},
+        max_balance_delta_kw=0.0,
+        step_override_applied=False,
+        step_override_devices=(),
+        iterations=0,
+        variable_count=len(ordered),
+        constraint_count=0,
+        equality_constraint_count=0,
+        inequality_constraint_count=0,
+        bound_count=len(ordered),
+        build_seconds=0.0,
+        solver_seconds=0.0,
+        storage_balance_seconds=0.0,
+        postprocess_seconds=0.0,
+        solve_seconds=0.0,
+    )
+
+
 def _solve_island(
     component_ids: Tuple[str, ...],
     variables: Sequence[_Variable],
@@ -803,6 +882,8 @@ def _solve_island(
             status="empty",
             message="拓扑岛没有可调设备",
             target_by_device={},
+            active_lower_by_device={},
+            active_upper_by_device={},
             balance_residual_by_component={},
             objective_value=0.0,
             renewable_curtailment_kw=0.0,
@@ -1275,6 +1356,14 @@ def _solve_island(
             status="failed",
             message=str(solved.message),
             target_by_device={},
+            active_lower_by_device={
+                item.key: float(active_lower[index])
+                for index, item in enumerate(ordered)
+            },
+            active_upper_by_device={
+                item.key: float(active_upper[index])
+                for index, item in enumerate(ordered)
+            },
             balance_residual_by_component={},
             objective_value=None,
             renewable_curtailment_kw=0.0,
@@ -1376,6 +1465,14 @@ def _solve_island(
         status=status,
         message=message,
         target_by_device=targets,
+        active_lower_by_device={
+            item.key: float(active_lower[index])
+            for index, item in enumerate(ordered)
+        },
+        active_upper_by_device={
+            item.key: float(active_upper[index])
+            for index, item in enumerate(ordered)
+        },
         balance_residual_by_component=residuals,
         objective_value=float(objective(values)),
         renewable_curtailment_kw=renewable_curtailment,
@@ -1439,6 +1536,8 @@ def optimize_topology_islands(
     bound_tolerance_kw: float = BOUND_TOLERANCE_KW,
     optimization_ftol: float = OPTIMIZATION_FTOL,
     optimization_max_iterations: int = OPTIMIZATION_MAX_ITERATIONS,
+    blocked_component_ids: Iterable[str] = (),
+    blocked_reason: str = "拓扑岛包含状态无效设备，按 fail closed 保持当前值",
 ) -> RenewableDispatchOptimizationResult:
     started = time.perf_counter()
     step_coefficient = max(0.0, float(step_coefficient))
@@ -1473,6 +1572,11 @@ def optimize_topology_islands(
     bound_tolerance_kw = max(EPSILON, float(bound_tolerance_kw))
     optimization_ftol = max(EPSILON, float(optimization_ftol))
     optimization_max_iterations = max(1, int(optimization_max_iterations))
+    blocked_components = {
+        str(component_id).strip()
+        for component_id in blocked_component_ids
+        if str(component_id).strip()
+    }
     variables: list[_Variable] = []
     expected_keys: set[DeviceKey] = set()
 
@@ -1545,23 +1649,42 @@ def optimize_topology_islands(
         variables_by_root.setdefault(root, []).append(item)
 
     outer_build_seconds = time.perf_counter() - started
-    island_results = tuple(
-        _solve_island(
-            tuple(sorted(components_by_root[root])),
-            variables_by_root.get(root, ()),
-            renewable_curtailment_weight=renewable_curtailment_weight,
-            diesel_output_weight=diesel_output_weight,
-            curtailment_square_weight=curtailment_square_weight,
-            adjustment_square_weight=source_storage_adjustment_square_weight,
-            balance_delta_square_weight=balance_delta_square_weight,
-            balance_tolerance_kw=balance_tolerance_kw,
-            bound_tolerance_kw=bound_tolerance_kw,
-            optimization_ftol=optimization_ftol,
-            optimization_max_iterations=optimization_max_iterations,
+    blocked_roots = {
+        components.find(component_id)
+        for component_id in blocked_components
+        if component_id in components._parent
+    }
+    island_results_list: list[IslandOptimizationResult] = []
+    for root in sorted(components_by_root):
+        island_variables = variables_by_root.get(root, ())
+        if not island_variables:
+            continue
+        component_ids = tuple(sorted(components_by_root[root]))
+        if root in blocked_roots:
+            island_results_list.append(
+                _blocked_island_result(
+                    component_ids,
+                    island_variables,
+                    blocked_reason,
+                )
+            )
+            continue
+        island_results_list.append(
+            _solve_island(
+                component_ids,
+                island_variables,
+                renewable_curtailment_weight=renewable_curtailment_weight,
+                diesel_output_weight=diesel_output_weight,
+                curtailment_square_weight=curtailment_square_weight,
+                adjustment_square_weight=source_storage_adjustment_square_weight,
+                balance_delta_square_weight=balance_delta_square_weight,
+                balance_tolerance_kw=balance_tolerance_kw,
+                bound_tolerance_kw=bound_tolerance_kw,
+                optimization_ftol=optimization_ftol,
+                optimization_max_iterations=optimization_max_iterations,
+            )
         )
-        for root in sorted(components_by_root)
-        if variables_by_root.get(root)
-    )
+    island_results = tuple(island_results_list)
     targets: Dict[DeviceKey, float] = {}
     for island in island_results:
         if island.success:

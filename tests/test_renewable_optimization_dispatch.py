@@ -130,15 +130,9 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
     def test_qinling_grid_converters_are_resolved_from_terminal_topology(self):
         import simu_loop
         from simu.model_semantics import grid_converter_keys
+        from simu.qinling_strategy_audit import resolve_qinling_model_dir
 
-        model_path = (
-            Path(__file__).resolve().parents[1]
-            / "models"
-            / "simulator"
-            / "source"
-            / "\u79e6\u5cad\u7ad9"
-            / "model.e"
-        )
+        model_path = resolve_qinling_model_dir(Path(__file__).resolve().parents[1]) / "model.e"
         rows = simu_loop.EBook(model_path).data["DCACConverter"].data
         boundary_keys = grid_converter_keys(simu_loop.EBook(model_path))
         boundary_indices = {
@@ -174,6 +168,64 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
                 },
             ),
             [],
+        )
+
+    def test_blocked_component_holds_the_complete_hybrid_island(self):
+        topology = ResourceTopology(
+            resources={},
+            dc_transfer_groups={},
+            converter_component_ids={
+                ("DCACConverter", "link"): ("AC:1", "DC:1")
+            },
+        )
+
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[
+                renewable(
+                    "wind",
+                    side="AC",
+                    component="AC:1",
+                    current=10.0,
+                    capacity=20.0,
+                ),
+                renewable(
+                    "pv",
+                    side="DC",
+                    component="DC:1",
+                    current=10.0,
+                    capacity=20.0,
+                ),
+            ],
+            diesel_rows=[
+                diesel(
+                    "diesel",
+                    component="AC:1",
+                    current=50.0,
+                    minimum=20.0,
+                    maximum=100.0,
+                )
+            ],
+            storage_rows=[],
+            converter_rows=[
+                converter(
+                    "link",
+                    current=0.0,
+                    minimum=-100.0,
+                    maximum=100.0,
+                )
+            ],
+            blocked_component_ids={"DC:1"},
+        )
+
+        self.assertFalse(result.all_success)
+        self.assertEqual(result.targets, {})
+        self.assertEqual(len(result.islands), 1)
+        self.assertEqual(result.islands[0].status, "blocked")
+        self.assertFalse(result.islands[0].success)
+        self.assertEqual(
+            set(result.islands[0].component_ids),
+            {"AC:1", "DC:1"},
         )
 
     def test_converter_rows_use_common_p_ac_terminal_balance_coefficients(self):
@@ -2617,7 +2669,7 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
         )
         self.assertAlmostEqual(
             result.targets[("ACGenerator", "严重过放储能")],
-            0.0,
+            -1.0,
             places=5,
         )
         self.assertAlmostEqual(
@@ -2690,17 +2742,17 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
         )
         self.assertAlmostEqual(
             result.targets[("DCGenerator", "严重过充储能")],
-            0.0,
+            5.0,
             places=5,
         )
         self.assertAlmostEqual(
             result.targets[("DCACConverter", "联络变流器")],
-            50.0,
+            55.0,
             places=5,
         )
         self.assertAlmostEqual(
             result.targets[("ACGenerator", "柴发")],
-            30.0,
+            25.0,
             places=5,
         )
         self.assertAlmostEqual(island.balance_delta_by_side["DC"], 0.0, places=5)
@@ -2752,12 +2804,12 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
         )
         self.assertAlmostEqual(
             result.targets[("ACGenerator", "严重过充储能")],
-            0.0,
+            1.0,
             places=5,
         )
         self.assertAlmostEqual(
             result.targets[("ACGenerator", "高出力风机")],
-            50.0,
+            49.0,
             places=5,
         )
         self.assertAlmostEqual(island.balance_delta_by_side["AC"], 0.0, places=5)
@@ -2780,7 +2832,8 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
                 "rated_charge": None,
                 "rated_discharge": 50.0,
                 "relation": "charge",
-                "expected_residual": -50.0,
+                "expected_target": -1.0,
+                "expected_residual": -51.0,
             },
             {
                 "name": "孤立高SOC储能",
@@ -2791,7 +2844,8 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
                 "rated_charge": 50.0,
                 "rated_discharge": None,
                 "relation": "discharge",
-                "expected_residual": 50.0,
+                "expected_target": 1.0,
+                "expected_residual": 51.0,
             },
         )
         for case in cases:
@@ -2833,10 +2887,11 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
                     island.step_override_devices,
                     (("DCGenerator", case["name"]),),
                 )
-                if case["relation"] == "charge":
-                    self.assertAlmostEqual(target, 0.0, places=5)
-                else:
-                    self.assertAlmostEqual(target, 0.0, places=5)
+                self.assertAlmostEqual(
+                    target,
+                    case["expected_target"],
+                    places=5,
+                )
                 self.assertAlmostEqual(
                     island.balance_residual_by_component["DC"],
                     case["expected_residual"],
@@ -2858,7 +2913,8 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
                 )
                 warnings = _optimization_balance_delta_warnings(result)
                 self.assertEqual(len(warnings), 1)
-                self.assertIn("功率平衡松弛量较大", warnings[0])
+                self.assertIn("无法精确配平", warnings[0])
+                self.assertIn("最小功率平衡松弛", warnings[0])
                 self.assertIn("delta_ac=0.000 kW", warnings[0])
                 self.assertIn("delta_dc=", warnings[0])
                 self.assertEqual(
@@ -2877,7 +2933,7 @@ class RenewableOptimizationDispatchTest(unittest.TestCase):
                     }
                 )
                 self.assertTrue(
-                    any("功率平衡松弛量较大" in item for item in log_detail)
+                    any("最小功率平衡松弛" in item for item in log_detail)
                 )
 
     def test_dc_balance_has_priority_when_converter_side_strategies_conflict(self):

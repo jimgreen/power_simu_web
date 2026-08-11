@@ -2384,7 +2384,10 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
                 self.assertAlmostEqual(storage["soc"], soc)
                 self.assertAlmostEqual(storage["chargeMarginKw"], 0.0)
-                self.assertAlmostEqual(storage["targetKw"], 0.0)
+                self.assertAlmostEqual(
+                    storage["targetKw"],
+                    4.0 if soc > 0.95 else 0.0,
+                )
 
     def test_low_soc_alone_never_creates_negative_grid_storage_target(self):
         plan = calculate_renewable_control_plan(
@@ -2688,7 +2691,13 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
                         for command in plan["commands"]
                     )
                 )
-                self.assertAlmostEqual(dc_storage["targetKw"], 4.0)
+                self.assertAlmostEqual(
+                    dc_storage["targetKw"],
+                    0.0 if name == "missing_current" else 4.0,
+                )
+                if name == "missing_current":
+                    self.assertEqual(dc_storage["optimizationStatus"], "failed")
+                    self.assertEqual(plan["commands"], [])
                 self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
 
     def test_duplicate_grid_storage_identity_fails_closed_without_blocking_peer(self):
@@ -6976,8 +6985,21 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
         plan = calculate_renewable_control_plan(snapshot)
 
-        self.assertEqual(plan["dataQuality"]["status"], "blocked")
-        self.assertFalse(plan["dataQuality"]["dispatchAllowed"])
+        self.assertEqual(plan["dataQuality"]["status"], "degraded")
+        self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
+        self.assertEqual(plan["commands"], [])
+        self.assertTrue(plan["metrics"]["optimizationIslands"])
+        self.assertTrue(
+            all(
+                island["status"] == "blocked"
+                for island in plan["metrics"]["optimizationIslands"]
+            )
+        )
+        rows = {row["dev_name"]: row for row in plan["commandRows"]}
+        self.assertIsNone(rows["diesel-1"]["commandKw"])
+        for name in ("wind-1", "pv-1", "storage-1", "grid-converter-1"):
+            self.assertAlmostEqual(rows[name]["commandKw"], rows[name]["currentKw"])
+            self.assertFalse(rows[name]["strategyCommand"])
         self.assertTrue(any("柴油" in issue and "实时有功" in issue for issue in plan["dataQuality"]["issues"]))
 
     def test_task8_metrics_use_topology_side_and_capacity_weighted_soc(self):

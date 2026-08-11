@@ -2274,6 +2274,68 @@ def _apply_grid_forming_fail_closed_scopes(
     }
 
 
+def _optimization_component_ids_for_row(
+    row: Mapping[str, Any],
+    topology: ResourceTopology,
+) -> Tuple[str, ...]:
+    key = (
+        str(row.get("model_block") or row.get("dev_type") or ""),
+        str(row.get("dev_name") or ""),
+    )
+    endpoints = topology.converter_component_ids.get(key)
+    if endpoints:
+        return tuple(component_id for component_id in endpoints if component_id)
+    side = str(row.get("connectionSide", "")).strip().upper()
+    if side == "AC":
+        component_id = str(row.get("gridComponentId", "")).strip()
+    elif side == "DC":
+        component_id = str(
+            row.get("dcTransferGroupId") or row.get("gridComponentId") or ""
+        ).strip()
+    else:
+        component_id = str(topology.device_component_ids.get(key, "")).strip()
+    return (component_id,) if component_id else ()
+
+
+def _blocked_optimization_component_ids(
+    topology: ResourceTopology,
+    fail_closed_scopes: Mapping[str, Iterable[str]],
+    renewable_rows: Sequence[Mapping[str, Any]],
+    storage_rows: Sequence[Mapping[str, Any]],
+    diesel_rows: Sequence[Mapping[str, Any]],
+    converter_rows: Sequence[Mapping[str, Any]],
+    quality: _Quality,
+) -> Tuple[str, ...]:
+    blocked = {
+        str(component_id).strip()
+        for scope_name in ("acComponents", "dcTransferGroups")
+        for component_id in fail_closed_scopes.get(scope_name, ())
+        if str(component_id).strip()
+    }
+    for row in (*renewable_rows, *storage_rows, *diesel_rows, *converter_rows):
+        if not row.get("online"):
+            continue
+        if (
+            _number(row.get("currentKw")) is not None
+            and not row.get("automaticControlBlocked")
+        ):
+            continue
+        blocked.update(_optimization_component_ids_for_row(row, topology))
+    if quality.blocked:
+        blocked.update(
+            str(component_id).strip()
+            for component_id in topology.device_component_ids.values()
+            if str(component_id).strip()
+        )
+        blocked.update(
+            str(component_id).strip()
+            for endpoints in topology.converter_component_ids.values()
+            for component_id in endpoints
+            if str(component_id).strip()
+        )
+    return tuple(sorted(blocked))
+
+
 @dataclass(frozen=True)
 class _RenewableStorageIslandComponent:
     grid_component_id: str
@@ -8089,6 +8151,16 @@ def _apply_optimization_targets(
         for island in result.islands
         for key in island.device_keys
     }
+    lower_by_device = {
+        key: value
+        for island in result.islands
+        for key, value in island.active_lower_by_device.items()
+    }
+    upper_by_device = {
+        key: value
+        for island in result.islands
+        for key, value in island.active_upper_by_device.items()
+    }
     failed_devices = {
         key
         for island in result.islands
@@ -8102,16 +8174,39 @@ def _apply_optimization_targets(
         key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
         current = _number(row.get("planningCurrentKw", row.get("currentKw")))
         optimization_target = _number(result.targets.get(key))
+        optimization_lower = _number(lower_by_device.get(key))
+        optimization_upper = _number(upper_by_device.get(key))
         target = optimization_target
-        if optimization_target is not None and _is_grid_converter_row(row):
+        if _is_grid_converter_row(row):
             # Optimizer targets are positive DC-to-AC. Command rows retain the
             # P_AC convention until dispatch selects p_ac_set or p_dc_set.
-            row["optimizationSuggestedSystemKw"] = optimization_target
-            target = converter_power_in_ac_terminal_convention(
-                optimization_target,
-                _converter_direction(row),
-                "P_DC",
-            )
+            if optimization_lower is not None and optimization_upper is not None:
+                row["optimizationLowerSystemKw"] = optimization_lower
+                row["optimizationUpperSystemKw"] = optimization_upper
+                converted_bounds = (
+                    converter_power_in_ac_terminal_convention(
+                        optimization_lower,
+                        _converter_direction(row),
+                        "P_DC",
+                    ),
+                    converter_power_in_ac_terminal_convention(
+                        optimization_upper,
+                        _converter_direction(row),
+                        "P_DC",
+                    ),
+                )
+                row["optimizationLowerKw"] = min(converted_bounds)
+                row["optimizationUpperKw"] = max(converted_bounds)
+            if optimization_target is not None:
+                row["optimizationSuggestedSystemKw"] = optimization_target
+                target = converter_power_in_ac_terminal_convention(
+                    optimization_target,
+                    _converter_direction(row),
+                    "P_DC",
+                )
+        elif optimization_lower is not None and optimization_upper is not None:
+            row["optimizationLowerKw"] = optimization_lower
+            row["optimizationUpperKw"] = optimization_upper
         row["optimizationIslandId"] = island_by_device.get(key, "")
         row["optimizationStatus"] = (
             "optimal"
@@ -8125,11 +8220,10 @@ def _apply_optimization_targets(
             continue
         if target is None:
             row["strategyCommand"] = False
-            if current is not None:
-                row["commandKw"] = current
-                if row.get("technology") == "storage":
-                    row["targetKw"] = current
-                    row["projectedTargetKw"] = current
+            row["commandKw"] = current
+            if row.get("technology") == "storage":
+                row["targetKw"] = current
+                row["projectedTargetKw"] = current
             continue
         direct_dispatch = bool(row.get("commandable") and row.get("set_type"))
         row["commandKw"] = target
@@ -8165,14 +8259,26 @@ def _optimization_balance_delta_warnings(
 ) -> List[str]:
     warnings: List[str] = []
     for island in result.islands:
-        if island.max_balance_delta_kw <= result.balance_delta_warning_kw:
+        if (
+            island.max_balance_delta_kw <= EPSILON
+            or (
+                "balance_slack" not in island.status
+                and "balance_delta_fallback" not in island.status
+            )
+        ):
             continue
         delta_ac = island.balance_delta_by_side.get("AC", 0.0)
         delta_dc = island.balance_delta_by_side.get("DC", 0.0)
+        threshold_detail = (
+            f"超过大失衡告警阈值{result.balance_delta_warning_kw:.3f} kW"
+            if island.max_balance_delta_kw > result.balance_delta_warning_kw
+            else f"未超过大失衡阈值{result.balance_delta_warning_kw:.3f} kW"
+        )
         warnings.append(
-            f"优化岛{island.island_id}功率平衡松弛量较大："
+            f"优化岛{island.island_id}在设备物理与安全边界内无法精确配平，"
+            "按最小功率平衡松弛继续形成策略："
             f"delta_ac={delta_ac:.3f} kW，delta_dc={delta_dc:.3f} kW，"
-            f"超过告警阈值{result.balance_delta_warning_kw:.3f} kW；"
+            f"{threshold_detail}；"
             "请检查可调资源余量、设备边界、拓扑状态及实时量测一致性"
         )
     return warnings
@@ -10395,6 +10501,15 @@ def calculate_renewable_control_plan(
         for row in diagnostic_converter_rows
     )
 
+    blocked_optimization_component_ids = _blocked_optimization_component_ids(
+        resource_topology,
+        fail_closed_scopes,
+        renewable_rows,
+        storage_rows,
+        diesel_rows,
+        converter_inventory_rows,
+        quality,
+    )
     optimization_started = time.perf_counter()
     strategy_preparation_seconds = optimization_started - topology_finished
     optimization_result = optimize_topology_islands(
@@ -10436,6 +10551,7 @@ def calculate_renewable_control_plan(
         bound_tolerance_kw=settings.optimization_bound_tolerance_kw,
         optimization_ftol=settings.optimization_ftol,
         optimization_max_iterations=settings.optimization_max_iterations,
+        blocked_component_ids=blocked_optimization_component_ids,
     )
     optimization_finished = time.perf_counter()
     optimization_total_seconds = optimization_finished - optimization_started

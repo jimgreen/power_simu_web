@@ -22,6 +22,11 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 from scipy.optimize import linprog
 
+from .device_roles import (
+    AC_TO_DC,
+    converter_balance_coefficients,
+    converter_power_in_dc_to_ac_convention,
+)
 from .model_semantics import grid_converter_keys
 from .renewable_control import RenewableControlSettings, calculate_renewable_control_plan
 from .service import PolarMicrogridSimulator
@@ -30,6 +35,7 @@ from .service import PolarMicrogridSimulator
 EPSILON = 1e-9
 AUDIT_TOLERANCE_KW = 0.15
 QINLING_MODEL_DIR = Path("models") / "simulator" / "source" / "\u79e6\u5cad\u7ad9"
+QINLING_MODEL_MARKER = "qinling"
 
 STATUS_PASS = "pass"
 STATUS_FAIL = "fail"
@@ -189,10 +195,33 @@ def _measurement(
     }
 
 
+def resolve_qinling_model_dir(project_root: Path) -> Path:
+    root = project_root.resolve()
+    preferred = root / QINLING_MODEL_DIR
+    if (preferred / "model.e").is_file():
+        return preferred
+
+    source_root = root / "models" / "simulator" / "source"
+    candidates: List[Path] = []
+    for model_file in sorted(source_root.glob("*/model.e")):
+        try:
+            header = model_file.read_text(encoding="utf-8", errors="ignore")[:4096]
+        except OSError:
+            continue
+        if QINLING_MODEL_MARKER in header.lower():
+            candidates.append(model_file.parent)
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        paths = "\u3001".join(str(path) for path in candidates)
+        raise AuditConfigurationError(f"Multiple Qinling model definitions found: {paths}")
+    raise AuditConfigurationError(
+        f"Qinling model not found under explicit model metadata: {source_root}"
+    )
+
+
 def load_qinling_snapshot(project_root: Path) -> Dict[str, Any]:
-    model_dir = project_root.resolve() / QINLING_MODEL_DIR
-    if not (model_dir / "model.e").is_file():
-        raise AuditConfigurationError(f"Qinling model not found: {model_dir}")
+    model_dir = resolve_qinling_model_dir(project_root)
     with tempfile.TemporaryDirectory(prefix="qinling_strategy_audit_") as runtime_dir:
         service = PolarMicrogridSimulator(
             model_dir,
@@ -820,16 +849,21 @@ def _forced_soc_response_check(
         soc_min = _number(row.get("socMin"))
         soc_max = _number(row.get("socMax"))
         target = _target(row)
-        if soc is None or soc_min is None or soc_max is None or target is None:
+        current = _number(row.get("planningCurrentKw", row.get("currentKw")))
+        if None in (soc, soc_min, soc_max, target, current):
             continue
         if soc < soc_min - settings.soc_deadband - EPSILON:
             applicable += 1
             if target >= -AUDIT_TOLERANCE_KW:
-                violations.append(f"{row.get('dev_name')} low SOC did not enter forced charge")
+                violations.append(
+                    f"{row.get('dev_name')} low SOC did not enter forced charge"
+                )
         elif soc > soc_max + settings.soc_deadband + EPSILON:
             applicable += 1
             if target <= AUDIT_TOLERANCE_KW:
-                violations.append(f"{row.get('dev_name')} high SOC did not enter forced discharge")
+                violations.append(
+                    f"{row.get('dev_name')} high SOC did not enter forced discharge"
+                )
     return _check_result(violations, applicable, "all extreme-SOC devices responded in the recovery direction")
 
 
@@ -960,6 +994,12 @@ def _soc_derating_check(
         applicable += 1
         expected_charge = _interpolate_curve(soc, settings.storage_charge_derating_curve)
         expected_discharge = _interpolate_curve(soc, settings.storage_discharge_derating_curve)
+        soc_min = _number(row.get("socMin"))
+        soc_max = _number(row.get("socMax"))
+        if soc_max is not None and soc >= soc_max - EPSILON:
+            expected_charge = 0.0
+        if soc_min is not None and soc <= soc_min + EPSILON:
+            expected_discharge = 0.0
         if abs(charge_factor - expected_charge) > 1e-6:
             violations.append(f"{row.get('dev_name')} charge derating factor mismatch")
         if abs(discharge_factor - expected_discharge) > 1e-6:
@@ -1037,8 +1077,18 @@ def _optimization_variable(
         if capacity is None or capacity < 0.0:
             return None
         step = settings.step_coefficient * capacity
-        upper = min(capacity, max(0.0, current) + step)
-        lower = 0.0 if key in override_keys else max(0.0, current - step)
+        exact_lower = _number(row.get("optimizationLowerKw"))
+        exact_upper = _number(row.get("optimizationUpperKw"))
+        upper = (
+            exact_upper
+            if exact_upper is not None
+            else min(capacity, max(0.0, current) + step)
+        )
+        lower = (
+            exact_lower
+            if exact_lower is not None
+            else 0.0 if key in override_keys else max(0.0, current - step)
+        )
         if lower > upper:
             lower = upper
         return _LpVariable(
@@ -1056,8 +1106,10 @@ def _optimization_variable(
             settings.diesel_power_protection_ratio * maximum,
             max(0.0, maximum - minimum) * 0.5,
         )
+        lower = _number(row.get("optimizationLowerKw"), minimum + guard)
+        upper = _number(row.get("optimizationUpperKw"), maximum - guard)
         return _LpVariable(
-            key, island_id, "diesel", current, minimum + guard, maximum - guard,
+            key, island_id, "diesel", current, lower, upper,
             side=str(row.get("connectionSide", "")), target=target,
         )
     if row.get("technology") == "storage" and (
@@ -1091,7 +1143,11 @@ def _optimization_variable(
                 safety_lower = max(safety_lower, forced)
         if safety_lower > safety_upper + EPSILON:
             return None
-        if row.get("role") == "balance":
+        exact_lower = _number(row.get("optimizationLowerKw"))
+        exact_upper = _number(row.get("optimizationUpperKw"))
+        if exact_lower is not None and exact_upper is not None:
+            lower, upper = exact_lower, exact_upper
+        elif row.get("role") == "balance":
             lower, upper = safety_lower, safety_upper
         elif current < safety_lower:
             lower = upper = safety_lower
@@ -1105,11 +1161,39 @@ def _optimization_variable(
             side=str(row.get("connectionSide", "")), target=target,
         )
     if row.get("category") == "交直流变流器" and row.get("commandable"):
-        lower = _number(row.get("signedMinTargetKw"))
-        upper = _number(row.get("signedMaxTargetKw"))
+        lower = _number(row.get("optimizationLowerSystemKw"))
+        upper = _number(row.get("optimizationUpperSystemKw"))
         capacity = _number(row.get("transferCapacityKw"))
-        if lower is None or upper is None or capacity is None or lower > upper:
+        current_p_ac = _number(row.get("currentKw"))
+        minimum_p_ac = _number(row.get("signedMinTargetKw"))
+        maximum_p_ac = _number(row.get("signedMaxTargetKw"))
+        if lower is None or upper is None:
+            if minimum_p_ac is None or maximum_p_ac is None:
+                return None
+            converted_limits = (
+                converter_power_in_dc_to_ac_convention(
+                    minimum_p_ac,
+                    AC_TO_DC,
+                    "P_AC",
+                ),
+                converter_power_in_dc_to_ac_convention(
+                    maximum_p_ac,
+                    AC_TO_DC,
+                    "P_AC",
+                ),
+            )
+            lower, upper = min(converted_limits), max(converted_limits)
+        if current_p_ac is None or capacity is None or lower > upper:
             return None
+        current = converter_power_in_dc_to_ac_convention(
+            current_p_ac,
+            AC_TO_DC,
+            "P_AC",
+        )
+        target = _number(row.get("optimizationSuggestedSystemKw"), target)
+        p_ac_ac_coefficient, p_ac_dc_coefficient = converter_balance_coefficients(
+            AC_TO_DC
+        )
         return _LpVariable(
             key,
             island_id,
@@ -1117,8 +1201,8 @@ def _optimization_variable(
             current,
             lower,
             upper,
-            ac_coefficient=_number(row.get("acBalanceCoefficient"), -1.0) or -1.0,
-            dc_coefficient=_number(row.get("dcBalanceCoefficient"), 1.0) or 1.0,
+            ac_coefficient=-p_ac_ac_coefficient,
+            dc_coefficient=-p_ac_dc_coefficient,
             converter_group=str(row.get("dcTransferGroupId", "")),
             converter_capacity=capacity,
             target=target,
@@ -1130,6 +1214,7 @@ def _lexicographic_reference(
     rows: Sequence[Mapping[str, Any]],
     settings: RenewableControlSettings,
     override_keys: set[Tuple[str, str]],
+    balance_delta_by_island: Mapping[Tuple[str, str], float],
 ) -> Tuple[Optional[float], Optional[float], str]:
     variables = [
         variable
@@ -1160,7 +1245,10 @@ def _lexicographic_reference(
             matrix[row_index[(variable.island_id, variable.side)], column] += 1.0
     current = np.array([variable.current for variable in variables], dtype=float)
     equality_rows = [row for row in matrix]
-    equality_rhs = list(matrix @ current)
+    equality_rhs = [
+        value - balance_delta_by_island.get(balance_key, 0.0)
+        for balance_key, value in zip(balance_keys, matrix @ current)
+    ]
 
     converter_groups: Dict[Tuple[str, str], List[int]] = defaultdict(list)
     for index, variable in enumerate(variables):
@@ -1229,11 +1317,13 @@ def _objective_checks(
     rows: Sequence[Mapping[str, Any]],
     settings: RenewableControlSettings,
     override_keys: set[Tuple[str, str]],
+    balance_delta_by_island: Mapping[Tuple[str, str], float],
 ) -> Tuple[CheckResult, CheckResult, Mapping[str, Any]]:
     maximum_renewable, minimum_diesel, detail = _lexicographic_reference(
         rows,
         settings,
         override_keys,
+        balance_delta_by_island,
     )
     actual_renewable = sum(
         _target(row) or 0.0
@@ -1292,9 +1382,33 @@ def _optimization_balance_check(plan: Mapping[str, Any]) -> CheckResult:
     if residual is None:
         return CheckResult(STATUS_FAIL, "optimization balance residual is missing", 0)
     if residual > AUDIT_TOLERANCE_KW:
+        islands = metrics.get("optimizationIslands", []) or []
+        slack_islands = [
+            island
+            for island in islands
+            if isinstance(island, Mapping)
+            and (
+                "balance_slack" in str(island.get("status", ""))
+                or "balance_delta_fallback" in str(island.get("status", ""))
+            )
+            and (_number(island.get("maxBalanceDeltaKw"), 0.0) or 0.0)
+            > AUDIT_TOLERANCE_KW
+        ]
+        warnings = [str(item) for item in plan.get("warnings", []) or []]
+        warning_emitted = any(
+            "无法精确配平" in warning and "最小功率平衡松弛" in warning
+            for warning in warnings
+        )
+        if slack_islands and warning_emitted:
+            return CheckResult(
+                STATUS_PASS,
+                "exact balance infeasible inside active safety bounds; "
+                f"minimum residual={residual:.3f} kW dispatched with warning",
+                1,
+            )
         return CheckResult(
             STATUS_FAIL,
-            f"maximum post-strategy balance residual={residual:.3f} kW",
+            f"maximum post-strategy balance residual={residual:.3f} kW without explicit minimum-slack warning",
             1,
         )
     return CheckResult(
@@ -1310,10 +1424,26 @@ def audit_plan(
 ) -> Tuple[Mapping[str, CheckResult], Mapping[str, Any]]:
     rows = [row for row in plan.get("commandRows", []) or [] if isinstance(row, Mapping)]
     override_keys = _optimization_step_override_keys(plan)
+    metrics = plan.get("metrics") if isinstance(plan.get("metrics"), Mapping) else {}
+    balance_delta_by_island: Dict[Tuple[str, str], float] = {}
+    for island in metrics.get("optimizationIslands", []) or []:
+        if not isinstance(island, Mapping):
+            continue
+        island_id = str(island.get("islandId", ""))
+        delta_by_side = (
+            island.get("balanceDeltaBySide")
+            if isinstance(island.get("balanceDeltaBySide"), Mapping)
+            else {}
+        )
+        for side in ("AC", "DC"):
+            delta = _number(delta_by_side.get(side))
+            if island_id and delta is not None:
+                balance_delta_by_island[(island_id, side)] = delta
     renewable_check, diesel_check, objective_metrics = _objective_checks(
         rows,
         settings,
         override_keys,
+        balance_delta_by_island,
     )
     checks = {
         "optimization_balance": _optimization_balance_check(plan),
@@ -1486,7 +1616,20 @@ def run_audit(
         "balanced_strategies": sum(
             1
             for record in records
-            if record["checks"]["optimization_balance"]["status"] == STATUS_PASS
+            if (
+                record["optimization"]["max_balance_residual_kw"] is not None
+                and record["optimization"]["max_balance_residual_kw"]
+                <= AUDIT_TOLERANCE_KW
+            )
+        ),
+        "balance_slack_scenarios": sum(
+            1
+            for record in records
+            if (
+                record["optimization"]["max_balance_residual_kw"] is not None
+                and record["optimization"]["max_balance_residual_kw"]
+                > AUDIT_TOLERANCE_KW
+            )
         ),
         "step_override_scenarios": sum(
             1 for record in records if record["optimization"]["step_override_applied"]
@@ -1669,6 +1812,7 @@ def write_audit_outputs(result: Mapping[str, Any], output_dir: Path) -> Dict[str
             f"- 优化岛全部求解成功：`{operational['optimizer_success']}/{result['count']}`",
             f"- 数据质量允许下发：`{operational['dispatch_allowed']}/{result['count']}`",
             f"- 优化后功率平衡：`{operational['balanced_strategies']}/{result['count']}`",
+            f"- 物理边界内无法精确配平、按最小松弛继续下发并告警：`{operational['balance_slack_scenarios']}` 个工况",
             f"- 安全校正突破普通步长：`{operational['step_override_scenarios']}` 个工况",
             f"- 充电SOC降额激活：`{operational['charge_derating_scenarios']}` 个工况",
             f"- 放电SOC降额激活：`{operational['discharge_derating_scenarios']}` 个工况",

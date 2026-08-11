@@ -30,6 +30,7 @@
 # ACNode         Bus_28              1
 # ACNode         Bus_29              1
 # ACNode         Bus_30              1
+# ACNode         Bus_31              1
 # ACNode         Bus_32              1
 # ACNode         Bus_33              1
 # ACNode         Bus_34              1
@@ -44,6 +45,7 @@
 # ACNode         Bus_43              1
 # ACNode         Bus_44              1
 # ACNode         Bus_45              1
+# ACNode         Bus_46              1
 # ACNode         Bus_47              1
 # ACNode         Bus_48              1
 # ACNode         Bus_49              1
@@ -61,6 +63,7 @@
 # ACNode         Bus_61              1
 # ACNode         Bus_62              1
 # ACNode         Bus_63              1
+# ACNode         Bus_64              1
 # ACNode         Bus_65              1
 # ACNode         Bus_66              1
 # ACNode         Bus_67              1
@@ -68,6 +71,7 @@
 # ACNode         Bus_69              1
 # ACNode         Bus_70              1
 # ACNode         Bus_71              1
+# ACNode         Bus_72              1
 # ACNode         Bus_73              1
 # ACNode         Bus_74              1
 # ACNode         Bus_75              1
@@ -82,6 +86,7 @@
 # ACNode         Bus_84              1
 # ACNode         Bus_85              1
 # ACNode         Bus_86              1
+# ACNode         Bus_87              1
 # ACNode         Bus_88              1
 # ACNode         Bus_89              1
 # ACNode         Bus_90              1
@@ -107,6 +112,7 @@
 # ACNode         Bus_110             1
 # ACNode         Bus_111             1
 # ACNode         Bus_112             1
+# ACNode         Bus_113             1
 # ACNode         Bus_114             1
 # ACNode         Bus_115             1
 # ACNode         Bus_116             1
@@ -772,164 +778,164 @@
 # ACLoad       Load_@_Bus_118    q_set     1.0
 # ACGenerator  Gen_1_@_Bus_1     p_set     0
 # ACGenerator  Gen_1_@_Bus_1     q_set     0
-# ACGenerator  Gen_1_@_Bus_1     v_set     0
+# ACGenerator  Gen_1_@_Bus_1     v_set     131.79
 # ACGenerator  Gen_2_@_Bus_4     p_set     0
 # ACGenerator  Gen_2_@_Bus_4     q_set     0
-# ACGenerator  Gen_2_@_Bus_4     v_set     0
+# ACGenerator  Gen_2_@_Bus_4     v_set     137.724
 # ACGenerator  Gen_3_@_Bus_6     p_set     0
 # ACGenerator  Gen_3_@_Bus_6     q_set     0
-# ACGenerator  Gen_3_@_Bus_6     v_set     0
+# ACGenerator  Gen_3_@_Bus_6     v_set     136.62
 # ACGenerator  Gen_4_@_Bus_8     p_set     0
 # ACGenerator  Gen_4_@_Bus_8     q_set     0
-# ACGenerator  Gen_4_@_Bus_8     v_set     0
-# ACGenerator  Gen_5_@_Bus_10    p_set     0
+# ACGenerator  Gen_4_@_Bus_8     v_set     350.175
+# ACGenerator  Gen_5_@_Bus_10    p_set     450
 # ACGenerator  Gen_5_@_Bus_10    q_set     0
-# ACGenerator  Gen_5_@_Bus_10    v_set     0
-# ACGenerator  Gen_6_@_Bus_12    p_set     0
+# ACGenerator  Gen_5_@_Bus_10    v_set     362.25
+# ACGenerator  Gen_6_@_Bus_12    p_set     85
 # ACGenerator  Gen_6_@_Bus_12    q_set     0
-# ACGenerator  Gen_6_@_Bus_12    v_set     0
+# ACGenerator  Gen_6_@_Bus_12    v_set     136.62
 # ACGenerator  Gen_7_@_Bus_15    p_set     0
 # ACGenerator  Gen_7_@_Bus_15    q_set     0
-# ACGenerator  Gen_7_@_Bus_15    v_set     0
+# ACGenerator  Gen_7_@_Bus_15    v_set     133.86
 # ACGenerator  Gen_8_@_Bus_18    p_set     0
 # ACGenerator  Gen_8_@_Bus_18    q_set     0
-# ACGenerator  Gen_8_@_Bus_18    v_set     0
+# ACGenerator  Gen_8_@_Bus_18    v_set     134.274
 # ACGenerator  Gen_9_@_Bus_19    p_set     0
 # ACGenerator  Gen_9_@_Bus_19    q_set     0
-# ACGenerator  Gen_9_@_Bus_19    v_set     0
+# ACGenerator  Gen_9_@_Bus_19    v_set     132.756
 # ACGenerator  Gen_10_@_Bus_24   p_set     0
 # ACGenerator  Gen_10_@_Bus_24   q_set     0
-# ACGenerator  Gen_10_@_Bus_24   v_set     0
-# ACGenerator  Gen_11_@_Bus_25   p_set     0
+# ACGenerator  Gen_10_@_Bus_24   v_set     136.896
+# ACGenerator  Gen_11_@_Bus_25   p_set     220
 # ACGenerator  Gen_11_@_Bus_25   q_set     0
-# ACGenerator  Gen_11_@_Bus_25   v_set     0
-# ACGenerator  Gen_12_@_Bus_26   p_set     0
+# ACGenerator  Gen_11_@_Bus_25   v_set     144.9
+# ACGenerator  Gen_12_@_Bus_26   p_set     314
 # ACGenerator  Gen_12_@_Bus_26   q_set     0
-# ACGenerator  Gen_12_@_Bus_26   v_set     0
+# ACGenerator  Gen_12_@_Bus_26   v_set     350.175
 # ACGenerator  Gen_13_@_Bus_27   p_set     0
 # ACGenerator  Gen_13_@_Bus_27   q_set     0
-# ACGenerator  Gen_13_@_Bus_27   v_set     0
-# ACGenerator  Gen_14_@_Bus_31   p_set     0
+# ACGenerator  Gen_13_@_Bus_27   v_set     133.584
+# ACGenerator  Gen_14_@_Bus_31   p_set     7
 # ACGenerator  Gen_14_@_Bus_31   q_set     0
-# ACGenerator  Gen_14_@_Bus_31   v_set     0
+# ACGenerator  Gen_14_@_Bus_31   v_set     133.446
 # ACGenerator  Gen_15_@_Bus_32   p_set     0
 # ACGenerator  Gen_15_@_Bus_32   q_set     0
-# ACGenerator  Gen_15_@_Bus_32   v_set     0
+# ACGenerator  Gen_15_@_Bus_32   v_set     132.894
 # ACGenerator  Gen_16_@_Bus_34   p_set     0
 # ACGenerator  Gen_16_@_Bus_34   q_set     0
-# ACGenerator  Gen_16_@_Bus_34   v_set     0
+# ACGenerator  Gen_16_@_Bus_34   v_set     135.792
 # ACGenerator  Gen_17_@_Bus_36   p_set     0
 # ACGenerator  Gen_17_@_Bus_36   q_set     0
-# ACGenerator  Gen_17_@_Bus_36   v_set     0
+# ACGenerator  Gen_17_@_Bus_36   v_set     135.24
 # ACGenerator  Gen_18_@_Bus_40   p_set     0
 # ACGenerator  Gen_18_@_Bus_40   q_set     0
-# ACGenerator  Gen_18_@_Bus_40   v_set     0
+# ACGenerator  Gen_18_@_Bus_40   v_set     133.86
 # ACGenerator  Gen_19_@_Bus_42   p_set     0
 # ACGenerator  Gen_19_@_Bus_42   q_set     0
-# ACGenerator  Gen_19_@_Bus_42   v_set     0
-# ACGenerator  Gen_20_@_Bus_46   p_set     0
+# ACGenerator  Gen_19_@_Bus_42   v_set     135.93
+# ACGenerator  Gen_20_@_Bus_46   p_set     19
 # ACGenerator  Gen_20_@_Bus_46   q_set     0
-# ACGenerator  Gen_20_@_Bus_46   v_set     0
-# ACGenerator  Gen_21_@_Bus_49   p_set     0
+# ACGenerator  Gen_20_@_Bus_46   v_set     138.69
+# ACGenerator  Gen_21_@_Bus_49   p_set     204
 # ACGenerator  Gen_21_@_Bus_49   q_set     0
-# ACGenerator  Gen_21_@_Bus_49   v_set     0
-# ACGenerator  Gen_22_@_Bus_54   p_set     0
+# ACGenerator  Gen_21_@_Bus_49   v_set     141.45
+# ACGenerator  Gen_22_@_Bus_54   p_set     48
 # ACGenerator  Gen_22_@_Bus_54   q_set     0
-# ACGenerator  Gen_22_@_Bus_54   v_set     0
+# ACGenerator  Gen_22_@_Bus_54   v_set     131.79
 # ACGenerator  Gen_23_@_Bus_55   p_set     0
 # ACGenerator  Gen_23_@_Bus_55   q_set     0
-# ACGenerator  Gen_23_@_Bus_55   v_set     0
+# ACGenerator  Gen_23_@_Bus_55   v_set     131.376
 # ACGenerator  Gen_24_@_Bus_56   p_set     0
 # ACGenerator  Gen_24_@_Bus_56   q_set     0
-# ACGenerator  Gen_24_@_Bus_56   v_set     0
-# ACGenerator  Gen_25_@_Bus_59   p_set     0
+# ACGenerator  Gen_24_@_Bus_56   v_set     131.652
+# ACGenerator  Gen_25_@_Bus_59   p_set     155
 # ACGenerator  Gen_25_@_Bus_59   q_set     0
-# ACGenerator  Gen_25_@_Bus_59   v_set     0
-# ACGenerator  Gen_26_@_Bus_61   p_set     0
+# ACGenerator  Gen_25_@_Bus_59   v_set     135.93
+# ACGenerator  Gen_26_@_Bus_61   p_set     160
 # ACGenerator  Gen_26_@_Bus_61   q_set     0
-# ACGenerator  Gen_26_@_Bus_61   v_set     0
+# ACGenerator  Gen_26_@_Bus_61   v_set     137.31
 # ACGenerator  Gen_27_@_Bus_62   p_set     0
 # ACGenerator  Gen_27_@_Bus_62   q_set     0
-# ACGenerator  Gen_27_@_Bus_62   v_set     0
-# ACGenerator  Gen_28_@_Bus_65   p_set     0
+# ACGenerator  Gen_27_@_Bus_62   v_set     137.724
+# ACGenerator  Gen_28_@_Bus_65   p_set     391
 # ACGenerator  Gen_28_@_Bus_65   q_set     0
-# ACGenerator  Gen_28_@_Bus_65   v_set     0
-# ACGenerator  Gen_29_@_Bus_66   p_set     0
+# ACGenerator  Gen_28_@_Bus_65   v_set     346.725
+# ACGenerator  Gen_29_@_Bus_66   p_set     392
 # ACGenerator  Gen_29_@_Bus_66   q_set     0
-# ACGenerator  Gen_29_@_Bus_66   v_set     0
-# ACGenerator  Gen_30_@_Bus_69   p_set     0
+# ACGenerator  Gen_29_@_Bus_66   v_set     144.9
+# ACGenerator  Gen_30_@_Bus_69   p_set     516.4
 # ACGenerator  Gen_30_@_Bus_69   q_set     0
-# ACGenerator  Gen_30_@_Bus_69   v_set     0
+# ACGenerator  Gen_30_@_Bus_69   v_set     142.83
 # ACGenerator  Gen_31_@_Bus_70   p_set     0
 # ACGenerator  Gen_31_@_Bus_70   q_set     0
-# ACGenerator  Gen_31_@_Bus_70   v_set     0
+# ACGenerator  Gen_31_@_Bus_70   v_set     135.792
 # ACGenerator  Gen_32_@_Bus_72   p_set     0
 # ACGenerator  Gen_32_@_Bus_72   q_set     0
-# ACGenerator  Gen_32_@_Bus_72   v_set     0
+# ACGenerator  Gen_32_@_Bus_72   v_set     135.24
 # ACGenerator  Gen_33_@_Bus_73   p_set     0
 # ACGenerator  Gen_33_@_Bus_73   q_set     0
-# ACGenerator  Gen_33_@_Bus_73   v_set     0
+# ACGenerator  Gen_33_@_Bus_73   v_set     136.758
 # ACGenerator  Gen_34_@_Bus_74   p_set     0
 # ACGenerator  Gen_34_@_Bus_74   q_set     0
-# ACGenerator  Gen_34_@_Bus_74   v_set     0
+# ACGenerator  Gen_34_@_Bus_74   v_set     132.204
 # ACGenerator  Gen_35_@_Bus_76   p_set     0
 # ACGenerator  Gen_35_@_Bus_76   q_set     0
-# ACGenerator  Gen_35_@_Bus_76   v_set     0
+# ACGenerator  Gen_35_@_Bus_76   v_set     130.134
 # ACGenerator  Gen_36_@_Bus_77   p_set     0
 # ACGenerator  Gen_36_@_Bus_77   q_set     0
-# ACGenerator  Gen_36_@_Bus_77   v_set     0
-# ACGenerator  Gen_37_@_Bus_80   p_set     0
+# ACGenerator  Gen_36_@_Bus_77   v_set     138.828
+# ACGenerator  Gen_37_@_Bus_80   p_set     477
 # ACGenerator  Gen_37_@_Bus_80   q_set     0
-# ACGenerator  Gen_37_@_Bus_80   v_set     0
+# ACGenerator  Gen_37_@_Bus_80   v_set     143.52
 # ACGenerator  Gen_38_@_Bus_85   p_set     0
 # ACGenerator  Gen_38_@_Bus_85   q_set     0
-# ACGenerator  Gen_38_@_Bus_85   v_set     0
-# ACGenerator  Gen_39_@_Bus_87   p_set     0
+# ACGenerator  Gen_38_@_Bus_85   v_set     135.93
+# ACGenerator  Gen_39_@_Bus_87   p_set     4
 # ACGenerator  Gen_39_@_Bus_87   q_set     0
-# ACGenerator  Gen_39_@_Bus_87   v_set     0
-# ACGenerator  Gen_40_@_Bus_89   p_set     0
+# ACGenerator  Gen_39_@_Bus_87   v_set     163.415
+# ACGenerator  Gen_40_@_Bus_89   p_set     607
 # ACGenerator  Gen_40_@_Bus_89   q_set     0
-# ACGenerator  Gen_40_@_Bus_89   v_set     0
+# ACGenerator  Gen_40_@_Bus_89   v_set     138.69
 # ACGenerator  Gen_41_@_Bus_90   p_set     0
 # ACGenerator  Gen_41_@_Bus_90   q_set     0
-# ACGenerator  Gen_41_@_Bus_90   v_set     0
+# ACGenerator  Gen_41_@_Bus_90   v_set     135.93
 # ACGenerator  Gen_42_@_Bus_91   p_set     0
 # ACGenerator  Gen_42_@_Bus_91   q_set     0
-# ACGenerator  Gen_42_@_Bus_91   v_set     0
+# ACGenerator  Gen_42_@_Bus_91   v_set     135.24
 # ACGenerator  Gen_43_@_Bus_92   p_set     0
 # ACGenerator  Gen_43_@_Bus_92   q_set     0
-# ACGenerator  Gen_43_@_Bus_92   v_set     0
+# ACGenerator  Gen_43_@_Bus_92   v_set     136.62
 # ACGenerator  Gen_44_@_Bus_99   p_set     0
 # ACGenerator  Gen_44_@_Bus_99   q_set     0
-# ACGenerator  Gen_44_@_Bus_99   v_set     0
-# ACGenerator  Gen_45_@_Bus_100  p_set     0
+# ACGenerator  Gen_44_@_Bus_99   v_set     139.38
+# ACGenerator  Gen_45_@_Bus_100  p_set     252
 # ACGenerator  Gen_45_@_Bus_100  q_set     0
-# ACGenerator  Gen_45_@_Bus_100  v_set     0
-# ACGenerator  Gen_46_@_Bus_103  p_set     0
+# ACGenerator  Gen_45_@_Bus_100  v_set     140.346
+# ACGenerator  Gen_46_@_Bus_103  p_set     40
 # ACGenerator  Gen_46_@_Bus_103  q_set     0
-# ACGenerator  Gen_46_@_Bus_103  v_set     0
+# ACGenerator  Gen_46_@_Bus_103  v_set     139.38
 # ACGenerator  Gen_47_@_Bus_104  p_set     0
 # ACGenerator  Gen_47_@_Bus_104  q_set     0
-# ACGenerator  Gen_47_@_Bus_104  v_set     0
+# ACGenerator  Gen_47_@_Bus_104  v_set     133.998
 # ACGenerator  Gen_48_@_Bus_105  p_set     0
 # ACGenerator  Gen_48_@_Bus_105  q_set     0
-# ACGenerator  Gen_48_@_Bus_105  v_set     0
+# ACGenerator  Gen_48_@_Bus_105  v_set     133.17
 # ACGenerator  Gen_49_@_Bus_107  p_set     0
 # ACGenerator  Gen_49_@_Bus_107  q_set     0
-# ACGenerator  Gen_49_@_Bus_107  v_set     0
+# ACGenerator  Gen_49_@_Bus_107  v_set     131.376
 # ACGenerator  Gen_50_@_Bus_110  p_set     0
 # ACGenerator  Gen_50_@_Bus_110  q_set     0
-# ACGenerator  Gen_50_@_Bus_110  v_set     0
-# ACGenerator  Gen_51_@_Bus_111  p_set     0
+# ACGenerator  Gen_50_@_Bus_110  v_set     134.274
+# ACGenerator  Gen_51_@_Bus_111  p_set     36
 # ACGenerator  Gen_51_@_Bus_111  q_set     0
-# ACGenerator  Gen_51_@_Bus_111  v_set     0
+# ACGenerator  Gen_51_@_Bus_111  v_set     135.24
 # ACGenerator  Gen_52_@_Bus_112  p_set     0
 # ACGenerator  Gen_52_@_Bus_112  q_set     0
-# ACGenerator  Gen_52_@_Bus_112  v_set     0
+# ACGenerator  Gen_52_@_Bus_112  v_set     134.55
 # ACGenerator  Gen_53_@_Bus_113  p_set     0
 # ACGenerator  Gen_53_@_Bus_113  q_set     0
-# ACGenerator  Gen_53_@_Bus_113  v_set     0
+# ACGenerator  Gen_53_@_Bus_113  v_set     137.034
 # ACGenerator  Gen_54_@_Bus_116  p_set     0
 # ACGenerator  Gen_54_@_Bus_116  q_set     0
-# ACGenerator  Gen_54_@_Bus_116  v_set     0
+# ACGenerator  Gen_54_@_Bus_116  v_set     138.69
 </SetValue>

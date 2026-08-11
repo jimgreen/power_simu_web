@@ -356,26 +356,11 @@ process.stdout.write(JSON.stringify({
         self.assertFalse(trainee_payload["hasRealSeries"])
         self.assertEqual(trainee_payload["scadaLatest"], 49)
 
-    def test_simulator_tooltip_reports_the_window_median_deviation(self):
+    def test_simulator_does_not_derive_median_deviation_from_history(self):
         simulator_path = self._scripts()[0]
-        body = """
-process.stdout.write(JSON.stringify({
-  odd: diagramTrendMedianDeviation([
-    { scada: 4.6, real: 4.5 },
-    { scada: 4.4, real: 4.5 },
-    { scada: 4.8, real: 4.5 },
-  ]),
-  even: diagramTrendMedianDeviation([
-    { scada: 4.6, real: 4.5 },
-    { scada: 4.7, real: 4.5 },
-  ]),
-  missing: diagramTrendMedianDeviation([{ scada: 4.6, real: null }]),
-}));
-"""
-        payload = self._run_trend_helpers(simulator_path.read_text(encoding="utf-8"), body)
-        self.assertAlmostEqual(payload["odd"], 0.1)
-        self.assertAlmostEqual(payload["even"], 0.15)
-        self.assertIsNone(payload["missing"])
+        script = simulator_path.read_text(encoding="utf-8")
+        self.assertNotIn("function diagramTrendMedianDeviation", script)
+        self.assertIn("median_deviation", script)
 
     def test_svg_context_menu_only_opens_on_blank_and_clamps_to_viewport(self):
         body = """

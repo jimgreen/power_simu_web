@@ -1052,6 +1052,36 @@ def _measurement_row_to_dict(row: Sequence[str]) -> Dict[str, Any]:
     return item
 
 
+def _normalized_measurement_median_deviation_pairs(
+    values: Mapping[str, Any] | Sequence[Sequence[Any]] | None,
+) -> Tuple[Tuple[str, float], ...]:
+    items = values.items() if isinstance(values, Mapping) else (values or ())
+    normalized: Dict[str, float] = {}
+    for raw_name, raw_value in items:
+        name = str(raw_name).strip()
+        number = _to_float(raw_value, None)
+        if not name or number is None or not math.isfinite(number):
+            continue
+        if number == 0.0:
+            normalized.pop(name, None)
+        else:
+            normalized[name] = float(number)
+    return tuple(sorted(normalized.items()))
+
+
+def _measurement_median_deviation_map(snapshot: DefinitionSnapshot) -> Dict[str, float]:
+    return dict(snapshot.measurement_median_deviations)
+
+
+def _measurement_definition_row_to_dict(
+    row: Sequence[str],
+    median_deviations: Mapping[str, float],
+) -> Dict[str, Any]:
+    item = _measurement_row_to_dict(row)
+    item["median_deviation"] = float(median_deviations.get(str(item.get("name", "")), 0.0))
+    return item
+
+
 def _measurement_dict_to_row(item: Mapping[str, Any]) -> List[str]:
     return [str(item.get(key, "")) for key in MEAS_HEADER]
 
@@ -1384,6 +1414,7 @@ class PolarMicrogridSimulator:
                 measurement_before=measurement_before,
                 measurement_rows=measurement_rows,
                 measurement_after=measurement_after,
+                measurement_median_deviations=snapshot.measurement_median_deviations,
             )
             self._definition_publish_epoch = epoch_after + 1
             self._definition_mirror_refs = mirror_refs
@@ -1402,6 +1433,9 @@ class PolarMicrogridSimulator:
             measurement_before=tuple(snapshot.measurement_before),
             measurement_rows=tuple(tuple(row) for row in snapshot.measurement_rows),
             measurement_after=tuple(snapshot.measurement_after),
+            measurement_median_deviations=_normalized_measurement_median_deviation_pairs(
+                snapshot.measurement_median_deviations
+            ),
         )
         measurement_before = list(normalized.measurement_before)
         measurement_rows = [list(row) for row in normalized.measurement_rows]
@@ -1512,6 +1546,9 @@ class PolarMicrogridSimulator:
                 measurement_before=tuple(measurement_before),
                 measurement_rows=tuple(tuple(row) for row in measurement_rows),
                 measurement_after=tuple(measurement_after),
+                measurement_median_deviations=self._read_source_measurement_median_deviations(
+                    measurement_rows
+                ),
             )
         )
         self.runtime_stat_book = self._base_stat_book_for_controls()
@@ -1522,8 +1559,12 @@ class PolarMicrogridSimulator:
         self.latest_device_states = []
         self.latest_real_rows = []
         self.latest_scada_rows = []
+        median_deviations = _measurement_median_deviation_map(self.definition_snapshot)
         self.latest_measurements = {
-            "definitions": [_measurement_row_to_dict(row) for row in measurement_rows],
+            "definitions": [
+                _measurement_definition_row_to_dict(row, median_deviations)
+                for row in measurement_rows
+            ],
             "real": [],
             "scada": [],
         }
@@ -1619,6 +1660,31 @@ class PolarMicrogridSimulator:
                 "fixed_value": fixed_value if status == "fixed" else None,
             }
         return statuses
+
+    def _read_source_measurement_median_deviations(
+        self,
+        measurement_rows: Sequence[Sequence[Any]],
+    ) -> Tuple[Tuple[str, float], ...]:
+        payload = _read_json(self.source_files["definition_defaults"], {})
+        raw_values = (
+            payload.get("measurement_median_deviations", {})
+            if isinstance(payload, Mapping)
+            else {}
+        )
+        if not isinstance(raw_values, Mapping):
+            return ()
+        measurement_names = {
+            str(row[1]).strip()
+            for row in measurement_rows
+            if len(row) > 1 and str(row[1]).strip()
+        }
+        return _normalized_measurement_median_deviation_pairs(
+            {
+                str(name): value
+                for name, value in raw_values.items()
+                if str(name).strip() in measurement_names
+            }
+        )
 
     def _read_runtime_logs(self) -> List[Dict[str, Any]]:
         snapshot = _read_json(self.runtime_logs_file, [])
@@ -3593,6 +3659,9 @@ class PolarMicrogridSimulator:
             dev_define_book=definition_snapshot.dev_define_book,
             mode_book=simu_loop._clone_ebook(self.mode_book) if self.mode_book is not None else None,
             measurement_bindings=self._measurement_bindings_cache,
+            measurement_median_deviations=_measurement_median_deviation_map(
+                definition_snapshot
+            ),
         )
 
     def _execute_kernel(self, config: simu_loop.SimulationConfig) -> PowerFlowExecution:
@@ -7075,6 +7144,11 @@ class PolarMicrogridSimulator:
                 }
             return statuses
 
+    def effective_measurement_median_deviation_defaults(self) -> Dict[str, float]:
+        """Return nonzero Gaussian error means for a materialized definition export."""
+        with self.definition_update_lock:
+            return _measurement_median_deviation_map(self.definition_snapshot)
+
     def _apply_measurement_statuses(self, minute: int | float, absolute_minute: int | float) -> None:
         del minute, absolute_minute
         statuses = self.local_settings.get("measurement_statuses", {})
@@ -7372,7 +7446,11 @@ class PolarMicrogridSimulator:
 
     def measurements(self) -> Dict[str, List[Dict[str, Any]]]:
         definition_snapshot = self.definition_snapshot
-        definitions = [_measurement_row_to_dict(row) for row in definition_snapshot.measurement_rows]
+        median_deviations = _measurement_median_deviation_map(definition_snapshot)
+        definitions = [
+            _measurement_definition_row_to_dict(row, median_deviations)
+            for row in definition_snapshot.measurement_rows
+        ]
         real = [_measurement_row_to_dict(row) for row in self.latest_real_rows]
         scada = [_measurement_row_to_dict(row) for row in self.latest_scada_rows]
         for rows in (real, scada):
@@ -9432,6 +9510,11 @@ class PolarMicrogridSimulator:
             column = {"weight": 5, "valid": 6}.get(field_name)
             if column is not None:
                 return self._manual_change_value_text(active.measurement_rows[index][column])
+            if field_name == "median_deviation":
+                values = _measurement_median_deviation_map(active)
+                return self._manual_change_value_text(
+                    values.get(str(item.get("measurement_name", "")), 0.0)
+                )
             if field_name in {"status", "fixed_value"}:
                 status, fixed_value = self._measurement_status_override(
                     active.measurement_rows[index]
@@ -9486,6 +9569,9 @@ class PolarMicrogridSimulator:
             measurement_before=tuple(measurement_before),
             measurement_rows=tuple(tuple(row) for row in measurement_rows),
             measurement_after=tuple(measurement_after),
+            measurement_median_deviations=self._read_source_measurement_median_deviations(
+                measurement_rows
+            ),
         )
         return snapshot, source_stat_book, control_book
 
@@ -9781,6 +9867,7 @@ class PolarMicrogridSimulator:
         kinds = {str(item.get("kind", "")) for item in items}
         model_book = simu_loop._clone_ebook(current.model_book) if "device" in kinds else current.model_book
         measurement_rows = [list(row) for row in current.measurement_rows]
+        measurement_median_deviations = _measurement_median_deviation_map(current)
         changed = False
 
         for item in items:
@@ -9817,6 +9904,10 @@ class PolarMicrogridSimulator:
                 measurement_rows,
                 {"name": measurement_name},
             )
+            current_item["median_deviation"] = measurement_median_deviations.get(
+                measurement_name,
+                0.0,
+            )
             normalized = normalize_measurement_changes(current_item, desired_values)
             changed = changed or not self._manual_change_values_equal(
                 measurement_rows[index][5],
@@ -9824,9 +9915,16 @@ class PolarMicrogridSimulator:
             ) or not self._manual_change_values_equal(
                 measurement_rows[index][6],
                 normalized["valid"],
+            ) or not self._manual_change_values_equal(
+                measurement_median_deviations.get(measurement_name, 0.0),
+                normalized["median_deviation"],
             )
             measurement_rows[index][5] = normalized["weight"]
             measurement_rows[index][6] = normalized["valid"]
+            if normalized["median_deviation"] == 0.0:
+                measurement_median_deviations.pop(measurement_name, None)
+            else:
+                measurement_median_deviations[measurement_name] = normalized["median_deviation"]
 
         if not changed:
             return current, kinds
@@ -9842,6 +9940,9 @@ class PolarMicrogridSimulator:
             measurement_before=current.measurement_before,
             measurement_rows=tuple(tuple(row) for row in measurement_rows),
             measurement_after=current.measurement_after,
+            measurement_median_deviations=_normalized_measurement_median_deviation_pairs(
+                measurement_median_deviations
+            ),
         ), kinds
 
     def retry_manual_definition_changes(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
@@ -10024,8 +10125,10 @@ class PolarMicrogridSimulator:
         persistence_error: str = "",
         before_status: Optional[str] = None,
         before_fixed_value: Any = None,
+        before_median_deviation: Any = 0.0,
         after_status: Optional[str] = None,
         after_fixed_value: Any = None,
+        after_median_deviation: Any = 0.0,
     ) -> None:
         after = _measurement_row_to_dict(after_row)
         measurement_name = str(after.get("name", ""))
@@ -10034,6 +10137,10 @@ class PolarMicrogridSimulator:
         object_name = str(after.get("dev_name", ""))
         raw_values = {
             "weight": (before_row[5], after_row[5]),
+            "median_deviation": (
+                before_median_deviation,
+                after_median_deviation,
+            ),
             "valid": (before_row[6], after_row[6]),
             "status": (
                 before_status
@@ -10061,7 +10168,11 @@ class PolarMicrogridSimulator:
                 **existing,
                 "id": change_id,
                 "kind": "measurement",
-                "change_type": "量测参数" if field_name == "weight" else "量测状态",
+                "change_type": (
+                    "量测参数"
+                    if field_name in {"weight", "median_deviation"}
+                    else "量测状态"
+                ),
                 "object_type": object_type,
                 "object_name": object_name,
                 "object_id": str(after.get("idx", "")),
@@ -10071,6 +10182,7 @@ class PolarMicrogridSimulator:
                 "field": field_name,
                 "field_label": {
                     "weight": "量测误差 / 权重",
+                    "median_deviation": "中值偏差",
                     "valid": "量测有效性",
                     "status": "量测状态",
                     "fixed_value": "量测固定值",
@@ -10078,7 +10190,11 @@ class PolarMicrogridSimulator:
                 "default_value": default_value,
                 "current_value": current_value,
                 "modified_at": now,
-                "source_file": "meas.e",
+                "source_file": (
+                    DEFINITION_DEFAULTS_FILE
+                    if field_name == "median_deviation"
+                    else "meas.e"
+                ),
             }
             self._set_manual_change_sync_state_unlocked(
                 item,
@@ -10298,6 +10414,7 @@ class PolarMicrogridSimulator:
                 measurement_before=current.measurement_before,
                 measurement_rows=current.measurement_rows,
                 measurement_after=current.measurement_after,
+                measurement_median_deviations=current.measurement_median_deviations,
             )
             self._publish_definition_snapshot(next_snapshot)
 
@@ -10379,6 +10496,9 @@ class PolarMicrogridSimulator:
             rows = [list(row) for row in current.measurement_rows]
             index, current_item = self._measurement_definition_row(rows, payload)
             before_row = list(rows[index])
+            measurement_name = str(current_item.get("name", ""))
+            median_deviations = _measurement_median_deviation_map(current)
+            current_median_deviation = median_deviations.get(measurement_name, 0.0)
             changes = payload.get("changes", {})
             if not isinstance(changes, Mapping):
                 raise ValueError("changes must be an object")
@@ -10386,9 +10506,14 @@ class PolarMicrogridSimulator:
             current_status, current_fixed_value = self._measurement_status_override(current_item)
             current_with_status["status"] = current_status
             current_with_status["fixed_value"] = current_fixed_value
+            current_with_status["median_deviation"] = current_median_deviation
             normalized = normalize_measurement_changes(current_with_status, changes)
             rows[index][5] = normalized["weight"]
             rows[index][6] = normalized["valid"]
+            if normalized["median_deviation"] == 0.0:
+                median_deviations.pop(measurement_name, None)
+            else:
+                median_deviations[measurement_name] = normalized["median_deviation"]
             next_snapshot = DefinitionSnapshot(
                 revision=current.revision + 1,
                 model_book=current.model_book,
@@ -10396,12 +10521,17 @@ class PolarMicrogridSimulator:
                 measurement_before=current.measurement_before,
                 measurement_rows=tuple(tuple(row) for row in rows),
                 measurement_after=current.measurement_after,
+                measurement_median_deviations=_normalized_measurement_median_deviation_pairs(
+                    median_deviations
+                ),
             )
             self._publish_definition_snapshot(next_snapshot)
 
             changed_fields: List[str] = []
             if "weight" in changes or "error_sigma" in changes:
                 changed_fields.append("weight")
+            if "median_deviation" in changes:
+                changed_fields.append("median_deviation")
             if "valid" in changes or "status" in changes:
                 changed_fields.append("valid")
             if "status" in changes:
@@ -10422,8 +10552,10 @@ class PolarMicrogridSimulator:
                 persistence_error="等待人工覆盖层保存",
                 before_status=current_status,
                 before_fixed_value=current_fixed_value,
+                before_median_deviation=current_median_deviation,
                 after_status=normalized["status"],
                 after_fixed_value=normalized["fixed_value"],
+                after_median_deviation=normalized["median_deviation"],
             )
             self._apply_manual_measurement_status_overrides_unlocked(
                 next_snapshot,
@@ -10445,8 +10577,10 @@ class PolarMicrogridSimulator:
                     persistence_error=persistence_error,
                     before_status=current_status,
                     before_fixed_value=current_fixed_value,
+                    before_median_deviation=current_median_deviation,
                     after_status=normalized["status"],
                     after_fixed_value=normalized["fixed_value"],
+                    after_median_deviation=normalized["median_deviation"],
                 )
             else:
                 change_record_persisted = True
@@ -10467,6 +10601,7 @@ class PolarMicrogridSimulator:
                     persisted = True
             record = _measurement_row_to_dict(rows[index])
             record["error_sigma"] = normalized["error_sigma"]
+            record["median_deviation"] = normalized["median_deviation"]
             record["status"] = normalized["status"]
             record["fixed_value"] = normalized["fixed_value"]
             result = self._definition_update_result(
@@ -10684,10 +10819,11 @@ class PolarMicrogridSimulator:
 
     def definitions(self, measurements: Optional[Mapping[str, Sequence[Mapping[str, Any]]]] = None) -> Dict[str, Any]:
         definition_snapshot = self.definition_snapshot
+        median_deviations = _measurement_median_deviation_map(definition_snapshot)
         measurement_rows = self._with_realtime_measurements(
             {
                 "definitions": [
-                    _measurement_row_to_dict(row)
+                    _measurement_definition_row_to_dict(row, median_deviations)
                     for row in definition_snapshot.measurement_rows
                 ],
                 "real": [],
@@ -10894,9 +11030,11 @@ class PolarMicrogridSimulator:
         if include_measurements:
             measurements = self.measurements()
             if "definitions" not in measurements:
+                definition_snapshot = self.definition_snapshot
+                median_deviations = _measurement_median_deviation_map(definition_snapshot)
                 measurements["definitions"] = [
-                    _measurement_row_to_dict(row)
-                    for row in self.definition_snapshot.measurement_rows
+                    _measurement_definition_row_to_dict(row, median_deviations)
+                    for row in definition_snapshot.measurement_rows
                 ]
             measurements = self._with_realtime_measurements(measurements)
         try:

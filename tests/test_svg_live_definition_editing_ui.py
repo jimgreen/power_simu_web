@@ -357,6 +357,7 @@ const snapshot = {
       dev_name: "wind-1",
       meas_type: "P_GEN",
       weight: 100,
+      median_deviation: -0.25,
       valid: 1,
     }],
   },
@@ -375,6 +376,7 @@ process.stdout.write(JSON.stringify({
   valid: pair.valid,
   weight: pair.weight,
   errorSigma: pair.errorSigma,
+  medianDeviation: pair.medianDeviation,
   fromSigma: diagramDefinitionWeightFromSigma(0.02),
   fromWeight: diagramDefinitionSigmaFromWeight(400),
 }));
@@ -388,6 +390,7 @@ process.stdout.write(JSON.stringify({
                 "valid": 1,
                 "weight": 100,
                 "errorSigma": 0.1,
+                "medianDeviation": -0.25,
                 "fromSigma": 2500,
                 "fromWeight": 0.05,
             },
@@ -460,7 +463,7 @@ applyDefinitionEditResult({
   memory_updated: true,
   persisted: false,
   warning: "disk warning",
-  record: { name: "line-1.p", weight: 400, valid: 0, error_sigma: 0.05 },
+  record: { name: "line-1.p", weight: 400, median_deviation: -0.25, valid: 0, error_sigma: 0.05 },
   static_meta: { definitions: { revision: 3 }, device_parameters: { revision: 3 } },
 });
 process.stdout.write(JSON.stringify({
@@ -477,6 +480,7 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(payload["branch"]["r"], 0.03)
         self.assertEqual(payload["branch"]["x"], 0.02)
         self.assertEqual(payload["measurement"]["weight"], 400)
+        self.assertEqual(payload["measurement"]["median_deviation"], -0.25)
         self.assertEqual(payload["measurement"]["valid"], 0)
         self.assertEqual(payload["channelValid"], [0, 0])
         self.assertEqual(payload["meta"]["definitions"]["revision"], 3)
@@ -768,6 +772,7 @@ process.stdout.write(JSON.stringify({
             1,
         )[1].split("function syncDiagramMeasurementDefinitionFields", 1)[0]
         self.assertIn("<dt>中值偏差</dt>", measurement_summary)
+        self.assertIn('data-diagram-measurement-definition-field="medianDeviation"', measurement_summary)
         self.assertNotIn("<dt>权重</dt>", measurement_summary)
         self.assertNotIn("data-diagram-measurement-weight", measurement_summary)
         self.assertIn("data-diagram-measurement-weight", self.trainee_script)

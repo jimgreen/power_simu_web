@@ -5966,6 +5966,7 @@ function diagramMetricMeasurementPair(hover, snapshot = state.snapshot || {}) {
     validNumber,
   );
   const fixedValueNumber = Number(definition?.fixed_value ?? channelRow?.fixed_value);
+  const medianDeviationNumber = Number(definition?.median_deviation ?? channelRow?.median_deviation ?? 0);
   return {
     definition,
     scadaRow,
@@ -5983,6 +5984,7 @@ function diagramMetricMeasurementPair(hover, snapshot = state.snapshot || {}) {
     fixedValue: Number.isFinite(fixedValueNumber) ? fixedValueNumber : null,
     weight,
     errorSigma: diagramDefinitionSigmaFromWeight(weight),
+    medianDeviation: Number.isFinite(medianDeviationNumber) ? medianDeviationNumber : 0,
   };
 }
 
@@ -6891,19 +6893,6 @@ function diagramTrendFiniteValue(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-function diagramTrendMedianDeviation(points) {
-  const deviations = (points || []).flatMap((point) => {
-    const scada = diagramTrendFiniteValue(point?.scada);
-    const real = diagramTrendFiniteValue(point?.real);
-    return scada === null || real === null ? [] : [scada - real];
-  }).sort((left, right) => left - right);
-  if (!deviations.length) return null;
-  const middle = Math.floor(deviations.length / 2);
-  return deviations.length % 2
-    ? deviations[middle]
-    : (deviations[middle - 1] + deviations[middle]) / 2;
-}
-
 function diagramTrendChartModel(points, period, tooltipWidth = 360, currentMinute = null, unit = "", rangeOverride = null) {
   const sourcePoints = Array.isArray(points) ? points : [];
   const targetCount = Math.max(32, Math.floor(Math.max(tooltipWidth, 320) * 0.75));
@@ -7266,7 +7255,15 @@ function diagramMetricTooltipData(container, hover, snapshot, interaction) {
     trendRange.windowOffset,
     trendRange,
   );
-  const medianDeviation = diagramTrendMedianDeviation(windowPoints) ?? deviation;
+  const medianDeviationRaw = diagramTrendFiniteValue(pair.medianDeviation) ?? 0;
+  const medianDeviation = diagramTrendDisplayValue(
+    medianDeviationRaw,
+    pair.row || row,
+    metricType,
+  ) ?? medianDeviationRaw;
+  const medianDeviationScale = medianDeviationRaw === 0
+    ? (diagramTrendDisplayValue(1, pair.row || row, metricType) ?? 1)
+    : medianDeviation / medianDeviationRaw;
   const deviceName = hover?.binding?.devName || row?.dev_name || row?.name || "动态量测";
   const metricLabel = diagramMetricLabel(metricType, row);
   const validText = pair.row || pair.definition
@@ -7283,6 +7280,8 @@ function diagramMetricTooltipData(container, hover, snapshot, interaction) {
     deviation,
     deviationText: formatMeasurementDisplayValue(deviation, pair.row, diagramNumberText),
     medianDeviation,
+    medianDeviationRaw,
+    medianDeviationScale,
     medianDeviationText: formatMeasurementDisplayValue(medianDeviation, pair.row, diagramNumberText),
     valid: pair.valid,
     status: pair.status,
@@ -7345,6 +7344,9 @@ function renderDiagramMeasurementSummary(data, editor = null, interaction = null
   const sigmaValue = editing
     ? `<input class="diagram-definition-input" data-diagram-tooltip-inline-input data-diagram-definition-input="measurement" data-diagram-measurement-definition-field="errorSigma" data-diagram-measurement-sigma type="number" min="0" step="any" value="${escapeHtml(editor.draft.errorSigma)}" ${interaction?.definitionSaving ? "disabled" : ""}>`
     : `<span data-diagram-measurement-sigma>${escapeHtml(data.errorSigmaText)}</span>`;
+  const medianDeviationValue = editing
+    ? `<div class="diagram-definition-input-wrap"><input class="diagram-definition-input" data-diagram-tooltip-inline-input data-diagram-definition-input="measurement" data-diagram-measurement-definition-field="medianDeviation" type="number" step="any" value="${escapeHtml(editor.draft.medianDeviation)}" ${interaction?.definitionSaving ? "disabled" : ""}>${data.unit ? `<small>${escapeHtml(data.unit)}</small>` : ""}</div>`
+    : escapeHtml(diagramMeasurementValueWithUnit(data.medianDeviationText, data.unit));
   const fixedValue = editing ? editor.draft.fixedValue : data.fixedValue;
   const fixedValueText = fixedValue === null || fixedValue === undefined || fixedValue === ""
     ? "--"
@@ -7381,7 +7383,7 @@ function renderDiagramMeasurementSummary(data, editor = null, interaction = null
       </div>
       <div>
         <dt>中值偏差</dt>
-        <dd data-diagram-measurement-median-deviation>${escapeHtml(diagramMeasurementValueWithUnit(data.medianDeviationText, data.unit))}</dd>
+        <dd data-diagram-measurement-median-deviation ${measurementEditableAttr}>${medianDeviationValue}</dd>
       </div>
       ${fixedValueCell}
     </dl>`;
@@ -7398,12 +7400,14 @@ function syncDiagramMeasurementDefinitionFields(editor, changedField = "") {
   }
   const nextSigma = Number(editor.draft.errorSigma);
   const nextWeight = Number(editor.draft.weight);
+  const nextMedianDeviation = Number(editor.draft.medianDeviation);
   const nextStatus = diagramMeasurementStatus(editor.draft.status, editor.original?.valid);
   editor.draft.status = nextStatus;
   const nextFixedValue = Number(editor.draft.fixedValue);
   let error = "";
   if (!Number.isFinite(nextSigma) || nextSigma <= 0) error = "误差 σ 必须大于 0";
   else if (!Number.isFinite(nextWeight) || nextWeight <= 0) error = "权重必须大于 0";
+  else if (!Number.isFinite(nextMedianDeviation)) error = "中值偏差必须为有限数字";
   else if (nextStatus === "fixed" && !Number.isFinite(nextFixedValue)) error = "固定值必须为有限数字";
   editor.validationError = error;
   return { valid: !error, error };
@@ -7435,6 +7439,7 @@ function beginDiagramMeasurementDefinitionEdit(container) {
   if (!data.definition || !data.measurementName) return false;
   const originalWeight = data.weight === null ? String(data.definition.weight ?? "") : String(data.weight);
   const originalSigma = data.errorSigma === null ? "" : String(data.errorSigma);
+  const originalMedianDeviation = String(data.medianDeviation ?? 0);
   interaction.definitionEditor = {
     kind: "measurement",
     name: data.measurementName,
@@ -7445,6 +7450,7 @@ function beginDiagramMeasurementDefinitionEdit(container) {
     original: {
       weight: originalWeight,
       errorSigma: originalSigma,
+      medianDeviation: originalMedianDeviation,
       status: data.status,
       fixedValue: data.fixedValue === null ? "" : String(data.fixedValue),
       valid: String(data.valid),
@@ -7452,11 +7458,13 @@ function beginDiagramMeasurementDefinitionEdit(container) {
     draft: {
       weight: originalWeight,
       errorSigma: originalSigma,
+      medianDeviation: originalMedianDeviation,
       status: data.status,
       fixedValue: data.fixedValue === null ? "" : String(data.fixedValue),
       valid: String(data.valid),
     },
     dirtyFields: new Set(),
+    medianDeviationScale: Number(data.medianDeviationScale) || 1,
     validationError: "",
   };
   interaction.definitionSaving = false;
@@ -7471,7 +7479,7 @@ function updateDiagramMeasurementDefinitionDraft(interaction, input) {
   const editor = interaction?.definitionEditor;
   if (editor?.kind !== "measurement") return false;
   const field = String(input?.getAttribute?.("data-diagram-measurement-definition-field") || "");
-  if (!["errorSigma", "weight", "status", "fixedValue"].includes(field)) return false;
+  if (!["errorSigma", "weight", "medianDeviation", "status", "fixedValue"].includes(field)) return false;
   editor.draft[field] = String(input.value ?? "");
   if (field === "errorSigma" || field === "weight") {
     syncDiagramMeasurementDefinitionFields(editor, field);
@@ -7490,6 +7498,13 @@ function updateDiagramMeasurementDefinitionDraft(interaction, input) {
       editor.dirtyFields.delete("fixedValue");
     } else {
       editor.dirtyFields.add("fixedValue");
+    }
+  } else if (field === "medianDeviation") {
+    syncDiagramMeasurementDefinitionFields(editor, field);
+    if (String(editor.draft.medianDeviation) === String(editor.original.medianDeviation)) {
+      editor.dirtyFields.delete("medianDeviation");
+    } else {
+      editor.dirtyFields.add("medianDeviation");
     }
   } else {
     syncDiagramMeasurementDefinitionFields(editor, field);
@@ -7534,6 +7549,9 @@ async function saveDiagramMeasurementDefinitionEdit(container) {
         changes: {
           weight: Number(editor.draft.weight),
           error_sigma: Number(editor.draft.errorSigma),
+          ...(editor.dirtyFields.has("medianDeviation") ? {
+            median_deviation: Number(editor.draft.medianDeviation) / (Number(editor.medianDeviationScale) || 1),
+          } : {}),
           status: editor.draft.status,
           ...(editor.draft.status === "fixed" ? { fixed_value: Number(editor.draft.fixedValue) } : {}),
         },

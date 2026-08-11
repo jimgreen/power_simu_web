@@ -181,7 +181,7 @@ class LiveDefinitionEditingApiTest(unittest.TestCase):
             "96",
         )
 
-    def test_simulator_measurement_route_updates_sigma_weight_and_validity(self):
+    def test_simulator_measurement_route_updates_sigma_median_deviation_and_validity(self):
         manager = self._make_manager()
         base = self._serve(manager)
 
@@ -191,16 +191,29 @@ class LiveDefinitionEditingApiTest(unittest.TestCase):
             {
                 "model_id": "second",
                 "name": "p_gen_diesel_300kw",
-                "changes": {"error_sigma": 0.04, "valid": 0},
+                "changes": {"error_sigma": 0.04, "median_deviation": -0.3, "valid": 0},
             },
         )
 
         self.assertEqual(status, 200)
         self.assertEqual(result["model_id"], "second")
         self.assertAlmostEqual(result["record"]["error_sigma"], 0.04)
+        self.assertAlmostEqual(result["record"]["median_deviation"], -0.3)
         self.assertAlmostEqual(float(result["record"]["weight"]), 625.0)
         self.assertEqual(result["record"]["valid"], 0)
         self.assertEqual(result["static_meta"]["device_parameters"]["revision"], result["revision"])
+        definition = next(
+            row
+            for row in manager.service_for("second").definitions()["measurement"]
+            if row["name"] == "p_gen_diesel_300kw"
+        )
+        self.assertAlmostEqual(definition["median_deviation"], -0.3)
+        self.assertAlmostEqual(
+            manager.service_for("second")
+            ._make_config()
+            .measurement_median_deviations["p_gen_diesel_300kw"],
+            -0.3,
+        )
 
     def test_definition_edit_routes_translate_validation_failures_to_http_400(self):
         manager = self._make_manager()
@@ -437,12 +450,13 @@ class LiveDefinitionEditingApiTest(unittest.TestCase):
                 "model_id": "first",
                 "name": "p_gen_diesel_300kw",
                 "revision": first.definition_snapshot.revision,
-                "changes": {"error_sigma": 0.04, "valid": 0},
+                "changes": {"error_sigma": 0.04, "median_deviation": -0.3, "valid": 0},
             },
         )
 
         self.assertEqual(status, 200)
         self.assertAlmostEqual(result["record"]["error_sigma"], 0.04)
+        self.assertAlmostEqual(result["record"]["median_deviation"], -0.3)
         self.assertAlmostEqual(float(result["record"]["weight"]), 625.0)
         self.assertEqual(result["record"]["valid"], 0)
 

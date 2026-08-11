@@ -148,17 +148,27 @@ class DefinitionEditingHelpersTest(unittest.TestCase):
     def test_measurement_sigma_and_weight_are_bidirectionally_normalized(self):
         from_sigma = normalize_measurement_changes(
             {"weight": "25", "valid": "1"},
-            {"error_sigma": 0.1},
+            {"error_sigma": 0.1, "median_deviation": -0.25},
         )
         self.assertAlmostEqual(float(from_sigma["weight"]), 100.0)
         self.assertAlmostEqual(from_sigma["error_sigma"], 0.1)
+        self.assertAlmostEqual(from_sigma["median_deviation"], -0.25)
 
         from_weight = normalize_measurement_changes(
-            {"weight": "25", "valid": "1"},
+            {"weight": "25", "valid": "1", "median_deviation": "0.5"},
             {"weight": 400},
         )
         self.assertEqual(from_weight["weight"], "400")
         self.assertAlmostEqual(from_weight["error_sigma"], 0.05)
+        self.assertAlmostEqual(from_weight["median_deviation"], 0.5)
+
+    def test_measurement_changes_reject_nonfinite_median_deviation(self):
+        for value in ("nan", "inf", "-inf", "not-a-number"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "median_deviation"):
+                normalize_measurement_changes(
+                    {"weight": "25", "valid": "1", "median_deviation": 0},
+                    {"median_deviation": value},
+                )
 
     def test_measurement_changes_reject_nonpositive_weight_and_invalid_status(self):
         with self.assertRaisesRegex(ValueError, "weight"):

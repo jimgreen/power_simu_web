@@ -142,6 +142,7 @@ class SimulationConfig:
     dev_define_book: Optional[EBook] = None
     mode_book: Optional[EBook] = None
     measurement_bindings: Optional[Tuple[MeasurementBinding, ...]] = None
+    measurement_median_deviations: Optional[Mapping[str, float]] = None
 
 
 @dataclass(frozen=True)
@@ -3019,8 +3020,14 @@ def _row_noise_sigma(row: Sequence[str], noise_std: Optional[float]) -> float:
     return sigma
 
 
-def add_noise_to_rows(rows: Sequence[Sequence[str]], noise_std: Optional[float], rng: random.Random) -> List[List[str]]:
+def add_noise_to_rows(
+    rows: Sequence[Sequence[str]],
+    noise_std: Optional[float],
+    rng: random.Random,
+    median_deviations: Optional[Mapping[str, float]] = None,
+) -> List[List[str]]:
     noisy_rows: List[List[str]] = []
+    configured_deviations = median_deviations or {}
     for source_row in rows:
         row = list(source_row)
         meas_type = str(row[4]).upper() if len(row) > 4 else ""
@@ -3028,11 +3035,18 @@ def add_noise_to_rows(rows: Sequence[Sequence[str]], noise_std: Optional[float],
             noisy_rows.append(row)
             continue
         sigma = _row_noise_sigma(row, noise_std)
-        if sigma > 0.0 or meas_type == "SOC":
+        measurement_name = str(row[1]).strip() if len(row) > 1 else ""
+        try:
+            median_deviation = float(configured_deviations.get(measurement_name, 0.0))
+        except (TypeError, ValueError):
+            median_deviation = 0.0
+        if not math.isfinite(median_deviation):
+            median_deviation = 0.0
+        if sigma > 0.0 or median_deviation != 0.0 or meas_type == "SOC":
             try:
                 value = float(row[7])
-                if sigma > 0.0:
-                    value += rng.gauss(0.0, sigma)
+                if sigma > 0.0 or median_deviation != 0.0:
+                    value += rng.gauss(median_deviation, sigma)
                 row[7] = format_number(value)
             except (IndexError, TypeError, ValueError):
                 pass
@@ -3149,7 +3163,12 @@ def run_once(
             model_book=model_book,
             measurement_bindings=config.measurement_bindings,
         )
-        scada_rows = add_noise_to_rows(real_rows, config.noise_std, rng)
+        scada_rows = add_noise_to_rows(
+            real_rows,
+            config.noise_std,
+            rng,
+            config.measurement_median_deviations,
+        )
         if config.write_output_files:
             write_measurement_snapshot(config.real_file, before, real_rows, after)
             write_measurement_snapshot(config.scada_file, before, scada_rows, after)
@@ -3190,7 +3209,12 @@ def run_once(
         device_states,
         model_book,
     )
-    scada_rows = add_noise_to_rows(real_rows, config.noise_std, rng)
+    scada_rows = add_noise_to_rows(
+        real_rows,
+        config.noise_std,
+        rng,
+        config.measurement_median_deviations,
+    )
     if config.write_output_files:
         write_measurement_snapshot(config.real_file, before, real_rows, after)
         write_measurement_snapshot(config.scada_file, before, scada_rows, after)

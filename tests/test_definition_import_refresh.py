@@ -81,6 +81,54 @@ class DefinitionImportRefreshTest(unittest.TestCase):
                 self.assertIn("WIND_SPEED", meas_text)
                 self.assertIn("SOLAR_IRRADIANCE", meas_text)
 
+    def test_definition_package_preserves_measurement_median_deviations(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            package_service = PolarMicrogridSimulator(
+                SIMPLE_MODEL_SOURCE,
+                temp_root / "package-runtime",
+                model_id="simple",
+                kernel=lambda _config: None,
+            )
+            measurement_name = "p_gen_diesel_300kw"
+            package_service.update_measurement_definition(
+                {
+                    "name": measurement_name,
+                    "changes": {"median_deviation": -0.35},
+                }
+            )
+
+            _filename, archive = make_definition_archive(package_service)
+            with zipfile.ZipFile(BytesIO(archive), mode="r") as definition_archive:
+                defaults = json.loads(
+                    definition_archive.read("definition_defaults.json").decode("utf-8")
+                )
+            self.assertAlmostEqual(
+                defaults["measurement_median_deviations"][measurement_name],
+                -0.35,
+            )
+
+            target_source = temp_root / "target-source"
+            copytree(SIMPLE_MODEL_SOURCE, target_source)
+            target = PolarMicrogridSimulator(
+                target_source,
+                temp_root / "target-runtime",
+                model_id="target",
+                kernel=lambda _config: None,
+            )
+            import_definition_archive(target, archive)
+
+            imported = next(
+                row
+                for row in target.definitions()["measurement"]
+                if row["name"] == measurement_name
+            )
+            self.assertAlmostEqual(imported["median_deviation"], -0.35)
+            self.assertAlmostEqual(
+                target._make_config().measurement_median_deviations[measurement_name],
+                -0.35,
+            )
+
     def test_definition_package_adds_one_dcp_control_for_each_converter(self):
         with tempfile.TemporaryDirectory() as temporary:
             package_service = PolarMicrogridSimulator(

@@ -1183,6 +1183,32 @@ class StorageSocConstraintTest(unittest.TestCase):
         self.assertAlmostEqual(float(upper[0][7]), 1.2)
         self.assertAlmostEqual(float(lower[0][7]), -0.2)
 
+    def test_scada_noise_uses_editable_median_deviation_as_gaussian_mean(self):
+        import simu_loop
+
+        class RecordingNoise:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def gauss(self, mean: float, sigma: float) -> float:
+                self.calls.append((mean, sigma))
+                return mean
+
+        rng = RecordingNoise()
+        analog_row = ["1", "diesel.p", "ACGenerator", "diesel-1", "P_GEN", "25", "1", "10"]
+        signal_row = ["2", "diesel.run", "ACGenerator", "diesel-1", "RUN_STAT", "25", "1", "1"]
+
+        rows = simu_loop.add_noise_to_rows(
+            [analog_row, signal_row],
+            None,
+            rng,
+            {"diesel.p": -0.4, "diesel.run": 99.0},
+        )
+
+        self.assertEqual(rng.calls, [(-0.4, 0.2)])
+        self.assertAlmostEqual(float(rows[0][7]), 9.6)
+        self.assertEqual(rows[1][7], "1")
+
     def test_limits_storage_from_model_embedded_device_block_without_device_file(self):
         import simu_loop
 

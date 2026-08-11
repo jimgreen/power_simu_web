@@ -73,6 +73,7 @@ class ManualOverridePersistenceTest(unittest.TestCase):
                 "revision": service.definition_snapshot.revision,
                 "changes": {
                     "error_sigma": 0.02,
+                    "median_deviation": -0.35,
                     "valid": 0,
                     "status": "fixed",
                     "fixed_value": 12.5,
@@ -90,6 +91,7 @@ class ManualOverridePersistenceTest(unittest.TestCase):
         self.assertEqual(self._device_row(restarted, "ACBranch", "diesel_line")["r"], "0.0025")
         measurement = self._measurement(restarted, "p_gen_diesel_300kw")
         self.assertEqual(float(measurement["weight"]), 2500.0)
+        self.assertAlmostEqual(measurement["median_deviation"], -0.35)
         self.assertEqual(measurement["status"], "fixed")
         self.assertEqual(float(measurement["fixed_value"]), 12.5)
         changes = self._manual_changes(restarted)
@@ -98,6 +100,7 @@ class ManualOverridePersistenceTest(unittest.TestCase):
             {
                 ("device", "r"),
                 ("measurement", "weight"),
+                ("measurement", "median_deviation"),
                 ("measurement", "status"),
                 ("measurement", "fixed_value"),
             },
@@ -113,6 +116,7 @@ class ManualOverridePersistenceTest(unittest.TestCase):
         self.assertEqual(self._device_row(restarted, "ACBranch", "diesel_line")["r"], "0.001")
         measurement = self._measurement(restarted, "p_gen_diesel_300kw")
         self.assertEqual(float(measurement["weight"]), 25.0)
+        self.assertEqual(measurement["median_deviation"], 0.0)
         self.assertEqual(int(float(measurement["valid"])), 1)
         self.assertEqual(measurement["status"], "valid")
         self.assertIsNone(measurement["fixed_value"])

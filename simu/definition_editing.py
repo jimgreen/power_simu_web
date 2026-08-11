@@ -17,6 +17,7 @@ class DefinitionSnapshot:
     measurement_before: Tuple[str, ...]
     measurement_rows: Tuple[Tuple[str, ...], ...]
     measurement_after: Tuple[str, ...]
+    measurement_median_deviations: Tuple[Tuple[str, float], ...] = ()
 
 
 class DefinitionRevisionConflict(ValueError):
@@ -245,7 +246,7 @@ def normalize_device_changes(current: Mapping[str, Any], changes: Mapping[str, A
 def normalize_measurement_changes(current: Mapping[str, Any], changes: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(changes, Mapping) or not changes:
         raise ValueError("At least one measurement parameter change is required")
-    allowed = {"weight", "error_sigma", "valid", "status", "fixed_value"}
+    allowed = {"weight", "error_sigma", "median_deviation", "valid", "status", "fixed_value"}
     unknown = [field for field in changes if field not in allowed]
     if unknown:
         raise ValueError(f"Unknown measurement parameter: {unknown[0]}")
@@ -266,6 +267,11 @@ def normalize_measurement_changes(current: Mapping[str, Any], changes: Mapping[s
         weight = sigma_weight
     else:
         sigma = 1.0 / math.sqrt(weight)
+
+    median_deviation = _finite_number(
+        changes.get("median_deviation", current.get("median_deviation", 0.0)),
+        "median_deviation",
+    )
 
     current_status = str(current.get("status", "")).strip().casefold()
     if not current_status:
@@ -299,6 +305,7 @@ def normalize_measurement_changes(current: Mapping[str, Any], changes: Mapping[s
         "weight": _number_text(weight),
         "valid": str(valid),
         "error_sigma": sigma,
+        "median_deviation": median_deviation,
         "status": status,
         "fixed_value": fixed_value,
     }

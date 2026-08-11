@@ -1180,6 +1180,23 @@ def _parse_definition_archive(data: bytes) -> Mapping[str, Any]:
         raw_statuses = parsed_defaults.get("measurement_statuses", {})
         if not isinstance(raw_statuses, Mapping):
             raise ValueError(f"Invalid {DEFINITION_DEFAULTS_FILE}: measurement_statuses must be an object")
+        raw_median_deviations = parsed_defaults.get("measurement_median_deviations", {})
+        if not isinstance(raw_median_deviations, Mapping):
+            raise ValueError(
+                f"Invalid {DEFINITION_DEFAULTS_FILE}: "
+                "measurement_median_deviations must be an object"
+            )
+        median_deviations: dict[str, float] = {}
+        for raw_name, raw_value in raw_median_deviations.items():
+            name = str(raw_name).strip()
+            value = _to_float(raw_value, None)
+            if not name or value is None or not math.isfinite(value):
+                raise ValueError(
+                    f"Invalid {DEFINITION_DEFAULTS_FILE}: "
+                    f"measurement_median_deviations[{raw_name!r}] must be finite"
+                )
+            if value != 0.0:
+                median_deviations[name] = float(value)
         definition_defaults = {
             "version": int(_to_float(parsed_defaults.get("version"), 1) or 1),
             "measurement_statuses": {
@@ -1187,6 +1204,7 @@ def _parse_definition_archive(data: bytes) -> Mapping[str, Any]:
                 for name, value in raw_statuses.items()
                 if str(name).strip() and isinstance(value, Mapping)
             },
+            "measurement_median_deviations": median_deviations,
         }
 
     assert model_text is not None and meas_text is not None and control_text is not None and curves_text is not None
@@ -1320,6 +1338,9 @@ def make_definition_archive(service: PolarMicrogridSimulator) -> tuple[str, byte
         definition_defaults = {
             "version": 1,
             "measurement_statuses": service.effective_measurement_status_defaults(),
+            "measurement_median_deviations": (
+                service.effective_measurement_median_deviation_defaults()
+            ),
         }
         diagram_path = Path(
             getattr(service, "source_files", {}).get(

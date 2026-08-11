@@ -86,6 +86,12 @@ try:
         TraineeRenewableControlManager,
     )
     from .trainee_exchange import TraineeExchangeLifecycleError, TraineeRealtimeExchange
+    from .trainee_data_policy import (
+        strip_trainee_truth_from_measurement_delta,
+        strip_trainee_truth_from_measurement_history,
+        strip_trainee_truth_from_measurements,
+        strip_trainee_truth_from_snapshot,
+    )
 except ImportError:  # pragma: no cover - legacy package compatibility.
     from hybrid_power_system_analysis.polar_microgrid_sim.definition_editing import (
         DefinitionRevisionConflict,
@@ -115,6 +121,12 @@ except ImportError:  # pragma: no cover - legacy package compatibility.
         TraineeRenewableControlManager,
     )
     from trainee_exchange import TraineeExchangeLifecycleError, TraineeRealtimeExchange
+    from trainee_data_policy import (
+        strip_trainee_truth_from_measurement_delta,
+        strip_trainee_truth_from_measurement_history,
+        strip_trainee_truth_from_measurements,
+        strip_trainee_truth_from_snapshot,
+    )
 
 try:
     import simu_loop  # type: ignore
@@ -1684,10 +1696,10 @@ def make_http_server(
                 "model_id": model_id,
                 "model_name": model.get("name", model_id),
                 "model_version": target.external_model_version(),
-                "snapshot_path": f"/api/snapshot?model_id={encoded_model_id}",
+                "snapshot_path": f"/api/snapshot?model_id={encoded_model_id}&trainee_view=1",
                 "command_path": f"/api/student/commands?model_id={encoded_model_id}",
                 "runtime_logs_path": f"/api/runtime-logs?model_id={encoded_model_id}",
-                "measurement_delta_path": f"/api/measurements/delta?model_id={encoded_model_id}",
+                "measurement_delta_path": f"/api/measurements/delta?model_id={encoded_model_id}&trainee_view=1",
                 "definition_archive_path": f"/api/export-definitions?format=json&model_id={encoded_model_id}",
                 "telemetry_path": f"/api/external/telemetry?model_id={encoded_model_id}",
                 "selected_telemetry_path": f"/api/external/telemetry/query?model_id={encoded_model_id}",
@@ -1749,9 +1761,9 @@ def make_http_server(
                 "teacher_api_base": base_url,
                 "model_id": model_id,
                 "model_name": model_id,
-                "snapshot_path": f"/api/snapshot?model_id={encoded_model_id}",
+                "snapshot_path": f"/api/snapshot?model_id={encoded_model_id}&trainee_view=1",
                 "command_path": f"/api/student/commands?model_id={encoded_model_id}",
-                "measurement_delta_path": f"/api/measurements/delta?model_id={encoded_model_id}",
+                "measurement_delta_path": f"/api/measurements/delta?model_id={encoded_model_id}&trainee_view=1",
                 "definition_archive_path": f"/api/export-definitions?format=json&model_id={encoded_model_id}",
             }
 
@@ -1779,7 +1791,17 @@ def make_http_server(
                 raise JsonApiError(400, "交互链接缺少模型标识")
             encoded_model_id = quote(model_id, safe="")
             base_url = str(payload.get("teacher_api_base") or f"{parsed.scheme}://{parsed.netloc}").rstrip("/")
-            snapshot_path = str(payload.get("snapshot_path") or f"/api/snapshot?model_id={encoded_model_id}")
+            snapshot_path = self._with_query_overrides(
+                str(payload.get("snapshot_path") or f"/api/snapshot?model_id={encoded_model_id}"),
+                {"trainee_view": 1},
+            )
+            measurement_delta_path = self._with_query_overrides(
+                str(
+                    payload.get("measurement_delta_path")
+                    or self._measurement_delta_path_from_snapshot_path(snapshot_path)
+                ),
+                {"trainee_view": 1},
+            )
             return {
                 "link": str(payload.get("link") or raw),
                 "teacher_api_base": base_url,
@@ -1787,9 +1809,7 @@ def make_http_server(
                 "model_name": str(payload.get("model_name") or model_id),
                 "snapshot_path": snapshot_path,
                 "command_path": str(payload.get("command_path") or f"/api/student/commands?model_id={encoded_model_id}"),
-                "measurement_delta_path": str(
-                    payload.get("measurement_delta_path") or self._measurement_delta_path_from_snapshot_path(snapshot_path)
-                ),
+                "measurement_delta_path": measurement_delta_path,
                 "definition_archive_path": str(
                     payload.get("definition_archive_path")
                     or f"/api/export-definitions?format=json&model_id={encoded_model_id}"
@@ -2132,6 +2152,8 @@ def make_http_server(
                     snapshot_payload["device_runtime_signature"] = device_runtime_signature
                     if after_device_runtime_signature != device_runtime_signature:
                         snapshot_payload["device_runtime"] = device_runtime_frame
+                if role == "trainee" or self._truthy_query("trainee_view"):
+                    strip_trainee_truth_from_snapshot(snapshot_payload)
                 self._send_json(snapshot_payload)
             elif path == "/api/runtime-logs":
                 self._send_json(
@@ -2143,21 +2165,30 @@ def make_http_server(
                     )
                 )
             elif path == "/api/measurements":
-                self._send_json(target.measurements())
+                measurements_payload = target.measurements()
+                if role == "trainee" or self._truthy_query("trainee_view"):
+                    measurements_payload = strip_trainee_truth_from_measurements(
+                        measurements_payload
+                    )
+                self._send_json(measurements_payload)
             elif path == "/api/measurements/delta":
-                self._send_json(
-                    target.measurement_delta(
-                        after_seq=self._int_query("after_seq", 0, 0, 2_000_000_000),
-                        compact=self._truthy_query("compact"),
-                    )
+                delta_payload = target.measurement_delta(
+                    after_seq=self._int_query("after_seq", 0, 0, 2_000_000_000),
+                    compact=self._truthy_query("compact"),
                 )
+                if role == "trainee" or self._truthy_query("trainee_view"):
+                    delta_payload = strip_trainee_truth_from_measurement_delta(delta_payload)
+                self._send_json(delta_payload)
             elif path == "/api/measurement-history":
-                self._send_json(
-                    target.measurement_history(
-                        indices=self._measurement_indices_query(),
-                        after_seq=self._int_query("after_seq", 0, 0, 2_000_000_000),
-                    )
+                history_payload = target.measurement_history(
+                    indices=self._measurement_indices_query(),
+                    after_seq=self._int_query("after_seq", 0, 0, 2_000_000_000),
                 )
+                if role == "trainee" or self._truthy_query("trainee_view"):
+                    history_payload = strip_trainee_truth_from_measurement_history(
+                        history_payload
+                    )
+                self._send_json(history_payload)
             elif path == "/api/external/telemetry":
                 self._send_json(target.latest_telemetry_values())
             elif path == "/api/external/devices":
@@ -2286,6 +2317,7 @@ def make_http_server(
                     snapshot_payload["device_runtime_signature"] = device_runtime_signature
                     if after_device_runtime_signature != device_runtime_signature:
                         snapshot_payload["device_runtime"] = device_runtime_frame
+                strip_trainee_truth_from_snapshot(snapshot_payload)
                 self._send_json(snapshot_payload)
             elif path == "/api/trainee/measurements/delta":
                 if exchange is None:
@@ -2312,7 +2344,7 @@ def make_http_server(
                         target.model_id,
                         **delta_options,
                     )
-                self._send_json(delta_payload)
+                self._send_json(strip_trainee_truth_from_measurement_delta(delta_payload))
             elif path == "/api/trainee/measurement-history":
                 if exchange is None:
                     raise JsonApiError(404, f"Unknown API route: {path}")
@@ -2329,7 +2361,7 @@ def make_http_server(
                         indices=self._measurement_indices_query(),
                         after_seq=self._int_query("after_seq", 0, 0, 2_000_000_000),
                     )
-                self._send_json(history_payload)
+                self._send_json(strip_trainee_truth_from_measurement_history(history_payload))
             elif path in ("/api/trainee-link", "/api/client-link"):
                 self._send_json(self._trainee_link_payload(target))
             elif path == "/api/config":

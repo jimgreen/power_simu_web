@@ -381,6 +381,7 @@ class MeasurementHistoryTest(unittest.TestCase):
         ) as response:
             simulator_payload = json.loads(response.read().decode("utf-8"))
         self.assertEqual(len(simulator_payload["frames"]), 1)
+        self.assertIn("real_values", simulator_payload["frames"][0])
 
         trainee = self._make_service("trainee-model")
         self._seed_measurements(trainee, 40.0, 39.5)
@@ -409,6 +410,8 @@ class MeasurementHistoryTest(unittest.TestCase):
         ) as response:
             trainee_payload = json.loads(response.read().decode("utf-8"))
         self.assertEqual(len(trainee_payload["frames"]), 1)
+        self.assertEqual(trainee_payload["value_channels"], ["scada"])
+        self.assertNotIn("real_values", trainee_payload["frames"][0])
 
     def test_starting_trainee_receive_clears_local_backend_history_before_polling(self):
         from simu.server import make_http_server
@@ -481,7 +484,8 @@ class MeasurementHistoryTest(unittest.TestCase):
         restarted_history = exchange.measurement_history(trainee.model_id, indices=[0])
         self.assertEqual(len(restarted_history["frames"]), 1)
         self.assertEqual(restarted_history["frames"][0]["step_count"], 6)
-        self.assertEqual(restarted_history["frames"][0]["real_values"], [61.0])
+        self.assertEqual(restarted_history["value_channels"], ["scada"])
+        self.assertNotIn("real_values", restarted_history["frames"][0])
         self.assertEqual(restarted_history["frames"][0]["scada_values"], [60.5])
 
 

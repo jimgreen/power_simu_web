@@ -231,6 +231,14 @@ class TraineeModelInitializationTest(unittest.TestCase):
             self.assertTrue(receive_state["initialized"])
             self.assertEqual(receive_state["teacher_model_id"], "remote_model")
             self.assertEqual(
+                receive_state["snapshot_path"],
+                "/api/snapshot?model_id=remote_model&trainee_view=1",
+            )
+            self.assertEqual(
+                receive_state["measurement_delta_path"],
+                "/api/measurements/delta?model_id=remote_model&trainee_view=1",
+            )
+            self.assertEqual(
                 receive_state["definition_archive_path"],
                 "/api/export-definitions?format=json&model_id=remote_model",
             )

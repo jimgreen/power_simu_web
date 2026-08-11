@@ -57,7 +57,7 @@ process.stdout.write(JSON.stringify({
                 self.assertEqual(payload["storageSocAlias"][:2], ["SOC", "LEVEL"])
                 self.assertEqual(payload["switchStatus"][:2], ["STATUS", "RUN_STAT"])
 
-    def test_semantic_binding_prefers_scada_and_falls_back_to_real(self):
+    def test_semantic_binding_uses_role_appropriate_measurement_channels(self):
         body = """
 const scadaRow = { dev_type: "ACGenerator", dev_name: "wind-1", meas_type: "P_GEN", value: 12.5 };
 const realRow = { dev_type: "ACGenerator", dev_name: "wind-1", meas_type: "P_GEN", value: 13.5 };
@@ -66,13 +66,13 @@ const binding = { devType: "ACGenerator", devName: "wind-1", metricType: "active
 const preferred = diagramMetricBindingValue(binding, maps);
 const fallbackMaps = diagramMeasurementMaps({ measurements: { scada: [], real: [realRow] } });
 const fallback = diagramMetricBindingValue(binding, fallbackMaps);
-process.stdout.write(JSON.stringify([preferred.value, fallback.value]));
+process.stdout.write(JSON.stringify([preferred?.value ?? null, fallback?.value ?? null]));
 """
         for path in self._scripts():
             with self.subTest(app=path.parent.name):
                 self.assertEqual(
                     self._run_helpers(path.read_text(encoding="utf-8"), body),
-                    [12.5, 13.5],
+                    [12.5, 13.5 if path.parent.name == "simulator" else None],
                 )
 
     def test_soc_display_is_percent_without_clamping(self):
@@ -127,7 +127,11 @@ process.stdout.write(JSON.stringify({ value: resolved?.value, display: diagramDi
                     "compiled SVG bindings are not cached",
                 )
                 self.assertTrue(
-                    "diagramMetricBindingValue(binding, maps, diagramDisplayPreferences.measurementSource)" in script,
+                    (
+                        "diagramMetricBindingValue(binding, maps, diagramDisplayPreferences.measurementSource)" in script
+                        if path.parent.name == "simulator"
+                        else "diagramMetricBindingValue(binding, maps)" in script
+                    ),
                     "semantic bindings are not resolved during refresh",
                 )
 

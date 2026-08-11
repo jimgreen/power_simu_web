@@ -159,7 +159,10 @@ process.stdout.write(JSON.stringify({{
 
             self.assertIn("definitions.length !== count", array_source)
             self.assertIn("const expectedValueCount = frame ? count : 0", array_source)
-            self.assertIn("payload.real_values.length !== expectedValueCount", array_source)
+            if role == "simulator":
+                self.assertIn("payload.real_values.length !== expectedValueCount", array_source)
+            else:
+                self.assertNotIn("payload.real_values.length !== expectedValueCount", array_source)
             self.assertIn("payload.scada_values.length !== expectedValueCount", array_source)
             self.assertIn("payload.valid_values.length !== expectedValueCount", array_source)
             self.assertIn("definitions.map((definition, index)", array_source)
@@ -173,6 +176,7 @@ process.stdout.write(JSON.stringify({{
                 "function measurementDefinitionSignature",
                 1,
             )[1].split("function applyEmbeddedMeasurementDelta", 1)[0]
+            real_values_field = "real_values: [11.0, 1]," if role == "simulator" else 'value_channels: ["scada"],'
             node_script = f"""
 const warnings = [];
 const originalLog = console.log;
@@ -200,7 +204,7 @@ const good = {{
   simu_time: "01:02:03",
   wall_time: "04:05:06",
   absolute_minute: 62.05,
-  real_values: [11.0, 1],
+  {real_values_field}
   scada_values: [10.8, 1],
   valid_values: [1, 1],
 }};
@@ -215,7 +219,9 @@ originalLog(JSON.stringify({{
   beforeBad,
   afterBad,
   warnings,
-  real: state.snapshot.measurements.real.map((row) => row.value),
+  real: Array.isArray(state.snapshot.measurements.real)
+    ? state.snapshot.measurements.real.map((row) => row.value)
+    : null,
   scada: state.snapshot.measurements.scada.map((row) => row.value),
   seq: state.measurementDeltaSeq,
 }}));
@@ -231,7 +237,7 @@ originalLog(JSON.stringify({{
 
             self.assertTrue(result["accepted"])
             self.assertFalse(result["rejected"])
-            self.assertEqual(result["real"], [11, 1])
+            self.assertEqual(result["real"], [11, 1] if role == "simulator" else None)
             self.assertEqual(result["scada"], [10.8, 1])
             self.assertEqual(result["seq"], 7)
             self.assertEqual(result["beforeBad"], result["afterBad"])
@@ -244,6 +250,7 @@ originalLog(JSON.stringify({{
                 "function measurementDefinitionSignature",
                 1,
             )[1].split("function applyEmbeddedMeasurementDelta", 1)[0]
+            real_values_field = "real_values: [11.0]," if role == "simulator" else 'value_channels: ["scada"],'
             node_script = f"""
 const warnings = [];
 const originalLog = console.log;
@@ -267,7 +274,7 @@ const rejected = applyMeasurementDelta({{
   count: 1,
   simu_time: "01:02:03",
   wall_time: "04:05:06",
-  real_values: [11.0],
+  {real_values_field}
   scada_values: [10.8],
   valid_values: [1],
 }});
@@ -366,6 +373,7 @@ console.log(JSON.stringify({{ before, after }}));
                 "function measurementDefinitionSignature",
                 1,
             )[1].split("function applyEmbeddedMeasurementDelta", 1)[0]
+            real_values_field = "real_values: [11.0, 1]," if role == "simulator" else 'value_channels: ["scada"],'
             node_script = f"""
 const warnings = [];
 const addRuntimeLog = () => undefined;
@@ -390,7 +398,7 @@ const accepted = applyMeasurementDelta({{
   simu_time: "01:02:03",
   wall_time: "04:05:06",
   absolute_minute: 62.05,
-  real_values: [11.0, 1],
+  {real_values_field}
   scada_values: [10.8, 0],
   valid_values: [1, 0],
   status_values: ["valid", "bad"],
@@ -398,11 +406,17 @@ const accepted = applyMeasurementDelta({{
 }});
 console.log(JSON.stringify({{
   accepted,
-  realStatus: state.snapshot.measurements.real.map((row) => row.status),
+  realStatus: Array.isArray(state.snapshot.measurements.real)
+    ? state.snapshot.measurements.real.map((row) => row.status)
+    : null,
   scadaStatus: state.snapshot.measurements.scada.map((row) => row.status),
-  realFixed: state.snapshot.measurements.real.map((row) => row.fixed_value),
+  realFixed: Array.isArray(state.snapshot.measurements.real)
+    ? state.snapshot.measurements.real.map((row) => row.fixed_value)
+    : null,
   scadaFixed: state.snapshot.measurements.scada.map((row) => row.fixed_value),
-  realValid: state.snapshot.measurements.real.map((row) => row.valid),
+  realValid: Array.isArray(state.snapshot.measurements.real)
+    ? state.snapshot.measurements.real.map((row) => row.valid)
+    : null,
   scadaValid: state.snapshot.measurements.scada.map((row) => row.valid),
 }}));
 """
@@ -416,11 +430,12 @@ console.log(JSON.stringify({{
             result = json.loads(completed.stdout)
 
             self.assertTrue(result["accepted"])
-            self.assertEqual(result["realStatus"], ["valid", "bad"])
+            expected_real = ["valid", "bad"] if role == "simulator" else None
+            self.assertEqual(result["realStatus"], expected_real)
             self.assertEqual(result["scadaStatus"], ["valid", "bad"])
-            self.assertEqual(result["realFixed"], [None, 12.5])
+            self.assertEqual(result["realFixed"], [None, 12.5] if role == "simulator" else None)
             self.assertEqual(result["scadaFixed"], [None, 12.5])
-            self.assertEqual(result["realValid"], [1, 0])
+            self.assertEqual(result["realValid"], [1, 0] if role == "simulator" else None)
             self.assertEqual(result["scadaValid"], [1, 0])
 
 

@@ -810,7 +810,8 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
         exchange.publish_runtime_snapshot(service.model_id, runtime)
         compact = exchange.measurement_delta(service.model_id, after_seq=0, compact=True)
 
-        self.assertEqual(compact["real_values"][definition_position], 41.5)
+        self.assertEqual(compact["value_channels"], ["scada"])
+        self.assertNotIn("real_values", compact)
         self.assertEqual(compact["scada_values"][definition_position], 40.75)
 
     def test_internal_snapshot_publish_does_not_deepcopy_unrelated_runtime_sections(self):
@@ -1759,7 +1760,7 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
         self.assertTrue(initial["reset"])
         self.assertGreater(initial["seq"], 0)
         self.assertEqual(initial_item["value"], 12.0)
-        self.assertEqual(initial_item["real_value"], 12.5)
+        self.assertNotIn("real_value", initial_item)
         self.assertEqual(initial_item["scada_value"], 12.0)
         self.assertEqual(initial_item["valid"], expected_valid)
         self.assertEqual(float(initial_item["weight"]), expected_weight)
@@ -1802,7 +1803,8 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
         self.assertEqual(payload["encoding"], "measurement-arrays-v1")
         self.assertTrue(payload["frame"])
         self.assertEqual(payload["count"], len(runtime["measurements"]["definitions"]))
-        self.assertEqual(len(payload["real_values"]), payload["count"])
+        self.assertEqual(payload["value_channels"], ["scada"])
+        self.assertNotIn("real_values", payload)
         self.assertEqual(len(payload["scada_values"]), payload["count"])
         self.assertNotIn(
             runtime["measurements"]["definitions"][0]["name"],
@@ -1852,9 +1854,9 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
         payload = exchange.measurement_delta(service.model_id, after_seq=0, compact=True)
 
         self.assertEqual(payload["count"], len(runtime["measurements"]["definitions"]))
-        self.assertEqual(len(payload["real_values"]), payload["count"])
+        self.assertEqual(payload["value_channels"], ["scada"])
+        self.assertNotIn("real_values", payload)
         self.assertEqual(len(payload["scada_values"]), payload["count"])
-        self.assertEqual(payload["real_values"][:2], [11.0, 22.0])
         self.assertEqual(payload["scada_values"][:2], [10.5, 21.5])
 
     def test_compact_measurement_delta_sends_all_values_after_one_runtime_value_changes(self):
@@ -1886,7 +1888,8 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
 
         self.assertTrue(changed["frame"])
         self.assertEqual(changed["count"], initial["count"])
-        self.assertEqual(len(changed["real_values"]), changed["count"])
+        self.assertEqual(changed["value_channels"], ["scada"])
+        self.assertNotIn("real_values", changed)
         self.assertEqual(len(changed["scada_values"]), changed["count"])
         self.assertEqual(changed["scada_values"][changed_index], 37.5)
 
@@ -1989,7 +1992,8 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
         compact = exchange.measurement_delta(service.model_id, after_seq=0, compact=True)
 
         self.assertTrue(compact["frame"])
-        self.assertEqual(len(compact["real_values"]), compact["count"])
+        self.assertEqual(compact["value_channels"], ["scada"])
+        self.assertNotIn("real_values", compact)
         self.assertEqual(len(compact["scada_values"]), compact["count"])
 
     def test_measurement_delta_copies_only_batches_newer_than_requested_sequence(self):

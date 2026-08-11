@@ -61,7 +61,10 @@ class MeasurementHistoryUiTest(unittest.TestCase):
                 self.assertIn("payload.definition_signature", merge_source)
                 self.assertIn("payload.count", merge_source)
                 self.assertIn("payload.run_id", merge_source)
-                self.assertIn("frame.real_values", merge_source)
+                if role == "simulator":
+                    self.assertIn("frame.real_values", merge_source)
+                else:
+                    self.assertNotIn("frame.real_values", merge_source)
                 self.assertIn("frame.scada_values", merge_source)
                 self.assertIn("frame.valid_values", merge_source)
 

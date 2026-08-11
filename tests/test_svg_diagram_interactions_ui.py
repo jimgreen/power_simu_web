@@ -227,33 +227,44 @@ process.stdout.write(JSON.stringify({
                 script = path.read_text(encoding="utf-8")
                 self.assertIn(expected_keys[path.parent.name], script)
                 payload = self._run_helpers(script, body)
-                self.assertEqual(
-                    payload["defaults"],
-                    {
-                        "measurements": True,
-                        "labels": True,
-                        "flowArrows": True,
-                        "measurementSource": "scada",
-                    },
-                )
-                self.assertEqual(
-                    payload["partial"],
-                    {
-                        "measurements": False,
-                        "labels": True,
-                        "flowArrows": True,
-                        "measurementSource": "real",
-                    },
-                )
-                self.assertEqual(payload["invalidSource"]["measurementSource"], "scada")
-                self.assertEqual(
-                    [item["label"] for item in payload["visibleScadaLabels"]],
-                    ["数据源: 量测", "不显示量测", "不显示标识", "显示流动箭头"],
-                )
-                self.assertEqual(
-                    [item["label"] for item in payload["visibleRealLabels"]],
-                    ["数据源: 真值", "不显示量测", "不显示标识", "显示流动箭头"],
-                )
+                if path.parent.name == "simulator":
+                    self.assertEqual(
+                        payload["defaults"],
+                        {
+                            "measurements": True,
+                            "labels": True,
+                            "flowArrows": True,
+                            "measurementSource": "scada",
+                        },
+                    )
+                    self.assertEqual(payload["partial"]["measurementSource"], "real")
+                    self.assertEqual(payload["invalidSource"]["measurementSource"], "scada")
+                    self.assertEqual(
+                        [item["label"] for item in payload["visibleScadaLabels"]],
+                        ["数据源: 量测", "不显示量测", "不显示标识", "显示流动箭头"],
+                    )
+                    self.assertEqual(
+                        [item["label"] for item in payload["visibleRealLabels"]],
+                        ["数据源: 真值", "不显示量测", "不显示标识", "显示流动箭头"],
+                    )
+                else:
+                    self.assertEqual(
+                        payload["defaults"],
+                        {"measurements": True, "labels": True, "flowArrows": True},
+                    )
+                    self.assertEqual(
+                        payload["partial"],
+                        {"measurements": False, "labels": True, "flowArrows": True},
+                    )
+                    self.assertNotIn("measurementSource", payload["invalidSource"])
+                    self.assertEqual(
+                        [item["label"] for item in payload["visibleScadaLabels"]],
+                        ["不显示量测", "不显示标识", "显示流动箭头"],
+                    )
+                    self.assertEqual(
+                        [item["label"] for item in payload["visibleRealLabels"]],
+                        ["不显示量测", "不显示标识", "显示流动箭头"],
+                    )
                 self.assertEqual(
                     [item["label"] for item in payload["hiddenLabels"]],
                     ["显示量测", "不显示标识", "显示流动箭头"],
@@ -277,8 +288,12 @@ process.stdout.write(JSON.stringify({
             with self.subTest(app=path.parent.name):
                 payload = self._run_helpers(path.read_text(encoding="utf-8"), body)
                 self.assertEqual(payload["scada"], {"value": 0.51, "channel": "scada"})
-                self.assertEqual(payload["real"], {"value": 0.48, "channel": "real"})
-                self.assertIsNone(payload["missingReal"])
+                if path.parent.name == "simulator":
+                    self.assertEqual(payload["real"], {"value": 0.48, "channel": "real"})
+                    self.assertIsNone(payload["missingReal"])
+                else:
+                    self.assertEqual(payload["real"], {"value": 0.51, "channel": "scada"})
+                    self.assertEqual(payload["missingReal"], {"value": 0.51, "channel": "scada"})
 
     def test_tooltip_trend_keeps_real_and_scada_as_two_series(self):
         body = """
@@ -303,17 +318,64 @@ process.stdout.write(JSON.stringify({
   realPolyline: model.series.real.polyline,
 }));
 """
-        for path in self._scripts():
-            with self.subTest(app=path.parent.name):
-                payload = self._run_trend_helpers(path.read_text(encoding="utf-8"), body)
-                self.assertEqual(payload["points"][0]["scada"], 51)
-                self.assertEqual(payload["points"][0]["real"], 50)
-                self.assertIsNone(payload["points"][2]["real"])
-                self.assertEqual(payload["windowPointCount"], 3)
-                self.assertEqual(payload["scadaLatest"], 47)
-                self.assertEqual(payload["realLatest"], 48)
-                self.assertTrue(payload["scadaPolyline"])
-                self.assertTrue(payload["realPolyline"])
+        simulator_path, trainee_path = self._scripts()
+        payload = self._run_trend_helpers(simulator_path.read_text(encoding="utf-8"), body)
+        self.assertEqual(payload["points"][0]["scada"], 51)
+        self.assertEqual(payload["points"][0]["real"], 50)
+        self.assertIsNone(payload["points"][2]["real"])
+        self.assertEqual(payload["windowPointCount"], 3)
+        self.assertEqual(payload["scadaLatest"], 47)
+        self.assertEqual(payload["realLatest"], 48)
+        self.assertTrue(payload["scadaPolyline"])
+        self.assertTrue(payload["realPolyline"])
+
+        trainee_body = """
+function measurementKey(row) { return row.name; }
+const state = {
+  measurementTraceHistory: [
+    { minute: 1, sim_time: "00:01", measurements: { soc: { scada: 0.51, real: 0.50 } } },
+    { minute: 2, sim_time: "00:02", measurements: { soc: { scada: 0.49, real: 0.48 } } },
+  ],
+};
+const row = { name: "soc", dev_type: "ACGenerator", dev_name: "storage-1", meas_type: "SOC" };
+const points = diagramTrendHistorySeries(row, "level");
+const model = diagramTrendChartModel(points, "hour", 360, 2, "%");
+process.stdout.write(JSON.stringify({
+  points,
+  hasRealPoint: points.some((point) => Object.prototype.hasOwnProperty.call(point, "real")),
+  hasRealSeries: Object.prototype.hasOwnProperty.call(model.series, "real"),
+  scadaLatest: model.series.scada.latest,
+}));
+"""
+        trainee_payload = self._run_trend_helpers(
+            trainee_path.read_text(encoding="utf-8"),
+            trainee_body,
+        )
+        self.assertEqual(trainee_payload["points"][0]["scada"], 51)
+        self.assertFalse(trainee_payload["hasRealPoint"])
+        self.assertFalse(trainee_payload["hasRealSeries"])
+        self.assertEqual(trainee_payload["scadaLatest"], 49)
+
+    def test_simulator_tooltip_reports_the_window_median_deviation(self):
+        simulator_path = self._scripts()[0]
+        body = """
+process.stdout.write(JSON.stringify({
+  odd: diagramTrendMedianDeviation([
+    { scada: 4.6, real: 4.5 },
+    { scada: 4.4, real: 4.5 },
+    { scada: 4.8, real: 4.5 },
+  ]),
+  even: diagramTrendMedianDeviation([
+    { scada: 4.6, real: 4.5 },
+    { scada: 4.7, real: 4.5 },
+  ]),
+  missing: diagramTrendMedianDeviation([{ scada: 4.6, real: null }]),
+}));
+"""
+        payload = self._run_trend_helpers(simulator_path.read_text(encoding="utf-8"), body)
+        self.assertAlmostEqual(payload["odd"], 0.1)
+        self.assertAlmostEqual(payload["even"], 0.15)
+        self.assertIsNone(payload["missing"])
 
     def test_svg_context_menu_only_opens_on_blank_and_clamps_to_viewport(self):
         body = """
@@ -1405,7 +1467,7 @@ process.stdout.write(JSON.stringify(payload));
                 self.assertNotIn("innerHTML", refresh_block)
 
     def test_metric_tooltip_exposes_incremental_update_targets(self):
-        required = (
+        common_required = (
             "function diagramMetricTooltipData",
             "function updateDiagramMetricTooltip",
             "function updateDiagramTrendChart",
@@ -1415,19 +1477,26 @@ process.stdout.write(JSON.stringify(payload));
             "data-diagram-tooltip-validity",
             "data-diagram-trend-axis-ticks",
             'data-diagram-trend-series="scada"',
-            'data-diagram-trend-series="real"',
             'data-diagram-trend-cursor-point="scada"',
-            'data-diagram-trend-cursor-point="real"',
             "data-diagram-trend-stat-scada-latest",
-            "data-diagram-trend-stat-real-latest",
             "data-diagram-trend-range-start",
             "data-diagram-trend-range-end",
         )
         for path in self._scripts():
             with self.subTest(app=path.parent.name):
                 script = path.read_text(encoding="utf-8")
-                for token in required:
+                for token in common_required:
                     self.assertIn(token, script)
+                real_tokens = (
+                    'data-diagram-trend-series="real"',
+                    'data-diagram-trend-cursor-point="real"',
+                    "data-diagram-trend-stat-real-latest",
+                )
+                for token in real_tokens:
+                    if path.parent.name == "simulator":
+                        self.assertIn(token, script)
+                    else:
+                        self.assertNotIn(token, script)
 
     def test_device_tooltip_reconciles_keyed_rows(self):
         required = (

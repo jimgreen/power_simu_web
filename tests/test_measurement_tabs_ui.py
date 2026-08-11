@@ -32,7 +32,8 @@ class MeasurementTabsUiTest(unittest.TestCase):
                 script = script_path.read_text(encoding="utf-8")
 
                 self.assertIn(f'id="{table_id}"', html)
-                self.assertIn("量测值与真值", html)
+                expected_title = "量测值与真值" if html_path.parent.name == "simulator" else "实时量测值"
+                self.assertIn(expected_title, html)
                 self.assertIn('role="tablist" aria-label="量测类型"', script)
                 self.assertIn(tab_attr, script)
                 self.assertIn("遥测", script)
@@ -100,23 +101,37 @@ console.log(JSON.stringify({{
                 self.assertEqual(result["customTelemetry"], "0.13")
                 self.assertEqual(result["invalid"], "--")
 
-    def test_both_measurement_tables_and_svg_tooltips_use_type_aware_value_formatting(self):
-        for role in ("simulator", "trainee"):
-            with self.subTest(surface=role):
-                script = (ROOT / f"simu/web/{role}/app.js").read_text(encoding="utf-8")
+    def test_simulator_measurement_table_and_svg_tooltip_keep_dual_channel_formatting(self):
+        script = (ROOT / "simu/web/simulator/app.js").read_text(encoding="utf-8")
 
-                self.assertIn("<th>真值</th>", script)
-                self.assertIn("<th>量测值</th>", script)
-                self.assertIn("<th>偏差</th>", script)
-                self.assertIn('data-measurement-live-field="real"', script)
-                self.assertIn('data-measurement-live-field="scada"', script)
-                self.assertIn('data-measurement-live-field="diff"', script)
-                self.assertIn("formatMeasurementDisplayValue(row.real_value, row)", script)
-                self.assertIn("formatMeasurementDisplayValue(row.scada_value, row)", script)
-                self.assertIn("formatMeasurementDisplayValue(row.diff, row)", script)
-                self.assertIn("formatMeasurementDisplayValue(scadaValue, pair.row, diagramNumberText)", script)
-                self.assertIn("formatMeasurementDisplayValue(realValue, pair.row, diagramNumberText)", script)
-                self.assertIn("formatMeasurementDisplayValue(deviation, pair.row, diagramNumberText)", script)
+        self.assertIn("<th>真值</th>", script)
+        self.assertIn("<th>量测值</th>", script)
+        self.assertIn("<th>偏差</th>", script)
+        self.assertIn('data-measurement-live-field="real"', script)
+        self.assertIn('data-measurement-live-field="scada"', script)
+        self.assertIn('data-measurement-live-field="diff"', script)
+        self.assertIn("formatMeasurementDisplayValue(row.real_value, row)", script)
+        self.assertIn("formatMeasurementDisplayValue(row.scada_value, row)", script)
+        self.assertIn("formatMeasurementDisplayValue(row.diff, row)", script)
+        self.assertIn("formatMeasurementDisplayValue(scadaValue, pair.row, diagramNumberText)", script)
+        self.assertIn("formatMeasurementDisplayValue(realValue, pair.row, diagramNumberText)", script)
+        self.assertIn("formatMeasurementDisplayValue(deviation, pair.row, diagramNumberText)", script)
+
+    def test_trainee_measurement_table_and_svg_tooltip_are_scada_only(self):
+        script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+
+        self.assertNotIn("<th>真值</th>", script)
+        self.assertIn("<th>量测值</th>", script)
+        self.assertNotIn("<th>偏差</th>", script)
+        self.assertNotIn('data-measurement-live-field="real"', script)
+        self.assertIn('data-measurement-live-field="scada"', script)
+        self.assertNotIn('data-measurement-live-field="diff"', script)
+        self.assertNotIn("formatMeasurementDisplayValue(row.real_value, row)", script)
+        self.assertIn("formatMeasurementDisplayValue(row.scada_value, row)", script)
+        self.assertNotIn("formatMeasurementDisplayValue(row.diff, row)", script)
+        self.assertIn("formatMeasurementDisplayValue(scadaValue, pair.row, diagramNumberText)", script)
+        self.assertNotIn("formatMeasurementDisplayValue(realValue, pair.row, diagramNumberText)", script)
+        self.assertNotIn("formatMeasurementDisplayValue(deviation, pair.row, diagramNumberText)", script)
 
 
 if __name__ == "__main__":

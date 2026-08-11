@@ -29,6 +29,15 @@ class TraineeModelPageUiTests(unittest.TestCase):
         self.assertIn('key === "name" ? "名称" : key', self.script)
         self.assertIn('new Set([...fixed, "dev_type", "dev_name", "__headers"])', self.script)
 
+    def test_model_tree_records_keep_their_definition_block_for_grouping(self):
+        builder = self.script.split("function definedModelDevices", 1)[1].split(
+            "function formatModelParamValue",
+            1,
+        )[0]
+
+        self.assertIn("model_block: blockName", builder)
+        self.assertIn("dev_type: blockName", builder)
+
 
 if __name__ == "__main__":
     unittest.main()

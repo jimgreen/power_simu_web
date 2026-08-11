@@ -90,7 +90,11 @@ def measurement_rows_by_definition_index(
     return aligned
 
 
-def compact_measurement_delta(payload: Mapping[str, Any]) -> Dict[str, Any]:
+def compact_measurement_delta(
+    payload: Mapping[str, Any],
+    *,
+    include_real_values: bool = True,
+) -> Dict[str, Any]:
     """Encode a complete ordered measurement frame without measurement names."""
 
     items = [
@@ -125,13 +129,16 @@ def compact_measurement_delta(payload: Mapping[str, Any]) -> Dict[str, Any]:
             "count": int(payload.get("count", len(items)) or 0),
             "simu_time": payload.get("simu_time", payload.get("time", "--")),
             "wall_time": payload.get("wall_time", "--"),
-            "real_values": [item.get("real_value") for item in items] if frame else [],
             "scada_values": [item.get("scada_value") for item in items] if frame else [],
             "valid_values": [item.get("valid") for item in items] if frame else [],
             "status_values": [item.get("status") for item in items] if frame else [],
             "fixed_values": [item.get("fixed_value") for item in items] if frame else [],
         }
     )
+    if include_real_values:
+        compact["real_values"] = [item.get("real_value") for item in items] if frame else []
+    else:
+        compact["value_channels"] = ["scada"]
     return compact
 
 
@@ -185,6 +192,15 @@ def _measurement_value_array(payload: Mapping[str, Any], key: str) -> list[Any]:
     return list(values)
 
 
+def _measurement_payload_is_scada_only(payload: Mapping[str, Any]) -> bool:
+    declared_channels = payload.get("value_channels")
+    return (
+        isinstance(declared_channels, Sequence)
+        and not isinstance(declared_channels, (str, bytes))
+        and "real" not in declared_channels
+    )
+
+
 def _apply_measurement_array_frame(
     measurements: Mapping[str, Any] | None,
     definitions: Sequence[Mapping[str, Any]],
@@ -208,7 +224,8 @@ def _apply_measurement_array_frame(
             f"接收={received_signature}，本地={expected_signature}"
         )
 
-    real_values = _measurement_value_array(payload, "real_values")
+    scada_only = _measurement_payload_is_scada_only(payload)
+    real_values = [] if scada_only else _measurement_value_array(payload, "real_values")
     scada_values = _measurement_value_array(payload, "scada_values")
     valid_values = _measurement_value_array(payload, "valid_values")
     status_values = payload.get("status_values")
@@ -231,9 +248,13 @@ def _apply_measurement_array_frame(
         "status_values": len(status_values),
         "fixed_values": len(fixed_values),
     }
-    values_match = all(
-        lengths[key] == expected_value_count
-        for key in ("real_values", "scada_values", "valid_values", "status_values", "fixed_values")
+    expected_real_count = 0 if scada_only else expected_value_count
+    values_match = (
+        lengths["real_values"] == expected_real_count
+        and all(
+            lengths[key] == expected_value_count
+            for key in ("scada_values", "valid_values", "status_values", "fixed_values")
+        )
     )
     if lengths["definitions"] != count or not values_match:
         detail = "，".join(f"{key}={value}" for key, value in lengths.items())
@@ -260,7 +281,10 @@ def _apply_measurement_array_frame(
         fixed_value = fixed_values[index]
         if fixed_value is None:
             fixed_value = definition.get("fixed_value")
-        for target, value in ((real_rows, real_values[index]), (scada_rows, scada_values[index])):
+        channels = [(scada_rows, scada_values[index])]
+        if not scada_only:
+            channels.insert(0, (real_rows, real_values[index]))
+        for target, value in channels:
             row = dict(definition)
             row["value"] = value
             row["valid"] = valid
@@ -272,7 +296,11 @@ def _apply_measurement_array_frame(
             target.append(row)
 
     merged["definitions"] = normalized_definitions
-    merged["real"] = real_rows
+    if scada_only:
+        merged.pop("real", None)
+        merged["value_channels"] = ["scada"]
+    else:
+        merged["real"] = real_rows
     merged["scada"] = scada_rows
     merged["definition_signature"] = expected_signature
     if payload.get("definition_revision") is not None:
@@ -291,6 +319,7 @@ def apply_measurement_delta(
         return _apply_measurement_array_frame(measurements, definitions, payload)
 
     merged: Dict[str, Any] = copy.deepcopy(dict(measurements or {}))
+    scada_only = _measurement_payload_is_scada_only(payload)
     definition_rows = [copy.deepcopy(dict(row)) for row in definitions if isinstance(row, Mapping)]
     if not merged.get("definitions"):
         merged["definitions"] = definition_rows
@@ -299,7 +328,7 @@ def apply_measurement_delta(
         for row in (merged.get("definitions") or definition_rows)
         if isinstance(row, Mapping) and str(row.get("name", ""))
     }
-    if payload.get("reset"):
+    if payload.get("reset") or scada_only:
         real_by_name: MutableMapping[str, Dict[str, Any]] = {}
         scada_by_name: MutableMapping[str, Dict[str, Any]] = {}
     else:
@@ -323,10 +352,10 @@ def apply_measurement_delta(
             scada_by_name.pop(name, None)
             continue
         definition = definitions_by_name.get(name)
-        for value_key, target in (
-            ("real_value", real_by_name),
-            ("scada_value", scada_by_name),
-        ):
+        channels = [("scada_value", scada_by_name)]
+        if not scada_only:
+            channels.insert(0, ("real_value", real_by_name))
+        for value_key, target in channels:
             value = item.get(value_key)
             if value is None:
                 continue
@@ -349,6 +378,10 @@ def apply_measurement_delta(
             row["updated_wall_time"] = item.get("updated_wall_time")
             row["updated_absolute_minute"] = item.get("updated_absolute_minute")
 
-    merged["real"] = list(real_by_name.values())
+    if scada_only:
+        merged.pop("real", None)
+        merged["value_channels"] = ["scada"]
+    else:
+        merged["real"] = list(real_by_name.values())
     merged["scada"] = list(scada_by_name.values())
     return merged

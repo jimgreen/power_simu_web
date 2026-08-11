@@ -29,6 +29,10 @@ try:
         measurement_rows_by_definition_index,
     )
     from .measurement_history import MeasurementHistoryStore
+    from .trainee_data_policy import (
+        strip_trainee_truth_from_measurement_history,
+        strip_trainee_truth_from_snapshot,
+    )
 except ImportError:  # pragma: no cover - legacy package compatibility.
     from command_frame import CommandFrameMismatchError, command_payload_signature
     from device_runtime_frame import (
@@ -44,6 +48,10 @@ except ImportError:  # pragma: no cover - legacy package compatibility.
         measurement_rows_by_definition_index,
     )
     from measurement_history import MeasurementHistoryStore
+    from trainee_data_policy import (
+        strip_trainee_truth_from_measurement_history,
+        strip_trainee_truth_from_snapshot,
+    )
 
 
 CONTROL_STATIC_FIELDS = ("definitions", "settings", "device_parameters")
@@ -365,13 +373,14 @@ def _merge_remote_measurements_with_local_definitions(
     expected_signature = measurement_definition_signature(normalized_rows)
     merged = dict(remote_measurements)
     merged["definitions"] = normalized_rows
+    channels = ("scada",) if "real" not in remote_measurements else ("real", "scada")
     if (
         str(remote_measurements.get("definition_signature", "") or "") == expected_signature
         and all(
             isinstance(remote_measurements.get(channel), Sequence)
             and not isinstance(remote_measurements.get(channel), (str, bytes))
             and len(remote_measurements.get(channel) or []) == len(normalized_rows)
-            for channel in ("real", "scada")
+            for channel in channels
         )
     ):
         return merged
@@ -381,7 +390,7 @@ def _merge_remote_measurements_with_local_definitions(
         for row in normalized_rows
         if measurement_row_index(row) >= 0
     }
-    for channel in ("real", "scada"):
+    for channel in channels:
         rows = merged.get(channel)
         if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
             continue
@@ -456,7 +465,6 @@ def _merge_runtime_snapshot_with_local_definitions(
 def _measurement_delta_signature(item: Mapping[str, Any]) -> str:
     comparable = {
         "value": item.get("value"),
-        "real_value": item.get("real_value"),
         "scada_value": item.get("scada_value"),
         "valid": item.get("valid"),
         "weight": item.get("weight"),
@@ -477,10 +485,6 @@ def _measurement_delta_items(
     definitions = measurements.get("definitions") or []
     if not isinstance(definitions, Sequence) or isinstance(definitions, (str, bytes)):
         definitions = []
-    real_rows = measurement_rows_by_definition_index(
-        definitions,
-        measurements.get("real") or [],
-    )
     scada_rows = measurement_rows_by_definition_index(
         definitions,
         measurements.get("scada") or [],
@@ -506,9 +510,7 @@ def _measurement_delta_items(
             continue
         key = str(index)
         name = str(definition.get("name", "")).strip()
-        real = real_rows[index]
         scada = scada_rows[index]
-        real_value = real.get("value") if real is not None else None
         scada_value = scada.get("value") if scada is not None else None
         try:
             valid = int(float(definition.get("valid", 0) or 0))
@@ -516,8 +518,7 @@ def _measurement_delta_items(
             valid = 0
         items[key] = {
             "name": name,
-            "value": scada_value if scada is not None else real_value,
-            "real_value": real_value,
+            "value": scada_value,
             "scada_value": scada_value,
             "valid": valid,
             "weight": definition.get("weight", ""),
@@ -962,6 +963,7 @@ class TraineeRealtimeExchange:
         history_limit = max(1, int(runtime_settings["measurement_delta_history_limit"]))
         published_at = float(received_at if received_at is not None else time.time())
         runtime = dict(snapshot) if snapshot_owned else copy.deepcopy(dict(snapshot))
+        strip_trainee_truth_from_snapshot(runtime)
         remote_measurements = runtime.get("measurements")
         if isinstance(remote_measurements, Mapping) and not measurement_frame_unchanged:
             if snapshot_owned:
@@ -1705,7 +1707,11 @@ class TraineeRealtimeExchange:
                     "definition_signature": measurement_definition_signature(definitions),
                 }
             )
-        return compact_measurement_delta(payload) if compact else payload
+        return (
+            compact_measurement_delta(payload, include_real_values=False)
+            if compact
+            else payload
+        )
 
     def measurement_history(
         self,
@@ -1757,12 +1763,13 @@ class TraineeRealtimeExchange:
             [row for row in definitions if isinstance(row, Mapping)],
             definition_revision=self._definition_revision(service),
         )
-        return history.payload(
+        payload = history.payload(
             indices=indices,
             after_seq=after_seq,
             model_id=str(getattr(service, "model_id", "default")),
             model_name=str(getattr(service, "model_name", "")),
         )
+        return strip_trainee_truth_from_measurement_history(payload)
 
     def submit_commands(
         self,
@@ -2138,7 +2145,8 @@ class TraineeRealtimeExchange:
                 )
             except (TypeError, ValueError):
                 response_size = 0
-            current_payload = dict(current)
+            current_payload = copy.deepcopy(dict(current))
+            strip_trainee_truth_from_snapshot(current_payload)
             processing_started = time.monotonic()
             embedded_delta = current_payload.pop("measurement_delta", None)
             device_runtime_frame = current_payload.pop("device_runtime", None)

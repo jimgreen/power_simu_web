@@ -688,8 +688,8 @@ function restoreModelContext(modelId = state.activeModelId) {
   state.measurementArrayWarning = context.measurementArrayWarning || "";
   state.runtimeLogSeq = Number(context.runtimeLogSeq) || 0;
   state.runtimeLogs = Array.isArray(context.runtimeLogs) ? context.runtimeLogs : [];
-  state.snapshot = context.snapshot || null;
-  state.measurementTraceHistory = Array.isArray(context.measurementTraceHistory) ? context.measurementTraceHistory : [];
+  state.snapshot = traineeMeasurementOnlySnapshot(context.snapshot || null);
+  state.measurementTraceHistory = traineeMeasurementOnlyTraceHistory(context.measurementTraceHistory);
   state.lastMeasurementTraceKey = context.lastMeasurementTraceKey || "";
   state.commandTraceHistory = Array.isArray(context.commandTraceHistory) ? context.commandTraceHistory : [];
   state.renewableTrendHistory = Array.isArray(context.renewableTrendHistory) ? context.renewableTrendHistory : [];
@@ -874,6 +874,12 @@ function syncChartLegendButtons(chartKey) {
     control.classList.toggle("is-hidden", hidden);
     control.classList.toggle("is-selected", selected);
     control.setAttribute("aria-pressed", hidden ? "false" : "true");
+    const legendLabel = control.dataset.chartLegendLabel || "";
+    if (legendLabel) {
+      const actionLabel = hidden ? "点击显示曲线" : "点击隐藏曲线";
+      control.title = `${legendLabel}：${actionLabel}`;
+      control.setAttribute("aria-label", `${legendLabel}，${actionLabel}`);
+    }
   });
 }
 
@@ -2109,16 +2115,82 @@ function staticSnapshotMissingKeys(snapshot, requiredKeys = STATIC_SNAPSHOT_KEYS
   return (requiredKeys || []).filter((key) => snapshot?.[key] === undefined);
 }
 
+function traineeMeasurementOnlySnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return snapshot;
+  const projected = { ...snapshot };
+  if (snapshot.measurements && typeof snapshot.measurements === "object") {
+    projected.measurements = {
+      ...snapshot.measurements,
+      value_channels: ["scada"],
+    };
+    delete projected.measurements.real;
+  }
+  if (snapshot.measurement_delta && typeof snapshot.measurement_delta === "object") {
+    projected.measurement_delta = {
+      ...snapshot.measurement_delta,
+      value_channels: ["scada"],
+    };
+    delete projected.measurement_delta.real_values;
+    if (Array.isArray(projected.measurement_delta.items)) {
+      projected.measurement_delta.items = projected.measurement_delta.items.map((rawItem) => {
+        if (!rawItem || typeof rawItem !== "object") return rawItem;
+        const item = { ...rawItem, value: rawItem.scada_value };
+        delete item.real_value;
+        return item;
+      });
+    }
+  }
+  if (snapshot.measurement_history && typeof snapshot.measurement_history === "object") {
+    projected.measurement_history = {
+      ...snapshot.measurement_history,
+      value_channels: ["scada"],
+      frames: Array.isArray(snapshot.measurement_history.frames)
+        ? snapshot.measurement_history.frames.map((rawFrame) => {
+          if (!rawFrame || typeof rawFrame !== "object") return rawFrame;
+          const frame = { ...rawFrame };
+          delete frame.real_values;
+          return frame;
+        })
+        : snapshot.measurement_history.frames,
+    };
+    delete projected.measurement_history.real_values;
+  }
+  return projected;
+}
+
+function traineeMeasurementOnlyTraceHistory(history) {
+  if (!Array.isArray(history)) return [];
+  return history.map((rawPoint) => {
+    if (!rawPoint || typeof rawPoint !== "object") return rawPoint;
+    const measurements = Object.fromEntries(
+      Object.entries(rawPoint.measurements || {}).map(([key, rawMeasurement]) => {
+        if (!rawMeasurement || typeof rawMeasurement !== "object") return [key, rawMeasurement];
+        const measurement = {
+          ...rawMeasurement,
+          value: rawMeasurement.scada ?? null,
+          scada: rawMeasurement.scada ?? null,
+        };
+        delete measurement.real;
+        delete measurement.real_value;
+        return [key, measurement];
+      }),
+    );
+    return { ...rawPoint, measurements };
+  });
+}
+
 function mergeSnapshot(previous, incoming) {
-  if (!previous || !incoming) return incoming;
-  const merged = { ...previous, ...incoming };
-  const previousModelId = String(previous.model?.id || "");
-  const incomingModelId = String(incoming.model?.id || "");
+  const safePrevious = traineeMeasurementOnlySnapshot(previous);
+  const safeIncoming = traineeMeasurementOnlySnapshot(incoming);
+  if (!safePrevious || !safeIncoming) return safeIncoming;
+  const merged = { ...safePrevious, ...safeIncoming };
+  const previousModelId = String(safePrevious.model?.id || "");
+  const incomingModelId = String(safeIncoming.model?.id || "");
   const modelChanged = Boolean(previousModelId && incomingModelId && previousModelId !== incomingModelId);
   STATIC_SNAPSHOT_KEYS.forEach((key) => {
-    if (incoming[key] !== undefined) return;
-    const incomingMeta = incoming.static_meta?.[key];
-    const previousMeta = previous.static_meta?.[key];
+    if (safeIncoming[key] !== undefined) return;
+    const incomingMeta = safeIncoming.static_meta?.[key];
+    const previousMeta = safePrevious.static_meta?.[key];
     const revisionChanged = Boolean(
       incomingMeta
       && previousMeta
@@ -2128,10 +2200,10 @@ function mergeSnapshot(previous, incoming) {
       delete merged[key];
       return;
     }
-    if (previous[key] !== undefined) merged[key] = previous[key];
+    if (safePrevious[key] !== undefined) merged[key] = safePrevious[key];
   });
-  if (modelChanged && incoming.device_states === undefined) delete merged.device_states;
-  if (incoming.runtime_logs === undefined) delete merged.runtime_logs;
+  if (modelChanged && safeIncoming.device_states === undefined) delete merged.device_states;
+  if (safeIncoming.runtime_logs === undefined) delete merged.runtime_logs;
   return merged;
 }
 
@@ -2483,7 +2555,6 @@ function compactMeasurementDeltaItems(payload) {
       const flags = Number(row?.[5]) || 0;
       return {
         name: String(row?.[0] || ""),
-        real_value: flags & 2 ? row?.[1] : null,
         scada_value: flags & 4 ? row?.[2] : null,
         valid: row?.[3],
         weight: row?.[4],
@@ -2547,8 +2618,6 @@ function applyMeasurementArrayFrame(payload, measurements, definitions) {
     !Number.isInteger(count)
     || count < 0
     || definitions.length !== count
-    || !Array.isArray(payload.real_values)
-    || payload.real_values.length !== expectedValueCount
     || !Array.isArray(payload.scada_values)
     || payload.scada_values.length !== expectedValueCount
     || !Array.isArray(payload.valid_values)
@@ -2572,7 +2641,7 @@ function applyMeasurementArrayFrame(payload, measurements, definitions) {
   ) {
     reportMeasurementArrayWarning(
       `实时量测数组长度不一致，整帧已拒绝：定义=${definitions.length}，声明=${payload.count}，`
-      + `真值=${payload.real_values?.length ?? "非数组"}，量测=${payload.scada_values?.length ?? "非数组"}，`
+      + `量测=${payload.scada_values?.length ?? "非数组"}，`
       + `状态=${payload.valid_values?.length ?? "非数组"}`,
     );
     return false;
@@ -2600,21 +2669,7 @@ function applyMeasurementArrayFrame(payload, measurements, definitions) {
   const simuTime = payload.simu_time ?? payload.time ?? "--";
   const wallTime = payload.wall_time ?? "--";
   const absoluteMinute = payload.absolute_minute;
-  const currentReal = Array.isArray(measurements.real) ? measurements.real : [];
   const currentScada = Array.isArray(measurements.scada) ? measurements.scada : [];
-  const realRows = definitions.map((definition, index) => {
-    const row = currentReal[index] || {};
-    Object.assign(row, definition);
-    row.value = payload.real_values[index];
-    row.valid = payload.valid_values[index] ?? definition.valid ?? row.valid;
-    row.weight = definition.weight ?? row.weight;
-    row.status = statusValues?.[index] ?? definition.status ?? row.status;
-    row.fixed_value = fixedValues?.[index] ?? definition.fixed_value ?? row.fixed_value;
-    row.updated_simu_time = simuTime;
-    row.updated_wall_time = wallTime;
-    row.updated_absolute_minute = absoluteMinute;
-    return row;
-  });
   const scadaRows = definitions.map((definition, index) => {
     const row = currentScada[index] || {};
     Object.assign(row, definition);
@@ -2629,7 +2684,8 @@ function applyMeasurementArrayFrame(payload, measurements, definitions) {
     return row;
   });
   measurements.definitions = definitions;
-  measurements.real = realRows;
+  delete measurements.real;
+  measurements.value_channels = ["scada"];
   measurements.scada = scadaRows;
   measurements.definition_signature = expectedSignature;
   measurements.definition_revision = payload.definition_revision;
@@ -2663,39 +2719,23 @@ function applyMeasurementDelta(payload) {
     );
   }
   if (payload.reset) {
-    measurements.real = [];
     measurements.scada = [];
+    delete measurements.real;
   }
   const definitionsByName = new Map(definitions.map((row) => [measurementNameKey(row), row]));
-  const channelIndexes = {
-    real: measurementChannelIndex(measurements.real || []),
-    scada: measurementChannelIndex(measurements.scada || []),
-  };
+  const channelIndexes = { scada: measurementChannelIndex(measurements.scada || []) };
   let changed = false;
   compactMeasurementDeltaItems(payload).forEach((item) => {
     if (!item?.name) return;
     const definition = definitionsByName.get(item.name);
     if (item.deleted) {
-      ensureMeasurementChannelRow(measurements, definitionsByName, "real", item, channelIndexes.real);
       ensureMeasurementChannelRow(measurements, definitionsByName, "scada", item, channelIndexes.scada);
       changed = true;
       return;
     }
-    const realRow = item.real_value !== undefined && item.real_value !== null
-      ? ensureMeasurementChannelRow(measurements, definitionsByName, "real", item, channelIndexes.real)
-      : null;
     const scadaRow = item.scada_value !== undefined && item.scada_value !== null
       ? ensureMeasurementChannelRow(measurements, definitionsByName, "scada", item, channelIndexes.scada)
       : null;
-    if (realRow) {
-      realRow.value = item.real_value;
-      realRow.valid = definition?.valid ?? item.valid ?? realRow.valid;
-      realRow.weight = definition?.weight ?? item.weight ?? realRow.weight;
-      realRow.updated_simu_time = item.updated_simu_time;
-      realRow.updated_wall_time = item.updated_wall_time;
-      realRow.updated_absolute_minute = item.updated_absolute_minute;
-      changed = true;
-    }
     if (scadaRow) {
       scadaRow.value = item.scada_value;
       scadaRow.valid = definition?.valid ?? item.valid ?? scadaRow.valid;
@@ -2706,8 +2746,8 @@ function applyMeasurementDelta(payload) {
       changed = true;
     }
   });
-  measurements.real = Array.from(channelIndexes.real.values());
   measurements.scada = Array.from(channelIndexes.scada.values());
+  measurements.value_channels = ["scada"];
   if (payload.reset) state.measurementDeltaSeq = Number(payload.seq) || 0;
   else state.measurementDeltaSeq = Math.max(Number(state.measurementDeltaSeq) || 0, Number(payload.seq) || 0);
   return appendMeasurementTraceAfterDelta(changed);
@@ -2847,7 +2887,6 @@ const DIAGRAM_DISPLAY_PREFERENCES_DEFAULTS = Object.freeze({
   measurements: true,
   labels: true,
   flowArrows: true,
-  measurementSource: "scada",
 });
 const DIAGRAM_MAX_ZOOM = 8;
 const DIAGRAM_PAN_THRESHOLD_PX = 5;
@@ -2859,25 +2898,16 @@ function normalizeDiagramDisplayPreferences(value) {
     measurements: typeof source.measurements === "boolean" ? source.measurements : true,
     labels: typeof source.labels === "boolean" ? source.labels : true,
     flowArrows: typeof source.flowArrows === "boolean" ? source.flowArrows : true,
-    measurementSource: source.measurementSource === "real" ? "real" : "scada",
   };
 }
 
 function diagramDisplayPreferenceMenuItems(preferences) {
   const value = normalizeDiagramDisplayPreferences(preferences);
-  const items = [
+  return [
     { key: "measurements", label: value.measurements ? "不显示量测" : "显示量测" },
     { key: "labels", label: value.labels ? "不显示标识" : "显示标识" },
     { key: "flowArrows", label: value.flowArrows ? "不显示流动箭头" : "显示流动箭头" },
   ];
-  if (value.measurements) {
-    items.unshift({
-      key: "measurementSource",
-      value: value.measurementSource === "scada" ? "real" : "scada",
-      label: value.measurementSource === "scada" ? "数据源: 量测" : "数据源: 真值",
-    });
-  }
-  return items;
 }
 
 function loadDiagramDisplayPreferences(storage = typeof localStorage === "undefined" ? null : localStorage) {
@@ -3191,7 +3221,7 @@ function diagramTrendPeriodLabels(period = "hour", range = {}) {
 }
 
 function diagramTrendPointHasFiniteValue(point) {
-  return [point?.value, point?.scada, point?.real].some((value) => (
+  return [point?.value, point?.scada].some((value) => (
     value !== null
     && value !== undefined
     && value !== ""
@@ -3473,32 +3503,19 @@ function addDiagramDeviceMeasurement(map, row) {
 function diagramMeasurementMaps(snapshot = state.snapshot || {}) {
   const measurements = snapshot.measurements || {};
   const scada = new Map();
-  const real = new Map();
   const scadaByDevice = new Map();
-  const realByDevice = new Map();
   (measurements.scada || []).forEach((row) => {
     addDiagramMeasurementAliases(scada, row);
     addDiagramDeviceMeasurement(scadaByDevice, row);
   });
-  (measurements.real || []).forEach((row) => {
-    addDiagramMeasurementAliases(real, row);
-    addDiagramDeviceMeasurement(realByDevice, row);
-  });
-  return { scada, real, scadaByDevice, realByDevice };
+  return { scada, scadaByDevice };
 }
 
-function diagramMetricBindingValue(binding, maps, channel = "auto") {
+function diagramMetricBindingValue(binding, maps) {
   const candidates = diagramMetricMeasurementTypes(binding?.devType, binding?.metricType);
-  const sources = channel === "real"
-    ? [maps.realByDevice]
-    : channel === "scada"
-      ? [maps.scadaByDevice]
-      : [maps.scadaByDevice, maps.realByDevice];
-  for (const source of sources) {
-    for (const measType of candidates) {
-      const key = diagramDeviceMeasurementKey(binding.devType, binding.devName, measType);
-      if (source?.has(key)) return source.get(key);
-    }
+  for (const measType of candidates) {
+    const key = diagramDeviceMeasurementKey(binding.devType, binding.devName, measType);
+    if (maps.scadaByDevice?.has(key)) return maps.scadaByDevice.get(key);
   }
   return null;
 }
@@ -3665,9 +3682,8 @@ function diagramControlMap(snapshot = state.snapshot || {}) {
 function diagramBindingValue(name, maps, channel = "scada") {
   const key = String(name || "").trim();
   if (!key) return null;
-  if (channel === "real") return maps.real.get(key) || null;
   if (channel === "control") return maps.controls.get(key) || null;
-  return maps.scada.get(key) || maps.real.get(key) || null;
+  return maps.scada.get(key) || null;
 }
 
 function setDiagramElementValue(element, row, metricType = "") {
@@ -3825,7 +3841,6 @@ function applyDiagramDisplayPreferences(container, preferences = diagramDisplayP
   svg.classList.toggle("is-diagram-measurements-hidden", !value.measurements);
   svg.classList.toggle("is-diagram-labels-hidden", !value.labels);
   svg.classList.toggle("is-diagram-flow-arrows-hidden", !value.flowArrows);
-  svg.dataset.diagramMeasurementSource = value.measurementSource;
   return value;
 }
 
@@ -4448,19 +4463,17 @@ function diagramHoverTarget(container, target) {
       };
     }
   }
-  const namedMetric = target.closest("[data-meas-name], [data-scada-name], [data-real-name]");
+  const namedMetric = target.closest("[data-meas-name], [data-scada-name]");
   if (namedMetric && container.contains(namedMetric)) {
-    const channel = namedMetric.hasAttribute("data-real-name") ? "real" : "scada";
     const name = namedMetric.getAttribute("data-meas-name")
       || namedMetric.getAttribute("data-scada-name")
-      || namedMetric.getAttribute("data-real-name")
       || "";
     if (name) {
       return {
         kind: "metric",
-        key: `named-metric:${channel}:${name}`,
+        key: `named-metric:scada:${name}`,
         element: namedMetric,
-        channel,
+        channel: "scada",
         name,
         metricType: "",
       };
@@ -4773,7 +4786,6 @@ function diagramMetricMeasurementRows(snapshot = state.snapshot || {}) {
   return {
     definitions: snapshot?.definitions?.measurement || measurements.definitions || [],
     scada: measurements.scada || [],
-    real: measurements.real || [],
   };
 }
 
@@ -4807,7 +4819,7 @@ function diagramMetricMeasurementPair(hover, snapshot = state.snapshot || {}) {
         devName: hover.binding.devName,
         measType: candidate,
       };
-      return [...rows.scada, ...rows.real, ...rows.definitions]
+      return [...rows.scada, ...rows.definitions]
         .some((row) => diagramMeasurementIdentityMatches(row, candidateIdentity));
     }) || candidates[0] || hover.binding.metricType;
     identity = {
@@ -4817,8 +4829,7 @@ function diagramMetricMeasurementPair(hover, snapshot = state.snapshot || {}) {
     };
   }
   const scadaRow = rows.scada.find((row) => diagramMeasurementIdentityMatches(row, identity)) || null;
-  const realRow = rows.real.find((row) => diagramMeasurementIdentityMatches(row, identity)) || null;
-  const channelRow = scadaRow || realRow;
+  const channelRow = scadaRow;
   if (identity?.name && channelRow) {
     identity = {
       name: identity.name,
@@ -4833,7 +4844,6 @@ function diagramMetricMeasurementPair(hover, snapshot = state.snapshot || {}) {
       : diagramMeasurementIdentityMatches(row, identity)
   )) || null;
   const scadaValue = diagramMeasurementFiniteValue(scadaRow);
-  const realValue = diagramMeasurementFiniteValue(realRow);
   const weightNumber = Number(definition?.weight ?? channelRow?.weight);
   const validNumber = Number(definition?.valid ?? channelRow?.valid ?? 1);
   const weight = Number.isFinite(weightNumber) ? weightNumber : null;
@@ -4845,15 +4855,12 @@ function diagramMetricMeasurementPair(hover, snapshot = state.snapshot || {}) {
   return {
     definition,
     scadaRow,
-    realRow,
-    row: scadaRow || realRow || definition,
+    row: scadaRow || definition,
     name: String(definition?.name || channelRow?.name || identity?.name || ""),
     devType: String(definition?.dev_type || channelRow?.dev_type || identity?.devType || ""),
     devName: String(definition?.dev_name || channelRow?.dev_name || identity?.devName || ""),
     measType: String(definition?.meas_type || channelRow?.meas_type || identity?.measType || ""),
     scadaValue,
-    realValue,
-    deviation: scadaValue !== null && realValue !== null ? scadaValue - realValue : null,
     valid: validNumber === 0 ? 0 : 1,
     status,
     fixedValue: Number.isFinite(fixedValueNumber) ? fixedValueNumber : null,
@@ -4935,7 +4942,7 @@ function patchDiagramRuntimeControlRecord(snapshot, runtime) {
     if (Object.prototype.hasOwnProperty.call(runtime, "status")) {
       measurementUpdates.set(normalizeDiagramMeasurementToken("STATUS"), runtime.status);
     }
-    ["definitions", "real", "scada"].forEach((channel) => {
+    ["definitions", "scada"].forEach((channel) => {
       const rows = snapshot.measurements[channel];
       if (!Array.isArray(rows)) return;
       rows.forEach((row) => {
@@ -4973,7 +4980,7 @@ function patchDiagramMeasurementDefinitionRecord(snapshot, record) {
     Object.assign(row, record);
     changed = true;
   });
-  [snapshot?.measurements?.real, snapshot?.measurements?.scada].forEach((rows) => {
+  [snapshot?.measurements?.scada].forEach((rows) => {
     if (!Array.isArray(rows)) return;
     const row = rows.find((item) => String(item?.name || "") === name);
     if (!row) return;
@@ -5094,10 +5101,6 @@ function diagramDeviceMeasurements(device, snapshot = state.snapshot || {}) {
   );
   const rows = new Map();
   (snapshot.measurements?.scada || []).filter(matches).forEach((row) => rows.set(measurementKey(row), row));
-  (snapshot.measurements?.real || []).filter(matches).forEach((row) => {
-    const key = measurementKey(row);
-    if (!rows.has(key)) rows.set(key, row);
-  });
   return [...rows.values()].sort((left, right) => (
     String(left.meas_type || left.name || "").localeCompare(String(right.meas_type || right.name || ""), "zh-Hans-CN")
   ));
@@ -5722,13 +5725,11 @@ function diagramTrendHistorySeries(row, metricType = "") {
     }
     if (!measurement) return null;
     const scada = diagramTrendDisplayValue(measurement.scada ?? measurement.value, row, metricType);
-    const real = diagramTrendDisplayValue(measurement.real, row, metricType);
-    if (scada === null && real === null) return null;
+    if (scada === null) return null;
     return {
       minute: Number(point.minute),
       time: point.sim_time || point.time || "--",
       scada,
-      real,
     };
   }).filter((point) => point && Number.isFinite(point.minute));
 }
@@ -5754,7 +5755,6 @@ function diagramMetricLabel(metricType, row) {
 
 const DIAGRAM_TREND_SERIES = Object.freeze([
   Object.freeze({ key: "scada", label: "量测值" }),
-  Object.freeze({ key: "real", label: "真值" }),
 ]);
 
 function diagramTrendFiniteValue(value) {
@@ -5815,18 +5815,14 @@ function diagramTrendChartModel(points, period, tooltipWidth = 360, currentMinut
   }));
   const cursorPoints = sourcePoints.map((point) => {
     const scada = diagramTrendFiniteValue(point?.scada);
-    const real = diagramTrendFiniteValue(point?.real);
     const hasScada = scada !== null;
-    const hasReal = real !== null;
-    if (!hasScada && !hasReal) return null;
+    if (!hasScada) return null;
     return {
       minute: Number(point.minute),
       time: point.time || "--",
       x: xForMinute(point.minute),
       scada: hasScada ? scada : null,
-      real: hasReal ? real : null,
       scadaY: hasScada ? yForValue(scada) : null,
-      realY: hasReal ? yForValue(real) : null,
     };
   }).filter((point) => point && Number.isFinite(point.minute));
   return {
@@ -5900,28 +5896,23 @@ function diagramTrendChartHtml(points, period, tooltipWidth = 360, currentMinute
     <div class="diagram-trend-empty" data-diagram-trend-empty${model.empty ? "" : " hidden"}>当前分页暂无历史曲线</div>
     <div class="diagram-trend-legend" data-diagram-trend-legend${model.empty ? " hidden" : ""}>
       <span><i class="is-scada"></i>量测值</span>
-      <span><i class="is-real"></i>真值</span>
     </div>
     <svg class="diagram-trend-chart" data-diagram-trend-chart viewBox="0 0 ${model.width} ${model.height}" role="img" aria-label="${model.period === "day" ? "日曲线" : "小时曲线"}"${model.empty ? " hidden" : ""}>
       <text x="${model.plot.left}" y="12" class="diagram-trend-axis-unit" data-diagram-trend-unit>${escapeHtml(model.unit)}</text>
       <g data-diagram-trend-axis-ticks>${diagramTrendAxisTicksHtml(model)}</g>
       <line x1="${model.plot.left}" y1="${model.plot.top}" x2="${model.plot.left}" y2="${model.height - model.plot.bottom}" class="diagram-trend-y-axis"></line>
       <polyline class="diagram-trend-series is-scada" data-diagram-trend-series="scada" points="${model.series.scada.polyline}" fill="none" vector-effect="non-scaling-stroke"></polyline>
-      <polyline class="diagram-trend-series is-real" data-diagram-trend-series="real" points="${model.series.real.polyline}" fill="none" vector-effect="non-scaling-stroke"></polyline>
       <line x1="0" y1="${model.plot.top}" x2="0" y2="${model.height - model.plot.bottom}" class="diagram-trend-cursor diagram-trend-cursor-line" data-diagram-trend-cursor data-diagram-trend-cursor-line visibility="hidden"></line>
       <circle cx="0" cy="0" r="3.5" class="diagram-trend-cursor diagram-trend-cursor-point is-scada" data-diagram-trend-cursor data-diagram-trend-cursor-point="scada" visibility="hidden"></circle>
-      <circle cx="0" cy="0" r="3.5" class="diagram-trend-cursor diagram-trend-cursor-point is-real" data-diagram-trend-cursor data-diagram-trend-cursor-point="real" visibility="hidden"></circle>
       <g class="diagram-trend-cursor diagram-trend-cursor-label" data-diagram-trend-cursor data-diagram-trend-cursor-label visibility="hidden">
-        <rect width="136" height="48" rx="4" ry="4"></rect>
+        <rect width="136" height="34" rx="4" ry="4"></rect>
         <text x="7" y="13" data-diagram-trend-cursor-time>--</text>
         <text x="7" y="27" data-diagram-trend-cursor-value="scada">--</text>
-        <text x="7" y="41" data-diagram-trend-cursor-value="real">--</text>
       </g>
     </svg>
     <div class="diagram-trend-range" data-diagram-trend-range${model.empty ? " hidden" : ""}><span data-diagram-trend-range-start>${escapeHtml(model.labels.start)}</span><span data-diagram-trend-range-end>${escapeHtml(model.labels.end)}</span></div>
     <div class="diagram-trend-stats" data-diagram-trend-stats${model.empty ? " hidden" : ""}>
       <div><span class="diagram-trend-stat-label is-scada">量测值</span><span>最小 <strong data-diagram-trend-stat-scada-min>${model.series.scada.min === null ? "--" : diagramNumberText(model.series.scada.min)}</strong></span><span>最大 <strong data-diagram-trend-stat-scada-max>${model.series.scada.max === null ? "--" : diagramNumberText(model.series.scada.max)}</strong></span><span>最新 <strong data-diagram-trend-stat-scada-latest>${model.series.scada.latest === null ? "--" : diagramNumberText(model.series.scada.latest)}</strong></span></div>
-      <div><span class="diagram-trend-stat-label is-real">真值</span><span>最小 <strong data-diagram-trend-stat-real-min>${model.series.real.min === null ? "--" : diagramNumberText(model.series.real.min)}</strong></span><span>最大 <strong data-diagram-trend-stat-real-max>${model.series.real.max === null ? "--" : diagramNumberText(model.series.real.max)}</strong></span><span>最新 <strong data-diagram-trend-stat-real-latest>${model.series.real.latest === null ? "--" : diagramNumberText(model.series.real.latest)}</strong></span></div>
     </div>`;
 }
 
@@ -6066,7 +6057,7 @@ function updateDiagramTrendCursor(interaction, chart, event) {
   });
   const anchorY = pointYs.length ? Math.min(...pointYs) : model.plot.top;
   const labelWidth = 136;
-  const labelHeight = 48;
+  const labelHeight = 34;
   const labelGap = 8;
   const maxLabelX = model.width - model.plot.right - labelWidth - 2;
   const labelX = Math.max(model.plot.left + 2, Math.min(point.x + labelGap, maxLabelX));
@@ -6097,11 +6088,9 @@ function diagramMetricTooltipData(container, hover, snapshot, interaction) {
   const row = pair.row || diagramMetricCurrentRow(container, hover, snapshot);
   const metricType = hover?.binding?.metricType || hover?.metricType || "";
   const scadaValue = diagramTrendDisplayValue(pair.scadaValue, pair.scadaRow || row, metricType);
-  const realValue = diagramTrendDisplayValue(pair.realValue, pair.realRow || row, metricType);
-  const deviation = scadaValue !== null && realValue !== null ? scadaValue - realValue : null;
   const unit = row?.unit || diagramMeasurementUnit(row?.meas_type || metricType);
   const period = interaction.trendPeriod === "day" ? "day" : "hour";
-  const history = diagramTrendHistorySeries(pair.scadaRow || pair.realRow || row, metricType);
+  const history = diagramTrendHistorySeries(pair.scadaRow || row, metricType);
   const endMinute = Number(snapshot?.clock?.absolute_minute ?? snapshot?.clock?.minute);
   const requestedOffset = Number(interaction?.trendPeriodOffsets?.[period]) || 0;
   const trendRange = diagramTrendNavigationRange(
@@ -6136,10 +6125,6 @@ function diagramMetricTooltipData(container, hover, snapshot, interaction) {
     displayText: formatMeasurementDisplayValue(scadaValue, pair.row, diagramNumberText),
     scadaValue,
     scadaText: formatMeasurementDisplayValue(scadaValue, pair.row, diagramNumberText),
-    realValue,
-    realText: formatMeasurementDisplayValue(realValue, pair.row, diagramNumberText),
-    deviation,
-    deviationText: formatMeasurementDisplayValue(deviation, pair.row, diagramNumberText),
     valid: pair.valid,
     status: pair.status,
     statusText: validText,
@@ -6165,7 +6150,7 @@ function diagramMetricTooltipData(container, hover, snapshot, interaction) {
 
 function ensureDiagramMetricMeasurementHistory(container, hover, snapshot, interaction) {
   const pair = diagramMetricMeasurementPair(hover, snapshot);
-  const row = pair.scadaRow || pair.realRow || pair.row || diagramMetricCurrentRow(container, hover, snapshot);
+  const row = pair.scadaRow || pair.row || diagramMetricCurrentRow(container, hover, snapshot);
   if (!row) return;
   const hoverKey = String(hover?.key || "");
   ensureMeasurementHistoryForRow(row).then((changed) => {
@@ -6222,14 +6207,6 @@ function renderDiagramMeasurementSummary(data, editor = null, interaction = null
       <div>
         <dt>量测值</dt>
         <dd><strong data-diagram-tooltip-current-value data-diagram-measurement-scada>${escapeHtml(data.scadaText)}</strong><span data-diagram-tooltip-current-unit>${escapeHtml(data.unit)}</span></dd>
-      </div>
-      <div>
-        <dt>真值</dt>
-        <dd data-diagram-measurement-real>${escapeHtml(diagramMeasurementValueWithUnit(data.realText, data.unit))}</dd>
-      </div>
-      <div>
-        <dt>当前偏差</dt>
-        <dd data-diagram-measurement-deviation>${escapeHtml(diagramMeasurementValueWithUnit(data.deviationText, data.unit))}</dd>
       </div>
       <div>
         <dt>量测状态</dt>
@@ -6451,8 +6428,6 @@ function updateDiagramMetricDynamicValues(tooltip, data) {
     ["[data-diagram-tooltip-metric-label]", data.metricLabel],
     ["[data-diagram-measurement-scada]", data.scadaText],
     ["[data-diagram-tooltip-current-unit]", data.unit],
-    ["[data-diagram-measurement-real]", diagramMeasurementValueWithUnit(data.realText, data.unit)],
-    ["[data-diagram-measurement-deviation]", diagramMeasurementValueWithUnit(data.deviationText, data.unit)],
     ["[data-diagram-measurement-valid]", data.validText],
     ["[data-diagram-measurement-sigma]", data.errorSigmaText],
     ["[data-diagram-measurement-weight]", data.weightText],
@@ -6978,9 +6953,7 @@ function initDiagramInteractions(container) {
     if (!button) return;
     const key = button.getAttribute("data-diagram-display-toggle") || "";
     if (!Object.prototype.hasOwnProperty.call(DIAGRAM_DISPLAY_PREFERENCES_DEFAULTS, key)) return;
-    const nextValue = key === "measurementSource"
-      ? (button.getAttribute("data-diagram-display-value") === "real" ? "real" : "scada")
-      : !diagramDisplayPreferences[key];
+    const nextValue = !diagramDisplayPreferences[key];
     diagramDisplayPreferences = saveDiagramDisplayPreferences({
       ...diagramDisplayPreferences,
       [key]: nextValue,
@@ -7013,14 +6986,14 @@ function updateDiagramRealtimeBindings(container = $("modelDiagramCanvas"), snap
   bindings.measurements.forEach(({ element, name }) => {
     setDiagramElementValue(
       element,
-      diagramBindingValue(name, maps, diagramDisplayPreferences.measurementSource),
+      diagramBindingValue(name, maps, "scada"),
     );
   });
   bindings.scada.forEach(({ element, name }) => {
     setDiagramElementValue(element, diagramBindingValue(name, maps, "scada"));
   });
   bindings.real.forEach(({ element, name }) => {
-    setDiagramElementValue(element, diagramBindingValue(name, maps, "real"));
+    setDiagramElementValue(element, null);
   });
   bindings.controls.forEach(({ element, name }) => {
     setDiagramElementValue(element, diagramBindingValue(name, maps, "control"));
@@ -7028,7 +7001,7 @@ function updateDiagramRealtimeBindings(container = $("modelDiagramCanvas"), snap
   bindings.metrics.forEach((binding) => {
     setDiagramElementValue(
       binding.element,
-      diagramMetricBindingValue(binding, maps, diagramDisplayPreferences.measurementSource),
+      diagramMetricBindingValue(binding, maps),
       binding.metricType,
     );
   });
@@ -7396,12 +7369,14 @@ function mergeTeacherMeasurementsWithLocalDefinitions(remoteMeasurements = {}, l
       weight: definition?.weight ?? item.weight,
     };
   });
-  return {
+  const merged = {
     ...(remoteMeasurements || {}),
     definitions: localDefinitionRows || [],
     scada: mergeChannel(remoteMeasurements?.scada),
-    real: mergeChannel(remoteMeasurements?.real),
+    value_channels: ["scada"],
   };
+  delete merged.real;
+  return merged;
 }
 
 function mergeTeacherSnapshotWithLocalDefinitions(previousSnapshot, remoteSnapshot) {
@@ -9110,13 +9085,12 @@ function commandNumber(value) {
 
 function weatherMeasurementState(snapshot, measType) {
   const measurements = snapshot.measurements || {};
-  for (const channel of [measurements.scada || [], measurements.real || []]) {
-    const row = channel.find((item) => (
-      item.dev_type === "Environment"
-      && item.dev_name === "weather"
-      && String(item.meas_type || "").toUpperCase() === measType
-    ));
-    if (!row) continue;
+  const row = (measurements.scada || []).find((item) => (
+    item.dev_type === "Environment"
+    && item.dev_name === "weather"
+    && String(item.meas_type || "").toUpperCase() === measType
+  ));
+  if (row) {
     const valid = Number(row.valid ?? 1) === 1;
     return { present: true, valid, value: valid ? optionalNumber(row.value) : null };
   }
@@ -10938,16 +10912,13 @@ function indexedDevice(snapshot, devType, index) {
 function measurementValuesByDevice(snapshot, measurementTypes) {
   const values = new Map();
   const measurements = snapshot.measurements || {};
-  const channels = [measurements.scada || [], measurements.real || []];
   (measurementTypes || []).map((type) => String(type || "").toUpperCase()).forEach((measurementType) => {
-    channels.forEach((channel) => {
-      channel.forEach((row) => {
-        if (String(row.meas_type || "").toUpperCase() !== measurementType || Number(row.valid ?? 1) !== 1) return;
-        const value = optionalNumber(row.value);
-        if (!Number.isFinite(value)) return;
-        const key = `${row.dev_type || ""}|${row.dev_name || ""}`;
-        if (!values.has(key)) values.set(key, value);
-      });
+    (measurements.scada || []).forEach((row) => {
+      if (String(row.meas_type || "").toUpperCase() !== measurementType || Number(row.valid ?? 1) !== 1) return;
+      const value = optionalNumber(row.value);
+      if (!Number.isFinite(value)) return;
+      const key = `${row.dev_type || ""}|${row.dev_name || ""}`;
+      if (!values.has(key)) values.set(key, value);
     });
   });
   return values;
@@ -12067,25 +12038,33 @@ function renewableTrendRightAxisScale(points = [], visibleSeries = []) {
   };
 }
 
-function renderRenewableTrendLegend(visibleSeries = []) {
+function renderRenewableTrendLegend(availableSeries = []) {
   const legend = $("renewableTrendLegend");
   if (!legend) return;
-  const fragment = document.createDocumentFragment();
-  visibleSeries.forEach((series) => {
-    const item = document.createElement("span");
-    item.className = "renewable-trend-inline-legend-item";
-    item.style.setProperty("--renewable-series-color", series.color || "#23854a");
-    item.title = series.label;
-    const swatch = document.createElement("i");
-    swatch.className = `renewable-trend-inline-legend-swatch${series.style ? ` is-${series.style}` : ""}`;
-    swatch.setAttribute("aria-hidden", "true");
-    const label = document.createElement("span");
-    label.textContent = series.label;
-    item.append(swatch, label);
-    fragment.appendChild(item);
-  });
-  legend.replaceChildren(fragment);
-  legend.hidden = !visibleSeries.length;
+  const seriesKeys = availableSeries.map((series) => series.key).join("|");
+  if (legend.dataset.seriesKeys !== seriesKeys) {
+    const fragment = document.createDocumentFragment();
+    availableSeries.forEach((series) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "renewable-trend-inline-legend-item";
+      item.dataset.chartToggle = "renewableTrend";
+      item.dataset.chartSeries = series.key;
+      item.dataset.chartLegendLabel = series.label;
+      item.style.setProperty("--renewable-series-color", series.color || "#23854a");
+      const swatch = document.createElement("i");
+      swatch.className = `renewable-trend-inline-legend-swatch${series.style ? ` is-${series.style}` : ""}`;
+      swatch.setAttribute("aria-hidden", "true");
+      const label = document.createElement("span");
+      label.textContent = series.label;
+      item.append(swatch, label);
+      fragment.appendChild(item);
+    });
+    legend.replaceChildren(fragment);
+    legend.dataset.seriesKeys = seriesKeys;
+  }
+  legend.hidden = !availableSeries.length;
+  syncChartLegendButtons("renewableTrend");
 }
 
 function drawRenewableTrendChart() {
@@ -12114,7 +12093,7 @@ function drawRenewableTrendChart() {
   const metrics = state.renewableControl.lastPlan?.metrics || {};
   const availableSeries = RENEWABLE_TREND_SERIES_DEFS.filter((series) => renewableTrendSeriesAvailable(series, metrics));
   const visibleSeries = visibleChartSeries(chartKey, availableSeries);
-  renderRenewableTrendLegend(visibleSeries);
+  renderRenewableTrendLegend(availableSeries);
   renderRenewableTrendSeriesAvailability(metrics);
   const visiblePowerSeries = visibleSeries.filter((series) => series.axis !== "right");
   const powerValues = points.flatMap((point) => visiblePowerSeries.map((series) => point[series.field]))
@@ -13316,6 +13295,7 @@ function definedModelDevices(snapshot = state.snapshot || {}) {
       const name = definedName || (idx !== "" ? `${blockName}_${idx}` : `${blockName}_${index + 1}`);
       return {
         dev_type: blockName,
+        model_block: blockName,
         dev_name: String(name || `${blockName}_${index + 1}`),
         idx,
         raw,
@@ -13570,26 +13550,17 @@ function measurementCompareRows(
     || [];
   const primaryRows = definitions.length
     ? definitions
-    : (measurements.scada?.length ? measurements.scada : measurements.real || []);
+    : (measurements.scada || []);
   const scadaByKey = new Map((measurements.scada || []).map((row) => [measurementKey(row), row]));
-  const realByKey = new Map((measurements.real || []).map((row) => [measurementKey(row), row]));
   return sortMeasurementsForDisplay(primaryRows.map((definition) => {
     const key = measurementKey(definition);
     const scada = scadaByKey.get(key);
-    const real = realByKey.get(key);
-    const realValue = real?.value;
     const scadaValue = scada?.value;
-    const realNumber = Number(realValue);
-    const scadaNumber = Number(scadaValue);
     return {
       ...definition,
-      value: scadaValue ?? realValue ?? definition.value,
-      real_value: realValue,
+      value: scadaValue ?? definition.value,
       scada_value: scadaValue,
-      diff: Number.isFinite(realNumber) && Number.isFinite(scadaNumber)
-        ? scadaNumber - realNumber
-        : null,
-      valid: scada?.valid ?? real?.valid ?? definition.valid,
+      valid: scada?.valid ?? definition.valid,
       weight: definition.weight,
     };
   }));
@@ -13725,9 +13696,7 @@ function measurementTableStructureKey(rows) {
 }
 
 function measurementLiveCellHtml(row, field) {
-  if (field === "real") return formatMeasurementDisplayValue(row.real_value, row);
   if (field === "scada") return formatMeasurementDisplayValue(row.scada_value, row);
-  if (field === "diff") return formatMeasurementDisplayValue(row.diff, row);
   if (field === "status") {
     const valid = Number(row.valid) ? true : false;
     return `<span class="status-pill ${valid ? "is-ok" : "is-off"}">${valid ? "可用" : "停用"}</span>`;
@@ -13751,11 +13720,6 @@ function updateMeasurementTableLiveCells(rows) {
         const value = Number(row.scada_value || 0);
         cell.classList.toggle("value-bad", Math.abs(value) > 10000);
         cell.classList.toggle("value-warn", Math.abs(value) > 1000 && Math.abs(value) <= 10000);
-      }
-      if (field === "diff") {
-        const diffActive = row.diff !== null && Math.abs(row.diff) >= 1e-6;
-        cell.classList.toggle("diff-active", diffActive);
-        cell.classList.toggle("diff-neutral", !diffActive);
       }
     });
   }
@@ -13826,25 +13790,22 @@ function renderMeasurements(snapshot = state.snapshot || {}) {
     <div class="measurement-type-tab-page is-active">
     <div class="virtual-table-scroll" data-virtual-table="measurement">
     <table class="measurement-compare-table">
-      <thead><tr><th>idx</th><th>量测名</th><th>设备</th><th>类型</th><th>真值</th><th>量测值</th><th>偏差</th><th>状态</th></tr></thead>
+      <thead><tr><th>idx</th><th>量测名</th><th>设备</th><th>类型</th><th>量测值</th><th>状态</th></tr></thead>
       <tbody>
-        ${renderVirtualSpacerRow(virtualRows.beforeHeight, 8)}
+        ${renderVirtualSpacerRow(virtualRows.beforeHeight, 6)}
         ${virtualRows.rows.map((item) => {
           const key = measurementKey(item);
           const valueClass = Math.abs(Number(item.scada_value || 0)) > 10000 ? "value-bad" : Math.abs(Number(item.scada_value || 0)) > 1000 ? "value-warn" : "";
-          const diffClass = item.diff === null || Math.abs(item.diff) < 1e-6 ? "diff-neutral" : "diff-active";
           return `<tr class="${key === state.selectedMeasurementKey ? "is-selected" : ""}" data-measurement-row-key="${escapeHtml(key)}" data-measurement-select-key="${escapeHtml(key)}">
             <td>${escapeHtml(item.idx ?? "")}</td>
             <td>${escapeHtml(measurementDisplayName(item) || "")}</td>
             <td>${escapeHtml(measurementDeviceDisplay(item))}</td>
             <td>${escapeHtml(measurementTypeDisplay(item))}</td>
-            <td class="numeric-cell" data-measurement-live-field="real">${formatMeasurementDisplayValue(item.real_value, item)}</td>
             <td class="numeric-cell ${valueClass}" data-measurement-live-field="scada">${formatMeasurementDisplayValue(item.scada_value, item)}</td>
-            <td class="numeric-cell ${diffClass}" data-measurement-live-field="diff">${formatMeasurementDisplayValue(item.diff, item)}</td>
             <td data-measurement-live-field="status"><span class="status-pill ${Number(item.valid) ? "is-ok" : "is-off"}">${Number(item.valid) ? "可用" : "停用"}</span></td>
           </tr>`;
         }).join("")}
-        ${renderVirtualSpacerRow(virtualRows.afterHeight, 8)}
+        ${renderVirtualSpacerRow(virtualRows.afterHeight, 6)}
       </tbody>
     </table>
     </div>
@@ -13861,10 +13822,7 @@ function appendMeasurementTrace(snapshot) {
   if (isSimulationPausedSnapshot(snapshot)) return false;
   if (Number(clock.step_count ?? 0) <= 0) return false;
   const rows = measurementCompareRows(snapshot.measurements || {});
-  if (!rows.some((row) => (
-    diagramTrendFiniteValue(row.real_value) !== null
-    || diagramTrendFiniteValue(row.scada_value) !== null
-  ))) {
+  if (!rows.some((row) => diagramTrendFiniteValue(row.scada_value) !== null)) {
     return false;
   }
   const result = snapshot.result || {};
@@ -13888,11 +13846,9 @@ function appendMeasurementTrace(snapshot) {
     measurements: {},
   };
   rows.forEach((row) => {
-    const real = diagramTrendFiniteValue(row.real_value);
     const scada = diagramTrendFiniteValue(row.scada_value);
     point.measurements[measurementKey(row)] = {
-      value: scada ?? real,
-      real,
+      value: scada,
       scada,
       valid: Number(row.valid) === 1 ? 1 : 0,
       dev_type: row.dev_type || "",
@@ -13984,13 +13940,12 @@ function mergeMeasurementHistoryPayload(payload, row, definitionIndex, definitio
   if (selectedPosition < 0) return false;
   const key = measurementKey(row);
   const incoming = (payload.frames || []).map((frame) => {
-    const arrays = [frame.real_values, frame.scada_values, frame.valid_values];
+    const arrays = [frame.scada_values, frame.valid_values];
     if (arrays.some((values) => !Array.isArray(values) || values.length !== indices.length)) {
       throw new Error("历史量测数组长度不一致，历史帧已拒绝");
     }
     const minute = Number(frame.absolute_minute);
     if (!Number.isFinite(minute)) throw new Error("历史量测仿真时刻无效，历史帧已拒绝");
-    const real = diagramTrendFiniteValue(frame.real_values[selectedPosition]);
     const scada = diagramTrendFiniteValue(frame.scada_values[selectedPosition]);
     const validValue = frame.valid_values[selectedPosition];
     return {
@@ -14004,8 +13959,7 @@ function mergeMeasurementHistoryPayload(payload, row, definitionIndex, definitio
       measurements: {
         [key]: {
           name: measurementDisplayName(row) || "",
-          value: scada ?? real,
-          real,
+          value: scada,
           scada,
           valid: validValue === null || validValue === undefined
             ? (Number(row.valid) === 1 ? 1 : 0)
@@ -15304,19 +15258,17 @@ function remoteAdjustmentMeasurement(dev, setType, snapshot = state.snapshot || 
   const measurements = snapshot.measurements || {};
   const candidates = remoteAdjustmentMeasurementTypeCandidates(dev, setType);
   for (const candidate of candidates) {
-    for (const rows of [measurements.scada || [], measurements.real || []]) {
-      const match = rows.find((row) => (
-        String(row?.dev_type || "").trim().toUpperCase() === targetType
-        && String(row?.dev_name || "").trim() === targetName
-        && remoteAdjustmentMeasTypeMatchesSetType(row?.meas_type, candidate)
-        && remoteAdjustmentMeasurementRowIsValid(row)
-        && row?.value !== undefined
-        && row?.value !== null
-        && String(row.value).trim() !== ""
-        && Number.isFinite(Number(row.value))
-      ));
-      if (match) return Number(match.value);
-    }
+    const match = (measurements.scada || []).find((row) => (
+      String(row?.dev_type || "").trim().toUpperCase() === targetType
+      && String(row?.dev_name || "").trim() === targetName
+      && remoteAdjustmentMeasTypeMatchesSetType(row?.meas_type, candidate)
+      && remoteAdjustmentMeasurementRowIsValid(row)
+      && row?.value !== undefined
+      && row?.value !== null
+      && String(row.value).trim() !== ""
+      && Number.isFinite(Number(row.value))
+    ));
+    if (match) return Number(match.value);
   }
   return null;
 }

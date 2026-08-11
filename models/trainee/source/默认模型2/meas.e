@@ -794,7 +794,7 @@
 # 792  DCBreak.直流断路器-16.status                  DCBreak        直流断路器-16            STATUS            1.0      1      1.0
 # 793  DCBreak.直流断路器-17.status                  DCBreak        直流断路器-17            STATUS            1.0      1      1.0
 # 794  DCBreak.直流断路器-18.status                  DCBreak        直流断路器-18            STATUS            1.0      1      1.0
-# 795  DCBreak.直流断路器-20.status                  DCBreak        直流断路器-20            STATUS            1.0      1      0.0
+# 795  DCBreak.直流断路器-20.status                  DCBreak        直流断路器-20            STATUS            1.0      1      1.0
 # 796  DCBreak.直流断路器-21.status                  DCBreak        直流断路器-21            STATUS            1.0      1      1.0
 # 797  DCBreak.直流断路器-29.status                  DCBreak        直流断路器-29            STATUS            1.0      1      1.0
 # 798  DCBreak.直流断路器-30.status                  DCBreak        直流断路器-30            STATUS            1.0      1      1.0

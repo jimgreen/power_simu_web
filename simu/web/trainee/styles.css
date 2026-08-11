@@ -3016,10 +3016,6 @@ body.is-vertical-splitter-dragging {
 .diagram-trend-stat-label.is-scada {
   color: #c93a3a;
 }
-.diagram-trend-legend .is-real,
-.diagram-trend-stat-label.is-real {
-  color: var(--teal);
-}
 .diagram-trend-chart {
   width: 100%;
   height: 148px;
@@ -3041,9 +3037,6 @@ body.is-vertical-splitter-dragging {
 }
 .diagram-trend-chart .diagram-trend-series.is-scada {
   stroke: #c93a3a;
-}
-.diagram-trend-chart .diagram-trend-series.is-real {
-  stroke: var(--teal);
 }
 .diagram-trend-grid-line {
   stroke: #dbe5e8;
@@ -3081,9 +3074,6 @@ body.is-vertical-splitter-dragging {
 }
 .diagram-trend-cursor-point.is-scada {
   stroke: #c93a3a;
-}
-.diagram-trend-cursor-point.is-real {
-  stroke: var(--teal);
 }
 .diagram-trend-cursor-label rect {
   fill: rgba(28, 45, 52, 0.94);
@@ -3946,10 +3936,37 @@ body.is-vertical-splitter-dragging {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  margin: 0;
+  padding: 1px 3px;
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
   color: #40525a;
+  font-family: inherit;
   font-size: 11px;
   line-height: 16px;
+  text-align: left;
   white-space: nowrap;
+  cursor: pointer;
+}
+.renewable-trend-inline-legend-item:hover {
+  border-color: #c9dadd;
+  background: #edf5f6;
+}
+.renewable-trend-inline-legend-item:focus-visible {
+  outline: 2px solid #2f7f83;
+  outline-offset: 1px;
+}
+.renewable-trend-inline-legend-item.is-hidden {
+  color: #7e8d93;
+  opacity: 0.46;
+}
+.renewable-trend-inline-legend-item.is-hidden > span:last-child {
+  text-decoration: line-through;
+}
+.renewable-trend-inline-legend-item.is-hidden .renewable-trend-inline-legend-swatch {
+  filter: grayscale(1);
 }
 .renewable-trend-inline-legend-swatch {
   flex: 0 0 24px;

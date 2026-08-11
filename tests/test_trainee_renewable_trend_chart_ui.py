@@ -331,25 +331,37 @@ process.stdout.write(JSON.stringify(latestRenewableTrendSegment(points).map((poi
         self.assertIn("drawChartCursor", draw_block)
         self.assertIn("pixelPoints.length === 1", draw_block)
 
-    def test_chart_renders_an_adaptive_legend_for_visible_series(self):
+    def test_chart_renders_a_clickable_adaptive_legend_for_all_available_series(self):
         self.assertIn('id="renewableTrendLegend"', self.html)
         self.assertIn('class="renewable-trend-inline-legend"', self.html)
+        self.assertIn('aria-label="曲线图例，点击图例可显示或隐藏曲线"', self.html)
         self.assertIn("function renderRenewableTrendLegend", self.script)
         draw_block = self.script.split("function drawRenewableTrendChart", 1)[1].split(
             "function renewableMetricTotal",
             1,
         )[0]
-        self.assertIn("renderRenewableTrendLegend(visibleSeries)", draw_block)
+        self.assertIn("renderRenewableTrendLegend(availableSeries)", draw_block)
         legend_block = self.script.split("function renderRenewableTrendLegend", 1)[1].split(
             "function drawRenewableTrendChart",
             1,
         )[0]
+        self.assertIn('document.createElement("button")', legend_block)
+        self.assertIn('item.dataset.chartToggle = "renewableTrend"', legend_block)
+        self.assertIn("item.dataset.chartSeries = series.key", legend_block)
+        self.assertIn("item.dataset.chartLegendLabel = series.label", legend_block)
+        self.assertIn('syncChartLegendButtons("renewableTrend")', legend_block)
         self.assertIn("series.label", legend_block)
         self.assertIn("series.style", legend_block)
         self.assertIn("--renewable-series-color", legend_block)
+        self.assertIn('target?.closest("[data-chart-toggle][data-chart-series]")', self.script)
+        self.assertIn('chartKey === "renewableTrend" ? drawRenewableTrendChart', self.script)
+        self.assertIn("control.dataset.chartLegendLabel", self.script)
         for css_hook in (
             ".renewable-trend-inline-legend",
             ".renewable-trend-inline-legend-item",
+            ".renewable-trend-inline-legend-item:hover",
+            ".renewable-trend-inline-legend-item:focus-visible",
+            ".renewable-trend-inline-legend-item.is-hidden",
             ".renewable-trend-inline-legend-swatch",
             ".renewable-trend-inline-legend-swatch.is-target",
             ".renewable-trend-inline-legend-swatch.is-available",

@@ -757,12 +757,20 @@ process.stdout.write(JSON.stringify({
             "data-diagram-measurement-scada",
             "data-diagram-measurement-real",
             "data-diagram-measurement-deviation",
+            "data-diagram-measurement-median-deviation",
             "data-diagram-measurement-valid",
             "data-diagram-measurement-sigma",
-            "data-diagram-measurement-weight",
         )
         for token in required:
             self.assertIn(token, self.script)
+        measurement_summary = self.script.split(
+            "function renderDiagramMeasurementSummary",
+            1,
+        )[1].split("function syncDiagramMeasurementDefinitionFields", 1)[0]
+        self.assertIn("<dt>中值偏差</dt>", measurement_summary)
+        self.assertNotIn("<dt>权重</dt>", measurement_summary)
+        self.assertNotIn("data-diagram-measurement-weight", measurement_summary)
+        self.assertIn("data-diagram-measurement-weight", self.trainee_script)
         self.assertNotIn("data-diagram-definition-edit-button", self.script)
         self.assertNotIn("data-diagram-definition-edit-measurement", self.script)
 

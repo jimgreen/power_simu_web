@@ -6891,6 +6891,19 @@ function diagramTrendFiniteValue(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function diagramTrendMedianDeviation(points) {
+  const deviations = (points || []).flatMap((point) => {
+    const scada = diagramTrendFiniteValue(point?.scada);
+    const real = diagramTrendFiniteValue(point?.real);
+    return scada === null || real === null ? [] : [scada - real];
+  }).sort((left, right) => left - right);
+  if (!deviations.length) return null;
+  const middle = Math.floor(deviations.length / 2);
+  return deviations.length % 2
+    ? deviations[middle]
+    : (deviations[middle - 1] + deviations[middle]) / 2;
+}
+
 function diagramTrendChartModel(points, period, tooltipWidth = 360, currentMinute = null, unit = "", rangeOverride = null) {
   const sourcePoints = Array.isArray(points) ? points : [];
   const targetCount = Math.max(32, Math.floor(Math.max(tooltipWidth, 320) * 0.75));
@@ -7253,6 +7266,7 @@ function diagramMetricTooltipData(container, hover, snapshot, interaction) {
     trendRange.windowOffset,
     trendRange,
   );
+  const medianDeviation = diagramTrendMedianDeviation(windowPoints) ?? deviation;
   const deviceName = hover?.binding?.devName || row?.dev_name || row?.name || "动态量测";
   const metricLabel = diagramMetricLabel(metricType, row);
   const validText = pair.row || pair.definition
@@ -7268,6 +7282,8 @@ function diagramMetricTooltipData(container, hover, snapshot, interaction) {
     realText: formatMeasurementDisplayValue(realValue, pair.row, diagramNumberText),
     deviation,
     deviationText: formatMeasurementDisplayValue(deviation, pair.row, diagramNumberText),
+    medianDeviation,
+    medianDeviationText: formatMeasurementDisplayValue(medianDeviation, pair.row, diagramNumberText),
     valid: pair.valid,
     status: pair.status,
     statusText: validText,
@@ -7276,7 +7292,6 @@ function diagramMetricTooltipData(container, hover, snapshot, interaction) {
     unit: String(unit || ""),
     validText,
     weight: pair.weight,
-    weightText: pair.weight === null ? "--" : String(pair.weight),
     errorSigma: pair.errorSigma,
     errorSigmaText: pair.errorSigma === null ? "--" : String(pair.errorSigma),
     definition: pair.definition,
@@ -7330,9 +7345,6 @@ function renderDiagramMeasurementSummary(data, editor = null, interaction = null
   const sigmaValue = editing
     ? `<input class="diagram-definition-input" data-diagram-tooltip-inline-input data-diagram-definition-input="measurement" data-diagram-measurement-definition-field="errorSigma" data-diagram-measurement-sigma type="number" min="0" step="any" value="${escapeHtml(editor.draft.errorSigma)}" ${interaction?.definitionSaving ? "disabled" : ""}>`
     : `<span data-diagram-measurement-sigma>${escapeHtml(data.errorSigmaText)}</span>`;
-  const weightValue = editing
-    ? `<input class="diagram-definition-input" data-diagram-tooltip-inline-input data-diagram-definition-input="measurement" data-diagram-measurement-definition-field="weight" data-diagram-measurement-weight type="number" min="0" step="any" value="${escapeHtml(editor.draft.weight)}" ${interaction?.definitionSaving ? "disabled" : ""}>`
-    : `<span data-diagram-measurement-weight>${escapeHtml(data.weightText)}</span>`;
   const fixedValue = editing ? editor.draft.fixedValue : data.fixedValue;
   const fixedValueText = fixedValue === null || fixedValue === undefined || fixedValue === ""
     ? "--"
@@ -7368,8 +7380,8 @@ function renderDiagramMeasurementSummary(data, editor = null, interaction = null
         <dd ${measurementEditableAttr}>${sigmaValue}</dd>
       </div>
       <div>
-        <dt>权重</dt>
-        <dd ${measurementEditableAttr}>${weightValue}</dd>
+        <dt>中值偏差</dt>
+        <dd data-diagram-measurement-median-deviation>${escapeHtml(diagramMeasurementValueWithUnit(data.medianDeviationText, data.unit))}</dd>
       </div>
       ${fixedValueCell}
     </dl>`;
@@ -7586,9 +7598,9 @@ function updateDiagramMetricDynamicValues(tooltip, data) {
     ["[data-diagram-tooltip-current-unit]", data.unit],
     ["[data-diagram-measurement-real]", diagramMeasurementValueWithUnit(data.realText, data.unit)],
     ["[data-diagram-measurement-deviation]", diagramMeasurementValueWithUnit(data.deviationText, data.unit)],
+    ["[data-diagram-measurement-median-deviation]", diagramMeasurementValueWithUnit(data.medianDeviationText, data.unit)],
     ["[data-diagram-measurement-valid]", data.validText],
     ["[data-diagram-measurement-sigma]", data.errorSigmaText],
-    ["[data-diagram-measurement-weight]", data.weightText],
     ["[data-diagram-measurement-fixed-value]", data.fixedValueText],
   ];
   let updated = true;

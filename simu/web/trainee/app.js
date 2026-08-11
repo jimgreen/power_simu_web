@@ -13205,7 +13205,7 @@ function tableFilterIsActive(keyword, type) {
 
 function refreshDeviceTreeFilterScope(scope) {
   if (scope === "model") renderTraineeModelDeviceTree();
-  if (scope === "measurement") renderDeviceTree("measurementDeviceTree", "measurementTreeSummary", measurementDevices(), state.measurementFilter, "measurement", "measurement");
+  if (scope === "measurement") renderDeviceTree("measurementDeviceTree", "measurementTreeSummary", measurementsDevices(state.snapshot || {}), state.measurementFilter, "measurement", "measurement");
   if (scope === "control") renderDeviceTree("commandDeviceTree", "commandTreeSummary", controlDefinitionDevices(), state.controlFilter, "control", "control");
 }
 
@@ -13575,12 +13575,43 @@ function measurementDisplayRows(snapshot = state.snapshot || {}) {
   return measurementCompareRows(measurements, definitions);
 }
 
+function measurementDeviceMetadataIndex(snapshot = state.snapshot || {}) {
+  const metadataByKey = new Map();
+  const remember = (dev) => {
+    const devType = String(dev?.dev_type || dev?.type || "").trim();
+    const devName = String(dev?.dev_name || dev?.name || "").trim();
+    const modelBlock = deviceModelBlock(dev);
+    if (!devType || !devName || !modelBlock) return;
+    const key = `${devType}|${devName}`;
+    const metadata = {
+      ...(metadataByKey.get(key) || {}),
+      model_block: modelBlock,
+    };
+    const family = deviceFamily(dev);
+    if (family) metadata.device_family = family;
+    if (Array.isArray(dev?.terminal_domains)) metadata.terminal_domains = [...dev.terminal_domains];
+    const technology = String(dev?.resource_technology || "").trim();
+    if (technology) metadata.resource_technology = technology;
+    metadataByKey.set(key, metadata);
+  };
+
+  definedModelDevices(snapshot).forEach(remember);
+  (snapshot.devices || []).forEach(remember);
+  metadataByKey.set("Environment|weather", {
+    model_block: "Environment",
+    device_family: "environment",
+  });
+  return metadataByKey;
+}
+
 function measurementsDevices(snapshot = state.snapshot || {}) {
   const devices = new Map();
+  const metadataByKey = measurementDeviceMetadataIndex(snapshot);
   measurementRows(snapshot).forEach((row) => {
     const key = `${row.dev_type || ""}|${row.dev_name || ""}`;
     if (!devices.has(key)) {
       devices.set(key, {
+        ...(metadataByKey.get(key) || {}),
         dev_type: row.dev_type || "Measurement",
         dev_name: row.dev_name || row.name || "",
         run_stat: row.valid,

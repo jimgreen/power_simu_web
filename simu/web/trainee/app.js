@@ -2881,6 +2881,7 @@ const DIAGRAM_DISPLAY_PREFERENCES_DEFAULTS = Object.freeze({
 });
 const DIAGRAM_MAX_ZOOM = 8;
 const DIAGRAM_PAN_THRESHOLD_PX = 5;
+const DIAGRAM_FIT_PADDING_RATIO = 0.006;
 const DIAGRAM_TOOLTIP_HIDE_DELAY_MS = 150;
 
 function normalizeDiagramDisplayPreferences(value) {
@@ -3377,15 +3378,108 @@ function diagramPanViewBox(current, original, delta) {
   };
 }
 
+function diagramSvgRenderMapping(viewBox, viewportRect, preserveAspectRatio = "") {
+  const viewValues = [viewBox?.x, viewBox?.y, viewBox?.width, viewBox?.height].map(Number);
+  const rectValues = [viewportRect?.left, viewportRect?.top, viewportRect?.width, viewportRect?.height].map(Number);
+  if (
+    viewValues.some((value) => !Number.isFinite(value))
+    || rectValues.some((value) => !Number.isFinite(value))
+    || viewValues[2] <= 0
+    || viewValues[3] <= 0
+    || rectValues[2] <= 0
+    || rectValues[3] <= 0
+  ) return null;
+  const [left, top, viewportWidth, viewportHeight] = rectValues;
+  const tokens = String(preserveAspectRatio || "xMidYMid meet").trim().split(/\s+/).filter(Boolean);
+  if (tokens.includes("none")) {
+    return {
+      left,
+      top,
+      scaleX: viewportWidth / viewValues[2],
+      scaleY: viewportHeight / viewValues[3],
+    };
+  }
+  const align = tokens.find((token) => /^x(?:Min|Mid|Max)Y(?:Min|Mid|Max)$/.test(token)) || "xMidYMid";
+  const scale = (tokens.includes("slice") ? Math.max : Math.min)(
+    viewportWidth / viewValues[2],
+    viewportHeight / viewValues[3],
+  );
+  const spareX = viewportWidth - viewValues[2] * scale;
+  const spareY = viewportHeight - viewValues[3] * scale;
+  const alignX = align.startsWith("xMin") ? 0 : align.startsWith("xMax") ? spareX : spareX / 2;
+  const alignY = align.endsWith("YMin") ? 0 : align.endsWith("YMax") ? spareY : spareY / 2;
+  return { left: left + alignX, top: top + alignY, scaleX: scale, scaleY: scale };
+}
+
+function diagramMeasurementFitViewBox(svg, source) {
+  const sourceValues = [source?.x, source?.y, source?.width, source?.height].map(Number);
+  if (sourceValues.some((value) => !Number.isFinite(value)) || sourceValues[2] <= 0 || sourceValues[3] <= 0) {
+    return source;
+  }
+  const [sourceX, sourceY, sourceWidth, sourceHeight] = sourceValues;
+  const fallback = { x: sourceX, y: sourceY, width: sourceWidth, height: sourceHeight };
+  if (
+    typeof svg?.getBoundingClientRect !== "function"
+    || typeof svg?.querySelectorAll !== "function"
+  ) return fallback;
+  const renderedViewBox = diagramViewBoxValue(svg.getAttribute?.("viewBox")) || fallback;
+  const mapping = diagramSvgRenderMapping(
+    renderedViewBox,
+    svg.getBoundingClientRect(),
+    svg.getAttribute?.("preserveAspectRatio") || "",
+  );
+  if (!mapping) return fallback;
+  let minX = sourceX;
+  let minY = sourceY;
+  let maxX = sourceX + sourceWidth;
+  let maxY = sourceY + sourceHeight;
+  [...svg.querySelectorAll(".diagram-measurement-layer")].forEach((element) => {
+    if (typeof element?.getBoundingClientRect !== "function") return;
+    const rect = element.getBoundingClientRect();
+    const values = [rect?.left, rect?.top, rect?.width, rect?.height].map(Number);
+    if (values.some((value) => !Number.isFinite(value)) || values[2] <= 0 || values[3] <= 0) return;
+    const left = renderedViewBox.x + (values[0] - mapping.left) / mapping.scaleX;
+    const top = renderedViewBox.y + (values[1] - mapping.top) / mapping.scaleY;
+    const right = left + values[2] / mapping.scaleX;
+    const bottom = top + values[3] / mapping.scaleY;
+    minX = Math.min(minX, left);
+    minY = Math.min(minY, top);
+    maxX = Math.max(maxX, right);
+    maxY = Math.max(maxY, bottom);
+  });
+  const epsilon = 1e-7;
+  const expandsLeft = minX < sourceX - epsilon;
+  const expandsTop = minY < sourceY - epsilon;
+  const expandsRight = maxX > sourceX + sourceWidth + epsilon;
+  const expandsBottom = maxY > sourceY + sourceHeight + epsilon;
+  if (!expandsLeft && !expandsTop && !expandsRight && !expandsBottom) return fallback;
+  const padding = Math.max(
+    4,
+    Math.min(24, Math.max(sourceWidth, sourceHeight) * DIAGRAM_FIT_PADDING_RATIO),
+  );
+  const x = expandsLeft ? minX - padding : sourceX;
+  const y = expandsTop ? minY - padding : sourceY;
+  const right = expandsRight ? maxX + padding : sourceX + sourceWidth;
+  const bottom = expandsBottom ? maxY + padding : sourceY + sourceHeight;
+  return { x, y, width: right - x, height: bottom - y };
+}
+
 function fitDiagramViewport(viewport) {
-  const original = viewport?.original;
   const svg = viewport?.svg;
-  if (!original || !svg || typeof svg.setAttribute !== "function") return false;
-  const values = [original.x, original.y, original.width, original.height].map(Number);
+  const source = viewport?.source || viewport?.original;
+  if (!source || !svg || typeof svg.setAttribute !== "function") return false;
+  const values = [source.x, source.y, source.width, source.height].map(Number);
   if (values.some((value) => !Number.isFinite(value)) || values[2] <= 0 || values[3] <= 0) return false;
-  const [x, y, width, height] = values;
-  viewport.current = { x, y, width, height };
-  svg.setAttribute("viewBox", `${x} ${y} ${width} ${height}`);
+  const original = diagramMeasurementFitViewBox(svg, {
+    x: values[0],
+    y: values[1],
+    width: values[2],
+    height: values[3],
+  });
+  viewport.source = { x: values[0], y: values[1], width: values[2], height: values[3] };
+  viewport.original = { ...original };
+  viewport.current = { ...original };
+  svg.setAttribute("viewBox", `${original.x} ${original.y} ${original.width} ${original.height}`);
   return true;
 }
 
@@ -6627,7 +6721,12 @@ function diagramViewportState(container) {
   if (cached?.svg === svg) return cached;
   const original = diagramViewBox(svg);
   if (!original) return null;
-  const viewport = { svg, original: { ...original }, current: { ...original } };
+  const viewport = {
+    svg,
+    source: { ...original },
+    original: { ...original },
+    current: { ...original },
+  };
   diagramViewportCache.set(container, viewport);
   return viewport;
 }
@@ -7020,6 +7119,7 @@ function renderModelDiagramPage(snapshot = state.snapshot || {}) {
     return;
   }
   const key = `${activeSnapshot.model?.id || ""}|${diagram.updated_at || ""}|${diagram.size || ""}`;
+  const diagramChanged = canvas.dataset.diagramKey !== key;
   if (canvas.dataset.diagramKey !== key) {
     const sanitized = sanitizeDiagramSvg(diagram.svg);
     resetDiagramInteractions(canvas);
@@ -7036,6 +7136,7 @@ function renderModelDiagramPage(snapshot = state.snapshot || {}) {
   applyDiagramDisplayPreferences(canvas, diagramDisplayPreferences);
   if (summary) summary.textContent = `${modelName} · ${diagram.filename || "diagram.svg"}`;
   updateDiagramRealtimeBindings(canvas, activeSnapshot);
+  if (diagramChanged) fitDiagramViewport(diagramViewportState(canvas));
 }
 
 window.addEventListener("storage", (event) => {

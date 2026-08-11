@@ -896,6 +896,75 @@ process.stdout.write(JSON.stringify({ fitted, invalid, current: viewport.current
                 )
                 self.assertEqual(payload["attributes"]["viewBox"], "10 20 1000 500")
 
+    def test_fit_expands_view_box_to_include_measurement_frames(self):
+        body = """
+const attributes = { viewBox: "0 0 2518 2143" };
+const svgRect = { left: 20, top: 100, width: 1220.8, height: 506 };
+const scale = svgRect.height / 2143;
+const drawingLeft = svgRect.left + (svgRect.width - 2518 * scale) / 2;
+const measurementFrame = {
+  getBoundingClientRect() {
+    return {
+      left: drawingLeft + 1403.89878 * scale,
+      top: svgRect.top + 2078.35015 * scale,
+      width: 148.20244 * scale,
+      height: 88.44954 * scale,
+    };
+  },
+};
+const viewport = {
+  svg: {
+    getAttribute(name) {
+      if (name === "preserveAspectRatio") return "xMidYMid meet";
+      return attributes[name] || null;
+    },
+    getBoundingClientRect() {
+      return svgRect;
+    },
+    querySelectorAll(selector) {
+      return selector === ".diagram-measurement-layer" ? [measurementFrame] : [];
+    },
+    setAttribute(name, value) { attributes[name] = String(value); },
+  },
+  source: { x: 0, y: 0, width: 2518, height: 2143 },
+  original: { x: 0, y: 0, width: 2518, height: 2143 },
+  current: { x: 0, y: 0, width: 2518, height: 2143 },
+};
+const fitted = fitDiagramViewport(viewport);
+process.stdout.write(JSON.stringify({ fitted, current: viewport.current, original: viewport.original, attributes }));
+"""
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                payload = self._run_helpers(path.read_text(encoding="utf-8"), body)
+                self.assertTrue(payload["fitted"])
+                self.assertEqual(payload["current"]["x"], 0)
+                self.assertEqual(payload["current"]["y"], 0)
+                self.assertEqual(payload["current"]["width"], 2518)
+                self.assertGreater(payload["current"]["height"], 2166.79969)
+                self.assertEqual(payload["original"], payload["current"])
+                self.assertEqual(
+                    [float(value) for value in payload["attributes"]["viewBox"].split()],
+                    [
+                        payload["current"]["x"],
+                        payload["current"]["y"],
+                        payload["current"]["width"],
+                        payload["current"]["height"],
+                    ],
+                )
+
+    def test_new_diagram_runs_fit_after_realtime_measurements_are_rendered(self):
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                script = path.read_text(encoding="utf-8")
+                render_block = script.split("function renderModelDiagramPage", 1)[1].split(
+                    'window.addEventListener("storage"',
+                    1,
+                )[0]
+                self.assertIn("const diagramChanged = canvas.dataset.diagramKey !== key", render_block)
+                realtime_index = render_block.index("updateDiagramRealtimeBindings(canvas, activeSnapshot)")
+                fit_index = render_block.index("fitDiagramViewport(diagramViewportState(canvas))")
+                self.assertLess(realtime_index, fit_index)
+
     def test_double_click_only_fits_genuine_svg_blank_space(self):
         body = """
 const actions = typeof diagramSvgDoubleClickAction === "function" ? {

@@ -1969,6 +1969,10 @@ function setUpdateModelBusy(isBusy) {
 
 function validateUpdateModelForm(showBlank = false) {
   const confirm = $("confirmUpdateModel");
+  const hostInput = $("updateModelServiceHost");
+  const portInput = $("updateModelServicePort");
+  hostInput?.removeAttribute("aria-invalid");
+  portInput?.removeAttribute("aria-invalid");
   const target = state.models.find((model) => model.id === state.updateTargetModelId);
   if (!target) {
     if (confirm) confirm.disabled = true;
@@ -2071,43 +2075,77 @@ async function updateModelFromFile() {
   const serviceAddress = validateServiceAddressInputs("updateModelServiceHost", "updateModelServicePort");
   if (!validateUpdateModelForm(true)) return;
   const updatedActiveModel = String(modelId || "") === String(state.activeModelId || "");
+  let updateFailed = false;
+  let invalidServiceAddress = false;
   setUpdateModelBusy(true);
-  setUpdateModelMessage("正在保存模型定义与访问链接...");
+  if (file) setUpdateModelMessage("正在保存模型定义与访问链接...");
+  else if (diagramFile) setUpdateModelMessage("正在保存 SVG 图与访问链接...");
+  else setUpdateModelMessage("正在保存访问链接...");
   try {
     const dataBase64 = file ? arrayBufferToBase64(await file.arrayBuffer()) : "";
     const diagramSvgBase64 = diagramFile
       ? arrayBufferToBase64(await diagramFile.arrayBuffer())
       : "";
+    const payload = {
+      model_id: modelId,
+      service_host: serviceAddress.host,
+      service_port: serviceAddress.port,
+    };
+    if (file) {
+      payload.filename = file.name;
+      payload.data_base64 = dataBase64;
+    }
+    if (diagramFile) {
+      payload.diagram_filename = diagramFile.name;
+      payload.diagram_svg_base64 = diagramSvgBase64;
+    }
     const result = await api("/api/models/update-definitions", {
       modelScoped: false,
       controlPlane: true,
       method: "POST",
-      body: JSON.stringify({
-        model_id: modelId,
-        service_host: serviceAddress.host,
-        service_port: serviceAddress.port,
-        filename: file?.name || "",
-        data_base64: dataBase64,
-        diagram_filename: diagramFile?.name || "",
-        diagram_svg_base64: diagramSvgBase64,
-      }),
+      body: JSON.stringify(payload),
     });
-    state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
+    if (Array.isArray(result.models)) {
+      state.models = normalizeModels(result.models);
+    } else if (result.model) {
+      const updatedModel = normalizeModels([result.model])[0];
+      if (updatedModel) {
+        let replaced = false;
+        state.models = state.models.map((model) => {
+          if (model.id !== updatedModel.id) return model;
+          replaced = true;
+          return updatedModel;
+        });
+        if (!replaced) state.models.push(updatedModel);
+      }
+    }
     closeUpdateModelDialog();
     state.selectedManagementModelId = modelId;
     renderModelSelector();
     renderModelManagementList();
-    setModelManagementMessage("模型已修改。", "ok");
+    setModelManagementMessage(file || diagramFile ? "模型已修改。" : "访问链接已修改。", "ok");
     if (updatedActiveModel && (file || diagramFile)) {
       invalidateManualDefinitionChanges();
       if (currentPageName() === "manual-changes") loadManualDefinitionChanges();
       await refresh();
     }
   } catch (error) {
-    setUpdateModelMessage(apiErrorText(error), "error");
+    updateFailed = true;
+    const message = apiErrorText(error);
+    setUpdateModelMessage(`保存失败：${message}`, "error");
+    if (message.includes("已分配给模型") || message.includes("不同模型不能共用同一 IP 和端口")) {
+      invalidServiceAddress = true;
+      const portInput = $("updateModelServicePort");
+      portInput?.setAttribute("aria-invalid", "true");
+    }
   } finally {
     setUpdateModelBusy(false);
-    if (!$("updateModelDialog").hidden) validateUpdateModelForm();
+    if (invalidServiceAddress) {
+      const portInput = $("updateModelServicePort");
+      portInput?.focus();
+      portInput?.select();
+    }
+    if (!updateFailed && !$("updateModelDialog").hidden) validateUpdateModelForm();
   }
 }
 

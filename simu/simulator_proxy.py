@@ -200,10 +200,31 @@ def make_simulator_proxy_server(
             )
 
         def _update_model(self, payload: Mapping[str, Any]) -> None:
+            requested_model_id = payload.get("model_id", payload.get("model"))
+            model_data = str(payload.get("data_base64") or "")
+            diagram_data = str(payload.get("diagram_svg_base64") or "")
+
+            if not model_data and not diagram_data:
+                current_model = manager.model_info(requested_model_id)
+                current_service = current_model.get("service", {})
+                model = manager.configure_model_service(
+                    requested_model_id,
+                    payload.get("service_host", current_service.get("host")),
+                    payload.get("service_port", current_service.get("port")),
+                )
+                service = model.get("service", {})
+                address = {
+                    "host": service.get("host"),
+                    "port": service.get("port"),
+                    "access_link": service.get("access_link"),
+                    "base_url": service.get("base_url"),
+                }
+                updated = {"service": address}
+                self._send_json({"model": {**model, "updated": updated}, "updated": updated})
+                return
+
             helpers = self._server_helpers()
-            target_id, target_dir, _runtime_dir = manager.require_stopped(
-                payload.get("model_id", payload.get("model"))
-            )
+            target_id, target_dir, _runtime_dir = manager.require_stopped(requested_model_id)
             current_model = manager.model_info(target_id)
             current_service = current_model.get("service", {})
             requested_host = payload.get("service_host", current_service.get("host"))
@@ -217,9 +238,6 @@ def make_simulator_proxy_server(
                 address["host"] != str(current_service.get("host") or "")
                 or address["port"] != int(current_service.get("port", 0) or 0)
             )
-            model_data = str(payload.get("data_base64") or "")
-            diagram_data = str(payload.get("diagram_svg_base64") or "")
-
             updated: dict[str, Any] = {
                 "service": address,
             }

@@ -488,6 +488,10 @@ html[data-simulator-ui-mode="direct"] .model-switcher span {
 .model-service-field-grid .modal-field {
   grid-template-columns: 42px minmax(0, 1fr);
 }
+.model-service-field-grid input[aria-invalid="true"] {
+  border-color: var(--red);
+  box-shadow: 0 0 0 2px rgba(194, 54, 54, 0.16);
+}
 .model-service-preview {
   min-width: 0;
   overflow: hidden;

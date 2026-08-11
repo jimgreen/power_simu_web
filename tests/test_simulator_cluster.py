@@ -140,6 +140,58 @@ def test_cluster_suggests_unused_port_and_persists_custom_model_access_address(t
     assert reloaded_model["service"]["port"] == 9202
 
 
+def test_stopped_service_catalog_skips_health_probes_and_keeps_port_edit_responsive(tmp_path: Path):
+    models_root = tmp_path / "models"
+    _make_model(models_root, "model_a")
+    _make_model(models_root, "model_b")
+    health_checks: list[str] = []
+    port_checks: list[int] = []
+
+    def health_checker(_host, _port, model_id, _timeout):
+        health_checks.append(model_id)
+        return False, {}, "not running"
+
+    manager = SimulatorClusterManager(
+        sim_dir=tmp_path,
+        models_root=models_root,
+        runtime_root=tmp_path / "runtime",
+        first_service_port=9101,
+        health_checker=health_checker,
+        port_checker=lambda _host, port: port_checks.append(port) or False,
+    )
+    port_checks.clear()
+
+    catalog = manager.catalog()
+    assert [item["service"]["port"] for item in catalog["models"]] == [9101, 9102]
+    assert health_checks == []
+    assert port_checks == [9103]
+
+    assert manager.catalog()["service_suggestion"]["port"] == 9103
+    assert port_checks == [9103]
+
+    save_calls = 0
+    original_save_registry = manager._save_registry_locked
+
+    def count_registry_save():
+        nonlocal save_calls
+        save_calls += 1
+        original_save_registry()
+
+    manager._save_registry_locked = count_registry_save
+    updated = manager.configure_model_service("model_b", "127.0.0.1", 9202)
+    assert updated["service"]["port"] == 9202
+    assert health_checks == []
+    assert save_calls == 1
+
+    assert manager.catalog()["models"][1]["service"]["port"] == 9202
+    assert health_checks == []
+    assert port_checks == [9103, 9202, 9102]
+
+    unchanged = manager.configure_model_service("model_b", "127.0.0.1", 9202)
+    assert unchanged["service"]["port"] == 9202
+    assert save_calls == 1
+
+
 def test_cluster_rejects_duplicate_occupied_or_invalid_model_access_address(tmp_path: Path):
     models_root = tmp_path / "models"
     _make_model(models_root, "model_a")
@@ -153,8 +205,10 @@ def test_cluster_rejects_duplicate_occupied_or_invalid_model_access_address(tmp_
         port_checker=lambda _host, port: port == 9300,
     )
 
-    with pytest.raises(ValueError, match="已分配给模型"):
+    with pytest.raises(ValueError, match="服务地址 127.0.0.1:9101 已分配给模型“model_a”.*不同模型不能共用同一 IP 和端口"):
         manager.configure_model_service("model_b", "127.0.0.1", 9101)
+    different_host = manager.configure_model_service("model_b", "127.0.0.2", 9101)
+    assert different_host["service"]["access_link"] == "127.0.0.2:9101"
     with pytest.raises(ValueError, match="已被占用"):
         manager.configure_model_service("model_b", "127.0.0.1", 9300)
     with pytest.raises(ValueError, match="地址"):
@@ -441,11 +495,17 @@ def test_proxy_exposes_only_catalog_and_lifecycle_control_without_data_forwardin
 def test_proxy_keeps_low_frequency_model_management_on_control_plane(tmp_path: Path):
     models_root = tmp_path / "models"
     shutil.copytree(SIMPLE_MODEL_SOURCE, models_root / "source")
+    health_checks: list[str] = []
+
+    def health_checker(_host, _port, model_id, _timeout):
+        health_checks.append(model_id)
+        return False, {}, "not running"
+
     manager = SimulatorClusterManager(
         sim_dir=Path(__file__).resolve().parents[1],
         models_root=models_root,
         runtime_root=tmp_path / "runtime",
-        health_checker=lambda *_args: (False, {}, "not running"),
+        health_checker=health_checker,
         port_checker=lambda *_args: False,
     )
     static_root = tmp_path / "static"
@@ -495,6 +555,7 @@ def test_proxy_keeps_low_frequency_model_management_on_control_plane(tmp_path: P
             name: (models_root / "created" / name).read_bytes()
             for name in generated_names
         }
+        health_checks.clear()
 
         _, updated = _json_request(
             f"{base}/api/models/update-definitions",
@@ -507,6 +568,8 @@ def test_proxy_keeps_low_frequency_model_management_on_control_plane(tmp_path: P
         )
         assert updated["model"]["service"]["access_link"] == "127.0.0.1:9552"
         assert updated["updated"]["service"]["port"] == 9552
+        assert "models" not in updated
+        assert health_checks == []
         assert (models_root / "created" / "model.e").exists()
         assert {
             name: (models_root / "created" / name).read_bytes()

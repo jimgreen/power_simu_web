@@ -117,6 +117,8 @@ class SimulatorClusterManager:
         self._log_handles: dict[str, Any] = {}
         self._states: dict[str, str] = {}
         self._errors: dict[str, str] = {}
+        self._service_suggestion_cache: dict[str, Any] = {}
+        self._service_suggestion_cached_at = 0.0
         self._registry = self._load_registry()
         self.default_model_id = ""
         self._sync_models_locked()
@@ -135,6 +137,8 @@ class SimulatorClusterManager:
         }
 
     def _save_registry_locked(self) -> None:
+        self._service_suggestion_cache = {}
+        self._service_suggestion_cached_at = 0.0
         payload = {
             "version": self.REGISTRY_VERSION,
             "service_host": self.service_host,
@@ -175,17 +179,18 @@ class SimulatorClusterManager:
         services = self._registry.setdefault("services", {})
         model_dirs = self._model_dirs_locked()
         model_ids = [path.name for path in model_dirs]
-        used_ports: set[int] = set()
+        reserved_ports: dict[str, set[int]] = {}
         for model_id in model_ids:
             entry = services.get(model_id)
             if not isinstance(entry, Mapping):
                 continue
             try:
+                host = _normalize_service_host(entry.get("host"), self.service_host)
                 port = int(entry.get("port", 0))
             except (TypeError, ValueError):
                 continue
-            if port > 0 and port not in used_ports:
-                used_ports.add(port)
+            if port > 0:
+                reserved_ports.setdefault(host, set()).add(port)
 
         changed = False
         normalized: dict[str, dict[str, Any]] = {}
@@ -203,12 +208,13 @@ class SimulatorClusterManager:
             except (TypeError, ValueError):
                 port = 0
             if port <= 0 or any(
-                int(other.get("port", 0) or 0) == port
+                str(other.get("host") or "") == host and int(other.get("port", 0) or 0) == port
                 for other_id, other in normalized.items()
                 if other_id != model_id
             ):
-                port = self._next_port_locked(host, used_ports)
-                used_ports.add(port)
+                host_ports = reserved_ports.setdefault(host, set())
+                port = self._next_port_locked(host, host_ports)
+                host_ports.add(port)
                 changed = True
             normalized[model_id] = {
                 "host": host,
@@ -288,6 +294,9 @@ class SimulatorClusterManager:
                 self._errors[model_id] = f"模拟服务已退出，返回码 {process.returncode}"
             entry["pid"] = None
             self._save_registry_locked()
+        state = self._states.get(model_id, "stopped")
+        if process is None and not entry.get("pid") and state in {"stopped", "failed"}:
+            return False, {}, self._errors.get(model_id, "")
         healthy, payload, error = self._probe_locked(model_id, entry)
         if healthy:
             self._states[model_id] = "running"
@@ -360,7 +369,11 @@ class SimulatorClusterManager:
         used_ports = {
             int(entry.get("port", 0) or 0)
             for model_id, entry in services.items()
-            if model_id != exclude_model_id and isinstance(entry, Mapping)
+            if (
+                model_id != exclude_model_id
+                and isinstance(entry, Mapping)
+                and _normalize_service_host(entry.get("host"), self.service_host) == normalized_host
+            )
         }
         if port is None or str(port).strip() == "":
             normalized_port = self._next_port_locked(normalized_host, used_ports)
@@ -369,8 +382,12 @@ class SimulatorClusterManager:
             for model_id, entry in services.items():
                 if model_id == exclude_model_id or not isinstance(entry, Mapping):
                     continue
-                if int(entry.get("port", 0) or 0) == normalized_port:
-                    raise ValueError(f"服务端口 {normalized_port} 已分配给模型 {model_id}")
+                entry_host = _normalize_service_host(entry.get("host"), self.service_host)
+                if entry_host == normalized_host and int(entry.get("port", 0) or 0) == normalized_port:
+                    raise ValueError(
+                        f"服务地址 {normalized_host}:{normalized_port} 已分配给模型“{model_id}”，"
+                        "不同模型不能共用同一 IP 和端口"
+                    )
 
             current = services.get(exclude_model_id) if exclude_model_id else None
             unchanged = bool(
@@ -400,12 +417,26 @@ class SimulatorClusterManager:
             return self._validate_service_address_locked(host, port, exclude_model_id=excluded)
 
     def suggest_service_address(self, host: Any = None) -> dict[str, Any]:
-        return self.validate_service_address(host, None)
+        with self.lock:
+            self._sync_models_locked()
+            normalized_host = _normalize_service_host(host, self.service_host)
+            now = time.monotonic()
+            cached = self._service_suggestion_cache
+            if (
+                cached
+                and cached.get("host") == normalized_host
+                and now - self._service_suggestion_cached_at < 1.0
+            ):
+                return dict(cached)
+            suggestion = self._validate_service_address_locked(normalized_host, None)
+            self._service_suggestion_cache = dict(suggestion)
+            self._service_suggestion_cached_at = now
+            return suggestion
 
     def configure_model_service(self, model_id: Any, host: Any, port: Any) -> dict[str, Any]:
         with self.lock:
             target_id, entry = self._entry_locked(model_id)
-            healthy, _payload, _error = self._probe_locked(target_id, entry)
+            healthy, _payload, _error = self._reconcile_locked(target_id, entry)
             process = self._processes.get(target_id)
             if healthy or (process is not None and process.poll() is None):
                 raise ValueError(f"模型模拟服务运行中，无法修改访问链接: {target_id}")
@@ -414,12 +445,14 @@ class SimulatorClusterManager:
                 port,
                 exclude_model_id=target_id,
             )
-            entry["host"] = address["host"]
-            entry["port"] = address["port"]
-            entry["pid"] = None
-            self._states[target_id] = "stopped"
-            self._errors[target_id] = ""
-            self._save_registry_locked()
+            changed = entry.get("host") != address["host"] or entry.get("port") != address["port"]
+            if changed:
+                entry["host"] = address["host"]
+                entry["port"] = address["port"]
+                entry["pid"] = None
+                self._states[target_id] = "stopped"
+                self._errors[target_id] = ""
+                self._save_registry_locked()
             return self.model_info(target_id)
 
     def _command_locked(self, model_id: str, entry: Mapping[str, Any]) -> list[str]:
@@ -585,7 +618,7 @@ class SimulatorClusterManager:
     def require_stopped(self, model_id: Any) -> tuple[str, Path, Path]:
         with self.lock:
             target_id, entry = self._entry_locked(model_id)
-            healthy, _payload, _error = self._probe_locked(target_id, entry)
+            healthy, _payload, _error = self._reconcile_locked(target_id, entry)
             process = self._processes.get(target_id)
             if healthy or (process is not None and process.poll() is None):
                 raise ValueError(f"模型模拟服务运行中，无法修改: {target_id}")

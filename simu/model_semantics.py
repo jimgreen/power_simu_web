@@ -66,6 +66,12 @@ SAME_DOMAIN_EDGE_SPECS = (
 )
 
 CROSS_DOMAIN_CONVERTER_BLOCKS = ("ACDCConverter", "DCACConverter")
+HYDROGEN_CONVERSION_BLOCKS = (
+    "AcE2Hydro",
+    "DcE2Hydro",
+    "Hydro2AcE",
+    "Hydro2DcE",
+)
 
 
 def _model_blocks(model: Any) -> Mapping[str, Any]:
@@ -97,6 +103,81 @@ def model_rows(model: Any, block_name: str) -> Tuple[Mapping[str, Any], ...]:
     if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
         return ()
     return tuple(row for row in rows if isinstance(row, Mapping))
+
+
+def _coupling_endpoint_block(reference_field: Any) -> str:
+    token = "".join(char for char in str(reference_field or "").casefold() if char.isalnum())
+    token = token.removeprefix("idx").removesuffix("t1").removesuffix("t2")
+    if token.startswith(("ace", "ac")):
+        return "ACLoad" if "load" in token else "ACGenerator"
+    if token.startswith(("dce", "dc")):
+        return "DCLoad" if "load" in token else "DCGenerator"
+    if token.startswith(("hydrogen", "hydro", "h2")):
+        if "load" in token:
+            return "HydroLoad"
+        if "storage" in token or "tank" in token:
+            return "HydroStorage"
+        return "HydroSource"
+    return ""
+
+
+def energy_coupling_control_bindings(model: Any) -> Dict[DeviceKey, Tuple[Dict[str, str], ...]]:
+    """Map each electric/H2 converter to endpoint-owned P and FLOW controls."""
+
+    endpoint_rows: Dict[str, Dict[str, Mapping[str, Any]]] = {}
+    for block_name in (
+        "ACGenerator",
+        "DCGenerator",
+        "ACLoad",
+        "DCLoad",
+        "HydroSource",
+        "HydroLoad",
+        "HydroStorage",
+    ):
+        endpoint_rows[block_name] = {
+            str(row.get("idx", "")).strip(): row
+            for row in model_rows(model, block_name)
+            if str(row.get("idx", "")).strip()
+        }
+
+    result: Dict[DeviceKey, Tuple[Dict[str, str], ...]] = {}
+    for block_name in HYDROGEN_CONVERSION_BLOCKS:
+        for row in model_rows(model, block_name):
+            coupling_name = str(row.get("name", "")).strip()
+            if not coupling_name:
+                continue
+            bindings = []
+            for field, endpoint_idx in row.items():
+                field_name = str(field)
+                if not field_name.startswith("idx_") or field_name in {"idx", "index"}:
+                    continue
+                endpoint_block = _coupling_endpoint_block(field_name)
+                endpoint = endpoint_rows.get(endpoint_block, {}).get(
+                    str(endpoint_idx).strip()
+                )
+                endpoint_name = str((endpoint or {}).get("name", "")).strip()
+                if not endpoint_block or not endpoint_name:
+                    continue
+                if endpoint_block in {"ACGenerator", "DCGenerator", "ACLoad", "DCLoad"}:
+                    set_type = "p_set"
+                elif endpoint_block in {"HydroSource", "HydroLoad"}:
+                    set_type = "flow_set"
+                else:
+                    continue
+                bindings.append(
+                    {
+                        "set_type": set_type,
+                        "target_dev_type": endpoint_block,
+                        "target_dev_name": endpoint_name,
+                        "target_set_type": set_type,
+                    }
+                )
+            by_set_type = {binding["set_type"]: binding for binding in bindings}
+            if set(by_set_type) == {"p_set", "flow_set"}:
+                result[(block_name, coupling_name)] = tuple(
+                    by_set_type[set_type] for set_type in ("p_set", "flow_set")
+                )
+    return result
 
 
 def structured_resources(model: Any) -> Tuple[StructuredResource, ...]:
@@ -291,11 +372,17 @@ def grid_converter_keys(model: Any) -> set[DeviceKey]:
 
 def device_family_from_block(block_name: Any) -> str:
     normalized = str(block_name or "").strip()
-    if normalized in {"ACGenerator", "DCGenerator"}:
+    if normalized in {"ACGenerator", "DCGenerator", "HydroSource"}:
         return "generator"
-    if normalized in {"ACLoad", "DCLoad"}:
+    if normalized in {"ACLoad", "DCLoad", "HydroLoad"}:
         return "load"
-    if normalized in {"ACDCConverter", "DCACConverter", "ACACConverter", "DCDCConverter"}:
+    if normalized in {
+        "ACDCConverter",
+        "DCACConverter",
+        "ACACConverter",
+        "DCDCConverter",
+        *HYDROGEN_CONVERSION_BLOCKS,
+    }:
         return "converter"
     if normalized in {"ACBreak", "DCBreak", "ACSwitch", "DCSwitch"}:
         return "switch"
@@ -308,6 +395,16 @@ def terminal_domains_from_block(block_name: Any) -> Tuple[str, ...]:
     normalized = str(block_name or "").strip()
     if normalized in {"ACDCConverter", "DCACConverter"}:
         return "AC", "DC"
+    if normalized == "AcE2Hydro":
+        return "AC", "HYDRO"
+    if normalized == "DcE2Hydro":
+        return "DC", "HYDRO"
+    if normalized == "Hydro2AcE":
+        return "HYDRO", "AC"
+    if normalized == "Hydro2DcE":
+        return "HYDRO", "DC"
+    if normalized.startswith("Hydro"):
+        return ("HYDRO",)
     if normalized.startswith("AC"):
         return ("AC",)
     if normalized.startswith("DC"):

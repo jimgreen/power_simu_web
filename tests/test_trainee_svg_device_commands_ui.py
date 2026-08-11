@@ -50,10 +50,12 @@ process.stdout.write(JSON.stringify({
     def test_svg_device_command_dialog_reuses_existing_manual_command_flows(self):
         required = (
             "function diagramDeviceCommandContext",
+            "function diagramDeviceAdjustmentRows",
             "function openDiagramDeviceCommandForSvgDevice",
             "function activateDiagramDeviceCommandOption",
             "remoteControlCommandRows([dev], snapshot)",
-            "remoteAdjustmentRows([dev], snapshot)",
+            "diagramDeviceAdjustmentRows(dev, snapshot)",
+            "remoteAdjustmentRows([target], snapshot)",
             "openRemoteControlDialog(option.row.dev, option.row.commandType)",
             "openRemoteAdjustmentDialog(option.row)",
             "当前设备未配置遥控或遥调点",

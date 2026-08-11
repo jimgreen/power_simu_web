@@ -138,6 +138,8 @@ try:
 except ImportError:  # pragma: no cover - legacy package compatibility.
     from hybrid_power_system_analysis.simu import simu_loop
 
+from simu.model_semantics import energy_coupling_control_bindings
+
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 WEB_DIR = PACKAGE_DIR / "web"
@@ -615,8 +617,10 @@ SET_VALUE_COLUMN_MAP = {
         ("q_to_set", "q_to_set"),
         ("v_to_set", "v_to_set"),
     ),
-    "ACLoad": (("p_set", "pv0"), ("q_set", "qv0")),
-    "DCLoad": (("p_set", "p_set"), ("v_set", "v_set"), ("i_set", "i_set")),
+    "ACLoad": (("p_set", "p_set"), ("p_set", "pv0"), ("q_set", "qv0")),
+    "DCLoad": (("p_set", "p_set"), ("p_set", "pv0"), ("v_set", "v_set"), ("i_set", "i_set")),
+    "HydroSource": (("flow_set", "flow_set"),),
+    "HydroLoad": (("flow_set", "flow_set"),),
 }
 MEASUREMENT_TYPE_MAP = {
     "ACNode": ("V", "ANGLE"),
@@ -625,6 +629,12 @@ MEASUREMENT_TYPE_MAP = {
     "DCGenerator": ("P_GEN", "V_GEN", "I_GEN"),
     "ACLoad": ("P_LOAD", "Q_LOAD", "V_LOAD", "I_LOAD"),
     "DCLoad": ("P_LOAD", "V_LOAD", "I_LOAD"),
+    "HydroSource": ("FLOW", "PRESS"),
+    "HydroLoad": ("FLOW", "PRESS"),
+    "AcE2Hydro": ("P", "FLOW"),
+    "DcE2Hydro": ("P", "FLOW"),
+    "Hydro2AcE": ("P", "FLOW"),
+    "Hydro2DcE": ("P", "FLOW"),
     "ACBranch": ("P_FROM", "Q_FROM", "P_TO", "Q_TO", "I"),
     "ACTransformer": ("P_FROM", "Q_FROM", "P_TO", "Q_TO", "I"),
     "ACZeroBranch": ("P_FROM", "Q_FROM", "P_TO", "Q_TO", "I"),
@@ -844,6 +854,8 @@ def _generated_control_blocks(model_book: EBook) -> Mapping[str, tuple[Sequence[
                     source_value = row.get(source_column, 0)
                 else:
                     continue
+                if source_value in (None, "", "-"):
+                    continue
                 set_row_key = (block_name, name, set_type)
                 if set_row_key in set_row_keys:
                     continue
@@ -985,10 +997,20 @@ def _load_base_kw(row: Mapping[str, Any], block_name: str) -> float:
 
 def _load_curve_sources(model_book: EBook) -> list[tuple[str, float]]:
     sources: list[tuple[str, float]] = []
+    coupled_loads = {
+        (
+            str(binding.get("target_dev_type", "")),
+            str(binding.get("target_dev_name", "")),
+        )
+        for bindings in energy_coupling_control_bindings(model_book).values()
+        for binding in bindings
+        if binding.get("set_type") == "p_set"
+        and binding.get("target_dev_type") in {"ACLoad", "DCLoad"}
+    }
     for block_name in ("ACLoad", "DCLoad"):
         for row in _rows(model_book, block_name):
             name = _row_name(row)
-            if name:
+            if name and (block_name, name) not in coupled_loads:
                 sources.append((name, _load_base_kw(row, block_name) or DEFAULT_WEATHER["load_kw"]))
     return sources
 

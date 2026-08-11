@@ -89,9 +89,9 @@
 # 30   交流线路（自适应）-30  ac-routable-line  21      22      1         0               0      0.1  1.0  0.0
 </ACBranch>
 <ACLoad>
-@ idx  name                dev_type         node  p_max  p_min  q_max  q_min  run_stat  rated_capacity  pbase  pv0  pv1  pv2  qbase  qv0  qv1  qv2  v_max  v_min
-# 1    交流负荷-1              ac-load          32    5      0      1.2    0      1         5               150    1.0  0.0  0.0  50     1.0  0.0  0.0  1.1    0.9
-# 2    交流电制氢-1_交流设备端交流电负荷  ac-electrolyzer  31    0      0      0      0      1         0               0      1.0  0.0  0.0  0      1.0  0.0  0.0  0      0
+@ idx  name                dev_type         node  p_set  p_max  p_min  q_max  q_min  run_stat  rated_capacity  pbase  pv0  pv1  pv2  qbase  qv0  qv1  qv2  v_max  v_min
+# 1    交流负荷-1              ac-load          32    150    5      0      1.2    0      1         5               150    1.0  0.0  0.0  50     1.0  0.0  0.0  1.1    0.9
+# 2    交流电制氢-1_交流设备端交流电负荷  ac-electrolyzer  31    10     50     0      0      0      1         50              10     1.0  0.0  0.0  0      1.0  0.0  0.0  1.1    0.9
 </ACLoad>
 <ACGenerator>
 @ idx  name        dev_type          node  control_type  p_set  p_max  p_min  q_set  q_max  q_min  v_set  alpha  run_stat  rated_capacity  rated_voltage  v_max  v_min
@@ -187,8 +187,8 @@
 # 4    燃料电池直流线路-1  dc-routable-line  23      24      1         0               0      1.0
 </DCBranch>
 <DCLoad>
-@ idx  name    dev_type  node  p_max  p_min  run_stat  rated_capacity  pbase  pv0  pv1  pv2  v_max  v_min
-# 1    直流负荷-1  dc-load   38    1.5    0      1         1.5             0      1.0  0.0  0.0  1.1    0.9
+@ idx  name    dev_type  node  p_set  p_max  p_min  run_stat  rated_capacity  pbase  pv0  pv1  pv2  v_max  v_min
+# 1    直流负荷-1  dc-load   38    1.5    1.5    0      1         1.5             1.5    1.0  0.0  0.0  1.1    0.9
 </DCLoad>
 <DCGenerator>
 @ idx  name                dev_type      node  control_type  v_set  p_set  p_max  p_min  i_set  run_stat  rated_capacity  rated_voltage  v_max  v_min
@@ -201,7 +201,7 @@
 # 7    电化学储能-4             dc-storage    32    V             500    0.0    60     -60    0.0    1         60              500            1.1    0.9
 # 8    电化学储能-5             dc-storage    33    V             500    0.0    60     -60    0.0    1         60              500            1.1    0.9
 # 9    电化学储能-6             dc-storage    34    V             500    0.0    60     -60    0.0    1         60              500            1.1    0.9
-# 10   直流燃料电池-1_直流设备端直流电源  dc-fuel-cell  25    P             750    0      0      0      0      1         0               0              0      0
+# 10   直流燃料电池-1_直流设备端直流电源  dc-fuel-cell  25    P             750    10     50     0      0      1         50              750            1.1    0.9
 </DCGenerator>
 <DCBreak>
 @ idx  name      dev_type    i_node  j_node  status  run_stat  rated_capacity  i_max
@@ -262,24 +262,24 @@
 # 1    氢气节点-1  1         1
 </HydroNode>
 <HydroSource>
-@ idx  name             dev_type         node  run_stat
-# 1    交流电制氢-1_氢能设备端氢源  ac-electrolyzer  1     1
+@ idx  name             dev_type         node  control_type  pressure_set  flow_set  alpha  flow_min  flow_max  run_stat
+# 1    交流电制氢-1_氢能设备端氢源  ac-electrolyzer  1     FLOW         35            2         1      0         20        1
 </HydroSource>
 <HydroLoad>
-@ idx  name              dev_type      node  run_stat
-# 1    直流燃料电池-1_氢能设备端氢荷  dc-fuel-cell  1     1
+@ idx  name              dev_type      node  flow_set  run_stat
+# 1    直流燃料电池-1_氢能设备端氢荷  dc-fuel-cell  1     5.555556  1
 </HydroLoad>
 <HydroStorage>
-@ idx  name       dev_type                 node  press  flow  gas_quantity  water_volume  press_max  press_min  run_stat
-# 1    集装格式储氢罐-1  hydrogen-tank-container  1     35     0     17500         50            45         2          1
+@ idx  name       dev_type                 node  control_type  pressure_set  flow_set  alpha  flow_min  flow_max  press  flow  gas_quantity  water_volume  press_max  press_min  run_stat
+# 1    集装格式储氢罐-1  hydrogen-tank-container  1     PRESSURE      35            0         1      -100      100       35     0     17500         50            45         2          1
 </HydroStorage>
 <AcE2Hydro>
-@ idx  name     run_stat  idx_ac_load_t1  idx_h2_unit_t2
-# 1    交流电制氢-1  1         2               1
+@ idx  name     run_stat  control_type  idx_ac_load_t1  idx_h2_unit_t2  e2h_coeff
+# 1    交流电制氢-1  1         P             2               1               0.2
 </AcE2Hydro>
 <Hydro2DcE>
-@ idx  name      run_stat  idx_dc_unit_t1  idx_h2_load_t2
-# 1    直流燃料电池-1  1         10              1
+@ idx  name      run_stat  control_type  idx_dc_unit_t1  idx_h2_load_t2  h2e_coeff
+# 1    直流燃料电池-1  1         P             10              1               1.8
 </Hydro2DcE>
 <ACWindGen>
 @ idx  idx_acgenerator  wind_turbine_model  cut_in_wind_speed  rated_wind_speed  cut_out_wind_speed  rotor_diameter  hub_height

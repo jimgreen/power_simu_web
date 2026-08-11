@@ -181,6 +181,7 @@
 # DCACConverter  风机变流器-10            1
 # DCACConverter  DCAC变流器-1           1
 # DCACConverter  DCAC变流器-2           1
+# HydroNode      氢气节点-1              1
 # HydroSource    交流电制氢-1_氢能设备端氢源     1
 # HydroLoad      直流燃料电池-1_氢能设备端氢荷    1
 # HydroStorage   集装格式储氢罐-1           1
@@ -189,9 +190,9 @@
 </RunStat>
 <SetValue>
 @ dev_type       dev_name            set_type  set_value
-# ACLoad         交流负荷-1              p_set     1.0
+# ACLoad         交流负荷-1              p_set     150
 # ACLoad         交流负荷-1              q_set     1.0
-# ACLoad         交流电制氢-1_交流设备端交流电负荷  p_set     1.0
+# ACLoad         交流电制氢-1_交流设备端交流电负荷  p_set     10
 # ACLoad         交流电制氢-1_交流设备端交流电负荷  q_set     1.0
 # ACGenerator    交流风电-1              p_set     3.0
 # ACGenerator    交流风电-1              q_set     0.5
@@ -247,6 +248,7 @@
 # ACGenerator    交流柴油发电机-30          p_set     0
 # ACGenerator    交流柴油发电机-30          q_set     0
 # ACGenerator    交流柴油发电机-30          v_set     380
+# DCLoad         直流负荷-1              p_set     1.5
 # DCGenerator    直流光伏-1              p_set     5.0
 # DCGenerator    直流光伏-1              v_set     400
 # DCGenerator    直流光伏-1              i_set     0.0
@@ -274,7 +276,7 @@
 # DCGenerator    电化学储能-6             p_set     0.0
 # DCGenerator    电化学储能-6             v_set     500
 # DCGenerator    电化学储能-6             i_set     0.0
-# DCGenerator    直流燃料电池-1_直流设备端直流电源  p_set     0
+# DCGenerator    直流燃料电池-1_直流设备端直流电源  p_set     10
 # DCGenerator    直流燃料电池-1_直流设备端直流电源  v_set     750
 # DCGenerator    直流燃料电池-1_直流设备端直流电源  i_set     0
 # DCDCConverter  光伏变流器-1             p_set     0
@@ -364,6 +366,8 @@
 # DCACConverter  DCAC变流器-2           q_ac_set  0
 # DCACConverter  DCAC变流器-2           v_ac_set  380
 # DCACConverter  DCAC变流器-2           v_dc_set  750
+# HydroSource    交流电制氢-1_氢能设备端氢源     flow_set  2
+# HydroLoad      直流燃料电池-1_氢能设备端氢荷    flow_set  5.555556
 </SetValue>
 <CbOpenStat>
 @ dev_type  dev_name  status
@@ -417,6 +421,6 @@
 # DCGenerator  9    电化学储能-6     0.5
 </StorageSoc>
 <HydroStorageState>
-@ dev_type     idx  name       press  flow  gas_quantity  soc
-# HydroStorage  1    集装格式储氢罐-1  35     0     17500         0.777778
+@ dev_type      idx  name       press  flow  gas_quantity  soc
+# HydroStorage  1    集装格式储氢罐-1  35     0     17500         0.7777777778
 </HydroStorageState>

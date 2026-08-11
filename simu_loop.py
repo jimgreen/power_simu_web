@@ -74,6 +74,7 @@ from simu.device_roles import (  # noqa: E402
     converter_power_setpoint_fields,
 )
 from simu.model_semantics import (  # noqa: E402
+    energy_coupling_control_bindings,
     grid_converter_keys,
     resolve_resource_reference,
     resource_aliases,
@@ -1268,6 +1269,15 @@ def apply_hydrogen_storage_state_book(model_book: EBook, stat_book: Optional[EBo
         for field in ("press", "flow", "gas_quantity", "soc"):
             if field in values:
                 changed += _set_row_value(row, field, format_number(values[field]))
+        if (
+            "press" in values
+            and str(row.get("control_type", "")).strip().upper() == "PRESSURE"
+        ):
+            changed += _set_row_value(
+                row,
+                "pressure_set",
+                format_number(values["press"]),
+            )
     return changed
 
 
@@ -1574,6 +1584,8 @@ def _set_value_target_column(dev_type: str, set_type: str, target: Optional[dict
             "v_ac_set": "v_ac_set",
             "v_dc_set": "v_dc_set",
         }.get(set_type, set_type)
+    if set_type == "p_set" and target.get("p_set") not in (None, "", "-"):
+        return "p_set"
     if "pv0" in target or "qv0" in target:
         return {"p_set": "pv0", "q_set": "qv0", "pv0": "pv0", "qv0": "qv0"}.get(set_type, set_type)
     return set_type
@@ -1906,6 +1918,19 @@ def _load_temperature_row(dev_define: EBook, load_name: str, pos: int) -> Option
     return _define_row_by_name_or_position(dev_define, "energyconsumer", load_name, pos)
 
 
+def _coupled_electric_load_keys(model_book: EBook) -> set[Tuple[str, str]]:
+    return {
+        (
+            str(binding.get("target_dev_type", "")),
+            str(binding.get("target_dev_name", "")),
+        )
+        for bindings in energy_coupling_control_bindings(model_book).values()
+        for binding in bindings
+        if binding.get("set_type") == "p_set"
+        and binding.get("target_dev_type") in {"ACLoad", "DCLoad"}
+    }
+
+
 def apply_load_model(model_book: EBook, dev_define: EBook, weather: Dict[str, float]) -> int:
     block = model_book.data.get("ACLoad")
     if block is None or not block.data:
@@ -1915,7 +1940,10 @@ def apply_load_model(model_book: EBook, dev_define: EBook, weather: Dict[str, fl
 
     weighted = []
     total_p = 0.0
+    coupled_loads = _coupled_electric_load_keys(model_book)
     for pos, row in enumerate(_sorted_rows(block.data)):
+        if ("ACLoad", str(row.get("name", ""))) in coupled_loads:
+            continue
         p, q, pbase, qbase = _load_power(row)
         load_name = str(row.get("name", ""))
         curve_scale = _load_curve_factor(dev_define, load_name, pos, weather)
@@ -1951,11 +1979,14 @@ def apply_load_power_targets(model_book: EBook, targets: Sequence[Mapping[str, o
     """Apply per-device AC/DC load powers captured from the live curve editor."""
 
     changed = 0
+    coupled_loads = _coupled_electric_load_keys(model_book)
     for target in targets:
         block_name = str(target.get("dev_type", "")).strip()
         load_name = str(target.get("dev_name", "")).strip()
         desired_p = _safe_float(target.get("p_kw"), None)
         if block_name not in {"ACLoad", "DCLoad"} or not load_name or desired_p is None:
+            continue
+        if (block_name, load_name) in coupled_loads:
             continue
         block = model_book.data.get(block_name)
         if block is None:
@@ -2547,7 +2578,10 @@ def apply_weather_book(
         if block is not None and block.data:
             base_loads = []
             total = 0.0
+            coupled_loads = _coupled_electric_load_keys(model_book)
             for row in block.data:
+                if ("ACLoad", str(row.get("name", ""))) in coupled_loads:
+                    continue
                 p, q, _pbase, _qbase = _load_power(row)
                 base_loads.append((row, p, q))
                 total += p
@@ -2973,6 +3007,7 @@ def solve_hybrid_snapshot(e_file: Path) -> Tuple[Snapshot, str]:
     snapshot.fluid_results = dict(
         getattr(getattr(calc, "lf_result", None), "fluid", {}) or {}
     )
+    snapshot.coupling_results = list(getattr(calc, "coupling_results", ()) or ())
     _add_zero_impedance_devices_from_file(snapshot, e_file)
     _link_snapshot_terminal_objects(snapshot)
     return snapshot, f"iter={calc.iterations}, normF={calc.normF:.3e}"
@@ -3021,6 +3056,7 @@ def solve_hybrid_snapshot_from_book(model_book: EBook, source: Optional[Path] = 
     snapshot.fluid_results = dict(
         getattr(getattr(calc, "lf_result", None), "fluid", {}) or {}
     )
+    snapshot.coupling_results = list(getattr(calc, "coupling_results", ()) or ())
     _add_zero_impedance_devices_from_book(snapshot, model_book)
     _link_snapshot_terminal_objects(snapshot)
     return snapshot, f"iter={calc.iterations}, normF={calc.normF:.3e}"
@@ -3200,6 +3236,82 @@ def _weather_measurement_value(meas_type: str, weather: Optional[Dict[str, float
     }.get(meas_type)
 
 
+def _fluid_endpoint_measurement_value(
+    snapshot,
+    dev_type: str,
+    dev_name: str,
+    meas_type: str,
+) -> Optional[float]:
+    domain = "hydro" if str(dev_type).startswith("Hydro") else ""
+    result = (getattr(snapshot, "fluid_results", {}) or {}).get(domain)
+    if result is None:
+        return None
+    collection_name = {
+        "HydroSource": "sources",
+        "HydroLoad": "loads",
+        "HydroStorage": "storages",
+    }.get(dev_type)
+    if collection_name is None:
+        return None
+    item = (getattr(result, collection_name, {}) or {}).get(dev_name)
+    if item is None:
+        return None
+    field = {
+        "FLOW": "flow",
+        "PRESS": "pressure",
+        "PRESSURE": "pressure",
+    }.get(str(meas_type).upper())
+    if field is None:
+        return None
+    value = _safe_float(getattr(item, field, None), None)
+    return value if value is not None and math.isfinite(value) else None
+
+
+def _hydrogen_conversion_measurement_value(
+    snapshot,
+    dev_type: str,
+    dev_name: str,
+    meas_type: str,
+) -> Optional[float]:
+    for result in getattr(snapshot, "coupling_results", ()) or ():
+        if (
+            str(getattr(result, "table_name", "")) != dev_type
+            or str(getattr(result, "name", "")) != dev_name
+        ):
+            continue
+        coupling = getattr(result, "coupling", None)
+        if coupling is None:
+            return None
+        terminals = (
+            (getattr(coupling, "t1", None), getattr(result, "t1_value", None)),
+            (getattr(coupling, "t2", None), getattr(result, "t2_value", None)),
+        )
+        if str(meas_type).upper() == "P":
+            value = next(
+                (
+                    _safe_float(endpoint_value, None)
+                    for terminal, endpoint_value in terminals
+                    if getattr(terminal, "domain", "") in {"ac", "dc"}
+                ),
+                None,
+            )
+            if value is None:
+                return None
+            converter = getattr(snapshot, "power_to_file", None)
+            return float(converter(value)) if callable(converter) else value
+        if str(meas_type).upper() == "FLOW":
+            return next(
+                (
+                    _safe_float(endpoint_value, None)
+                    for terminal, endpoint_value in terminals
+                    if getattr(terminal, "domain", "") == "hydro"
+                ),
+                None,
+            )
+        return None
+    return None
+
+
 def _measurement_value(
     snapshot,
     row: Sequence[str],
@@ -3215,6 +3327,20 @@ def _measurement_value(
         return None if signal_values is None else signal_values.get((dev_type, dev_name, meas_type))
     if dev_type == "Environment" and dev_name == "weather":
         return _weather_measurement_value(meas_type, weather)
+    if dev_type in {"HydroSource", "HydroLoad"}:
+        return _fluid_endpoint_measurement_value(
+            snapshot,
+            dev_type,
+            dev_name,
+            meas_type,
+        )
+    if dev_type in {"AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"}:
+        return _hydrogen_conversion_measurement_value(
+            snapshot,
+            dev_type,
+            dev_name,
+            meas_type,
+        )
     target_present = False
     if binding is not None:
         target_type = binding.target_type

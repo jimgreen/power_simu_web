@@ -67,6 +67,7 @@ from simu.device_roles import (
 from simu.device_runtime_frame import compact_device_runtime_frame
 from simu.model_semantics import (
     device_family_from_block,
+    energy_coupling_control_bindings,
     grid_converter_keys,
     resolve_resource_reference,
     resource_keys_by_alias,
@@ -7783,6 +7784,7 @@ class PolarMicrogridSimulator:
         model_book = definition_snapshot.model_book
         run_stats, cb_status, set_values, soc_values = self._stat_maps()
         resources_by_key = resources_by_device_key(model_book)
+        coupling_bindings = energy_coupling_control_bindings(model_book)
         devices: List[Dict[str, Any]] = []
         device_blocks = (
             "ACGenerator",
@@ -7797,6 +7799,13 @@ class PolarMicrogridSimulator:
             "DCBreak",
             "ACSwitch",
             "DCSwitch",
+            "HydroSource",
+            "HydroLoad",
+            "HydroStorage",
+            "AcE2Hydro",
+            "DcE2Hydro",
+            "Hydro2AcE",
+            "Hydro2DcE",
         )
         for dev_type in device_blocks:
             block = model_book.data.get(dev_type)
@@ -7819,6 +7828,7 @@ class PolarMicrogridSimulator:
                     "v_dc_set",
                     "pv0",
                     "qv0",
+                    "flow_set",
                 ):
                     if column in block.header_list:
                         set_types.append(column)
@@ -7844,6 +7854,7 @@ class PolarMicrogridSimulator:
                         ),
                         "set_types": set_types,
                         "set_values": set_values.get(key, {}),
+                        "control_bindings": list(coupling_bindings.get(key, ())),
                         "raw": {header: row.get(header, "") for header in block.header_list},
                     }
                 )

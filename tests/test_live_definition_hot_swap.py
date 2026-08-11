@@ -611,7 +611,7 @@ class LiveDefinitionHotSwapTest(unittest.TestCase):
 
         storage = next(item for item in devices if item["dev_name"] == "ess01_vsrc")
         self.assertEqual(before.revision + 1, service.definition_snapshot.revision)
-        self.assertEqual(storage["raw"]["emva"], 100.0)
+        self.assertEqual(float(storage["raw"]["energy_capacity"]), 100.0)
 
 
 if __name__ == "__main__":

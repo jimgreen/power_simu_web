@@ -5283,6 +5283,26 @@ const DIAGRAM_DEFINITION_RATIO_FIELDS = new Set([
   "soc_upper_limit",
 ]);
 
+const DIAGRAM_DEFINITION_FIELD_LABELS = Object.freeze({
+  control_type: "控制模式",
+  e2h_coeff: "电-气效率 (Nm3/kWh)",
+  h2e_coeff: "气-电效率 (kWh/Nm3)",
+});
+
+function diagramDefinitionFieldLabel(field) {
+  const name = String(field || "").trim().toLowerCase();
+  return DIAGRAM_DEFINITION_FIELD_LABELS[name] || String(field || "");
+}
+
+function diagramDefinitionControlModeValue(value) {
+  const token = String(value || "").trim().toUpperCase();
+  return ({
+    P: "定电功率 (P)",
+    FLOW: "定气流量 (FLOW)",
+    PRESSURE: "定压力 (PRESSURE)",
+  })[token] || diagramTooltipValue(value);
+}
+
 function diagramDefinitionSocField(field) {
   const name = String(field || "").trim().toLowerCase();
   return DIAGRAM_DEFINITION_RATIO_FIELDS.has(name) || name.startsWith("soc_");
@@ -5320,6 +5340,9 @@ function diagramDefinitionNumberText(value) {
 }
 
 function diagramDefinitionDisplayValue(field, value) {
+  if (String(field || "").trim().toLowerCase() === "control_type") {
+    return diagramDefinitionControlModeValue(value);
+  }
   if (!diagramDefinitionRatioField(field)) return diagramTooltipValue(value);
   const ratio = diagramDefinitionRatioFromStored(field, value);
   return ratio === null ? diagramTooltipValue(value) : `${diagramDefinitionNumberText(ratio * 100)}%`;
@@ -5381,7 +5404,7 @@ function renderDiagramDeviceDefinitionValueRow(record, field, activeEditor, inte
   if (!editable) {
     return `
       <div class="diagram-tooltip-row${fieldEditable ? " is-editable" : ""}" data-diagram-tooltip-row="${escapeHtml(key)}">
-        <dt>${escapeHtml(field)}</dt>
+        <dt>${escapeHtml(diagramDefinitionFieldLabel(field))}</dt>
         <dd
           data-diagram-definition-value="${escapeHtml(key)}"
           data-diagram-tooltip-value="${escapeHtml(key)}"
@@ -5392,7 +5415,7 @@ function renderDiagramDeviceDefinitionValueRow(record, field, activeEditor, inte
   const descriptor = diagramDefinitionInputDescriptor(field, activeEditor.draft[field]);
   return `
     <div class="diagram-tooltip-row is-editing-definition" data-diagram-tooltip-row="${escapeHtml(key)}">
-      <dt>${escapeHtml(field)}</dt>
+      <dt>${escapeHtml(diagramDefinitionFieldLabel(field))}</dt>
       <dd data-diagram-definition-value="${escapeHtml(key)}">
         <span class="diagram-definition-input-wrap">
           <input
@@ -15306,6 +15329,7 @@ function remoteAdjustmentTypeLabel(setType) {
     p_dc_set: "DCP有功设定",
     q_set: "Q无功设定",
     v_set: "V电压设定",
+    flow_set: "气流量设定",
   }[setType] || setType;
 }
 
@@ -15790,7 +15814,7 @@ function diagramDeviceCommandContext(container, devId, snapshot = state.snapshot
     && deviceName(candidate) === record.devName
   )) || null;
   const remoteControls = dev ? remoteControlCommandRows([dev], snapshot) : [];
-  const adjustments = dev ? remoteAdjustmentRows([dev], snapshot) : [];
+  const adjustments = dev ? diagramDeviceAdjustmentRows(dev, snapshot) : [];
   return {
     container,
     devId: record.devId,
@@ -15801,6 +15825,25 @@ function diagramDeviceCommandContext(container, devId, snapshot = state.snapshot
       ...adjustments.map((row) => ({ kind: "remote-adjustment", row })),
     ],
   };
+}
+
+function diagramDeviceAdjustmentRows(dev, snapshot = state.snapshot || {}) {
+  const bindings = Array.isArray(dev?.control_bindings) ? dev.control_bindings : [];
+  if (!bindings.length) return remoteAdjustmentRows([dev], snapshot);
+  const controlDevices = controlDefinitionDevices(snapshot);
+  return bindings.flatMap((binding) => {
+    const targetType = String(binding?.target_dev_type || "");
+    const targetName = String(binding?.target_dev_name || "");
+    const targetSetType = String(binding?.target_set_type || binding?.set_type || "");
+    const target = controlDevices.find((candidate) => (
+      deviceType(candidate) === targetType
+      && deviceName(candidate) === targetName
+    ));
+    if (!target) return [];
+    return remoteAdjustmentRows([target], snapshot).filter(
+      (row) => row.setType === targetSetType,
+    );
+  });
 }
 
 function closeDiagramDeviceCommandDialog() {

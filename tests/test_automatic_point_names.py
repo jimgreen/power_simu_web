@@ -8,6 +8,7 @@ from pathlib import Path
 import simu.server as server_module
 import simu_loop
 from simu.generate_simple_model import measurement_blocks, model_blocks, stat_blocks
+from simu.model_semantics import energy_coupling_control_bindings
 from simu.service import PolarMicrogridSimulator
 from tests.model_fixtures import SIMPLE_MODEL_SOURCE
 
@@ -135,6 +136,75 @@ class AutomaticPointNamesTest(unittest.TestCase):
         self.assertEqual(values[("dual-link", "p_dc_set")], 30.0)
         self.assertNotIn(("dual-link", "p_ac_set"), values)
         self.assertEqual(len(values), len(rows))
+
+    def test_hydrogen_conversion_setpoints_belong_to_endpoint_devices(self):
+        model_book = server_module._book_from_text(
+            """<ACLoad>
+@ idx name node p_set run_stat
+# 1 ac-electrolyzer-load 1 12 1
+</ACLoad>
+<DCGenerator>
+@ idx name node control_type p_set v_set i_set run_stat
+# 1 dc-fuel-cell-source 2 P 18 750 0 1
+</DCGenerator>
+<HydroSource>
+@ idx name node control_type flow_set run_stat
+# 1 electrolyzer-h2-source 1 FLOW 2.4 1
+</HydroSource>
+<HydroLoad>
+@ idx name node flow_set run_stat
+# 1 fuel-cell-h2-load 1 10 1
+</HydroLoad>
+<AcE2Hydro>
+@ idx name run_stat control_type idx_ac_load_t1 idx_h2_unit_t2 e2h_coeff
+# 1 ac-electrolyzer 1 P 1 1 0.2
+</AcE2Hydro>
+<Hydro2DcE>
+@ idx name run_stat control_type idx_dc_unit_t1 idx_h2_load_t2 h2e_coeff
+# 1 dc-fuel-cell 1 FLOW 1 1 1.8
+</Hydro2DcE>
+"""
+        )
+
+        rows = server_module._generated_control_blocks(model_book)["SetValue"][1]
+        values = {
+            (str(row["dev_type"]), str(row["dev_name"]), str(row["set_type"]))
+            for row in rows
+        }
+
+        self.assertIn(("ACLoad", "ac-electrolyzer-load", "p_set"), values)
+        self.assertIn(("DCGenerator", "dc-fuel-cell-source", "p_set"), values)
+        self.assertIn(("HydroSource", "electrolyzer-h2-source", "flow_set"), values)
+        self.assertIn(("HydroLoad", "fuel-cell-h2-load", "flow_set"), values)
+        self.assertFalse(
+            any(
+                dev_type in {"AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"}
+                and set_type in {"p_set", "flow_set"}
+                for dev_type, _dev_name, set_type in values
+            )
+        )
+        bindings = energy_coupling_control_bindings(model_book)
+        self.assertEqual(
+            bindings[("AcE2Hydro", "ac-electrolyzer")],
+            (
+                {
+                    "set_type": "p_set",
+                    "target_dev_type": "ACLoad",
+                    "target_dev_name": "ac-electrolyzer-load",
+                    "target_set_type": "p_set",
+                },
+                {
+                    "set_type": "flow_set",
+                    "target_dev_type": "HydroSource",
+                    "target_dev_name": "electrolyzer-h2-source",
+                    "target_set_type": "flow_set",
+                },
+            ),
+        )
+        self.assertEqual(
+            {binding["target_dev_type"] for binding in bindings[("Hydro2DcE", "dc-fuel-cell")]},
+            {"DCGenerator", "HydroLoad"},
+        )
 
     def test_generated_model_requires_explicit_converter_dcp_column(self):
         model_book = server_module._book_from_text(

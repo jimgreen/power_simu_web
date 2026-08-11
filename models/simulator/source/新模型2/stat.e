@@ -416,3 +416,7 @@
 # DCGenerator  8    电化学储能-5     0.5
 # DCGenerator  9    电化学储能-6     0.5
 </StorageSoc>
+<HydroStorageState>
+@ dev_type     idx  name       press  flow  gas_quantity  soc
+# HydroStorage  1    集装格式储氢罐-1  35     0     17500         0.777778
+</HydroStorageState>

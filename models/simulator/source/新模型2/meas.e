@@ -801,4 +801,8 @@
 # 799  DCBreak.直流断路器-31.status                  DCBreak        直流断路器-31            STATUS            1.0      1      1.0
 # 800  DCBreak.直流断路器-32.status                  DCBreak        直流断路器-32            STATUS            1.0      1      1.0
 # 801  DCBreak.直流断路器-33.status                  DCBreak        直流断路器-33            STATUS            1.0      1      1.0
+# 802  HydroStorage.集装格式储氢罐-1.press          HydroStorage   集装格式储氢罐-1           PRESS             10000    1      35
+# 803  HydroStorage.集装格式储氢罐-1.flow           HydroStorage   集装格式储氢罐-1           FLOW              10000    1      0
+# 804  HydroStorage.集装格式储氢罐-1.gas_quantity   HydroStorage   集装格式储氢罐-1           GAS_QUANTITY      10000    1      17500
+# 805  HydroStorage.集装格式储氢罐-1.soc            HydroStorage   集装格式储氢罐-1           SOC               10000    1      0.777778
 </Measurement>

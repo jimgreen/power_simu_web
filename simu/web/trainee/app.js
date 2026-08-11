@@ -3432,7 +3432,9 @@ const DIAGRAM_METRIC_MEASUREMENT_TYPES = Object.freeze({
   level: Object.freeze({ "*": ["SOC", "LEVEL"] }),
   frequency: Object.freeze({ "*": ["FREQUENCY", "FREQ", "F"] }),
   flow: Object.freeze({ "*": ["FLOW"] }),
-  pressure: Object.freeze({ "*": ["PRESSURE"] }),
+  pressure: Object.freeze({ "*": ["PRESS", "PRESSURE"] }),
+  gas_quantity: Object.freeze({ "*": ["GAS_QUANTITY"] }),
+  soc: Object.freeze({ "*": ["SOC"] }),
   temperature: Object.freeze({ "*": ["TEMPERATURE"] }),
 });
 
@@ -4530,6 +4532,9 @@ function diagramTooltipValue(value) {
 function diagramMeasurementUnit(measType) {
   const type = normalizeDiagramMeasurementToken(measType);
   if (type === "SOC" || type === "LEVEL") return "%";
+  if (type === "PRESS" || type === "PRESSURE") return "MPa";
+  if (type === "FLOW") return "Nm3/h";
+  if (type === "GAS_QUANTITY") return "Nm3";
   if (type.startsWith("P")) return "kW";
   if (type.startsWith("Q")) return "kvar";
   if (type.startsWith("V")) return "V";
@@ -13444,6 +13449,13 @@ function isSignalMeasurement(row) {
   return Object.prototype.hasOwnProperty.call(SIGNAL_MEASUREMENT_LABELS, String(row?.meas_type || "").toUpperCase());
 }
 
+function measurementPresentationValue(value, row = null) {
+  if (value === null || value === undefined || value === "") return value;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return value;
+  return String(row?.meas_type || "").toUpperCase() === "SOC" ? number * 100 : number;
+}
+
 function formatMeasurementDisplayValue(value, row = null, analogFormatter = formatNumber) {
   if (value === null || value === undefined || value === "") return "--";
   const number = Number(value);
@@ -13699,7 +13711,7 @@ function measurementTableStructureKey(rows) {
 }
 
 function measurementLiveCellHtml(row, field) {
-  if (field === "scada") return formatMeasurementDisplayValue(row.scada_value, row);
+  if (field === "scada") return formatMeasurementDisplayValue(measurementPresentationValue(row.scada_value, row), row);
   if (field === "status") {
     const valid = Number(row.valid) ? true : false;
     return `<span class="status-pill ${valid ? "is-ok" : "is-off"}">${valid ? "可用" : "停用"}</span>`;
@@ -13804,7 +13816,7 @@ function renderMeasurements(snapshot = state.snapshot || {}) {
             <td>${escapeHtml(measurementDisplayName(item) || "")}</td>
             <td>${escapeHtml(measurementDeviceDisplay(item))}</td>
             <td>${escapeHtml(measurementTypeDisplay(item))}</td>
-            <td class="numeric-cell ${valueClass}" data-measurement-live-field="scada">${formatMeasurementDisplayValue(item.scada_value, item)}</td>
+            <td class="numeric-cell ${valueClass}" data-measurement-live-field="scada">${formatMeasurementDisplayValue(measurementPresentationValue(item.scada_value, item), item)}</td>
             <td data-measurement-live-field="status"><span class="status-pill ${Number(item.valid) ? "is-ok" : "is-off"}">${Number(item.valid) ? "可用" : "停用"}</span></td>
           </tr>`;
         }).join("")}
@@ -13849,7 +13861,7 @@ function appendMeasurementTrace(snapshot) {
     measurements: {},
   };
   rows.forEach((row) => {
-    const scada = diagramTrendFiniteValue(row.scada_value);
+    const scada = diagramTrendFiniteValue(measurementPresentationValue(row.scada_value, row));
     point.measurements[measurementKey(row)] = {
       value: scada,
       scada,
@@ -13949,7 +13961,7 @@ function mergeMeasurementHistoryPayload(payload, row, definitionIndex, definitio
     }
     const minute = Number(frame.absolute_minute);
     if (!Number.isFinite(minute)) throw new Error("历史量测仿真时刻无效，历史帧已拒绝");
-    const scada = diagramTrendFiniteValue(frame.scada_values[selectedPosition]);
+    const scada = diagramTrendFiniteValue(measurementPresentationValue(frame.scada_values[selectedPosition], row));
     const validValue = frame.valid_values[selectedPosition];
     return {
       minute,

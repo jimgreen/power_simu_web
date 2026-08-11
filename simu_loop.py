@@ -65,6 +65,8 @@ from hybrid_lf import (  # noqa: E402
     _build_lf_network_from_single_ac_file,
     _build_lf_network_from_single_dc_file,
     _detect_lf_rows_kind,
+    attach_multi_energy_context,
+    build_multi_energy_context_from_rows,
 )
 from simu.device_roles import (  # noqa: E402
     converter_active_power_setpoint_field,
@@ -91,6 +93,16 @@ DEFAULT_LOG_DIR = ROOT_DIR / "log"
 DEFAULT_PERIOD_SECONDS = 60.0
 DEFAULT_STORAGE_CAPACITY_KWH = 50.0
 DEFAULT_DC_EXPORT_EFFICIENCY = 0.98
+HYDROGEN_STORAGE_STATE_BLOCK = "HydroStorageState"
+HYDROGEN_STORAGE_STATE_HEADERS = (
+    "dev_type",
+    "idx",
+    "name",
+    "press",
+    "flow",
+    "gas_quantity",
+    "soc",
+)
 StorageTarget = Tuple[str, dict, str, Optional[dict], int]
 SIGNAL_MEASUREMENT_TYPES = {"RUN_STAT", "STATUS"}
 GENERIC_CURRENT_BRANCH_TYPES = {
@@ -1092,6 +1104,315 @@ def _storage_soc_block(book: EBook):
 def _storage_soc_rows(book: EBook) -> List[dict]:
     block = _storage_soc_block(book)
     return [] if block is None else list(block.data)
+
+
+def _hydrogen_storage_state_block(book: EBook):
+    return book.data.get(HYDROGEN_STORAGE_STATE_BLOCK)
+
+
+def _hydrogen_storage_rows(model_book: EBook) -> List[dict]:
+    block = model_book.data.get("HydroStorage")
+    return [] if block is None else list(getattr(block, "data", []))
+
+
+def _hydrogen_storage_initial_press(row: Mapping[str, Any]) -> Optional[float]:
+    for field in ("press", "pressure"):
+        value = _safe_float(row.get(field), None)
+        if value is not None and math.isfinite(value):
+            return float(value)
+    return None
+
+
+def _hydrogen_storage_water_volume(row: Mapping[str, Any]) -> Optional[float]:
+    value = _safe_float(row.get("water_volume"), None)
+    if value is None or not math.isfinite(value):
+        return None
+    return float(value)
+
+
+def _hydrogen_storage_initial_quantity(row: Mapping[str, Any]) -> Optional[float]:
+    value = _safe_float(row.get("gas_quantity"), None)
+    if value is not None and math.isfinite(value):
+        return float(value)
+    press = _hydrogen_storage_initial_press(row)
+    water_volume = _hydrogen_storage_water_volume(row)
+    if press is None or water_volume is None or water_volume <= 0.0:
+        return None
+    return press * water_volume / 0.1
+
+
+def _hydrogen_storage_press_max(row: Mapping[str, Any]) -> Optional[float]:
+    for field in ("press_max", "pressure_max"):
+        value = _safe_float(row.get(field), None)
+        if value is not None and math.isfinite(value):
+            return float(value)
+    return None
+
+
+def _hydrogen_storage_soc(press: float, model_row: Mapping[str, Any]) -> Optional[float]:
+    press_max = _hydrogen_storage_press_max(model_row)
+    if press_max is None or press_max <= 0.0:
+        return None
+    return float(press) / press_max
+
+
+def _hydrogen_storage_state_key(row: Mapping[str, Any]) -> Tuple[str, str]:
+    name = str(row.get("name", row.get("dev_name", ""))).strip()
+    if name:
+        return ("name", name)
+    return ("idx", str(row.get("idx", "")).strip())
+
+
+def ensure_hydrogen_storage_state_rows_book(stat_book: EBook, model_book: EBook) -> int:
+    model_rows = _hydrogen_storage_rows(model_book)
+    if not model_rows:
+        return 0
+    block = _hydrogen_storage_state_block(stat_book)
+    if block is None:
+        template = EBook(
+            {
+                HYDROGEN_STORAGE_STATE_BLOCK: [
+                    {header: "" for header in HYDROGEN_STORAGE_STATE_HEADERS}
+                ]
+            }
+        )
+        block = template.data[HYDROGEN_STORAGE_STATE_BLOCK]
+        block.data.clear()
+        stat_book.data[HYDROGEN_STORAGE_STATE_BLOCK] = block
+    for header in HYDROGEN_STORAGE_STATE_HEADERS:
+        if header not in block.header_list:
+            block.header_list.append(header)
+
+    existing = {
+        _hydrogen_storage_state_key(row): row
+        for row in block.data
+        if any(str(row.get(field, "")).strip() for field in ("name", "dev_name", "idx"))
+    }
+    changed = 0
+    for pos, model_row in enumerate(model_rows, start=1):
+        key = _hydrogen_storage_state_key(model_row)
+        state = existing.get(key)
+        if state is None:
+            state = {
+                "dev_type": "HydroStorage",
+                "idx": model_row.get("idx", pos),
+                "name": model_row.get("name", ""),
+                "press": "",
+                "flow": "0",
+                "gas_quantity": "",
+                "soc": "",
+            }
+            block.data.append(state)
+            existing[key] = state
+            changed += 1
+        changed += _set_row_value(state, "dev_type", "HydroStorage")
+        changed += _set_row_value(state, "idx", model_row.get("idx", pos))
+        changed += _set_row_value(state, "name", model_row.get("name", ""))
+        if state.get("press", "") == "":
+            initial_press = _hydrogen_storage_initial_press(model_row)
+            if initial_press is not None:
+                changed += _set_row_value(state, "press", format_number(initial_press))
+        if state.get("flow", "") == "":
+            changed += _set_row_value(state, "flow", "0")
+        if state.get("gas_quantity", "") == "":
+            initial_quantity = _hydrogen_storage_initial_quantity(model_row)
+            if initial_quantity is not None:
+                changed += _set_row_value(
+                    state,
+                    "gas_quantity",
+                    format_number(initial_quantity),
+                )
+        if state.get("soc", "") == "":
+            initial_press = _safe_float(state.get("press"), None)
+            initial_soc = (
+                _hydrogen_storage_soc(initial_press, model_row)
+                if initial_press is not None
+                else None
+            )
+            if initial_soc is not None:
+                changed += _set_row_value(state, "soc", format_number(initial_soc))
+    return changed
+
+
+def hydrogen_storage_state_values_from_book(
+    stat_book: Optional[EBook],
+) -> Dict[object, Dict[str, float]]:
+    if stat_book is None:
+        return {}
+    block = _hydrogen_storage_state_block(stat_book)
+    result: Dict[object, Dict[str, float]] = {}
+    for row in getattr(block, "data", []):
+        name = str(row.get("name", row.get("dev_name", ""))).strip()
+        if not name:
+            continue
+        values: Dict[str, float] = {}
+        for field in ("press", "flow", "gas_quantity", "soc"):
+            value = _safe_float(row.get(field), None)
+            if value is not None and math.isfinite(value):
+                values[field] = float(value)
+        if not values:
+            continue
+        result[("HydroStorage", name)] = values
+        result[name] = values
+    return result
+
+
+def apply_hydrogen_storage_state_book(model_book: EBook, stat_book: Optional[EBook]) -> int:
+    state_values = hydrogen_storage_state_values_from_book(stat_book)
+    changed = 0
+    for row in _hydrogen_storage_rows(model_book):
+        name = str(row.get("name", "")).strip()
+        values = state_values.get(("HydroStorage", name))
+        if values is None:
+            continue
+        for field in ("press", "flow", "gas_quantity", "soc"):
+            if field in values:
+                changed += _set_row_value(row, field, format_number(values[field]))
+    return changed
+
+
+def integrate_hydrogen_storage_state(
+    *,
+    press: float,
+    gas_quantity: float,
+    flow: float,
+    period_seconds: float,
+    water_volume: float,
+) -> Tuple[float, float]:
+    water_volume = float(water_volume)
+    if not math.isfinite(water_volume) or water_volume <= 0.0:
+        raise ValueError("HydroStorage water_volume must be greater than zero")
+    period_hours = max(0.0, float(period_seconds)) / 3600.0
+    quantity_delta = float(flow) * period_hours
+    return (
+        float(press) - quantity_delta / water_volume * 0.1,
+        float(gas_quantity) - quantity_delta,
+    )
+
+
+def _snapshot_hydrogen_storage_flow_by_name(snapshot: Any) -> Dict[str, float]:
+    fluid_results = getattr(snapshot, "fluid_results", {}) or {}
+    hydro_result = (
+        fluid_results.get("hydro")
+        if isinstance(fluid_results, Mapping)
+        else getattr(fluid_results, "hydro", None)
+    )
+    storages = getattr(hydro_result, "storages", {}) if hydro_result is not None else {}
+    flows: Dict[str, float] = {}
+    for name, result in getattr(storages, "items", lambda: ())():
+        flow = _safe_float(getattr(result, "flow", None), None)
+        if flow is not None and math.isfinite(flow):
+            flows[str(name)] = float(flow)
+    return flows
+
+
+def update_hydrogen_storage_state_book(
+    stat_book: EBook,
+    model_book: EBook,
+    period_seconds: float,
+    *,
+    snapshot: Any,
+) -> int:
+    changed = ensure_hydrogen_storage_state_rows_book(stat_book, model_book)
+    block = _hydrogen_storage_state_block(stat_book)
+    if block is None:
+        return changed
+    model_by_key = {
+        _hydrogen_storage_state_key(row): row
+        for row in _hydrogen_storage_rows(model_book)
+    }
+    flow_by_name = _snapshot_hydrogen_storage_flow_by_name(snapshot)
+    period_hours = max(0.0, float(period_seconds)) / 3600.0
+    for state in block.data:
+        model_row = model_by_key.get(_hydrogen_storage_state_key(state))
+        if model_row is None:
+            continue
+        name = str(model_row.get("name", "")).strip()
+        flow = flow_by_name.get(name)
+        if flow is None:
+            if _safe_int(model_row.get("run_stat", 1), 1) == 0:
+                changed += _set_row_value(state, "flow", "0")
+            continue
+        changed += _set_row_value(state, "flow", format_number(flow))
+        gas_quantity = _safe_float(state.get("gas_quantity"), None)
+        if gas_quantity is None:
+            gas_quantity = _hydrogen_storage_initial_quantity(model_row)
+        if gas_quantity is not None and math.isfinite(gas_quantity):
+            changed += _set_row_value(
+                state,
+                "gas_quantity",
+                format_number(float(gas_quantity) - flow * period_hours),
+            )
+        press = _safe_float(state.get("press"), None)
+        if press is None:
+            press = _hydrogen_storage_initial_press(model_row)
+        water_volume = _hydrogen_storage_water_volume(model_row)
+        if water_volume is None or water_volume <= 0.0:
+            LOGGER.warning(
+                "HydroStorage %s has invalid water_volume=%r; pressure integration skipped",
+                name,
+                model_row.get("water_volume"),
+            )
+            continue
+        if press is None or not math.isfinite(press):
+            LOGGER.warning(
+                "HydroStorage %s has no valid initial press; pressure integration skipped",
+                name,
+            )
+            continue
+        next_press = float(press) - flow * period_hours / water_volume * 0.1
+        changed += _set_row_value(state, "press", format_number(next_press))
+        next_soc = _hydrogen_storage_soc(next_press, model_row)
+        if next_soc is None:
+            LOGGER.warning(
+                "HydroStorage %s has invalid press_max=%r; SOC update skipped",
+                name,
+                model_row.get("press_max", model_row.get("pressure_max")),
+            )
+        else:
+            changed += _set_row_value(state, "soc", format_number(next_soc))
+    changed += apply_hydrogen_storage_state_book(model_book, stat_book)
+    return changed
+
+
+def reset_hydrogen_storage_state_book(stat_book: EBook, model_book: EBook) -> int:
+    changed = ensure_hydrogen_storage_state_rows_book(stat_book, model_book)
+    block = _hydrogen_storage_state_block(stat_book)
+    if block is None:
+        return changed
+    model_by_key = {
+        _hydrogen_storage_state_key(row): row
+        for row in _hydrogen_storage_rows(model_book)
+    }
+    for state in block.data:
+        model_row = model_by_key.get(_hydrogen_storage_state_key(state))
+        if model_row is None:
+            continue
+        initial_press = _hydrogen_storage_initial_press(model_row)
+        initial_quantity = _hydrogen_storage_initial_quantity(model_row)
+        initial_soc = (
+            _hydrogen_storage_soc(initial_press, model_row)
+            if initial_press is not None
+            else None
+        )
+        changed += _set_row_value(
+            state,
+            "press",
+            "" if initial_press is None else format_number(initial_press),
+        )
+        changed += _set_row_value(state, "flow", "0")
+        changed += _set_row_value(
+            state,
+            "gas_quantity",
+            "" if initial_quantity is None else format_number(initial_quantity),
+        )
+        changed += _set_row_value(
+            state,
+            "soc",
+            "" if initial_soc is None else format_number(initial_soc),
+        )
+    changed += apply_hydrogen_storage_state_book(model_book, stat_book)
+    return changed
 
 
 def _row_order_key(row: dict) -> Tuple[int, str]:
@@ -2325,6 +2646,26 @@ def update_storage_soc(
     return changed
 
 
+def update_hydrogen_storage_state(
+    dev_stat_file: Path,
+    model_book: EBook,
+    period_seconds: float,
+    *,
+    snapshot: Any,
+) -> int:
+    dev_stat_file = Path(dev_stat_file)
+    stat_book = EBook(dev_stat_file) if dev_stat_file.exists() else EBook({})
+    changed = update_hydrogen_storage_state_book(
+        stat_book,
+        model_book,
+        period_seconds,
+        snapshot=snapshot,
+    )
+    if changed:
+        write_ebook_aligned(stat_book, dev_stat_file)
+    return changed
+
+
 def _unique_names(*names: str) -> List[str]:
     result: List[str] = []
     seen: set[str] = set()
@@ -2510,6 +2851,9 @@ def apply_realtime_inputs(
     active_power_controls = _active_power_control_targets(yt_ctrl_file)
     changed = 0
     changed += apply_dev_stat_file(model_book, dev_stat_file)
+    stat_book = EBook(dev_stat_file) if Path(dev_stat_file).exists() else EBook({})
+    changed += ensure_hydrogen_storage_state_rows_book(stat_book, model_book)
+    changed += apply_hydrogen_storage_state_book(model_book, stat_book)
     changed += apply_mode_file(model_book, mode_file)
     changed += apply_weather_file(model_book, weather_file, dev_define_file)
     changed += apply_yt_ctrl_file(model_book, yt_ctrl_file)
@@ -2543,6 +2887,8 @@ def apply_realtime_input_books(
     active_power_controls = _active_power_control_targets_book(ctrl_book)
     changed = 0
     changed += apply_dev_stat_book(model_book, stat_book)
+    changed += ensure_hydrogen_storage_state_rows_book(stat_book, model_book)
+    changed += apply_hydrogen_storage_state_book(model_book, stat_book)
     changed += apply_mode_book(model_book, mode_book)
     changed += apply_weather_book(
         model_book,
@@ -2624,6 +2970,9 @@ def solve_hybrid_snapshot(e_file: Path) -> Tuple[Snapshot, str]:
         dcac_converters=network.dcac_converters,
         acac_converters=network.acac_converters,
     )
+    snapshot.fluid_results = dict(
+        getattr(getattr(calc, "lf_result", None), "fluid", {}) or {}
+    )
     _add_zero_impedance_devices_from_file(snapshot, e_file)
     _link_snapshot_terminal_objects(snapshot)
     return snapshot, f"iter={calc.iterations}, normF={calc.normF:.3e}"
@@ -2633,10 +2982,13 @@ def _read_lf_network_from_book(model_book: EBook, source: Path) -> object:
     rows = _ebook_to_efile_rows(model_book)
     file_kind = _detect_lf_rows_kind(rows)
     if file_kind == "ac":
-        return _build_lf_network_from_single_ac_file(source, rows)
-    if file_kind == "dc":
-        return _build_lf_network_from_single_dc_file(source, rows)
-    return _build_lf_network_from_hybrid_rows(source, rows)
+        network = _build_lf_network_from_single_ac_file(source, rows)
+    elif file_kind == "dc":
+        network = _build_lf_network_from_single_dc_file(source, rows)
+    else:
+        network = _build_lf_network_from_hybrid_rows(source, rows)
+    context = build_multi_energy_context_from_rows(rows, source=source)
+    return attach_multi_energy_context(network, context)
 
 
 def solve_hybrid_snapshot_from_book(model_book: EBook, source: Optional[Path] = None) -> Tuple[Snapshot, str]:
@@ -2665,6 +3017,9 @@ def solve_hybrid_snapshot_from_book(model_book: EBook, source: Optional[Path] = 
         dc_grid=network.dc,
         dcac_converters=network.dcac_converters,
         acac_converters=network.acac_converters,
+    )
+    snapshot.fluid_results = dict(
+        getattr(getattr(calc, "lf_result", None), "fluid", {}) or {}
     )
     _add_zero_impedance_devices_from_book(snapshot, model_book)
     _link_snapshot_terminal_objects(snapshot)
@@ -2853,6 +3208,7 @@ def _measurement_value(
     signal_values: Optional[Dict[Tuple[str, str, str], float]] = None,
     model_book: Optional[EBook] = None,
     binding: Optional[MeasurementBinding] = None,
+    hydrogen_storage_state: Optional[Mapping[object, Mapping[str, float]]] = None,
 ) -> Optional[float]:
     dev_type, dev_name, meas_type = row[2], row[3], row[4].upper()
     if meas_type in SIGNAL_MEASUREMENT_TYPES:
@@ -2883,6 +3239,25 @@ def _measurement_value(
                 target_type, target_name = resolved[0]
             elif _model_row(model_book, dev_type, dev_name) is not None:
                 target_type, target_name = dev_type, dev_name
+    if dev_type == "HydroStorage" or target_type == "HydroStorage":
+        field = {
+            "PRESS": "press",
+            "PRESSURE": "press",
+            "FLOW": "flow",
+            "GAS_QUANTITY": "gas_quantity",
+            "SOC": "soc",
+        }.get(meas_type)
+        if field is not None and hydrogen_storage_state is not None:
+            for key in (
+                (dev_type, dev_name),
+                (target_type, target_name),
+                dev_name,
+                target_name,
+            ):
+                values = hydrogen_storage_state.get(key)
+                if values is not None and field in values:
+                    return values[field]
+            return None
     if meas_type == "I" and target_type in GENERIC_CURRENT_BRANCH_TYPES:
         for terminal_meas_type in ("I_FROM", "I_TO"):
             value = snapshot.value(target_type, target_name, terminal_meas_type)
@@ -2930,6 +3305,9 @@ def build_real_rows(
 ) -> Tuple[List[str], List[List[str]], List[str], int, int]:
     before, rows, after = parse_measurement_rows(meas_file)
     storage_soc = _storage_soc_values(dev_stat_file, model_book)
+    hydrogen_storage_state = hydrogen_storage_state_values_from_book(
+        EBook(dev_stat_file) if dev_stat_file is not None and Path(dev_stat_file).exists() else None
+    )
     weather = _weather_values(weather_file) if weather_file is not None else None
     signal_values = _effective_signal_measurement_values(
         _signal_measurement_values(dev_stat_file),
@@ -2944,6 +3322,7 @@ def build_real_rows(
         before,
         after,
         model_book=model_book,
+        hydrogen_storage_state=hydrogen_storage_state,
     )
 
 
@@ -2958,6 +3337,7 @@ def build_real_rows_from_data(
     *,
     model_book: Optional[EBook] = None,
     measurement_bindings: Optional[Sequence[MeasurementBinding]] = None,
+    hydrogen_storage_state: Optional[Mapping[object, Mapping[str, float]]] = None,
 ) -> Tuple[List[str], List[List[str]], List[str], int, int]:
     rows = []
     for source_row in measurement_rows:
@@ -2979,6 +3359,7 @@ def build_real_rows_from_data(
             signal_values,
             model_book,
             binding,
+            hydrogen_storage_state,
         )
         if value is None:
             missing += 1
@@ -3147,6 +3528,13 @@ def run_once(
         snapshot, solver_info = _solve_snapshot_from_book(solver, model_book, config.model_file)
         soc_updates = update_storage_soc_book(stat_book, model_book, config.period_seconds, dev_define, snapshot=snapshot)
         storage_soc = _storage_soc_values_from_book(stat_book, model_book)
+        hydrogen_updates = update_hydrogen_storage_state_book(
+            stat_book,
+            model_book,
+            config.period_seconds,
+            snapshot=snapshot,
+        )
+        hydrogen_storage_state = hydrogen_storage_state_values_from_book(stat_book)
         device_states = collect_device_operating_states(snapshot, model_book)
         signal_values = _effective_signal_measurement_values(
             _signal_measurement_values_from_book(stat_book),
@@ -3162,6 +3550,7 @@ def run_once(
             meas_after,
             model_book=model_book,
             measurement_bindings=config.measurement_bindings,
+            hydrogen_storage_state=hydrogen_storage_state,
         )
         scada_rows = add_noise_to_rows(
             real_rows,
@@ -3177,7 +3566,7 @@ def run_once(
             scada_file=config.scada_file,
             updated=updated,
             missing=missing,
-            overlay_updates=overlay_updates + soc_updates,
+            overlay_updates=overlay_updates + soc_updates + hydrogen_updates,
             solver_info=solver_info,
             model_book=model_book,
             measurement_definitions=[list(row) for row in meas_rows],
@@ -3199,6 +3588,12 @@ def run_once(
     )
     snapshot, solver_info = _solve_snapshot_from_book(solver, model_book, config.model_file)
     soc_updates = update_storage_soc(config.dev_stat_file, model_book, config.period_seconds, config.dev_define_file, snapshot=snapshot)
+    hydrogen_updates = update_hydrogen_storage_state(
+        config.dev_stat_file,
+        model_book,
+        config.period_seconds,
+        snapshot=snapshot,
+    )
     device_states = collect_device_operating_states(snapshot, model_book)
 
     before, real_rows, after, updated, missing = build_real_rows(
@@ -3223,7 +3618,7 @@ def run_once(
         scada_file=config.scada_file,
         updated=updated,
         missing=missing,
-        overlay_updates=overlay_updates + soc_updates,
+        overlay_updates=overlay_updates + soc_updates + hydrogen_updates,
         solver_info=solver_info,
         model_book=model_book,
         measurement_definitions=[list(row) for row in real_rows],

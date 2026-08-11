@@ -144,6 +144,15 @@ STAT_HEADERS = {
     "CbOpenStat": ("dev_type", "dev_name", "status"),
     "SetValue": ("dev_type", "dev_name", "set_type", "set_value"),
     "StorageSoc": ("dev_type", "idx", "name", "soc_curr"),
+    "HydroStorageState": (
+        "dev_type",
+        "idx",
+        "name",
+        "press",
+        "flow",
+        "gas_quantity",
+        "soc",
+    ),
 }
 RUNTIME_CONTROL_STATUS_FIELDS = frozenset(("run_stat", "status"))
 RUNTIME_CONTROL_SETPOINT_FIELDS = frozenset(
@@ -2262,6 +2271,10 @@ class PolarMicrogridSimulator:
         book = self.runtime_stat_book
         for name, headers in STAT_HEADERS.items():
             _ensure_block(book, name, headers)
+        simu_loop.ensure_hydrogen_storage_state_rows_book(
+            book,
+            self.definition_snapshot.model_book,
+        )
         self.runtime_stat_book = book
 
     def _reset_storage_soc_to_initial(self) -> None:
@@ -2288,6 +2301,12 @@ class PolarMicrogridSimulator:
             row["soc_curr"] = initial_soc
         self.runtime_stat_book = book
         self._sync_latest_storage_soc_measurement_rows()
+
+    def _reset_hydrogen_storage_state_to_initial(self) -> None:
+        simu_loop.reset_hydrogen_storage_state_book(
+            self.runtime_stat_book,
+            self.definition_snapshot.model_book,
+        )
 
     def _simulation_cycle_minutes(self) -> int:
         return int(_simulation_mode_duration_minutes(self.curves.get("mode", "day")))
@@ -2385,6 +2404,21 @@ class PolarMicrogridSimulator:
         if runtime_storage is not None:
             storage_block = _ensure_block(book, "StorageSoc", STAT_HEADERS["StorageSoc"])
             storage_block.data = self._merge_runtime_storage_soc(storage_block.data, runtime_storage.data)
+        runtime_hydrogen = runtime_book.data.get(simu_loop.HYDROGEN_STORAGE_STATE_BLOCK)
+        if runtime_hydrogen is not None:
+            hydrogen_block = _ensure_block(
+                book,
+                simu_loop.HYDROGEN_STORAGE_STATE_BLOCK,
+                simu_loop.HYDROGEN_STORAGE_STATE_HEADERS,
+            )
+            hydrogen_block.data = self._merge_runtime_hydrogen_storage_state(
+                hydrogen_block.data,
+                runtime_hydrogen.data,
+            )
+        simu_loop.ensure_hydrogen_storage_state_rows_book(
+            book,
+            self.definition_snapshot.model_book,
+        )
         return book
 
     def _storage_soc_identity(self, row: Mapping[str, Any]) -> Optional[Tuple[str, str, str]]:
@@ -2420,6 +2454,32 @@ class PolarMicrogridSimulator:
             if runtime_row is not None and runtime_row.get("soc_curr", "") != "":
                 row["soc_curr"] = runtime_row.get("soc_curr", "")
             merged.append(row)
+        return merged
+
+    def _merge_runtime_hydrogen_storage_state(
+        self,
+        current_rows: Sequence[Mapping[str, Any]],
+        incoming_rows: Sequence[Mapping[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        headers = simu_loop.HYDROGEN_STORAGE_STATE_HEADERS
+        incoming_by_key = {
+            simu_loop._hydrogen_storage_state_key(row): row
+            for row in incoming_rows
+        }
+        merged: List[Dict[str, Any]] = []
+        seen: set[Tuple[str, str]] = set()
+        for current in current_rows:
+            key = simu_loop._hydrogen_storage_state_key(current)
+            incoming = incoming_by_key.get(key)
+            source = incoming if incoming is not None else current
+            merged.append({header: source.get(header, "") for header in headers})
+            seen.add(key)
+        for incoming in incoming_rows:
+            key = simu_loop._hydrogen_storage_state_key(incoming)
+            if key in seen:
+                continue
+            merged.append({header: incoming.get(header, "") for header in headers})
+            seen.add(key)
         return merged
 
     def _normalize_run_command_items(self, items: Sequence[Any]) -> List[Dict[str, Any]]:
@@ -3610,13 +3670,23 @@ class PolarMicrogridSimulator:
 
     def _merge_execution_runtime_stat_book(self, execution_book: EBook) -> None:
         incoming_storage = execution_book.data.get("StorageSoc") or execution_book.data.get("StorageStatus")
-        if incoming_storage is None:
-            return
-        current_storage = _ensure_block(self.runtime_stat_book, "StorageSoc", STAT_HEADERS["StorageSoc"])
-        current_storage.data = self._merge_runtime_storage_soc(
-            current_storage.data,
-            incoming_storage.data,
-        )
+        if incoming_storage is not None:
+            current_storage = _ensure_block(self.runtime_stat_book, "StorageSoc", STAT_HEADERS["StorageSoc"])
+            current_storage.data = self._merge_runtime_storage_soc(
+                current_storage.data,
+                incoming_storage.data,
+            )
+        incoming_hydrogen = execution_book.data.get(simu_loop.HYDROGEN_STORAGE_STATE_BLOCK)
+        if incoming_hydrogen is not None:
+            current_hydrogen = _ensure_block(
+                self.runtime_stat_book,
+                simu_loop.HYDROGEN_STORAGE_STATE_BLOCK,
+                simu_loop.HYDROGEN_STORAGE_STATE_HEADERS,
+            )
+            current_hydrogen.data = self._merge_runtime_hydrogen_storage_state(
+                current_hydrogen.data,
+                incoming_hydrogen.data,
+            )
 
     def _make_config(
         self,
@@ -6628,6 +6698,7 @@ class PolarMicrogridSimulator:
             self.clock.minute = self.clock.absolute_minute % 1440.0
             if should_reset_storage_soc:
                 self._reset_storage_soc_to_initial()
+                self._reset_hydrogen_storage_state_to_initial()
             if history_reset_requested:
                 self._measurement_history.clear()
                 self.latest_measurement_clock = {}
@@ -6772,6 +6843,7 @@ class PolarMicrogridSimulator:
                 self.clock.step_count += 1
                 if crossed_cycle_start:
                     self._reset_storage_soc_to_initial()
+                    self._reset_hydrogen_storage_state_to_initial()
                     if self.clear_commands_on_start_and_reset:
                         cleared = self._remove_automatic_command_history_for_restart()
                     else:

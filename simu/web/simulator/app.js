@@ -4961,7 +4961,9 @@ const DIAGRAM_METRIC_MEASUREMENT_TYPES = Object.freeze({
   level: Object.freeze({ "*": ["SOC", "LEVEL"] }),
   frequency: Object.freeze({ "*": ["FREQUENCY", "FREQ", "F"] }),
   flow: Object.freeze({ "*": ["FLOW"] }),
-  pressure: Object.freeze({ "*": ["PRESSURE"] }),
+  pressure: Object.freeze({ "*": ["PRESS", "PRESSURE"] }),
+  gas_quantity: Object.freeze({ "*": ["GAS_QUANTITY"] }),
+  soc: Object.freeze({ "*": ["SOC"] }),
   temperature: Object.freeze({ "*": ["TEMPERATURE"] }),
 });
 
@@ -6076,6 +6078,9 @@ function diagramTooltipValue(value) {
 function diagramMeasurementUnit(measType) {
   const type = normalizeDiagramMeasurementToken(measType);
   if (type === "SOC" || type === "LEVEL") return "%";
+  if (type === "PRESS" || type === "PRESSURE") return "MPa";
+  if (type === "FLOW") return "Nm3/h";
+  if (type === "GAS_QUANTITY") return "Nm3";
   if (type.startsWith("P")) return "kW";
   if (type.startsWith("Q")) return "kvar";
   if (type.startsWith("V")) return "V";
@@ -13311,6 +13316,13 @@ function formatMeasurementValue(value) {
   return number.toFixed(5);
 }
 
+function measurementPresentationValue(value, row = null) {
+  if (value === null || value === undefined || value === "") return value;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return value;
+  return String(row?.meas_type || "").toUpperCase() === "SOC" ? number * 100 : number;
+}
+
 function isWeatherMeasurement(row) {
   return row?.dev_type === "Environment" && row?.dev_name === "weather";
 }
@@ -13426,6 +13438,10 @@ function measurementCompareRows(measurements = state.snapshot?.measurements || {
 function measurementUnit(measType) {
   const type = String(measType || "").toUpperCase();
   if (WEATHER_MEASUREMENT_LABELS[type]?.unit) return WEATHER_MEASUREMENT_LABELS[type].unit;
+  if (type === "SOC" || type === "LEVEL") return "%";
+  if (type === "PRESS" || type === "PRESSURE") return "MPa";
+  if (type === "FLOW") return "Nm3/h";
+  if (type === "GAS_QUANTITY") return "Nm3";
   if (type.startsWith("P")) return "kW";
   if (type.startsWith("Q")) return "kvar";
   if (type.startsWith("V")) return "V";
@@ -13474,8 +13490,8 @@ function appendMeasurementTrace(snapshot) {
       dev_name: row.dev_name || "",
       meas_type: measurementTypeDisplay(row) || "",
       unit: measurementUnit(row.meas_type),
-      real: numberOrNull(row.real_value),
-      scada: numberOrNull(row.scada_value),
+      real: numberOrNull(measurementPresentationValue(row.real_value, row)),
+      scada: numberOrNull(measurementPresentationValue(row.scada_value, row)),
       valid: Number(row.valid) === 1 ? 1 : 0,
     };
   });
@@ -13568,8 +13584,8 @@ function mergeMeasurementHistoryPayload(payload, row, definitionIndex, definitio
     }
     const minute = Number(frame.absolute_minute);
     if (!Number.isFinite(minute)) throw new Error("历史量测仿真时刻无效，历史帧已拒绝");
-    const real = numberOrNull(frame.real_values[selectedPosition]);
-    const scada = numberOrNull(frame.scada_values[selectedPosition]);
+    const real = numberOrNull(measurementPresentationValue(frame.real_values[selectedPosition], row));
+    const scada = numberOrNull(measurementPresentationValue(frame.scada_values[selectedPosition], row));
     const validValue = frame.valid_values[selectedPosition];
     return {
       minute,
@@ -13976,14 +13992,14 @@ function measurementCompareTableStructureKey(rows) {
 }
 
 function measurementLiveCellHtml(row, field) {
-  if (field === "real") return formatMeasurementDisplayValue(row.real_value, row);
-  if (field === "scada") return formatMeasurementDisplayValue(row.scada_value, row);
+  if (field === "real") return formatMeasurementDisplayValue(measurementPresentationValue(row.real_value, row), row);
+  if (field === "scada") return formatMeasurementDisplayValue(measurementPresentationValue(row.scada_value, row), row);
   if (field === "weight") return escapeHtml(row.weight);
   if (field === "status") {
     const valid = Number(row.valid) === 1;
     return `<span class="status-dot ${valid ? "on" : ""}"></span>${valid ? "有效" : "无效"}`;
   }
-  if (field === "diff") return formatMeasurementDisplayValue(row.diff, row);
+  if (field === "diff") return formatMeasurementDisplayValue(measurementPresentationValue(row.diff, row), row);
   return "";
 }
 
@@ -14164,9 +14180,9 @@ function renderMeasurementCompareTable() {
               <td>${escapeHtml(measurementDisplayName(row) || "--")}</td>
               <td>${escapeHtml(measurementDeviceDisplay(row))}</td>
               <td>${escapeHtml(measurementTypeDisplay(row) || "--")}</td>
-              <td class="numeric-cell" data-measurement-live-field="real">${formatMeasurementDisplayValue(row.real_value, row)}</td>
-              <td class="numeric-cell" data-measurement-live-field="scada">${formatMeasurementDisplayValue(row.scada_value, row)}</td>
-              <td class="numeric-cell ${diffClass}" data-measurement-live-field="diff">${formatMeasurementDisplayValue(row.diff, row)}</td>
+              <td class="numeric-cell" data-measurement-live-field="real">${formatMeasurementDisplayValue(measurementPresentationValue(row.real_value, row), row)}</td>
+              <td class="numeric-cell" data-measurement-live-field="scada">${formatMeasurementDisplayValue(measurementPresentationValue(row.scada_value, row), row)}</td>
+              <td class="numeric-cell ${diffClass}" data-measurement-live-field="diff">${formatMeasurementDisplayValue(measurementPresentationValue(row.diff, row), row)}</td>
               <td class="numeric-cell" data-measurement-live-field="weight">${escapeHtml(row.weight)}</td>
               <td data-measurement-live-field="status"><span class="status-dot ${Number(row.valid) === 1 ? "on" : ""}"></span>${Number(row.valid) === 1 ? "有效" : "无效"}</td>
             </tr>

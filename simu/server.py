@@ -637,6 +637,7 @@ MEASUREMENT_TYPE_MAP = {
     "DCDCConverter": ("P_FROM", "V_FROM", "I_FROM", "P_TO", "V_TO", "I_TO"),
     "DCACConverter": ("P_DC", "V_DC", "I_DC", "P_AC", "Q_AC", "V_AC", "I_AC"),
     "ACACConverter": ("P_FROM", "Q_FROM", "V_FROM", "I_FROM", "P_TO", "Q_TO", "V_TO", "I_TO"),
+    "HydroStorage": ("PRESS", "FLOW", "GAS_QUANTITY", "SOC"),
 }
 STORAGE_PARAMETER_SPECS = (
     ("ACStorageGen", "ACGenerator", "idx_acgenerator"),
@@ -865,6 +866,14 @@ def _generated_control_blocks(model_book: EBook) -> Mapping[str, tuple[Sequence[
     storage_rows = _storage_source_rows(model_book)
     if storage_rows:
         blocks["StorageSoc"] = (STAT_HEADERS["StorageSoc"], storage_rows)
+    hydrogen_state_book = EBook({})
+    simu_loop.ensure_hydrogen_storage_state_rows_book(hydrogen_state_book, model_book)
+    hydrogen_state = hydrogen_state_book.data.get(simu_loop.HYDROGEN_STORAGE_STATE_BLOCK)
+    if hydrogen_state is not None and hydrogen_state.data:
+        blocks[simu_loop.HYDROGEN_STORAGE_STATE_BLOCK] = (
+            simu_loop.HYDROGEN_STORAGE_STATE_HEADERS,
+            list(hydrogen_state.data),
+        )
     return blocks
 
 

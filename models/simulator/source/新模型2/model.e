@@ -257,6 +257,10 @@
 # 13   DCAC变流器-1  dcac-converter  23       21       PQ               NONE             0         0         380       0         750       1         300             300       -300      0         1.1       0.9       300       -300      0         1.1       0.9       0   0
 # 14   DCAC变流器-2  dcac-converter  25       22       PQ               NONE             0         0         380       0         750       1         300             300       -300      0         1.1       0.9       300       -300      0         1.1       0.9       0   0
 </DCACConverter>
+<HydroNode>
+@ idx  name    pressure  run_stat
+# 1    氢气节点-1  1         1
+</HydroNode>
 <HydroSource>
 @ idx  name             dev_type         node  run_stat
 # 1    交流电制氢-1_氢能设备端氢源  ac-electrolyzer  1     1
@@ -266,8 +270,8 @@
 # 1    直流燃料电池-1_氢能设备端氢荷  dc-fuel-cell  1     1
 </HydroLoad>
 <HydroStorage>
-@ idx  name       dev_type                 node  run_stat
-# 1    集装格式储氢罐-1  hydrogen-tank-container  1     1
+@ idx  name       dev_type                 node  press  flow  gas_quantity  water_volume  press_max  press_min  run_stat
+# 1    集装格式储氢罐-1  hydrogen-tank-container  1     35     0     17500         50            45         2          1
 </HydroStorage>
 <AcE2Hydro>
 @ idx  name     run_stat  idx_ac_load_t1  idx_h2_unit_t2

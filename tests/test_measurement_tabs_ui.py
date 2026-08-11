@@ -101,6 +101,54 @@ console.log(JSON.stringify({{
                 self.assertEqual(result["customTelemetry"], "0.13")
                 self.assertEqual(result["invalid"], "--")
 
+    def test_soc_measurements_are_presented_as_percent_without_clamping(self):
+        surfaces = (
+            ROOT / "simu/web/simulator/app.js",
+            ROOT / "simu/web/trainee/app.js",
+        )
+        for script_path in surfaces:
+            with self.subTest(surface=script_path.parent.name):
+                script = script_path.read_text(encoding="utf-8")
+                match = re.search(
+                    r"function measurementPresentationValue\([^)]*\) \{.*?^\}",
+                    script,
+                    flags=re.MULTILINE | re.DOTALL,
+                )
+                self.assertIsNotNone(match, "measurementPresentationValue")
+                node_script = f"""
+{match.group(0)}
+console.log(JSON.stringify({{
+  normal: measurementPresentationValue(0.7733333333, {{ meas_type: "SOC" }}),
+  aboveMaximum: measurementPresentationValue(1.08, {{ meas_type: "SOC" }}),
+  belowMinimum: measurementPresentationValue(-0.03, {{ meas_type: "SOC" }}),
+  otherTelemetry: measurementPresentationValue(12.5, {{ meas_type: "P_GEN" }}),
+  missing: measurementPresentationValue(null, {{ meas_type: "SOC" }}),
+}}));
+"""
+                completed = subprocess.run(
+                    ["node", "-e", node_script],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                )
+                result = json.loads(completed.stdout)
+
+                self.assertAlmostEqual(result["normal"], 77.33333333)
+                self.assertEqual(result["aboveMaximum"], 108)
+                self.assertEqual(result["belowMinimum"], -3)
+                self.assertEqual(result["otherTelemetry"], 12.5)
+                self.assertIsNone(result["missing"])
+
+                self.assertIn(
+                    "formatMeasurementDisplayValue(measurementPresentationValue(row.scada_value, row), row)",
+                    script,
+                )
+                self.assertIn(
+                    "measurementPresentationValue(frame.scada_values[selectedPosition], row)",
+                    script,
+                )
+
     def test_simulator_measurement_table_and_svg_tooltip_keep_dual_channel_formatting(self):
         script = (ROOT / "simu/web/simulator/app.js").read_text(encoding="utf-8")
 
@@ -110,9 +158,9 @@ console.log(JSON.stringify({{
         self.assertIn('data-measurement-live-field="real"', script)
         self.assertIn('data-measurement-live-field="scada"', script)
         self.assertIn('data-measurement-live-field="diff"', script)
-        self.assertIn("formatMeasurementDisplayValue(row.real_value, row)", script)
-        self.assertIn("formatMeasurementDisplayValue(row.scada_value, row)", script)
-        self.assertIn("formatMeasurementDisplayValue(row.diff, row)", script)
+        self.assertIn("formatMeasurementDisplayValue(measurementPresentationValue(row.real_value, row), row)", script)
+        self.assertIn("formatMeasurementDisplayValue(measurementPresentationValue(row.scada_value, row), row)", script)
+        self.assertIn("formatMeasurementDisplayValue(measurementPresentationValue(row.diff, row), row)", script)
         self.assertIn("formatMeasurementDisplayValue(scadaValue, pair.row, diagramNumberText)", script)
         self.assertIn("formatMeasurementDisplayValue(realValue, pair.row, diagramNumberText)", script)
         self.assertIn("formatMeasurementDisplayValue(deviation, pair.row, diagramNumberText)", script)
@@ -126,9 +174,9 @@ console.log(JSON.stringify({{
         self.assertNotIn('data-measurement-live-field="real"', script)
         self.assertIn('data-measurement-live-field="scada"', script)
         self.assertNotIn('data-measurement-live-field="diff"', script)
-        self.assertNotIn("formatMeasurementDisplayValue(row.real_value, row)", script)
-        self.assertIn("formatMeasurementDisplayValue(row.scada_value, row)", script)
-        self.assertNotIn("formatMeasurementDisplayValue(row.diff, row)", script)
+        self.assertNotIn("formatMeasurementDisplayValue(measurementPresentationValue(row.real_value, row), row)", script)
+        self.assertIn("formatMeasurementDisplayValue(measurementPresentationValue(row.scada_value, row), row)", script)
+        self.assertNotIn("formatMeasurementDisplayValue(measurementPresentationValue(row.diff, row), row)", script)
         self.assertIn("formatMeasurementDisplayValue(scadaValue, pair.row, diagramNumberText)", script)
         self.assertNotIn("formatMeasurementDisplayValue(realValue, pair.row, diagramNumberText)", script)
         self.assertNotIn("formatMeasurementDisplayValue(deviation, pair.row, diagramNumberText)", script)

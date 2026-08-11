@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 from simu.server import make_http_server
@@ -16,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class TraineeInteractionLinkTest(unittest.TestCase):
-    def test_simulator_exposes_shareable_model_scoped_trainee_link(self):
+    def test_simulator_exposes_shareable_service_address_trainee_link(self):
         with tempfile.TemporaryDirectory() as temporary:
             service = PolarMicrogridSimulator(
                 SIMPLE_MODEL_SOURCE,
@@ -29,8 +30,14 @@ class TraineeInteractionLinkTest(unittest.TestCase):
             thread.start()
             try:
                 port = server.server_address[1]
-                with urlopen(f"http://127.0.0.1:{port}/api/trainee-link?model_id=simple_model", timeout=5) as response:
+                with urlopen(f"http://127.0.0.1:{port}/api/trainee-link", timeout=5) as response:
                     payload = json.loads(response.read().decode("utf-8"))
+                with self.assertRaises(HTTPError) as old_link_error:
+                    urlopen(
+                        f"http://127.0.0.1:{port}/api/trainee-link?model_id=simple_model",
+                        timeout=5,
+                    )
+                self.assertEqual(old_link_error.exception.code, 400)
             finally:
                 server.shutdown()
                 server.server_close()
@@ -40,7 +47,7 @@ class TraineeInteractionLinkTest(unittest.TestCase):
         self.assertEqual(payload["model_id"], "simple_model")
         self.assertEqual(payload["model_name"], "简单模型")
         self.assertTrue(payload["shareable"])
-        self.assertIn(f"http://127.0.0.1:{port}/api/trainee-link?model_id=simple_model", payload["link"])
+        self.assertEqual(payload["link"], f"http://127.0.0.1:{port}/api/trainee-link")
         self.assertEqual(payload["teacher_api_base"], f"http://127.0.0.1:{port}")
         self.assertEqual(
             payload["snapshot_path"],
@@ -70,6 +77,10 @@ class TraineeInteractionLinkTest(unittest.TestCase):
         self.assertIn("openTraineeLinkDialog", script)
         self.assertIn('api("/api/trainee-link"', script)
         self.assertIn("generatedTraineeLink", script)
+        generated_block = script.split("function generatedTraineeLink", 1)[1].split("\n}", 1)[0]
+        self.assertIn("controlPlaneApiBase", generated_block)
+        self.assertIn("directSimulatorServiceMode", generated_block)
+        self.assertIn("model_id", generated_block)
         self.assertIn("setTraineeLinkCopyEnabled", script)
         self.assertIn("交互链接已自动生成", script)
         self.assertIn("copyTraineeLink", script)
@@ -94,6 +105,7 @@ class TraineeInteractionLinkTest(unittest.TestCase):
         self.assertIn('$("modelInitializeButton").addEventListener("click", openReceiveLinkDialog);', script)
         self.assertIn('$("traineeRunToggle").addEventListener("click", toggleReceiveMode);', script)
         self.assertNotIn("fetch(url.href", script)
+        self.assertNotIn("legacyTeacherInteractionConnection", script)
         self.assertIn(".receive-link-dialog", styles)
 
 

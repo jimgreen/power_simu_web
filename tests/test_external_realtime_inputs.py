@@ -650,7 +650,7 @@ class ExternalRealtimeInputsTest(unittest.TestCase):
         thread.start()
         try:
             base = f"http://127.0.0.1:{server.server_address[1]}"
-            link = self._request_json(f"{base}/api/trainee-link?model_id={service.model_id}")
+            link = self._request_json(f"{base}/api/trainee-link")
             self.assertEqual(
                 link["external_api"]["realtime_inputs"],
                 f"/api/external/realtime-inputs?model_id={service.model_id}",

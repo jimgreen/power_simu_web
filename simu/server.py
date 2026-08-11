@@ -19,7 +19,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, List, Mapping, Optional, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
@@ -85,6 +85,8 @@ try:
         TraineeRenewableControlLifecycleError,
         TraineeRenewableControlManager,
     )
+    from .simulator_cluster import SimulatorClusterManager
+    from .simulator_proxy import make_simulator_proxy_server
     from .trainee_exchange import TraineeExchangeLifecycleError, TraineeRealtimeExchange
     from .trainee_data_policy import (
         strip_trainee_truth_from_measurement_delta,
@@ -120,6 +122,8 @@ except ImportError:  # pragma: no cover - legacy package compatibility.
         TraineeRenewableControlLifecycleError,
         TraineeRenewableControlManager,
     )
+    from simulator_cluster import SimulatorClusterManager
+    from simulator_proxy import make_simulator_proxy_server
     from trainee_exchange import TraineeExchangeLifecycleError, TraineeRealtimeExchange
     from trainee_data_policy import (
         strip_trainee_truth_from_measurement_delta,
@@ -1397,6 +1401,7 @@ def make_http_server(
     sim_url: Optional[str] = None,
     trainee_exchange: Optional[TraineeRealtimeExchange] = None,
     renewable_control_manager: Optional[TraineeRenewableControlManager] = None,
+    direct_simulator_ui: bool = False,
 ) -> ThreadingHTTPServer:
     role = role.lower()
     if static_root is None:
@@ -1512,6 +1517,14 @@ def make_http_server(
                 if self.path.startswith("/api/"):
                     self._handle_api_get()
                     return
+                if direct_simulator_ui and role == "simulator" and path in {"", "/", "/index.html"}:
+                    ui_mode = (parse_qs(urlparse(self.path).query).get("ui") or [""])[0]
+                    if ui_mode != "direct":
+                        self.send_response(302)
+                        self._cors(cache_control="no-cache")
+                        self.send_header("Location", "/?ui=direct")
+                        self.end_headers()
+                        return
                 self._serve_static(static_root)
             except JsonApiError as exc:
                 self._send_json(
@@ -1697,7 +1710,7 @@ def make_http_server(
             model_id = str(model.get("id", target.model_id))
             base_url = self._request_base_url()
             encoded_model_id = quote(model_id, safe="")
-            link = f"{base_url}/api/trainee-link?model_id={encoded_model_id}"
+            link = f"{base_url}/api/trainee-link"
             external_api = {
                 "devices": f"/api/external/devices?model_id={encoded_model_id}",
                 "realtime_inputs": f"{external_realtime_inputs_path}?model_id={encoded_model_id}",
@@ -1765,29 +1778,6 @@ def make_http_server(
             except json.JSONDecodeError as exc:
                 raise JsonApiError(502, "模拟台返回内容不是有效 JSON") from exc
 
-        def _legacy_trainee_connection_from_link(self, raw_link: str, parsed: Any) -> Optional[Mapping[str, Any]]:
-            path = parsed.path.replace("//", "/").rstrip("/")
-            if path not in {"/api/trainee-link", "/api/client-link"}:
-                return None
-            values = parse_qs(parsed.query)
-            model_id = (values.get("model_id") or values.get("model") or [""])[0]
-            if not model_id:
-                return None
-            encoded_model_id = quote(model_id, safe="")
-            base_url = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
-            return {
-                "type": "polar-microgrid-trainee-link",
-                "role": "simulator",
-                "link": raw_link,
-                "teacher_api_base": base_url,
-                "model_id": model_id,
-                "model_name": model_id,
-                "snapshot_path": f"/api/snapshot?model_id={encoded_model_id}&trainee_view=1",
-                "command_path": f"/api/student/commands?model_id={encoded_model_id}",
-                "measurement_delta_path": f"/api/measurements/delta?model_id={encoded_model_id}&trainee_view=1",
-                "definition_archive_path": f"/api/export-definitions?format=json&model_id={encoded_model_id}",
-            }
-
         def _resolve_trainee_connection(self, raw_link: str) -> Mapping[str, Any]:
             raw = str(raw_link or "").strip()
             if not raw:
@@ -1795,14 +1785,7 @@ def make_http_server(
             parsed = urlparse(raw)
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
                 raise JsonApiError(400, "交互链接必须是完整的 http 或 https 地址")
-            try:
-                payload = self._json_request_to_url(raw)
-            except JsonApiError as exc:
-                legacy = self._legacy_trainee_connection_from_link(raw, parsed)
-                if legacy and exc.status == 404:
-                    payload = legacy
-                else:
-                    raise
+            payload = self._json_request_to_url(raw)
             if not isinstance(payload, Mapping):
                 raise JsonApiError(400, "交互链接返回内容不是对象")
             if payload.get("type") != "polar-microgrid-trainee-link" or payload.get("role") != "simulator":
@@ -2060,6 +2043,8 @@ def make_http_server(
                 health = {
                     "ok": True,
                     "role": role,
+                    "model_id": target.model_id,
+                    "model_name": target.model_name,
                     "process": _process_health_payload(),
                     "compute": dict(getattr(target, "latest_compute", {}) or {}),
                 }
@@ -2384,6 +2369,14 @@ def make_http_server(
                     )
                 self._send_json(strip_trainee_truth_from_measurement_history(history_payload))
             elif path in ("/api/trainee-link", "/api/client-link"):
+                link_query = parse_qs(urlparse(self.path).query)
+                if not hasattr(service, "service_for") and any(
+                    key in link_query for key in ("model_id", "model")
+                ):
+                    raise JsonApiError(
+                        400,
+                        "单模型模拟服务交互链接不接受 model_id，请直接使用 /api/trainee-link。",
+                    )
                 self._send_json(self._trainee_link_payload(target))
             elif path == "/api/config":
                 runtime_settings = target.web_runtime_settings(role)["settings"]
@@ -2940,7 +2933,11 @@ def start_clock_workers(
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Serve polar microgrid simulator or trainee console.")
-    parser.add_argument("--role", choices=("simulator", "trainee"), default="simulator")
+    parser.add_argument(
+        "--role",
+        choices=("simulator", "simulator-service", "trainee"),
+        default="simulator",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--sim-dir", default=str(simu_loop.SIMU_DIR))
@@ -2949,9 +2946,28 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=None,
         help="Directory whose direct subfolders are simulation models. Defaults to models/<role>/source.",
     )
+    parser.add_argument("--model-id", default=None, help="Single model id for simulator-service mode.")
+    parser.add_argument("--model-dir", default=None, help="Single source model directory for simulator-service mode.")
     parser.add_argument("--runtime-dir", default=None)
     parser.add_argument("--sim-url", default=None, help="Simulator API base URL for trainee proxy mode.")
     parser.add_argument("--static-root", default=None)
+    parser.add_argument(
+        "--service-host",
+        default="127.0.0.1",
+        help="Host assigned to per-model simulator services managed by the simulator proxy.",
+    )
+    parser.add_argument(
+        "--first-service-port",
+        type=int,
+        default=8711,
+        help="First stable port assigned to a per-model simulator service.",
+    )
+    parser.add_argument(
+        "--service-startup-timeout-seconds",
+        type=float,
+        default=30.0,
+        help="Maximum time for a per-model simulator service to become healthy.",
+    )
     parser.add_argument("--no-worker", action="store_true", help="Do not start automatic clock worker.")
     parser.add_argument("--noise-std", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
@@ -2973,10 +2989,99 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
-    port = args.port if args.port is not None else (8720 if args.role == "trainee" else 8710)
     sim_dir = Path(args.sim_dir).resolve()
-    runtime_dir = Path(args.runtime_dir).resolve() if args.runtime_dir else _default_runtime_dir(sim_dir, args.role)
-    models_dir = Path(args.models_dir).resolve() if args.models_dir else _default_models_dir(sim_dir, args.role)
+    if args.role == "simulator":
+        port = args.port if args.port is not None else 8710
+        runtime_dir = (
+            Path(args.runtime_dir).resolve()
+            if args.runtime_dir
+            else _default_runtime_dir(sim_dir, "simulator")
+        )
+        models_dir = (
+            Path(args.models_dir).resolve()
+            if args.models_dir
+            else _default_models_dir(sim_dir, "simulator")
+        )
+        static_root = Path(args.static_root).resolve() if args.static_root else WEB_DIR / "simulator"
+        manager = SimulatorClusterManager(
+            sim_dir=sim_dir,
+            models_root=models_dir,
+            runtime_root=runtime_dir,
+            service_host=args.service_host,
+            first_service_port=args.first_service_port,
+            compute_interval_seconds=args.compute_interval_seconds,
+            child_no_worker=args.no_worker,
+            noise_std=args.noise_std,
+            random_seed=args.seed,
+            startup_timeout_seconds=args.service_startup_timeout_seconds,
+        )
+        server = make_simulator_proxy_server(
+            (args.host, port),
+            manager,
+            static_root=static_root,
+        )
+        print(f"simulator proxy: http://{args.host}:{port}/")
+        print(f"runtime dir: {runtime_dir}")
+        print(f"models dir: {manager.models_root}")
+        print(f"models: {', '.join(item['id'] for item in manager.models())}")
+        print("data plane: browser and trainee services connect directly to per-model simulator services")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.shutdown()
+            server.server_close()
+        return 0
+
+    if args.role == "simulator-service":
+        if not str(args.model_id or "").strip():
+            raise SystemExit("--model-id is required for simulator-service mode")
+        if not str(args.model_dir or "").strip():
+            raise SystemExit("--model-dir is required for simulator-service mode")
+        port = args.port if args.port is not None else 8711
+        runtime_dir = (
+            Path(args.runtime_dir).resolve()
+            if args.runtime_dir
+            else _default_runtime_dir(sim_dir, "simulator") / str(args.model_id)
+        )
+        service = PolarMicrogridSimulator(
+            sim_dir=Path(args.model_dir).resolve(),
+            runtime_dir=runtime_dir,
+            noise_std=args.noise_std,
+            random_seed=args.seed,
+            compute_interval_seconds=args.compute_interval_seconds,
+            model_id=str(args.model_id),
+            model_name=str(args.model_id),
+            clear_commands_on_start_and_reset=True,
+        )
+        server = make_http_server(
+            (args.host, port),
+            service,
+            role="simulator",
+            static_root=args.static_root,
+            direct_simulator_ui=True,
+        )
+        stop_event = threading.Event()
+        workers = [] if args.no_worker else start_clock_workers(service, stop_event)
+        print(f"simulator service [{service.model_id}]: http://{args.host}:{port}/?ui=direct")
+        print(f"runtime dir: {runtime_dir}")
+        print(f"model dir: {service.sim_dir}")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            stop_event.set()
+            for worker in workers:
+                worker.join(timeout=2)
+            server.shutdown()
+            server.server_close()
+        return 0
+
+    port = args.port if args.port is not None else 8720
+    runtime_dir = Path(args.runtime_dir).resolve() if args.runtime_dir else _default_runtime_dir(sim_dir, "trainee")
+    models_dir = Path(args.models_dir).resolve() if args.models_dir else _default_models_dir(sim_dir, "trainee")
     service = MultiModelSimulator.discover(
         sim_dir=sim_dir,
         runtime_dir=runtime_dir,
@@ -2985,18 +3090,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         compute_interval_seconds=args.compute_interval_seconds,
         models_dir=models_dir,
         kernel_runner=None,
-        runtime_role=args.role,
+        runtime_role="trainee",
     )
     server = make_http_server(
         (args.host, port),
         service,
-        role=args.role,
+        role="trainee",
         static_root=args.static_root,
         sim_url=args.sim_url,
     )
     stop_event = threading.Event()
     workers = [] if args.no_worker else start_clock_workers(service, stop_event)
-    print(f"{args.role} console: http://{args.host}:{port}/")
+    print(f"trainee console: http://{args.host}:{port}/")
     print(f"runtime dir: {runtime_dir}")
     print(f"models dir: {service.models_root}")
     print(f"models: {', '.join(item['id'] for item in service.models())}")

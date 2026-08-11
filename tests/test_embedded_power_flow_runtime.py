@@ -64,12 +64,16 @@ class EmbeddedPowerFlowRuntimeTest(unittest.TestCase):
         import simu.power_flow_worker as worker_module
         import simu.server as server_module
 
-        class FakeService:
+        class FakeManager:
             models_root = Path("models")
 
             @staticmethod
             def models():
                 return [{"id": "embedded"}]
+
+            @staticmethod
+            def close():
+                return None
 
         class FakeServer:
             def serve_forever(self):
@@ -81,7 +85,7 @@ class EmbeddedPowerFlowRuntimeTest(unittest.TestCase):
             def server_close(self):
                 return None
 
-        fake_service = FakeService()
+        fake_manager = FakeManager()
         with (
             patch.object(
                 worker_module.PowerFlowProcessRunner,
@@ -89,11 +93,11 @@ class EmbeddedPowerFlowRuntimeTest(unittest.TestCase):
                 side_effect=AssertionError("process runner created"),
             ),
             patch.object(
-                server_module.MultiModelSimulator,
-                "discover",
-                return_value=fake_service,
-            ) as discover,
-            patch.object(server_module, "make_http_server", return_value=FakeServer()),
+                server_module,
+                "SimulatorClusterManager",
+                return_value=fake_manager,
+            ) as manager_factory,
+            patch.object(server_module, "make_simulator_proxy_server", return_value=FakeServer()),
         ):
             rc = server_module.main(
                 [
@@ -106,8 +110,8 @@ class EmbeddedPowerFlowRuntimeTest(unittest.TestCase):
             )
 
         self.assertEqual(rc, 0)
-        self.assertIsNone(discover.call_args.kwargs["kernel_runner"])
-        self.assertEqual(discover.call_args.kwargs["runtime_role"], "simulator")
+        self.assertEqual(manager_factory.call_args.kwargs["compute_interval_seconds"], 1.0)
+        self.assertTrue(manager_factory.call_args.kwargs["child_no_worker"])
 
 
 if __name__ == "__main__":

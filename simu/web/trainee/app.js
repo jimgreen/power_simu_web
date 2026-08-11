@@ -2443,17 +2443,7 @@ function appendUrlQuery(url, params) {
 
 function teacherSnapshotPath() {
   if (state.teacherSnapshotPath) return state.teacherSnapshotPath;
-  try {
-    const legacyConnection = state.interactionLink
-      ? legacyTeacherInteractionConnection(normalizeConnectionUrl(state.interactionLink))
-      : null;
-    if (legacyConnection?.snapshotPath) return legacyConnection.snapshotPath;
-  } catch (_error) {
-    // Ignore malformed cached links; fall back to the currently selected model.
-  }
-  return state.activeModelId
-    ? `/api/snapshot?model_id=${encodeURIComponent(state.activeModelId)}`
-    : "/api/snapshot";
+  return "/api/snapshot";
 }
 
 function teacherReceiveAddress() {
@@ -7116,25 +7106,6 @@ function normalizeConnectionUrl(value) {
   const url = new URL(raw, location.href);
   if (!/^https?:$/.test(url.protocol)) throw new Error("交互链接必须是 http 或 https 地址。");
   return url;
-}
-
-function legacyTeacherInteractionConnection(url) {
-  const path = url.pathname.replace(/\/+$/, "");
-  if (!["/api/trainee-link", "/api/client-link"].includes(path)) {
-    return null;
-  }
-  const modelId = url.searchParams.get("model_id") || url.searchParams.get("model") || "";
-  if (!modelId) return null;
-  const encodedModelId = encodeURIComponent(modelId);
-  return {
-    link: url.href,
-    teacherApiBase: url.origin,
-    modelId: String(modelId),
-    modelName: String(modelId),
-    snapshotPath: `/api/snapshot?model_id=${encodedModelId}`,
-    commandPath: `/api/student/commands?model_id=${encodedModelId}`,
-    measurementDeltaPath: `/api/measurements/delta?model_id=${encodedModelId}`,
-  };
 }
 
 function teacherConnectionFromPayload(payload = {}, fallbackLink = "") {

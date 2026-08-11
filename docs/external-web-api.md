@@ -2,10 +2,52 @@
 
 ## 1. 访问入口
 
-外部程序首先读取模型交互链接：
+模拟台采用 `1+N` 服务结构。`8710` 是代理 WEB 控制面，只提供模型服务发现和启停管理；每个模型由独立模拟服务进程运行，并拥有独立的 `IP:端口`。实时量测、控制、曲线和外部输入不经过代理转发。
+
+外部程序首先从代理查询全部模型服务：
+
+```http
+GET http://127.0.0.1:8710/api/models
+```
+
+选择目标模型后，读取该模型的 `service.base_url`：
+
+```json
+{
+  "id": "秦岭站",
+  "service": {
+    "state": "running",
+    "healthy": true,
+    "host": "127.0.0.1",
+    "port": 8712,
+    "base_url": "http://127.0.0.1:8712"
+  }
+}
+```
+
+若服务未运行，可通过代理启动：
+
+```http
+POST http://127.0.0.1:8710/api/simulator-services/start
+Content-Type: application/json
+
+{"model_id":"秦岭站"}
+```
+
+交互链接支持两种访问方式。
+
+方式一，由代理按模型标识中转一次链接发现请求：
 
 ```http
 GET http://127.0.0.1:8710/api/trainee-link?model_id=秦岭站
+```
+
+代理根据 `model_id` 找到已启动的模型模拟服务，读取交互信息后原样返回，并把 `link` 保留为代理发现地址。返回中的 `teacher_api_base`、快照、量测增量和控制路径仍指向模型模拟服务，后续实时数据不经过代理。
+
+方式二，直接从已知的模型模拟服务读取交互链接；单模型服务地址不再携带冗余的 `model_id`：
+
+```http
+GET http://127.0.0.1:8712/api/trainee-link
 ```
 
 返回中的 `teacher_api_base` 是接口根地址，`external_api` 给出本模型的全部外部接口路径：
@@ -33,6 +75,16 @@ GET http://127.0.0.1:8710/api/trainee-link?model_id=秦岭站
 ```
 
 `model_id` 应当进行 URL 编码。外部程序不要自行拼接后续路径，优先采用交互链接返回的 `external_api`。
+
+除低频的 `/api/trainee-link?model_id=...` 链接发现外，代理对 `/api/snapshot`、`/api/measurements/delta`、`/api/student/commands` 等运行数据接口返回 `404`；调用方必须使用返回的 `teacher_api_base` 或选中模型的 `service.base_url`，从而避免代理中转实时数据。
+
+每个已启动的模型模拟服务还提供独立直连 WEB 界面：
+
+```text
+http://127.0.0.1:8712/?ui=direct
+```
+
+直接访问模型服务根地址时会自动进入该界面。界面只显示并控制当前服务对应的一个模型，不提供模型服务启停、模型切换或其他模拟服务入口；快照、量测增量、曲线、控制指令和交互链接均由浏览器直接请求当前模型模拟服务，不经过 `8710` 代理。
 
 ## 2. 一致性校验
 

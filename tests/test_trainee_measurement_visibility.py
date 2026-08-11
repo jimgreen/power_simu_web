@@ -168,7 +168,7 @@ class TraineeMeasurementVisibilityTest(unittest.TestCase):
                 trainee_delta = get_json(
                     "/api/measurements/delta?model_id=simple_model&compact=1&trainee_view=1"
                 )
-                link = get_json("/api/trainee-link?model_id=simple_model")
+                link = get_json("/api/trainee-link")
             finally:
                 server.shutdown()
                 server.server_close()

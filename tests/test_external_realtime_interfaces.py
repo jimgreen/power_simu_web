@@ -135,7 +135,7 @@ class ExternalRealtimeInterfacesTest(unittest.TestCase):
         try:
             port = server.server_address[1]
             base = f"http://127.0.0.1:{port}"
-            with urlopen(f"{base}/api/trainee-link?model_id=simple_model", timeout=5) as response:
+            with urlopen(f"{base}/api/trainee-link", timeout=5) as response:
                 link = json.loads(response.read().decode("utf-8"))
             history_request = Request(
                 base + link["external_api"]["measurement_history"],
@@ -477,7 +477,7 @@ class ExternalRealtimeInterfacesTest(unittest.TestCase):
         try:
             port = server.server_address[1]
             base = f"http://127.0.0.1:{port}"
-            with urlopen(f"{base}/api/trainee-link?model_id=simple_model", timeout=5) as response:
+            with urlopen(f"{base}/api/trainee-link", timeout=5) as response:
                 link = json.loads(response.read().decode("utf-8"))
 
             paths = link["external_api"]

@@ -13,6 +13,7 @@ from unittest.mock import patch
 import simu.server as server_module
 from simu.generate_simple_model import write_model_dir
 from simu.server import make_http_server
+from simu.simulator_proxy import make_simulator_proxy_server
 from simu.service import MultiModelSimulator, PolarMicrogridSimulator, SimulationModelSpec
 from simu.trainee_exchange import TraineeRealtimeExchange
 from tests.model_fixtures import SIMPLE_MODEL_SOURCE
@@ -36,6 +37,31 @@ class RecordingRenewableManager:
 
     def close(self):
         self.closed += 1
+
+
+class RunningSingleServiceManager:
+    def __init__(self, model_id: str, base_url: str) -> None:
+        self.model_id = model_id
+        self.base_url = base_url
+
+    def model_info(self, model_id):
+        if str(model_id) != self.model_id:
+            raise KeyError(model_id)
+        return {
+            "id": self.model_id,
+            "name": self.model_id,
+            "service": {
+                "state": "running",
+                "healthy": True,
+                "base_url": self.base_url,
+            },
+        }
+
+    def catalog(self):
+        return {"models": [self.model_info(self.model_id)], "active_model_id": self.model_id}
+
+    def close(self):
+        return None
 
 
 class CoordinatedDefinitionLock:
@@ -201,7 +227,7 @@ class TraineeModelInitializationTest(unittest.TestCase):
             try:
                 simulator_port = simulator_server.server_address[1]
                 trainee_port = trainee_server.server_address[1]
-                link = f"http://127.0.0.1:{simulator_port}/api/trainee-link?model_id=remote_model"
+                link = f"http://127.0.0.1:{simulator_port}/api/trainee-link"
                 payload = self._post_json(
                     f"http://127.0.0.1:{trainee_port}/api/trainee/model-initialize",
                     {"model_id": "local_b", "link": link},
@@ -298,21 +324,44 @@ class TraineeModelInitializationTest(unittest.TestCase):
             trainee_thread = threading.Thread(target=trainee_server.serve_forever, daemon=True)
             simulator_thread.start()
             trainee_thread.start()
+            proxy_server = None
+            proxy_thread = None
             try:
                 simulator_port = simulator_server.server_address[1]
                 trainee_port = trainee_server.server_address[1]
-                link = f"http://127.0.0.1:{simulator_port}/api/trainee-link?model_id=remote_model"
+                proxy_static = root / "proxy-static"
+                proxy_static.mkdir()
+                (proxy_static / "index.html").write_text("proxy-ui", encoding="utf-8")
+                proxy_server = make_simulator_proxy_server(
+                    ("127.0.0.1", 0),
+                    RunningSingleServiceManager(
+                        "remote_model",
+                        f"http://127.0.0.1:{simulator_port}",
+                    ),
+                    static_root=proxy_static,
+                )
+                proxy_thread = threading.Thread(target=proxy_server.serve_forever, daemon=True)
+                proxy_thread.start()
+                link = (
+                    f"http://127.0.0.1:{proxy_server.server_address[1]}"
+                    "/api/trainee-link?model_id=remote_model"
+                )
                 self._post_json(
                     f"http://127.0.0.1:{trainee_port}/api/trainee/model-initialize",
                     {"model_id": "local_b", "link": link},
                 )
             finally:
+                if proxy_server is not None:
+                    proxy_server.shutdown()
+                    proxy_server.server_close()
                 trainee_server.shutdown()
                 simulator_server.shutdown()
                 trainee_server.server_close()
                 simulator_server.server_close()
                 trainee_thread.join(timeout=5)
                 simulator_thread.join(timeout=5)
+                if proxy_thread is not None:
+                    proxy_thread.join(timeout=5)
 
             local_b = trainee.service_for("local_b")
             self.assertEqual(self._tree_bytes(simulator.sim_dir), simulator_source_before)
@@ -424,7 +473,7 @@ class TraineeModelInitializationTest(unittest.TestCase):
             try:
                 simulator_port = simulator_server.server_address[1]
                 trainee_port = trainee_server.server_address[1]
-                link = f"http://127.0.0.1:{simulator_port}/api/trainee-link?model_id=remote_model"
+                link = f"http://127.0.0.1:{simulator_port}/api/trainee-link"
                 initialize_url = f"http://127.0.0.1:{trainee_port}/api/trainee/model-initialize"
                 self._post_json(initialize_url, {"model_id": "local_b", "link": link})
 
@@ -542,7 +591,7 @@ class TraineeModelInitializationTest(unittest.TestCase):
                 self.assertTrue(local_delta["definition_signature"])
                 self.assertTrue(local_archive["filename"].startswith("local_b_"))
 
-                link = f"http://127.0.0.1:{simulator_server.server_address[1]}/api/trainee-link?model_id=remote_model"
+                link = f"http://127.0.0.1:{simulator_server.server_address[1]}/api/trainee-link"
                 initialized = self._post_json(
                     f"{trainee_base}/api/trainee/model-initialize",
                     {"model_id": "local_b", "link": link},
@@ -602,7 +651,7 @@ class TraineeModelInitializationTest(unittest.TestCase):
                 self.assertIn("模型初始化", error_body)
 
                 simulator_port = simulator_server.server_address[1]
-                link = f"http://127.0.0.1:{simulator_port}/api/trainee-link?model_id=remote_model"
+                link = f"http://127.0.0.1:{simulator_port}/api/trainee-link"
                 self._post_json(
                     f"http://127.0.0.1:{trainee_port}/api/trainee/model-initialize",
                     {"model_id": "local_b", "link": link},
@@ -671,7 +720,7 @@ class TraineeModelInitializationTest(unittest.TestCase):
             try:
                 simulator_port = simulator_server.server_address[1]
                 trainee_port = trainee_server.server_address[1]
-                link = f"http://127.0.0.1:{simulator_port}/api/trainee-link?model_id=remote_model"
+                link = f"http://127.0.0.1:{simulator_port}/api/trainee-link"
                 with self.assertRaises(HTTPError) as raised:
                     self._post_json(
                         f"http://127.0.0.1:{trainee_port}/api/trainee/model-initialize",
@@ -720,7 +769,7 @@ class TraineeModelInitializationTest(unittest.TestCase):
             trainee_thread.start()
             simulator_port = simulator_server.server_address[1]
             trainee_port = trainee_server.server_address[1]
-            link = f"http://127.0.0.1:{simulator_port}/api/trainee-link?model_id=remote_model"
+            link = f"http://127.0.0.1:{simulator_port}/api/trainee-link"
             result = {}
 
             def initialize_old_target():
@@ -800,7 +849,7 @@ class TraineeModelInitializationTest(unittest.TestCase):
             trainee_thread.start()
             simulator_port = simulator_server.server_address[1]
             trainee_port = trainee_server.server_address[1]
-            link = f"http://127.0.0.1:{simulator_port}/api/trainee-link?model_id=remote_model"
+            link = f"http://127.0.0.1:{simulator_port}/api/trainee-link"
             result = {}
 
             def initialize_model():
@@ -872,7 +921,7 @@ class TraineeModelInitializationTest(unittest.TestCase):
             trainee_thread.start()
             simulator_port = simulator_server.server_address[1]
             trainee_port = trainee_server.server_address[1]
-            link = f"http://127.0.0.1:{simulator_port}/api/trainee-link?model_id=remote_model"
+            link = f"http://127.0.0.1:{simulator_port}/api/trainee-link"
 
             def commit_control_generation():
                 try:

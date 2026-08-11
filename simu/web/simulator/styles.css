@@ -131,6 +131,46 @@ h1 {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.model-service-control {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+}
+.model-service-state {
+  min-width: 44px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.model-service-state[data-state="running"] { color: #16754f; }
+.model-service-state[data-state="failed"] { color: #b34242; }
+.model-service-state[data-state="starting"],
+.model-service-state[data-state="stopping"] { color: #8a6417; }
+.model-service-toggle {
+  height: 32px;
+  min-width: 58px;
+  padding: 0 10px;
+  border-color: rgba(0, 140, 140, 0.34);
+  color: var(--teal-dark);
+  white-space: nowrap;
+}
+.model-service-toggle[data-action="stop"] {
+  border-color: rgba(179, 66, 66, 0.42);
+  color: #9f3434;
+}
+html[data-simulator-ui-mode="direct"] .model-management-button,
+html[data-simulator-ui-mode="direct"] .model-switcher select,
+html[data-simulator-ui-mode="direct"] .model-service-control {
+  display: none;
+}
+html[data-simulator-ui-mode="direct"] .model-switcher span {
+  display: block !important;
+  flex: 0 1 180px;
+  min-width: 80px;
+  max-width: 180px;
+}
 .simulation-mode-switcher {
   flex: 0 0 auto;
   display: flex;
@@ -642,6 +682,49 @@ h1 {
 .topbar-clock-controls .icon-button svg {
   width: 20px;
   height: 20px;
+}
+
+@media (max-width: 1500px) and (min-width: 821px) {
+  .topbar {
+    padding: 10px 14px;
+    gap: 10px;
+  }
+  .brand {
+    gap: 8px;
+  }
+  .brand-mark {
+    width: 32px;
+    height: 32px;
+  }
+  .brand h1 {
+    font-size: 17px;
+  }
+  .model-toolbar {
+    gap: 6px;
+  }
+  .model-switcher {
+    gap: 4px;
+  }
+  .model-switcher select {
+    min-width: 138px;
+    flex-basis: 150px;
+  }
+  .model-switcher span,
+  .simulation-mode-switcher > span,
+  .topbar-clock-controls .overview-clock-control-label {
+    display: none;
+  }
+  .model-service-control {
+    gap: 4px;
+  }
+  .topbar-clock-controls .overview-clock-button-group {
+    gap: 4px;
+  }
+  .topbar-clock-controls .icon-button {
+    flex-basis: 34px;
+    width: 34px;
+    height: 34px;
+  }
 }
 .overview-status-primary,
 .overview-status-tail {

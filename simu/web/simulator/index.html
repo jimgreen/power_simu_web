@@ -1,9 +1,15 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-simulator-ui-mode="proxy">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>极地微电网模拟台</title>
+    <script>
+      const searchParams = new URLSearchParams(window.location.search);
+      if (searchParams.get("ui") === "direct") {
+        document.documentElement.dataset.simulatorUiMode = "direct";
+      }
+    </script>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -23,7 +29,11 @@
             </select>
             <span id="activeModelName">默认模型</span>
           </label>
-          <label class="simulation-mode-switcher">仿真模式
+          <div class="model-service-control" aria-label="选中模型模拟服务">
+            <span id="modelServiceState" class="model-service-state" data-state="stopped">已停止</span>
+            <button id="modelServiceToggle" class="model-service-toggle" type="button">启动</button>
+          </div>
+          <label class="simulation-mode-switcher"><span>仿真模式</span>
             <select id="simulationModeSelector" title="选择时、日、周、月或年仿真">
               <option value="hour">时仿真</option>
               <option value="day">日仿真</option>

@@ -1,4 +1,10 @@
-const apiBase = (window.POLAR_SIM_API_URL || localStorage.getItem("polarSimApiUrl") || location.origin).replace(/\/$/, "");
+const directSimulatorServiceMode = document.documentElement.dataset.simulatorUiMode === "direct";
+const directSimulatorServiceApiBase = (
+  new URLSearchParams(location.search).get("service")
+  || window.POLAR_SIM_SERVICE_URL
+  || location.origin
+).replace(/\/$/, "");
+const controlPlaneApiBase = (window.POLAR_SIM_API_URL || localStorage.getItem("polarSimApiUrl") || location.origin).replace(/\/$/, "");
 const OVERVIEW_BOTTOM_HEIGHT_KEY = "polarOverviewBottomHeight";
 const OVERVIEW_BOTTOM_DEFAULT_HEIGHT = 156;
 const OVERVIEW_BOTTOM_MIN_HEIGHT = 96;
@@ -43,6 +49,8 @@ const state = {
   pageMain: null,
   models: [],
   modelsLoaded: false,
+  modelServiceOperationActive: false,
+  serviceCatalogLastLoadedAt: 0,
   activeModelId: localStorage.getItem("polarSimulatorModelId") || "",
   manualDefinitionChanges: [],
   manualDefinitionChangesRevision: 0,
@@ -236,7 +244,8 @@ async function runRefreshScheduler() {
   state.frontendRefreshTimerId = null;
   const startedAtMs = Date.now();
   try {
-    await refresh();
+    await refreshServiceCatalog();
+    if (activeModelServiceRunning()) await refresh();
   } finally {
     const elapsedMs = Date.now() - startedAtMs;
     scheduleNextRefresh(Math.max(0, refreshSchedulerIntervalMs() - elapsedMs));
@@ -1295,7 +1304,7 @@ function applyWebRuntimeSettings() {
 
 async function loadWebRuntimeSettings(force = false) {
   const modelId = state.activeModelId;
-  if (!modelId) return null;
+  if (!modelId || !activeModelServiceRunning()) return null;
   if (!force && state.webRuntimeLoadedModelId === modelId) {
     renderWebRuntimeSettings();
     return state.webRuntimeSettings;
@@ -1601,6 +1610,8 @@ function setModelManagementMessage(text, kind = "") {
 
 function modelClockState(model) {
   const modelId = String(model?.id || "");
+  const serviceState = String(model?.service?.state || "stopped");
+  if (serviceState !== "running") return "stopped";
   if (modelId && modelId === state.activeModelId && state.snapshot?.clock?.state) {
     return state.snapshot.clock.state;
   }
@@ -1830,6 +1841,7 @@ async function createNewModelFromFile() {
       : "";
     const result = await api("/api/models/create", {
       modelScoped: false,
+      controlPlane: true,
       method: "POST",
       body: JSON.stringify({
         name,
@@ -1981,6 +1993,7 @@ async function updateModelFromFile() {
       : "";
     const result = await api("/api/models/update-definitions", {
       modelScoped: false,
+      controlPlane: true,
       method: "POST",
       body: JSON.stringify({
         model_id: modelId,
@@ -2142,6 +2155,7 @@ async function cloneCurrentModel() {
     const sourceModelId = state.cloneSourceModelId || state.activeModelId || "";
     const result = await api("/api/models/clone", {
       modelScoped: false,
+      controlPlane: true,
       method: "POST",
       body: JSON.stringify({ model_id: sourceModelId, name }),
     });
@@ -2254,6 +2268,8 @@ async function importDefinitionModel() {
   try {
     const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
     const result = await api("/api/models/import-definitions", {
+      modelScoped: false,
+      controlPlane: true,
       method: "POST",
       body: JSON.stringify({
         create_model: true,
@@ -2385,6 +2401,31 @@ function modelScopedPath(path) {
   return `${path}${separator}model_id=${encodeURIComponent(state.activeModelId)}`;
 }
 
+function activeModelService() {
+  const model = state.models.find((item) => item.id === state.activeModelId);
+  if (model?.service) return model.service;
+  return directSimulatorServiceMode
+    ? {
+        state: "running",
+        healthy: true,
+        base_url: directSimulatorServiceApiBase,
+      }
+    : {};
+}
+
+function activeModelServiceBase() {
+  if (directSimulatorServiceMode) return directSimulatorServiceApiBase;
+  return String(activeModelService().base_url || "").replace(/\/$/, "");
+}
+
+function activeModelServiceRunning() {
+  if (directSimulatorServiceMode) {
+    return Boolean(state.activeModelId && directSimulatorServiceApiBase);
+  }
+  const service = activeModelService();
+  return service.state === "running" && service.healthy !== false && Boolean(service.base_url);
+}
+
 function recordFrontendRequestDiagnostics(path, response, durationMs) {
   const diagnostics = state.frontendDiagnostics;
   const responseBytes = Math.max(0, Number(response?.headers?.get?.("Content-Length")) || 0);
@@ -2400,11 +2441,19 @@ function recordFrontendRequestDiagnostics(path, response, durationMs) {
 async function api(path, options = {}) {
   const {
     modelScoped = true,
+    controlPlane = false,
     timeoutMs = frontendRequestTimeoutMs(),
     signal: callerSignal,
     ...fetchOptions
   } = options;
+  if (directSimulatorServiceMode && controlPlane) {
+    throw new Error("直连模拟服务界面不提供代理控制面操作");
+  }
   const targetPath = modelScoped ? modelScopedPath(path) : path;
+  const requestBase = controlPlane ? controlPlaneApiBase : activeModelServiceBase();
+  if (!requestBase) {
+    throw new Error("选中模型的模拟服务尚未启动");
+  }
   const requestStartedAtMs = performance.now();
   const controller = new AbortController();
   const boundedTimeout = Math.max(0, Number(timeoutMs) || 0);
@@ -2421,7 +2470,7 @@ async function api(path, options = {}) {
     else callerSignal.addEventListener("abort", abortFromCaller, { once: true });
   }
   try {
-    const response = await fetch(`${apiBase}${targetPath}`, {
+    const response = await fetch(`${requestBase}${targetPath}`, {
       ...fetchOptions,
       signal: controller.signal,
       headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) },
@@ -3110,7 +3159,7 @@ function snapshotPollPath(page = currentPageName(), forceStaticKeys = null) {
 
 function apiUrl(path, modelScoped = true) {
   const targetPath = modelScoped ? modelScopedPath(path) : path;
-  return `${apiBase}${targetPath}`;
+  return `${activeModelServiceBase()}${targetPath}`;
 }
 
 function mergeRuntimeLogItems(items = [], { reset = false, latestSeq = 0, total = null } = {}) {
@@ -3612,6 +3661,7 @@ async function deleteManagedModel(modelId) {
   try {
     const result = await api("/api/models/delete", {
       modelScoped: false,
+      controlPlane: true,
       method: "POST",
       body: JSON.stringify({ model_id: modelId }),
     });
@@ -3737,9 +3787,49 @@ function activeModelInfo() {
 
 function generatedTraineeLink(modelId) {
   const id = String(modelId || state.activeModelId || "").trim();
+  const serviceBase = activeModelServiceBase();
+  if (!serviceBase) return "";
+  if (directSimulatorServiceMode) return `${serviceBase}/api/trainee-link`;
   return id
-    ? `${apiBase}/api/trainee-link?model_id=${encodeURIComponent(id)}`
-    : `${apiBase}/api/trainee-link`;
+    ? `${controlPlaneApiBase}/api/trainee-link?model_id=${encodeURIComponent(id)}`
+    : "";
+}
+
+function modelServiceStateLabel(service = activeModelService()) {
+  const labels = {
+    running: "运行中",
+    starting: "启动中",
+    stopping: "停止中",
+    failed: "异常",
+    stopped: "已停止",
+  };
+  return labels[service.state] || "未知";
+}
+
+function renderModelServiceControl() {
+  if (directSimulatorServiceMode) return;
+  const service = activeModelService();
+  const stateElement = $("modelServiceState");
+  const button = $("modelServiceToggle");
+  const serviceState = service.state || "stopped";
+  if (stateElement) {
+    stateElement.textContent = modelServiceStateLabel(service);
+    stateElement.dataset.state = serviceState;
+    stateElement.title = service.error || service.base_url || "";
+  }
+  if (!button) return;
+  const running = serviceState === "running";
+  button.textContent = running ? "停止" : "启动";
+  button.dataset.action = running ? "stop" : "start";
+  button.disabled = (
+    !state.activeModelId
+    || state.modelServiceOperationActive
+    || serviceState === "starting"
+    || serviceState === "stopping"
+  );
+  button.title = service.base_url
+    ? `${running ? "停止" : "启动"} ${service.base_url}`
+    : `${running ? "停止" : "启动"}选中模型的模拟服务`;
 }
 
 function setTraineeLinkCopyEnabled(enabled) {
@@ -3763,7 +3853,12 @@ async function openTraineeLinkDialog() {
   input.select();
   if (button) button.disabled = true;
   try {
-    const payload = await api("/api/trainee-link");
+    const payload = directSimulatorServiceMode
+      ? await api("/api/trainee-link", { modelScoped: false })
+      : await api(`/api/trainee-link?model_id=${encodeURIComponent(currentModel.id)}`, {
+          modelScoped: false,
+          controlPlane: true,
+        });
     input.value = payload.link || input.value;
     modelName.textContent = payload.model_name || payload.model_id || "--";
     setTraineeLinkCopyEnabled(Boolean(input.value));
@@ -3816,6 +3911,7 @@ function renderModelSelector() {
   selector.disabled = models.length <= 1;
   const active = models.find((model) => model.id === selector.value) || models[0] || {};
   $("activeModelName").textContent = active.name || active.id || "默认模型";
+  renderModelServiceControl();
   if (!$("modelManagementDialog")?.hidden) renderModelManagementList();
 }
 
@@ -3898,15 +3994,33 @@ async function setActiveModel(modelId, shouldRefresh = true) {
   state.curvesLoadedModelId = "";
   renderModelSelector();
   if (currentPageName() === "curves") renderCurveEditorLoading("正在加载曲线摘要...");
-  await loadWebRuntimeSettings();
-  if (shouldRefresh) await refresh();
+  renderModelServiceControl();
+  if (activeModelServiceRunning()) {
+    await loadWebRuntimeSettings();
+    if (shouldRefresh) await refresh();
+  } else {
+    $("simState").textContent = "stopped";
+    const solverInfo = $("solverInfo");
+    if (solverInfo) solverInfo.textContent = "模拟服务已停止";
+  }
 }
 
-async function loadModels() {
+async function loadModels({ preserveSelection = true } = {}) {
+  if (directSimulatorServiceMode) {
+    try {
+      await loadDirectSimulatorServiceModel();
+    } catch (error) {
+      console.error("直连模拟服务模型加载失败", error);
+    } finally {
+      state.modelsLoaded = true;
+    }
+    return;
+  }
   try {
-    const catalog = await api("/api/models", { modelScoped: false });
+    const catalog = await api("/api/models", { modelScoped: false, controlPlane: true });
     state.models = normalizeModels(Array.isArray(catalog.models) ? catalog.models : []);
-    const preferred = state.activeModelId || catalog.active_model_id || state.models[0]?.id || "";
+    state.serviceCatalogLastLoadedAt = Date.now();
+    const preferred = (preserveSelection ? state.activeModelId : "") || catalog.active_model_id || state.models[0]?.id || "";
     const exists = state.models.some((model) => model.id === preferred);
     await setActiveModel(exists ? preferred : state.models[0]?.id || "", false);
   } catch (_error) {
@@ -3914,6 +4028,102 @@ async function loadModels() {
     renderModelSelector();
   } finally {
     state.modelsLoaded = true;
+  }
+}
+
+async function loadDirectSimulatorServiceModel() {
+  state.activeModelId = "";
+  try {
+    const catalog = await api("/api/models", { modelScoped: false });
+    const source = normalizeModels(Array.isArray(catalog.models) ? catalog.models : [])[0]
+      || {
+        id: String(catalog.active_model_id || "").trim(),
+        name: String(catalog.active_model_id || "").trim(),
+      };
+    const modelId = String(source.id || catalog.active_model_id || "").trim();
+    if (!modelId) throw new Error("模拟服务未返回当前模型标识");
+    state.models = [{
+      ...source,
+      id: modelId,
+      name: source.name || modelId,
+      service: {
+        ...(source.service || {}),
+        state: "running",
+        healthy: true,
+        base_url: directSimulatorServiceApiBase,
+      },
+    }];
+    state.serviceCatalogLastLoadedAt = Date.now();
+    await setActiveModel(modelId, false);
+  } catch (error) {
+    state.models = [];
+    state.activeModelId = "";
+    renderModelSelector();
+    throw error;
+  }
+}
+
+async function refreshServiceCatalog(force = false) {
+  if (directSimulatorServiceMode) return state.models;
+  if (!force && Date.now() - state.serviceCatalogLastLoadedAt < 3000) return state.models;
+  try {
+    const catalog = await api("/api/simulator-services", {
+      modelScoped: false,
+      controlPlane: true,
+      timeoutMs: 3000,
+    });
+    state.models = normalizeModels(Array.isArray(catalog.models) ? catalog.models : []);
+    state.serviceCatalogLastLoadedAt = Date.now();
+    renderModelSelector();
+    return state.models;
+  } catch (error) {
+    console.error("模拟服务目录刷新失败", error);
+    return state.models;
+  }
+}
+
+async function toggleActiveModelService() {
+  if (directSimulatorServiceMode) return;
+  if (!state.activeModelId || state.modelServiceOperationActive) return;
+  const running = activeModelService().state === "running";
+  const path = running ? "/api/simulator-services/stop" : "/api/simulator-services/start";
+  state.modelServiceOperationActive = true;
+  const activeModel = state.models.find((model) => model.id === state.activeModelId);
+  if (activeModel?.service) activeModel.service.state = running ? "stopping" : "starting";
+  renderModelServiceControl();
+  try {
+    const payload = await api(path, {
+      method: "POST",
+      body: JSON.stringify({ model_id: state.activeModelId }),
+      modelScoped: false,
+      controlPlane: true,
+      timeoutMs: running ? 15000 : 45000,
+    });
+    state.models = normalizeModels(Array.isArray(payload.models) ? payload.models : state.models);
+    state.serviceCatalogLastLoadedAt = Date.now();
+    renderModelSelector();
+    if (activeModelServiceRunning()) {
+      resetWebRuntimeSettingsState();
+      await loadWebRuntimeSettings(true);
+      await refresh();
+    } else {
+      state.snapshot = null;
+      $("simState").textContent = "stopped";
+      const solverInfo = $("solverInfo");
+      if (solverInfo) solverInfo.textContent = "模拟服务已停止";
+    }
+  } catch (error) {
+    await refreshServiceCatalog(true);
+    const message = apiErrorText(error);
+    const stateElement = $("modelServiceState");
+    if (stateElement) {
+      stateElement.textContent = "操作失败";
+      stateElement.dataset.state = "failed";
+      stateElement.title = message;
+    }
+  } finally {
+    state.modelServiceOperationActive = false;
+    renderModelServiceControl();
   }
 }
 
@@ -9891,6 +10101,12 @@ function initMeasurementMonitor() {
 
 async function refresh() {
   if (state.refreshRequestActive) return;
+  if (!activeModelServiceRunning()) {
+    $("simState").textContent = "stopped";
+    const solverInfo = $("solverInfo");
+    if (solverInfo) solverInfo.textContent = "模拟服务已停止";
+    return;
+  }
   state.refreshRequestActive = true;
   try {
     const activePage = currentPageName();
@@ -14644,6 +14860,7 @@ if (curveTreeElement) {
 window.addEventListener("pointerup", finishCurveTreePointerSelection);
 window.addEventListener("pointercancel", resetCurveTreePointerSelection);
 $("modelSelector").addEventListener("change", (event) => setActiveModel(event.target.value));
+$("modelServiceToggle").addEventListener("click", toggleActiveModelService);
 $("runtimeLogTypeFilter").addEventListener("change", (event) => {
   state.runtimeLogTypeFilter = event.target.value || "all";
   state.runtimeLogPage = 1;
@@ -14940,6 +15157,6 @@ setFaultTab(state.activeFaultTab);
 renderFaults(true);
 initPageNavigation();
 loadModels().finally(() => {
-  refresh();
+  if (activeModelServiceRunning()) refresh();
   restartRefreshScheduler();
 });

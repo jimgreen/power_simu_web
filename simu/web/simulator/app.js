@@ -49,6 +49,7 @@ const state = {
   pageMain: null,
   models: [],
   modelsLoaded: false,
+  serviceSuggestion: { host: "127.0.0.1", port: 8711 },
   modelServiceOperationActive: false,
   serviceCatalogLastLoadedAt: 0,
   activeModelId: localStorage.getItem("polarSimulatorModelId") || "",
@@ -1541,6 +1542,8 @@ function setNewModelBusy(isBusy) {
   const confirm = $("confirmNewModel");
   const button = $("newModelButton");
   const input = $("newModelName");
+  const hostInput = $("newModelServiceHost");
+  const portInput = $("newModelServicePort");
   const selectButton = $("selectNewModelFile");
   const selectSvgButton = $("selectNewModelSvgFile");
   if (confirm) {
@@ -1549,6 +1552,8 @@ function setNewModelBusy(isBusy) {
   }
   if (button) button.disabled = isBusy;
   if (input) input.disabled = isBusy;
+  if (hostInput) hostInput.disabled = isBusy;
+  if (portInput) portInput.disabled = isBusy;
   if (selectButton) selectButton.disabled = isBusy;
   if (selectSvgButton) selectSvgButton.disabled = isBusy;
 }
@@ -1583,6 +1588,13 @@ function validateNewModelForm(showBlank = false) {
   if (isModelNameTaken(name)) {
     if (confirm) confirm.disabled = true;
     setNewModelMessage(`模型已存在：${name}，请输入新的模型名称。`, "error");
+    return false;
+  }
+  const serviceAddress = validateServiceAddressInputs("newModelServiceHost", "newModelServicePort");
+  updateServiceAddressPreview("newModelServiceHost", "newModelServicePort", "newModelServicePreview");
+  if (!serviceAddress.ok) {
+    if (confirm) confirm.disabled = true;
+    setNewModelMessage(serviceAddress.message, "error");
     return false;
   }
   if (!pendingNewModelFile) {
@@ -1624,6 +1636,16 @@ function modelClockStateText(clockState) {
     paused: "暂停中",
     stopped: "已停止",
   }[clockState] || clockState || "--";
+}
+
+function modelServiceStateText(serviceState) {
+  return {
+    running: "服务运行",
+    starting: "启动中",
+    stopping: "停止中",
+    failed: "服务异常",
+    stopped: "服务停止",
+  }[serviceState] || serviceState || "服务停止";
 }
 
 function ensureSelectedManagementModelId(models = normalizeModels(state.models)) {
@@ -1704,7 +1726,8 @@ function renderModelManagementList() {
     const modelId = String(model.id || "");
     const isActive = modelId === state.activeModelId;
     const isSelected = modelId === selectedId;
-    const clockState = modelClockState(model);
+    const serviceState = String(model?.service?.state || "stopped");
+    const endpoint = modelServiceEndpoint(model);
     return `
       <div
         class="model-management-item ${isActive ? "is-active" : ""} ${isSelected ? "is-selected" : ""}"
@@ -1714,10 +1737,13 @@ function renderModelManagementList() {
         data-model-id="${escapeHtml(modelId)}"
       >
         <span class="model-management-node-mark" aria-hidden="true"></span>
-        <strong class="model-node-name">${escapeHtml(model.name || modelId)}</strong>
+        <div class="model-node-main">
+          <strong class="model-node-name">${escapeHtml(model.name || modelId)}</strong>
+          <span class="model-service-address" title="${escapeHtml(model?.service?.base_url || endpoint.accessLink)}">${escapeHtml(endpoint.accessLink)}</span>
+        </div>
         <div class="model-item-badges">
           ${isActive ? '<span class="model-current-pill">当前</span>' : ""}
-          <span class="model-state-pill" data-state="${escapeHtml(clockState)}">${escapeHtml(modelClockStateText(clockState))}</span>
+          <span class="model-service-state-pill" data-state="${escapeHtml(serviceState)}">${escapeHtml(modelServiceStateText(serviceState))}</span>
         </div>
       </div>
     `;
@@ -1765,6 +1791,8 @@ function openNewModelDialog() {
   const svgFilename = $("newModelSvgFilename");
   const fileInput = $("newModelFileInput");
   const svgInput = $("newModelSvgInput");
+  const hostInput = $("newModelServiceHost");
+  const portInput = $("newModelServicePort");
   if (!dialog || !input) return;
   pendingNewModelFile = null;
   pendingNewModelSvgFile = null;
@@ -1773,8 +1801,26 @@ function openNewModelDialog() {
   if (filename) filename.textContent = "未选择文件";
   if (svgFilename) svgFilename.textContent = "未选择图形";
   input.value = uniqueNewModelName("新模型");
+  if (hostInput) hostInput.value = state.serviceSuggestion.host || "127.0.0.1";
+  if (portInput) portInput.value = String(state.serviceSuggestion.port || 8711);
+  updateServiceAddressPreview("newModelServiceHost", "newModelServicePort", "newModelServicePreview");
   dialog.hidden = false;
   validateNewModelForm();
+  const initialHost = String(hostInput?.value || "");
+  const initialPort = String(portInput?.value || "");
+  api("/api/simulator-services/suggestion", {
+    modelScoped: false,
+    controlPlane: true,
+    timeoutMs: 3000,
+  }).then((result) => {
+    captureServiceSuggestion(result);
+    if (dialog.hidden) return;
+    if (String(hostInput?.value || "") !== initialHost || String(portInput?.value || "") !== initialPort) return;
+    if (hostInput) hostInput.value = state.serviceSuggestion.host || "127.0.0.1";
+    if (portInput) portInput.value = String(state.serviceSuggestion.port || 8711);
+    updateServiceAddressPreview("newModelServiceHost", "newModelServicePort", "newModelServicePreview");
+    validateNewModelForm();
+  }).catch(() => {});
   requestAnimationFrame(() => {
     input.focus();
     input.select();
@@ -1828,6 +1874,7 @@ async function createNewModelFromFile() {
   const file = pendingNewModelFile;
   const input = $("newModelName");
   const name = String(input?.value || "").trim();
+  const serviceAddress = validateServiceAddressInputs("newModelServiceHost", "newModelServicePort");
   if (!file || !validateNewModelForm(true)) {
     input?.focus();
     return;
@@ -1845,12 +1892,15 @@ async function createNewModelFromFile() {
       method: "POST",
       body: JSON.stringify({
         name,
+        service_host: serviceAddress.host,
+        service_port: serviceAddress.port,
         filename: file.name,
         data_base64: dataBase64,
         diagram_filename: pendingNewModelSvgFile?.name || "",
         diagram_svg_base64: diagramSvgBase64,
       }),
     });
+    captureServiceSuggestion(result);
     state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
     const newModelId = result.model?.id || result.active_model_id || name;
     closeNewModelDialog();
@@ -1882,12 +1932,16 @@ function setUpdateModelBusy(isBusy) {
   const confirm = $("confirmUpdateModel");
   const selectFile = $("selectUpdateModelFile");
   const selectSvg = $("selectUpdateModelSvgFile");
+  const hostInput = $("updateModelServiceHost");
+  const portInput = $("updateModelServicePort");
   if (confirm) {
     confirm.disabled = isBusy;
-    confirm.textContent = isBusy ? "修改中" : "修改";
+    confirm.textContent = isBusy ? "保存中" : "确认";
   }
   if (selectFile) selectFile.disabled = isBusy;
   if (selectSvg) selectSvg.disabled = isBusy;
+  if (hostInput) hostInput.disabled = isBusy;
+  if (portInput) portInput.disabled = isBusy;
 }
 
 function validateUpdateModelForm(showBlank = false) {
@@ -1903,12 +1957,14 @@ function validateUpdateModelForm(showBlank = false) {
     setUpdateModelMessage("模型运行中或暂停中，不能修改。", "error");
     return false;
   }
-  if (!pendingUpdateModelFile) {
+  const serviceAddress = validateServiceAddressInputs("updateModelServiceHost", "updateModelServicePort");
+  updateServiceAddressPreview("updateModelServiceHost", "updateModelServicePort", "updateModelServicePreview");
+  if (!serviceAddress.ok) {
     if (confirm) confirm.disabled = true;
-    setUpdateModelMessage(showBlank ? "请选择 model.e 文件。" : "");
+    setUpdateModelMessage(serviceAddress.message, "error");
     return false;
   }
-  if (!String(pendingUpdateModelFile.name || "").toLowerCase().endsWith(".e")) {
+  if (pendingUpdateModelFile && !String(pendingUpdateModelFile.name || "").toLowerCase().endsWith(".e")) {
     if (confirm) confirm.disabled = true;
     setUpdateModelMessage("请选择 .e 格式的模型定义文件。", "error");
     return false;
@@ -1919,7 +1975,7 @@ function validateUpdateModelForm(showBlank = false) {
     return false;
   }
   if (confirm) confirm.disabled = false;
-  setUpdateModelMessage("");
+  setUpdateModelMessage(showBlank ? "未选择的文件将保持不变。" : "");
   return true;
 }
 
@@ -1940,11 +1996,17 @@ function openUpdateModelDialog(modelId = selectedManagementModelId()) {
   if (!dialog) return;
   const fileInput = $("updateModelFileInput");
   const svgInput = $("updateModelSvgInput");
+  const hostInput = $("updateModelServiceHost");
+  const portInput = $("updateModelServicePort");
   if (fileInput) fileInput.value = "";
   if (svgInput) svgInput.value = "";
   $("updateModelTargetName").textContent = target.name || target.id || "--";
   $("updateModelFilename").textContent = "未选择文件";
   $("updateModelSvgFilename").textContent = "未选择图形";
+  const endpoint = modelServiceEndpoint(target);
+  if (hostInput) hostInput.value = endpoint.host;
+  if (portInput) portInput.value = String(endpoint.port || "");
+  updateServiceAddressPreview("updateModelServiceHost", "updateModelServicePort", "updateModelServicePreview");
   dialog.hidden = false;
   validateUpdateModelForm();
 }
@@ -1981,15 +2043,17 @@ function handleUpdateModelSvgFileSelected(event) {
 
 async function updateModelFromFile() {
   const file = pendingUpdateModelFile;
+  const diagramFile = pendingUpdateModelSvgFile;
   const modelId = state.updateTargetModelId;
-  if (!file || !validateUpdateModelForm(true)) return;
+  const serviceAddress = validateServiceAddressInputs("updateModelServiceHost", "updateModelServicePort");
+  if (!validateUpdateModelForm(true)) return;
   const updatedActiveModel = String(modelId || "") === String(state.activeModelId || "");
   setUpdateModelBusy(true);
-  setUpdateModelMessage("正在导入修改后的模型与图形数据...");
+  setUpdateModelMessage("正在保存模型定义与访问链接...");
   try {
-    const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
-    const diagramSvgBase64 = pendingUpdateModelSvgFile
-      ? arrayBufferToBase64(await pendingUpdateModelSvgFile.arrayBuffer())
+    const dataBase64 = file ? arrayBufferToBase64(await file.arrayBuffer()) : "";
+    const diagramSvgBase64 = diagramFile
+      ? arrayBufferToBase64(await diagramFile.arrayBuffer())
       : "";
     const result = await api("/api/models/update-definitions", {
       modelScoped: false,
@@ -1997,9 +2061,11 @@ async function updateModelFromFile() {
       method: "POST",
       body: JSON.stringify({
         model_id: modelId,
-        filename: file.name,
+        service_host: serviceAddress.host,
+        service_port: serviceAddress.port,
+        filename: file?.name || "",
         data_base64: dataBase64,
-        diagram_filename: pendingUpdateModelSvgFile?.name || "",
+        diagram_filename: diagramFile?.name || "",
         diagram_svg_base64: diagramSvgBase64,
       }),
     });
@@ -2009,7 +2075,7 @@ async function updateModelFromFile() {
     renderModelSelector();
     renderModelManagementList();
     setModelManagementMessage("模型已修改。", "ok");
-    if (updatedActiveModel) {
+    if (updatedActiveModel && (file || diagramFile)) {
       invalidateManualDefinitionChanges();
       if (currentPageName() === "manual-changes") loadManualDefinitionChanges();
       await refresh();
@@ -2385,6 +2451,74 @@ function showPage(page, updateHash = true) {
   });
 }
 
+function captureServiceSuggestion(payload) {
+  const suggestion = payload?.service_suggestion;
+  const host = String(suggestion?.host || "").trim();
+  const port = Number(suggestion?.port);
+  if (host && Number.isInteger(port) && port >= 1 && port <= 65535) {
+    state.serviceSuggestion = { host, port };
+  }
+  return state.serviceSuggestion;
+}
+
+function modelServiceEndpoint(model) {
+  const service = model?.service || {};
+  const baseUrl = String(service.base_url || "").trim();
+  let parsedBaseUrl = null;
+  if (baseUrl) {
+    try {
+      parsedBaseUrl = new URL(baseUrl);
+    } catch (_error) {
+      parsedBaseUrl = null;
+    }
+  }
+  const host = String(service.host || parsedBaseUrl?.hostname || "127.0.0.1").trim() || "127.0.0.1";
+  const port = Number(service.port || parsedBaseUrl?.port);
+  const normalizedPort = Number.isInteger(port) ? port : 0;
+  const fallbackAccessLink = parsedBaseUrl?.host || (normalizedPort ? `${host}:${normalizedPort}` : host);
+  return {
+    host,
+    port: normalizedPort,
+    accessLink: String(service.access_link || fallbackAccessLink),
+  };
+}
+
+function renderOverviewServiceLink(snapshot = state.snapshot) {
+  const modelId = String(state.activeModelId || snapshot?.model?.id || "");
+  const model = state.models.find((item) => String(item?.id || "") === modelId);
+  const accessLink = model ? modelServiceEndpoint(model).accessLink : "--";
+  setOverviewText("overviewServiceLink", accessLink || "--");
+}
+
+function validateServiceAddressInputs(hostInputId, portInputId) {
+  const host = String($(hostInputId)?.value || "").trim();
+  const port = Number($(portInputId)?.value);
+  const hostPattern = /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/;
+  if (
+    !host
+    || host.includes("://")
+    || host.includes(":")
+    || host.includes("/")
+    || host.includes("\\")
+    || host.includes("..")
+    || /\s/.test(host)
+    || !hostPattern.test(host)
+  ) {
+    return { ok: false, host, port, message: "请输入有效的 IPv4 地址或主机名，不要包含协议、端口或路径。" };
+  }
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return { ok: false, host, port, message: "端口必须是 1-65535 之间的整数。" };
+  }
+  return { ok: true, host, port, accessLink: `${host}:${port}`, message: "" };
+}
+
+function updateServiceAddressPreview(hostInputId, portInputId, previewId) {
+  const host = String($(hostInputId)?.value || "").trim() || "--";
+  const port = String($(portInputId)?.value || "").trim() || "--";
+  const preview = $(previewId);
+  if (preview) preview.textContent = `${host}:${port}`;
+}
+
 function initPageNavigation() {
   collectPageSections();
   document.querySelectorAll("[data-nav-page]").forEach((button) => {
@@ -2696,6 +2830,7 @@ async function retryPendingManualDefinitionChanges() {
         change_ids: changeIds,
       }),
     });
+    captureServiceSuggestion(result);
     if (requestedModelId !== state.activeModelId) return;
     state.manualDefinitionChanges = Array.isArray(result.changes) ? result.changes : [];
     state.manualDefinitionChangesRevision = Number(result.revision) || 0;
@@ -3786,13 +3921,10 @@ function activeModelInfo() {
 }
 
 function generatedTraineeLink(modelId) {
-  const id = String(modelId || state.activeModelId || "").trim();
+  void modelId;
   const serviceBase = activeModelServiceBase();
   if (!serviceBase) return "";
-  if (directSimulatorServiceMode) return `${serviceBase}/api/trainee-link`;
-  return id
-    ? `${controlPlaneApiBase}/api/trainee-link?model_id=${encodeURIComponent(id)}`
-    : "";
+  return `${serviceBase}/api/trainee-link`;
 }
 
 function modelServiceStateLabel(service = activeModelService()) {
@@ -3853,12 +3985,7 @@ async function openTraineeLinkDialog() {
   input.select();
   if (button) button.disabled = true;
   try {
-    const payload = directSimulatorServiceMode
-      ? await api("/api/trainee-link", { modelScoped: false })
-      : await api(`/api/trainee-link?model_id=${encodeURIComponent(currentModel.id)}`, {
-          modelScoped: false,
-          controlPlane: true,
-        });
+    const payload = await api("/api/trainee-link", { modelScoped: false });
     input.value = payload.link || input.value;
     modelName.textContent = payload.model_name || payload.model_id || "--";
     setTraineeLinkCopyEnabled(Boolean(input.value));
@@ -3911,6 +4038,7 @@ function renderModelSelector() {
   selector.disabled = models.length <= 1;
   const active = models.find((model) => model.id === selector.value) || models[0] || {};
   $("activeModelName").textContent = active.name || active.id || "默认模型";
+  renderOverviewServiceLink();
   renderModelServiceControl();
   if (!$("modelManagementDialog")?.hidden) renderModelManagementList();
 }
@@ -4018,6 +4146,7 @@ async function loadModels({ preserveSelection = true } = {}) {
   }
   try {
     const catalog = await api("/api/models", { modelScoped: false, controlPlane: true });
+    captureServiceSuggestion(catalog);
     state.models = normalizeModels(Array.isArray(catalog.models) ? catalog.models : []);
     state.serviceCatalogLastLoadedAt = Date.now();
     const preferred = (preserveSelection ? state.activeModelId : "") || catalog.active_model_id || state.models[0]?.id || "";
@@ -4072,6 +4201,7 @@ async function refreshServiceCatalog(force = false) {
       controlPlane: true,
       timeoutMs: 3000,
     });
+    captureServiceSuggestion(catalog);
     state.models = normalizeModels(Array.isArray(catalog.models) ? catalog.models : []);
     state.serviceCatalogLastLoadedAt = Date.now();
     renderModelSelector();
@@ -11027,6 +11157,7 @@ function renderOverviewDashboard(snapshot) {
     stateDot.classList.toggle("is-paused", clock.state === "paused");
   }
   setOverviewText("overviewModel", snapshot.model?.name || snapshot.model?.id || "--");
+  renderOverviewServiceLink(snapshot);
   const overviewMode = snapshot.curve_boundary?.mode || snapshot.curves?.mode || state.curveMode;
   setOverviewText("overviewMode", simulationModeLabel(overviewMode));
   const effectiveStepSeconds = Number(
@@ -14765,6 +14896,8 @@ $("newModelForm").addEventListener("submit", (event) => {
   createNewModelFromFile();
 });
 $("newModelName").addEventListener("input", () => validateNewModelForm());
+$("newModelServiceHost").addEventListener("input", () => validateNewModelForm());
+$("newModelServicePort").addEventListener("input", () => validateNewModelForm());
 $("closeUpdateModelDialog").addEventListener("click", closeUpdateModelDialog);
 $("cancelUpdateModel").addEventListener("click", closeUpdateModelDialog);
 $("updateModelDialog").addEventListener("click", (event) => {
@@ -14774,6 +14907,8 @@ $("selectUpdateModelFile").addEventListener("click", () => $("updateModelFileInp
 $("updateModelFileInput").addEventListener("change", handleUpdateModelFileSelected);
 $("selectUpdateModelSvgFile").addEventListener("click", () => $("updateModelSvgInput").click());
 $("updateModelSvgInput").addEventListener("change", handleUpdateModelSvgFileSelected);
+$("updateModelServiceHost").addEventListener("input", () => validateUpdateModelForm());
+$("updateModelServicePort").addEventListener("input", () => validateUpdateModelForm());
 $("updateModelForm").addEventListener("submit", (event) => {
   event.preventDefault();
   updateModelFromFile();

@@ -240,6 +240,36 @@ class SimulatorModelCreationTest(unittest.TestCase):
             self.assertEqual((target_dir / "diagram.svg").read_text(encoding="utf-8"), diagram_text)
             self.assertEqual(manager.service_for("带图模型").snapshot()["diagram"]["svg"], diagram_text)
 
+    def test_model_e_update_merges_curves_json_by_load_name(self):
+        existing = {
+            "mode": "day",
+            "time_step_minutes": 5,
+            "point_count": 2,
+            "weather": [{"minute": 0, "wind_speed_mps": 3}, {"minute": 5, "wind_speed_mps": 4}],
+            "loads": {
+                "保留负荷": [{"minute": 0, "p_kw": 11}, {"minute": 5, "p_kw": 12}],
+                "删除负荷": [{"minute": 0, "p_kw": 21}, {"minute": 5, "p_kw": 22}],
+            },
+        }
+        generated = {
+            "mode": "day",
+            "time_step_minutes": 1,
+            "point_count": 4,
+            "weather": [{"minute": index, "wind_speed_mps": 8} for index in range(4)],
+            "loads": {
+                "保留负荷": [{"minute": index, "p_kw": 100 + index} for index in range(4)],
+                "新增负荷": [{"minute": index, "p_kw": 30 + index} for index in range(4)],
+            },
+        }
+
+        merged = server_module._merge_generated_curves_payload(existing, generated)
+
+        self.assertEqual(merged["weather"], existing["weather"])
+        self.assertEqual(merged["loads"]["保留负荷"], existing["loads"]["保留负荷"])
+        self.assertNotIn("删除负荷", merged["loads"])
+        self.assertEqual(len(merged["loads"]["新增负荷"]), 2)
+        self.assertEqual([point["minute"] for point in merged["loads"]["新增负荷"]], [0, 5])
+
     def test_update_model_from_uploaded_model_e_can_replace_definition_and_svg_for_stopped_model_only(self):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
@@ -498,6 +528,8 @@ class SimulatorModelCreationTest(unittest.TestCase):
         self.assertNotIn(".model-management-table", styles)
         self.assertIn('id="newModelDialog"', html)
         self.assertIn('id="newModelName"', html)
+        self.assertIn('id="newModelServiceHost"', html)
+        self.assertIn('id="newModelServicePort"', html)
         self.assertIn('id="newModelFileInput"', html)
         self.assertIn('accept=".e"', html)
         self.assertIn('id="newModelSvgInput"', html)
@@ -508,6 +540,38 @@ class SimulatorModelCreationTest(unittest.TestCase):
         self.assertRegex(script, re.compile(r'api\("/api/models/create",\s*\{[^}]*modelScoped:\s*false', re.DOTALL))
         self.assertIn("data_base64", script)
         self.assertIn("diagram_svg_base64", script)
+        self.assertIn("service_host", script)
+        self.assertIn("service_port", script)
+        self.assertIn("未选择的文件将保持不变", script)
+        self.assertNotIn('if (!file || !validateUpdateModelForm(true))', script)
+        self.assertIn('id="updateModelServiceHost"', html)
+        self.assertIn('id="updateModelServicePort"', html)
+        self.assertIn('id="confirmUpdateModel" class="primary" type="submit">确认</button>', html)
+        self.assertIn('<dt>访问链接</dt><dd id="overviewServiceLink">--</dd>', html)
+        self.assertIn("model-service-address", script)
+        self.assertIn("model-service-state-pill", script)
+        self.assertIn('setOverviewText("overviewServiceLink"', script)
+        self.assertIn("new URL(baseUrl)", script)
+        self.assertIn(".model-service-address", styles)
+        self.assertIn(".model-service-state-pill", styles)
+        self.assertRegex(
+            styles,
+            re.compile(
+                r"\.modal-card\.model-management-modal\s*\{[^}]*width:\s*min\(820px,\s*calc\(100vw - 40px\)\)",
+                re.DOTALL,
+            ),
+        )
+        self.assertRegex(
+            styles,
+            re.compile(r"\.model-service-address\s*\{[^}]*text-align:\s*left", re.DOTALL),
+        )
+        self.assertRegex(
+            styles,
+            re.compile(
+                r"\.model-item-badges\s*\{[^}]*width:\s*148px[^}]*justify-content:\s*flex-end",
+                re.DOTALL,
+            ),
+        )
         self.assertIn("模型已存在", script)
 
 

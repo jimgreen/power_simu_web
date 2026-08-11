@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import gzip
 import hashlib
 import html
@@ -1053,12 +1054,91 @@ def _generated_model_artifacts(model_text: str) -> Mapping[str, Any]:
     }
 
 
+def _merge_generated_curves_payload(
+    existing_payload: Mapping[str, Any],
+    generated_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    merged = copy.deepcopy(dict(existing_payload))
+    for key, value in generated_payload.items():
+        if key != "loads" and key not in merged:
+            merged[key] = copy.deepcopy(value)
+
+    existing_loads = existing_payload.get("loads", {})
+    generated_loads = generated_payload.get("loads", {})
+    existing_loads = existing_loads if isinstance(existing_loads, Mapping) else {}
+    generated_loads = generated_loads if isinstance(generated_loads, Mapping) else {}
+
+    try:
+        target_count = int(merged.get("point_count", 0) or 0)
+    except (TypeError, ValueError):
+        target_count = 0
+    if target_count <= 0:
+        weather = merged.get("weather", [])
+        target_count = len(weather) if isinstance(weather, list) else 0
+    if target_count <= 0:
+        for values in existing_loads.values():
+            if isinstance(values, list):
+                target_count = len(values)
+                break
+
+    template_points: list[Any] = []
+    for values in existing_loads.values():
+        if isinstance(values, list) and values:
+            template_points = values
+            break
+    if not template_points:
+        weather = merged.get("weather", [])
+        if isinstance(weather, list):
+            template_points = weather
+
+    try:
+        step_minutes = float(merged.get("time_step_minutes", 1) or 1)
+    except (TypeError, ValueError):
+        step_minutes = 1.0
+
+    def default_curve(values: Any) -> Any:
+        source = copy.deepcopy(values)
+        if not isinstance(source, list) or not source or target_count <= 0 or len(source) == target_count:
+            return source
+        resized: list[Any] = []
+        for index in range(target_count):
+            source_index = min(len(source) - 1, int(index * len(source) / target_count))
+            source_point = source[source_index]
+            if not isinstance(source_point, Mapping):
+                resized.append(copy.deepcopy(source_point))
+                continue
+            point = dict(source_point)
+            if index < len(template_points) and isinstance(template_points[index], Mapping):
+                time_fields = {
+                    key: copy.deepcopy(value)
+                    for key, value in template_points[index].items()
+                    if key not in {"p_kw", "value", "load_kw"}
+                }
+                if time_fields:
+                    point = {**time_fields, "p_kw": point.get("p_kw", 0.0)}
+            elif "minute" in point:
+                point["minute"] = round(index * step_minutes, 9)
+            resized.append(point)
+        return resized
+
+    merged["loads"] = {
+        str(name): (
+            copy.deepcopy(existing_loads[name])
+            if name in existing_loads
+            else default_curve(values)
+        )
+        for name, values in generated_loads.items()
+    }
+    return merged
+
+
 def _write_generated_model_artifacts(
     target_dir: Path,
     artifacts: Mapping[str, Any],
     *,
     diagram_svg_text: Optional[str] = None,
     remove_diagram_when_absent: bool = False,
+    preserve_existing_curves: bool = False,
 ) -> list[str]:
     normalized_diagram = _normalize_diagram_svg_text(diagram_svg_text)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -1074,7 +1154,16 @@ def _write_generated_model_artifacts(
     simu_loop.write_ebook_aligned(stat_book, target_dir / "stat.e")
     simu_loop.write_ebook_aligned(control_book, target_dir / "control.e")
     simu_loop.write_ebook_aligned(weather_book, target_dir / "weather.e")
-    _write_json_file(target_dir / "curves.json", curves_payload)
+    curves_path = target_dir / "curves.json"
+    curves_to_write = curves_payload
+    if preserve_existing_curves and curves_path.exists():
+        try:
+            existing_curves = json.loads(curves_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing_curves = {}
+        if isinstance(existing_curves, Mapping):
+            curves_to_write = _merge_generated_curves_payload(existing_curves, curves_payload)
+    _write_json_file(curves_path, curves_to_write)
     (target_dir / "curves.e").write_text(_curve_definition_text(curves_payload), encoding="utf-8")
     written = ["model.e", "meas.e", "control.e", "stat.e", "weather.e", "curves.e", "curves.json"]
     if _write_model_diagram(target_dir, normalized_diagram, remove_when_absent=remove_diagram_when_absent):
@@ -1144,6 +1233,7 @@ def update_model_from_efile(
                 artifacts,
                 diagram_svg_text=diagram_svg_text,
                 remove_diagram_when_absent=replace_diagram,
+                preserve_existing_curves=True,
             )
             target.reset_runtime_for_model_change()
             model_info = target.model_info()

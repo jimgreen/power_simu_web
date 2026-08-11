@@ -101,6 +101,7 @@
               </div>
               <dl class="overview-status-metrics">
                 <div><dt>模型</dt><dd id="overviewModel">--</dd></div>
+                <div class="overview-service-link-metric"><dt>访问链接</dt><dd id="overviewServiceLink">--</dd></div>
                 <div><dt>仿真类型</dt><dd id="overviewMode">--</dd></div>
                 <div><dt>仿真时步</dt><dd id="overviewStep">--</dd></div>
                 <div><dt>有效量测</dt><dd><span id="metricScada">0</span>/<span id="overviewMeasurementTotal">0</span></dd></div>
@@ -1184,7 +1185,7 @@
       </div>
 
       <div id="newModelDialog" class="modal-backdrop" hidden>
-        <form id="newModelForm" class="modal-card" aria-modal="true" role="dialog" aria-labelledby="newModelTitle">
+        <form id="newModelForm" class="modal-card model-editor-modal" aria-modal="true" role="dialog" aria-labelledby="newModelTitle">
           <div class="modal-head">
             <h2 id="newModelTitle">新建模型</h2>
             <button id="closeNewModelDialog" class="icon-button" type="button" title="关闭">
@@ -1194,6 +1195,18 @@
           <label class="modal-field">模型名称
             <input id="newModelName" name="newModelName" type="text" autocomplete="off" required />
           </label>
+          <fieldset class="model-service-config">
+            <legend>访问链接</legend>
+            <div class="model-service-field-grid">
+              <label class="modal-field">地址
+                <input id="newModelServiceHost" name="newModelServiceHost" type="text" value="127.0.0.1" autocomplete="off" required />
+              </label>
+              <label class="modal-field">端口
+                <input id="newModelServicePort" name="newModelServicePort" type="number" min="1" max="65535" step="1" inputmode="numeric" required />
+              </label>
+            </div>
+            <output id="newModelServicePreview" class="model-service-preview">127.0.0.1:--</output>
+          </fieldset>
           <div class="new-model-file-row">
             <button id="selectNewModelFile" type="button">选择 E 文件</button>
             <input id="newModelFileInput" type="file" accept=".e" hidden />
@@ -1214,7 +1227,7 @@
       </div>
 
       <div id="updateModelDialog" class="modal-backdrop" hidden>
-        <form id="updateModelForm" class="modal-card" aria-modal="true" role="dialog" aria-labelledby="updateModelTitle">
+        <form id="updateModelForm" class="modal-card model-editor-modal" aria-modal="true" role="dialog" aria-labelledby="updateModelTitle">
           <div class="modal-head">
             <h2 id="updateModelTitle">修改模型</h2>
             <button id="closeUpdateModelDialog" class="icon-button" type="button" title="关闭">
@@ -1226,6 +1239,18 @@
             <div><dt>E 文件</dt><dd id="updateModelFilename">未选择文件</dd></div>
             <div><dt>SVG 图</dt><dd id="updateModelSvgFilename">未选择图形</dd></div>
           </dl>
+          <fieldset class="model-service-config">
+            <legend>访问链接</legend>
+            <div class="model-service-field-grid">
+              <label class="modal-field">地址
+                <input id="updateModelServiceHost" name="updateModelServiceHost" type="text" autocomplete="off" required />
+              </label>
+              <label class="modal-field">端口
+                <input id="updateModelServicePort" name="updateModelServicePort" type="number" min="1" max="65535" step="1" inputmode="numeric" required />
+              </label>
+            </div>
+            <output id="updateModelServicePreview" class="model-service-preview">--</output>
+          </fieldset>
           <div class="new-model-file-row">
             <button id="selectUpdateModelFile" type="button">选择 E 文件</button>
             <input id="updateModelFileInput" type="file" accept=".e" hidden />
@@ -1236,11 +1261,11 @@
             <input id="updateModelSvgInput" type="file" accept=".svg,image/svg+xml" hidden />
             <span>导入修改后的 SVG 图形；未选择时保留现有接线图</span>
           </div>
-          <p class="modal-hint">只有停止状态的模型可以修改；修改后会同步后台计算内存。</p>
+          <p class="modal-hint">只有停止状态的模型可以修改；访问链接可以单独保存，模型定义文件保持不变。</p>
           <p id="updateModelMessage" class="modal-message" aria-live="polite"></p>
           <div class="modal-actions">
             <button id="cancelUpdateModel" type="button">取消</button>
-            <button id="confirmUpdateModel" class="primary" type="submit">修改</button>
+            <button id="confirmUpdateModel" class="primary" type="submit">确认</button>
           </div>
         </form>
       </div>

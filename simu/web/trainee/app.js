@@ -2447,6 +2447,7 @@ function teacherSnapshotPath() {
 }
 
 function teacherReceiveAddress() {
+  if (state.interactionLink) return state.interactionLink;
   const base = state.teacherApiBase || "";
   const path = teacherSnapshotPath();
   if (!base) return path;

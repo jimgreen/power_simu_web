@@ -208,7 +208,7 @@ html[data-simulator-ui-mode="direct"] .model-switcher span {
   width: min(560px, calc(100vw - 40px));
 }
 .model-management-modal {
-  width: min(920px, calc(100vw - 40px));
+  width: min(820px, calc(100vw - 40px));
   max-height: calc(100vh - 40px);
   grid-template-rows: auto auto minmax(0, 1fr) auto auto;
 }
@@ -323,10 +323,30 @@ html[data-simulator-ui-mode="direct"] .model-switcher span {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.model-node-main {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 150px;
+  align-items: center;
+  gap: 16px;
+}
+.model-service-address {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: Consolas, "Microsoft YaHei", monospace;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .model-item-badges {
   flex: 0 0 auto;
+  width: 148px;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
 }
 .model-current-pill {
@@ -356,6 +376,29 @@ html[data-simulator-ui-mode="direct"] .model-switcher span {
 .model-state-pill[data-state="paused"] {
   background: #fff6e4;
   color: var(--amber);
+}
+.model-service-state-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #eef5f5;
+  color: var(--muted);
+  font-weight: 700;
+}
+.model-service-state-pill[data-state="running"] {
+  background: #e7f4ec;
+  color: var(--green);
+}
+.model-service-state-pill[data-state="starting"],
+.model-service-state-pill[data-state="stopping"] {
+  background: #fff6e4;
+  color: var(--amber);
+}
+.model-service-state-pill[data-state="failed"] {
+  background: #fbeaea;
+  color: var(--red);
 }
 .model-context-menu {
   position: fixed;
@@ -420,6 +463,52 @@ html[data-simulator-ui-mode="direct"] .model-switcher span {
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.model-service-config {
+  min-width: 0;
+  margin: 0;
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.model-service-config legend {
+  padding: 0 6px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+.model-service-field-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 170px;
+  gap: 10px;
+}
+.model-service-field-grid .modal-field {
+  grid-template-columns: 42px minmax(0, 1fr);
+}
+.model-service-preview {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--teal-dark);
+  font-family: Consolas, "Microsoft YaHei", monospace;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 640px) {
+  .model-node-main,
+  .model-service-field-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+  .model-service-address {
+    text-align: left;
+  }
+  .model-item-badges {
+    width: auto;
+  }
 }
 .clock-strip {
   display: flex;
@@ -768,7 +857,7 @@ html[data-simulator-ui-mode="direct"] .model-switcher span {
 .overview-status-metrics {
   margin: 0;
   display: grid;
-  grid-template-columns: repeat(6, minmax(88px, 1fr));
+  grid-template-columns: minmax(88px, 1fr) minmax(128px, 1.25fr) repeat(5, minmax(88px, 1fr));
 }
 .overview-status-metrics div {
   min-width: 0;
@@ -786,6 +875,10 @@ html[data-simulator-ui-mode="direct"] .model-switcher span {
   font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.overview-service-link-metric dd {
+  font-family: Consolas, "Microsoft YaHei", monospace;
+  font-size: 13px;
 }
 .overview-status-tail {
   flex-direction: column;
@@ -4394,9 +4487,14 @@ th {
   box-shadow: 0 18px 44px rgba(23, 32, 38, 0.22);
 }
 .modal-card.model-management-modal {
-  width: min(1100px, calc(100vw - 40px));
+  width: min(820px, calc(100vw - 40px));
   max-height: calc(100vh - 40px);
   grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+}
+.modal-card.model-editor-modal {
+  width: min(580px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
 }
 .modal-head {
   display: flex;

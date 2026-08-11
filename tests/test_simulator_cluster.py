@@ -99,6 +99,70 @@ def test_cluster_assigns_stable_unique_ports_and_builds_one_model_child_command(
     assert [item["service"]["port"] for item in manager_reloaded.models()] == [9101, 9102]
 
 
+def test_cluster_suggests_unused_port_and_persists_custom_model_access_address(tmp_path: Path):
+    models_root = tmp_path / "models"
+    _make_model(models_root, "model_a")
+    _make_model(models_root, "model_b")
+    occupied = {9103}
+    manager = SimulatorClusterManager(
+        sim_dir=tmp_path,
+        models_root=models_root,
+        runtime_root=tmp_path / "runtime",
+        service_host="127.0.0.1",
+        first_service_port=9101,
+        health_checker=lambda *_args: (False, {}, "not running"),
+        port_checker=lambda _host, port: port in occupied,
+    )
+
+    assert manager.suggest_service_address() == {
+        "host": "127.0.0.1",
+        "port": 9104,
+        "access_link": "127.0.0.1:9104",
+        "base_url": "http://127.0.0.1:9104",
+    }
+
+    configured = manager.configure_model_service("model_b", "192.168.10.25", 9202)
+    assert configured["service"]["host"] == "192.168.10.25"
+    assert configured["service"]["port"] == 9202
+    assert configured["service"]["access_link"] == "192.168.10.25:9202"
+
+    reloaded = SimulatorClusterManager(
+        sim_dir=tmp_path,
+        models_root=models_root,
+        runtime_root=tmp_path / "runtime",
+        service_host="127.0.0.1",
+        first_service_port=9301,
+        health_checker=lambda *_args: (False, {}, "not running"),
+        port_checker=lambda *_args: False,
+    )
+    reloaded_model = reloaded.model_info("model_b")
+    assert reloaded_model["service"]["host"] == "192.168.10.25"
+    assert reloaded_model["service"]["port"] == 9202
+
+
+def test_cluster_rejects_duplicate_occupied_or_invalid_model_access_address(tmp_path: Path):
+    models_root = tmp_path / "models"
+    _make_model(models_root, "model_a")
+    _make_model(models_root, "model_b")
+    manager = SimulatorClusterManager(
+        sim_dir=tmp_path,
+        models_root=models_root,
+        runtime_root=tmp_path / "runtime",
+        first_service_port=9101,
+        health_checker=lambda *_args: (False, {}, "not running"),
+        port_checker=lambda _host, port: port == 9300,
+    )
+
+    with pytest.raises(ValueError, match="已分配给模型"):
+        manager.configure_model_service("model_b", "127.0.0.1", 9101)
+    with pytest.raises(ValueError, match="已被占用"):
+        manager.configure_model_service("model_b", "127.0.0.1", 9300)
+    with pytest.raises(ValueError, match="地址"):
+        manager.configure_model_service("model_b", "http://127.0.0.1", 9301)
+    with pytest.raises(ValueError, match="1-65535"):
+        manager.configure_model_service("model_b", "127.0.0.1", 70000)
+
+
 def test_cluster_start_and_stop_are_idempotent(tmp_path: Path):
     models_root = tmp_path / "models"
     _make_model(models_root, "only")
@@ -178,6 +242,48 @@ def _free_port_pair() -> int:
         except OSError:
             continue
     raise RuntimeError("Could not reserve two consecutive local ports")
+
+
+def test_modified_service_address_is_used_by_direct_interaction_link(tmp_path: Path):
+    models_root = tmp_path / "models"
+    shutil.copytree(SIMPLE_MODEL_SOURCE, models_root / "model_a")
+    first_port = _free_port_pair()
+    manager = SimulatorClusterManager(
+        sim_dir=Path(__file__).resolve().parents[1],
+        models_root=models_root,
+        runtime_root=tmp_path / "runtime",
+        first_service_port=first_port,
+        startup_timeout_seconds=20,
+    )
+    proxy_server = None
+    try:
+        manager.configure_model_service("model_a", "127.0.0.1", first_port + 1)
+        service = manager.start("model_a")
+        assert service["base_url"] == f"http://127.0.0.1:{first_port + 1}"
+        with urlopen(f"{service['base_url']}/api/trainee-link", timeout=5) as response:
+            interaction = json.loads(response.read().decode("utf-8"))
+        assert interaction["teacher_api_base"] == service["base_url"]
+        assert interaction["link"] == f"{service['base_url']}/api/trainee-link"
+
+        static_root = tmp_path / "static"
+        static_root.mkdir()
+        (static_root / "index.html").write_text("proxy-ui", encoding="utf-8")
+        proxy_server = make_simulator_proxy_server(
+            ("127.0.0.1", 0),
+            manager,
+            static_root=static_root,
+        )
+        threading.Thread(target=proxy_server.serve_forever, daemon=True).start()
+        proxy_base = f"http://127.0.0.1:{proxy_server.server_address[1]}"
+        with urlopen(f"{proxy_base}/api/trainee-link?model_id=model_a", timeout=5) as response:
+            discovered = json.loads(response.read().decode("utf-8"))
+        assert discovered["teacher_api_base"] == service["base_url"]
+        assert discovered["link"] == f"{proxy_base}/api/trainee-link?model_id=model_a"
+    finally:
+        if proxy_server is not None:
+            proxy_server.shutdown()
+            proxy_server.server_close()
+        manager.close()
 
 
 def test_real_per_model_services_run_on_distinct_ports_and_remain_independent(tmp_path: Path):
@@ -350,6 +456,10 @@ def test_proxy_keeps_low_frequency_model_management_on_control_plane(tmp_path: P
     thread.start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
     try:
+        _, suggestion = _json_request(f"{base}/api/simulator-services/suggestion")
+        assert suggestion["service_suggestion"]["host"] == "127.0.0.1"
+        assert suggestion["service_suggestion"]["port"] == 8712
+
         _, cloned = _json_request(
             f"{base}/api/models/clone",
             method="POST",
@@ -373,10 +483,65 @@ def test_proxy_keeps_low_frequency_model_management_on_control_plane(tmp_path: P
             payload={
                 "name": "created",
                 "data_base64": base64.b64encode(model_text).decode("ascii"),
+                "service_host": "127.0.0.1",
+                "service_port": 9551,
             },
         )
         assert created["model"]["id"] == "created"
+        assert created["model"]["service"]["access_link"] == "127.0.0.1:9551"
         assert (models_root / "created" / "meas.e").exists()
+        generated_names = ("model.e", "control.e", "curves.json", "meas.e", "stat.e", "weather.e", "curves.e")
+        generated_before_link_update = {
+            name: (models_root / "created" / name).read_bytes()
+            for name in generated_names
+        }
+
+        _, updated = _json_request(
+            f"{base}/api/models/update-definitions",
+            method="POST",
+            payload={
+                "model_id": "created",
+                "service_host": "127.0.0.1",
+                "service_port": 9552,
+            },
+        )
+        assert updated["model"]["service"]["access_link"] == "127.0.0.1:9552"
+        assert updated["updated"]["service"]["port"] == 9552
+        assert (models_root / "created" / "model.e").exists()
+        assert {
+            name: (models_root / "created" / name).read_bytes()
+            for name in generated_names
+        } == generated_before_link_update
+
+        _, unchanged = _json_request(
+            f"{base}/api/models/update-definitions",
+            method="POST",
+            payload={
+                "model_id": "created",
+                "service_host": "127.0.0.1",
+                "service_port": 9552,
+            },
+        )
+        assert unchanged["model"]["service"]["access_link"] == "127.0.0.1:9552"
+        assert unchanged["updated"]["service"]["port"] == 9552
+
+        diagram_text = '<svg xmlns="http://www.w3.org/2000/svg"><text>updated</text></svg>'
+        _, diagram_only = _json_request(
+            f"{base}/api/models/update-definitions",
+            method="POST",
+            payload={
+                "model_id": "created",
+                "service_host": "127.0.0.1",
+                "service_port": 9552,
+                "diagram_svg_base64": base64.b64encode(diagram_text.encode("utf-8")).decode("ascii"),
+            },
+        )
+        assert diagram_only["updated"]["diagram"]["updated"] is True
+        assert (models_root / "created" / "diagram.svg").read_text(encoding="utf-8") == diagram_text
+        assert {
+            name: (models_root / "created" / name).read_bytes()
+            for name in generated_names
+        } == generated_before_link_update
     finally:
         server.shutdown()
         server.server_close()

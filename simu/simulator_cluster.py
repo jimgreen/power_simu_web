@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -34,6 +35,37 @@ def _model_key(value: Any) -> str:
     return str(value or "").strip().casefold()
 
 
+_SERVICE_HOST_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
+
+
+def _normalize_service_host(value: Any, default: str = "127.0.0.1") -> str:
+    text = str(value if value is not None else default).strip()
+    if (
+        not text
+        or "://" in text
+        or "/" in text
+        or "\\" in text
+        or ":" in text
+        or any(char.isspace() for char in text)
+        or ".." in text
+        or not _SERVICE_HOST_PATTERN.fullmatch(text)
+    ):
+        raise ValueError("服务地址无效：请输入 IPv4 地址或主机名，不要包含协议、端口或路径")
+    return text
+
+
+def _normalize_service_port(value: Any) -> int:
+    if isinstance(value, bool):
+        raise ValueError("服务端口必须是 1-65535 之间的整数")
+    text = str(value if value is not None else "").strip()
+    if not text.isdigit():
+        raise ValueError("服务端口必须是 1-65535 之间的整数")
+    port = int(text)
+    if not 1 <= port <= 65535:
+        raise ValueError("服务端口必须是 1-65535 之间的整数")
+    return port
+
+
 class SimulatorClusterManager:
     """Own one independently addressable simulator process per source model."""
 
@@ -61,7 +93,7 @@ class SimulatorClusterManager:
         self.sim_dir = Path(sim_dir).resolve()
         self.models_root = Path(models_root).resolve()
         self.runtime_root = Path(runtime_root).resolve()
-        self.service_host = str(service_host or "127.0.0.1").strip()
+        self.service_host = _normalize_service_host(service_host or "127.0.0.1")
         self.first_service_port = max(1, int(first_service_port))
         self.compute_interval_seconds = max(0.1, float(compute_interval_seconds or 1.0))
         self.child_no_worker = bool(child_no_worker)
@@ -131,10 +163,12 @@ class SimulatorClusterManager:
                     return model_id
         return model_ids[0] if model_ids else ""
 
-    def _next_port_locked(self, used_ports: set[int]) -> int:
+    def _next_port_locked(self, host: str, used_ports: set[int]) -> int:
         port = self.first_service_port
-        while port in used_ports:
+        while port <= 65535 and (port in used_ports or self.port_checker(host, port)):
             port += 1
+        if port > 65535:
+            raise ValueError("没有可分配的模拟服务端口")
         return port
 
     def _sync_models_locked(self) -> None:
@@ -160,6 +194,11 @@ class SimulatorClusterManager:
             raw_entry = services.get(model_id)
             entry = dict(raw_entry) if isinstance(raw_entry, Mapping) else {}
             try:
+                host = _normalize_service_host(entry.get("host"), self.service_host)
+            except ValueError:
+                host = self.service_host
+                changed = True
+            try:
                 port = int(entry.get("port", 0))
             except (TypeError, ValueError):
                 port = 0
@@ -168,10 +207,9 @@ class SimulatorClusterManager:
                 for other_id, other in normalized.items()
                 if other_id != model_id
             ):
-                port = self._next_port_locked(used_ports)
+                port = self._next_port_locked(host, used_ports)
                 used_ports.add(port)
                 changed = True
-            host = str(entry.get("host") or self.service_host).strip() or self.service_host
             normalized[model_id] = {
                 "host": host,
                 "port": port,
@@ -276,6 +314,7 @@ class SimulatorClusterManager:
             "state": state,
             "host": host,
             "port": port,
+            "access_link": f"{host}:{port}",
             "base_url": f"http://{host}:{port}",
             "pid": entry.get("pid"),
             "healthy": healthy,
@@ -306,7 +345,82 @@ class SimulatorClusterManager:
             "active_model_id": self.default_model_id,
             "models_root": str(self.models_root),
             "data_plane": "direct",
+            "service_suggestion": self.suggest_service_address(),
         }
+
+    def _validate_service_address_locked(
+        self,
+        host: Any,
+        port: Any,
+        *,
+        exclude_model_id: str = "",
+    ) -> dict[str, Any]:
+        normalized_host = _normalize_service_host(host, self.service_host)
+        services = self._registry.setdefault("services", {})
+        used_ports = {
+            int(entry.get("port", 0) or 0)
+            for model_id, entry in services.items()
+            if model_id != exclude_model_id and isinstance(entry, Mapping)
+        }
+        if port is None or str(port).strip() == "":
+            normalized_port = self._next_port_locked(normalized_host, used_ports)
+        else:
+            normalized_port = _normalize_service_port(port)
+            for model_id, entry in services.items():
+                if model_id == exclude_model_id or not isinstance(entry, Mapping):
+                    continue
+                if int(entry.get("port", 0) or 0) == normalized_port:
+                    raise ValueError(f"服务端口 {normalized_port} 已分配给模型 {model_id}")
+
+            current = services.get(exclude_model_id) if exclude_model_id else None
+            unchanged = bool(
+                isinstance(current, Mapping)
+                and str(current.get("host") or "") == normalized_host
+                and int(current.get("port", 0) or 0) == normalized_port
+            )
+            if not unchanged and self.port_checker(normalized_host, normalized_port):
+                raise ValueError(f"服务地址 {normalized_host}:{normalized_port} 已被占用")
+        return {
+            "host": normalized_host,
+            "port": normalized_port,
+            "access_link": f"{normalized_host}:{normalized_port}",
+            "base_url": f"http://{normalized_host}:{normalized_port}",
+        }
+
+    def validate_service_address(
+        self,
+        host: Any = None,
+        port: Any = None,
+        *,
+        exclude_model_id: Any = "",
+    ) -> dict[str, Any]:
+        with self.lock:
+            self._sync_models_locked()
+            excluded = str(exclude_model_id or "").strip()
+            return self._validate_service_address_locked(host, port, exclude_model_id=excluded)
+
+    def suggest_service_address(self, host: Any = None) -> dict[str, Any]:
+        return self.validate_service_address(host, None)
+
+    def configure_model_service(self, model_id: Any, host: Any, port: Any) -> dict[str, Any]:
+        with self.lock:
+            target_id, entry = self._entry_locked(model_id)
+            healthy, _payload, _error = self._probe_locked(target_id, entry)
+            process = self._processes.get(target_id)
+            if healthy or (process is not None and process.poll() is None):
+                raise ValueError(f"模型模拟服务运行中，无法修改访问链接: {target_id}")
+            address = self._validate_service_address_locked(
+                host,
+                port,
+                exclude_model_id=target_id,
+            )
+            entry["host"] = address["host"]
+            entry["port"] = address["port"]
+            entry["pid"] = None
+            self._states[target_id] = "stopped"
+            self._errors[target_id] = ""
+            self._save_registry_locked()
+            return self.model_info(target_id)
 
     def _command_locked(self, model_id: str, entry: Mapping[str, Any]) -> list[str]:
         command = [
@@ -457,15 +571,16 @@ class SimulatorClusterManager:
             self._save_registry_locked()
             host = str(entry["host"])
             port = int(entry["port"])
-            return {
-                "state": "stopped",
-                "host": host,
-                "port": port,
-                "base_url": f"http://{host}:{port}",
-                "pid": None,
-                "healthy": False,
-                "error": "",
-            }
+        return {
+            "state": "stopped",
+            "host": host,
+            "port": port,
+            "access_link": f"{host}:{port}",
+            "base_url": f"http://{host}:{port}",
+            "pid": None,
+            "healthy": False,
+            "error": "",
+        }
 
     def require_stopped(self, model_id: Any) -> tuple[str, Path, Path]:
         with self.lock:
@@ -485,12 +600,29 @@ class SimulatorClusterManager:
                 raise ValueError(f"模型已存在: {target_id}")
         return target_id
 
-    def register_model(self, model_id: Any) -> dict[str, Any]:
+    def register_model(
+        self,
+        model_id: Any,
+        *,
+        service_host: Any = None,
+        service_port: Any = None,
+    ) -> dict[str, Any]:
         target_id = _safe_model_id(model_id)
         with self.lock:
             if not (self.models_root / target_id / "model.e").exists():
                 raise ValueError(f"模型定义不存在: {target_id}")
             self._sync_models_locked()
+            if service_host is not None or service_port is not None:
+                entry = self._registry["services"][target_id]
+                address = self._validate_service_address_locked(
+                    service_host if service_host is not None else entry["host"],
+                    service_port if service_port is not None else entry["port"],
+                    exclude_model_id=target_id,
+                )
+                entry["host"] = address["host"]
+                entry["port"] = address["port"]
+                entry["pid"] = None
+                self._save_registry_locked()
             return self.model_info(target_id)
 
     def model_source_dir(self, model_id: Any) -> tuple[str, Path]:

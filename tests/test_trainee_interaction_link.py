@@ -78,9 +78,13 @@ class TraineeInteractionLinkTest(unittest.TestCase):
         self.assertIn('api("/api/trainee-link"', script)
         self.assertIn("generatedTraineeLink", script)
         generated_block = script.split("function generatedTraineeLink", 1)[1].split("\n}", 1)[0]
-        self.assertIn("controlPlaneApiBase", generated_block)
-        self.assertIn("directSimulatorServiceMode", generated_block)
-        self.assertIn("model_id", generated_block)
+        self.assertIn("activeModelServiceBase", generated_block)
+        self.assertIn("/api/trainee-link", generated_block)
+        self.assertNotIn("controlPlaneApiBase", generated_block)
+        self.assertNotIn("model_id", generated_block)
+        open_dialog_block = script.split("async function openTraineeLinkDialog", 1)[1].split("\n}", 1)[0]
+        self.assertIn('api("/api/trainee-link", { modelScoped: false })', open_dialog_block)
+        self.assertNotIn("controlPlane: true", open_dialog_block)
         self.assertIn("setTraineeLinkCopyEnabled", script)
         self.assertIn("交互链接已自动生成", script)
         self.assertIn("copyTraineeLink", script)
@@ -106,6 +110,8 @@ class TraineeInteractionLinkTest(unittest.TestCase):
         self.assertIn('$("traineeRunToggle").addEventListener("click", toggleReceiveMode);', script)
         self.assertNotIn("fetch(url.href", script)
         self.assertNotIn("legacyTeacherInteractionConnection", script)
+        receive_address_block = script.split("function teacherReceiveAddress", 1)[1].split("\n}", 1)[0]
+        self.assertIn("state.interactionLink", receive_address_block)
         self.assertIn(".receive-link-dialog", styles)
 
 

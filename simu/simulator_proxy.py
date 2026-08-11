@@ -45,6 +45,8 @@ def make_simulator_proxy_server(
                     self._send_json({"ok": True, "role": "simulator-proxy", **manager.catalog()})
                 elif path in {"/api/models", "/api/simulator-services"}:
                     self._send_json(manager.catalog())
+                elif path == "/api/simulator-services/suggestion":
+                    self._send_json({"service_suggestion": manager.suggest_service_address()})
                 elif path == "/api/trainee-link":
                     self._send_trainee_link()
                 elif path.startswith("/api/"):
@@ -160,6 +162,10 @@ def make_simulator_proxy_server(
             helpers = self._server_helpers()
             name = payload.get("name", payload.get("model_name"))
             target_id = manager.validate_new_model_name(name)
+            address = manager.validate_service_address(
+                payload.get("service_host"),
+                payload.get("service_port"),
+            )
             model_text = self._decode_base64(payload, "data_base64", "model.e data").decode("utf-8-sig")
             artifacts = helpers._generated_model_artifacts(model_text)
             diagram_svg_text = helpers._decode_optional_svg_payload(payload)
@@ -170,7 +176,11 @@ def make_simulator_proxy_server(
                     artifacts,
                     diagram_svg_text=diagram_svg_text,
                 )
-                model = manager.register_model(target_id)
+                model = manager.register_model(
+                    target_id,
+                    service_host=address["host"],
+                    service_port=address["port"],
+                )
             except Exception:
                 if target_dir.exists():
                     shutil.rmtree(target_dir)
@@ -194,21 +204,56 @@ def make_simulator_proxy_server(
             target_id, target_dir, _runtime_dir = manager.require_stopped(
                 payload.get("model_id", payload.get("model"))
             )
-            model_text = self._decode_base64(payload, "data_base64", "model.e data").decode("utf-8-sig")
-            artifacts = helpers._generated_model_artifacts(model_text)
-            written = helpers._write_generated_model_artifacts(
-                target_dir,
-                artifacts,
-                diagram_svg_text=helpers._decode_optional_svg_payload(payload),
-                remove_diagram_when_absent=bool(payload.get("replace_diagram", False)),
+            current_model = manager.model_info(target_id)
+            current_service = current_model.get("service", {})
+            requested_host = payload.get("service_host", current_service.get("host"))
+            requested_port = payload.get("service_port", current_service.get("port"))
+            address = manager.validate_service_address(
+                requested_host,
+                requested_port,
+                exclude_model_id=target_id,
             )
-            manager.clear_model_runtime(target_id)
-            model = manager.model_info(target_id)
-            updated = {
-                "files": written,
-                "measurement_count": len(artifacts["meas_book"].data["Measurement"].data),
-                "curve_points": artifacts["curves_payload"]["point_count"],
+            service_changed = (
+                address["host"] != str(current_service.get("host") or "")
+                or address["port"] != int(current_service.get("port", 0) or 0)
+            )
+            model_data = str(payload.get("data_base64") or "")
+            diagram_data = str(payload.get("diagram_svg_base64") or "")
+
+            updated: dict[str, Any] = {
+                "service": address,
             }
+            if model_data:
+                model_text = self._decode_base64(payload, "data_base64", "model.e data").decode("utf-8-sig")
+                artifacts = helpers._generated_model_artifacts(model_text)
+                written = helpers._write_generated_model_artifacts(
+                    target_dir,
+                    artifacts,
+                    diagram_svg_text=helpers._decode_optional_svg_payload(payload),
+                    remove_diagram_when_absent=bool(payload.get("replace_diagram", False)),
+                    preserve_existing_curves=True,
+                )
+                manager.clear_model_runtime(target_id)
+                updated.update(
+                    {
+                        "files": written,
+                        "measurement_count": len(artifacts["meas_book"].data["Measurement"].data),
+                        "curve_points": artifacts["curves_payload"]["point_count"],
+                    }
+                )
+            elif diagram_data:
+                diagram_written = helpers._write_model_diagram(
+                    target_dir,
+                    helpers._decode_optional_svg_payload(payload),
+                )
+                updated["diagram"] = {
+                    "updated": bool(diagram_written),
+                    "filename": "diagram.svg" if diagram_written else "",
+                }
+            if service_changed:
+                model = manager.configure_model_service(target_id, address["host"], address["port"])
+            else:
+                model = manager.model_info(target_id)
             self._send_json({"model": {**model, "updated": updated}, "updated": updated, **manager.catalog()})
 
         def _write_parsed_archive(self, target_dir: Path, parsed: Mapping[str, Any]) -> Mapping[str, Any]:

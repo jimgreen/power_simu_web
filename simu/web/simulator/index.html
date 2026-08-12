@@ -1062,6 +1062,17 @@
                       <option value="all">全部类型</option>
                     </select>
                   </label>
+                  <label>来源
+                    <select
+                      id="runtimeCommandOriginFilter"
+                      data-table-filter-scope="runtimeCommand"
+                      data-table-filter-field="origin"
+                    >
+                      <option value="all">全部来源</option>
+                      <option value="manual">人工指令</option>
+                      <option value="automatic">自动指令</option>
+                    </select>
+                  </label>
                 </div>
                 <div class="sr-only">指令类型 设备 设备类型 模式 指令项 控制指令 指令来源 接收本机时刻 接收仿真时刻 实时值 量测值 操作</div>
                 <div id="deviceTable" class="runtime-device-wrap" data-runtime-role="device-table"></div>
@@ -1453,6 +1464,6 @@
         </form>
       </div>
     </div>
-    <script src="/app.js?v=20260812-runtime-log-column-resize"></script>
+    <script src="/app.js?v=20260813-command-origin-filter"></script>
   </body>
 </html>

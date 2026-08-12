@@ -193,6 +193,7 @@ const state = {
   controlFilter: { dev_type: "all", dev_name: "" },
   commandKeywordFilter: "",
   commandTypeFilter: "all",
+  commandOriginFilter: "all",
   commandOnlyActive: false,
   activeControlTab: "remote-control",
   selectedCommandTraceKey: "",
@@ -9143,7 +9144,9 @@ function activeCommandHistory(snapshot = state.snapshot || {}) {
 function allActiveCommandHistory(snapshot = state.snapshot || {}) {
   const currentMinute = Number(snapshot.clock?.absolute_minute ?? snapshot.clock?.minute ?? 0) || 0;
   const currentRunId = Number(snapshot.clock?.run_id ?? 0) || 0;
-  return [...(snapshot.commands?.history || [])].filter((entry) => {
+  const history = Array.isArray(snapshot.commands?.history) ? snapshot.commands.history : [];
+  const effective = Array.isArray(snapshot.commands?.effective) ? snapshot.commands.effective : [];
+  return [...history, ...effective].filter((entry) => {
     if (!entry?.eligible_source || entry.cancelled) return false;
     const manualHold = manualCommandHoldsAcrossClockLifecycle(entry);
     if (!manualHold) {
@@ -16468,6 +16471,11 @@ function commandTableTypeLabel(row) {
   return row?.category || "";
 }
 
+function commandTableRowOrigin(row) {
+  const origin = String(row?.commandOrigin || row?.issuedTime?.command_origin || "").trim().toLowerCase();
+  return ["manual", "automatic"].includes(origin) ? origin : "";
+}
+
 function commandTableName(row) {
   if (row?.name) return row.name;
   if (row?.commandType) return `${deviceType(row.dev)}.${deviceName(row.dev)}.${remoteControlLabel(row.commandType)}`;
@@ -16497,15 +16505,19 @@ function syncCommandTypeFilter(rows) {
     "commandTypeFilter",
     tableFilterTypeOptions(rows, commandTableTypeLabel),
   );
+  const originSelect = $("commandOriginFilter");
+  if (originSelect) originSelect.value = state.commandOriginFilter || "all";
 }
 
 function applyCommandTableFilters(rows) {
   const keyword = state.commandKeywordFilter || "";
   const type = state.commandTypeFilter || "all";
+  const origin = state.commandOriginFilter || "all";
   return (rows || []).filter((row) => {
     if (state.commandOnlyActive && !row.active) return false;
     if (!tableFilterMatchesKeyword(commandTableFilterFields(row), keyword)) return false;
     if (type !== "all" && commandTableTypeLabel(row) !== type) return false;
+    if (origin !== "all" && commandTableRowOrigin(row) !== origin) return false;
     return true;
   });
 }
@@ -16532,6 +16544,7 @@ function traineeCommandTableStructureKey(rows, activeTab = state.activeControlTa
     deviceTreeFilterSelection(filter).map((item) => deviceTreeFilterKey(item.dev_type, item.dev_name)).join("|"),
     state.commandKeywordFilter || "",
     state.commandTypeFilter || "all",
+    state.commandOriginFilter || "all",
     state.commandOnlyActive ? "active" : "all",
     rows.map((row) => traineeCommandTraceKey(row)).join("||"),
   ].join("::");
@@ -17783,6 +17796,7 @@ function handleTraineeTableFilterControl(target) {
   }
   if (scope === "command") {
     if (field === "type") state.commandTypeFilter = control.value || "all";
+    else if (field === "origin") state.commandOriginFilter = control.value || "all";
     else state.commandKeywordFilter = control.value || "";
     renderCombinedControlPage();
     drawCommandTraceChart();

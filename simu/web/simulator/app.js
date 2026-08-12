@@ -133,6 +133,7 @@ const state = {
   lastRuntimeTraceKey: "",
   runtimeCommandKeywordFilter: "",
   runtimeCommandTypeFilter: "all",
+  runtimeCommandOriginFilter: "all",
   runtimeCommandOnlyActive: false,
   runtimeCommandDeleteSending: new Set(),
   measurementCompareFilter: { dev_type: "all", dev_name: "" },
@@ -13765,6 +13766,11 @@ function runtimeCommandTypeLabel(row) {
   return row?.command || row?.set_type || row?.category || row?.signal_kind || "";
 }
 
+function runtimeCommandRowOrigin(row) {
+  const origin = String(row?.receive_time?.command_origin || row?.command_origin || "").trim().toLowerCase();
+  return ["manual", "automatic"].includes(origin) ? origin : "";
+}
+
 function runtimeCommandFilterFields(row) {
   const dev = row?.device || {};
   return [
@@ -13791,15 +13797,19 @@ function syncRuntimeCommandTypeFilter(rows) {
     "runtimeCommandTypeFilter",
     tableFilterTypeOptions(rows, runtimeCommandTypeLabel),
   );
+  const originSelect = $("runtimeCommandOriginFilter");
+  if (originSelect) originSelect.value = state.runtimeCommandOriginFilter || "all";
 }
 
 function applyRuntimeCommandTableFilters(rows) {
   const keyword = state.runtimeCommandKeywordFilter || "";
   const type = state.runtimeCommandTypeFilter || "all";
+  const origin = state.runtimeCommandOriginFilter || "all";
   return (rows || []).filter((row) => {
     if (state.runtimeCommandOnlyActive && !row.active) return false;
     if (!tableFilterMatchesKeyword(runtimeCommandFilterFields(row), keyword)) return false;
     if (type !== "all" && runtimeCommandTypeLabel(row) !== type) return false;
+    if (origin !== "all" && runtimeCommandRowOrigin(row) !== origin) return false;
     return true;
   });
 }
@@ -14242,6 +14252,7 @@ function runtimeCommandTableStructureKey(rows) {
     deviceTreeFilterSelection(filter).map((item) => deviceTreeFilterKey(item.dev_type, item.dev_name)).join("|"),
     state.runtimeCommandKeywordFilter || "",
     state.runtimeCommandTypeFilter || "all",
+    state.runtimeCommandOriginFilter || "all",
     state.runtimeCommandOnlyActive ? "active" : "all",
     rows.map((row) => runtimeCommandTraceKey(row)).join("||"),
   ].join("::");
@@ -14419,6 +14430,7 @@ function renderRuntimeDeviceTable() {
     state.selectedRuntimeCommandLabel = "";
   }
   const filterActive = state.runtimeCommandOnlyActive
+    || state.runtimeCommandOriginFilter !== "all"
     || tableFilterIsActive(state.runtimeCommandKeywordFilter, state.runtimeCommandTypeFilter);
   $("runtimeDeviceSummary").textContent = filterActive
     ? `${runtimeFilterLabel()} · ${commandCount}/${totalCommandCount} 条指令`
@@ -16795,6 +16807,7 @@ function handleSimulatorTableFilterControl(target) {
   }
   if (scope === "runtimeCommand") {
     if (field === "type") state.runtimeCommandTypeFilter = control.value || "all";
+    else if (field === "origin") state.runtimeCommandOriginFilter = control.value || "all";
     else state.runtimeCommandKeywordFilter = control.value || "";
     renderRuntimeDeviceTable();
     drawRuntimeTraceChart();

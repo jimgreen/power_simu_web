@@ -99,7 +99,7 @@ HYDROGEN_STORAGE_STATE_HEADERS = (
     "dev_type",
     "idx",
     "name",
-    "press",
+    "pressure",
     "flow",
     "gas_quantity",
     "soc",
@@ -1116,12 +1116,11 @@ def _hydrogen_storage_rows(model_book: EBook) -> List[dict]:
     return [] if block is None else list(getattr(block, "data", []))
 
 
-def _hydrogen_storage_initial_press(row: Mapping[str, Any]) -> Optional[float]:
-    for field in ("press", "pressure"):
-        value = _safe_float(row.get(field), None)
-        if value is not None and math.isfinite(value):
-            return float(value)
-    return None
+def _hydrogen_storage_initial_pressure(row: Mapping[str, Any]) -> Optional[float]:
+    value = _safe_float(row.get("pressure"), None)
+    if value is None or not math.isfinite(value):
+        return None
+    return float(value)
 
 
 def _hydrogen_storage_water_volume(row: Mapping[str, Any]) -> Optional[float]:
@@ -1135,26 +1134,25 @@ def _hydrogen_storage_initial_quantity(row: Mapping[str, Any]) -> Optional[float
     value = _safe_float(row.get("gas_quantity"), None)
     if value is not None and math.isfinite(value):
         return float(value)
-    press = _hydrogen_storage_initial_press(row)
+    pressure = _hydrogen_storage_initial_pressure(row)
     water_volume = _hydrogen_storage_water_volume(row)
-    if press is None or water_volume is None or water_volume <= 0.0:
+    if pressure is None or water_volume is None or water_volume <= 0.0:
         return None
-    return press * water_volume / 0.1
+    return pressure * water_volume / 0.1
 
 
-def _hydrogen_storage_press_max(row: Mapping[str, Any]) -> Optional[float]:
-    for field in ("press_max", "pressure_max"):
-        value = _safe_float(row.get(field), None)
-        if value is not None and math.isfinite(value):
-            return float(value)
-    return None
-
-
-def _hydrogen_storage_soc(press: float, model_row: Mapping[str, Any]) -> Optional[float]:
-    press_max = _hydrogen_storage_press_max(model_row)
-    if press_max is None or press_max <= 0.0:
+def _hydrogen_storage_pressure_max(row: Mapping[str, Any]) -> Optional[float]:
+    value = _safe_float(row.get("pressure_max"), None)
+    if value is None or not math.isfinite(value):
         return None
-    return float(press) / press_max
+    return float(value)
+
+
+def _hydrogen_storage_soc(pressure: float, model_row: Mapping[str, Any]) -> Optional[float]:
+    pressure_max = _hydrogen_storage_pressure_max(model_row)
+    if pressure_max is None or pressure_max <= 0.0:
+        return None
+    return float(pressure) / pressure_max
 
 
 def _hydrogen_storage_state_key(row: Mapping[str, Any]) -> Tuple[str, str]:
@@ -1180,6 +1178,17 @@ def ensure_hydrogen_storage_state_rows_book(stat_book: EBook, model_book: EBook)
         block = template.data[HYDROGEN_STORAGE_STATE_BLOCK]
         block.data.clear()
         stat_book.data[HYDROGEN_STORAGE_STATE_BLOCK] = block
+    changed = 0
+    if "press" in block.header_list:
+        if "pressure" not in block.header_list:
+            block.header_list[block.header_list.index("press")] = "pressure"
+        else:
+            block.header_list.remove("press")
+        for row in block.data:
+            if row.get("pressure", "") == "" and row.get("press", "") != "":
+                row["pressure"] = row.get("press")
+            row.pop("press", None)
+        changed += 1
     for header in HYDROGEN_STORAGE_STATE_HEADERS:
         if header not in block.header_list:
             block.header_list.append(header)
@@ -1189,7 +1198,6 @@ def ensure_hydrogen_storage_state_rows_book(stat_book: EBook, model_book: EBook)
         for row in block.data
         if any(str(row.get(field, "")).strip() for field in ("name", "dev_name", "idx"))
     }
-    changed = 0
     for pos, model_row in enumerate(model_rows, start=1):
         key = _hydrogen_storage_state_key(model_row)
         state = existing.get(key)
@@ -1198,7 +1206,7 @@ def ensure_hydrogen_storage_state_rows_book(stat_book: EBook, model_book: EBook)
                 "dev_type": "HydroStorage",
                 "idx": model_row.get("idx", pos),
                 "name": model_row.get("name", ""),
-                "press": "",
+                "pressure": "",
                 "flow": "0",
                 "gas_quantity": "",
                 "soc": "",
@@ -1209,10 +1217,10 @@ def ensure_hydrogen_storage_state_rows_book(stat_book: EBook, model_book: EBook)
         changed += _set_row_value(state, "dev_type", "HydroStorage")
         changed += _set_row_value(state, "idx", model_row.get("idx", pos))
         changed += _set_row_value(state, "name", model_row.get("name", ""))
-        if state.get("press", "") == "":
-            initial_press = _hydrogen_storage_initial_press(model_row)
-            if initial_press is not None:
-                changed += _set_row_value(state, "press", format_number(initial_press))
+        if state.get("pressure", "") == "":
+            initial_pressure = _hydrogen_storage_initial_pressure(model_row)
+            if initial_pressure is not None:
+                changed += _set_row_value(state, "pressure", format_number(initial_pressure))
         if state.get("flow", "") == "":
             changed += _set_row_value(state, "flow", "0")
         if state.get("gas_quantity", "") == "":
@@ -1224,10 +1232,10 @@ def ensure_hydrogen_storage_state_rows_book(stat_book: EBook, model_book: EBook)
                     format_number(initial_quantity),
                 )
         if state.get("soc", "") == "":
-            initial_press = _safe_float(state.get("press"), None)
+            initial_pressure = _safe_float(state.get("pressure"), None)
             initial_soc = (
-                _hydrogen_storage_soc(initial_press, model_row)
-                if initial_press is not None
+                _hydrogen_storage_soc(initial_pressure, model_row)
+                if initial_pressure is not None
                 else None
             )
             if initial_soc is not None:
@@ -1247,7 +1255,7 @@ def hydrogen_storage_state_values_from_book(
         if not name:
             continue
         values: Dict[str, float] = {}
-        for field in ("press", "flow", "gas_quantity", "soc"):
+        for field in ("pressure", "flow", "gas_quantity", "soc"):
             value = _safe_float(row.get(field), None)
             if value is not None and math.isfinite(value):
                 values[field] = float(value)
@@ -1266,24 +1274,24 @@ def apply_hydrogen_storage_state_book(model_book: EBook, stat_book: Optional[EBo
         values = state_values.get(("HydroStorage", name))
         if values is None:
             continue
-        for field in ("press", "flow", "gas_quantity", "soc"):
+        for field in ("pressure", "flow", "gas_quantity", "soc"):
             if field in values:
                 changed += _set_row_value(row, field, format_number(values[field]))
         if (
-            "press" in values
+            "pressure" in values
             and str(row.get("control_type", "")).strip().upper() == "PRESSURE"
         ):
             changed += _set_row_value(
                 row,
                 "pressure_set",
-                format_number(values["press"]),
+                format_number(values["pressure"]),
             )
     return changed
 
 
 def integrate_hydrogen_storage_state(
     *,
-    press: float,
+    pressure: float,
     gas_quantity: float,
     flow: float,
     period_seconds: float,
@@ -1295,7 +1303,7 @@ def integrate_hydrogen_storage_state(
     period_hours = max(0.0, float(period_seconds)) / 3600.0
     quantity_delta = float(flow) * period_hours
     return (
-        float(press) - quantity_delta / water_volume * 0.1,
+        float(pressure) - quantity_delta / water_volume * 0.1,
         float(gas_quantity) - quantity_delta,
     )
 
@@ -1353,9 +1361,9 @@ def update_hydrogen_storage_state_book(
                 "gas_quantity",
                 format_number(float(gas_quantity) - flow * period_hours),
             )
-        press = _safe_float(state.get("press"), None)
-        if press is None:
-            press = _hydrogen_storage_initial_press(model_row)
+        pressure = _safe_float(state.get("pressure"), None)
+        if pressure is None:
+            pressure = _hydrogen_storage_initial_pressure(model_row)
         water_volume = _hydrogen_storage_water_volume(model_row)
         if water_volume is None or water_volume <= 0.0:
             LOGGER.warning(
@@ -1364,20 +1372,20 @@ def update_hydrogen_storage_state_book(
                 model_row.get("water_volume"),
             )
             continue
-        if press is None or not math.isfinite(press):
+        if pressure is None or not math.isfinite(pressure):
             LOGGER.warning(
-                "HydroStorage %s has no valid initial press; pressure integration skipped",
+                "HydroStorage %s has no valid initial pressure; pressure integration skipped",
                 name,
             )
             continue
-        next_press = float(press) - flow * period_hours / water_volume * 0.1
-        changed += _set_row_value(state, "press", format_number(next_press))
-        next_soc = _hydrogen_storage_soc(next_press, model_row)
+        next_pressure = float(pressure) - flow * period_hours / water_volume * 0.1
+        changed += _set_row_value(state, "pressure", format_number(next_pressure))
+        next_soc = _hydrogen_storage_soc(next_pressure, model_row)
         if next_soc is None:
             LOGGER.warning(
-                "HydroStorage %s has invalid press_max=%r; SOC update skipped",
+                "HydroStorage %s has invalid pressure_max=%r; SOC update skipped",
                 name,
-                model_row.get("press_max", model_row.get("pressure_max")),
+                model_row.get("pressure_max"),
             )
         else:
             changed += _set_row_value(state, "soc", format_number(next_soc))
@@ -1398,17 +1406,17 @@ def reset_hydrogen_storage_state_book(stat_book: EBook, model_book: EBook) -> in
         model_row = model_by_key.get(_hydrogen_storage_state_key(state))
         if model_row is None:
             continue
-        initial_press = _hydrogen_storage_initial_press(model_row)
+        initial_pressure = _hydrogen_storage_initial_pressure(model_row)
         initial_quantity = _hydrogen_storage_initial_quantity(model_row)
         initial_soc = (
-            _hydrogen_storage_soc(initial_press, model_row)
-            if initial_press is not None
+            _hydrogen_storage_soc(initial_pressure, model_row)
+            if initial_pressure is not None
             else None
         )
         changed += _set_row_value(
             state,
-            "press",
-            "" if initial_press is None else format_number(initial_press),
+            "pressure",
+            "" if initial_pressure is None else format_number(initial_pressure),
         )
         changed += _set_row_value(state, "flow", "0")
         changed += _set_row_value(
@@ -3258,9 +3266,8 @@ def _fluid_endpoint_measurement_value(
         return None
     field = {
         "FLOW": "flow",
-        "PRESS": "pressure",
         "PRESSURE": "pressure",
-    }.get(str(meas_type).upper())
+    }.get(str(meas_type).strip().upper())
     if field is None:
         return None
     value = _safe_float(getattr(item, field, None), None)
@@ -3273,6 +3280,7 @@ def _hydrogen_conversion_measurement_value(
     dev_name: str,
     meas_type: str,
 ) -> Optional[float]:
+    normalized_type = str(meas_type).strip().upper()
     for result in getattr(snapshot, "coupling_results", ()) or ():
         if (
             str(getattr(result, "table_name", "")) != dev_type
@@ -3286,7 +3294,7 @@ def _hydrogen_conversion_measurement_value(
             (getattr(coupling, "t1", None), getattr(result, "t1_value", None)),
             (getattr(coupling, "t2", None), getattr(result, "t2_value", None)),
         )
-        if str(meas_type).upper() == "P":
+        if normalized_type == "P":
             value = next(
                 (
                     _safe_float(endpoint_value, None)
@@ -3299,7 +3307,7 @@ def _hydrogen_conversion_measurement_value(
                 return None
             converter = getattr(snapshot, "power_to_file", None)
             return float(converter(value)) if callable(converter) else value
-        if str(meas_type).upper() == "FLOW":
+        if normalized_type == "FLOW":
             return next(
                 (
                     _safe_float(endpoint_value, None)
@@ -3322,7 +3330,7 @@ def _measurement_value(
     binding: Optional[MeasurementBinding] = None,
     hydrogen_storage_state: Optional[Mapping[object, Mapping[str, float]]] = None,
 ) -> Optional[float]:
-    dev_type, dev_name, meas_type = row[2], row[3], row[4].upper()
+    dev_type, dev_name, meas_type = row[2], row[3], str(row[4]).strip().upper()
     if meas_type in SIGNAL_MEASUREMENT_TYPES:
         return None if signal_values is None else signal_values.get((dev_type, dev_name, meas_type))
     if dev_type == "Environment" and dev_name == "weather":
@@ -3367,12 +3375,13 @@ def _measurement_value(
                 target_type, target_name = dev_type, dev_name
     if dev_type == "HydroStorage" or target_type == "HydroStorage":
         field = {
-            "PRESS": "press",
-            "PRESSURE": "press",
+            "PRESSURE": "pressure",
             "FLOW": "flow",
             "GAS_QUANTITY": "gas_quantity",
             "SOC": "soc",
         }.get(meas_type)
+        if field is None:
+            return None
         if field is not None and hydrogen_storage_state is not None:
             for key in (
                 (dev_type, dev_name),

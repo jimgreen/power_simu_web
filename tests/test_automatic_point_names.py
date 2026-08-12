@@ -359,6 +359,72 @@ class AutomaticPointNamesTest(unittest.TestCase):
         self.assertIn("ACGenerator.shared.P_GEN", {str(row["name"]) for row in rows})
         self.assertIn("DCGenerator.shared.P_GEN", {str(row["name"]) for row in rows})
 
+    def test_uploaded_model_generation_uses_lowercase_hydrogen_measurement_types(self):
+        model_book = server_module._book_from_text(
+            """<HydroSource>
+@ idx name node control_type flow_set run_stat
+# 1 source-1 1 FLOW 2.4 1
+</HydroSource>
+<HydroLoad>
+@ idx name node flow_set run_stat
+# 1 load-1 1 1.8 1
+</HydroLoad>
+<AcE2Hydro>
+@ idx name idx_acload idx_hydrosource control_type run_stat e2h_coeff
+# 1 electrolyzer-1 1 1 P 1 0.2
+</AcE2Hydro>
+<DcE2Hydro>
+@ idx name idx_dcload idx_hydrosource control_type run_stat e2h_coeff
+# 1 dc-electrolyzer-1 1 1 FLOW 1 0.2
+</DcE2Hydro>
+<Hydro2AcE>
+@ idx name idx_hydroload idx_acgenerator control_type run_stat h2e_coeff
+# 1 fuel-cell-1 1 1 P 1 1.8
+</Hydro2AcE>
+<Hydro2DcE>
+@ idx name idx_hydroload idx_dcgenerator control_type run_stat h2e_coeff
+# 1 dc-fuel-cell-1 1 1 FLOW 1 1.8
+</Hydro2DcE>
+<HydroStorage>
+@ idx name node control_type pressure_set flow_set run_stat pressure gas_quantity water_volume pressure_max pressure_min
+# 1 tank-1 1 PRESSURE 35 0 1 35 17500 50 45 2
+</HydroStorage>
+"""
+        )
+        control_blocks = server_module._generated_control_blocks(model_book)
+        measurement_book = server_module._generated_measurement_book(model_book, control_blocks)
+        rows = measurement_book.data["Measurement"].data
+        types_by_device = {}
+        for row in rows:
+            dev_type = str(row["dev_type"])
+            if dev_type not in {
+                "HydroSource",
+                "HydroLoad",
+                "AcE2Hydro",
+                "DcE2Hydro",
+                "Hydro2AcE",
+                "Hydro2DcE",
+                "HydroStorage",
+            }:
+                continue
+            if str(row["meas_type"]).upper() in {"RUN_STAT", "STATUS"}:
+                continue
+            types_by_device.setdefault(dev_type, []).append(str(row["meas_type"]))
+            self.assertEqual(
+                row["name"],
+                f"{row['dev_type']}.{row['dev_name']}.{row['meas_type']}",
+            )
+
+        self.assertEqual(types_by_device["HydroSource"], ["flow", "pressure"])
+        self.assertEqual(types_by_device["HydroLoad"], ["flow", "pressure"])
+        for dev_type in ("AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"):
+            self.assertEqual(types_by_device[dev_type], ["p", "flow"])
+        self.assertEqual(
+            types_by_device["HydroStorage"],
+            ["pressure", "flow", "gas_quantity", "soc"],
+        )
+        self.assertNotIn("PRESS", {str(row["meas_type"]) for row in rows})
+
     def test_service_generated_weather_and_signal_names_include_device_type(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "source"

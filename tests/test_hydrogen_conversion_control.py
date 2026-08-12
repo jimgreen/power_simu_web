@@ -195,12 +195,12 @@ def test_power_control_drives_hydrogen_flow_and_realtime_measurements(tmp_path):
     snapshot, solver_info = simu_loop.solve_hybrid_snapshot_from_book(book, model_path)
 
     assert "normF=" in solver_info
-    assert _measurement(snapshot, "AcE2Hydro", book.data["AcE2Hydro"].data[0]["name"], "P") == pytest.approx(2.0)
-    assert _measurement(snapshot, "AcE2Hydro", book.data["AcE2Hydro"].data[0]["name"], "FLOW") == pytest.approx(0.4)
-    assert _measurement(snapshot, "Hydro2DcE", book.data["Hydro2DcE"].data[0]["name"], "P") == pytest.approx(5.4)
-    assert _measurement(snapshot, "Hydro2DcE", book.data["Hydro2DcE"].data[0]["name"], "FLOW") == pytest.approx(3.0)
-    assert _measurement(snapshot, "HydroSource", rows["h2_source"]["name"], "FLOW") == pytest.approx(0.4)
-    assert _measurement(snapshot, "HydroLoad", rows["h2_load"]["name"], "FLOW") == pytest.approx(3.0)
+    assert _measurement(snapshot, "AcE2Hydro", book.data["AcE2Hydro"].data[0]["name"], "p") == pytest.approx(2.0)
+    assert _measurement(snapshot, "AcE2Hydro", book.data["AcE2Hydro"].data[0]["name"], "flow") == pytest.approx(0.4)
+    assert _measurement(snapshot, "Hydro2DcE", book.data["Hydro2DcE"].data[0]["name"], "p") == pytest.approx(5.4)
+    assert _measurement(snapshot, "Hydro2DcE", book.data["Hydro2DcE"].data[0]["name"], "flow") == pytest.approx(3.0)
+    assert _measurement(snapshot, "HydroSource", rows["h2_source"]["name"], "flow") == pytest.approx(0.4)
+    assert _measurement(snapshot, "HydroLoad", rows["h2_load"]["name"], "flow") == pytest.approx(3.0)
     assert {result.status for result in snapshot.coupling_results} == {"balanced"}
 
 
@@ -219,8 +219,8 @@ def test_flow_control_ignores_conflicting_electric_setpoints(tmp_path):
 
     assert snapshot.value("ACLoad", rows["ac_load"]["name"], "P_LOAD") == pytest.approx(2.0)
     assert snapshot.value("DCGenerator", rows["dc_gen"]["name"], "P_GEN") == pytest.approx(5.4)
-    assert _measurement(snapshot, "HydroSource", rows["h2_source"]["name"], "FLOW") == pytest.approx(0.4)
-    assert _measurement(snapshot, "HydroLoad", rows["h2_load"]["name"], "FLOW") == pytest.approx(3.0)
+    assert _measurement(snapshot, "HydroSource", rows["h2_source"]["name"], "flow") == pytest.approx(0.4)
+    assert _measurement(snapshot, "HydroLoad", rows["h2_load"]["name"], "flow") == pytest.approx(3.0)
     assert {result.status for result in snapshot.coupling_results} == {"balanced"}
 
 
@@ -294,8 +294,8 @@ def test_trainee_endpoint_binding_dispatches_into_live_conversion_calculation(
         (row["dev_type"], row["dev_name"], row["meas_type"]): float(row["value"])
         for row in snapshot["measurements"]["real"]
     }
-    flow = real_values[(coupling_block, converter["dev_name"], "FLOW")]
-    power = real_values[(coupling_block, converter["dev_name"], "P")]
+    flow = real_values[(coupling_block, converter["dev_name"], "flow")]
+    power = real_values[(coupling_block, converter["dev_name"], "p")]
     active_value = power if set_type == "p_set" else flow
     assert min(initial_value, set_value) < active_value < max(initial_value, set_value)
     if coupling_block == "AcE2Hydro":
@@ -415,10 +415,10 @@ def test_simulator_svg_endpoint_edit_applies_the_mode_selected_setpoint_to_next_
         (row["dev_type"], row["dev_name"], row["meas_type"]): float(row["value"])
         for row in snapshot["measurements"]["real"]
     }
-    assert real_values[(coupling_block, coupling_name, "P")] == pytest.approx(
+    assert real_values[(coupling_block, coupling_name, "p")] == pytest.approx(
         expected_power
     )
-    assert real_values[(coupling_block, coupling_name, "FLOW")] == pytest.approx(
+    assert real_values[(coupling_block, coupling_name, "flow")] == pytest.approx(
         expected_flow
     )
 
@@ -465,14 +465,41 @@ def test_coupled_hydrogen_flow_updates_all_tank_runtime_states(
     expected_press = 35.0 - expected_flow / 50.0 * 0.1
     expected_quantity = 17500.0 - expected_flow
 
-    assert storage_values["FLOW"] == pytest.approx(expected_flow)
-    assert storage_values["PRESS"] == pytest.approx(expected_press)
-    assert storage_values["GAS_QUANTITY"] == pytest.approx(expected_quantity)
-    assert storage_values["SOC"] == pytest.approx(expected_press / 45.0)
+    assert storage_values["flow"] == pytest.approx(expected_flow)
+    assert storage_values["pressure"] == pytest.approx(expected_press)
+    assert storage_values["gas_quantity"] == pytest.approx(expected_quantity)
+    assert storage_values["soc"] == pytest.approx(expected_press / 45.0)
     direction = -1.0 if expected_flow > 0.0 else 1.0
-    assert (storage_values["PRESS"] - 35.0) * direction > 0.0
-    assert (storage_values["GAS_QUANTITY"] - 17500.0) * direction > 0.0
-    assert (storage_values["SOC"] - 35.0 / 45.0) * direction > 0.0
+    assert (storage_values["pressure"] - 35.0) * direction > 0.0
+    assert (storage_values["gas_quantity"] - 17500.0) * direction > 0.0
+    assert (storage_values["soc"] - 35.0 / 45.0) * direction > 0.0
+
+
+def test_bundled_hydrogen_model_converges_with_endpoint_power_limits():
+    model_path = next(
+        path
+        for path in (ROOT / "models" / "simulator" / "source").glob("*/model.e")
+        if "<AcE2Hydro>" in path.read_text(encoding="utf-8")
+    )
+    book = simu_loop.EBook(model_path)
+    electrolyzer_load = next(
+        row for row in book.data["ACLoad"].data if str(row.get("idx")) == "2"
+    )
+    electrolyzer_load["p_set"] = electrolyzer_load["p_max"]
+    fuel_cell_coupling = book.data["Hydro2DcE"].data[0]
+    fuel_cell_generator = next(
+        row
+        for row in book.data["DCGenerator"].data
+        if str(row.get("idx")) == str(fuel_cell_coupling["idx_dc_unit_t1"])
+    )
+    fuel_cell_generator["p_set"] = "30"
+
+    _snapshot, solver_info = simu_loop.solve_hybrid_snapshot_from_book(book, model_path)
+
+    assert float(electrolyzer_load["p_set"]) == 100.0
+    assert float(fuel_cell_generator["p_max"]) == 100.0
+    assert float(fuel_cell_generator["p_set"]) == 30.0
+    assert "normF=" in solver_info
 
 
 @pytest.mark.parametrize("role", ("simulator", "trainee"))
@@ -483,6 +510,8 @@ def test_hydrogen_conversion_parameter_labels_and_modes_are_explicit(role):
     assert 'h2e_coeff: "气-电效率 (kWh/Nm3)"' in script
     assert 'P: "定电功率 (P)"' in script
     assert 'FLOW: "定气流量 (FLOW)"' in script
+    assert '["PRESS", "PRESSURE"]' not in script
+    assert 'type === "PRESS"' not in script
     assert "diagramDefinitionFieldLabel(field)" in script
     assert "diagramDefinitionControlModeOptions(record, field)" in script
     assert "data-diagram-definition-control-mode" in script

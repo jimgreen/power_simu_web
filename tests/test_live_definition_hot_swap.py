@@ -11,7 +11,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import simu_loop
-from simu.definition_editing import atomic_write_text as real_atomic_write_text
+from simu.definition_editing import (
+    atomic_write_text as real_atomic_write_text,
+    render_ebook_aligned,
+)
 from simu.service import EBook, PolarMicrogridSimulator
 
 
@@ -95,6 +98,35 @@ class LiveDefinitionHotSwapTest(unittest.TestCase):
                         "changes": changes,
                     }
                 )
+
+    def test_device_update_rejects_out_of_bounds_setpoint_atomically(self):
+        _source, runtime, service = self._make_service()
+        current = service.definition_snapshot
+        model_book = simu_loop._clone_ebook(current.model_book)
+        load = model_book.data["ACLoad"].data[0]
+        for field, value in (("p_set", "20"), ("p_min", "0"), ("p_max", "100")):
+            if field not in model_book.data["ACLoad"].header_list:
+                model_book.data["ACLoad"].header_list.append(field)
+            load[field] = value
+        service._publish_definition_snapshot(replace(current, model_book=model_book))
+        revision_before = service.definition_snapshot.revision
+        stat_before = render_ebook_aligned(service.runtime_stat_book)
+
+        with self.assertRaisesRegex(ValueError, "p_set.*p_max"):
+            service.update_device_parameters(
+                {
+                    "block_name": "ACLoad",
+                    "row_key": {"name": "load_ac_1", "idx": "1"},
+                    "revision": revision_before,
+                    "changes": {"p_set": 101},
+                }
+            )
+
+        active = service.definition_snapshot.model_book.data["ACLoad"].data[0]
+        self.assertEqual(service.definition_snapshot.revision, revision_before)
+        self.assertEqual(active["p_set"], "20")
+        self.assertEqual(render_ebook_aligned(service.runtime_stat_book), stat_before)
+        self.assertFalse((runtime / "manual_overrides.json").exists())
 
     def test_device_update_rejects_stale_revision_without_mutating_state(self):
         source, _runtime, service = self._make_service()

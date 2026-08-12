@@ -57,6 +57,7 @@ from simu.definition_editing import (
     normalize_measurement_changes,
     ratio_parameter_number,
     require_definition_revision,
+    validate_setpoint_safety_bounds,
 )
 from simu.device_roles import (
     AC_TO_DC,
@@ -75,6 +76,7 @@ from simu.model_semantics import (
     resources_by_device_key,
     structured_resources,
     normalize_hydrogen_conversion_control_mode,
+    resource_aliases,
     terminal_domains_from_block,
 )
 from simu.measurement_delta import (
@@ -151,7 +153,7 @@ STAT_HEADERS = {
         "dev_type",
         "idx",
         "name",
-        "press",
+        "pressure",
         "flow",
         "gas_quantity",
         "soc",
@@ -1932,6 +1934,15 @@ class PolarMicrogridSimulator:
             requested_set = self._normalize_set_command_items(source_set)
             retained_run = self._filter_defined_run_command_items(requested_run)
             retained_set = self._filter_defined_set_command_items(requested_set)
+            safe_set: List[Dict[str, Any]] = []
+            for set_item in retained_set:
+                try:
+                    safe_set.append(
+                        self._validated_set_command_item(set_item, strict=True)
+                    )
+                except ValueError:
+                    changed = True
+            retained_set = safe_set
             if not retained_run and not retained_set:
                 changed = True
                 continue
@@ -2705,6 +2716,7 @@ class PolarMicrogridSimulator:
         applied_run = 0
         applied_set = 0
         active_set_rows: List[Dict[str, Any]] = []
+        unsafe_set_items: List[str] = []
 
         for command in active_entries:
             normalized = command.get("normalized", {})
@@ -2746,11 +2758,19 @@ class PolarMicrogridSimulator:
                         continue
                     if (dev_type, dev_name, set_type) not in allowed_set_keys:
                         continue
+                    try:
+                        safe_item = self._validated_set_command_item(
+                            item,
+                            strict=True,
+                        )
+                    except ValueError as exc:
+                        unsafe_set_items.append(str(exc))
+                        continue
                     row = _find_set_row(set_block, dev_type, dev_name, set_type)
                     if row is None:
                         row = {"dev_type": dev_type, "dev_name": dev_name, "set_type": set_type, "set_value": ""}
                         set_block.data.append(row)
-                    row["set_value"] = _number_text(item.get("set_value", ""))
+                    row["set_value"] = safe_item["set_value"]
                     applied_set += 1
                     active_set_rows.append(
                         {
@@ -2765,6 +2785,17 @@ class PolarMicrogridSimulator:
         if persist:
             simu_loop.write_ebook_aligned(book, self.files["stat"])
         self._write_active_yt_ctrl_file(active_set_rows, persist=persist)
+        if unsafe_set_items:
+            self._append_runtime_log(
+                "控制安全边界",
+                "持久化指令物化",
+                "越界指令已阻断",
+                [
+                    *unsafe_set_items,
+                    "不安全指令未写入运行控制文件和潮流边界。",
+                ],
+                level="warn",
+            )
         return {"active_commands": len(active_entries), "run_status": applied_run, "set_values": applied_set}
 
     def _active_remote_adjustment_keys(self, absolute_minute: int | float) -> set[Tuple[str, str, str]]:
@@ -2810,6 +2841,144 @@ class PolarMicrogridSimulator:
             ),
             None,
         )
+
+    def _control_target_row(
+        self,
+        dev_type: str,
+        dev_name: str,
+    ) -> Optional[Mapping[str, Any]]:
+        direct = self._model_control_row(dev_type, dev_name)
+        resources = structured_resources(self.definition_snapshot.model_book)
+        resource_by_key = {resource.device_key: resource for resource in resources}
+        matched_resources = []
+        if direct is not None:
+            direct_resource = resource_by_key.get((dev_type, dev_name))
+            return self._control_safety_row(direct, direct_resource)
+
+        protocol_key = (dev_type, dev_name)
+        for resource_key, protocol_keys in self._storage_runtime_protocol_keys().items():
+            if protocol_key in protocol_keys and resource_key in resource_by_key:
+                matched_resources.append(resource_by_key[resource_key])
+        matched_resources.extend(
+            resource
+            for resource in resources
+            if dev_name in resource_aliases(resource)
+            and (not dev_type or dev_type in {"ESS", resource.source_block})
+        )
+        unique = {resource.device_key: resource for resource in matched_resources}
+        if len(unique) != 1:
+            return None
+        resource = next(iter(unique.values()))
+        return self._control_safety_row(resource.source, resource)
+
+    @staticmethod
+    def _control_safety_row(
+        source: Mapping[str, Any],
+        resource: Any = None,
+    ) -> Mapping[str, Any]:
+        """Combine source and capability limits without changing model data."""
+
+        row = dict(source)
+        if resource is None:
+            return row
+        parameter = dict(resource.parameter)
+        for field, value in parameter.items():
+            row.setdefault(field, value)
+
+        source_p_min = _to_float(row.get("p_min"), None)
+        source_p_max = _to_float(row.get("p_max"), None)
+        parameter_p_min = _to_float(parameter.get("p_min"), None)
+        parameter_p_max = _to_float(parameter.get("p_max"), None)
+        source_pair_is_placeholder = (
+            source_p_min == 0.0
+            and source_p_max == 0.0
+            and any(value not in (None, 0.0) for value in (parameter_p_min, parameter_p_max))
+        )
+        if source_p_min is None or source_pair_is_placeholder:
+            if parameter_p_min is not None:
+                row["p_min"] = parameter_p_min
+        if source_p_max is None or source_pair_is_placeholder:
+            if parameter_p_max is not None:
+                row["p_max"] = parameter_p_max
+
+        if resource.technology == "storage" and (
+            source_p_min is None
+            or source_p_max is None
+            or (source_p_min == 0.0 and source_p_max == 0.0)
+        ):
+            max_charge = _to_float(
+                parameter.get("max_charge_power", parameter.get("charge_p_max")),
+                None,
+            )
+            max_discharge = _to_float(
+                parameter.get("max_discharge_power", parameter.get("dis_charge_p_max")),
+                None,
+            )
+            if max_charge is not None and max_charge >= 0.0:
+                row["p_min"] = -float(max_charge)
+            if max_discharge is not None and max_discharge >= 0.0:
+                row["p_max"] = float(max_discharge)
+        return row
+
+    def _validated_set_command_item(
+        self,
+        item: Mapping[str, Any],
+        *,
+        strict: bool,
+    ) -> Dict[str, Any]:
+        dev_type = str(item.get("dev_type", "")).strip()
+        dev_name = str(item.get("dev_name", "")).strip()
+        set_type = str(item.get("set_type", "")).strip()
+        value = item.get("set_value", "")
+        target = self._control_target_row(dev_type, dev_name)
+        if target is None:
+            if strict:
+                raise ValueError(
+                    f"遥调安全校验失败：未找到 {dev_type}/{dev_name} 的模型设备；"
+                    "本批指令未下发，仿真边界未修改。"
+                )
+            return {
+                "dev_type": dev_type,
+                "dev_name": dev_name,
+                "set_type": set_type,
+                "set_value": _number_text(value),
+            }
+
+        target_type = str(dev_type)
+        target_set_type = simu_loop._set_value_target_column(
+            target_type,
+            set_type,
+            dict(target),
+        )
+        try:
+            number, _bounds = validate_setpoint_safety_bounds(
+                target,
+                target_set_type,
+                value,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"遥调安全校验失败：{dev_type}/{dev_name} 的 "
+                f"{set_type}={_number_text(value)} 超出允许范围（{exc}）；"
+                "本批指令未下发，仿真边界未修改。"
+            ) from exc
+        return {
+            "dev_type": dev_type,
+            "dev_name": dev_name,
+            "set_type": set_type,
+            "set_value": _number_text(number),
+        }
+
+    def _validate_set_command_items(
+        self,
+        items: Sequence[Mapping[str, Any]],
+        *,
+        strict: bool,
+    ) -> List[Dict[str, Any]]:
+        return [
+            self._validated_set_command_item(item, strict=strict)
+            for item in items
+        ]
 
     def _remote_adjustment_measurement_types(self, key: Tuple[str, str, str]) -> Tuple[str, ...]:
         dev_type, dev_name, set_type = key
@@ -5175,7 +5344,7 @@ class PolarMicrogridSimulator:
             if "FLOW" in values:
                 metrics.setdefault("gasFlow", []).append((float(values["FLOW"]), 1.0))
             if category == "hydrogenStorage":
-                pressure = values.get("PRESS", values.get("PRESSURE"))
+                pressure = values.get("PRESSURE")
                 if pressure is not None:
                     metrics.setdefault("gasPressure", []).append((float(pressure), 1.0))
                 if "GAS_QUANTITY" in values:
@@ -5510,6 +5679,24 @@ class PolarMicrogridSimulator:
             normalized_run_items = self._filter_defined_run_command_items(requested_run_items)
             normalized_set_items = self._filter_defined_set_command_items(requested_set_items)
             eligible_source = _is_trainee_command_source(source)
+            if eligible_source and normalized_set_items:
+                try:
+                    normalized_set_items = self._validate_set_command_items(
+                        normalized_set_items,
+                        strict=True,
+                    )
+                except ValueError as exc:
+                    self._append_runtime_log(
+                        "控制安全边界",
+                        "遥调指令接收",
+                        "整批拒绝",
+                        [
+                            str(exc),
+                            "本批遥控/遥调未写入指令历史、运行控制文件或潮流边界。",
+                        ],
+                        level="warn",
+                    )
+                    raise
             issued_absolute_minute = float(self.clock.absolute_minute)
             received_wall_time = _now_text()
             received_simu_time = minute_to_time(self.clock.minute)
@@ -9962,6 +10149,8 @@ class PolarMicrogridSimulator:
         for item in items:
             if item.get("kind") != "device":
                 continue
+            if item.get("effective") is False:
+                continue
             field_name = str(item.get("field", "")).strip().casefold()
             block_name = str(item.get("block_name", "")).strip()
             row_key = item.get("row_key", {})
@@ -10156,6 +10345,9 @@ class PolarMicrogridSimulator:
                 )
         accepted_fingerprints = list(dict.fromkeys(accepted_fingerprints))
         current_fingerprint = self._manual_definition_source_fingerprint()
+        source_definition_changed = bool(
+            accepted_fingerprints and current_fingerprint not in accepted_fingerprints
+        )
         model_matches = not isinstance(payload, Mapping) or str(
             payload.get("model_id", self.model_id)
         ).strip() in {"", self.model_id}
@@ -10164,10 +10356,6 @@ class PolarMicrogridSimulator:
             or not payload
             or not accepted_fingerprints
         ):
-            self._manual_definition_changes = {}
-            self._archive_manual_definition_changes_unlocked()
-            return
-        if accepted_fingerprints and current_fingerprint not in accepted_fingerprints:
             self._manual_definition_changes = {}
             self._archive_manual_definition_changes_unlocked()
             return
@@ -10192,6 +10380,24 @@ class PolarMicrogridSimulator:
                 item.setdefault("retry_count", 0)
                 loaded[change_id] = item
         self._manual_definition_changes = loaded
+        if source_definition_changed and self._manual_definition_changes:
+            try:
+                source_snapshot, _source_stat, _source_control = (
+                    self._source_definition_state_unlocked()
+                )
+            except (KeyError, ValueError, OSError):
+                source_snapshot = None
+            if source_snapshot is not None:
+                for item in self._manual_definition_changes.values():
+                    try:
+                        source_value = self._current_manual_change_value(
+                            item,
+                            snapshot=source_snapshot,
+                        )
+                    except (KeyError, ValueError):
+                        source_value = None
+                    if source_value is not None:
+                        item["default_value"] = source_value
         migrated_legacy_statuses = self._migrate_legacy_measurement_status_overrides_unlocked()
         if not self._manual_definition_changes:
             return
@@ -10206,8 +10412,11 @@ class PolarMicrogridSimulator:
             self.reload_definition_state()
             return
 
-        reconciled = migrated_legacy_statuses
+        reconciled = migrated_legacy_statuses or source_definition_changed
         for change_id, item in list(self._manual_definition_changes.items()):
+            if item.get("effective") is False:
+                reconciled = True
+                continue
             try:
                 current_value = self._current_manual_change_value(item)
             except (KeyError, ValueError):
@@ -10250,30 +10459,56 @@ class PolarMicrogridSimulator:
         measurement_median_deviations = _measurement_median_deviation_map(current)
         changed = False
 
-        for item in items:
-            kind = str(item.get("kind", ""))
-            field_name = str(item.get("field", ""))
-            desired_value = item.get("current_value", "")
-            if kind == "device":
-                block_name = str(item.get("block_name", ""))
+        device_groups: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+        for raw_item in items:
+            if raw_item.get("kind") != "device":
+                continue
+            item = raw_item if isinstance(raw_item, dict) else dict(raw_item)
+            block_name = str(item.get("block_name", ""))
+            row_key = item.get("row_key", {})
+            identity = json.dumps(row_key, ensure_ascii=False, sort_keys=True)
+            device_groups.setdefault((block_name, identity), []).append(item)
+
+        for (block_name, _identity), group in device_groups.items():
+            try:
                 block = model_book.data.get(block_name)
                 if block is None:
                     raise ValueError(f"Unknown model block: {block_name}")
-                row_key = item.get("row_key", {})
+                row_key = group[0].get("row_key", {})
                 if not isinstance(row_key, Mapping):
-                    raise ValueError(f"Invalid device identity for manual change: {item.get('id', '')}")
+                    raise ValueError(
+                        f"Invalid device identity for manual change: {group[0].get('id', '')}"
+                    )
                 row = self._definition_row(block, row_key)
-                normalized = normalize_device_changes(row, {field_name: desired_value})
-                changed = changed or not self._manual_change_values_equal(
-                    row.get(field_name, ""),
-                    normalized[field_name],
-                )
-                row.update(normalized)
+                desired = {
+                    str(item.get("field", "")): item.get("current_value", "")
+                    for item in group
+                }
+                normalized = normalize_device_changes(row, desired)
+            except (KeyError, ValueError) as exc:
+                for item in group:
+                    item["effective"] = False
+                    item["application_status"] = "invalid"
+                    item["application_error"] = str(exc)
+                continue
+            for item in group:
+                item["effective"] = True
+                item["application_status"] = "applied"
+                item["application_error"] = ""
+            changed = changed or any(
+                not self._manual_change_values_equal(row.get(field_name, ""), value)
+                for field_name, value in normalized.items()
+            )
+            row.update(normalized)
 
         measurement_groups: Dict[str, Dict[str, Any]] = {}
         for item in items:
             if item.get("kind") != "measurement":
                 continue
+            if isinstance(item, dict):
+                item["effective"] = True
+                item["application_status"] = "applied"
+                item["application_error"] = ""
             measurement_name = str(item.get("measurement_name", ""))
             measurement_groups.setdefault(measurement_name, {})[str(item.get("field", ""))] = item.get(
                 "current_value",

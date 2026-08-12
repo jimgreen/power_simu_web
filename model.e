@@ -223,7 +223,7 @@
 # 1    直流燃料电池-1_氢能设备端氢荷  dc-fuel-cell  1     5.555556  1
 </HydroLoad>
 <HydroStorage>
-@ idx  name       dev_type                 node  control_type  pressure_set  flow_set  alpha  flow_min  flow_max  press  flow  gas_quantity  water_volume  press_max  press_min  run_stat
+@ idx  name       dev_type                 node  control_type  pressure_set  flow_set  alpha  flow_min  flow_max  pressure  flow  gas_quantity  water_volume  pressure_max  pressure_min  run_stat
 # 1    集装格式储氢罐-1  hydrogen-tank-container  1     PRESSURE      35            0         1      -100      100       35     0     17500         50            45         2          1
 </HydroStorage>
 <AcE2Hydro>

@@ -170,7 +170,7 @@ class ManualOverridePersistenceTest(unittest.TestCase):
         self.assertEqual(restored_row["p_set"], "80")
         self.assertEqual(self._source_bytes(source), source_before)
 
-    def test_replaced_source_definition_invalidates_persisted_overrides(self):
+    def test_replaced_source_definition_revalidates_persisted_overrides(self):
         source, runtime = self._make_workspace()
         service = PolarMicrogridSimulator(source, runtime, model_id="manual", kernel=lambda _config: None)
         service.update_device_parameters(
@@ -195,10 +195,13 @@ class ManualOverridePersistenceTest(unittest.TestCase):
 
         restarted = PolarMicrogridSimulator(source, runtime, model_id="manual", kernel=lambda _config: None)
 
-        self.assertEqual(self._device_row(restarted, "ACBranch", "diesel_line")["r"], "0.0035")
-        self.assertEqual(restarted.manual_definition_changes()["count"], 0)
-        self.assertFalse(override_file.exists())
-        self.assertTrue(list(runtime.glob("manual_overrides.stale.*.json")))
+        self.assertEqual(self._device_row(restarted, "ACBranch", "diesel_line")["r"], "0.0025")
+        changes = restarted.manual_definition_changes()
+        self.assertEqual(changes["count"], 1)
+        self.assertEqual(changes["changes"][0]["default_value"], "0.0035")
+        self.assertTrue(changes["changes"][0]["effective"])
+        self.assertTrue(override_file.exists())
+        self.assertFalse(list(runtime.glob("manual_overrides.stale.*.json")))
 
 
 if __name__ == "__main__":

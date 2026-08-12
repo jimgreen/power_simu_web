@@ -5055,7 +5055,7 @@ const DIAGRAM_METRIC_MEASUREMENT_TYPES = Object.freeze({
   level: Object.freeze({ "*": ["SOC", "LEVEL"] }),
   frequency: Object.freeze({ "*": ["FREQUENCY", "FREQ", "F"] }),
   flow: Object.freeze({ "*": ["FLOW"] }),
-  pressure: Object.freeze({ "*": ["PRESS", "PRESSURE"] }),
+  pressure: Object.freeze({ "*": ["PRESSURE"] }),
   gas_quantity: Object.freeze({ "*": ["GAS_QUANTITY"] }),
   soc: Object.freeze({ "*": ["SOC"] }),
   temperature: Object.freeze({ "*": ["TEMPERATURE"] }),
@@ -6174,7 +6174,7 @@ function diagramTooltipValue(value) {
 function diagramMeasurementUnit(measType) {
   const type = normalizeDiagramMeasurementToken(measType);
   if (type === "SOC" || type === "LEVEL") return "%";
-  if (type === "PRESS" || type === "PRESSURE") return "MPa";
+  if (type === "PRESSURE") return "MPa";
   if (type === "FLOW") return "Nm3/h";
   if (type === "GAS_QUANTITY") return "Nm3";
   if (type.startsWith("P")) return "kW";
@@ -13910,7 +13910,7 @@ function measurementUnit(measType) {
   const type = String(measType || "").toUpperCase();
   if (WEATHER_MEASUREMENT_LABELS[type]?.unit) return WEATHER_MEASUREMENT_LABELS[type].unit;
   if (type === "SOC" || type === "LEVEL") return "%";
-  if (type === "PRESS" || type === "PRESSURE") return "MPa";
+  if (type === "PRESSURE") return "MPa";
   if (type === "FLOW") return "Nm3/h";
   if (type === "GAS_QUANTITY") return "Nm3";
   if (type.startsWith("P")) return "kW";

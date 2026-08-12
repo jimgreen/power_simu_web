@@ -203,6 +203,58 @@ class ManualDefinitionChangesTest(unittest.TestCase):
         self.assertEqual(int(measurement["valid"]), 0)
         self.assertEqual(reloaded.manual_definition_changes()["count"], 3)
 
+    def test_out_of_bounds_persisted_setpoint_is_retained_but_not_replayed(self):
+        _root, source, runtime, _service = self._make_service()
+        model_book = EBook(source / "model.e")
+        load_block = model_book.data["ACLoad"]
+        load = load_block.data[0]
+        for field, value in (("p_set", "0"), ("p_min", "0"), ("p_max", "100")):
+            if field not in load_block.header_list:
+                load_block.header_list.append(field)
+            load[field] = value
+        (source / "model.e").write_text(
+            render_ebook_aligned(model_book),
+            encoding="utf-8",
+        )
+        service = PolarMicrogridSimulator(
+            source,
+            runtime,
+            model_id="manual",
+            kernel=lambda _config: None,
+        )
+        service.update_device_parameters(
+            {
+                "block_name": "ACLoad",
+                "row_key": {"name": "load_ac_1", "idx": "1"},
+                "changes": {"p_set": 50},
+            }
+        )
+        payload = json.loads((runtime / CHANGE_FILE).read_text(encoding="utf-8"))
+        change = next(item for item in payload["changes"] if item["field"] == "p_set")
+        change["current_value"] = "101"
+        (runtime / CHANGE_FILE).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        reloaded = PolarMicrogridSimulator(
+            source,
+            runtime,
+            model_id="manual",
+            kernel=lambda _config: None,
+        )
+
+        active = self._device_row(reloaded, "ACLoad", "load_ac_1")
+        retained = next(
+            item
+            for item in reloaded.manual_definition_changes()["changes"]
+            if item["field"] == "p_set"
+        )
+        self.assertEqual(active["p_set"], "0")
+        self.assertFalse(retained["effective"])
+        self.assertEqual(retained["application_status"], "invalid")
+        self.assertRegex(retained["application_error"], "p_set.*p_max")
+
     def test_reset_selected_changes_restores_source_defaults_and_keeps_other_overrides(self):
         _root, source, runtime, service = self._make_service()
         source_before = self._tree_bytes(source)
@@ -375,7 +427,7 @@ class ManualDefinitionChangesTest(unittest.TestCase):
         self.assertEqual(self._device_row(reloaded)["x"], "0.006")
         self.assertEqual(set(self._by_field(reloaded.manual_definition_changes())), {"x"})
 
-    def test_external_source_replacement_archives_stale_overlay(self):
+    def test_external_source_replacement_revalidates_and_keeps_overlay(self):
         _root, source, runtime, service = self._make_service()
         service.update_device_parameters(
             {
@@ -396,10 +448,13 @@ class ManualDefinitionChangesTest(unittest.TestCase):
 
         reloaded = PolarMicrogridSimulator(source, runtime, model_id="manual", kernel=lambda _config: None)
 
-        self.assertEqual(self._device_row(reloaded)["r"], "0.0035")
-        self.assertEqual(reloaded.manual_definition_changes()["count"], 0)
-        self.assertFalse((runtime / CHANGE_FILE).exists())
-        self.assertTrue(list(runtime.glob("manual_overrides.stale.*.json")))
+        self.assertEqual(self._device_row(reloaded)["r"], "0.0025")
+        changes = reloaded.manual_definition_changes()
+        self.assertEqual(changes["count"], 1)
+        self.assertEqual(changes["changes"][0]["default_value"], "0.0035")
+        self.assertTrue(changes["changes"][0]["effective"])
+        self.assertTrue((runtime / CHANGE_FILE).exists())
+        self.assertFalse(list(runtime.glob("manual_overrides.stale.*.json")))
 
     def test_old_direct_definition_edits_cannot_mutate_recreated_model_lifecycle(self):
         cases = (

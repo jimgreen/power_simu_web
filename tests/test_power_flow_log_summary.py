@@ -1142,14 +1142,14 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
                 {"dev_type": "ACLoad", "dev_name": "load_ac_1", "meas_type": "P_LOAD", "value": 90.0},
                 {"dev_type": "ACLoad", "dev_name": "electrolyzer-ac-endpoint", "meas_type": "P_LOAD", "value": 30.0},
                 {"dev_type": "ACGenerator", "dev_name": "diesel_300kw", "meas_type": "P_GEN", "value": 20.0},
-                {"dev_type": "AcE2Hydro", "dev_name": "electrolyzer-1", "meas_type": "P", "value": 30.0},
-                {"dev_type": "AcE2Hydro", "dev_name": "electrolyzer-1", "meas_type": "FLOW", "value": 6.0},
-                {"dev_type": "Hydro2DcE", "dev_name": "fuel-cell-1", "meas_type": "P", "value": 12.0},
-                {"dev_type": "Hydro2DcE", "dev_name": "fuel-cell-1", "meas_type": "FLOW", "value": 8.0},
-                {"dev_type": "HydroStorage", "dev_name": "hydrogen-tank-1", "meas_type": "PRESS", "value": 32.0},
-                {"dev_type": "HydroStorage", "dev_name": "hydrogen-tank-1", "meas_type": "FLOW", "value": -2.5},
-                {"dev_type": "HydroStorage", "dev_name": "hydrogen-tank-1", "meas_type": "GAS_QUANTITY", "value": 15000.0},
-                {"dev_type": "HydroStorage", "dev_name": "hydrogen-tank-1", "meas_type": "SOC", "value": 0.62},
+                {"dev_type": "AcE2Hydro", "dev_name": "electrolyzer-1", "meas_type": "p", "value": 30.0},
+                {"dev_type": "AcE2Hydro", "dev_name": "electrolyzer-1", "meas_type": "flow", "value": 6.0},
+                {"dev_type": "Hydro2DcE", "dev_name": "fuel-cell-1", "meas_type": "p", "value": 12.0},
+                {"dev_type": "Hydro2DcE", "dev_name": "fuel-cell-1", "meas_type": "flow", "value": 8.0},
+                {"dev_type": "HydroStorage", "dev_name": "hydrogen-tank-1", "meas_type": "pressure", "value": 32.0},
+                {"dev_type": "HydroStorage", "dev_name": "hydrogen-tank-1", "meas_type": "flow", "value": -2.5},
+                {"dev_type": "HydroStorage", "dev_name": "hydrogen-tank-1", "meas_type": "gas_quantity", "value": 15000.0},
+                {"dev_type": "HydroStorage", "dev_name": "hydrogen-tank-1", "meas_type": "soc", "value": 0.62},
             ]
         )
 

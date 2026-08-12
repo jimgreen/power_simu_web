@@ -629,12 +629,12 @@ MEASUREMENT_TYPE_MAP = {
     "DCGenerator": ("P_GEN", "V_GEN", "I_GEN"),
     "ACLoad": ("P_LOAD", "Q_LOAD", "V_LOAD", "I_LOAD"),
     "DCLoad": ("P_LOAD", "V_LOAD", "I_LOAD"),
-    "HydroSource": ("FLOW", "PRESS"),
-    "HydroLoad": ("FLOW", "PRESS"),
-    "AcE2Hydro": ("P", "FLOW"),
-    "DcE2Hydro": ("P", "FLOW"),
-    "Hydro2AcE": ("P", "FLOW"),
-    "Hydro2DcE": ("P", "FLOW"),
+    "HydroSource": ("flow", "pressure"),
+    "HydroLoad": ("flow", "pressure"),
+    "AcE2Hydro": ("p", "flow"),
+    "DcE2Hydro": ("p", "flow"),
+    "Hydro2AcE": ("p", "flow"),
+    "Hydro2DcE": ("p", "flow"),
     "ACBranch": ("P_FROM", "Q_FROM", "P_TO", "Q_TO", "I"),
     "ACTransformer": ("P_FROM", "Q_FROM", "P_TO", "Q_TO", "I"),
     "ACZeroBranch": ("P_FROM", "Q_FROM", "P_TO", "Q_TO", "I"),
@@ -647,7 +647,7 @@ MEASUREMENT_TYPE_MAP = {
     "DCDCConverter": ("P_FROM", "V_FROM", "I_FROM", "P_TO", "V_TO", "I_TO"),
     "DCACConverter": ("P_DC", "V_DC", "I_DC", "P_AC", "Q_AC", "V_AC", "I_AC"),
     "ACACConverter": ("P_FROM", "Q_FROM", "V_FROM", "I_FROM", "P_TO", "Q_TO", "V_TO", "I_TO"),
-    "HydroStorage": ("PRESS", "FLOW", "GAS_QUANTITY", "SOC"),
+    "HydroStorage": ("pressure", "flow", "gas_quantity", "soc"),
 }
 STORAGE_PARAMETER_SPECS = (
     ("ACStorageGen", "ACGenerator", "idx_acgenerator"),
@@ -2714,7 +2714,14 @@ def make_http_server(
                     raise JsonApiError(400, str(exc)) from exc
                 self._send_json(result)
             elif path == "/api/student/commands":
-                self._send_json(target.apply_student_commands(payload, source=str(payload.get("source", ""))))
+                try:
+                    result = target.apply_student_commands(
+                        payload,
+                        source=str(payload.get("source", "")),
+                    )
+                except ValueError as exc:
+                    raise JsonApiError(400, str(exc)) from exc
+                self._send_json(result)
             elif path == SIMULATOR_COMMAND_DELETE_PATH:
                 if role != "simulator":
                     raise JsonApiError(404, f"Unknown API route: {path}")

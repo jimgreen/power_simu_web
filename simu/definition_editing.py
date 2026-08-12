@@ -195,6 +195,147 @@ def _bound_pairs(fields: Sequence[str]) -> set[tuple[str, str]]:
     return pairs
 
 
+def _configured_number(row: Mapping[str, Any], field: str) -> float | None:
+    value = row.get(field)
+    if value in (None, "", "-"):
+        return None
+    try:
+        return _finite_number(value, field)
+    except ValueError:
+        return None
+
+
+def _setpoint_bound_candidates(
+    current: Mapping[str, Any],
+    setpoint: str,
+) -> list[tuple[str, str]]:
+    field = _normalized_field_name(setpoint)
+    if not field.endswith("_set"):
+        return []
+    stem = field[:-4]
+    candidates: list[tuple[str, str]] = [(f"{stem}_min", f"{stem}_max")]
+    terminal_aliases = {
+        "p_ac": "ac_p",
+        "q_ac": "ac_q",
+        "v_ac": "ac_v",
+        "i_ac": "ac_i",
+        "p_dc": "dc_p",
+        "q_dc": "dc_q",
+        "v_dc": "dc_v",
+        "i_dc": "dc_i",
+        "p_from": "i_p",
+        "q_from": "i_q",
+        "v_from": "i_v",
+        "i_from": "i_i",
+        "p_to": "j_p",
+        "q_to": "j_q",
+        "v_to": "j_v",
+        "i_to": "j_i",
+    }
+    alias = terminal_aliases.get(stem)
+    if alias:
+        candidates.append((f"{alias}_min", f"{alias}_max"))
+
+    quantity = stem if stem in {"p", "q", "v", "i"} else ""
+    if quantity and any(
+        key in current
+        for key in (
+            "i_control_type",
+            "j_control_type",
+            f"i_{quantity}_min",
+            f"i_{quantity}_max",
+            f"j_{quantity}_min",
+            f"j_{quantity}_max",
+        )
+    ):
+        mode_tokens = {
+            "p": {"P", "PQ", "CTRL_P"},
+            "q": {"Q", "PQ", "CTRL_Q"},
+            "v": {"V", "PV", "CTRL_V", "SLACK"},
+            "i": {"I", "CTRL_I"},
+        }[quantity]
+        selected_sides = [
+            side
+            for side in ("i", "j")
+            if str(current.get(f"{side}_control_type", "")).strip().upper()
+            in mode_tokens
+        ]
+        sides = selected_sides or ["i", "j"]
+        candidates.extend(
+            (f"{side}_{quantity}_min", f"{side}_{quantity}_max")
+            for side in sides
+        )
+    return list(dict.fromkeys(candidates))
+
+
+def configured_setpoint_bounds(
+    current: Mapping[str, Any],
+    setpoint: Any,
+) -> tuple[str, float | None, str, float | None] | None:
+    """Return the effective configured bounds for one analog setpoint.
+
+    A complete terminal-specific pair takes precedence. If a dual-terminal
+    device does not declare a unique controlled side, all configured terminal
+    limits form a conservative intersection instead of guessing by name.
+    """
+
+    candidates = _setpoint_bound_candidates(current, str(setpoint))
+    configured: list[tuple[str, float | None, str, float | None]] = []
+    for lower, upper in candidates:
+        lower_number = _configured_number(current, lower)
+        upper_number = _configured_number(current, upper)
+        if lower_number is None and upper_number is None:
+            continue
+        configured.append((lower, lower_number, upper, upper_number))
+
+    if not configured:
+        return None
+    lower_options = list(enumerate(item for item in configured if item[1] is not None))
+    upper_options = list(enumerate(item for item in configured if item[3] is not None))
+    lower_entry = (
+        max(lower_options, key=lambda entry: (float(entry[1][1]), entry[0]))
+        if lower_options
+        else None
+    )
+    upper_entry = (
+        min(upper_options, key=lambda entry: (float(entry[1][3]), -entry[0]))
+        if upper_options
+        else None
+    )
+    lower_item = lower_entry[1] if lower_entry else None
+    upper_item = upper_entry[1] if upper_entry else None
+    return (
+        lower_item[0] if lower_item else "",
+        lower_item[1] if lower_item else None,
+        upper_item[2] if upper_item else "",
+        upper_item[3] if upper_item else None,
+    )
+
+
+def validate_setpoint_safety_bounds(
+    current: Mapping[str, Any],
+    setpoint: Any,
+    value: Any,
+) -> tuple[float, tuple[str, float | None, str, float | None] | None]:
+    field = str(setpoint or "").strip()
+    number = _finite_number(value, field or "set_value")
+    bounds = configured_setpoint_bounds(current, field)
+    if bounds is None:
+        return number, None
+    lower_name, lower, upper_name, upper = bounds
+    tolerance = 1e-9 * max(
+        1.0,
+        abs(number),
+        abs(lower) if lower is not None else 0.0,
+        abs(upper) if upper is not None else 0.0,
+    )
+    if lower is not None and number < lower - tolerance:
+        raise ValueError(f"{field}={_number_text(number)} must not be below {lower_name}={_number_text(lower)}")
+    if upper is not None and number > upper + tolerance:
+        raise ValueError(f"{field}={_number_text(number)} must not exceed {upper_name}={_number_text(upper)}")
+    return number, bounds
+
+
 def normalize_device_changes(current: Mapping[str, Any], changes: Mapping[str, Any]) -> dict[str, str]:
     if not isinstance(changes, Mapping) or not changes:
         raise ValueError("At least one device parameter change is required")
@@ -240,6 +381,13 @@ def normalize_device_changes(current: Mapping[str, Any], changes: Mapping[str, A
         )
         if lower_number > upper_number:
             raise ValueError(f"{lower} must not exceed {upper}")
+    changed_fields = {_normalized_field_name(field) for field in changes}
+    for setpoint in (field for field in merged if str(field).endswith("_set")):
+        candidates = _setpoint_bound_candidates(merged, setpoint)
+        related_fields = {setpoint, *(field for pair in candidates for field in pair)}
+        if not (related_fields & changed_fields):
+            continue
+        validate_setpoint_safety_bounds(merged, setpoint, merged[setpoint])
     return normalized
 
 

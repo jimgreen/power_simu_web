@@ -105,6 +105,25 @@ class DefinitionEditingHelpersTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "p_min.*p_max"):
             normalize_device_changes(current, {"p_min": 120})
 
+    def test_device_setpoints_must_remain_within_configured_bounds(self):
+        current = {
+            "p_set": "20",
+            "p_min": "0",
+            "p_max": "100",
+            "q_set": "0",
+            "q_min": "-10",
+            "q_max": "10",
+        }
+
+        with self.assertRaisesRegex(ValueError, "p_set.*p_max"):
+            normalize_device_changes(current, {"p_set": 101})
+        with self.assertRaisesRegex(ValueError, "q_set.*q_min"):
+            normalize_device_changes(current, {"q_set": -11})
+        self.assertEqual(
+            normalize_device_changes(current, {"p_set": 120, "p_max": 120}),
+            {"p_set": "120", "p_max": "120"},
+        )
+
     def test_device_changes_reject_negative_capacity_fields(self):
         current = {"rated_capacity": "100", "r": "0.01"}
 

@@ -358,7 +358,7 @@ class ControlCommandValidityTest(unittest.TestCase):
                         "dev_type": "DCACConverter",
                         "dev_name": "grid_inv_acp",
                         "set_type": "p_set",
-                        "set_value": -200,
+                        "set_value": -40,
                     }
                 ],
             },
@@ -391,7 +391,7 @@ class ControlCommandValidityTest(unittest.TestCase):
         service.clock.minute = 6
         service._materialize_active_control_commands(6)
 
-        self.assertEqual(self._set_value(service, "DCACConverter", "grid_inv_acp", "p_set"), "-200")
+        self.assertEqual(self._set_value(service, "DCACConverter", "grid_inv_acp", "p_set"), "-40")
         resumed = {
             item["name"]: item for item in service.latest_control_values()["items"]
         }["DCACConverter.grid_inv_acp.p_set"]
@@ -531,7 +531,7 @@ class ControlCommandValidityTest(unittest.TestCase):
                         "dev_type": "DCACConverter",
                         "dev_name": "grid_inv_acp",
                         "set_type": "p_set",
-                        "set_value": -200,
+                        "set_value": -40,
                     }
                 ],
             },

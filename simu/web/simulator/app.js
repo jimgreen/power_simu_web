@@ -23,6 +23,7 @@ const VERTICAL_SPLIT_MIN_TOP_PX = 120;
 const VERTICAL_SPLIT_MIN_BOTTOM_PX = 120;
 const STATIC_CACHE_STORAGE_KEY = "polarSimulatorStaticCacheV2";
 const STATIC_CACHE_MODEL_LIMIT = 4;
+const CURVE_TREE_COLLAPSE_KEY = "polarSimulatorCurveTreeCollapsedGroups";
 const HIDDEN_REFRESH_INTERVAL_MS = 10000;
 const WEB_RUNTIME_FALLBACKS = {
   frontend_refresh_seconds: 1,
@@ -94,6 +95,7 @@ const state = {
   selectedCurveKeys: ["wind_speed_mps"],
   hiddenCurveKeys: [],
   curveEditKey: "",
+  curveTreeGroupCollapsed: readStoredCurveTreeCollapsedGroups(),
   isCurveDragging: false,
   isCurveTreePointerDown: false,
   isCurveTreeMultiSelecting: false,
@@ -282,6 +284,12 @@ const CURVE_META = [
 const ENV_CURVE_KEYS = ["wind_speed_mps", "solar_irradiance_w_m2", "air_temp_c"];
 const LOAD_CURVE_META = { label: "负荷", color: "#c93a3a", min: 0, max: 500, digits: 2, unit: "kW" };
 const LOAD_CURVE_COLORS = ["#c93a3a", "#8a4fbf", "#23854a", "#d16300", "#4369b2", "#0a8b8b"];
+const SOURCE_CURVE_FAMILIES = [
+  { key: "electric", label: "电源曲线" },
+  { key: "hydrogen", label: "氢源曲线" },
+  { key: "heat", label: "热源曲线" },
+];
+const SOURCE_CURVE_COLORS = ["#126f8a", "#8a4fbf", "#23854a", "#d16300", "#4369b2", "#0a8b8b"];
 const CURVE_PLOT = { left: 58, right: 24, top: 46, bottom: 34 };
 const VIRTUAL_TABLE_ROW_HEIGHT = 34;
 const VIRTUAL_TABLE_MIN_ROWS = 220;
@@ -9796,8 +9804,17 @@ function allLoadCurveKeys() {
   return curveLoadDevices().map((dev) => loadCurveKey(dev.dev_name));
 }
 
+function curveSourceCatalog() {
+  const sources = Array.isArray(state.curveSummary?.sources) ? state.curveSummary.sources : [];
+  return sources.filter((item) => item && item.key && item.family);
+}
+
+function allSourceCurveKeys() {
+  return curveSourceCatalog().map((item) => item.key);
+}
+
 function allCurveKeys() {
-  return [...ENV_CURVE_KEYS, ...allLoadCurveKeys()];
+  return [...ENV_CURVE_KEYS, ...allLoadCurveKeys(), ...allSourceCurveKeys()];
 }
 
 function semanticDeviceModelBlock(dev) {
@@ -9834,6 +9851,25 @@ function curveMetaForKey(key) {
     const loadIndex = Math.max(0, allLoadCurveKeys().indexOf(key));
     const color = LOAD_CURVE_COLORS[loadIndex % LOAD_CURVE_COLORS.length];
     return { ...LOAD_CURVE_META, key, label: devName, color };
+  }
+  if (String(key).startsWith("source:")) {
+    const source = curveSourceCatalog().find((item) => item.key === key) || {};
+    const sourceIndex = Math.max(0, allSourceCurveKeys().indexOf(key));
+    const defaultValue = Number(source.default_value);
+    const lower = Number(source.min);
+    const upper = Number(source.max);
+    const span = Math.max(1, Math.abs(Number.isFinite(defaultValue) ? defaultValue : 0));
+    return {
+      key,
+      label: source.name || source.dev_name || key,
+      color: SOURCE_CURVE_COLORS[sourceIndex % SOURCE_CURVE_COLORS.length],
+      min: Number.isFinite(lower) ? lower : Math.min(0, (Number.isFinite(defaultValue) ? defaultValue : 0) - span),
+      max: Number.isFinite(upper) ? upper : Math.max(1, (Number.isFinite(defaultValue) ? defaultValue : 0) + span),
+      digits: 3,
+      unit: source.unit || "",
+      family: source.family || "electric",
+      devType: source.dev_type || "",
+    };
   }
   return CURVE_META[0];
 }
@@ -9913,6 +9949,10 @@ function loadCurveSeriesTemplate() {
 
 function curveFallbackValue(key) {
   if (String(key || "").startsWith("load:")) return 120;
+  if (String(key || "").startsWith("source:")) {
+    const source = curveSourceCatalog().find((item) => item.key === key);
+    return Number(source?.default_value) || 0;
+  }
   return curveMetaForKey(key).min;
 }
 
@@ -9924,7 +9964,7 @@ function ensureCurveSeries(keys = selectedCurveKeys()) {
   let changed = false;
   const available = new Set(allCurveKeys());
   const targetKeys = Array.from(new Set(keys || []))
-    .filter((key) => available.has(key) || ENV_CURVE_KEYS.includes(key) || String(key || "").startsWith("load:"));
+    .filter((key) => available.has(key) || ENV_CURVE_KEYS.includes(key) || /^(load|source):/.test(String(key || "")));
   targetKeys.forEach((key) => {
     changed = normalizeCurveSeriesLength(key, curveFallbackValue(key)) || changed;
   });
@@ -9990,6 +10030,15 @@ function loadCurvesFromSnapshot(curves, modelId = state.activeModelId) {
       120,
     );
   });
+  (Array.isArray(curves.sources) ? curves.sources : []).forEach((source) => {
+    if (!source?.key) return;
+    const points = Array.isArray(source.points) ? source.points : [];
+    state.curveSeries[source.key] = resampleSeries(
+      points.map((point) => Number(point.value ?? point.set_value) || 0),
+      config.pointCount,
+      Number(source.default_value) || 0,
+    );
+  });
   ensureCurveSeries();
   state.curveSeriesByMode[mode] = state.curveSeries;
   syncCurvePayload(false);
@@ -10014,11 +10063,16 @@ function curveSummaryFromCurves(curves = {}) {
       name,
       point_count: Array.isArray(loads[name]) ? loads[name].length : 0,
     })),
+    sources: (Array.isArray(curves.sources) ? curves.sources : []).map((source) => ({
+      ...source,
+      point_count: Array.isArray(source.points) ? source.points.length : 0,
+      points: undefined,
+    })),
   };
 }
 
 function curveSummaryHasCatalog(summary = state.curveSummary) {
-  return Boolean(summary && Array.isArray(summary.environment) && Array.isArray(summary.loads));
+  return Boolean(summary && Array.isArray(summary.environment) && Array.isArray(summary.loads) && Array.isArray(summary.sources));
 }
 
 function applyCurveSummary(summary, modelId = state.activeModelId) {
@@ -10195,6 +10249,9 @@ function updateCurveModeLabels() {
 function curveFamilyKeys(family) {
   if (family === "environment") return [...ENV_CURVE_KEYS];
   if (family === "load") return allLoadCurveKeys();
+  if (SOURCE_CURVE_FAMILIES.some((item) => item.key === family)) {
+    return curveSourceCatalog().filter((item) => item.family === family).map((item) => item.key);
+  }
   return [];
 }
 
@@ -10327,6 +10384,52 @@ function cancelCurveEditSelection() {
   drawCurves();
 }
 
+function readStoredCurveTreeCollapsedGroups() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CURVE_TREE_COLLAPSE_KEY) || "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+  } catch (_error) {
+    // Invalid local UI state falls back to the default expanded tree.
+  }
+  return {};
+}
+
+function curveTreeGroupCollapsed(groupKey) {
+  return Boolean(state.curveTreeGroupCollapsed?.[groupKey]);
+}
+
+function toggleCurveTreeGroup(groupKey) {
+  if (!groupKey) return;
+  state.curveTreeGroupCollapsed = {
+    ...(state.curveTreeGroupCollapsed || {}),
+    [groupKey]: !curveTreeGroupCollapsed(groupKey),
+  };
+  localStorage.setItem(CURVE_TREE_COLLAPSE_KEY, JSON.stringify(state.curveTreeGroupCollapsed));
+  renderCurveTree();
+}
+
+function curveTreeGroupHeader(groupKey, label, count, buttonAttrs, buttonClasses = "", toggleAttribute = "data-curve-tree-toggle") {
+  const collapsed = curveTreeGroupCollapsed(groupKey);
+  return `
+    <div class="tree-parent-row">
+      <button
+        type="button"
+        class="tree-collapse-toggle ${collapsed ? "is-collapsed" : ""}"
+        ${toggleAttribute}="${escapeHtml(groupKey)}"
+        aria-label="${collapsed ? "展开" : "折叠"}${escapeHtml(label)}"
+        aria-expanded="${collapsed ? "false" : "true"}"
+      ><span class="tree-toggle" aria-hidden="true"></span></button>
+      <button
+        type="button"
+        class="tree-node tree-type ${buttonClasses}"
+        ${buttonAttrs}
+      >
+        <span>${escapeHtml(label)}</span>
+        <strong>${count}</strong>
+      </button>
+    </div>`;
+}
+
 function renderCurveTree() {
   const container = $("curveTree");
   if (!container) return;
@@ -10336,28 +10439,30 @@ function renderCurveTree() {
   const selectedSet = new Set(selectedKeys);
   const loadDevices = curveLoadDevices();
   const loadKeys = allLoadCurveKeys();
+  const sourceGroups = SOURCE_CURVE_FAMILIES.map((family) => ({
+    ...family,
+    sources: curveSourceCatalog().filter((item) => item.family === family.key),
+  }));
   const envSelected = ENV_CURVE_KEYS.every((key) => selectedSet.has(key))
     && selectedKeys.every((key) => ENV_CURVE_KEYS.includes(key));
   const loadSelected = loadKeys.every((key) => selectedSet.has(key))
     && selectedKeys.every((key) => loadKeys.includes(key));
   const envPartial = ENV_CURVE_KEYS.some((key) => selectedSet.has(key));
   const loadPartial = loadKeys.some((key) => selectedSet.has(key));
-  $("curveTreeSummary").textContent = `${ENV_CURVE_KEYS.length + loadDevices.length} 条`;
+  $("curveTreeSummary").textContent = `${ENV_CURVE_KEYS.length + loadDevices.length + allSourceCurveKeys().length} 条`;
   $("activeCurve").value = activeKey;
   $("activeCurveLabel").textContent = selectedCurveLabel();
   container.innerHTML = `
     <div class="tree-group">
-      <button
-        type="button"
-        class="tree-node tree-type ${envSelected ? "is-active" : envPartial ? "is-parent-active" : ""}"
-        data-curve-tree-type="environment"
-        data-curve-family="environment"
-        aria-pressed="${envSelected ? "true" : "false"}"
-      >
-        <span>环境曲线</span>
-        <strong>${ENV_CURVE_KEYS.length}</strong>
-      </button>
-      <div class="tree-children">
+      ${curveTreeGroupHeader(
+        "environment",
+        "环境曲线",
+        ENV_CURVE_KEYS.length,
+        `data-curve-tree-type="environment" data-curve-family="environment" aria-pressed="${envSelected ? "true" : "false"}" aria-expanded="${curveTreeGroupCollapsed("environment") ? "false" : "true"}"`,
+        envSelected ? "is-active" : envPartial ? "is-parent-active" : "",
+        "data-curve-tree-toggle",
+      )}
+      <div class="tree-children" ${curveTreeGroupCollapsed("environment") ? "hidden" : ""}>
         ${ENV_CURVE_KEYS.map((key) => {
           const meta = curveMetaForKey(key);
           const shortLabel = key === "wind_speed_mps" ? "风" : key === "solar_irradiance_w_m2" ? "光" : "温";
@@ -10377,17 +10482,15 @@ function renderCurveTree() {
       </div>
     </div>
     <div class="tree-group">
-      <button
-        type="button"
-        class="tree-node tree-type ${loadSelected ? "is-active" : loadPartial ? "is-parent-active" : ""}"
-        data-curve-tree-type="load"
-        data-curve-family="load"
-        aria-pressed="${loadSelected ? "true" : "false"}"
-      >
-        <span>负荷曲线</span>
-        <strong>${loadDevices.length}</strong>
-      </button>
-      <div id="curveLoadTree" class="tree-children">
+      ${curveTreeGroupHeader(
+        "load",
+        "负荷曲线",
+        loadDevices.length,
+        `data-curve-tree-type="load" data-curve-family="load" aria-pressed="${loadSelected ? "true" : "false"}" aria-expanded="${curveTreeGroupCollapsed("load") ? "false" : "true"}"`,
+        loadSelected ? "is-active" : loadPartial ? "is-parent-active" : "",
+        "data-curve-tree-toggle",
+      )}
+      <div id="curveLoadTree" class="tree-children" ${curveTreeGroupCollapsed("load") ? "hidden" : ""}>
         ${loadDevices.map((dev) => {
           const key = loadCurveKey(dev.dev_name);
           return `
@@ -10405,6 +10508,39 @@ function renderCurveTree() {
         }).join("")}
       </div>
     </div>
+    ${sourceGroups.map((group) => {
+      const keys = group.sources.map((source) => source.key);
+      const selected = keys.length && keys.every((key) => selectedSet.has(key))
+        && selectedKeys.every((key) => keys.includes(key));
+      const partial = keys.some((key) => selectedSet.has(key));
+      return `
+        <div class="tree-group">
+          ${curveTreeGroupHeader(
+            group.key,
+            group.label,
+            keys.length,
+            `data-curve-tree-type="source" data-curve-family="${escapeHtml(group.key)}" aria-pressed="${selected ? "true" : "false"}" aria-expanded="${curveTreeGroupCollapsed(group.key) ? "false" : "true"}"`,
+            selected ? "is-active" : partial ? "is-parent-active" : "",
+            "data-curve-tree-toggle",
+          )}
+          <div class="tree-children" ${curveTreeGroupCollapsed(group.key) ? "hidden" : ""}>
+            ${group.sources.map((source) => {
+              const key = source.key;
+              return `
+                <button
+                  type="button"
+                  class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""} ${editKey === key ? "is-edit-target" : ""} ${isCurveSeriesHidden(key) ? "is-hidden-series" : ""}"
+                  data-curve-tree-type="source"
+                  data-curve-key="${escapeHtml(key)}"
+                  aria-pressed="${selectedSet.has(key) ? "true" : "false"}"
+                >
+                  <span>${escapeHtml(source.name || source.dev_name || key)}</span>
+                  <small>${escapeHtml(source.unit || source.dev_type || "")}</small>
+                </button>`;
+            }).join("") || `<div class="empty-state compact">暂无${escapeHtml(group.label)}</div>`}
+          </div>
+        </div>`;
+    }).join("")}
   `;
 }
 
@@ -10596,6 +10732,9 @@ function generateCurves(jitter = 0, mode = state.curveMode, shouldRender = true)
   const loadDevices = curveLoadDevices();
   loadDevices.forEach((dev) => {
     state.curveSeries[loadCurveKey(dev.dev_name)] = new Array(pointCount);
+  });
+  curveSourceCatalog().forEach((source) => {
+    state.curveSeries[source.key] = new Array(pointCount).fill(Number(source.default_value) || 0);
   });
   for (let i = 0; i < pointCount; i += 1) {
     const minute = pointMinute(i);
@@ -16345,6 +16484,13 @@ document.addEventListener("change", (event) => {
 });
 document.addEventListener("scroll", handleVirtualTableScroll, true);
 document.addEventListener("click", (event) => {
+  const curveTreeToggle = event.target.closest("[data-curve-tree-toggle]");
+  if (curveTreeToggle) {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleCurveTreeGroup(curveTreeToggle.dataset.curveTreeToggle || "");
+    return;
+  }
   const chartToggle = event.target.closest("[data-chart-toggle][data-chart-series]");
   if (chartToggle) {
     event.preventDefault();

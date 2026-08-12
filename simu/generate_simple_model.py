@@ -8,8 +8,10 @@ from typing import Any, Iterable, Mapping, Sequence
 
 try:
     from .point_names import automatic_point_name
+    from .source_curves import SOURCE_CURVE_SPECS
 except ImportError:  # pragma: no cover - direct script execution.
     from point_names import automatic_point_name
+    from source_curves import SOURCE_CURVE_SPECS
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -588,12 +590,40 @@ def curves_payload() -> dict[str, Any]:
             }
         )
         loads.append({"minute": float(minute), "p_kw": round(max(60.0, load), 3)})
+    sources: list[dict[str, Any]] = []
+    for block_name, _header, rows in model_blocks():
+        spec = SOURCE_CURVE_SPECS.get(block_name)
+        if spec is None:
+            continue
+        family, set_type, unit = spec
+        for row in rows:
+            name = str(row.get("name", "")).strip()
+            value = row.get(set_type)
+            if not name or value in (None, ""):
+                continue
+            stem = set_type.removesuffix("_set")
+            source = {
+                "dev_type": block_name,
+                "dev_name": name,
+                "name": name,
+                "set_type": set_type,
+                "family": family,
+                "unit": unit,
+                "default_value": value,
+                "points": [{"minute": 0.0, "value": value}],
+            }
+            if row.get(f"{stem}_min") not in (None, ""):
+                source["min"] = row[f"{stem}_min"]
+            if row.get(f"{stem}_max") not in (None, ""):
+                source["max"] = row[f"{stem}_max"]
+            sources.append(source)
     return {
         "mode": "day",
         "time_step_minutes": 1,
         "point_count": 1440,
         "weather": weather,
         "loads": {"load_ac_1": loads},
+        "sources": sources,
     }
 
 
@@ -627,6 +657,30 @@ def curve_definition_blocks(curves: Mapping[str, Any]) -> list[Block]:
                             "p_kw": point.get("p_kw", ""),
                         }
                     )
+    source_rows: list[dict[str, Any]] = []
+    sources = curves.get("sources", [])
+    if isinstance(sources, Sequence) and not isinstance(sources, (str, bytes)):
+        for source in sources:
+            if not isinstance(source, Mapping):
+                continue
+            points = source.get("points", [])
+            if not isinstance(points, Sequence) or isinstance(points, (str, bytes)):
+                continue
+            for idx, point in enumerate(points, start=1):
+                if not isinstance(point, Mapping):
+                    continue
+                source_rows.append(
+                    {
+                        "idx": idx,
+                        "dev_type": source.get("dev_type", ""),
+                        "dev_name": source.get("dev_name", source.get("name", "")),
+                        "set_type": source.get("set_type", ""),
+                        "family": source.get("family", ""),
+                        "unit": source.get("unit", ""),
+                        "minute": point.get("minute", idx - 1),
+                        "value": point.get("value", point.get("set_value", "")),
+                    }
+                )
     return [
         (
             "CurveInfo",
@@ -653,6 +707,11 @@ def curve_definition_blocks(curves: Mapping[str, Any]) -> list[Block]:
             weather_rows,
         ),
         ("LoadCurve", ("idx", "load_name", "minute", "p_kw"), load_rows),
+        (
+            "SourceCurve",
+            ("idx", "dev_type", "dev_name", "set_type", "family", "unit", "minute", "value"),
+            source_rows,
+        ),
     ]
 
 

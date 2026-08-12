@@ -90,6 +90,12 @@ from simu.measurement_history import MeasurementHistoryStore
 from simu.point_names import automatic_point_name
 from simu.power_flow_worker import PowerFlowExecution, PowerFlowTimeoutError
 from simu.renewable_capability import renewable_weather_available_kw
+from simu.source_curves import (
+    source_curve_catalog,
+    source_curve_catalog_by_identity,
+    source_curve_catalog_by_key,
+    source_curve_identity,
+)
 from simu.web_runtime_settings import runtime_settings_payload, updated_runtime_settings_entry
 
 
@@ -1179,6 +1185,8 @@ class PolarMicrogridSimulator:
             str,
             Tuple[int, Tuple[Tuple[str, str], ...]],
         ] = {}
+        self._source_curve_catalog_cache_key = -1
+        self._source_curve_catalog_cache_value: Tuple[Dict[str, Any], ...] = ()
         self._measurement_bindings_cache_revision = -1
         self._measurement_bindings_cache: Tuple[simu_loop.MeasurementBinding, ...] = ()
         self._latest_power_summary_cache_key: Optional[Tuple[Any, ...]] = None
@@ -1648,9 +1656,104 @@ class PolarMicrogridSimulator:
             self._write_weather_row(DEFAULT_WEATHER | {"time": minute_to_time(0)})
 
     def _read_curves(self) -> Dict[str, Any]:
-        default = {"mode": "day", "time_step_minutes": 1, "weather": [], "loads": {}}
+        default = {"mode": "day", "time_step_minutes": 1, "weather": [], "loads": {}, "sources": []}
         source_curves = _read_json(self.source_curves_file, default) if self.source_curves_file.exists() else default
-        return _read_json(self.curves_file, source_curves)
+        payload = _read_json(self.curves_file, source_curves)
+        return self._normalized_curves_with_source_defaults(payload)
+
+    def _source_curve_catalog(self) -> Tuple[Dict[str, Any], ...]:
+        revision = self.definition_snapshot.revision
+        if revision != self._source_curve_catalog_cache_key:
+            self._source_curve_catalog_cache_key = revision
+            self._source_curve_catalog_cache_value = tuple(
+                dict(item) for item in source_curve_catalog(self.definition_snapshot.model_book)
+            )
+        return self._source_curve_catalog_cache_value
+
+    def _normalized_source_curves(
+        self,
+        raw_sources: Any,
+        point_count: int,
+        step_minutes: float,
+    ) -> List[Dict[str, Any]]:
+        catalog = self._source_curve_catalog()
+        catalog_by_identity = {source_curve_identity(item): item for item in catalog}
+        incoming: Dict[Tuple[str, str, str], Mapping[str, Any]] = {}
+        if isinstance(raw_sources, Mapping):
+            candidates = raw_sources.values()
+        elif isinstance(raw_sources, Sequence) and not isinstance(raw_sources, (str, bytes)):
+            candidates = raw_sources
+        else:
+            candidates = ()
+        for item in candidates:
+            if not isinstance(item, Mapping):
+                continue
+            identity = source_curve_identity(item)
+            if identity in catalog_by_identity:
+                incoming[identity] = item
+
+        normalized: List[Dict[str, Any]] = []
+        for catalog_item in catalog:
+            identity = source_curve_identity(catalog_item)
+            raw_item = incoming.get(identity, {})
+            points = _normalize_points(raw_item.get("points"), ("value", "set_value", "p_kw", "flow_set"))
+            default_value = float(catalog_item.get("default_value", 0.0) or 0.0)
+            normalized_points: List[Dict[str, Any]] = []
+            for index, raw_point in enumerate(points):
+                value = next(
+                    (
+                        raw_point.get(alias)
+                        for alias in ("value", "set_value", "p_kw", "flow_set")
+                        if raw_point.get(alias) not in (None, "")
+                    ),
+                    default_value,
+                )
+                normalized_points.append(
+                    {
+                        "minute": _to_float(raw_point.get("minute"), index * step_minutes)
+                        if raw_point
+                        else index * step_minutes,
+                        "value": _to_float(value, default_value) or 0.0,
+                    }
+                )
+            if not normalized_points:
+                normalized_points.append({"minute": 0.0, "value": default_value})
+            normalized.append({**dict(catalog_item), "points": normalized_points})
+        return normalized
+
+    def _normalized_curves_with_source_defaults(self, payload: Any) -> Dict[str, Any]:
+        raw = dict(payload) if isinstance(payload, Mapping) else {}
+        mode = _normalize_simulation_mode(raw.get("mode", "day"))
+        default_step = _simulation_mode_curve_step_minutes(mode)
+        step_minutes = float(_to_float(raw.get("time_step_minutes"), default_step) or default_step)
+        if step_minutes <= 0:
+            step_minutes = default_step
+        weather = raw.get("weather", [])
+        loads = raw.get("loads", {})
+        point_count = int(_to_float(raw.get("point_count"), 0) or 0)
+        if point_count <= 0:
+            point_count = len(weather) if isinstance(weather, Sequence) and not isinstance(weather, (str, bytes)) else 0
+        if point_count <= 0 and isinstance(loads, Mapping):
+            point_count = max(
+                (
+                    len(points)
+                    for points in loads.values()
+                    if isinstance(points, Sequence) and not isinstance(points, (str, bytes))
+                ),
+                default=0,
+            )
+        point_count = point_count or _simulation_mode_point_count(mode)
+        raw.update(
+            {
+                "mode": mode,
+                "time_step_minutes": step_minutes,
+                "point_count": point_count,
+                "weather": weather if isinstance(weather, list) else [],
+                "loads": loads if isinstance(loads, Mapping) else {},
+                "sources": self._normalized_source_curves(raw.get("sources"), point_count, step_minutes),
+            }
+        )
+        return raw
 
     def _read_local_settings(self) -> Dict[str, Any]:
         default = {
@@ -2625,14 +2728,16 @@ class PolarMicrogridSimulator:
         for index, item in enumerate(self.command_history):
             if self._command_entry_is_active(item, absolute_minute, current_run_id):
                 active.append((index, item))
-        # Materialization is last-write-wins. Apply held manual values first so an
-        # active automatic strategy can temporarily supersede the same control point.
-        active.sort(key=lambda pair: (0 if _manual_command_holds_across_clock_lifecycle(pair[1]) else 1, pair[0]))
+        # Materialization is last-write-wins. Automatic targets are the lower
+        # priority fallback; a manual command always owns the same control point
+        # until the operator explicitly exits it.
+        active.sort(key=lambda pair: (0 if _command_origin(pair[1]) == "automatic" else 1, pair[0]))
         return [item for _index, item in active]
 
     def _effective_active_control_command_entries(self, absolute_minute: int | float) -> List[Mapping[str, Any]]:
         active_entries = self._active_control_command_entries(absolute_minute)
         effective_by_control: Dict[Tuple[str, str, str, str], Mapping[str, Any]] = {}
+        simulator_ui_overrides = self._simulator_ui_control_override_keys()
         for entry in active_entries:
             normalized = entry.get("normalized", {})
             if not isinstance(normalized, Mapping):
@@ -2646,9 +2751,17 @@ class PolarMicrogridSimulator:
                     dev_name = str(item.get("dev_name", "")).strip()
                     if not dev_type or not dev_name:
                         continue
-                    if item.get("run_stat", "") != "":
+                    if (
+                        item.get("run_stat", "") != ""
+                        and ("remote_control", dev_type, dev_name, "run_stat")
+                        not in simulator_ui_overrides
+                    ):
                         effective_by_control[("remote_control", dev_type, dev_name, "run_stat")] = entry
-                    if item.get("status", "") != "":
+                    if (
+                        item.get("status", "") != ""
+                        and ("remote_control", dev_type, dev_name, "status")
+                        not in simulator_ui_overrides
+                    ):
                         effective_by_control[("remote_control", dev_type, dev_name, "status")] = entry
             set_items = normalized.get("set_values", [])
             if isinstance(set_items, Sequence) and not isinstance(set_items, (str, bytes)):
@@ -2658,7 +2771,13 @@ class PolarMicrogridSimulator:
                     dev_type = str(item.get("dev_type", "")).strip()
                     dev_name = str(item.get("dev_name", "")).strip()
                     set_type = str(item.get("set_type", "")).strip()
-                    if dev_type and dev_name and set_type:
+                    if (
+                        dev_type
+                        and dev_name
+                        and set_type
+                        and ("remote_adjustment", dev_type, dev_name, set_type)
+                        not in simulator_ui_overrides
+                    ):
                         effective_by_control[("remote_adjustment", dev_type, dev_name, set_type)] = entry
         effective_ids = {id(entry) for entry in effective_by_control.values()}
         return [entry for entry in active_entries if id(entry) in effective_ids]
@@ -2776,7 +2895,13 @@ class PolarMicrogridSimulator:
             self._validate_set_command_items(set_items, strict=True),
         )
 
-    def _materialize_active_control_commands(self, absolute_minute: int | float, *, persist: bool = False) -> Dict[str, int]:
+    def _materialize_active_control_commands(
+        self,
+        absolute_minute: int | float,
+        *,
+        persist: bool = False,
+        additional_ui_overrides: Optional[set[Tuple[str, str, str, str]]] = None,
+    ) -> Dict[str, int]:
         book = self._base_stat_book_for_controls()
         run_block = _ensure_block(book, "RunStat", STAT_HEADERS["RunStat"])
         cb_block = _ensure_block(book, "CbOpenStat", STAT_HEADERS["CbOpenStat"])
@@ -2784,11 +2909,19 @@ class PolarMicrogridSimulator:
         active_entries = self._active_control_command_entries(absolute_minute)
         allowed_run_fields = self._defined_run_control_fields()
         allowed_set_keys = self._defined_set_control_keys()
+        source_curve_defaults = self._apply_default_source_curves(
+            book,
+            absolute_minute,
+            allowed_set_keys=allowed_set_keys,
+        )
         applied_run = 0
         applied_set = 0
         safe_active_entries = 0
         active_set_rows: List[Dict[str, Any]] = []
         unsafe_command_items: List[str] = []
+        simulator_ui_overrides = self._simulator_ui_control_override_keys()
+        if additional_ui_overrides:
+            simulator_ui_overrides.update(additional_ui_overrides)
 
         for command in active_entries:
             try:
@@ -2808,13 +2941,29 @@ class PolarMicrogridSimulator:
                     if not fields:
                         continue
                     row = _find_dev_row(run_block, dev_type, dev_name)
-                    if row is None and "run_stat" in fields and item.get("run_stat", "") != "":
+                    run_stat_overridden = (
+                        "remote_control", dev_type, dev_name, "run_stat"
+                    ) in simulator_ui_overrides
+                    status_overridden = (
+                        "remote_control", dev_type, dev_name, "status"
+                    ) in simulator_ui_overrides
+                    if (
+                        row is None
+                        and not run_stat_overridden
+                        and "run_stat" in fields
+                        and item.get("run_stat", "") != ""
+                    ):
                         row = {"dev_type": dev_type, "dev_name": dev_name, "run_stat": ""}
                         run_block.data.append(row)
-                    if row is not None and item.get("run_stat", "") != "" and "run_stat" in fields:
+                    if (
+                        not run_stat_overridden
+                        and row is not None
+                        and item.get("run_stat", "") != ""
+                        and "run_stat" in fields
+                    ):
                         row["run_stat"] = _number_text(item.get("run_stat"))
                         applied_run += 1
-                    if "status" in item and "status" in fields:
+                    if not status_overridden and "status" in item and "status" in fields:
                         cb_row = _find_dev_row(cb_block, dev_type, dev_name)
                         if cb_row is None:
                             cb_row = {"dev_type": dev_type, "dev_name": dev_name, "status": ""}
@@ -2828,6 +2977,10 @@ class PolarMicrogridSimulator:
                     if not dev_type or not dev_name or not set_type:
                         continue
                     if (dev_type, dev_name, set_type) not in allowed_set_keys:
+                        continue
+                    if (
+                        "remote_adjustment", dev_type, dev_name, set_type
+                    ) in simulator_ui_overrides:
                         continue
                     row = _find_set_row(set_block, dev_type, dev_name, set_type)
                     if row is None:
@@ -2859,11 +3012,112 @@ class PolarMicrogridSimulator:
                 ],
                 level="warn",
             )
-        return {"active_commands": safe_active_entries, "run_status": applied_run, "set_values": applied_set}
+        return {
+            "active_commands": safe_active_entries,
+            "run_status": applied_run,
+            "set_values": applied_set,
+            "source_curve_defaults": source_curve_defaults,
+        }
+
+    def _manual_source_curve_override_keys(self) -> set[Tuple[str, str, str]]:
+        keys: set[Tuple[str, str, str]] = set()
+        for item in self._manual_definition_changes.values():
+            if item.get("kind") != "device" or item.get("effective") is False:
+                continue
+            dev_type = str(item.get("block_name", "")).strip()
+            set_type = str(item.get("field", "")).strip().casefold()
+            row_key = item.get("row_key", {})
+            dev_name = (
+                str(row_key.get("name", "")).strip()
+                if isinstance(row_key, Mapping)
+                else ""
+            )
+            if dev_type and dev_name and set_type:
+                keys.add((dev_type, dev_name, set_type))
+        return keys
+
+    def _simulator_ui_control_override_keys(self) -> set[Tuple[str, str, str, str]]:
+        keys: set[Tuple[str, str, str, str]] = set()
+        for item in self._manual_definition_changes.values():
+            if item.get("kind") != "device" or item.get("effective") is False:
+                continue
+            dev_type = str(item.get("block_name", "")).strip()
+            field_name = str(item.get("field", "")).strip().casefold()
+            row_key = item.get("row_key", {})
+            dev_name = (
+                str(row_key.get("name", "")).strip()
+                if isinstance(row_key, Mapping)
+                else ""
+            )
+            if not dev_type or not dev_name:
+                continue
+            if field_name in RUNTIME_CONTROL_STATUS_FIELDS:
+                keys.add(("remote_control", dev_type, dev_name, field_name))
+                continue
+            set_type = self._runtime_control_set_type(dev_type, field_name)
+            if set_type:
+                keys.add(("remote_adjustment", dev_type, dev_name, set_type))
+        return keys
+
+    def _apply_default_source_curves(
+        self,
+        book: EBook,
+        absolute_minute: int | float,
+        *,
+        allowed_set_keys: Optional[set[Tuple[str, str, str]]] = None,
+    ) -> int:
+        sources = self.curves.get("sources", [])
+        if not isinstance(sources, Sequence) or isinstance(sources, (str, bytes)):
+            return 0
+        catalog = source_curve_catalog_by_identity(self.definition_snapshot.model_book)
+        allowed = allowed_set_keys if allowed_set_keys is not None else self._defined_set_control_keys()
+        manual_overrides = self._manual_source_curve_override_keys()
+        active_commands = self._active_remote_adjustment_keys(absolute_minute)
+        curve_mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
+        period_minutes = _simulation_mode_duration_minutes(curve_mode)
+        applied = 0
+        for item in sources:
+            if not isinstance(item, Mapping):
+                continue
+            key = source_curve_identity(item)
+            if key not in catalog or key in manual_overrides or key in active_commands:
+                continue
+            points = item.get("points", [])
+            if not isinstance(points, Sequence) or isinstance(points, (str, bytes)):
+                continue
+            value = self._interpolate_curve_series(
+                points,
+                absolute_minute,
+                "value",
+                None,
+                period_minutes=period_minutes,
+            )
+            if value is None or not math.isfinite(value):
+                continue
+            try:
+                safe = self._validated_set_command_item(
+                    {
+                        "dev_type": key[0],
+                        "dev_name": key[1],
+                        "set_type": key[2],
+                        "set_value": value,
+                    },
+                    strict=True,
+                )
+            except ValueError:
+                continue
+            self._write_boundary_set_value(book, key, float(safe["set_value"]))
+            applied += 1
+        return applied
 
     def _active_remote_adjustment_keys(self, absolute_minute: int | float) -> set[Tuple[str, str, str]]:
         allowed_set_keys = self._defined_set_control_keys()
         active_keys: set[Tuple[str, str, str]] = set()
+        simulator_ui_overrides = {
+            (dev_type, dev_name, field_name)
+            for kind, dev_type, dev_name, field_name in self._simulator_ui_control_override_keys()
+            if kind == "remote_adjustment"
+        }
         for command in self._active_control_command_entries(absolute_minute):
             try:
                 _run_items, set_items = self._validated_command_entry_items(command)
@@ -2875,7 +3129,7 @@ class PolarMicrogridSimulator:
                     str(item.get("dev_name", "")),
                     str(item.get("set_type", "")),
                 )
-                if key in allowed_set_keys:
+                if key in allowed_set_keys and key not in simulator_ui_overrides:
                     active_keys.add(key)
         return active_keys
 
@@ -5998,12 +6252,18 @@ class PolarMicrogridSimulator:
                             "p_kw": item.get("p_kw", item.get("value", item.get("load_kw", 0))),
                         }
                     )
+            resolved_point_count = point_count or len(weather_points) or default_point_count
             self.curves = {
                 "mode": mode,
                 "time_step_minutes": time_step_minutes,
-                "point_count": point_count or len(weather_points),
+                "point_count": resolved_point_count,
                 "weather": weather_points,
                 "loads": loads,
+                "sources": self._normalized_source_curves(
+                    payload.get("sources"),
+                    resolved_point_count,
+                    time_step_minutes,
+                ),
             }
             if mode != current_mode:
                 self._apply_mode_default_clock_speed(mode, persist=True)
@@ -6015,7 +6275,12 @@ class PolarMicrogridSimulator:
             self.clock.updated_at = time.time()
             _write_json(self.curves_file, self.curves)
             self._curve_revision += 1
-            return {"weather_points": len(weather_points), "load_devices": len(loads), "mode": mode}
+            return {
+                "weather_points": len(weather_points),
+                "load_devices": len(loads),
+                "source_devices": len(self.curves["sources"]),
+                "mode": mode,
+            }
 
     def curves_summary(self) -> Dict[str, Any]:
         with self.curves_lock:
@@ -6024,6 +6289,7 @@ class PolarMicrogridSimulator:
             default_point_count = _simulation_mode_point_count(mode)
             weather = self.curves.get("weather", [])
             loads = self.curves.get("loads", {})
+            sources = self.curves.get("sources", [])
             point_count = int(_to_float(self.curves.get("point_count"), 0) or 0)
             if not point_count:
                 point_count = len(weather) if isinstance(weather, Sequence) else 0
@@ -6046,6 +6312,36 @@ class PolarMicrogridSimulator:
                     }
                     for name, points in (loads.items() if isinstance(loads, Mapping) else [])
                 ],
+                "sources": [
+                    {
+                        key: item.get(key)
+                        for key in (
+                            "key",
+                            "dev_type",
+                            "dev_name",
+                            "name",
+                            "set_type",
+                            "family",
+                            "unit",
+                            "default_value",
+                            "min",
+                            "max",
+                        )
+                        if item.get(key) is not None
+                    }
+                    | {
+                        "point_count": len(item.get("points", []))
+                        if isinstance(item.get("points"), Sequence)
+                        and not isinstance(item.get("points"), (str, bytes))
+                        else 0
+                    }
+                    for item in (
+                        sources
+                        if isinstance(sources, Sequence) and not isinstance(sources, (str, bytes))
+                        else []
+                    )
+                    if isinstance(item, Mapping)
+                ],
             }
 
     def _curve_series_values(self, key: str) -> List[float]:
@@ -6062,6 +6358,28 @@ class PolarMicrogridSimulator:
                 return []
             return [
                 float(_to_float(point.get("p_kw", point.get("value", point.get("load_kw"))), 0.0) or 0.0)
+                for point in points
+                if isinstance(point, Mapping)
+            ]
+        if key.startswith("source:"):
+            sources = self.curves.get("sources", [])
+            if not isinstance(sources, Sequence) or isinstance(sources, (str, bytes)):
+                return []
+            item = next(
+                (
+                    item
+                    for item in sources
+                    if isinstance(item, Mapping) and str(item.get("key", "")) == key
+                ),
+                None,
+            )
+            if item is None:
+                return []
+            points = item.get("points", [])
+            if not isinstance(points, Sequence) or isinstance(points, (str, bytes)):
+                return []
+            return [
+                float(_to_float(point.get("value", point.get("set_value")), 0.0) or 0.0)
                 for point in points
                 if isinstance(point, Mapping)
             ]
@@ -6130,6 +6448,50 @@ class PolarMicrogridSimulator:
             point.setdefault("p_kw", DEFAULT_WEATHER["load_kw"])
         return points
 
+    def _ensure_source_curve_points(
+        self,
+        curve_key: str,
+        point_count: int,
+        step_minutes: float,
+    ) -> Optional[List[Dict[str, Any]]]:
+        catalog_item = source_curve_catalog_by_key(self.definition_snapshot.model_book).get(curve_key)
+        if catalog_item is None:
+            return None
+        sources = self.curves.get("sources")
+        if not isinstance(sources, list):
+            sources = []
+            self.curves["sources"] = sources
+        item = next(
+            (
+                item
+                for item in sources
+                if isinstance(item, dict) and str(item.get("key", "")) == curve_key
+            ),
+            None,
+        )
+        if item is None:
+            item = {**catalog_item, "points": []}
+            sources.append(item)
+        else:
+            item.update(catalog_item)
+        points = item.get("points")
+        if not isinstance(points, list):
+            points = []
+            item["points"] = points
+        fallback = float(catalog_item.get("default_value", 0.0) or 0.0)
+        while len(points) < point_count:
+            index = len(points)
+            points.append({"minute": index * step_minutes, "value": fallback})
+        if len(points) > point_count:
+            del points[point_count:]
+        for index, point in enumerate(points):
+            if not isinstance(point, dict):
+                point = {"value": point}
+                points[index] = point
+            point["minute"] = _to_float(point.get("minute"), index * step_minutes) or 0.0
+            point.setdefault("value", fallback)
+        return points
+
     def update_curve_series(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
         with self.lock, self.curves_lock:
             current_mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
@@ -6174,6 +6536,13 @@ class PolarMicrogridSimulator:
                     points = self._ensure_load_curve_points(load_name, point_count, step_minutes)
                     for index, value in enumerate(values[:point_count]):
                         points[index]["p_kw"] = _to_float(value, 0.0) or 0.0
+                    updated.append(curve_key)
+                elif curve_key.startswith("source:"):
+                    points = self._ensure_source_curve_points(curve_key, point_count, step_minutes)
+                    if points is None:
+                        continue
+                    for index, value in enumerate(values[:point_count]):
+                        points[index]["value"] = _to_float(value, 0.0) or 0.0
                     updated.append(curve_key)
             if mode != current_mode:
                 self._apply_mode_default_clock_speed(mode, persist=True)
@@ -9552,6 +9921,17 @@ class PolarMicrogridSimulator:
         dev_name: str,
         field_name: str,
     ) -> Dict[str, Any]:
+        override_key = (command_kind, dev_type, dev_name, field_name)
+        if override_key in self._simulator_ui_control_override_keys():
+            return {
+                "wall_time": "--",
+                "simu_time": "--",
+                "absolute_minute": None,
+                "expires_at_absolute_minute": None,
+                "source": "simulator-ui",
+                "command_origin": "simulator-ui",
+                "active": True,
+            }
         for entry in reversed(self._active_control_command_entries(self.clock.absolute_minute)):
             normalized = entry.get("normalized", {})
             if not isinstance(normalized, Mapping):
@@ -11076,6 +11456,8 @@ class PolarMicrogridSimulator:
         block_name: str,
         row: Mapping[str, Any],
         changes: Mapping[str, Any],
+        *,
+        priority_override_keys: Optional[set[Tuple[str, str, str, str]]] = None,
     ) -> Optional[Dict[str, Any]]:
         dev_type = str(block_name or "").strip()
         dev_name = str(row.get("name", row.get("dev_name", ""))).strip()
@@ -11123,7 +11505,10 @@ class PolarMicrogridSimulator:
         # The source books are the editable baseline. Rebuild the effective
         # runtime book so valid commands and active device faults keep their
         # existing precedence over that baseline.
-        self._materialize_active_control_commands(self.clock.absolute_minute)
+        self._materialize_active_control_commands(
+            self.clock.absolute_minute,
+            additional_ui_overrides=priority_override_keys,
+        )
         self._apply_device_faults(self.clock.minute, self.clock.absolute_minute)
         run_stats, cb_status, set_values, _soc_values = self._stat_maps()
         key = (dev_type, dev_name)
@@ -11214,6 +11599,21 @@ class PolarMicrogridSimulator:
                         f"（{exc}）；修改未生效，人工覆盖层、运行控制文件和仿真边界均未更新。"
                     ) from exc
             row.update(normalized_changes)
+            runtime_override_keys: set[Tuple[str, str, str, str]] = set()
+            dev_name = str(row.get("name", row.get("dev_name", ""))).strip()
+            if dev_name:
+                for field_name in normalized_changes:
+                    normalized_field = str(field_name).strip().casefold()
+                    if normalized_field in RUNTIME_CONTROL_STATUS_FIELDS:
+                        runtime_override_keys.add(
+                            ("remote_control", block_name, dev_name, normalized_field)
+                        )
+                        continue
+                    set_type = self._runtime_control_set_type(block_name, normalized_field)
+                    if set_type:
+                        runtime_override_keys.add(
+                            ("remote_adjustment", block_name, dev_name, set_type)
+                        )
             dev_define_book = simu_loop._capability_define_book(
                 model_book,
                 self._legacy_dev_define_file(),
@@ -11229,11 +11629,6 @@ class PolarMicrogridSimulator:
             )
             self._publish_definition_snapshot(next_snapshot)
 
-            runtime_control = self._sync_runtime_controls_from_device_changes_unlocked(
-                block_name,
-                row,
-                normalized_changes,
-            )
             self._record_device_manual_changes_unlocked(
                 block_name,
                 before_row,
@@ -11241,6 +11636,12 @@ class PolarMicrogridSimulator:
                 tuple(normalized_changes),
                 persisted=False,
                 persistence_error="等待人工覆盖层保存",
+            )
+            runtime_control = self._sync_runtime_controls_from_device_changes_unlocked(
+                block_name,
+                row,
+                normalized_changes,
+                priority_override_keys=runtime_override_keys,
             )
             persisted = False
             change_record_persisted = False

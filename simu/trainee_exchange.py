@@ -54,7 +54,7 @@ except ImportError:  # pragma: no cover - legacy package compatibility.
     )
 
 
-CONTROL_STATIC_FIELDS = ("definitions", "settings", "device_parameters")
+CONTROL_STATIC_FIELDS = ("definitions", "settings", "device_parameters", "curves")
 
 
 class TraineeExchangeLifecycleError(RuntimeError):

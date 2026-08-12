@@ -4834,6 +4834,28 @@ body.is-vertical-splitter-dragging {
   flex-direction: column;
   gap: 4px;
 }
+.tree-parent-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 4px;
+}
+.tree-collapse-toggle {
+  width: 24px;
+  min-height: 34px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.tree-collapse-toggle:hover,
+.tree-collapse-toggle:focus-visible {
+  border-color: var(--line);
+  background: #eef4f5;
+  color: var(--teal-dark);
+}
 .tree-children {
   margin: 0 0 6px 12px;
   padding-left: 8px;
@@ -4841,6 +4863,9 @@ body.is-vertical-splitter-dragging {
   flex-direction: column;
   gap: 5px;
   border-left: 1px solid var(--line);
+}
+.tree-children[hidden] {
+  display: none;
 }
 .tree-node {
   width: 100%;
@@ -4894,7 +4919,8 @@ body.is-vertical-splitter-dragging {
   opacity: 0.72;
   transform: translateY(1px);
 }
-.tree-type.is-collapsed .tree-toggle {
+.tree-type.is-collapsed .tree-toggle,
+.tree-collapse-toggle.is-collapsed .tree-toggle {
   border-top: 5px solid transparent;
   border-bottom: 5px solid transparent;
   border-left: 6px solid currentColor;

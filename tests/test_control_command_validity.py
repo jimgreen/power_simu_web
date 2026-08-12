@@ -212,7 +212,7 @@ class ControlCommandValidityTest(unittest.TestCase):
         self.assertEqual(automatic_entry["command_origin"], "automatic")
         self.assertFalse(automatic_entry["manual_hold"])
         self.assertEqual(automatic_entry["expires_at_absolute_minute"], 1.0)
-        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "5")
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
 
         service.clock.absolute_minute = 2
         service.clock.minute = 2
@@ -251,8 +251,8 @@ class ControlCommandValidityTest(unittest.TestCase):
             source="trainee-automatic-control",
         )
         automatic_entry = service.command_history[-1]
-        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "5")
-        self.assertEqual(self._run_stat(service, "ACGenerator", "wt01_10kw"), "1")
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
+        self.assertEqual(self._run_stat(service, "ACGenerator", "wt01_10kw"), "0")
 
         service.control_clock({"action": "stop"})
         second_run = service.control_clock({"action": "start", "minute": 0})
@@ -297,7 +297,7 @@ class ControlCommandValidityTest(unittest.TestCase):
             source="trainee-automatic-control",
         )
         automatic_entry = service.command_history[-1]
-        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "5")
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
 
         service.clock.step_count = 9
         service.control_clock({"action": "pause"})
@@ -347,7 +347,7 @@ class ControlCommandValidityTest(unittest.TestCase):
         detail = "\n".join(str(item) for item in service.runtime_logs[-1]["detail"])
         self.assertIn("ACBreak.br1.status=0", detail)
 
-    def test_active_strategy_command_overrides_manual_command_until_expiry(self):
+    def test_manual_command_overrides_active_strategy_command(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
 
@@ -380,12 +380,12 @@ class ControlCommandValidityTest(unittest.TestCase):
             source="trainee-renewable-priority",
         )
 
-        self.assertEqual(self._set_value(service, "DCACConverter", "grid_inv_acp", "p_set"), "0")
+        self.assertEqual(self._set_value(service, "DCACConverter", "grid_inv_acp", "p_set"), "-40")
         by_name = {item["name"]: item for item in service.latest_control_values()["items"]}
         effective = by_name["DCACConverter.grid_inv_acp.p_set"]
         self.assertTrue(effective["active"])
-        self.assertEqual(effective["command_origin"], "automatic")
-        self.assertEqual(effective["expires_at_absolute_minute"], 5.0)
+        self.assertEqual(effective["command_origin"], "manual")
+        self.assertIsNone(effective["expires_at_absolute_minute"])
 
         service.clock.absolute_minute = 6
         service.clock.minute = 6
@@ -398,7 +398,7 @@ class ControlCommandValidityTest(unittest.TestCase):
         self.assertEqual(resumed["command_origin"], "manual")
         self.assertIsNone(resumed["expires_at_absolute_minute"])
 
-    def test_static_runtime_control_edit_updates_baseline_without_overriding_active_strategy(self):
+    def test_simulator_ui_runtime_control_edit_overrides_active_strategy(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
 
@@ -429,8 +429,8 @@ class ControlCommandValidityTest(unittest.TestCase):
         )
 
         self.assertEqual(result["record"]["p_set"], 95)
-        self.assertEqual(result["runtime_control"]["set_values"]["p_set"], 60)
-        self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "60")
+        self.assertEqual(result["runtime_control"]["set_values"]["p_set"], 95)
+        self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "95")
         self.assertEqual(
             next(
                 row
@@ -447,6 +447,45 @@ class ControlCommandValidityTest(unittest.TestCase):
         service._materialize_active_control_commands(6)
 
         self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "95")
+
+    def test_simulator_ui_run_state_edit_overrides_manual_and_automatic_remote_control(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        service.apply_student_commands(
+            {
+                "command_origin": "automatic",
+                "valid_for_minutes": 5,
+                "run_status": [
+                    {"dev_type": "ACGenerator", "dev_name": "wt01_10kw", "run_stat": 1}
+                ],
+            },
+            source="trainee-automatic-control",
+        )
+        service.apply_student_commands(
+            {
+                "command_origin": "manual",
+                "run_status": [
+                    {"dev_type": "ACGenerator", "dev_name": "wt01_10kw", "run_stat": 1}
+                ],
+            },
+            source="trainee-ui",
+        )
+        result = service.update_device_parameters(
+            {
+                "block_name": "ACGenerator",
+                "row_key": {"name": "wt01_10kw"},
+                "revision": service.definition_snapshot.revision,
+                "changes": {"run_stat": 0},
+            }
+        )
+
+        self.assertEqual(result["runtime_control"]["run_stat"], 0)
+        self.assertEqual(self._run_stat(service, "ACGenerator", "wt01_10kw"), "0")
+        latest = {
+            item["name"]: item for item in service.latest_control_values()["items"]
+        }["ACGenerator.wt01_10kw.run_stat"]
+        self.assertEqual(latest["command_origin"], "simulator-ui")
 
     def test_manual_control_commands_are_not_evicted_by_frequent_strategy_refreshes(self):
         workspace, service = self._make_service()
@@ -472,7 +511,7 @@ class ControlCommandValidityTest(unittest.TestCase):
                 source="trainee-renewable-priority",
             )
 
-        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "5")
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
         from simu.service import PolarMicrogridSimulator
 
         restarted = PolarMicrogridSimulator(service.sim_dir, service.runtime_dir, kernel=lambda _config: None)
@@ -517,8 +556,8 @@ class ControlCommandValidityTest(unittest.TestCase):
         self.assertIn(manual_entry, history)
         self.assertLessEqual(len(history), 51)
         self.assertEqual(len(commands["effective"]), 1)
-        self.assertIsNot(commands["effective"][0], manual_entry)
-        self.assertEqual(commands["effective"][0]["source"], "trainee-renewable-priority")
+        self.assertIs(commands["effective"][0], manual_entry)
+        self.assertEqual(commands["effective"][0]["source"], "trainee-ui")
 
     def test_manual_exit_only_cancels_manual_hold_and_keeps_automatic_command_active(self):
         workspace, service = self._make_service()

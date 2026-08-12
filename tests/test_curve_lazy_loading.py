@@ -45,6 +45,19 @@ class CurveLazyLoadingTest(unittest.TestCase):
                         {"minute": 2, "p_kw": 202},
                     ],
                 },
+                "sources": [
+                    {
+                        "dev_type": "ACGenerator",
+                        "dev_name": "diesel_300kw",
+                        "set_type": "p_set",
+                        "family": "electric",
+                        "points": [
+                            {"minute": 0, "value": 80},
+                            {"minute": 1, "value": 81},
+                            {"minute": 2, "value": 82},
+                        ],
+                    }
+                ],
             }
         )
         return workspace, service
@@ -64,18 +77,28 @@ class CurveLazyLoadingTest(unittest.TestCase):
             "air_temp_c",
         ])
         self.assertEqual([item["name"] for item in summary["loads"]], ["load_a", "load_b"])
+        self.assertIn(
+            ("ACGenerator", "diesel_300kw", "p_set", "electric"),
+            [(item["dev_type"], item["name"], item["set_type"], item["family"]) for item in summary["sources"]],
+        )
         self.assertNotIn("weather", summary)
         self.assertNotIn("series", summary["loads"][0])
+        self.assertNotIn("points", summary["sources"][0])
 
     def test_curve_series_returns_only_requested_curves(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
 
-        payload = service.curves_series(["wind_speed_mps", "load:load_b"])
+        payload = service.curves_series([
+            "wind_speed_mps",
+            "load:load_b",
+            "source:ACGenerator:diesel_300kw:p_set",
+        ])
 
         self.assertEqual(payload["mode"], "day")
         self.assertEqual(payload["series"]["wind_speed_mps"], [1, 2, 3])
         self.assertEqual(payload["series"]["load:load_b"], [200, 201, 202])
+        self.assertEqual(payload["series"]["source:ACGenerator:diesel_300kw:p_set"], [80, 81, 82])
         self.assertNotIn("solar_irradiance_w_m2", payload["series"])
         self.assertNotIn("load:load_a", payload["series"])
 
@@ -88,14 +111,20 @@ class CurveLazyLoadingTest(unittest.TestCase):
                 "mode": "day",
                 "series": {
                     "wind_speed_mps": [7, 8, 9],
+                    "source:ACGenerator:diesel_300kw:p_set": [90, 91, 92],
                 },
             }
         )
 
-        self.assertEqual(result["updated"], ["wind_speed_mps"])
+        self.assertEqual(
+            result["updated"],
+            ["wind_speed_mps", "source:ACGenerator:diesel_300kw:p_set"],
+        )
         self.assertEqual(service.curves["weather"][0]["wind_speed_mps"], 7)
         self.assertEqual(service.curves["weather"][0]["solar_irradiance_w_m2"], 10)
         self.assertEqual(service.curves["loads"]["load_a"][0]["p_kw"], 100)
+        diesel = next(item for item in service.curves["sources"] if item["name"] == "diesel_300kw")
+        self.assertEqual(diesel["points"][0]["value"], 90)
 
     def test_curve_summary_is_not_blocked_by_running_simulation_lock(self):
         workspace, service = self._make_service()

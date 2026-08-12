@@ -139,6 +139,7 @@ except ImportError:  # pragma: no cover - legacy package compatibility.
     from hybrid_power_system_analysis.simu import simu_loop
 
 from simu.model_semantics import energy_coupling_control_bindings
+from simu.source_curves import source_curve_catalog, source_curve_identity
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -397,6 +398,7 @@ def _curve_definition_text(curves: Mapping[str, Any]) -> str:
     time_step_minutes = curves.get("time_step_minutes", "")
     weather = curves.get("weather", [])
     loads = curves.get("loads", {})
+    sources = curves.get("sources", [])
     point_count = curves.get("point_count", len(weather) if isinstance(weather, list) else "")
 
     info_rows = [
@@ -438,6 +440,30 @@ def _curve_definition_text(curves: Mapping[str, Any]) -> str:
                         }
                     )
 
+    source_rows: list[Mapping[str, Any]] = []
+    if isinstance(sources, Sequence) and not isinstance(sources, (str, bytes)):
+        for source in sources:
+            if not isinstance(source, Mapping):
+                continue
+            points = source.get("points", [])
+            if not isinstance(points, Sequence) or isinstance(points, (str, bytes)):
+                continue
+            for idx, point in enumerate(points, start=1):
+                if not isinstance(point, Mapping):
+                    continue
+                source_rows.append(
+                    {
+                        "idx": idx,
+                        "dev_type": source.get("dev_type", ""),
+                        "dev_name": source.get("dev_name", source.get("name", "")),
+                        "set_type": source.get("set_type", ""),
+                        "family": source.get("family", ""),
+                        "unit": source.get("unit", ""),
+                        "minute": point.get("minute", idx - 1),
+                        "value": point.get("value", point.get("set_value", "")),
+                    }
+                )
+
     return _aligned_efile_text(
         {
             "CurveInfo": (["mode", "time_step_minutes", "point_count"], info_rows),
@@ -454,6 +480,10 @@ def _curve_definition_text(curves: Mapping[str, Any]) -> str:
                 env_rows,
             ),
             "LoadCurve": (["idx", "load_name", "minute", "p_kw"], load_rows),
+            "SourceCurve": (
+                ["idx", "dev_type", "dev_name", "set_type", "family", "unit", "minute", "value"],
+                source_rows,
+            ),
         }
     )
 
@@ -468,6 +498,7 @@ def _curves_from_definition_text(text: str) -> Mapping[str, Any]:
         "point_count": _definition_number(info.get("point_count", 0)),
         "weather": [],
         "loads": {},
+        "sources": [],
     }
 
     env_block = book.data.get("EnvironmentCurve")
@@ -500,6 +531,36 @@ def _curves_from_definition_text(text: str) -> Mapping[str, Any]:
                 }
             )
     payload["loads"] = loads
+    source_block = book.data.get("SourceCurve")
+    sources: dict[tuple[str, str, str], dict[str, Any]] = {}
+    if source_block is not None:
+        for row in source_block.data:
+            identity = (
+                str(row.get("dev_type", "")).strip(),
+                str(row.get("dev_name", "")).strip(),
+                str(row.get("set_type", "")).strip(),
+            )
+            if not all(identity):
+                continue
+            source = sources.setdefault(
+                identity,
+                {
+                    "dev_type": identity[0],
+                    "dev_name": identity[1],
+                    "name": identity[1],
+                    "set_type": identity[2],
+                    "family": str(row.get("family", "")).strip(),
+                    "unit": str(row.get("unit", "")).strip(),
+                    "points": [],
+                },
+            )
+            source["points"].append(
+                {
+                    "minute": _definition_number(row.get("minute", "")),
+                    "value": _definition_number(row.get("value", "")),
+                }
+            )
+    payload["sources"] = list(sources.values())
     if not payload["point_count"]:
         payload["point_count"] = len(payload["weather"])
     return payload
@@ -626,6 +687,7 @@ SET_VALUE_COLUMN_MAP = {
     "DCLoad": (("p_set", "p_set"), ("p_set", "pv0"), ("v_set", "v_set"), ("i_set", "i_set")),
     "HydroSource": (("flow_set", "flow_set"),),
     "HydroLoad": (("flow_set", "flow_set"),),
+    "HeatSource": (("flow_set", "flow_set"),),
 }
 MEASUREMENT_TYPE_MAP = {
     "ACNode": ("V", "ANGLE"),
@@ -1058,6 +1120,10 @@ def _generated_curves_payload(model_book: EBook) -> dict[str, Any]:
         "point_count": point_count,
         "weather": weather,
         "loads": loads,
+        "sources": [
+            {**item, "points": [{"minute": 0.0, "value": item["default_value"]}]}
+            for item in source_curve_catalog(model_book)
+        ],
     }
 
 
@@ -1105,7 +1171,7 @@ def _merge_generated_curves_payload(
 ) -> dict[str, Any]:
     merged = copy.deepcopy(dict(existing_payload))
     for key, value in generated_payload.items():
-        if key != "loads" and key not in merged:
+        if key not in {"loads", "sources"} and key not in merged:
             merged[key] = copy.deepcopy(value)
 
     existing_loads = existing_payload.get("loads", {})
@@ -1174,6 +1240,18 @@ def _merge_generated_curves_payload(
         )
         for name, values in generated_loads.items()
     }
+    existing_sources = existing_payload.get("sources", [])
+    generated_sources = generated_payload.get("sources", [])
+    existing_by_identity = {
+        source_curve_identity(item): item
+        for item in existing_sources
+        if isinstance(item, Mapping)
+    } if isinstance(existing_sources, Sequence) and not isinstance(existing_sources, (str, bytes)) else {}
+    merged["sources"] = [
+        copy.deepcopy(existing_by_identity.get(source_curve_identity(item), item))
+        for item in generated_sources
+        if isinstance(item, Mapping)
+    ] if isinstance(generated_sources, Sequence) and not isinstance(generated_sources, (str, bytes)) else []
     return merged
 
 
@@ -1209,7 +1287,7 @@ def _write_generated_model_artifacts(
         if isinstance(existing_curves, Mapping):
             curves_to_write = _merge_generated_curves_payload(existing_curves, curves_payload)
     _write_json_file(curves_path, curves_to_write)
-    (target_dir / "curves.e").write_text(_curve_definition_text(curves_payload), encoding="utf-8")
+    (target_dir / "curves.e").write_text(_curve_definition_text(curves_to_write), encoding="utf-8")
     written = ["model.e", "meas.e", "control.e", "stat.e", "weather.e", "curves.e", "curves.json"]
     if _write_model_diagram(target_dir, normalized_diagram, remove_when_absent=remove_diagram_when_absent):
         written.append(DIAGRAM_FILE_NAME)

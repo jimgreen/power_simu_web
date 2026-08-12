@@ -152,7 +152,7 @@ class SimulatorCommandHistoryLifecycleTest(unittest.TestCase):
             self.assertEqual(automatic_result["set_values"], 1)
             self.assertEqual(
                 str(service.latest_control_values()["values"].get("ESS.ess01.p_set")),
-                "5",
+                "20",
             )
 
             service.control_clock({"action": "stop"})

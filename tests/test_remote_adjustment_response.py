@@ -112,7 +112,7 @@ class RemoteAdjustmentResponseTest(unittest.TestCase):
 
         self.assertAlmostEqual(self._book_set_value(boundaries[-1]["stat"], "ESS", "ess01", "p_set"), 5.1)
 
-    def test_automatic_override_and_manual_resume_both_use_gradual_boundaries(self):
+    def test_manual_command_keeps_priority_when_automatic_command_arrives_later(self):
         workspace, service, boundaries = self._make_service()
         self.addCleanup(workspace.cleanup)
 
@@ -132,12 +132,12 @@ class RemoteAdjustmentResponseTest(unittest.TestCase):
         )
         self.assertEqual(result["set_values"], 1)
         service.step()
-        self.assertAlmostEqual(self._book_set_value(boundaries[-1]["stat"], "ESS", "ess01", "p_set"), 5.1)
+        self.assertAlmostEqual(self._book_set_value(boundaries[-1]["stat"], "ESS", "ess01", "p_set"), 19.1)
 
         service.clock.absolute_minute = 2.0
         service.clock.minute = 2.0
         service.step()
-        self.assertAlmostEqual(self._book_set_value(boundaries[-1]["stat"], "ESS", "ess01", "p_set"), 15.53)
+        self.assertAlmostEqual(self._book_set_value(boundaries[-1]["stat"], "ESS", "ess01", "p_set"), 19.73)
         self.assertEqual(
             service.latest_control_values()["values"]["ESS.ess01.p_set"],
             20,

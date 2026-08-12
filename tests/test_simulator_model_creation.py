@@ -89,6 +89,7 @@ class SimulatorModelCreationTest(unittest.TestCase):
             self.assertIn("CurveInfo", curves.data)
             self.assertIn("EnvironmentCurve", curves.data)
             self.assertIn("LoadCurve", curves.data)
+            self.assertIn("SourceCurve", curves.data)
 
             measurement_rows = meas.data["Measurement"].data
             self.assertGreater(len(measurement_rows), 0)
@@ -269,6 +270,62 @@ class SimulatorModelCreationTest(unittest.TestCase):
         self.assertNotIn("删除负荷", merged["loads"])
         self.assertEqual(len(merged["loads"]["新增负荷"]), 2)
         self.assertEqual([point["minute"] for point in merged["loads"]["新增负荷"]], [0, 5])
+
+    def test_source_curve_definition_round_trip_and_model_update_merge(self):
+        curves = {
+            "mode": "day",
+            "time_step_minutes": 1,
+            "point_count": 2,
+            "weather": [],
+            "loads": {},
+            "sources": [
+                {
+                    "dev_type": "HydroSource",
+                    "dev_name": "h-source",
+                    "set_type": "flow_set",
+                    "family": "hydrogen",
+                    "unit": "Nm3/h",
+                    "points": [{"minute": 0, "value": 1}, {"minute": 1, "value": 2}],
+                }
+            ],
+        }
+        restored = server_module._curves_from_definition_text(server_module._curve_definition_text(curves))
+        self.assertEqual(restored["sources"][0]["dev_type"], "HydroSource")
+        self.assertEqual(restored["sources"][0]["points"], curves["sources"][0]["points"])
+
+        generated = {
+            **curves,
+            "sources": [
+                {**curves["sources"][0], "points": [{"minute": 0, "value": 9}]},
+                {
+                    "dev_type": "HeatSource",
+                    "dev_name": "heat-new",
+                    "set_type": "flow_set",
+                    "family": "heat",
+                    "unit": "kg/s",
+                    "points": [{"minute": 0, "value": 3}],
+                },
+            ],
+        }
+        existing = {
+            **curves,
+            "sources": [
+                curves["sources"][0],
+                {
+                    "dev_type": "HeatSource",
+                    "dev_name": "heat-deleted",
+                    "set_type": "flow_set",
+                    "family": "heat",
+                    "unit": "kg/s",
+                    "points": [{"minute": 0, "value": 4}],
+                },
+            ],
+        }
+        merged = server_module._merge_generated_curves_payload(existing, generated)
+        identities = [(item["dev_type"], item["dev_name"], item["set_type"]) for item in merged["sources"]]
+        self.assertEqual(identities, [("HydroSource", "h-source", "flow_set"), ("HeatSource", "heat-new", "flow_set")])
+        self.assertEqual(merged["sources"][0]["points"], curves["sources"][0]["points"])
+        self.assertEqual(merged["sources"][1]["points"], [{"minute": 0, "value": 3}])
 
     def test_update_model_from_uploaded_model_e_can_replace_definition_and_svg_for_stopped_model_only(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -19,6 +19,7 @@ const VERTICAL_SPLIT_MIN_TOP_PX = 120;
 const VERTICAL_SPLIT_MIN_BOTTOM_PX = 120;
 const STATIC_CACHE_STORAGE_KEY = "polarTraineeStaticCacheV2";
 const STATIC_CACHE_MODEL_LIMIT = 4;
+const CURVE_DISPLAY_TREE_COLLAPSE_KEY = "polarTraineeCurveTreeCollapsedGroups";
 const HIDDEN_REFRESH_INTERVAL_MS = 10000;
 const MODEL_CONTEXT_PERSIST_INTERVAL_MS = 5000;
 const WEB_RUNTIME_FALLBACKS = {
@@ -161,6 +162,7 @@ const state = {
   activeCurveDisplayKey: "wind_speed_mps",
   selectedCurveDisplayKeys: ["wind_speed_mps"],
   hiddenCurveDisplayKeys: [],
+  curveDisplayTreeGroupCollapsed: readStoredCurveDisplayTreeCollapsedGroups(),
   curveDisplayCursor: { visible: false, x: 0, y: 0, index: 0 },
   curveDisplayLegendHitBoxes: [],
   lastCurveDisplayRenderKey: "",
@@ -413,6 +415,12 @@ const CURVE_DISPLAY_META = [
 ];
 const CURVE_DISPLAY_LOAD_META = { label: "负荷", color: "#c93a3a", min: 0, max: 500, digits: 2, unit: "kW" };
 const CURVE_DISPLAY_LOAD_COLORS = ["#c93a3a", "#8a4fbf", "#23854a", "#d16300", "#4369b2", "#0a8b8b"];
+const CURVE_DISPLAY_SOURCE_FAMILIES = [
+  { key: "electric", label: "电源曲线" },
+  { key: "hydrogen", label: "氢源曲线" },
+  { key: "heat", label: "热源曲线" },
+];
+const CURVE_DISPLAY_SOURCE_COLORS = ["#126f8a", "#8a4fbf", "#23854a", "#d16300", "#4369b2", "#0a8b8b"];
 const CURVE_DISPLAY_PLOT = { left: 58, right: 24, top: 46, bottom: 34 };
 const WEATHER_MEASUREMENT_LABELS = {
   WIND_SPEED: { label: "风速", order: 0 },
@@ -11208,8 +11216,17 @@ function curveDisplayLoadKeys(snapshot = state.snapshot || {}) {
   return curveDisplayLoads(snapshot).map(curveDisplayLoadKey);
 }
 
+function curveDisplaySourceCatalog(snapshot = state.snapshot || {}) {
+  const sources = snapshot.curves?.sources;
+  return Array.isArray(sources) ? sources.filter((item) => item?.key && item?.family) : [];
+}
+
+function curveDisplaySourceKeys(snapshot = state.snapshot || {}) {
+  return curveDisplaySourceCatalog(snapshot).map((item) => item.key);
+}
+
 function curveDisplayAllKeys(snapshot = state.snapshot || {}) {
-  return [...CURVE_DISPLAY_ENV_KEYS, ...curveDisplayLoadKeys(snapshot)];
+  return [...CURVE_DISPLAY_ENV_KEYS, ...curveDisplayLoadKeys(snapshot), ...curveDisplaySourceKeys(snapshot)];
 }
 
 function curveDisplayRawPoints(key, snapshot = state.snapshot || {}) {
@@ -11217,6 +11234,10 @@ function curveDisplayRawPoints(key, snapshot = state.snapshot || {}) {
     const loadName = curveDisplayLoadName(key);
     const points = snapshot.curves?.loads?.[loadName];
     return Array.isArray(points) ? points : [];
+  }
+  if (String(key).startsWith("source:")) {
+    const source = curveDisplaySourceCatalog(snapshot).find((item) => item.key === key);
+    return Array.isArray(source?.points) ? source.points : [];
   }
   return Array.isArray(snapshot.curves?.weather) ? snapshot.curves.weather : [];
 }
@@ -11226,12 +11247,35 @@ function curveDisplayPointValue(point, key) {
   if (String(key).startsWith("load:")) {
     return Number(point.p_kw ?? point.value ?? point.load_kw);
   }
+  if (String(key).startsWith("source:")) return Number(point.value ?? point.set_value);
   return Number(point[key]);
 }
 
 function curveDisplayMetaForKey(key, snapshot = state.snapshot || {}) {
   const meta = CURVE_DISPLAY_META.find((item) => item.key === key);
   if (meta) return meta;
+  if (String(key).startsWith("source:")) {
+    const source = curveDisplaySourceCatalog(snapshot).find((item) => item.key === key) || {};
+    const sourceIndex = Math.max(0, curveDisplaySourceKeys(snapshot).indexOf(key));
+    const values = curveDisplayRawPoints(key, snapshot)
+      .map((point) => curveDisplayPointValue(point, key))
+      .filter((value) => Number.isFinite(value));
+    const defaultValue = Number(source.default_value);
+    const lower = Number(source.min);
+    const upper = Number(source.max);
+    const minimum = Number.isFinite(lower) ? lower : Math.min(0, ...(values.length ? values : [defaultValue || 0]));
+    const dynamicMax = Math.max(...(values.length ? values : [defaultValue || 0, 1]));
+    return {
+      key,
+      label: source.name || source.dev_name || key,
+      color: CURVE_DISPLAY_SOURCE_COLORS[sourceIndex % CURVE_DISPLAY_SOURCE_COLORS.length],
+      min: minimum,
+      max: Number.isFinite(upper) ? upper : Math.max(1, dynamicMax * 1.12),
+      digits: 3,
+      unit: source.unit || "",
+      family: source.family || "electric",
+    };
+  }
   const loadKeys = curveDisplayLoadKeys(snapshot);
   const loadIndex = Math.max(0, loadKeys.indexOf(key));
   const values = curveDisplayRawPoints(key, snapshot)
@@ -11335,6 +11379,9 @@ function toggleCurveDisplaySeriesVisibility(key, shouldRender = true) {
 function curveDisplayFamilyKeys(family, snapshot = state.snapshot || {}) {
   if (family === "environment") return [...CURVE_DISPLAY_ENV_KEYS];
   if (family === "load") return curveDisplayLoadKeys(snapshot);
+  if (family === "electric") return curveDisplaySourceCatalog(snapshot).filter((item) => item.family === family).map((item) => item.key);
+  if (family === "hydrogen") return curveDisplaySourceCatalog(snapshot).filter((item) => item.family === family).map((item) => item.key);
+  if (family === "heat") return curveDisplaySourceCatalog(snapshot).filter((item) => item.family === family).map((item) => item.key);
   return [];
 }
 
@@ -11366,31 +11413,80 @@ function curveDisplaySelectedLabel(snapshot = state.snapshot || {}) {
   return selected.length <= 1 ? curveDisplayMetaForKey(selected[0], snapshot).label : `已选${selected.length}条`;
 }
 
+function readStoredCurveDisplayTreeCollapsedGroups() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CURVE_DISPLAY_TREE_COLLAPSE_KEY) || "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+  } catch (_error) {
+    // Invalid local UI state falls back to the default expanded tree.
+  }
+  return {};
+}
+
+function curveDisplayTreeGroupCollapsed(groupKey) {
+  return Boolean(state.curveDisplayTreeGroupCollapsed?.[groupKey]);
+}
+
+function toggleCurveDisplayTreeGroup(groupKey) {
+  if (!groupKey) return;
+  state.curveDisplayTreeGroupCollapsed = {
+    ...(state.curveDisplayTreeGroupCollapsed || {}),
+    [groupKey]: !curveDisplayTreeGroupCollapsed(groupKey),
+  };
+  localStorage.setItem(CURVE_DISPLAY_TREE_COLLAPSE_KEY, JSON.stringify(state.curveDisplayTreeGroupCollapsed));
+  renderCurveDisplayTree(state.snapshot || {});
+}
+
+function curveDisplayTreeGroupHeader(groupKey, label, count, buttonAttrs, buttonClasses = "", toggleAttribute = "data-curve-display-tree-toggle") {
+  const collapsed = curveDisplayTreeGroupCollapsed(groupKey);
+  return `
+    <div class="tree-parent-row">
+      <button
+        type="button"
+        class="tree-collapse-toggle ${collapsed ? "is-collapsed" : ""}"
+        ${toggleAttribute}="${escapeHtml(groupKey)}"
+        aria-label="${collapsed ? "展开" : "折叠"}${escapeHtml(label)}"
+        aria-expanded="${collapsed ? "false" : "true"}"
+      ><span class="tree-toggle" aria-hidden="true"></span></button>
+      <button
+        type="button"
+        class="tree-node tree-type ${buttonClasses}"
+        ${buttonAttrs}
+      >
+        <span>${escapeHtml(label)}</span>
+        <strong>${count}</strong>
+      </button>
+    </div>`;
+}
+
 function renderCurveDisplayTree(snapshot = state.snapshot || {}) {
   const container = $("curveDisplayTree");
   if (!container) return;
   const selected = selectedCurveDisplayKeys(snapshot);
   const selectedSet = new Set(selected);
   const loadKeys = curveDisplayLoadKeys(snapshot);
+  const sourceGroups = CURVE_DISPLAY_SOURCE_FAMILIES.map((family) => ({
+    ...family,
+    sources: curveDisplaySourceCatalog(snapshot).filter((item) => item.family === family.key),
+  }));
   const envSelected = CURVE_DISPLAY_ENV_KEYS.every((key) => selectedSet.has(key))
     && selected.every((key) => CURVE_DISPLAY_ENV_KEYS.includes(key));
   const loadSelected = loadKeys.length && loadKeys.every((key) => selectedSet.has(key))
     && selected.every((key) => loadKeys.includes(key));
   const envPartial = CURVE_DISPLAY_ENV_KEYS.some((key) => selectedSet.has(key));
   const loadPartial = loadKeys.some((key) => selectedSet.has(key));
-  $("curveDisplayTreeSummary").textContent = `${CURVE_DISPLAY_ENV_KEYS.length + loadKeys.length} 条`;
+  $("curveDisplayTreeSummary").textContent = `${CURVE_DISPLAY_ENV_KEYS.length + loadKeys.length + curveDisplaySourceKeys(snapshot).length} 条`;
   container.innerHTML = `
     <div class="tree-group">
-      <button
-        type="button"
-        class="tree-node tree-type ${envSelected ? "is-active" : envPartial ? "is-parent-active" : ""}"
-        data-curve-display-tree-type="environment"
-        data-curve-display-family="environment"
-      >
-        <span>环境曲线</span>
-        <strong>${CURVE_DISPLAY_ENV_KEYS.length}</strong>
-      </button>
-      <div class="tree-children">
+      ${curveDisplayTreeGroupHeader(
+        "environment",
+        "环境曲线",
+        CURVE_DISPLAY_ENV_KEYS.length,
+        `data-curve-display-tree-type="environment" data-curve-display-family="environment" aria-expanded="${curveDisplayTreeGroupCollapsed("environment") ? "false" : "true"}"`,
+        envSelected ? "is-active" : envPartial ? "is-parent-active" : "",
+        "data-curve-display-tree-toggle",
+      )}
+      <div class="tree-children" ${curveDisplayTreeGroupCollapsed("environment") ? "hidden" : ""}>
         ${CURVE_DISPLAY_ENV_KEYS.map((key) => {
           const meta = curveDisplayMetaForKey(key, snapshot);
           const shortLabel = key === "wind_speed_mps" ? "风" : key === "solar_irradiance_w_m2" ? "光" : "温";
@@ -11408,16 +11504,15 @@ function renderCurveDisplayTree(snapshot = state.snapshot || {}) {
       </div>
     </div>
     <div class="tree-group">
-      <button
-        type="button"
-        class="tree-node tree-type ${loadSelected ? "is-active" : loadPartial ? "is-parent-active" : ""}"
-        data-curve-display-tree-type="load"
-        data-curve-display-family="load"
-      >
-        <span>负荷曲线</span>
-        <strong>${loadKeys.length}</strong>
-      </button>
-      <div class="tree-children">
+      ${curveDisplayTreeGroupHeader(
+        "load",
+        "负荷曲线",
+        loadKeys.length,
+        `data-curve-display-tree-type="load" data-curve-display-family="load" aria-expanded="${curveDisplayTreeGroupCollapsed("load") ? "false" : "true"}"`,
+        loadSelected ? "is-active" : loadPartial ? "is-parent-active" : "",
+        "data-curve-display-tree-toggle",
+      )}
+      <div class="tree-children" ${curveDisplayTreeGroupCollapsed("load") ? "hidden" : ""}>
         ${loadKeys.map((key) => `
           <button
             type="button"
@@ -11430,7 +11525,36 @@ function renderCurveDisplayTree(snapshot = state.snapshot || {}) {
           </button>
         `).join("") || '<div class="empty-state compact">暂无负荷曲线</div>'}
       </div>
-    </div>`;
+    </div>
+    ${sourceGroups.map((group) => {
+      const keys = group.sources.map((source) => source.key);
+      const groupSelected = keys.length && keys.every((key) => selectedSet.has(key))
+        && selected.every((key) => keys.includes(key));
+      const groupPartial = keys.some((key) => selectedSet.has(key));
+      return `
+        <div class="tree-group">
+          ${curveDisplayTreeGroupHeader(
+            group.key,
+            group.label,
+            keys.length,
+            `data-curve-display-tree-type="source" data-curve-display-family="${escapeHtml(group.key)}" aria-expanded="${curveDisplayTreeGroupCollapsed(group.key) ? "false" : "true"}"`,
+            groupSelected ? "is-active" : groupPartial ? "is-parent-active" : "",
+            "data-curve-display-tree-toggle",
+          )}
+          <div class="tree-children" ${curveDisplayTreeGroupCollapsed(group.key) ? "hidden" : ""}>
+            ${group.sources.map((source) => `
+              <button
+                type="button"
+                class="tree-node tree-child ${selectedSet.has(source.key) ? "is-active" : ""} ${isCurveDisplaySeriesHidden(source.key) ? "is-hidden-series" : ""}"
+                data-curve-display-tree-type="source"
+                data-curve-display-key="${escapeHtml(source.key)}"
+              >
+                <span>${escapeHtml(source.name || source.dev_name || source.key)}</span>
+                <small>${escapeHtml(source.unit || source.dev_type || "")}</small>
+              </button>`).join("") || `<div class="empty-state compact">暂无${escapeHtml(group.label)}</div>`}
+          </div>
+        </div>`;
+    }).join("")}`;
 }
 
 function renderCurveDisplayModeControls(snapshot = state.snapshot || {}) {
@@ -11813,7 +11937,7 @@ function renderCurveDisplayTable(snapshot = state.snapshot || {}, force = false)
     points: config.pointCount,
     selected: metas.map((meta) => meta.key),
     staticMeta: snapshot.static_meta?.curves || null,
-    source: `${snapshot.curves?.weather?.length || 0}|${Object.values(snapshot.curves?.loads || {}).map((points) => points?.length || 0).join(",")}`,
+    source: `${snapshot.curves?.weather?.length || 0}|${Object.values(snapshot.curves?.loads || {}).map((points) => points?.length || 0).join(",")}|${curveDisplaySourceCatalog(snapshot).map((item) => item.points?.length || 0).join(",")}`,
   });
   if (!force && signature === state.lastCurveDisplayTableKey) return;
   state.lastCurveDisplayTableKey = signature;
@@ -17321,6 +17445,15 @@ document.addEventListener("click", (event) => {
     });
   }
   const curveDisplayButton = target?.closest("[data-curve-display-tree-type]");
+  const curveDisplayTreeToggle = target?.closest("[data-curve-display-tree-toggle]");
+  if (curveDisplayTreeToggle) {
+    event.preventDefault();
+    event.stopPropagation();
+    requestAnimationFrame(() => toggleCurveDisplayTreeGroup(
+      curveDisplayTreeToggle.dataset.curveDisplayTreeToggle || "",
+    ));
+    return;
+  }
   if (curveDisplayButton) {
     event.preventDefault();
     requestAnimationFrame(() => selectCurveDisplayButton(curveDisplayButton));

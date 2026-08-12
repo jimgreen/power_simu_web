@@ -2755,6 +2755,60 @@ body.is-vertical-splitter-dragging {
   padding: 8px 11px 11px;
   overflow-y: auto;
 }
+.diagram-device-tabs {
+  position: sticky;
+  top: -8px;
+  z-index: 2;
+  display: flex;
+  gap: 5px;
+  margin: -8px -2px 8px;
+  padding: 8px 2px 7px;
+  overflow-x: auto;
+  background: rgba(255, 255, 255, 0.98);
+  border-bottom: 1px solid rgba(211, 222, 226, 0.88);
+  scrollbar-width: thin;
+}
+.diagram-device-tab {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 82px;
+  max-width: 154px;
+  height: 38px;
+  display: grid;
+  align-content: center;
+  gap: 1px;
+  padding: 3px 9px;
+  border-radius: 5px;
+  background: #f7fafb;
+  color: var(--muted);
+  line-height: 1.15;
+  text-align: left;
+}
+.diagram-device-tab span,
+.diagram-device-tab small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.diagram-device-tab span {
+  color: inherit;
+  font-size: 11px;
+  font-weight: 700;
+}
+.diagram-device-tab small {
+  color: #7a8a92;
+  font-size: 9px;
+}
+.diagram-device-tab[aria-selected="true"] {
+  border-color: rgba(0, 140, 140, 0.58);
+  background: #e8f5f3;
+  color: var(--teal-dark);
+}
+.diagram-device-tab-panel {
+  min-width: 0;
+}
 .diagram-tooltip-body h4 {
   margin: 10px 0 5px;
   color: var(--muted);

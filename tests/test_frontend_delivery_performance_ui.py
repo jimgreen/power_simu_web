@@ -34,6 +34,11 @@ class FrontendDeliveryPerformanceUiTest(unittest.TestCase):
             )
             self.assertIn("state.deviceRuntimeNeedsFullRefresh = true;", script)
             self.assertIn("state.deviceRuntimeNeedsFullRefresh = false;", script)
+            compact_guard = script.split("function canUseCompactDeviceRuntime", 1)[1].split(
+                "function snapshotPollPath",
+                1,
+            )[0]
+            self.assertIn("!state.snapshot.devices.length", compact_guard)
 
     def test_compact_device_runtime_frame_is_applied_by_canonical_device_order(self):
         script = self._script("simulator")

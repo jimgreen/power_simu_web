@@ -3137,7 +3137,7 @@ function pageNeedsRuntimeLogDelta(page = currentPageName()) {
 }
 
 function pageNeedsDevices(page = currentPageName()) {
-  return ["overview", "faults", "modes", "runtime"].includes(page);
+  return ["overview", "diagram", "faults", "modes", "runtime"].includes(page);
 }
 
 function pageNeedsDeviceStates(page = currentPageName()) {
@@ -3299,7 +3299,7 @@ function applyDeviceRuntimePayload(previous, incoming) {
 
 function canUseCompactDeviceRuntime(page = currentPageName()) {
   if (!pageNeedsDevices(page) || state.deviceRuntimeNeedsFullRefresh) return false;
-  if (!Array.isArray(state.snapshot?.devices)) return false;
+  if (!Array.isArray(state.snapshot?.devices) || !state.snapshot.devices.length) return false;
   return !pageNeedsDeviceStates(page) || Array.isArray(state.snapshot?.device_states);
 }
 
@@ -6024,6 +6024,8 @@ function diagramInteractionState(container) {
       definitionSaving: false,
       definitionMessage: "",
       definitionMessageWarning: false,
+      deviceTooltipHostKey: "",
+      deviceTooltipTabKey: "self",
       drag: null,
       suppressClick: false,
       suppressClickTimer: null,
@@ -6705,8 +6707,9 @@ function diagramDeviceDefinitionDirtyUpdates(editor) {
 
 function diagramDeviceData(container, device, snapshot = state.snapshot || {}) {
   if (!device) return { definition: null, live: null, raw: {}, svgIdx: "" };
-  const type = normalizeDiagramMeasurementToken(device.devType);
-  const name = String(device.devName || "");
+  const resolvedDevice = diagramResolvedTooltipDevice(container, device);
+  const type = normalizeDiagramMeasurementToken(resolvedDevice.devType);
+  const name = String(resolvedDevice.devName || "");
   const definition = definedModelDevices(snapshot).find((item) => (
     normalizeDiagramMeasurementToken(item.dev_type) === type
     && String(item.dev_name || "") === name
@@ -6716,8 +6719,9 @@ function diagramDeviceData(container, device, snapshot = state.snapshot || {}) {
     && String(item.dev_name || "") === name
   )) || null;
   const svgElement = [...container.querySelectorAll("[dev-id]")]
-    .find((element) => String(element.getAttribute("dev-id") || "") === device.devId);
+    .find((element) => String(element.getAttribute("dev-id") || "") === resolvedDevice.devId);
   return {
+    device: resolvedDevice,
     definition,
     live,
     raw: { ...(definition?.raw || {}), ...(live?.raw || {}) },
@@ -6745,15 +6749,84 @@ function diagramDeviceMeasurements(device, snapshot = state.snapshot || {}) {
   ));
 }
 
-function diagramDeviceTooltipData(container, hover, snapshot) {
-  const device = hover?.device || null;
+function diagramDeviceIdentityKey(device) {
+  const devType = normalizeDiagramMeasurementToken(device?.devType ?? device?.dev_type);
+  const devName = String(device?.devName ?? device?.dev_name ?? device?.name ?? "").trim();
+  return devType && devName ? `${devType}|${devName}` : "";
+}
+
+function diagramTooltipDeviceRecord(device = {}) {
+  return {
+    devId: String(device?.devId ?? device?.dev_id ?? "").trim(),
+    devType: String(device?.devType ?? device?.dev_type ?? "").trim(),
+    devName: String(device?.devName ?? device?.dev_name ?? device?.name ?? "").trim(),
+  };
+}
+
+function diagramDeviceSnapshotEntry(snapshot, devType, devName) {
+  const identity = diagramDeviceIdentityKey({ devType, devName });
+  if (!identity) return null;
+  return (snapshot?.devices || []).find((item) => diagramDeviceIdentityKey(item) === identity)
+    || definedModelDevices(snapshot).find((item) => diagramDeviceIdentityKey(item) === identity)
+    || null;
+}
+
+function diagramResolvedTooltipDevice(container, device) {
+  const record = diagramTooltipDeviceRecord(device);
+  if (record.devId || !container) return record;
+  const identity = diagramDeviceIdentityKey(record);
+  const svgRecord = [...diagramDeviceIndex(container).values()]
+    .find((item) => diagramDeviceIdentityKey(item) === identity);
+  return svgRecord ? { ...record, devId: svgRecord.devId } : record;
+}
+
+function diagramCouplingDevicePages(device, snapshot = state.snapshot || {}) {
+  const hostDevice = diagramTooltipDeviceRecord(device);
+  if (!hostDevice.devType || !hostDevice.devName) return [];
+  const pages = [{ key: "self", label: "设备本体", relation: null, device: hostDevice }];
+  const hostEntry = diagramDeviceSnapshotEntry(snapshot, hostDevice.devType, hostDevice.devName);
+  const bindings = Array.isArray(hostEntry?.control_bindings) ? hostEntry.control_bindings : [];
+  const seen = new Set([diagramDeviceIdentityKey(hostDevice)]);
+  bindings.forEach((binding) => {
+    const targetType = String(binding?.target_dev_type || "").trim();
+    const targetName = String(binding?.target_dev_name || "").trim();
+    const targetEntry = diagramDeviceSnapshotEntry(snapshot, targetType, targetName);
+    if (!targetEntry) return;
+    const targetDevice = diagramTooltipDeviceRecord(targetEntry);
+    const identity = diagramDeviceIdentityKey(targetDevice);
+    if (!identity || seen.has(identity)) return;
+    seen.add(identity);
+    pages.push({
+      key: `related:${identity}`,
+      label: targetDevice.devName || targetDevice.devType,
+      relation: { ...binding },
+      device: targetDevice,
+    });
+  });
+  return pages;
+}
+
+function diagramActiveDeviceTooltipPage(interaction, hover, pages = []) {
+  if (!pages.length) return null;
+  const hostKey = String(hover?.key || "");
+  if (!interaction) return pages[0];
+  if (String(interaction.deviceTooltipHostKey || "") !== hostKey) {
+    interaction.deviceTooltipHostKey = hostKey;
+    interaction.deviceTooltipTabKey = "self";
+  }
+  const active = pages.find((page) => page.key === interaction.deviceTooltipTabKey) || pages[0];
+  interaction.deviceTooltipTabKey = active.key;
+  return active;
+}
+
+function diagramSingleDeviceTooltipData(container, device, snapshot) {
   if (!device) return null;
-  const { definition, live, raw, svgIdx } = diagramDeviceData(container, device, snapshot);
-  const definitionRecords = diagramDeviceDefinitionRecords(device, snapshot);
+  const { device: resolvedDevice, definition, live, raw, svgIdx } = diagramDeviceData(container, device, snapshot);
+  const definitionRecords = diagramDeviceDefinitionRecords(resolvedDevice, snapshot);
   const idx = live?.raw?.idx ?? definition?.idx ?? raw.idx ?? svgIdx ?? "--";
   const identityRows = [
-    ["设备类型", device.devType || "--", "identity:type"],
-    ["设备标识", device.devId || "--", "identity:id"],
+    ["设备类型", resolvedDevice.devType || "--", "identity:type"],
+    ["设备标识", resolvedDevice.devId || "--", "identity:id"],
     ["idx", idx, "identity:idx"],
   ];
   const runStatBinding = diagramDefinitionFieldBinding(definitionRecords, ["run_stat"]);
@@ -6781,7 +6854,7 @@ function diagramDeviceTooltipData(container, hover, snapshot) {
   const rawRows = Object.entries(raw)
     .filter(([key]) => !duplicateKeys.has(key) && !definitionRecords.length)
     .map(([key, value]) => [key, value, `raw:${key}`]);
-  const measurementRows = diagramDeviceMeasurements(device, snapshot).map((row) => {
+  const measurementRows = diagramDeviceMeasurements(resolvedDevice, snapshot).map((row) => {
     const metricType = normalizeDiagramMeasurementToken(row.meas_type) === "SOC" ? "level" : "";
     const value = diagramTrendDisplayValue(row.value, row, metricType);
     const unit = diagramMeasurementUnit(row.meas_type);
@@ -6792,7 +6865,7 @@ function diagramDeviceTooltipData(container, hover, snapshot) {
     ];
   });
   return {
-    title: device.devName || device.devId || "设备",
+    title: resolvedDevice.devName || resolvedDevice.devId || "设备",
     dynamicSections: [
       { key: "identity", title: "", rows: identityRows },
       { key: "status", title: "运行信息", rows: statusRows },
@@ -6801,6 +6874,18 @@ function diagramDeviceTooltipData(container, hover, snapshot) {
       { key: "measurement", title: "实时量测", rows: measurementRows },
     ].filter((section) => section.rows.length),
     definitionRecords,
+  };
+}
+
+function diagramDeviceTooltipData(container, hover, snapshot, interaction = null) {
+  const pages = diagramCouplingDevicePages(hover?.device, snapshot);
+  const activePage = diagramActiveDeviceTooltipPage(interaction, hover, pages);
+  const data = diagramSingleDeviceTooltipData(container, activePage?.device, snapshot);
+  if (!data || !activePage) return null;
+  return {
+    ...data,
+    pages,
+    activePageKey: activePage.key,
   };
 }
 
@@ -7063,7 +7148,13 @@ function renderDiagramDeviceClassifiedTable(data, interaction) {
   const [identitySection, ...detailSections] = data.dynamicSections;
   const identitySections = identitySection ? [identitySection] : [];
   return `
-    <div data-diagram-device-dynamic-body>
+    <div
+      class="diagram-device-tab-panel"
+      role="tabpanel"
+      data-diagram-device-tab-panel
+      data-diagram-device-active-tab="${escapeHtml(data.activePageKey || "self")}"
+      data-diagram-device-dynamic-body
+    >
       ${diagramTooltipSectionsHtml(identitySections, interaction)}
       ${renderDiagramDeviceDefinitionRecords(data.definitionRecords, interaction)}
       ${diagramTooltipSectionsHtml(detailSections, interaction)}
@@ -7071,8 +7162,34 @@ function renderDiagramDeviceClassifiedTable(data, interaction) {
     </div>`;
 }
 
+function renderDiagramDeviceTabs(data, interaction) {
+  if (!Array.isArray(data?.pages) || data.pages.length <= 1) return "";
+  const disabled = diagramDefinitionEditPinned(interaction);
+  return `
+    <div class="diagram-device-tabs" role="tablist" aria-label="关联设备">
+      ${data.pages.map((page) => {
+        const active = page.key === data.activePageKey;
+        const type = page.device?.devType || "";
+        return `
+          <button
+            type="button"
+            class="diagram-device-tab"
+            role="tab"
+            data-diagram-device-tab="${escapeHtml(page.key)}"
+            aria-selected="${active ? "true" : "false"}"
+            tabindex="${active ? "0" : "-1"}"
+            title="${escapeHtml(type ? `${type} · ${page.label}` : page.label)}"
+            ${disabled ? "disabled" : ""}
+          >
+            <span>${escapeHtml(page.label)}</span>
+            ${type ? `<small>${escapeHtml(type)}</small>` : ""}
+          </button>`;
+      }).join("")}
+    </div>`;
+}
+
 function renderDiagramDeviceTooltip(container, hover, snapshot, interaction) {
-  const data = diagramDeviceTooltipData(container, hover, snapshot);
+  const data = diagramDeviceTooltipData(container, hover, snapshot, interaction);
   if (!data) return "";
   return `
     <div class="diagram-tooltip-head">
@@ -7083,6 +7200,7 @@ function renderDiagramDeviceTooltip(container, hover, snapshot, interaction) {
       </div>
     </div>
     <div class="diagram-tooltip-body" data-diagram-device-tooltip-body>
+      ${renderDiagramDeviceTabs(data, interaction)}
       ${renderDiagramDeviceClassifiedTable(data, interaction)}
     </div>`;
 }
@@ -7094,10 +7212,9 @@ function diagramDefinitionEditPinned(interaction) {
 function beginDiagramDeviceDefinitionEdit(container, blockName, rowIndex = 0) {
   const interaction = diagramInteractionState(container);
   const snapshot = interaction.snapshot || state.snapshot || {};
-  const records = diagramDeviceDefinitionRecords(
-    interaction.hover?.device,
-    snapshot,
-  );
+  const pages = diagramCouplingDevicePages(interaction.hover?.device, snapshot);
+  const activePage = diagramActiveDeviceTooltipPage(interaction, interaction.hover, pages);
+  const records = diagramDeviceDefinitionRecords(activePage?.device, snapshot);
   const record = records.find((item) => (
     item.blockName === String(blockName || "")
     && Number(item.rowIndex) === Number(rowIndex)
@@ -7113,6 +7230,7 @@ function beginDiagramDeviceDefinitionEdit(container, blockName, rowIndex = 0) {
     records: editorRecords,
     dirtyFields: new Set(),
     validationError: "",
+    devicePageKey: activePage?.key || "self",
   };
   interaction.definitionSaving = false;
   interaction.definitionMessage = "";
@@ -7350,11 +7468,62 @@ function updateDiagramDeviceDynamicSections(tooltip, data) {
   return syncDiagramTooltipSections(dynamicBody, data.dynamicSections);
 }
 
+function syncDiagramDeviceTabs(tooltip, data, interaction) {
+  const body = tooltip?.querySelector("[data-diagram-device-tooltip-body]");
+  const panel = body?.querySelector("[data-diagram-device-tab-panel]");
+  let tabs = body?.querySelector(".diagram-device-tabs") || null;
+  if (!body || !panel) return false;
+  panel.setAttribute("data-diagram-device-active-tab", data.activePageKey || "self");
+  if (!Array.isArray(data.pages) || data.pages.length <= 1) {
+    tabs?.remove();
+    return true;
+  }
+  if (!tabs) {
+    tabs = document.createElement("div");
+    tabs.className = "diagram-device-tabs";
+    tabs.setAttribute("role", "tablist");
+    tabs.setAttribute("aria-label", "关联设备");
+    body.insertBefore(tabs, panel);
+  }
+  const existing = new Map(Array.from(tabs.querySelectorAll("[data-diagram-device-tab]"))
+    .map((button) => [button.getAttribute("data-diagram-device-tab") || "", button]));
+  const desiredKeys = new Set();
+  const desiredButtons = data.pages.map((page) => {
+    desiredKeys.add(page.key);
+    let button = existing.get(page.key);
+    if (!button) {
+      button = document.createElement("button");
+      button.type = "button";
+      button.className = "diagram-device-tab";
+      button.setAttribute("role", "tab");
+      button.setAttribute("data-diagram-device-tab", page.key);
+      button.append(document.createElement("span"), document.createElement("small"));
+    }
+    const active = page.key === data.activePageKey;
+    const type = String(page.device?.devType || "");
+    button.querySelector("span").textContent = page.label;
+    const typeLabel = button.querySelector("small");
+    typeLabel.textContent = type;
+    typeLabel.hidden = !type;
+    button.title = type ? `${type} · ${page.label}` : page.label;
+    button.setAttribute("aria-selected", active ? "true" : "false");
+    button.tabIndex = active ? 0 : -1;
+    button.disabled = diagramDefinitionEditPinned(interaction);
+    return button;
+  });
+  existing.forEach((button, key) => {
+    if (!desiredKeys.has(key)) button.remove();
+  });
+  reorderDiagramChildren(tabs, desiredButtons);
+  return true;
+}
+
 function updateDiagramDeviceTooltip(container, hover, snapshot, interaction) {
   const tooltip = interaction?.tooltip;
-  const data = diagramDeviceTooltipData(container, hover, snapshot);
+  const data = diagramDeviceTooltipData(container, hover, snapshot, interaction);
   const definitions = tooltip?.querySelector("[data-diagram-definition-records]");
   if (!tooltip || !data) return false;
+  syncDiagramDeviceTabs(tooltip, data, interaction);
   const dynamicUpdated = updateDiagramDeviceDynamicSections(tooltip, data);
   if (interaction.definitionEditor?.kind === "device") return dynamicUpdated;
   if (definitions) {
@@ -8246,6 +8415,8 @@ function hideDiagramTooltip(container) {
   if (!interaction) return;
   clearDiagramTooltipHide(interaction);
   interaction.hover = null;
+  interaction.deviceTooltipHostKey = "";
+  interaction.deviceTooltipTabKey = "self";
   interaction.tooltipPositionKey = "";
   interaction.trendPeriodOffsets = { hour: 0, day: 0 };
   interaction.trendNavigationRange = null;
@@ -8319,6 +8490,8 @@ function resetDiagramInteractions(container) {
     if (interaction.suppressClickTimer) clearTimeout(interaction.suppressClickTimer);
     interaction.selectedDevId = "";
     interaction.hover = null;
+    interaction.deviceTooltipHostKey = "";
+    interaction.deviceTooltipTabKey = "self";
     interaction.snapshot = null;
     interaction.tooltipPositionKey = "";
     interaction.trendPeriodOffsets = { hour: 0, day: 0 };
@@ -8616,6 +8789,23 @@ function initDiagramInteractions(container) {
   tooltip.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target : null;
     if (!target) return;
+    const deviceTab = target.closest("[data-diagram-device-tab]");
+    if (deviceTab) {
+      clearDiagramTooltipHide(interaction);
+      if (diagramDefinitionEditPinned(interaction)) return;
+      const tabKey = deviceTab.getAttribute("data-diagram-device-tab") || "self";
+      if (tabKey === interaction.deviceTooltipTabKey) return;
+      interaction.deviceTooltipTabKey = tabKey;
+      const updated = updateDiagramDeviceTooltip(
+        container,
+        interaction.hover,
+        interaction.snapshot || state.snapshot || {},
+        interaction,
+      );
+      if (!updated) renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
+      interaction.tooltip?.querySelector(`[data-diagram-device-tab="${CSS.escape(tabKey)}"]`)?.focus();
+      return;
+    }
     const editable = target.closest("[data-diagram-definition-editable]");
     if (editable && !interaction.definitionEditor && !interaction.definitionSaving) {
       if (editable.getAttribute("data-diagram-definition-editable") === "measurement") {

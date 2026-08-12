@@ -77,6 +77,29 @@ class SvgDiagramInteractionsUiTest(unittest.TestCase):
         )
         return json.loads(result.stdout)
 
+    def _coupling_tooltip_helper_source(self, script: str) -> str:
+        if "function diagramDeviceIdentityKey" not in script:
+            self.fail("coupling device tooltip helpers are missing")
+        return "function diagramDeviceIdentityKey" + script.split(
+            "function diagramDeviceIdentityKey",
+            1,
+        )[1].split("function diagramSingleDeviceTooltipData", 1)[0]
+
+    def _run_coupling_tooltip_helpers(self, script: str, body: str):
+        result = subprocess.run(
+            ["node"],
+            input=(
+                "function normalizeDiagramMeasurementToken(value) { "
+                "return String(value || '').trim().toUpperCase(); }\n"
+                "function definedModelDevices(snapshot) { return snapshot.definedDevices || []; }\n"
+                f"{self._coupling_tooltip_helper_source(script)}\n{body}"
+            ),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(result.stdout)
+
     def _flow_helper_source(self, script: str) -> str:
         if "function diagramFlowResolvePower" not in script:
             self.fail("diagram flow resolution helpers are missing")
@@ -1567,6 +1590,139 @@ process.stdout.write(JSON.stringify(payload));
                 script = path.read_text(encoding="utf-8")
                 for token in required:
                     self.assertIn(token, script)
+
+    def test_coupling_device_tooltip_pages_deduplicate_bound_devices(self):
+        body = r"""
+const host = { devType: "AcE2Hydro", devName: "electrolyzer", devId: "h2-1" };
+const snapshot = {
+  devices: [
+    {
+      dev_type: "AcE2Hydro",
+      dev_name: "electrolyzer",
+      control_bindings: [
+        { target_dev_type: "ACLoad", target_dev_name: "electrolyzer-load" },
+        { target_dev_type: "ACLoad", target_dev_name: "electrolyzer-load" },
+        { target_dev_type: "HydroSource", target_dev_name: "hydrogen-source" },
+      ],
+    },
+    { dev_type: "ACLoad", dev_name: "electrolyzer-load" },
+    { dev_type: "HydroSource", dev_name: "hydrogen-source" },
+  ],
+  definedDevices: [],
+};
+const pages = diagramCouplingDevicePages(host, snapshot);
+process.stdout.write(JSON.stringify(pages.map((page) => ({
+  key: page.key,
+  label: page.label,
+  devType: page.device.devType,
+  devName: page.device.devName,
+}))));
+"""
+        expected = [
+            {
+                "key": "self",
+                "label": "设备本体",
+                "devType": "AcE2Hydro",
+                "devName": "electrolyzer",
+            },
+            {
+                "key": "related:ACLOAD|electrolyzer-load",
+                "label": "electrolyzer-load",
+                "devType": "ACLoad",
+                "devName": "electrolyzer-load",
+            },
+            {
+                "key": "related:HYDROSOURCE|hydrogen-source",
+                "label": "hydrogen-source",
+                "devType": "HydroSource",
+                "devName": "hydrogen-source",
+            },
+        ]
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                script = path.read_text(encoding="utf-8")
+                self.assertEqual(self._run_coupling_tooltip_helpers(script, body), expected)
+
+    def test_coupling_device_tooltip_tab_state_survives_refresh_and_resets_for_new_host(self):
+        body = r"""
+const pages = [
+  { key: "self", label: "设备本体", device: { devType: "AcE2Hydro", devName: "one" } },
+  { key: "related:ACLOAD|load", label: "load", device: { devType: "ACLoad", devName: "load" } },
+];
+const interaction = {};
+const first = diagramActiveDeviceTooltipPage(interaction, { key: "device:one" }, pages).key;
+interaction.deviceTooltipTabKey = "related:ACLOAD|load";
+const refreshed = diagramActiveDeviceTooltipPage(interaction, { key: "device:one" }, pages).key;
+const changed = diagramActiveDeviceTooltipPage(interaction, { key: "device:two" }, pages).key;
+const ordinary = diagramCouplingDevicePages(
+  { devType: "ACLoad", devName: "ordinary", devId: "load-2" },
+  { devices: [{ dev_type: "ACLoad", dev_name: "ordinary" }], definedDevices: [] },
+);
+process.stdout.write(JSON.stringify({
+  first,
+  refreshed,
+  changed,
+  current: interaction.deviceTooltipTabKey,
+  ordinaryCount: ordinary.length,
+}));
+"""
+        expected = {
+            "first": "self",
+            "refreshed": "related:ACLOAD|load",
+            "changed": "self",
+            "current": "self",
+            "ordinaryCount": 1,
+        }
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                script = path.read_text(encoding="utf-8")
+                self.assertEqual(self._run_coupling_tooltip_helpers(script, body), expected)
+
+    def test_coupling_device_tooltip_tabs_are_wired_without_rebuilding_on_refresh(self):
+        required = (
+            "function diagramCouplingDevicePages",
+            "function diagramActiveDeviceTooltipPage",
+            "function renderDiagramDeviceTabs",
+            "function syncDiagramDeviceTabs",
+            'role="tablist"',
+            'role="tab"',
+            "data-diagram-device-tab",
+            "deviceTooltipHostKey",
+            "deviceTooltipTabKey",
+            "target_dev_type",
+            "target_dev_name",
+        )
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                script = path.read_text(encoding="utf-8")
+                for token in required:
+                    self.assertIn(token, script)
+                update_block = script.split("function updateDiagramDeviceTooltip", 1)[1].split(
+                    "function diagramMetricCurrentRow",
+                    1,
+                )[0]
+                self.assertIn("syncDiagramDeviceTabs(tooltip, data, interaction)", update_block)
+                self.assertNotIn("tooltip.innerHTML", update_block)
+                click_block = script.split('tooltip.addEventListener("click"', 1)[1].split(
+                    "function updateDiagramRealtimeBindings",
+                    1,
+                )[0]
+                self.assertIn('target.closest("[data-diagram-device-tab]")', click_block)
+                self.assertIn("diagramDefinitionEditPinned(interaction)", click_block)
+
+    def test_coupling_device_tooltip_tab_styles_are_available_in_both_apps(self):
+        required = (
+            ".diagram-device-tabs",
+            ".diagram-device-tab",
+            '.diagram-device-tab[aria-selected="true"]',
+            ".diagram-device-tab-panel",
+            "overflow-x: auto",
+        )
+        for path in self._styles():
+            with self.subTest(app=path.parent.name):
+                styles = path.read_text(encoding="utf-8")
+                for token in required:
+                    self.assertIn(token, styles)
 
     def test_scripts_wire_tooltip_selection_tabs_and_wheel_zoom(self):
         required = (

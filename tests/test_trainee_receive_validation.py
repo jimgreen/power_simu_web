@@ -231,8 +231,8 @@ def test_trainee_runtime_signal_refresh_is_wired_to_rendering_and_never_reads_re
     assert render_block.index("applyTraineeObservedRuntimeSignals(snapshot);") < render_block.index(
         "state.snapshot = snapshot;"
     )
-    tooltip_block = script.split("function diagramDeviceTooltipData", 1)[1].split(
-        "function diagramDeviceMeasurements",
+    tooltip_block = script.split("function diagramSingleDeviceTooltipData", 1)[1].split(
+        "function diagramDeviceTooltipData",
         1,
     )[0]
     assert "traineeRuntimeSignalDisplayValue" in tooltip_block

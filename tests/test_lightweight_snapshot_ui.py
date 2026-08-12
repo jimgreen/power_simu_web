@@ -58,6 +58,11 @@ process.stdout.write(JSON.stringify([
         self.assertIn("function restoreStaticSnapshotCache", script)
         self.assertIn("function persistStaticSnapshotCache", script)
         self.assertIn("function pageNeedsDevices", script)
+        devices_source = script.split("function pageNeedsDevices", 1)[1].split(
+            "function pageNeedsDeviceStates",
+            1,
+        )[0]
+        self.assertIn('"diagram"', devices_source)
         self.assertIn("function pageNeedsCommands", script)
         self.assertIn("function pageNeedsCommandHistory", script)
         self.assertIn('"model": ["files", "source_files", "work_files", "definitions", "settings", "device_parameters"]', script)

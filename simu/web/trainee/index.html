@@ -1222,6 +1222,13 @@
           <label>SOC死区(%)
             <input id="socDeadband" type="number" min="0" max="100" step="0.1" value="5" />
           </label>
+          <label class="renewable-control-toggle-field">
+            <span>氢能是否闭环控制</span>
+            <input id="hydrogenClosedLoopEnabled" type="checkbox" />
+          </label>
+          <label>氢储罐压力死区(%)
+            <input id="hydrogenPressureDeadbandRatio" type="number" min="0" max="50" step="0.1" value="5" />
+          </label>
           <label>新能源弃电权重
             <input id="optimizationRenewableCurtailmentWeight" type="number" min="0" step="0.001" value="1" />
           </label>

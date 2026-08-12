@@ -186,6 +186,21 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             self.assertNotIn(legacy_migration_field, self.html)
             self.assertIn(legacy_migration_field, self.script)
 
+    def test_hydrogen_closed_loop_control_is_explicit_and_saved(self):
+        self.assertIn('id="hydrogenClosedLoopEnabled" type="checkbox"', self.html)
+        self.assertIn('id="hydrogenPressureDeadbandRatio"', self.html)
+        self.assertIn("hydrogenClosedLoopEnabled", self.script)
+        settings_block = self.script.split("async function updateRenewableSettings", 1)[1].split(
+            "function storagePowerDeratingRowHtml",
+            1,
+        )[0]
+        self.assertIn(
+            'hydrogenClosedLoopEnabled: Boolean($("hydrogenClosedLoopEnabled")?.checked)',
+            settings_block,
+        )
+        self.assertIn("hydrogen_closed_loop_enabled", self.backend)
+        self.assertIn("hydrogen_pressure_deadband_ratio", self.backend)
+
     def test_backend_does_not_use_dwell_or_pending_feedback_state(self):
         self.assertNotIn("def _stabilize_region", self.backend)
         self.assertNotIn("def _feedback_status", self.backend)

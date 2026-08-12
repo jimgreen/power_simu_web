@@ -29,8 +29,16 @@ from simu.device_roles import (
     converter_power_setpoint_fields,
     converter_setpoint_from_p_ac_convention,
 )
-from simu.control_config import default_derating_curve, default_integer, default_number
-from simu.model_semantics import grid_converter_keys as structured_grid_converter_keys
+from simu.control_config import (
+    default_boolean,
+    default_derating_curve,
+    default_integer,
+    default_number,
+)
+from simu.model_semantics import (
+    energy_coupling_control_bindings,
+    grid_converter_keys as structured_grid_converter_keys,
+)
 from simu.renewable_capability import (
     renewable_weather_available_kw as _renewable_weather_available_kw,
 )
@@ -207,6 +215,20 @@ def _number(value: Any, default: Optional[float] = None) -> Optional[float]:
         except ValueError:
             return default
     return number if math.isfinite(number) else default
+
+
+def _boolean(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    number = _number(value)
+    if number is not None:
+        return number != 0.0
+    normalized = str(value or "").strip().lower()
+    if normalized in {"true", "yes", "on", "enabled"}:
+        return True
+    if normalized in {"false", "no", "off", "disabled", ""}:
+        return False
+    return default
 
 
 def _finite_number(value: Any, default: float = 0.0) -> float:
@@ -816,6 +838,476 @@ def _preferred_set_type(
     return next((candidate for candidate in candidates if candidate in set_types), "")
 
 
+def _definition_device_rows(
+    snapshot: Mapping[str, Any],
+    block_names: Sequence[str],
+) -> Dict[Tuple[str, str], Mapping[str, Any]]:
+    rows: Dict[Tuple[str, str], Mapping[str, Any]] = {}
+    for block_name in block_names:
+        for row in _parameter_rows(snapshot, block_name):
+            name = _parameter_name(row).strip()
+            if name:
+                rows[(block_name, name)] = row
+    return rows
+
+
+def _device_by_model_key(
+    snapshot: Mapping[str, Any],
+) -> Dict[Tuple[str, str], Mapping[str, Any]]:
+    return {
+        _device_model_key(device): device
+        for device in snapshot.get("devices", []) or []
+        if isinstance(device, Mapping) and all(_device_model_key(device))
+    }
+
+
+def _hydrogen_pressure_states(
+    snapshot: Mapping[str, Any],
+    measurements: Mapping[Tuple[str, str, str], MeasurementValue],
+    settings: RenewableControlSettings,
+) -> List[Dict[str, Any]]:
+    devices = _device_by_model_key(snapshot)
+    states: List[Dict[str, Any]] = []
+    for row in _parameter_rows(snapshot, "HydroStorage"):
+        name = _parameter_name(row).strip()
+        device = devices.get(("HydroStorage", name))
+        pressure_measurement = (
+            _measured(measurements, _device_type(device), name, ("PRESSURE", "PRESS"))
+            if device
+            else _measured(measurements, "HydroStorage", name, ("PRESSURE", "PRESS"))
+        )
+        pressure = pressure_measurement.value if pressure_measurement else None
+        pressure_min = _number(row.get("pressure_min"))
+        pressure_max = _number(row.get("pressure_max"))
+        limits_valid = bool(
+            pressure_min is not None
+            and pressure_max is not None
+            and pressure_max > pressure_min + EPSILON
+        )
+        deadband = (
+            settings.hydrogen_pressure_deadband_ratio
+            * (float(pressure_max) - float(pressure_min))
+            if limits_valid
+            else None
+        )
+        online = bool(device and _is_online(device, measurements))
+        states.append(
+            {
+                "devType": _device_type(device) if device else "HydroStorage",
+                "devName": name,
+                "online": online,
+                "pressure": pressure,
+                "pressureKnown": pressure is not None,
+                "pressureSource": pressure_measurement.source if pressure_measurement else "missing",
+                "pressureMin": pressure_min,
+                "pressureMax": pressure_max,
+                "pressureDeadband": deadband,
+                "lowGuard": float(pressure_min) + float(deadband) if limits_valid else None,
+                "highGuard": float(pressure_max) - float(deadband) if limits_valid else None,
+                "limitsValid": limits_valid,
+            }
+        )
+    return states
+
+
+def _node_in_dc_transfer_group(
+    resource_topology: ResourceTopology,
+    node: Any,
+) -> str:
+    node_id = str(node if node is not None else "").strip()
+    matches = [
+        group_id
+        for group_id, group in resource_topology.dc_transfer_groups.items()
+        if node_id and node_id in group.dc_nodes
+    ]
+    return matches[0] if len(matches) == 1 else ""
+
+
+def _allocate_converter_ac_injection_delta(
+    converter_rows: Sequence[MutableMapping[str, Any]],
+    delta_kw: float,
+) -> float:
+    remaining = float(delta_kw)
+    if abs(remaining) <= EPSILON:
+        return 0.0
+    ordered = sorted(converter_rows, key=_converter_row_sort_key)
+    while abs(remaining) > EPSILON:
+        margins = []
+        for row in ordered:
+            target_kw = _finite_number(row.get("commandKw"), row.get("currentKw"))
+            target_injection = _converter_ac_injection_kw(row, target_kw)
+            minimum, maximum = _converter_ac_injection_bounds_kw(row)
+            margin = (
+                max(0.0, maximum - target_injection)
+                if remaining > 0.0
+                else max(0.0, target_injection - minimum)
+            )
+            margins.append(margin)
+        total_margin = sum(margins)
+        if total_margin <= EPSILON:
+            break
+        requested = min(abs(remaining), total_margin)
+        allocations = [requested * margin / total_margin for margin in margins]
+        delivered = 0.0
+        for row, allocation in zip(ordered, allocations):
+            if allocation <= EPSILON:
+                continue
+            old_target = _finite_number(row.get("commandKw"), row.get("currentKw"))
+            old_injection = _converter_ac_injection_kw(row, old_target)
+            new_injection = old_injection + (allocation if remaining > 0.0 else -allocation)
+            new_target = _converter_target_from_ac_injection_kw(row, new_injection)
+            row["commandKw"] = new_target
+            row["strategyCommand"] = True
+            delivered += abs(
+                _converter_ac_injection_kw(row, new_target) - old_injection
+            )
+        if delivered <= EPSILON:
+            break
+        remaining -= delivered if remaining > 0.0 else -delivered
+    return float(delta_kw) - remaining
+
+
+def _hydrogen_post_dispatch_plan(
+    snapshot: Mapping[str, Any],
+    measurements: Mapping[Tuple[str, str, str], MeasurementValue],
+    settings: RenewableControlSettings,
+    resource_topology: ResourceTopology,
+    command_rows: List[Dict[str, Any]],
+    storage_rows: Sequence[Mapping[str, Any]],
+    *,
+    diesel_current_kw: float,
+    diesel_deadband_upper_kw: float,
+    diesel_input_valid: bool = True,
+) -> Dict[str, Any]:
+    pressure_states = _hydrogen_pressure_states(snapshot, measurements, settings)
+    diagnostics: Dict[str, Any] = {
+        "enabled": settings.hydrogen_closed_loop_enabled,
+        "pressureDeadbandRatio": settings.hydrogen_pressure_deadband_ratio,
+        "pressureStates": pressure_states,
+        "action": "disabled" if not settings.hydrogen_closed_loop_enabled else "hold",
+        "electricPowerAdjustmentKw": 0.0,
+        "targetElectricPowerKw": 0.0,
+        "targetEquivalentFlow": 0.0,
+        "commands": [],
+        "converterCorrectionKw": 0.0,
+        "warnings": [],
+    }
+    if not settings.hydrogen_closed_loop_enabled:
+        return diagnostics
+
+    if not diesel_input_valid:
+        diagnostics["action"] = "blocked"
+        diagnostics["warnings"].append(
+            "氢能闭环缺少全部在线柴发的有效实时有功，已禁止氢能自动策略"
+        )
+        return diagnostics
+
+    online_tanks = [row for row in pressure_states if row.get("online")]
+    tank_inputs_valid = bool(
+        online_tanks
+        and all(row.get("pressureKnown") and row.get("limitsValid") for row in online_tanks)
+    )
+    if not tank_inputs_valid:
+        diagnostics["action"] = "blocked"
+        diagnostics["warnings"].append(
+            "氢能闭环缺少在线储氢罐有效压力量测或压力上下限，已禁止氢能自动策略"
+        )
+        return diagnostics
+
+    model_rows = _definition_device_rows(
+        snapshot,
+        (
+            "ACGenerator",
+            "DCGenerator",
+            "ACLoad",
+            "DCLoad",
+            "HydroSource",
+            "HydroLoad",
+            "AcE2Hydro",
+            "DcE2Hydro",
+            "Hydro2AcE",
+            "Hydro2DcE",
+        ),
+    )
+    devices = _device_by_model_key(snapshot)
+    bindings_by_coupling = energy_coupling_control_bindings(snapshot)
+    current_command_by_key = {
+        (
+            str(row.get("dev_type", "")),
+            str(row.get("dev_name", "")),
+            str(row.get("set_type", "")),
+        ): row
+        for row in command_rows
+        if row.get("set_type")
+    }
+
+    online_storage = [row for row in storage_rows if row.get("online")]
+    all_storage_low = bool(
+        online_storage
+        and all(
+            row.get("socKnown")
+            and _number(row.get("soc")) is not None
+            and _number(row.get("socMin")) is not None
+            and float(row["soc"]) < float(row["socMin"]) - EPSILON
+            for row in online_storage
+        )
+    )
+    wants_electrolyzer = diesel_current_kw < diesel_deadband_upper_kw - EPSILON
+    wants_fuel_cell = (
+        all_storage_low
+        and diesel_current_kw > diesel_deadband_upper_kw + EPSILON
+    )
+    if wants_electrolyzer and any(
+        float(row["pressure"]) >= float(row["highGuard"])
+        for row in online_tanks
+    ):
+        diagnostics["action"] = "electrolyzer_pressure_high_hold"
+        return diagnostics
+    if wants_fuel_cell and any(
+        float(row["pressure"]) < float(row["lowGuard"])
+        for row in online_tanks
+    ):
+        diagnostics["action"] = "fuel_cell_pressure_low_blocked"
+        diagnostics["warnings"].append(
+            "储氢罐压力低于压力下限加死区，已禁止燃料电池自动发电策略"
+        )
+        return diagnostics
+    if not wants_electrolyzer and not wants_fuel_cell:
+        return diagnostics
+
+    coupling_types = (
+        ("AcE2Hydro", "DcE2Hydro")
+        if wants_electrolyzer
+        else ("Hydro2AcE", "Hydro2DcE")
+    )
+    remaining_power_kw = (
+        diesel_deadband_upper_kw - diesel_current_kw
+        if wants_electrolyzer
+        else diesel_current_kw - diesel_deadband_upper_kw
+    )
+    action = "electrolyzer" if wants_electrolyzer else "fuel_cell"
+    planned: List[Dict[str, Any]] = []
+    for coupling_type in coupling_types:
+        for coupling in _parameter_rows(snapshot, coupling_type):
+            coupling_name = _parameter_name(coupling).strip()
+            coupling_device = devices.get((coupling_type, coupling_name))
+            bindings = bindings_by_coupling.get((coupling_type, coupling_name), ())
+            if (
+                remaining_power_kw <= EPSILON
+                or not coupling_device
+                or not _is_online(coupling_device, measurements)
+                or len(bindings) != 2
+            ):
+                continue
+            power_binding = next((row for row in bindings if row.get("set_type") == "p_set"), None)
+            flow_binding = next((row for row in bindings if row.get("set_type") == "flow_set"), None)
+            active_binding = next((row for row in bindings if row.get("active")), None)
+            if not power_binding or not flow_binding or not active_binding:
+                continue
+            power_type = str(power_binding.get("target_dev_type", ""))
+            power_name = str(power_binding.get("target_dev_name", ""))
+            flow_type = str(flow_binding.get("target_dev_type", ""))
+            flow_name = str(flow_binding.get("target_dev_name", ""))
+            power_row = model_rows.get((power_type, power_name), {})
+            flow_row = model_rows.get((flow_type, flow_name), {})
+            power_device = devices.get((power_type, power_name))
+            flow_device = devices.get((flow_type, flow_name))
+            if (
+                not power_device
+                or not flow_device
+                or not _is_online(power_device, measurements)
+                or not _is_online(flow_device, measurements)
+            ):
+                continue
+            coefficient_field = "e2h_coeff" if wants_electrolyzer else "h2e_coeff"
+            coefficient = _number(coupling.get(coefficient_field))
+            if coefficient is None or coefficient <= EPSILON:
+                continue
+            power_min = _number(power_row.get("p_min"))
+            power_max = _number(power_row.get("p_max"))
+            flow_min = _number(flow_row.get("flow_min"))
+            flow_max = _number(flow_row.get("flow_max"))
+            if (
+                power_min is None
+                or power_max is None
+                or power_min > power_max
+                or flow_min is None
+                or flow_max is None
+                or flow_min > flow_max
+            ):
+                continue
+            power_measurement = _measured(
+                measurements,
+                _device_type(power_device),
+                power_name,
+                ("P_LOAD", "P_GEN", "P", "P_AC", "P_DC"),
+            )
+            flow_measurement = _measured(
+                measurements,
+                _device_type(flow_device),
+                flow_name,
+                ("FLOW",),
+            )
+            if power_measurement is not None:
+                current_power = abs(power_measurement.value)
+            elif flow_measurement is not None:
+                current_power = (
+                    abs(flow_measurement.value) / float(coefficient)
+                    if wants_electrolyzer
+                    else abs(flow_measurement.value) * float(coefficient)
+                )
+            else:
+                continue
+            rated_power = _positive(
+                (
+                    power_row.get("rated_capacity"),
+                    power_row.get("rated_power"),
+                    power_max,
+                )
+            )
+            step_kw = max(0.0, settings.step_coefficient * rated_power)
+            if step_kw <= EPSILON:
+                continue
+            if wants_electrolyzer:
+                flow_power_max = max(0.0, float(flow_max)) / float(coefficient)
+                allowed_power = min(float(power_max), flow_power_max)
+                delta_kw = min(
+                    remaining_power_kw,
+                    step_kw,
+                    max(0.0, allowed_power - current_power),
+                )
+                target_power = current_power + delta_kw
+                target_flow = target_power * float(coefficient)
+            else:
+                flow_power_max = max(0.0, float(flow_max)) * float(coefficient)
+                allowed_power = min(float(power_max), flow_power_max)
+                delta_kw = min(
+                    remaining_power_kw,
+                    max(0.0, allowed_power - current_power),
+                )
+                target_power = current_power + delta_kw
+                target_flow = target_power / float(coefficient)
+            if delta_kw <= EPSILON:
+                continue
+            active_set_type = str(
+                active_binding.get("target_set_type", active_binding.get("set_type", ""))
+            )
+            current_active_value = (
+                current_power
+                if active_set_type == "p_set"
+                else current_power * float(coefficient)
+                if wants_electrolyzer
+                else current_power / float(coefficient)
+            )
+            active_type = str(active_binding.get("target_dev_type", ""))
+            active_name = str(active_binding.get("target_dev_name", ""))
+            active_device = devices.get((active_type, active_name))
+            if (
+                not active_device
+                or _preferred_set_type(
+                    snapshot,
+                    active_device,
+                    (active_set_type,),
+                )
+                != active_set_type
+            ):
+                continue
+            set_value = target_power if active_set_type == "p_set" else target_flow
+            active_key = (active_type, active_name, active_set_type)
+            active_row = current_command_by_key.get(active_key)
+            if active_row is None:
+                active_row = {
+                    "category": "氢能闭环",
+                    "dev_type": active_type,
+                    "model_block": active_type,
+                    "dev_name": active_name,
+                    "online": True,
+                    "commandable": True,
+                    "strategyCommand": True,
+                    "set_type": active_set_type,
+                    "currentKw": current_active_value,
+                    "commandKw": set_value,
+                    "statusLabel": "氢能闭环后置策略",
+                }
+                command_rows.append(active_row)
+                current_command_by_key[active_key] = active_row
+            else:
+                active_row["commandKw"] = set_value
+                active_row["strategyCommand"] = True
+            electric_side = "AC" if power_type.startswith("AC") else "DC"
+            dc_group_id = (
+                _node_in_dc_transfer_group(resource_topology, power_row.get("node"))
+                if electric_side == "DC"
+                else ""
+            )
+            planned.append(
+                {
+                    "action": action,
+                    "couplingType": coupling_type,
+                    "couplingName": coupling_name,
+                    "activeDevType": active_type,
+                    "activeDevName": active_name,
+                    "activeSetType": active_set_type,
+                    "setValue": set_value,
+                    "electricSide": electric_side,
+                    "electricPowerKw": target_power,
+                    "electricDeltaKw": delta_kw,
+                    "equivalentFlow": target_flow,
+                    "dcTransferGroupId": dc_group_id,
+                }
+            )
+            remaining_power_kw -= delta_kw
+
+    converter_correction = 0.0
+    for item in planned:
+        group_id = str(item.get("dcTransferGroupId", ""))
+        if item.get("electricSide") != "DC":
+            continue
+        eligible = [
+            row
+            for row in command_rows
+            if _is_grid_converter_row(row)
+            and row.get("online")
+            and row.get("commandable") is not False
+            and str(row.get("dcTransferGroupId", "")) == group_id
+        ]
+        if not group_id or not eligible:
+            diagnostics["warnings"].append(
+                f"氢能设备{item['couplingName']}直流拓扑组无可调ACDC，未执行跨侧修正"
+            )
+            continue
+        correction = (
+            -float(item["electricDeltaKw"])
+            if wants_electrolyzer
+            else float(item["electricDeltaKw"])
+        )
+        converter_correction += _allocate_converter_ac_injection_delta(
+            eligible,
+            correction,
+        )
+    diagnostics.update(
+        {
+            "action": action if planned else "blocked",
+            "electricPowerAdjustmentKw": sum(
+                float(row["electricDeltaKw"]) for row in planned
+            ),
+            "targetElectricPowerKw": sum(
+                float(row["electricPowerKw"]) for row in planned
+            ),
+            "targetEquivalentFlow": sum(
+                float(row["equivalentFlow"]) for row in planned
+            ),
+            "commands": planned,
+            "converterCorrectionKw": converter_correction,
+        }
+    )
+    if not planned:
+        diagnostics["warnings"].append(
+            "氢能闭环触发条件已满足，但耦合设备、遥调点、实时量测或设备边界不完整，未生成氢能策略"
+        )
+    return diagnostics
+
+
 def _runtime_mode(snapshot: Mapping[str, Any], device: Mapping[str, Any]) -> str:
     settings = snapshot.get("settings")
     modes = settings.get("modes", []) if isinstance(settings, Mapping) else []
@@ -879,6 +1371,12 @@ class RenewableControlSettings:
         "diesel_power_protection_ratio"
     )
     soc_deadband: float = default_number("soc_deadband")
+    hydrogen_closed_loop_enabled: bool = default_boolean(
+        "hydrogen_closed_loop_enabled"
+    )
+    hydrogen_pressure_deadband_ratio: float = default_number(
+        "hydrogen_pressure_deadband_ratio"
+    )
     converter_step_ratio: float = default_number("legacy_converter_step_ratio")
     storage_charge_derating_curve: Tuple[Tuple[float, float], ...] = DEFAULT_STORAGE_CHARGE_DERATING_CURVE
     storage_discharge_derating_curve: Tuple[Tuple[float, float], ...] = DEFAULT_STORAGE_DISCHARGE_DERATING_CURVE
@@ -953,6 +1451,14 @@ class RenewableControlSettings:
                 MAXIMUM_POWER_PROTECTION_RATIO,
             ),
             soc_deadband=_clamp(float(self.soc_deadband), 0.0, 1.0),
+            hydrogen_closed_loop_enabled=bool(
+                self.hydrogen_closed_loop_enabled
+            ),
+            hydrogen_pressure_deadband_ratio=_clamp(
+                float(self.hydrogen_pressure_deadband_ratio),
+                0.0,
+                0.5,
+            ),
             converter_step_ratio=0.0,
             storage_charge_derating_curve=_normalized_derating_curve(
                 self.storage_charge_derating_curve,
@@ -1037,6 +1543,10 @@ class RenewableControlSettings:
                 "dieselDeadbandRatio",
             ),
             "soc_deadband": ("soc_deadband", "socDeadband"),
+            "hydrogen_pressure_deadband_ratio": (
+                "hydrogen_pressure_deadband_ratio",
+                "hydrogenPressureDeadbandRatio",
+            ),
             "command_valid_minutes": ("command_valid_minutes", "commandValidMinutes"),
             "optimization_renewable_curtailment_weight": (
                 "optimization_renewable_curtailment_weight",
@@ -1087,6 +1597,16 @@ class RenewableControlSettings:
                     if parsed is not None:
                         values[field_name] = parsed
                     break
+        for name in (
+            "hydrogen_closed_loop_enabled",
+            "hydrogenClosedLoopEnabled",
+        ):
+            if name in payload:
+                values["hydrogen_closed_loop_enabled"] = _boolean(
+                    payload.get(name),
+                    self.hydrogen_closed_loop_enabled,
+                )
+                break
         if not any(
             name in payload
             for name in (
@@ -1157,6 +1677,8 @@ class RenewableControlSettings:
             "gridFormingStorageProtectionRatio": self.grid_forming_storage_protection_ratio,
             "dieselPowerProtectionRatio": self.diesel_power_protection_ratio,
             "socDeadband": self.soc_deadband,
+            "hydrogenClosedLoopEnabled": self.hydrogen_closed_loop_enabled,
+            "hydrogenPressureDeadbandRatio": self.hydrogen_pressure_deadband_ratio,
             "storageChargeDeratingCurve": _derating_curve_payload(self.storage_charge_derating_curve),
             "storageDischargeDeratingCurve": _derating_curve_payload(self.storage_discharge_derating_curve),
             "commandValidMinutes": self.command_valid_minutes,
@@ -10729,6 +11251,42 @@ def calculate_renewable_control_plan(
         )
         renewable_effective_step_ratio = settings.step_coefficient * renewable_step_scale
 
+    hydrogen_plan = _hydrogen_post_dispatch_plan(
+        snapshot,
+        measurements,
+        settings,
+        resource_topology,
+        command_rows,
+        storage_rows,
+        diesel_current_kw=diesel_current_for_control,
+        diesel_deadband_upper_kw=diesel_deadband_upper_kw,
+        diesel_input_valid=bool(
+            online_diesel
+            and len(measured_diesel) == len(online_diesel)
+        ),
+    )
+    final_converter_targets = {
+        (str(row.get("dev_type", "")), str(row.get("dev_name", ""))): float(row["commandKw"])
+        for row in command_rows
+        if _is_grid_converter_row(row)
+        and row.get("online")
+        and _number(row.get("commandKw")) is not None
+    }
+    aggregate_converter_values = [
+        (row, current_kw, target_kw)
+        for row in command_rows
+        if _is_grid_converter_row(row)
+        and row.get("online")
+        and row.get("commandable") is not False
+        and row.get("set_type")
+        and (current_kw := _number(row.get("currentKw"))) is not None
+        and (target_kw := _number(row.get("commandKw"))) is not None
+    ]
+    aggregate_converter_target_kw = sum(
+        _finite_number(_converter_system_power_kw(row, target_kw))
+        for row, _current_kw, target_kw in aggregate_converter_values
+    )
+
     candidate_commands = [
         {
             "dev_type": row["dev_type"],
@@ -10749,6 +11307,7 @@ def calculate_renewable_control_plan(
         commands = []
 
     warnings: List[str] = []
+    warnings.extend(str(item) for item in hydrogen_plan.get("warnings", []))
     if any(
         row.get("technology") == "wind"
         and row.get("online")
@@ -11016,6 +11575,9 @@ def calculate_renewable_control_plan(
         "storageSocUpperLimit": storage_soc_upper_limit,
         "storageSocRegion": storage_soc_region,
         "socDeadband": settings.soc_deadband,
+        "hydrogenClosedLoopEnabled": settings.hydrogen_closed_loop_enabled,
+        "hydrogenPressureDeadbandRatio": settings.hydrogen_pressure_deadband_ratio,
+        "hydrogenControl": hydrogen_plan,
         "lowerSocDeadbandActive": lower_soc_deadband_active,
         "upperSocDeadbandActive": upper_soc_deadband_active,
         "renewableUpperBoundaryDistance": renewable_upper_boundary_distance,
@@ -11391,6 +11953,19 @@ def calculate_renewable_control_plan(
     decision_detail = [
         f"数据来源：{_source_label(data_source)}，质量 {quality_payload['status']}，闭环下发{'允许' if quality_payload['dispatchAllowed'] else '禁止'}",
         *_task8_decision_detail(command_rows, metrics),
+        (
+            "氢能闭环：未启用，不生成电制氢、燃料电池或氢能引起的ACDC修正"
+            if not settings.hydrogen_closed_loop_enabled
+            else (
+                f"氢能闭环：动作 {hydrogen_plan.get('action', 'hold')}，"
+                f"本轮电功率增量 {_finite_number(hydrogen_plan.get('electricPowerAdjustmentKw')):.2f} kW，"
+                f"目标电功率 {_finite_number(hydrogen_plan.get('targetElectricPowerKw')):.2f} kW，"
+                f"目标等效氢流量 {_finite_number(hydrogen_plan.get('targetEquivalentFlow')):.2f} Nm3/h，"
+                f"压力死区 {settings.hydrogen_pressure_deadband_ratio * 100:.2f}%（按各储氢罐压力范围计算）；"
+                "燃料电池仅在全部在线电化学储能SOC低于各自下限、柴发高于保护带上界，"
+                "且所有在线储氢罐压力不低于下限加死区时允许动作"
+            )
+        ),
         operating_mode_detail,
         control_architecture_detail,
         control_reference_detail,

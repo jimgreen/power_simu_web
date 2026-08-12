@@ -13,6 +13,8 @@
   "grid_forming_storage_protection_ratio": 0.05,
   "diesel_power_protection_ratio": 0.03,
   "soc_deadband": 0.05,
+  "hydrogen_closed_loop_enabled": false,
+  "hydrogen_pressure_deadband_ratio": 0.05,
   "command_valid_minutes": 120.0,
   "wind_power_curve_exponent": 3.0,
   "simulation_default_step_minutes": 1.0,

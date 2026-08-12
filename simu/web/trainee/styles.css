@@ -5379,6 +5379,16 @@ th {
   min-width: 0;
   height: 38px;
 }
+.renewable-control-parameter-fields .renewable-control-toggle-field {
+  grid-template-columns: minmax(0, 1fr) 42px;
+  align-items: center;
+}
+.renewable-control-parameter-fields .renewable-control-toggle-field input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  justify-self: end;
+  accent-color: var(--accent);
+}
 .renewable-control-parameter-row {
   grid-column: 1 / -1;
   grid-template-columns: minmax(0, 1fr) minmax(160px, 0.7fr);

@@ -230,6 +230,8 @@ const state = {
     gridFormingStorageProtectionRatio: 0.05,
     dieselPowerProtectionRatio: 0.03,
     socDeadband: 0.05,
+    hydrogenClosedLoopEnabled: false,
+    hydrogenPressureDeadbandRatio: 0.05,
     optimizationRenewableCurtailmentWeight: 1,
     optimizationDieselOutputWeight: 1,
     optimizationCurtailmentSquareWeight: 0.000001,
@@ -12310,6 +12312,11 @@ function applyRenewableControlState(payload = {}) {
       control.dieselPowerProtectionRatio || 0.03,
     )),
     socDeadband: Math.max(0, toNumber(settings.socDeadband, control.socDeadband || 0.05)),
+    hydrogenClosedLoopEnabled: Boolean(settings.hydrogenClosedLoopEnabled),
+    hydrogenPressureDeadbandRatio: Math.min(0.5, Math.max(0, toNumber(
+      settings.hydrogenPressureDeadbandRatio,
+      control.hydrogenPressureDeadbandRatio || 0.05,
+    ))),
     optimizationRenewableCurtailmentWeight: Math.max(0, toNumber(settings.optimizationRenewableCurtailmentWeight, control.optimizationRenewableCurtailmentWeight || 1)),
     optimizationDieselOutputWeight: Math.max(0, toNumber(settings.optimizationDieselOutputWeight, control.optimizationDieselOutputWeight || 1)),
     optimizationCurtailmentSquareWeight: Math.max(0, toNumber(settings.optimizationCurtailmentSquareWeight, control.optimizationCurtailmentSquareWeight || 0.000001)),
@@ -13366,6 +13373,7 @@ function populateRenewableControlParameters(control = state.renewableControl) {
     gridFormingStorageProtectionRatio: control.gridFormingStorageProtectionRatio,
     dieselPowerProtectionRatio: control.dieselPowerProtectionRatio,
     socDeadband: control.socDeadband,
+    hydrogenPressureDeadbandRatio: control.hydrogenPressureDeadbandRatio,
   };
   Object.entries(ratioInputs).forEach(([id, value]) => {
     const input = $(id);
@@ -13373,6 +13381,8 @@ function populateRenewableControlParameters(control = state.renewableControl) {
   });
   const commandValidInput = $("renewableCommandValidMinutes");
   if (commandValidInput) commandValidInput.value = String(control.commandValidMinutes || 120);
+  const hydrogenEnabledInput = $("hydrogenClosedLoopEnabled");
+  if (hydrogenEnabledInput) hydrogenEnabledInput.checked = Boolean(control.hydrogenClosedLoopEnabled);
   const numericInputs = {
     optimizationRenewableCurtailmentWeight: control.optimizationRenewableCurtailmentWeight,
     optimizationDieselOutputWeight: control.optimizationDieselOutputWeight,
@@ -13457,6 +13467,7 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     gridFormingStorageProtectionRatio: control.gridFormingStorageProtectionRatio,
     dieselPowerProtectionRatio: control.dieselPowerProtectionRatio,
     socDeadband: control.socDeadband,
+    hydrogenPressureDeadbandRatio: control.hydrogenPressureDeadbandRatio,
   };
   Object.entries(ratioInputs).forEach(([id, value]) => {
     const input = $(id);
@@ -13467,6 +13478,10 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   const commandValidInput = $("renewableCommandValidMinutes");
   if (!parameterDialogOpen && commandValidInput && document.activeElement !== commandValidInput) {
     commandValidInput.value = String(control.commandValidMinutes || 120);
+  }
+  const hydrogenEnabledInput = $("hydrogenClosedLoopEnabled");
+  if (!parameterDialogOpen && hydrogenEnabledInput && document.activeElement !== hydrogenEnabledInput) {
+    hydrogenEnabledInput.checked = Boolean(control.hydrogenClosedLoopEnabled);
   }
   const numericInputs = {
     optimizationRenewableCurtailmentWeight: control.optimizationRenewableCurtailmentWeight,
@@ -13800,6 +13815,8 @@ async function updateRenewableSettings() {
       gridFormingStorageProtectionRatio: ratio("gridFormingStorageProtectionRatio", 5, 0, 50),
       dieselPowerProtectionRatio: ratio("dieselPowerProtectionRatio", 3, 0, 50),
       socDeadband: ratio("socDeadband", 5),
+      hydrogenClosedLoopEnabled: Boolean($("hydrogenClosedLoopEnabled")?.checked),
+      hydrogenPressureDeadbandRatio: ratio("hydrogenPressureDeadbandRatio", 5, 0, 50),
       optimizationRenewableCurtailmentWeight: Math.max(0, toNumber($("optimizationRenewableCurtailmentWeight")?.value, 1)),
       optimizationDieselOutputWeight: Math.max(0, toNumber($("optimizationDieselOutputWeight")?.value, 1)),
       optimizationCurtailmentSquareWeight: Math.max(0, toNumber($("optimizationCurtailmentSquareWeight")?.value, 0.000001)),

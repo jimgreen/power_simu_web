@@ -46,6 +46,21 @@ def default_integer(name: str) -> int:
     return int(value)
 
 
+def default_boolean(name: str) -> bool:
+    if name not in DEFAULT_CONTROL_CONFIG:
+        raise RuntimeError(f"missing renewable control default: {name}")
+    value = DEFAULT_CONTROL_CONFIG[name]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "on", "1"}:
+            return True
+        if normalized in {"false", "no", "off", "0"}:
+            return False
+    raise RuntimeError(f"invalid renewable control boolean default: {name}")
+
+
 def default_derating_curve(name: str) -> Tuple[Tuple[float, float], ...]:
     raw_curve = DEFAULT_CONTROL_CONFIG.get(name)
     if not isinstance(raw_curve, list) or len(raw_curve) < 2:

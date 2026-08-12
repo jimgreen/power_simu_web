@@ -85,7 +85,7 @@ def normalize_hydrogen_conversion_control_mode(value: Any) -> str:
 
 def hydrogen_conversion_active_set_type(value: Any) -> str:
     mode = str(value or "").strip().upper()
-    return {"P": "p_set", "FLOW": "flow_set"}.get(mode, "")
+    return {"P": "p_set", "PQ": "p_set", "FLOW": "flow_set"}.get(mode, "")
 
 
 def _model_blocks(model: Any) -> Mapping[str, Any]:

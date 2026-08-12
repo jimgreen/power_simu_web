@@ -30,6 +30,10 @@ class DefinitionRevisionConflict(ValueError):
         self.current_revision = current_revision
 
 
+class SafetyBoundaryError(ValueError):
+    """Raised when an operator-supplied value violates a configured limit."""
+
+
 PROTECTED_DEVICE_FIELDS = {
     "idx",
     "name",
@@ -210,9 +214,13 @@ def _setpoint_bound_candidates(
     setpoint: str,
 ) -> list[tuple[str, str]]:
     field = _normalized_field_name(setpoint)
-    if not field.endswith("_set"):
+    legacy_load_stems = {"pv0": "p", "qv0": "q"}
+    if field.endswith("_set"):
+        stem = field[:-4]
+    elif field in legacy_load_stems:
+        stem = legacy_load_stems[field]
+    else:
         return []
-    stem = field[:-4]
     candidates: list[tuple[str, str]] = [(f"{stem}_min", f"{stem}_max")]
     terminal_aliases = {
         "p_ac": "ac_p",
@@ -330,9 +338,15 @@ def validate_setpoint_safety_bounds(
         abs(upper) if upper is not None else 0.0,
     )
     if lower is not None and number < lower - tolerance:
-        raise ValueError(f"{field}={_number_text(number)} must not be below {lower_name}={_number_text(lower)}")
+        raise SafetyBoundaryError(
+            f"{field}={_number_text(number)} must not be below "
+            f"{lower_name}={_number_text(lower)}"
+        )
     if upper is not None and number > upper + tolerance:
-        raise ValueError(f"{field}={_number_text(number)} must not exceed {upper_name}={_number_text(upper)}")
+        raise SafetyBoundaryError(
+            f"{field}={_number_text(number)} must not exceed "
+            f"{upper_name}={_number_text(upper)}"
+        )
     return number, bounds
 
 
@@ -357,11 +371,11 @@ def normalize_device_changes(current: Mapping[str, Any], changes: Mapping[str, A
             )
             normalized_field = str(field).casefold()
             if normalized_field in BINARY_DEVICE_FIELDS and number not in (0.0, 1.0):
-                raise ValueError(f"{field} must be 0 or 1")
+                raise SafetyBoundaryError(f"{field} must be 0 or 1")
             if ratio_field and not 0.0 <= number <= 1.0:
-                raise ValueError(f"{field} must be between 0 and 1")
+                raise SafetyBoundaryError(f"{field} must be between 0 and 1")
             if any(token in normalized_field for token in NONNEGATIVE_DEVICE_FIELD_TOKENS) and number < 0:
-                raise ValueError(f"{field} must not be negative")
+                raise SafetyBoundaryError(f"{field} must not be negative")
             normalized[field] = _number_text(number)
         else:
             normalized[field] = str(value).strip()
@@ -380,9 +394,14 @@ def normalize_device_changes(current: Mapping[str, Any], changes: Mapping[str, A
             else _finite_number(merged[upper], upper)
         )
         if lower_number > upper_number:
-            raise ValueError(f"{lower} must not exceed {upper}")
+            raise SafetyBoundaryError(f"{lower} must not exceed {upper}")
     changed_fields = {_normalized_field_name(field) for field in changes}
-    for setpoint in (field for field in merged if str(field).endswith("_set")):
+    for setpoint in (
+        field
+        for field in merged
+        if str(field).endswith("_set")
+        or _normalized_field_name(field) in {"pv0", "qv0"}
+    ):
         candidates = _setpoint_bound_candidates(merged, setpoint)
         related_fields = {setpoint, *(field for pair in candidates for field in pair)}
         if not (related_fields & changed_fields):

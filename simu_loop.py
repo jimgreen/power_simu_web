@@ -1571,7 +1571,12 @@ def _apply_setpoint_row(model_book: EBook, row: dict) -> int:
     for src, dst in mapping.items():
         value = row.get(src, "")
         if value != "":
-            changed += _set_row_value(target, dst, value)
+            load_changed = _apply_load_set_value(target, dev_type, src, value)
+            changed += (
+                _set_row_value(target, dst, value)
+                if load_changed is None
+                else load_changed
+            )
     if row.get("run_stat", "") != "":
         changed += _set_row_value(target, "run_stat", row["run_stat"])
     return changed
@@ -1599,6 +1604,31 @@ def _set_value_target_column(dev_type: str, set_type: str, target: Optional[dict
     return set_type
 
 
+def _apply_load_set_value(target: dict, dev_type: str, set_type: str, value: object) -> Optional[int]:
+    """Map physical load targets to the ZIP boundary consumed by the kernel."""
+
+    if dev_type not in {"ACLoad", "DCLoad"}:
+        return None
+    if set_type == "p_set":
+        if "p_set" in target:
+            return _set_row_value(target, "p_set", value)
+        pbase, changed = _load_write_base(target, "pbase")
+        return changed + _set_row_value(
+            target,
+            "pv0",
+            _format_power((_safe_float(value, 0.0) or 0.0) / pbase),
+        )
+    if dev_type == "ACLoad" and set_type == "q_set":
+        changed = _set_row_value(target, "q_set", value) if "q_set" in target else 0
+        qbase, base_changed = _load_write_base(target, "qbase")
+        return changed + base_changed + _set_row_value(
+            target,
+            "qv0",
+            _format_power((_safe_float(value, 0.0) or 0.0) / qbase),
+        )
+    return None
+
+
 def _apply_set_value_row(model_book: EBook, row: dict) -> int:
     dev_type = str(row.get("dev_type", ""))
     target = _source_model_row(
@@ -1615,6 +1645,9 @@ def _apply_set_value_row(model_book: EBook, row: dict) -> int:
     value = row.get("set_value", "")
     if value == "":
         return 0
+    load_changed = _apply_load_set_value(target, dev_type, set_type, value)
+    if load_changed is not None:
+        return load_changed
     target_column = _set_value_target_column(dev_type, set_type, target)
     return _set_row_value(target, target_column, value)
 
@@ -2007,16 +2040,15 @@ def apply_load_power_targets(model_book: EBook, targets: Sequence[Mapping[str, o
         if block_name == "ACLoad":
             current_p, current_q, _pbase, _qbase = _load_power(row)
             reactive_ratio = current_q / current_p if abs(current_p) > 1e-12 else 0.0
-            pbase, base_changed = _load_write_base(row, "pbase")
-            changed += base_changed
-            changed += _set_row_value(row, "pv0", _format_power(desired_p / pbase))
-            qbase, base_changed = _load_write_base(row, "qbase")
-            changed += base_changed
-            changed += _set_row_value(row, "qv0", _format_power(desired_p * reactive_ratio / qbase))
+            changed += _apply_load_set_value(row, block_name, "p_set", desired_p) or 0
+            changed += _apply_load_set_value(
+                row,
+                block_name,
+                "q_set",
+                desired_p * reactive_ratio,
+            ) or 0
         else:
-            pbase, base_changed = _load_write_base(row, "pbase")
-            changed += base_changed
-            changed += _set_row_value(row, "pv0", _format_power(desired_p / pbase))
+            changed += _apply_load_set_value(row, block_name, "p_set", desired_p) or 0
     return changed
 
 

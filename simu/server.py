@@ -617,7 +617,12 @@ SET_VALUE_COLUMN_MAP = {
         ("q_to_set", "q_to_set"),
         ("v_to_set", "v_to_set"),
     ),
-    "ACLoad": (("p_set", "p_set"), ("p_set", "pv0"), ("q_set", "qv0")),
+    "ACLoad": (
+        ("p_set", "p_set"),
+        ("p_set", "pv0"),
+        ("q_set", "q_set"),
+        ("q_set", "qv0"),
+    ),
     "DCLoad": (("p_set", "p_set"), ("p_set", "pv0"), ("v_set", "v_set"), ("i_set", "i_set")),
     "HydroSource": (("flow_set", "flow_set"),),
     "HydroLoad": (("flow_set", "flow_set"),),
@@ -854,6 +859,10 @@ def _generated_control_blocks(model_book: EBook) -> Mapping[str, tuple[Sequence[
                     source_value = row.get(source_column, 0)
                 else:
                     continue
+                if block_name in {"ACLoad", "DCLoad"} and source_column == "pv0":
+                    source_value = _numeric(row.get("pbase"), 1.0) * _numeric(source_value, 0.0)
+                elif block_name == "ACLoad" and source_column == "qv0":
+                    source_value = _numeric(row.get("qbase"), 1.0) * _numeric(source_value, 0.0)
                 if source_value in (None, "", "-"):
                     continue
                 set_row_key = (block_name, name, set_type)

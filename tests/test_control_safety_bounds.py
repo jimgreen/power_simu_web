@@ -202,6 +202,51 @@ class ControlSafetyBoundsTest(unittest.TestCase):
         self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "80")
         self.assertEqual(render_ebook_aligned(service.runtime_stat_book), stat_before)
 
+    def test_legacy_load_setpoint_alias_cannot_bypass_power_limits(self):
+        service, runtime = self._make_service()
+        self._add_fields(
+            service,
+            "ACLoad",
+            "load_ac_1",
+            {"p_min": 0, "p_max": 100},
+        )
+        revision_before = service.definition_snapshot.revision
+        history_before = list(service.command_history)
+        stat_before = render_ebook_aligned(service.runtime_stat_book)
+
+        with self.assertRaisesRegex(ValueError, r"p_set.*p_max"):
+            service.apply_student_commands(
+                {
+                    "set_values": [
+                        {
+                            "dev_type": "ACLoad",
+                            "dev_name": "load_ac_1",
+                            "set_type": "p_set",
+                            "set_value": 101,
+                        }
+                    ]
+                },
+                source="trainee-ui",
+            )
+        with self.assertRaisesRegex(
+            ValueError,
+            r"人工修改安全校验失败.*ACLoad/load_ac_1.*pv0.*p_max.*未生效",
+        ):
+            service.update_device_parameters(
+                {
+                    "block_name": "ACLoad",
+                    "row_key": {"name": "load_ac_1", "idx": "1"},
+                    "revision": revision_before,
+                    "changes": {"pv0": 101},
+                }
+            )
+
+        self.assertEqual(service.definition_snapshot.revision, revision_before)
+        self.assertEqual(service.command_history, history_before)
+        self.assertEqual(render_ebook_aligned(service.runtime_stat_book), stat_before)
+        self.assertFalse((runtime / "commands.json").exists())
+        self.assertFalse(service.manual_definition_changes_file.exists())
+
     def test_voltage_flow_pressure_and_converter_terminal_limits_are_enforced(self):
         service, _runtime = self._make_service()
         self._add_fields(
@@ -375,6 +420,96 @@ class ControlSafetyBoundsTest(unittest.TestCase):
         self.assertNotIn("301", service.files["yt_ctrl"].read_text(encoding="utf-8"))
         self.assertTrue(any("安全边界" in str(item) for item in service.runtime_logs))
 
+    def test_defensive_materialization_rejects_an_unsafe_history_entry_atomically(self):
+        service, runtime = self._make_service()
+        self._add_fields(
+            service,
+            "ACGenerator",
+            "diesel_300kw",
+            {"p_min": 30, "p_max": 300},
+        )
+        service.command_history.append(
+            {
+                "eligible_source": True,
+                "manual_hold": True,
+                "command_origin": "manual",
+                "accepted": {"run_status": 1, "set_values": 1, "ignored": 0},
+                "normalized": {
+                    "run_status": [
+                        {
+                            "dev_type": "ACGenerator",
+                            "dev_name": "wt01_10kw",
+                            "run_stat": "0",
+                        }
+                    ],
+                    "set_values": [
+                        {
+                            "dev_type": "ACGenerator",
+                            "dev_name": "diesel_300kw",
+                            "set_type": "p_set",
+                            "set_value": "301",
+                        }
+                    ],
+                },
+            }
+        )
+
+        result = service._materialize_active_control_commands(0, persist=True)
+
+        self.assertEqual(result["run_status"], 0)
+        self.assertEqual(result["set_values"], 0)
+        self.assertEqual(
+            self._set_value(service, "ACGenerator", "wt01_10kw", "run_stat"),
+            "1",
+        )
+        self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "80")
+        self.assertNotIn("301", service.files["stat"].read_text(encoding="utf-8"))
+        self.assertNotIn("301", service.files["yt_ctrl"].read_text(encoding="utf-8"))
+        self.assertTrue(runtime.is_dir())
+
+    def test_remote_adjustment_does_not_send_an_out_of_bounds_intermediate_value(self):
+        service, _runtime = self._make_service()
+        measurement = next(
+            list(row)
+            for row in service.definition_snapshot.measurement_rows
+            if row[2] == "DCGenerator"
+            and row[3] == "ess01_vsrc"
+            and row[4].upper() == "P_GEN"
+        )
+        measurement[2] = "ESS"
+        measurement[3] = "ess01"
+        measurement[4] = "P"
+        measurement[7] = "100"
+        service.latest_real_rows = [measurement]
+        service.apply_student_commands(
+            {
+                "set_values": [
+                    {
+                        "dev_type": "ESS",
+                        "dev_name": "ess01",
+                        "set_type": "p_set",
+                        "set_value": 20,
+                    }
+                ]
+            },
+            source="trainee-ui",
+        )
+
+        boundary, _yt = service._remote_adjustment_boundary_books(0, cycle_token=1)
+
+        self.assertEqual(
+            service._set_value_from_book(boundary, ("ESS", "ess01", "p_set")),
+            20.0,
+        )
+        self.assertTrue(
+            any(
+                item.get("type") == "控制安全边界"
+                and item.get("target") == "遥调逐步响应"
+                and "安全目标" in str(item)
+                for item in service.runtime_logs
+            )
+        )
+
     def test_unsafe_loaded_history_is_removed_before_startup_materialization(self):
         from simu.generate_simple_model import write_model_dir
         from simu.service import EBook, PolarMicrogridSimulator
@@ -422,6 +557,121 @@ class ControlSafetyBoundsTest(unittest.TestCase):
 
             self.assertEqual(service.command_history, [])
             self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "80")
+            self.assertEqual(json.loads((runtime / "commands.json").read_text(encoding="utf-8")), [])
+
+    def test_loaded_history_batch_is_removed_atomically_when_one_control_is_unsafe(self):
+        from simu.generate_simple_model import write_model_dir
+        from simu.service import EBook, PolarMicrogridSimulator
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            runtime = root / "runtime"
+            write_model_dir(source)
+            model_book = EBook(source / "model.e")
+            block = model_book.data["ACGenerator"]
+            diesel = next(row for row in block.data if row["name"] == "diesel_300kw")
+            diesel["p_min"] = "30"
+            diesel["p_max"] = "300"
+            (source / "model.e").write_text(
+                render_ebook_aligned(model_book),
+                encoding="utf-8",
+            )
+            runtime.mkdir(parents=True)
+            history = [
+                {
+                    "eligible_source": True,
+                    "manual_hold": True,
+                    "command_origin": "manual",
+                    "accepted": {"run_status": 1, "set_values": 2, "ignored": 0},
+                    "normalized": {
+                        "run_status": [
+                            {
+                                "dev_type": "ACGenerator",
+                                "dev_name": "wt01_10kw",
+                                "run_stat": "0",
+                            }
+                        ],
+                        "set_values": [
+                            {
+                                "dev_type": "ACGenerator",
+                                "dev_name": "diesel_300kw",
+                                "set_type": "p_set",
+                                "set_value": "100",
+                            },
+                            {
+                                "dev_type": "ACGenerator",
+                                "dev_name": "diesel_300kw",
+                                "set_type": "p_set",
+                                "set_value": "301",
+                            },
+                        ],
+                    },
+                }
+            ]
+            (runtime / "commands.json").write_text(
+                json.dumps(history, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            service = PolarMicrogridSimulator(source, runtime, kernel=lambda _config: None)
+
+            self.assertEqual(service.command_history, [])
+            self.assertEqual(
+                self._set_value(service, "ACGenerator", "wt01_10kw", "run_stat"),
+                "1",
+            )
+            self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "80")
+            self.assertEqual(json.loads((runtime / "commands.json").read_text(encoding="utf-8")), [])
+
+    def test_loaded_history_with_invalid_binary_control_is_removed_atomically(self):
+        from simu.generate_simple_model import write_model_dir
+        from simu.service import PolarMicrogridSimulator
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            runtime = root / "runtime"
+            write_model_dir(source)
+            runtime.mkdir(parents=True)
+            history = [
+                {
+                    "eligible_source": True,
+                    "manual_hold": True,
+                    "command_origin": "manual",
+                    "accepted": {"run_status": 1, "set_values": 1, "ignored": 0},
+                    "normalized": {
+                        "run_status": [
+                            {
+                                "dev_type": "ACGenerator",
+                                "dev_name": "wt01_10kw",
+                                "run_stat": "2",
+                            }
+                        ],
+                        "set_values": [
+                            {
+                                "dev_type": "ESS",
+                                "dev_name": "ess01",
+                                "set_type": "p_set",
+                                "set_value": "20",
+                            }
+                        ],
+                    },
+                }
+            ]
+            (runtime / "commands.json").write_text(
+                json.dumps(history, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            service = PolarMicrogridSimulator(source, runtime, kernel=lambda _config: None)
+
+            self.assertEqual(service.command_history, [])
+            self.assertEqual(
+                self._set_value(service, "ACGenerator", "wt01_10kw", "run_stat"),
+                "1",
+            )
+            self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "10")
             self.assertEqual(json.loads((runtime / "commands.json").read_text(encoding="utf-8")), [])
 
 

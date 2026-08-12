@@ -52,6 +52,7 @@ from simu.definition_editing import (
     DefinitionSnapshot,
     MEASUREMENT_STATUS_TOKENS,
     MEASUREMENT_STATUS_VALIDITY,
+    SafetyBoundaryError,
     atomic_write_text,
     normalize_device_changes,
     normalize_measurement_changes,
@@ -1934,15 +1935,17 @@ class PolarMicrogridSimulator:
             requested_set = self._normalize_set_command_items(source_set)
             retained_run = self._filter_defined_run_command_items(requested_run)
             retained_set = self._filter_defined_set_command_items(requested_set)
-            safe_set: List[Dict[str, Any]] = []
-            for set_item in retained_set:
-                try:
-                    safe_set.append(
-                        self._validated_set_command_item(set_item, strict=True)
-                    )
-                except ValueError:
-                    changed = True
-            retained_set = safe_set
+            try:
+                retained_run = self._validate_run_command_items(retained_run)
+                retained_set = self._validate_set_command_items(
+                    retained_set,
+                    strict=True,
+                )
+            except ValueError:
+                # Persisted entries retain their original batch semantics.  A
+                # corrupt or now-unsafe member invalidates the whole entry.
+                changed = True
+                continue
             if not retained_run and not retained_set:
                 changed = True
                 continue
@@ -2728,6 +2731,35 @@ class PolarMicrogridSimulator:
             )
         return filtered
 
+    def _validated_command_entry_items(
+        self,
+        command: Mapping[str, Any],
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        normalized = command.get("normalized", {})
+        normalized_map = normalized if isinstance(normalized, Mapping) else {}
+        raw_run = normalized_map.get("run_status", [])
+        raw_set = normalized_map.get("set_values", [])
+        run_sequence = (
+            list(raw_run)
+            if isinstance(raw_run, Sequence) and not isinstance(raw_run, (str, bytes))
+            else []
+        )
+        set_sequence = (
+            list(raw_set)
+            if isinstance(raw_set, Sequence) and not isinstance(raw_set, (str, bytes))
+            else []
+        )
+        run_items = self._filter_defined_run_command_items(
+            self._normalize_run_command_items(run_sequence)
+        )
+        set_items = self._filter_defined_set_command_items(
+            self._normalize_set_command_items(set_sequence)
+        )
+        return (
+            self._validate_run_command_items(run_items),
+            self._validate_set_command_items(set_items, strict=True),
+        )
+
     def _materialize_active_control_commands(self, absolute_minute: int | float, *, persist: bool = False) -> Dict[str, int]:
         book = self._base_stat_book_for_controls()
         run_block = _ensure_block(book, "RunStat", STAT_HEADERS["RunStat"])
@@ -2738,17 +2770,20 @@ class PolarMicrogridSimulator:
         allowed_set_keys = self._defined_set_control_keys()
         applied_run = 0
         applied_set = 0
+        safe_active_entries = 0
         active_set_rows: List[Dict[str, Any]] = []
-        unsafe_set_items: List[str] = []
+        unsafe_command_items: List[str] = []
 
         for command in active_entries:
-            normalized = command.get("normalized", {})
-            run_items = normalized.get("run_status", []) if isinstance(normalized, Mapping) else []
-            set_items = normalized.get("set_values", []) if isinstance(normalized, Mapping) else []
-            if isinstance(run_items, Sequence) and not isinstance(run_items, (str, bytes)):
-                for item in run_items:
-                    if not isinstance(item, Mapping):
-                        continue
+            try:
+                run_items, set_items = self._validated_command_entry_items(command)
+            except ValueError as exc:
+                unsafe_command_items.append(str(exc))
+                continue
+            if not run_items and not set_items:
+                continue
+            safe_active_entries += 1
+            for item in run_items:
                     dev_type = str(item.get("dev_type", ""))
                     dev_name = str(item.get("dev_name", ""))
                     if not dev_type or not dev_name:
@@ -2770,10 +2805,7 @@ class PolarMicrogridSimulator:
                             cb_block.data.append(cb_row)
                         cb_row["status"] = _number_text(item.get("status"))
                         applied_run += 1
-            if isinstance(set_items, Sequence) and not isinstance(set_items, (str, bytes)):
-                for item in set_items:
-                    if not isinstance(item, Mapping):
-                        continue
+            for item in set_items:
                     dev_type = str(item.get("dev_type", ""))
                     dev_name = str(item.get("dev_name", ""))
                     set_type = str(item.get("set_type", ""))
@@ -2781,19 +2813,11 @@ class PolarMicrogridSimulator:
                         continue
                     if (dev_type, dev_name, set_type) not in allowed_set_keys:
                         continue
-                    try:
-                        safe_item = self._validated_set_command_item(
-                            item,
-                            strict=True,
-                        )
-                    except ValueError as exc:
-                        unsafe_set_items.append(str(exc))
-                        continue
                     row = _find_set_row(set_block, dev_type, dev_name, set_type)
                     if row is None:
                         row = {"dev_type": dev_type, "dev_name": dev_name, "set_type": set_type, "set_value": ""}
                         set_block.data.append(row)
-                    row["set_value"] = safe_item["set_value"]
+                    row["set_value"] = item["set_value"]
                     applied_set += 1
                     active_set_rows.append(
                         {
@@ -2808,30 +2832,28 @@ class PolarMicrogridSimulator:
         if persist:
             simu_loop.write_ebook_aligned(book, self.files["stat"])
         self._write_active_yt_ctrl_file(active_set_rows, persist=persist)
-        if unsafe_set_items:
+        if unsafe_command_items:
             self._append_runtime_log(
                 "控制安全边界",
                 "持久化指令物化",
                 "越界指令已阻断",
                 [
-                    *unsafe_set_items,
-                    "不安全指令未写入运行控制文件和潮流边界。",
+                    *unsafe_command_items,
+                    "包含不安全值的整批指令未写入运行控制文件和潮流边界。",
                 ],
                 level="warn",
             )
-        return {"active_commands": len(active_entries), "run_status": applied_run, "set_values": applied_set}
+        return {"active_commands": safe_active_entries, "run_status": applied_run, "set_values": applied_set}
 
     def _active_remote_adjustment_keys(self, absolute_minute: int | float) -> set[Tuple[str, str, str]]:
         allowed_set_keys = self._defined_set_control_keys()
         active_keys: set[Tuple[str, str, str]] = set()
         for command in self._active_control_command_entries(absolute_minute):
-            normalized = command.get("normalized", {})
-            set_items = normalized.get("set_values", []) if isinstance(normalized, Mapping) else []
-            if not isinstance(set_items, Sequence) or isinstance(set_items, (str, bytes)):
+            try:
+                _run_items, set_items = self._validated_command_entry_items(command)
+            except ValueError:
                 continue
             for item in set_items:
-                if not isinstance(item, Mapping):
-                    continue
                 key = (
                     str(item.get("dev_type", "")),
                     str(item.get("dev_name", "")),
@@ -3108,6 +3130,29 @@ class PolarMicrogridSimulator:
             if target is None:
                 self._remote_adjustment_execution.pop(key, None)
                 continue
+            try:
+                safe_target = self._validated_set_command_item(
+                    {
+                        "dev_type": key[0],
+                        "dev_name": key[1],
+                        "set_type": key[2],
+                        "set_value": target,
+                    },
+                    strict=True,
+                )
+                target = float(safe_target["set_value"])
+            except ValueError as exc:
+                self._append_runtime_log(
+                    "控制安全边界",
+                    "潮流边界准备",
+                    "不安全目标已阻断",
+                    [str(exc), "本轮潮流计算未接收该不安全遥调边界。"],
+                    level="warn",
+                )
+                raise ValueError(
+                    f"潮流边界安全校验失败：{key[0]}/{key[1]} 的 {key[2]}="
+                    f"{_number_text(target)} 超出允许范围；本轮潮流计算已阻断。"
+                ) from exc
 
             state = self._remote_adjustment_execution.get(key)
             if state is None:
@@ -3138,6 +3183,33 @@ class PolarMicrogridSimulator:
                 state["last_cycle_token"] = cycle_token
 
             executed_value = float(state.get("executed_value", target))
+            try:
+                safe_executed = self._validated_set_command_item(
+                    {
+                        "dev_type": key[0],
+                        "dev_name": key[1],
+                        "set_type": key[2],
+                        "set_value": executed_value,
+                    },
+                    strict=True,
+                )
+                executed_value = float(safe_executed["set_value"])
+            except ValueError as exc:
+                unsafe_executed = executed_value
+                executed_value = float(target)
+                state["executed_value"] = executed_value
+                state["target_value"] = float(target)
+                self._append_runtime_log(
+                    "控制安全边界",
+                    "遥调逐步响应",
+                    "越界中间值已阻断",
+                    [
+                        str(exc),
+                        f"逐步响应中间值 {_number_text(unsafe_executed)} 未送入潮流内核。",
+                        f"已显式告警并直接采用已校验的安全目标 {_number_text(target)}。",
+                    ],
+                    level="warn",
+                )
             self._write_boundary_set_value(stat_book, key, executed_value)
             if key in active_keys or self._set_value_from_book(yt_ctrl_book, key) is not None:
                 self._write_boundary_set_value(yt_ctrl_book, key, executed_value)
@@ -11049,7 +11121,14 @@ class PolarMicrogridSimulator:
                         "学员台设备参数入口禁止修改运行状态、开关状态和遥调设定值，"
                         "请使用遥控/遥调。"
                     )
-            normalized_changes = normalize_device_changes(row, changes)
+            try:
+                normalized_changes = normalize_device_changes(row, changes)
+            except SafetyBoundaryError as exc:
+                dev_name = str(row.get("name", row.get("dev_name", ""))).strip()
+                raise ValueError(
+                    f"人工修改安全校验失败：{block_name}/{dev_name} 的修改超出允许范围"
+                    f"（{exc}）；修改未生效，人工覆盖层、运行控制文件和仿真边界均未更新。"
+                ) from exc
             row.update(normalized_changes)
             dev_define_book = simu_loop._capability_define_book(
                 model_book,

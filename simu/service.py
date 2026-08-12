@@ -2453,6 +2453,7 @@ class PolarMicrogridSimulator:
             self.runtime_stat_book,
             self.definition_snapshot.model_book,
         )
+        self._sync_latest_hydrogen_storage_measurement_rows()
 
     def _simulation_cycle_minutes(self) -> int:
         return int(_simulation_mode_duration_minutes(self.curves.get("mode", "day")))
@@ -2532,6 +2533,49 @@ class PolarMicrogridSimulator:
                     if row[7] != value:
                         row[7] = value
                         changed = True
+
+        sync_rows(self.latest_real_rows)
+        sync_rows(self.latest_scada_rows)
+        if changed:
+            self._invalidate_measurement_delta_cache()
+        if changed and self.latest_measurements:
+            self.latest_measurements = self.measurements()
+
+    def _sync_latest_hydrogen_storage_measurement_rows(self) -> None:
+        state_values = simu_loop.hydrogen_storage_state_values_from_book(
+            self.runtime_stat_book
+        )
+        if not state_values:
+            return
+
+        field_by_measurement_type = {
+            "PRESS": "pressure",
+            "PRESSURE": "pressure",
+            "FLOW": "flow",
+            "GASQUANTITY": "gas_quantity",
+            "GAS_QUANTITY": "gas_quantity",
+            "SOC": "soc",
+        }
+        changed = False
+
+        def sync_rows(rows: List[List[str]]) -> None:
+            nonlocal changed
+            for row in rows:
+                if len(row) < len(MEAS_HEADER):
+                    continue
+                if str(row[2]).strip() != "HydroStorage":
+                    continue
+                field = field_by_measurement_type.get(str(row[4]).strip().upper())
+                if field is None:
+                    continue
+                dev_name = str(row[3]).strip()
+                values = state_values.get(("HydroStorage", dev_name)) or state_values.get(dev_name)
+                if not values or field not in values:
+                    continue
+                value = _number_text(values[field])
+                if row[7] != value:
+                    row[7] = value
+                    changed = True
 
         sync_rows(self.latest_real_rows)
         sync_rows(self.latest_scada_rows)

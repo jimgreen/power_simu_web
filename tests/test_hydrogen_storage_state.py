@@ -54,6 +54,38 @@ class HydrogenStorageStateTest(unittest.TestCase):
         self.assertAlmostEqual(pressure, 17.75)
         self.assertAlmostEqual(quantity, 17750.0)
 
+    def test_reset_uses_each_device_water_volume(self) -> None:
+        model_book = _model_book(
+            {
+                "idx": 1,
+                "name": "tank-10m3",
+                "capacity": 1000.0,
+                "water_volume": 10.0,
+                "initial_soc": 0.5,
+                "run_stat": 1,
+            },
+            {
+                "idx": 2,
+                "name": "tank-50m3",
+                "capacity": 1000.0,
+                "water_volume": 50.0,
+                "initial_soc": 0.5,
+                "run_stat": 1,
+            },
+        )
+        stat_book = simu_loop.EBook({})
+
+        simu_loop.reset_hydrogen_storage_state_book(stat_book, model_book)
+
+        states = {
+            str(row["name"]): row
+            for row in stat_book.data[simu_loop.HYDROGEN_STORAGE_STATE_BLOCK].data
+        }
+        self.assertAlmostEqual(float(states["tank-10m3"]["pressure"]), 5.0)
+        self.assertAlmostEqual(float(states["tank-50m3"]["pressure"]), 1.0)
+        self.assertAlmostEqual(float(states["tank-10m3"]["gas_quantity"]), 500.0)
+        self.assertAlmostEqual(float(states["tank-50m3"]["gas_quantity"]), 500.0)
+
     def test_soc_is_quantity_ratio_without_physical_range_clamping(self) -> None:
         model_book = _model_book(
             {
@@ -418,6 +450,59 @@ class HydrogenStorageStateTest(unittest.TestCase):
         self.assertAlmostEqual(float(row["gas_quantity"]), 17000.0)
         self.assertAlmostEqual(float(row["soc"]), 34.5 / 45.0)
 
+    def test_service_reset_immediately_syncs_all_hydrogen_storage_measurements(self) -> None:
+        service = PolarMicrogridSimulator.__new__(PolarMicrogridSimulator)
+        service.runtime_stat_book = simu_loop.EBook(
+            {
+                simu_loop.HYDROGEN_STORAGE_STATE_BLOCK: [
+                    {
+                        "dev_type": "HydroStorage",
+                        "idx": 1,
+                        "name": "tank-1",
+                        "pressure": 99.0,
+                        "flow": 123.0,
+                        "gas_quantity": 9999.0,
+                        "soc": 9.999,
+                    }
+                ]
+            }
+        )
+        service._definition_snapshot = SimpleNamespace(
+            model_book=_model_book(
+                {
+                    "idx": 1,
+                    "name": "tank-1",
+                    "capacity": 1000.0,
+                    "water_volume": 10.0,
+                    "initial_soc": 0.5,
+                    "pressure": 99.0,
+                    "run_stat": 1,
+                }
+            )
+        )
+        service._definition_publish_epoch = 1
+        measurement_rows = [
+            [str(index), f"tank.{meas_type}", "HydroStorage", "tank-1", meas_type, "1", "1", "-1"]
+            for index, meas_type in enumerate(("pressure", "flow", "gas_quantity", "soc"), start=1)
+        ]
+        service.latest_real_rows = [list(row) for row in measurement_rows]
+        service.latest_scada_rows = [list(row) for row in measurement_rows]
+        service.latest_measurements = {}
+        service._measurement_delta_step_count = 1
+        service._measurement_delta_runtime_marker = ("stale",)
+
+        service._reset_hydrogen_storage_state_to_initial()
+
+        state = service.runtime_stat_book.data[simu_loop.HYDROGEN_STORAGE_STATE_BLOCK].data[0]
+        self.assertEqual(
+            tuple(float(state[field]) for field in ("pressure", "flow", "gas_quantity", "soc")),
+            (5.0, 0.0, 500.0, 0.5),
+        )
+        for rows in (service.latest_real_rows, service.latest_scada_rows):
+            self.assertEqual([float(row[7]) for row in rows], [5.0, 0.0, 500.0, 0.5])
+        self.assertIsNone(service._measurement_delta_step_count)
+        self.assertIsNone(service._measurement_delta_runtime_marker)
+
     def test_reset_does_not_invent_capacity_from_pressure_limit(self) -> None:
         model_book = _model_book(
             {
@@ -558,8 +643,8 @@ class HydrogenStorageStateTest(unittest.TestCase):
         expected_pressure = expected_quantity / water_volume / 10.0
 
         self.assertAlmostEqual(rated_capacity, 1000.0)
-        self.assertAlmostEqual(expected_quantity, 777.7777777777778)
-        self.assertAlmostEqual(expected_pressure, 1.5555555555555556)
+        self.assertAlmostEqual(expected_quantity, 500.0)
+        self.assertAlmostEqual(expected_pressure, 5.0)
         self.assertAlmostEqual(float(storage["pressure"]), expected_pressure)
 
     def test_scada_soc_is_derived_from_same_frame_gas_quantity(self) -> None:
@@ -623,9 +708,9 @@ class HydrogenStorageStateTest(unittest.TestCase):
             snapshot=snapshot,
         )
         state = stat_book.data[simu_loop.HYDROGEN_STORAGE_STATE_BLOCK].data[0]
-        self.assertAlmostEqual(float(state["pressure"]), 1.3555555555555556)
-        self.assertAlmostEqual(float(state["gas_quantity"]), 677.7777777777778)
-        self.assertAlmostEqual(float(state["soc"]), 0.6777777777777778)
+        self.assertAlmostEqual(float(state["pressure"]), 4.0)
+        self.assertAlmostEqual(float(state["gas_quantity"]), 400.0)
+        self.assertAlmostEqual(float(state["soc"]), 0.4)
 
     def test_bundled_hydrogen_tank_balances_conversion_net_flow(self) -> None:
         model_path = next(

@@ -422,5 +422,5 @@
 </StorageSoc>
 <HydroStorageState>
 @ dev_type      idx  name       pressure  flow  gas_quantity  soc
-# HydroStorage  3    集装格式储氢罐-3  1.5555555556  0     777.7777777778  0.7777777778
+# HydroStorage  3    集装格式储氢罐-3  5         0     500           0.5
 </HydroStorageState>

@@ -259,7 +259,7 @@
 </DCACConverter>
 <HydroNode>
 @ idx  name       pressure  run_stat
-# 1    集装格式储氢罐-3  1.5555555555555556  1
+# 1    集装格式储氢罐-3  5         1
 </HydroNode>
 <HydroSource>
 @ idx  name             dev_type         node  control_type  pressure_set  flow_set  run_stat  rated_capacity  pressure_max  pressure_min  flow_max  flow_min
@@ -270,8 +270,8 @@
 # 1    直流燃料电池-1_氢能设备端氢荷  dc-fuel-cell  1     FLOW          2             10        1         10              5             0.1           10        0
 </HydroLoad>
 <HydroStorage>
-@ idx  name       dev_type                 node  control_type  pressure_set  flow_set  alpha  flow_min  flow_max  run_stat  pressure  capacity  water_volume  initial_soc         pressure_max  pressure_min
-# 3    集装格式储氢罐-3  hydrogen-tank-container  1     PRESSURE      1.5555555555555556  0         1      -10       10        1         1.5555555555555556  1000      50            0.7777777777777778  45            2
+@ idx  name       dev_type                 node  control_type  pressure_set  flow_set  alpha  flow_min  flow_max  run_stat  pressure  capacity  water_volume  initial_soc  pressure_max  pressure_min
+# 3    集装格式储氢罐-3  hydrogen-tank-container  1     PRESSURE      5             0         1      -10       10        1         5         1000      10            0.5          10            1
 </HydroStorage>
 <AcE2Hydro>
 @ idx  name     control_type  run_stat  idx_ac_load_t1  idx_h2_unit_t2  e2h_coeff

@@ -927,6 +927,176 @@ def _hydrogen_pressure_states_by_island(
     return result
 
 
+def _hydrogen_operating_metrics(
+    snapshot: Mapping[str, Any],
+    measurements: Mapping[Tuple[str, str, str], MeasurementValue],
+    pressure_states: Sequence[Mapping[str, Any]],
+    hydrogen_commands: Sequence[Mapping[str, Any]] = (),
+) -> Dict[str, Any]:
+    devices = _device_by_model_key(snapshot)
+    bindings_by_coupling = energy_coupling_control_bindings(snapshot)
+    command_by_coupling = {
+        (
+            str(row.get("couplingType", "")),
+            str(row.get("couplingName", "")),
+        ): row
+        for row in hydrogen_commands
+        if isinstance(row, Mapping)
+    }
+    category_values: Dict[str, Dict[str, List[float]]] = {
+        "electrolyzer": {"currentPower": [], "targetPower": [], "currentFlow": [], "targetFlow": []},
+        "fuelCell": {"currentPower": [], "targetPower": [], "currentFlow": [], "targetFlow": []},
+    }
+    online_counts = {"electrolyzer": 0, "fuelCell": 0}
+    for coupling_type in ("AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"):
+        category = "electrolyzer" if coupling_type in {"AcE2Hydro", "DcE2Hydro"} else "fuelCell"
+        coefficient_field = "e2h_coeff" if category == "electrolyzer" else "h2e_coeff"
+        for coupling in _parameter_rows(snapshot, coupling_type):
+            coupling_name = _parameter_name(coupling).strip()
+            coupling_device = devices.get((coupling_type, coupling_name))
+            bindings = bindings_by_coupling.get((coupling_type, coupling_name), ())
+            if (
+                not coupling_device
+                or not _is_online(coupling_device, measurements)
+                or len(bindings) != 2
+            ):
+                continue
+            power_binding = next((row for row in bindings if row.get("set_type") == "p_set"), None)
+            flow_binding = next((row for row in bindings if row.get("set_type") == "flow_set"), None)
+            if not power_binding or not flow_binding:
+                continue
+            power_key = (
+                str(power_binding.get("target_dev_type", "")),
+                str(power_binding.get("target_dev_name", "")),
+            )
+            flow_key = (
+                str(flow_binding.get("target_dev_type", "")),
+                str(flow_binding.get("target_dev_name", "")),
+            )
+            power_device = devices.get(power_key)
+            flow_device = devices.get(flow_key)
+            if (
+                not power_device
+                or not flow_device
+                or not _is_online(power_device, measurements)
+                or not _is_online(flow_device, measurements)
+            ):
+                continue
+            online_counts[category] += 1
+            power_measurement = _measured(
+                measurements,
+                _device_type(power_device),
+                power_key[1],
+                ("P_LOAD", "P_GEN", "P", "P_AC", "P_DC"),
+            )
+            flow_measurement = _measured(
+                measurements,
+                _device_type(flow_device),
+                flow_key[1],
+                ("FLOW",),
+            )
+            coefficient = _number(coupling.get(coefficient_field))
+            current_power = abs(power_measurement.value) if power_measurement else None
+            current_flow = abs(flow_measurement.value) if flow_measurement else None
+            if coefficient is not None and coefficient > EPSILON:
+                if current_power is None and current_flow is not None:
+                    current_power = (
+                        current_flow / coefficient
+                        if category == "electrolyzer"
+                        else current_flow * coefficient
+                    )
+                if current_flow is None and current_power is not None:
+                    current_flow = (
+                        current_power * coefficient
+                        if category == "electrolyzer"
+                        else current_power / coefficient
+                    )
+            command = command_by_coupling.get((coupling_type, coupling_name), {})
+            target_power = _number(command.get("electricPowerKw"))
+            target_flow = _number(command.get("equivalentFlow"))
+            if target_power is None:
+                target_power = current_power
+            if target_flow is None:
+                target_flow = current_flow
+            values = category_values[category]
+            if current_power is not None and math.isfinite(current_power):
+                values["currentPower"].append(float(current_power))
+            if target_power is not None and math.isfinite(target_power):
+                values["targetPower"].append(float(target_power))
+            if current_flow is not None and math.isfinite(current_flow):
+                values["currentFlow"].append(float(current_flow))
+            if target_flow is not None and math.isfinite(target_flow):
+                values["targetFlow"].append(float(target_flow))
+
+    def total(values: Sequence[float]) -> Optional[float]:
+        return sum(values) if values else None
+
+    storage_pressures: List[float] = []
+    storage_low_guards: List[float] = []
+    storage_high_guards: List[float] = []
+    storage_gas_quantities: List[float] = []
+    storage_soc_values: List[float] = []
+    storage_flows: List[float] = []
+    online_storage_count = 0
+    pressure_by_key = {
+        (str(row.get("devType", "")), str(row.get("devName", ""))): row
+        for row in pressure_states
+        if isinstance(row, Mapping)
+    }
+    for storage in _parameter_rows(snapshot, "HydroStorage"):
+        storage_name = _parameter_name(storage).strip()
+        storage_device = devices.get(("HydroStorage", storage_name))
+        if not storage_device or not _is_online(storage_device, measurements):
+            continue
+        online_storage_count += 1
+        device_type = _device_type(storage_device)
+        state = pressure_by_key.get((device_type, storage_name), {})
+        for key, target in (
+            ("pressure", storage_pressures),
+            ("lowGuard", storage_low_guards),
+            ("highGuard", storage_high_guards),
+        ):
+            value = _number(state.get(key))
+            if value is not None and math.isfinite(value):
+                target.append(float(value))
+        gas_quantity = _measured(measurements, device_type, storage_name, ("GAS_QUANTITY", "GAS_VOLUME"))
+        soc = _measured(measurements, device_type, storage_name, ("SOC",))
+        flow = _measured(measurements, device_type, storage_name, ("FLOW",))
+        if gas_quantity is not None and math.isfinite(gas_quantity.value):
+            storage_gas_quantities.append(float(gas_quantity.value))
+        if soc is not None:
+            soc_ratio = _live_soc_ratio(soc.value)
+            if soc_ratio is not None and math.isfinite(soc_ratio):
+                storage_soc_values.append(float(soc_ratio))
+        if flow is not None and math.isfinite(flow.value):
+            storage_flows.append(float(flow.value))
+
+    def average(values: Sequence[float]) -> Optional[float]:
+        return sum(values) / len(values) if values else None
+
+    electrolyzer = category_values["electrolyzer"]
+    fuel_cell = category_values["fuelCell"]
+    return {
+        "onlineElectrolyzerCount": online_counts["electrolyzer"],
+        "onlineFuelCellCount": online_counts["fuelCell"],
+        "onlineHydrogenStorageCount": online_storage_count,
+        "electrolyzerCurrentKw": total(electrolyzer["currentPower"]),
+        "electrolyzerTargetKw": total(electrolyzer["targetPower"]),
+        "electrolyzerFlowCurrentNm3h": total(electrolyzer["currentFlow"]),
+        "electrolyzerFlowTargetNm3h": total(electrolyzer["targetFlow"]),
+        "fuelCellCurrentKw": total(fuel_cell["currentPower"]),
+        "fuelCellTargetKw": total(fuel_cell["targetPower"]),
+        "fuelCellFlowCurrentNm3h": total(fuel_cell["currentFlow"]),
+        "fuelCellFlowTargetNm3h": total(fuel_cell["targetFlow"]),
+        "hydrogenStoragePressureMpa": average(storage_pressures),
+        "hydrogenStoragePressureLowGuardMpa": average(storage_low_guards),
+        "hydrogenStoragePressureHighGuardMpa": average(storage_high_guards),
+        "hydrogenStorageGasQuantityNm3": total(storage_gas_quantities),
+        "hydrogenStorageSoc": average(storage_soc_values),
+        "hydrogenStorageFlowNm3h": total(storage_flows),
+    }
+
+
 def _hydrogen_island_pressure_state(
     resource_topology: ResourceTopology,
     pressure_by_island: Mapping[str, Sequence[Mapping[str, Any]]],
@@ -1105,6 +1275,13 @@ def _hydrogen_post_dispatch_plan(
         "atomic": True,
         "warnings": [],
     }
+    diagnostics.update(
+        _hydrogen_operating_metrics(
+            snapshot,
+            measurements,
+            pressure_states,
+        )
+    )
     if not settings.hydrogen_closed_loop_enabled:
         return diagnostics
 
@@ -1624,6 +1801,14 @@ def _hydrogen_post_dispatch_plan(
             "balanceCorrectionKw": balance_correction,
             "predictedDieselAfterKw": predicted_diesel_kw,
         }
+    )
+    diagnostics.update(
+        _hydrogen_operating_metrics(
+            snapshot,
+            measurements,
+            pressure_states,
+            planned,
+        )
     )
     if not planned:
         diagnostics["warnings"].append(
@@ -12019,6 +12204,23 @@ def calculate_renewable_control_plan(
         "hydrogenClosedLoopEnabled": settings.hydrogen_closed_loop_enabled,
         "hydrogenPressureDeadbandRatio": settings.hydrogen_pressure_deadband_ratio,
         "hydrogenControl": hydrogen_plan,
+        "onlineElectrolyzerCount": hydrogen_plan.get("onlineElectrolyzerCount", 0),
+        "onlineFuelCellCount": hydrogen_plan.get("onlineFuelCellCount", 0),
+        "onlineHydrogenStorageCount": hydrogen_plan.get("onlineHydrogenStorageCount", 0),
+        "electrolyzerCurrentKw": hydrogen_plan.get("electrolyzerCurrentKw"),
+        "electrolyzerTargetKw": hydrogen_plan.get("electrolyzerTargetKw"),
+        "electrolyzerFlowCurrentNm3h": hydrogen_plan.get("electrolyzerFlowCurrentNm3h"),
+        "electrolyzerFlowTargetNm3h": hydrogen_plan.get("electrolyzerFlowTargetNm3h"),
+        "fuelCellCurrentKw": hydrogen_plan.get("fuelCellCurrentKw"),
+        "fuelCellTargetKw": hydrogen_plan.get("fuelCellTargetKw"),
+        "fuelCellFlowCurrentNm3h": hydrogen_plan.get("fuelCellFlowCurrentNm3h"),
+        "fuelCellFlowTargetNm3h": hydrogen_plan.get("fuelCellFlowTargetNm3h"),
+        "hydrogenStoragePressureMpa": hydrogen_plan.get("hydrogenStoragePressureMpa"),
+        "hydrogenStoragePressureLowGuardMpa": hydrogen_plan.get("hydrogenStoragePressureLowGuardMpa"),
+        "hydrogenStoragePressureHighGuardMpa": hydrogen_plan.get("hydrogenStoragePressureHighGuardMpa"),
+        "hydrogenStorageGasQuantityNm3": hydrogen_plan.get("hydrogenStorageGasQuantityNm3"),
+        "hydrogenStorageSoc": hydrogen_plan.get("hydrogenStorageSoc"),
+        "hydrogenStorageFlowNm3h": hydrogen_plan.get("hydrogenStorageFlowNm3h"),
         "lowerSocDeadbandActive": lower_soc_deadband_active,
         "upperSocDeadbandActive": upper_soc_deadband_active,
         "renewableUpperBoundaryDistance": renewable_upper_boundary_distance,
@@ -13790,6 +13992,20 @@ class TraineeRenewableControlManager:
             "totalLoadKw": metric_value("totalLoadKw", "acLoadKw", "dcLoadKw"),
             "acdcCurrentKw": metric_value("acdcCurrentKw"),
             "acdcTargetKw": metric_value("acdcTargetKw"),
+            "electrolyzerCurrentKw": metric_value("electrolyzerCurrentKw"),
+            "electrolyzerTargetKw": metric_value("electrolyzerTargetKw"),
+            "electrolyzerFlowCurrentNm3h": metric_value("electrolyzerFlowCurrentNm3h"),
+            "electrolyzerFlowTargetNm3h": metric_value("electrolyzerFlowTargetNm3h"),
+            "fuelCellCurrentKw": metric_value("fuelCellCurrentKw"),
+            "fuelCellTargetKw": metric_value("fuelCellTargetKw"),
+            "fuelCellFlowCurrentNm3h": metric_value("fuelCellFlowCurrentNm3h"),
+            "fuelCellFlowTargetNm3h": metric_value("fuelCellFlowTargetNm3h"),
+            "hydrogenStoragePressureMpa": metric_value("hydrogenStoragePressureMpa"),
+            "hydrogenStoragePressureLowGuardMpa": metric_value("hydrogenStoragePressureLowGuardMpa"),
+            "hydrogenStoragePressureHighGuardMpa": metric_value("hydrogenStoragePressureHighGuardMpa"),
+            "hydrogenStorageGasQuantityNm3": metric_value("hydrogenStorageGasQuantityNm3"),
+            "hydrogenStorageSocPercent": metric_soc_percent("hydrogenStorageSoc"),
+            "hydrogenStorageFlowNm3h": metric_value("hydrogenStorageFlowNm3h"),
             "observedWindSpeed": _number(weather.get("observedWindSpeed")),
             "observedSolarIrradiance": _number(weather.get("observedSolarIrradiance")),
         }
@@ -13992,6 +14208,16 @@ class TraineeRenewableControlManager:
         merged_hydrogen = dict(hydrogen_control)
         merged_hydrogen["generationHeld"] = True
         merged_hydrogen["heldCommandCount"] = len(held_commands)
+        effective_metrics = effective_target_snapshot.get("metrics")
+        for key in (
+            "electrolyzerTargetKw",
+            "electrolyzerFlowTargetNm3h",
+            "fuelCellTargetKw",
+            "fuelCellFlowTargetNm3h",
+        ):
+            if isinstance(effective_metrics, Mapping) and key in effective_metrics:
+                merged_metrics[key] = _json_safe_copy(effective_metrics[key])
+                merged_hydrogen[key] = _json_safe_copy(effective_metrics[key])
         merged_metrics["hydrogenControl"] = merged_hydrogen
         merged["metrics"] = merged_metrics
         return merged

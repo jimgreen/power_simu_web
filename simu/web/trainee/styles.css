@@ -5352,7 +5352,8 @@ th {
   width: min(680px, calc(100vw - 28px));
 }
 .renewable-control-parameters-dialog {
-  width: min(680px, calc(100vw - 28px));
+  width: min(800px, calc(100vw - 28px));
+  max-height: min(720px, calc(100vh - 28px));
 }
 .storage-power-derating-dialog {
   width: min(820px, calc(100vw - 28px));
@@ -5383,8 +5384,61 @@ th {
   line-height: 1;
 }
 .dialog-close-button:hover { border-color: var(--line); background: #f5f8f9; color: var(--ink); }
+.renewable-control-parameters-dialog .remote-control-form {
+  max-height: min(720px, calc(100vh - 28px));
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  overflow: hidden;
+}
+.renewable-control-parameter-tabs {
+  min-width: 0;
+  margin-top: 14px;
+  display: flex;
+  align-items: end;
+  gap: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.renewable-control-parameter-tabs button {
+  flex: 1 0 150px;
+  min-width: 150px;
+  height: 38px;
+  padding: 0 12px;
+  border-color: transparent;
+  border-bottom: 0;
+  border-radius: 5px 5px 0 0;
+  color: var(--muted);
+  background: transparent;
+  font-weight: 700;
+}
+.renewable-control-parameter-tabs button:hover {
+  color: var(--teal-dark);
+  background: #edf5f5;
+}
+.renewable-control-parameter-tabs button.is-active {
+  border-color: var(--line);
+  color: var(--teal-dark);
+  background: #fff;
+  box-shadow: inset 0 -2px 0 var(--teal);
+}
+.renewable-control-parameter-panes {
+  min-height: 0;
+  overflow: hidden;
+}
+.renewable-control-parameter-pane {
+  height: 100%;
+  padding: 16px 2px 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+.renewable-control-parameter-pane[hidden] {
+  display: none;
+}
 .renewable-control-parameter-fields {
-  margin: 16px 0 4px;
+  margin: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
@@ -6021,6 +6075,10 @@ canvas {
 }
 
 @media (max-height: 780px) and (min-width: 821px) {
+  .renewable-control-parameters-dialog,
+  .renewable-control-parameters-dialog .remote-control-form {
+    max-height: calc(100vh - 20px);
+  }
   .overview-dashboard {
     --overview-main-min-height: 580px;
     grid-template-rows: auto minmax(var(--overview-main-min-height), 1fr) 10px minmax(96px, var(--overview-bottom-height));
@@ -6182,6 +6240,18 @@ canvas {
   }
   .renewable-control-parameter-fields {
     grid-template-columns: 1fr;
+  }
+  .renewable-control-parameters-dialog {
+    max-height: calc(100vh - 20px);
+  }
+  .renewable-control-parameters-dialog .remote-control-form {
+    max-height: calc(100vh - 20px);
+    padding: 14px;
+  }
+  .renewable-control-parameter-tabs button {
+    flex-basis: 128px;
+    min-width: 128px;
+    padding: 0 8px;
   }
   .renewable-hydrogen-power-settings {
     grid-column: auto;

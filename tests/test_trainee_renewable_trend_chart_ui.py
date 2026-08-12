@@ -70,6 +70,20 @@ EXPECTED_TREND_SERIES = {
     "acdcTarget": ("renewableAcdcTargetKw", "acdcTargetKw"),
     "observedWindSpeed": ("renewableObservedWindSpeed", "observedWindSpeed"),
     "observedSolarIrradiance": ("renewableObservedSolarIrradiance", "observedSolarIrradiance"),
+    "electrolyzerCurrent": ("renewableElectrolyzerCurrentKw", "electrolyzerCurrentKw"),
+    "electrolyzerTarget": ("renewableElectrolyzerTargetKw", "electrolyzerTargetKw"),
+    "electrolyzerFlowCurrent": ("renewableElectrolyzerFlowCurrentNm3h", "electrolyzerFlowCurrentNm3h"),
+    "electrolyzerFlowTarget": ("renewableElectrolyzerFlowTargetNm3h", "electrolyzerFlowTargetNm3h"),
+    "fuelCellCurrent": ("renewableFuelCellCurrentKw", "fuelCellCurrentKw"),
+    "fuelCellTarget": ("renewableFuelCellTargetKw", "fuelCellTargetKw"),
+    "fuelCellFlowCurrent": ("renewableFuelCellFlowCurrentNm3h", "fuelCellFlowCurrentNm3h"),
+    "fuelCellFlowTarget": ("renewableFuelCellFlowTargetNm3h", "fuelCellFlowTargetNm3h"),
+    "hydrogenStoragePressure": ("renewableHydrogenStoragePressureMpa", "hydrogenStoragePressureMpa"),
+    "hydrogenStoragePressureLowGuard": ("renewableHydrogenStoragePressureLowGuardMpa", "hydrogenStoragePressureLowGuardMpa"),
+    "hydrogenStoragePressureHighGuard": ("renewableHydrogenStoragePressureHighGuardMpa", "hydrogenStoragePressureHighGuardMpa"),
+    "hydrogenStorageGasQuantity": ("renewableHydrogenStorageGasQuantityNm3", "hydrogenStorageGasQuantityNm3"),
+    "hydrogenStorageSoc": ("renewableHydrogenStorageSoc", "hydrogenStorageSocPercent"),
+    "hydrogenStorageFlow": ("renewableHydrogenStorageFlowNm3h", "hydrogenStorageFlowNm3h"),
 }
 
 
@@ -132,10 +146,10 @@ class TraineeRenewableTrendChartUiTest(unittest.TestCase):
         self.assertIn('data-renewable-series-scope="${escapeHtml(scope.key)}"', self.script)
         self.assertIn('data-renewable-series-device="${escapeHtml(device.key)}"', self.script)
         self.assertIn('data-chart-series="${escapeHtml(series.key)}"', self.script)
-        for scope, label in (("ac", "交流"), ("dc", "直流"), ("system", "系统")):
+        for scope, label in (("ac", "交流"), ("dc", "直流"), ("system", "系统"), ("hydrogen", "氢能")):
             with self.subTest(scope=scope):
                 self.assertIn(f'key: "{scope}", label: "{label}"', self.script)
-        for device_label in ("新能源", "风电", "光伏", "跟网储能", "构网储能", "柴发", "负荷", "AC/DC变流器", "环境"):
+        for device_label in ("新能源", "风电", "光伏", "跟网储能", "构网储能", "柴发", "负荷", "AC/DC变流器", "环境", "电制氢", "燃料电池", "储氢罐"):
             with self.subTest(device_label=device_label):
                 self.assertIn(f'deviceLabel: "{device_label}"', self.series_block)
         for curve_label in ("功率", "目标", "最大可发", "SOC", "下限", "风速", "太阳辐照度"):

@@ -165,10 +165,10 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
         self.assertNotIn('id="renewableObservedSolarIrradiance"', system_pane)
 
     def test_each_metric_tab_uses_one_three_column_table_and_keeps_value_ids_unique(self):
-        self.assertEqual(self.html.count('class="renewable-metric-table"'), 3)
-        self.assertEqual(self.html.count('<th scope="col">值对象</th>'), 3)
-        self.assertEqual(self.html.count('<th scope="col">实时值</th>'), 3)
-        self.assertEqual(self.html.count('<th scope="col">目标值</th>'), 3)
+        self.assertEqual(self.html.count('class="renewable-metric-table"'), 4)
+        self.assertEqual(self.html.count('<th scope="col">值对象</th>'), 4)
+        self.assertEqual(self.html.count('<th scope="col">实时值</th>'), 4)
+        self.assertEqual(self.html.count('<th scope="col">目标值</th>'), 4)
         self.assertNotIn('class="renewable-metric-grid"', self.html)
         for node_id in (
             "renewableAcCurrentKw",

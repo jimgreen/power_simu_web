@@ -13,6 +13,7 @@ from simu.renewable_control import (
     _dispatch_setpoint_value,
     _hydrogen_post_dispatch_plan,
     _measurement_index,
+    calculate_renewable_control_plan,
 )
 from simu.trainee_exchange import TraineeControlSnapshot
 from simu.resource_topology import resolve_resource_topology
@@ -1010,6 +1011,74 @@ def test_hydrogen_target_is_held_in_next_replaceable_generation():
     assert held["commands"] == first_plan["commands"]
     assert held["metrics"]["hydrogenControl"]["generationHeld"] is True
     assert held["commandRows"][0]["commandKw"] == 6.0
+
+
+def test_hydrogen_aggregate_metrics_follow_explicit_coupling_bindings():
+    snapshot = _electrolyzer_snapshot(
+        tank_pressure=20.0,
+        electric_power=4.0,
+    )
+    snapshot["measurements"]["scada"].extend(
+        [
+            _measurement("HydroStorage", "tank", "GAS_QUANTITY", 420.0),
+            _measurement("HydroStorage", "tank", "SOC", 0.42),
+            _measurement("HydroStorage", "tank", "FLOW", 0.8),
+        ]
+    )
+    settings = RenewableControlSettings(hydrogen_closed_loop_enabled=False)
+    plan = calculate_renewable_control_plan(snapshot, settings)
+    metrics = plan["metrics"]
+
+    assert metrics["onlineElectrolyzerCount"] == 1
+    assert metrics["onlineFuelCellCount"] == 1
+    assert metrics["onlineHydrogenStorageCount"] == 1
+    assert metrics["electrolyzerCurrentKw"] == pytest.approx(4.0)
+    assert metrics["electrolyzerTargetKw"] == pytest.approx(4.0)
+    assert metrics["electrolyzerFlowCurrentNm3h"] == pytest.approx(0.8)
+    assert metrics["electrolyzerFlowTargetNm3h"] == pytest.approx(0.8)
+    assert metrics["hydrogenStoragePressureMpa"] == pytest.approx(20.0)
+    assert metrics["hydrogenStoragePressureLowGuardMpa"] == pytest.approx(4.15)
+    assert metrics["hydrogenStoragePressureHighGuardMpa"] == pytest.approx(42.85)
+    assert metrics["hydrogenStorageGasQuantityNm3"] == pytest.approx(420.0)
+    assert metrics["hydrogenStorageSoc"] == pytest.approx(0.42)
+    assert metrics["hydrogenStorageFlowNm3h"] == pytest.approx(0.8)
+
+
+def test_hydrogen_aggregate_targets_are_held_with_current_generation():
+    plan = {
+        "metrics": {
+            "electrolyzerCurrentKw": 6.0,
+            "electrolyzerTargetKw": 0.0,
+            "electrolyzerFlowCurrentNm3h": 1.2,
+            "electrolyzerFlowTargetNm3h": 0.0,
+            "hydrogenControl": {"action": "hold", "commands": []},
+        },
+        "commands": [],
+        "commandRows": [],
+    }
+    effective = {
+        "metrics": {
+            "electrolyzerTargetKw": 6.0,
+            "electrolyzerFlowTargetNm3h": 1.2,
+        },
+        "hydrogenCommands": [
+            {
+                "dev_type": "ACLoad",
+                "dev_name": "electrolyzer-load",
+                "set_type": "p_set",
+            }
+        ],
+        "hydrogenCommandRows": [],
+    }
+
+    held = TraineeRenewableControlManager._plan_with_held_hydrogen_targets(
+        plan,
+        effective,
+    )
+
+    assert held["metrics"]["electrolyzerTargetKw"] == pytest.approx(6.0)
+    assert held["metrics"]["electrolyzerFlowTargetNm3h"] == pytest.approx(1.2)
+    assert held["metrics"]["hydrogenControl"]["electrolyzerTargetKw"] == pytest.approx(6.0)
 
 
 def test_unrelated_high_pressure_hydrogen_island_does_not_block_electrolyzer():

@@ -805,12 +805,13 @@
                   <span>实时 / 目标</span>
                 </div>
                 <div id="renewableMetricTabs" class="renewable-metric-tabs" role="tablist" aria-label="统计指标范围">
-                  <button id="renewableMetricTabAc" type="button" class="is-active" role="tab" data-renewable-metric-tab="ac" aria-selected="true">交流侧</button>
-                  <button id="renewableMetricTabDc" type="button" role="tab" data-renewable-metric-tab="dc" aria-selected="false">直流侧</button>
-                  <button id="renewableMetricTabSystem" type="button" role="tab" data-renewable-metric-tab="system" aria-selected="false">系统总</button>
+                  <button id="renewableMetricTabAc" type="button" class="is-active" role="tab" data-renewable-metric-tab="ac" aria-controls="renewableMetricPaneAc" aria-selected="true">交流侧</button>
+                  <button id="renewableMetricTabDc" type="button" role="tab" data-renewable-metric-tab="dc" aria-controls="renewableMetricPaneDc" aria-selected="false">直流侧</button>
+                  <button id="renewableMetricTabSystem" type="button" role="tab" data-renewable-metric-tab="system" aria-controls="renewableMetricPaneSystem" aria-selected="false">系统总</button>
+                  <button id="renewableMetricTabHydrogen" type="button" role="tab" data-renewable-metric-tab="hydrogen" aria-controls="renewableMetricPaneHydrogen" aria-selected="false">氢能</button>
                 </div>
                 <div class="renewable-metric-panes">
-                  <section class="renewable-metric-pane is-active" role="tabpanel" data-renewable-metric-pane="ac" aria-labelledby="renewableMetricTabAc">
+                  <section id="renewableMetricPaneAc" class="renewable-metric-pane is-active" role="tabpanel" data-renewable-metric-pane="ac" aria-labelledby="renewableMetricTabAc">
                     <div class="renewable-metric-table-wrap">
                       <table class="renewable-metric-table">
                         <colgroup><col class="renewable-metric-object-column" /><col class="renewable-metric-value-column" /><col class="renewable-metric-value-column" /></colgroup>
@@ -833,7 +834,7 @@
                       </table>
                     </div>
                   </section>
-                  <section class="renewable-metric-pane" role="tabpanel" data-renewable-metric-pane="dc" aria-labelledby="renewableMetricTabDc" hidden>
+                  <section id="renewableMetricPaneDc" class="renewable-metric-pane" role="tabpanel" data-renewable-metric-pane="dc" aria-labelledby="renewableMetricTabDc" hidden>
                     <div class="renewable-metric-table-wrap">
                       <table class="renewable-metric-table">
                         <colgroup><col class="renewable-metric-object-column" /><col class="renewable-metric-value-column" /><col class="renewable-metric-value-column" /></colgroup>
@@ -856,7 +857,7 @@
                       </table>
                     </div>
                   </section>
-                  <section class="renewable-metric-pane" role="tabpanel" data-renewable-metric-pane="system" aria-labelledby="renewableMetricTabSystem" hidden>
+                  <section id="renewableMetricPaneSystem" class="renewable-metric-pane" role="tabpanel" data-renewable-metric-pane="system" aria-labelledby="renewableMetricTabSystem" hidden>
                     <div class="renewable-metric-table-wrap">
                       <table class="renewable-metric-table">
                         <colgroup><col class="renewable-metric-object-column" /><col class="renewable-metric-value-column" /><col class="renewable-metric-value-column" /></colgroup>
@@ -876,6 +877,26 @@
                           <tr data-renewable-metric-group="system-diesel"><th scope="row">柴发下限<span class="renewable-metric-unit">（kW）</span></th><td id="renewableTotalDieselMinKw">--</td><td class="renewable-metric-empty">--</td></tr>
                           <tr data-renewable-metric-group="system-load"><th scope="row">负荷<span class="renewable-metric-unit">（kW）</span></th><td id="renewableTotalLoadKw">--</td><td class="renewable-metric-empty">--</td></tr>
                           <tr data-renewable-metric-group="system-acdc"><th scope="row">ACDC变流<span class="renewable-metric-unit">（kW）</span></th><td id="renewableAcdcCurrentKw">--</td><td id="renewableAcdcTargetKw">--</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                  <section id="renewableMetricPaneHydrogen" class="renewable-metric-pane" role="tabpanel" data-renewable-metric-pane="hydrogen" aria-labelledby="renewableMetricTabHydrogen" hidden>
+                    <div class="renewable-metric-table-wrap">
+                      <table class="renewable-metric-table">
+                        <colgroup><col class="renewable-metric-object-column" /><col class="renewable-metric-value-column" /><col class="renewable-metric-value-column" /></colgroup>
+                        <thead><tr><th scope="col">值对象</th><th scope="col">实时值</th><th scope="col">目标值</th></tr></thead>
+                        <tbody>
+                          <tr data-renewable-metric-group="hydrogen-electrolyzer"><th scope="row">电制氢功率<span class="renewable-metric-unit">（kW）</span></th><td id="renewableElectrolyzerCurrentKw">--</td><td id="renewableElectrolyzerTargetKw">--</td></tr>
+                          <tr data-renewable-metric-group="hydrogen-electrolyzer"><th scope="row">产氢流量<span class="renewable-metric-unit">（Nm³/h）</span></th><td id="renewableElectrolyzerFlowCurrentNm3h">--</td><td id="renewableElectrolyzerFlowTargetNm3h">--</td></tr>
+                          <tr data-renewable-metric-group="hydrogen-fuel-cell"><th scope="row">燃料电池功率<span class="renewable-metric-unit">（kW）</span></th><td id="renewableFuelCellCurrentKw">--</td><td id="renewableFuelCellTargetKw">--</td></tr>
+                          <tr data-renewable-metric-group="hydrogen-fuel-cell"><th scope="row">耗氢流量<span class="renewable-metric-unit">（Nm³/h）</span></th><td id="renewableFuelCellFlowCurrentNm3h">--</td><td id="renewableFuelCellFlowTargetNm3h">--</td></tr>
+                          <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">储氢罐平均压力<span class="renewable-metric-unit">（MPa）</span></th><td id="renewableHydrogenStoragePressureMpa">--</td><td class="renewable-metric-empty">--</td></tr>
+                          <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">平均压力下限保护值<span class="renewable-metric-unit">（MPa）</span></th><td id="renewableHydrogenStoragePressureLowGuardMpa">--</td><td class="renewable-metric-empty">--</td></tr>
+                          <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">平均压力上限保护值<span class="renewable-metric-unit">（MPa）</span></th><td id="renewableHydrogenStoragePressureHighGuardMpa">--</td><td class="renewable-metric-empty">--</td></tr>
+                          <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">储氢罐总储气量<span class="renewable-metric-unit">（Nm³）</span></th><td id="renewableHydrogenStorageGasQuantityNm3">--</td><td class="renewable-metric-empty">--</td></tr>
+                          <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">储氢罐平均SOC<span class="renewable-metric-unit">（%）</span></th><td id="renewableHydrogenStorageSoc">--</td><td class="renewable-metric-empty">--</td></tr>
+                          <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">储氢罐净流量<span class="renewable-metric-unit">（Nm³/h）</span></th><td id="renewableHydrogenStorageFlowNm3h">--</td><td class="renewable-metric-empty">--</td></tr>
                         </tbody>
                       </table>
                     </div>
@@ -1199,102 +1220,124 @@
           </div>
           <button id="closeRenewableControlParametersDialog" class="dialog-close-button" type="button" aria-label="关闭控制参数窗口">×</button>
         </div>
-        <div class="renewable-control-parameter-fields">
-          <label>自动控制周期（仿真秒）
-            <input id="renewableControlPeriod" type="number" min="1" step="0.1" value="2" title="按仿真时钟累计，仿真暂停时停止计时" />
-          </label>
-          <label>自动指令有效期(分钟)
-            <input id="renewableCommandValidMinutes" type="number" min="0.1" step="1" value="120" />
-          </label>
-          <label>新能源步长(%/次决策)
-            <input id="renewableStepRatio" type="number" min="0" max="100" step="0.1" value="3" />
-          </label>
-          <label>跟网储能步长(%/次决策)
-            <input id="storageStepRatio" type="number" min="0" max="100" step="0.1" value="3" />
-          </label>
-          <label>SOC越界步长倍率(%)
-            <input id="storageSocCorrectionStepScale" type="number" min="10" max="100" step="0.1" value="20" />
-          </label>
-          <label>构网储能功率保护带(%)
-            <input id="gridFormingStorageProtectionRatio" type="number" min="0" max="50" step="0.1" value="5" />
-          </label>
-          <label>柴发功率保护带(%)
-            <input id="dieselPowerProtectionRatio" type="number" min="0" max="50" step="0.1" value="3" />
-          </label>
-          <label>SOC死区(%)
-            <input id="socDeadband" type="number" min="0" max="100" step="0.1" value="5" />
-          </label>
-          <label class="renewable-control-toggle-field">
-            <span>氢能是否闭环控制</span>
-            <input id="hydrogenClosedLoopEnabled" type="checkbox" />
-          </label>
-          <label>氢储罐压力死区(%)
-            <input id="hydrogenPressureDeadbandRatio" type="number" min="0" max="50" step="0.1" value="5" />
-          </label>
-          <fieldset class="renewable-hydrogen-power-settings">
-            <legend>电制氢功率参数</legend>
-            <label>下限(kW)
-              <input id="electrolyzerPowerMinKw" type="number" min="0" step="0.1" value="2" />
-            </label>
-            <label>上限(kW)
-              <input id="electrolyzerPowerMaxKw" type="number" min="0" step="0.1" value="50" />
-            </label>
-            <label>死区(kW)
-              <input id="electrolyzerPowerDeadbandKw" type="number" min="0" step="0.1" value="0" />
-            </label>
-            <label>步长(kW/次决策)
-              <input id="electrolyzerPowerStepKw" type="number" min="0.001" step="0.1" value="2" />
-            </label>
-          </fieldset>
-          <fieldset class="renewable-hydrogen-power-settings">
-            <legend>燃料电池功率参数</legend>
-            <label>下限(kW)
-              <input id="fuelCellPowerMinKw" type="number" min="0" step="0.1" value="3" />
-            </label>
-            <label>上限(kW)
-              <input id="fuelCellPowerMaxKw" type="number" min="0" step="0.1" value="15" />
-            </label>
-            <label>死区(kW)
-              <input id="fuelCellPowerDeadbandKw" type="number" min="0" step="0.1" value="0" />
-            </label>
-            <label>步长(kW/次决策)
-              <input id="fuelCellPowerStepKw" type="number" min="0.001" step="0.1" value="3" />
-            </label>
-          </fieldset>
-          <label>新能源弃电权重
-            <input id="optimizationRenewableCurtailmentWeight" type="number" min="0" step="0.001" value="1" />
-          </label>
-          <label>柴发出力权重
-            <input id="optimizationDieselOutputWeight" type="number" min="0" step="0.001" value="1" />
-          </label>
-          <label>弃电平方权重
-            <input id="optimizationCurtailmentSquareWeight" type="number" min="0" step="0.000001" value="0.000001" />
-          </label>
-          <label>电源/储能调节平方权重
-            <input id="optimizationSourceStorageAdjustmentSquareWeight" type="number" min="0" step="0.000001" value="0.000001" />
-          </label>
-          <label>平衡松弛平方权重
-            <input id="optimizationBalanceDeltaSquareWeight" type="number" min="0" step="1000" value="10000" />
-          </label>
-          <label>平衡松弛告警(kW)
-            <input id="optimizationBalanceDeltaWarningKw" type="number" min="0" step="0.1" value="1" />
-          </label>
-          <label>平衡容差(kW)
-            <input id="optimizationBalanceToleranceKw" type="number" min="0" step="0.1" value="0.1" />
-          </label>
-          <label>边界容差(kW)
-            <input id="optimizationBoundToleranceKw" type="number" min="0" step="0.1" value="0.1" />
-          </label>
-          <label>求解收敛容差
-            <input id="optimizationFtol" type="number" min="0" step="0.001" value="0.001" />
-          </label>
-          <label>最大迭代次数
-            <input id="optimizationMaxIterations" type="number" min="1" step="1" value="100" />
-          </label>
-          <div class="renewable-control-parameter-row">
-            <span>储能功率降额</span>
-            <button id="storagePowerDeratingButton" type="button">配置曲线</button>
-          </div>
+        <div id="renewableControlParameterTabs" class="renewable-control-parameter-tabs" role="tablist" aria-label="控制参数分类">
+          <button id="renewableControlParameterTabRuntime" type="button" class="is-active" role="tab" data-renewable-parameter-tab="runtime" aria-controls="renewableControlParameterPaneRuntime" aria-selected="true">运行与步长</button>
+          <button id="renewableControlParameterTabProtection" type="button" role="tab" data-renewable-parameter-tab="protection" aria-controls="renewableControlParameterPaneProtection" aria-selected="false">储能与保护</button>
+          <button id="renewableControlParameterTabHydrogen" type="button" role="tab" data-renewable-parameter-tab="hydrogen" aria-controls="renewableControlParameterPaneHydrogen" aria-selected="false">氢能与控制</button>
+          <button id="renewableControlParameterTabOptimization" type="button" role="tab" data-renewable-parameter-tab="optimization" aria-controls="renewableControlParameterPaneOptimization" aria-selected="false">优化与求解</button>
+        </div>
+        <div class="renewable-control-parameter-panes">
+          <section id="renewableControlParameterPaneRuntime" class="renewable-control-parameter-pane is-active" role="tabpanel" data-renewable-parameter-pane="runtime" aria-labelledby="renewableControlParameterTabRuntime">
+            <div class="renewable-control-parameter-fields">
+              <label>自动控制周期（仿真秒）
+                <input id="renewableControlPeriod" type="number" min="1" step="0.1" value="2" title="按仿真时钟累计，仿真暂停时停止计时" />
+              </label>
+              <label>自动指令有效期(分钟)
+                <input id="renewableCommandValidMinutes" type="number" min="0.1" step="1" value="120" />
+              </label>
+              <label>新能源步长(%/次决策)
+                <input id="renewableStepRatio" type="number" min="0" max="100" step="0.1" value="3" />
+              </label>
+              <label>跟网储能步长(%/次决策)
+                <input id="storageStepRatio" type="number" min="0" max="100" step="0.1" value="3" />
+              </label>
+            </div>
+          </section>
+          <section id="renewableControlParameterPaneProtection" class="renewable-control-parameter-pane" role="tabpanel" data-renewable-parameter-pane="protection" aria-labelledby="renewableControlParameterTabProtection" hidden>
+            <div class="renewable-control-parameter-fields">
+              <label>SOC越界步长倍率(%)
+                <input id="storageSocCorrectionStepScale" type="number" min="10" max="100" step="0.1" value="20" />
+              </label>
+              <label>构网储能功率保护带(%)
+                <input id="gridFormingStorageProtectionRatio" type="number" min="0" max="50" step="0.1" value="5" />
+              </label>
+              <label>柴发功率保护带(%)
+                <input id="dieselPowerProtectionRatio" type="number" min="0" max="50" step="0.1" value="3" />
+              </label>
+              <label>SOC死区(%)
+                <input id="socDeadband" type="number" min="0" max="100" step="0.1" value="5" />
+              </label>
+              <div class="renewable-control-parameter-row">
+                <span>储能功率降额</span>
+                <button id="storagePowerDeratingButton" type="button">配置曲线</button>
+              </div>
+            </div>
+          </section>
+          <section id="renewableControlParameterPaneHydrogen" class="renewable-control-parameter-pane" role="tabpanel" data-renewable-parameter-pane="hydrogen" aria-labelledby="renewableControlParameterTabHydrogen" hidden>
+            <div class="renewable-control-parameter-fields">
+              <label class="renewable-control-toggle-field">
+                <span>氢能是否闭环控制</span>
+                <input id="hydrogenClosedLoopEnabled" type="checkbox" />
+              </label>
+              <label>氢储罐压力死区(%)
+                <input id="hydrogenPressureDeadbandRatio" type="number" min="0" max="50" step="0.1" value="5" />
+              </label>
+              <fieldset class="renewable-hydrogen-power-settings">
+                <legend>电制氢功率参数</legend>
+                <label>下限(kW)
+                  <input id="electrolyzerPowerMinKw" type="number" min="0" step="0.1" value="2" />
+                </label>
+                <label>上限(kW)
+                  <input id="electrolyzerPowerMaxKw" type="number" min="0" step="0.1" value="50" />
+                </label>
+                <label>死区(kW)
+                  <input id="electrolyzerPowerDeadbandKw" type="number" min="0" step="0.1" value="0" />
+                </label>
+                <label>步长(kW/次决策)
+                  <input id="electrolyzerPowerStepKw" type="number" min="0.001" step="0.1" value="2" />
+                </label>
+              </fieldset>
+              <fieldset class="renewable-hydrogen-power-settings">
+                <legend>燃料电池功率参数</legend>
+                <label>下限(kW)
+                  <input id="fuelCellPowerMinKw" type="number" min="0" step="0.1" value="3" />
+                </label>
+                <label>上限(kW)
+                  <input id="fuelCellPowerMaxKw" type="number" min="0" step="0.1" value="15" />
+                </label>
+                <label>死区(kW)
+                  <input id="fuelCellPowerDeadbandKw" type="number" min="0" step="0.1" value="0" />
+                </label>
+                <label>步长(kW/次决策)
+                  <input id="fuelCellPowerStepKw" type="number" min="0.001" step="0.1" value="3" />
+                </label>
+              </fieldset>
+            </div>
+          </section>
+          <section id="renewableControlParameterPaneOptimization" class="renewable-control-parameter-pane" role="tabpanel" data-renewable-parameter-pane="optimization" aria-labelledby="renewableControlParameterTabOptimization" hidden>
+            <div class="renewable-control-parameter-fields">
+              <label>新能源弃电权重
+                <input id="optimizationRenewableCurtailmentWeight" type="number" min="0" step="0.001" value="1" />
+              </label>
+              <label>柴发出力权重
+                <input id="optimizationDieselOutputWeight" type="number" min="0" step="0.001" value="1" />
+              </label>
+              <label>弃电平方权重
+                <input id="optimizationCurtailmentSquareWeight" type="number" min="0" step="0.000001" value="0.000001" />
+              </label>
+              <label>电源/储能调节平方权重
+                <input id="optimizationSourceStorageAdjustmentSquareWeight" type="number" min="0" step="0.000001" value="0.000001" />
+              </label>
+              <label>平衡松弛平方权重
+                <input id="optimizationBalanceDeltaSquareWeight" type="number" min="0" step="1000" value="10000" />
+              </label>
+              <label>平衡松弛告警(kW)
+                <input id="optimizationBalanceDeltaWarningKw" type="number" min="0" step="0.1" value="1" />
+              </label>
+              <label>平衡容差(kW)
+                <input id="optimizationBalanceToleranceKw" type="number" min="0" step="0.1" value="0.1" />
+              </label>
+              <label>边界容差(kW)
+                <input id="optimizationBoundToleranceKw" type="number" min="0" step="0.1" value="0.1" />
+              </label>
+              <label>求解收敛容差
+                <input id="optimizationFtol" type="number" min="0" step="0.001" value="0.001" />
+              </label>
+              <label>最大迭代次数
+                <input id="optimizationMaxIterations" type="number" min="1" step="1" value="100" />
+              </label>
+            </div>
+          </section>
         </div>
         <p class="remote-control-hint">参数修改后点击保存，写入学员台 WEB 后台，并供下次启动加载。</p>
         <div class="dialog-actions">

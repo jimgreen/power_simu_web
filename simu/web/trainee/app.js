@@ -274,6 +274,7 @@ const state = {
     lastStatus: "请选择单次计算或启动实时控制。",
     logs: [],
     metricTab: "ac",
+    parameterTab: "runtime",
     strategyTab: "ac-wind",
     detailTab: "trend",
     logPage: 1,
@@ -334,6 +335,7 @@ const RENEWABLE_TREND_SCOPE_DEFS = [
   { key: "ac", label: "交流" },
   { key: "dc", label: "直流" },
   { key: "system", label: "系统" },
+  { key: "hydrogen", label: "氢能" },
 ];
 const RENEWABLE_TREND_SERIES_DEFS = [
   { key: "acRenewableCurrent", metricId: "renewableAcCurrentKw", field: "acRenewableCurrentKw", label: "交流新能源当前值", scope: "ac", device: "renewable", deviceLabel: "新能源", curveLabel: "功率", group: "ac-renewable", color: "#23854a", axis: "left", unit: "kW", style: "power" },
@@ -397,6 +399,20 @@ const RENEWABLE_TREND_SERIES_DEFS = [
   { key: "acdcTarget", metricId: "renewableAcdcTargetKw", field: "acdcTargetKw", label: "AC/DC变流目标值", scope: "system", device: "acdc", deviceLabel: "AC/DC变流器", curveLabel: "目标", group: "system-acdc", color: "#0a8b8b", axis: "left", unit: "kW", style: "target", dashed: true },
   { key: "observedWindSpeed", metricId: "renewableObservedWindSpeed", field: "observedWindSpeed", label: "实时风速", scope: "system", device: "environment", deviceLabel: "环境", curveLabel: "风速", group: "system-environment", color: "#3278b5", axis: "right", unit: "m/s", style: "weather" },
   { key: "observedSolarIrradiance", metricId: "renewableObservedSolarIrradiance", field: "observedSolarIrradiance", label: "实时太阳辐照度", scope: "system", device: "environment", deviceLabel: "环境", curveLabel: "太阳辐照度", group: "system-environment", color: "#d28b16", axis: "right", unit: "W/m²", style: "weather" },
+  { key: "electrolyzerCurrent", metricId: "renewableElectrolyzerCurrentKw", field: "electrolyzerCurrentKw", label: "电制氢实时功率", scope: "hydrogen", device: "electrolyzer", deviceLabel: "电制氢", curveLabel: "功率", group: "hydrogen-electrolyzer", color: "#008678", axis: "left", unit: "kW", style: "power" },
+  { key: "electrolyzerTarget", metricId: "renewableElectrolyzerTargetKw", field: "electrolyzerTargetKw", label: "电制氢目标功率", scope: "hydrogen", device: "electrolyzer", deviceLabel: "电制氢", curveLabel: "目标", group: "hydrogen-electrolyzer", color: "#008678", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "electrolyzerFlowCurrent", metricId: "renewableElectrolyzerFlowCurrentNm3h", field: "electrolyzerFlowCurrentNm3h", label: "实时产氢流量", scope: "hydrogen", device: "electrolyzer", deviceLabel: "电制氢", curveLabel: "产氢流量", group: "hydrogen-electrolyzer", color: "#18a899", axis: "right", unit: "Nm³/h", style: "flow" },
+  { key: "electrolyzerFlowTarget", metricId: "renewableElectrolyzerFlowTargetNm3h", field: "electrolyzerFlowTargetNm3h", label: "目标产氢流量", scope: "hydrogen", device: "electrolyzer", deviceLabel: "电制氢", curveLabel: "流量目标", group: "hydrogen-electrolyzer", color: "#18a899", axis: "right", unit: "Nm³/h", style: "target", dashed: true },
+  { key: "fuelCellCurrent", metricId: "renewableFuelCellCurrentKw", field: "fuelCellCurrentKw", label: "燃料电池实时功率", scope: "hydrogen", device: "fuel-cell", deviceLabel: "燃料电池", curveLabel: "功率", group: "hydrogen-fuel-cell", color: "#c06e00", axis: "left", unit: "kW", style: "power" },
+  { key: "fuelCellTarget", metricId: "renewableFuelCellTargetKw", field: "fuelCellTargetKw", label: "燃料电池目标功率", scope: "hydrogen", device: "fuel-cell", deviceLabel: "燃料电池", curveLabel: "目标", group: "hydrogen-fuel-cell", color: "#c06e00", axis: "left", unit: "kW", style: "target", dashed: true },
+  { key: "fuelCellFlowCurrent", metricId: "renewableFuelCellFlowCurrentNm3h", field: "fuelCellFlowCurrentNm3h", label: "实时耗氢流量", scope: "hydrogen", device: "fuel-cell", deviceLabel: "燃料电池", curveLabel: "耗氢流量", group: "hydrogen-fuel-cell", color: "#e0932f", axis: "right", unit: "Nm³/h", style: "flow" },
+  { key: "fuelCellFlowTarget", metricId: "renewableFuelCellFlowTargetNm3h", field: "fuelCellFlowTargetNm3h", label: "目标耗氢流量", scope: "hydrogen", device: "fuel-cell", deviceLabel: "燃料电池", curveLabel: "流量目标", group: "hydrogen-fuel-cell", color: "#e0932f", axis: "right", unit: "Nm³/h", style: "target", dashed: true },
+  { key: "hydrogenStoragePressure", metricId: "renewableHydrogenStoragePressureMpa", field: "hydrogenStoragePressureMpa", label: "储氢罐平均压力", scope: "hydrogen", device: "hydrogen-storage", deviceLabel: "储氢罐", curveLabel: "平均压力", group: "hydrogen-storage", color: "#6358a9", axis: "right", unit: "MPa", style: "pressure" },
+  { key: "hydrogenStoragePressureLowGuard", metricId: "renewableHydrogenStoragePressureLowGuardMpa", field: "hydrogenStoragePressureLowGuardMpa", label: "储氢罐平均压力下限保护值", scope: "hydrogen", device: "hydrogen-storage", deviceLabel: "储氢罐", curveLabel: "压力下限", group: "hydrogen-storage", color: "#6358a9", axis: "right", unit: "MPa", style: "limit", dashPattern: [10, 4, 2, 4] },
+  { key: "hydrogenStoragePressureHighGuard", metricId: "renewableHydrogenStoragePressureHighGuardMpa", field: "hydrogenStoragePressureHighGuardMpa", label: "储氢罐平均压力上限保护值", scope: "hydrogen", device: "hydrogen-storage", deviceLabel: "储氢罐", curveLabel: "压力上限", group: "hydrogen-storage", color: "#8b55a4", axis: "right", unit: "MPa", style: "limit", dashPattern: [10, 4, 2, 4] },
+  { key: "hydrogenStorageGasQuantity", metricId: "renewableHydrogenStorageGasQuantityNm3", field: "hydrogenStorageGasQuantityNm3", label: "储氢罐总储气量", scope: "hydrogen", device: "hydrogen-storage", deviceLabel: "储氢罐", curveLabel: "总储气量", group: "hydrogen-storage", color: "#3b6fa1", axis: "right", unit: "Nm³", style: "quantity" },
+  { key: "hydrogenStorageSoc", metricId: "renewableHydrogenStorageSoc", field: "hydrogenStorageSocPercent", label: "储氢罐平均SOC", scope: "hydrogen", device: "hydrogen-storage", deviceLabel: "储氢罐", curveLabel: "平均SOC", group: "hydrogen-storage", color: "#8b55a4", axis: "right", unit: "%", style: "soc", dashPattern: [2, 4] },
+  { key: "hydrogenStorageFlow", metricId: "renewableHydrogenStorageFlowNm3h", field: "hydrogenStorageFlowNm3h", label: "储氢罐净流量", scope: "hydrogen", device: "hydrogen-storage", deviceLabel: "储氢罐", curveLabel: "净流量", group: "hydrogen-storage", color: "#2d8ba4", axis: "right", unit: "Nm³/h", style: "flow" },
 ];
 const RENEWABLE_TREND_DEFAULT_VISIBLE_SERIES = new Set([
   "acLoad",
@@ -12345,6 +12361,7 @@ function resetRenewableControlView(modelId = state.activeModelId) {
     lastStatus: "正在读取学员台后台控制状态。",
     logs: [],
     metricTab: "ac",
+    parameterTab: "runtime",
     strategyTab: "ac-wind",
     logPage: 1,
     lastControlLogRenderKey: "",
@@ -12801,7 +12818,7 @@ function renewableControlLogs() {
 }
 
 function renderRenewableMetricTabs() {
-  const allowedTabs = new Set(["ac", "dc", "system"]);
+  const allowedTabs = new Set(["ac", "dc", "system", "hydrogen"]);
   const activeTab = allowedTabs.has(state.renewableControl.metricTab)
     ? state.renewableControl.metricTab
     : "ac";
@@ -12816,6 +12833,29 @@ function renderRenewableMetricTabs() {
     const active = pane.dataset.renewableMetricPane === activeTab;
     pane.hidden = !active;
     pane.classList.toggle("is-active", active);
+  });
+}
+
+function renderRenewableControlParameterTabs(requestedTab = "") {
+  const allowedTabs = new Set(["runtime", "protection", "hydrogen", "optimization"]);
+  const currentTab = state.renewableControl.parameterTab;
+  const activeTab = allowedTabs.has(requestedTab)
+    ? requestedTab
+    : allowedTabs.has(currentTab)
+      ? currentTab
+      : "runtime";
+  state.renewableControl.parameterTab = activeTab;
+  document.querySelectorAll("[data-renewable-parameter-tab]").forEach((button) => {
+    const active = button.dataset.renewableParameterTab === activeTab;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll("[data-renewable-parameter-pane]").forEach((pane) => {
+    const active = pane.dataset.renewableParameterPane === activeTab;
+    pane.hidden = !active;
+    pane.classList.toggle("is-active", active);
+    if (active) pane.scrollTop = 0;
   });
 }
 
@@ -13031,6 +13071,9 @@ function renewableMetricGroupCount(metrics = {}, group = "") {
     "ac-load": ["onlineAcLoadCount"],
     "dc-load": ["onlineDcLoadCount"],
     "system-acdc": ["onlineAcdcConverterCount", "storageConverterCount"],
+    "hydrogen-electrolyzer": ["onlineElectrolyzerCount"],
+    "hydrogen-fuel-cell": ["onlineFuelCellCount"],
+    "hydrogen-storage": ["onlineHydrogenStorageCount"],
   };
   if (directKeys[group]) return renewableMetricCount(metrics, directKeys[group]);
   const aggregateGroups = {
@@ -13556,6 +13599,10 @@ function renewableMetricPowerText(value) {
   return Number.isFinite(value) ? formatNumber(value) : "--";
 }
 
+function renewableMetricNumberText(value) {
+  return Number.isFinite(value) ? formatNumber(value) : "--";
+}
+
 function renewableMetricSocText(value) {
   return Number.isFinite(value) ? formatOverviewNumber(value * 100) : "--";
 }
@@ -13628,6 +13675,7 @@ function openRenewableControlParametersDialog() {
   const dialog = $("renewableControlParametersDialog");
   if (dialog && !dialog.open) {
     populateRenewableControlParameters();
+    renderRenewableControlParameterTabs("runtime");
     dialog.showModal();
   }
 }
@@ -13881,6 +13929,20 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     renewableTotalLoadKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalLoadKw", ["loadKw"])),
     renewableAcdcCurrentKw: renewableMetricPowerText(metrics.acdcCurrentKw),
     renewableAcdcTargetKw: renewableMetricPowerText(metrics.acdcTargetKw),
+    renewableElectrolyzerCurrentKw: renewableMetricPowerText(metrics.electrolyzerCurrentKw),
+    renewableElectrolyzerTargetKw: renewableMetricPowerText(metrics.electrolyzerTargetKw),
+    renewableElectrolyzerFlowCurrentNm3h: renewableMetricNumberText(metrics.electrolyzerFlowCurrentNm3h),
+    renewableElectrolyzerFlowTargetNm3h: renewableMetricNumberText(metrics.electrolyzerFlowTargetNm3h),
+    renewableFuelCellCurrentKw: renewableMetricPowerText(metrics.fuelCellCurrentKw),
+    renewableFuelCellTargetKw: renewableMetricPowerText(metrics.fuelCellTargetKw),
+    renewableFuelCellFlowCurrentNm3h: renewableMetricNumberText(metrics.fuelCellFlowCurrentNm3h),
+    renewableFuelCellFlowTargetNm3h: renewableMetricNumberText(metrics.fuelCellFlowTargetNm3h),
+    renewableHydrogenStoragePressureMpa: renewableMetricNumberText(metrics.hydrogenStoragePressureMpa),
+    renewableHydrogenStoragePressureLowGuardMpa: renewableMetricNumberText(metrics.hydrogenStoragePressureLowGuardMpa),
+    renewableHydrogenStoragePressureHighGuardMpa: renewableMetricNumberText(metrics.hydrogenStoragePressureHighGuardMpa),
+    renewableHydrogenStorageGasQuantityNm3: renewableMetricNumberText(metrics.hydrogenStorageGasQuantityNm3),
+    renewableHydrogenStorageSoc: renewableMetricSocText(metrics.hydrogenStorageSoc),
+    renewableHydrogenStorageFlowNm3h: renewableMetricNumberText(metrics.hydrogenStorageFlowNm3h),
     renewableObservedWindSpeed: Number.isFinite(observedWindSpeed) ? formatNumber(observedWindSpeed) : "--",
     renewableObservedSolarIrradiance: Number.isFinite(observedSolarIrradiance) ? formatNumber(observedSolarIrradiance) : "--",
     renewableLastSent: loopMode === "closed" ? control.lastSentAt || "--" : control.lastCalculatedAt || "--",
@@ -17824,9 +17886,14 @@ document.querySelectorAll("[data-renewable-strategy-tab]").forEach((button) => {
 document.querySelectorAll("[data-renewable-metric-tab]").forEach((button) => {
   button.addEventListener("click", () => {
     const tabKey = button.dataset.renewableMetricTab || "ac";
-    if (!["ac", "dc", "system"].includes(tabKey)) return;
+    if (!["ac", "dc", "system", "hydrogen"].includes(tabKey)) return;
     state.renewableControl.metricTab = tabKey;
     renderRenewableMetricTabs();
+  });
+});
+document.querySelectorAll("[data-renewable-parameter-tab]").forEach((button) => {
+  button.addEventListener("click", () => {
+    renderRenewableControlParameterTabs(button.dataset.renewableParameterTab || "runtime");
   });
 });
 document.querySelectorAll("[data-renewable-detail-tab]").forEach((button) => {

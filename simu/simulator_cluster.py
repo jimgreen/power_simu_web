@@ -307,6 +307,16 @@ class SimulatorClusterManager:
             if next_pid != entry.get("pid"):
                 entry["pid"] = next_pid
                 self._save_registry_locked()
+        elif process is None and entry.get("pid"):
+            # A proxy restart can leave the last child PID in the registry even
+            # though that process no longer exists. Probe it once so a live
+            # independently-addressable service can be adopted; after a failed
+            # identity/health check, discard the stale marker instead of making
+            # every catalog request wait for the same timeout.
+            entry["pid"] = None
+            self._states[model_id] = "stopped"
+            self._errors[model_id] = ""
+            self._save_registry_locked()
         elif self._states.get(model_id) == "running":
             self._states[model_id] = "failed"
             self._errors[model_id] = error or "模拟服务健康检查失败"

@@ -282,6 +282,45 @@ def test_cluster_does_not_terminate_unverified_stale_pid(tmp_path: Path, monkeyp
     assert killed == []
 
 
+def test_catalog_clears_unhealthy_stale_pid_after_proxy_restart(tmp_path: Path):
+    models_root = tmp_path / "models"
+    _make_model(models_root, "only")
+    runtime_root = tmp_path / "runtime"
+    manager = SimulatorClusterManager(
+        sim_dir=tmp_path,
+        models_root=models_root,
+        runtime_root=runtime_root,
+        health_checker=lambda *_args: (False, {}, "not running"),
+    )
+    registry = json.loads(manager.registry_path.read_text(encoding="utf-8"))
+    registry["services"]["only"]["pid"] = 999999
+    manager.registry_path.write_text(json.dumps(registry), encoding="utf-8")
+
+    health_checks: list[str] = []
+
+    def health_checker(_host, _port, model_id, _timeout):
+        health_checks.append(model_id)
+        return False, {}, "not running"
+
+    reloaded = SimulatorClusterManager(
+        sim_dir=tmp_path,
+        models_root=models_root,
+        runtime_root=runtime_root,
+        health_checker=health_checker,
+        port_checker=lambda *_args: False,
+    )
+
+    first = reloaded.catalog()
+    second = reloaded.catalog()
+
+    assert first["models"][0]["service"]["state"] == "stopped"
+    assert first["models"][0]["service"]["pid"] is None
+    assert second["models"][0]["service"]["pid"] is None
+    assert health_checks == ["only"]
+    persisted = json.loads(reloaded.registry_path.read_text(encoding="utf-8"))
+    assert persisted["services"]["only"]["pid"] is None
+
+
 def _free_port_pair() -> int:
     for _attempt in range(100):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:

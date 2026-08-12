@@ -36,9 +36,21 @@ class OverviewEnergyConventionsUiTest(unittest.TestCase):
             "function overviewFallbackFlowGroups",
             "function parsePowerFlowOverview",
         )
+        overview_text_functions = _function_block(
+            source,
+            "function formatOverviewNumber",
+            "function overviewGreenGroupPower",
+        )
+        hydrogen_target_function = _function_block(
+            source,
+            "function overviewHydrogenActiveTarget",
+            "function renderOverviewFlowGroups",
+        )
         node_script = f"""
 {green_functions}
 {power_number_function}
+{overview_text_functions}
+{hydrogen_target_function}
 const OVERVIEW_FLOW_GROUP_DEFINITIONS = [
   {{ key: "acdcConverter", category: "converter", region: "bridge", color: "#0a8b8b" }},
 ];
@@ -79,7 +91,7 @@ const absentDcLoad = overviewGreenMetrics({{
     diesel: {{ present: true, power: 30 }},
   }},
 }});
-const normalizedConverter = normalizeOverviewFlowGroups({{
+        const normalizedConverter = normalizeOverviewFlowGroups({{
   acdcConverter: {{
     power: 16,
     targetPower: 20,
@@ -87,7 +99,25 @@ const normalizedConverter = normalizeOverviewFlowGroups({{
     onlineCount: 2,
     measuredCount: 2,
   }},
-}}, {{}}).acdcConverter;
+        }}, {{}}).acdcConverter;
+        const pControlledFuelCell = overviewHydrogenActiveTarget({{
+          category: "fuelCell",
+          controlMode: "P",
+          targetPower: 12,
+          targetGasFlow: 8,
+        }});
+        const legacyPqElectrolyzer = overviewHydrogenActiveTarget({{
+          category: "electrolyzer",
+          controlMode: "PQ",
+          targetPower: 20,
+          targetGasFlow: 4,
+        }});
+        const flowControlledElectrolyzer = overviewHydrogenActiveTarget({{
+          category: "electrolyzer",
+          controlMode: "FLOW",
+          targetPower: 20,
+          targetGasFlow: 4,
+        }});
 
 process.stdout.write(JSON.stringify({{
   metrics,
@@ -97,7 +127,10 @@ process.stdout.write(JSON.stringify({{
   absentDcLoad,
   positiveConverter: overviewFlowState("converter", 20),
   negativeConverter: overviewFlowState("converter", -20),
-  normalizedConverter,
+          normalizedConverter,
+          pControlledFuelCell,
+          legacyPqElectrolyzer,
+          flowControlledElectrolyzer,
 }}));
 """
         completed = subprocess.run(
@@ -146,6 +179,18 @@ process.stdout.write(JSON.stringify({{
                 self.assertEqual(result["normalizedConverter"]["onlineCount"], 2)
                 self.assertEqual(result["normalizedConverter"]["status"], "dcToAc")
                 self.assertEqual(result["normalizedConverter"]["flowDirection"], "toAc")
+                self.assertEqual(
+                    result["pControlledFuelCell"],
+                    {"label": "发电目标", "value": "12.00 kW"},
+                )
+                self.assertEqual(
+                    result["legacyPqElectrolyzer"],
+                    {"label": "耗电目标", "value": "20.00 kW"},
+                )
+                self.assertEqual(
+                    result["flowControlledElectrolyzer"],
+                    {"label": "产气目标", "value": "4.00 Nm3/h"},
+                )
 
 
 if __name__ == "__main__":

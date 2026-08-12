@@ -10412,7 +10412,7 @@ function overviewHydrogenActiveTarget(group) {
       value: overviewGasFlowText(group.targetGasFlow),
     };
   }
-  if (mode === "P") {
+  if (["P", "PQ"].includes(mode)) {
     return {
       label: group.category === "fuelCell" ? "发电目标" : "耗电目标",
       value: overviewPowerText(group.targetPower),
@@ -10445,7 +10445,6 @@ function renderOverviewFlowGroups(power) {
     const gasFlowNode = node.querySelector("[data-overview-gas-flow]");
     const targetGasFlowNode = node.querySelector("[data-overview-target-gas-flow]");
     const gasPressureNode = node.querySelector("[data-overview-gas-pressure]");
-    const gasQuantityNode = node.querySelector("[data-overview-gas-quantity]");
     const socNode = node.querySelector("[data-overview-soc]");
     const metaNode = node.querySelector("[data-overview-meta]");
     const countNode = node.querySelector("[data-overview-count]");
@@ -10457,10 +10456,9 @@ function renderOverviewFlowGroups(power) {
     if (gasFlowNode) gasFlowNode.textContent = overviewGasFlowText(group.gasFlow);
     if (targetGasFlowNode) targetGasFlowNode.textContent = overviewGasFlowText(group.targetGasFlow);
     if (gasPressureNode) gasPressureNode.textContent = overviewGasPressureText(group.gasPressure);
-    if (gasQuantityNode) gasQuantityNode.textContent = overviewGasQuantityText(group.gasQuantity);
     if (socNode) socNode.textContent = overviewPercentText(group.soc);
     if (metaNode) metaNode.textContent = overviewFlowGroupMeta(group);
-    if (countNode) countNode.textContent = `数量 ${group.onlineCount}/${group.totalCount} 台`;
+    if (countNode) countNode.textContent = `${group.onlineCount}/${group.totalCount} 台`;
     const activeTarget = ["fuelCell", "electrolyzer"].includes(definition.key)
       ? overviewHydrogenActiveTarget(group)
       : null;

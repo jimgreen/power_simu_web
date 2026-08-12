@@ -221,6 +221,41 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn(".energy-device-readings {", self.styles)
         self.assertIn(".energy-device-reading {", self.styles)
 
+    def test_trainee_overview_cards_place_status_summary_in_the_right_side_of_the_first_row(self):
+        for group_key, label in (
+            ("dcWind", "直流并网风电"),
+            ("dcSolar", "直流并网光伏"),
+            ("dcGridFollowingStorage", "直流跟网储能"),
+            ("dcLoad", "直流负荷"),
+            ("acdcConverter", "DC/AC变流器"),
+            ("dcGridFormingStorage", "直流构网储能"),
+            ("acGridFormingStorage", "交流构网储能"),
+            ("acWind", "交流并网风电"),
+            ("acSolar", "交流并网光伏"),
+            ("acGridFollowingStorage", "交流跟网储能"),
+            ("acLoad", "交流负荷"),
+            ("diesel", "柴油发电"),
+        ):
+            card = self.html.split(f'data-overview-group="{group_key}"', 1)[1].split("</article>", 1)[0]
+            self.assertEqual(card.count('class="energy-device-card-head"'), 1)
+            header = card.split('<div class="energy-device-card-head">', 1)[1].split("</div>", 1)[0]
+            self.assertIn(f"<span>{label}</span>", header)
+            self.assertIn("data-overview-meta", header)
+            self.assertLess(card.index("energy-device-card-head"), card.index("energy-device-readings"))
+            self.assertEqual(card.count("data-overview-meta"), 1)
+
+        header_styles = self.styles.split(".energy-device-card-head {", 1)[1].split("}", 1)[0]
+        self.assertIn("display: flex;", header_styles)
+        self.assertIn("justify-content: space-between;", header_styles)
+        self.assertIn("align-items: baseline;", header_styles)
+        title_styles = self.styles.split(".energy-device-card-head > span {", 1)[1].split("}", 1)[0]
+        meta_styles = self.styles.split('.energy-device-card-head [data-overview-meta] {', 1)[1].split("}", 1)[0]
+        self.assertIn("flex: 0 0 auto;", title_styles)
+        self.assertIn("flex: 1 1 auto;", meta_styles)
+        self.assertIn("text-align: right;", meta_styles)
+        self.assertIn("white-space: nowrap;", meta_styles)
+        self.assertIn("--energy-storage-card-width: 360px;", self.styles)
+
     def test_trainee_overview_icons_own_flow_connectors_and_keep_state_responsive_rules(self):
         left_block = self.styles.split('.energy-side-node[data-flow-side="left"] {', 1)[1].split("}", 1)[0]
         right_block = self.styles.split('.energy-side-node[data-flow-side="right"] {', 1)[1].split("}", 1)[0]
@@ -288,7 +323,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
 
         card = self.styles.split(".energy-device-card {", 1)[1].split("}", 1)[0]
         self.assertIn("min-height: 76px;", card)
-        self.assertIn("padding: 9px 14px;", card)
+        self.assertIn("padding: 9px 10px;", card)
 
         medium = self.styles.split("@container (max-height: 460px) {", 1)[1].split(
             "@container (max-height: 360px)",
@@ -429,6 +464,9 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         ):
             self.assertIn(f'data-overview-group="{group_key}"', chain)
             self.assertIn(label, chain)
+            card = chain.split(f'data-overview-group="{group_key}"', 1)[1].split("</article>", 1)[0]
+            count = card.split("data-overview-count", 1)[1].split("</span>", 1)[0]
+            self.assertNotIn("数量", count)
 
         fuel_cell = chain.split('data-overview-group="fuelCell"', 1)[1].split("</article>", 1)[0]
         electrolyzer = chain.split('data-overview-group="electrolyzer"', 1)[1].split("</article>", 1)[0]
@@ -464,13 +502,27 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn('node.querySelector("[data-overview-active-target-label]")', self.script)
         self.assertIn('node.querySelector("[data-overview-active-target]")', self.script)
         self.assertIn('node.querySelector("[data-overview-count]")', self.script)
+        self.assertIn('countNode.textContent = `${group.onlineCount}/${group.totalCount} 台`', self.script)
+        self.assertNotIn('countNode.textContent = `数量 ${group.onlineCount}/${group.totalCount} 台`', self.script)
         self.assertIn('node.querySelector("[data-overview-gas-pressure]")', self.script)
         self.assertIn('node.querySelector("[data-overview-soc]")', self.script)
+        self.assertNotIn('node.querySelector("[data-overview-gas-quantity]")', self.script)
 
         self.assertIn(".energy-hydrogen-chain {", self.styles)
         self.assertIn(".energy-hydrogen-link {", self.styles)
         self.assertIn('[data-hydrogen-link="fuel-cell-electric"]', self.styles)
         self.assertIn('[data-hydrogen-link="electrolyzer-electric"]', self.styles)
+        hydrogen_header = self.styles.split(".energy-hydrogen-card-head > span {", 1)[1].split("}", 1)[0]
+        hydrogen_label = self.styles.split(".energy-hydrogen-readings .energy-device-reading span {", 1)[1].split("}", 1)[0]
+        hydrogen_value = self.styles.split(".energy-hydrogen-readings .energy-device-reading strong {", 1)[1].split("}", 1)[0]
+        self.assertIn("font: inherit;", hydrogen_header)
+        self.assertIn("color: inherit;", hydrogen_header)
+        self.assertIn("font-size: 12px;", hydrogen_header)
+        self.assertIn("line-height: 14px;", hydrogen_header)
+        self.assertIn("font-size: 11px;", hydrogen_label)
+        self.assertIn("line-height: 13px;", hydrogen_label)
+        self.assertIn("font-size: 14px;", hydrogen_value)
+        self.assertIn("line-height: 15px;", hydrogen_value)
         compact = self.styles.split("@container (max-width: 760px) {", 1)[1]
         self.assertIn(".energy-hydrogen-chain", compact)
         self.assertIn("position: static;", compact)
@@ -478,13 +530,17 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         narrow = self.styles.split("@container (max-width: 940px) and (min-width: 761px) {", 1)[1]
         narrow_card = narrow.split(".energy-hydrogen-card {", 1)[1].split("}", 1)[0]
         medium_height = self.styles.split("@container (max-height: 460px) {", 1)[1].split("@container (max-height: 360px) {", 1)[0]
-        medium_count = medium_height.split(".energy-hydrogen-card-count {", 1)[1].split("}", 1)[0]
+        medium_header = medium_height.split(".energy-hydrogen-card-head > span,", 1)[1].split("}", 1)[0]
+        medium_label = medium_height.split(".energy-hydrogen-readings .energy-device-reading span {", 1)[1].split("}", 1)[0]
+        medium_value = medium_height.split(".energy-hydrogen-readings .energy-device-reading strong {", 1)[1].split("}", 1)[0]
         medium_device = medium_height.split(".energy-hydrogen-device {", 1)[1].split("}", 1)[0]
         self.assertIn("grid-column: 1 / -1;", narrow_card)
         self.assertIn(".energy-hydrogen-card-head {", self.styles)
         self.assertIn("justify-content: space-between;", self.styles)
-        self.assertIn("font-size: 9px;", medium_count)
-        self.assertNotIn("display: none;", medium_count)
+        self.assertIn("font-size: 12px;", medium_header)
+        self.assertIn("font-size: 10px;", medium_label)
+        self.assertIn("font-size: 13px;", medium_value)
+        self.assertNotIn("display: none;", medium_header)
         self.assertIn("grid-template-columns: 36px minmax(0, 1fr);", medium_device)
         self.assertIn("min-height: 76px;", medium_height)
 
@@ -681,7 +737,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("flex: 1 1 auto;", list_block)
         self.assertIn("align-content: space-evenly;", list_block)
         self.assertIn("min-height: 76px;", card_block)
-        self.assertIn("padding: 9px 14px;", card_block)
+        self.assertIn("padding: 9px 10px;", card_block)
         self.assertIn("gap: 4px;", card_block)
         self.assertIn("font-size: 17px;", value_block)
         self.assertIn("white-space: nowrap;", value_block)
@@ -806,7 +862,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
 
         self.assertIn("overflow-y: auto;", dashboard_block)
         self.assertIn("overflow-x: hidden;", dashboard_block)
-        self.assertIn("--overview-main-min-height: 540px;", dashboard_block)
+        self.assertIn("--overview-main-min-height: 580px;", dashboard_block)
         self.assertIn("min-height: var(--overview-main-min-height);", main_grid_block)
         self.assertIn("height: 100%;", low_height_flow_block)
 

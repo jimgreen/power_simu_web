@@ -133,13 +133,15 @@
                       <div class="energy-device-list">
                         <article class="energy-device wind energy-side-node" data-overview-group="dcWind" data-flow-side="left" data-flow-active="false" data-flow-direction="idle" hidden>
                           <div class="energy-device-card">
-                            <span>直流并网风电</span>
+                            <div class="energy-device-card-head">
+                              <span>直流并网风电</span>
+                              <small data-overview-meta>等待量测</small>
+                            </div>
                             <div class="energy-device-readings">
                               <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
                               <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
                               <div class="energy-device-reading"><span>最大可发</span><strong data-overview-max-available>--</strong></div>
                             </div>
-                            <small data-overview-meta>等待量测</small>
                           </div>
                           <div class="energy-device-icon" role="img" aria-label="风力发电机">
                             <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-wind-turbine"></use></svg>
@@ -147,13 +149,15 @@
                         </article>
                         <article class="energy-device solar energy-side-node" data-overview-group="dcSolar" data-flow-side="left" data-flow-active="false" data-flow-direction="idle" hidden>
                           <div class="energy-device-card">
-                            <span>直流并网光伏</span>
+                            <div class="energy-device-card-head">
+                              <span>直流并网光伏</span>
+                              <small data-overview-meta>等待量测</small>
+                            </div>
                             <div class="energy-device-readings">
                               <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
                               <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
                               <div class="energy-device-reading"><span>最大可发</span><strong data-overview-max-available>--</strong></div>
                             </div>
-                            <small data-overview-meta>等待量测</small>
                           </div>
                           <div class="energy-device-icon" role="img" aria-label="光伏阵列">
                             <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-solar-array"></use></svg>
@@ -161,12 +165,14 @@
                         </article>
                         <article class="energy-device storage energy-side-node" data-overview-group="dcGridFollowingStorage" data-flow-side="left" data-flow-active="false" data-flow-direction="idle" hidden>
                           <div class="energy-device-card">
-                            <span>直流跟网储能</span>
+                            <div class="energy-device-card-head">
+                              <span>直流跟网储能</span>
+                              <small data-overview-meta>等待量测</small>
+                            </div>
                             <div class="energy-device-readings">
                               <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
                               <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
                             </div>
-                            <small data-overview-meta>等待量测</small>
                           </div>
                           <div class="energy-device-icon" role="img" aria-label="电池储能">
                             <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-battery-storage"></use></svg>
@@ -174,12 +180,14 @@
                         </article>
                         <article class="energy-device load energy-side-node" data-overview-group="dcLoad" data-flow-side="left" data-flow-active="false" data-flow-direction="idle" hidden>
                           <div class="energy-device-card">
-                            <span>直流负荷</span>
+                            <div class="energy-device-card-head">
+                              <span>直流负荷</span>
+                              <small data-overview-meta>等待量测</small>
+                            </div>
                             <div class="energy-device-readings">
                               <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
                               <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
                             </div>
-                            <small data-overview-meta>等待量测</small>
                           </div>
                           <div class="energy-device-icon" role="img" aria-label="电气负荷">
                             <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-electric-load"></use></svg>
@@ -214,7 +222,7 @@
                         <div class="energy-device-card energy-hydrogen-card">
                           <div class="energy-hydrogen-card-head">
                             <span>燃料电池</span>
-                            <small class="energy-hydrogen-card-count" data-overview-count>数量 0/0 台</small>
+                            <span class="energy-hydrogen-card-count" data-overview-count>0/0 台</span>
                           </div>
                           <div class="energy-device-readings energy-hydrogen-readings">
                             <div class="energy-device-reading"><span>发电实时</span><strong data-overview-power>--</strong></div>
@@ -231,7 +239,7 @@
                         <div class="energy-device-card energy-hydrogen-card">
                           <div class="energy-hydrogen-card-head">
                             <span>储氢罐</span>
-                            <small class="energy-hydrogen-card-count" data-overview-count>数量 0/0 台</small>
+                            <span class="energy-hydrogen-card-count" data-overview-count>0/0 台</span>
                           </div>
                           <div class="energy-device-readings energy-hydrogen-readings">
                             <div class="energy-device-reading"><span>气流量</span><strong data-overview-gas-flow>--</strong></div>
@@ -248,7 +256,7 @@
                         <div class="energy-device-card energy-hydrogen-card">
                           <div class="energy-hydrogen-card-head">
                             <span>电制氢</span>
-                            <small class="energy-hydrogen-card-count" data-overview-count>数量 0/0 台</small>
+                            <span class="energy-hydrogen-card-count" data-overview-count>0/0 台</span>
                           </div>
                           <div class="energy-device-readings energy-hydrogen-readings">
                             <div class="energy-device-reading"><span>耗电实时</span><strong data-overview-power>--</strong></div>
@@ -264,12 +272,14 @@
                         <svg aria-hidden="true" viewBox="0 0 36 36"><use href="#energy-icon-acdc-converter"></use></svg>
                       </div>
                       <div class="energy-device-card energy-converter-card">
-                        <span>DC/AC变流器</span>
+                        <div class="energy-device-card-head">
+                          <span>DC/AC变流器</span>
+                          <small data-overview-meta>等待量测</small>
+                        </div>
                         <div class="energy-device-readings">
                           <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
                           <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
                         </div>
-                        <small data-overview-meta>等待量测</small>
                       </div>
                     </article>
 
@@ -282,12 +292,14 @@
                               <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-battery-storage"></use></svg>
                             </div>
                             <div class="energy-device-card">
-                              <span>直流构网储能</span>
+                              <div class="energy-device-card-head">
+                                <span>直流构网储能</span>
+                                <small data-overview-meta>等待量测</small>
+                              </div>
                               <div class="energy-device-readings">
                                 <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
                                 <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
                               </div>
-                              <small data-overview-meta>等待量测</small>
                             </div>
                           </article>
                         </section>
@@ -295,12 +307,14 @@
                           <div class="energy-storage-branch" aria-hidden="true"></div>
                           <article class="energy-device storage" data-overview-group="acGridFormingStorage" data-flow-side="center" data-flow-active="false" data-flow-direction="idle" hidden>
                             <div class="energy-device-card">
-                              <span>交流构网储能</span>
+                              <div class="energy-device-card-head">
+                                <span>交流构网储能</span>
+                                <small data-overview-meta>等待量测</small>
+                              </div>
                               <div class="energy-device-readings">
                                 <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
                                 <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
                               </div>
-                              <small data-overview-meta>等待量测</small>
                             </div>
                             <div class="energy-device-icon" role="img" aria-label="交流构网电池储能">
                               <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-battery-storage"></use></svg>
@@ -322,13 +336,15 @@
                             <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-wind-turbine"></use></svg>
                           </div>
                           <div class="energy-device-card">
-                            <span>交流并网风电</span>
+                            <div class="energy-device-card-head">
+                              <span>交流并网风电</span>
+                              <small data-overview-meta>等待量测</small>
+                            </div>
                             <div class="energy-device-readings">
                               <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
                               <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
                               <div class="energy-device-reading"><span>最大可发</span><strong data-overview-max-available>--</strong></div>
                             </div>
-                            <small data-overview-meta>等待量测</small>
                           </div>
                         </article>
                         <article class="energy-device solar energy-side-node" data-overview-group="acSolar" data-flow-side="right" data-flow-active="false" data-flow-direction="idle" hidden>
@@ -336,13 +352,15 @@
                             <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-solar-array"></use></svg>
                           </div>
                           <div class="energy-device-card">
-                            <span>交流并网光伏</span>
+                            <div class="energy-device-card-head">
+                              <span>交流并网光伏</span>
+                              <small data-overview-meta>等待量测</small>
+                            </div>
                             <div class="energy-device-readings">
                               <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
                               <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
                               <div class="energy-device-reading"><span>最大可发</span><strong data-overview-max-available>--</strong></div>
                             </div>
-                            <small data-overview-meta>等待量测</small>
                           </div>
                         </article>
                         <article class="energy-device storage energy-side-node" data-overview-group="acGridFollowingStorage" data-flow-side="right" data-flow-active="false" data-flow-direction="idle" hidden>
@@ -350,12 +368,14 @@
                             <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-battery-storage"></use></svg>
                           </div>
                           <div class="energy-device-card">
-                            <span>交流跟网储能</span>
+                            <div class="energy-device-card-head">
+                              <span>交流跟网储能</span>
+                              <small data-overview-meta>等待量测</small>
+                            </div>
                             <div class="energy-device-readings">
                               <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
                               <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
                             </div>
-                            <small data-overview-meta>等待量测</small>
                           </div>
                         </article>
                         <article class="energy-device load energy-side-node" data-overview-group="acLoad" data-flow-side="right" data-flow-active="false" data-flow-direction="idle" hidden>
@@ -363,12 +383,14 @@
                             <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-electric-load"></use></svg>
                           </div>
                           <div class="energy-device-card">
-                            <span>交流负荷</span>
+                            <div class="energy-device-card-head">
+                              <span>交流负荷</span>
+                              <small data-overview-meta>等待量测</small>
+                            </div>
                             <div class="energy-device-readings">
                               <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
                               <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
                             </div>
-                            <small data-overview-meta>等待量测</small>
                           </div>
                         </article>
                         <article class="energy-device diesel energy-side-node" data-overview-group="diesel" data-flow-side="right" data-flow-active="false" data-flow-direction="idle" hidden>
@@ -376,12 +398,14 @@
                             <svg aria-hidden="true" viewBox="0 0 28 28"><use href="#energy-icon-diesel-generator"></use></svg>
                           </div>
                           <div class="energy-device-card">
-                            <span>柴油发电</span>
+                            <div class="energy-device-card-head">
+                              <span>柴油发电</span>
+                              <small data-overview-meta>等待量测</small>
+                            </div>
                             <div class="energy-device-readings">
                               <div class="energy-device-reading"><span>当前</span><strong data-overview-power>--</strong></div>
                               <div class="energy-device-reading"><span>目标</span><strong data-overview-target>--</strong></div>
                             </div>
-                            <small data-overview-meta>等待量测</small>
                           </div>
                         </article>
                       </div>

@@ -1216,7 +1216,7 @@ body.is-vertical-splitter-dragging {
 .energy-device-card {
   min-width: 0;
   min-height: 76px;
-  padding: 9px 14px;
+  padding: 9px 10px;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -1230,6 +1230,31 @@ body.is-vertical-splitter-dragging {
 }
 .energy-device-card strong {
   font-size: 17px;
+  white-space: nowrap;
+}
+.energy-device-card-head {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+.energy-device-card-head > span {
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.energy-device-card-head [data-overview-meta] {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: #52676f;
+  font-size: 11px;
+  line-height: 13px;
+  text-align: right;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .energy-device-readings {
@@ -1568,15 +1593,15 @@ body.is-vertical-splitter-dragging {
   justify-content: space-between;
   gap: 6px;
 }
-.energy-hydrogen-card-head > span,
-.energy-hydrogen-card-count {
-  font-size: 10px;
-  line-height: 12px;
+.energy-hydrogen-card-head > span {
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  line-height: 14px;
   white-space: nowrap;
 }
 .energy-hydrogen-card-count {
   margin-left: auto;
-  color: var(--muted);
   text-align: right;
 }
 .energy-hydrogen-readings {
@@ -1587,12 +1612,12 @@ body.is-vertical-splitter-dragging {
   grid-column: auto;
 }
 .energy-hydrogen-readings .energy-device-reading span {
-  font-size: 9px;
-  line-height: 12px;
+  font-size: 11px;
+  line-height: 13px;
 }
 .energy-hydrogen-readings .energy-device-reading strong {
-  font-size: 10px;
-  line-height: 12px;
+  font-size: 14px;
+  line-height: 15px;
 }
 .energy-acdc-converter {
   position: absolute;
@@ -1649,7 +1674,7 @@ body.is-vertical-splitter-dragging {
   --flow-head-half: 6px;
   --flow-opacity: 0.48;
   --flow-duration: 1.25s;
-  --energy-storage-card-width: 290px;
+  --energy-storage-card-width: 360px;
   position: absolute;
   z-index: 2;
   grid-column: 1 / -1;
@@ -1798,6 +1823,16 @@ body.is-vertical-splitter-dragging {
 .energy-device-list .energy-device small {
   font-size: 13px;
   line-height: 15px;
+}
+.energy-device-list .energy-device .energy-device-card-head > span,
+.energy-grid-forming-stack .energy-device .energy-device-card-head > span {
+  font-size: 12px;
+  line-height: 14px;
+}
+.energy-device-list .energy-device .energy-device-card-head [data-overview-meta],
+.energy-grid-forming-stack .energy-device .energy-device-card-head [data-overview-meta] {
+  font-size: 10px;
+  line-height: 12px;
 }
 .energy-grid-forming-stack {
   position: absolute;
@@ -1995,6 +2030,31 @@ body.is-vertical-splitter-dragging {
   opacity: 0.24;
 }
 @container (max-width: 940px) and (min-width: 761px) {
+  .energy-device-card-head {
+    gap: 2px;
+  }
+  .energy-device-list .energy-device .energy-device-card-head > span,
+  .energy-grid-forming-stack .energy-device .energy-device-card-head > span {
+    font-size: 9px;
+    line-height: 11px;
+  }
+  .energy-device-list .energy-device .energy-device-card-head [data-overview-meta],
+  .energy-grid-forming-stack .energy-device .energy-device-card-head [data-overview-meta] {
+    font-size: 8px;
+    line-height: 10px;
+  }
+  .energy-grid-forming-stack .energy-device.storage .energy-device-icon {
+    display: none;
+  }
+  .energy-grid-forming-stack .energy-storage-branch-wrap .energy-device.storage {
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .energy-grid-forming-stack .energy-device.storage .energy-device-card {
+    width: 100%;
+    padding-inline: 5px;
+  }
   .energy-hydrogen-chain {
     grid-template-columns: 12px minmax(82px, 1fr) 10px minmax(82px, 1fr) 10px minmax(82px, 1fr) 12px;
   }
@@ -2009,12 +2069,21 @@ body.is-vertical-splitter-dragging {
     padding-inline: 5px;
   }
   .energy-hydrogen-card-head > span,
-  .energy-hydrogen-card-count,
-  .energy-hydrogen-readings .energy-device-reading strong {
-    font-size: 8px;
+  .energy-hydrogen-card-count {
+    font-size: 9px;
+    line-height: 11px;
   }
   .energy-hydrogen-readings .energy-device-reading span {
-    font-size: 7px;
+    font-size: 11px;
+    line-height: 13px;
+  }
+  .energy-hydrogen-readings .energy-device-reading strong {
+    font-size: 14px;
+    line-height: 15px;
+  }
+  .energy-hydrogen-readings .energy-device-reading {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
   }
 }
 @container (max-width: 760px) {
@@ -2172,18 +2241,18 @@ body.is-vertical-splitter-dragging {
     padding: 4px 6px;
     gap: 1px;
   }
-  .energy-hydrogen-card-count {
-    font-size: 9px;
-    line-height: 11px;
-  }
   .energy-hydrogen-card-head > span,
-  .energy-hydrogen-readings .energy-device-reading strong {
-    font-size: 10px;
-    line-height: 11px;
+  .energy-hydrogen-card-count {
+    font-size: 12px;
+    line-height: 14px;
   }
   .energy-hydrogen-readings .energy-device-reading span {
-    font-size: 9px;
-    line-height: 11px;
+    font-size: 10px;
+    line-height: 12px;
+  }
+  .energy-hydrogen-readings .energy-device-reading strong {
+    font-size: 13px;
+    line-height: 14px;
   }
 }
 @container (max-height: 360px) {
@@ -2243,7 +2312,7 @@ body.is-vertical-splitter-dragging {
   }
   .energy-hydrogen-device,
   .energy-hydrogen-card {
-    min-height: 40px;
+    min-height: 52px;
   }
   .energy-hydrogen-device {
     grid-template-columns: 24px minmax(0, 1fr);
@@ -2263,14 +2332,17 @@ body.is-vertical-splitter-dragging {
     gap: 0;
   }
   .energy-hydrogen-card-head > span,
-  .energy-hydrogen-card-count,
-  .energy-hydrogen-readings .energy-device-reading strong {
-    font-size: 7px;
-    line-height: 8px;
+  .energy-hydrogen-card-count {
+    font-size: 12px;
+    line-height: 14px;
   }
   .energy-hydrogen-readings .energy-device-reading span {
-    font-size: 6px;
-    line-height: 8px;
+    font-size: 9px;
+    line-height: 11px;
+  }
+  .energy-hydrogen-readings .energy-device-reading strong {
+    font-size: 12px;
+    line-height: 13px;
   }
 }
 @container (max-height: 320px) {
@@ -2328,7 +2400,7 @@ body.is-vertical-splitter-dragging {
     gap: 5px;
   }
   .energy-device-list .energy-device small {
-    display: none;
+    display: block;
   }
   .energy-device-list .energy-device strong {
     font-size: clamp(15px, 5.4cqh, 17px);
@@ -2364,7 +2436,7 @@ body.is-vertical-splitter-dragging {
   }
   .energy-hydrogen-device,
   .energy-hydrogen-card {
-    min-height: 34px;
+    min-height: 52px;
   }
   .energy-hydrogen-device {
     grid-template-columns: minmax(0, 1fr);
@@ -5897,7 +5969,7 @@ canvas {
 
 @media (max-height: 780px) and (min-width: 821px) {
   .overview-dashboard {
-    --overview-main-min-height: 540px;
+    --overview-main-min-height: 580px;
     grid-template-rows: auto minmax(var(--overview-main-min-height), 1fr) 10px minmax(96px, var(--overview-bottom-height));
     overflow-x: hidden;
     overflow-y: auto;

@@ -275,6 +275,47 @@ class DefinitionImportRefreshTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "p_dc_set"):
                 import_definition_archive(trainee, archive)
 
+    def test_import_definition_archive_removes_ambiguous_converter_runtime_fields(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            package_service = PolarMicrogridSimulator(
+                SIMPLE_MODEL_SOURCE,
+                temp_root / "package-runtime",
+                model_id="simple",
+            )
+            _filename, archive = make_definition_archive(package_service)
+            with zipfile.ZipFile(BytesIO(archive), mode="r") as definition_archive:
+                model_text = definition_archive.read("model.e").decode("utf-8")
+            converter_block = """
+<DCACConverter>
+@ idx name ac_node dc_node ac_control_type dc_control_type p_ac_set p_dc_set run_stat p q u i
+# 1 dcac-1 1 1 PQ NONE -10 10 1 -10 0 380 15
+</DCACConverter>
+"""
+            model_text = _replace_efile_block(model_text, "DCACConverter", converter_block)
+            archive = _rewrite_definition_archive(
+                archive,
+                {"model.e": model_text.encode("utf-8")},
+            )
+
+            trainee_source = temp_root / "trainee-source"
+            copytree(ROOT / "models/trainee/source/默认模型", trainee_source)
+            trainee = PolarMicrogridSimulator(
+                trainee_source,
+                temp_root / "trainee-runtime",
+                model_id="trainee",
+            )
+
+            import_definition_archive(trainee, archive)
+
+            imported = server_module._book_from_text(
+                (trainee_source / "model.e").read_text(encoding="utf-8")
+            )
+            headers = imported.data["DCACConverter"].header_list
+            self.assertTrue({"p", "q", "u", "i"}.isdisjoint(headers))
+            self.assertIn("p_ac_set", headers)
+            self.assertIn("p_dc_set", headers)
+
     def test_definition_package_roundtrips_svg_diagram_and_exposes_snapshot(self):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)

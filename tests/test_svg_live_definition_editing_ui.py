@@ -156,6 +156,53 @@ process.stdout.write(JSON.stringify({
             [True, True, False, False, False, False, False, False],
         )
 
+    def test_converter_parameter_panels_hide_ambiguous_runtime_fields(self):
+        body = r"""
+const snapshot = {
+  definitions: {
+    model: {
+      DCACConverter: {
+        headers: ["idx", "name", "p", "q", "u", "i", "p_ac_set", "p_dc_set", "ac_p_max", "dc_p_max"],
+        rows: [{ idx: 1, name: "dcac-1", p: 1, q: 2, u: 380, i: 3, p_ac_set: 4, p_dc_set: -4, ac_p_max: 10, dc_p_max: 10 }],
+      },
+      DCDCConverter: {
+        headers: ["idx", "name", "p", "q", "u", "i", "p_set", "v_set", "i_p_max", "j_p_max"],
+        rows: [{ idx: 2, name: "dcdc-1", p: 1, q: 2, u: 750, i: 3, p_set: 4, v_set: 750, i_p_max: 10, j_p_max: 10 }],
+      },
+      ACACConverter: {
+        headers: ["idx", "name", "p", "q", "u", "i", "p_set", "q_from_set", "q_to_set"],
+        rows: [{ idx: 3, name: "acac-1", p: 1, q: 2, u: 380, i: 3, p_set: 4, q_from_set: 1, q_to_set: -1 }],
+      },
+      ACGenerator: {
+        headers: ["idx", "name", "p", "q", "u", "i", "p_set"],
+        rows: [{ idx: 4, name: "source-1", p: 1, q: 2, u: 380, i: 3, p_set: 4 }],
+      },
+    },
+  },
+};
+function displayed(devType, devName) {
+  const record = diagramDeviceDefinitionRecords({ devType, devName }, snapshot)[0];
+  return diagramDefinitionDisplayHeaders(record);
+}
+process.stdout.write(JSON.stringify({
+  dcac: displayed("DCACConverter", "dcac-1"),
+  dcdc: displayed("DCDCConverter", "dcdc-1"),
+  acac: displayed("ACACConverter", "acac-1"),
+  source: displayed("ACGenerator", "source-1"),
+}));
+"""
+        for script in (self.script, self.trainee_script):
+            payload = self._run_helpers(body, script)
+            for converter in ("dcac", "dcdc", "acac"):
+                self.assertTrue(
+                    {"p", "q", "u", "i"}.isdisjoint(payload[converter]),
+                    converter,
+                )
+            self.assertTrue({"p_ac_set", "p_dc_set"}.issubset(payload["dcac"]))
+            self.assertTrue({"p_set", "v_set"}.issubset(payload["dcdc"]))
+            self.assertTrue({"p_set", "q_from_set", "q_to_set"}.issubset(payload["acac"]))
+            self.assertTrue({"p", "q", "u", "i"}.issubset(payload["source"]))
+
     def test_device_editor_includes_primary_and_linked_static_parameter_blocks(self):
         body = r"""
 const snapshot = {

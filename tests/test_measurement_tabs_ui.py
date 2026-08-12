@@ -181,6 +181,52 @@ console.log(JSON.stringify({{
         self.assertNotIn("formatMeasurementDisplayValue(realValue, pair.row, diagramNumberText)", script)
         self.assertNotIn("formatMeasurementDisplayValue(deviation, pair.row, diagramNumberText)", script)
 
+    def test_diagram_device_realtime_measurements_use_electrical_field_labels(self):
+        surfaces = (
+            ROOT / "simu/web/simulator/app.js",
+            ROOT / "simu/web/trainee/app.js",
+        )
+        for script_path in surfaces:
+            with self.subTest(surface=script_path.parent.name):
+                script = script_path.read_text(encoding="utf-8")
+                aliases = re.search(
+                    r"const DIAGRAM_MEASUREMENT_FIELD_LABELS = Object\.freeze\(\{.*?^\}\);",
+                    script,
+                    flags=re.MULTILINE | re.DOTALL,
+                )
+                function = re.search(
+                    r"function diagramMeasurementFieldName\([^)]*\) \{.*?^\}",
+                    script,
+                    flags=re.MULTILINE | re.DOTALL,
+                )
+                self.assertIsNotNone(aliases)
+                self.assertIsNotNone(function)
+                node_script = f"""
+{aliases.group(0)}
+{function.group(0)}
+console.log(JSON.stringify({{
+  generator: ["P_GEN", "V_GEN", "I_GEN"].map((meas_type) => diagramMeasurementFieldName({{ meas_type }})),
+  load: ["P_LOAD", "V_LOAD", "I_LOAD"].map((meas_type) => diagramMeasurementFieldName({{ meas_type }})),
+  reactive: ["Q_GEN", "Q_LOAD"].map((meas_type) => diagramMeasurementFieldName({{ meas_type }})),
+  converter: ["P_DC", "P_AC", "V_DC", "V_AC"].map((meas_type) => diagramMeasurementFieldName({{ meas_type }})),
+  signal: diagramMeasurementFieldName({{ meas_type: "RUN_STAT" }}),
+}}));
+"""
+                completed = subprocess.run(
+                    ["node", "-e", node_script],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                )
+                result = json.loads(completed.stdout)
+
+                self.assertEqual(result["generator"], ["p", "u", "i"])
+                self.assertEqual(result["load"], ["p", "u", "i"])
+                self.assertEqual(result["reactive"], ["q", "q"])
+                self.assertEqual(result["converter"], ["p_dc", "p_ac", "v_dc", "v_ac"])
+                self.assertEqual(result["signal"], "run_stat")
+
 
 if __name__ == "__main__":
     unittest.main()

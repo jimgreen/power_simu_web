@@ -473,6 +473,16 @@ const SIGNAL_MEASUREMENT_LABELS = {
   RUN_STAT: { label: "运行状态", order: 0 },
   STATUS: { label: "开关状态", order: 1 },
 };
+const DIAGRAM_MEASUREMENT_FIELD_LABELS = Object.freeze({
+  P_GEN: "p",
+  Q_GEN: "q",
+  V_GEN: "u",
+  I_GEN: "i",
+  P_LOAD: "p",
+  Q_LOAD: "q",
+  V_LOAD: "u",
+  I_LOAD: "i",
+});
 const RECEIVE_WARNING_LIMIT = 40;
 
 const $ = (id) => document.getElementById(id);
@@ -5041,15 +5051,24 @@ const DIAGRAM_DEFINITION_PROTECTED_FIELDS = new Set([
 const DIAGRAM_DEFINITION_IDENTITY_FIELDS = new Set([
   "idx", "name", "dev_name", "dev_type",
 ]);
+const DIAGRAM_CONVERTER_DEFINITION_BLOCKS = new Set([
+  "DCACCONVERTER", "DCDCCONVERTER", "ACACCONVERTER",
+]);
+const DIAGRAM_AMBIGUOUS_CONVERTER_FIELDS = new Set(["p", "q", "u", "i"]);
 
 function diagramDefinitionDisplayHeaders(record) {
   const integratedFields = record?.integratedFields instanceof Set
     ? record.integratedFields
     : new Set(record?.integratedFields || []);
-  return (record?.headers || []).filter((field) => (
-    !DIAGRAM_DEFINITION_IDENTITY_FIELDS.has(String(field || "").trim().toLowerCase())
-    && !integratedFields.has(String(field || "").trim().toLowerCase())
-  ));
+  const converterBlock = DIAGRAM_CONVERTER_DEFINITION_BLOCKS.has(
+    normalizeDiagramMeasurementToken(record?.blockName),
+  );
+  return (record?.headers || []).filter((field) => {
+    const name = String(field || "").trim().toLowerCase();
+    return !DIAGRAM_DEFINITION_IDENTITY_FIELDS.has(name)
+      && !integratedFields.has(name)
+      && !(converterBlock && DIAGRAM_AMBIGUOUS_CONVERTER_FIELDS.has(name));
+  });
 }
 
 function diagramDefinitionFieldBinding(records, fieldNames = []) {
@@ -5596,7 +5615,8 @@ function renderDiagramDefinitionLeavePrompt(interaction) {
 
 function diagramMeasurementFieldName(row = {}) {
   const field = String(row?.meas_type || row?.name || "量测").trim();
-  return field ? field.toLowerCase() : "量测";
+  if (!field) return "量测";
+  return DIAGRAM_MEASUREMENT_FIELD_LABELS[field.toUpperCase()] || field.toLowerCase();
 }
 
 function diagramDeviceData(container, device, snapshot = state.snapshot || {}) {

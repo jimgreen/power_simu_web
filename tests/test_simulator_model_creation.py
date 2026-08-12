@@ -103,6 +103,42 @@ class SimulatorModelCreationTest(unittest.TestCase):
             devices = manager.service_for("新建测试模型").devices()
             self.assertGreater(len(devices), 0)
 
+    def test_generated_model_removes_ambiguous_converter_runtime_fields(self):
+        model_text = """<DCACConverter>
+@ idx name ac_node dc_node ac_control_type dc_control_type p_ac_set p_dc_set run_stat p q u i
+# 1 dcac-1 1 2 PQ NONE 3 -3 1 30 4 380 8
+</DCACConverter>
+<DCDCConverter>
+@ idx name i_node j_node i_control_type j_control_type p_set v_set run_stat p q u i
+# 1 dcdc-1 2 3 V NONE 5 750 1 20 0 750 2
+</DCDCConverter>
+<ACACConverter>
+@ idx name i_node j_node control_type p_set q_from_set q_to_set run_stat p q u i
+# 1 acac-1 3 4 PQQ 6 1 -1 1 10 2 380 3
+</ACACConverter>
+"""
+
+        artifacts = server_module._generated_model_artifacts(model_text)
+
+        model_book = artifacts["model_book"]
+        for block_name in ("DCACConverter", "DCDCConverter", "ACACConverter"):
+            with self.subTest(block=block_name):
+                block = model_book.data[block_name]
+                self.assertTrue({"p", "q", "u", "i"}.isdisjoint(block.header_list))
+                self.assertTrue(
+                    all(
+                        {"p", "q", "u", "i"}.isdisjoint(row)
+                        for row in block.data
+                    )
+                )
+
+        self.assertIn("p_ac_set", model_book.data["DCACConverter"].header_list)
+        self.assertIn("p_dc_set", model_book.data["DCACConverter"].header_list)
+        self.assertIn("p_set", model_book.data["DCDCConverter"].header_list)
+        self.assertIn("v_set", model_book.data["DCDCConverter"].header_list)
+        self.assertIn("q_from_set", model_book.data["ACACConverter"].header_list)
+        self.assertIn("q_to_set", model_book.data["ACACConverter"].header_list)
+
     def test_create_model_from_uploaded_model_e_generates_ac_and_dc_storage_state(self):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)

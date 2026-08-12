@@ -733,6 +733,8 @@ STORAGE_PARAMETER_SPECS = (
     ("ACStorageGen", "ACGenerator", "idx_acgenerator"),
     ("DCStorageGen", "DCGenerator", "idx_dcgenerator"),
 )
+CONVERTER_MODEL_BLOCKS = ("DCACConverter", "DCDCConverter", "ACACConverter")
+AMBIGUOUS_CONVERTER_RUNTIME_FIELDS = frozenset({"p", "q", "u", "i"})
 
 
 def _rows(book: EBook, block_name: str) -> list[dict]:
@@ -748,6 +750,23 @@ def _ebook_from_blocks(blocks: Mapping[str, tuple[Sequence[str], Sequence[Mappin
         block.data = [{header: row.get(header, "") for header in headers} for row in rows]
         book.data[block_name] = block
     return book
+
+
+def _remove_ambiguous_converter_runtime_fields(model_book: EBook) -> None:
+    for block_name in CONVERTER_MODEL_BLOCKS:
+        block = model_book.data.get(block_name)
+        if block is None:
+            continue
+        headers = [
+            field
+            for field in getattr(block, "header_list", [])
+            if str(field).strip().casefold() not in AMBIGUOUS_CONVERTER_RUNTIME_FIELDS
+        ]
+        block.header_list = headers
+        block.data = [
+            {field: row.get(field, "") for field in headers}
+            for row in getattr(block, "data", [])
+        ]
 
 
 def _row_name(row: Mapping[str, Any]) -> str:
@@ -1139,6 +1158,7 @@ def _generated_model_artifacts(model_text: str) -> Mapping[str, Any]:
     if not str(model_text or "").strip():
         raise ValueError("model.e 不能为空")
     model_book = _book_from_text(model_text)
+    _remove_ambiguous_converter_runtime_fields(model_book)
     for block in model_book.data.values():
         for field in getattr(block, "header_list", []):
             if not is_ratio_parameter_field(field):
@@ -1463,6 +1483,8 @@ def _parse_definition_archive(data: bytes) -> Mapping[str, Any]:
 
     assert model_text is not None and meas_text is not None and control_text is not None and curves_text is not None
     model_book = _book_from_text(model_text)
+    _remove_ambiguous_converter_runtime_fields(model_book)
+    model_text = render_ebook_aligned(model_book)
     _validate_dcac_converter_schema(model_book)
     measurement_book = _book_from_text(meas_text)
     measurement_block = measurement_book.data.get("Measurement")

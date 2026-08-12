@@ -2047,6 +2047,7 @@ body.is-vertical-splitter-dragging {
     display: none;
   }
   .energy-hydrogen-card {
+    grid-column: 1 / -1;
     padding-inline: 5px;
   }
   .energy-hydrogen-card > span,
@@ -2138,7 +2139,7 @@ body.is-vertical-splitter-dragging {
   .energy-flow-map {
     --energy-device-icon-size: 52px;
     --energy-device-icon-glyph-size: 34px;
-    --energy-summary-top: clamp(24px, 12cqh, 58px);
+    --energy-summary-top: clamp(86px, 28cqh, 112px);
     --energy-storage-gap: clamp(28px, 13cqh, 58px);
   }
   .energy-device-card {
@@ -2199,7 +2200,7 @@ body.is-vertical-splitter-dragging {
     min-height: 52px;
   }
   .energy-hydrogen-device {
-    grid-template-columns: 30px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     gap: 4px;
   }
   .energy-hydrogen-icon {
@@ -2390,7 +2391,7 @@ body.is-vertical-splitter-dragging {
     min-height: 34px;
   }
   .energy-hydrogen-device {
-    grid-template-columns: 24px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
   .energy-hydrogen-icon {
     width: 24px;

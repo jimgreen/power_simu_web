@@ -338,7 +338,7 @@ class OverviewDashboardUiTest(unittest.TestCase):
         )[0]
         self.assertIn("--energy-device-icon-size: 52px;", medium)
         self.assertIn("--energy-device-icon-glyph-size: 34px;", medium)
-        self.assertIn("--energy-summary-top: clamp(24px, 12cqh, 58px);", medium)
+        self.assertIn("--energy-summary-top: clamp(86px, 28cqh, 112px);", medium)
         self.assertIn("--energy-storage-gap: clamp(28px, 13cqh, 58px);", medium)
         self.assertIn("min-height: 64px;", medium)
         self.assertIn("padding: 7px 12px;", medium)
@@ -606,6 +606,10 @@ class OverviewDashboardUiTest(unittest.TestCase):
         compact = styles.split("@container (max-width: 760px) {", 1)[1]
         self.assertIn(".energy-hydrogen-chain", compact)
         self.assertIn("position: static;", compact)
+
+        narrow = styles.split("@container (max-width: 940px) and (min-width: 761px) {", 1)[1]
+        narrow_card = narrow.split(".energy-hydrogen-card {", 1)[1].split("}", 1)[0]
+        self.assertIn("grid-column: 1 / -1;", narrow_card)
 
     def test_overview_converter_card_sits_above_the_trunk_icon(self):
         styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")

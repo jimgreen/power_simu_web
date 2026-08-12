@@ -279,7 +279,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         )[0]
         self.assertIn("--energy-device-icon-size: 52px;", medium)
         self.assertIn("--energy-device-icon-glyph-size: 34px;", medium)
-        self.assertIn("--energy-summary-top: clamp(24px, 12cqh, 58px);", medium)
+        self.assertIn("--energy-summary-top: clamp(86px, 28cqh, 112px);", medium)
         self.assertIn("--energy-storage-gap: clamp(28px, 13cqh, 58px);", medium)
         self.assertIn("min-height: 64px;", medium)
         self.assertIn("padding: 7px 12px;", medium)
@@ -451,6 +451,10 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         compact = self.styles.split("@container (max-width: 760px) {", 1)[1]
         self.assertIn(".energy-hydrogen-chain", compact)
         self.assertIn("position: static;", compact)
+
+        narrow = self.styles.split("@container (max-width: 940px) and (min-width: 761px) {", 1)[1]
+        narrow_card = narrow.split(".energy-hydrogen-card {", 1)[1].split("}", 1)[0]
+        self.assertIn("grid-column: 1 / -1;", narrow_card)
 
     def test_trainee_weather_display_falls_back_when_environment_scada_is_invalid(self):
         weather_block = self.script.split("function currentWeatherLoad", 1)[1].split(

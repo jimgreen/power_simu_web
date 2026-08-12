@@ -8,6 +8,7 @@ that both the simulator console and trainee console can poll.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import heapq
 import json
@@ -91,6 +92,8 @@ from simu.point_names import automatic_point_name
 from simu.power_flow_worker import PowerFlowExecution, PowerFlowTimeoutError
 from simu.renewable_capability import renewable_weather_available_kw
 from simu.source_curves import (
+    load_curve_catalog,
+    load_curve_identity,
     source_curve_catalog,
     source_curve_catalog_by_identity,
     source_curve_catalog_by_key,
@@ -186,6 +189,8 @@ RUNTIME_CONTROL_SETPOINT_FIELDS = frozenset(
         "p_to_set",
         "q_to_set",
         "v_to_set",
+        "flow_set",
+        "heat_power",
     )
 )
 
@@ -197,6 +202,11 @@ EXTERNAL_REALTIME_WEATHER_FIELDS = (
     ("humidity_pct", "%"),
 )
 EXTERNAL_REALTIME_WEATHER_FIELD_SET = {item[0] for item in EXTERNAL_REALTIME_WEATHER_FIELDS}
+EXTERNAL_CURVE_ENVIRONMENT_SPECS = {
+    "wind_speed_mps": "m/s",
+    "solar_irradiance_w_m2": "W/m2",
+    "air_temp_c": "℃",
+}
 RUNTIME_CONTROL_SETPOINT_ALIASES = {
     ("ACLoad", "pv0"): "p_set",
     ("ACLoad", "qv0"): "q_set",
@@ -1749,7 +1759,7 @@ class PolarMicrogridSimulator:
                 "time_step_minutes": step_minutes,
                 "point_count": point_count,
                 "weather": weather if isinstance(weather, list) else [],
-                "loads": loads if isinstance(loads, Mapping) else {},
+                "loads": loads,
                 "sources": self._normalized_source_curves(raw.get("sources"), point_count, step_minutes),
             }
         )
@@ -2914,6 +2924,10 @@ class PolarMicrogridSimulator:
             absolute_minute,
             allowed_set_keys=allowed_set_keys,
         )
+        load_curve_defaults = self._apply_default_non_electric_load_curves(
+            book,
+            absolute_minute,
+        )
         applied_run = 0
         applied_set = 0
         safe_active_entries = 0
@@ -3017,6 +3031,7 @@ class PolarMicrogridSimulator:
             "run_status": applied_run,
             "set_values": applied_set,
             "source_curve_defaults": source_curve_defaults,
+            "load_curve_defaults": load_curve_defaults,
         }
 
     def _manual_source_curve_override_keys(self) -> set[Tuple[str, str, str]]:
@@ -3059,6 +3074,24 @@ class PolarMicrogridSimulator:
                 keys.add(("remote_adjustment", dev_type, dev_name, set_type))
         return keys
 
+    def _inactive_coupling_default_curve_keys(self) -> set[Tuple[str, str, str]]:
+        active_by_endpoint: Dict[Tuple[str, str, str], bool] = {}
+        for bindings in energy_coupling_control_bindings(
+            self.definition_snapshot.model_book
+        ).values():
+            for binding in bindings:
+                key = (
+                    str(binding.get("target_dev_type", "")).strip(),
+                    str(binding.get("target_dev_name", "")).strip(),
+                    str(binding.get("target_set_type", binding.get("set_type", ""))).strip(),
+                )
+                if not all(key):
+                    continue
+                active_by_endpoint[key] = active_by_endpoint.get(key, False) or bool(
+                    binding.get("active")
+                )
+        return {key for key, active in active_by_endpoint.items() if not active}
+
     def _apply_default_source_curves(
         self,
         book: EBook,
@@ -3073,6 +3106,7 @@ class PolarMicrogridSimulator:
         allowed = allowed_set_keys if allowed_set_keys is not None else self._defined_set_control_keys()
         manual_overrides = self._manual_source_curve_override_keys()
         active_commands = self._active_remote_adjustment_keys(absolute_minute)
+        inactive_coupling_keys = self._inactive_coupling_default_curve_keys()
         curve_mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
         period_minutes = _simulation_mode_duration_minutes(curve_mode)
         applied = 0
@@ -3080,7 +3114,12 @@ class PolarMicrogridSimulator:
             if not isinstance(item, Mapping):
                 continue
             key = source_curve_identity(item)
-            if key not in catalog or key in manual_overrides or key in active_commands:
+            if (
+                key not in catalog
+                or key in manual_overrides
+                or key in active_commands
+                or key in inactive_coupling_keys
+            ):
                 continue
             points = item.get("points", [])
             if not isinstance(points, Sequence) or isinstance(points, (str, bytes)):
@@ -3092,6 +3131,58 @@ class PolarMicrogridSimulator:
                 None,
                 period_minutes=period_minutes,
             )
+            if value is None or not math.isfinite(value):
+                continue
+            try:
+                safe = self._validated_set_command_item(
+                    {
+                        "dev_type": key[0],
+                        "dev_name": key[1],
+                        "set_type": key[2],
+                        "set_value": value,
+                    },
+                    strict=True,
+                )
+            except ValueError:
+                continue
+            self._write_boundary_set_value(book, key, float(safe["set_value"]))
+            applied += 1
+        return applied
+
+    def _apply_default_non_electric_load_curves(
+        self,
+        book: EBook,
+        absolute_minute: int | float,
+    ) -> int:
+        catalog = {
+            str(item["key"]): item
+            for item in self._external_curve_catalog()
+            if item.get("curve_type") == "load"
+            and item.get("dev_type") in {"HydroLoad", "HeatLoad"}
+        }
+        manual_overrides = self._manual_source_curve_override_keys()
+        active_commands = self._active_remote_adjustment_keys(absolute_minute)
+        inactive_coupling_keys = self._inactive_coupling_default_curve_keys()
+        curve_mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
+        period_minutes = _simulation_mode_duration_minutes(curve_mode)
+        applied = 0
+        for item in catalog.values():
+            key = load_curve_identity(item)
+            if key in manual_overrides or key in active_commands or key in inactive_coupling_keys:
+                continue
+            points = item.get("points", [])
+            aliases = tuple(item.get("value_aliases", ("value",)))
+            value = None
+            for alias in aliases:
+                value = self._interpolate_curve_series(
+                    points,
+                    absolute_minute,
+                    str(alias),
+                    None,
+                    period_minutes=period_minutes,
+                )
+                if value is not None:
+                    break
             if value is None or not math.isfinite(value):
                 continue
             try:
@@ -6293,6 +6384,11 @@ class PolarMicrogridSimulator:
             point_count = int(_to_float(self.curves.get("point_count"), 0) or 0)
             if not point_count:
                 point_count = len(weather) if isinstance(weather, Sequence) else 0
+            load_catalog = {
+                str(item.get("storage_key", "")): item
+                for item in self._external_curve_catalog()
+                if item.get("curve_type") == "load"
+            }
             return {
                 "mode": mode,
                 "time_step_minutes": float(_to_float(self.curves.get("time_step_minutes"), default_step) or default_step),
@@ -6309,6 +6405,11 @@ class PolarMicrogridSimulator:
                         "key": f"load:{name}",
                         "name": str(name),
                         "point_count": len(points) if isinstance(points, Sequence) else 0,
+                        **{
+                            key: load_catalog[str(name)].get(key)
+                            for key in ("dev_type", "dev_name", "set_type", "family", "unit")
+                            if str(name) in load_catalog and load_catalog[str(name)].get(key) is not None
+                        },
                     }
                     for name, points in (loads.items() if isinstance(loads, Mapping) else [])
                 ],
@@ -6356,8 +6457,27 @@ class PolarMicrogridSimulator:
             points = loads.get(load_name, []) if isinstance(loads, Mapping) else []
             if not isinstance(points, Sequence) or isinstance(points, (str, bytes)):
                 return []
+            catalog_item = next(
+                (
+                    item for item in self._external_curve_catalog()
+                    if item.get("curve_type") == "load"
+                    and str(item.get("storage_key", "")) == load_name
+                ),
+                None,
+            )
+            aliases = tuple(catalog_item.get("value_aliases", ())) if catalog_item else ("p_kw", "value", "load_kw")
             return [
-                float(_to_float(point.get("p_kw", point.get("value", point.get("load_kw"))), 0.0) or 0.0)
+                float(
+                    next(
+                        (
+                            _to_float(point.get(alias), 0.0)
+                            for alias in aliases
+                            if point.get(alias) not in (None, "")
+                        ),
+                        0.0,
+                    )
+                    or 0.0
+                )
                 for point in points
                 if isinstance(point, Mapping)
             ]
@@ -6404,6 +6524,363 @@ class PolarMicrogridSimulator:
                 "time_step_minutes": float(_to_float(self.curves.get("time_step_minutes"), default_step) or default_step),
                 "point_count": point_count or default_point_count,
                 "series": series,
+            }
+
+    @staticmethod
+    def _external_curve_range(
+        item: Mapping[str, Any],
+        fallback: Mapping[str, Any],
+    ) -> Tuple[Optional[float], Optional[float]]:
+        raw_start = item.get("start_minute", fallback.get("start_minute"))
+        raw_end = item.get("end_minute", fallback.get("end_minute"))
+        if raw_start in (None, "") and raw_end in (None, ""):
+            return None, None
+        if raw_start in (None, "") or raw_end in (None, ""):
+            raise ValueError("曲线时间范围必须同时提供 start_minute 和 end_minute")
+        start = _to_float(raw_start, None)
+        end = _to_float(raw_end, None)
+        if start is None or end is None or not math.isfinite(start) or not math.isfinite(end):
+            raise ValueError("曲线时间范围必须是有限数值")
+        if start < 0 or end < 0:
+            raise ValueError("曲线时间范围不能为负数")
+        if start > end:
+            raise ValueError("曲线时间范围 start_minute 不能大于 end_minute")
+        return float(start), float(end)
+
+    @staticmethod
+    def _load_curve_storage_key(
+        item: Mapping[str, Any],
+        loads: Mapping[str, Any],
+        name_counts: Mapping[str, int],
+    ) -> str:
+        structured_key = str(item["key"])
+        dev_type = str(item["dev_type"])
+        dev_name = str(item["dev_name"])
+        for candidate in (structured_key, f"{dev_type}:{dev_name}", dev_name):
+            if candidate in loads and (candidate != dev_name or name_counts.get(dev_name, 0) == 1):
+                return candidate
+        return dev_name if name_counts.get(dev_name, 0) == 1 else f"{dev_type}:{dev_name}"
+
+    def _external_curve_catalog(self, curves: Optional[Mapping[str, Any]] = None) -> List[Dict[str, Any]]:
+        current = curves if isinstance(curves, Mapping) else self.curves
+        weather = current.get("weather", [])
+        catalog: List[Dict[str, Any]] = [
+            {
+                "key": key,
+                "curve_type": "environment",
+                "energy_type": "environment",
+                "dev_type": "Environment",
+                "dev_name": "weather",
+                "set_type": key,
+                "unit": unit,
+                "storage_kind": "weather",
+                "storage_key": key,
+                "value_aliases": (key,),
+                "points": weather,
+            }
+            for key, unit in EXTERNAL_CURVE_ENVIRONMENT_SPECS.items()
+        ]
+
+        loads = current.get("loads", {})
+        loads = loads if isinstance(loads, Mapping) else {}
+        load_items = load_curve_catalog(self.definition_snapshot.model_book)
+        name_counts: Dict[str, int] = {}
+        for item in load_items:
+            name = str(item["dev_name"])
+            name_counts[name] = name_counts.get(name, 0) + 1
+        for item in load_items:
+            storage_key = self._load_curve_storage_key(item, loads, name_counts)
+            catalog.append(
+                {
+                    **dict(item),
+                    "curve_type": "load",
+                    "energy_type": item.get("family", ""),
+                    "storage_kind": "load",
+                    "storage_key": storage_key,
+                    "points": loads.get(storage_key, []),
+                }
+            )
+
+        sources = current.get("sources", [])
+        source_points = {
+            str(item.get("key", "")): item.get("points", [])
+            for item in sources
+            if isinstance(item, Mapping)
+        } if isinstance(sources, Sequence) and not isinstance(sources, (str, bytes)) else {}
+        for item in source_curve_catalog(self.definition_snapshot.model_book):
+            key = str(item["key"])
+            catalog.append(
+                {
+                    **dict(item),
+                    "curve_type": "source",
+                    "energy_type": item.get("family", ""),
+                    "storage_kind": "source",
+                    "storage_key": key,
+                    "value_aliases": ("value", "set_value", "p_kw", "flow_set"),
+                    "points": source_points.get(key, []),
+                }
+            )
+        return catalog
+
+    @staticmethod
+    def _external_curve_public_item(
+        item: Mapping[str, Any],
+        start_minute: Optional[float] = None,
+        end_minute: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        aliases = tuple(str(alias) for alias in item.get("value_aliases", ("value",)))
+        points: List[Dict[str, float]] = []
+        raw_points = item.get("points", [])
+        if isinstance(raw_points, Sequence) and not isinstance(raw_points, (str, bytes)):
+            for index, point in enumerate(raw_points):
+                if not isinstance(point, Mapping):
+                    continue
+                minute = _to_float(point.get("minute"), float(index))
+                value = next(
+                    (
+                        _to_float(point.get(alias), None)
+                        for alias in aliases
+                        if point.get(alias) not in (None, "")
+                    ),
+                    None,
+                )
+                if minute is None or value is None or not math.isfinite(minute) or not math.isfinite(value):
+                    continue
+                if start_minute is not None and minute < start_minute:
+                    continue
+                if end_minute is not None and minute > end_minute:
+                    continue
+                points.append({"minute": float(minute), "value": float(value)})
+        points.sort(key=lambda point: point["minute"])
+        return {
+            key: item.get(key, "")
+            for key in (
+                "key", "curve_type", "energy_type", "dev_type",
+                "dev_name", "set_type", "unit",
+            )
+        } | {"points": points}
+
+    @staticmethod
+    def _external_curve_selectors(payload: Mapping[str, Any]) -> List[Mapping[str, Any]]:
+        raw_curves = payload.get("curves")
+        if raw_curves is not None:
+            if not isinstance(raw_curves, Sequence) or isinstance(raw_curves, (str, bytes)):
+                raise ValueError("curves 必须是曲线选择数组")
+            if any(not isinstance(item, Mapping) for item in raw_curves):
+                raise ValueError("curves 中的每一项必须是曲线对象")
+            return list(raw_curves)
+        raw_keys = payload.get("keys")
+        if raw_keys is None:
+            return []
+        if isinstance(raw_keys, str):
+            raw_keys = [key.strip() for key in raw_keys.split(",")]
+        if not isinstance(raw_keys, Sequence) or isinstance(raw_keys, (str, bytes)):
+            raise ValueError("keys 必须是曲线键数组")
+        return [{"key": str(key).strip()} for key in raw_keys if str(key).strip()]
+
+    @staticmethod
+    def _resolve_external_curve(
+        selector: Mapping[str, Any],
+        catalog: Mapping[str, Mapping[str, Any]],
+    ) -> Mapping[str, Any]:
+        key = str(selector.get("key", "")).strip()
+        item = catalog.get(key) if key else None
+        if item is None and not key:
+            identity = tuple(
+                str(selector.get(field, "")).strip()
+                for field in ("dev_type", "dev_name", "set_type")
+            )
+            if all(identity):
+                matches = [
+                    candidate
+                    for candidate in catalog.values()
+                    if tuple(str(candidate.get(field, "")) for field in ("dev_type", "dev_name", "set_type"))
+                    == identity
+                ]
+                item = matches[0] if len(matches) == 1 else None
+        if item is None:
+            identity_text = "/".join(
+                str(selector.get(field, "")).strip()
+                for field in ("dev_type", "dev_name", "set_type")
+            ).strip("/")
+            raise ValueError(f"曲线不存在：{key or identity_text or '<empty>'}")
+        key = str(item["key"])
+        for field in ("curve_type", "energy_type", "dev_type", "dev_name", "set_type"):
+            requested = str(selector.get(field, "")).strip()
+            if requested and requested != str(item.get(field, "")):
+                raise ValueError(f"曲线 {key} 的 {field} 身份不匹配")
+        return item
+
+    def external_curves_query(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        with self.curves_lock:
+            catalog = self._external_curve_catalog()
+            by_key = {str(item["key"]): item for item in catalog}
+            selectors = self._external_curve_selectors(payload)
+            if not selectors:
+                selectors = [{"key": item["key"]} for item in catalog]
+            curves = []
+            for selector in selectors:
+                item = self._resolve_external_curve(selector, by_key)
+                start, end = self._external_curve_range(selector, payload)
+                curves.append(self._external_curve_public_item(item, start, end))
+            mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
+            default_step = _simulation_mode_curve_step_minutes(mode)
+            return {
+                **self._external_response_metadata(),
+                "mode": mode,
+                "time_step_minutes": float(
+                    _to_float(self.curves.get("time_step_minutes"), default_step) or default_step
+                ),
+                "returned_count": len(curves),
+                "available_count": len(catalog),
+                "curves": curves,
+            }
+
+    @staticmethod
+    def _validated_external_curve_points(raw_points: Any) -> List[Dict[str, float]]:
+        if not isinstance(raw_points, Sequence) or isinstance(raw_points, (str, bytes)):
+            raise ValueError("曲线 points 必须是时间点数组")
+        points: List[Dict[str, float]] = []
+        seen: set[float] = set()
+        for raw_point in raw_points:
+            if not isinstance(raw_point, Mapping):
+                raise ValueError("曲线时间点必须包含 minute 和 value")
+            minute = _to_float(raw_point.get("minute"), None)
+            value = _to_float(raw_point.get("value"), None)
+            if minute is None or value is None or not math.isfinite(minute) or not math.isfinite(value):
+                raise ValueError("曲线 minute 和 value 必须是有限数值")
+            minute = float(minute)
+            if minute < 0:
+                raise ValueError("曲线 minute 不能为负数")
+            if minute in seen:
+                raise ValueError(f"曲线存在重复时刻：{minute:g}")
+            seen.add(minute)
+            points.append({"minute": minute, "value": float(value)})
+        points.sort(key=lambda point: point["minute"])
+        return points
+
+    @staticmethod
+    def _store_external_curve_points(
+        curves: Dict[str, Any],
+        item: Mapping[str, Any],
+        points: Sequence[Mapping[str, float]],
+    ) -> None:
+        kind = str(item.get("storage_kind", ""))
+        storage_key = str(item.get("storage_key", item.get("key", "")))
+        if kind == "weather":
+            weather = curves.setdefault("weather", [])
+            if not isinstance(weather, list):
+                weather = []
+                curves["weather"] = weather
+            field = str(item["set_type"])
+            for row in weather:
+                if isinstance(row, dict):
+                    row.pop(field, None)
+            rows_by_minute = {
+                float(_to_float(row.get("minute"), index) or 0.0): row
+                for index, row in enumerate(weather)
+                if isinstance(row, dict)
+            }
+            for point in points:
+                minute = float(point["minute"])
+                row = rows_by_minute.get(minute)
+                if row is None:
+                    row = {"minute": minute}
+                    weather.append(row)
+                    rows_by_minute[minute] = row
+                row[field] = float(point["value"])
+            weather.sort(key=lambda row: float(_to_float(row.get("minute"), 0.0) or 0.0))
+            return
+        if kind == "load":
+            loads = curves.setdefault("loads", {})
+            if not isinstance(loads, dict):
+                loads = {}
+                curves["loads"] = loads
+            field = "p_kw" if item.get("set_type") == "p_set" else str(item["set_type"])
+            loads[storage_key] = [
+                {"minute": float(point["minute"]), field: float(point["value"])}
+                for point in points
+            ]
+            return
+        sources = curves.setdefault("sources", [])
+        if not isinstance(sources, list):
+            sources = []
+            curves["sources"] = sources
+        target = next(
+            (
+                source for source in sources
+                if isinstance(source, dict) and str(source.get("key", "")) == storage_key
+            ),
+            None,
+        )
+        if target is None:
+            target = {
+                key: item.get(key)
+                for key in ("key", "dev_type", "dev_name", "name", "set_type", "family", "unit")
+            }
+            sources.append(target)
+        target["points"] = [
+            {"minute": float(point["minute"]), "value": float(point["value"])}
+            for point in points
+        ]
+
+    def external_curves_update(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        with self.lock, self.curves_lock:
+            raw_updates = payload.get("curves")
+            if not isinstance(raw_updates, Sequence) or isinstance(raw_updates, (str, bytes)) or not raw_updates:
+                raise ValueError("curves 必须是非空曲线更新数组")
+            staged = copy.deepcopy(self.curves)
+            by_key = {str(item["key"]): item for item in self._external_curve_catalog(staged)}
+            prepared = []
+            seen_keys: set[str] = set()
+            for raw_item in raw_updates:
+                if not isinstance(raw_item, Mapping):
+                    raise ValueError("curves 中的每一项必须是曲线对象")
+                item = self._resolve_external_curve(raw_item, by_key)
+                key = str(item["key"])
+                if key in seen_keys:
+                    raise ValueError(f"同一批更新中曲线重复：{key}")
+                seen_keys.add(key)
+                start, end = self._external_curve_range(raw_item, payload)
+                points = self._validated_external_curve_points(raw_item.get("points"))
+                if start is not None and any(point["minute"] < start or point["minute"] > end for point in points):
+                    raise ValueError(f"曲线 {key} 的更新点超出指定时间范围")
+                prepared.append((item, points, start, end))
+
+            results = []
+            for item, incoming, start, end in prepared:
+                points = list(incoming)
+                if start is not None:
+                    points = [
+                        point for point in self._external_curve_public_item(item)["points"]
+                        if point["minute"] < start or point["minute"] > end
+                    ] + points
+                    points.sort(key=lambda point: point["minute"])
+                self._store_external_curve_points(staged, item, points)
+                result = {
+                    "key": item["key"],
+                    "update_scope": "time_range" if start is not None else "whole_curve",
+                    "point_count": len(points),
+                }
+                if start is not None:
+                    result.update({"start_minute": start, "end_minute": end})
+                results.append(result)
+
+            atomic_write_text(
+                self.curves_file,
+                json.dumps(staged, ensure_ascii=False, indent=2) + "\n",
+            )
+            self.curves = staged
+            self._curve_revision += 1
+            final_catalog = {str(item["key"]): item for item in self._external_curve_catalog()}
+            return {
+                **self._external_response_metadata(),
+                "updated_count": len(results),
+                "results": results,
+                "curves": [
+                    self._external_curve_public_item(final_catalog[str(item["key"])])
+                    for item, _points, _start, _end in prepared
+                ],
             }
 
     def _ensure_weather_curve_points(self, point_count: int, step_minutes: float) -> List[Dict[str, Any]]:
@@ -8045,6 +8522,9 @@ class PolarMicrogridSimulator:
             return []
 
         curve_targets = self._load_curve_targets()
+        manual_overrides = self._manual_source_curve_override_keys()
+        active_commands = self._active_remote_adjustment_keys(target_minute)
+        inactive_coupling_keys = self._inactive_coupling_default_curve_keys()
         targets_by_device: Dict[Tuple[str, str], Tuple[int, Dict[str, Any]]] = {}
         for raw_name, points in loads.items():
             curve_name = str(raw_name).strip()
@@ -8062,6 +8542,13 @@ class PolarMicrogridSimulator:
                 continue
             for block_name, dev_name in matches:
                 key = (block_name, dev_name)
+                control_key = (block_name, dev_name, "p_set")
+                if (
+                    control_key in manual_overrides
+                    or control_key in active_commands
+                    or control_key in inactive_coupling_keys
+                ):
+                    continue
                 current = targets_by_device.get(key)
                 if current is not None and current[0] > priority:
                     continue
@@ -12884,6 +13371,12 @@ class MultiModelSimulator:
 
     def update_curve_series(self, payload: Mapping[str, Any], model_id: Optional[str] = None) -> Dict[str, Any]:
         return self.service_for(model_id).update_curve_series(payload)
+
+    def external_curves_query(self, payload: Mapping[str, Any], model_id: Optional[str] = None) -> Dict[str, Any]:
+        return self.service_for(model_id).external_curves_query(payload)
+
+    def external_curves_update(self, payload: Mapping[str, Any], model_id: Optional[str] = None) -> Dict[str, Any]:
+        return self.service_for(model_id).external_curves_update(payload)
 
     def external_realtime_input_schema(self, model_id: Optional[str] = None) -> Dict[str, Any]:
         return self.service_for(model_id).external_realtime_input_schema()

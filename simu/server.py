@@ -1973,6 +1973,8 @@ def make_http_server(
                 "measurement_history": f"/api/external/telemetry/history/query?model_id={encoded_model_id}",
                 "control_names": f"/api/external/controls/names?model_id={encoded_model_id}",
                 "control_execute": f"/api/external/controls/execute?model_id={encoded_model_id}",
+                "curves_query": f"/api/external/curves/query?model_id={encoded_model_id}",
+                "curves_update": f"/api/external/curves/update?model_id={encoded_model_id}",
             }
             return {
                 "type": "polar-microgrid-trainee-link",
@@ -2948,6 +2950,22 @@ def make_http_server(
                     raise JsonApiError(404, f"Unknown API route: {path}")
                 try:
                     result = target.external_measurement_history(payload)
+                except ValueError as exc:
+                    raise JsonApiError(400, str(exc), target._external_response_metadata()) from exc
+                self._send_json(result)
+            elif path == "/api/external/curves/query":
+                if role != "simulator":
+                    raise JsonApiError(404, f"Unknown API route: {path}")
+                try:
+                    result = target.external_curves_query(payload)
+                except ValueError as exc:
+                    raise JsonApiError(400, str(exc), target._external_response_metadata()) from exc
+                self._send_json(result)
+            elif path in ("/api/external/curves/update", "/api/external/curves/updat"):
+                if role != "simulator":
+                    raise JsonApiError(404, f"Unknown API route: {path}")
+                try:
+                    result = target.external_curves_update(payload)
                 except ValueError as exc:
                     raise JsonApiError(400, str(exc), target._external_response_metadata()) from exc
                 self._send_json(result)

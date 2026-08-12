@@ -8753,8 +8753,9 @@ function validateTeacherSnapshotDefinitions(snapshot, result = "定义不一致"
   return false;
 }
 
-function isSimulationPausedSnapshot(snapshot = state.snapshot) {
-  return String(snapshot?.clock?.state || "").trim().toLowerCase() === "paused";
+function isSimulationFrozenSnapshot(snapshot = state.snapshot) {
+  const simulationState = String(snapshot?.clock?.state || "").trim().toLowerCase();
+  return ["paused", "stopped"].includes(simulationState);
 }
 
 function acceptTeacherSnapshot(snapshot, epoch = state.receiveEpoch) {
@@ -8762,23 +8763,12 @@ function acceptTeacherSnapshot(snapshot, epoch = state.receiveEpoch) {
   state.snapshotSource = "teacher";
   const clock = snapshot.clock || {};
   finishTraineeWebTransportRecovery(clock.time || "--");
-  if (isSimulationPausedSnapshot(snapshot)) {
+  if (isSimulationFrozenSnapshot(snapshot)) {
     resetReceiveIssueStreak();
     state.lastReceiveAt = new Date().toLocaleTimeString();
     renderSnapshot(snapshot);
     renderReceiveMode();
     return true;
-  }
-  if (String(clock.state || "").toLowerCase() === "stopped") {
-    renderSnapshot(snapshot);
-    recordReceiveIssue(
-      "实时交互",
-      "模拟台 /api/snapshot",
-      "模拟台未启动仿真",
-      [`仿真状态 ${clock.state || "stopped"}`, "请在模拟台启动仿真后继续接收"],
-      clock.time || "--",
-    );
-    return false;
   }
   resetReceiveIssueStreak();
   state.lastReceiveAt = new Date().toLocaleTimeString();

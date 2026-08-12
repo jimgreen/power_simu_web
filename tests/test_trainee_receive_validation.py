@@ -456,8 +456,26 @@ def test_trainee_receive_runtime_logs_each_issue_and_stops_after_consecutive_fai
     assert "/api/trainee/snapshot" in script
     assert "通讯失败" in script
     assert "数据接收失败" in script
-    assert "模拟台未启动仿真" in script
     assert "已停止接收" in script
+
+
+def test_stopped_or_paused_simulator_freezes_trainee_without_stopping_receive():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+    helper = script.split("function isSimulationFrozenSnapshot", 1)[1].split(
+        "function acceptTeacherSnapshot",
+        1,
+    )[0]
+    accept_block = script.split("function acceptTeacherSnapshot", 1)[1].split(
+        "async function attemptTeacherReconnect",
+        1,
+    )[0]
+
+    assert '["paused", "stopped"].includes' in helper
+    assert "if (isSimulationFrozenSnapshot(snapshot))" in accept_block
+    assert "resetReceiveIssueStreak();" in accept_block
+    assert "renderSnapshot(snapshot);" in accept_block
+    assert "recordReceiveIssue(" not in accept_block
+    assert "setTraineeReceiveActive" not in accept_block
 
 
 def test_local_trainee_web_fetch_outage_keeps_receive_mode_and_retries():

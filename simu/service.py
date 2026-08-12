@@ -2547,6 +2547,7 @@ class PolarMicrogridSimulator:
         )
         if not state_values:
             return
+        definition_rows = self.definition_snapshot.measurement_rows
 
         field_by_measurement_type = {
             "PRESS": "pressure",
@@ -2560,6 +2561,7 @@ class PolarMicrogridSimulator:
 
         def sync_rows(rows: List[List[str]]) -> None:
             nonlocal changed
+            populated_keys: set[Tuple[str, str]] = set()
             for row in rows:
                 if len(row) < len(MEAS_HEADER):
                     continue
@@ -2572,10 +2574,31 @@ class PolarMicrogridSimulator:
                 values = state_values.get(("HydroStorage", dev_name)) or state_values.get(dev_name)
                 if not values or field not in values:
                     continue
+                populated_keys.add((dev_name, field))
                 value = _number_text(values[field])
                 if row[7] != value:
                     row[7] = value
                     changed = True
+
+            for definition in definition_rows:
+                if len(definition) < len(MEAS_HEADER):
+                    continue
+                if str(definition[2]).strip() != "HydroStorage":
+                    continue
+                field = field_by_measurement_type.get(
+                    str(definition[4]).strip().upper()
+                )
+                dev_name = str(definition[3]).strip()
+                if field is None or (dev_name, field) in populated_keys:
+                    continue
+                values = state_values.get(("HydroStorage", dev_name)) or state_values.get(dev_name)
+                if not values or field not in values:
+                    continue
+                row = list(definition)
+                row[7] = _number_text(values[field])
+                rows.append(row)
+                populated_keys.add((dev_name, field))
+                changed = True
 
         sync_rows(self.latest_real_rows)
         sync_rows(self.latest_scada_rows)

@@ -467,6 +467,10 @@ class HydrogenStorageStateTest(unittest.TestCase):
                 ]
             }
         )
+        measurement_rows = [
+            [str(index), f"tank.{meas_type}", "HydroStorage", "tank-1", meas_type, "1", "1", "-1"]
+            for index, meas_type in enumerate(("pressure", "flow", "gas_quantity", "soc"), start=1)
+        ]
         service._definition_snapshot = SimpleNamespace(
             model_book=_model_book(
                 {
@@ -478,15 +482,12 @@ class HydrogenStorageStateTest(unittest.TestCase):
                     "pressure": 99.0,
                     "run_stat": 1,
                 }
-            )
+            ),
+            measurement_rows=measurement_rows,
         )
         service._definition_publish_epoch = 1
-        measurement_rows = [
-            [str(index), f"tank.{meas_type}", "HydroStorage", "tank-1", meas_type, "1", "1", "-1"]
-            for index, meas_type in enumerate(("pressure", "flow", "gas_quantity", "soc"), start=1)
-        ]
-        service.latest_real_rows = [list(row) for row in measurement_rows]
-        service.latest_scada_rows = [list(row) for row in measurement_rows]
+        service.latest_real_rows = []
+        service.latest_scada_rows = []
         service.latest_measurements = {}
         service._measurement_delta_step_count = 1
         service._measurement_delta_runtime_marker = ("stale",)

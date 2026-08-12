@@ -40,10 +40,10 @@
 </CbOpenStat>
 <SetValue>
 @ dev_type       dev_name            set_type  set_value
-# ACLoad         交流负荷-1              p_set     1.0
-# ACLoad         交流负荷-1              q_set     1.0
-# ACLoad         交流电制氢-1_交流设备端交流电负荷  p_set     1.0
-# ACLoad         交流电制氢-1_交流设备端交流电负荷  q_set     1.0
+# ACLoad         交流负荷-1              p_set     0
+# ACLoad         交流负荷-1              q_set     50.0
+# ACLoad         交流电制氢-1_交流设备端交流电负荷  p_set     0
+# ACLoad         交流电制氢-1_交流设备端交流电负荷  q_set     0.0
 # ACGenerator    交流风电-1              p_set     3.0
 # ACGenerator    交流风电-1              q_set     0.5
 # ACGenerator    交流风电-1              v_set     380
@@ -98,6 +98,7 @@
 # ACGenerator    交流柴油发电机-30          p_set     0
 # ACGenerator    交流柴油发电机-30          q_set     0
 # ACGenerator    交流柴油发电机-30          v_set     380
+# DCLoad         直流负荷-1              p_set     0
 # DCGenerator    直流光伏-1              p_set     5.0
 # DCGenerator    直流光伏-1              v_set     400
 # DCGenerator    直流光伏-1              i_set     0.0
@@ -156,65 +157,67 @@
 # DCDCConverter  储能变流器-6             i_set     0
 # DCDCConverter  储能变流器-6             v_set     750
 # DCACConverter  风机变流器-1             p_ac_set  0
-# DCACConverter 风机变流器-1 p_dc_set 0
+# DCACConverter  风机变流器-1             p_dc_set  0
 # DCACConverter  风机变流器-1             q_ac_set  0
 # DCACConverter  风机变流器-1             v_ac_set  380
 # DCACConverter  风机变流器-1             v_dc_set  750
 # DCACConverter  风机变流器-2             p_ac_set  0
-# DCACConverter 风机变流器-2 p_dc_set 0
+# DCACConverter  风机变流器-2             p_dc_set  0
 # DCACConverter  风机变流器-2             q_ac_set  0
 # DCACConverter  风机变流器-2             v_ac_set  380
 # DCACConverter  风机变流器-2             v_dc_set  750
 # DCACConverter  风机变流器-3             p_ac_set  0
-# DCACConverter 风机变流器-3 p_dc_set 0
+# DCACConverter  风机变流器-3             p_dc_set  0
 # DCACConverter  风机变流器-3             q_ac_set  0
 # DCACConverter  风机变流器-3             v_ac_set  380
 # DCACConverter  风机变流器-3             v_dc_set  750
 # DCACConverter  风机变流器-4             p_ac_set  0
-# DCACConverter 风机变流器-4 p_dc_set 0
+# DCACConverter  风机变流器-4             p_dc_set  0
 # DCACConverter  风机变流器-4             q_ac_set  0
 # DCACConverter  风机变流器-4             v_ac_set  380
 # DCACConverter  风机变流器-4             v_dc_set  750
 # DCACConverter  风机变流器-5             p_ac_set  0
-# DCACConverter 风机变流器-5 p_dc_set 0
+# DCACConverter  风机变流器-5             p_dc_set  0
 # DCACConverter  风机变流器-5             q_ac_set  0
 # DCACConverter  风机变流器-5             v_ac_set  380
 # DCACConverter  风机变流器-5             v_dc_set  750
 # DCACConverter  风机变流器-6             p_ac_set  0
-# DCACConverter 风机变流器-6 p_dc_set 0
+# DCACConverter  风机变流器-6             p_dc_set  0
 # DCACConverter  风机变流器-6             q_ac_set  0
 # DCACConverter  风机变流器-6             v_ac_set  380
 # DCACConverter  风机变流器-6             v_dc_set  750
 # DCACConverter  风机变流器-7             p_ac_set  0
-# DCACConverter 风机变流器-7 p_dc_set 0
+# DCACConverter  风机变流器-7             p_dc_set  0
 # DCACConverter  风机变流器-7             q_ac_set  0
 # DCACConverter  风机变流器-7             v_ac_set  380
 # DCACConverter  风机变流器-7             v_dc_set  750
 # DCACConverter  风机变流器-8             p_ac_set  0
-# DCACConverter 风机变流器-8 p_dc_set 0
+# DCACConverter  风机变流器-8             p_dc_set  0
 # DCACConverter  风机变流器-8             q_ac_set  0
 # DCACConverter  风机变流器-8             v_ac_set  380
 # DCACConverter  风机变流器-8             v_dc_set  750
 # DCACConverter  风机变流器-9             p_ac_set  0
-# DCACConverter 风机变流器-9 p_dc_set 0
+# DCACConverter  风机变流器-9             p_dc_set  0
 # DCACConverter  风机变流器-9             q_ac_set  0
 # DCACConverter  风机变流器-9             v_ac_set  380
 # DCACConverter  风机变流器-9             v_dc_set  750
 # DCACConverter  风机变流器-10            p_ac_set  0
-# DCACConverter 风机变流器-10 p_dc_set 0
+# DCACConverter  风机变流器-10            p_dc_set  0
 # DCACConverter  风机变流器-10            q_ac_set  0
 # DCACConverter  风机变流器-10            v_ac_set  380
 # DCACConverter  风机变流器-10            v_dc_set  750
-# DCACConverter  DCAC变流器-1           p_ac_set  10
-# DCACConverter DCAC变流器-1 p_dc_set -10
+# DCACConverter  DCAC变流器-1           p_ac_set  0
+# DCACConverter  DCAC变流器-1           p_dc_set  0
 # DCACConverter  DCAC变流器-1           q_ac_set  0
 # DCACConverter  DCAC变流器-1           v_ac_set  380
 # DCACConverter  DCAC变流器-1           v_dc_set  750
-# DCACConverter  DCAC变流器-2           p_ac_set  10
-# DCACConverter DCAC变流器-2 p_dc_set -10
+# DCACConverter  DCAC变流器-2           p_ac_set  0
+# DCACConverter  DCAC变流器-2           p_dc_set  0
 # DCACConverter  DCAC变流器-2           q_ac_set  0
 # DCACConverter  DCAC变流器-2           v_ac_set  380
 # DCACConverter  DCAC变流器-2           v_dc_set  750
+# HydroSource    交流电制氢-1_氢能设备端氢源     flow_set  10
+# HydroLoad      直流燃料电池-1_氢能设备端氢荷    flow_set  10
 </SetValue>
 <RunStat>
 @ dev_type       dev_name            run_stat
@@ -399,9 +402,10 @@
 # DCACConverter  风机变流器-10            1
 # DCACConverter  DCAC变流器-1           1
 # DCACConverter  DCAC变流器-2           1
+# HydroNode      集装格式储氢罐-3           1
 # HydroSource    交流电制氢-1_氢能设备端氢源     1
 # HydroLoad      直流燃料电池-1_氢能设备端氢荷    1
-# HydroStorage   集装格式储氢罐-1           1
+# HydroStorage   集装格式储氢罐-3           1
 # AcE2Hydro      交流电制氢-1             1
 # Hydro2DcE      直流燃料电池-1            1
 </RunStat>

@@ -571,6 +571,15 @@ def _write_json_file(path: Path, payload: Mapping[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _decode_uploaded_definition_text(data: bytes, description: str = "model.e") -> str:
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(f"{description} 文件编码无法识别，请保存为 UTF-8 或 GB18030 编码")
+
+
 def _read_zip_text(archive: zipfile.ZipFile, entry_name: str, required: bool = True) -> Optional[str]:
     try:
         data = archive.read(entry_name)
@@ -2739,7 +2748,7 @@ def make_http_server(
                     raise JsonApiError(400, "model.e data is required")
                 try:
                     model_data = base64.b64decode(data_base64, validate=True)
-                    model_text = model_data.decode("utf-8-sig")
+                    model_text = _decode_uploaded_definition_text(model_data)
                     diagram_svg_text = _decode_optional_svg_payload(payload)
                     model = create_model_from_efile(
                         service,  # type: ignore[arg-type]
@@ -2765,7 +2774,7 @@ def make_http_server(
                     raise JsonApiError(400, "model.e data is required")
                 try:
                     model_data = base64.b64decode(data_base64, validate=True)
-                    model_text = model_data.decode("utf-8-sig")
+                    model_text = _decode_uploaded_definition_text(model_data)
                     diagram_svg_text = _decode_optional_svg_payload(payload)
                     model = update_model_from_efile(
                         service,  # type: ignore[arg-type]

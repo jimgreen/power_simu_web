@@ -1951,9 +1951,7 @@ async function createNewModelFromFile() {
     const diagramSvgBase64 = pendingNewModelSvgFile
       ? arrayBufferToBase64(await pendingNewModelSvgFile.arrayBuffer())
       : "";
-    const result = await api("/api/models/create", {
-      modelScoped: false,
-      controlPlane: true,
+    const result = await controlPlaneApi("/api/models/create", {
       method: "POST",
       body: JSON.stringify({
         name,
@@ -2746,6 +2744,14 @@ async function api(path, options = {}) {
     if (timeoutId) clearTimeout(timeoutId);
     callerSignal?.removeEventListener?.("abort", abortFromCaller);
   }
+}
+
+function controlPlaneApi(path, options = {}) {
+  return api(path, {
+    ...options,
+    modelScoped: false,
+    controlPlane: true,
+  });
 }
 
 function invalidateManualDefinitionChanges() {
@@ -16353,6 +16359,7 @@ $("newModelForm").addEventListener("submit", (event) => {
   event.preventDefault();
   createNewModelFromFile();
 });
+$("confirmNewModel").addEventListener("click", createNewModelFromFile);
 $("newModelName").addEventListener("input", () => validateNewModelForm());
 $("newModelServiceHost").addEventListener("input", () => validateNewModelForm());
 $("newModelServicePort").addEventListener("input", () => validateNewModelForm());

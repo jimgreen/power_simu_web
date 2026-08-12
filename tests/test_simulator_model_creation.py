@@ -491,6 +491,47 @@ class SimulatorModelCreationTest(unittest.TestCase):
             self.assertTrue((models_root / "接口新模型/diagram.svg").exists())
             self.assertIn("接口新模型", {model["id"] for model in body["models"]})
 
+    def test_create_model_endpoint_accepts_gb18030_model_e_payload(self):
+        from simu.server import make_http_server
+        from urllib.request import Request, urlopen
+        import json
+        import threading
+
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            models_root = temp_root / "models"
+            copytree(SIMPLE_MODEL_SOURCE, models_root / "默认模型")
+            manager = MultiModelSimulator.discover(
+                models_root.parent,
+                temp_root / "runtime",
+                models_dir=models_root,
+            )
+            server = make_http_server(("127.0.0.1", 0), manager)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            port = server.server_address[1]
+            try:
+                model_text = (SIMPLE_MODEL_SOURCE / "model.e").read_text(encoding="utf-8")
+                payload = {
+                    "name": "国标编码模型",
+                    "filename": "model.e",
+                    "data_base64": base64.b64encode(model_text.encode("gb18030")).decode("ascii"),
+                }
+                request = Request(
+                    f"http://127.0.0.1:{port}/api/models/create",
+                    data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(request, timeout=10) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+
+            self.assertEqual(body["model"]["id"], "国标编码模型")
+            self.assertTrue((models_root / "国标编码模型/model.e").exists())
+
     def test_delete_model_rejects_running_model_and_removes_stopped_model_folder(self):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
@@ -599,10 +640,20 @@ class SimulatorModelCreationTest(unittest.TestCase):
         self.assertIn('accept=".e"', html)
         self.assertIn('id="newModelSvgInput"', html)
         self.assertIn('accept=".svg,image/svg+xml"', html)
+        self.assertIn('id="confirmNewModel" class="primary" type="button">新建</button>', html)
+        self.assertIn('src="/app.js?v=20260812-model-create-fix"', html)
+        self.assertIn('href="/styles.css?v=20260812-model-create-fix"', html)
         self.assertIn("openNewModelDialog", script)
         self.assertIn("validateNewModelForm", script)
-        self.assertIn('api("/api/models/create"', script)
-        self.assertRegex(script, re.compile(r'api\("/api/models/create",\s*\{[^}]*modelScoped:\s*false', re.DOTALL))
+        self.assertIn('controlPlaneApi("/api/models/create"', script)
+        self.assertIn('$("confirmNewModel").addEventListener("click", createNewModelFromFile)', script)
+        self.assertRegex(
+            script,
+            re.compile(
+                r'controlPlaneApi\("/api/models/create",\s*\{[^}]*method:\s*"POST"',
+                re.DOTALL,
+            ),
+        )
         self.assertIn("data_base64", script)
         self.assertIn("diagram_svg_base64", script)
         self.assertIn("service_host", script)

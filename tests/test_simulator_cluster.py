@@ -550,6 +550,21 @@ def test_proxy_keeps_low_frequency_model_management_on_control_plane(tmp_path: P
         assert created["model"]["id"] == "created"
         assert created["model"]["service"]["access_link"] == "127.0.0.1:9551"
         assert (models_root / "created" / "meas.e").exists()
+
+        _, gb18030_created = _json_request(
+            f"{base}/api/models/create",
+            method="POST",
+            payload={
+                "name": "国标编码模型",
+                "data_base64": base64.b64encode(
+                    model_text.decode("utf-8-sig").encode("gb18030")
+                ).decode("ascii"),
+                "service_host": "127.0.0.1",
+                "service_port": 9553,
+            },
+        )
+        assert gb18030_created["model"]["id"] == "国标编码模型"
+        assert (models_root / "国标编码模型" / "model.e").exists()
         generated_names = ("model.e", "control.e", "curves.json", "meas.e", "stat.e", "weather.e", "curves.e")
         generated_before_link_update = {
             name: (models_root / "created" / name).read_bytes()

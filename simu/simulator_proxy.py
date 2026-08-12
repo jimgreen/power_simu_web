@@ -166,7 +166,9 @@ def make_simulator_proxy_server(
                 payload.get("service_host"),
                 payload.get("service_port"),
             )
-            model_text = self._decode_base64(payload, "data_base64", "model.e data").decode("utf-8-sig")
+            model_text = helpers._decode_uploaded_definition_text(
+                self._decode_base64(payload, "data_base64", "model.e data")
+            )
             artifacts = helpers._generated_model_artifacts(model_text)
             diagram_svg_text = helpers._decode_optional_svg_payload(payload)
             target_dir = manager.models_root / target_id
@@ -242,7 +244,9 @@ def make_simulator_proxy_server(
                 "service": address,
             }
             if model_data:
-                model_text = self._decode_base64(payload, "data_base64", "model.e data").decode("utf-8-sig")
+                model_text = helpers._decode_uploaded_definition_text(
+                    self._decode_base64(payload, "data_base64", "model.e data")
+                )
                 artifacts = helpers._generated_model_artifacts(model_text)
                 written = helpers._write_generated_model_artifacts(
                     target_dir,
@@ -357,7 +361,7 @@ def make_simulator_proxy_server(
                 return
             data = target.read_bytes()
             self.send_response(200)
-            self._cors(cache_control="no-cache")
+            self._cors(cache_control="no-store")
             self.send_header("Content-Type", mimetypes.guess_type(str(target))[0] or "application/octet-stream")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()

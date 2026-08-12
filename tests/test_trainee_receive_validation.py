@@ -238,7 +238,7 @@ def test_trainee_runtime_signal_refresh_is_wired_to_rendering_and_never_reads_re
     assert "traineeRuntimeSignalDisplayValue" in tooltip_block
 
 
-def test_trainee_receive_keeps_local_measurement_status_while_applying_teacher_values():
+def test_trainee_receive_keeps_local_measurement_status_and_scada_only_visibility():
     script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
 
     assert "function mergeTeacherMeasurementsWithLocalDefinitions" in script
@@ -263,10 +263,10 @@ process.stdout.write(JSON.stringify(mergeTeacherMeasurementsWithLocalDefinitions
     )
     merged = json.loads(result.stdout)
     assert merged["scada"][0]["value"] == 12.5
-    assert merged["real"][0]["value"] == 12.0
     assert merged["scada"][0]["valid"] == 0
-    assert merged["real"][0]["valid"] == 0
     assert merged["scada"][0]["weight"] == 625
+    assert merged["value_channels"] == ["scada"]
+    assert "real" not in merged
 
     merge_block = script.split("function mergeTeacherSnapshotWithLocalDefinitions", 1)[1].split(
         "function applyTeacherConnection",
@@ -623,12 +623,12 @@ def test_trainee_accepts_legacy_teacher_link_when_link_route_is_missing():
     script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
     server = (ROOT / "simu/server.py").read_text(encoding="utf-8")
 
-    assert "function legacyTeacherInteractionConnection" in script
-    assert "\"/api/trainee-link\"" in script
-    assert "\"/api/client-link\"" in script
+    assert "function legacyTeacherInteractionConnection" not in script
+    assert '"/api/trainee-link"' in server
+    assert '"/api/client-link"' in server
     assert "Unknown API route" not in script
     assert "response.status === 404" not in script
     assert "def _legacy_trainee_connection_from_link" in server
     assert "exc.status == 404" in server
-    assert "snapshotPath: `/api/snapshot?model_id=${encodedModelId}`" in script
-    assert "commandPath: `/api/student/commands?model_id=${encodedModelId}`" in script
+    assert "snapshot_path" in server
+    assert "command_path" in server

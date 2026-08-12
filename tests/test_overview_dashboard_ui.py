@@ -8,6 +8,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class OverviewDashboardUiTest(unittest.TestCase):
+    def test_power_flow_failure_is_a_persistent_global_alert_not_only_a_log(self):
+        html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
+        app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="powerFlowFailureAlert"', html)
+        self.assertIn('role="alert"', html)
+        self.assertIn('aria-live="assertive"', html)
+        self.assertIn('id="powerFlowFailureTitle"', html)
+        self.assertIn('id="powerFlowFailureDetail"', html)
+        self.assertIn("function renderPowerFlowFailureAlert", app_js)
+        self.assertIn("snapshot.compute?.error", app_js)
+        self.assertIn("snapshot.compute?.simu_time", app_js)
+        self.assertIn("本轮潮流结果未采用", app_js)
+        self.assertIn("last_successful_simu_time", app_js)
+        self.assertIn("当前画面量测为上一成功帧", app_js)
+        self.assertIn("当前画面没有成功潮流量测帧", app_js)
+        self.assertIn("renderPowerFlowFailureAlert(snapshot)", app_js)
+        self.assertIn(".power-flow-failure-alert", styles)
+        self.assertIn(".power-flow-failure-alert[hidden]", styles)
+
     def test_overview_event_panel_shows_up_to_eight_rows(self):
         app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
         renderer = app_js.split("function renderOverviewEvents(snapshot) {", 1)[1].split(
@@ -537,7 +558,10 @@ class OverviewDashboardUiTest(unittest.TestCase):
         summary_block = styles.split(".energy-green-share {", 1)[1].split("}", 1)[0]
         self.assertIn("position: absolute;", summary_block)
         self.assertIn("left: 50%;", summary_block)
-        self.assertIn("top: var(--energy-summary-top);", summary_block)
+        self.assertIn(
+            "top: calc(var(--energy-summary-top) + var(--energy-central-upper-shift));",
+            summary_block,
+        )
         self.assertIn("width: min(320px, 36%);", summary_block)
         self.assertIn("transform: translateX(-50%);", summary_block)
         self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", summary_block)
@@ -625,7 +649,10 @@ class OverviewDashboardUiTest(unittest.TestCase):
 
         compact_styles = styles.split("@container (max-height: 320px) {", 1)[1]
         compact_summary_block = compact_styles.split(".energy-green-share {", 1)[1].split("}", 1)[0]
-        self.assertIn("top: var(--energy-summary-top);", compact_summary_block)
+        self.assertIn(
+            "top: calc(var(--energy-summary-top) + var(--energy-central-upper-shift));",
+            compact_summary_block,
+        )
 
     def test_overview_energy_flow_has_dynamic_power_arrows(self):
         html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
@@ -811,7 +838,10 @@ class OverviewDashboardUiTest(unittest.TestCase):
         )
         self.assertIn(responsive_bus_height, left_bus_block)
         self.assertIn(responsive_bus_height, right_bus_block)
-        self.assertIn("top: var(--energy-summary-top);", green_summary_block)
+        self.assertIn(
+            "top: calc(var(--energy-summary-top) + var(--energy-central-upper-shift));",
+            green_summary_block,
+        )
         self.assertIn("gap: var(--energy-stack-gap);", forming_stack_block)
         self.assertNotIn("--energy-storage-gap: 36px;", low_height_flow_block)
         self.assertNotIn("top: 40px;", low_height_styles)
@@ -851,6 +881,32 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("overflow-x: hidden;", dashboard_block)
         self.assertIn("--overview-main-min-height: 370px;", dashboard_block)
         self.assertIn("min-height: var(--overview-main-min-height);", main_grid_block)
+
+    def test_overview_central_upper_group_moves_down_responsively(self):
+        styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
+
+        flow_block = styles.split(".energy-flow-map {", 1)[1].split("}", 1)[0]
+        summary_block = styles.split(".energy-green-share {", 1)[1].split("}", 1)[0]
+        hydrogen_block = styles.split(".energy-hydrogen-chain {", 1)[1].split("}", 1)[0]
+        medium_block = styles.split("@container (max-height: 460px) {", 1)[1].split(
+            "@container (max-height: 360px)", 1
+        )[0]
+        compact_block = styles.split("@container (max-height: 320px) {", 1)[1]
+
+        self.assertIn("--energy-central-upper-shift: clamp(0px, calc(13cqh - 57px), 60px);", flow_block)
+        self.assertIn("--energy-hydrogen-top: clamp(6px, 1.8cqh, 16px);", flow_block)
+        self.assertIn(
+            "top: calc(var(--energy-summary-top) + var(--energy-central-upper-shift));",
+            summary_block,
+        )
+        self.assertIn(
+            "top: calc(var(--energy-hydrogen-top) + var(--energy-central-upper-shift));",
+            hydrogen_block,
+        )
+        self.assertIn("--energy-hydrogen-top: 2px;", medium_block)
+        self.assertIn("--energy-hydrogen-top: 1px;", compact_block)
+        self.assertNotIn("margin-top:", summary_block)
+        self.assertNotIn("margin-top:", hydrogen_block)
 
     def test_overview_storage_cards_connect_horizontally_to_their_own_bus(self):
         styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")

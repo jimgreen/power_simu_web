@@ -110,6 +110,29 @@ process.stdout.write(JSON.stringify({ value: resolved?.value, display: diagramDi
                     {"value": 0.5, "display": 50},
                 )
 
+    def test_exported_gas_quantity_camel_case_alias_resolves_live_measurement(self):
+        body = """
+const quantityRow = {
+  dev_type: "HydroStorage",
+  dev_name: "tank-1",
+  meas_type: "gas_quantity",
+  value: 999.5,
+};
+const maps = diagramMeasurementMaps({ measurements: { scada: [quantityRow], real: [] } });
+const binding = { devType: "HydroStorage", devName: "tank-1", metricType: "gasQuantity" };
+const resolved = diagramMetricBindingValue(binding, maps);
+process.stdout.write(JSON.stringify({
+  candidates: diagramMetricMeasurementTypes(binding.devType, binding.metricType),
+  value: resolved?.value ?? null,
+}));
+"""
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                self.assertEqual(
+                    self._run_helpers(path.read_text(encoding="utf-8"), body),
+                    {"candidates": ["GAS_QUANTITY"], "value": 999.5},
+                )
+
     def test_exported_svg_semantic_placeholders_are_compiled_and_cached(self):
         for path in self._scripts():
             with self.subTest(app=path.parent.name):

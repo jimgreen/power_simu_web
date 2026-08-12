@@ -1130,7 +1130,46 @@ def _hydrogen_storage_water_volume(row: Mapping[str, Any]) -> Optional[float]:
     return float(value)
 
 
+def _hydrogen_storage_rated_capacity(row: Mapping[str, Any]) -> Optional[float]:
+    for field in ("rated_capacity", "capacity", "rated_gas_capacity", "gas_capacity"):
+        value = _safe_float(row.get(field), None)
+        if value is not None and math.isfinite(value):
+            return float(value)
+    return None
+
+
+def _hydrogen_storage_initial_soc(row: Mapping[str, Any]) -> Optional[float]:
+    for field in ("initial_soc", "soc_initial", "soc_init", "soc"):
+        value = _safe_float(row.get(field), None)
+        if value is not None and math.isfinite(value):
+            return float(value)
+    return None
+
+
+def _hydrogen_storage_derived_initial_state(
+    row: Mapping[str, Any],
+) -> Optional[Tuple[float, float, float]]:
+    rated_capacity = _hydrogen_storage_rated_capacity(row)
+    water_volume = _hydrogen_storage_water_volume(row)
+    initial_soc = _hydrogen_storage_initial_soc(row)
+    if (
+        rated_capacity is None
+        or rated_capacity <= 0.0
+        or water_volume is None
+        or water_volume <= 0.0
+        or initial_soc is None
+        or not 0.0 <= initial_soc <= 1.0
+    ):
+        return None
+    gas_quantity = rated_capacity * initial_soc
+    pressure = gas_quantity / water_volume / 10.0
+    return pressure, gas_quantity, initial_soc
+
+
 def _hydrogen_storage_initial_quantity(row: Mapping[str, Any]) -> Optional[float]:
+    derived = _hydrogen_storage_derived_initial_state(row)
+    if derived is not None:
+        return derived[1]
     value = _safe_float(row.get("gas_quantity"), None)
     if value is not None and math.isfinite(value):
         return float(value)
@@ -1148,7 +1187,20 @@ def _hydrogen_storage_pressure_max(row: Mapping[str, Any]) -> Optional[float]:
     return float(value)
 
 
-def _hydrogen_storage_soc(pressure: float, model_row: Mapping[str, Any]) -> Optional[float]:
+def _hydrogen_storage_soc(
+    pressure: float,
+    model_row: Mapping[str, Any],
+    gas_quantity: Optional[float] = None,
+) -> Optional[float]:
+    rated_capacity = _hydrogen_storage_rated_capacity(model_row)
+    if rated_capacity is not None and rated_capacity > 0.0:
+        quantity = gas_quantity
+        if quantity is None:
+            water_volume = _hydrogen_storage_water_volume(model_row)
+            if water_volume is not None and water_volume > 0.0:
+                quantity = float(pressure) * water_volume * 10.0
+        if quantity is not None and math.isfinite(quantity):
+            return float(quantity) / rated_capacity
     pressure_max = _hydrogen_storage_pressure_max(model_row)
     if pressure_max is None or pressure_max <= 0.0:
         return None
@@ -1217,14 +1269,23 @@ def ensure_hydrogen_storage_state_rows_book(stat_book: EBook, model_book: EBook)
         changed += _set_row_value(state, "dev_type", "HydroStorage")
         changed += _set_row_value(state, "idx", model_row.get("idx", pos))
         changed += _set_row_value(state, "name", model_row.get("name", ""))
+        derived_initial = _hydrogen_storage_derived_initial_state(model_row)
         if state.get("pressure", "") == "":
-            initial_pressure = _hydrogen_storage_initial_pressure(model_row)
+            initial_pressure = (
+                derived_initial[0]
+                if derived_initial is not None
+                else _hydrogen_storage_initial_pressure(model_row)
+            )
             if initial_pressure is not None:
                 changed += _set_row_value(state, "pressure", format_number(initial_pressure))
         if state.get("flow", "") == "":
             changed += _set_row_value(state, "flow", "0")
         if state.get("gas_quantity", "") == "":
-            initial_quantity = _hydrogen_storage_initial_quantity(model_row)
+            initial_quantity = (
+                derived_initial[1]
+                if derived_initial is not None
+                else _hydrogen_storage_initial_quantity(model_row)
+            )
             if initial_quantity is not None:
                 changed += _set_row_value(
                     state,
@@ -1233,8 +1294,15 @@ def ensure_hydrogen_storage_state_rows_book(stat_book: EBook, model_book: EBook)
                 )
         if state.get("soc", "") == "":
             initial_pressure = _safe_float(state.get("pressure"), None)
+            initial_quantity = _safe_float(state.get("gas_quantity"), None)
             initial_soc = (
-                _hydrogen_storage_soc(initial_pressure, model_row)
+                derived_initial[2]
+                if derived_initial is not None
+                else _hydrogen_storage_soc(
+                    initial_pressure,
+                    model_row,
+                    initial_quantity,
+                )
                 if initial_pressure is not None
                 else None
             )
@@ -1380,7 +1448,8 @@ def update_hydrogen_storage_state_book(
             continue
         next_pressure = float(pressure) - flow * period_hours / water_volume * 0.1
         changed += _set_row_value(state, "pressure", format_number(next_pressure))
-        next_soc = _hydrogen_storage_soc(next_pressure, model_row)
+        next_quantity = _safe_float(state.get("gas_quantity"), None)
+        next_soc = _hydrogen_storage_soc(next_pressure, model_row, next_quantity)
         if next_soc is None:
             LOGGER.warning(
                 "HydroStorage %s has invalid pressure_max=%r; SOC update skipped",
@@ -1406,10 +1475,21 @@ def reset_hydrogen_storage_state_book(stat_book: EBook, model_book: EBook) -> in
         model_row = model_by_key.get(_hydrogen_storage_state_key(state))
         if model_row is None:
             continue
-        initial_pressure = _hydrogen_storage_initial_pressure(model_row)
-        initial_quantity = _hydrogen_storage_initial_quantity(model_row)
+        derived_initial = _hydrogen_storage_derived_initial_state(model_row)
+        initial_pressure = (
+            derived_initial[0]
+            if derived_initial is not None
+            else _hydrogen_storage_initial_pressure(model_row)
+        )
+        initial_quantity = (
+            derived_initial[1]
+            if derived_initial is not None
+            else _hydrogen_storage_initial_quantity(model_row)
+        )
         initial_soc = (
-            _hydrogen_storage_soc(initial_pressure, model_row)
+            derived_initial[2]
+            if derived_initial is not None
+            else _hydrogen_storage_soc(initial_pressure, model_row, initial_quantity)
             if initial_pressure is not None
             else None
         )

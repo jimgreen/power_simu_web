@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -175,6 +177,29 @@ class HydrogenStorageStateTest(unittest.TestCase):
 
         row = stat_book.data[simu_loop.HYDROGEN_STORAGE_STATE_BLOCK].data[0]
         self.assertAlmostEqual(float(row["gas_quantity"]), 17500.0)
+
+    def test_initial_state_is_derived_from_capacity_water_volume_and_soc(self) -> None:
+        model_book = _model_book(
+            {
+                "idx": 1,
+                "name": "tank-1",
+                "pressure": 99.0,
+                "gas_quantity": 99999.0,
+                "capacity": 20000.0,
+                "water_volume": 50.0,
+                "soc": 0.6,
+                "pressure_max": 45.0,
+                "run_stat": 1,
+            }
+        )
+        stat_book = simu_loop.EBook({})
+
+        simu_loop.ensure_hydrogen_storage_state_rows_book(stat_book, model_book)
+
+        row = stat_book.data[simu_loop.HYDROGEN_STORAGE_STATE_BLOCK].data[0]
+        self.assertAlmostEqual(float(row["gas_quantity"]), 12000.0)
+        self.assertAlmostEqual(float(row["pressure"]), 24.0)
+        self.assertAlmostEqual(float(row["soc"]), 0.6)
 
     def test_multiple_tanks_are_integrated_independently(self) -> None:
         model_book = _model_book(
@@ -360,6 +385,113 @@ class HydrogenStorageStateTest(unittest.TestCase):
         self.assertAlmostEqual(float(row["gas_quantity"]), 17500.0)
         self.assertAlmostEqual(float(row["soc"]), 35.0 / 45.0)
 
+    def test_reset_recomputes_initial_state_instead_of_restoring_stale_values(self) -> None:
+        model_book = _model_book(
+            {
+                "idx": 1,
+                "name": "tank-1",
+                "pressure": 35.0,
+                "gas_quantity": 17500.0,
+                "capacity": 20000.0,
+                "water_volume": 50.0,
+                "soc": 0.6,
+                "pressure_max": 45.0,
+                "run_stat": 1,
+            }
+        )
+        stat_book = simu_loop.EBook(
+            {
+                simu_loop.HYDROGEN_STORAGE_STATE_BLOCK: [
+                    {
+                        "dev_type": "HydroStorage",
+                        "idx": 1,
+                        "name": "tank-1",
+                        "pressure": 12.0,
+                        "flow": 100.0,
+                        "gas_quantity": 6000.0,
+                        "soc": 0.3,
+                    }
+                ]
+            }
+        )
+
+        simu_loop.reset_hydrogen_storage_state_book(stat_book, model_book)
+
+        row = stat_book.data[simu_loop.HYDROGEN_STORAGE_STATE_BLOCK].data[0]
+        self.assertAlmostEqual(float(row["gas_quantity"]), 12000.0)
+        self.assertAlmostEqual(float(row["pressure"]), 24.0)
+        self.assertAlmostEqual(float(row["flow"]), 0.0)
+        self.assertAlmostEqual(float(row["soc"]), 0.6)
+
+    def test_service_restart_recomputes_hydrogen_initial_state(self) -> None:
+        source_model = next(
+            path
+            for path in (self.ROOT / "models" / "simulator" / "source").glob("*/model.e")
+            if "<HydroStorage>" in path.read_text(encoding="utf-8")
+        )
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        root = Path(workspace.name)
+        source = root / "source"
+        runtime = root / "runtime"
+        shutil.copytree(source_model.parent, source)
+
+        model_book = simu_loop.EBook(source / "model.e")
+        storage = model_book.data["HydroStorage"].data[0]
+        for header in ("capacity", "water_volume", "soc", "pressure", "gas_quantity"):
+            if header not in model_book.data["HydroStorage"].header_list:
+                model_book.data["HydroStorage"].header_list.append(header)
+        storage.update(
+            capacity="20000",
+            water_volume="50",
+            initial_soc="0.6",
+            soc="0.6",
+            pressure="99",
+            gas_quantity="99999",
+        )
+        simu_loop.write_ebook_aligned(model_book, source / "model.e")
+
+        source_stat = simu_loop.EBook(source / "stat.e")
+        state = source_stat.data[simu_loop.HYDROGEN_STORAGE_STATE_BLOCK].data[0]
+        state.update(pressure="12", flow="100", gas_quantity="6000", soc="0.3")
+        simu_loop.write_ebook_aligned(source_stat, source / "stat.e")
+
+        service = PolarMicrogridSimulator(source, runtime, kernel=lambda _config: None)
+
+        def state_values(instance: PolarMicrogridSimulator) -> tuple[float, float, float, float]:
+            row = instance.runtime_stat_book.data[simu_loop.HYDROGEN_STORAGE_STATE_BLOCK].data[0]
+            return tuple(float(row[field]) for field in ("gas_quantity", "pressure", "flow", "soc"))
+
+        self.assertEqual(state_values(service), (12000.0, 24.0, 0.0, 0.6))
+        service.runtime_stat_book.data[simu_loop.HYDROGEN_STORAGE_STATE_BLOCK].data[0].update(
+            pressure="10",
+            flow="200",
+            gas_quantity="5000",
+            soc="0.25",
+        )
+
+        restarted = PolarMicrogridSimulator(source, runtime, kernel=lambda _config: None)
+
+        self.assertEqual(state_values(restarted), (12000.0, 24.0, 0.0, 0.6))
+
+    def test_bundled_hydrogen_tank_initial_state_is_self_consistent(self) -> None:
+        model_path = next(
+            path
+            for path in (self.ROOT / "models" / "simulator" / "source").glob("*/model.e")
+            if "<HydroStorage>" in path.read_text(encoding="utf-8")
+        )
+        storage = simu_loop.EBook(model_path).data["HydroStorage"].data[0]
+        rated_capacity = float(storage["capacity"])
+        water_volume = float(storage["water_volume"])
+        initial_soc = float(storage["initial_soc"])
+
+        expected_quantity = rated_capacity * initial_soc
+        expected_pressure = expected_quantity / water_volume / 10.0
+
+        self.assertAlmostEqual(expected_quantity, 17500.0)
+        self.assertAlmostEqual(expected_pressure, 35.0)
+        self.assertAlmostEqual(float(storage["pressure"]), expected_pressure)
+
     def test_in_memory_hybrid_solver_returns_actual_hydrogen_storage_flow(self) -> None:
         model_path = next(
             path
@@ -397,6 +529,64 @@ class HydrogenStorageStateTest(unittest.TestCase):
         state = stat_book.data[simu_loop.HYDROGEN_STORAGE_STATE_BLOCK].data[0]
         self.assertAlmostEqual(float(state["pressure"]), 34.8)
         self.assertAlmostEqual(float(state["gas_quantity"]), 17400.0)
+
+    def test_bundled_hydrogen_tank_balances_conversion_net_flow(self) -> None:
+        model_path = next(
+            path
+            for path in (self.ROOT / "models" / "simulator" / "source").glob(
+                "*/model.e"
+            )
+            if "<HydroStorage>" in path.read_text(encoding="utf-8")
+        )
+        model_book = simu_loop.EBook(model_path)
+        storage = model_book.data["HydroStorage"].data[0]
+        self.assertEqual(str(storage.get("control_type", "")).upper(), "PRESSURE")
+        self.assertAlmostEqual(
+            float(storage["pressure_set"]),
+            float(storage["pressure"]),
+        )
+        self.assertLess(float(storage["flow_min"]), 0.0)
+        self.assertGreater(float(storage["flow_max"]), 0.0)
+
+        fuel_cell = model_book.data["Hydro2DcE"].data[0]
+        fuel_cell["control_type"] = "P"
+        generator = next(
+            row
+            for row in model_book.data["DCGenerator"].data
+            if str(row.get("idx")) == str(fuel_cell["idx_dc_unit_t1"])
+        )
+        generator["p_set"] = "10"
+        electrolyzer = model_book.data["AcE2Hydro"].data[0]
+        electrolyzer["control_type"] = "P"
+        load = next(
+            row
+            for row in model_book.data["ACLoad"].data
+            if str(row.get("idx")) == str(electrolyzer["idx_ac_load_t1"])
+        )
+        load["p_set"] = "0.02"
+
+        snapshot, _solver_info = simu_loop.solve_hybrid_snapshot_from_book(
+            model_book,
+            model_path,
+        )
+        hydro = snapshot.fluid_results["hydro"]
+        source_flow = next(iter(hydro.sources.values())).flow
+        load_flow = next(iter(hydro.loads.values())).flow
+        storage_flow = hydro.storages[str(storage["name"])].flow
+
+        self.assertGreater(storage_flow, 0.0)
+        self.assertAlmostEqual(storage_flow, load_flow - source_flow)
+
+        stat_book = simu_loop.EBook({})
+        simu_loop.update_hydrogen_storage_state_book(
+            stat_book,
+            model_book,
+            period_seconds=3600.0,
+            snapshot=snapshot,
+        )
+        state = stat_book.data[simu_loop.HYDROGEN_STORAGE_STATE_BLOCK].data[0]
+        self.assertAlmostEqual(float(state["flow"]), storage_flow)
+        self.assertLess(float(state["gas_quantity"]), 17500.0)
 
 
 if __name__ == "__main__":

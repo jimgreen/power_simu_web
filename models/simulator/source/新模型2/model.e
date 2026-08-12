@@ -86,12 +86,12 @@
 # 27   交流线路（自适应）-27  ac-routable-line  8       18      1         10              15.1938738301  0.1  1.0  0.0
 # 28   交流线路（自适应）-28  ac-routable-line  9       19      1         10              15.1938738301  0.1  1.0  0.0
 # 29   交流线路（自适应）-29  ac-routable-line  10      20      1         10              15.1938738301  0.1  1.0  0.0
-# 30   交流线路（自适应）-30  ac-routable-line  21      22      1         200             303.877476601  0.02  0.2  0.0
+# 30   交流线路（自适应）-30  ac-routable-line  21      22      1         200             303.877476601  0.1  1.0  0.0
 </ACBranch>
 <ACLoad>
 @ idx  name                dev_type         node  p_set  p_max  p_min  q_max  q_min  run_stat  rated_capacity  pbase  pv0  pv1  pv2  qbase  qv0  qv1  qv2  v_max  v_min
 # 1    交流负荷-1              ac-load          32    0      5      0      1.2    0      1         5               150    1.0  0.0  0.0  50     1.0  0.0  0.0  456    304
-# 2    交流电制氢-1_交流设备端交流电负荷  ac-electrolyzer  31    0      100    0      0      0      1         100             0      1.0  0.0  0.0  0      1.0  0.0  0.0  0      0
+# 2    交流电制氢-1_交流设备端交流电负荷  ac-electrolyzer  31    0      60     0      60     -60    1         100             0      1.0  0.0  0.0  0      1.0  0.0  0.0  0      0
 </ACLoad>
 <ACGenerator>
 @ idx  name        dev_type          node  control_type  p_set  p_max  p_min  q_set  q_max  q_min  v_set  alpha  run_stat  rated_capacity  rated_voltage  v_max  v_min  regable
@@ -201,7 +201,7 @@
 # 7    电化学储能-4             dc-storage    32    V             500    0.0    0      0      0.0    1         60              500            600    400
 # 8    电化学储能-5             dc-storage    33    V             500    0.0    0      0      0.0    1         60              500            600    400
 # 9    电化学储能-6             dc-storage    34    V             500    0.0    0      0      0.0    1         60              500            600    400
-# 10   直流燃料电池-1_直流设备端直流电源  dc-fuel-cell  25    P             750    0      100    0      0      1         100             750            900    600
+# 10   直流燃料电池-1_直流设备端直流电源  dc-fuel-cell  25    P             750    0      30     0      0      1         30              750            0      0
 </DCGenerator>
 <DCBreak>
 @ idx  name      dev_type    i_node  j_node  status  run_stat  rated_capacity  i_max
@@ -262,20 +262,20 @@
 # 1    集装格式储氢罐-3  35        1
 </HydroNode>
 <HydroSource>
-@ idx  name             dev_type         node  flow_set  run_stat
-# 1    交流电制氢-1_氢能设备端氢源  ac-electrolyzer  1     0         1
+@ idx  name             dev_type         node  control_type  pressure_set  flow_set  run_stat  rated_capacity  pressure_max  pressure_min  flow_max  flow_min
+# 1    交流电制氢-1_氢能设备端氢源  ac-electrolyzer  1     FLOW          20            10        1         10              25            1             10        0
 </HydroSource>
 <HydroLoad>
-@ idx  name              dev_type      node  flow_set  run_stat
-# 1    直流燃料电池-1_氢能设备端氢荷  dc-fuel-cell  1     0         1
+@ idx  name              dev_type      node  control_type  pressure_set  flow_set  run_stat  rated_capacity  pressure_max  pressure_min  flow_max  flow_min
+# 1    直流燃料电池-1_氢能设备端氢荷  dc-fuel-cell  1     FLOW          2             10        1         10              5             0.1           10        0
 </HydroLoad>
 <HydroStorage>
-@ idx  name       dev_type                 node  run_stat  pressure  capacity  water_volume  pressure_max  pressure_min
-# 3    集装格式储氢罐-3  hydrogen-tank-container  1     1         35        1000      50            45            2
+@ idx  name       dev_type                 node  control_type  pressure_set  flow_set  alpha  flow_min  flow_max  run_stat  pressure  capacity  water_volume  initial_soc         pressure_max  pressure_min
+# 3    集装格式储氢罐-3  hydrogen-tank-container  1     PRESSURE      35            0         1      -10       10        1         35        22500     50            0.7777777777777778  45            2
 </HydroStorage>
 <AcE2Hydro>
 @ idx  name     control_type  run_stat  idx_ac_load_t1  idx_h2_unit_t2  e2h_coeff
-# 1    交流电制氢-1  P             1         2               1               0.2
+# 1    交流电制氢-1  PQ            1         2               1               0.2
 </AcE2Hydro>
 <Hydro2DcE>
 @ idx  name      control_type  run_stat  idx_dc_unit_t1  idx_h2_load_t2  h2e_coeff

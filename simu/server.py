@@ -1908,6 +1908,36 @@ def make_http_server(
             except json.JSONDecodeError as exc:
                 raise JsonApiError(502, "模拟台返回内容不是有效 JSON") from exc
 
+        def _legacy_trainee_connection_from_link(self, raw_link: str) -> Optional[Mapping[str, Any]]:
+            parsed = urlparse(str(raw_link or "").strip())
+            if parsed.path.rstrip("/") not in {"/api/trainee-link", "/api/client-link"}:
+                return None
+            query = parse_qs(parsed.query)
+            model_id = str((query.get("model_id") or query.get("model") or [""])[0]).strip()
+            if not model_id:
+                return None
+            encoded_model_id = quote(model_id, safe="")
+            base_url = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+            snapshot_path = self._with_query_overrides(
+                f"/api/snapshot?model_id={encoded_model_id}",
+                {"trainee_view": 1},
+            )
+            return {
+                "link": str(raw_link),
+                "teacher_api_base": base_url,
+                "model_id": model_id,
+                "model_name": model_id,
+                "snapshot_path": snapshot_path,
+                "command_path": f"/api/student/commands?model_id={encoded_model_id}",
+                "measurement_delta_path": self._with_query_overrides(
+                    f"/api/measurements/delta?model_id={encoded_model_id}",
+                    {"trainee_view": 1},
+                ),
+                "definition_archive_path": (
+                    f"/api/export-definitions?format=json&model_id={encoded_model_id}"
+                ),
+            }
+
         def _resolve_trainee_connection(self, raw_link: str) -> Mapping[str, Any]:
             raw = str(raw_link or "").strip()
             if not raw:
@@ -1915,7 +1945,14 @@ def make_http_server(
             parsed = urlparse(raw)
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
                 raise JsonApiError(400, "交互链接必须是完整的 http 或 https 地址")
-            payload = self._json_request_to_url(raw)
+            try:
+                payload = self._json_request_to_url(raw)
+            except JsonApiError as exc:
+                if exc.status == 404:
+                    legacy = self._legacy_trainee_connection_from_link(raw)
+                    if legacy is not None:
+                        return legacy
+                raise
             if not isinstance(payload, Mapping):
                 raise JsonApiError(400, "交互链接返回内容不是对象")
             if payload.get("type") != "polar-microgrid-trainee-link" or payload.get("role") != "simulator":

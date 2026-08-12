@@ -51,6 +51,20 @@
         <button data-nav-page="history">运行日志</button>
       </nav>
 
+      <section
+        id="powerFlowFailureAlert"
+        class="power-flow-failure-alert"
+        role="alert"
+        aria-live="assertive"
+        hidden
+      >
+        <span class="power-flow-failure-icon" aria-hidden="true">!</span>
+        <div>
+          <strong id="powerFlowFailureTitle">模拟台潮流计算失败，仿真已暂停</strong>
+          <p id="powerFlowFailureDetail"></p>
+        </div>
+      </section>
+
       <main class="page-main">
         <section class="page-section is-active" data-page="overview">
           <div class="overview-dashboard trainee-overview-dashboard">

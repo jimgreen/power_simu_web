@@ -8,6 +8,7 @@ import pytest
 
 import simu_loop
 from simu import server as server_module
+from simu.definition_editing import render_ebook_aligned
 from simu.service import PolarMicrogridSimulator
 
 
@@ -31,6 +32,10 @@ def _write_conversion_model(
     *,
     electrolyzer_mode: str = "P",
     fuel_cell_mode: str = "P",
+    hydrogen_flow_max: float = 20.0,
+    fuel_cell_coefficient: float = 1.8,
+    electric_power_max: float = 50.0,
+    hydrogen_pipe_conductance: float = 3.0,
 ) -> Path:
     text = (ROOT / "tests" / "fixtures" / "simple_model" / "model.e").read_text(
         encoding="utf-8"
@@ -38,10 +43,10 @@ def _write_conversion_model(
     text = _replace_block(
         text,
         "ACLoad",
-        """
+        f"""
 <ACLoad>
 @ idx name node p_set p_max p_min q_max q_min run_stat rated_capacity pbase pv0 pv1 pv2 qbase qv0 qv1 qv2
-# 1 electrolyzer_ac_load 6 2 50 0 30 0 1 50 2 1 0 0 30 1 0 0
+# 1 electrolyzer_ac_load 6 2 {electric_power_max} 0 30 0 1 {electric_power_max} 2 1 0 0 30 1 0 0
 </ACLoad>
 """,
     )
@@ -72,16 +77,16 @@ def _write_conversion_model(
 <HydroSource>
 @ idx name node control_type pressure_set flow_set alpha flow_min flow_max run_stat
 # 1 h2_reference_source 1 PRESSURE 3.00 0 1 0 20 1
-# 2 electrolyzer_h2_source 3 FLOW 2.98 0.4 1 0 20 1
+# 2 electrolyzer_h2_source 3 FLOW 2.98 0.4 1 0 {hydrogen_flow_max} 1
 </HydroSource>
 <HydroLoad>
-@ idx name node flow_set run_stat
-# 1 fuel_cell_h2_load 2 3 1
+@ idx name node flow_set flow_min flow_max run_stat
+# 1 fuel_cell_h2_load 2 3 0 {hydrogen_flow_max} 1
 </HydroLoad>
 <HydroPipe>
 @ idx name i_node j_node conductance run_stat
-# 1 h2_pipe_12 1 2 3.0 1
-# 2 h2_pipe_13 1 3 3.0 1
+# 1 h2_pipe_12 1 2 {hydrogen_pipe_conductance} 1
+# 2 h2_pipe_13 1 3 {hydrogen_pipe_conductance} 1
 </HydroPipe>
 <AcE2Hydro>
 @ idx name run_stat control_type idx_ac_load_t1 idx_h2_unit_t2 e2h_coeff
@@ -89,11 +94,15 @@ def _write_conversion_model(
 </AcE2Hydro>
 <Hydro2DcE>
 @ idx name run_stat control_type idx_dc_unit_t1 idx_h2_load_t2 h2e_coeff
-# 1 dc_fuel_cell 1 {fuel_cell_mode} 4 1 1.8
+# 1 dc_fuel_cell 1 {fuel_cell_mode} 4 1 {fuel_cell_coefficient}
 </Hydro2DcE>
 """.format(
         electrolyzer_mode=electrolyzer_mode,
         fuel_cell_mode=fuel_cell_mode,
+        hydrogen_flow_max=hydrogen_flow_max,
+        fuel_cell_coefficient=fuel_cell_coefficient,
+        electric_power_max=electric_power_max,
+        hydrogen_pipe_conductance=hydrogen_pipe_conductance,
     )
     model_path = directory / "model.e"
     model_path.write_text(text, encoding="utf-8")
@@ -128,8 +137,8 @@ def _write_storage_coupled_model(directory: Path) -> Path:
         "HydroLoad",
         """
 <HydroLoad>
-@ idx name node flow_set run_stat
-# 1 fuel_cell_h2_load 1 3 1
+@ idx name node flow_set flow_min flow_max run_stat
+# 1 fuel_cell_h2_load 1 3 0 20 1
 </HydroLoad>
 """,
     )
@@ -424,6 +433,292 @@ def test_simulator_svg_endpoint_edit_applies_the_mode_selected_setpoint_to_next_
 
 
 @pytest.mark.parametrize(
+    (
+        "endpoint_block",
+        "endpoint_name",
+        "set_value",
+        "coupling_name",
+        "hydrogen_endpoint",
+        "expected_flow",
+    ),
+    (
+        (
+            "ACLoad",
+            "electrolyzer_ac_load",
+            60.0,
+            "ac_electrolyzer",
+            "HydroSource/electrolyzer_h2_source",
+            12.0,
+        ),
+        (
+            "DCGenerator",
+            "fuel_cell_dc_source",
+            20.0,
+            "dc_fuel_cell",
+            "HydroLoad/fuel_cell_h2_load",
+            20.0 / 1.5,
+        ),
+    ),
+)
+def test_simulator_svg_rejects_power_setpoint_when_derived_hydrogen_flow_is_unsafe(
+    tmp_path,
+    endpoint_block,
+    endpoint_name,
+    set_value,
+    coupling_name,
+    hydrogen_endpoint,
+    expected_flow,
+):
+    model_path = _write_conversion_model(
+        tmp_path,
+        hydrogen_flow_max=10.0,
+        fuel_cell_coefficient=1.5,
+        electric_power_max=100.0,
+    )
+    artifacts = server_module._generated_model_artifacts(
+        model_path.read_text(encoding="utf-8")
+    )
+    source_dir = tmp_path / "source"
+    server_module._write_generated_model_artifacts(source_dir, artifacts)
+    runtime_dir = tmp_path / "runtime"
+    service = PolarMicrogridSimulator(
+        source_dir,
+        runtime_dir,
+        model_id="hydrogen-svg-safety-test",
+    )
+    revision_before = service.definition_snapshot.revision
+    target_before = next(
+        row
+        for row in service.definition_snapshot.model_book.data[endpoint_block].data
+        if row["name"] == endpoint_name
+    )["p_set"]
+    stat_before = simu_loop._clone_ebook(service.runtime_stat_book)
+    control_before = simu_loop._clone_ebook(service.control_book)
+
+    with pytest.raises(ValueError) as error:
+        service.update_device_parameters(
+            {
+                "block_name": endpoint_block,
+                "row_key": {"name": endpoint_name},
+                "revision": revision_before,
+                "changes": {"p_set": set_value},
+            }
+        )
+
+    message = str(error.value)
+    for token in (
+        "人工修改安全校验失败",
+        f"{endpoint_block}/{endpoint_name}",
+        coupling_name,
+        hydrogen_endpoint,
+        f"{expected_flow:.3g}",
+        "flow_max=10",
+        "人工覆盖层、运行控制文件和仿真边界均未更新",
+    ):
+        assert token in message
+
+    target_after = next(
+        row
+        for row in service.definition_snapshot.model_book.data[endpoint_block].data
+        if row["name"] == endpoint_name
+    )["p_set"]
+    assert service.definition_snapshot.revision == revision_before
+    assert target_after == target_before
+    assert service.command_history == []
+    assert service.manual_definition_changes()["changes"] == []
+    assert not (runtime_dir / "manual_overrides.json").exists()
+    assert render_ebook_aligned(service.runtime_stat_book) == render_ebook_aligned(stat_before)
+    assert render_ebook_aligned(service.control_book) == render_ebook_aligned(control_before)
+
+
+@pytest.mark.parametrize(
+    (
+        "endpoint_block",
+        "endpoint_name",
+        "set_value",
+        "coupling_name",
+        "hydrogen_endpoint",
+        "expected_flow",
+    ),
+    (
+        (
+            "ACLoad",
+            "electrolyzer_ac_load",
+            60.0,
+            "ac_electrolyzer",
+            "HydroSource/electrolyzer_h2_source",
+            12.0,
+        ),
+        (
+            "DCGenerator",
+            "fuel_cell_dc_source",
+            20.0,
+            "dc_fuel_cell",
+            "HydroLoad/fuel_cell_h2_load",
+            20.0 / 1.5,
+        ),
+    ),
+)
+@pytest.mark.parametrize("source", ("trainee-ui", "trainee-renewable-priority"))
+def test_remote_adjustment_rejects_unsafe_derived_hydrogen_flow_atomically(
+    tmp_path,
+    endpoint_block,
+    endpoint_name,
+    set_value,
+    coupling_name,
+    hydrogen_endpoint,
+    expected_flow,
+    source,
+):
+    model_path = _write_conversion_model(
+        tmp_path,
+        hydrogen_flow_max=10.0,
+        fuel_cell_coefficient=1.5,
+        electric_power_max=100.0,
+    )
+    artifacts = server_module._generated_model_artifacts(
+        model_path.read_text(encoding="utf-8")
+    )
+    source_dir = tmp_path / "source"
+    server_module._write_generated_model_artifacts(source_dir, artifacts)
+    runtime_dir = tmp_path / "runtime"
+    service = PolarMicrogridSimulator(
+        source_dir,
+        runtime_dir,
+        model_id="hydrogen-command-safety-test",
+    )
+    stat_before = render_ebook_aligned(service.runtime_stat_book)
+
+    with pytest.raises(ValueError) as error:
+        service.apply_student_commands(
+            {
+                "set_values": [
+                    {
+                        "dev_type": "ACLoad",
+                        "dev_name": "electrolyzer_ac_load",
+                        "set_type": "p_set",
+                        "set_value": 4.0,
+                    },
+                    {
+                        "dev_type": endpoint_block,
+                        "dev_name": endpoint_name,
+                        "set_type": "p_set",
+                        "set_value": set_value,
+                    },
+                ]
+            },
+            source=source,
+        )
+
+    message = str(error.value)
+    for token in (
+        "遥调安全校验失败",
+        f"{endpoint_block}/{endpoint_name}",
+        coupling_name,
+        hydrogen_endpoint,
+        f"{expected_flow:.3g}",
+        "flow_max=10",
+        "本批指令未下发",
+    ):
+        assert token in message
+
+    assert service.command_history == []
+    assert render_ebook_aligned(service.runtime_stat_book) == stat_before
+    assert not (runtime_dir / "commands.json").exists()
+
+
+@pytest.mark.parametrize(
+    (
+        "endpoint_block",
+        "endpoint_name",
+        "set_value",
+        "coupling_block",
+        "coupling_name",
+        "expected_flow",
+    ),
+    (
+        (
+            "ACLoad",
+            "electrolyzer_ac_load",
+            40.0,
+            "AcE2Hydro",
+            "ac_electrolyzer",
+            8.0,
+        ),
+        (
+            "DCGenerator",
+            "fuel_cell_dc_source",
+            15.0,
+            "Hydro2DcE",
+            "dc_fuel_cell",
+            10.0,
+        ),
+    ),
+)
+def test_safe_power_setpoint_reaches_conversion_kernel_at_hydrogen_flow_limit(
+    tmp_path,
+    endpoint_block,
+    endpoint_name,
+    set_value,
+    coupling_block,
+    coupling_name,
+    expected_flow,
+):
+    model_path = _write_conversion_model(
+        tmp_path,
+        hydrogen_flow_max=10.0,
+        fuel_cell_coefficient=1.5,
+        hydrogen_pipe_conductance=100.0,
+    )
+    artifacts = server_module._generated_model_artifacts(
+        model_path.read_text(encoding="utf-8")
+    )
+    source_dir = tmp_path / "source"
+    server_module._write_generated_model_artifacts(source_dir, artifacts)
+    service = PolarMicrogridSimulator(
+        source_dir,
+        tmp_path / "runtime",
+        model_id="hydrogen-safe-boundary-test",
+    )
+
+    if endpoint_block == "ACLoad":
+        service.update_device_parameters(
+            {
+                "block_name": "DCGenerator",
+                "row_key": {"name": "fuel_cell_dc_source"},
+                "revision": service.definition_snapshot.revision,
+                "changes": {"p_set": 0.0},
+            }
+        )
+    else:
+        service.update_device_parameters(
+            {
+                "block_name": "ACLoad",
+                "row_key": {"name": "electrolyzer_ac_load"},
+                "revision": service.definition_snapshot.revision,
+                "changes": {"p_set": 0.0},
+            }
+        )
+
+    service.update_device_parameters(
+        {
+            "block_name": endpoint_block,
+            "row_key": {"name": endpoint_name},
+            "revision": service.definition_snapshot.revision,
+            "changes": {"p_set": set_value},
+        }
+    )
+    snapshot = service.step(advance_seconds=1.0)
+
+    real_values = {
+        (row["dev_type"], row["dev_name"], row["meas_type"]): float(row["value"])
+        for row in snapshot["measurements"]["real"]
+    }
+    assert real_values[(coupling_block, coupling_name, "p")] == pytest.approx(set_value)
+    assert real_values[(coupling_block, coupling_name, "flow")] == pytest.approx(expected_flow)
+
+
+@pytest.mark.parametrize(
     ("electrolyzer_power", "expected_flow"),
     (
         (4.0, 2.2),
@@ -475,30 +770,29 @@ def test_coupled_hydrogen_flow_updates_all_tank_runtime_states(
     assert (storage_values["soc"] - 35.0 / 45.0) * direction > 0.0
 
 
-def test_bundled_hydrogen_model_converges_with_endpoint_power_limits():
-    model_path = next(
-        path
-        for path in (ROOT / "models" / "simulator" / "source").glob("*/model.e")
-        if "<AcE2Hydro>" in path.read_text(encoding="utf-8")
+def test_hydrogen_model_converges_with_safe_endpoint_power_limits(tmp_path):
+    model_path = _write_conversion_model(
+        tmp_path,
+        hydrogen_flow_max=10.0,
+        fuel_cell_coefficient=1.5,
+        electric_power_max=100.0,
+        hydrogen_pipe_conductance=100.0,
     )
     book = simu_loop.EBook(model_path)
-    electrolyzer_load = next(
-        row for row in book.data["ACLoad"].data if str(row.get("idx")) == "2"
-    )
-    electrolyzer_load["p_set"] = electrolyzer_load["p_max"]
+    electrolyzer_load = book.data["ACLoad"].data[0]
+    electrolyzer_load["p_set"] = "40"
     fuel_cell_coupling = book.data["Hydro2DcE"].data[0]
     fuel_cell_generator = next(
         row
         for row in book.data["DCGenerator"].data
         if str(row.get("idx")) == str(fuel_cell_coupling["idx_dc_unit_t1"])
     )
-    fuel_cell_generator["p_set"] = "30"
+    fuel_cell_generator["p_set"] = "15"
 
     _snapshot, solver_info = simu_loop.solve_hybrid_snapshot_from_book(book, model_path)
 
-    assert float(electrolyzer_load["p_set"]) == 100.0
-    assert float(fuel_cell_generator["p_max"]) == 100.0
-    assert float(fuel_cell_generator["p_set"]) == 30.0
+    assert float(electrolyzer_load["p_set"]) == 40.0
+    assert float(fuel_cell_generator["p_set"]) == 15.0
     assert "normF=" in solver_info
 
 
@@ -515,8 +809,8 @@ def test_hydrogen_conversion_parameter_labels_and_modes_are_explicit(role):
     assert "diagramDefinitionFieldLabel(field)" in script
     assert "diagramDefinitionControlModeOptions(record, field)" in script
     assert "data-diagram-definition-control-mode" in script
-    assert "currentModeValid" in script
-    assert "无效模式" in script
+    assert "data-diagram-definition-enum" in script
+    assert "无效选项" in script
 
 
 def test_trainee_coupling_command_dialog_only_uses_the_active_mode_binding():

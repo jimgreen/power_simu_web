@@ -7,6 +7,7 @@ from parameter-table references and terminal connectivity.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Mapping, Sequence, Tuple
 
@@ -192,6 +193,158 @@ def energy_coupling_control_bindings(model: Any) -> Dict[DeviceKey, Tuple[Dict[s
                 result[(block_name, coupling_name)] = tuple(
                     by_set_type[set_type] for set_type in ("p_set", "flow_set")
                 )
+    return result
+
+
+def _finite_semantic_number(value: Any) -> float | None:
+    try:
+        number = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _semantic_number_text(value: float) -> str:
+    text = format(float(value), ".15g")
+    return "0" if text in {"-0", "-0.0"} else text
+
+
+def validate_hydrogen_power_setpoint_safety(
+    model: Any,
+    dev_type: Any,
+    dev_name: Any,
+    set_type: Any,
+    value: Any,
+) -> Dict[str, Any] | None:
+    """Validate the hydrogen-side flow implied by an active electric P control.
+
+    Electric and hydrogen endpoints own separate configured limits. A power
+    setpoint can therefore be legal for its electric endpoint while its
+    converted hydrogen flow is unsafe. This check resolves converter endpoints
+    structurally and never relies on device-name conventions.
+    """
+
+    target_type = str(dev_type or "").strip()
+    target_name = str(dev_name or "").strip()
+    target_set_type = str(set_type or "").strip()
+    if target_set_type != "p_set" or not target_type or not target_name:
+        return None
+
+    number = _finite_semantic_number(value)
+    if number is None:
+        raise ValueError(f"p_set={value!s} 不是有限数值")
+
+    coupling_rows = {
+        (block_name, str(row.get("name", "")).strip()): row
+        for block_name in HYDROGEN_CONVERSION_BLOCKS
+        for row in model_rows(model, block_name)
+        if str(row.get("name", "")).strip()
+    }
+    endpoint_rows = {
+        (block_name, str(row.get("name", "")).strip()): row
+        for block_name in ("HydroSource", "HydroLoad")
+        for row in model_rows(model, block_name)
+        if str(row.get("name", "")).strip()
+    }
+    matches: list[tuple[DeviceKey, Mapping[str, Any], Mapping[str, Any]]] = []
+    for coupling_key, bindings in energy_coupling_control_bindings(model).items():
+        power_binding = next(
+            (
+                binding
+                for binding in bindings
+                if binding.get("active")
+                and str(binding.get("target_set_type", binding.get("set_type", "")))
+                == "p_set"
+                and str(binding.get("target_dev_type", "")) == target_type
+                and str(binding.get("target_dev_name", "")) == target_name
+            ),
+            None,
+        )
+        flow_binding = next(
+            (
+                binding
+                for binding in bindings
+                if str(binding.get("target_set_type", binding.get("set_type", "")))
+                == "flow_set"
+            ),
+            None,
+        )
+        if power_binding is not None and flow_binding is not None:
+            matches.append((coupling_key, power_binding, flow_binding))
+
+    if not matches:
+        return None
+    if len(matches) != 1:
+        names = ", ".join(f"{key[0]}/{key[1]}" for key, _power, _flow in matches)
+        raise ValueError(
+            f"{target_type}/{target_name}.p_set 同时关联多个氢能转换设备：{names}"
+        )
+
+    coupling_key, _power_binding, flow_binding = matches[0]
+    coupling_type, coupling_name = coupling_key
+    coupling_row = coupling_rows.get(coupling_key, {})
+    if coupling_type in {"AcE2Hydro", "DcE2Hydro"}:
+        coefficient_name = "e2h_coeff"
+        coefficient = _finite_semantic_number(coupling_row.get(coefficient_name))
+        if coefficient is None or coefficient <= 0.0:
+            raise ValueError(
+                f"{coupling_type}/{coupling_name} 的 {coefficient_name}="
+                f"{coupling_row.get(coefficient_name, '')} 必须是大于 0 的有限数值"
+            )
+        flow = abs(number) * coefficient
+    else:
+        coefficient_name = "h2e_coeff"
+        coefficient = _finite_semantic_number(coupling_row.get(coefficient_name))
+        if coefficient is None or coefficient <= 0.0:
+            raise ValueError(
+                f"{coupling_type}/{coupling_name} 的 {coefficient_name}="
+                f"{coupling_row.get(coefficient_name, '')} 必须是大于 0 的有限数值"
+            )
+        flow = abs(number) / coefficient
+
+    hydrogen_type = str(flow_binding.get("target_dev_type", ""))
+    hydrogen_name = str(flow_binding.get("target_dev_name", ""))
+    hydrogen_row = endpoint_rows.get((hydrogen_type, hydrogen_name), {})
+    flow_min = _finite_semantic_number(hydrogen_row.get("flow_min"))
+    flow_max = _finite_semantic_number(hydrogen_row.get("flow_max"))
+    result = {
+        "coupling_type": coupling_type,
+        "coupling_name": coupling_name,
+        "electric_dev_type": target_type,
+        "electric_dev_name": target_name,
+        "p_set": number,
+        "coefficient_name": coefficient_name,
+        "coefficient": coefficient,
+        "hydrogen_dev_type": hydrogen_type,
+        "hydrogen_dev_name": hydrogen_name,
+        "flow": flow,
+        "flow_min": flow_min,
+        "flow_max": flow_max,
+    }
+    if flow_min is None and flow_max is None:
+        return result
+
+    tolerance = 1e-9 * max(
+        1.0,
+        abs(flow),
+        abs(flow_min) if flow_min is not None else 0.0,
+        abs(flow_max) if flow_max is not None else 0.0,
+    )
+    outside_lower = flow_min is not None and flow < flow_min - tolerance
+    outside_upper = flow_max is not None and flow > flow_max + tolerance
+    if outside_lower or outside_upper:
+        bounds = []
+        if flow_min is not None:
+            bounds.append(f"flow_min={_semantic_number_text(flow_min)}")
+        if flow_max is not None:
+            bounds.append(f"flow_max={_semantic_number_text(flow_max)}")
+        raise ValueError(
+            f"{coupling_type}/{coupling_name} 将 {target_type}/{target_name} 的 "
+            f"p_set={_semantic_number_text(number)} 按 {coefficient_name}="
+            f"{_semantic_number_text(coefficient)} 换算为氢流量 "
+            f"{_semantic_number_text(flow)} Nm3/h，超出 "
+            f"{hydrogen_type}/{hydrogen_name} 的 {', '.join(bounds)}"
+        )
     return result
 
 

@@ -14,6 +14,23 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         cls.script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
         cls.styles = (ROOT / "simu/web/trainee/styles.css").read_text(encoding="utf-8")
 
+    def test_power_flow_failure_is_visible_on_every_trainee_page(self):
+        self.assertIn('id="powerFlowFailureAlert"', self.html)
+        self.assertIn('role="alert"', self.html)
+        self.assertIn('aria-live="assertive"', self.html)
+        self.assertIn('id="powerFlowFailureTitle"', self.html)
+        self.assertIn('id="powerFlowFailureDetail"', self.html)
+        self.assertIn("function renderPowerFlowFailureAlert", self.script)
+        self.assertIn("snapshot.compute?.error", self.script)
+        self.assertIn("snapshot.compute?.simu_time", self.script)
+        self.assertIn("本轮潮流结果未采用", self.script)
+        self.assertIn("last_successful_simu_time", self.script)
+        self.assertIn("当前画面量测为上一成功帧", self.script)
+        self.assertIn("当前画面没有成功潮流量测帧", self.script)
+        self.assertIn("renderPowerFlowFailureAlert(snapshot)", self.script)
+        self.assertIn(".power-flow-failure-alert", self.styles)
+        self.assertIn(".power-flow-failure-alert[hidden]", self.styles)
+
     def test_trainee_overview_event_panel_shows_up_to_eight_rows(self):
         renderer = self.script.split("function renderTraineeOverviewEvents() {", 1)[1].split(
             "function renderTraineeOverviewDashboard",
@@ -565,7 +582,10 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         summary_block = self.styles.split(".energy-green-share {", 1)[1].split("}", 1)[0]
         self.assertIn("position: absolute;", summary_block)
         self.assertIn("left: 50%;", summary_block)
-        self.assertIn("top: var(--energy-summary-top);", summary_block)
+        self.assertIn(
+            "top: calc(var(--energy-summary-top) + var(--energy-central-upper-shift));",
+            summary_block,
+        )
         self.assertIn("width: min(320px, 36%);", summary_block)
         self.assertIn("transform: translateX(-50%);", summary_block)
         self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", summary_block)
@@ -590,7 +610,10 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
 
         compact_styles = self.styles.split("@container (max-height: 320px) {", 1)[1]
         compact_summary_block = compact_styles.split(".energy-green-share {", 1)[1].split("}", 1)[0]
-        self.assertIn("top: var(--energy-summary-top);", compact_summary_block)
+        self.assertIn(
+            "top: calc(var(--energy-summary-top) + var(--energy-central-upper-shift));",
+            compact_summary_block,
+        )
 
     def test_trainee_grid_forming_storage_stays_between_side_device_columns(self):
         block = self.styles.split(".energy-grid-forming-stack {", 1)[1].split("}", 1)[0]
@@ -732,7 +755,10 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         )
         self.assertIn(responsive_bus_height, left_bus_block)
         self.assertIn(responsive_bus_height, right_bus_block)
-        self.assertIn("top: var(--energy-summary-top);", green_summary_block)
+        self.assertIn(
+            "top: calc(var(--energy-summary-top) + var(--energy-central-upper-shift));",
+            green_summary_block,
+        )
         self.assertIn("gap: var(--energy-stack-gap);", forming_stack_block)
         self.assertIn("top: calc(var(--energy-trunk-y) + var(--energy-storage-gap));", self.styles)
         self.assertIn("width: max(22px, calc((100% - var(--energy-storage-card-width)) / 2 + 2px));", self.styles)
@@ -764,6 +790,30 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("--overview-main-min-height: 370px;", dashboard_block)
         self.assertIn("min-height: var(--overview-main-min-height);", main_grid_block)
         self.assertIn("height: 100%;", low_height_flow_block)
+
+    def test_trainee_central_upper_group_moves_down_responsively(self):
+        flow_block = self.styles.split(".energy-flow-map {", 1)[1].split("}", 1)[0]
+        summary_block = self.styles.split(".energy-green-share {", 1)[1].split("}", 1)[0]
+        hydrogen_block = self.styles.split(".energy-hydrogen-chain {", 1)[1].split("}", 1)[0]
+        medium_block = self.styles.split("@container (max-height: 460px) {", 1)[1].split(
+            "@container (max-height: 360px)", 1
+        )[0]
+        compact_block = self.styles.split("@container (max-height: 320px) {", 1)[1]
+
+        self.assertIn("--energy-central-upper-shift: clamp(0px, calc(13cqh - 57px), 60px);", flow_block)
+        self.assertIn("--energy-hydrogen-top: clamp(6px, 1.8cqh, 16px);", flow_block)
+        self.assertIn(
+            "top: calc(var(--energy-summary-top) + var(--energy-central-upper-shift));",
+            summary_block,
+        )
+        self.assertIn(
+            "top: calc(var(--energy-hydrogen-top) + var(--energy-central-upper-shift));",
+            hydrogen_block,
+        )
+        self.assertIn("--energy-hydrogen-top: 2px;", medium_block)
+        self.assertIn("--energy-hydrogen-top: 1px;", compact_block)
+        self.assertNotIn("margin-top:", summary_block)
+        self.assertNotIn("margin-top:", hydrogen_block)
 
     def test_trainee_home_storage_cards_connect_horizontally_to_their_own_bus(self):
         def css_block(selector: str, text: str = self.styles) -> str:

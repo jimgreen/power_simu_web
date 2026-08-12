@@ -79,6 +79,7 @@ from simu.model_semantics import (
     normalize_hydrogen_conversion_control_mode,
     resource_aliases,
     terminal_domains_from_block,
+    validate_hydrogen_power_setpoint_safety,
 )
 from simu.measurement_delta import (
     compact_measurement_delta,
@@ -1332,6 +1333,7 @@ class PolarMicrogridSimulator:
         self._runtime_log_seq = max((int(_to_float(item.get("seq"), 0) or 0) for item in self.runtime_logs), default=0)
         self.reload_definition_state()
         self._load_manual_definition_changes()
+        self._reset_hydrogen_storage_state_to_initial()
         self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
 
     def reset_runtime_for_model_change(self) -> Dict[str, int]:
@@ -3000,6 +3002,13 @@ class PolarMicrogridSimulator:
                 target,
                 target_set_type,
                 value,
+            )
+            validate_hydrogen_power_setpoint_safety(
+                self.definition_snapshot.model_book,
+                dev_type,
+                dev_name,
+                target_set_type,
+                number,
             )
         except ValueError as exc:
             raise ValueError(
@@ -5739,6 +5748,8 @@ class PolarMicrogridSimulator:
         absolute_minute: int | float,
         clock_advance: int | float,
         period_seconds: float,
+        *,
+        auto_paused: bool,
     ) -> None:
         simu_time = minute_to_time(minute)
         result = self._power_flow_failure_result(error)
@@ -5749,7 +5760,11 @@ class PolarMicrogridSimulator:
                 f"仿真周期 {format_number(period_seconds)} s"
             ),
             f"失败类型 {result}，异常 {type(error).__name__}: {error}",
-            "处理措施 本轮潮流结果未写入，仿真时钟不推进；时钟保护逻辑将切换为暂停状态",
+            (
+                "处理措施 本轮潮流结果未写入，仿真时钟不推进；运行中的仿真已自动暂停"
+                if auto_paused
+                else "处理措施 本轮潮流结果未写入，仿真时钟不推进；当前时钟状态保持不变"
+            ),
             *self._input_boundary_lines(minute, absolute_minute, clock_advance, period_seconds),
         ]
         self._append_runtime_log(
@@ -7341,6 +7356,11 @@ class PolarMicrogridSimulator:
                 elapsed = max(0.0, time.perf_counter() - execution_started)
                 compute_status = "timeout" if isinstance(exc, PowerFlowTimeoutError) else "failed"
                 with self.lock:
+                    last_successful_simu_time = str(
+                        self.latest_measurement_clock.get("time", "") or ""
+                    )
+                    if start_clock_state == "running":
+                        self.clock.state = "paused"
                     self.latest_compute = {
                         "mode": "process" if self.kernel_runner is not None else "embedded",
                         "http_pid": os.getpid(),
@@ -7353,6 +7373,13 @@ class PolarMicrogridSimulator:
                         "round_trip_ms": round(elapsed * 1000.0, 3),
                         "status": compute_status,
                         "resident_model": self.kernel_runner is None,
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "simu_time": minute_to_time(minute),
+                        "absolute_minute": float(absolute_minute),
+                        "failed_at": _now_text(),
+                        "result_discarded": True,
+                        "measurement_frame_stale": True,
+                        "last_successful_simu_time": last_successful_simu_time,
                     }
                     self.latest_result = {
                         "solver_info": "failed",
@@ -7364,6 +7391,7 @@ class PolarMicrogridSimulator:
                         absolute_minute,
                         clock_advance,
                         period_seconds,
+                        auto_paused=start_clock_state == "running",
                     )
                     self.clock.updated_at = time.time()
                 raise
@@ -11129,6 +11157,21 @@ class PolarMicrogridSimulator:
                     f"人工修改安全校验失败：{block_name}/{dev_name} 的修改超出允许范围"
                     f"（{exc}）；修改未生效，人工覆盖层、运行控制文件和仿真边界均未更新。"
                 ) from exc
+            if "p_set" in normalized_changes:
+                try:
+                    validate_hydrogen_power_setpoint_safety(
+                        model_book,
+                        block_name,
+                        str(row.get("name", row.get("dev_name", ""))).strip(),
+                        "p_set",
+                        normalized_changes["p_set"],
+                    )
+                except ValueError as exc:
+                    dev_name = str(row.get("name", row.get("dev_name", ""))).strip()
+                    raise ValueError(
+                        f"人工修改安全校验失败：{block_name}/{dev_name} 的跨域换算超出允许范围"
+                        f"（{exc}）；修改未生效，人工覆盖层、运行控制文件和仿真边界均未更新。"
+                    ) from exc
             row.update(normalized_changes)
             dev_define_book = simu_loop._capability_define_book(
                 model_book,
@@ -11755,15 +11798,22 @@ class PolarMicrogridSimulator:
     ) -> Dict[str, Any]:
         measurements: Dict[str, Any] = {}
         if include_measurements:
-            measurements = self.measurements()
-            if "definitions" not in measurements:
-                definition_snapshot = self.definition_snapshot
-                median_deviations = _measurement_median_deviation_map(definition_snapshot)
-                measurements["definitions"] = [
-                    _measurement_definition_row_to_dict(row, median_deviations)
-                    for row in definition_snapshot.measurement_rows
-                ]
-            measurements = self._with_realtime_measurements(measurements)
+            compute_status = str(self.latest_compute.get("status", "") or "").lower()
+            if compute_status in {"failed", "timeout"} and self.latest_measurements:
+                measurements = {
+                    str(channel): [dict(row) for row in rows]
+                    for channel, rows in self.latest_measurements.items()
+                }
+            else:
+                measurements = self.measurements()
+                if "definitions" not in measurements:
+                    definition_snapshot = self.definition_snapshot
+                    median_deviations = _measurement_median_deviation_map(definition_snapshot)
+                    measurements["definitions"] = [
+                        _measurement_definition_row_to_dict(row, median_deviations)
+                        for row in definition_snapshot.measurement_rows
+                    ]
+                measurements = self._with_realtime_measurements(measurements)
         try:
             log_limit = max(0, int(runtime_log_limit))
         except (TypeError, ValueError):
@@ -11843,15 +11893,19 @@ class PolarMicrogridSimulator:
     def _summary(self, measurements: Mapping[str, Sequence[Mapping[str, Any]]]) -> Dict[str, Any]:
         scada = measurements.get("scada", [])
         valid = [item for item in scada if item.get("valid", 0) == 1]
-        alarms = [
+        measurement_alarms = [
             item
             for item in scada
             if item.get("value") is not None and abs(float(item.get("value") or 0.0)) > 1e4
         ]
+        compute_status = str(self.latest_compute.get("status", "") or "").strip().lower()
+        power_flow_alarm_count = int(compute_status in {"failed", "timeout"})
         return {
             "scada_count": len(scada),
             "valid_scada_count": len(valid),
-            "alarm_count": len(alarms),
+            "alarm_count": len(measurement_alarms) + power_flow_alarm_count,
+            "measurement_alarm_count": len(measurement_alarms),
+            "power_flow_alarm_count": power_flow_alarm_count,
             "command_count": len(self.command_history),
             "runtime_dir": str(self.runtime_dir),
             "model_id": self.model_id,

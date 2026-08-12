@@ -29,6 +29,20 @@ class SvgLiveDefinitionEditingUiTest(unittest.TestCase):
             1,
         )[0]
 
+    def _editor_helper_source(self, script: str | None = None) -> str:
+        script = script or self.script
+        marker = "const DIAGRAM_DEFINITION_RATIO_FIELDS"
+        if marker not in script:
+            self.fail("device definition editor rendering helpers are missing")
+        integrated_row = "function renderDiagramIntegratedDefinitionRow" + script.split(
+            "function renderDiagramIntegratedDefinitionRow",
+            1,
+        )[1].split("function diagramTooltipRows", 1)[0]
+        return integrated_row + self._helper_source(script) + marker + script.split(marker, 1)[1].split(
+            "function renderDiagramDeviceDefinitionRecord",
+            1,
+        )[0]
+
     def _run_helpers(self, body: str, script: str | None = None):
         harness = r"""
 const state = { snapshot: null };
@@ -48,6 +62,9 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
+function diagramTooltipValue(value) {
+  return value === null || value === undefined || value === "" ? "--" : String(value);
+}
 function diagramMetricMeasurementTypes(devType, metricType) {
   if (normalizeDiagramMeasurementToken(devType) === "ACGENERATOR"
       && normalizeDiagramMeasurementToken(metricType) === "ACTIVEPOWER") {
@@ -59,6 +76,33 @@ function diagramMetricMeasurementTypes(devType, metricType) {
         result = subprocess.run(
             ["node"],
             input=f"{harness}\n{self._helper_source(script)}\n{body}",
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(result.stdout)
+
+    def _run_editor_helpers(self, body: str, script: str | None = None):
+        script = script or self.script
+        harness = r"""
+function normalizeDiagramMeasurementToken(value) {
+  return String(value || "").trim().replace(/[\s_.-]+/g, "").toUpperCase();
+}
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+function diagramTooltipValue(value) {
+  return value === null || value === undefined || value === "" ? "--" : String(value);
+}
+"""
+        result = subprocess.run(
+            ["node"],
+            input=f"{harness}\n{self._editor_helper_source(script)}\n{body}",
             check=True,
             capture_output=True,
             text=True,
@@ -296,6 +340,155 @@ process.stdout.write(JSON.stringify({
                 "diagramDeviceHasSwitchStatus(definitionRecords, raw)",
                 script,
             )
+
+    def test_all_runtime_states_and_control_modes_have_enumerated_choices(self):
+        body = r"""
+const optionValues = (blockName, field, row) => (
+  diagramDefinitionEnumOptions({ blockName, row }, field).map((option) => option.value)
+);
+process.stdout.write(JSON.stringify({
+  runStat: optionValues("ACLoad", "run_stat", { run_stat: 1 }),
+  switchStatus: optionValues("ACBreak", "status", { status: 0 }),
+  acGenerator: optionValues("ACGenerator", "control_type", { control_type: "PV" }),
+  dcGenerator: optionValues("DCGenerator", "control_type", { control_type: "V" }),
+  acacSide: optionValues("ACACConverter", "i_control_type", { i_control_type: "PV" }),
+  dcdcSide: optionValues("DCDCConverter", "i_control_type", { i_control_type: "CTRL_V" }),
+  dcacAcForDcPower: optionValues("DCACConverter", "ac_control_type", {
+    ac_control_type: "NONE",
+    dc_control_type: "P",
+  }),
+  dcacDcForAcPower: optionValues("DCACConverter", "dc_control_type", {
+    ac_control_type: "PQ",
+    dc_control_type: "NONE",
+  }),
+  hydrogenConversion: optionValues("AcE2Hydro", "control_type", { control_type: "P" }),
+  invalidHydrogenConversion: optionValues("AcE2Hydro", "control_type", { control_type: "PQ" }),
+  hydrogenStorage: optionValues("HydroStorage", "control_type", { control_type: "PRESSURE" }),
+  unknownMode: optionValues("CustomDevice", "mode", { mode: "AUTO" }),
+  canonicalDcdcAlias: diagramDefinitionEnumCanonicalValue(
+    { blockName: "DCDCConverter", row: { i_control_type: "CTRL_V" } },
+    "i_control_type",
+    "CTRL_V",
+  ),
+  dcdcSwitchSide: diagramDefinitionCoupledEnumValues({
+    blockName: "DCDCConverter",
+    row: { i_control_type: "V", j_control_type: "NONE" },
+  }, "j_control_type", "I"),
+  dcacSwitchToDcPower: diagramDefinitionCoupledEnumValues({
+    blockName: "DCACConverter",
+    row: { ac_control_type: "PH", dc_control_type: "NONE" },
+  }, "dc_control_type", "P"),
+}));
+"""
+        expected = {
+            "runStat": ["1", "0"],
+            "switchStatus": ["1", "0"],
+            "acGenerator": ["PQ", "P", "PV", "V", "SLACK", "PH"],
+            "dcGenerator": ["P", "V", "I", "SLACK"],
+            "acacSide": ["PQ", "PV", "PH", "NONE"],
+            "dcdcSide": ["P", "V", "I", "NONE"],
+            "dcacAcForDcPower": ["PQ", "PH", "NONE"],
+            "dcacDcForAcPower": ["NONE", "V", "P"],
+            "hydrogenConversion": ["P", "FLOW"],
+            "invalidHydrogenConversion": ["P", "FLOW"],
+            "hydrogenStorage": ["PRESSURE", "FLOW"],
+            "unknownMode": ["AUTO"],
+            "canonicalDcdcAlias": "V",
+            "dcdcSwitchSide": {"j_control_type": "I", "i_control_type": "NONE"},
+            "dcacSwitchToDcPower": {"dc_control_type": "P", "ac_control_type": "NONE"},
+        }
+        self.assertEqual(self._run_editor_helpers(body), expected)
+        self.assertEqual(self._run_editor_helpers(body, self.trainee_script), expected)
+
+    def test_editable_runtime_states_and_control_modes_render_as_selects(self):
+        body = r"""
+const interaction = { definitionSaving: false };
+const editor = {
+  kind: "device",
+  records: [{
+    blockName: "AcE2Hydro",
+    rowIndex: 0,
+    editableFields: ["run_stat", "control_type", "e2h_coeff"],
+    original: { run_stat: "1", control_type: "P", e2h_coeff: "0.2" },
+    draft: { run_stat: "1", control_type: "P", e2h_coeff: "0.2" },
+    dirtyFields: new Set(),
+  }],
+};
+interaction.definitionEditor = editor;
+const record = {
+  blockName: "AcE2Hydro",
+  rowIndex: 0,
+  headers: ["run_stat", "control_type", "e2h_coeff"],
+  row: { run_stat: "1", control_type: "P", e2h_coeff: "0.2" },
+};
+const activeEditor = editor.records[0];
+const runHtml = renderDiagramIntegratedDefinitionRow(
+  "运行状态",
+  "1",
+  "status:run_stat",
+  { blockName: "AcE2Hydro", rowIndex: 0, field: "run_stat", editable: true },
+  interaction,
+);
+const modeHtml = renderDiagramIntegratedDefinitionRow(
+  "控制模式",
+  "P",
+  "status:mode",
+  { blockName: "AcE2Hydro", rowIndex: 0, field: "control_type", editable: true },
+  interaction,
+);
+const invalidModeHtml = renderDiagramDefinitionEnumSelect(
+  { blockName: "AcE2Hydro", row: { control_type: "PQ" } },
+  "control_type",
+  "PQ",
+  interaction,
+);
+const numberHtml = renderDiagramDeviceDefinitionValueRow(
+  record,
+  "e2h_coeff",
+  activeEditor,
+  interaction,
+);
+process.stdout.write(JSON.stringify({
+  runSelect: runHtml.includes("<select") && runHtml.includes("投入") && runHtml.includes("退出"),
+  modeSelect: modeHtml.includes("<select") && modeHtml.includes("定电功率") && modeHtml.includes("定气流量"),
+  noRunTextInput: !runHtml.includes("<input"),
+  noModeTextInput: !modeHtml.includes("<input"),
+  invalidModePrompt: invalidModeHtml.includes("无效选项 (PQ)，请选择"),
+  numericInput: numberHtml.includes("<input") && !numberHtml.includes("<select"),
+  readOnlyRunText: diagramDefinitionDisplayValue("run_stat", 1),
+  readOnlySwitchText: diagramDefinitionDisplayValue("status", 0),
+}));
+"""
+        expected = {
+            "runSelect": True,
+            "modeSelect": True,
+            "noRunTextInput": True,
+            "noModeTextInput": True,
+            "invalidModePrompt": True,
+            "numericInput": True,
+            "readOnlyRunText": "投入",
+            "readOnlySwitchText": "断开",
+        }
+        self.assertEqual(self._run_editor_helpers(body), expected)
+
+        trainee_body = body.replace(
+            'field: "run_stat", editable: true',
+            'field: "run_stat", editable: false',
+        )
+        trainee = self._run_editor_helpers(trainee_body, self.trainee_script)
+        self.assertFalse(trainee["runSelect"])
+        self.assertTrue(trainee["modeSelect"])
+        self.assertTrue(trainee["noRunTextInput"])
+        self.assertEqual(trainee["readOnlyRunText"], "投入")
+
+    def test_realtime_refresh_preserves_friendly_read_only_enum_labels(self):
+        for script in (self.script, self.trainee_script):
+            refresh = script.split("function syncDiagramTooltipSections", 1)[1].split(
+                "function updateDiagramDevice",
+                1,
+            )[0]
+            self.assertIn("diagramDefinitionDisplayValue(binding.field, value)", refresh)
+            self.assertIn(": diagramTooltipValue(value)", refresh)
 
     def test_nameless_model_rows_match_the_definition_driven_synthetic_device_name(self):
         body = r"""
@@ -625,27 +818,136 @@ process.stdout.write(JSON.stringify({
         self.assertIn("updateDiagramMetricDynamicValues", update_block)
         self.assertNotIn("tooltip.innerHTML", update_block)
 
-    def test_device_editor_lifecycle_is_explicit_and_pins_the_tooltip(self):
+    def test_device_editor_lifecycle_prompts_before_discarding_dirty_changes(self):
         for function_name in (
             "beginDiagramDeviceDefinitionEdit",
             "cancelDiagramDefinitionEdit",
             "saveDiagramDeviceDefinitionEdit",
             "renderDiagramDeviceDefinitionEditor",
-            "updateDiagramDeviceDynamicSections",
             "diagramDefinitionEditPinned",
+            "diagramDefinitionEditorPendingChanges",
+            "renderDiagramDefinitionLeavePrompt",
         ):
-            self.assertIn(f"function {function_name}", self.script)
-        hide_block = self.script.split("function scheduleDiagramTooltipHide", 1)[1].split(
-            "function renderActiveDiagramTooltip",
-            1,
-        )[0]
-        self.assertIn("diagramDefinitionEditPinned", hide_block)
+            for script in (self.script, self.trainee_script):
+                self.assertIn(f"function {function_name}", script)
+
+        for script in (self.script, self.trainee_script):
+            hide_block = script.split("function scheduleDiagramTooltipHide", 1)[1].split(
+                "function renderActiveDiagramTooltip",
+                1,
+            )[0]
+            self.assertNotIn("if (diagramDefinitionEditPinned(interaction)) return", hide_block)
+            self.assertIn("diagramDefinitionEditorPendingChanges", hide_block)
+            self.assertIn("interaction.definitionLeavePrompt = true", hide_block)
+            self.assertIn("hideDiagramTooltip(container)", hide_block)
+            for action in ("save", "discard", "continue"):
+                self.assertIn(f'data-diagram-definition-leave-action="{action}"', script)
+
         update_block = self.script.split("function updateDiagramDeviceTooltip", 1)[1].split(
             "function diagramMetricCurrentRow",
             1,
         )[0]
+        self.assertIn("function updateDiagramDeviceDynamicSections", self.script)
         self.assertIn("updateDiagramDeviceDynamicSections", update_block)
         self.assertIn('interaction.definitionEditor?.kind === "device"', update_block)
+
+    def test_leave_prompt_lists_device_and_measurement_changes(self):
+        body = r"""
+const deviceEditor = {
+  kind: "device",
+  records: [{
+    blockName: "DCRealBs",
+    rowIndex: 0,
+    original: { v_max: 900, run_stat: 1 },
+    draft: { v_max: 950, run_stat: 0 },
+    dirtyFields: new Set(["v_max", "run_stat"]),
+  }],
+};
+const measurementEditor = {
+  kind: "measurement",
+  original: { errorSigma: "0.1", status: "valid" },
+  draft: { errorSigma: "0.2", status: "fixed" },
+  dirtyFields: new Set(["errorSigma", "status"]),
+};
+const deviceChanges = diagramDefinitionEditorPendingChanges(deviceEditor);
+const measurementChanges = diagramDefinitionEditorPendingChanges(measurementEditor);
+const html = renderDiagramDefinitionLeavePrompt({
+  definitionEditor: deviceEditor,
+  definitionLeavePrompt: true,
+  definitionSaving: false,
+});
+process.stdout.write(JSON.stringify({ deviceChanges, measurementChanges, html }));
+"""
+        for script in (self.script, self.trainee_script):
+            payload = self._run_helpers(body, script)
+            self.assertEqual(
+                [(item["before"], item["after"]) for item in payload["deviceChanges"]],
+                [("900", "950"), ("投入", "退出")],
+            )
+            self.assertEqual(
+                [(item["before"], item["after"]) for item in payload["measurementChanges"]],
+                [("0.1", "0.2"), ("有效", "固定值")],
+            )
+            self.assertIn("尚未保存", payload["html"])
+            self.assertIn("保存并关闭", payload["html"])
+            self.assertIn("不保存并关闭", payload["html"])
+            self.assertIn("继续编辑", payload["html"])
+
+    def test_leave_prompt_ignores_fields_that_were_changed_back_to_the_original_value(self):
+        body = r"""
+const deviceEditor = {
+  kind: "device",
+  records: [{
+    blockName: "ACGenerator",
+    rowIndex: 0,
+    original: { p_max: 100 },
+    draft: { p_max: "100.0" },
+    dirtyFields: new Set(["p_max"]),
+  }],
+};
+const measurementEditor = {
+  kind: "measurement",
+  original: { errorSigma: "0.1", status: "valid", valid: 1 },
+  draft: { errorSigma: "0.10", status: "valid", valid: 1 },
+  dirtyFields: new Set(["errorSigma", "status"]),
+};
+process.stdout.write(JSON.stringify({
+  device: diagramDefinitionEditorPendingChanges(deviceEditor),
+  measurement: diagramDefinitionEditorPendingChanges(measurementEditor),
+}));
+"""
+        for script in (self.script, self.trainee_script):
+            self.assertEqual(
+                self._run_helpers(body, script),
+                {"device": [], "measurement": []},
+            )
+
+    def test_save_and_close_only_closes_after_complete_success(self):
+        for script in (self.script, self.trainee_script):
+            for function_name, next_function in (
+                ("saveDiagramDeviceDefinitionEdit", "function reorderDiagramChildren"),
+                ("saveDiagramMeasurementDefinitionEdit", "function renderDiagramMetricTooltip"),
+            ):
+                source = script.split(f"async function {function_name}", 1)[1].split(
+                    next_function,
+                    1,
+                )[0]
+                self.assertIn("const closeAfterSave = Boolean(interaction.definitionCloseAfterSave)", source)
+                self.assertIn("if (closeAfterSave) hideDiagramTooltip(container)", source)
+                self.assertIn("return false", source)
+                catch_source = source.split("} catch (error) {", 1)[1]
+                self.assertNotIn("interaction.definitionEditor = null", catch_source)
+                self.assertIn("interaction.definitionCloseAfterSave = false", catch_source)
+
+    def test_device_tooltip_measurement_field_names_are_lowercase(self):
+        for script in (self.script, self.trainee_script):
+            self.assertIn("function diagramMeasurementFieldName", script)
+            tooltip_block = script.split("function diagramSingleDeviceTooltipData", 1)[1].split(
+                "function diagramDeviceTooltipData",
+                1,
+            )[0]
+            self.assertIn("diagramMeasurementFieldName(row)", tooltip_block)
+            self.assertNotIn("row.meas_type || row.name || \"量测\"", tooltip_block)
 
     def test_simulator_device_definition_actions_render_in_the_tooltip_header(self):
         self.assertIn(
@@ -831,6 +1133,9 @@ process.stdout.write(JSON.stringify({
 }));
 """
             harness = r"""
+function normalizeDiagramMeasurementToken(value) {
+  return String(value || "").trim().replace(/[\s_.-]+/g, "").toUpperCase();
+}
 function escapeHtml(value) { return String(value ?? ""); }
 function diagramTooltipValue(value) { return String(value ?? ""); }
 """

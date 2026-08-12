@@ -794,6 +794,45 @@ h2 {
 }
 .overview-state-dot.is-running { border-color: var(--green); background: var(--green); }
 .overview-state-dot.is-paused { border-color: var(--amber); background: var(--amber); }
+.power-flow-failure-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 10px 14px 0;
+  padding: 12px 14px;
+  border: 1px solid #dc2626;
+  border-left-width: 5px;
+  border-radius: 6px;
+  background: #fff1f2;
+  color: #991b1b;
+  box-shadow: 0 5px 16px rgb(127 29 29 / 12%);
+}
+.power-flow-failure-alert[hidden] { display: none; }
+.power-flow-failure-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #b91c1c;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1;
+}
+.power-flow-failure-alert div { min-width: 0; }
+.power-flow-failure-alert strong {
+  display: block;
+  font-size: 14px;
+  line-height: 20px;
+}
+.power-flow-failure-alert p {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 18px;
+}
 .overview-status-metrics {
   margin: 0;
   display: grid;
@@ -990,6 +1029,8 @@ body.is-vertical-splitter-dragging {
   --energy-stack-gap: clamp(4px, 1.5cqh, 12px);
   --energy-list-gap: clamp(3px, 1.25cqh, 10px);
   --energy-summary-top: clamp(124px, 25cqh, 160px);
+  --energy-hydrogen-top: clamp(6px, 1.8cqh, 16px);
+  --energy-central-upper-shift: clamp(0px, calc(13cqh - 57px), 60px);
   --energy-storage-gap: clamp(34px, 14cqh, 112px);
   position: relative;
   width: min(100%, 1540px);
@@ -1369,7 +1410,7 @@ body.is-vertical-splitter-dragging {
   position: absolute;
   z-index: 3;
   left: 50%;
-  top: var(--energy-summary-top);
+  top: calc(var(--energy-summary-top) + var(--energy-central-upper-shift));
   width: min(320px, 36%);
   min-width: 280px;
   padding: clamp(6px, 2cqh, 12px) 10px;
@@ -1414,7 +1455,7 @@ body.is-vertical-splitter-dragging {
   z-index: 3;
   left: var(--energy-bus-inset);
   right: var(--energy-bus-inset);
-  top: clamp(6px, 1.8cqh, 16px);
+  top: calc(var(--energy-hydrogen-top) + var(--energy-central-upper-shift));
   min-width: 0;
   display: grid;
   grid-template-columns: 15px minmax(160px, 1fr) 10px minmax(154px, 0.95fr) 10px minmax(160px, 1fr) 15px;
@@ -2044,6 +2085,7 @@ body.is-vertical-splitter-dragging {
     --energy-device-icon-size: 52px;
     --energy-device-icon-glyph-size: 34px;
     --energy-summary-top: clamp(86px, 28cqh, 112px);
+    --energy-hydrogen-top: 2px;
     --energy-storage-gap: clamp(28px, 13cqh, 58px);
   }
   .energy-device-card {
@@ -2095,9 +2137,6 @@ body.is-vertical-splitter-dragging {
   }
   .energy-converter-card {
     min-height: 60px;
-  }
-  .energy-hydrogen-chain {
-    top: 2px;
   }
   .energy-hydrogen-device,
   .energy-hydrogen-card {
@@ -2230,7 +2269,7 @@ body.is-vertical-splitter-dragging {
     line-height: 12px;
   }
   .energy-green-share {
-    top: var(--energy-summary-top);
+    top: calc(var(--energy-summary-top) + var(--energy-central-upper-shift));
     padding: clamp(4px, 2cqh, 8px) 8px;
   }
   .energy-green-metric {
@@ -2288,8 +2327,8 @@ body.is-vertical-splitter-dragging {
     min-height: clamp(38px, 15cqh, 50px);
     padding: 2px 7px;
   }
-  .energy-hydrogen-chain {
-    top: 1px;
+  .energy-flow-map {
+    --energy-hydrogen-top: 1px;
   }
   .energy-hydrogen-device,
   .energy-hydrogen-card {
@@ -3198,6 +3237,52 @@ body.is-vertical-splitter-dragging {
 }
 .diagram-definition-message[hidden] {
   display: none;
+}
+.diagram-definition-leave-prompt {
+  padding: 12px;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 18px;
+}
+.diagram-definition-leave-prompt > strong {
+  color: #835400;
+}
+.diagram-definition-change-list {
+  max-height: 240px;
+  margin: 8px 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.diagram-definition-change-list li {
+  display: grid;
+  grid-template-columns: minmax(112px, 1fr) minmax(54px, auto) auto minmax(54px, auto);
+  align-items: center;
+  gap: 6px;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(91, 112, 120, 0.16);
+}
+.diagram-definition-change-list code {
+  padding: 1px 4px;
+  overflow-wrap: anywhere;
+  color: #1f4e5c;
+  background: #edf4f5;
+  font-family: Consolas, monospace;
+}
+.diagram-definition-leave-prompt p {
+  margin: 8px 0 0;
+}
+.diagram-definition-leave-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 9px;
+}
+.diagram-definition-leave-actions button {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 11px;
 }
 .diagram-metric-current {
   min-height: 58px;

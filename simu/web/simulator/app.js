@@ -1071,6 +1071,36 @@ function renderClock(clock) {
   renderCurveModeControls();
 }
 
+function renderPowerFlowFailureAlert(snapshot = state.snapshot || {}) {
+  const alert = $("powerFlowFailureAlert");
+  if (!alert) return;
+  const computeStatus = String(snapshot.compute?.status || "").toLowerCase();
+  const failed = computeStatus === "failed" || computeStatus === "timeout";
+  alert.hidden = !failed;
+  if (!failed) return;
+  const timedOut = computeStatus === "timeout";
+  const simulationPaused = String(snapshot.clock?.state || "").toLowerCase() === "paused";
+  const simuTime = snapshot.compute?.simu_time || snapshot.clock?.time || "--";
+  const lastSuccessTime = snapshot.compute?.last_successful_simu_time || "";
+  const error = snapshot.compute?.error || snapshot.result?.error || "潮流内核未返回可用结果";
+  const title = $("powerFlowFailureTitle");
+  const detail = $("powerFlowFailureDetail");
+  if (title) {
+    title.textContent = simulationPaused
+      ? (timedOut ? "潮流计算超时，仿真已暂停" : "潮流计算失败，仿真已暂停")
+      : (timedOut ? "潮流计算超时，本轮结果已丢弃" : "潮流计算失败，本轮结果已丢弃");
+  }
+  if (detail) {
+    const staleFrameText = lastSuccessTime
+      ? `当前画面量测为上一成功帧（${lastSuccessTime}）`
+      : "当前画面没有成功潮流量测帧";
+    detail.textContent = (
+      `失败仿真时刻 ${simuTime}。${error}。`
+      + `本轮潮流结果未采用，${staleFrameText}，请修正边界后${simulationPaused ? "再恢复运行" : "重新计算"}。`
+    );
+  }
+}
+
 function parameterNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
@@ -5092,6 +5122,7 @@ function normalizeDiagramMetricType(value) {
   const metricName = String(value || "").trim().toLowerCase();
   const compactName = metricName.replace(/[\s_-]+/g, "");
   if (compactName === "soc" || compactName === "stateofcharge") return "level";
+  if (compactName === "gasquantity") return "gas_quantity";
   return metricName;
 }
 
@@ -6022,6 +6053,8 @@ function diagramInteractionState(container) {
       hideTimer: null,
       definitionEditor: null,
       definitionSaving: false,
+      definitionLeavePrompt: false,
+      definitionCloseAfterSave: false,
       definitionMessage: "",
       definitionMessageWarning: false,
       deviceTooltipHostKey: "",
@@ -6215,6 +6248,24 @@ function renderDiagramIntegratedDefinitionRow(label, value, rowKey, binding, int
           data-diagram-tooltip-value="${escapeHtml(rowKey)}"
           ${fieldEditable ? 'data-diagram-definition-editable="device"' : ""}
         >${escapeHtml(diagramDefinitionDisplayValue(binding?.field, value))}</dd>
+      </div>`;
+  }
+  const enumOptions = diagramDefinitionEnumOptions(
+    { ...binding, row: activeEditor.draft },
+    binding.field,
+  );
+  if (enumOptions.length) {
+    return `
+      <div class="diagram-tooltip-row is-editing-definition" data-diagram-tooltip-row="${escapeHtml(rowKey)}"${recordAttributes}>
+        <dt>${escapeHtml(label)}</dt>
+        <dd data-diagram-tooltip-value="${escapeHtml(rowKey)}">
+          ${renderDiagramDefinitionEnumSelect(
+            { ...binding, row: activeEditor.draft },
+            binding.field,
+            activeEditor.draft[binding.field],
+            interaction,
+          )}
+        </dd>
       </div>`;
   }
   const descriptor = diagramDefinitionInputDescriptor(binding.field, activeEditor.draft[binding.field]);
@@ -6705,6 +6756,126 @@ function diagramDeviceDefinitionDirtyUpdates(editor) {
   }).filter(Boolean);
 }
 
+function diagramDefinitionPendingFieldLabel(field, kind = "device") {
+  const name = String(field || "").trim();
+  if (kind === "measurement") {
+    return ({
+      errorSigma: "误差 σ",
+      weight: "权重",
+      medianDeviation: "中值偏差",
+      status: "量测状态",
+      fixedValue: "固定值",
+    })[name] || name;
+  }
+  const normalized = name.toLowerCase();
+  return ({
+    control_type: "控制模式",
+    ac_control_type: "交流侧控制模式",
+    dc_control_type: "直流侧控制模式",
+    i_control_type: "I 侧控制模式",
+    j_control_type: "J 侧控制模式",
+    run_stat: "运行状态",
+    status: "开关状态",
+  })[normalized] || name;
+}
+
+function diagramDefinitionPendingDeviceValue(field, value) {
+  if (typeof diagramDefinitionDisplayValue === "function") {
+    return String(diagramDefinitionDisplayValue(field, value));
+  }
+  const name = String(field || "").trim().toLowerCase();
+  const token = String(value ?? "").trim().toUpperCase();
+  if (name === "run_stat") return ["1", "TRUE", "ON", "投入"].includes(token) ? "投入" : "退出";
+  if (name === "status") return ["1", "TRUE", "ON", "CLOSED", "闭合", "合闸"].includes(token) ? "闭合" : "断开";
+  return diagramTooltipValue(value);
+}
+
+function diagramDefinitionPendingValuesEqual(field, before, after, kind = "device") {
+  if (kind === "measurement" && field === "status") {
+    return diagramMeasurementStatus(before) === diagramMeasurementStatus(after);
+  }
+  const left = String(before ?? "").trim();
+  const right = String(after ?? "").trim();
+  if (left === right) return true;
+  const leftNumber = Number(left);
+  const rightNumber = Number(right);
+  return left !== "" && right !== ""
+    && Number.isFinite(leftNumber) && Number.isFinite(rightNumber)
+    && leftNumber === rightNumber;
+}
+
+function diagramDefinitionEditorPendingChanges(editor) {
+  if (editor?.kind === "device") {
+    return (editor.records || []).flatMap((record) => [...(record.dirtyFields || [])]
+      .filter((field) => !diagramDefinitionPendingValuesEqual(
+        field,
+        record.original?.[field],
+        record.draft?.[field],
+      ))
+      .map((field) => ({
+      kind: "device",
+      blockName: record.blockName,
+      rowIndex: record.rowIndex,
+      field,
+      label: `${record.blockName || "设备"} · ${diagramDefinitionPendingFieldLabel(field)}`,
+      before: diagramDefinitionPendingDeviceValue(field, record.original?.[field]),
+      after: diagramDefinitionPendingDeviceValue(field, record.draft?.[field]),
+      })));
+  }
+  if (editor?.kind === "measurement") {
+    return [...(editor.dirtyFields || [])]
+      .filter((field) => !diagramDefinitionPendingValuesEqual(
+        field,
+        editor.original?.[field],
+        editor.draft?.[field],
+        "measurement",
+      ))
+      .map((field) => ({
+      kind: "measurement",
+      field,
+      label: diagramDefinitionPendingFieldLabel(field, "measurement"),
+      before: field === "status"
+        ? diagramMeasurementStatusLabel(editor.original?.[field], editor.original?.valid)
+        : diagramTooltipValue(editor.original?.[field]),
+      after: field === "status"
+        ? diagramMeasurementStatusLabel(editor.draft?.[field], editor.draft?.valid)
+        : diagramTooltipValue(editor.draft?.[field]),
+      }));
+  }
+  return [];
+}
+
+function renderDiagramDefinitionLeavePrompt(interaction) {
+  if (!interaction?.definitionLeavePrompt || !interaction?.definitionEditor) return "";
+  const changes = diagramDefinitionEditorPendingChanges(interaction.definitionEditor);
+  if (!changes.length) return "";
+  const disabled = interaction.definitionSaving ? "disabled" : "";
+  return `
+    <div class="diagram-definition-leave-prompt" data-diagram-definition-leave-prompt>
+      <strong>以下修改尚未保存</strong>
+      <ul class="diagram-definition-change-list">
+        ${changes.map((change) => `
+          <li>
+            <span>${escapeHtml(change.label)}</span>
+            <code>${escapeHtml(change.before)}</code>
+            <span aria-hidden="true">→</span>
+            <code>${escapeHtml(change.after)}</code>
+          </li>`).join("")}
+      </ul>
+      <p>是否保存这些修改？</p>
+      <div class="diagram-definition-leave-actions">
+        <button type="button" class="primary" data-diagram-definition-leave-action="save" ${disabled}>保存并关闭</button>
+        <button type="button" data-diagram-definition-leave-action="discard" ${disabled}>不保存并关闭</button>
+        <button type="button" data-diagram-definition-leave-action="continue" ${disabled}>继续编辑</button>
+      </div>
+    </div>`;
+}
+
+function diagramMeasurementFieldName(row = {}) {
+  const field = String(row?.meas_type || row?.name || "量测").trim();
+  return field ? field.toLowerCase() : "量测";
+}
+
 function diagramDeviceData(container, device, snapshot = state.snapshot || {}) {
   if (!device) return { definition: null, live: null, raw: {}, svgIdx: "" };
   const resolvedDevice = diagramResolvedTooltipDevice(container, device);
@@ -6859,7 +7030,7 @@ function diagramSingleDeviceTooltipData(container, device, snapshot) {
     const value = diagramTrendDisplayValue(row.value, row, metricType);
     const unit = diagramMeasurementUnit(row.meas_type);
     return [
-      row.meas_type || row.name || "量测",
+      diagramMeasurementFieldName(row),
       value === null ? "--" : `${diagramNumberText(value)}${unit ? ` ${unit}` : ""}`,
       `measurement:${measurementKey(row)}`,
     ];
@@ -6917,6 +7088,12 @@ const DIAGRAM_DEFINITION_RATIO_FIELDS = new Set([
 
 const DIAGRAM_DEFINITION_FIELD_LABELS = Object.freeze({
   control_type: "控制模式",
+  ac_control_type: "交流侧控制模式",
+  dc_control_type: "直流侧控制模式",
+  i_control_type: "I 侧控制模式",
+  j_control_type: "J 侧控制模式",
+  run_stat: "运行状态",
+  status: "开关状态",
   e2h_coeff: "电-气效率 (Nm3/kWh)",
   h2e_coeff: "气-电效率 (kWh/Nm3)",
 });
@@ -6936,16 +7113,166 @@ function diagramDefinitionControlModeValue(value) {
   const token = String(value || "").trim().toUpperCase();
   return ({
     P: "定电功率 (P)",
+    PQ: "定有功/无功 (PQ)",
+    PV: "定有功/电压 (PV)",
+    Q: "定无功 (Q)",
+    V: "定电压 (V)",
+    I: "定电流 (I)",
+    B: "定电纳 (B)",
+    Z: "定阻抗 (Z)",
+    SLACK: "平衡参考 (SLACK)",
+    PH: "构网定压/相角 (PH)",
     FLOW: "定气流量 (FLOW)",
     PRESSURE: "定压力 (PRESSURE)",
+    NONE: "无控制 (NONE)",
+    PQQ: "两侧定功率 (PQQ)",
+    PVQ: "I侧定压/J侧定功率 (PVQ)",
+    PQV: "I侧定功率/J侧定压 (PQV)",
+    PVV: "两侧定压 (PVV)",
   })[token] || diagramTooltipValue(value);
 }
 
+const DIAGRAM_CONTROL_MODE_OPTIONS_BY_BLOCK = Object.freeze({
+  ACGENERATOR: ["PQ", "P", "PV", "V", "SLACK", "PH"],
+  ACREALBS: ["Q", "V", "B", "Z"],
+  ACACCONVERTER: ["PQQ", "PVQ", "PQV", "PVV"],
+  DCGENERATOR: ["P", "V", "I", "SLACK"],
+  DCDCCONVERTER: ["P", "V", "I"],
+  HYDROSOURCE: ["PRESSURE", "FLOW"],
+  HYDROLOAD: ["FLOW"],
+  HYDROSTORAGE: ["PRESSURE", "FLOW"],
+  ACE2HYDRO: ["P", "FLOW"],
+  DCE2HYDRO: ["P", "FLOW"],
+  HYDRO2ACE: ["P", "FLOW"],
+  HYDRO2DCE: ["P", "FLOW"],
+});
+const DIAGRAM_AC_SIDE_CONTROL_OPTIONS = Object.freeze(["PQ", "PV", "PH", "NONE"]);
+const DIAGRAM_DC_SIDE_CONTROL_OPTIONS = Object.freeze(["P", "V", "I", "NONE"]);
+const DIAGRAM_DCAC_CONTROL_PAIRS = Object.freeze([
+  ["PQ", "NONE"],
+  ["PQ", "V"],
+  ["PH", "NONE"],
+  ["NONE", "P"],
+]);
+
+function diagramDefinitionEnumCanonicalValue(record, field, value) {
+  const name = String(field || "").trim().toLowerCase();
+  const block = normalizeDiagramMeasurementToken(record?.blockName);
+  let token = String(value ?? "").trim().toUpperCase();
+  if (name === "run_stat" || name === "status") {
+    if (["TRUE", "ON", "CLOSED", "投入", "闭合", "合闸"].includes(token)) return "1";
+    if (["FALSE", "OFF", "OPEN", "退出", "断开", "分闸"].includes(token)) return "0";
+    return Number(token) === 1 ? "1" : (Number(token) === 0 ? "0" : token);
+  }
+  if (name === "i_control_type" || name === "j_control_type") {
+    if (token === "CTRL_P") token = "P";
+    if (token === "CTRL_I") token = "I";
+    if (block === "ACACCONVERTER") {
+      if (["CTRL_PQ", "Q"].includes(token)) token = "PQ";
+      if (["CTRL_PV", "CTRL_V", "V"].includes(token)) token = "PV";
+      if (token === "CTRL_PH") token = "PH";
+      if (["CTRL_NONE", "UNSPEC", "UNDEFINED", "NA"].includes(token)) token = "NONE";
+    } else if (block === "DCDCCONVERTER") {
+      if (token === "CTRL_V") token = "V";
+      if (["SLACK", "CTRL_SLACK", "CTRL_NONE"].includes(token)) token = "NONE";
+    }
+  }
+  return token;
+}
+
+function diagramDefinitionEnumOption(value, label = "") {
+  const token = String(value);
+  return { value: token, label: label || diagramDefinitionControlModeValue(token) };
+}
+
+function diagramDefinitionEnumOptions(record, field) {
+  const name = String(field || "").trim().toLowerCase();
+  const block = normalizeDiagramMeasurementToken(record?.blockName);
+  const row = record?.row || {};
+  if (name === "run_stat") {
+    return [diagramDefinitionEnumOption("1", "投入"), diagramDefinitionEnumOption("0", "退出")];
+  }
+  if (name === "status") {
+    return [diagramDefinitionEnumOption("1", "闭合"), diagramDefinitionEnumOption("0", "断开")];
+  }
+  let values = [];
+  if (block === "DCACCONVERTER" && name === "ac_control_type") {
+    values = DIAGRAM_DCAC_CONTROL_PAIRS.map((pair) => pair[0]);
+  } else if (block === "DCACCONVERTER" && name === "dc_control_type") {
+    values = DIAGRAM_DCAC_CONTROL_PAIRS.map((pair) => pair[1]);
+  } else if (name === "ac_control_type") {
+    values = DIAGRAM_AC_SIDE_CONTROL_OPTIONS;
+  } else if (name === "dc_control_type") {
+    values = DIAGRAM_DC_SIDE_CONTROL_OPTIONS;
+  } else if (name === "i_control_type" || name === "j_control_type") {
+    values = block === "ACACCONVERTER"
+      ? DIAGRAM_AC_SIDE_CONTROL_OPTIONS
+      : DIAGRAM_DC_SIDE_CONTROL_OPTIONS;
+  } else if (name === "control_type") {
+    values = DIAGRAM_CONTROL_MODE_OPTIONS_BY_BLOCK[block] || [];
+  } else if (name.endsWith("_control_type") || name === "mode" || name.endsWith("_mode")) {
+    values = [];
+  } else {
+    return [];
+  }
+  const current = diagramDefinitionEnumCanonicalValue(record, field, row[field]);
+  const unique = [...new Set(values.map((value) => String(value)))];
+  if (!unique.length && current) unique.push(current);
+  return unique.map((value) => diagramDefinitionEnumOption(value));
+}
+
+function diagramDefinitionCoupledEnumValues(record, field, value) {
+  const block = normalizeDiagramMeasurementToken(record?.blockName);
+  const name = String(field || "").trim().toLowerCase();
+  const row = record?.row || {};
+  const selected = diagramDefinitionEnumCanonicalValue(record, field, value);
+  const changes = { [field]: selected };
+  if (block === "DCDCCONVERTER" && ["i_control_type", "j_control_type"].includes(name)) {
+    const otherField = name === "i_control_type" ? "j_control_type" : "i_control_type";
+    const other = diagramDefinitionEnumCanonicalValue(record, otherField, row[otherField]);
+    changes[otherField] = selected === "NONE"
+      ? (["P", "V", "I"].includes(other) ? other : "P")
+      : "NONE";
+  }
+  if (block === "DCACCONVERTER" && name === "ac_control_type") {
+    const dcMode = diagramDefinitionEnumCanonicalValue(record, "dc_control_type", row.dc_control_type);
+    changes.dc_control_type = selected === "NONE"
+      ? "P"
+      : (selected === "PQ" && dcMode === "V" ? "V" : "NONE");
+  }
+  if (block === "DCACCONVERTER" && name === "dc_control_type") {
+    const acMode = diagramDefinitionEnumCanonicalValue(record, "ac_control_type", row.ac_control_type);
+    changes.ac_control_type = selected === "P"
+      ? "NONE"
+      : (selected === "V" ? "PQ" : (["PQ", "PH"].includes(acMode) ? acMode : "PQ"));
+  }
+  return changes;
+}
+
 function diagramDefinitionControlModeOptions(record, field) {
-  if (String(field || "").trim().toLowerCase() !== "control_type") return [];
-  return DIAGRAM_HYDROGEN_CONVERSION_BLOCKS.has(String(record?.blockName || ""))
-    ? ["P", "FLOW"]
-    : [];
+  return diagramDefinitionEnumOptions(record, field).map((option) => option.value);
+}
+
+function renderDiagramDefinitionEnumSelect(record, field, value, interaction) {
+  const options = diagramDefinitionEnumOptions(record, field);
+  const current = diagramDefinitionEnumCanonicalValue(record, field, value);
+  const currentValid = options.some((option) => option.value === current);
+  return `
+    <select
+      class="diagram-definition-input"
+      data-diagram-tooltip-inline-input
+      data-diagram-definition-input="device"
+      data-diagram-definition-enum
+      data-diagram-definition-control-mode
+      data-diagram-definition-field="${escapeHtml(field)}"
+      ${interaction?.definitionSaving ? "disabled" : ""}
+    >
+      ${currentValid ? "" : `<option value="" selected disabled>${escapeHtml(`无效选项 (${current || "空"})，请选择`)}</option>`}
+      ${options.map((option) => `
+        <option value="${escapeHtml(option.value)}" ${current === option.value ? "selected" : ""}>
+          ${escapeHtml(option.label)}
+        </option>`).join("")}
+    </select>`;
 }
 
 function diagramDefinitionSocField(field) {
@@ -6985,7 +7312,11 @@ function diagramDefinitionNumberText(value) {
 }
 
 function diagramDefinitionDisplayValue(field, value) {
-  if (String(field || "").trim().toLowerCase() === "control_type") {
+  const name = String(field || "").trim().toLowerCase();
+  const canonical = diagramDefinitionEnumCanonicalValue({}, field, value);
+  if (name === "run_stat") return canonical === "1" ? "投入" : (canonical === "0" ? "退出" : diagramTooltipValue(value));
+  if (name === "status") return canonical === "1" ? "闭合" : (canonical === "0" ? "断开" : diagramTooltipValue(value));
+  if (name === "control_type" || name === "mode" || name.endsWith("_control_type") || name.endsWith("_mode")) {
     return diagramDefinitionControlModeValue(value);
   }
   if (!diagramDefinitionRatioField(field)) return diagramTooltipValue(value);
@@ -7068,33 +7399,19 @@ function renderDiagramDeviceDefinitionValueRow(record, field, activeEditor, inte
         >${escapeHtml(diagramDefinitionDisplayValue(field, record.row[field]))}</dd>
       </div>`;
   }
-  const controlModeOptions = diagramDefinitionControlModeOptions(record, field);
-  if (controlModeOptions.length) {
-    const currentMode = String(activeEditor.draft[field] || "").trim().toUpperCase();
-    const currentModeValid = controlModeOptions.includes(currentMode);
+  const enumRecord = { ...record, row: activeEditor.draft };
+  const enumOptions = diagramDefinitionEnumOptions(enumRecord, field);
+  if (enumOptions.length) {
     return `
       <div class="diagram-tooltip-row is-editing-definition" data-diagram-tooltip-row="${escapeHtml(key)}">
         <dt>${escapeHtml(diagramDefinitionFieldLabel(field))}</dt>
         <dd data-diagram-definition-value="${escapeHtml(key)}">
-          <select
-            class="diagram-definition-input"
-            data-diagram-tooltip-inline-input
-            data-diagram-definition-input="device"
-            data-diagram-definition-control-mode
-            data-diagram-definition-field="${escapeHtml(field)}"
-            ${interaction?.definitionSaving ? "disabled" : ""}
-          >
-            ${currentModeValid ? "" : `
-              <option value="" selected disabled>
-                ${escapeHtml(`无效模式 (${currentMode || "空"})，请选择`)}
-              </option>
-            `}
-            ${controlModeOptions.map((mode) => `
-              <option value="${mode}" ${currentMode === mode ? "selected" : ""}>
-                ${escapeHtml(diagramDefinitionControlModeValue(mode))}
-              </option>
-            `).join("")}
-          </select>
+          ${renderDiagramDefinitionEnumSelect(
+            enumRecord,
+            field,
+            activeEditor.draft[field],
+            interaction,
+          )}
         </dd>
       </div>`;
   }
@@ -7234,6 +7551,15 @@ function renderDiagramDeviceTabs(data, interaction) {
 function renderDiagramDeviceTooltip(container, hover, snapshot, interaction) {
   const data = diagramDeviceTooltipData(container, hover, snapshot, interaction);
   if (!data) return "";
+  const leavePrompt = renderDiagramDefinitionLeavePrompt(interaction);
+  if (leavePrompt) {
+    return `
+      <div class="diagram-tooltip-head">
+        <strong data-diagram-tooltip-device-name>${escapeHtml(data.title)}</strong>
+        <span>设备参数</span>
+      </div>
+      <div class="diagram-tooltip-body">${leavePrompt}</div>`;
+  }
   return `
     <div class="diagram-tooltip-head">
       <strong data-diagram-tooltip-device-name>${escapeHtml(data.title)}</strong>
@@ -7276,6 +7602,8 @@ function beginDiagramDeviceDefinitionEdit(container, blockName, rowIndex = 0) {
     devicePageKey: activePage?.key || "self",
   };
   interaction.definitionSaving = false;
+  interaction.definitionLeavePrompt = false;
+  interaction.definitionCloseAfterSave = false;
   interaction.definitionMessage = "";
   interaction.definitionMessageWarning = false;
   interaction.tooltip?.classList.add("is-editing-definition");
@@ -7288,6 +7616,8 @@ function cancelDiagramDefinitionEdit(container) {
   if (!interaction?.definitionEditor && !interaction?.definitionSaving) return false;
   interaction.definitionEditor = null;
   interaction.definitionSaving = false;
+  interaction.definitionLeavePrompt = false;
+  interaction.definitionCloseAfterSave = false;
   interaction.definitionMessage = "";
   interaction.definitionMessageWarning = false;
   interaction.tooltip?.classList.remove("is-editing-definition");
@@ -7324,17 +7654,34 @@ function updateDiagramDeviceDefinitionDraft(interaction, input) {
     item.blockName === blockName && Number(item.rowIndex) === rowIndex
   ));
   if (!record || !record.editableFields.includes(field)) return false;
-  const value = diagramDefinitionStoredValue(field, input.value);
-  record.draft[field] = value;
-  const originalValue = diagramDefinitionCanonicalStoredValue(field, record.original[field]);
-  const dirtyKey = `${record.blockName}:${record.rowIndex}:${field}`;
-  if (value === originalValue) {
-    record.dirtyFields.delete(field);
-    editor.dirtyFields.delete(dirtyKey);
-  } else {
-    record.dirtyFields.add(field);
-    editor.dirtyFields.add(dirtyKey);
-  }
+  const enumRecord = { ...record, row: record.draft };
+  const enumOptions = diagramDefinitionEnumOptions(enumRecord, field);
+  const changes = enumOptions.length
+    ? diagramDefinitionCoupledEnumValues(enumRecord, field, input.value)
+    : { [field]: diagramDefinitionStoredValue(field, input.value) };
+  Object.entries(changes).forEach(([changedField, value]) => {
+    if (!record.editableFields.includes(changedField)) return;
+    record.draft[changedField] = value;
+    const changedRecord = { ...record, row: record.draft };
+    const originalValue = diagramDefinitionEnumOptions(changedRecord, changedField).length
+      ? diagramDefinitionEnumCanonicalValue(changedRecord, changedField, record.original[changedField])
+      : diagramDefinitionCanonicalStoredValue(changedField, record.original[changedField]);
+    const dirtyKey = `${record.blockName}:${record.rowIndex}:${changedField}`;
+    if (value === originalValue) {
+      record.dirtyFields.delete(changedField);
+      editor.dirtyFields.delete(dirtyKey);
+    } else {
+      record.dirtyFields.add(changedField);
+      editor.dirtyFields.add(dirtyKey);
+    }
+    interaction.tooltip?.querySelectorAll?.(`[data-diagram-definition-field="${changedField}"]`).forEach((candidate) => {
+      const candidateSection = candidate.closest?.("[data-diagram-definition-block]");
+      if (String(candidateSection?.getAttribute?.("data-diagram-definition-block") || "") === record.blockName
+          && Number(candidateSection?.getAttribute?.("data-diagram-definition-row-index") || 0) === record.rowIndex) {
+        candidate.value = value;
+      }
+    });
+  });
   interaction.definitionMessage = "";
   interaction.definitionMessageWarning = false;
   updateDiagramDefinitionSaveState(interaction);
@@ -7347,6 +7694,7 @@ async function saveDiagramDeviceDefinitionEdit(container) {
   if (!interaction || editor?.kind !== "device" || interaction.definitionSaving) return false;
   const updates = diagramDeviceDefinitionDirtyUpdates(editor);
   if (!updates.length) return false;
+  const closeAfterSave = Boolean(interaction.definitionCloseAfterSave);
   interaction.definitionSaving = true;
   interaction.definitionMessage = `正在更新 ${updates.length} 个参数块并保存人工覆盖层`;
   interaction.definitionMessageWarning = false;
@@ -7374,26 +7722,47 @@ async function saveDiagramDeviceDefinitionEdit(container) {
         ?? revision,
       );
       completed += 1;
-      resultWarning = definitionEditResultHasWarning(result) || resultWarning;
+      const updateWarning = definitionEditResultHasWarning(result);
+      resultWarning = updateWarning || resultWarning;
+      interaction.definitionMessageWarning = resultWarning;
       if (result?.warning) warningMessage = result.warning;
       runtimeControlUpdated = Boolean(result?.runtime_control) || runtimeControlUpdated;
+      const savedRecord = (editor.records || []).find((record) => (
+        record.blockName === update.blockName && Number(record.rowIndex) === Number(update.rowIndex)
+      ));
+      Object.keys(update.changes).forEach((field) => {
+        if (!savedRecord || updateWarning) return;
+        savedRecord.original[field] = savedRecord.draft[field];
+        savedRecord.dirtyFields.delete(field);
+        editor.dirtyFields.delete(`${savedRecord.blockName}:${savedRecord.rowIndex}:${field}`);
+      });
+      editor.revision = revision;
     }
     interaction.snapshot = state.snapshot;
-    interaction.definitionEditor = null;
     interaction.definitionSaving = false;
+    interaction.definitionLeavePrompt = false;
+    interaction.definitionCloseAfterSave = false;
+    if (resultWarning) {
+      interaction.definitionMessage = warningMessage || `${completed} 个参数块已更新，但人工覆盖层保存未完成，请重试`;
+      interaction.definitionMessageWarning = true;
+      renderActiveDiagramTooltip(container, state.snapshot || {}, interaction);
+      return false;
+    }
+    interaction.definitionEditor = null;
     interaction.definitionMessage = resultWarning
       ? (warningMessage || `${completed} 个参数块已更新，但人工覆盖层需要重试`)
       : (runtimeControlUpdated
-        ? `${completed} 个参数块及运行控制覆盖已保存`
+        ? `${completed} 个参数块及运行控制覆盖已接收，等待下一轮潮流计算执行`
         : `${completed} 个参数块的人工覆盖已保存`);
     interaction.definitionMessageWarning = resultWarning;
     interaction.tooltip?.classList.remove("is-editing-definition");
-    renderActiveDiagramTooltip(container, state.snapshot || {}, interaction);
+    if (closeAfterSave) hideDiagramTooltip(container);
+    else renderActiveDiagramTooltip(container, state.snapshot || {}, interaction);
     return true;
   } catch (error) {
     interaction.snapshot = state.snapshot;
-    interaction.definitionEditor = null;
     interaction.definitionSaving = false;
+    interaction.definitionCloseAfterSave = false;
     interaction.definitionMessage = completed
       ? `已保存 ${completed}/${updates.length} 个参数块；后续保存失败：${apiErrorText(error)}`
       : apiErrorText(error);
@@ -7469,7 +7838,11 @@ function syncDiagramTooltipSections(body, sections = []) {
       const description = rowElement.querySelector("dd");
       const inlineInput = description?.querySelector("[data-diagram-tooltip-inline-input]");
       if (term) term.textContent = label;
-      if (description && !inlineInput) description.textContent = diagramTooltipValue(value);
+      if (description && !inlineInput) {
+        description.textContent = binding
+          ? diagramDefinitionDisplayValue(binding.field, value)
+          : diagramTooltipValue(value);
+      }
       if (!inlineInput) {
         rowElement.className = `diagram-tooltip-row${binding?.editable ? " is-editable" : ""}`;
         if (binding) {
@@ -8227,6 +8600,8 @@ function beginDiagramMeasurementDefinitionEdit(container) {
     validationError: "",
   };
   interaction.definitionSaving = false;
+  interaction.definitionLeavePrompt = false;
+  interaction.definitionCloseAfterSave = false;
   interaction.definitionMessage = "";
   interaction.definitionMessageWarning = false;
   interaction.tooltip?.classList.add("is-editing-definition");
@@ -8242,8 +8617,15 @@ function updateDiagramMeasurementDefinitionDraft(interaction, input) {
   editor.draft[field] = String(input.value ?? "");
   if (field === "errorSigma" || field === "weight") {
     syncDiagramMeasurementDefinitionFields(editor, field);
-    editor.dirtyFields.add("errorSigma");
-    editor.dirtyFields.add("weight");
+    ["errorSigma", "weight"].forEach((pairedField) => {
+      if (diagramDefinitionPendingValuesEqual(
+        pairedField,
+        editor.original[pairedField],
+        editor.draft[pairedField],
+        "measurement",
+      )) editor.dirtyFields.delete(pairedField);
+      else editor.dirtyFields.add(pairedField);
+    });
     const counterpartField = field === "errorSigma" ? "weight" : "errorSigma";
     const counterpart = interaction.tooltip?.querySelector(`[data-diagram-measurement-definition-field="${counterpartField}"]`);
     if (counterpart) counterpart.value = editor.draft[counterpartField];
@@ -8289,9 +8671,13 @@ async function saveDiagramMeasurementDefinitionEdit(container) {
   if (!interaction || editor?.kind !== "measurement" || interaction.definitionSaving) return false;
   const validation = syncDiagramMeasurementDefinitionFields(editor);
   if (!validation.valid || !editor.dirtyFields.size) {
+    interaction.definitionLeavePrompt = false;
+    interaction.definitionCloseAfterSave = false;
     updateDiagramDefinitionSaveState(interaction);
+    renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
     return false;
   }
+  const closeAfterSave = Boolean(interaction.definitionCloseAfterSave);
   interaction.definitionSaving = true;
   interaction.definitionMessage = "正在更新后台定义并保存人工覆盖层";
   interaction.definitionMessageWarning = false;
@@ -8317,19 +8703,38 @@ async function saveDiagramMeasurementDefinitionEdit(container) {
       }),
     });
     applyDefinitionEditResult(result);
+    editor.revision = Number(
+      result?.revision
+      ?? result?.static_meta?.definitions?.revision
+      ?? editor.revision,
+    );
     interaction.snapshot = state.snapshot;
-    interaction.definitionEditor = null;
     interaction.definitionSaving = false;
+    interaction.definitionLeavePrompt = false;
+    interaction.definitionCloseAfterSave = false;
     const resultWarning = definitionEditResultHasWarning(result);
+    interaction.definitionMessageWarning = resultWarning;
+    if (resultWarning) {
+      interaction.definitionSaving = false;
+      interaction.definitionLeavePrompt = false;
+      interaction.definitionCloseAfterSave = false;
+      interaction.definitionMessage = result.warning || "后台定义已更新，但人工覆盖层保存未完成，请重试";
+      interaction.definitionMessageWarning = true;
+      renderActiveDiagramTooltip(container, state.snapshot || {}, interaction);
+      return false;
+    }
+    interaction.definitionEditor = null;
     interaction.definitionMessage = resultWarning
       ? (result.warning || "后台定义已更新，但人工覆盖层保存未完成，请重试")
       : "后台定义及人工覆盖层已保存";
     interaction.definitionMessageWarning = resultWarning;
     interaction.tooltip?.classList.remove("is-editing-definition");
-    renderActiveDiagramTooltip(container, state.snapshot || {}, interaction);
+    if (closeAfterSave) hideDiagramTooltip(container);
+    else renderActiveDiagramTooltip(container, state.snapshot || {}, interaction);
     return true;
   } catch (error) {
     interaction.definitionSaving = false;
+    interaction.definitionCloseAfterSave = false;
     interaction.definitionMessage = apiErrorText(error);
     interaction.definitionMessageWarning = true;
     renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
@@ -8339,6 +8744,15 @@ async function saveDiagramMeasurementDefinitionEdit(container) {
 
 function renderDiagramMetricTooltip(container, hover, snapshot, interaction) {
   const data = diagramMetricTooltipData(container, hover, snapshot, interaction);
+  const leavePrompt = renderDiagramDefinitionLeavePrompt(interaction);
+  if (leavePrompt) {
+    return `
+      <div class="diagram-tooltip-head">
+        <strong data-diagram-tooltip-device-name>${escapeHtml(data.deviceName)}</strong>
+        <span>${escapeHtml(data.metricLabel)}</span>
+      </div>
+      <div class="diagram-metric-current">${leavePrompt}</div>`;
+  }
   const editor = interaction?.definitionEditor?.kind === "measurement"
     && interaction.definitionEditor.name === data.measurementName
     ? interaction.definitionEditor
@@ -8474,9 +8888,25 @@ function hideDiagramTooltip(container) {
 function scheduleDiagramTooltipHide(container) {
   const interaction = diagramInteractionCache.get(container);
   if (!interaction) return;
-  if (diagramDefinitionEditPinned(interaction)) return;
   clearDiagramTooltipHide(interaction);
-  interaction.hideTimer = setTimeout(() => hideDiagramTooltip(container), DIAGRAM_TOOLTIP_HIDE_DELAY_MS);
+  interaction.hideTimer = setTimeout(() => {
+    interaction.hideTimer = null;
+    if (interaction.definitionSaving || interaction.definitionLeavePrompt) return;
+    if (!interaction.definitionEditor) {
+      hideDiagramTooltip(container);
+      return;
+    }
+    if (!diagramDefinitionEditorPendingChanges(interaction.definitionEditor).length) {
+      interaction.definitionEditor = null;
+      interaction.definitionCloseAfterSave = false;
+      interaction.tooltip?.classList.remove("is-editing-definition");
+      hideDiagramTooltip(container);
+      return;
+    }
+    interaction.definitionLeavePrompt = true;
+    interaction.definitionCloseAfterSave = false;
+    renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
+  }, DIAGRAM_TOOLTIP_HIDE_DELAY_MS);
 }
 
 function renderActiveDiagramTooltip(container, snapshot, interaction) {
@@ -8541,6 +8971,8 @@ function resetDiagramInteractions(container) {
     interaction.trendNavigationRange = null;
     interaction.definitionEditor = null;
     interaction.definitionSaving = false;
+    interaction.definitionLeavePrompt = false;
+    interaction.definitionCloseAfterSave = false;
     interaction.definitionMessage = "";
     interaction.definitionMessageWarning = false;
     hideDiagramTrendCursor(interaction);
@@ -8832,6 +9264,34 @@ function initDiagramInteractions(container) {
   tooltip.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target : null;
     if (!target) return;
+    const leaveAction = target.closest("[data-diagram-definition-leave-action]");
+    if (leaveAction) {
+      clearDiagramTooltipHide(interaction);
+      const action = leaveAction.getAttribute("data-diagram-definition-leave-action") || "";
+      if (action === "save") {
+        interaction.definitionLeavePrompt = false;
+        interaction.definitionCloseAfterSave = true;
+        if (interaction.definitionEditor?.kind === "measurement") {
+          saveDiagramMeasurementDefinitionEdit(container);
+        } else {
+          saveDiagramDeviceDefinitionEdit(container);
+        }
+      } else if (action === "discard") {
+        interaction.definitionEditor = null;
+        interaction.definitionSaving = false;
+        interaction.definitionLeavePrompt = false;
+        interaction.definitionCloseAfterSave = false;
+        interaction.definitionMessage = "";
+        interaction.definitionMessageWarning = false;
+        interaction.tooltip?.classList.remove("is-editing-definition");
+        hideDiagramTooltip(container);
+      } else if (action === "continue") {
+        interaction.definitionLeavePrompt = false;
+        interaction.definitionCloseAfterSave = false;
+        renderActiveDiagramTooltip(container, interaction.snapshot || state.snapshot || {}, interaction);
+      }
+      return;
+    }
     const deviceTab = target.closest("[data-diagram-device-tab]");
     if (deviceTab) {
       clearDiagramTooltipHide(interaction);
@@ -11827,6 +12287,7 @@ function renderSnapshot(snapshot) {
   }
   renderModelSelector();
   renderClock(snapshot.clock);
+  renderPowerFlowFailureAlert(snapshot);
   state.systemParameters = snapshotSystemParameters(snapshot || {});
   const runId = Number(snapshot.clock?.run_id ?? 0);
   const stepCount = Number(snapshot.clock?.step_count ?? 0);

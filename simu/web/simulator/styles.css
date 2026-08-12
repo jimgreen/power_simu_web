@@ -1088,7 +1088,7 @@ body.is-vertical-splitter-dragging {
   --energy-edge-inset-y: clamp(10px, 3.5cqh, 28px);
   --energy-stack-gap: clamp(4px, 1.5cqh, 12px);
   --energy-list-gap: clamp(3px, 1.25cqh, 10px);
-  --energy-summary-top: clamp(40px, 17cqh, 140px);
+  --energy-summary-top: clamp(124px, 25cqh, 160px);
   --energy-storage-gap: clamp(34px, 14cqh, 112px);
   position: relative;
   width: min(100%, 1540px);

@@ -764,7 +764,7 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("--energy-edge-inset-y: clamp(10px, 3.5cqh, 28px);", energy_flow_block)
         self.assertIn("--energy-stack-gap: clamp(4px, 1.5cqh, 12px);", energy_flow_block)
         self.assertIn("--energy-list-gap: clamp(3px, 1.25cqh, 10px);", energy_flow_block)
-        self.assertIn("--energy-summary-top: clamp(40px, 17cqh, 140px);", energy_flow_block)
+        self.assertIn("--energy-summary-top: clamp(124px, 25cqh, 160px);", energy_flow_block)
         self.assertIn("--energy-storage-gap: clamp(34px, 14cqh, 112px);", energy_flow_block)
         self.assertIn("min-height: 0;", energy_board_block)
         self.assertIn("place-items: center;", energy_board_block)

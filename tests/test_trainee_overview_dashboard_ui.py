@@ -707,7 +707,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("--energy-edge-inset-y: clamp(10px, 3.5cqh, 28px);", flow_block)
         self.assertIn("--energy-stack-gap: clamp(4px, 1.5cqh, 12px);", flow_block)
         self.assertIn("--energy-list-gap: clamp(3px, 1.25cqh, 10px);", flow_block)
-        self.assertIn("--energy-summary-top: clamp(40px, 17cqh, 140px);", flow_block)
+        self.assertIn("--energy-summary-top: clamp(124px, 25cqh, 160px);", flow_block)
         self.assertIn("--energy-storage-gap: clamp(34px, 14cqh, 112px);", flow_block)
         self.assertIn("gap: var(--energy-stack-gap);", source_stack_block)
         self.assertIn("gap: var(--energy-stack-gap);", terminal_stack_block)

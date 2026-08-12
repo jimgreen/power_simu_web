@@ -6920,6 +6920,12 @@ const DIAGRAM_DEFINITION_FIELD_LABELS = Object.freeze({
   e2h_coeff: "电-气效率 (Nm3/kWh)",
   h2e_coeff: "气-电效率 (kWh/Nm3)",
 });
+const DIAGRAM_HYDROGEN_CONVERSION_BLOCKS = new Set([
+  "AcE2Hydro",
+  "DcE2Hydro",
+  "Hydro2AcE",
+  "Hydro2DcE",
+]);
 
 function diagramDefinitionFieldLabel(field) {
   const name = String(field || "").trim().toLowerCase();
@@ -6933,6 +6939,13 @@ function diagramDefinitionControlModeValue(value) {
     FLOW: "定气流量 (FLOW)",
     PRESSURE: "定压力 (PRESSURE)",
   })[token] || diagramTooltipValue(value);
+}
+
+function diagramDefinitionControlModeOptions(record, field) {
+  if (String(field || "").trim().toLowerCase() !== "control_type") return [];
+  return DIAGRAM_HYDROGEN_CONVERSION_BLOCKS.has(String(record?.blockName || ""))
+    ? ["P", "FLOW"]
+    : [];
 }
 
 function diagramDefinitionSocField(field) {
@@ -7053,6 +7066,36 @@ function renderDiagramDeviceDefinitionValueRow(record, field, activeEditor, inte
           data-diagram-tooltip-value="${escapeHtml(key)}"
           ${fieldEditable ? 'data-diagram-definition-editable="device"' : ""}
         >${escapeHtml(diagramDefinitionDisplayValue(field, record.row[field]))}</dd>
+      </div>`;
+  }
+  const controlModeOptions = diagramDefinitionControlModeOptions(record, field);
+  if (controlModeOptions.length) {
+    const currentMode = String(activeEditor.draft[field] || "").trim().toUpperCase();
+    const currentModeValid = controlModeOptions.includes(currentMode);
+    return `
+      <div class="diagram-tooltip-row is-editing-definition" data-diagram-tooltip-row="${escapeHtml(key)}">
+        <dt>${escapeHtml(diagramDefinitionFieldLabel(field))}</dt>
+        <dd data-diagram-definition-value="${escapeHtml(key)}">
+          <select
+            class="diagram-definition-input"
+            data-diagram-tooltip-inline-input
+            data-diagram-definition-input="device"
+            data-diagram-definition-control-mode
+            data-diagram-definition-field="${escapeHtml(field)}"
+            ${interaction?.definitionSaving ? "disabled" : ""}
+          >
+            ${currentModeValid ? "" : `
+              <option value="" selected disabled>
+                ${escapeHtml(`无效模式 (${currentMode || "空"})，请选择`)}
+              </option>
+            `}
+            ${controlModeOptions.map((mode) => `
+              <option value="${mode}" ${currentMode === mode ? "selected" : ""}>
+                ${escapeHtml(diagramDefinitionControlModeValue(mode))}
+              </option>
+            `).join("")}
+          </select>
+        </dd>
       </div>`;
   }
   const descriptor = diagramDefinitionInputDescriptor(field, activeEditor.draft[field]);
@@ -10703,6 +10746,9 @@ const OVERVIEW_FLOW_GROUP_DEFINITIONS = [
   { key: "dcSolar", category: "generation", region: "dc", color: "#2f9e62" },
   { key: "dcGridFollowingStorage", category: "storage", region: "dc", color: "#2f9e62" },
   { key: "dcLoad", category: "load", region: "dc", color: "#bd5656" },
+  { key: "fuelCell", category: "fuelCell", region: "hydrogen", color: "#16856a" },
+  { key: "hydrogenStorage", category: "hydrogenStorage", region: "hydrogen", color: "#287ea0" },
+  { key: "electrolyzer", category: "electrolyzer", region: "hydrogen", color: "#b56a22" },
   { key: "dcGridFormingStorage", category: "storage", region: "forming", color: "#2f9e62" },
   { key: "acGridFormingStorage", category: "storage", region: "forming", color: "#2f9e62" },
   { key: "acdcConverter", category: "converter", region: "bridge", color: "#0a8b8b" },
@@ -10725,6 +10771,8 @@ const OVERVIEW_FLOW_STATUS_LABELS = {
   retired: "退运",
   deadIsland: "死岛",
   unmeasured: "待量测",
+  storingHydrogen: "储气",
+  releasingHydrogen: "供气",
 };
 
 function overviewFallbackFlowGroups(power) {
@@ -10746,7 +10794,7 @@ function overviewFlowState(category, power) {
       ? { status: "discharge", flowDirection: "toBus" }
       : { status: "charge", flowDirection: "fromBus" };
   }
-  if (category === "load") {
+  if (category === "load" || category === "electrolyzer") {
     return power > 0
       ? { status: "consumption", flowDirection: "fromBus" }
       : { status: "generation", flowDirection: "toBus" };
@@ -10759,6 +10807,14 @@ function overviewFlowState(category, power) {
   return power > 0
     ? { status: "generation", flowDirection: "toBus" }
     : { status: "absorption", flowDirection: "fromBus" };
+}
+
+function overviewHydrogenStorageFlowState(gasFlow) {
+  if (!Number.isFinite(gasFlow)) return { status: "unmeasured", flowDirection: "idle" };
+  if (Math.abs(gasFlow) <= 1e-9) return { status: "idle", flowDirection: "idle" };
+  return gasFlow > 0
+    ? { status: "releasingHydrogen", flowDirection: "fromTank" }
+    : { status: "storingHydrogen", flowDirection: "toTank" };
 }
 
 function normalizeOverviewFlowGroups(rawGroups, power) {
@@ -10774,6 +10830,7 @@ function normalizeOverviewFlowGroups(rawGroups, power) {
       : {};
     const fallbackData = hasStructuredGroups ? {} : (fallback[definition.key] || {});
     const groupPower = powerSummaryNumber(data.power ?? fallbackData.power);
+    const gasFlow = powerSummaryNumber(data.gasFlow ?? fallbackData.gasFlow);
     const totalCountValue = Number(data.totalCount);
     const totalCount = Number.isFinite(totalCountValue)
       ? Math.max(0, Math.trunc(totalCountValue))
@@ -10782,8 +10839,10 @@ function normalizeOverviewFlowGroups(rawGroups, power) {
     const onlineCount = Number.isFinite(onlineCountValue)
       ? Math.max(0, Math.trunc(onlineCountValue))
       : totalCount;
-    const derived = overviewFlowState(definition.category, groupPower);
-    const flowDirection = ["toBus", "fromBus", "toAc", "toDc", "idle"].includes(data.flowDirection)
+    const derived = definition.category === "hydrogenStorage"
+      ? overviewHydrogenStorageFlowState(gasFlow)
+      : overviewFlowState(definition.category, groupPower);
+    const flowDirection = ["toBus", "fromBus", "toAc", "toDc", "toTank", "fromTank", "idle"].includes(data.flowDirection)
       ? data.flowDirection
       : derived.flowDirection;
     const status = String(data.status || derived.status);
@@ -10797,6 +10856,10 @@ function normalizeOverviewFlowGroups(rawGroups, power) {
       power: groupPower,
       targetPower: powerSummaryNumber(data.targetPower ?? fallbackData.targetPower),
       maxAvailablePower: powerSummaryNumber(data.maxAvailablePower ?? fallbackData.maxAvailablePower),
+      gasFlow,
+      targetGasFlow: powerSummaryNumber(data.targetGasFlow ?? fallbackData.targetGasFlow),
+      gasPressure: powerSummaryNumber(data.gasPressure ?? fallbackData.gasPressure),
+      gasQuantity: powerSummaryNumber(data.gasQuantity ?? fallbackData.gasQuantity),
       soc: powerSummaryNumber(data.soc ?? fallbackData.soc),
       totalCount,
       onlineCount,
@@ -10893,6 +10956,18 @@ function overviewPercentText(value) {
   return Number.isFinite(value) ? `${formatOverviewNumber(value)}%` : "--";
 }
 
+function overviewGasFlowText(value) {
+  return Number.isFinite(value) ? `${formatOverviewNumber(value)} Nm3/h` : "--";
+}
+
+function overviewGasPressureText(value) {
+  return Number.isFinite(value) ? `${formatOverviewNumber(value)} MPa` : "--";
+}
+
+function overviewGasQuantityText(value) {
+  return Number.isFinite(value) ? `${formatOverviewNumber(value)} Nm3` : "--";
+}
+
 function overviewGreenGroupPower(groups, key) {
   const group = groups?.[key];
   if (!group || group.present === false) return 0;
@@ -10903,11 +10978,12 @@ function overviewGreenMetrics(power = {}) {
   const groups = power.flowGroups || {};
   const dcLoadPower = overviewGreenGroupPower(groups, "dcLoad");
   const acLoadPower = overviewGreenGroupPower(groups, "acLoad");
+  const electrolyzerPower = overviewGreenGroupPower(groups, "electrolyzer");
   const dieselPower = overviewGreenGroupPower(groups, "diesel");
-  if ([dcLoadPower, acLoadPower, dieselPower].some((value) => value === null)) {
+  if ([dcLoadPower, acLoadPower, electrolyzerPower, dieselPower].some((value) => value === null)) {
     return { loadPower: null, greenPower: null, greenPowerShare: null };
   }
-  const loadPower = dcLoadPower + acLoadPower;
+  const loadPower = dcLoadPower + acLoadPower + electrolyzerPower;
   const greenPower = loadPower - dieselPower;
   return {
     loadPower,
@@ -10973,6 +11049,9 @@ function setOverviewFlowVisual(id, powerValue, maxPower, color) {
 function overviewFlowGroupMeta(group) {
   const status = OVERVIEW_FLOW_STATUS_LABELS[group.status] || "待量测";
   const count = `${group.onlineCount}/${group.totalCount} 台`;
+  if (["fuelCell", "electrolyzer", "hydrogenStorage"].includes(group.category)) {
+    return `${status} · 数量 ${count}`;
+  }
   if (group.category !== "storage") return `${status} · ${count}`;
   const soc = Number.isFinite(group.soc) ? `${formatOverviewNumber(group.soc)}%` : "--";
   return `${status} · SOC ${soc} · ${count}`;
@@ -10999,10 +11078,20 @@ function renderOverviewFlowGroups(power) {
     const powerNode = node.querySelector("[data-overview-power]");
     const targetNode = node.querySelector("[data-overview-target]");
     const maxAvailableNode = node.querySelector("[data-overview-max-available]");
+    const gasFlowNode = node.querySelector("[data-overview-gas-flow]");
+    const targetGasFlowNode = node.querySelector("[data-overview-target-gas-flow]");
+    const gasPressureNode = node.querySelector("[data-overview-gas-pressure]");
+    const gasQuantityNode = node.querySelector("[data-overview-gas-quantity]");
+    const socNode = node.querySelector("[data-overview-soc]");
     const metaNode = node.querySelector("[data-overview-meta]");
     if (powerNode) powerNode.textContent = overviewPowerText(group.power);
     if (targetNode) targetNode.textContent = overviewPowerText(group.targetPower);
     if (maxAvailableNode) maxAvailableNode.textContent = overviewPowerText(group.maxAvailablePower);
+    if (gasFlowNode) gasFlowNode.textContent = overviewGasFlowText(group.gasFlow);
+    if (targetGasFlowNode) targetGasFlowNode.textContent = overviewGasFlowText(group.targetGasFlow);
+    if (gasPressureNode) gasPressureNode.textContent = overviewGasPressureText(group.gasPressure);
+    if (gasQuantityNode) gasQuantityNode.textContent = overviewGasQuantityText(group.gasQuantity);
+    if (socNode) socNode.textContent = overviewPercentText(group.soc);
     if (metaNode) metaNode.textContent = overviewFlowGroupMeta(group);
     const tooltipParts = [
       node.querySelector("span")?.textContent || "设备",
@@ -11011,6 +11100,16 @@ function renderOverviewFlowGroups(power) {
     ];
     if (["dcWind", "dcSolar", "acWind", "acSolar"].includes(definition.key)) {
       tooltipParts.push(`最大可发 ${overviewPowerText(group.maxAvailablePower)}`);
+    }
+    if (["fuelCell", "electrolyzer"].includes(definition.key)) {
+      tooltipParts.push(`气流实时 ${overviewGasFlowText(group.gasFlow)}`);
+      tooltipParts.push(`气流目标 ${overviewGasFlowText(group.targetGasFlow)}`);
+    }
+    if (definition.key === "hydrogenStorage") {
+      tooltipParts.push(`气流量 ${overviewGasFlowText(group.gasFlow)}`);
+      tooltipParts.push(`储气压力 ${overviewGasPressureText(group.gasPressure)}`);
+      tooltipParts.push(`储气量 ${overviewGasQuantityText(group.gasQuantity)}`);
+      tooltipParts.push(`SOC ${overviewPercentText(group.soc)}`);
     }
     tooltipParts.push(overviewFlowGroupMeta(group));
     node.title = tooltipParts.join(" · ");
@@ -11032,9 +11131,67 @@ function renderOverviewFlowGroups(power) {
   const formingStack = $("overviewGridFormingStack");
   if (formingStack) formingStack.hidden = !visibleGroups.some((group) => group.region === "forming");
 
+  const hydrogenLinkState = (name, group, value, maxValue, direction, color, present) => {
+    const link = document.querySelector(`[data-hydrogen-link="${name}"]`);
+    if (!link) return;
+    link.hidden = !present;
+    link.dataset.flowDirection = direction;
+    setOverviewFlowVisualElement(link, value, maxValue, color);
+  };
+  const fuelCellGroup = groups.fuelCell;
+  const hydrogenStorageGroup = groups.hydrogenStorage;
+  const electrolyzerGroup = groups.electrolyzer;
+  const maxHydrogenPower = Math.max(
+    1,
+    overviewFlowPowerValue(fuelCellGroup?.power),
+    overviewFlowPowerValue(electrolyzerGroup?.power),
+  );
+  const maxHydrogenFlow = Math.max(
+    1,
+    overviewFlowPowerValue(fuelCellGroup?.gasFlow),
+    overviewFlowPowerValue(electrolyzerGroup?.gasFlow),
+    overviewFlowPowerValue(hydrogenStorageGroup?.gasFlow),
+  );
+  hydrogenLinkState(
+    "fuel-cell-electric",
+    fuelCellGroup,
+    fuelCellGroup?.power,
+    maxHydrogenPower,
+    Number(fuelCellGroup?.power) >= 0 ? "left" : "right",
+    "#16856a",
+    Boolean(fuelCellGroup?.present),
+  );
+  hydrogenLinkState(
+    "fuel-cell-gas",
+    fuelCellGroup,
+    fuelCellGroup?.gasFlow,
+    maxHydrogenFlow,
+    Number(fuelCellGroup?.gasFlow) >= 0 ? "left" : "right",
+    "#287ea0",
+    Boolean(fuelCellGroup?.present && hydrogenStorageGroup?.present),
+  );
+  hydrogenLinkState(
+    "electrolyzer-gas",
+    electrolyzerGroup,
+    electrolyzerGroup?.gasFlow,
+    maxHydrogenFlow,
+    Number(electrolyzerGroup?.gasFlow) >= 0 ? "left" : "right",
+    "#287ea0",
+    Boolean(electrolyzerGroup?.present && hydrogenStorageGroup?.present),
+  );
+  hydrogenLinkState(
+    "electrolyzer-electric",
+    electrolyzerGroup,
+    electrolyzerGroup?.power,
+    maxHydrogenPower,
+    Number(electrolyzerGroup?.power) >= 0 ? "left" : "right",
+    "#b56a22",
+    Boolean(electrolyzerGroup?.present),
+  );
+
   const converterGroup = groups.acdcConverter;
   const aggregateTrunkPower = visibleGroups
-    .filter((group) => !["load", "converter"].includes(group.category))
+    .filter((group) => !["load", "converter", "electrolyzer", "hydrogenStorage"].includes(group.category))
     .reduce((total, group) => total + overviewFlowPowerValue(group.power), 0);
   const trunkPower = converterGroup?.present && Number.isFinite(converterGroup.power)
     ? converterGroup.power

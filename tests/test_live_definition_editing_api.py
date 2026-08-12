@@ -44,6 +44,38 @@ class LiveDefinitionEditingApiTest(unittest.TestCase):
         self.addCleanup(workspace.cleanup)
         return manager
 
+    def _make_hydrogen_manager(self):
+        workspace = tempfile.TemporaryDirectory()
+        root = Path(workspace.name)
+        source = root / "hydrogen"
+        shutil.copytree(FIXTURE, source)
+        model_file = source / "model.e"
+        model_file.write_text(
+            model_file.read_text(encoding="utf-8")
+            + """
+<HydroNode>
+@ idx name pressure run_stat
+# 1 h2_bus 3.5 1
+</HydroNode>
+<HydroSource>
+@ idx name node control_type flow_set run_stat
+# 1 electrolyzer_h2 1 FLOW 2.4 1
+</HydroSource>
+<AcE2Hydro>
+@ idx name run_stat control_type idx_ac_load_t1 idx_h2_unit_t2 e2h_coeff
+# 1 electrolyzer 1 P 1 1 0.2
+</AcE2Hydro>
+""",
+            encoding="utf-8",
+        )
+        manager = MultiModelSimulator(
+            [SimulationModelSpec("hydrogen", source, "Hydrogen")],
+            root / "runtime",
+            kernel=lambda _config: None,
+        )
+        self.addCleanup(workspace.cleanup)
+        return manager
+
     def _post(self, base: str, path: str, payload: dict):
         request = Request(
             f"{base}{path}",
@@ -94,6 +126,41 @@ class LiveDefinitionEditingApiTest(unittest.TestCase):
         self.assertEqual(result["static_meta"]["definitions"]["revision"], result["revision"])
         self.assertEqual(first.clock.state, "running")
         self.assertEqual(second.definition_snapshot.revision, second_before)
+
+    def test_hydrogen_coupling_mode_is_canonicalized_and_rejects_non_p_flow_values(self):
+        manager = self._make_hydrogen_manager()
+        service = manager.service_for("hydrogen")
+        base = self._serve(manager)
+
+        status, result = self._post(
+            base,
+            "/api/definitions/device-parameters",
+            {
+                "model_id": "hydrogen",
+                "block_name": "AcE2Hydro",
+                "row_key": {"name": "electrolyzer", "idx": "1"},
+                "revision": service.definition_snapshot.revision,
+                "changes": {"control_type": "flow"},
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(result["record"]["control_type"], "FLOW")
+        with self.assertRaises(HTTPError) as raised:
+            self._post(
+                base,
+                "/api/definitions/device-parameters",
+                {
+                    "model_id": "hydrogen",
+                    "block_name": "AcE2Hydro",
+                    "row_key": {"name": "electrolyzer", "idx": "1"},
+                    "revision": result["revision"],
+                    "changes": {"control_type": "PQ"},
+                },
+            )
+        self.assertEqual(raised.exception.code, 400)
+        error = json.loads(raised.exception.read().decode("utf-8"))
+        self.assertIn("P or FLOW", error["error"])
 
     def test_device_route_updates_runtime_control_books_and_live_values(self):
         manager = self._make_manager()

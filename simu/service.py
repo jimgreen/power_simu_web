@@ -66,6 +66,7 @@ from simu.device_roles import (
 )
 from simu.device_runtime_frame import compact_device_runtime_frame
 from simu.model_semantics import (
+    HYDROGEN_CONVERSION_BLOCKS,
     device_family_from_block,
     energy_coupling_control_bindings,
     grid_converter_keys,
@@ -73,6 +74,7 @@ from simu.model_semantics import (
     resource_keys_by_alias,
     resources_by_device_key,
     structured_resources,
+    normalize_hydrogen_conversion_control_mode,
     terminal_domains_from_block,
 )
 from simu.measurement_delta import (
@@ -4216,6 +4218,8 @@ class PolarMicrogridSimulator:
             "diesel": ("P_GEN", "P", "P_AC", "P_TO", "P_FROM"),
             "load": ("P_LOAD", "P", "P_AC", "P_TO", "P_FROM"),
             "storage": ("P", "P_GEN", "P_FROM", "P_TO"),
+            "fuelCell": ("P", "P_GEN", "P_DC", "P_AC"),
+            "electrolyzer": ("P", "P_LOAD", "P_AC", "P_DC"),
         }
         for meas_type in preferences.get(category, ("P",)):
             if meas_type in values:
@@ -4382,6 +4386,24 @@ class PolarMicrogridSimulator:
                     if name:
                         effective_rows[(str(block_name), name)] = row
 
+        model_rows_by_key: Dict[Tuple[str, str], Mapping[str, Any]] = {}
+        for block_name, block in model_book.data.items():
+            for row in getattr(block, "data", []):
+                name = str(row.get("name", "")).strip()
+                if name:
+                    model_rows_by_key[(str(block_name), name)] = row
+        coupling_bindings = energy_coupling_control_bindings(model_book)
+        coupling_electric_endpoints = {
+            (
+                str(binding.get("target_dev_type", "")),
+                str(binding.get("target_dev_name", "")),
+            )
+            for bindings in coupling_bindings.values()
+            for binding in bindings
+            if str(binding.get("target_dev_type", ""))
+            in {"ACGenerator", "DCGenerator", "ACLoad", "DCLoad"}
+        }
+
         weather = simu_loop._weather_values_from_book(self.weather_book)
 
         def is_grid_forming(side: str, mode: str) -> bool:
@@ -4432,6 +4454,40 @@ class PolarMicrogridSimulator:
                     if value is not None:
                         return field, float(value)
             return None
+
+        def endpoint_target_value(
+            bindings: Sequence[Mapping[str, Any]],
+            set_type: str,
+        ) -> Optional[float]:
+            binding = next(
+                (
+                    item
+                    for item in bindings
+                    if str(item.get("target_set_type", item.get("set_type", "")))
+                    == set_type
+                ),
+                None,
+            )
+            if binding is None:
+                return None
+            target_key = (
+                str(binding.get("target_dev_type", "")),
+                str(binding.get("target_dev_name", "")),
+            )
+            active_value = active_adjustment_values.get(
+                (target_key[0], target_key[1], set_type)
+            )
+            if active_value is not None:
+                return float(active_value)
+            effective_row = effective_rows.get(target_key)
+            value = _to_float((effective_row or {}).get(set_type), None)
+            if value is not None:
+                return float(value)
+            value = _to_float(set_values.get(target_key, {}).get(set_type), None)
+            if value is not None:
+                return float(value)
+            value = _to_float(model_rows_by_key.get(target_key, {}).get(set_type), None)
+            return float(value) if value is not None else None
 
         def target_power(
             dev_type: str,
@@ -4595,6 +4651,8 @@ class PolarMicrogridSimulator:
         )
         for dev_type, native_side, row, category, parameter in classified_generators:
             name = str(row.get("name", "")).strip()
+            if (dev_type, name) in coupling_electric_endpoints:
+                continue
             side = connection_sides.get((dev_type, name), native_side)
             canonical = self._canonical_power_device_name(category, name)
             mode = str(
@@ -4682,10 +4740,96 @@ class PolarMicrogridSimulator:
                     }
                 )
 
+        hydrogen_conversion_specs = (
+            ("Hydro2AcE", "fuelCell", "ac", "fuelCell"),
+            ("Hydro2DcE", "fuelCell", "dc", "fuelCell"),
+            ("AcE2Hydro", "electrolyzer", "ac", "electrolyzer"),
+            ("DcE2Hydro", "electrolyzer", "dc", "electrolyzer"),
+        )
+        for dev_type, category, side, group_key in hydrogen_conversion_specs:
+            for row in block_rows(dev_type):
+                name = str(row.get("name", "")).strip()
+                bindings = coupling_bindings.get((dev_type, name), ())
+                if not name or not bindings:
+                    continue
+                identity = (group_key, f"{dev_type}\0{name}")
+                if identity in seen_profiles:
+                    continue
+                seen_profiles.add(identity)
+                run_stat, dead_island = operating_state(dev_type, name, category, row)
+                profiles.append(
+                    {
+                        "dev_type": dev_type,
+                        "dev_name": name,
+                        "canonical_name": name,
+                        "category": category,
+                        "side": side,
+                        "control_mode": str(row.get("control_type", "")),
+                        "group_key": group_key,
+                        "run_stat": run_stat,
+                        "dead_island": dead_island,
+                        "online": run_stat != 0 and not dead_island,
+                        "capacity": None,
+                        "state_keys": [(dev_type, name)],
+                        "measurement_keys": [
+                            (dev_type, name),
+                            *[
+                                (
+                                    str(binding.get("target_dev_type", "")),
+                                    str(binding.get("target_dev_name", "")),
+                                )
+                                for binding in bindings
+                            ],
+                        ],
+                        "target_power": endpoint_target_value(bindings, "p_set"),
+                        "target_gas_flow": endpoint_target_value(bindings, "flow_set"),
+                        "max_available_power": None,
+                    }
+                )
+
+        for row in block_rows("HydroStorage"):
+            name = str(row.get("name", "")).strip()
+            if not name:
+                continue
+            identity = ("hydrogenStorage", name)
+            if identity in seen_profiles:
+                continue
+            seen_profiles.add(identity)
+            run_stat, dead_island = operating_state(
+                "HydroStorage",
+                name,
+                "hydrogenStorage",
+                row,
+            )
+            capacity = _to_float(row.get("capacity"), None)
+            profiles.append(
+                {
+                    "dev_type": "HydroStorage",
+                    "dev_name": name,
+                    "canonical_name": name,
+                    "category": "hydrogenStorage",
+                    "side": "hydrogen",
+                    "control_mode": "",
+                    "group_key": "hydrogenStorage",
+                    "run_stat": run_stat,
+                    "dead_island": dead_island,
+                    "online": run_stat != 0 and not dead_island,
+                    "capacity": (
+                        float(capacity)
+                        if capacity is not None and capacity > 0.0
+                        else None
+                    ),
+                    "state_keys": [("HydroStorage", name)],
+                    "target_power": None,
+                    "target_gas_flow": None,
+                    "max_available_power": None,
+                }
+            )
+
         for dev_type, side in (("ACLoad", "ac"), ("DCLoad", "dc")):
             for row in block_rows(dev_type):
                 name = str(row.get("name", "")).strip()
-                if not name:
+                if not name or (dev_type, name) in coupling_electric_endpoints:
                     continue
                 group_key = flow_group_key("load", side)
                 identity = (group_key, name)
@@ -4732,6 +4876,14 @@ class PolarMicrogridSimulator:
             canonical = str(profile.get("canonical_name", dev_name))
             group_key = str(profile.get("group_key", ""))
             by_measurement[(dev_type, dev_name)] = profile
+            for measurement_type, measurement_name in profile.get(
+                "measurement_keys",
+                (),
+            ):
+                by_measurement.setdefault(
+                    (str(measurement_type), str(measurement_name)),
+                    profile,
+                )
             by_category_name[(category, canonical)] = profile
             by_power_key[(category, canonical, group_key)] = profile
             if category == "storage":
@@ -4749,16 +4901,28 @@ class PolarMicrogridSimulator:
                 return "deadIsland", "idle"
             if retired_count:
                 return "retired", "idle"
+        category = str(group.get("category", ""))
+        if category == "hydrogenStorage":
+            gas_flow = group.get("gasFlow")
+            if gas_flow is None:
+                return "unmeasured", "idle"
+            gas_flow_value = float(gas_flow)
+            if abs(gas_flow_value) <= 1e-9:
+                return "idle", "idle"
+            return (
+                ("releasingHydrogen", "fromTank")
+                if gas_flow_value > 0.0
+                else ("storingHydrogen", "toTank")
+            )
         power = group.get("power")
         if power is None:
             return "unmeasured", "idle"
         power_value = float(power)
         if abs(power_value) <= 1e-9:
             return "idle", "idle"
-        category = str(group.get("category", ""))
         if category == "storage":
             return ("discharge", "toBus") if power_value > 0 else ("charge", "fromBus")
-        if category == "load":
+        if category in {"load", "electrolyzer"}:
             return ("consumption", "fromBus") if power_value > 0 else ("generation", "toBus")
         if category == "converter":
             return ("dcToAc", "toAc") if power_value > 0 else ("acToDc", "toDc")
@@ -4778,6 +4942,10 @@ class PolarMicrogridSimulator:
         measured_converter_power_by_key: Dict[Tuple[str, str], float] = {}
         converter_dc_terminal_power_by_key: Dict[Tuple[str, str], float] = {}
         converter_power_values_by_key: Dict[Tuple[str, str], Dict[str, float]] = {}
+        hydrogen_measurements_by_device: Dict[
+            Tuple[str, str, str],
+            Dict[str, float],
+        ] = {}
 
         for item in realtime_measurements:
             if int(_to_float(item.get("valid"), 1) or 0) != 1:
@@ -4805,6 +4973,15 @@ class PolarMicrogridSimulator:
                 canonical_name = str(profile.get("canonical_name", dev_name))
                 soc_by_storage[canonical_name] = value
                 continue
+            if category in {"fuelCell", "electrolyzer", "hydrogenStorage"}:
+                canonical_name = str(profile.get("canonical_name", dev_name))
+                group_key = str(profile.get("group_key", ""))
+                hydrogen_measurements_by_device.setdefault(
+                    (category, canonical_name, group_key),
+                    {},
+                )[meas_type] = value
+                if category == "hydrogenStorage" or not meas_type.startswith("P"):
+                    continue
             if not meas_type.startswith("P"):
                 continue
             if not category:
@@ -4841,11 +5018,16 @@ class PolarMicrogridSimulator:
             "diesel": 0,
             "load": 0,
             "storage": 0,
+            "fuelCell": 0,
+            "electrolyzer": 0,
+            "hydrogenStorage": 0,
             "greenPowerConverter": len(measured_converter_power_by_key),
         }
         storage_generation = 0.0
         storage_charge = 0.0
         storage_total = 0.0
+        fuel_cell_generation = 0.0
+        electrolyzer_consumption = 0.0
         measured_group_devices: Dict[str, set[Tuple[str, str]]] = {}
         group_power_totals: Dict[str, float] = {}
         for (category, dev_name, group_key), values in power_by_device.items():
@@ -4862,6 +5044,10 @@ class PolarMicrogridSimulator:
                     storage_generation += power
                 else:
                     storage_charge += -power
+            elif category == "fuelCell":
+                fuel_cell_generation += power
+            elif category == "electrolyzer":
+                electrolyzer_consumption += power
             else:
                 totals[category] += power
 
@@ -4888,13 +5074,33 @@ class PolarMicrogridSimulator:
         soc_values = [value * 100.0 if abs(value) <= 2.0 else value for value in soc_by_storage.values()]
         soc_average = sum(soc_values) / len(soc_values) if soc_values else None
         soc_total = sum(soc_by_storage.values()) if soc_values else None
-        has_power = any(counts[key] for key in ("wind", "pv", "diesel", "load", "storage"))
-        generation_total = totals["wind"] + totals["pv"] + totals["diesel"] + storage_generation
-        consumption_total = totals["load"] + storage_charge
+        has_power = any(
+            counts[key]
+            for key in (
+                "wind",
+                "pv",
+                "diesel",
+                "load",
+                "storage",
+                "fuelCell",
+                "electrolyzer",
+            )
+        )
+        load_total = totals["load"] + electrolyzer_consumption
+        generation_total = (
+            totals["wind"]
+            + totals["pv"]
+            + totals["diesel"]
+            + storage_generation
+            + fuel_cell_generation
+        )
+        consumption_total = load_total + storage_charge
         power_difference = generation_total - consumption_total
         flow_groups: Dict[str, Dict[str, Any]] = {}
         group_target_totals: Dict[str, float] = {}
         group_target_counts: Dict[str, int] = {}
+        group_target_gas_flow_totals: Dict[str, float] = {}
+        group_target_gas_flow_counts: Dict[str, int] = {}
         group_available_totals: Dict[str, float] = {}
         group_available_counts: Dict[str, int] = {}
         for profile in profiles:
@@ -4915,6 +5121,10 @@ class PolarMicrogridSimulator:
                     "power": None,
                     "targetPower": None,
                     "maxAvailablePower": None,
+                    "gasFlow": None,
+                    "targetGasFlow": None,
+                    "gasPressure": None,
+                    "gasQuantity": None,
                     "soc": None,
                     "totalCount": 0,
                     "onlineCount": 0,
@@ -4934,10 +5144,70 @@ class PolarMicrogridSimulator:
                 if target is not None:
                     group_target_totals[group_key] = group_target_totals.get(group_key, 0.0) + target
                     group_target_counts[group_key] = group_target_counts.get(group_key, 0) + 1
+                target_gas_flow = _to_float(profile.get("target_gas_flow"), None)
+                if target_gas_flow is not None:
+                    group_target_gas_flow_totals[group_key] = (
+                        group_target_gas_flow_totals.get(group_key, 0.0)
+                        + target_gas_flow
+                    )
+                    group_target_gas_flow_counts[group_key] = (
+                        group_target_gas_flow_counts.get(group_key, 0) + 1
+                    )
                 available = _to_float(profile.get("max_available_power"), None)
                 if available is not None:
                     group_available_totals[group_key] = group_available_totals.get(group_key, 0.0) + available
                     group_available_counts[group_key] = group_available_counts.get(group_key, 0) + 1
+
+        hydrogen_metric_values: Dict[str, Dict[str, List[Tuple[float, float]]]] = {}
+        hydrogen_measured_devices: Dict[str, set[Tuple[str, str]]] = {}
+        for (category, dev_name, group_key), values in hydrogen_measurements_by_device.items():
+            profile = profiles_by_power_key.get((category, dev_name, group_key))
+            if profile is None or not bool(profile.get("online", False)):
+                continue
+            device_key = (
+                str(profile.get("dev_type", "")),
+                str(profile.get("dev_name", dev_name)),
+            )
+            measured_group_devices.setdefault(group_key, set()).add(device_key)
+            hydrogen_measured_devices.setdefault(category, set()).add(device_key)
+            metrics = hydrogen_metric_values.setdefault(group_key, {})
+            capacity = _to_float(profile.get("capacity"), 1.0) or 1.0
+            if "FLOW" in values:
+                metrics.setdefault("gasFlow", []).append((float(values["FLOW"]), 1.0))
+            if category == "hydrogenStorage":
+                pressure = values.get("PRESS", values.get("PRESSURE"))
+                if pressure is not None:
+                    metrics.setdefault("gasPressure", []).append((float(pressure), 1.0))
+                if "GAS_QUANTITY" in values:
+                    metrics.setdefault("gasQuantity", []).append(
+                        (float(values["GAS_QUANTITY"]), 1.0)
+                    )
+                if "SOC" in values:
+                    raw_soc = float(values["SOC"])
+                    soc_percent = raw_soc * 100.0 if abs(raw_soc) <= 2.0 else raw_soc
+                    metrics.setdefault("soc", []).append(
+                        (soc_percent, max(1e-9, float(capacity)))
+                    )
+
+        counts["hydrogenStorage"] = len(
+            hydrogen_measured_devices.get("hydrogenStorage", set())
+        )
+        for group_key, metric_values in hydrogen_metric_values.items():
+            group = flow_groups.get(group_key)
+            if group is None:
+                continue
+            for metric_name, values in metric_values.items():
+                if not values:
+                    continue
+                if metric_name in {"gasPressure", "soc"}:
+                    total_weight = sum(weight for _value, weight in values)
+                    group[metric_name] = (
+                        sum(value * weight for value, weight in values) / total_weight
+                        if total_weight > 0.0
+                        else None
+                    )
+                else:
+                    group[metric_name] = sum(value for value, _weight in values)
 
         for group_key, group in flow_groups.items():
             online_count = int(group.get("onlineCount", 0) or 0)
@@ -4947,6 +5217,13 @@ class PolarMicrogridSimulator:
                     group["maxAvailablePower"] = 0.0
             elif group_target_counts.get(group_key, 0) == online_count:
                 group["targetPower"] = group_target_totals.get(group_key, 0.0)
+            if online_count == 0:
+                group["targetGasFlow"] = 0.0
+            elif group_target_gas_flow_counts.get(group_key, 0) == online_count:
+                group["targetGasFlow"] = group_target_gas_flow_totals.get(
+                    group_key,
+                    0.0,
+                )
             if (
                 str(group.get("category", "")) in {"wind", "pv"}
                 and group_available_counts.get(group_key, 0) == online_count
@@ -4988,12 +5265,25 @@ class PolarMicrogridSimulator:
 
         dc_load_power = green_metric_group_power("dcLoad")
         ac_load_power = green_metric_group_power("acLoad")
+        electrolyzer_power = green_metric_group_power("electrolyzer")
         diesel_power = green_metric_group_power("diesel")
-        if any(value is None for value in (dc_load_power, ac_load_power, diesel_power)):
+        if any(
+            value is None
+            for value in (
+                dc_load_power,
+                ac_load_power,
+                electrolyzer_power,
+                diesel_power,
+            )
+        ):
             green_power = None
             green_power_share = None
         else:
-            green_load_power = float(dc_load_power) + float(ac_load_power)
+            green_load_power = (
+                float(dc_load_power)
+                + float(ac_load_power)
+                + float(electrolyzer_power)
+            )
             green_power = green_load_power - float(diesel_power)
             green_power_share = (
                 green_power / green_load_power * 100.0
@@ -5004,7 +5294,11 @@ class PolarMicrogridSimulator:
             "wind": totals["wind"] if counts["wind"] else None,
             "solar": totals["pv"] if counts["pv"] else None,
             "diesel": totals["diesel"] if counts["diesel"] else None,
-            "load": totals["load"] if counts["load"] else None,
+            "load": (
+                load_total
+                if counts["load"] or counts["electrolyzer"]
+                else None
+            ),
             "storage": storage_total if counts["storage"] else None,
             "storageDischarge": storage_generation if counts["storage"] else None,
             "storageCharge": storage_charge if counts["storage"] else None,
@@ -5022,6 +5316,9 @@ class PolarMicrogridSimulator:
                 "diesel": counts["diesel"],
                 "load": counts["load"],
                 "storage": counts["storage"],
+                "fuelCell": counts["fuelCell"],
+                "electrolyzer": counts["electrolyzer"],
+                "hydrogenStorage": counts["hydrogenStorage"],
                 "greenPowerConverter": counts["greenPowerConverter"],
                 "soc": len(soc_values),
             },
@@ -10472,6 +10769,13 @@ class PolarMicrogridSimulator:
             changes = payload.get("changes", {})
             if not isinstance(changes, Mapping):
                 raise ValueError("changes must be an object")
+            if block_name in HYDROGEN_CONVERSION_BLOCKS and "control_type" in changes:
+                changes = {
+                    **changes,
+                    "control_type": normalize_hydrogen_conversion_control_mode(
+                        changes["control_type"]
+                    ),
+                }
             if not allow_runtime_controls:
                 runtime_fields = [
                     str(field)

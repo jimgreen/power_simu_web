@@ -140,6 +140,19 @@
                           <rect x="4" y="5" width="28" height="26" rx="3" />
                           <path d="M7 18h22M9 12h8M11 9v6M21 11c2-3 5-3 7 0M21 25h7M24 22v6M15 16l3 2-3 2M21 20l-3-2 3-2" />
                         </symbol>
+                        <symbol id="energy-icon-fuel-cell" viewBox="0 0 32 32">
+                          <rect x="4" y="6" width="24" height="20" rx="3" />
+                          <path d="M8 11h7M11.5 8v6M19 10h5M19 15h5M8 21h5l3-6 2 6h6" />
+                        </symbol>
+                        <symbol id="energy-icon-hydrogen-tank" viewBox="0 0 32 32">
+                          <path d="M9 5h14M9 27h14M11 5v22M21 5v22M11 8h10M11 24h10" />
+                          <path d="M14 12v8M18 12v8M14 16h4" />
+                        </symbol>
+                        <symbol id="energy-icon-electrolyzer" viewBox="0 0 32 32">
+                          <rect x="5" y="5" width="22" height="22" rx="3" />
+                          <path d="M10 11h5M12.5 8.5v5M18 10h5M10 22c2-3 4-3 6 0 2-3 4-3 6 0" />
+                          <circle cx="20" cy="15" r="1.5" />
+                        </symbol>
                       </defs>
                     </svg>
                     <section class="energy-source-stack" data-overview-region="dc" aria-label="直流电源与负荷侧">
@@ -219,6 +232,57 @@
                         <strong id="overviewFlowGreenShare">--</strong>
                       </div>
                     </article>
+                    <section class="energy-hydrogen-chain" data-overview-region="hydrogen" aria-label="氢能转换与储存链" hidden>
+                      <i class="energy-hydrogen-link is-electric" data-hydrogen-link="fuel-cell-electric" data-flow-active="false" data-flow-direction="left" aria-hidden="true"></i>
+                      <article class="energy-device energy-hydrogen-device fuel-cell" data-overview-group="fuelCell" data-flow-side="center" data-flow-active="false" data-flow-direction="idle" hidden>
+                        <div class="energy-device-icon energy-hydrogen-icon" role="img" aria-label="燃料电池">
+                          <svg aria-hidden="true" viewBox="0 0 32 32"><use href="#energy-icon-fuel-cell"></use></svg>
+                        </div>
+                        <div class="energy-device-card energy-hydrogen-card">
+                          <span>燃料电池</span>
+                          <div class="energy-device-readings energy-hydrogen-readings">
+                            <div class="energy-device-reading"><span>发电实时</span><strong data-overview-power>--</strong></div>
+                            <div class="energy-device-reading"><span>发电目标</span><strong data-overview-target>--</strong></div>
+                            <div class="energy-device-reading"><span>耗气实时</span><strong data-overview-gas-flow>--</strong></div>
+                            <div class="energy-device-reading"><span>耗气目标</span><strong data-overview-target-gas-flow>--</strong></div>
+                          </div>
+                          <small data-overview-meta>数量 0/0 台</small>
+                        </div>
+                      </article>
+                      <i class="energy-hydrogen-link is-gas" data-hydrogen-link="fuel-cell-gas" data-flow-active="false" data-flow-direction="left" aria-hidden="true"></i>
+                      <article class="energy-device energy-hydrogen-device hydrogen-storage" data-overview-group="hydrogenStorage" data-flow-side="center" data-flow-active="false" data-flow-direction="idle" hidden>
+                        <div class="energy-device-icon energy-hydrogen-icon" role="img" aria-label="储氢罐">
+                          <svg aria-hidden="true" viewBox="0 0 32 32"><use href="#energy-icon-hydrogen-tank"></use></svg>
+                        </div>
+                        <div class="energy-device-card energy-hydrogen-card">
+                          <span>储氢罐</span>
+                          <div class="energy-device-readings energy-hydrogen-readings">
+                            <div class="energy-device-reading"><span>气流量</span><strong data-overview-gas-flow>--</strong></div>
+                            <div class="energy-device-reading"><span>储气压力</span><strong data-overview-gas-pressure>--</strong></div>
+                            <div class="energy-device-reading"><span>储气量</span><strong data-overview-gas-quantity>--</strong></div>
+                            <div class="energy-device-reading"><span>SOC</span><strong data-overview-soc>--</strong></div>
+                          </div>
+                          <small data-overview-meta>数量 0/0 台</small>
+                        </div>
+                      </article>
+                      <i class="energy-hydrogen-link is-gas" data-hydrogen-link="electrolyzer-gas" data-flow-active="false" data-flow-direction="left" aria-hidden="true"></i>
+                      <article class="energy-device energy-hydrogen-device electrolyzer" data-overview-group="electrolyzer" data-flow-side="center" data-flow-active="false" data-flow-direction="idle" hidden>
+                        <div class="energy-device-icon energy-hydrogen-icon" role="img" aria-label="电制氢">
+                          <svg aria-hidden="true" viewBox="0 0 32 32"><use href="#energy-icon-electrolyzer"></use></svg>
+                        </div>
+                        <div class="energy-device-card energy-hydrogen-card">
+                          <span>电制氢</span>
+                          <div class="energy-device-readings energy-hydrogen-readings">
+                            <div class="energy-device-reading"><span>耗电实时</span><strong data-overview-power>--</strong></div>
+                            <div class="energy-device-reading"><span>耗电目标</span><strong data-overview-target>--</strong></div>
+                            <div class="energy-device-reading"><span>产气实时</span><strong data-overview-gas-flow>--</strong></div>
+                            <div class="energy-device-reading"><span>产气目标</span><strong data-overview-target-gas-flow>--</strong></div>
+                          </div>
+                          <small data-overview-meta>数量 0/0 台</small>
+                        </div>
+                      </article>
+                      <i class="energy-hydrogen-link is-electric" data-hydrogen-link="electrolyzer-electric" data-flow-active="false" data-flow-direction="left" aria-hidden="true"></i>
+                    </section>
                     <article class="energy-device converter energy-acdc-converter" data-overview-group="acdcConverter" data-flow-side="center" data-flow-active="false" data-flow-direction="idle" hidden>
                       <div class="energy-device-icon energy-converter-icon" role="img" aria-label="DC/AC变流器">
                         <svg aria-hidden="true" viewBox="0 0 36 36"><use href="#energy-icon-acdc-converter"></use></svg>

@@ -72,6 +72,19 @@ HYDROGEN_CONVERSION_BLOCKS = (
     "Hydro2AcE",
     "Hydro2DcE",
 )
+HYDROGEN_CONVERSION_CONTROL_MODES = frozenset({"P", "FLOW"})
+
+
+def normalize_hydrogen_conversion_control_mode(value: Any) -> str:
+    mode = str(value or "").strip().upper()
+    if mode not in HYDROGEN_CONVERSION_CONTROL_MODES:
+        raise ValueError("hydrogen conversion control_type must be P or FLOW")
+    return mode
+
+
+def hydrogen_conversion_active_set_type(value: Any) -> str:
+    mode = str(value or "").strip().upper()
+    return {"P": "p_set", "FLOW": "flow_set"}.get(mode, "")
 
 
 def _model_blocks(model: Any) -> Mapping[str, Any]:
@@ -121,7 +134,7 @@ def _coupling_endpoint_block(reference_field: Any) -> str:
     return ""
 
 
-def energy_coupling_control_bindings(model: Any) -> Dict[DeviceKey, Tuple[Dict[str, str], ...]]:
+def energy_coupling_control_bindings(model: Any) -> Dict[DeviceKey, Tuple[Dict[str, Any], ...]]:
     """Map each electric/H2 converter to endpoint-owned P and FLOW controls."""
 
     endpoint_rows: Dict[str, Dict[str, Mapping[str, Any]]] = {}
@@ -140,12 +153,13 @@ def energy_coupling_control_bindings(model: Any) -> Dict[DeviceKey, Tuple[Dict[s
             if str(row.get("idx", "")).strip()
         }
 
-    result: Dict[DeviceKey, Tuple[Dict[str, str], ...]] = {}
+    result: Dict[DeviceKey, Tuple[Dict[str, Any], ...]] = {}
     for block_name in HYDROGEN_CONVERSION_BLOCKS:
         for row in model_rows(model, block_name):
             coupling_name = str(row.get("name", "")).strip()
             if not coupling_name:
                 continue
+            active_set_type = hydrogen_conversion_active_set_type(row.get("control_type"))
             bindings = []
             for field, endpoint_idx in row.items():
                 field_name = str(field)
@@ -170,6 +184,7 @@ def energy_coupling_control_bindings(model: Any) -> Dict[DeviceKey, Tuple[Dict[s
                         "target_dev_type": endpoint_block,
                         "target_dev_name": endpoint_name,
                         "target_set_type": set_type,
+                        "active": set_type == active_set_type,
                     }
                 )
             by_set_type = {binding["set_type"]: binding for binding in bindings}

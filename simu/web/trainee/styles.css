@@ -1409,6 +1409,137 @@ body.is-vertical-splitter-dragging {
   text-align: center;
   white-space: nowrap;
 }
+.energy-hydrogen-chain {
+  position: absolute;
+  z-index: 3;
+  left: var(--energy-bus-inset);
+  right: var(--energy-bus-inset);
+  top: clamp(6px, 1.8cqh, 16px);
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 15px minmax(160px, 1fr) 10px minmax(154px, 0.95fr) 10px minmax(160px, 1fr) 15px;
+  align-items: center;
+  pointer-events: none;
+}
+.energy-hydrogen-chain[hidden],
+.energy-hydrogen-link[hidden] {
+  display: none !important;
+}
+.energy-hydrogen-link {
+  --flow-color: #287ea0;
+  --flow-thickness: 3px;
+  --flow-head-size: 8px;
+  --flow-head-half: 5px;
+  --flow-opacity: 0.5;
+  --flow-duration: 1.25s;
+  position: relative;
+  width: 100%;
+  height: var(--flow-thickness);
+  border-radius: 999px;
+  background-color: var(--flow-color);
+  background-image: repeating-linear-gradient(
+    90deg,
+    transparent 0 7px,
+    rgba(255, 255, 255, 0.72) 7px 11px,
+    transparent 11px 18px
+  );
+  background-size: 28px 100%;
+  opacity: var(--flow-opacity);
+  animation: energyFlowForward var(--flow-duration) linear infinite;
+}
+.energy-hydrogen-link::before,
+.energy-hydrogen-link::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 0;
+  height: 0;
+  display: none;
+  transform: translateY(-50%);
+  opacity: var(--flow-opacity);
+}
+.energy-hydrogen-link[data-flow-direction="left"] {
+  animation-name: energyFlowReverse;
+}
+.energy-hydrogen-link[data-flow-direction="left"]::before {
+  left: -1px;
+  display: block;
+  border-top: var(--flow-head-half) solid transparent;
+  border-bottom: var(--flow-head-half) solid transparent;
+  border-right: var(--flow-head-size) solid var(--flow-color);
+}
+.energy-hydrogen-link[data-flow-direction="right"]::after {
+  right: -1px;
+  display: block;
+  border-top: var(--flow-head-half) solid transparent;
+  border-bottom: var(--flow-head-half) solid transparent;
+  border-left: var(--flow-head-size) solid var(--flow-color);
+}
+.energy-hydrogen-link[data-flow-active="false"] {
+  animation: none;
+  background-image: none;
+  opacity: 0.22;
+}
+.energy-hydrogen-link[data-hydrogen-link="fuel-cell-electric"] { grid-column: 1; }
+.energy-hydrogen-device[data-overview-group="fuelCell"] { grid-column: 2; }
+.energy-hydrogen-link[data-hydrogen-link="fuel-cell-gas"] { grid-column: 3; }
+.energy-hydrogen-device[data-overview-group="hydrogenStorage"] { grid-column: 4; }
+.energy-hydrogen-link[data-hydrogen-link="electrolyzer-gas"] { grid-column: 5; }
+.energy-hydrogen-device[data-overview-group="electrolyzer"] { grid-column: 6; }
+.energy-hydrogen-link[data-hydrogen-link="electrolyzer-electric"] { grid-column: 7; }
+.energy-hydrogen-device {
+  min-width: 0;
+  min-height: 108px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  pointer-events: auto;
+}
+.energy-hydrogen-device.fuel-cell { --flow-color: #16856a; }
+.energy-hydrogen-device.hydrogen-storage { --flow-color: #287ea0; }
+.energy-hydrogen-device.electrolyzer { --flow-color: #b56a22; }
+.energy-hydrogen-icon {
+  width: 42px;
+  height: 42px;
+  flex-basis: 42px;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.92);
+}
+.energy-hydrogen-icon svg {
+  width: 29px;
+  height: 29px;
+}
+.energy-hydrogen-card {
+  min-height: 108px;
+  padding: 6px 8px;
+  gap: 2px;
+}
+.energy-hydrogen-card > span,
+.energy-hydrogen-card > small {
+  font-size: 10px;
+  line-height: 12px;
+}
+.energy-hydrogen-readings {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+}
+.energy-hydrogen-readings > .energy-device-reading:nth-child(3) {
+  grid-column: auto;
+}
+.energy-hydrogen-readings .energy-device-reading span {
+  font-size: 9px;
+  line-height: 12px;
+}
+.energy-hydrogen-readings .energy-device-reading strong {
+  font-size: 10px;
+  line-height: 12px;
+}
 .energy-acdc-converter {
   position: absolute;
   z-index: 4;
@@ -1558,6 +1689,7 @@ body.is-vertical-splitter-dragging {
   .energy-diesel-node::after,
   .energy-side-node .energy-device-icon::after,
   .energy-main-trunk .energy-flow-stream,
+  .energy-hydrogen-link,
   .energy-storage-branch {
     animation: none;
   }
@@ -1808,6 +1940,28 @@ body.is-vertical-splitter-dragging {
   background: #aeb7ba;
   opacity: 0.24;
 }
+@container (max-width: 940px) and (min-width: 761px) {
+  .energy-hydrogen-chain {
+    grid-template-columns: 12px minmax(82px, 1fr) 10px minmax(82px, 1fr) 10px minmax(82px, 1fr) 12px;
+  }
+  .energy-hydrogen-device {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .energy-hydrogen-icon {
+    display: none;
+  }
+  .energy-hydrogen-card {
+    padding-inline: 5px;
+  }
+  .energy-hydrogen-card > span,
+  .energy-hydrogen-card > small,
+  .energy-hydrogen-readings .energy-device-reading strong {
+    font-size: 8px;
+  }
+  .energy-hydrogen-readings .energy-device-reading span {
+    font-size: 7px;
+  }
+}
 @container (max-width: 760px) {
   .energy-flow-map {
     height: auto;
@@ -1835,6 +1989,24 @@ body.is-vertical-splitter-dragging {
     width: 100%;
     min-width: 0;
     transform: none;
+  }
+  .energy-hydrogen-chain {
+    position: static;
+    grid-column: 1;
+    grid-row: auto;
+    left: auto;
+    right: auto;
+    width: 100%;
+    grid-template-columns: repeat(3, minmax(190px, 1fr));
+    gap: 8px;
+    overflow-x: auto;
+    pointer-events: auto;
+  }
+  .energy-hydrogen-chain .energy-hydrogen-link {
+    display: none;
+  }
+  .energy-hydrogen-chain .energy-hydrogen-device {
+    grid-column: auto;
   }
   .energy-device-list,
   .energy-grid-forming-list {
@@ -1923,6 +2095,42 @@ body.is-vertical-splitter-dragging {
   .energy-converter-card {
     min-height: 60px;
   }
+  .energy-hydrogen-chain {
+    top: 2px;
+  }
+  .energy-hydrogen-device,
+  .energy-hydrogen-card {
+    min-height: 52px;
+  }
+  .energy-hydrogen-device {
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: 4px;
+  }
+  .energy-hydrogen-icon {
+    width: 30px;
+    height: 30px;
+    flex-basis: 30px;
+  }
+  .energy-hydrogen-icon svg {
+    width: 21px;
+    height: 21px;
+  }
+  .energy-hydrogen-card {
+    padding: 2px 5px;
+    gap: 0;
+  }
+  .energy-hydrogen-card > small {
+    display: none;
+  }
+  .energy-hydrogen-card > span,
+  .energy-hydrogen-readings .energy-device-reading strong {
+    font-size: 8px;
+    line-height: 9px;
+  }
+  .energy-hydrogen-readings .energy-device-reading span {
+    font-size: 7px;
+    line-height: 9px;
+  }
 }
 @container (max-height: 360px) {
   .energy-flow-map {
@@ -1978,6 +2186,19 @@ body.is-vertical-splitter-dragging {
   }
   .energy-converter-card {
     min-height: 48px;
+  }
+  .energy-hydrogen-device,
+  .energy-hydrogen-card {
+    min-height: 40px;
+  }
+  .energy-hydrogen-card > span,
+  .energy-hydrogen-readings .energy-device-reading strong {
+    font-size: 7px;
+    line-height: 8px;
+  }
+  .energy-hydrogen-readings .energy-device-reading span {
+    font-size: 6px;
+    line-height: 8px;
   }
 }
 @container (max-height: 320px) {
@@ -2064,6 +2285,25 @@ body.is-vertical-splitter-dragging {
   .energy-device-card {
     min-height: clamp(38px, 15cqh, 50px);
     padding: 2px 7px;
+  }
+  .energy-hydrogen-chain {
+    top: 1px;
+  }
+  .energy-hydrogen-device,
+  .energy-hydrogen-card {
+    min-height: 34px;
+  }
+  .energy-hydrogen-device {
+    grid-template-columns: 24px minmax(0, 1fr);
+  }
+  .energy-hydrogen-icon {
+    width: 24px;
+    height: 24px;
+    flex-basis: 24px;
+  }
+  .energy-hydrogen-icon svg {
+    width: 17px;
+    height: 17px;
   }
 }
 .boundary-list {
@@ -5741,7 +5981,7 @@ canvas {
     min-height: 0;
     grid-template-rows: auto;
     place-items: stretch;
-    container-type: normal;
+    container-type: inline-size;
   }
   .energy-flow-map {
     min-height: 0;

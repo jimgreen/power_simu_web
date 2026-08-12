@@ -387,7 +387,8 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
             "renderTraineeOverviewEvents",
         ):
             self.assertIn(helper, self.script)
-        self.assertIn("const loadPower = dcLoadPower + acLoadPower;", self.script)
+        self.assertIn('const electrolyzerPower = overviewGreenGroupPower(groups, "electrolyzer");', self.script)
+        self.assertIn("const loadPower = dcLoadPower + acLoadPower + electrolyzerPower;", self.script)
         self.assertIn("const greenPower = loadPower - dieselPower;", self.script)
         self.assertIn("(greenPower / loadPower) * 100.0", self.script)
         self.assertIn("acdcConverter: { power: null }", self.script)
@@ -401,6 +402,55 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         ):
             self.assertIn(f'id="{element_id}"', self.html)
         self.assertIn("renderTraineeOverviewDashboard(snapshot);", self.script)
+
+    def test_overview_draws_hydrogen_chain_with_dedicated_realtime_and_target_metrics(self):
+        chain = self.html.split('data-overview-region="hydrogen"', 1)[1].split("</section>", 1)[0]
+        for group_key, label in (
+            ("fuelCell", "燃料电池"),
+            ("hydrogenStorage", "储氢罐"),
+            ("electrolyzer", "电制氢"),
+        ):
+            self.assertIn(f'data-overview-group="{group_key}"', chain)
+            self.assertIn(label, chain)
+
+        fuel_cell = chain.split('data-overview-group="fuelCell"', 1)[1].split("</article>", 1)[0]
+        electrolyzer = chain.split('data-overview-group="electrolyzer"', 1)[1].split("</article>", 1)[0]
+        tank = chain.split('data-overview-group="hydrogenStorage"', 1)[1].split("</article>", 1)[0]
+        for card in (fuel_cell, electrolyzer):
+            self.assertIn("data-overview-power", card)
+            self.assertIn("data-overview-target", card)
+            self.assertIn("data-overview-gas-flow", card)
+            self.assertIn("data-overview-target-gas-flow", card)
+            self.assertIn("data-overview-meta", card)
+        for field in ("gas-flow", "gas-pressure", "gas-quantity", "soc"):
+            self.assertIn(f"data-overview-{field}", tank)
+
+        self.assertIn('key: "fuelCell"', self.script)
+        self.assertIn('key: "hydrogenStorage"', self.script)
+        self.assertIn('key: "electrolyzer"', self.script)
+        self.assertIn("const gasFlow = powerSummaryNumber", self.script)
+        self.assertIn("targetGasFlow: powerSummaryNumber", self.script)
+        self.assertIn("gasPressure: powerSummaryNumber", self.script)
+        self.assertIn("gasQuantity: powerSummaryNumber", self.script)
+        hydrogen_state = self.script.split("function overviewHydrogenStorageFlowState", 1)[1].split(
+            "function normalizeOverviewFlowGroups",
+            1,
+        )[0]
+        self.assertIn('? { status: "releasingHydrogen", flowDirection: "fromTank" }', hydrogen_state)
+        self.assertIn(': { status: "storingHydrogen", flowDirection: "toTank" }', hydrogen_state)
+        self.assertIn('node.querySelector("[data-overview-gas-flow]")', self.script)
+        self.assertIn('node.querySelector("[data-overview-target-gas-flow]")', self.script)
+        self.assertIn('node.querySelector("[data-overview-gas-pressure]")', self.script)
+        self.assertIn('node.querySelector("[data-overview-gas-quantity]")', self.script)
+        self.assertIn('node.querySelector("[data-overview-soc]")', self.script)
+
+        self.assertIn(".energy-hydrogen-chain {", self.styles)
+        self.assertIn(".energy-hydrogen-link {", self.styles)
+        self.assertIn('[data-hydrogen-link="fuel-cell-electric"]', self.styles)
+        self.assertIn('[data-hydrogen-link="electrolyzer-electric"]', self.styles)
+        compact = self.styles.split("@container (max-width: 760px) {", 1)[1]
+        self.assertIn(".energy-hydrogen-chain", compact)
+        self.assertIn("position: static;", compact)
 
     def test_trainee_weather_display_falls_back_when_environment_scada_is_invalid(self):
         weather_block = self.script.split("function currentWeatherLoad", 1)[1].split(
@@ -499,7 +549,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("top: var(--energy-trunk-y);", converter_block)
         self.assertIn("transform: translate(-50%, -50%);", converter_block)
         self.assertIn('[data-flow-direction="toDc"] .energy-flow-stream', self.styles)
-        self.assertIn('["toBus", "fromBus", "toAc", "toDc", "idle"]', self.script)
+        self.assertIn('["toBus", "fromBus", "toAc", "toDc", "toTank", "fromTank", "idle"]', self.script)
         self.assertIn('trunk.dataset.flowDirection = converterGroup?.flowDirection || "toAc"', self.script)
         self.assertNotIn(".energy-device-heading {", self.styles)
         self.assertNotIn(".energy-load-green-share {", self.styles)
@@ -600,7 +650,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("grid-template-rows: auto;", board_block)
         self.assertIn("min-height: 0;", board_block)
         self.assertIn("flex: 0 0 auto;", board_block)
-        self.assertIn("container-type: normal;", board_block)
+        self.assertIn("container-type: inline-size;", board_block)
         self.assertIn("align-self: start;", flow_block)
 
     def test_trainee_home_bottom_tables_have_draggable_height_splitter(self):

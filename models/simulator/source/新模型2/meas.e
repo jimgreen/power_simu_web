@@ -586,10 +586,10 @@
 # 584  DCACConverter.DCAC变流器-2.Q_AC             DCACConverter  DCAC变流器-2           Q_AC              10000.0  1      0.0
 # 585  DCACConverter.DCAC变流器-2.V_AC             DCACConverter  DCAC变流器-2           V_AC              10000.0  1      0.0
 # 586  DCACConverter.DCAC变流器-2.I_AC             DCACConverter  DCAC变流器-2           I_AC              10000.0  1      0.0
-# 587  HydroStorage.集装格式储氢罐-1.PRESS             HydroStorage   集装格式储氢罐-1           PRESS             10000.0  1      0.0
-# 588  HydroStorage.集装格式储氢罐-1.FLOW              HydroStorage   集装格式储氢罐-1           FLOW              10000.0  1      0.0
-# 589  HydroStorage.集装格式储氢罐-1.GAS_QUANTITY      HydroStorage   集装格式储氢罐-1           GAS_QUANTITY      10000.0  1      0.0
-# 590  HydroStorage.集装格式储氢罐-1.SOC               HydroStorage   集装格式储氢罐-1           SOC               10000.0  1      0.0
+# 587  HydroStorage.集装格式储氢罐-3.PRESS             HydroStorage   集装格式储氢罐-3           PRESS             10000.0  1      0.0
+# 588  HydroStorage.集装格式储氢罐-3.FLOW              HydroStorage   集装格式储氢罐-3           FLOW              10000.0  1      0.0
+# 589  HydroStorage.集装格式储氢罐-3.GAS_QUANTITY      HydroStorage   集装格式储氢罐-3           GAS_QUANTITY      10000.0  1      0.0
+# 590  HydroStorage.集装格式储氢罐-3.SOC               HydroStorage   集装格式储氢罐-3           SOC               10000.0  1      0.0
 # 591  Environment.weather.WIND_SPEED           Environment    weather             WIND_SPEED        1.0      0      0.0
 # 592  Environment.weather.AIR_TEMP             Environment    weather             AIR_TEMP          1.0      1      -18.0
 # 593  Environment.weather.HUMIDITY             Environment    weather             HUMIDITY          1.0      1      72.0
@@ -771,10 +771,10 @@
 # 769  DCACConverter.风机变流器-10.run_stat          DCACConverter  风机变流器-10            RUN_STAT          1.0      1      1.0
 # 770  DCACConverter.DCAC变流器-1.run_stat         DCACConverter  DCAC变流器-1           RUN_STAT          1.0      1      1.0
 # 771  DCACConverter.DCAC变流器-2.run_stat         DCACConverter  DCAC变流器-2           RUN_STAT          1.0      1      1.0
-# 772  HydroNode.氢气节点-1.run_stat                HydroNode      氢气节点-1              RUN_STAT          1.0      1      1.0
+# 772  HydroNode.集装格式储氢罐-3.run_stat             HydroNode      集装格式储氢罐-3           RUN_STAT          1.0      1      1.0
 # 773  HydroSource.交流电制氢-1_氢能设备端氢源.run_stat     HydroSource    交流电制氢-1_氢能设备端氢源     RUN_STAT          1.0      1      1.0
 # 774  HydroLoad.直流燃料电池-1_氢能设备端氢荷.run_stat      HydroLoad      直流燃料电池-1_氢能设备端氢荷    RUN_STAT          1.0      1      1.0
-# 775  HydroStorage.集装格式储氢罐-1.run_stat          HydroStorage   集装格式储氢罐-1           RUN_STAT          1.0      1      1.0
+# 775  HydroStorage.集装格式储氢罐-3.run_stat          HydroStorage   集装格式储氢罐-3           RUN_STAT          1.0      1      1.0
 # 776  AcE2Hydro.交流电制氢-1.run_stat               AcE2Hydro      交流电制氢-1             RUN_STAT          1.0      1      1.0
 # 777  Hydro2DcE.直流燃料电池-1.run_stat              Hydro2DcE      直流燃料电池-1            RUN_STAT          1.0      1      1.0
 # 778  ACBreak.交流断路器-1.status                   ACBreak        交流断路器-1             STATUS            1.0      1      1.0

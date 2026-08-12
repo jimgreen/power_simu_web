@@ -143,6 +143,14 @@ class AutomaticPointNamesTest(unittest.TestCase):
 @ idx name node p_set run_stat
 # 1 ac-electrolyzer-load 1 12 1
 </ACLoad>
+<DCLoad>
+@ idx name node p_set run_stat
+# 1 dc-electrolyzer-load 2 14 1
+</DCLoad>
+<ACGenerator>
+@ idx name node control_type p_set q_set v_set run_stat
+# 1 ac-fuel-cell-source 3 P 16 0 380 1
+</ACGenerator>
 <DCGenerator>
 @ idx name node control_type p_set v_set i_set run_stat
 # 1 dc-fuel-cell-source 2 P 18 750 0 1
@@ -150,15 +158,25 @@ class AutomaticPointNamesTest(unittest.TestCase):
 <HydroSource>
 @ idx name node control_type flow_set run_stat
 # 1 electrolyzer-h2-source 1 FLOW 2.4 1
+# 2 dc-electrolyzer-h2-source 1 FLOW 2.8 1
 </HydroSource>
 <HydroLoad>
 @ idx name node flow_set run_stat
 # 1 fuel-cell-h2-load 1 10 1
+# 2 ac-fuel-cell-h2-load 1 8 1
 </HydroLoad>
 <AcE2Hydro>
 @ idx name run_stat control_type idx_ac_load_t1 idx_h2_unit_t2 e2h_coeff
 # 1 ac-electrolyzer 1 P 1 1 0.2
 </AcE2Hydro>
+<DcE2Hydro>
+@ idx name run_stat control_type idx_dc_load_t1 idx_h2_unit_t2 e2h_coeff
+# 1 dc-electrolyzer 1 FLOW 1 2 0.2
+</DcE2Hydro>
+<Hydro2AcE>
+@ idx name run_stat control_type idx_ac_unit_t1 idx_h2_load_t2 h2e_coeff
+# 1 ac-fuel-cell 1 P 1 2 1.8
+</Hydro2AcE>
 <Hydro2DcE>
 @ idx name run_stat control_type idx_dc_unit_t1 idx_h2_load_t2 h2e_coeff
 # 1 dc-fuel-cell 1 FLOW 1 1 1.8
@@ -173,9 +191,13 @@ class AutomaticPointNamesTest(unittest.TestCase):
         }
 
         self.assertIn(("ACLoad", "ac-electrolyzer-load", "p_set"), values)
+        self.assertIn(("DCLoad", "dc-electrolyzer-load", "p_set"), values)
+        self.assertIn(("ACGenerator", "ac-fuel-cell-source", "p_set"), values)
         self.assertIn(("DCGenerator", "dc-fuel-cell-source", "p_set"), values)
         self.assertIn(("HydroSource", "electrolyzer-h2-source", "flow_set"), values)
+        self.assertIn(("HydroSource", "dc-electrolyzer-h2-source", "flow_set"), values)
         self.assertIn(("HydroLoad", "fuel-cell-h2-load", "flow_set"), values)
+        self.assertIn(("HydroLoad", "ac-fuel-cell-h2-load", "flow_set"), values)
         self.assertFalse(
             any(
                 dev_type in {"AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"}
@@ -192,18 +214,44 @@ class AutomaticPointNamesTest(unittest.TestCase):
                     "target_dev_type": "ACLoad",
                     "target_dev_name": "ac-electrolyzer-load",
                     "target_set_type": "p_set",
+                    "active": True,
                 },
                 {
                     "set_type": "flow_set",
                     "target_dev_type": "HydroSource",
                     "target_dev_name": "electrolyzer-h2-source",
                     "target_set_type": "flow_set",
+                    "active": False,
                 },
             ),
         )
         self.assertEqual(
             {binding["target_dev_type"] for binding in bindings[("Hydro2DcE", "dc-fuel-cell")]},
             {"DCGenerator", "HydroLoad"},
+        )
+        self.assertEqual(
+            {
+                binding["set_type"]
+                for binding in bindings[("Hydro2DcE", "dc-fuel-cell")]
+                if binding["active"]
+            },
+            {"flow_set"},
+        )
+        self.assertEqual(
+            {
+                binding["set_type"]
+                for binding in bindings[("DcE2Hydro", "dc-electrolyzer")]
+                if binding["active"]
+            },
+            {"flow_set"},
+        )
+        self.assertEqual(
+            {
+                binding["set_type"]
+                for binding in bindings[("Hydro2AcE", "ac-fuel-cell")]
+                if binding["active"]
+            },
+            {"p_set"},
         )
 
     def test_generated_model_requires_explicit_converter_dcp_column(self):

@@ -510,7 +510,7 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("top: var(--energy-trunk-y);", converter_block)
         self.assertIn("transform: translate(-50%, -50%);", converter_block)
         self.assertIn('[data-flow-direction="toDc"] .energy-flow-stream', styles)
-        self.assertIn('["toBus", "fromBus", "toAc", "toDc", "idle"]', app_js)
+        self.assertIn('["toBus", "fromBus", "toAc", "toDc", "toTank", "fromTank", "idle"]', app_js)
         self.assertIn('trunk.dataset.flowDirection = converterGroup?.flowDirection || "toAc"', app_js)
         self.assertIn(".energy-green-share {", styles)
         self.assertIn(".energy-green-metric {", styles)
@@ -524,8 +524,9 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("overviewPercentText", app_js)
         self.assertIn('const dcLoadPower = overviewGreenGroupPower(groups, "dcLoad");', app_js)
         self.assertIn('const acLoadPower = overviewGreenGroupPower(groups, "acLoad");', app_js)
+        self.assertIn('const electrolyzerPower = overviewGreenGroupPower(groups, "electrolyzer");', app_js)
         self.assertIn('const dieselPower = overviewGreenGroupPower(groups, "diesel");', app_js)
-        self.assertIn("const loadPower = dcLoadPower + acLoadPower;", app_js)
+        self.assertIn("const loadPower = dcLoadPower + acLoadPower + electrolyzerPower;", app_js)
         self.assertIn("const greenPower = loadPower - dieselPower;", app_js)
         self.assertIn("(greenPower / loadPower) * 100.0", app_js)
         self.assertIn("acdcConverter: { power: null }", app_js)
@@ -552,6 +553,59 @@ class OverviewDashboardUiTest(unittest.TestCase):
         narrow_block = styles.split("@container (max-width: 760px) {", 1)[1].split("@container (max-height: 320px)", 1)[0]
         self.assertIn(".energy-green-share", narrow_block)
         self.assertIn("position: static;", narrow_block)
+
+    def test_overview_draws_hydrogen_chain_with_dedicated_realtime_and_target_metrics(self):
+        html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
+        styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
+        app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+
+        chain = html.split('data-overview-region="hydrogen"', 1)[1].split("</section>", 1)[0]
+        for group_key, label in (
+            ("fuelCell", "燃料电池"),
+            ("hydrogenStorage", "储氢罐"),
+            ("electrolyzer", "电制氢"),
+        ):
+            self.assertIn(f'data-overview-group="{group_key}"', chain)
+            self.assertIn(label, chain)
+
+        fuel_cell = chain.split('data-overview-group="fuelCell"', 1)[1].split("</article>", 1)[0]
+        electrolyzer = chain.split('data-overview-group="electrolyzer"', 1)[1].split("</article>", 1)[0]
+        tank = chain.split('data-overview-group="hydrogenStorage"', 1)[1].split("</article>", 1)[0]
+        for card in (fuel_cell, electrolyzer):
+            self.assertIn("data-overview-power", card)
+            self.assertIn("data-overview-target", card)
+            self.assertIn("data-overview-gas-flow", card)
+            self.assertIn("data-overview-target-gas-flow", card)
+            self.assertIn("data-overview-meta", card)
+        for field in ("gas-flow", "gas-pressure", "gas-quantity", "soc"):
+            self.assertIn(f"data-overview-{field}", tank)
+
+        self.assertIn('key: "fuelCell"', app_js)
+        self.assertIn('key: "hydrogenStorage"', app_js)
+        self.assertIn('key: "electrolyzer"', app_js)
+        self.assertIn("const gasFlow = powerSummaryNumber", app_js)
+        self.assertIn("targetGasFlow: powerSummaryNumber", app_js)
+        self.assertIn("gasPressure: powerSummaryNumber", app_js)
+        self.assertIn("gasQuantity: powerSummaryNumber", app_js)
+        hydrogen_state = app_js.split("function overviewHydrogenStorageFlowState", 1)[1].split(
+            "function normalizeOverviewFlowGroups",
+            1,
+        )[0]
+        self.assertIn('? { status: "releasingHydrogen", flowDirection: "fromTank" }', hydrogen_state)
+        self.assertIn(': { status: "storingHydrogen", flowDirection: "toTank" }', hydrogen_state)
+        self.assertIn('node.querySelector("[data-overview-gas-flow]")', app_js)
+        self.assertIn('node.querySelector("[data-overview-target-gas-flow]")', app_js)
+        self.assertIn('node.querySelector("[data-overview-gas-pressure]")', app_js)
+        self.assertIn('node.querySelector("[data-overview-gas-quantity]")', app_js)
+        self.assertIn('node.querySelector("[data-overview-soc]")', app_js)
+
+        self.assertIn(".energy-hydrogen-chain {", styles)
+        self.assertIn(".energy-hydrogen-link {", styles)
+        self.assertIn('[data-hydrogen-link="fuel-cell-electric"]', styles)
+        self.assertIn('[data-hydrogen-link="electrolyzer-electric"]', styles)
+        compact = styles.split("@container (max-width: 760px) {", 1)[1]
+        self.assertIn(".energy-hydrogen-chain", compact)
+        self.assertIn("position: static;", compact)
 
     def test_overview_converter_card_sits_above_the_trunk_icon(self):
         styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
@@ -661,7 +715,7 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("grid-template-rows: auto;", board_block)
         self.assertIn("min-height: 0;", board_block)
         self.assertIn("flex: 0 0 auto;", board_block)
-        self.assertIn("container-type: normal;", board_block)
+        self.assertIn("container-type: inline-size;", board_block)
         self.assertIn("align-self: start;", flow_block)
 
     def test_mobile_overview_keeps_surrounding_sections_from_shrinking(self):

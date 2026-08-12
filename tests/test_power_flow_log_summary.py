@@ -267,15 +267,14 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertEqual(snapshot["power_summary"]["soc"], 105.0)
 
     def test_power_summary_classifies_indexed_chinese_wind_pv_storage_and_load_devices(self):
-        from simu.service import PolarMicrogridSimulator
-
-        workspace = tempfile.TemporaryDirectory()
+        workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
-        service = PolarMicrogridSimulator(
-            ROOT / "models" / "simulator" / "source" / "秦岭站",
-            Path(workspace.name) / "runtime",
-            kernel=lambda _config: None,
-        )
+        model = service.source_model_book
+        next(row for row in model.data["ACGenerator"].data if row["idx"] == "1")["name"] = "交流风电-1"
+        next(row for row in model.data["ACGenerator"].data if row["idx"] == "2")["name"] = "交流柴油发电机-27"
+        next(row for row in model.data["DCGenerator"].data if row["idx"] == "2")["name"] = "直流光伏-1"
+        next(row for row in model.data["DCGenerator"].data if row["idx"] == "3")["name"] = "电化学储能-1"
+        model.data["ACLoad"].data[0]["name"] = "交流负荷-1"
 
         summary = service._power_flow_summary(
             [
@@ -297,18 +296,38 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
 
     def test_power_summary_builds_topology_aware_energy_flow_groups(self):
         import simu_loop
-        from simu.service import PolarMicrogridSimulator
 
-        workspace = tempfile.TemporaryDirectory()
+        workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
-        service = PolarMicrogridSimulator(
-            ROOT / "models" / "simulator" / "source" / "秦岭站",
-            Path(workspace.name) / "runtime",
-            kernel=lambda _config: None,
-        )
-
-        ac_generators = service.source_model_book.data["ACGenerator"].data
-        dc_generators = service.source_model_book.data["DCGenerator"].data
+        model = service.source_model_book
+        ac_generators = model.data["ACGenerator"].data
+        dc_generators = model.data["DCGenerator"].data
+        next(row for row in ac_generators if row["idx"] == "2")["name"] = "交流柴油发电机-27"
+        next(row for row in dc_generators if row["idx"] == "2")["name"] = "直流光伏-1"
+        next(row for row in dc_generators if row["idx"] == "3")["name"] = "电化学储能-1"
+        model.data["ACLoad"].data[0]["name"] = "交流负荷-1"
+        model.data["DCLoad"] = simu_loop.EBook(
+            {
+                "DCLoad": [
+                    {
+                        "idx": 1,
+                        "name": "直流负荷-1",
+                        "node": 1,
+                        "p_set": 12,
+                        "run_stat": 1,
+                    }
+                ]
+            }
+        ).data["DCLoad"]
+        for block_name, reference_field in (
+            ("ACPVGen", "idx_acgenerator"),
+            ("ACStorageGen", "idx_acgenerator"),
+        ):
+            if block_name not in model.data:
+                model.data[block_name] = simu_loop.EBook(
+                    {block_name: [{"idx": 0, reference_field: 0}]}
+                ).data[block_name]
+                model.data[block_name].data.clear()
         next(row for row in dc_generators if row.get("name") == "电化学储能-1")["control_type"] = "V"
         ac_generators.extend(
             [
@@ -316,7 +335,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
                     "idx": 89,
                     "name": "交流直连风电测试",
                     "dev_type": "ac-wind-source",
-                    "node": 29,
+                    "node": 4,
                     "control_type": "PQ",
                     "run_stat": 1,
                     "rated_capacity": 25,
@@ -325,7 +344,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
                     "idx": 90,
                     "name": "交流光伏测试",
                     "dev_type": "ac-pv-source",
-                    "node": 29,
+                    "node": 4,
                     "control_type": "PQ",
                     "run_stat": 1,
                     "rated_capacity": 30,
@@ -334,7 +353,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
                     "idx": 91,
                     "name": "交流构网储能测试",
                     "dev_type": "ac-storage",
-                    "node": 29,
+                    "node": 4,
                     "control_type": "PH",
                     "run_stat": 1,
                     "rated_capacity": 50,
@@ -343,7 +362,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
                     "idx": 92,
                     "name": "交流跟网储能测试",
                     "dev_type": "ac-storage",
-                    "node": 29,
+                    "node": 4,
                     "control_type": "PQ",
                     "run_stat": 1,
                     "rated_capacity": 40,
@@ -356,7 +375,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
                     "idx": 90,
                     "name": "直流风电测试",
                     "dev_type": "dc-wind-source",
-                    "node": 13,
+                    "node": 1,
                     "control_type": "P",
                     "run_stat": 1,
                     "rated_capacity": 20,
@@ -365,7 +384,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
                     "idx": 91,
                     "name": "直流跟网储能测试",
                     "dev_type": "dc-storage",
-                    "node": 13,
+                    "node": 1,
                     "control_type": "P",
                     "run_stat": 1,
                     "rated_capacity": 40,
@@ -788,36 +807,35 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertIsNone(group["targetPower"])
 
     def test_power_summary_keeps_same_named_ac_and_dc_loads_separate(self):
-        from simu.service import PolarMicrogridSimulator
+        import simu_loop
 
-        workspace = tempfile.TemporaryDirectory()
+        workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
-        service = PolarMicrogridSimulator(
-            ROOT / "models" / "simulator" / "source" / "秦岭站",
-            Path(workspace.name) / "runtime",
-            kernel=lambda _config: None,
-        )
         shared_name = "同名交直流负荷"
         service.source_model_book.data["ACLoad"].data.append(
             {
                 "idx": 90,
                 "name": shared_name,
                 "dev_type": "ac-load",
-                "node": 32,
+                "node": 4,
                 "run_stat": 1,
                 "pbase": 0,
             }
         )
-        service.source_model_book.data["DCLoad"].data.append(
+        service.source_model_book.data["DCLoad"] = simu_loop.EBook(
             {
-                "idx": 90,
-                "name": shared_name,
-                "dev_type": "dc-load",
-                "node": 38,
-                "run_stat": 1,
-                "pbase": 0,
+                "DCLoad": [
+                    {
+                        "idx": 90,
+                        "name": shared_name,
+                        "dev_type": "dc-load",
+                        "node": 1,
+                        "run_stat": 1,
+                        "pbase": 0,
+                    }
+                ]
             }
-        )
+        ).data["DCLoad"]
 
         summary = service._power_flow_summary(
             [
@@ -831,21 +849,22 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertEqual(summary["load"], 30.0)
 
     def test_topology_groups_follow_final_real_bus_for_wind_pv_and_storage(self):
-        from simu.service import PolarMicrogridSimulator
+        import simu_loop
 
-        workspace = tempfile.TemporaryDirectory()
+        workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
-        service = PolarMicrogridSimulator(
-            ROOT / "models" / "simulator" / "source" / "秦岭站",
-            Path(workspace.name) / "runtime",
-            kernel=lambda _config: None,
-        )
-
-        ac_nodes = service.source_model_book.data["ACNode"].data
-        dc_nodes = service.source_model_book.data["DCNode"].data
-        ac_generators = service.source_model_book.data["ACGenerator"].data
-        dc_generators = service.source_model_book.data["DCGenerator"].data
-        dcac_converters = service.source_model_book.data["DCACConverter"].data
+        model = service.source_model_book
+        ac_nodes = model.data["ACNode"].data
+        dc_nodes = model.data["DCNode"].data
+        ac_generators = model.data["ACGenerator"].data
+        dc_generators = model.data["DCGenerator"].data
+        dcac_converters = model.data["DCACConverter"].data
+        next(row for row in ac_generators if row["idx"] == "1")["name"] = "交流风电-1"
+        if "ACStorageGen" not in model.data:
+            model.data["ACStorageGen"] = simu_loop.EBook(
+                {"ACStorageGen": [{"idx": 0, "idx_acgenerator": 0}]}
+            ).data["ACStorageGen"]
+            model.data["ACStorageGen"].data.clear()
 
         ac_nodes.append({"idx": 90, "name": "跨域储能交流端", "vbase": 380, "run_stat": 1})
         dc_nodes.append({"idx": 90, "name": "跨域光伏直流端", "vbase": 750, "run_stat": 1})
@@ -877,7 +896,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
                     "idx": 90,
                     "name": "光伏并网逆变器测试",
                     "dev_type": "acdc-converter",
-                    "ac_node": 29,
+                    "ac_node": 4,
                     "dc_node": 90,
                     "run_stat": 1,
                 },
@@ -886,7 +905,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
                     "name": "储能并网整流器测试",
                     "dev_type": "acdc-converter",
                     "ac_node": 90,
-                    "dc_node": 13,
+                    "dc_node": 1,
                     "run_stat": 1,
                 },
             ]
@@ -908,12 +927,15 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
 
         groups = summary["flowGroups"]
         self.assertEqual(groups["dcWind"]["power"], 3.0)
-        self.assertIsNone(groups["acWind"]["power"])
-        self.assertEqual(groups["acWind"]["measuredCount"], 0)
+        self.assertIsNone(groups.get("acWind", {}).get("power"))
+        self.assertEqual(groups.get("acWind", {}).get("measuredCount", 0), 0)
         self.assertEqual(groups["acSolar"]["power"], 5.0)
         self.assertEqual(groups["dcGridFollowingStorage"]["power"], -7.0)
-        self.assertIsNone(groups["acGridFollowingStorage"]["power"])
-        self.assertEqual(groups["acGridFollowingStorage"]["measuredCount"], 0)
+        self.assertIsNone(groups.get("acGridFollowingStorage", {}).get("power"))
+        self.assertEqual(
+            groups.get("acGridFollowingStorage", {}).get("measuredCount", 0),
+            0,
+        )
 
     def test_topology_groups_exclude_retired_and_dead_island_power(self):
         workspace, service = self._make_service()
@@ -1010,6 +1032,182 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
 
         group = summary["flowGroups"]["dcGridFormingStorage"]
         self.assertAlmostEqual(group["soc"], 62.5)
+
+    def test_hydrogen_chain_has_dedicated_groups_and_keeps_electrolyzer_in_green_load(self):
+        import simu_loop
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        model = service.source_model_book
+        model.data["ACLoad"].data.append(
+            {
+                "idx": 90,
+                "name": "electrolyzer-ac-endpoint",
+                "dev_type": "ac-electrolyzer",
+                "node": 6,
+                "p_set": 28.0,
+                "pbase": 0.0,
+                "run_stat": 1,
+            }
+        )
+        model.data["DCGenerator"].data.append(
+            {
+                "idx": 90,
+                "name": "fuel-cell-dc-endpoint",
+                "dev_type": "dc-fuel-cell",
+                "node": 1,
+                "control_type": "P",
+                "p_set": 11.0,
+                "run_stat": 1,
+            }
+        )
+        hydrogen_blocks = simu_loop.EBook(
+            {
+                "HydroSource": [
+                    {
+                        "idx": 1,
+                        "name": "electrolyzer-hydrogen-endpoint",
+                        "dev_type": "ac-electrolyzer",
+                        "node": 1,
+                        "flow_set": 5.5,
+                        "run_stat": 1,
+                    }
+                ],
+                "HydroLoad": [
+                    {
+                        "idx": 1,
+                        "name": "fuel-cell-hydrogen-endpoint",
+                        "dev_type": "dc-fuel-cell",
+                        "node": 1,
+                        "flow_set": 7.5,
+                        "run_stat": 1,
+                    }
+                ],
+                "HydroStorage": [
+                    {
+                        "idx": 1,
+                        "name": "hydrogen-tank-1",
+                        "dev_type": "hydrogen-tank",
+                        "node": 1,
+                        "capacity": 20000.0,
+                        "run_stat": 1,
+                    }
+                ],
+                "AcE2Hydro": [
+                    {
+                        "idx": 1,
+                        "name": "electrolyzer-1",
+                        "control_type": "P",
+                        "run_stat": 1,
+                        "idx_ac_load_t1": 90,
+                        "idx_h2_unit_t2": 1,
+                        "e2h_coeff": 0.2,
+                    }
+                ],
+                "Hydro2DcE": [
+                    {
+                        "idx": 1,
+                        "name": "fuel-cell-1",
+                        "control_type": "P",
+                        "run_stat": 1,
+                        "idx_dc_unit_t1": 90,
+                        "idx_h2_load_t2": 1,
+                        "h2e_coeff": 1.5,
+                    }
+                ],
+            }
+        )
+        for block_name, block in hydrogen_blocks.data.items():
+            model.data[block_name] = block
+
+        service.runtime_stat_book.data["RunStat"].data.extend(
+            [
+                {"dev_type": "AcE2Hydro", "dev_name": "electrolyzer-1", "run_stat": 1},
+                {"dev_type": "Hydro2DcE", "dev_name": "fuel-cell-1", "run_stat": 1},
+                {"dev_type": "HydroStorage", "dev_name": "hydrogen-tank-1", "run_stat": 1},
+            ]
+        )
+        service.runtime_stat_book.data["SetValue"].data.extend(
+            [
+                {"dev_type": "ACLoad", "dev_name": "electrolyzer-ac-endpoint", "set_type": "p_set", "set_value": 28.0},
+                {"dev_type": "HydroSource", "dev_name": "electrolyzer-hydrogen-endpoint", "set_type": "flow_set", "set_value": 5.5},
+                {"dev_type": "DCGenerator", "dev_name": "fuel-cell-dc-endpoint", "set_type": "p_set", "set_value": 11.0},
+                {"dev_type": "HydroLoad", "dev_name": "fuel-cell-hydrogen-endpoint", "set_type": "flow_set", "set_value": 7.5},
+            ]
+        )
+
+        summary = service._power_flow_summary(
+            [
+                {"dev_type": "ACLoad", "dev_name": "load_ac_1", "meas_type": "P_LOAD", "value": 90.0},
+                {"dev_type": "ACLoad", "dev_name": "electrolyzer-ac-endpoint", "meas_type": "P_LOAD", "value": 30.0},
+                {"dev_type": "ACGenerator", "dev_name": "diesel_300kw", "meas_type": "P_GEN", "value": 20.0},
+                {"dev_type": "AcE2Hydro", "dev_name": "electrolyzer-1", "meas_type": "P", "value": 30.0},
+                {"dev_type": "AcE2Hydro", "dev_name": "electrolyzer-1", "meas_type": "FLOW", "value": 6.0},
+                {"dev_type": "Hydro2DcE", "dev_name": "fuel-cell-1", "meas_type": "P", "value": 12.0},
+                {"dev_type": "Hydro2DcE", "dev_name": "fuel-cell-1", "meas_type": "FLOW", "value": 8.0},
+                {"dev_type": "HydroStorage", "dev_name": "hydrogen-tank-1", "meas_type": "PRESS", "value": 32.0},
+                {"dev_type": "HydroStorage", "dev_name": "hydrogen-tank-1", "meas_type": "FLOW", "value": -2.5},
+                {"dev_type": "HydroStorage", "dev_name": "hydrogen-tank-1", "meas_type": "GAS_QUANTITY", "value": 15000.0},
+                {"dev_type": "HydroStorage", "dev_name": "hydrogen-tank-1", "meas_type": "SOC", "value": 0.62},
+            ]
+        )
+
+        groups = summary["flowGroups"]
+        self.assertEqual(groups["acLoad"]["power"], 90.0)
+        self.assertEqual(groups["acLoad"]["totalCount"], 1)
+
+        electrolyzer = groups["electrolyzer"]
+        self.assertEqual(electrolyzer["power"], 30.0)
+        self.assertEqual(electrolyzer["targetPower"], 28.0)
+        self.assertEqual(electrolyzer["gasFlow"], 6.0)
+        self.assertEqual(electrolyzer["targetGasFlow"], 5.5)
+        self.assertEqual(electrolyzer["totalCount"], 1)
+
+        fuel_cell = groups["fuelCell"]
+        self.assertEqual(fuel_cell["power"], 12.0)
+        self.assertEqual(fuel_cell["targetPower"], 11.0)
+        self.assertEqual(fuel_cell["gasFlow"], 8.0)
+        self.assertEqual(fuel_cell["targetGasFlow"], 7.5)
+        self.assertEqual(fuel_cell["totalCount"], 1)
+
+        tank = groups["hydrogenStorage"]
+        self.assertEqual(tank["gasFlow"], -2.5)
+        self.assertEqual(tank["gasPressure"], 32.0)
+        self.assertEqual(tank["gasQuantity"], 15000.0)
+        self.assertEqual(tank["soc"], 62.0)
+        self.assertEqual(tank["totalCount"], 1)
+        self.assertEqual(tank["status"], "storingHydrogen")
+        self.assertEqual(tank["flowDirection"], "toTank")
+
+        self.assertEqual(summary["load"], 120.0)
+        self.assertEqual(summary["generation"], 32.0)
+        self.assertEqual(summary["consumption"], 120.0)
+        self.assertEqual(summary["greenPower"], 100.0)
+        self.assertAlmostEqual(summary["greenPowerShare"], 100.0 / 120.0 * 100.0)
+        self.assertEqual(summary["counts"]["electrolyzer"], 1)
+        self.assertEqual(summary["counts"]["fuelCell"], 1)
+        self.assertEqual(summary["counts"]["hydrogenStorage"], 1)
+
+    def test_hydrogen_storage_flow_direction_matches_state_integration_sign(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        for gas_flow, expected_status, expected_direction in (
+            (2.5, "releasingHydrogen", "fromTank"),
+            (-2.5, "storingHydrogen", "toTank"),
+        ):
+            with self.subTest(gas_flow=gas_flow):
+                status, direction = service._flow_group_status(
+                    {
+                        "category": "hydrogenStorage",
+                        "gasFlow": gas_flow,
+                        "totalCount": 1,
+                        "onlineCount": 1,
+                    }
+                )
+                self.assertEqual(status, expected_status)
+                self.assertEqual(direction, expected_direction)
 
 
 if __name__ == "__main__":

@@ -2686,6 +2686,29 @@ class PolarMicrogridSimulator:
                 filtered.append(row)
         return filtered
 
+    @staticmethod
+    def _validate_run_command_items(
+        items: Sequence[Mapping[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        validated: List[Dict[str, Any]] = []
+        for item in items:
+            dev_type = str(item.get("dev_type", "")).strip()
+            dev_name = str(item.get("dev_name", "")).strip()
+            row: Dict[str, Any] = {"dev_type": dev_type, "dev_name": dev_name}
+            for field in ("run_stat", "status"):
+                if field not in item or item.get(field, "") == "":
+                    continue
+                number = _to_float(item.get(field), None)
+                if number not in (0.0, 1.0):
+                    raise ValueError(
+                        f"遥控安全校验失败：{dev_type}/{dev_name} 的 {field}="
+                        f"{item.get(field)} 只能取 0 或 1；"
+                        "本批指令未下发，仿真边界未修改。"
+                    )
+                row[field] = _number_text(number)
+            validated.append(row)
+        return validated
+
     def _filter_defined_set_command_items(self, items: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
         allowed_keys = self._defined_set_control_keys()
         filtered: List[Dict[str, Any]] = []
@@ -5679,8 +5702,11 @@ class PolarMicrogridSimulator:
             normalized_run_items = self._filter_defined_run_command_items(requested_run_items)
             normalized_set_items = self._filter_defined_set_command_items(requested_set_items)
             eligible_source = _is_trainee_command_source(source)
-            if eligible_source and normalized_set_items:
+            if eligible_source and (normalized_run_items or normalized_set_items):
                 try:
+                    normalized_run_items = self._validate_run_command_items(
+                        normalized_run_items
+                    )
                     normalized_set_items = self._validate_set_command_items(
                         normalized_set_items,
                         strict=True,

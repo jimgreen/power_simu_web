@@ -454,7 +454,11 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
 
         narrow = self.styles.split("@container (max-width: 940px) and (min-width: 761px) {", 1)[1]
         narrow_card = narrow.split(".energy-hydrogen-card {", 1)[1].split("}", 1)[0]
+        medium_height = self.styles.split("@container (max-height: 460px) {", 1)[1].split("@container (max-height: 360px) {", 1)[0]
+        medium_count = medium_height.split(".energy-hydrogen-card > small {", 1)[1].split("}", 1)[0]
         self.assertIn("grid-column: 1 / -1;", narrow_card)
+        self.assertIn("font-size: 7px;", medium_count)
+        self.assertNotIn("display: none;", medium_count)
 
     def test_trainee_weather_display_falls_back_when_environment_scada_is_invalid(self):
         weather_block = self.script.split("function currentWeatherLoad", 1)[1].split(

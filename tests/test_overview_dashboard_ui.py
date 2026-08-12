@@ -609,7 +609,11 @@ class OverviewDashboardUiTest(unittest.TestCase):
 
         narrow = styles.split("@container (max-width: 940px) and (min-width: 761px) {", 1)[1]
         narrow_card = narrow.split(".energy-hydrogen-card {", 1)[1].split("}", 1)[0]
+        medium_height = styles.split("@container (max-height: 460px) {", 1)[1].split("@container (max-height: 360px) {", 1)[0]
+        medium_count = medium_height.split(".energy-hydrogen-card > small {", 1)[1].split("}", 1)[0]
         self.assertIn("grid-column: 1 / -1;", narrow_card)
+        self.assertIn("font-size: 7px;", medium_count)
+        self.assertNotIn("display: none;", medium_count)
 
     def test_overview_converter_card_sits_above_the_trunk_icon(self):
         styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")

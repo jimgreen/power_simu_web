@@ -5407,7 +5407,15 @@ class PolarMicrogridSimulator:
                         if profile.get("category") == "converter"
                         else ""
                     ),
-                    "controlMode": "gridForming" if "GridForming" in group_key else "gridFollowing" if "GridFollowing" in group_key else "",
+                    "controlMode": (
+                        str(profile.get("control_mode", "")).strip().upper()
+                        if profile.get("category") in {"fuelCell", "electrolyzer"}
+                        else "gridForming"
+                        if "GridForming" in group_key
+                        else "gridFollowing"
+                        if "GridFollowing" in group_key
+                        else ""
+                    ),
                     "power": None,
                     "targetPower": None,
                     "maxAvailablePower": None,
@@ -5423,6 +5431,13 @@ class PolarMicrogridSimulator:
                     "measuredCount": 0,
                 },
             )
+            if profile.get("category") in {"fuelCell", "electrolyzer"}:
+                profile_mode = str(profile.get("control_mode", "")).strip().upper()
+                group_mode = str(group.get("controlMode", "")).strip().upper()
+                if profile_mode and group_mode and profile_mode != group_mode:
+                    group["controlMode"] = "MIXED"
+                elif profile_mode:
+                    group["controlMode"] = profile_mode
             group["totalCount"] += 1
             if int(profile.get("run_stat", 1) or 0) == 0:
                 group["retiredCount"] += 1

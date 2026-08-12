@@ -1129,8 +1129,8 @@ body.is-vertical-splitter-dragging {
   --energy-list-gap: clamp(3px, 1.25cqh, 10px);
   --energy-summary-top: clamp(124px, 25cqh, 160px);
   --energy-hydrogen-top: clamp(6px, 1.8cqh, 16px);
-  --energy-central-upper-shift: clamp(0px, calc(13cqh - 57px), 60px);
-  --energy-storage-gap: clamp(34px, 14cqh, 112px);
+  --energy-central-upper-shift: clamp(12px, calc(13cqh - 45px), 72px);
+  --energy-storage-gap: clamp(122px, 19cqh, 150px);
   position: relative;
   width: min(100%, 1540px);
   min-height: 0;
@@ -1657,10 +1657,23 @@ body.is-vertical-splitter-dragging {
   padding: 6px 8px;
   gap: 2px;
 }
-.energy-hydrogen-card > span,
-.energy-hydrogen-card > small {
+.energy-hydrogen-card-head {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+.energy-hydrogen-card-head > span,
+.energy-hydrogen-card-count {
   font-size: 10px;
   line-height: 12px;
+  white-space: nowrap;
+}
+.energy-hydrogen-card-count {
+  margin-left: auto;
+  color: var(--muted);
+  text-align: right;
 }
 .energy-hydrogen-readings {
   grid-template-columns: minmax(0, 1fr);
@@ -1710,8 +1723,8 @@ body.is-vertical-splitter-dragging {
 }
 .energy-converter-card {
   position: absolute;
-  top: auto;
-  bottom: calc(100% + 7px);
+  top: calc(100% + 7px);
+  bottom: auto;
   width: 100%;
   min-height: 68px;
   text-align: center;
@@ -2091,8 +2104,8 @@ body.is-vertical-splitter-dragging {
     grid-column: 1 / -1;
     padding-inline: 5px;
   }
-  .energy-hydrogen-card > span,
-  .energy-hydrogen-card > small,
+  .energy-hydrogen-card-head > span,
+  .energy-hydrogen-card-count,
   .energy-hydrogen-readings .energy-device-reading strong {
     font-size: 8px;
   }
@@ -2182,7 +2195,7 @@ body.is-vertical-splitter-dragging {
     --energy-device-icon-glyph-size: 34px;
     --energy-summary-top: clamp(86px, 28cqh, 112px);
     --energy-hydrogen-top: 2px;
-    --energy-storage-gap: clamp(28px, 13cqh, 58px);
+    --energy-storage-gap: clamp(116px, 29cqh, 128px);
   }
   .energy-device-card {
     min-height: 64px;
@@ -2236,37 +2249,37 @@ body.is-vertical-splitter-dragging {
   }
   .energy-hydrogen-device,
   .energy-hydrogen-card {
-    min-height: 52px;
+    min-height: 76px;
   }
   .energy-hydrogen-device {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 4px;
+    grid-template-columns: 36px minmax(0, 1fr);
+    gap: 5px;
   }
   .energy-hydrogen-icon {
-    width: 30px;
-    height: 30px;
-    flex-basis: 30px;
+    width: 36px;
+    height: 36px;
+    flex-basis: 36px;
   }
   .energy-hydrogen-icon svg {
-    width: 21px;
-    height: 21px;
+    width: 25px;
+    height: 25px;
   }
   .energy-hydrogen-card {
-    padding: 2px 5px;
-    gap: 0;
+    padding: 4px 6px;
+    gap: 1px;
   }
-  .energy-hydrogen-card > small {
-    font-size: 7px;
-    line-height: 8px;
+  .energy-hydrogen-card-count {
+    font-size: 9px;
+    line-height: 11px;
   }
-  .energy-hydrogen-card > span,
+  .energy-hydrogen-card-head > span,
   .energy-hydrogen-readings .energy-device-reading strong {
-    font-size: 8px;
-    line-height: 9px;
+    font-size: 10px;
+    line-height: 11px;
   }
   .energy-hydrogen-readings .energy-device-reading span {
-    font-size: 7px;
-    line-height: 9px;
+    font-size: 9px;
+    line-height: 11px;
   }
 }
 @container (max-height: 360px) {
@@ -2328,7 +2341,25 @@ body.is-vertical-splitter-dragging {
   .energy-hydrogen-card {
     min-height: 40px;
   }
-  .energy-hydrogen-card > span,
+  .energy-hydrogen-device {
+    grid-template-columns: 24px minmax(0, 1fr);
+    gap: 3px;
+  }
+  .energy-hydrogen-icon {
+    width: 24px;
+    height: 24px;
+    flex-basis: 24px;
+  }
+  .energy-hydrogen-icon svg {
+    width: 17px;
+    height: 17px;
+  }
+  .energy-hydrogen-card {
+    padding: 2px 4px;
+    gap: 0;
+  }
+  .energy-hydrogen-card-head > span,
+  .energy-hydrogen-card-count,
   .energy-hydrogen-readings .energy-device-reading strong {
     font-size: 7px;
     line-height: 8px;
@@ -2354,7 +2385,8 @@ body.is-vertical-splitter-dragging {
   }
   .energy-converter-card {
     min-height: clamp(40px, 15cqh, 48px);
-    bottom: calc(100% + 6px);
+    top: calc(100% + 6px);
+    bottom: auto;
   }
   .energy-acdc-converter strong {
     font-size: 17px;
@@ -5001,7 +5033,7 @@ th {
 
 @media (max-height: 780px) and (min-width: 821px) {
   .overview-dashboard {
-    --overview-main-min-height: 370px;
+    --overview-main-min-height: 540px;
     grid-template-rows: auto minmax(var(--overview-main-min-height), 1fr) 10px minmax(96px, var(--overview-bottom-height));
     overflow-x: hidden;
     overflow-y: auto;

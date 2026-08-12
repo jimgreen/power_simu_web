@@ -360,7 +360,7 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("--energy-device-icon-size: 52px;", medium)
         self.assertIn("--energy-device-icon-glyph-size: 34px;", medium)
         self.assertIn("--energy-summary-top: clamp(86px, 28cqh, 112px);", medium)
-        self.assertIn("--energy-storage-gap: clamp(28px, 13cqh, 58px);", medium)
+        self.assertIn("--energy-storage-gap: clamp(116px, 29cqh, 128px);", medium)
         self.assertIn("min-height: 64px;", medium)
         self.assertIn("padding: 7px 12px;", medium)
 
@@ -578,7 +578,7 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn(".energy-green-share", narrow_block)
         self.assertIn("position: static;", narrow_block)
 
-    def test_overview_draws_hydrogen_chain_with_dedicated_realtime_and_target_metrics(self):
+    def test_overview_draws_hydrogen_chain_with_only_the_active_target_and_header_count(self):
         html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
         styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
         app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
@@ -597,18 +597,22 @@ class OverviewDashboardUiTest(unittest.TestCase):
         tank = chain.split('data-overview-group="hydrogenStorage"', 1)[1].split("</article>", 1)[0]
         for card in (fuel_cell, electrolyzer):
             self.assertIn("data-overview-power", card)
-            self.assertIn("data-overview-target", card)
             self.assertIn("data-overview-gas-flow", card)
-            self.assertIn("data-overview-target-gas-flow", card)
-            self.assertIn("data-overview-meta", card)
-        for field in ("gas-flow", "gas-pressure", "gas-quantity", "soc"):
+            self.assertEqual(card.count("data-overview-active-target"), 2)
+            self.assertIn("data-overview-count", card)
+            self.assertNotIn("data-overview-target-gas-flow", card)
+            self.assertNotIn("data-overview-meta", card)
+        for field in ("gas-flow", "gas-pressure", "soc"):
             self.assertIn(f"data-overview-{field}", tank)
+        self.assertNotIn("data-overview-gas-quantity", tank)
+        self.assertIn("data-overview-count", tank)
 
         self.assertIn('key: "fuelCell"', app_js)
         self.assertIn('key: "hydrogenStorage"', app_js)
         self.assertIn('key: "electrolyzer"', app_js)
         self.assertIn("const gasFlow = powerSummaryNumber", app_js)
         self.assertIn("targetGasFlow: powerSummaryNumber", app_js)
+        self.assertIn("controlMode: String(data.controlMode", app_js)
         self.assertIn("gasPressure: powerSummaryNumber", app_js)
         self.assertIn("gasQuantity: powerSummaryNumber", app_js)
         hydrogen_state = app_js.split("function overviewHydrogenStorageFlowState", 1)[1].split(
@@ -618,9 +622,11 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn('? { status: "releasingHydrogen", flowDirection: "fromTank" }', hydrogen_state)
         self.assertIn(': { status: "storingHydrogen", flowDirection: "toTank" }', hydrogen_state)
         self.assertIn('node.querySelector("[data-overview-gas-flow]")', app_js)
-        self.assertIn('node.querySelector("[data-overview-target-gas-flow]")', app_js)
+        self.assertIn("function overviewHydrogenActiveTarget", app_js)
+        self.assertIn('node.querySelector("[data-overview-active-target-label]")', app_js)
+        self.assertIn('node.querySelector("[data-overview-active-target]")', app_js)
+        self.assertIn('node.querySelector("[data-overview-count]")', app_js)
         self.assertIn('node.querySelector("[data-overview-gas-pressure]")', app_js)
-        self.assertIn('node.querySelector("[data-overview-gas-quantity]")', app_js)
         self.assertIn('node.querySelector("[data-overview-soc]")', app_js)
 
         self.assertIn(".energy-hydrogen-chain {", styles)
@@ -634,20 +640,34 @@ class OverviewDashboardUiTest(unittest.TestCase):
         narrow = styles.split("@container (max-width: 940px) and (min-width: 761px) {", 1)[1]
         narrow_card = narrow.split(".energy-hydrogen-card {", 1)[1].split("}", 1)[0]
         medium_height = styles.split("@container (max-height: 460px) {", 1)[1].split("@container (max-height: 360px) {", 1)[0]
-        medium_count = medium_height.split(".energy-hydrogen-card > small {", 1)[1].split("}", 1)[0]
+        medium_count = medium_height.split(".energy-hydrogen-card-count {", 1)[1].split("}", 1)[0]
+        medium_device = medium_height.split(".energy-hydrogen-device {", 1)[1].split("}", 1)[0]
         self.assertIn("grid-column: 1 / -1;", narrow_card)
-        self.assertIn("font-size: 7px;", medium_count)
+        self.assertIn(".energy-hydrogen-card-head {", styles)
+        self.assertIn("justify-content: space-between;", styles)
+        self.assertIn("font-size: 9px;", medium_count)
         self.assertNotIn("display: none;", medium_count)
+        self.assertIn("grid-template-columns: 36px minmax(0, 1fr);", medium_device)
+        self.assertIn("min-height: 76px;", medium_height)
 
-    def test_overview_converter_card_sits_above_the_trunk_icon(self):
+    def test_overview_converter_card_sits_below_the_trunk_icon(self):
         styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
+        html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
 
         converter_card_block = styles.split(".energy-converter-card {", 1)[1].split("}", 1)[0]
         self.assertIn("position: absolute;", converter_card_block)
-        self.assertIn("top: auto;", converter_card_block)
-        self.assertIn("bottom: calc(100% + 7px);", converter_card_block)
+        self.assertIn("top: calc(100% + 7px);", converter_card_block)
+        self.assertIn("bottom: auto;", converter_card_block)
 
         compact_styles = styles.split("@container (max-height: 320px) {", 1)[1]
+        compact_converter_card = compact_styles.split(".energy-converter-card {", 1)[1].split("}", 1)[0]
+        self.assertIn("top: calc(100% + 6px);", compact_converter_card)
+        self.assertIn("bottom: auto;", compact_converter_card)
+
+        self.assertNotIn('<div class="energy-column-title">构网储能</div>', html)
+        self.assertIn('data-overview-group="dcGridFormingStorage"', html)
+        self.assertIn('data-overview-group="acGridFormingStorage"', html)
+
         compact_summary_block = compact_styles.split(".energy-green-share {", 1)[1].split("}", 1)[0]
         self.assertIn(
             "top: calc(var(--energy-summary-top) + var(--energy-central-upper-shift));",
@@ -800,7 +820,7 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("--energy-stack-gap: clamp(4px, 1.5cqh, 12px);", energy_flow_block)
         self.assertIn("--energy-list-gap: clamp(3px, 1.25cqh, 10px);", energy_flow_block)
         self.assertIn("--energy-summary-top: clamp(124px, 25cqh, 160px);", energy_flow_block)
-        self.assertIn("--energy-storage-gap: clamp(34px, 14cqh, 112px);", energy_flow_block)
+        self.assertIn("--energy-storage-gap: clamp(122px, 19cqh, 150px);", energy_flow_block)
         self.assertIn("min-height: 0;", energy_board_block)
         self.assertIn("place-items: center;", energy_board_block)
         self.assertIn("container-type: size;", energy_board_block)
@@ -879,7 +899,7 @@ class OverviewDashboardUiTest(unittest.TestCase):
 
         self.assertIn("overflow-y: auto;", dashboard_block)
         self.assertIn("overflow-x: hidden;", dashboard_block)
-        self.assertIn("--overview-main-min-height: 370px;", dashboard_block)
+        self.assertIn("--overview-main-min-height: 540px;", dashboard_block)
         self.assertIn("min-height: var(--overview-main-min-height);", main_grid_block)
 
     def test_overview_central_upper_group_moves_down_responsively(self):
@@ -893,7 +913,7 @@ class OverviewDashboardUiTest(unittest.TestCase):
         )[0]
         compact_block = styles.split("@container (max-height: 320px) {", 1)[1]
 
-        self.assertIn("--energy-central-upper-shift: clamp(0px, calc(13cqh - 57px), 60px);", flow_block)
+        self.assertIn("--energy-central-upper-shift: clamp(12px, calc(13cqh - 45px), 72px);", flow_block)
         self.assertIn("--energy-hydrogen-top: clamp(6px, 1.8cqh, 16px);", flow_block)
         self.assertIn(
             "top: calc(var(--energy-summary-top) + var(--energy-central-upper-shift));",

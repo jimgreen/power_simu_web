@@ -10220,6 +10220,7 @@ function normalizeOverviewFlowGroups(rawGroups, power) {
       category: definition.category,
       region: definition.region,
       color: definition.color,
+      controlMode: String(data.controlMode ?? fallbackData.controlMode ?? "").trim().toUpperCase(),
       present: totalCount > 0,
       power: groupPower,
       targetPower: powerSummaryNumber(data.targetPower ?? fallbackData.targetPower),
@@ -10403,6 +10404,23 @@ function overviewFlowGroupMeta(group) {
   return `${status} · SOC ${soc} · ${count}`;
 }
 
+function overviewHydrogenActiveTarget(group) {
+  const mode = String(group.controlMode || "").trim().toUpperCase();
+  if (mode === "FLOW") {
+    return {
+      label: group.category === "fuelCell" ? "耗气目标" : "产气目标",
+      value: overviewGasFlowText(group.targetGasFlow),
+    };
+  }
+  if (mode === "P") {
+    return {
+      label: group.category === "fuelCell" ? "发电目标" : "耗电目标",
+      value: overviewPowerText(group.targetPower),
+    };
+  }
+  return { label: "有效目标", value: "--" };
+}
+
 function renderOverviewFlowGroups(power) {
   const groups = power.flowGroups || {};
   const visibleGroups = OVERVIEW_FLOW_GROUP_DEFINITIONS
@@ -10430,6 +10448,9 @@ function renderOverviewFlowGroups(power) {
     const gasQuantityNode = node.querySelector("[data-overview-gas-quantity]");
     const socNode = node.querySelector("[data-overview-soc]");
     const metaNode = node.querySelector("[data-overview-meta]");
+    const countNode = node.querySelector("[data-overview-count]");
+    const activeTargetLabelNode = node.querySelector("[data-overview-active-target-label]");
+    const activeTargetNode = node.querySelector("[data-overview-active-target]");
     if (powerNode) powerNode.textContent = overviewPowerText(group.power);
     if (targetNode) targetNode.textContent = overviewPowerText(group.targetPower);
     if (maxAvailableNode) maxAvailableNode.textContent = overviewPowerText(group.maxAvailablePower);
@@ -10439,22 +10460,27 @@ function renderOverviewFlowGroups(power) {
     if (gasQuantityNode) gasQuantityNode.textContent = overviewGasQuantityText(group.gasQuantity);
     if (socNode) socNode.textContent = overviewPercentText(group.soc);
     if (metaNode) metaNode.textContent = overviewFlowGroupMeta(group);
+    if (countNode) countNode.textContent = `数量 ${group.onlineCount}/${group.totalCount} 台`;
+    const activeTarget = ["fuelCell", "electrolyzer"].includes(definition.key)
+      ? overviewHydrogenActiveTarget(group)
+      : null;
+    if (activeTargetLabelNode) activeTargetLabelNode.textContent = activeTarget?.label || "有效目标";
+    if (activeTargetNode) activeTargetNode.textContent = activeTarget?.value || "--";
     const tooltipParts = [
       node.querySelector("span")?.textContent || "设备",
       `当前 ${overviewPowerText(group.power)}`,
-      `目标 ${overviewPowerText(group.targetPower)}`,
     ];
+    if (activeTarget) tooltipParts.push(`${activeTarget.label} ${activeTarget.value}`);
+    else tooltipParts.push(`目标 ${overviewPowerText(group.targetPower)}`);
     if (["dcWind", "dcSolar", "acWind", "acSolar"].includes(definition.key)) {
       tooltipParts.push(`最大可发 ${overviewPowerText(group.maxAvailablePower)}`);
     }
     if (["fuelCell", "electrolyzer"].includes(definition.key)) {
       tooltipParts.push(`气流实时 ${overviewGasFlowText(group.gasFlow)}`);
-      tooltipParts.push(`气流目标 ${overviewGasFlowText(group.targetGasFlow)}`);
     }
     if (definition.key === "hydrogenStorage") {
       tooltipParts.push(`气流量 ${overviewGasFlowText(group.gasFlow)}`);
       tooltipParts.push(`储气压力 ${overviewGasPressureText(group.gasPressure)}`);
-      tooltipParts.push(`储气量 ${overviewGasQuantityText(group.gasQuantity)}`);
       tooltipParts.push(`SOC ${overviewPercentText(group.soc)}`);
     }
     tooltipParts.push(overviewFlowGroupMeta(group));

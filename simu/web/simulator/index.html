@@ -253,14 +253,15 @@
                           <svg aria-hidden="true" viewBox="0 0 32 32"><use href="#energy-icon-fuel-cell"></use></svg>
                         </div>
                         <div class="energy-device-card energy-hydrogen-card">
-                          <span>燃料电池</span>
+                          <div class="energy-hydrogen-card-head">
+                            <span>燃料电池</span>
+                            <small class="energy-hydrogen-card-count" data-overview-count>数量 0/0 台</small>
+                          </div>
                           <div class="energy-device-readings energy-hydrogen-readings">
                             <div class="energy-device-reading"><span>发电实时</span><strong data-overview-power>--</strong></div>
-                            <div class="energy-device-reading"><span>发电目标</span><strong data-overview-target>--</strong></div>
+                            <div class="energy-device-reading"><span data-overview-active-target-label>有效目标</span><strong data-overview-active-target>--</strong></div>
                             <div class="energy-device-reading"><span>耗气实时</span><strong data-overview-gas-flow>--</strong></div>
-                            <div class="energy-device-reading"><span>耗气目标</span><strong data-overview-target-gas-flow>--</strong></div>
                           </div>
-                          <small data-overview-meta>数量 0/0 台</small>
                         </div>
                       </article>
                       <i class="energy-hydrogen-link is-gas" data-hydrogen-link="fuel-cell-gas" data-flow-active="false" data-flow-direction="left" aria-hidden="true"></i>
@@ -269,14 +270,15 @@
                           <svg aria-hidden="true" viewBox="0 0 32 32"><use href="#energy-icon-hydrogen-tank"></use></svg>
                         </div>
                         <div class="energy-device-card energy-hydrogen-card">
-                          <span>储氢罐</span>
+                          <div class="energy-hydrogen-card-head">
+                            <span>储氢罐</span>
+                            <small class="energy-hydrogen-card-count" data-overview-count>数量 0/0 台</small>
+                          </div>
                           <div class="energy-device-readings energy-hydrogen-readings">
                             <div class="energy-device-reading"><span>气流量</span><strong data-overview-gas-flow>--</strong></div>
                             <div class="energy-device-reading"><span>储气压力</span><strong data-overview-gas-pressure>--</strong></div>
-                            <div class="energy-device-reading"><span>储气量</span><strong data-overview-gas-quantity>--</strong></div>
                             <div class="energy-device-reading"><span>SOC</span><strong data-overview-soc>--</strong></div>
                           </div>
-                          <small data-overview-meta>数量 0/0 台</small>
                         </div>
                       </article>
                       <i class="energy-hydrogen-link is-gas" data-hydrogen-link="electrolyzer-gas" data-flow-active="false" data-flow-direction="left" aria-hidden="true"></i>
@@ -285,14 +287,15 @@
                           <svg aria-hidden="true" viewBox="0 0 32 32"><use href="#energy-icon-electrolyzer"></use></svg>
                         </div>
                         <div class="energy-device-card energy-hydrogen-card">
-                          <span>电制氢</span>
+                          <div class="energy-hydrogen-card-head">
+                            <span>电制氢</span>
+                            <small class="energy-hydrogen-card-count" data-overview-count>数量 0/0 台</small>
+                          </div>
                           <div class="energy-device-readings energy-hydrogen-readings">
                             <div class="energy-device-reading"><span>耗电实时</span><strong data-overview-power>--</strong></div>
-                            <div class="energy-device-reading"><span>耗电目标</span><strong data-overview-target>--</strong></div>
+                            <div class="energy-device-reading"><span data-overview-active-target-label>有效目标</span><strong data-overview-active-target>--</strong></div>
                             <div class="energy-device-reading"><span>产气实时</span><strong data-overview-gas-flow>--</strong></div>
-                            <div class="energy-device-reading"><span>产气目标</span><strong data-overview-target-gas-flow>--</strong></div>
                           </div>
-                          <small data-overview-meta>数量 0/0 台</small>
                         </div>
                       </article>
                       <i class="energy-hydrogen-link is-electric" data-hydrogen-link="electrolyzer-electric" data-flow-active="false" data-flow-direction="left" aria-hidden="true"></i>
@@ -312,7 +315,6 @@
                     </article>
 
                     <section class="energy-grid-forming-stack" id="overviewGridFormingStack" data-overview-region="forming" aria-label="构网储能" hidden>
-                      <div class="energy-column-title">构网储能</div>
                       <div class="energy-grid-forming-list">
                         <section class="energy-storage-branch-wrap" data-overview-group-wrapper="dcGridFormingStorage" data-storage-flow="idle" hidden>
                           <div class="energy-storage-branch" aria-hidden="true"></div>

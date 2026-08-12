@@ -1158,6 +1158,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertEqual(groups["acLoad"]["totalCount"], 1)
 
         electrolyzer = groups["electrolyzer"]
+        self.assertEqual(electrolyzer["controlMode"], "P")
         self.assertEqual(electrolyzer["power"], 30.0)
         self.assertEqual(electrolyzer["targetPower"], 28.0)
         self.assertEqual(electrolyzer["gasFlow"], 6.0)
@@ -1165,6 +1166,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertEqual(electrolyzer["totalCount"], 1)
 
         fuel_cell = groups["fuelCell"]
+        self.assertEqual(fuel_cell["controlMode"], "P")
         self.assertEqual(fuel_cell["power"], 12.0)
         self.assertEqual(fuel_cell["targetPower"], 11.0)
         self.assertEqual(fuel_cell["gasFlow"], 8.0)

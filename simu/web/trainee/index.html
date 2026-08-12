@@ -1078,6 +1078,8 @@
                     <tr><td><strong>运行日志分页条数</strong><small>运行日志页面每页展示的记录数量</small></td><td id="currentWebRuntimeLogPageSize" class="numeric-cell">20</td><td><input id="webRuntimeLogPageSize" type="number" min="5" max="200" step="1" data-runtime-setting="runtime_log_page_size" /></td><td>条</td></tr>
                     <tr><td><strong>运行日志缓存上限</strong><small>浏览器内存中保留的运行日志数量</small></td><td id="currentWebRuntimeLogCacheLimit" class="numeric-cell">300</td><td><input id="webRuntimeLogCacheLimit" type="number" min="50" max="5000" step="10" data-runtime-setting="runtime_log_cache_limit" /></td><td>条</td></tr>
                     <tr><td><strong>接收状态同步周期</strong><small>WEB 前端读取学员台后台接收状态的周期</small></td><td id="currentWebRuntimeReceiveStateSync" class="numeric-cell">5</td><td><input id="webRuntimeReceiveStateSync" type="number" min="0.5" max="60" step="0.5" data-runtime-setting="receive_state_sync_seconds" /></td><td>s</td></tr>
+                    <tr><td><strong>电功率箭头显示门槛</strong><small>绝对值不超过门槛时隐藏电气潮流箭头</small></td><td id="currentWebRuntimeDiagramElectricFlowThreshold" class="numeric-cell">0.1</td><td><input id="webRuntimeDiagramElectricFlowThreshold" type="number" min="0" max="1000000" step="0.01" data-runtime-setting="diagram_flow_electric_threshold_kw" /></td><td>kW</td></tr>
+                    <tr><td><strong>氢流量箭头显示门槛</strong><small>绝对值不超过门槛时隐藏氢气流动箭头</small></td><td id="currentWebRuntimeDiagramHydrogenFlowThreshold" class="numeric-cell">0.1</td><td><input id="webRuntimeDiagramHydrogenFlowThreshold" type="number" min="0" max="1000000" step="0.01" data-runtime-setting="diagram_flow_hydrogen_threshold_nm3_h" /></td><td>Nm3/h</td></tr>
                   </tbody>
                 </table>
               </form>
@@ -1229,6 +1231,36 @@
           <label>氢储罐压力死区(%)
             <input id="hydrogenPressureDeadbandRatio" type="number" min="0" max="50" step="0.1" value="5" />
           </label>
+          <fieldset class="renewable-hydrogen-power-settings">
+            <legend>电制氢功率参数</legend>
+            <label>下限(kW)
+              <input id="electrolyzerPowerMinKw" type="number" min="0" step="0.1" value="2" />
+            </label>
+            <label>上限(kW)
+              <input id="electrolyzerPowerMaxKw" type="number" min="0" step="0.1" value="50" />
+            </label>
+            <label>死区(kW)
+              <input id="electrolyzerPowerDeadbandKw" type="number" min="0" step="0.1" value="0" />
+            </label>
+            <label>步长(kW/次决策)
+              <input id="electrolyzerPowerStepKw" type="number" min="0.001" step="0.1" value="2" />
+            </label>
+          </fieldset>
+          <fieldset class="renewable-hydrogen-power-settings">
+            <legend>燃料电池功率参数</legend>
+            <label>下限(kW)
+              <input id="fuelCellPowerMinKw" type="number" min="0" step="0.1" value="3" />
+            </label>
+            <label>上限(kW)
+              <input id="fuelCellPowerMaxKw" type="number" min="0" step="0.1" value="15" />
+            </label>
+            <label>死区(kW)
+              <input id="fuelCellPowerDeadbandKw" type="number" min="0" step="0.1" value="0" />
+            </label>
+            <label>步长(kW/次决策)
+              <input id="fuelCellPowerStepKw" type="number" min="0.001" step="0.1" value="3" />
+            </label>
+          </fieldset>
           <label>新能源弃电权重
             <input id="optimizationRenewableCurtailmentWeight" type="number" min="0" step="0.001" value="1" />
           </label>

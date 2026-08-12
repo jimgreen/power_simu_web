@@ -39,6 +39,8 @@ class WebRuntimeSettingsTest(unittest.TestCase):
         self.assertEqual(simulator["settings"]["frontend_refresh_seconds"], 1.0)
         self.assertEqual(simulator["settings"]["curve_request_timeout_seconds"], 8.0)
         self.assertEqual(simulator["settings"]["runtime_log_delta_batch_size"], 200)
+        self.assertEqual(simulator["settings"]["diagram_flow_electric_threshold_kw"], 0.1)
+        self.assertEqual(simulator["settings"]["diagram_flow_hydrogen_threshold_nm3_h"], 0.1)
         self.assertNotIn("backend_refresh_seconds", simulator["settings"])
         self.assertEqual(
             simulator["constraints"]["frontend_refresh_seconds"],
@@ -49,7 +51,13 @@ class WebRuntimeSettingsTest(unittest.TestCase):
         self.assertEqual(trainee["settings"]["backend_refresh_seconds"], 1.0)
         self.assertEqual(trainee["settings"]["backend_request_timeout_seconds"], 8.0)
         self.assertEqual(trainee["settings"]["receive_max_reconnect_attempts"], 3)
+        self.assertEqual(trainee["settings"]["diagram_flow_electric_threshold_kw"], 0.1)
+        self.assertEqual(trainee["settings"]["diagram_flow_hydrogen_threshold_nm3_h"], 0.1)
         self.assertNotIn("curve_request_timeout_seconds", trainee["settings"])
+        self.assertEqual(
+            trainee["constraints"]["diagram_flow_electric_threshold_kw"],
+            {"type": "number", "min": 0.0, "max": 1000000.0},
+        )
 
     def test_settings_persist_per_model_and_survive_service_restart(self):
         workspace = tempfile.TemporaryDirectory()
@@ -64,6 +72,8 @@ class WebRuntimeSettingsTest(unittest.TestCase):
                 "settings": {
                     "frontend_refresh_seconds": 2.5,
                     "runtime_log_page_size": 35,
+                    "diagram_flow_electric_threshold_kw": 0.25,
+                    "diagram_flow_hydrogen_threshold_nm3_h": 0.4,
                 }
             },
         )
@@ -81,6 +91,14 @@ class WebRuntimeSettingsTest(unittest.TestCase):
         restored_b = self.make_service(root, "model-b")
         self.assertEqual(restored_a.web_runtime_settings("simulator")["settings"]["frontend_refresh_seconds"], 2.5)
         self.assertEqual(restored_a.web_runtime_settings("simulator")["settings"]["runtime_log_page_size"], 35)
+        self.assertEqual(
+            restored_a.web_runtime_settings("simulator")["settings"]["diagram_flow_electric_threshold_kw"],
+            0.25,
+        )
+        self.assertEqual(
+            restored_a.web_runtime_settings("simulator")["settings"]["diagram_flow_hydrogen_threshold_nm3_h"],
+            0.4,
+        )
         self.assertEqual(restored_b.web_runtime_settings("simulator")["settings"]["frontend_refresh_seconds"], 4.0)
 
         stored = json.loads(restored_a.settings_file.read_text(encoding="utf-8"))
@@ -244,34 +262,37 @@ class WebRuntimeSettingsApiTest(unittest.TestCase):
         self.assertEqual(saved["role"], "trainee")
         self.assertEqual(saved["settings"]["backend_refresh_seconds"], 0.5)
 
-    def test_trainee_backend_refresh_period_must_divide_control_period(self):
+    def test_trainee_backend_refresh_period_is_independent_of_control_period(self):
         workspace = tempfile.TemporaryDirectory()
         self.addCleanup(workspace.cleanup)
         service = self.make_service(Path(workspace.name), "trainee-period")
         base = self.start_server(service, role="trainee")
         url = f"{base}/api/runtime-settings?model_id=trainee-period"
 
-        for invalid_period in (2.0, 0.75):
-            with self.subTest(invalid_period=invalid_period):
-                with self.assertRaises(HTTPError) as context:
-                    self.request_json(
-                        url,
-                        method="POST",
-                        payload={
-                            "settings": {
-                                "backend_refresh_seconds": invalid_period,
-                            }
-                        },
-                    )
-                self.assertEqual(context.exception.code, 400)
+        for valid_period in (2.0, 0.75, 0.5):
+            with self.subTest(valid_period=valid_period):
+                status, saved = self.request_json(
+                    url,
+                    method="POST",
+                    payload={
+                        "settings": {
+                            "backend_refresh_seconds": valid_period,
+                        }
+                    },
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(
+                    saved["settings"]["backend_refresh_seconds"],
+                    valid_period,
+                )
 
-        status, saved = self.request_json(
-            url,
-            method="POST",
-            payload={"settings": {"backend_refresh_seconds": 0.5}},
-        )
-        self.assertEqual(status, 200)
-        self.assertEqual(saved["settings"]["backend_refresh_seconds"], 0.5)
+        with self.assertRaises(HTTPError) as context:
+            self.request_json(
+                url,
+                method="POST",
+                payload={"settings": {"backend_refresh_seconds": 0}},
+            )
+        self.assertEqual(context.exception.code, 400)
 
     def test_trainee_health_endpoint_reports_the_local_process_instead_of_proxying(self):
         workspace = tempfile.TemporaryDirectory()

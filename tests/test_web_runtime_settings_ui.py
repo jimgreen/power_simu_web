@@ -22,6 +22,8 @@ class WebRuntimeSettingsUiTest(unittest.TestCase):
             "webRuntimeCurveRequestTimeout",
             "webRuntimeLogDeltaBatchSize",
             "webRuntimeLogHistoryBatchSize",
+            "webRuntimeDiagramElectricFlowThreshold",
+            "webRuntimeDiagramHydrogenFlowThreshold",
             "saveRuntimeParameters",
             "undoRuntimeParameters",
             "restoreRuntimeParameterDefaults",
@@ -58,6 +60,8 @@ class WebRuntimeSettingsUiTest(unittest.TestCase):
             "webRuntimeLogPageSize",
             "webRuntimeLogCacheLimit",
             "webRuntimeReceiveStateSync",
+            "webRuntimeDiagramElectricFlowThreshold",
+            "webRuntimeDiagramHydrogenFlowThreshold",
             "saveRuntimeParameters",
             "undoRuntimeParameters",
             "restoreRuntimeParameterDefaults",
@@ -93,10 +97,14 @@ class WebRuntimeSettingsUiTest(unittest.TestCase):
         self.assertIn('activeRuntimeSetting("curve_request_timeout_seconds")', scripts["simulator"])
         self.assertIn('activeRuntimeSetting("runtime_log_delta_batch_size")', scripts["simulator"])
         self.assertIn('activeRuntimeSetting("runtime_log_history_batch_size")', scripts["simulator"])
+        self.assertIn('activeRuntimeSetting("diagram_flow_electric_threshold_kw")', scripts["simulator"])
+        self.assertIn('activeRuntimeSetting("diagram_flow_hydrogen_threshold_nm3_h")', scripts["simulator"])
         self.assertNotIn("const CURVE_REQUEST_TIMEOUT_MS = 8000", scripts["simulator"])
 
         self.assertIn('activeRuntimeSetting("receive_state_sync_seconds")', scripts["trainee"])
         self.assertIn('activeRuntimeSetting("receive_max_reconnect_attempts")', scripts["trainee"])
+        self.assertIn('activeRuntimeSetting("diagram_flow_electric_threshold_kw")', scripts["trainee"])
+        self.assertIn('activeRuntimeSetting("diagram_flow_hydrogen_threshold_nm3_h")', scripts["trainee"])
         self.assertIn("const RUNTIME_PARAMETER_GROUPS", scripts["trainee"])
         self.assertIn('async function saveWebRuntimeSettings(group = "web")', scripts["trainee"])
         self.assertIn("runtimeParameterGroupValues(pendingDraft, group)", scripts["trainee"])

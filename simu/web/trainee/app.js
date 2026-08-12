@@ -34,6 +34,8 @@ const WEB_RUNTIME_FALLBACKS = {
   receive_state_sync_seconds: 5,
   receive_max_reconnect_attempts: 3,
   measurement_delta_history_limit: 200,
+  diagram_flow_electric_threshold_kw: 0.1,
+  diagram_flow_hydrogen_threshold_nm3_h: 0.1,
 };
 const WEB_RUNTIME_CURRENT_IDS = {
   frontend_refresh_seconds: "currentWebRuntimeFrontendRefresh",
@@ -47,6 +49,8 @@ const WEB_RUNTIME_CURRENT_IDS = {
   receive_state_sync_seconds: "currentWebRuntimeReceiveStateSync",
   receive_max_reconnect_attempts: "currentBackendRuntimeReconnectAttempts",
   measurement_delta_history_limit: "currentBackendRuntimeMeasurementDeltaHistoryLimit",
+  diagram_flow_electric_threshold_kw: "currentWebRuntimeDiagramElectricFlowThreshold",
+  diagram_flow_hydrogen_threshold_nm3_h: "currentWebRuntimeDiagramHydrogenFlowThreshold",
 };
 const RUNTIME_PARAMETER_GROUPS = Object.freeze({
   backend: Object.freeze([
@@ -63,6 +67,8 @@ const RUNTIME_PARAMETER_GROUPS = Object.freeze({
     "runtime_log_page_size",
     "runtime_log_cache_limit",
     "receive_state_sync_seconds",
+    "diagram_flow_electric_threshold_kw",
+    "diagram_flow_hydrogen_threshold_nm3_h",
   ]),
 });
 const DEFAULT_STORAGE_CHARGE_DERATING_CURVE = Object.freeze([
@@ -234,6 +240,14 @@ const state = {
     socDeadband: 0.05,
     hydrogenClosedLoopEnabled: false,
     hydrogenPressureDeadbandRatio: 0.05,
+    electrolyzerPowerMinKw: 2,
+    electrolyzerPowerMaxKw: 50,
+    electrolyzerPowerDeadbandKw: 0,
+    electrolyzerPowerStepKw: 2,
+    fuelCellPowerMinKw: 3,
+    fuelCellPowerMaxKw: 15,
+    fuelCellPowerDeadbandKw: 0,
+    fuelCellPowerStepKw: 3,
     optimizationRenewableCurtailmentWeight: 1,
     optimizationDieselOutputWeight: 1,
     optimizationCurtailmentSquareWeight: 0.000001,
@@ -2999,10 +3013,10 @@ const DIAGRAM_FLOW_POWER_MEASUREMENT_TYPES = Object.freeze({
   HYDROSOURCE: Object.freeze(["FLOW"]),
   HYDROLOAD: Object.freeze(["FLOW"]),
   HYDROSTORAGE: Object.freeze(["FLOW"]),
-  ACE2HYDRO: Object.freeze(["FLOW"]),
-  DCE2HYDRO: Object.freeze(["FLOW"]),
-  HYDRO2ACE: Object.freeze(["FLOW"]),
-  HYDRO2DCE: Object.freeze(["FLOW"]),
+  ACE2HYDRO: Object.freeze([]),
+  DCE2HYDRO: Object.freeze([]),
+  HYDRO2ACE: Object.freeze([]),
+  HYDRO2DCE: Object.freeze([]),
   HYDROPIPE: Object.freeze(["FLOW"]),
   HYDROVALVE: Object.freeze(["FLOW"]),
   HYDROCOMPRESSOR: Object.freeze(["FLOW"]),
@@ -3082,12 +3096,16 @@ function diagramFlowNodeKey(node, domain = "") {
   return `${normalizeDiagramMeasurementToken(diagramFlowDomain(domain)) || "NODE"}:${String(node || "").trim()}`;
 }
 
-function diagramFlowArrowVisibility({ power, referencePower, valid = true, offline = false } = {}) {
+function diagramFlowArrowThreshold(measType, electricThreshold, hydrogenThreshold) {
+  const type = normalizeDiagramMeasurementToken(measType);
+  const threshold = type === "FLOW" ? Number(hydrogenThreshold) : Number(electricThreshold);
+  return Number.isFinite(threshold) ? Math.max(0, threshold) : 0;
+}
+
+function diagramFlowArrowVisibility({ power, threshold = 0, valid = true, offline = false } = {}) {
   const magnitude = Math.abs(Number(power));
   if (!valid || offline || !Number.isFinite(magnitude)) return false;
-  const reference = Math.abs(Number(referencePower));
-  const threshold = reference > 0 ? reference * 0.001 : 0;
-  return magnitude > threshold;
+  return magnitude > Math.max(0, Number(threshold) || 0);
 }
 
 function diagramTooltipPointerMoveAction(currentHover, nextHover, tooltipHidden = false) {
@@ -3619,6 +3637,53 @@ function diagramDeviceMeasurementKey(devType, devName, measType) {
   ].join("\u0000");
 }
 
+function diagramCouplingMeasurementEndpointKey(devType, devName) {
+  return [normalizeDiagramMeasurementToken(devType), String(devName || "").trim()].join("\u0000");
+}
+
+function diagramIsHydrogenConversionDevice(device) {
+  return ["ACE2HYDRO", "DCE2HYDRO", "HYDRO2ACE", "HYDRO2DCE"].includes(
+    normalizeDiagramMeasurementToken(device?.devType ?? device?.dev_type),
+  );
+}
+
+function diagramCouplingMeasurementEndpoints(snapshot = {}) {
+  const result = new Map();
+  (snapshot.devices || []).forEach((device) => {
+    if (!diagramIsHydrogenConversionDevice(device)) return;
+    const endpoints = { electric: null, hydrogen: null };
+    (Array.isArray(device?.control_bindings) ? device.control_bindings : []).forEach((binding) => {
+      const target = {
+        devType: String(binding?.target_dev_type || "").trim(),
+        devName: String(binding?.target_dev_name || "").trim(),
+      };
+      const targetType = normalizeDiagramMeasurementToken(target.devType);
+      if (!target.devType || !target.devName) return;
+      if (["ACGENERATOR", "DCGENERATOR", "ACLOAD", "DCLOAD"].includes(targetType)) endpoints.electric = target;
+      if (["HYDROSOURCE", "HYDROLOAD", "HYDROSTORAGE"].includes(targetType)) endpoints.hydrogen = target;
+    });
+    result.set(
+      diagramCouplingMeasurementEndpointKey(device.dev_type, device.dev_name),
+      endpoints,
+    );
+  });
+  return result;
+}
+
+function diagramCouplingMeasurementEndpoint(device, maps, metricType = "", measurementTypes = null) {
+  if (!diagramIsHydrogenConversionDevice(device)) return device;
+  const endpoints = maps?.couplingEndpoints?.get(
+    diagramCouplingMeasurementEndpointKey(device?.devType, device?.devName),
+  );
+  if (!endpoints) return null;
+  const explicitTypes = Array.isArray(measurementTypes)
+    ? measurementTypes.map(normalizeDiagramMeasurementToken)
+    : [];
+  const hydrogenMetric = normalizeDiagramMetricType(metricType) === "flow"
+    || (explicitTypes.length > 0 && explicitTypes.every((type) => type === "FLOW"));
+  return (hydrogenMetric ? endpoints.hydrogen : endpoints.electric) || device;
+}
+
 function addDiagramDeviceMeasurement(map, row) {
   if (!row?.dev_type || !row?.dev_name || !row?.meas_type) return;
   map.set(diagramDeviceMeasurementKey(row.dev_type, row.dev_name, row.meas_type), row);
@@ -3632,13 +3697,19 @@ function diagramMeasurementMaps(snapshot = state.snapshot || {}) {
     addDiagramMeasurementAliases(scada, row);
     addDiagramDeviceMeasurement(scadaByDevice, row);
   });
-  return { scada, scadaByDevice };
+  return {
+    scada,
+    scadaByDevice,
+    couplingEndpoints: diagramCouplingMeasurementEndpoints(snapshot),
+  };
 }
 
 function diagramMetricBindingValue(binding, maps) {
-  const candidates = diagramMetricMeasurementTypes(binding?.devType, binding?.metricType);
+  const measurementDevice = diagramCouplingMeasurementEndpoint(binding, maps, binding?.metricType);
+  if (!measurementDevice) return null;
+  const candidates = diagramMetricMeasurementTypes(measurementDevice?.devType, binding?.metricType);
   for (const measType of candidates) {
-    const key = diagramDeviceMeasurementKey(binding.devType, binding.devName, measType);
+    const key = diagramDeviceMeasurementKey(measurementDevice.devType, measurementDevice.devName, measType);
     if (maps.scadaByDevice?.has(key)) return maps.scadaByDevice.get(key);
   }
   return null;
@@ -4376,12 +4447,19 @@ function diagramFlowEdgeBinding(sourceEntry, targetEntry, topology) {
 }
 
 function diagramFlowDevicePowerSample(device, measurementMaps, measurementTypes = null) {
+  const measurementDevice = diagramCouplingMeasurementEndpoint(
+    device,
+    measurementMaps,
+    "",
+    measurementTypes,
+  );
+  if (!measurementDevice) return null;
   const types = Array.isArray(measurementTypes) && measurementTypes.length
     ? measurementTypes
-    : diagramFlowPowerMeasurementTypes(device?.devType);
+    : diagramFlowPowerMeasurementTypes(measurementDevice?.devType);
   for (const map of [measurementMaps?.scadaByDevice, measurementMaps?.realByDevice]) {
     const candidates = types.map((measType, order) => {
-      const key = diagramDeviceMeasurementKey(device?.devType, device?.devName, measType);
+      const key = diagramDeviceMeasurementKey(measurementDevice?.devType, measurementDevice?.devName, measType);
       const row = map?.get(key);
       const rawPower = Number(row?.value);
       const valid = Boolean(row) && Number(row.valid ?? 1) === 1 && Number.isFinite(rawPower);
@@ -4614,7 +4692,12 @@ function updateDiagramFlowArrows(container, snapshot = state.snapshot || {}, mea
     ));
     const referenceDevice = resolved.binding?.device || record.device;
     const referencePower = diagramFlowReferencePower(container, referenceDevice, snapshot, interaction, power);
-    const visible = diagramFlowArrowVisibility({ power, referencePower, valid, offline });
+    const threshold = diagramFlowArrowThreshold(
+      resolved.row?.meas_type || resolved.row?.measurement_type,
+      activeRuntimeSetting("diagram_flow_electric_threshold_kw"),
+      activeRuntimeSetting("diagram_flow_hydrogen_threshold_nm3_h"),
+    );
+    const visible = diagramFlowArrowVisibility({ power, threshold, valid, offline });
     record.root.setAttribute("data-flow-power", valid ? String(power) : "");
     record.root.setAttribute("data-flow-binding-id", String(resolved.binding?.device?.devId || ""));
     record.root.setAttribute(
@@ -12441,6 +12524,14 @@ function applyRenewableControlState(payload = {}) {
       settings.hydrogenPressureDeadbandRatio,
       control.hydrogenPressureDeadbandRatio || 0.05,
     ))),
+    electrolyzerPowerMinKw: Math.max(0, toNumber(settings.electrolyzerPowerMinKw, control.electrolyzerPowerMinKw ?? 2)),
+    electrolyzerPowerMaxKw: Math.max(0, toNumber(settings.electrolyzerPowerMaxKw, control.electrolyzerPowerMaxKw ?? 50)),
+    electrolyzerPowerDeadbandKw: Math.max(0, toNumber(settings.electrolyzerPowerDeadbandKw, control.electrolyzerPowerDeadbandKw ?? 0)),
+    electrolyzerPowerStepKw: Math.max(0.001, toNumber(settings.electrolyzerPowerStepKw, control.electrolyzerPowerStepKw ?? 2)),
+    fuelCellPowerMinKw: Math.max(0, toNumber(settings.fuelCellPowerMinKw, control.fuelCellPowerMinKw ?? 3)),
+    fuelCellPowerMaxKw: Math.max(0, toNumber(settings.fuelCellPowerMaxKw, control.fuelCellPowerMaxKw ?? 15)),
+    fuelCellPowerDeadbandKw: Math.max(0, toNumber(settings.fuelCellPowerDeadbandKw, control.fuelCellPowerDeadbandKw ?? 0)),
+    fuelCellPowerStepKw: Math.max(0.001, toNumber(settings.fuelCellPowerStepKw, control.fuelCellPowerStepKw ?? 3)),
     optimizationRenewableCurtailmentWeight: Math.max(0, toNumber(settings.optimizationRenewableCurtailmentWeight, control.optimizationRenewableCurtailmentWeight || 1)),
     optimizationDieselOutputWeight: Math.max(0, toNumber(settings.optimizationDieselOutputWeight, control.optimizationDieselOutputWeight || 1)),
     optimizationCurtailmentSquareWeight: Math.max(0, toNumber(settings.optimizationCurtailmentSquareWeight, control.optimizationCurtailmentSquareWeight || 0.000001)),
@@ -13508,6 +13599,14 @@ function populateRenewableControlParameters(control = state.renewableControl) {
   const hydrogenEnabledInput = $("hydrogenClosedLoopEnabled");
   if (hydrogenEnabledInput) hydrogenEnabledInput.checked = Boolean(control.hydrogenClosedLoopEnabled);
   const numericInputs = {
+    electrolyzerPowerMinKw: control.electrolyzerPowerMinKw,
+    electrolyzerPowerMaxKw: control.electrolyzerPowerMaxKw,
+    electrolyzerPowerDeadbandKw: control.electrolyzerPowerDeadbandKw,
+    electrolyzerPowerStepKw: control.electrolyzerPowerStepKw,
+    fuelCellPowerMinKw: control.fuelCellPowerMinKw,
+    fuelCellPowerMaxKw: control.fuelCellPowerMaxKw,
+    fuelCellPowerDeadbandKw: control.fuelCellPowerDeadbandKw,
+    fuelCellPowerStepKw: control.fuelCellPowerStepKw,
     optimizationRenewableCurtailmentWeight: control.optimizationRenewableCurtailmentWeight,
     optimizationDieselOutputWeight: control.optimizationDieselOutputWeight,
     optimizationCurtailmentSquareWeight: control.optimizationCurtailmentSquareWeight,
@@ -13608,6 +13707,14 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     hydrogenEnabledInput.checked = Boolean(control.hydrogenClosedLoopEnabled);
   }
   const numericInputs = {
+    electrolyzerPowerMinKw: control.electrolyzerPowerMinKw,
+    electrolyzerPowerMaxKw: control.electrolyzerPowerMaxKw,
+    electrolyzerPowerDeadbandKw: control.electrolyzerPowerDeadbandKw,
+    electrolyzerPowerStepKw: control.electrolyzerPowerStepKw,
+    fuelCellPowerMinKw: control.fuelCellPowerMinKw,
+    fuelCellPowerMaxKw: control.fuelCellPowerMaxKw,
+    fuelCellPowerDeadbandKw: control.fuelCellPowerDeadbandKw,
+    fuelCellPowerStepKw: control.fuelCellPowerStepKw,
     optimizationRenewableCurtailmentWeight: control.optimizationRenewableCurtailmentWeight,
     optimizationDieselOutputWeight: control.optimizationDieselOutputWeight,
     optimizationCurtailmentSquareWeight: control.optimizationCurtailmentSquareWeight,
@@ -13928,6 +14035,33 @@ async function updateRenewableSettings() {
       Math.max(minimumPercent, toNumber($(id)?.value, fallbackPercent)),
     ) / 100
   );
+  const powerSettings = {
+    electrolyzerPowerMinKw: Math.max(0, toNumber($("electrolyzerPowerMinKw")?.value, 2)),
+    electrolyzerPowerMaxKw: Math.max(0, toNumber($("electrolyzerPowerMaxKw")?.value, 50)),
+    electrolyzerPowerDeadbandKw: Math.max(0, toNumber($("electrolyzerPowerDeadbandKw")?.value, 0)),
+    electrolyzerPowerStepKw: Math.max(0.001, toNumber($("electrolyzerPowerStepKw")?.value, 2)),
+    fuelCellPowerMinKw: Math.max(0, toNumber($("fuelCellPowerMinKw")?.value, 3)),
+    fuelCellPowerMaxKw: Math.max(0, toNumber($("fuelCellPowerMaxKw")?.value, 15)),
+    fuelCellPowerDeadbandKw: Math.max(0, toNumber($("fuelCellPowerDeadbandKw")?.value, 0)),
+    fuelCellPowerStepKw: Math.max(0.001, toNumber($("fuelCellPowerStepKw")?.value, 3)),
+  };
+  const powerSettingError = [
+    ["电制氢", powerSettings.electrolyzerPowerMinKw, powerSettings.electrolyzerPowerMaxKw, powerSettings.electrolyzerPowerDeadbandKw],
+    ["燃料电池", powerSettings.fuelCellPowerMinKw, powerSettings.fuelCellPowerMaxKw, powerSettings.fuelCellPowerDeadbandKw],
+  ].map(([label, minimum, maximum, deadband]) => {
+    if (minimum > maximum) return `${label}功率下限不能大于上限。`;
+    if (minimum + deadband > maximum) return `${label}启动功率（下限+死区）不能大于上限。`;
+    return "";
+  }).find(Boolean);
+  if (powerSettingError) {
+    state.renewableControl.lastStatus = powerSettingError;
+    renderRenewableControl(state.snapshot || {});
+    return null;
+  }
+  Object.entries(powerSettings).forEach(([id, value]) => {
+    const input = $(id);
+    if (input) input.value = String(value);
+  });
   return runRenewableControlAction("update_settings", {
     settings: {
       simulationIntervalSeconds: intervalSeconds,
@@ -13941,6 +14075,7 @@ async function updateRenewableSettings() {
       socDeadband: ratio("socDeadband", 5),
       hydrogenClosedLoopEnabled: Boolean($("hydrogenClosedLoopEnabled")?.checked),
       hydrogenPressureDeadbandRatio: ratio("hydrogenPressureDeadbandRatio", 5, 0, 50),
+      ...powerSettings,
       optimizationRenewableCurtailmentWeight: Math.max(0, toNumber($("optimizationRenewableCurtailmentWeight")?.value, 1)),
       optimizationDieselOutputWeight: Math.max(0, toNumber($("optimizationDieselOutputWeight")?.value, 1)),
       optimizationCurtailmentSquareWeight: Math.max(0, toNumber($("optimizationCurtailmentSquareWeight")?.value, 0.000001)),

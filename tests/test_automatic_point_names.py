@@ -418,7 +418,7 @@ class AutomaticPointNamesTest(unittest.TestCase):
         self.assertEqual(types_by_device["HydroSource"], ["flow", "pressure"])
         self.assertEqual(types_by_device["HydroLoad"], ["flow", "pressure"])
         for dev_type in ("AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"):
-            self.assertEqual(types_by_device[dev_type], ["p", "flow"])
+            self.assertNotIn(dev_type, types_by_device)
         self.assertEqual(
             types_by_device["HydroStorage"],
             ["pressure", "flow", "gas_quantity", "soc"],

@@ -275,7 +275,7 @@
 </HydroStorage>
 <AcE2Hydro>
 @ idx  name     control_type  run_stat  idx_ac_load_t1  idx_h2_unit_t2  e2h_coeff
-# 1    交流电制氢-1  PQ            1         2               1               0.2
+# 1    交流电制氢-1  P             1         2               1               0.2
 </AcE2Hydro>
 <Hydro2DcE>
 @ idx  name      control_type  run_stat  idx_dc_unit_t1  idx_h2_load_t2  h2e_coeff

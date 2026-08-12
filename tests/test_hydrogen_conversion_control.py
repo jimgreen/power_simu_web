@@ -704,8 +704,28 @@ def test_trainee_endpoint_binding_dispatches_into_live_conversion_calculation(
         (row["dev_type"], row["dev_name"], row["meas_type"]): float(row["value"])
         for row in snapshot["measurements"]["real"]
     }
-    flow = real_values[(coupling_block, converter["dev_name"], "flow")]
-    power = real_values[(coupling_block, converter["dev_name"], "p")]
+    bindings = {item["set_type"]: item for item in converter["control_bindings"]}
+    power_binding = bindings["p_set"]
+    flow_binding = bindings["flow_set"]
+    power_meas_type = (
+        "P_LOAD"
+        if power_binding["target_dev_type"] in {"ACLoad", "DCLoad"}
+        else "P_GEN"
+    )
+    power = real_values[
+        (
+            power_binding["target_dev_type"],
+            power_binding["target_dev_name"],
+            power_meas_type,
+        )
+    ]
+    flow = real_values[
+        (
+            flow_binding["target_dev_type"],
+            flow_binding["target_dev_name"],
+            "flow",
+        )
+    ]
     active_value = power if set_type == "p_set" else flow
     assert min(initial_value, set_value) < active_value < max(initial_value, set_value)
     if coupling_block == "AcE2Hydro":
@@ -825,12 +845,25 @@ def test_simulator_svg_endpoint_edit_applies_the_mode_selected_setpoint_to_next_
         (row["dev_type"], row["dev_name"], row["meas_type"]): float(row["value"])
         for row in snapshot["measurements"]["real"]
     }
-    assert real_values[(coupling_block, coupling_name, "p")] == pytest.approx(
-        expected_power
+    converter = next(
+        device
+        for device in service.devices()
+        if device["dev_type"] == coupling_block and device["dev_name"] == coupling_name
     )
-    assert real_values[(coupling_block, coupling_name, "flow")] == pytest.approx(
-        expected_flow
+    bindings = {item["set_type"]: item for item in converter["control_bindings"]}
+    power_binding = bindings["p_set"]
+    flow_binding = bindings["flow_set"]
+    power_meas_type = (
+        "P_LOAD"
+        if power_binding["target_dev_type"] in {"ACLoad", "DCLoad"}
+        else "P_GEN"
     )
+    assert real_values[
+        (power_binding["target_dev_type"], power_binding["target_dev_name"], power_meas_type)
+    ] == pytest.approx(expected_power)
+    assert real_values[
+        (flow_binding["target_dev_type"], flow_binding["target_dev_name"], "flow")
+    ] == pytest.approx(expected_flow)
 
 
 @pytest.mark.parametrize(
@@ -1115,8 +1148,25 @@ def test_safe_power_setpoint_reaches_conversion_kernel_at_hydrogen_flow_limit(
         (row["dev_type"], row["dev_name"], row["meas_type"]): float(row["value"])
         for row in snapshot["measurements"]["real"]
     }
-    assert real_values[(coupling_block, coupling_name, "p")] == pytest.approx(set_value)
-    assert real_values[(coupling_block, coupling_name, "flow")] == pytest.approx(expected_flow)
+    converter = next(
+        device
+        for device in service.devices()
+        if device["dev_type"] == coupling_block and device["dev_name"] == coupling_name
+    )
+    bindings = {item["set_type"]: item for item in converter["control_bindings"]}
+    power_binding = bindings["p_set"]
+    flow_binding = bindings["flow_set"]
+    power_meas_type = (
+        "P_LOAD"
+        if power_binding["target_dev_type"] in {"ACLoad", "DCLoad"}
+        else "P_GEN"
+    )
+    assert real_values[
+        (power_binding["target_dev_type"], power_binding["target_dev_name"], power_meas_type)
+    ] == pytest.approx(set_value)
+    assert real_values[
+        (flow_binding["target_dev_type"], flow_binding["target_dev_name"], "flow")
+    ] == pytest.approx(expected_flow)
 
 
 @pytest.mark.parametrize(

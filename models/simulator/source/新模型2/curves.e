@@ -4328,3 +4328,35 @@
 # 1439  直流负荷-1     1438    77.258
 # 1440  直流负荷-1     1439    77.282
 </LoadCurve>
+<SourceCurve>
+@ idx  dev_type     dev_name            set_type  family    unit   minute  value
+# 1    ACGenerator  交流风电-1              p_set     electric  kW     0       3
+# 1    ACGenerator  交流风电-2              p_set     electric  kW     0       3
+# 1    ACGenerator  交流风电-3              p_set     electric  kW     0       3
+# 1    ACGenerator  交流风电-4              p_set     electric  kW     0       3
+# 1    ACGenerator  交流风电-5              p_set     electric  kW     0       3
+# 1    ACGenerator  交流风电-6              p_set     electric  kW     0       3
+# 1    ACGenerator  交流风电-7              p_set     electric  kW     0       3
+# 1    ACGenerator  交流风电-8              p_set     electric  kW     0       3
+# 1    ACGenerator  交流风电-9              p_set     electric  kW     0       3
+# 1    ACGenerator  交流风电-10             p_set     electric  kW     0       3
+# 1    ACGenerator  交流电化学储能-23          p_set     electric  kW     0       0
+# 1    ACGenerator  交流风力发电机-24          p_set     electric  kW     0       0
+# 1    ACGenerator  交流光伏发电机-25          p_set     electric  kW     0       0
+# 1    ACGenerator  交流电化学储能-26          p_set     electric  kW     0       0
+# 1    ACGenerator  交流柴油发电机-27          p_set     electric  kW     0       0
+# 1    ACGenerator  交流柴油发电机-28          p_set     electric  kW     0       0
+# 1    ACGenerator  交流柴油发电机-29          p_set     electric  kW     0       0
+# 1    ACGenerator  交流柴油发电机-30          p_set     electric  kW     0       0
+# 1    DCGenerator  直流光伏-1              p_set     electric  kW     0       5
+# 1    DCGenerator  直流光伏-2              p_set     electric  kW     0       5
+# 1    DCGenerator  直流光伏-3              p_set     electric  kW     0       5
+# 1    DCGenerator  电化学储能-1             p_set     electric  kW     0       0
+# 1    DCGenerator  电化学储能-2             p_set     electric  kW     0       0
+# 1    DCGenerator  电化学储能-3             p_set     electric  kW     0       0
+# 1    DCGenerator  电化学储能-4             p_set     electric  kW     0       0
+# 1    DCGenerator  电化学储能-5             p_set     electric  kW     0       0
+# 1    DCGenerator  电化学储能-6             p_set     electric  kW     0       0
+# 1    DCGenerator  直流燃料电池-1_直流设备端直流电源  p_set     electric  kW     0       0
+# 1    HydroSource  交流电制氢-1_氢能设备端氢源     flow_set  hydrogen  Nm3/h  0       10
+</SourceCurve>

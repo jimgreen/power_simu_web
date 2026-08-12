@@ -938,6 +938,18 @@
                       <td><input id="webRuntimeLogHistoryBatchSize" type="number" min="20" max="500" step="10" data-runtime-setting="runtime_log_history_batch_size" /></td>
                       <td>条</td>
                     </tr>
+                    <tr>
+                      <td><strong>电功率箭头显示门槛</strong><small>绝对值不超过门槛时隐藏电气潮流箭头</small></td>
+                      <td id="currentWebRuntimeDiagramElectricFlowThreshold" class="numeric-cell">0.1</td>
+                      <td><input id="webRuntimeDiagramElectricFlowThreshold" type="number" min="0" max="1000000" step="0.01" data-runtime-setting="diagram_flow_electric_threshold_kw" /></td>
+                      <td>kW</td>
+                    </tr>
+                    <tr>
+                      <td><strong>氢流量箭头显示门槛</strong><small>绝对值不超过门槛时隐藏氢气流动箭头</small></td>
+                      <td id="currentWebRuntimeDiagramHydrogenFlowThreshold" class="numeric-cell">0.1</td>
+                      <td><input id="webRuntimeDiagramHydrogenFlowThreshold" type="number" min="0" max="1000000" step="0.01" data-runtime-setting="diagram_flow_hydrogen_threshold_nm3_h" /></td>
+                      <td>Nm3/h</td>
+                    </tr>
                   </tbody>
                 </table>
               </form>

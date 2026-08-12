@@ -235,10 +235,6 @@
 # 233  HydroSource.交流电制氢-1_氢能设备端氢源.pressure     HydroSource    交流电制氢-1_氢能设备端氢源     pressure          10000.0  1      0.0
 # 234  HydroLoad.直流燃料电池-1_氢能设备端氢荷.flow          HydroLoad      直流燃料电池-1_氢能设备端氢荷    flow              10000.0  1      0.0
 # 235  HydroLoad.直流燃料电池-1_氢能设备端氢荷.pressure      HydroLoad      直流燃料电池-1_氢能设备端氢荷    pressure          10000.0  1      0.0
-# 236  AcE2Hydro.交流电制氢-1.p                      AcE2Hydro      交流电制氢-1             p                 10000.0  1      0.0
-# 237  AcE2Hydro.交流电制氢-1.flow                   AcE2Hydro      交流电制氢-1             flow              10000.0  1      0.0
-# 238  Hydro2DcE.直流燃料电池-1.p                     Hydro2DcE      直流燃料电池-1            p                 10000.0  1      0.0
-# 239  Hydro2DcE.直流燃料电池-1.flow                  Hydro2DcE      直流燃料电池-1            flow              10000.0  1      0.0
 # 240  ACBranch.交流线路（自适应）-20.P_FROM             ACBranch       交流线路（自适应）-20        P_FROM            10000.0  1      0.0
 # 241  ACBranch.交流线路（自适应）-20.Q_FROM             ACBranch       交流线路（自适应）-20        Q_FROM            10000.0  1      0.0
 # 242  ACBranch.交流线路（自适应）-20.P_TO               ACBranch       交流线路（自适应）-20        P_TO              10000.0  1      0.0

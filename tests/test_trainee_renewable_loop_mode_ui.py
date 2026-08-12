@@ -189,6 +189,18 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
     def test_hydrogen_closed_loop_control_is_explicit_and_saved(self):
         self.assertIn('id="hydrogenClosedLoopEnabled" type="checkbox"', self.html)
         self.assertIn('id="hydrogenPressureDeadbandRatio"', self.html)
+        for field_id in (
+            "electrolyzerPowerMinKw",
+            "electrolyzerPowerMaxKw",
+            "electrolyzerPowerDeadbandKw",
+            "electrolyzerPowerStepKw",
+            "fuelCellPowerMinKw",
+            "fuelCellPowerMaxKw",
+            "fuelCellPowerDeadbandKw",
+            "fuelCellPowerStepKw",
+        ):
+            self.assertIn(f'id="{field_id}"', self.html)
+            self.assertIn(field_id, self.script)
         self.assertIn("hydrogenClosedLoopEnabled", self.script)
         settings_block = self.script.split("async function updateRenewableSettings", 1)[1].split(
             "function storagePowerDeratingRowHtml",
@@ -198,6 +210,7 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             'hydrogenClosedLoopEnabled: Boolean($("hydrogenClosedLoopEnabled")?.checked)',
             settings_block,
         )
+        self.assertIn("启动功率（下限+死区）不能大于上限", settings_block)
         self.assertIn("hydrogen_closed_loop_enabled", self.backend)
         self.assertIn("hydrogen_pressure_deadband_ratio", self.backend)
 

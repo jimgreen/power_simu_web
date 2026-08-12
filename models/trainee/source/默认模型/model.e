@@ -91,7 +91,7 @@
 <ACLoad>
 @ idx  name                dev_type         node  p_set  p_max  p_min  q_max  q_min  run_stat  rated_capacity  pbase  pv0  pv1  pv2  qbase  qv0  qv1  qv2  v_max  v_min
 # 1    交流负荷-1              ac-load          32    0      5      0      1.2    0      1         5               150    1.0  0.0  0.0  50     1.0  0.0  0.0  456    304
-# 2    交流电制氢-1_交流设备端交流电负荷  ac-electrolyzer  31    100    100    0      0      0      1         100             0      1.0  0.0  0.0  0      1.0  0.0  0.0  0      0
+# 2    交流电制氢-1_交流设备端交流电负荷  ac-electrolyzer  31    0      60     0      60     -60    1         100             0      1.0  0.0  0.0  0      1.0  0.0  0.0  0      0
 </ACLoad>
 <ACGenerator>
 @ idx  name        dev_type          node  control_type  p_set  p_max  p_min  q_set  q_max  q_min  v_set  alpha  run_stat  rated_capacity  rated_voltage  v_max  v_min  regable
@@ -201,7 +201,7 @@
 # 7    电化学储能-4             dc-storage    32    V             500    0.0    0      0      0.0    1         60              500            600    400
 # 8    电化学储能-5             dc-storage    33    V             500    0.0    0      0      0.0    1         60              500            600    400
 # 9    电化学储能-6             dc-storage    34    V             500    0.0    0      0      0.0    1         60              500            600    400
-# 10   直流燃料电池-1_直流设备端直流电源  dc-fuel-cell  25    P             750    30     100    0      0      1         100             750            900    600
+# 10   直流燃料电池-1_直流设备端直流电源  dc-fuel-cell  25    P             750    0      30     0      0      1         30              750            0      0
 </DCGenerator>
 <DCBreak>
 @ idx  name      dev_type    i_node  j_node  status  run_stat  rated_capacity  i_max
@@ -262,12 +262,12 @@
 # 1    集装格式储氢罐-3  1.5555555555555556  1
 </HydroNode>
 <HydroSource>
-@ idx  name             dev_type         node  flow_set  run_stat
-# 1    交流电制氢-1_氢能设备端氢源  ac-electrolyzer  1     0         1
+@ idx  name             dev_type         node  flow_set  flow_min  flow_max  run_stat
+# 1    交流电制氢-1_氢能设备端氢源  ac-electrolyzer  1     0         0         10        1
 </HydroSource>
 <HydroLoad>
-@ idx  name              dev_type      node  flow_set  run_stat
-# 1    直流燃料电池-1_氢能设备端氢荷  dc-fuel-cell  1     0         1
+@ idx  name              dev_type      node  flow_set  flow_min  flow_max  run_stat
+# 1    直流燃料电池-1_氢能设备端氢荷  dc-fuel-cell  1     0         0         10        1
 </HydroLoad>
 <HydroStorage>
 @ idx  name       dev_type                 node  control_type  pressure_set  flow_set  alpha  flow_min  flow_max  run_stat  pressure  capacity  water_volume  initial_soc         pressure_max  pressure_min

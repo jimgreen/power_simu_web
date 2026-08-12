@@ -5415,6 +5415,23 @@ th {
   justify-self: end;
   accent-color: var(--accent);
 }
+.renewable-hydrogen-power-settings {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.renewable-hydrogen-power-settings legend {
+  padding: 0 6px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+}
 .renewable-control-parameter-row {
   grid-column: 1 / -1;
   grid-template-columns: minmax(0, 1fr) minmax(160px, 0.7fr);
@@ -6165,6 +6182,10 @@ canvas {
   }
   .renewable-control-parameter-fields {
     grid-template-columns: 1fr;
+  }
+  .renewable-hydrogen-power-settings {
+    grid-column: auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .renewable-control-parameter-row {
     grid-column: auto;

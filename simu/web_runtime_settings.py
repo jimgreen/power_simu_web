@@ -26,6 +26,8 @@ COMMON_RUNTIME_SETTING_SPECS: Dict[str, RuntimeSettingSpec] = {
     "frontend_request_timeout_seconds": RuntimeSettingSpec(30.0, 1.0, 300.0),
     "runtime_log_page_size": RuntimeSettingSpec(20, 5, 200, "integer"),
     "runtime_log_cache_limit": RuntimeSettingSpec(300, 50, 5000, "integer"),
+    "diagram_flow_electric_threshold_kw": RuntimeSettingSpec(0.1, 0.0, 1000000.0),
+    "diagram_flow_hydrogen_threshold_nm3_h": RuntimeSettingSpec(0.1, 0.0, 1000000.0),
 }
 
 ROLE_RUNTIME_SETTING_SPECS: Dict[str, Dict[str, RuntimeSettingSpec]] = {

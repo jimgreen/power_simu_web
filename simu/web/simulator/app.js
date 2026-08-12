@@ -33,6 +33,8 @@ const WEB_RUNTIME_FALLBACKS = {
   curve_request_timeout_seconds: 8,
   runtime_log_delta_batch_size: 200,
   runtime_log_history_batch_size: 120,
+  diagram_flow_electric_threshold_kw: 0.1,
+  diagram_flow_hydrogen_threshold_nm3_h: 0.1,
 };
 const WEB_RUNTIME_CURRENT_IDS = {
   frontend_refresh_seconds: "currentWebRuntimeFrontendRefresh",
@@ -42,6 +44,8 @@ const WEB_RUNTIME_CURRENT_IDS = {
   curve_request_timeout_seconds: "currentWebRuntimeCurveRequestTimeout",
   runtime_log_delta_batch_size: "currentWebRuntimeLogDeltaBatchSize",
   runtime_log_history_batch_size: "currentWebRuntimeLogHistoryBatchSize",
+  diagram_flow_electric_threshold_kw: "currentWebRuntimeDiagramElectricFlowThreshold",
+  diagram_flow_hydrogen_threshold_nm3_h: "currentWebRuntimeDiagramHydrogenFlowThreshold",
 };
 const state = {
   snapshot: null,
@@ -4558,10 +4562,10 @@ const DIAGRAM_FLOW_POWER_MEASUREMENT_TYPES = Object.freeze({
   HYDROSOURCE: Object.freeze(["FLOW"]),
   HYDROLOAD: Object.freeze(["FLOW"]),
   HYDROSTORAGE: Object.freeze(["FLOW"]),
-  ACE2HYDRO: Object.freeze(["FLOW"]),
-  DCE2HYDRO: Object.freeze(["FLOW"]),
-  HYDRO2ACE: Object.freeze(["FLOW"]),
-  HYDRO2DCE: Object.freeze(["FLOW"]),
+  ACE2HYDRO: Object.freeze([]),
+  DCE2HYDRO: Object.freeze([]),
+  HYDRO2ACE: Object.freeze([]),
+  HYDRO2DCE: Object.freeze([]),
   HYDROPIPE: Object.freeze(["FLOW"]),
   HYDROVALVE: Object.freeze(["FLOW"]),
   HYDROCOMPRESSOR: Object.freeze(["FLOW"]),
@@ -4641,12 +4645,16 @@ function diagramFlowNodeKey(node, domain = "") {
   return `${normalizeDiagramMeasurementToken(diagramFlowDomain(domain)) || "NODE"}:${String(node || "").trim()}`;
 }
 
-function diagramFlowArrowVisibility({ power, referencePower, valid = true, offline = false } = {}) {
+function diagramFlowArrowThreshold(measType, electricThreshold, hydrogenThreshold) {
+  const type = normalizeDiagramMeasurementToken(measType);
+  const threshold = type === "FLOW" ? Number(hydrogenThreshold) : Number(electricThreshold);
+  return Number.isFinite(threshold) ? Math.max(0, threshold) : 0;
+}
+
+function diagramFlowArrowVisibility({ power, threshold = 0, valid = true, offline = false } = {}) {
   const magnitude = Math.abs(Number(power));
   if (!valid || offline || !Number.isFinite(magnitude)) return false;
-  const reference = Math.abs(Number(referencePower));
-  const threshold = reference > 0 ? reference * 0.001 : 0;
-  return magnitude > threshold;
+  return magnitude > Math.max(0, Number(threshold) || 0);
 }
 
 function diagramTooltipPointerMoveAction(currentHover, nextHover, tooltipHidden = false) {
@@ -5176,6 +5184,53 @@ function diagramDeviceMeasurementKey(devType, devName, measType) {
   ].join("\u0000");
 }
 
+function diagramCouplingMeasurementEndpointKey(devType, devName) {
+  return [normalizeDiagramMeasurementToken(devType), String(devName || "").trim()].join("\u0000");
+}
+
+function diagramIsHydrogenConversionDevice(device) {
+  return ["ACE2HYDRO", "DCE2HYDRO", "HYDRO2ACE", "HYDRO2DCE"].includes(
+    normalizeDiagramMeasurementToken(device?.devType ?? device?.dev_type),
+  );
+}
+
+function diagramCouplingMeasurementEndpoints(snapshot = {}) {
+  const result = new Map();
+  (snapshot.devices || []).forEach((device) => {
+    if (!diagramIsHydrogenConversionDevice(device)) return;
+    const endpoints = { electric: null, hydrogen: null };
+    (Array.isArray(device?.control_bindings) ? device.control_bindings : []).forEach((binding) => {
+      const target = {
+        devType: String(binding?.target_dev_type || "").trim(),
+        devName: String(binding?.target_dev_name || "").trim(),
+      };
+      const targetType = normalizeDiagramMeasurementToken(target.devType);
+      if (!target.devType || !target.devName) return;
+      if (["ACGENERATOR", "DCGENERATOR", "ACLOAD", "DCLOAD"].includes(targetType)) endpoints.electric = target;
+      if (["HYDROSOURCE", "HYDROLOAD", "HYDROSTORAGE"].includes(targetType)) endpoints.hydrogen = target;
+    });
+    result.set(
+      diagramCouplingMeasurementEndpointKey(device.dev_type, device.dev_name),
+      endpoints,
+    );
+  });
+  return result;
+}
+
+function diagramCouplingMeasurementEndpoint(device, maps, metricType = "", measurementTypes = null) {
+  if (!diagramIsHydrogenConversionDevice(device)) return device;
+  const endpoints = maps?.couplingEndpoints?.get(
+    diagramCouplingMeasurementEndpointKey(device?.devType, device?.devName),
+  );
+  if (!endpoints) return null;
+  const explicitTypes = Array.isArray(measurementTypes)
+    ? measurementTypes.map(normalizeDiagramMeasurementToken)
+    : [];
+  const hydrogenMetric = normalizeDiagramMetricType(metricType) === "flow"
+    || (explicitTypes.length > 0 && explicitTypes.every((type) => type === "FLOW"));
+  return (hydrogenMetric ? endpoints.hydrogen : endpoints.electric) || device;
+}
+
 function addDiagramDeviceMeasurement(map, row) {
   if (!row?.dev_type || !row?.dev_name || !row?.meas_type) return;
   map.set(diagramDeviceMeasurementKey(row.dev_type, row.dev_name, row.meas_type), row);
@@ -5195,11 +5250,19 @@ function diagramMeasurementMaps(snapshot = state.snapshot || {}) {
     addDiagramMeasurementAliases(real, row);
     addDiagramDeviceMeasurement(realByDevice, row);
   });
-  return { scada, real, scadaByDevice, realByDevice };
+  return {
+    scada,
+    real,
+    scadaByDevice,
+    realByDevice,
+    couplingEndpoints: diagramCouplingMeasurementEndpoints(snapshot),
+  };
 }
 
 function diagramMetricBindingValue(binding, maps, channel = "auto") {
-  const candidates = diagramMetricMeasurementTypes(binding?.devType, binding?.metricType);
+  const measurementDevice = diagramCouplingMeasurementEndpoint(binding, maps, binding?.metricType);
+  if (!measurementDevice) return null;
+  const candidates = diagramMetricMeasurementTypes(measurementDevice?.devType, binding?.metricType);
   const sources = channel === "real"
     ? [maps.realByDevice]
     : channel === "scada"
@@ -5207,7 +5270,7 @@ function diagramMetricBindingValue(binding, maps, channel = "auto") {
       : [maps.scadaByDevice, maps.realByDevice];
   for (const source of sources) {
     for (const measType of candidates) {
-      const key = diagramDeviceMeasurementKey(binding.devType, binding.devName, measType);
+      const key = diagramDeviceMeasurementKey(measurementDevice.devType, measurementDevice.devName, measType);
       if (source?.has(key)) return source.get(key);
     }
   }
@@ -5948,12 +6011,19 @@ function diagramFlowEdgeBinding(sourceEntry, targetEntry, topology) {
 }
 
 function diagramFlowDevicePowerSample(device, measurementMaps, measurementTypes = null) {
+  const measurementDevice = diagramCouplingMeasurementEndpoint(
+    device,
+    measurementMaps,
+    "",
+    measurementTypes,
+  );
+  if (!measurementDevice) return null;
   const types = Array.isArray(measurementTypes) && measurementTypes.length
     ? measurementTypes
-    : diagramFlowPowerMeasurementTypes(device?.devType);
+    : diagramFlowPowerMeasurementTypes(measurementDevice?.devType);
   for (const map of [measurementMaps?.scadaByDevice, measurementMaps?.realByDevice]) {
     const candidates = types.map((measType, order) => {
-      const key = diagramDeviceMeasurementKey(device?.devType, device?.devName, measType);
+      const key = diagramDeviceMeasurementKey(measurementDevice?.devType, measurementDevice?.devName, measType);
       const row = map?.get(key);
       const rawPower = Number(row?.value);
       const valid = Boolean(row) && Number(row.valid ?? 1) === 1 && Number.isFinite(rawPower);
@@ -6186,7 +6256,12 @@ function updateDiagramFlowArrows(container, snapshot = state.snapshot || {}, mea
     ));
     const referenceDevice = resolved.binding?.device || record.device;
     const referencePower = diagramFlowReferencePower(container, referenceDevice, snapshot, interaction, power);
-    const visible = diagramFlowArrowVisibility({ power, referencePower, valid, offline });
+    const threshold = diagramFlowArrowThreshold(
+      resolved.row?.meas_type || resolved.row?.measurement_type,
+      activeRuntimeSetting("diagram_flow_electric_threshold_kw"),
+      activeRuntimeSetting("diagram_flow_hydrogen_threshold_nm3_h"),
+    );
+    const visible = diagramFlowArrowVisibility({ power, threshold, valid, offline });
     record.root.setAttribute("data-flow-power", valid ? String(power) : "");
     record.root.setAttribute("data-flow-binding-id", String(resolved.binding?.device?.devId || ""));
     record.root.setAttribute(

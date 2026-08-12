@@ -231,6 +231,38 @@ class RenewableControllerCommandLifecycleTest(unittest.TestCase):
         self.assertFalse(stopped["enabled"])
         self.assertIn("已撤销自动指令", stopped["status"])
 
+    def test_retired_controller_clears_effective_hydrogen_generation_snapshot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            service = self._service(temporary)
+            manager = make_control_manager(service)
+            state = manager._state_for("shared")
+            with state.lock:
+                state.enabled = True
+                state.desired_enabled = True
+                state.strategy_generation_active = True
+                state.strategy_cancel_pending = True
+                state.effective_target_snapshot = {
+                    "commands": [
+                        {
+                            "dev_type": "ACLoad",
+                            "dev_name": "electrolyzer-load",
+                            "set_type": "p_set",
+                            "set_value": 6.0,
+                        }
+                    ]
+                }
+            try:
+                removed = manager.remove_model_for_service(service)
+            finally:
+                manager.close()
+
+        self.assertTrue(removed)
+        self.assertFalse(state.enabled)
+        self.assertFalse(state.desired_enabled)
+        self.assertFalse(state.strategy_generation_active)
+        self.assertFalse(state.strategy_cancel_pending)
+        self.assertIsNone(state.effective_target_snapshot)
+
     def test_empty_closed_loop_plan_replaces_previous_nonempty_generation_once(self):
         dispatched = []
 

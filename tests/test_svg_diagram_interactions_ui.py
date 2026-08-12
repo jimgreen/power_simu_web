@@ -470,6 +470,7 @@ process.stdout.write(JSON.stringify({
         body = """
 const available = typeof diagramFlowArrowDirection === "function"
   && typeof diagramFlowArrowSize === "function"
+  && typeof diagramFlowArrowThreshold === "function"
   && typeof diagramFlowArrowVisibility === "function"
   && typeof diagramFlowArrowCount === "function"
   && typeof diagramFlowMotionAttributes === "function";
@@ -481,9 +482,12 @@ process.stdout.write(JSON.stringify(available ? {
   quarter: diagramFlowArrowSize(25, 100),
   full: diagramFlowArrowSize(100, 100),
   over: diagramFlowArrowSize(400, 100),
-  visible: diagramFlowArrowVisibility({ power: 10, referencePower: 100, valid: true, offline: false }),
-  nearZero: diagramFlowArrowVisibility({ power: 0.05, referencePower: 100, valid: true, offline: false }),
-  offline: diagramFlowArrowVisibility({ power: 10, referencePower: 100, valid: true, offline: true }),
+  electricThreshold: diagramFlowArrowThreshold("P_GEN", 0.2, 0.3),
+  hydrogenThreshold: diagramFlowArrowThreshold("FLOW", 0.2, 0.3),
+  visible: diagramFlowArrowVisibility({ power: 10, threshold: 0.1, valid: true, offline: false }),
+  atThreshold: diagramFlowArrowVisibility({ power: 0.1, threshold: 0.1, valid: true, offline: false }),
+  nearZero: diagramFlowArrowVisibility({ power: -0.02, threshold: 0.1, valid: true, offline: false }),
+  offline: diagramFlowArrowVisibility({ power: 10, threshold: 0.1, valid: true, offline: true }),
   shortCount: diagramFlowArrowCount(20),
   standardCount: diagramFlowArrowCount(135),
   longCount: diagramFlowArrowCount(480),
@@ -499,7 +503,10 @@ process.stdout.write(JSON.stringify(available ? {
             "quarter": 17,
             "full": 24,
             "over": 24,
+            "electricThreshold": 0.2,
+            "hydrogenThreshold": 0.3,
             "visible": True,
+            "atThreshold": False,
             "nearZero": False,
             "offline": False,
             "shortCount": 2,
@@ -839,15 +846,20 @@ process.stdout.write(JSON.stringify({
 
     def test_hydrogen_edges_use_signed_flow_and_endpoint_direction(self):
         body = """
-function flowMap(device, value) {
-  const key = diagramDeviceMeasurementKey(device.devType, device.devName, "FLOW");
+function flowMap(coupling, endpoint, value) {
+  const key = diagramDeviceMeasurementKey(endpoint.devType, endpoint.devName, "FLOW");
   return {
     scadaByDevice: new Map([[key, { meas_type: "flow", value, valid: 1 }]]),
     realByDevice: new Map(),
+    couplingEndpoints: new Map([[
+      diagramCouplingMeasurementEndpointKey(coupling.devType, coupling.devName),
+      { electric: null, hydrogen: endpoint },
+    ]]),
   };
 }
 function compact(binding, maps) {
   const resolved = diagramFlowResolvePower(binding, maps);
+  const threshold = diagramFlowArrowThreshold(resolved.row?.meas_type, 0.1, 0.1);
   return {
     kind: binding?.kind || "",
     orientation: binding?.orientation ?? null,
@@ -855,12 +867,15 @@ function compact(binding, maps) {
     measType: resolved.row?.meas_type || "",
     flow: resolved.power,
     direction: diagramFlowArrowDirection(resolved.power, binding?.orientation),
+    visible: diagramFlowArrowVisibility({ power: resolved.power, threshold, valid: resolved.valid }),
     valid: resolved.valid,
   };
 }
 
 const electrolyzer = { devId: "AcE2Hydro-1", devType: "AcE2Hydro", devName: "electrolyzer-1" };
 const fuelCell = { devId: "Hydro2DcE-1", devType: "Hydro2DcE", devName: "fuel-cell-1" };
+const hydrogenSource = { devType: "HydroSource", devName: "electrolyzer-source-1" };
+const hydrogenLoad = { devType: "HydroLoad", devName: "fuel-cell-load-1" };
 const tank = { devId: "HydroStorage-3", devType: "HydroStorage", devName: "tank-1" };
 const sourceEntry = { device: electrolyzer, nodes: [{ terminal: 2, domain: "hydro", key: "HYDRO:1" }] };
 const loadEntry = { device: fuelCell, nodes: [{ terminal: 2, domain: "hydro", key: "HYDRO:1" }] };
@@ -876,9 +891,10 @@ process.stdout.write(JSON.stringify({
     fuelCell: diagramHydrogenFlowRole(fuelCell.devType),
     tank: diagramHydrogenFlowRole(tank.devType),
   },
-  sourceToTank: compact(sourceToTank, flowMap(electrolyzer, 4)),
-  fuelCellToTank: compact(fuelCellToTank, flowMap(fuelCell, 6.67)),
-  tankToFuelCell: compact(tankToFuelCell, flowMap(fuelCell, 6.67)),
+  sourceToTank: compact(sourceToTank, flowMap(electrolyzer, hydrogenSource, 4)),
+  fuelCellToTank: compact(fuelCellToTank, flowMap(fuelCell, hydrogenLoad, 6.67)),
+  tankToFuelCell: compact(tankToFuelCell, flowMap(fuelCell, hydrogenLoad, 6.67)),
+  fuelCellResidual: compact(fuelCellToTank, flowMap(fuelCell, hydrogenLoad, -0.02)),
 }));
 """
         expected = {
@@ -894,6 +910,7 @@ process.stdout.write(JSON.stringify({
                 "measType": "flow",
                 "flow": 4,
                 "direction": 1,
+                "visible": True,
                 "valid": True,
             },
             "fuelCellToTank": {
@@ -903,6 +920,7 @@ process.stdout.write(JSON.stringify({
                 "measType": "flow",
                 "flow": 6.67,
                 "direction": -1,
+                "visible": True,
                 "valid": True,
             },
             "tankToFuelCell": {
@@ -912,6 +930,17 @@ process.stdout.write(JSON.stringify({
                 "measType": "flow",
                 "flow": 6.67,
                 "direction": 1,
+                "visible": True,
+                "valid": True,
+            },
+            "fuelCellResidual": {
+                "kind": "hydrogen",
+                "orientation": -1,
+                "measurementTypes": ["FLOW"],
+                "measType": "flow",
+                "flow": -0.02,
+                "direction": 1,
+                "visible": False,
                 "valid": True,
             },
         }
@@ -921,6 +950,66 @@ process.stdout.write(JSON.stringify({
                     self._run_flow_helpers(path.read_text(encoding="utf-8"), body),
                     expected,
                 )
+
+    def test_coupling_metrics_resolve_endpoint_measurements_without_duplicated_points(self):
+        body = """
+function measurementKey(row) {
+  return `${row.dev_type}.${row.dev_name}.${row.meas_type}`;
+}
+const couplingTypes = ["AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"];
+const endpointSpecs = [
+  ["AcE2Hydro", "ac-electrolyzer", "ACLoad", "ac-load", "HydroSource", "h2-source", "P_LOAD", "V_LOAD"],
+  ["DcE2Hydro", "dc-electrolyzer", "DCLoad", "dc-load", "HydroSource", "dc-h2-source", "P_LOAD", "V_LOAD"],
+  ["Hydro2AcE", "ac-fuel-cell", "ACGenerator", "ac-generator", "HydroLoad", "ac-h2-load", "P_GEN", "V_GEN"],
+  ["Hydro2DcE", "dc-fuel-cell", "DCGenerator", "dc-generator", "HydroLoad", "dc-h2-load", "P_GEN", "V_GEN"],
+];
+const devices = [];
+const scada = [];
+endpointSpecs.forEach(([type, name, electricType, electricName, hydrogenType, hydrogenName, pType, vType], index) => {
+  devices.push({
+    dev_type: type,
+    dev_name: name,
+    control_bindings: [
+      { set_type: "p_set", target_dev_type: electricType, target_dev_name: electricName },
+      { set_type: "flow_set", target_dev_type: hydrogenType, target_dev_name: hydrogenName },
+    ],
+  });
+  scada.push(
+    { dev_type: electricType, dev_name: electricName, meas_type: pType, value: 10 + index, valid: 1 },
+    { dev_type: electricType, dev_name: electricName, meas_type: vType, value: 380 + index, valid: 1 },
+    { dev_type: hydrogenType, dev_name: hydrogenName, meas_type: "flow", value: 2 + index, valid: 1 },
+    { dev_type: type, dev_name: name, meas_type: "p", value: 999, valid: 1 },
+    { dev_type: type, dev_name: name, meas_type: "u", value: 999, valid: 1 },
+    { dev_type: type, dev_name: name, meas_type: "flow", value: 999, valid: 1 },
+  );
+});
+const maps = diagramMeasurementMaps({ devices, measurements: { scada, real: [] } });
+const values = endpointSpecs.map(([devType, devName]) => {
+  const binding = { devType, devName };
+  const electricArrow = diagramFlowDevicePowerSample(binding, maps);
+  const hydrogenArrow = diagramFlowDevicePowerSample(binding, maps, ["FLOW"]);
+  return {
+    power: diagramMetricBindingValue({ ...binding, metricType: "activePower" }, maps)?.value ?? null,
+    voltage: diagramMetricBindingValue({ ...binding, metricType: "voltage" }, maps)?.value ?? null,
+    flow: diagramMetricBindingValue({ ...binding, metricType: "flow" }, maps)?.value ?? null,
+    electricArrow: electricArrow?.power ?? null,
+    hydrogenArrow: hydrogenArrow?.power ?? null,
+  };
+});
+process.stdout.write(JSON.stringify({ couplingTypes, values }));
+"""
+        expected = {
+            "couplingTypes": ["AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"],
+            "values": [
+                {"power": 10, "voltage": 380, "flow": 2, "electricArrow": 10, "hydrogenArrow": 2},
+                {"power": 11, "voltage": 381, "flow": 3, "electricArrow": 11, "hydrogenArrow": 3},
+                {"power": 12, "voltage": 382, "flow": 4, "electricArrow": 12, "hydrogenArrow": 4},
+                {"power": 13, "voltage": 383, "flow": 5, "electricArrow": 13, "hydrogenArrow": 5},
+            ],
+        }
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                self.assertEqual(self._run_flow_helpers(path.read_text(encoding="utf-8"), body), expected)
 
     def test_complete_hydrogen_path_uses_explicit_domains_inline_flows_and_status(self):
         body = """

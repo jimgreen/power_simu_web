@@ -47,6 +47,13 @@ class DcTransferGroup:
 
 
 @dataclass(frozen=True)
+class HydrogenIsland:
+    island_id: str
+    node_ids: Tuple[str, ...]
+    tank_keys: Tuple[DeviceKey, ...]
+
+
+@dataclass(frozen=True)
 class ResourceTopology:
     resources: Mapping[DeviceKey, ResourceConnection]
     dc_transfer_groups: Mapping[str, DcTransferGroup]
@@ -63,11 +70,20 @@ class ResourceTopology:
     converter_component_ids: Mapping[DeviceKey, Tuple[str, str]] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    hydrogen_islands: Mapping[str, HydrogenIsland] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    hydrogen_device_island_ids: Mapping[DeviceKey, str] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    hydrogen_invalid_devices: Tuple[DeviceKey, ...] = ()
 
 
 RESOURCE_TERMINALS = {
     "ACGenerator": ("AC", "node"),
     "DCGenerator": ("DC", "node"),
+    "ACLoad": ("AC", "node"),
+    "DCLoad": ("DC", "node"),
 }
 
 SAME_DOMAIN_EDGES = {
@@ -103,6 +119,14 @@ _CONVERTER_TYPES = frozenset(
     {"ACACConverter", "DCDCConverter", "ACDCConverter", "DCACConverter"}
 )
 _AC_DC_CONVERTER_TYPES = ("ACDCConverter", "DCACConverter")
+_HYDROGEN_ENDPOINT_TYPES = ("HydroSource", "HydroLoad", "HydroStorage")
+_HYDROGEN_EDGE_TYPES = (
+    "HydroPipe",
+    "HydroValve",
+    "HydroCompressor",
+    "HydroPressRegulator",
+    "HydroStopValve",
+)
 _SWITCHLIKE_TYPES = frozenset(
     dev_type
     for dev_type, (*_, switchlike) in SAME_DOMAIN_EDGES.items()
@@ -509,6 +533,161 @@ def _device_is_active(
     return _is_active_state(
         _row_state(device_key[0], row, states),
         switchlike=device_key[0] in _SWITCHLIKE_TYPES,
+    )
+
+
+def _hydrogen_edge_is_active(
+    dev_type: str,
+    row: Mapping[str, object],
+    states: Mapping[DeviceKey, _OperatingState],
+) -> bool:
+    dev_name = _device_name(row)
+    if dev_name is None or not _is_active_state(_row_state(dev_type, row, states)):
+        return False
+    status = _finite_number(row.get("status"))
+    if status is not None and status == 0.0:
+        return False
+    control_type = str(row.get("control_type", "")).strip().upper()
+    if control_type in {"CLOSE", "CLOSED", "OFF"}:
+        return False
+    return True
+
+
+def _hydrogen_topology(
+    parsed: _ParsedModel,
+    states: Mapping[DeviceKey, _OperatingState],
+) -> Tuple[
+    Mapping[str, HydrogenIsland],
+    Mapping[DeviceKey, str],
+    Tuple[DeviceKey, ...],
+]:
+    node_rows = _block_rows(parsed.model, "HydroNode")
+    node_counts: Dict[str, int] = {}
+    for row in node_rows:
+        node_id = _node_id(row.get("idx"))
+        if node_id is not None:
+            node_counts[node_id] = node_counts.get(node_id, 0) + 1
+    valid_node_rows = {
+        node_id: row
+        for row in node_rows
+        if (node_id := _node_id(row.get("idx"))) is not None
+        and node_counts.get(node_id) == 1
+    }
+    active_nodes = {
+        node_id
+        for node_id, row in valid_node_rows.items()
+        if _is_active_state(_row_state("HydroNode", row, states))
+    }
+    adjacency: Dict[str, set[str]] = {node_id: set() for node_id in active_nodes}
+    invalid_devices: set[DeviceKey] = set()
+    active_edges: list[Tuple[DeviceKey, str, str]] = []
+
+    for dev_type in _HYDROGEN_EDGE_TYPES:
+        rows = _block_rows(parsed.model, dev_type)
+        name_counts: Dict[str, int] = {}
+        for row in rows:
+            name = _device_name(row)
+            if name is not None:
+                name_counts[name] = name_counts.get(name, 0) + 1
+        for row in rows:
+            name = _device_name(row)
+            if name is None:
+                continue
+            key = (dev_type, name)
+            left = _node_id(row.get("i_node"))
+            right = _node_id(row.get("j_node"))
+            endpoints_valid = bool(
+                name_counts.get(name) == 1
+                and left is not None
+                and right is not None
+                and left in valid_node_rows
+                and right in valid_node_rows
+            )
+            if not endpoints_valid:
+                invalid_devices.add(key)
+                continue
+            if (
+                left not in active_nodes
+                or right not in active_nodes
+                or not _hydrogen_edge_is_active(dev_type, row, states)
+            ):
+                continue
+            adjacency[left].add(right)
+            adjacency[right].add(left)
+            active_edges.append((key, left, right))
+
+    components: list[Tuple[str, ...]] = []
+    component_by_node: Dict[str, str] = {}
+    unseen = set(active_nodes)
+    while unseen:
+        start = min(unseen)
+        pending = [start]
+        nodes = set()
+        while pending:
+            node_id = pending.pop()
+            if node_id in nodes:
+                continue
+            nodes.add(node_id)
+            unseen.discard(node_id)
+            pending.extend(sorted(adjacency.get(node_id, ()), reverse=True))
+        components.append(tuple(sorted(nodes)))
+
+    island_nodes: Dict[str, Tuple[str, ...]] = {}
+    for nodes in components:
+        payload = _component_payload("H2", nodes)
+        island_id = _component_id("H2", payload)
+        island_nodes[island_id] = nodes
+        for node_id in nodes:
+            component_by_node[node_id] = island_id
+
+    device_islands: Dict[DeviceKey, str] = {}
+    tank_keys_by_island: Dict[str, list[DeviceKey]] = {
+        island_id: [] for island_id in island_nodes
+    }
+    for dev_type in _HYDROGEN_ENDPOINT_TYPES:
+        rows = _block_rows(parsed.model, dev_type)
+        name_counts: Dict[str, int] = {}
+        for row in rows:
+            name = _device_name(row)
+            if name is not None:
+                name_counts[name] = name_counts.get(name, 0) + 1
+        for row in rows:
+            name = _device_name(row)
+            if name is None:
+                continue
+            key = (dev_type, name)
+            node_id = _node_id(row.get("node"))
+            if (
+                name_counts.get(name) != 1
+                or node_id is None
+                or node_id not in valid_node_rows
+            ):
+                invalid_devices.add(key)
+                continue
+            island_id = component_by_node.get(node_id, "")
+            if not island_id or not _is_active_state(_row_state(dev_type, row, states)):
+                continue
+            device_islands[key] = island_id
+            if dev_type == "HydroStorage":
+                tank_keys_by_island[island_id].append(key)
+
+    for key, left, right in active_edges:
+        island_id = component_by_node.get(left, "")
+        if island_id and island_id == component_by_node.get(right, ""):
+            device_islands[key] = island_id
+
+    islands = {
+        island_id: HydrogenIsland(
+            island_id=island_id,
+            node_ids=nodes,
+            tank_keys=tuple(sorted(tank_keys_by_island.get(island_id, ()))),
+        )
+        for island_id, nodes in sorted(island_nodes.items())
+    }
+    return (
+        MappingProxyType(islands),
+        MappingProxyType(dict(sorted(device_islands.items()))),
+        tuple(sorted(invalid_devices)),
     )
 
 
@@ -1390,6 +1569,11 @@ def resolve_resource_topology(
         active_graph,
         components,
     )
+    (
+        hydrogen_islands,
+        hydrogen_device_island_ids,
+        hydrogen_invalid_devices,
+    ) = _hydrogen_topology(parsed, states)
     device_component_ids: Dict[DeviceKey, str] = {}
     for device_key in parsed.resource_rows:
         resource = ResourceRef(
@@ -1426,4 +1610,7 @@ def resolve_resource_topology(
         dc_transfer_groups=dc_transfer_groups,
         device_component_ids=MappingProxyType(device_component_ids),
         converter_component_ids=converter_component_ids,
+        hydrogen_islands=hydrogen_islands,
+        hydrogen_device_island_ids=hydrogen_device_island_ids,
+        hydrogen_invalid_devices=hydrogen_invalid_devices,
     )

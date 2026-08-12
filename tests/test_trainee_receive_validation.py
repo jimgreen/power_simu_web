@@ -477,6 +477,23 @@ def test_stopped_or_paused_simulator_freezes_trainee_without_stopping_receive():
     assert "recordReceiveIssue(" not in accept_block
     assert "setTraineeReceiveActive" not in accept_block
 
+    node_script = f"""
+function isSimulationFrozenSnapshot{helper}
+process.stdout.write(JSON.stringify([
+  isSimulationFrozenSnapshot({{ clock: {{ state: "paused" }} }}),
+  isSimulationFrozenSnapshot({{ clock: {{ state: "stopped" }} }}),
+  isSimulationFrozenSnapshot({{ clock: {{ state: "running" }} }}),
+]));
+"""
+    completed = subprocess.run(
+        ["node", "-e", node_script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(completed.stdout) == [True, True, False]
+    assert "isSimulationPausedSnapshot" not in script
+
 
 def test_local_trainee_web_fetch_outage_keeps_receive_mode_and_retries():
     script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")

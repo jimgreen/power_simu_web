@@ -186,12 +186,12 @@ def test_simulator_pause_is_rendered_as_a_neutral_frozen_state_without_trace_gro
         1,
     )[0]
 
-    assert "isSimulationPausedSnapshot(snapshot)" in accept_block
-    assert "recordReceiveIssue" not in accept_block.split("if (isSimulationPausedSnapshot(snapshot))", 1)[1].split(
+    assert "isSimulationFrozenSnapshot(snapshot)" in accept_block
+    assert "recordReceiveIssue" not in accept_block.split("if (isSimulationFrozenSnapshot(snapshot))", 1)[1].split(
         "if (String(clock.state", 1
     )[0]
     assert "模拟台暂停，已冻结" in receive_block
-    assert "isSimulationPausedSnapshot(snapshot)" in command_trace_block
+    assert "isSimulationFrozenSnapshot(snapshot)" in command_trace_block
     assert '"frozen"' in render_control_block
     assert "control.controlFrozen" in render_control_block
     assert "control.controlFrozen" in prerequisite_block

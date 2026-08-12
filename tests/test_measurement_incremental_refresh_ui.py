@@ -76,7 +76,9 @@ const state = {{
 }};
 const numberOrNull = (value) => Number.isFinite(Number(value)) ? Number(value) : null;
 const diagramTrendFiniteValue = numberOrNull;
+const isSimulationFrozenSnapshot = () => false;
 const isSimulationPausedSnapshot = () => false;
+const measurementPresentationValue = (value) => value;
 const measurementCompareRows = (measurements) => measurements.rows || [];
 const measurementKey = (row) => row.name;
 const measurementDisplayName = (row) => row.name;

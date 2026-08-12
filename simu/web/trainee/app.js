@@ -10031,7 +10031,7 @@ function renderReceiveMode(extraText = "") {
   const teacherModelDisplayName = $("teacherModelDisplayName");
   const connectionDot = $("connectionDot");
   const connectionText = $("connectionText");
-  const simulationPaused = Boolean(state.receiveMode && isSimulationPausedSnapshot(state.snapshot));
+  const simulationPaused = Boolean(state.receiveMode && isSimulationFrozenSnapshot(state.snapshot));
   if (button) {
     button.textContent = state.receiveMode ? "停止接收" : "启动接收";
     button.disabled = !state.receiveMode && !state.modelInitialized;
@@ -15399,7 +15399,7 @@ function appendMeasurementTrace(snapshot) {
   const clock = sampledClock && Number(sampledClock.step_count ?? 0) > 0
     ? sampledClock
     : snapshot.clock || {};
-  if (isSimulationPausedSnapshot(snapshot)) return false;
+  if (isSimulationFrozenSnapshot(snapshot)) return false;
   if (Number(clock.step_count ?? 0) <= 0) return false;
   const rows = measurementCompareRows(snapshot.measurements || {});
   if (!rows.some((row) => diagramTrendFiniteValue(row.scada_value) !== null)) {
@@ -16047,7 +16047,7 @@ function commandTraceWindowPoints(range = commandTraceWindowRange()) {
 
 function appendCommandTrace(snapshot) {
   const clock = snapshot.clock || {};
-  if (isSimulationPausedSnapshot(snapshot)) return false;
+  if (isSimulationFrozenSnapshot(snapshot)) return false;
   if (Number(clock.step_count ?? 0) <= 0) return;
   const devices = controlDefinitionDevices(snapshot);
   const point = {

@@ -82,13 +82,14 @@ class HydrogenStorageStateTest(unittest.TestCase):
         self.assertAlmostEqual(float(row["soc"]), 23000.0 / 20000.0)
         self.assertGreater(float(row["soc"]), 1.0)
 
-    def test_missing_capacity_and_pressure_limit_leave_soc_invalid(self) -> None:
+    def test_missing_capacity_is_not_inferred_from_pressure_limit(self) -> None:
         model_book = _model_book(
             {
                 "idx": 1,
                 "name": "tank-1",
                 "gas_quantity": 23000.0,
                 "water_volume": 50.0,
+                "pressure_max": 45.0,
                 "run_stat": 1,
             }
         )
@@ -152,7 +153,7 @@ class HydrogenStorageStateTest(unittest.TestCase):
                 "pressure": 35.0,
                 "flow": 9999.0,
                 "gas_quantity": 17500.0,
-                "capacity": 22500.0,
+                "capacity": 20000.0,
                 "water_volume": 100.0,
                 "pressure_max": 45.0,
                 "pressure_min": 2.0,
@@ -181,7 +182,7 @@ class HydrogenStorageStateTest(unittest.TestCase):
         self.assertAlmostEqual(float(row["pressure"]), 16.5)
         self.assertAlmostEqual(float(row["flow"]), 1000.0)
         self.assertAlmostEqual(float(row["gas_quantity"]), 16500.0)
-        self.assertAlmostEqual(float(row["soc"]), 16500.0 / 22500.0)
+        self.assertAlmostEqual(float(row["soc"]), 16500.0 / 20000.0)
 
     def test_initial_quantity_is_derived_from_pressure_and_water_volume(self) -> None:
         model_book = _model_book(
@@ -274,7 +275,7 @@ class HydrogenStorageStateTest(unittest.TestCase):
                 "name": "tank-1",
                 "pressure": 35.0,
                 "gas_quantity": 17500.0,
-                "capacity": 22500.0,
+                "capacity": 20000.0,
                 "water_volume": 50.0,
                 "pressure_max": 45.0,
                 "run_stat": 1,
@@ -305,7 +306,7 @@ class HydrogenStorageStateTest(unittest.TestCase):
         }
         self.assertAlmostEqual(float(rows["tank-1"]["pressure"]), 34.8)
         self.assertAlmostEqual(float(rows["tank-1"]["gas_quantity"]), 17400.0)
-        self.assertAlmostEqual(float(rows["tank-1"]["soc"]), 17400.0 / 22500.0)
+        self.assertAlmostEqual(float(rows["tank-1"]["soc"]), 17400.0 / 20000.0)
         self.assertAlmostEqual(float(rows["tank-2"]["pressure"]), 20.2)
         self.assertAlmostEqual(float(rows["tank-2"]["gas_quantity"]), 20200.0)
         self.assertAlmostEqual(float(rows["tank-2"]["soc"]), 20200.0 / 40000.0)
@@ -417,7 +418,7 @@ class HydrogenStorageStateTest(unittest.TestCase):
         self.assertAlmostEqual(float(row["gas_quantity"]), 17000.0)
         self.assertAlmostEqual(float(row["soc"]), 34.5 / 45.0)
 
-    def test_reset_derives_capacity_from_pressure_limit_and_water_volume(self) -> None:
+    def test_reset_does_not_invent_capacity_from_pressure_limit(self) -> None:
         model_book = _model_book(
             {
                 "idx": 1,
@@ -451,7 +452,7 @@ class HydrogenStorageStateTest(unittest.TestCase):
         self.assertAlmostEqual(float(row["pressure"]), 35.0)
         self.assertAlmostEqual(float(row["flow"]), 0.0)
         self.assertAlmostEqual(float(row["gas_quantity"]), 17500.0)
-        self.assertAlmostEqual(float(row["soc"]), 17500.0 / 22500.0)
+        self.assertTrue(math.isnan(float(row["soc"])))
 
     def test_reset_recomputes_initial_state_instead_of_restoring_stale_values(self) -> None:
         model_book = _model_book(
@@ -556,9 +557,36 @@ class HydrogenStorageStateTest(unittest.TestCase):
         expected_quantity = rated_capacity * initial_soc
         expected_pressure = expected_quantity / water_volume / 10.0
 
-        self.assertAlmostEqual(expected_quantity, 17500.0)
-        self.assertAlmostEqual(expected_pressure, 35.0)
+        self.assertAlmostEqual(rated_capacity, 1000.0)
+        self.assertAlmostEqual(expected_quantity, 777.7777777777778)
+        self.assertAlmostEqual(expected_pressure, 1.5555555555555556)
         self.assertAlmostEqual(float(storage["pressure"]), expected_pressure)
+
+    def test_scada_soc_is_derived_from_same_frame_gas_quantity(self) -> None:
+        model_book = _model_book(
+            {
+                "idx": 1,
+                "name": "tank-1",
+                "capacity": 1000.0,
+                "water_volume": 50.0,
+                "initial_soc": 0.8,
+                "run_stat": 1,
+            }
+        )
+        rows = [
+            ["1", "tank.quantity", "HydroStorage", "tank-1", "gas_quantity", "1", "1", "800"],
+            ["2", "tank.soc", "HydroStorage", "tank-1", "soc", "1", "1", "0.8"],
+        ]
+
+        class FixedNoise:
+            def gauss(self, _mean: float, _sigma: float) -> float:
+                return 10.0
+
+        noisy = simu_loop.add_noise_to_rows(rows, 1.0, FixedNoise())
+        aligned = simu_loop.derive_hydrogen_storage_scada_soc(noisy, model_book)
+
+        self.assertAlmostEqual(float(aligned[0][7]), 810.0)
+        self.assertAlmostEqual(float(aligned[1][7]), 0.81)
 
     def test_in_memory_hybrid_solver_returns_actual_hydrogen_storage_flow(self) -> None:
         model_path = next(
@@ -595,8 +623,9 @@ class HydrogenStorageStateTest(unittest.TestCase):
             snapshot=snapshot,
         )
         state = stat_book.data[simu_loop.HYDROGEN_STORAGE_STATE_BLOCK].data[0]
-        self.assertAlmostEqual(float(state["pressure"]), 34.8)
-        self.assertAlmostEqual(float(state["gas_quantity"]), 17400.0)
+        self.assertAlmostEqual(float(state["pressure"]), 1.3555555555555556)
+        self.assertAlmostEqual(float(state["gas_quantity"]), 677.7777777777778)
+        self.assertAlmostEqual(float(state["soc"]), 0.6777777777777778)
 
     def test_bundled_hydrogen_tank_balances_conversion_net_flow(self) -> None:
         model_path = next(
@@ -654,7 +683,11 @@ class HydrogenStorageStateTest(unittest.TestCase):
         )
         state = stat_book.data[simu_loop.HYDROGEN_STORAGE_STATE_BLOCK].data[0]
         self.assertAlmostEqual(float(state["flow"]), storage_flow)
-        self.assertLess(float(state["gas_quantity"]), 17500.0)
+        self.assertLess(float(state["gas_quantity"]), 777.7777777777778)
+        self.assertAlmostEqual(
+            float(state["soc"]),
+            float(state["gas_quantity"]) / 1000.0,
+        )
 
 
 if __name__ == "__main__":

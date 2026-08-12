@@ -636,6 +636,11 @@ MEASUREMENT_TYPE_MAP = {
     "DCLoad": ("P_LOAD", "V_LOAD", "I_LOAD"),
     "HydroSource": ("flow", "pressure"),
     "HydroLoad": ("flow", "pressure"),
+    "HydroPipe": ("flow",),
+    "HydroValve": ("flow",),
+    "HydroCompressor": ("flow",),
+    "HydroPressRegulator": ("flow",),
+    "HydroStopValve": ("flow",),
     "AcE2Hydro": ("p", "flow"),
     "DcE2Hydro": ("p", "flow"),
     "Hydro2AcE": ("p", "flow"),
@@ -1344,6 +1349,28 @@ def _parse_definition_archive(data: bytes) -> Mapping[str, Any]:
     assert model_text is not None and meas_text is not None and control_text is not None and curves_text is not None
     model_book = _book_from_text(model_text)
     _validate_dcac_converter_schema(model_book)
+    measurement_book = _book_from_text(meas_text)
+    measurement_block = measurement_book.data.get("Measurement")
+    measurement_rows = (
+        []
+        if measurement_block is None
+        else [
+            [str(row.get(header, "")) for header in MEAS_HEADER]
+            for row in measurement_block.data
+        ]
+    )
+    measurement_rows, added_measurements = (
+        simu_loop.reconcile_hydrogen_inline_flow_measurements(
+            model_book,
+            measurement_rows,
+        )
+    )
+    if added_measurements:
+        meas_text = simu_loop.render_measurement_snapshot_aligned(
+            (),
+            measurement_rows,
+            (),
+        )
     control_book = _book_from_text(control_text)
     _ensure_dcac_dcp_control_rows(model_book, control_book)
     return {
@@ -1457,13 +1484,31 @@ def make_definition_archive(service: PolarMicrogridSimulator) -> tuple[str, byte
             if has_device_overrides
             else model_path.read_bytes()
         )
+        reconciled_measurement_rows, added_measurements = (
+            simu_loop.reconcile_hydrogen_inline_flow_measurements(
+                snapshot.model_book,
+                snapshot.measurement_rows,
+            )
+        )
+        try:
+            _source_before, source_measurement_rows, _source_after = (
+                simu_loop.parse_measurement_rows(meas_path)
+            )
+            _source_rows, source_added_measurements = (
+                simu_loop.reconcile_hydrogen_inline_flow_measurements(
+                    snapshot.model_book,
+                    source_measurement_rows,
+                )
+            )
+        except (OSError, RuntimeError, ValueError):
+            source_added_measurements = added_measurements
         meas_data = (
             simu_loop.render_measurement_snapshot_aligned(
                 snapshot.measurement_before,
-                snapshot.measurement_rows,
+                reconciled_measurement_rows,
                 snapshot.measurement_after,
             ).encode("utf-8")
-            if has_measurement_overrides
+            if has_measurement_overrides or source_added_measurements
             else meas_path.read_bytes()
         )
         export_control_book = _book_from_text(render_ebook_aligned(service.control_book))

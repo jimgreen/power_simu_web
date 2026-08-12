@@ -674,8 +674,8 @@
 # 672  weather_humidity                      Environment    weather             HUMIDITY          10000   1      0
 # 673  weather_air_pressure                  Environment    weather             AIR_PRESSURE      10000   1      0
 # 674  weather_solar_irradiance              Environment    weather             SOLAR_IRRADIANCE  10000   1      0
-# 675  HydroStorage.集装格式储氢罐-1.pressure       HydroStorage   集装格式储氢罐-1           pressure          10000   1      35
+# 675  HydroStorage.集装格式储氢罐-1.pressure       HydroStorage   集装格式储氢罐-1           pressure          10000   1      1.5555555556
 # 676  HydroStorage.集装格式储氢罐-1.flow           HydroStorage   集装格式储氢罐-1           flow              10000   1      0
-# 677  HydroStorage.集装格式储氢罐-1.gas_quantity   HydroStorage   集装格式储氢罐-1           gas_quantity      10000   1      17500
+# 677  HydroStorage.集装格式储氢罐-1.gas_quantity   HydroStorage   集装格式储氢罐-1           gas_quantity      10000   1      777.7777777778
 # 678  HydroStorage.集装格式储氢罐-1.soc            HydroStorage   集装格式储氢罐-1           soc               10000   1      0.777778
 </Measurement>

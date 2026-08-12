@@ -1175,7 +1175,7 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertEqual(tank["gasFlow"], -2.5)
         self.assertEqual(tank["gasPressure"], 32.0)
         self.assertEqual(tank["gasQuantity"], 15000.0)
-        self.assertEqual(tank["soc"], 62.0)
+        self.assertEqual(tank["soc"], 75.0)
         self.assertEqual(tank["totalCount"], 1)
         self.assertEqual(tank["status"], "storingHydrogen")
         self.assertEqual(tank["flowDirection"], "toTank")

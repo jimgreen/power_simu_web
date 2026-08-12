@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from io import BytesIO
 from pathlib import Path
+import math
+import random
 import re
 import tempfile
+import zipfile
 
 import pytest
 
@@ -158,7 +163,7 @@ def _write_storage_coupled_model(directory: Path) -> Path:
     text += """
 <HydroStorage>
 @ idx name dev_type node control_type pressure_set flow_set alpha flow_min flow_max run_stat pressure capacity water_volume initial_soc pressure_max pressure_min
-# 1 tank-1 hydrogen-tank 1 PRESSURE 35 0 1 -20 20 1 35 22500 50 0.7777777777777778 45 2
+# 1 tank-1 hydrogen-tank 1 PRESSURE 1.5555555555555556 0 1 -20 20 1 1.5555555555555556 1000 50 0.7777777777777778 45 2
 </HydroStorage>
 """
     model_path.write_text(text, encoding="utf-8")
@@ -179,6 +184,82 @@ def _measurement(snapshot, dev_type: str, dev_name: str, meas_type: str) -> floa
     value = simu_loop._measurement_value(snapshot, row)
     assert value is not None
     return float(value)
+
+
+def _inline_hydrogen_model_text() -> str:
+    with tempfile.TemporaryDirectory() as temporary:
+        model_path = _write_conversion_model(Path(temporary))
+        text = model_path.read_text(encoding="utf-8")
+    text = _replace_block(
+        text,
+        "HydroNode",
+        """
+<HydroNode>
+@ idx name pressure run_stat
+# 1 h2_reference 3.00 1
+# 2 h2_pipe_bus 2.99 1
+# 3 h2_valve_bus 2.98 1
+# 4 h2_compressor_bus 2.97 1
+# 5 h2_regulator_bus 2.96 1
+# 6 h2_stop_bus 2.95 1
+# 7 h2_closed_bus 2.94 1
+# 8 h2_load_bus 2.93 1
+</HydroNode>
+""",
+    )
+    text = _replace_block(
+        text,
+        "HydroSource",
+        """
+<HydroSource>
+@ idx name node control_type pressure_set flow_set alpha flow_min flow_max run_stat
+# 1 h2_reference_source 1 PRESSURE 3.00 0 1 0 20 1
+# 2 electrolyzer_h2_source 1 FLOW 3.00 0.4 1 0 20 1
+</HydroSource>
+""",
+    )
+    text = _replace_block(
+        text,
+        "HydroLoad",
+        """
+<HydroLoad>
+@ idx name node flow_set flow_min flow_max run_stat
+# 1 fuel_cell_h2_load 8 3 0 20 1
+</HydroLoad>
+""",
+    )
+    text = _replace_block(
+        text,
+        "HydroPipe",
+        """
+<HydroPipe>
+@ idx name i_node j_node conductance run_stat
+# 11 pipe-1 1 2 30.0 1
+# 12 pipe-closed-bypass 7 8 30.0 1
+# 13 pipe-2 6 8 30.0 1
+</HydroPipe>
+""",
+    )
+    text += """
+<HydroValve>
+@ idx name i_node j_node control_type conductance flow_set run_stat
+# 21 valve-1 2 3 OPEN 30.0 0 1
+</HydroValve>
+<HydroCompressor>
+@ idx name i_node j_node control_type ratio conductance flow_set run_stat
+# 31 compressor-1 3 4 RATIO 1.0 30.0 0 1
+</HydroCompressor>
+<HydroPressRegulator>
+@ idx name i_node j_node ratio conductance run_stat
+# 41 regulator-1 4 5 1.0 30.0 1
+</HydroPressRegulator>
+<HydroStopValve>
+@ idx name i_node j_node status conductance run_stat
+# 51 stop-valve-open 5 6 1 30.0 1
+# 52 stop-valve-closed 6 7 0 30.0 1
+</HydroStopValve>
+"""
+    return text
 
 
 @pytest.mark.parametrize(
@@ -211,6 +292,326 @@ def test_power_control_drives_hydrogen_flow_and_realtime_measurements(tmp_path):
     assert _measurement(snapshot, "HydroSource", rows["h2_source"]["name"], "flow") == pytest.approx(0.4)
     assert _measurement(snapshot, "HydroLoad", rows["h2_load"]["name"], "flow") == pytest.approx(3.0)
     assert {result.status for result in snapshot.coupling_results} == {"balanced"}
+
+
+def test_hydrogen_inline_device_measurements_use_i_to_j_signed_flow(tmp_path):
+    model_path = _write_conversion_model(tmp_path)
+    book = simu_loop.EBook(model_path)
+
+    snapshot, _solver_info = simu_loop.solve_hybrid_snapshot_from_book(book, model_path)
+
+    for row in book.data["HydroPipe"].data:
+        result = snapshot.fluid_results["hydro"].pipes[str(row["name"])]
+        assert _measurement(snapshot, "HydroPipe", str(row["name"]), "flow") == pytest.approx(
+            result.i_flow
+        )
+
+
+def test_generated_measurements_cover_all_supported_hydrogen_inline_devices(tmp_path):
+    model_path = _write_conversion_model(tmp_path)
+    text = model_path.read_text(encoding="utf-8") + """
+<HydroValve>
+@ idx name i_node j_node control_type conductance flow_set run_stat
+# 1 valve-1 1 2 OPEN 3.0 0 1
+</HydroValve>
+<HydroCompressor>
+@ idx name i_node j_node control_type ratio flow_set run_stat
+# 1 compressor-1 1 2 RATIO 1.01 0 1
+</HydroCompressor>
+<HydroPressRegulator>
+@ idx name i_node j_node run_stat
+# 1 regulator-1 1 2 1
+</HydroPressRegulator>
+<HydroStopValve>
+@ idx name i_node j_node status run_stat
+# 1 stop-valve-1 1 2 1 1
+</HydroStopValve>
+"""
+    book = server_module._book_from_text(text)
+    generated = server_module._generated_measurement_book(
+        book,
+        server_module._generated_control_blocks(book),
+    )
+    flow_devices = {
+        (str(row["dev_type"]), str(row["dev_name"]))
+        for row in generated.data["Measurement"].data
+        if str(row["meas_type"]).upper() == "FLOW"
+    }
+
+    assert {
+        ("HydroPipe", "h2_pipe_12"),
+        ("HydroPipe", "h2_pipe_13"),
+        ("HydroValve", "valve-1"),
+        ("HydroCompressor", "compressor-1"),
+        ("HydroPressRegulator", "regulator-1"),
+        ("HydroStopValve", "stop-valve-1"),
+    }.issubset(flow_devices)
+
+
+def test_old_measurement_definition_gets_end_to_end_hydrogen_inline_flow_writeback(tmp_path):
+    model_text = _inline_hydrogen_model_text()
+    artifacts = server_module._generated_model_artifacts(model_text)
+    source_dir = tmp_path / "source"
+    server_module._write_generated_model_artifacts(source_dir, artifacts)
+
+    existing_measurement = [
+        "7",
+        "custom.diesel.p",
+        "ACGenerator",
+        "diesel_300kw",
+        "P_GEN",
+        "2.5",
+        "0",
+        "123.0",
+    ]
+    simu_loop.write_measurement_snapshot(
+        source_dir / "meas.e",
+        (),
+        (existing_measurement,),
+        (),
+    )
+    service = PolarMicrogridSimulator(
+        source_dir,
+        tmp_path / "runtime",
+        model_id="old-hydrogen-measurements",
+    )
+
+    expected_devices = {
+        ("HydroPipe", "pipe-1"),
+        ("HydroPipe", "pipe-2"),
+        ("HydroPipe", "pipe-closed-bypass"),
+        ("HydroValve", "valve-1"),
+        ("HydroCompressor", "compressor-1"),
+        ("HydroPressRegulator", "regulator-1"),
+        ("HydroStopValve", "stop-valve-open"),
+        ("HydroStopValve", "stop-valve-closed"),
+    }
+    reconciled_definitions = {
+        (row[2], row[3], row[4].upper()): row
+        for row in service.measurement_rows
+    }
+    for dev_type, dev_name in expected_devices:
+        assert (dev_type, dev_name, "FLOW") in reconciled_definitions
+    preserved = next(
+        row
+        for row in service.measurement_rows
+        if row[1] == "custom.diesel.p"
+    )
+    assert preserved == existing_measurement
+    assert len({row[0] for row in service.measurement_rows}) == len(service.measurement_rows)
+    assert len({row[1] for row in service.measurement_rows}) == len(service.measurement_rows)
+
+    config = service._make_config(period_seconds=1.0)
+    config = replace(config, write_output_files=True)
+    result = simu_loop.run_once(config, rng=random.Random(7))
+    service._store_kernel_measurement_rows(result)
+
+    real_rows = {
+        (row[2], row[3], row[4].upper()): row
+        for row in simu_loop.parse_measurement_rows(config.real_file)[1]
+    }
+    scada_rows = {
+        (row[2], row[3], row[4].upper()): row
+        for row in simu_loop.parse_measurement_rows(config.scada_file)[1]
+    }
+    solved_snapshot, _solver_info = simu_loop.solve_hybrid_snapshot_from_book(
+        result.model_book,
+        config.model_file,
+    )
+    for dev_type, dev_name in expected_devices - {
+        ("HydroStopValve", "stop-valve-closed"),
+        ("HydroPipe", "pipe-closed-bypass"),
+    }:
+        expected = simu_loop._fluid_endpoint_measurement_value(
+            solved_snapshot,
+            dev_type,
+            dev_name,
+            "FLOW",
+        )
+        assert expected is not None
+        assert float(real_rows[(dev_type, dev_name, "FLOW")][7]) == pytest.approx(expected)
+        scada_value = float(scada_rows[(dev_type, dev_name, "FLOW")][7])
+        assert math.isfinite(scada_value)
+        assert abs(scada_value - expected) < 0.1
+    assert float(real_rows[("HydroStopValve", "stop-valve-closed", "FLOW")][7]) == 0.0
+    assert float(scada_rows[("HydroStopValve", "stop-valve-closed", "FLOW")][7]) == 0.0
+
+    api_snapshot = service.snapshot()
+    api_real_keys = {
+        (row["dev_type"], row["dev_name"], row["meas_type"])
+        for row in api_snapshot["measurements"]["real"]
+    }
+    api_scada_keys = {
+        (row["dev_type"], row["dev_name"], row["meas_type"])
+        for row in api_snapshot["measurements"]["scada"]
+    }
+    assert {(dev_type, dev_name, "flow") for dev_type, dev_name in expected_devices}.issubset(
+        api_real_keys
+    )
+    assert {(dev_type, dev_name, "flow") for dev_type, dev_name in expected_devices}.issubset(
+        api_scada_keys
+    )
+
+
+def test_definition_archive_reconciles_missing_hydrogen_inline_flow_points(tmp_path):
+    artifacts = server_module._generated_model_artifacts(_inline_hydrogen_model_text())
+    package_source = tmp_path / "package-source"
+    server_module._write_generated_model_artifacts(package_source, artifacts)
+    simu_loop.write_measurement_snapshot(
+        package_source / "meas.e",
+        (),
+        (
+            [
+                "9",
+                "kept.custom.point",
+                "ACGenerator",
+                "diesel_300kw",
+                "P_GEN",
+                "3.5",
+                "0",
+                "12.0",
+            ],
+        ),
+        (),
+    )
+    package = PolarMicrogridSimulator(
+        package_source,
+        tmp_path / "package-runtime",
+        model_id="package",
+    )
+
+    _filename, archive = server_module.make_definition_archive(package)
+    with zipfile.ZipFile(BytesIO(archive)) as definition_archive:
+        exported_block = server_module._book_from_text(
+            definition_archive.read("meas.e").decode("utf-8")
+        ).data["Measurement"]
+    exported = [
+        [str(row.get(header, "")) for header in simu_loop.MEAS_HEADER]
+        for row in exported_block.data
+    ]
+
+    exported_by_identity = {
+        (row[2], row[3], row[4].upper()): row
+        for row in exported
+    }
+    exported_custom = next(
+        row
+        for row in exported
+        if row[1] == "kept.custom.point"
+    )
+    assert exported_custom == [
+        "9",
+        "kept.custom.point",
+        "ACGenerator",
+        "diesel_300kw",
+        "P_GEN",
+        "3.5",
+        "0",
+        "12.0",
+    ]
+    assert ("HydroCompressor", "compressor-1", "FLOW") in exported_by_identity
+    assert ("HydroPressRegulator", "regulator-1", "FLOW") in exported_by_identity
+    assert ("HydroStopValve", "stop-valve-closed", "FLOW") in exported_by_identity
+
+
+def test_explicit_hydrogen_valves_keep_identity_status_and_flow_measurements(tmp_path):
+    model_path = _write_conversion_model(tmp_path)
+    text = model_path.read_text(encoding="utf-8")
+    text = _replace_block(
+        text,
+        "HydroNode",
+        """
+<HydroNode>
+@ idx name pressure run_stat
+# 1 h2_reference 3.00 1
+# 2 h2_valve_bus 2.98 1
+# 3 h2_regulator_bus 2.96 1
+# 4 h2_load_bus 2.94 1
+</HydroNode>
+""",
+    )
+    text = _replace_block(
+        text,
+        "HydroSource",
+        """
+<HydroSource>
+@ idx name node control_type pressure_set flow_set alpha flow_min flow_max run_stat
+# 1 h2_reference_source 1 PRESSURE 3.00 0 1 0 20 1
+# 2 electrolyzer_h2_source 1 FLOW 3.00 0.4 1 0 20 1
+</HydroSource>
+""",
+    )
+    text = _replace_block(
+        text,
+        "HydroLoad",
+        """
+<HydroLoad>
+@ idx name node flow_set flow_min flow_max run_stat
+# 1 fuel_cell_h2_load 4 3 0 20 1
+</HydroLoad>
+""",
+    )
+    text = _replace_block(
+        text,
+        "HydroPipe",
+        """
+<HydroPipe>
+@ idx name i_node j_node conductance run_stat
+</HydroPipe>
+""",
+    )
+    text += """
+<HydroValve>
+@ idx name i_node j_node control_type conductance flow_set run_stat
+# 101 valve-1 1 2 OPEN 30.0 0 1
+</HydroValve>
+<HydroPressRegulator>
+@ idx name i_node j_node ratio conductance run_stat
+# 202 regulator-1 2 3 1.0 30.0 1
+</HydroPressRegulator>
+<HydroStopValve>
+@ idx name i_node j_node status conductance run_stat
+# 303 stop-valve-open 3 4 1 30.0 1
+# 304 stop-valve-closed 2 4 0 30.0 1
+</HydroStopValve>
+"""
+    book = server_module._book_from_text(text)
+
+    rows = simu_loop._ebook_to_efile_rows(book)
+    valve_block = rows["HydroValve"]
+    valve_rows = {
+        row[valve_block["header_list"].index("name")]: dict(
+            zip(valve_block["header_list"], row)
+        )
+        for row in valve_block["rows"]
+    }
+
+    assert valve_rows["valve-1"]["idx"] == "101"
+    assert valve_rows["regulator-1"]["idx"] == "202"
+    assert valve_rows["regulator-1"]["control_type"] == "RATIO"
+    assert valve_rows["stop-valve-open"]["idx"] == "303"
+    assert valve_rows["stop-valve-open"]["control_type"] == "OPEN"
+    assert valve_rows["stop-valve-closed"]["idx"] == "304"
+    assert valve_rows["stop-valve-closed"]["control_type"] == "CLOSED"
+
+    book.data["HydroPressRegulator"].data[0]["ratio"] = ""
+    network = simu_loop._read_lf_network_from_book(book, model_path)
+    hydro_network = network.fluid_networks["hydro"]
+    regulator = next(edge for edge in hydro_network.edges if edge.name == "regulator-1")
+    assert regulator.control_type == "PASSIVE"
+    assert "stop-valve-closed" not in {edge.name for edge in hydro_network.edges}
+
+    snapshot, _solver_info = simu_loop.solve_hybrid_snapshot_from_book(book, model_path)
+    for dev_type, dev_name in (
+        ("HydroValve", "valve-1"),
+        ("HydroPressRegulator", "regulator-1"),
+        ("HydroStopValve", "stop-valve-open"),
+    ):
+        assert _measurement(snapshot, dev_type, dev_name, "flow") == pytest.approx(3.0)
+    closed_row = [
+        "1", "point", "HydroStopValve", "stop-valve-closed", "flow", "1", "1", "0"
+    ]
+    assert simu_loop._measurement_value(snapshot, closed_row) is None
 
 
 def test_flow_control_ignores_conflicting_electric_setpoints(tmp_path):
@@ -757,18 +1158,18 @@ def test_coupled_hydrogen_flow_updates_all_tank_runtime_states(
         for row in snapshot["measurements"]["real"]
         if row["dev_type"] == "HydroStorage" and row["dev_name"] == "tank-1"
     }
-    expected_quantity = 17500.0 - expected_flow
+    expected_quantity = 777.7777777777778 - expected_flow
     expected_press = expected_quantity / 50.0 / 10.0
-    expected_capacity = 22500.0
+    expected_capacity = 1000.0
 
     assert storage_values["flow"] == pytest.approx(expected_flow)
     assert storage_values["pressure"] == pytest.approx(expected_press)
     assert storage_values["gas_quantity"] == pytest.approx(expected_quantity)
     assert storage_values["soc"] == pytest.approx(expected_quantity / expected_capacity)
     direction = -1.0 if expected_flow > 0.0 else 1.0
-    assert (storage_values["pressure"] - 35.0) * direction > 0.0
-    assert (storage_values["gas_quantity"] - 17500.0) * direction > 0.0
-    assert (storage_values["soc"] - 17500.0 / expected_capacity) * direction > 0.0
+    assert (storage_values["pressure"] - 1.5555555555555556) * direction > 0.0
+    assert (storage_values["gas_quantity"] - 777.7777777777778) * direction > 0.0
+    assert (storage_values["soc"] - 0.7777777777777778) * direction > 0.0
 
 
 def test_hydrogen_model_converges_with_safe_endpoint_power_limits(tmp_path):

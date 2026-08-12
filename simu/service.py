@@ -652,6 +652,16 @@ def ensure_dcac_dcp_control_rows(model_book: EBook, control_book: EBook) -> int:
     return added
 
 
+def _reconcile_hydrogen_inline_flow_measurements(
+    model_book: EBook,
+    measurement_rows: Sequence[Sequence[Any]],
+) -> Tuple[List[List[str]], int]:
+    return simu_loop.reconcile_hydrogen_inline_flow_measurements(
+        model_book,
+        measurement_rows,
+    )
+
+
 def _active_window(
     item: Mapping[str, Any],
     minute: int | float,
@@ -1555,6 +1565,10 @@ class PolarMicrogridSimulator:
             )
         except Exception:
             measurement_before, measurement_rows, measurement_after = [], [], []
+        measurement_rows, _added_measurements = _reconcile_hydrogen_inline_flow_measurements(
+            model_book,
+            measurement_rows,
+        )
         self._publish_definition_snapshot(
             DefinitionSnapshot(
                 revision=self._definition_snapshot.revision + 1,
@@ -5074,7 +5088,10 @@ class PolarMicrogridSimulator:
                 "hydrogenStorage",
                 row,
             )
-            capacity = _to_float(row.get("capacity"), None)
+            capacity = _first_number(
+                row,
+                ("rated_capacity", "capacity", "rated_gas_capacity", "gas_capacity"),
+            )
             profiles.append(
                 {
                     "dev_type": "HydroStorage",
@@ -5444,7 +5461,7 @@ class PolarMicrogridSimulator:
             measured_group_devices.setdefault(group_key, set()).add(device_key)
             hydrogen_measured_devices.setdefault(category, set()).add(device_key)
             metrics = hydrogen_metric_values.setdefault(group_key, {})
-            capacity = _to_float(profile.get("capacity"), 1.0) or 1.0
+            capacity = _to_float(profile.get("capacity"), None)
             if "FLOW" in values:
                 metrics.setdefault("gasFlow", []).append((float(values["FLOW"]), 1.0))
             if category == "hydrogenStorage":
@@ -5452,14 +5469,19 @@ class PolarMicrogridSimulator:
                 if pressure is not None:
                     metrics.setdefault("gasPressure", []).append((float(pressure), 1.0))
                 if "GAS_QUANTITY" in values:
+                    gas_quantity = float(values["GAS_QUANTITY"])
                     metrics.setdefault("gasQuantity", []).append(
-                        (float(values["GAS_QUANTITY"]), 1.0)
+                        (gas_quantity, 1.0)
                     )
-                if "SOC" in values:
+                    if capacity is not None and capacity > 0.0:
+                        metrics.setdefault("soc", []).append(
+                            (gas_quantity / capacity * 100.0, float(capacity))
+                        )
+                elif "SOC" in values:
                     raw_soc = float(values["SOC"])
                     soc_percent = raw_soc * 100.0 if abs(raw_soc) <= 2.0 else raw_soc
                     metrics.setdefault("soc", []).append(
-                        (soc_percent, max(1e-9, float(capacity)))
+                        (soc_percent, max(1e-9, float(capacity or 1.0)))
                     )
 
         counts["hydrogenStorage"] = len(
@@ -10255,6 +10277,10 @@ class PolarMicrogridSimulator:
             )
         except Exception:
             measurement_before, measurement_rows, measurement_after = [], [], []
+        measurement_rows, _added_measurements = _reconcile_hydrogen_inline_flow_measurements(
+            model_book,
+            measurement_rows,
+        )
         snapshot = DefinitionSnapshot(
             revision=self.definition_snapshot.revision + 1,
             model_book=model_book,

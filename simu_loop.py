@@ -80,6 +80,7 @@ from simu.model_semantics import (  # noqa: E402
     resource_aliases,
     structured_resources,
 )
+from simu.point_names import automatic_point_name  # noqa: E402
 
 
 DEFAULT_MODEL_FILE = SIMU_DIR / "model.e"
@@ -106,6 +107,13 @@ HYDROGEN_STORAGE_STATE_HEADERS = (
 )
 StorageTarget = Tuple[str, dict, str, Optional[dict], int]
 SIGNAL_MEASUREMENT_TYPES = {"RUN_STAT", "STATUS"}
+HYDROGEN_INLINE_FLOW_DEVICE_TYPES = (
+    "HydroPipe",
+    "HydroValve",
+    "HydroCompressor",
+    "HydroPressRegulator",
+    "HydroStopValve",
+)
 GENERIC_CURRENT_BRANCH_TYPES = {
     "ACBranch",
     "ACTransformer",
@@ -313,7 +321,55 @@ def _ebook_to_efile_rows(book: EBook) -> Dict[str, Dict[str, Any]]:
             "rows": serialized_rows,
             "lv": lv,
         }
+    _merge_explicit_hydrogen_valve_rows(rows)
     return rows
+
+
+def _merge_explicit_hydrogen_valve_rows(rows: Dict[str, Dict[str, Any]]) -> None:
+    """Adapt explicit WEB valve roles to the kernel's HydroValve table."""
+
+    source_blocks = ("HydroValve", "HydroPressRegulator", "HydroStopValve")
+    if not any(block_name in rows for block_name in source_blocks):
+        return
+    headers = (
+        "idx",
+        "name",
+        "i_node",
+        "j_node",
+        "control_type",
+        "conductance",
+        "flow_set",
+        "ratio",
+        "run_stat",
+    )
+    merged_rows: List[List[str]] = []
+    for block_name in source_blocks:
+        block = rows.get(block_name)
+        if not block:
+            continue
+        source_headers = [str(header) for header in block.get("header_list", ())]
+        for source_row in block.get("rows", ()):
+            values = {
+                header: str(source_row[pos]) if pos < len(source_row) else ""
+                for pos, header in enumerate(source_headers)
+            }
+            if block_name == "HydroStopValve":
+                status = _safe_int(values.get("status", 1), 1)
+                values["control_type"] = "OPEN" if status == 1 else "CLOSED"
+            elif block_name == "HydroPressRegulator" and not values.get("control_type"):
+                values["control_type"] = "RATIO" if values.get("ratio") not in (None, "", "-") else "OPEN"
+            values.setdefault("control_type", "OPEN")
+            values.setdefault("conductance", "1")
+            values.setdefault("flow_set", "0")
+            values.setdefault("ratio", "1")
+            values.setdefault("run_stat", "1")
+            merged_rows.append([str(values.get(header, "")) for header in headers])
+    rows["HydroValve"] = {
+        "table_name": "HydroValve",
+        "header_list": list(headers),
+        "rows": merged_rows,
+        "lv": 0,
+    }
 
 
 def _ebook_to_dict_rows(book: EBook) -> Dict[str, List[Dict[str, str]]]:
@@ -1135,16 +1191,6 @@ def _hydrogen_storage_rated_capacity(row: Mapping[str, Any]) -> Optional[float]:
         value = _safe_float(row.get(field), None)
         if value is not None and math.isfinite(value) and value > 0.0:
             return float(value)
-    pressure_max = _safe_float(row.get("pressure_max"), None)
-    water_volume = _hydrogen_storage_water_volume(row)
-    if (
-        pressure_max is not None
-        and math.isfinite(pressure_max)
-        and pressure_max > 0.0
-        and water_volume is not None
-        and water_volume > 0.0
-    ):
-        return float(pressure_max) * water_volume * 10.0
     return None
 
 
@@ -3353,24 +3399,54 @@ def _fluid_endpoint_measurement_value(
     result = (getattr(snapshot, "fluid_results", {}) or {}).get(domain)
     if result is None:
         return None
-    collection_name = {
-        "HydroSource": "sources",
-        "HydroLoad": "loads",
-        "HydroStorage": "storages",
+    collection_names = {
+        "HydroSource": ("sources",),
+        "HydroLoad": ("loads",),
+        "HydroStorage": ("storages",),
+        "HydroPipe": ("pipes",),
+        "HydroValve": ("valves",),
+        "HydroStopValve": ("valves",),
+        "HydroCompressor": ("controllers",),
+        "HydroPressRegulator": ("controllers", "valves"),
     }.get(dev_type)
-    if collection_name is None:
+    if collection_names is None:
         return None
-    item = (getattr(result, collection_name, {}) or {}).get(dev_name)
+    item = next(
+        (
+            (getattr(result, collection_name, {}) or {}).get(dev_name)
+            for collection_name in collection_names
+            if (getattr(result, collection_name, {}) or {}).get(dev_name) is not None
+        ),
+        None,
+    )
     if item is None:
         return None
     field = {
-        "FLOW": "flow",
+        "FLOW": "flow" if dev_type in {"HydroSource", "HydroLoad", "HydroStorage"} else "i_flow",
         "PRESSURE": "pressure",
     }.get(str(meas_type).strip().upper())
     if field is None:
         return None
     value = _safe_float(getattr(item, field, None), None)
     return value if value is not None and math.isfinite(value) else None
+
+
+def _hydrogen_inline_flow_is_deterministic_zero(
+    model_book: Optional[EBook],
+    dev_type: str,
+    dev_name: str,
+) -> bool:
+    if model_book is None or dev_type not in HYDROGEN_INLINE_FLOW_DEVICE_TYPES:
+        return False
+    model_row = _model_row(model_book, dev_type, dev_name)
+    if model_row is None:
+        return False
+    if not _is_running_row(model_row):
+        return True
+    return (
+        dev_type == "HydroStopValve"
+        and _safe_int(model_row.get("status", 1), 1) == 0
+    )
 
 
 def _hydrogen_conversion_measurement_value(
@@ -3434,13 +3510,32 @@ def _measurement_value(
         return None if signal_values is None else signal_values.get((dev_type, dev_name, meas_type))
     if dev_type == "Environment" and dev_name == "weather":
         return _weather_measurement_value(meas_type, weather)
-    if dev_type in {"HydroSource", "HydroLoad"}:
-        return _fluid_endpoint_measurement_value(
+    if dev_type in {
+        "HydroSource",
+        "HydroLoad",
+        "HydroPipe",
+        "HydroValve",
+        "HydroStopValve",
+        "HydroCompressor",
+        "HydroPressRegulator",
+    }:
+        value = _fluid_endpoint_measurement_value(
             snapshot,
             dev_type,
             dev_name,
             meas_type,
         )
+        if value is not None:
+            return value
+        if meas_type == "FLOW" and _hydrogen_inline_flow_is_deterministic_zero(
+            model_book,
+            dev_type,
+            dev_name,
+        ):
+            # A disabled, closed, disconnected, or otherwise absent transport
+            # edge must not retain a stale nonzero definition value.
+            return 0.0
+        return None
     if dev_type in {"AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"}:
         return _hydrogen_conversion_measurement_value(
             snapshot,
@@ -3538,6 +3633,7 @@ def build_real_rows(
     model_book: Optional[EBook] = None,
 ) -> Tuple[List[str], List[List[str]], List[str], int, int]:
     before, rows, after = parse_measurement_rows(meas_file)
+    rows, _added = reconcile_hydrogen_inline_flow_measurements(model_book, rows)
     storage_soc = _storage_soc_values(dev_stat_file, model_book)
     hydrogen_storage_state = hydrogen_storage_state_values_from_book(
         EBook(dev_stat_file) if dev_stat_file is not None and Path(dev_stat_file).exists() else None
@@ -3558,6 +3654,84 @@ def build_real_rows(
         model_book=model_book,
         hydrogen_storage_state=hydrogen_storage_state,
     )
+
+
+def reconcile_hydrogen_inline_flow_measurements(
+    model_book: Optional[EBook],
+    measurement_rows: Sequence[Sequence[Any]],
+) -> Tuple[List[List[str]], int]:
+    """Append missing FLOW points for explicit hydrogen transport devices.
+
+    Existing point rows are copied verbatim. Device identity comes only from
+    the explicit E-file block and its stable row name; descriptive names and
+    role markers are deliberately not interpreted.
+    """
+
+    rows: List[List[str]] = []
+    existing_identities: set[Tuple[str, str, str]] = set()
+    used_names: set[str] = set()
+    max_numeric_idx = 0
+    for source_row in measurement_rows:
+        row = [str(cell) for cell in source_row]
+        if len(row) < len(MEAS_HEADER):
+            row.extend("" for _ in range(len(MEAS_HEADER) - len(row)))
+        row = row[: len(MEAS_HEADER)]
+        rows.append(row)
+        existing_identities.add(
+            (row[2].strip(), row[3].strip(), row[4].strip().upper())
+        )
+        if row[1].strip():
+            used_names.add(row[1].strip())
+        try:
+            numeric_idx = int(row[0].strip())
+        except (TypeError, ValueError):
+            continue
+        if numeric_idx > max_numeric_idx:
+            max_numeric_idx = numeric_idx
+
+    if model_book is None:
+        return rows, 0
+
+    def unused_point_name(dev_type: str, dev_name: str) -> str:
+        base = automatic_point_name(dev_type, dev_name, "flow")
+        if base not in used_names:
+            return base
+        suffix = 2
+        while f"{base}.{suffix}" in used_names:
+            suffix += 1
+        return f"{base}.{suffix}"
+
+    added = 0
+    next_idx = max_numeric_idx + 1
+    for block_name in HYDROGEN_INLINE_FLOW_DEVICE_TYPES:
+        block = model_book.data.get(block_name)
+        if block is None:
+            continue
+        for model_row in getattr(block, "data", ()):
+            dev_name = str(
+                model_row.get("name", model_row.get("dev_name", ""))
+            ).strip()
+            identity = (block_name, dev_name, "FLOW")
+            if not dev_name or identity in existing_identities:
+                continue
+            point_name = unused_point_name(block_name, dev_name)
+            rows.append(
+                [
+                    str(next_idx),
+                    point_name,
+                    block_name,
+                    dev_name,
+                    "flow",
+                    "10000.0",
+                    "1",
+                    "0.0",
+                ]
+            )
+            existing_identities.add(identity)
+            used_names.add(point_name)
+            next_idx += 1
+            added += 1
+    return rows, added
 
 
 def build_real_rows_from_data(
@@ -3640,6 +3814,7 @@ def add_noise_to_rows(
     noise_std: Optional[float],
     rng: random.Random,
     median_deviations: Optional[Mapping[str, float]] = None,
+    model_book: Optional[EBook] = None,
 ) -> List[List[str]]:
     noisy_rows: List[List[str]] = []
     configured_deviations = median_deviations or {}
@@ -3647,6 +3822,21 @@ def add_noise_to_rows(
         row = list(source_row)
         meas_type = str(row[4]).upper() if len(row) > 4 else ""
         if meas_type in SIGNAL_MEASUREMENT_TYPES:
+            noisy_rows.append(row)
+            continue
+        if (
+            len(row) > 7
+            and str(row[2]).strip() in HYDROGEN_INLINE_FLOW_DEVICE_TYPES
+            and meas_type == "FLOW"
+            and (_safe_float(row[7], None) or 0.0) == 0.0
+            and _hydrogen_inline_flow_is_deterministic_zero(
+                model_book,
+                str(row[2]).strip(),
+                str(row[3]).strip(),
+            )
+        ):
+            # Closed/offline topology is a deterministic physical zero, not an
+            # energized sensor that should acquire Gaussian noise.
             noisy_rows.append(row)
             continue
         sigma = _row_noise_sigma(row, noise_std)
@@ -3667,6 +3857,39 @@ def add_noise_to_rows(
                 pass
         noisy_rows.append(row)
     return noisy_rows
+
+
+def derive_hydrogen_storage_scada_soc(
+    rows: Sequence[Sequence[str]],
+    model_book: EBook,
+) -> List[List[str]]:
+    """Keep a tank's SCADA SOC derived from its same-frame gas quantity."""
+    aligned_rows = [list(row) for row in rows]
+    capacities = {
+        str(row.get("name", "")).strip(): _hydrogen_storage_rated_capacity(row)
+        for row in _hydrogen_storage_rows(model_book)
+    }
+    quantities: Dict[str, float] = {}
+    for row in aligned_rows:
+        if len(row) <= 7 or str(row[2]).strip() != "HydroStorage":
+            continue
+        if str(row[4]).strip().upper() != "GAS_QUANTITY":
+            continue
+        value = _safe_float(row[7], None)
+        if value is not None and math.isfinite(value):
+            quantities[str(row[3]).strip()] = float(value)
+    for row in aligned_rows:
+        if len(row) <= 7 or str(row[2]).strip() != "HydroStorage":
+            continue
+        if str(row[4]).strip().upper() != "SOC":
+            continue
+        name = str(row[3]).strip()
+        capacity = capacities.get(name)
+        quantity = quantities.get(name)
+        if capacity is None or capacity <= 0.0 or quantity is None:
+            continue
+        row[7] = format_number(quantity / capacity)
+    return aligned_rows
 
 
 def render_measurement_snapshot_aligned(before: Sequence[str], rows: Sequence[Sequence[str]], after: Sequence[str]) -> str:
@@ -3737,6 +3960,10 @@ def run_once(
         else:
             meas_rows = [list(row) for row in config.meas_rows]
             meas_after = list(config.meas_after or [])
+        meas_rows, reconciled_measurement_count = reconcile_hydrogen_inline_flow_measurements(
+            source_model_book,
+            meas_rows,
+        )
         stat_book = config.dev_stat_book or _read_optional_book(config.dev_stat_file)
         weather_book = config.weather_book or _read_optional_book(config.weather_file)
         ctrl_book = config.yt_ctrl_book or _read_optional_book(config.yt_ctrl_file)
@@ -3783,7 +4010,11 @@ def run_once(
             meas_before,
             meas_after,
             model_book=model_book,
-            measurement_bindings=config.measurement_bindings,
+            measurement_bindings=(
+                config.measurement_bindings
+                if reconciled_measurement_count == 0
+                else None
+            ),
             hydrogen_storage_state=hydrogen_storage_state,
         )
         scada_rows = add_noise_to_rows(
@@ -3791,7 +4022,9 @@ def run_once(
             config.noise_std,
             rng,
             config.measurement_median_deviations,
+            model_book,
         )
+        scada_rows = derive_hydrogen_storage_scada_soc(scada_rows, model_book)
         if config.write_output_files:
             write_measurement_snapshot(config.real_file, before, real_rows, after)
             write_measurement_snapshot(config.scada_file, before, scada_rows, after)
@@ -3843,7 +4076,9 @@ def run_once(
         config.noise_std,
         rng,
         config.measurement_median_deviations,
+        model_book,
     )
+    scada_rows = derive_hydrogen_storage_scada_soc(scada_rows, model_book)
     if config.write_output_files:
         write_measurement_snapshot(config.real_file, before, real_rows, after)
         write_measurement_snapshot(config.scada_file, before, scada_rows, after)

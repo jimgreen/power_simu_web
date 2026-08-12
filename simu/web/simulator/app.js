@@ -4555,6 +4555,7 @@ const DIAGRAM_FLOW_POWER_MEASUREMENT_TYPES = Object.freeze({
   HYDRO2ACE: Object.freeze(["FLOW"]),
   HYDRO2DCE: Object.freeze(["FLOW"]),
   HYDROPIPE: Object.freeze(["FLOW"]),
+  HYDROVALVE: Object.freeze(["FLOW"]),
   HYDROCOMPRESSOR: Object.freeze(["FLOW"]),
   HYDROPRESSREGULATOR: Object.freeze(["FLOW"]),
   HYDROSTOPVALVE: Object.freeze(["FLOW"]),
@@ -4576,6 +4577,8 @@ function diagramFlowCanonicalPower(measType, value) {
 
 function diagramFlowPowerRouteOrientation(device, nodes = []) {
   const type = normalizeDiagramMeasurementToken(device?.devType);
+  if (["HYDRO2ACE", "HYDRO2DCE"].includes(type)) return -1;
+  if (["ACE2HYDRO", "DCE2HYDRO"].includes(type)) return 1;
   if (type !== "ACDCCONVERTER" && type !== "DCACCONVERTER") return 1;
   const terminalFor = (domain) => Number((nodes || []).find((item) => {
     const nodeDomain = normalizeDiagramMeasurementToken(
@@ -4589,8 +4592,20 @@ function diagramFlowPowerRouteOrientation(device, nodes = []) {
   return 1;
 }
 
-function diagramFlowInlineDeviceKind(devType) {
+function diagramFlowInlineDeviceKind(devType, nodes = []) {
   const type = normalizeDiagramMeasurementToken(devType);
+  if (type === "HYDROPIPE") return "branch";
+  if ([
+    "ACE2HYDRO",
+    "DCE2HYDRO",
+    "HYDRO2ACE",
+    "HYDRO2DCE",
+    "HYDROVALVE",
+    "HYDROSTOPVALVE",
+    "HYDROCOMPRESSOR",
+    "HYDROPRESSREGULATOR",
+  ].includes(type)) return "device";
+  if (diagramHydrogenFlowInlineKind(type, nodes)) return "device";
   if (type.includes("BRANCH")) return "branch";
   if (
     type.includes("BREAK")
@@ -4603,7 +4618,7 @@ function diagramFlowInlineDeviceKind(devType) {
 
 function diagramFlowSeriesOrientation(subjectTerminal, neighborKind, neighborTerminal = 0) {
   const terminal = Number(subjectTerminal);
-  if (neighborKind === "generator") return terminal === 1 ? 1 : -1;
+  if (["generator", "source", "storage"].includes(neighborKind)) return terminal === 1 ? 1 : -1;
   if (neighborKind === "load") return terminal === 2 ? 1 : -1;
   return terminal !== Number(neighborTerminal) ? 1 : -1;
 }
@@ -4615,7 +4630,7 @@ function diagramFlowEdgeTerminalOrientation(position, terminal) {
 }
 
 function diagramFlowNodeKey(node, domain = "") {
-  return `${normalizeDiagramMeasurementToken(domain) || "NODE"}:${String(node || "").trim()}`;
+  return `${normalizeDiagramMeasurementToken(diagramFlowDomain(domain)) || "NODE"}:${String(node || "").trim()}`;
 }
 
 function diagramFlowArrowVisibility({ power, referencePower, valid = true, offline = false } = {}) {
@@ -5653,35 +5668,123 @@ function diagramHydrogenFlowRole(devType) {
   return "";
 }
 
-function diagramHydrogenFlowEdgeBinding(sourceEntry, targetEntry) {
-  const endpoints = [
-    { position: "source", entry: sourceEntry, role: diagramHydrogenFlowRole(sourceEntry?.device?.devType) },
-    { position: "target", entry: targetEntry, role: diagramHydrogenFlowRole(targetEntry?.device?.devType) },
-  ].filter((item) => item.role);
-  if (!endpoints.length) return null;
-  const active = endpoints.filter((item) => item.role !== "storage");
-  const candidates = active.length ? active : endpoints;
-  const sources = candidates.filter((item) => item.role === "source");
-  const selected = sources.length === 1 ? sources[0] : candidates.length === 1 ? candidates[0] : null;
-  if (!selected) return null;
-  const orientation = selected.role === "load"
-    ? (selected.position === "target" ? 1 : -1)
-    : (selected.position === "source" ? 1 : -1);
+function diagramHydrogenFlowInlineKind(devType, nodes = []) {
+  const type = normalizeDiagramMeasurementToken(devType);
+  if (type === "HYDROPIPE") return "branch";
+  if ([
+    "HYDROVALVE",
+    "HYDROSTOPVALVE",
+    "HYDROCOMPRESSOR",
+    "HYDROPRESSREGULATOR",
+  ].includes(type)) return "device";
+  const hydrogenTerminals = (nodes || []).filter((node) => (
+    Number(node?.terminal) > 0 && diagramFlowDomain(node?.domain) === "hydro"
+  ));
+  if (hydrogenTerminals.length === 2) return "device";
+  return "";
+}
+
+const DIAGRAM_HYDROGEN_TERMINAL_DOMAINS = Object.freeze({
+  HYDROSOURCE: Object.freeze(["hydro"]),
+  HYDROLOAD: Object.freeze(["hydro"]),
+  HYDROSTORAGE: Object.freeze(["hydro"]),
+  HYDROBUS: Object.freeze(["hydro"]),
+  HYDROPIPE: Object.freeze(["hydro", "hydro"]),
+  HYDROVALVE: Object.freeze(["hydro", "hydro"]),
+  HYDROSTOPVALVE: Object.freeze(["hydro", "hydro"]),
+  HYDROCOMPRESSOR: Object.freeze(["hydro", "hydro"]),
+  HYDROPRESSREGULATOR: Object.freeze(["hydro", "hydro"]),
+  ACE2HYDRO: Object.freeze(["ac", "hydro"]),
+  DCE2HYDRO: Object.freeze(["dc", "hydro"]),
+  HYDRO2ACE: Object.freeze(["ac", "hydro"]),
+  HYDRO2DCE: Object.freeze(["dc", "hydro"]),
+});
+
+function diagramFlowTerminalDomains(devType) {
+  const domains = DIAGRAM_HYDROGEN_TERMINAL_DOMAINS[normalizeDiagramMeasurementToken(devType)];
+  return domains ? [...domains] : [];
+}
+
+function diagramFlowDomain(value) {
+  const type = normalizeDiagramMeasurementToken(value);
+  if (["HYDRO", "HYDROGEN", "H2"].includes(type)) return "hydro";
+  if (type === "AC") return "ac";
+  if (type === "DC") return "dc";
+  return String(value || "").trim().toLowerCase();
+}
+
+function diagramHydrogenFlowEdgeTerminal(entry, otherEntry) {
+  const hydrogenNodes = (entry?.nodes || []).filter((node) => (
+    diagramFlowDomain(node?.domain || String(node?.key || "").split(":", 1)[0]) === "hydro"
+  ));
+  return hydrogenNodes.find((node) => (
+    (otherEntry?.nodes || []).some((otherNode) => otherNode.key === node.key)
+  )) || null;
+}
+
+function diagramHydrogenFlowEdgeCandidate(position, entry, otherEntry, topology) {
+  const terminalNode = diagramHydrogenFlowEdgeTerminal(entry, otherEntry);
+  if (!terminalNode) return null;
+  const role = diagramHydrogenFlowRole(entry?.device?.devType);
+  if (role) {
+    const orientation = role === "load"
+      ? (position === "target" ? 1 : -1)
+      : (position === "source" ? 1 : -1);
+    return {
+      entry,
+      orientation,
+      priority: role === "storage" ? 1 : 2,
+      powerBindings: [{
+        device: entry.device,
+        nodes: entry.nodes || [],
+        orientation: 1,
+        priority: role === "storage" ? 1 : 2,
+        measurementTypes: ["FLOW"],
+      }],
+    };
+  }
+  if (!diagramHydrogenFlowInlineKind(entry?.device?.devType, entry?.nodes) || Number(terminalNode.terminal) <= 0) return null;
+  return {
+    entry,
+    orientation: diagramFlowEdgeTerminalOrientation(position, terminalNode.terminal),
+    priority: 3,
+    powerBindings: diagramFlowPowerBindings(entry.device, entry.element, topology),
+  };
+}
+
+function diagramHydrogenFlowEdgeBinding(sourceEntry, targetEntry, topology) {
+  const candidates = [
+    diagramHydrogenFlowEdgeCandidate("source", sourceEntry, targetEntry, topology),
+    diagramHydrogenFlowEdgeCandidate("target", targetEntry, sourceEntry, topology),
+  ].filter(Boolean).sort((left, right) => right.priority - left.priority);
+  if (!candidates.length) return null;
+  const selected = candidates[0];
+  const orientation = selected.orientation;
+  const uniqueBindings = new Map();
+  candidates.forEach((candidate) => {
+    candidate.powerBindings.forEach((binding) => {
+      const adjusted = {
+        ...binding,
+        orientation: (Number(binding.orientation) < 0 ? -1 : 1)
+          * candidate.orientation
+          * orientation,
+      };
+      const key = `${adjusted.device?.devId || ""}|${adjusted.orientation}|${(adjusted.measurementTypes || []).join(",")}`;
+      if (!uniqueBindings.has(key)) uniqueBindings.set(key, adjusted);
+    });
+  });
   return {
     kind: "hydrogen",
     device: selected.entry.device,
     orientation,
-    powerBindings: [{
-      device: selected.entry.device,
-      nodes: selected.entry.nodes || [],
-      orientation: 1,
-      priority: 3,
-      measurementTypes: ["FLOW"],
-    }],
+    powerBindings: [...uniqueBindings.values()],
   };
 }
 
-function diagramFlowPowerAnchorKind(device) {
+function diagramFlowPowerAnchorKind(device, nodes = []) {
+  const hydrogenRole = diagramHydrogenFlowRole(device?.devType);
+  if (hydrogenRole) return hydrogenRole;
+  if (diagramHydrogenFlowInlineKind(device?.devType, nodes)) return "two-terminal";
   const endpointKind = diagramFlowEndpointKind(device);
   if (endpointKind) return endpointKind;
   const type = normalizeDiagramMeasurementToken(device?.devType);
@@ -5697,15 +5800,16 @@ function diagramFlowDeviceNodes(element) {
   const node2 = String(element.getAttribute("node-2") || "").trim();
   const baseDomain = String(element.getAttribute("voltage-type") || "").trim();
   const fallbackType = normalizeDiagramMeasurementToken(element.parentElement?.getAttribute?.("device-type"));
+  const terminalDomains = diagramFlowTerminalDomains(fallbackType);
   const fallbackDomain = fallbackType.startsWith("AC") ? "ac" : fallbackType.startsWith("DC") ? "dc" : "";
-  const domain1 = String(element.getAttribute("voltage-type-1") || baseDomain || fallbackDomain).trim();
-  const domain2 = String(element.getAttribute("voltage-type-2") || baseDomain || fallbackDomain).trim();
+  const domain1 = diagramFlowDomain(element.getAttribute("voltage-type-1") || terminalDomains[0] || baseDomain || fallbackDomain);
+  const domain2 = diagramFlowDomain(element.getAttribute("voltage-type-2") || terminalDomains[1] || baseDomain || fallbackDomain);
   const nodes = [];
   if (node1) nodes.push({ node: node1, key: diagramFlowNodeKey(node1, domain1), terminal: 1, domain: domain1 });
   if (node2) nodes.push({ node: node2, key: diagramFlowNodeKey(node2, domain2), terminal: 2, domain: domain2 });
   if (!nodes.length) {
     const node = String(element.getAttribute("node") || "").trim();
-    const domain = baseDomain || fallbackDomain;
+    const domain = diagramFlowDomain(terminalDomains[0] || baseDomain || fallbackDomain);
     if (node) nodes.push({ node, key: diagramFlowNodeKey(node, domain), terminal: 0, domain });
   }
   return nodes;
@@ -5749,21 +5853,28 @@ function diagramFlowDeviceRoute(symbol) {
 function diagramFlowPowerBindings(device, element, topology) {
   const entry = topology?.byId?.get(String(device?.devId || ""));
   const ownNodes = entry?.nodes || diagramFlowDeviceNodes(element);
+  const hydrogenInline = diagramHydrogenFlowInlineKind(device?.devType, ownNodes);
   const own = {
     device,
     nodes: ownNodes,
     orientation: diagramFlowPowerRouteOrientation(device, ownNodes),
-    priority: 1,
+    priority: hydrogenInline ? 3 : 1,
+    ...(hydrogenInline ? { measurementTypes: ["FLOW"] } : {}),
   };
   const type = normalizeDiagramMeasurementToken(device?.devType);
-  if (!type.includes("BREAK") && !type.includes("SWITCH")) return [own];
+  if (!type.includes("BREAK") && !type.includes("SWITCH") && !hydrogenInline) return [own];
   if (!entry) return [own];
   const fallbacks = [];
   entry.nodes.filter(({ terminal }) => terminal > 0).forEach(({ key, terminal }) => {
     (topology.byNode.get(key) || []).forEach((neighbor) => {
       if (neighbor === entry) return;
-      const neighborKind = diagramFlowPowerAnchorKind(neighbor.device);
+      const neighborKind = diagramFlowPowerAnchorKind(neighbor.device, neighbor.nodes);
       if (!neighborKind) return;
+      const hydrogenNeighbor = Boolean(
+        diagramHydrogenFlowRole(neighbor.device?.devType)
+        || diagramHydrogenFlowInlineKind(neighbor.device?.devType, neighbor.nodes),
+      );
+      if (hydrogenInline && !hydrogenNeighbor) return;
       const neighborTerminal = neighbor.nodes.find((item) => item.key === key)?.terminal || 0;
       fallbacks.push({
         device: neighbor.device,
@@ -5771,6 +5882,7 @@ function diagramFlowPowerBindings(device, element, topology) {
         orientation: diagramFlowSeriesOrientation(terminal, neighborKind, neighborTerminal)
           * diagramFlowPowerRouteOrientation(neighbor.device, neighbor.nodes),
         priority: 2,
+        ...(hydrogenNeighbor ? { measurementTypes: ["FLOW"] } : {}),
       });
     });
   });
@@ -5783,7 +5895,7 @@ function diagramFlowPowerBindings(device, element, topology) {
 }
 
 function diagramFlowEdgeBinding(sourceEntry, targetEntry, topology) {
-  const hydrogenBinding = diagramHydrogenFlowEdgeBinding(sourceEntry, targetEntry);
+  const hydrogenBinding = diagramHydrogenFlowEdgeBinding(sourceEntry, targetEntry, topology);
   if (hydrogenBinding) return hydrogenBinding;
   const endpoints = [
     { position: "source", entry: sourceEntry, endpointKind: diagramFlowEndpointKind(sourceEntry?.device) },
@@ -5804,7 +5916,7 @@ function diagramFlowEdgeBinding(sourceEntry, targetEntry, topology) {
   }
   if (direct.length > 1) return null;
   const connectorCandidates = endpoints.map((item) => {
-    const inlineKind = diagramFlowInlineDeviceKind(item.entry?.device?.devType);
+    const inlineKind = diagramFlowInlineDeviceKind(item.entry?.device?.devType, item.entry?.nodes);
     const type = normalizeDiagramMeasurementToken(item.entry?.device?.devType);
     const priority = inlineKind === "branch" ? 3 : type.includes("CONVERTER") ? 2 : inlineKind ? 1 : 0;
     return { ...item, priority };
@@ -5880,6 +5992,13 @@ function diagramFlowResolvePower(record, measurementMaps) {
   return { ...selected, valid: true };
 }
 
+function diagramFlowDeviceBlocksFlow(device, deviceState, measurementMaps) {
+  const type = normalizeDiagramMeasurementToken(device?.devType);
+  if (!["HYDROVALVE", "HYDROSTOPVALVE"].includes(type)) return false;
+  const status = diagramSwitchMeasurementRow(device, measurementMaps)?.value ?? deviceState?.status;
+  return diagramSwitchState(status) === "open";
+}
+
 function createDiagramFlowArrow(sourceElement, routeD, transforms = [], routeLength = 0) {
   if (!sourceElement?.parentNode || !routeD) return null;
   const createSvgElement = (tagName) => document.createElementNS("http://www.w3.org/2000/svg", tagName);
@@ -5945,8 +6064,8 @@ function compileDiagramFlowArrows(container) {
   if (!svg) return interaction.flowArrows;
   const topology = diagramFlowTopology(svg, container);
 
-  topology.entries.forEach(({ device, element: useElement }) => {
-    const inlineKind = diagramFlowInlineDeviceKind(device?.devType);
+  topology.entries.forEach(({ device, element: useElement, nodes }) => {
+    const inlineKind = diagramFlowInlineDeviceKind(device?.devType, nodes);
     if (!inlineKind) return;
     const symbol = diagramFlowSymbol(svg, useElement);
     if (!symbol) return;
@@ -6051,6 +6170,11 @@ function updateDiagramFlowArrows(container, snapshot = state.snapshot || {}, mea
     ].filter(Boolean);
     const offline = relevantDevices.some((device) => (
       diagramDeviceIsOffline(diagramDeviceOperatingState(device, operatingMaps))
+      || diagramFlowDeviceBlocksFlow(
+        device,
+        diagramDeviceOperatingState(device, operatingMaps),
+        measurementMaps,
+      )
     ));
     const referenceDevice = resolved.binding?.device || record.device;
     const referencePower = diagramFlowReferencePower(container, referenceDevice, snapshot, interaction, power);

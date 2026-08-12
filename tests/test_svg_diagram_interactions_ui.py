@@ -556,23 +556,42 @@ const available = typeof diagramFlowInlineDeviceKind === "function"
   && typeof diagramFlowEdgeTerminalOrientation === "function"
   && typeof diagramFlowNodeKey === "function";
 process.stdout.write(JSON.stringify(available ? {
-  inline: {
+      inline: {
     branch: diagramFlowInlineDeviceKind("ACBranch"),
     zeroBranch: diagramFlowInlineDeviceKind("ACZeroBranch"),
     acBreak: diagramFlowInlineDeviceKind("ACBreak"),
     dcBreak: diagramFlowInlineDeviceKind("DCBreak"),
     dcac: diagramFlowInlineDeviceKind("DCACConverter"),
     dcdc: diagramFlowInlineDeviceKind("DCDCConverter"),
-    transformer: diagramFlowInlineDeviceKind("ACTransformer"),
+        transformer: diagramFlowInlineDeviceKind("ACTransformer"),
+        hydroPipe: diagramFlowInlineDeviceKind("HydroPipe"),
+        hydroValve: diagramFlowInlineDeviceKind("HydroValve"),
+    hydroStopValve: diagramFlowInlineDeviceKind("HydroStopValve"),
+    hydroCompressor: diagramFlowInlineDeviceKind("HydroCompressor"),
+    hydroPressRegulator: diagramFlowInlineDeviceKind("HydroPressRegulator"),
+    futureExplicitHydrogenDevice: diagramFlowInlineDeviceKind("FutureDevice", [
+      { terminal: 1, domain: "h2" },
+      { terminal: 2, domain: "hydrogen" },
+    ]),
+    futureImplicitDevice: diagramFlowInlineDeviceKind("FutureDevice"),
+    acElectrolyzer: diagramFlowInlineDeviceKind("AcE2Hydro"),
+    dcElectrolyzer: diagramFlowInlineDeviceKind("DcE2Hydro"),
+    acFuelCell: diagramFlowInlineDeviceKind("Hydro2AcE"),
+    dcFuelCell: diagramFlowInlineDeviceKind("Hydro2DcE"),
     bus: diagramFlowInlineDeviceKind("ACRealBs"),
     generator: diagramFlowInlineDeviceKind("ACGenerator"),
   },
-  measurementTypes: {
+      measurementTypes: {
     dcdc: diagramFlowPowerMeasurementTypes("DCDCConverter"),
     acdc: diagramFlowPowerMeasurementTypes("ACDCConverter"),
     dcac: diagramFlowPowerMeasurementTypes("DCACConverter"),
     break: diagramFlowPowerMeasurementTypes("DCBreak"),
-    transformer: diagramFlowPowerMeasurementTypes("ACTransformer"),
+        transformer: diagramFlowPowerMeasurementTypes("ACTransformer"),
+        hydroPipe: diagramFlowPowerMeasurementTypes("HydroPipe"),
+        hydroValve: diagramFlowPowerMeasurementTypes("HydroValve"),
+        hydroStopValve: diagramFlowPowerMeasurementTypes("HydroStopValve"),
+        hydroCompressor: diagramFlowPowerMeasurementTypes("HydroCompressor"),
+        hydroPressRegulator: diagramFlowPowerMeasurementTypes("HydroPressRegulator"),
   },
   series: {
     terminal1ToTerminal2: diagramFlowSeriesOrientation(1, "two-terminal", 2),
@@ -592,7 +611,16 @@ process.stdout.write(JSON.stringify(available ? {
   nodeKeys: {
     ac: diagramFlowNodeKey("1", "ac"),
     dc: diagramFlowNodeKey("1", "dc"),
+    h2: diagramFlowNodeKey("1", "h2"),
+    hydrogen: diagramFlowNodeKey("1", "hydrogen"),
+    hydro: diagramFlowNodeKey("1", "hydro"),
     distinct: diagramFlowNodeKey("1", "ac") !== diagramFlowNodeKey("1", "dc"),
+  },
+  hydrogenConversionOrientation: {
+    acElectrolyzer: diagramFlowPowerRouteOrientation({ devType: "AcE2Hydro" }),
+    dcElectrolyzer: diagramFlowPowerRouteOrientation({ devType: "DcE2Hydro" }),
+    acFuelCell: diagramFlowPowerRouteOrientation({ devType: "Hydro2AcE" }),
+    dcFuelCell: diagramFlowPowerRouteOrientation({ devType: "Hydro2DcE" }),
   },
 } : null));
 """
@@ -605,6 +633,17 @@ process.stdout.write(JSON.stringify(available ? {
                 "dcac": "device",
                 "dcdc": "device",
                 "transformer": "device",
+                "hydroPipe": "branch",
+                "hydroValve": "device",
+                "hydroStopValve": "device",
+                "hydroCompressor": "device",
+                "hydroPressRegulator": "device",
+                "futureExplicitHydrogenDevice": "device",
+                "futureImplicitDevice": "",
+                "acElectrolyzer": "device",
+                "dcElectrolyzer": "device",
+                "acFuelCell": "device",
+                "dcFuelCell": "device",
                 "bus": "",
                 "generator": "",
             },
@@ -614,6 +653,11 @@ process.stdout.write(JSON.stringify(available ? {
                 "dcac": ["P_AC", "P_DC"],
                 "break": ["P_FROM", "P_TO"],
                 "transformer": ["P_FROM", "P_TO"],
+                "hydroPipe": ["FLOW"],
+                "hydroValve": ["FLOW"],
+                "hydroStopValve": ["FLOW"],
+                "hydroCompressor": ["FLOW"],
+                "hydroPressRegulator": ["FLOW"],
             },
             "series": {
                 "terminal1ToTerminal2": 1,
@@ -633,13 +677,22 @@ process.stdout.write(JSON.stringify(available ? {
             "nodeKeys": {
                 "ac": "AC:1",
                 "dc": "DC:1",
+                "h2": "HYDRO:1",
+                "hydrogen": "HYDRO:1",
+                "hydro": "HYDRO:1",
                 "distinct": True,
+            },
+            "hydrogenConversionOrientation": {
+                "acElectrolyzer": 1,
+                "dcElectrolyzer": 1,
+                "acFuelCell": -1,
+                "dcFuelCell": -1,
             },
         }
         for path in self._scripts():
             with self.subTest(app=path.parent.name):
                 script = path.read_text(encoding="utf-8")
-                self.assertEqual(self._run_helpers(script, body), expected)
+                self.assertEqual(self._run_flow_helpers(script, body), expected)
                 flow_block = script.split("function diagramFlowEndpointKind", 1)[1].split(
                     "function updateDiagramRealtimeBindings",
                     1,
@@ -809,9 +862,9 @@ function compact(binding, maps) {
 const electrolyzer = { devId: "AcE2Hydro-1", devType: "AcE2Hydro", devName: "electrolyzer-1" };
 const fuelCell = { devId: "Hydro2DcE-1", devType: "Hydro2DcE", devName: "fuel-cell-1" };
 const tank = { devId: "HydroStorage-3", devType: "HydroStorage", devName: "tank-1" };
-const sourceEntry = { device: electrolyzer, nodes: [] };
-const loadEntry = { device: fuelCell, nodes: [] };
-const tankEntry = { device: tank, nodes: [] };
+const sourceEntry = { device: electrolyzer, nodes: [{ terminal: 2, domain: "hydro", key: "HYDRO:1" }] };
+const loadEntry = { device: fuelCell, nodes: [{ terminal: 2, domain: "hydro", key: "HYDRO:1" }] };
+const tankEntry = { device: tank, nodes: [{ terminal: 0, domain: "hydro", key: "HYDRO:1" }] };
 const topology = { byId: new Map(), byNode: new Map() };
 
 const sourceToTank = diagramFlowEdgeBinding(sourceEntry, tankEntry, topology);
@@ -861,6 +914,95 @@ process.stdout.write(JSON.stringify({
                 "direction": 1,
                 "valid": True,
             },
+        }
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                self.assertEqual(
+                    self._run_flow_helpers(path.read_text(encoding="utf-8"), body),
+                    expected,
+                )
+
+    def test_complete_hydrogen_path_uses_explicit_domains_inline_flows_and_status(self):
+        body = """
+function attrs(values) {
+  return {
+    getAttribute(name) { return values[name] ?? null; },
+    parentElement: { getAttribute(name) { return name === "device-type" ? values.devType : null; } },
+  };
+}
+function flowMap(rows) {
+  return {
+    scadaByDevice: new Map(rows.map(({ device, measType = "FLOW", value, valid = 1 }) => [
+      diagramDeviceMeasurementKey(device.devType, device.devName, measType),
+      { meas_type: measType, value, valid },
+    ])),
+    realByDevice: new Map(),
+  };
+}
+function resolve(binding, maps) {
+  const result = diagramFlowResolvePower(binding, maps);
+  return { flow: result.power, valid: result.valid };
+}
+const source = { devId: "HydroSource-1", devType: "HydroSource", devName: "source" };
+const pipe = { devId: "HydroPipe-1", devType: "HydroPipe", devName: "pipe" };
+const valve = { devId: "HydroStopValve-1", devType: "HydroStopValve", devName: "valve" };
+const compressor = { devId: "HydroCompressor-1", devType: "HydroCompressor", devName: "compressor" };
+const regulator = { devId: "HydroPressRegulator-1", devType: "HydroPressRegulator", devName: "regulator" };
+const load = { devId: "HydroLoad-1", devType: "HydroLoad", devName: "load" };
+const entries = [
+  { device: source, element: attrs({ devType: source.devType, node: "1" }) },
+  { device: pipe, element: attrs({ devType: pipe.devType, "node-1": "1", "node-2": "2" }) },
+  { device: valve, element: attrs({ devType: valve.devType, "node-1": "2", "node-2": "3" }) },
+  { device: compressor, element: attrs({ devType: compressor.devType, "node-1": "3", "node-2": "4" }) },
+  { device: regulator, element: attrs({ devType: regulator.devType, "node-1": "4", "node-2": "5" }) },
+  { device: load, element: attrs({ devType: load.devType, node: "5" }) },
+];
+entries.forEach((entry) => { entry.nodes = diagramFlowDeviceNodes(entry.element); });
+const topology = { byId: new Map(entries.map((entry) => [entry.device.devId, entry])), byNode: new Map() };
+entries.forEach((entry) => entry.nodes.forEach(({ key }) => {
+  if (!topology.byNode.has(key)) topology.byNode.set(key, []);
+  topology.byNode.get(key).push(entry);
+}));
+const maps = flowMap([
+  { device: pipe, value: 4 },
+  { device: valve, value: 4 },
+  { device: compressor, value: 4 },
+  { device: regulator, value: -3 },
+  { device: source, value: 2 },
+]);
+const pipeBinding = { powerBindings: diagramFlowPowerBindings(pipe, entries[1].element, topology) };
+const sourceToPipe = diagramFlowEdgeBinding(entries[0], entries[1], topology);
+const pipeToValve = diagramFlowEdgeBinding(entries[1], entries[2], topology);
+const regulatorToLoad = diagramFlowEdgeBinding(entries[4], entries[5], topology);
+process.stdout.write(JSON.stringify({
+  domains: entries.map((entry) => entry.nodes.map(({ domain }) => domain)),
+  ownPipe: resolve(pipeBinding, maps),
+  reversedPipe: resolve(pipeBinding, flowMap([{ device: pipe, value: -4 }])),
+  sourceToPipe: { ...resolve(sourceToPipe, maps), direction: diagramFlowArrowDirection(resolve(sourceToPipe, maps).flow, sourceToPipe.orientation) },
+  pipeToValve: { ...resolve(pipeToValve, maps), direction: diagramFlowArrowDirection(resolve(pipeToValve, maps).flow, pipeToValve.orientation) },
+  regulatorToLoad: { ...resolve(regulatorToLoad, maps), direction: diagramFlowArrowDirection(resolve(regulatorToLoad, maps).flow, regulatorToLoad.orientation) },
+  valveClosed: diagramFlowDeviceBlocksFlow(valve, { status: 0 }, flowMap([])),
+  valveOpen: diagramFlowDeviceBlocksFlow(valve, { status: 1 }, flowMap([])),
+  flowStatusWins: diagramFlowDeviceBlocksFlow(valve, { status: 1 }, flowMap([{ device: valve, measType: "STATUS", value: 0 }])),
+}));
+"""
+        expected = {
+            "domains": [
+                ["hydro"],
+                ["hydro", "hydro"],
+                ["hydro", "hydro"],
+                ["hydro", "hydro"],
+                ["hydro", "hydro"],
+                ["hydro"],
+            ],
+            "ownPipe": {"flow": 4, "valid": True},
+            "reversedPipe": {"flow": -4, "valid": True},
+            "sourceToPipe": {"flow": 4, "valid": True, "direction": 1},
+            "pipeToValve": {"flow": 4, "valid": True, "direction": 1},
+            "regulatorToLoad": {"flow": -3, "valid": True, "direction": -1},
+            "valveClosed": True,
+            "valveOpen": False,
+            "flowStatusWins": True,
         }
         for path in self._scripts():
             with self.subTest(app=path.parent.name):

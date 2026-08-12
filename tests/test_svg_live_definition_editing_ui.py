@@ -1127,6 +1127,7 @@ const descriptor = diagramDefinitionInputDescriptor("charge_discharge_efficiency
 process.stdout.write(JSON.stringify({
   efficiency: diagramDefinitionDisplayValue("charge_discharge_efficiency", "0.99"),
   soc: diagramDefinitionDisplayValue("soc_upper_limit", 0.9),
+  initialSoc: diagramDefinitionDisplayValue("initial_soc", 0.6),
   descriptor,
   stored: diagramDefinitionStoredValue("module_efficiency", "21.3"),
   ordinary: diagramDefinitionInputDescriptor("p_set", "21.3"),
@@ -1149,6 +1150,7 @@ function diagramTooltipValue(value) { return String(value ?? ""); }
             payload = json.loads(result.stdout)
             self.assertEqual(payload["efficiency"], "99%")
             self.assertEqual(payload["soc"], "90%")
+            self.assertEqual(payload["initialSoc"], "60%")
             self.assertEqual(payload["descriptor"]["value"], "99")
             self.assertEqual(payload["descriptor"]["suffix"], "%")
             self.assertEqual(payload["descriptor"]["min"], "0")

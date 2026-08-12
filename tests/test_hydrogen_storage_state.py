@@ -32,37 +32,36 @@ def _snapshot(*, flows: dict[str, float]) -> SimpleNamespace:
 class HydrogenStorageStateTest(unittest.TestCase):
     ROOT = Path(__file__).resolve().parents[1]
 
-    def test_integrates_pressure_and_gas_quantity_with_logical_interval(self) -> None:
+    def test_integrates_quantity_first_then_derives_pressure(self) -> None:
         pressure, quantity = simu_loop.integrate_hydrogen_storage_state(
-            pressure=35.0,
             gas_quantity=17500.0,
             flow=1000.0,
             period_seconds=1800.0,
             water_volume=100.0,
         )
 
-        self.assertAlmostEqual(pressure, 34.5)
+        self.assertAlmostEqual(pressure, 17.0)
         self.assertAlmostEqual(quantity, 17000.0)
 
     def test_negative_flow_charges_tank_and_raises_pressure(self) -> None:
         pressure, quantity = simu_loop.integrate_hydrogen_storage_state(
-            pressure=35.0,
             gas_quantity=17500.0,
             flow=-500.0,
             period_seconds=1800.0,
             water_volume=100.0,
         )
 
-        self.assertAlmostEqual(pressure, 35.25)
+        self.assertAlmostEqual(pressure, 17.75)
         self.assertAlmostEqual(quantity, 17750.0)
 
-    def test_soc_is_pressure_ratio_without_physical_range_clamping(self) -> None:
+    def test_soc_is_quantity_ratio_without_physical_range_clamping(self) -> None:
         model_book = _model_book(
             {
                 "idx": 1,
                 "name": "tank-1",
                 "pressure": 46.0,
                 "gas_quantity": 23000.0,
+                "capacity": 20000.0,
                 "water_volume": 50.0,
                 "pressure_max": 45.0,
                 "run_stat": 1,
@@ -80,8 +79,32 @@ class HydrogenStorageStateTest(unittest.TestCase):
         row = stat_book.data[simu_loop.HYDROGEN_STORAGE_STATE_BLOCK].data[0]
         self.assertAlmostEqual(float(row["pressure"]), 46.0)
         self.assertNotIn("press", row)
-        self.assertAlmostEqual(float(row["soc"]), 46.0 / 45.0)
+        self.assertAlmostEqual(float(row["soc"]), 23000.0 / 20000.0)
         self.assertGreater(float(row["soc"]), 1.0)
+
+    def test_missing_capacity_and_pressure_limit_leave_soc_invalid(self) -> None:
+        model_book = _model_book(
+            {
+                "idx": 1,
+                "name": "tank-1",
+                "gas_quantity": 23000.0,
+                "water_volume": 50.0,
+                "run_stat": 1,
+            }
+        )
+        stat_book = simu_loop.EBook({})
+
+        with self.assertLogs("SimulationLoop", level="WARNING"):
+            simu_loop.update_hydrogen_storage_state_book(
+                stat_book,
+                model_book,
+                period_seconds=3600.0,
+                snapshot=_snapshot(flows={"tank-1": 0.0}),
+            )
+
+        row = stat_book.data[simu_loop.HYDROGEN_STORAGE_STATE_BLOCK].data[0]
+        self.assertAlmostEqual(float(row["pressure"]), 46.0)
+        self.assertTrue(math.isnan(float(row["soc"])))
 
     def test_legacy_press_runtime_state_is_migrated_to_pressure(self) -> None:
         model_book = _model_book(
@@ -129,6 +152,7 @@ class HydrogenStorageStateTest(unittest.TestCase):
                 "pressure": 35.0,
                 "flow": 9999.0,
                 "gas_quantity": 17500.0,
+                "capacity": 22500.0,
                 "water_volume": 100.0,
                 "pressure_max": 45.0,
                 "pressure_min": 2.0,
@@ -154,10 +178,10 @@ class HydrogenStorageStateTest(unittest.TestCase):
         self.assertGreater(first, 0)
         self.assertGreater(second, 0)
         row = stat_book.data[simu_loop.HYDROGEN_STORAGE_STATE_BLOCK].data[0]
-        self.assertAlmostEqual(float(row["pressure"]), 34.0)
+        self.assertAlmostEqual(float(row["pressure"]), 16.5)
         self.assertAlmostEqual(float(row["flow"]), 1000.0)
         self.assertAlmostEqual(float(row["gas_quantity"]), 16500.0)
-        self.assertAlmostEqual(float(row["soc"]), 34.0 / 45.0)
+        self.assertAlmostEqual(float(row["soc"]), 16500.0 / 22500.0)
 
     def test_initial_quantity_is_derived_from_pressure_and_water_volume(self) -> None:
         model_book = _model_book(
@@ -201,6 +225,48 @@ class HydrogenStorageStateTest(unittest.TestCase):
         self.assertAlmostEqual(float(row["pressure"]), 24.0)
         self.assertAlmostEqual(float(row["soc"]), 0.6)
 
+    def test_runtime_derives_pressure_and_soc_from_integrated_quantity(self) -> None:
+        model_book = _model_book(
+            {
+                "idx": 1,
+                "name": "tank-1",
+                "pressure": 99.0,
+                "gas_quantity": 12000.0,
+                "capacity": 20000.0,
+                "water_volume": 50.0,
+                "initial_soc": 0.6,
+                "pressure_max": 45.0,
+                "run_stat": 1,
+            }
+        )
+        stat_book = simu_loop.EBook(
+            {
+                simu_loop.HYDROGEN_STORAGE_STATE_BLOCK: [
+                    {
+                        "dev_type": "HydroStorage",
+                        "idx": 1,
+                        "name": "tank-1",
+                        "pressure": 88.0,
+                        "flow": 0.0,
+                        "gas_quantity": 12000.0,
+                        "soc": 0.1,
+                    }
+                ]
+            }
+        )
+
+        simu_loop.update_hydrogen_storage_state_book(
+            stat_book,
+            model_book,
+            period_seconds=3600.0,
+            snapshot=_snapshot(flows={"tank-1": 1000.0}),
+        )
+
+        row = stat_book.data[simu_loop.HYDROGEN_STORAGE_STATE_BLOCK].data[0]
+        self.assertAlmostEqual(float(row["gas_quantity"]), 11000.0)
+        self.assertAlmostEqual(float(row["pressure"]), 22.0)
+        self.assertAlmostEqual(float(row["soc"]), 0.55)
+
     def test_multiple_tanks_are_integrated_independently(self) -> None:
         model_book = _model_book(
             {
@@ -208,6 +274,7 @@ class HydrogenStorageStateTest(unittest.TestCase):
                 "name": "tank-1",
                 "pressure": 35.0,
                 "gas_quantity": 17500.0,
+                "capacity": 22500.0,
                 "water_volume": 50.0,
                 "pressure_max": 45.0,
                 "run_stat": 1,
@@ -217,6 +284,7 @@ class HydrogenStorageStateTest(unittest.TestCase):
                 "name": "tank-2",
                 "pressure": 20.0,
                 "gas_quantity": 20000.0,
+                "capacity": 40000.0,
                 "water_volume": 100.0,
                 "pressure_max": 40.0,
                 "run_stat": 1,
@@ -237,10 +305,10 @@ class HydrogenStorageStateTest(unittest.TestCase):
         }
         self.assertAlmostEqual(float(rows["tank-1"]["pressure"]), 34.8)
         self.assertAlmostEqual(float(rows["tank-1"]["gas_quantity"]), 17400.0)
-        self.assertAlmostEqual(float(rows["tank-1"]["soc"]), 34.8 / 45.0)
+        self.assertAlmostEqual(float(rows["tank-1"]["soc"]), 17400.0 / 22500.0)
         self.assertAlmostEqual(float(rows["tank-2"]["pressure"]), 20.2)
         self.assertAlmostEqual(float(rows["tank-2"]["gas_quantity"]), 20200.0)
-        self.assertAlmostEqual(float(rows["tank-2"]["soc"]), 20.2 / 40.0)
+        self.assertAlmostEqual(float(rows["tank-2"]["soc"]), 20200.0 / 40000.0)
 
     def test_invalid_water_volume_does_not_fabricate_pressure_change(self) -> None:
         model_book = _model_book(
@@ -349,7 +417,7 @@ class HydrogenStorageStateTest(unittest.TestCase):
         self.assertAlmostEqual(float(row["gas_quantity"]), 17000.0)
         self.assertAlmostEqual(float(row["soc"]), 34.5 / 45.0)
 
-    def test_reset_restores_model_initial_hydrogen_state(self) -> None:
+    def test_reset_derives_capacity_from_pressure_limit_and_water_volume(self) -> None:
         model_book = _model_book(
             {
                 "idx": 1,
@@ -383,7 +451,7 @@ class HydrogenStorageStateTest(unittest.TestCase):
         self.assertAlmostEqual(float(row["pressure"]), 35.0)
         self.assertAlmostEqual(float(row["flow"]), 0.0)
         self.assertAlmostEqual(float(row["gas_quantity"]), 17500.0)
-        self.assertAlmostEqual(float(row["soc"]), 35.0 / 45.0)
+        self.assertAlmostEqual(float(row["soc"]), 17500.0 / 22500.0)
 
     def test_reset_recomputes_initial_state_instead_of_restoring_stale_values(self) -> None:
         model_book = _model_book(

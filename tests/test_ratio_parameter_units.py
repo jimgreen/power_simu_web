@@ -19,6 +19,9 @@ ROOT = Path(__file__).resolve().parents[1]
 class RatioParameterUnitsTest(unittest.TestCase):
     def test_ratio_field_detection_covers_soc_and_efficiency_aliases(self):
         ratio_fields = (
+            "initial_soc",
+            "soc_initial",
+            "soc_init",
             "state_of_charge",
             "soc_curr",
             "soc_lower_limit",
@@ -43,6 +46,7 @@ class RatioParameterUnitsTest(unittest.TestCase):
 
     def test_ratio_text_is_canonical_decimal_even_when_input_is_percent(self):
         self.assertEqual(canonical_ratio_parameter_text("module_efficiency", "21.3%"), "0.213")
+        self.assertEqual(canonical_ratio_parameter_text("initial_soc", "60%"), "0.6")
         self.assertEqual(canonical_ratio_parameter_text("soc_upper_limit", "90%"), "0.9")
         self.assertEqual(canonical_ratio_parameter_text("charge_efficiency", 0.99), "0.99")
 

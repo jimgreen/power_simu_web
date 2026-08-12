@@ -157,8 +157,8 @@ def _write_storage_coupled_model(directory: Path) -> Path:
     )
     text += """
 <HydroStorage>
-@ idx name dev_type node control_type pressure_set flow_set alpha flow_min flow_max run_stat pressure gas_quantity water_volume pressure_max pressure_min
-# 1 tank-1 hydrogen-tank 1 PRESSURE 35 0 1 -20 20 1 35 17500 50 45 2
+@ idx name dev_type node control_type pressure_set flow_set alpha flow_min flow_max run_stat pressure capacity water_volume initial_soc pressure_max pressure_min
+# 1 tank-1 hydrogen-tank 1 PRESSURE 35 0 1 -20 20 1 35 22500 50 0.7777777777777778 45 2
 </HydroStorage>
 """
     model_path.write_text(text, encoding="utf-8")
@@ -757,17 +757,18 @@ def test_coupled_hydrogen_flow_updates_all_tank_runtime_states(
         for row in snapshot["measurements"]["real"]
         if row["dev_type"] == "HydroStorage" and row["dev_name"] == "tank-1"
     }
-    expected_press = 35.0 - expected_flow / 50.0 * 0.1
     expected_quantity = 17500.0 - expected_flow
+    expected_press = expected_quantity / 50.0 / 10.0
+    expected_capacity = 22500.0
 
     assert storage_values["flow"] == pytest.approx(expected_flow)
     assert storage_values["pressure"] == pytest.approx(expected_press)
     assert storage_values["gas_quantity"] == pytest.approx(expected_quantity)
-    assert storage_values["soc"] == pytest.approx(expected_press / 45.0)
+    assert storage_values["soc"] == pytest.approx(expected_quantity / expected_capacity)
     direction = -1.0 if expected_flow > 0.0 else 1.0
     assert (storage_values["pressure"] - 35.0) * direction > 0.0
     assert (storage_values["gas_quantity"] - 17500.0) * direction > 0.0
-    assert (storage_values["soc"] - 35.0 / 45.0) * direction > 0.0
+    assert (storage_values["soc"] - 17500.0 / expected_capacity) * direction > 0.0
 
 
 def test_hydrogen_model_converges_with_safe_endpoint_power_limits(tmp_path):

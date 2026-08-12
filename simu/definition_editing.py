@@ -51,6 +51,9 @@ PROTECTED_DEVICE_FIELDS = {
 BINARY_DEVICE_FIELDS = {"run_stat", "status"}
 
 DIAGRAM_RATIO_DEVICE_FIELDS = {
+    "initial_soc",
+    "soc_initial",
+    "soc_init",
     "state_of_charge",
     "soc",
     "soc_curr",

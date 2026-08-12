@@ -4547,6 +4547,17 @@ const DIAGRAM_FLOW_POWER_MEASUREMENT_TYPES = Object.freeze({
   DCBREAK: Object.freeze(["P_FROM", "P_TO"]),
   ACSWITCH: Object.freeze(["P_FROM", "P_TO"]),
   DCSWITCH: Object.freeze(["P_FROM", "P_TO"]),
+  HYDROSOURCE: Object.freeze(["FLOW"]),
+  HYDROLOAD: Object.freeze(["FLOW"]),
+  HYDROSTORAGE: Object.freeze(["FLOW"]),
+  ACE2HYDRO: Object.freeze(["FLOW"]),
+  DCE2HYDRO: Object.freeze(["FLOW"]),
+  HYDRO2ACE: Object.freeze(["FLOW"]),
+  HYDRO2DCE: Object.freeze(["FLOW"]),
+  HYDROPIPE: Object.freeze(["FLOW"]),
+  HYDROCOMPRESSOR: Object.freeze(["FLOW"]),
+  HYDROPRESSREGULATOR: Object.freeze(["FLOW"]),
+  HYDROSTOPVALVE: Object.freeze(["FLOW"]),
 });
 
 function diagramFlowPowerMeasurementTypes(devType) {
@@ -5634,6 +5645,42 @@ function diagramFlowEndpointKind(device) {
   return "";
 }
 
+function diagramHydrogenFlowRole(devType) {
+  const type = normalizeDiagramMeasurementToken(devType);
+  if (["ACE2HYDRO", "DCE2HYDRO", "HYDROSOURCE"].includes(type)) return "source";
+  if (["HYDRO2ACE", "HYDRO2DCE", "HYDROLOAD"].includes(type)) return "load";
+  if (type === "HYDROSTORAGE") return "storage";
+  return "";
+}
+
+function diagramHydrogenFlowEdgeBinding(sourceEntry, targetEntry) {
+  const endpoints = [
+    { position: "source", entry: sourceEntry, role: diagramHydrogenFlowRole(sourceEntry?.device?.devType) },
+    { position: "target", entry: targetEntry, role: diagramHydrogenFlowRole(targetEntry?.device?.devType) },
+  ].filter((item) => item.role);
+  if (!endpoints.length) return null;
+  const active = endpoints.filter((item) => item.role !== "storage");
+  const candidates = active.length ? active : endpoints;
+  const sources = candidates.filter((item) => item.role === "source");
+  const selected = sources.length === 1 ? sources[0] : candidates.length === 1 ? candidates[0] : null;
+  if (!selected) return null;
+  const orientation = selected.role === "load"
+    ? (selected.position === "target" ? 1 : -1)
+    : (selected.position === "source" ? 1 : -1);
+  return {
+    kind: "hydrogen",
+    device: selected.entry.device,
+    orientation,
+    powerBindings: [{
+      device: selected.entry.device,
+      nodes: selected.entry.nodes || [],
+      orientation: 1,
+      priority: 3,
+      measurementTypes: ["FLOW"],
+    }],
+  };
+}
+
 function diagramFlowPowerAnchorKind(device) {
   const endpointKind = diagramFlowEndpointKind(device);
   if (endpointKind) return endpointKind;
@@ -5736,6 +5783,8 @@ function diagramFlowPowerBindings(device, element, topology) {
 }
 
 function diagramFlowEdgeBinding(sourceEntry, targetEntry, topology) {
+  const hydrogenBinding = diagramHydrogenFlowEdgeBinding(sourceEntry, targetEntry);
+  if (hydrogenBinding) return hydrogenBinding;
   const endpoints = [
     { position: "source", entry: sourceEntry, endpointKind: diagramFlowEndpointKind(sourceEntry?.device) },
     { position: "target", entry: targetEntry, endpointKind: diagramFlowEndpointKind(targetEntry?.device) },
@@ -5778,8 +5827,10 @@ function diagramFlowEdgeBinding(sourceEntry, targetEntry, topology) {
   };
 }
 
-function diagramFlowDevicePowerSample(device, measurementMaps) {
-  const types = diagramFlowPowerMeasurementTypes(device?.devType);
+function diagramFlowDevicePowerSample(device, measurementMaps, measurementTypes = null) {
+  const types = Array.isArray(measurementTypes) && measurementTypes.length
+    ? measurementTypes
+    : diagramFlowPowerMeasurementTypes(device?.devType);
   for (const map of [measurementMaps?.scadaByDevice, measurementMaps?.realByDevice]) {
     const candidates = types.map((measType, order) => {
       const key = diagramDeviceMeasurementKey(device?.devType, device?.devName, measType);
@@ -5807,7 +5858,11 @@ function diagramFlowDevicePowerSample(device, measurementMaps) {
 function diagramFlowResolvePower(record, measurementMaps) {
   const resolved = (record?.powerBindings || [{ device: record?.device, orientation: 1, priority: 1 }])
     .map((binding) => {
-      const sample = diagramFlowDevicePowerSample(binding.device, measurementMaps);
+      const sample = diagramFlowDevicePowerSample(
+        binding.device,
+        measurementMaps,
+        binding.measurementTypes,
+      );
       return {
         binding,
         row: sample?.row || null,
@@ -5969,7 +6024,7 @@ function diagramFlowReferencePower(container, device, snapshot, interaction, pow
     String(key).trim().toLowerCase(),
     Number(value),
   ]));
-  for (const key of ["rated_capacity", "rated_power", "p_max", "max_power", "max_charge_power", "max_discharge_power"]) {
+  for (const key of ["flow_max", "rated_capacity", "rated_power", "p_max", "max_power", "max_charge_power", "max_discharge_power"]) {
     const value = Math.abs(Number(capacities.get(key)));
     if (Number.isFinite(value) && value > 0) return value;
   }
@@ -7076,6 +7131,9 @@ function diagramDefinitionMessageHtml(interaction) {
 }
 
 const DIAGRAM_DEFINITION_RATIO_FIELDS = new Set([
+  "initial_soc",
+  "soc_initial",
+  "soc_init",
   "state_of_charge",
   "soc",
   "soc_curr",

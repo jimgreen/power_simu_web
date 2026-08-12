@@ -784,6 +784,91 @@ process.stdout.write(JSON.stringify({
                     expected,
                 )
 
+    def test_hydrogen_edges_use_signed_flow_and_endpoint_direction(self):
+        body = """
+function flowMap(device, value) {
+  const key = diagramDeviceMeasurementKey(device.devType, device.devName, "FLOW");
+  return {
+    scadaByDevice: new Map([[key, { meas_type: "flow", value, valid: 1 }]]),
+    realByDevice: new Map(),
+  };
+}
+function compact(binding, maps) {
+  const resolved = diagramFlowResolvePower(binding, maps);
+  return {
+    kind: binding?.kind || "",
+    orientation: binding?.orientation ?? null,
+    measurementTypes: binding?.powerBindings?.[0]?.measurementTypes || [],
+    measType: resolved.row?.meas_type || "",
+    flow: resolved.power,
+    direction: diagramFlowArrowDirection(resolved.power, binding?.orientation),
+    valid: resolved.valid,
+  };
+}
+
+const electrolyzer = { devId: "AcE2Hydro-1", devType: "AcE2Hydro", devName: "electrolyzer-1" };
+const fuelCell = { devId: "Hydro2DcE-1", devType: "Hydro2DcE", devName: "fuel-cell-1" };
+const tank = { devId: "HydroStorage-3", devType: "HydroStorage", devName: "tank-1" };
+const sourceEntry = { device: electrolyzer, nodes: [] };
+const loadEntry = { device: fuelCell, nodes: [] };
+const tankEntry = { device: tank, nodes: [] };
+const topology = { byId: new Map(), byNode: new Map() };
+
+const sourceToTank = diagramFlowEdgeBinding(sourceEntry, tankEntry, topology);
+const fuelCellToTank = diagramFlowEdgeBinding(loadEntry, tankEntry, topology);
+const tankToFuelCell = diagramFlowEdgeBinding(tankEntry, loadEntry, topology);
+process.stdout.write(JSON.stringify({
+  roles: {
+    electrolyzer: diagramHydrogenFlowRole(electrolyzer.devType),
+    fuelCell: diagramHydrogenFlowRole(fuelCell.devType),
+    tank: diagramHydrogenFlowRole(tank.devType),
+  },
+  sourceToTank: compact(sourceToTank, flowMap(electrolyzer, 4)),
+  fuelCellToTank: compact(fuelCellToTank, flowMap(fuelCell, 6.67)),
+  tankToFuelCell: compact(tankToFuelCell, flowMap(fuelCell, 6.67)),
+}));
+"""
+        expected = {
+            "roles": {
+                "electrolyzer": "source",
+                "fuelCell": "load",
+                "tank": "storage",
+            },
+            "sourceToTank": {
+                "kind": "hydrogen",
+                "orientation": 1,
+                "measurementTypes": ["FLOW"],
+                "measType": "flow",
+                "flow": 4,
+                "direction": 1,
+                "valid": True,
+            },
+            "fuelCellToTank": {
+                "kind": "hydrogen",
+                "orientation": -1,
+                "measurementTypes": ["FLOW"],
+                "measType": "flow",
+                "flow": 6.67,
+                "direction": -1,
+                "valid": True,
+            },
+            "tankToFuelCell": {
+                "kind": "hydrogen",
+                "orientation": 1,
+                "measurementTypes": ["FLOW"],
+                "measType": "flow",
+                "flow": 6.67,
+                "direction": 1,
+                "valid": True,
+            },
+        }
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                self.assertEqual(
+                    self._run_flow_helpers(path.read_text(encoding="utf-8"), body),
+                    expected,
+                )
+
     def test_styles_include_noninteractive_flow_arrow_layers(self):
         required = (
             ".diagram-flow-arrow",

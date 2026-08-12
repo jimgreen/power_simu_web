@@ -1133,8 +1133,18 @@ def _hydrogen_storage_water_volume(row: Mapping[str, Any]) -> Optional[float]:
 def _hydrogen_storage_rated_capacity(row: Mapping[str, Any]) -> Optional[float]:
     for field in ("rated_capacity", "capacity", "rated_gas_capacity", "gas_capacity"):
         value = _safe_float(row.get(field), None)
-        if value is not None and math.isfinite(value):
+        if value is not None and math.isfinite(value) and value > 0.0:
             return float(value)
+    pressure_max = _safe_float(row.get("pressure_max"), None)
+    water_volume = _hydrogen_storage_water_volume(row)
+    if (
+        pressure_max is not None
+        and math.isfinite(pressure_max)
+        and pressure_max > 0.0
+        and water_volume is not None
+        and water_volume > 0.0
+    ):
+        return float(pressure_max) * water_volume * 10.0
     return None
 
 
@@ -1180,31 +1190,19 @@ def _hydrogen_storage_initial_quantity(row: Mapping[str, Any]) -> Optional[float
     return pressure * water_volume / 0.1
 
 
-def _hydrogen_storage_pressure_max(row: Mapping[str, Any]) -> Optional[float]:
-    value = _safe_float(row.get("pressure_max"), None)
-    if value is None or not math.isfinite(value):
-        return None
-    return float(value)
-
-
 def _hydrogen_storage_soc(
-    pressure: float,
     model_row: Mapping[str, Any],
-    gas_quantity: Optional[float] = None,
+    gas_quantity: Optional[float],
 ) -> Optional[float]:
     rated_capacity = _hydrogen_storage_rated_capacity(model_row)
-    if rated_capacity is not None and rated_capacity > 0.0:
-        quantity = gas_quantity
-        if quantity is None:
-            water_volume = _hydrogen_storage_water_volume(model_row)
-            if water_volume is not None and water_volume > 0.0:
-                quantity = float(pressure) * water_volume * 10.0
-        if quantity is not None and math.isfinite(quantity):
-            return float(quantity) / rated_capacity
-    pressure_max = _hydrogen_storage_pressure_max(model_row)
-    if pressure_max is None or pressure_max <= 0.0:
+    if (
+        rated_capacity is None
+        or rated_capacity <= 0.0
+        or gas_quantity is None
+        or not math.isfinite(gas_quantity)
+    ):
         return None
-    return float(pressure) / pressure_max
+    return float(gas_quantity) / rated_capacity
 
 
 def _hydrogen_storage_state_key(row: Mapping[str, Any]) -> Tuple[str, str]:
@@ -1293,21 +1291,17 @@ def ensure_hydrogen_storage_state_rows_book(stat_book: EBook, model_book: EBook)
                     format_number(initial_quantity),
                 )
         if state.get("soc", "") == "":
-            initial_pressure = _safe_float(state.get("pressure"), None)
             initial_quantity = _safe_float(state.get("gas_quantity"), None)
             initial_soc = (
                 derived_initial[2]
                 if derived_initial is not None
-                else _hydrogen_storage_soc(
-                    initial_pressure,
-                    model_row,
-                    initial_quantity,
-                )
-                if initial_pressure is not None
-                else None
+                else _hydrogen_storage_soc(model_row, initial_quantity)
             )
-            if initial_soc is not None:
-                changed += _set_row_value(state, "soc", format_number(initial_soc))
+            changed += _set_row_value(
+                state,
+                "soc",
+                "nan" if initial_soc is None else format_number(initial_soc),
+            )
     return changed
 
 
@@ -1359,7 +1353,6 @@ def apply_hydrogen_storage_state_book(model_book: EBook, stat_book: Optional[EBo
 
 def integrate_hydrogen_storage_state(
     *,
-    pressure: float,
     gas_quantity: float,
     flow: float,
     period_seconds: float,
@@ -1370,10 +1363,9 @@ def integrate_hydrogen_storage_state(
         raise ValueError("HydroStorage water_volume must be greater than zero")
     period_hours = max(0.0, float(period_seconds)) / 3600.0
     quantity_delta = float(flow) * period_hours
-    return (
-        float(pressure) - quantity_delta / water_volume * 0.1,
-        float(gas_quantity) - quantity_delta,
-    )
+    next_quantity = float(gas_quantity) - quantity_delta
+    next_pressure = next_quantity / water_volume / 10.0
+    return next_pressure, next_quantity
 
 
 def _snapshot_hydrogen_storage_flow_by_name(snapshot: Any) -> Dict[str, float]:
@@ -1408,7 +1400,6 @@ def update_hydrogen_storage_state_book(
         for row in _hydrogen_storage_rows(model_book)
     }
     flow_by_name = _snapshot_hydrogen_storage_flow_by_name(snapshot)
-    period_hours = max(0.0, float(period_seconds)) / 3600.0
     for state in block.data:
         model_row = model_by_key.get(_hydrogen_storage_state_key(state))
         if model_row is None:
@@ -1423,38 +1414,36 @@ def update_hydrogen_storage_state_book(
         gas_quantity = _safe_float(state.get("gas_quantity"), None)
         if gas_quantity is None:
             gas_quantity = _hydrogen_storage_initial_quantity(model_row)
-        if gas_quantity is not None and math.isfinite(gas_quantity):
-            changed += _set_row_value(
-                state,
-                "gas_quantity",
-                format_number(float(gas_quantity) - flow * period_hours),
+        if gas_quantity is None or not math.isfinite(gas_quantity):
+            LOGGER.warning(
+                "HydroStorage %s has no valid gas quantity; dynamic state update skipped",
+                name,
             )
-        pressure = _safe_float(state.get("pressure"), None)
-        if pressure is None:
-            pressure = _hydrogen_storage_initial_pressure(model_row)
+            continue
+        period_hours = max(0.0, float(period_seconds)) / 3600.0
+        next_quantity = float(gas_quantity) - flow * period_hours
+        changed += _set_row_value(
+            state,
+            "gas_quantity",
+            format_number(next_quantity),
+        )
+        rated_capacity = _hydrogen_storage_rated_capacity(model_row)
         water_volume = _hydrogen_storage_water_volume(model_row)
         if water_volume is None or water_volume <= 0.0:
             LOGGER.warning(
-                "HydroStorage %s has invalid water_volume=%r; pressure integration skipped",
+                "HydroStorage %s has invalid water_volume=%r; pressure update skipped",
                 name,
                 model_row.get("water_volume"),
             )
-            continue
-        if pressure is None or not math.isfinite(pressure):
-            LOGGER.warning(
-                "HydroStorage %s has no valid initial pressure; pressure integration skipped",
-                name,
-            )
-            continue
-        next_pressure = float(pressure) - flow * period_hours / water_volume * 0.1
-        changed += _set_row_value(state, "pressure", format_number(next_pressure))
-        next_quantity = _safe_float(state.get("gas_quantity"), None)
-        next_soc = _hydrogen_storage_soc(next_pressure, model_row, next_quantity)
+        else:
+            next_pressure = next_quantity / water_volume / 10.0
+            changed += _set_row_value(state, "pressure", format_number(next_pressure))
+        next_soc = _hydrogen_storage_soc(model_row, next_quantity)
         if next_soc is None:
             LOGGER.warning(
-                "HydroStorage %s has invalid pressure_max=%r; SOC update skipped",
+                "HydroStorage %s has invalid rated capacity=%r; SOC update skipped",
                 name,
-                model_row.get("pressure_max"),
+                rated_capacity,
             )
         else:
             changed += _set_row_value(state, "soc", format_number(next_soc))
@@ -1489,9 +1478,7 @@ def reset_hydrogen_storage_state_book(stat_book: EBook, model_book: EBook) -> in
         initial_soc = (
             derived_initial[2]
             if derived_initial is not None
-            else _hydrogen_storage_soc(initial_pressure, model_row, initial_quantity)
-            if initial_pressure is not None
-            else None
+            else _hydrogen_storage_soc(model_row, initial_quantity)
         )
         changed += _set_row_value(
             state,
@@ -1507,7 +1494,7 @@ def reset_hydrogen_storage_state_book(stat_book: EBook, model_book: EBook) -> in
         changed += _set_row_value(
             state,
             "soc",
-            "" if initial_soc is None else format_number(initial_soc),
+            "nan" if initial_soc is None else format_number(initial_soc),
         )
     changed += apply_hydrogen_storage_state_book(model_book, stat_book)
     return changed

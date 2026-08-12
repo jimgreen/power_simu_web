@@ -115,6 +115,57 @@ class ControlSafetyBoundsTest(unittest.TestCase):
                     str(value),
                 )
 
+    def test_storage_alias_uses_capability_charge_and_discharge_limits(self):
+        service, runtime = self._make_service()
+        history_before = list(service.command_history)
+        stat_before = render_ebook_aligned(service.runtime_stat_book)
+
+        for unsafe_value in (-40.1, 40.1):
+            with self.subTest(unsafe_value=unsafe_value), self.assertRaisesRegex(
+                ValueError,
+                r"ESS/ess01.*p_set.*p_(min|max)",
+            ):
+                service.apply_student_commands(
+                    {
+                        "set_values": [
+                            {
+                                "dev_type": "ESS",
+                                "dev_name": "ess01",
+                                "set_type": "p_set",
+                                "set_value": unsafe_value,
+                            }
+                        ]
+                    },
+                    source="trainee-ui",
+                )
+
+        self.assertEqual(service.command_history, history_before)
+        self.assertEqual(render_ebook_aligned(service.runtime_stat_book), stat_before)
+        self.assertFalse((runtime / "commands.json").exists())
+
+    def test_invalid_runtime_control_binary_is_rejected_atomically(self):
+        service, runtime = self._make_service()
+        history_before = list(service.command_history)
+        stat_before = render_ebook_aligned(service.runtime_stat_book)
+
+        with self.assertRaisesRegex(ValueError, r"遥控安全校验失败.*run_stat.*0 或 1"):
+            service.apply_student_commands(
+                {
+                    "run_status": [
+                        {
+                            "dev_type": "ACGenerator",
+                            "dev_name": "diesel_300kw",
+                            "run_stat": 2,
+                        }
+                    ]
+                },
+                source="trainee-ui",
+            )
+
+        self.assertEqual(service.command_history, history_before)
+        self.assertEqual(render_ebook_aligned(service.runtime_stat_book), stat_before)
+        self.assertFalse((runtime / "commands.json").exists())
+
     def test_mixed_safe_and_unsafe_command_batch_is_rejected_atomically(self):
         service, runtime = self._make_service()
         self._add_fields(

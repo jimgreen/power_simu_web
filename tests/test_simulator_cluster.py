@@ -487,6 +487,13 @@ def test_proxy_exposes_only_catalog_and_lifecycle_control_without_data_forwardin
             _json_request(f"{base}/api/snapshot?model_id=model_a")
         assert error.value.code == 404
         assert "directly" in error.value.read().decode("utf-8").lower()
+
+        with pytest.raises(HTTPError) as error:
+            _json_request(f"{base}/api/models/create")
+        assert error.value.code == 405
+        get_error = json.loads(error.value.read().decode("utf-8"))
+        assert "only accepts POST" in get_error["error"]
+        assert "Runtime APIs" not in get_error["error"]
     finally:
         server.shutdown()
         server.server_close()
@@ -565,6 +572,24 @@ def test_proxy_keeps_low_frequency_model_management_on_control_plane(tmp_path: P
         )
         assert gb18030_created["model"]["id"] == "国标编码模型"
         assert (models_root / "国标编码模型" / "model.e").exists()
+
+        incomplete_dir = models_root / "秦岭站"
+        incomplete_dir.mkdir()
+        (incomplete_dir / "meas.e").write_text("legacy partial data", encoding="utf-8")
+        _, recovered = _json_request(
+            f"{base}/api/models/create",
+            method="POST",
+            payload={
+                "name": "秦岭站",
+                "data_base64": base64.b64encode(model_text).decode("ascii"),
+                "service_host": "127.0.0.1",
+                "service_port": 9554,
+            },
+        )
+        recovered_dir = Path(recovered["model"]["created"]["recovered_incomplete_directory"])
+        assert recovered["model"]["id"] == "秦岭站"
+        assert (models_root / "秦岭站" / "model.e").exists()
+        assert (recovered_dir / "meas.e").read_text(encoding="utf-8") == "legacy partial data"
         generated_names = ("model.e", "control.e", "curves.json", "meas.e", "stat.e", "weather.e", "curves.e")
         generated_before_link_update = {
             name: (models_root / "created" / name).read_bytes()

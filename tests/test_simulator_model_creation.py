@@ -446,6 +446,35 @@ class SimulatorModelCreationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "模型已存在"):
                 create_model_from_efile(manager, "默认模型", model_text)
 
+    def test_create_model_recovers_incomplete_same_name_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            manager = self._manager(temp_root)
+            incomplete_dir = manager.models_root / "秦岭站"
+            incomplete_dir.mkdir()
+            (incomplete_dir / "meas.e").write_text("legacy partial data", encoding="utf-8")
+            model_text = (SIMPLE_MODEL_SOURCE / "model.e").read_text(encoding="utf-8")
+
+            created = server_module.create_model_from_efile(manager, "秦岭站", model_text)
+
+            recovered_dir = Path(created["created"]["recovered_incomplete_directory"])
+            self.assertEqual(created["id"], "秦岭站")
+            self.assertTrue((manager.models_root / "秦岭站" / "model.e").exists())
+            self.assertEqual((recovered_dir / "meas.e").read_text(encoding="utf-8"), "legacy partial data")
+            self.assertTrue(recovered_dir.is_relative_to(manager.runtime_dir))
+
+    def test_create_model_removes_current_attempt_when_registration_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            manager = self._manager(temp_root)
+            model_text = (SIMPLE_MODEL_SOURCE / "model.e").read_text(encoding="utf-8")
+
+            with patch.object(manager, "_append_manifest_model", side_effect=OSError("write failed")):
+                with self.assertRaisesRegex(OSError, "write failed"):
+                    server_module.create_model_from_efile(manager, "创建失败模型", model_text)
+
+            self.assertFalse((manager.models_root / "创建失败模型").exists())
+
     def test_create_model_endpoint_accepts_base64_model_e_payload(self):
         from simu.server import make_http_server
         from urllib.request import Request, urlopen
@@ -641,12 +670,13 @@ class SimulatorModelCreationTest(unittest.TestCase):
         self.assertIn('id="newModelSvgInput"', html)
         self.assertIn('accept=".svg,image/svg+xml"', html)
         self.assertIn('id="confirmNewModel" class="primary" type="button">新建</button>', html)
-        self.assertIn('src="/app.js?v=20260812-model-create-fix"', html)
-        self.assertIn('href="/styles.css?v=20260812-model-create-fix"', html)
+        self.assertIn('src="/app.js?v=20260812-model-create-recovery"', html)
+        self.assertIn('href="/styles.css?v=20260812-model-create-recovery"', html)
         self.assertIn("openNewModelDialog", script)
         self.assertIn("validateNewModelForm", script)
         self.assertIn('controlPlaneApi("/api/models/create"', script)
         self.assertIn('$("confirmNewModel").addEventListener("click", createNewModelFromFile)', script)
+        self.assertIn("if (newModelCreationActive) return", script)
         self.assertRegex(
             script,
             re.compile(

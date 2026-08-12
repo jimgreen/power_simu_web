@@ -13,6 +13,7 @@ import math
 import mimetypes
 import os
 import re
+import shutil
 import threading
 import time
 import zipfile
@@ -80,6 +81,7 @@ try:
         MultiModelSimulator,
         PolarMicrogridSimulator,
         ServiceInstanceRetiredError,
+        _safe_model_id as _service_model_id,
         _to_float,
     )
     from .renewable_control import (
@@ -117,6 +119,7 @@ except ImportError:  # pragma: no cover - legacy package compatibility.
         MultiModelSimulator,
         PolarMicrogridSimulator,
         ServiceInstanceRetiredError,
+        _safe_model_id as _service_model_id,
         _to_float,
     )
     from renewable_control import (
@@ -1299,6 +1302,32 @@ def _write_generated_model_artifacts(
     return written
 
 
+def _recover_incomplete_model_directory(manager: Any, new_model_name: Any) -> Optional[Path]:
+    """Move a non-model name collision aside without discarding its files."""
+    raw_name = str(new_model_name or "").strip()
+    target_id = raw_name if isinstance(manager, SimulatorClusterManager) else _service_model_id(raw_name)
+    if not target_id:
+        return None
+    models_root = Path(manager.models_root).resolve()
+    target_dir = (models_root / target_id).resolve()
+    try:
+        target_dir.relative_to(models_root)
+    except ValueError as exc:
+        raise ValueError(f"模型名称无效: {new_model_name}") from exc
+    if not target_dir.exists() or (target_dir / "model.e").exists():
+        return None
+
+    runtime_base = Path(
+        getattr(manager, "runtime_root", getattr(manager, "runtime_dir", models_root.parent / "runtime"))
+    ).resolve()
+    recovery_root = runtime_base / ".incomplete-model-backups"
+    recovery_root.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    recovery_dir = recovery_root / f"{target_id}-{timestamp}"
+    target_dir.replace(recovery_dir)
+    return recovery_dir
+
+
 def create_model_from_efile(
     manager: MultiModelSimulator,
     new_model_name: Any,
@@ -1307,29 +1336,32 @@ def create_model_from_efile(
     diagram_svg_text: Optional[str] = None,
 ) -> Mapping[str, Any]:
     """Create one simulator source model folder from an uploaded model.e file."""
-    target_id = manager.validate_new_model_name(new_model_name)
     artifacts = _generated_model_artifacts(model_text)
-
-    target_dir = (manager.models_root / target_id).resolve()
-    try:
-        target_dir.relative_to(manager.models_root.resolve())
-    except ValueError as exc:
-        raise ValueError(f"模型名称无效: {new_model_name}") from exc
-    if target_dir.exists():
-        raise ValueError(f"模型文件夹已存在: {target_id}")
-
-    written = _write_generated_model_artifacts(target_dir, artifacts, diagram_svg_text=diagram_svg_text)
+    with manager.lock:
+        recovered_dir = _recover_incomplete_model_directory(manager, new_model_name)
+        target_id = manager.validate_new_model_name(new_model_name)
+        target_dir = (manager.models_root / target_id).resolve()
+        try:
+            written = _write_generated_model_artifacts(
+                target_dir,
+                artifacts,
+                diagram_svg_text=diagram_svg_text,
+            )
+            manager._append_manifest_model(target_id, target_dir)
+            model_info = manager.service_for(target_id).model_info()
+        except Exception:
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+            raise
     meas_book = artifacts["meas_book"]
     curves_payload = artifacts["curves_payload"]
-
-    manager._append_manifest_model(target_id, target_dir)
-    model_info = manager.service_for(target_id).model_info()
     return {
         **model_info,
         "created": {
             "files": written,
             "measurement_count": len(meas_book.data["Measurement"].data),
             "curve_points": curves_payload["point_count"],
+            "recovered_incomplete_directory": str(recovered_dir) if recovered_dir else "",
         },
     }
 

@@ -29,6 +29,15 @@ def make_simulator_proxy_server(
 
     class SimulatorProxyHandler(BaseHTTPRequestHandler):
         server_version = "PolarMicrogridProxy/0.1"
+        control_plane_post_routes = {
+            "/api/simulator-services/start",
+            "/api/simulator-services/stop",
+            "/api/models/create",
+            "/api/models/update-definitions",
+            "/api/models/clone",
+            "/api/models/delete",
+            "/api/models/import-definitions",
+        }
 
         def log_message(self, _fmt: str, *_args: Any) -> None:
             return
@@ -49,6 +58,11 @@ def make_simulator_proxy_server(
                     self._send_json({"service_suggestion": manager.suggest_service_address()})
                 elif path == "/api/trainee-link":
                     self._send_trainee_link()
+                elif path in self.control_plane_post_routes:
+                    self._send_json(
+                        {"error": f"Control-plane API {path} only accepts POST requests."},
+                        status=405,
+                    )
                 elif path.startswith("/api/"):
                     self._send_json(
                         {
@@ -161,7 +175,6 @@ def make_simulator_proxy_server(
         def _create_model(self, payload: Mapping[str, Any]) -> None:
             helpers = self._server_helpers()
             name = payload.get("name", payload.get("model_name"))
-            target_id = manager.validate_new_model_name(name)
             address = manager.validate_service_address(
                 payload.get("service_host"),
                 payload.get("service_port"),
@@ -171,22 +184,25 @@ def make_simulator_proxy_server(
             )
             artifacts = helpers._generated_model_artifacts(model_text)
             diagram_svg_text = helpers._decode_optional_svg_payload(payload)
-            target_dir = manager.models_root / target_id
-            try:
-                written = helpers._write_generated_model_artifacts(
-                    target_dir,
-                    artifacts,
-                    diagram_svg_text=diagram_svg_text,
-                )
-                model = manager.register_model(
-                    target_id,
-                    service_host=address["host"],
-                    service_port=address["port"],
-                )
-            except Exception:
-                if target_dir.exists():
-                    shutil.rmtree(target_dir)
-                raise
+            with manager.lock:
+                recovered_dir = helpers._recover_incomplete_model_directory(manager, name)
+                target_id = manager.validate_new_model_name(name)
+                target_dir = manager.models_root / target_id
+                try:
+                    written = helpers._write_generated_model_artifacts(
+                        target_dir,
+                        artifacts,
+                        diagram_svg_text=diagram_svg_text,
+                    )
+                    model = manager.register_model(
+                        target_id,
+                        service_host=address["host"],
+                        service_port=address["port"],
+                    )
+                except Exception:
+                    if target_dir.exists():
+                        shutil.rmtree(target_dir)
+                    raise
             self._send_json(
                 {
                     "model": {
@@ -195,6 +211,7 @@ def make_simulator_proxy_server(
                             "files": written,
                             "measurement_count": len(artifacts["meas_book"].data["Measurement"].data),
                             "curve_points": artifacts["curves_payload"]["point_count"],
+                            "recovered_incomplete_directory": str(recovered_dir) if recovered_dir else "",
                         },
                     },
                     **manager.catalog(),

@@ -312,6 +312,7 @@ const SIGNAL_MEASUREMENT_LABELS = {
 let pendingImportDefinitionFile = null;
 let pendingNewModelFile = null;
 let pendingNewModelSvgFile = null;
+let newModelCreationActive = false;
 let pendingUpdateModelFile = null;
 let pendingUpdateModelSvgFile = null;
 
@@ -1936,6 +1937,7 @@ function handleNewModelSvgFileSelected(event) {
 }
 
 async function createNewModelFromFile() {
+  if (newModelCreationActive) return;
   const file = pendingNewModelFile;
   const input = $("newModelName");
   const name = String(input?.value || "").trim();
@@ -1944,6 +1946,7 @@ async function createNewModelFromFile() {
     input?.focus();
     return;
   }
+  newModelCreationActive = true;
   setNewModelBusy(true);
   setNewModelMessage("正在读取 model.e 并生成模型定义...");
   try {
@@ -1978,6 +1981,7 @@ async function createNewModelFromFile() {
       "error",
     );
   } finally {
+    newModelCreationActive = false;
     setNewModelBusy(false);
     if (!$("newModelDialog").hidden) validateNewModelForm();
   }

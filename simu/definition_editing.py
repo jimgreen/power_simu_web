@@ -353,7 +353,12 @@ def validate_setpoint_safety_bounds(
     return number, bounds
 
 
-def normalize_device_changes(current: Mapping[str, Any], changes: Mapping[str, Any]) -> dict[str, str]:
+def normalize_device_changes(
+    current: Mapping[str, Any],
+    changes: Mapping[str, Any],
+    *,
+    allow_out_of_bounds_setpoints: bool = False,
+) -> dict[str, str]:
     if not isinstance(changes, Mapping) or not changes:
         raise ValueError("At least one device parameter change is required")
     unknown = [field for field in changes if field not in current]
@@ -405,6 +410,11 @@ def normalize_device_changes(current: Mapping[str, Any], changes: Mapping[str, A
         if str(field).endswith("_set")
         or _normalized_field_name(field) in {"pv0", "qv0"}
     ):
+        if (
+            allow_out_of_bounds_setpoints
+            and _normalized_field_name(setpoint) in changed_fields
+        ):
+            continue
         candidates = _setpoint_bound_candidates(merged, setpoint)
         related_fields = {setpoint, *(field for pair in candidates for field in pair)}
         if not (related_fields & changed_fields):

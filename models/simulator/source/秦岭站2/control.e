@@ -356,7 +356,7 @@
 # DCACConverter  风机变流器-10            q_ac_set  0
 # DCACConverter  风机变流器-10            v_ac_set  380
 # DCACConverter  风机变流器-10            v_dc_set  750
-# DCACConverter  DCAC变流器-1           p_ac_set  20
+# DCACConverter  DCAC变流器-1           p_ac_set  0
 # DCACConverter  DCAC变流器-1           p_dc_set  0
 # DCACConverter  DCAC变流器-1           q_ac_set  0
 # DCACConverter  DCAC变流器-1           v_ac_set  380
@@ -369,17 +369,6 @@
 # HydroSource    交流电制氢-1_氢能设备端氢源     flow_set  10
 # HydroLoad      直流燃料电池-1_氢能设备端氢荷    flow_set  10
 </SetValue>
-<StorageSoc>
-@ dev_type     idx  name        soc_curr
-# ACGenerator  23   交流电化学储能-23  0.5
-# ACGenerator  26   交流电化学储能-26  0.5
-# DCGenerator  4    电化学储能-1     0.5
-# DCGenerator  5    电化学储能-2     0.5
-# DCGenerator  6    电化学储能-3     0.5
-# DCGenerator  7    电化学储能-4     0.5
-# DCGenerator  8    电化学储能-5     0.5
-# DCGenerator  9    电化学储能-6     0.5
-</StorageSoc>
 <CbOpenStat>
 @ dev_type  dev_name  status
 # ACBreak   交流断路器-1   1
@@ -420,3 +409,18 @@
 # DCBreak   直流断路器-32  1
 # DCBreak   直流断路器-33  1
 </CbOpenStat>
+<StorageSoc>
+@ dev_type     idx  name        soc_curr
+# ACGenerator  23   交流电化学储能-23  0.5
+# ACGenerator  26   交流电化学储能-26  0.5
+# DCGenerator  4    电化学储能-1     0.5
+# DCGenerator  5    电化学储能-2     0.5
+# DCGenerator  6    电化学储能-3     0.5
+# DCGenerator  7    电化学储能-4     0.5
+# DCGenerator  8    电化学储能-5     0.5
+# DCGenerator  9    电化学储能-6     0.5
+</StorageSoc>
+<HydroStorageState>
+@ dev_type      idx  name       pressure  flow  gas_quantity  soc
+# HydroStorage  3    集装格式储氢罐-3  5         0     500           0.5
+</HydroStorageState>

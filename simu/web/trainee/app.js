@@ -20,6 +20,9 @@ const VERTICAL_SPLIT_MIN_BOTTOM_PX = 120;
 const STATIC_CACHE_STORAGE_KEY = "polarTraineeStaticCacheV2";
 const STATIC_CACHE_MODEL_LIMIT = 4;
 const CURVE_DISPLAY_TREE_COLLAPSE_KEY = "polarTraineeCurveTreeCollapsedGroups";
+const RUNTIME_LOG_COLUMN_WIDTHS_KEY = "polarTraineeRuntimeLogColumnWidths";
+const RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS = Object.freeze([104, 104, 112, 190, 104, 640]);
+const RUNTIME_LOG_COLUMN_MIN_WIDTHS = Object.freeze([82, 82, 78, 110, 78, 180]);
 const HIDDEN_REFRESH_INTERVAL_MS = 10000;
 const MODEL_CONTEXT_PERSIST_INTERVAL_MS = 5000;
 const WEB_RUNTIME_FALLBACKS = {
@@ -156,6 +159,7 @@ const state = {
   lastReceiveStateSyncAtMs: 0,
   definitionMismatchLastKey: "",
   runtimeLogs: [],
+  runtimeLogColumnWidths: readStoredRuntimeLogColumnWidths(),
   runtimeLogTypeFilter: "all",
   runtimeLogPage: 1,
   runtimeLogPageSize: 20,
@@ -445,6 +449,11 @@ const CURVE_DISPLAY_META = [
 ];
 const CURVE_DISPLAY_LOAD_META = { label: "负荷", color: "#c93a3a", min: 0, max: 500, digits: 2, unit: "kW" };
 const CURVE_DISPLAY_LOAD_COLORS = ["#c93a3a", "#8a4fbf", "#23854a", "#d16300", "#4369b2", "#0a8b8b"];
+const CURVE_DISPLAY_LOAD_FAMILIES = [
+  { key: "electric", label: "电负荷曲线", blocks: ["ACLoad", "DCLoad"], unit: "kW", valueKey: "p_kw" },
+  { key: "hydrogen", label: "氢负荷曲线", blocks: ["HydroLoad"], unit: "Nm³/h", valueKey: "flow_set" },
+  { key: "heat", label: "热负荷曲线", blocks: ["HeatLoad"], unit: "kW", valueKey: "heat_power" },
+];
 const CURVE_DISPLAY_SOURCE_FAMILIES = [
   { key: "electric", label: "电源曲线" },
   { key: "hydrogen", label: "氢源曲线" },
@@ -11298,21 +11307,65 @@ function curveDisplayLoadName(key) {
   return String(key || "").replace(/^load:/, "") || "load";
 }
 
+function curveDisplayLoadFamilyConfig(family) {
+  return CURVE_DISPLAY_LOAD_FAMILIES.find((item) => item.key === family) || null;
+}
+
+function curveDisplayLoadFamilyForBlock(blockName) {
+  const block = String(blockName || "").trim();
+  return CURVE_DISPLAY_LOAD_FAMILIES.find((item) => item.blocks.includes(block))?.key || "other";
+}
+
 function curveDisplayLoads(snapshot = state.snapshot || {}) {
-  const names = new Set(Object.keys(snapshot.curves?.loads || {}));
+  const names = new Map(Object.keys(snapshot.curves?.loads || {}).map((name) => [name, {
+    name,
+    devType: "",
+    family: "other",
+    unit: "",
+    valueKey: "value",
+    min: null,
+    max: null,
+    defaultValue: 0,
+  }]));
+  const supportedBlocks = new Set(CURVE_DISPLAY_LOAD_FAMILIES.flatMap((item) => item.blocks));
   (snapshot.devices || []).forEach((dev) => {
     if ((
       deviceFamily(dev) === "load"
-      || ["ACLoad", "DCLoad"].includes(deviceModelBlock(dev))
+      || supportedBlocks.has(deviceModelBlock(dev))
     ) && deviceName(dev)) {
-      names.add(deviceName(dev));
+      const name = deviceName(dev);
+      const devType = deviceModelBlock(dev);
+      const family = curveDisplayLoadFamilyForBlock(devType);
+      const config = curveDisplayLoadFamilyConfig(family);
+      const setType = family === "hydrogen" ? "flow_set" : family === "heat" ? "heat_power" : "p_set";
+      names.set(name, {
+        name,
+        devType,
+        family,
+        unit: config?.unit || "",
+        valueKey: config?.valueKey || "value",
+        min: Number(dev.raw?.[`${setType.replace(/_set$/, "")}_min`]),
+        max: Number(dev.raw?.[`${setType.replace(/_set$/, "")}_max`]),
+        defaultValue: Number(dev.raw?.[setType] ?? 0),
+      });
     }
   });
-  return Array.from(names).sort((left, right) => left.localeCompare(right, "zh-Hans-CN"));
+  return Array.from(names.values()).sort((left, right) => left.name.localeCompare(right.name, "zh-Hans-CN"));
 }
 
 function curveDisplayLoadKeys(snapshot = state.snapshot || {}) {
-  return curveDisplayLoads(snapshot).map(curveDisplayLoadKey);
+  return curveDisplayLoads(snapshot).map((load) => curveDisplayLoadKey(load.name));
+}
+
+function curveDisplayLoadForKey(key, snapshot = state.snapshot || {}) {
+  const name = curveDisplayLoadName(key);
+  return curveDisplayLoads(snapshot).find((load) => load.name === name) || null;
+}
+
+function curveDisplayLoadFamilyKeys(family, snapshot = state.snapshot || {}) {
+  return curveDisplayLoads(snapshot)
+    .filter((load) => load.family === family)
+    .map((load) => curveDisplayLoadKey(load.name));
 }
 
 function curveDisplaySourceCatalog(snapshot = state.snapshot || {}) {
@@ -11341,10 +11394,18 @@ function curveDisplayRawPoints(key, snapshot = state.snapshot || {}) {
   return Array.isArray(snapshot.curves?.weather) ? snapshot.curves.weather : [];
 }
 
-function curveDisplayPointValue(point, key) {
+function curveDisplayPointValue(point, key, snapshot = state.snapshot || {}) {
   if (!point) return null;
   if (String(key).startsWith("load:")) {
-    return Number(point.p_kw ?? point.value ?? point.load_kw);
+    const load = curveDisplayLoadForKey(key, snapshot);
+    return Number(
+      point[load?.valueKey || "value"]
+      ?? point.value
+      ?? point.p_kw
+      ?? point.load_kw
+      ?? point.flow_set
+      ?? point.heat_power,
+    );
   }
   if (String(key).startsWith("source:")) return Number(point.value ?? point.set_value);
   return Number(point[key]);
@@ -11357,7 +11418,7 @@ function curveDisplayMetaForKey(key, snapshot = state.snapshot || {}) {
     const source = curveDisplaySourceCatalog(snapshot).find((item) => item.key === key) || {};
     const sourceIndex = Math.max(0, curveDisplaySourceKeys(snapshot).indexOf(key));
     const values = curveDisplayRawPoints(key, snapshot)
-      .map((point) => curveDisplayPointValue(point, key))
+      .map((point) => curveDisplayPointValue(point, key, snapshot))
       .filter((value) => Number.isFinite(value));
     const defaultValue = Number(source.default_value);
     const lower = Number(source.min);
@@ -11376,17 +11437,25 @@ function curveDisplayMetaForKey(key, snapshot = state.snapshot || {}) {
     };
   }
   const loadKeys = curveDisplayLoadKeys(snapshot);
+  const load = curveDisplayLoadForKey(key, snapshot);
   const loadIndex = Math.max(0, loadKeys.indexOf(key));
   const values = curveDisplayRawPoints(key, snapshot)
-    .map((point) => curveDisplayPointValue(point, key))
+    .map((point) => curveDisplayPointValue(point, key, snapshot))
     .filter((value) => Number.isFinite(value));
   const dynamicMax = values.length ? Math.max(...values) * 1.12 : CURVE_DISPLAY_LOAD_META.max;
+  const lower = Number(load?.min);
+  const upper = Number(load?.max);
   return {
     ...CURVE_DISPLAY_LOAD_META,
     key,
     label: curveDisplayLoadName(key),
     color: CURVE_DISPLAY_LOAD_COLORS[loadIndex % CURVE_DISPLAY_LOAD_COLORS.length],
-    max: Math.max(CURVE_DISPLAY_LOAD_META.max, dynamicMax, 1),
+    unit: load?.unit || CURVE_DISPLAY_LOAD_META.unit,
+    family: load?.family || "other",
+    min: Number.isFinite(lower) ? lower : 0,
+    max: Number.isFinite(upper) && upper > (Number.isFinite(lower) ? lower : 0)
+      ? upper
+      : Math.max(dynamicMax, Number(load?.defaultValue) || 0, 1),
   };
 }
 
@@ -11397,11 +11466,11 @@ function curveDisplayRoundValue(key, value, snapshot = state.snapshot || {}) {
   return Number(numeric.toFixed(meta.digits));
 }
 
-function interpolateCurveDisplay(points, minute, key, defaultValue = 0) {
+function interpolateCurveDisplay(points, minute, key, defaultValue = 0, snapshot = state.snapshot || {}) {
   const pairs = (points || [])
     .map((point, index) => ({
       minute: Number(point.minute ?? index),
-      value: curveDisplayPointValue(point, key),
+      value: curveDisplayPointValue(point, key, snapshot),
     }))
     .filter((point) => Number.isFinite(point.minute) && Number.isFinite(point.value))
     .sort((left, right) => left.minute - right.minute);
@@ -11426,10 +11495,10 @@ function curveDisplaySeries(key, snapshot = state.snapshot || {}) {
   const points = curveDisplayRawPoints(key, snapshot);
   const meta = curveDisplayMetaForKey(key, snapshot);
   if (points.length === config.pointCount) {
-    return points.map((point) => curveDisplayRoundValue(key, curveDisplayPointValue(point, key) ?? meta.min, snapshot));
+    return points.map((point) => curveDisplayRoundValue(key, curveDisplayPointValue(point, key, snapshot) ?? meta.min, snapshot));
   }
   return Array.from({ length: config.pointCount }, (_unused, index) => (
-    curveDisplayRoundValue(key, interpolateCurveDisplay(points, curveDisplayPointMinute(index, snapshot), key, meta.min), snapshot)
+    curveDisplayRoundValue(key, interpolateCurveDisplay(points, curveDisplayPointMinute(index, snapshot), key, meta.min, snapshot), snapshot)
   ));
 }
 
@@ -11478,6 +11547,7 @@ function toggleCurveDisplaySeriesVisibility(key, shouldRender = true) {
 function curveDisplayFamilyKeys(family, snapshot = state.snapshot || {}) {
   if (family === "environment") return [...CURVE_DISPLAY_ENV_KEYS];
   if (family === "load") return curveDisplayLoadKeys(snapshot);
+  if (String(family).startsWith("load:")) return curveDisplayLoadFamilyKeys(String(family).slice(5), snapshot);
   if (family === "electric") return curveDisplaySourceCatalog(snapshot).filter((item) => item.family === family).map((item) => item.key);
   if (family === "hydrogen") return curveDisplaySourceCatalog(snapshot).filter((item) => item.family === family).map((item) => item.key);
   if (family === "heat") return curveDisplaySourceCatalog(snapshot).filter((item) => item.family === family).map((item) => item.key);
@@ -11564,6 +11634,18 @@ function renderCurveDisplayTree(snapshot = state.snapshot || {}) {
   const selected = selectedCurveDisplayKeys(snapshot);
   const selectedSet = new Set(selected);
   const loadKeys = curveDisplayLoadKeys(snapshot);
+  const loadDevices = curveDisplayLoads(snapshot);
+  const loadGroups = [
+    ...CURVE_DISPLAY_LOAD_FAMILIES.map((family) => ({
+      ...family,
+      loads: loadDevices.filter((load) => load.family === family.key),
+    })),
+    {
+      key: "other",
+      label: "其他负荷曲线",
+      loads: loadDevices.filter((load) => !CURVE_DISPLAY_LOAD_FAMILIES.some((family) => family.key === load.family)),
+    },
+  ].filter((group) => group.key !== "other" || group.loads.length);
   const sourceGroups = CURVE_DISPLAY_SOURCE_FAMILIES.map((family) => ({
     ...family,
     sources: curveDisplaySourceCatalog(snapshot).filter((item) => item.family === family.key),
@@ -11612,17 +11694,38 @@ function renderCurveDisplayTree(snapshot = state.snapshot || {}) {
         "data-curve-display-tree-toggle",
       )}
       <div class="tree-children" ${curveDisplayTreeGroupCollapsed("load") ? "hidden" : ""}>
-        ${loadKeys.map((key) => `
-          <button
-            type="button"
-            class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""} ${isCurveDisplaySeriesHidden(key) ? "is-hidden-series" : ""}"
-            data-curve-display-tree-type="load"
-            data-curve-display-key="${escapeHtml(key)}"
-          >
-            <span>${escapeHtml(curveDisplayLoadName(key))}</span>
-            <small>kW</small>
-          </button>
-        `).join("") || '<div class="empty-state compact">暂无负荷曲线</div>'}
+        ${loadGroups.map((group) => {
+          const groupKey = `load:${group.key}`;
+          const keys = group.loads.map((load) => curveDisplayLoadKey(load.name));
+          const groupSelected = keys.length && keys.every((key) => selectedSet.has(key))
+            && selected.every((key) => keys.includes(key));
+          const groupPartial = keys.some((key) => selectedSet.has(key));
+          return `
+            <div class="tree-subgroup">
+              ${curveDisplayTreeGroupHeader(
+                groupKey,
+                group.label,
+                keys.length,
+                `data-curve-display-tree-type="load" data-curve-display-family="${escapeHtml(groupKey)}" aria-expanded="${curveDisplayTreeGroupCollapsed(groupKey) ? "false" : "true"}"`,
+                groupSelected ? "is-active" : groupPartial ? "is-parent-active" : "",
+              )}
+              <div class="tree-children tree-grandchildren" ${curveDisplayTreeGroupCollapsed(groupKey) ? "hidden" : ""}>
+                ${group.loads.map((load) => {
+                  const key = curveDisplayLoadKey(load.name);
+                  return `
+                    <button
+                      type="button"
+                      class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""} ${isCurveDisplaySeriesHidden(key) ? "is-hidden-series" : ""}"
+                      data-curve-display-tree-type="load"
+                      data-curve-display-key="${escapeHtml(key)}"
+                    >
+                      <span>${escapeHtml(load.name)}</span>
+                      <small>${escapeHtml(load.unit || load.devType)}</small>
+                    </button>`;
+                }).join("") || `<div class="empty-state compact">暂无${escapeHtml(group.label)}</div>`}
+              </div>
+            </div>`;
+        }).join("") || '<div class="empty-state compact">暂无负荷曲线</div>'}
       </div>
     </div>
     ${sourceGroups.map((group) => {
@@ -16934,6 +17037,108 @@ function syncCommandHistoryLogs(history = []) {
   });
 }
 
+function readStoredRuntimeLogColumnWidths() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(RUNTIME_LOG_COLUMN_WIDTHS_KEY) || "[]");
+    if (Array.isArray(stored) && stored.length === RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS.length) {
+      return stored.map((value, index) => Math.max(
+        RUNTIME_LOG_COLUMN_MIN_WIDTHS[index],
+        Number(value) || RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS[index],
+      ));
+    }
+  } catch (_error) {
+    // Invalid local UI state falls back to the default widths.
+  }
+  return [...RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS];
+}
+
+function runtimeLogColgroupHtml() {
+  return `<colgroup>${state.runtimeLogColumnWidths.map((width) => `<col style="width:${Math.round(width)}px">`).join("")}</colgroup>`;
+}
+
+function applyRuntimeLogColumnWidths(table, widths = state.runtimeLogColumnWidths) {
+  if (!table) return;
+  const normalized = widths.map((value, index) => Math.max(
+    RUNTIME_LOG_COLUMN_MIN_WIDTHS[index],
+    Number(value) || RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS[index],
+  ));
+  state.runtimeLogColumnWidths = normalized;
+  table.querySelectorAll("colgroup col").forEach((column, index) => {
+    if (normalized[index] !== undefined) column.style.width = `${Math.round(normalized[index])}px`;
+  });
+  table.style.width = `${Math.round(normalized.reduce((total, width) => total + width, 0))}px`;
+  table.style.minWidth = "100%";
+}
+
+function enableRuntimeLogColumnResizing(table) {
+  if (!table || table.dataset.columnResizeReady === "true") return;
+  table.dataset.columnResizeReady = "true";
+  applyRuntimeLogColumnWidths(table);
+  const headers = Array.from(table.querySelectorAll("thead th"));
+  headers.forEach((header, columnIndex) => {
+    const handle = document.createElement("span");
+    handle.className = "table-column-resize-handle";
+    handle.setAttribute("role", "separator");
+    handle.setAttribute("aria-orientation", "vertical");
+    handle.setAttribute("aria-label", `调整${header.textContent.trim()}列宽`);
+    handle.title = "拖动调整列宽，双击恢复默认宽度";
+    handle.tabIndex = 0;
+    const restoreDefault = () => {
+      state.runtimeLogColumnWidths[columnIndex] = RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS[columnIndex];
+      applyRuntimeLogColumnWidths(table);
+      localStorage.setItem(RUNTIME_LOG_COLUMN_WIDTHS_KEY, JSON.stringify(state.runtimeLogColumnWidths));
+    };
+    handle.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      restoreDefault();
+    });
+    handle.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      const step = event.shiftKey ? 24 : 8;
+      state.runtimeLogColumnWidths[columnIndex] = Math.max(
+        RUNTIME_LOG_COLUMN_MIN_WIDTHS[columnIndex],
+        state.runtimeLogColumnWidths[columnIndex] + (event.key === "ArrowRight" ? step : -step),
+      );
+      applyRuntimeLogColumnWidths(table);
+      localStorage.setItem(RUNTIME_LOG_COLUMN_WIDTHS_KEY, JSON.stringify(state.runtimeLogColumnWidths));
+    });
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      state.runtimeLogColumnWidths = headers.map((item, index) => Math.max(
+        RUNTIME_LOG_COLUMN_MIN_WIDTHS[index],
+        Math.round(item.getBoundingClientRect().width),
+      ));
+      applyRuntimeLogColumnWidths(table);
+      const startX = event.clientX;
+      const startWidth = state.runtimeLogColumnWidths[columnIndex];
+      document.body.classList.add("is-resizing-table-column");
+      handle.setPointerCapture?.(event.pointerId);
+      const move = (moveEvent) => {
+        state.runtimeLogColumnWidths[columnIndex] = Math.max(
+          RUNTIME_LOG_COLUMN_MIN_WIDTHS[columnIndex],
+          Math.round(startWidth + moveEvent.clientX - startX),
+        );
+        applyRuntimeLogColumnWidths(table);
+      };
+      const finish = () => {
+        document.body.classList.remove("is-resizing-table-column");
+        localStorage.setItem(RUNTIME_LOG_COLUMN_WIDTHS_KEY, JSON.stringify(state.runtimeLogColumnWidths));
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", finish);
+        window.removeEventListener("pointercancel", finish);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", finish);
+      window.addEventListener("pointercancel", finish);
+    });
+    header.appendChild(handle);
+  });
+}
+
 function renderHistory() {
   const historyCount = $("historyCount");
   const commandHistory = $("commandHistory");
@@ -16950,7 +17155,8 @@ function renderHistory() {
     return;
   }
   commandHistory.innerHTML = `
-    <table class="runtime-log-table">
+    <table class="runtime-log-table runtime-log-table-resizable">
+      ${runtimeLogColgroupHtml()}
       <thead><tr><th>本机时刻</th><th>仿真时刻</th><th>类型</th><th>对象</th><th>结果</th><th>详情</th></tr></thead>
       <tbody>
         ${logs.map((item) => `
@@ -16965,6 +17171,7 @@ function renderHistory() {
         `).join("")}
       </tbody>
     </table>`;
+  enableRuntimeLogColumnResizing(commandHistory.querySelector(".runtime-log-table-resizable"));
 }
 
 function renderHistoryIfMounted() {

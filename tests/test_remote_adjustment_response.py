@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 class RemoteAdjustmentResponseTest(unittest.TestCase):
-    def _make_service(self):
+    def _make_service(self, *, enforce_runtime_setpoint_bounds=True):
         from simu.generate_simple_model import write_model_dir
         from simu.service import PolarMicrogridSimulator
 
@@ -26,7 +26,12 @@ class RemoteAdjustmentResponseTest(unittest.TestCase):
             )
             return None
 
-        service = PolarMicrogridSimulator(source, runtime, kernel=kernel)
+        service = PolarMicrogridSimulator(
+            source,
+            runtime,
+            kernel=kernel,
+            enforce_runtime_setpoint_bounds=enforce_runtime_setpoint_bounds,
+        )
         return workspace, service, boundaries
 
     @staticmethod
@@ -97,6 +102,40 @@ class RemoteAdjustmentResponseTest(unittest.TestCase):
         self.assertAlmostEqual(
             self._book_set_value(boundaries[-1]["stat"], "ESS", "ess01", "p_set"),
             15.8,
+        )
+
+    def test_simulator_sends_out_of_bounds_smooth_boundary_to_kernel(self):
+        workspace, service, boundaries = self._make_service(
+            enforce_runtime_setpoint_bounds=False
+        )
+        self.addCleanup(workspace.cleanup)
+
+        self._send_adjustment(
+            service,
+            0,
+            dev_type="ACGenerator",
+            dev_name="diesel_300kw",
+            set_type="p_set",
+        )
+        service.step()
+
+        self.assertAlmostEqual(
+            self._book_set_value(
+                boundaries[-1]["stat"],
+                "ACGenerator",
+                "diesel_300kw",
+                "p_set",
+            ),
+            24.0,
+        )
+        self.assertAlmostEqual(
+            self._book_set_value(
+                boundaries[-1]["yt"],
+                "ACGenerator",
+                "diesel_300kw",
+                "p_set",
+            ),
+            24.0,
         )
 
     def test_changed_target_reverses_gradually_from_last_executed_boundary(self):

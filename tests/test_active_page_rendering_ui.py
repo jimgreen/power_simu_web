@@ -21,8 +21,8 @@ class ActivePageRenderingUiTest(unittest.TestCase):
         html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
 
-        self.assertIn('href="/styles.css"', html)
-        self.assertIn('src="/app.js"', html)
+        self.assertIn('href="/styles.css', html)
+        self.assertIn('src="/app.js', html)
         self.assertIn("const SIMULATOR_PAGE_ROUTES", script)
         for route in ('"/logs": "logs"', '"/modes": "modes"', '"/measurements": "measurements"', '"/diagram": "diagram"'):
             self.assertIn(route, script)
@@ -37,8 +37,8 @@ class ActivePageRenderingUiTest(unittest.TestCase):
         html = (ROOT / "simu" / "web" / "trainee" / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "simu" / "web" / "trainee" / "app.js").read_text(encoding="utf-8")
 
-        self.assertIn('href="/styles.css"', html)
-        self.assertIn('src="/app.js"', html)
+        self.assertIn('href="/styles.css', html)
+        self.assertIn('src="/app.js', html)
         self.assertIn("const TRAINEE_PAGE_ROUTES", script)
         for route in ('"/history": "history"', '"/commands": "commands"', '"/measurements": "measurements"', '"/diagram": "diagram"'):
             self.assertIn(route, script)

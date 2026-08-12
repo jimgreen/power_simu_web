@@ -1152,6 +1152,7 @@ class PolarMicrogridSimulator:
         model_id: str = "default",
         model_name: str = "",
         clear_commands_on_start_and_reset: bool = False,
+        enforce_runtime_setpoint_bounds: bool = True,
     ) -> None:
         self.sim_dir = Path(sim_dir).resolve()
         self.runtime_dir = Path(runtime_dir).resolve()
@@ -1159,6 +1160,7 @@ class PolarMicrogridSimulator:
         self.model_id = _safe_model_id(model_id)
         self.model_name = model_name or self.model_id
         self.clear_commands_on_start_and_reset = bool(clear_commands_on_start_and_reset)
+        self.enforce_runtime_setpoint_bounds = bool(enforce_runtime_setpoint_bounds)
         self.service_instance_id = uuid.uuid4().hex
         self.kernel = kernel or simu_loop.run_once
         self.kernel_runner = kernel_runner
@@ -3423,6 +3425,20 @@ class PolarMicrogridSimulator:
             set_type,
             dict(target),
         )
+        if not self.enforce_runtime_setpoint_bounds:
+            number = _to_float(value, None)
+            if number is None or not math.isfinite(number):
+                raise ValueError(
+                    f"遥调数值校验失败：{dev_type}/{dev_name} 的 "
+                    f"{set_type}={value} 不是有限数值；"
+                    "本批指令未下发，仿真边界未修改。"
+                )
+            return {
+                "dev_type": dev_type,
+                "dev_name": dev_name,
+                "set_type": set_type,
+                "set_value": _number_text(number),
+            }
         try:
             number, _bounds = validate_setpoint_safety_bounds(
                 target,
@@ -11585,7 +11601,11 @@ class PolarMicrogridSimulator:
                     str(item.get("field", "")): item.get("current_value", "")
                     for item in group
                 }
-                normalized = normalize_device_changes(row, desired)
+                normalized = normalize_device_changes(
+                    row,
+                    desired,
+                    allow_out_of_bounds_setpoints=not self.enforce_runtime_setpoint_bounds,
+                )
             except (KeyError, ValueError) as exc:
                 for item in group:
                     item["effective"] = False
@@ -12130,14 +12150,18 @@ class PolarMicrogridSimulator:
                         "请使用遥控/遥调。"
                     )
             try:
-                normalized_changes = normalize_device_changes(row, changes)
+                normalized_changes = normalize_device_changes(
+                    row,
+                    changes,
+                    allow_out_of_bounds_setpoints=not self.enforce_runtime_setpoint_bounds,
+                )
             except SafetyBoundaryError as exc:
                 dev_name = str(row.get("name", row.get("dev_name", ""))).strip()
                 raise ValueError(
                     f"人工修改安全校验失败：{block_name}/{dev_name} 的修改超出允许范围"
                     f"（{exc}）；修改未生效，人工覆盖层、运行控制文件和仿真边界均未更新。"
                 ) from exc
-            if "p_set" in normalized_changes:
+            if "p_set" in normalized_changes and self.enforce_runtime_setpoint_bounds:
                 try:
                     validate_hydrogen_power_setpoint_safety(
                         model_book,
@@ -12935,6 +12959,7 @@ class MultiModelSimulator:
         self.directory_backed = directory_backed
         self.runtime_role = str(runtime_role or "").strip().lower()
         self.clear_commands_on_start_and_reset = self.runtime_role == "simulator"
+        self.enforce_runtime_setpoint_bounds = self.runtime_role != "simulator"
         self.kernel = kernel
         self.kernel_runner = kernel_runner
         self.period_seconds = period_seconds
@@ -12959,6 +12984,7 @@ class MultiModelSimulator:
                 model_id=spec.model_id,
                 model_name=spec.name,
                 clear_commands_on_start_and_reset=self.clear_commands_on_start_and_reset,
+                enforce_runtime_setpoint_bounds=self.enforce_runtime_setpoint_bounds,
             )
             self._services[spec.model_id] = service
             if not self.default_model_id:
@@ -13097,6 +13123,7 @@ class MultiModelSimulator:
             model_id=spec.model_id,
             model_name=spec.name,
             clear_commands_on_start_and_reset=self.clear_commands_on_start_and_reset,
+            enforce_runtime_setpoint_bounds=self.enforce_runtime_setpoint_bounds,
         )
 
     @staticmethod

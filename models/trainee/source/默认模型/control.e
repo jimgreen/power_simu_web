@@ -276,7 +276,7 @@
 # DCGenerator    电化学储能-6             p_set     0.0
 # DCGenerator    电化学储能-6             v_set     500
 # DCGenerator    电化学储能-6             i_set     0.0
-# DCGenerator    直流燃料电池-1_直流设备端直流电源  p_set     10
+# DCGenerator    直流燃料电池-1_直流设备端直流电源  p_set     0
 # DCGenerator    直流燃料电池-1_直流设备端直流电源  v_set     750
 # DCGenerator    直流燃料电池-1_直流设备端直流电源  i_set     0
 # DCDCConverter  光伏变流器-1             p_set     0
@@ -356,7 +356,7 @@
 # DCACConverter  风机变流器-10            q_ac_set  0
 # DCACConverter  风机变流器-10            v_ac_set  380
 # DCACConverter  风机变流器-10            v_dc_set  750
-# DCACConverter  DCAC变流器-1           p_ac_set  0
+# DCACConverter  DCAC变流器-1           p_ac_set  20
 # DCACConverter  DCAC变流器-1           p_dc_set  0
 # DCACConverter  DCAC变流器-1           q_ac_set  0
 # DCACConverter  DCAC变流器-1           v_ac_set  380
@@ -366,7 +366,7 @@
 # DCACConverter  DCAC变流器-2           q_ac_set  0
 # DCACConverter  DCAC变流器-2           v_ac_set  380
 # DCACConverter  DCAC变流器-2           v_dc_set  750
-# HydroSource    交流电制氢-1_氢能设备端氢源     flow_set  2
+# HydroSource    交流电制氢-1_氢能设备端氢源     flow_set  10
 # HydroLoad      直流燃料电池-1_氢能设备端氢荷    flow_set  10
 </SetValue>
 <CbOpenStat>

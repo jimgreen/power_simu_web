@@ -76,13 +76,17 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
         self.assertIn("command_rows.extend", plan_block)
         self.assertIn("for row in diesel_rows", plan_block)
 
-    def test_metrics_use_ac_dc_and_system_pagination_tabs(self):
+    def test_metrics_use_single_row_ac_dc_system_and_hydrogen_tabs(self):
         self.assertIn('id="renewableMetricTabs"', self.html)
-        for key, label in (("ac", "交流侧"), ("dc", "直流侧"), ("system", "系统总")):
+        for key, label in (("ac", "交流"), ("dc", "直流"), ("system", "系统"), ("hydrogen", "氢能")):
             with self.subTest(key=key):
                 self.assertIn(f'data-renewable-metric-tab="{key}"', self.html)
                 self.assertIn(f'>{label}</button>', self.html)
                 self.assertIn(f'data-renewable-metric-pane="{key}"', self.html)
+        metric_tabs = self.styles.split(".renewable-metric-tabs {", 1)[1].split("}", 1)[0]
+        metric_buttons = self.styles.split(".renewable-metric-tabs button {", 1)[1].split("}", 1)[0]
+        self.assertIn("grid-template-columns: repeat(4, minmax(0, 1fr));", metric_tabs)
+        self.assertIn("white-space: nowrap;", metric_buttons)
         for group, label, current_id, target_id in (
             ("ac-renewable", "新能源", "renewableAcCurrentKw", "renewableAcTargetKw"),
             ("dc-renewable", "新能源", "renewableDcCurrentKw", "renewableDcTargetKw"),

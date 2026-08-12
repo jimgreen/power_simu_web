@@ -16,6 +16,33 @@ def javascript_function_body(script: str, name: str, next_name: str) -> str:
 
 
 class SourceCurveUiTest(unittest.TestCase):
+    def test_load_curves_are_grouped_by_explicit_model_blocks(self):
+        simulator = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        trainee = (ROOT / "simu" / "web" / "trainee" / "app.js").read_text(encoding="utf-8")
+
+        for script in (simulator, trainee):
+            for label in ("电负荷曲线", "氢负荷曲线", "热负荷曲线"):
+                self.assertIn(label, script)
+            self.assertIn('["ACLoad", "DCLoad"]', script)
+            self.assertIn('["HydroLoad"]', script)
+            self.assertIn('["HeatLoad"]', script)
+
+        self.assertIn("semanticDeviceModelBlock", simulator)
+        self.assertIn("loadCurveFamilyForBlock", simulator)
+        self.assertIn("model_block", trainee)
+        self.assertIn("curveDisplayLoadFamilyForBlock", trainee)
+
+    def test_load_curve_units_and_values_follow_the_energy_medium(self):
+        simulator = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        trainee = (ROOT / "simu" / "web" / "trainee" / "app.js").read_text(encoding="utf-8")
+
+        for script in (simulator, trainee):
+            self.assertIn('unit: "Nm³/h"', script)
+            self.assertIn('valueKey: "flow_set"', script)
+            self.assertIn('valueKey: "heat_power"', script)
+        self.assertIn("curveFallbackValue(loadCurveKey(dev.dev_name))", simulator)
+        self.assertIn('dev.family === "electric"', simulator)
+
     def test_simulator_source_curves_are_structured_editable_series(self):
         script = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
         for label in ("电源曲线", "氢源曲线", "热源曲线"):
@@ -75,6 +102,10 @@ class SourceCurveUiTest(unittest.TestCase):
         self.assertIn("aria-expanded", trainee_tree)
         self.assertIn("localStorage.setItem(CURVE_TREE_COLLAPSE_KEY", simulator)
         self.assertIn("localStorage.setItem(CURVE_DISPLAY_TREE_COLLAPSE_KEY", trainee)
+        self.assertIn('const groupKey = `load:${group.key}`', simulator_tree)
+        self.assertIn('const groupKey = `load:${group.key}`', trainee_tree)
+        self.assertIn('data-curve-family="${escapeHtml(groupKey)}"', simulator_tree)
+        self.assertIn('data-curve-display-family="${escapeHtml(groupKey)}"', trainee_tree)
 
 
 if __name__ == "__main__":

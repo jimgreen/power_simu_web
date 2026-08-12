@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 class SourceCurveRuntimeTest(unittest.TestCase):
-    def _make_service(self):
+    def _make_service(self, *, enforce_runtime_setpoint_bounds=True):
         from simu.generate_simple_model import write_model_dir
         from simu.service import PolarMicrogridSimulator
 
@@ -48,6 +48,7 @@ class SourceCurveRuntimeTest(unittest.TestCase):
             runtime,
             kernel=lambda _config: None,
             model_id="source-curves",
+            enforce_runtime_setpoint_bounds=enforce_runtime_setpoint_bounds,
         )
         service.set_curves(
             {
@@ -232,6 +233,16 @@ class SourceCurveRuntimeTest(unittest.TestCase):
         stat_book, _yt_ctrl_book = service._prepare_runtime_inputs(0, 0)
 
         self.assertAlmostEqual(self._set_value(stat_book, "HeatSource", "heat-source", "flow_set"), 0.5)
+
+    def test_simulator_source_curve_uses_out_of_bounds_value_directly(self):
+        workspace, service = self._make_service(enforce_runtime_setpoint_bounds=False)
+        self.addCleanup(workspace.cleanup)
+        heat_curve = next(item for item in service.curves["sources"] if item["dev_name"] == "heat-source")
+        heat_curve["points"] = [{"minute": 0, "value": 50}]
+
+        stat_book, _yt_ctrl_book = service._prepare_runtime_inputs(0, 0)
+
+        self.assertAlmostEqual(self._set_value(stat_book, "HeatSource", "heat-source", "flow_set"), 50.0)
 
 
 if __name__ == "__main__":

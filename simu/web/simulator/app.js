@@ -24,6 +24,9 @@ const VERTICAL_SPLIT_MIN_BOTTOM_PX = 120;
 const STATIC_CACHE_STORAGE_KEY = "polarSimulatorStaticCacheV2";
 const STATIC_CACHE_MODEL_LIMIT = 4;
 const CURVE_TREE_COLLAPSE_KEY = "polarSimulatorCurveTreeCollapsedGroups";
+const RUNTIME_LOG_COLUMN_WIDTHS_KEY = "polarSimulatorRuntimeLogColumnWidths";
+const RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS = Object.freeze([104, 104, 112, 190, 104, 640]);
+const RUNTIME_LOG_COLUMN_MIN_WIDTHS = Object.freeze([82, 82, 78, 110, 78, 180]);
 const HIDDEN_REFRESH_INTERVAL_MS = 10000;
 const WEB_RUNTIME_FALLBACKS = {
   frontend_refresh_seconds: 1,
@@ -153,6 +156,7 @@ const state = {
   deviceTreeSearch: {},
   deviceTreeSelectionAnchors: {},
   runtimeLogs: [],
+  runtimeLogColumnWidths: readStoredRuntimeLogColumnWidths(),
   runtimeLogTypeFilter: "all",
   runtimeLogPage: 1,
   runtimeLogPageSize: 20,
@@ -288,6 +292,11 @@ const CURVE_META = [
 const ENV_CURVE_KEYS = ["wind_speed_mps", "solar_irradiance_w_m2", "air_temp_c"];
 const LOAD_CURVE_META = { label: "负荷", color: "#c93a3a", min: 0, max: 500, digits: 2, unit: "kW" };
 const LOAD_CURVE_COLORS = ["#c93a3a", "#8a4fbf", "#23854a", "#d16300", "#4369b2", "#0a8b8b"];
+const LOAD_CURVE_FAMILIES = [
+  { key: "electric", label: "电负荷曲线", blocks: ["ACLoad", "DCLoad"], unit: "kW", setType: "p_set", valueKey: "p_kw" },
+  { key: "hydrogen", label: "氢负荷曲线", blocks: ["HydroLoad"], unit: "Nm³/h", setType: "flow_set", valueKey: "flow_set" },
+  { key: "heat", label: "热负荷曲线", blocks: ["HeatLoad"], unit: "kW", setType: "heat_power", valueKey: "heat_power" },
+];
 const SOURCE_CURVE_FAMILIES = [
   { key: "electric", label: "电源曲线" },
   { key: "hydrogen", label: "氢源曲线" },
@@ -9889,6 +9898,26 @@ function allLoadCurveKeys() {
   return curveLoadDevices().map((dev) => loadCurveKey(dev.dev_name));
 }
 
+function loadCurveFamilyConfig(family) {
+  return LOAD_CURVE_FAMILIES.find((item) => item.key === family) || null;
+}
+
+function loadCurveFamilyForBlock(blockName) {
+  const block = String(blockName || "").trim();
+  return LOAD_CURVE_FAMILIES.find((item) => item.blocks.includes(block))?.key || "other";
+}
+
+function loadCurveFamilyKeys(family) {
+  return curveLoadDevices()
+    .filter((dev) => dev.family === family)
+    .map((dev) => loadCurveKey(dev.dev_name));
+}
+
+function curveLoadDeviceForKey(key) {
+  const devName = loadNameFromCurveKey(key);
+  return curveLoadDevices().find((dev) => dev.dev_name === devName) || null;
+}
+
 function curveSourceCatalog() {
   const sources = Array.isArray(state.curveSummary?.sources) ? state.curveSummary.sources : [];
   return sources.filter((item) => item && item.key && item.family);
@@ -9911,21 +9940,65 @@ function semanticDeviceFamily(dev) {
 }
 
 function curveLoadDevices() {
+  const summaryLoads = Array.isArray(state.curveSummary?.loads) ? state.curveSummary.loads : [];
+  const summaryByName = new Map(summaryLoads.map((item) => [String(item.dev_name || item.name || ""), item]));
+  const supportedBlocks = new Set(LOAD_CURVE_FAMILIES.flatMap((item) => item.blocks));
   const devices = (state.snapshot?.devices || [])
     .filter((dev) => (
       semanticDeviceFamily(dev) === "load"
-      || ["ACLoad", "DCLoad"].includes(semanticDeviceModelBlock(dev))
+      || supportedBlocks.has(semanticDeviceModelBlock(dev))
     ) && dev.dev_name)
-    .map((dev) => ({ dev_type: dev.dev_type, dev_name: dev.dev_name }));
+    .map((dev) => {
+      const summary = summaryByName.get(String(dev.dev_name || "")) || {};
+      const modelBlock = semanticDeviceModelBlock(dev) || String(summary.dev_type || dev.dev_type || "");
+      const family = String(summary.family || loadCurveFamilyForBlock(modelBlock));
+      const config = loadCurveFamilyConfig(family);
+      return {
+        dev_type: modelBlock,
+        dev_name: dev.dev_name,
+        family,
+        unit: summary.unit || config?.unit || "",
+        set_type: summary.set_type || config?.setType || "",
+        value_key: config?.valueKey || "value",
+        default_value: Number(summary.default_value ?? dev.raw?.[summary.set_type || config?.setType || ""] ?? 0),
+        min: Number(summary.min ?? dev.raw?.[`${String(summary.set_type || config?.setType || "").replace(/_set$/, "")}_min`]),
+        max: Number(summary.max ?? dev.raw?.[`${String(summary.set_type || config?.setType || "").replace(/_set$/, "")}_max`]),
+      };
+    });
   const unique = new Map();
   devices.forEach((dev) => unique.set(`${dev.dev_type}|${dev.dev_name}`, dev));
   const loads = Array.from(unique.values()).sort((left, right) => left.dev_name.localeCompare(right.dev_name));
-  if (!loads.length && Array.isArray(state.curveSummary?.loads)) {
-    return state.curveSummary.loads
-      .map((item) => ({ dev_type: item.dev_type || "ACLoad", dev_name: item.name || loadNameFromCurveKey(item.key) }))
+  if (!loads.length && summaryLoads.length) {
+    return summaryLoads
+      .map((item) => {
+        const devType = String(item.dev_type || "");
+        const family = String(item.family || loadCurveFamilyForBlock(devType));
+        const config = loadCurveFamilyConfig(family);
+        return {
+          dev_type: devType,
+          dev_name: item.dev_name || item.name || loadNameFromCurveKey(item.key),
+          family,
+          unit: item.unit || config?.unit || "",
+          set_type: item.set_type || config?.setType || "",
+          value_key: config?.valueKey || "value",
+          default_value: Number(item.default_value ?? 0),
+          min: Number(item.min),
+          max: Number(item.max),
+        };
+      })
       .filter((dev) => dev.dev_name);
   }
-  return loads.length ? loads : [{ dev_type: "ACLoad", dev_name: "load_ac_1" }];
+  return loads.length ? loads : [{
+    dev_type: "ACLoad",
+    dev_name: "load_ac_1",
+    family: "electric",
+      unit: "kW",
+      set_type: "p_set",
+      value_key: "p_kw",
+      default_value: 0,
+      min: 0,
+      max: 500,
+  }];
 }
 
 function curveMetaForKey(key) {
@@ -9933,9 +10006,25 @@ function curveMetaForKey(key) {
   if (meta) return meta;
   if (String(key).startsWith("load:")) {
     const devName = loadNameFromCurveKey(key);
+    const loadDevice = curveLoadDeviceForKey(key);
     const loadIndex = Math.max(0, allLoadCurveKeys().indexOf(key));
     const color = LOAD_CURVE_COLORS[loadIndex % LOAD_CURVE_COLORS.length];
-    return { ...LOAD_CURVE_META, key, label: devName, color };
+    const lower = Number(loadDevice?.min);
+    const upper = Number(loadDevice?.max);
+    const defaultValue = Number(loadDevice?.default_value);
+    return {
+      ...LOAD_CURVE_META,
+      key,
+      label: devName,
+      color,
+      unit: loadDevice?.unit || LOAD_CURVE_META.unit,
+      family: loadDevice?.family || "electric",
+      devType: loadDevice?.dev_type || "",
+      min: Number.isFinite(lower) ? lower : 0,
+      max: Number.isFinite(upper) && upper > (Number.isFinite(lower) ? lower : 0)
+        ? upper
+        : Math.max(1, Number.isFinite(defaultValue) ? Math.abs(defaultValue) * 1.2 : LOAD_CURVE_META.max),
+    };
   }
   if (String(key).startsWith("source:")) {
     const source = curveSourceCatalog().find((item) => item.key === key) || {};
@@ -10027,13 +10116,11 @@ function normalizeCurveSeriesLength(key, fallbackValue) {
   return changed;
 }
 
-function loadCurveSeriesTemplate() {
-  const firstLoadKey = loadCurveKey(curveLoadDevices()[0]?.dev_name);
-  return resampleSeries(state.curveSeries.load_kw || state.curveSeries[firstLoadKey], curvePointCount(), 120);
-}
-
 function curveFallbackValue(key) {
-  if (String(key || "").startsWith("load:")) return 120;
+  if (String(key || "").startsWith("load:")) {
+    const defaultValue = Number(curveLoadDeviceForKey(key)?.default_value);
+    return Number.isFinite(defaultValue) ? defaultValue : 0;
+  }
   if (String(key || "").startsWith("source:")) {
     const source = curveSourceCatalog().find((item) => item.key === key);
     return Number(source?.default_value) || 0;
@@ -10110,9 +10197,16 @@ function loadCurvesFromSnapshot(curves, modelId = state.activeModelId) {
   curveLoadDevices().forEach((dev) => {
     const points = Array.isArray(loads[dev.dev_name]) ? loads[dev.dev_name] : [];
     state.curveSeries[loadCurveKey(dev.dev_name)] = resampleSeries(
-      points.map((point) => Number(point.p_kw ?? point.value ?? point.load_kw) || 0),
+      points.map((point) => Number(
+        point[dev.value_key]
+        ?? point.value
+        ?? point.p_kw
+        ?? point.load_kw
+        ?? point.flow_set
+        ?? point.heat_power,
+      ) || 0),
       config.pointCount,
-      120,
+      curveFallbackValue(loadCurveKey(dev.dev_name)),
     );
   });
   (Array.isArray(curves.sources) ? curves.sources : []).forEach((source) => {
@@ -10147,6 +10241,22 @@ function curveSummaryFromCurves(curves = {}) {
       key: loadCurveKey(name),
       name,
       point_count: Array.isArray(loads[name]) ? loads[name].length : 0,
+      ...(() => {
+        const dev = (state.snapshot?.devices || []).find((item) => (
+          String(item?.dev_name || "") === name
+          && (semanticDeviceFamily(item) === "load" || loadCurveFamilyForBlock(semanticDeviceModelBlock(item)) !== "other")
+        ));
+        const devType = semanticDeviceModelBlock(dev);
+        const family = loadCurveFamilyForBlock(devType);
+        const config = loadCurveFamilyConfig(family);
+        return devType ? {
+          dev_type: devType,
+          dev_name: name,
+          family,
+          unit: config?.unit || "",
+          set_type: config?.setType || "",
+        } : {};
+      })(),
     })),
     sources: (Array.isArray(curves.sources) ? curves.sources : []).map((source) => ({
       ...source,
@@ -10334,6 +10444,7 @@ function updateCurveModeLabels() {
 function curveFamilyKeys(family) {
   if (family === "environment") return [...ENV_CURVE_KEYS];
   if (family === "load") return allLoadCurveKeys();
+  if (String(family).startsWith("load:")) return loadCurveFamilyKeys(String(family).slice(5));
   if (SOURCE_CURVE_FAMILIES.some((item) => item.key === family)) {
     return curveSourceCatalog().filter((item) => item.family === family).map((item) => item.key);
   }
@@ -10524,6 +10635,17 @@ function renderCurveTree() {
   const selectedSet = new Set(selectedKeys);
   const loadDevices = curveLoadDevices();
   const loadKeys = allLoadCurveKeys();
+  const loadGroups = [
+    ...LOAD_CURVE_FAMILIES.map((family) => ({
+      ...family,
+      loads: loadDevices.filter((dev) => dev.family === family.key),
+    })),
+    {
+      key: "other",
+      label: "其他负荷曲线",
+      loads: loadDevices.filter((dev) => !LOAD_CURVE_FAMILIES.some((family) => family.key === dev.family)),
+    },
+  ].filter((group) => group.key !== "other" || group.loads.length);
   const sourceGroups = SOURCE_CURVE_FAMILIES.map((family) => ({
     ...family,
     sources: curveSourceCatalog().filter((item) => item.family === family.key),
@@ -10576,20 +10698,38 @@ function renderCurveTree() {
         "data-curve-tree-toggle",
       )}
       <div id="curveLoadTree" class="tree-children" ${curveTreeGroupCollapsed("load") ? "hidden" : ""}>
-        ${loadDevices.map((dev) => {
-          const key = loadCurveKey(dev.dev_name);
+        ${loadGroups.map((group) => {
+          const groupKey = `load:${group.key}`;
+          const keys = group.loads.map((dev) => loadCurveKey(dev.dev_name));
+          const selected = keys.length && keys.every((key) => selectedSet.has(key))
+            && selectedKeys.every((key) => keys.includes(key));
+          const partial = keys.some((key) => selectedSet.has(key));
           return `
-            <button
-              type="button"
-              class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""} ${editKey === key ? "is-edit-target" : ""} ${isCurveSeriesHidden(key) ? "is-hidden-series" : ""}"
-              data-curve-tree-type="load"
-              data-curve-key="${escapeHtml(key)}"
-              aria-pressed="${selectedSet.has(key) ? "true" : "false"}"
-            >
-              <span>${escapeHtml(dev.dev_name)}</span>
-              <small>${escapeHtml(dev.dev_type)}</small>
-            </button>
-          `;
+            <div class="tree-subgroup">
+              ${curveTreeGroupHeader(
+                groupKey,
+                group.label,
+                keys.length,
+                `data-curve-tree-type="load" data-curve-family="${escapeHtml(groupKey)}" aria-pressed="${selected ? "true" : "false"}" aria-expanded="${curveTreeGroupCollapsed(groupKey) ? "false" : "true"}"`,
+                selected ? "is-active" : partial ? "is-parent-active" : "",
+              )}
+              <div class="tree-children tree-grandchildren" ${curveTreeGroupCollapsed(groupKey) ? "hidden" : ""}>
+                ${group.loads.map((dev) => {
+                  const key = loadCurveKey(dev.dev_name);
+                  return `
+                    <button
+                      type="button"
+                      class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""} ${editKey === key ? "is-edit-target" : ""} ${isCurveSeriesHidden(key) ? "is-hidden-series" : ""}"
+                      data-curve-tree-type="load"
+                      data-curve-key="${escapeHtml(key)}"
+                      aria-pressed="${selectedSet.has(key) ? "true" : "false"}"
+                    >
+                      <span>${escapeHtml(dev.dev_name)}</span>
+                      <small>${escapeHtml(dev.unit || dev.dev_type)}</small>
+                    </button>`;
+                }).join("") || `<div class="empty-state compact">暂无${escapeHtml(group.label)}</div>`}
+              </div>
+            </div>`;
         }).join("")}
       </div>
     </div>
@@ -10813,7 +10953,6 @@ function generateCurves(jitter = 0, mode = state.curveMode, shouldRender = true)
   const windPeak = 38 + jitter;
   const solarPeak = 720;
   const tempMean = -18;
-  const loadBase = 180;
   const loadDevices = curveLoadDevices();
   loadDevices.forEach((dev) => {
     state.curveSeries[loadCurveKey(dev.dev_name)] = new Array(pointCount);
@@ -10833,16 +10972,26 @@ function generateCurves(jitter = 0, mode = state.curveMode, shouldRender = true)
     const tempSeason = state.curveMode === "year" ? 9 * season : 0;
     const sunShape = daylight * solarSeason;
     const temp = tempMean + tempSeason + 6 * Math.sin((day - 0.33) * Math.PI * 2);
-    const load = loadBase * (0.84 + 0.18 * Math.sin((day - 0.18) * Math.PI * 2) + 0.08 * Math.sin(day * Math.PI * 8));
+    const loadShape = 0.84 + 0.18 * Math.sin((day - 0.18) * Math.PI * 2) + 0.08 * Math.sin(day * Math.PI * 8);
     state.curveSeries.wind_speed_mps[i] = Number(wind.toFixed(2));
     state.curveSeries.solar_irradiance_w_m2[i] = Number((solarPeak * sunShape).toFixed(1));
     state.curveSeries.air_temp_c[i] = Number(temp.toFixed(2));
     loadDevices.forEach((dev, loadIndex) => {
       const offset = 1 + loadIndex * 0.035;
-      state.curveSeries[loadCurveKey(dev.dev_name)][i] = Number(Math.max(20, load * offset).toFixed(2));
+      const base = curveFallbackValue(loadCurveKey(dev.dev_name));
+      const lower = Number.isFinite(Number(dev.min)) ? Number(dev.min) : 0;
+      const upper = Number.isFinite(Number(dev.max)) && Number(dev.max) >= lower
+        ? Number(dev.max)
+        : Math.max(lower, Math.abs(base) * 1.2, 1);
+      state.curveSeries[loadCurveKey(dev.dev_name)][i] = Number(
+        clamp(base * loadShape * offset, lower, upper).toFixed(2),
+      );
     });
   }
-  state.curveSeries.load_kw = [...state.curveSeries[loadCurveKey(loadDevices[0]?.dev_name)]];
+  const firstElectricLoad = loadDevices.find((dev) => dev.family === "electric") || loadDevices[0];
+  if (firstElectricLoad) {
+    state.curveSeries.load_kw = [...state.curveSeries[loadCurveKey(firstElectricLoad.dev_name)]];
+  }
   state.curveSeriesByMode[state.curveMode] = state.curveSeries;
   markCurveKeysDirty(Object.keys(state.curveSeries));
   syncCurvePayload(false);
@@ -10871,7 +11020,7 @@ function syncCurvePayload(shouldStoreSeries = true) {
     });
     curveLoadDevices().forEach((dev, loadIndex) => {
       const key = loadCurveKey(dev.dev_name);
-      const point = { minute, p_kw: roundCurveValue(key, state.curveSeries[key]?.[i] ?? 0) };
+      const point = { minute, [dev.value_key || "value"]: roundCurveValue(key, state.curveSeries[key]?.[i] ?? 0) };
       state.loadPointsByName[dev.dev_name].push(point);
       if (loadIndex === 0) state.loadPoints.push(point);
     });
@@ -12836,6 +12985,108 @@ function normalizeRuntimeLog(item, fallbackSeq = 0) {
   };
 }
 
+function readStoredRuntimeLogColumnWidths() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(RUNTIME_LOG_COLUMN_WIDTHS_KEY) || "[]");
+    if (Array.isArray(stored) && stored.length === RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS.length) {
+      return stored.map((value, index) => Math.max(
+        RUNTIME_LOG_COLUMN_MIN_WIDTHS[index],
+        Number(value) || RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS[index],
+      ));
+    }
+  } catch (_error) {
+    // Invalid local UI state falls back to the default widths.
+  }
+  return [...RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS];
+}
+
+function runtimeLogColgroupHtml() {
+  return `<colgroup>${state.runtimeLogColumnWidths.map((width) => `<col style="width:${Math.round(width)}px">`).join("")}</colgroup>`;
+}
+
+function applyRuntimeLogColumnWidths(table, widths = state.runtimeLogColumnWidths) {
+  if (!table) return;
+  const normalized = widths.map((value, index) => Math.max(
+    RUNTIME_LOG_COLUMN_MIN_WIDTHS[index],
+    Number(value) || RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS[index],
+  ));
+  state.runtimeLogColumnWidths = normalized;
+  table.querySelectorAll("colgroup col").forEach((column, index) => {
+    if (normalized[index] !== undefined) column.style.width = `${Math.round(normalized[index])}px`;
+  });
+  table.style.width = `${Math.round(normalized.reduce((total, width) => total + width, 0))}px`;
+  table.style.minWidth = "100%";
+}
+
+function enableRuntimeLogColumnResizing(table) {
+  if (!table || table.dataset.columnResizeReady === "true") return;
+  table.dataset.columnResizeReady = "true";
+  applyRuntimeLogColumnWidths(table);
+  const headers = Array.from(table.querySelectorAll("thead th"));
+  headers.forEach((header, columnIndex) => {
+    const handle = document.createElement("span");
+    handle.className = "table-column-resize-handle";
+    handle.setAttribute("role", "separator");
+    handle.setAttribute("aria-orientation", "vertical");
+    handle.setAttribute("aria-label", `调整${header.textContent.trim()}列宽`);
+    handle.title = "拖动调整列宽，双击恢复默认宽度";
+    handle.tabIndex = 0;
+    const restoreDefault = () => {
+      state.runtimeLogColumnWidths[columnIndex] = RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS[columnIndex];
+      applyRuntimeLogColumnWidths(table);
+      localStorage.setItem(RUNTIME_LOG_COLUMN_WIDTHS_KEY, JSON.stringify(state.runtimeLogColumnWidths));
+    };
+    handle.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      restoreDefault();
+    });
+    handle.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      const step = event.shiftKey ? 24 : 8;
+      state.runtimeLogColumnWidths[columnIndex] = Math.max(
+        RUNTIME_LOG_COLUMN_MIN_WIDTHS[columnIndex],
+        state.runtimeLogColumnWidths[columnIndex] + (event.key === "ArrowRight" ? step : -step),
+      );
+      applyRuntimeLogColumnWidths(table);
+      localStorage.setItem(RUNTIME_LOG_COLUMN_WIDTHS_KEY, JSON.stringify(state.runtimeLogColumnWidths));
+    });
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      state.runtimeLogColumnWidths = headers.map((item, index) => Math.max(
+        RUNTIME_LOG_COLUMN_MIN_WIDTHS[index],
+        Math.round(item.getBoundingClientRect().width),
+      ));
+      applyRuntimeLogColumnWidths(table);
+      const startX = event.clientX;
+      const startWidth = state.runtimeLogColumnWidths[columnIndex];
+      document.body.classList.add("is-resizing-table-column");
+      handle.setPointerCapture?.(event.pointerId);
+      const move = (moveEvent) => {
+        state.runtimeLogColumnWidths[columnIndex] = Math.max(
+          RUNTIME_LOG_COLUMN_MIN_WIDTHS[columnIndex],
+          Math.round(startWidth + moveEvent.clientX - startX),
+        );
+        applyRuntimeLogColumnWidths(table);
+      };
+      const finish = () => {
+        document.body.classList.remove("is-resizing-table-column");
+        localStorage.setItem(RUNTIME_LOG_COLUMN_WIDTHS_KEY, JSON.stringify(state.runtimeLogColumnWidths));
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", finish);
+        window.removeEventListener("pointercancel", finish);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", finish);
+      window.addEventListener("pointercancel", finish);
+    });
+    header.appendChild(handle);
+  });
+}
+
 function renderRuntimeLogs() {
   const container = $("runtimeLogTable");
   if (!container) return;
@@ -12854,7 +13105,8 @@ function renderRuntimeLogs() {
     return;
   }
   container.innerHTML = `
-    <table class="runtime-log-table">
+    <table class="runtime-log-table runtime-log-table-resizable">
+      ${runtimeLogColgroupHtml()}
       <thead>
         <tr>
           <th>本机时刻</th>
@@ -12878,6 +13130,7 @@ function renderRuntimeLogs() {
         `).join("")}
       </tbody>
     </table>`;
+  enableRuntimeLogColumnResizing(container.querySelector(".runtime-log-table-resizable"));
 }
 
 function definitionBlocks(kind, snapshot = state.snapshot || {}) {

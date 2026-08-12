@@ -6,25 +6,25 @@
     {
       "minute": 0,
       "wind_speed_mps": 7.733,
-      "air_temp_c": -27,
+      "air_temp_c": -27.0,
       "air_pressure_hpa": 961.918,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.456
     },
     {
       "minute": 1,
       "wind_speed_mps": 7.807,
-      "air_temp_c": -27,
+      "air_temp_c": -27.0,
       "air_pressure_hpa": 961.933,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.469
     },
     {
       "minute": 2,
       "wind_speed_mps": 7.882,
-      "air_temp_c": -27,
+      "air_temp_c": -27.0,
       "air_pressure_hpa": 961.948,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.481
     },
     {
@@ -32,7 +32,7 @@
       "wind_speed_mps": 7.956,
       "air_temp_c": -26.999,
       "air_pressure_hpa": 961.963,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.494
     },
     {
@@ -40,7 +40,7 @@
       "wind_speed_mps": 8.03,
       "air_temp_c": -26.999,
       "air_pressure_hpa": 961.979,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.506
     },
     {
@@ -48,7 +48,7 @@
       "wind_speed_mps": 8.105,
       "air_temp_c": -26.998,
       "air_pressure_hpa": 961.994,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.518
     },
     {
@@ -56,7 +56,7 @@
       "wind_speed_mps": 8.179,
       "air_temp_c": -26.998,
       "air_pressure_hpa": 962.009,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.53
     },
     {
@@ -64,7 +64,7 @@
       "wind_speed_mps": 8.254,
       "air_temp_c": -26.997,
       "air_pressure_hpa": 962.024,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.541
     },
     {
@@ -72,7 +72,7 @@
       "wind_speed_mps": 8.328,
       "air_temp_c": -26.996,
       "air_pressure_hpa": 962.039,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.553
     },
     {
@@ -80,7 +80,7 @@
       "wind_speed_mps": 8.403,
       "air_temp_c": -26.995,
       "air_pressure_hpa": 962.054,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.564
     },
     {
@@ -88,7 +88,7 @@
       "wind_speed_mps": 8.477,
       "air_temp_c": -26.993,
       "air_pressure_hpa": 962.069,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.576
     },
     {
@@ -96,7 +96,7 @@
       "wind_speed_mps": 8.552,
       "air_temp_c": -26.992,
       "air_pressure_hpa": 962.084,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.587
     },
     {
@@ -104,7 +104,7 @@
       "wind_speed_mps": 8.626,
       "air_temp_c": -26.99,
       "air_pressure_hpa": 962.099,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.598
     },
     {
@@ -112,7 +112,7 @@
       "wind_speed_mps": 8.7,
       "air_temp_c": -26.989,
       "air_pressure_hpa": 962.114,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.609
     },
     {
@@ -120,7 +120,7 @@
       "wind_speed_mps": 8.774,
       "air_temp_c": -26.987,
       "air_pressure_hpa": 962.128,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.619
     },
     {
@@ -128,7 +128,7 @@
       "wind_speed_mps": 8.849,
       "air_temp_c": -26.985,
       "air_pressure_hpa": 962.143,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.63
     },
     {
@@ -136,7 +136,7 @@
       "wind_speed_mps": 8.922,
       "air_temp_c": -26.983,
       "air_pressure_hpa": 962.158,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.64
     },
     {
@@ -144,7 +144,7 @@
       "wind_speed_mps": 8.996,
       "air_temp_c": -26.981,
       "air_pressure_hpa": 962.173,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.651
     },
     {
@@ -152,7 +152,7 @@
       "wind_speed_mps": 9.07,
       "air_temp_c": -26.978,
       "air_pressure_hpa": 962.187,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.661
     },
     {
@@ -160,7 +160,7 @@
       "wind_speed_mps": 9.143,
       "air_temp_c": -26.976,
       "air_pressure_hpa": 962.202,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.671
     },
     {
@@ -168,7 +168,7 @@
       "wind_speed_mps": 9.217,
       "air_temp_c": -26.973,
       "air_pressure_hpa": 962.216,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.681
     },
     {
@@ -176,7 +176,7 @@
       "wind_speed_mps": 9.29,
       "air_temp_c": -26.971,
       "air_pressure_hpa": 962.231,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.69
     },
     {
@@ -184,7 +184,7 @@
       "wind_speed_mps": 9.363,
       "air_temp_c": -26.968,
       "air_pressure_hpa": 962.245,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.7
     },
     {
@@ -192,7 +192,7 @@
       "wind_speed_mps": 9.435,
       "air_temp_c": -26.965,
       "air_pressure_hpa": 962.26,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.709
     },
     {
@@ -200,7 +200,7 @@
       "wind_speed_mps": 9.508,
       "air_temp_c": -26.962,
       "air_pressure_hpa": 962.274,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.718
     },
     {
@@ -208,7 +208,7 @@
       "wind_speed_mps": 9.58,
       "air_temp_c": -26.958,
       "air_pressure_hpa": 962.288,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.728
     },
     {
@@ -216,7 +216,7 @@
       "wind_speed_mps": 9.652,
       "air_temp_c": -26.955,
       "air_pressure_hpa": 962.303,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.737
     },
     {
@@ -224,7 +224,7 @@
       "wind_speed_mps": 9.723,
       "air_temp_c": -26.951,
       "air_pressure_hpa": 962.317,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.745
     },
     {
@@ -232,7 +232,7 @@
       "wind_speed_mps": 9.795,
       "air_temp_c": -26.948,
       "air_pressure_hpa": 962.331,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.754
     },
     {
@@ -240,7 +240,7 @@
       "wind_speed_mps": 9.865,
       "air_temp_c": -26.944,
       "air_pressure_hpa": 962.345,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.763
     },
     {
@@ -248,7 +248,7 @@
       "wind_speed_mps": 9.936,
       "air_temp_c": -26.94,
       "air_pressure_hpa": 962.359,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.771
     },
     {
@@ -256,7 +256,7 @@
       "wind_speed_mps": 10.006,
       "air_temp_c": -26.936,
       "air_pressure_hpa": 962.374,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.779
     },
     {
@@ -264,7 +264,7 @@
       "wind_speed_mps": 10.076,
       "air_temp_c": -26.932,
       "air_pressure_hpa": 962.388,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.787
     },
     {
@@ -272,7 +272,7 @@
       "wind_speed_mps": 10.146,
       "air_temp_c": -26.928,
       "air_pressure_hpa": 962.402,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.795
     },
     {
@@ -280,7 +280,7 @@
       "wind_speed_mps": 10.215,
       "air_temp_c": -26.923,
       "air_pressure_hpa": 962.415,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.803
     },
     {
@@ -288,7 +288,7 @@
       "wind_speed_mps": 10.284,
       "air_temp_c": -26.919,
       "air_pressure_hpa": 962.429,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.811
     },
     {
@@ -296,7 +296,7 @@
       "wind_speed_mps": 10.352,
       "air_temp_c": -26.914,
       "air_pressure_hpa": 962.443,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.818
     },
     {
@@ -304,7 +304,7 @@
       "wind_speed_mps": 10.42,
       "air_temp_c": -26.909,
       "air_pressure_hpa": 962.457,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.825
     },
     {
@@ -312,7 +312,7 @@
       "wind_speed_mps": 10.487,
       "air_temp_c": -26.904,
       "air_pressure_hpa": 962.471,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.833
     },
     {
@@ -320,7 +320,7 @@
       "wind_speed_mps": 10.554,
       "air_temp_c": -26.899,
       "air_pressure_hpa": 962.484,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.84
     },
     {
@@ -328,7 +328,7 @@
       "wind_speed_mps": 10.62,
       "air_temp_c": -26.894,
       "air_pressure_hpa": 962.498,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.846
     },
     {
@@ -336,7 +336,7 @@
       "wind_speed_mps": 10.686,
       "air_temp_c": -26.888,
       "air_pressure_hpa": 962.512,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.853
     },
     {
@@ -344,7 +344,7 @@
       "wind_speed_mps": 10.752,
       "air_temp_c": -26.883,
       "air_pressure_hpa": 962.525,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.86
     },
     {
@@ -352,7 +352,7 @@
       "wind_speed_mps": 10.817,
       "air_temp_c": -26.877,
       "air_pressure_hpa": 962.539,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.866
     },
     {
@@ -360,7 +360,7 @@
       "wind_speed_mps": 10.881,
       "air_temp_c": -26.871,
       "air_pressure_hpa": 962.552,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.872
     },
     {
@@ -368,7 +368,7 @@
       "wind_speed_mps": 10.945,
       "air_temp_c": -26.865,
       "air_pressure_hpa": 962.566,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.879
     },
     {
@@ -376,7 +376,7 @@
       "wind_speed_mps": 11.009,
       "air_temp_c": -26.859,
       "air_pressure_hpa": 962.579,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.885
     },
     {
@@ -384,7 +384,7 @@
       "wind_speed_mps": 11.071,
       "air_temp_c": -26.853,
       "air_pressure_hpa": 962.592,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.89
     },
     {
@@ -392,7 +392,7 @@
       "wind_speed_mps": 11.134,
       "air_temp_c": -26.847,
       "air_pressure_hpa": 962.606,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.896
     },
     {
@@ -400,7 +400,7 @@
       "wind_speed_mps": 11.195,
       "air_temp_c": -26.841,
       "air_pressure_hpa": 962.619,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.902
     },
     {
@@ -408,7 +408,7 @@
       "wind_speed_mps": 11.256,
       "air_temp_c": -26.834,
       "air_pressure_hpa": 962.632,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.907
     },
     {
@@ -416,7 +416,7 @@
       "wind_speed_mps": 11.317,
       "air_temp_c": -26.827,
       "air_pressure_hpa": 962.645,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.912
     },
     {
@@ -424,7 +424,7 @@
       "wind_speed_mps": 11.377,
       "air_temp_c": -26.821,
       "air_pressure_hpa": 962.658,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.917
     },
     {
@@ -432,7 +432,7 @@
       "wind_speed_mps": 11.436,
       "air_temp_c": -26.814,
       "air_pressure_hpa": 962.671,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.922
     },
     {
@@ -440,7 +440,7 @@
       "wind_speed_mps": 11.494,
       "air_temp_c": -26.807,
       "air_pressure_hpa": 962.684,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.927
     },
     {
@@ -448,7 +448,7 @@
       "wind_speed_mps": 11.552,
       "air_temp_c": -26.799,
       "air_pressure_hpa": 962.697,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.932
     },
     {
@@ -456,7 +456,7 @@
       "wind_speed_mps": 11.61,
       "air_temp_c": -26.792,
       "air_pressure_hpa": 962.71,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.936
     },
     {
@@ -464,7 +464,7 @@
       "wind_speed_mps": 11.666,
       "air_temp_c": -26.785,
       "air_pressure_hpa": 962.723,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.94
     },
     {
@@ -472,7 +472,7 @@
       "wind_speed_mps": 11.722,
       "air_temp_c": -26.777,
       "air_pressure_hpa": 962.736,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.945
     },
     {
@@ -480,7 +480,7 @@
       "wind_speed_mps": 11.778,
       "air_temp_c": -26.769,
       "air_pressure_hpa": 962.748,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.949
     },
     {
@@ -488,7 +488,7 @@
       "wind_speed_mps": 11.832,
       "air_temp_c": -26.761,
       "air_pressure_hpa": 962.761,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.953
     },
     {
@@ -496,7 +496,7 @@
       "wind_speed_mps": 11.886,
       "air_temp_c": -26.754,
       "air_pressure_hpa": 962.774,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.956
     },
     {
@@ -504,7 +504,7 @@
       "wind_speed_mps": 11.939,
       "air_temp_c": -26.745,
       "air_pressure_hpa": 962.786,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.96
     },
     {
@@ -512,7 +512,7 @@
       "wind_speed_mps": 11.992,
       "air_temp_c": -26.737,
       "air_pressure_hpa": 962.799,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.963
     },
     {
@@ -520,7 +520,7 @@
       "wind_speed_mps": 12.043,
       "air_temp_c": -26.729,
       "air_pressure_hpa": 962.811,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.967
     },
     {
@@ -528,7 +528,7 @@
       "wind_speed_mps": 12.094,
       "air_temp_c": -26.72,
       "air_pressure_hpa": 962.823,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.97
     },
     {
@@ -536,7 +536,7 @@
       "wind_speed_mps": 12.144,
       "air_temp_c": -26.712,
       "air_pressure_hpa": 962.836,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.973
     },
     {
@@ -544,7 +544,7 @@
       "wind_speed_mps": 12.194,
       "air_temp_c": -26.703,
       "air_pressure_hpa": 962.848,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.975
     },
     {
@@ -552,7 +552,7 @@
       "wind_speed_mps": 12.243,
       "air_temp_c": -26.694,
       "air_pressure_hpa": 962.86,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.978
     },
     {
@@ -560,7 +560,7 @@
       "wind_speed_mps": 12.291,
       "air_temp_c": -26.685,
       "air_pressure_hpa": 962.872,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.981
     },
     {
@@ -568,7 +568,7 @@
       "wind_speed_mps": 12.338,
       "air_temp_c": -26.676,
       "air_pressure_hpa": 962.885,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.983
     },
     {
@@ -576,7 +576,7 @@
       "wind_speed_mps": 12.384,
       "air_temp_c": -26.667,
       "air_pressure_hpa": 962.897,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.985
     },
     {
@@ -584,7 +584,7 @@
       "wind_speed_mps": 12.43,
       "air_temp_c": -26.657,
       "air_pressure_hpa": 962.909,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.987
     },
     {
@@ -592,7 +592,7 @@
       "wind_speed_mps": 12.475,
       "air_temp_c": -26.648,
       "air_pressure_hpa": 962.921,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.989
     },
     {
@@ -600,7 +600,7 @@
       "wind_speed_mps": 12.519,
       "air_temp_c": -26.638,
       "air_pressure_hpa": 962.932,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.991
     },
     {
@@ -608,7 +608,7 @@
       "wind_speed_mps": 12.562,
       "air_temp_c": -26.629,
       "air_pressure_hpa": 962.944,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.992
     },
     {
@@ -616,7 +616,7 @@
       "wind_speed_mps": 12.605,
       "air_temp_c": -26.619,
       "air_pressure_hpa": 962.956,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.994
     },
     {
@@ -624,7 +624,7 @@
       "wind_speed_mps": 12.646,
       "air_temp_c": -26.609,
       "air_pressure_hpa": 962.968,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.995
     },
     {
@@ -632,7 +632,7 @@
       "wind_speed_mps": 12.687,
       "air_temp_c": -26.598,
       "air_pressure_hpa": 962.979,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.996
     },
     {
@@ -640,7 +640,7 @@
       "wind_speed_mps": 12.727,
       "air_temp_c": -26.588,
       "air_pressure_hpa": 962.991,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.997
     },
     {
@@ -648,7 +648,7 @@
       "wind_speed_mps": 12.767,
       "air_temp_c": -26.578,
       "air_pressure_hpa": 963.003,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.998
     },
     {
@@ -656,7 +656,7 @@
       "wind_speed_mps": 12.805,
       "air_temp_c": -26.567,
       "air_pressure_hpa": 963.014,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.999
     },
     {
@@ -664,7 +664,7 @@
       "wind_speed_mps": 12.843,
       "air_temp_c": -26.557,
       "air_pressure_hpa": 963.026,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.999
     },
     {
@@ -672,47 +672,47 @@
       "wind_speed_mps": 12.879,
       "air_temp_c": -26.546,
       "air_pressure_hpa": 963.037,
-      "solar_irradiance_w_m2": 0,
-      "humidity_pct": 80
+      "solar_irradiance_w_m2": 0.0,
+      "humidity_pct": 80.0
     },
     {
       "minute": 84,
       "wind_speed_mps": 12.915,
       "air_temp_c": -26.535,
       "air_pressure_hpa": 963.048,
-      "solar_irradiance_w_m2": 0,
-      "humidity_pct": 80
+      "solar_irradiance_w_m2": 0.0,
+      "humidity_pct": 80.0
     },
     {
       "minute": 85,
       "wind_speed_mps": 12.95,
       "air_temp_c": -26.524,
       "air_pressure_hpa": 963.06,
-      "solar_irradiance_w_m2": 0,
-      "humidity_pct": 80
+      "solar_irradiance_w_m2": 0.0,
+      "humidity_pct": 80.0
     },
     {
       "minute": 86,
       "wind_speed_mps": 12.985,
       "air_temp_c": -26.513,
       "air_pressure_hpa": 963.071,
-      "solar_irradiance_w_m2": 0,
-      "humidity_pct": 80
+      "solar_irradiance_w_m2": 0.0,
+      "humidity_pct": 80.0
     },
     {
       "minute": 87,
       "wind_speed_mps": 13.018,
       "air_temp_c": -26.502,
       "air_pressure_hpa": 963.082,
-      "solar_irradiance_w_m2": 0,
-      "humidity_pct": 80
+      "solar_irradiance_w_m2": 0.0,
+      "humidity_pct": 80.0
     },
     {
       "minute": 88,
       "wind_speed_mps": 13.051,
       "air_temp_c": -26.49,
       "air_pressure_hpa": 963.093,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.999
     },
     {
@@ -720,7 +720,7 @@
       "wind_speed_mps": 13.083,
       "air_temp_c": -26.479,
       "air_pressure_hpa": 963.104,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.999
     },
     {
@@ -728,7 +728,7 @@
       "wind_speed_mps": 13.113,
       "air_temp_c": -26.467,
       "air_pressure_hpa": 963.115,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.998
     },
     {
@@ -736,7 +736,7 @@
       "wind_speed_mps": 13.144,
       "air_temp_c": -26.455,
       "air_pressure_hpa": 963.126,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.997
     },
     {
@@ -744,7 +744,7 @@
       "wind_speed_mps": 13.173,
       "air_temp_c": -26.444,
       "air_pressure_hpa": 963.137,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.996
     },
     {
@@ -752,7 +752,7 @@
       "wind_speed_mps": 13.201,
       "air_temp_c": -26.432,
       "air_pressure_hpa": 963.148,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.995
     },
     {
@@ -760,7 +760,7 @@
       "wind_speed_mps": 13.229,
       "air_temp_c": -26.419,
       "air_pressure_hpa": 963.158,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.994
     },
     {
@@ -768,7 +768,7 @@
       "wind_speed_mps": 13.255,
       "air_temp_c": -26.407,
       "air_pressure_hpa": 963.169,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.992
     },
     {
@@ -776,7 +776,7 @@
       "wind_speed_mps": 13.281,
       "air_temp_c": -26.395,
       "air_pressure_hpa": 963.18,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.991
     },
     {
@@ -784,7 +784,7 @@
       "wind_speed_mps": 13.306,
       "air_temp_c": -26.382,
       "air_pressure_hpa": 963.19,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.989
     },
     {
@@ -792,7 +792,7 @@
       "wind_speed_mps": 13.331,
       "air_temp_c": -26.37,
       "air_pressure_hpa": 963.201,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.987
     },
     {
@@ -800,7 +800,7 @@
       "wind_speed_mps": 13.354,
       "air_temp_c": -26.357,
       "air_pressure_hpa": 963.211,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.985
     },
     {
@@ -808,7 +808,7 @@
       "wind_speed_mps": 13.377,
       "air_temp_c": -26.344,
       "air_pressure_hpa": 963.222,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.983
     },
     {
@@ -816,7 +816,7 @@
       "wind_speed_mps": 13.398,
       "air_temp_c": -26.331,
       "air_pressure_hpa": 963.232,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.98
     },
     {
@@ -824,7 +824,7 @@
       "wind_speed_mps": 13.419,
       "air_temp_c": -26.318,
       "air_pressure_hpa": 963.242,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.978
     },
     {
@@ -832,7 +832,7 @@
       "wind_speed_mps": 13.439,
       "air_temp_c": -26.305,
       "air_pressure_hpa": 963.252,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.975
     },
     {
@@ -840,7 +840,7 @@
       "wind_speed_mps": 13.458,
       "air_temp_c": -26.292,
       "air_pressure_hpa": 963.262,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.972
     },
     {
@@ -848,7 +848,7 @@
       "wind_speed_mps": 13.477,
       "air_temp_c": -26.278,
       "air_pressure_hpa": 963.273,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.969
     },
     {
@@ -856,7 +856,7 @@
       "wind_speed_mps": 13.494,
       "air_temp_c": -26.265,
       "air_pressure_hpa": 963.283,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.966
     },
     {
@@ -864,7 +864,7 @@
       "wind_speed_mps": 13.511,
       "air_temp_c": -26.251,
       "air_pressure_hpa": 963.292,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.963
     },
     {
@@ -872,7 +872,7 @@
       "wind_speed_mps": 13.527,
       "air_temp_c": -26.237,
       "air_pressure_hpa": 963.302,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.96
     },
     {
@@ -880,7 +880,7 @@
       "wind_speed_mps": 13.542,
       "air_temp_c": -26.223,
       "air_pressure_hpa": 963.312,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.956
     },
     {
@@ -888,7 +888,7 @@
       "wind_speed_mps": 13.557,
       "air_temp_c": -26.209,
       "air_pressure_hpa": 963.322,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.952
     },
     {
@@ -896,7 +896,7 @@
       "wind_speed_mps": 13.57,
       "air_temp_c": -26.195,
       "air_pressure_hpa": 963.332,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.948
     },
     {
@@ -904,7 +904,7 @@
       "wind_speed_mps": 13.583,
       "air_temp_c": -26.181,
       "air_pressure_hpa": 963.341,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.944
     },
     {
@@ -912,7 +912,7 @@
       "wind_speed_mps": 13.595,
       "air_temp_c": -26.166,
       "air_pressure_hpa": 963.351,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.94
     },
     {
@@ -920,7 +920,7 @@
       "wind_speed_mps": 13.606,
       "air_temp_c": -26.152,
       "air_pressure_hpa": 963.36,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.936
     },
     {
@@ -928,7 +928,7 @@
       "wind_speed_mps": 13.617,
       "air_temp_c": -26.137,
       "air_pressure_hpa": 963.37,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.931
     },
     {
@@ -936,7 +936,7 @@
       "wind_speed_mps": 13.626,
       "air_temp_c": -26.122,
       "air_pressure_hpa": 963.379,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.927
     },
     {
@@ -944,7 +944,7 @@
       "wind_speed_mps": 13.635,
       "air_temp_c": -26.107,
       "air_pressure_hpa": 963.388,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.922
     },
     {
@@ -952,7 +952,7 @@
       "wind_speed_mps": 13.643,
       "air_temp_c": -26.092,
       "air_pressure_hpa": 963.398,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.917
     },
     {
@@ -960,7 +960,7 @@
       "wind_speed_mps": 13.651,
       "air_temp_c": -26.077,
       "air_pressure_hpa": 963.407,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.912
     },
     {
@@ -968,7 +968,7 @@
       "wind_speed_mps": 13.657,
       "air_temp_c": -26.062,
       "air_pressure_hpa": 963.416,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.907
     },
     {
@@ -976,7 +976,7 @@
       "wind_speed_mps": 13.663,
       "air_temp_c": -26.047,
       "air_pressure_hpa": 963.425,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.901
     },
     {
@@ -984,7 +984,7 @@
       "wind_speed_mps": 13.669,
       "air_temp_c": -26.031,
       "air_pressure_hpa": 963.434,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.896
     },
     {
@@ -992,15 +992,15 @@
       "wind_speed_mps": 13.673,
       "air_temp_c": -26.016,
       "air_pressure_hpa": 963.443,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.89
     },
     {
       "minute": 124,
       "wind_speed_mps": 13.677,
-      "air_temp_c": -26,
+      "air_temp_c": -26.0,
       "air_pressure_hpa": 963.452,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.884
     },
     {
@@ -1008,7 +1008,7 @@
       "wind_speed_mps": 13.68,
       "air_temp_c": -25.984,
       "air_pressure_hpa": 963.461,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.878
     },
     {
@@ -1016,7 +1016,7 @@
       "wind_speed_mps": 13.682,
       "air_temp_c": -25.968,
       "air_pressure_hpa": 963.469,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.872
     },
     {
@@ -1024,7 +1024,7 @@
       "wind_speed_mps": 13.684,
       "air_temp_c": -25.952,
       "air_pressure_hpa": 963.478,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.866
     },
     {
@@ -1032,7 +1032,7 @@
       "wind_speed_mps": 13.685,
       "air_temp_c": -25.936,
       "air_pressure_hpa": 963.486,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.859
     },
     {
@@ -1040,7 +1040,7 @@
       "wind_speed_mps": 13.685,
       "air_temp_c": -25.92,
       "air_pressure_hpa": 963.495,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.853
     },
     {
@@ -1048,7 +1048,7 @@
       "wind_speed_mps": 13.685,
       "air_temp_c": -25.904,
       "air_pressure_hpa": 963.503,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.846
     },
     {
@@ -1056,7 +1056,7 @@
       "wind_speed_mps": 13.684,
       "air_temp_c": -25.887,
       "air_pressure_hpa": 963.512,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.839
     },
     {
@@ -1064,7 +1064,7 @@
       "wind_speed_mps": 13.682,
       "air_temp_c": -25.871,
       "air_pressure_hpa": 963.52,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.832
     },
     {
@@ -1072,7 +1072,7 @@
       "wind_speed_mps": 13.68,
       "air_temp_c": -25.854,
       "air_pressure_hpa": 963.528,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.825
     },
     {
@@ -1080,7 +1080,7 @@
       "wind_speed_mps": 13.677,
       "air_temp_c": -25.837,
       "air_pressure_hpa": 963.537,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.818
     },
     {
@@ -1088,7 +1088,7 @@
       "wind_speed_mps": 13.674,
       "air_temp_c": -25.82,
       "air_pressure_hpa": 963.545,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.81
     },
     {
@@ -1096,7 +1096,7 @@
       "wind_speed_mps": 13.67,
       "air_temp_c": -25.803,
       "air_pressure_hpa": 963.553,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.803
     },
     {
@@ -1104,7 +1104,7 @@
       "wind_speed_mps": 13.665,
       "air_temp_c": -25.786,
       "air_pressure_hpa": 963.561,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.795
     },
     {
@@ -1112,7 +1112,7 @@
       "wind_speed_mps": 13.66,
       "air_temp_c": -25.769,
       "air_pressure_hpa": 963.569,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.787
     },
     {
@@ -1120,7 +1120,7 @@
       "wind_speed_mps": 13.654,
       "air_temp_c": -25.752,
       "air_pressure_hpa": 963.577,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.779
     },
     {
@@ -1128,7 +1128,7 @@
       "wind_speed_mps": 13.647,
       "air_temp_c": -25.734,
       "air_pressure_hpa": 963.584,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.771
     },
     {
@@ -1136,7 +1136,7 @@
       "wind_speed_mps": 13.64,
       "air_temp_c": -25.716,
       "air_pressure_hpa": 963.592,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.762
     },
     {
@@ -1144,7 +1144,7 @@
       "wind_speed_mps": 13.633,
       "air_temp_c": -25.699,
       "air_pressure_hpa": 963.6,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.754
     },
     {
@@ -1152,7 +1152,7 @@
       "wind_speed_mps": 13.625,
       "air_temp_c": -25.681,
       "air_pressure_hpa": 963.607,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.745
     },
     {
@@ -1160,7 +1160,7 @@
       "wind_speed_mps": 13.617,
       "air_temp_c": -25.663,
       "air_pressure_hpa": 963.615,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.736
     },
     {
@@ -1168,7 +1168,7 @@
       "wind_speed_mps": 13.608,
       "air_temp_c": -25.645,
       "air_pressure_hpa": 963.622,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.727
     },
     {
@@ -1176,7 +1176,7 @@
       "wind_speed_mps": 13.598,
       "air_temp_c": -25.627,
       "air_pressure_hpa": 963.63,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.718
     },
     {
@@ -1184,7 +1184,7 @@
       "wind_speed_mps": 13.588,
       "air_temp_c": -25.609,
       "air_pressure_hpa": 963.637,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.709
     },
     {
@@ -1192,7 +1192,7 @@
       "wind_speed_mps": 13.578,
       "air_temp_c": -25.59,
       "air_pressure_hpa": 963.644,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.699
     },
     {
@@ -1200,7 +1200,7 @@
       "wind_speed_mps": 13.567,
       "air_temp_c": -25.572,
       "air_pressure_hpa": 963.651,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.69
     },
     {
@@ -1208,7 +1208,7 @@
       "wind_speed_mps": 13.556,
       "air_temp_c": -25.553,
       "air_pressure_hpa": 963.658,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.68
     },
     {
@@ -1216,7 +1216,7 @@
       "wind_speed_mps": 13.544,
       "air_temp_c": -25.535,
       "air_pressure_hpa": 963.665,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.67
     },
     {
@@ -1224,7 +1224,7 @@
       "wind_speed_mps": 13.532,
       "air_temp_c": -25.516,
       "air_pressure_hpa": 963.672,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.66
     },
     {
@@ -1232,7 +1232,7 @@
       "wind_speed_mps": 13.519,
       "air_temp_c": -25.497,
       "air_pressure_hpa": 963.679,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.65
     },
     {
@@ -1240,7 +1240,7 @@
       "wind_speed_mps": 13.506,
       "air_temp_c": -25.478,
       "air_pressure_hpa": 963.686,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.64
     },
     {
@@ -1248,7 +1248,7 @@
       "wind_speed_mps": 13.493,
       "air_temp_c": -25.459,
       "air_pressure_hpa": 963.693,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.63
     },
     {
@@ -1256,7 +1256,7 @@
       "wind_speed_mps": 13.48,
       "air_temp_c": -25.44,
       "air_pressure_hpa": 963.699,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.619
     },
     {
@@ -1264,7 +1264,7 @@
       "wind_speed_mps": 13.466,
       "air_temp_c": -25.421,
       "air_pressure_hpa": 963.706,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.608
     },
     {
@@ -1272,7 +1272,7 @@
       "wind_speed_mps": 13.451,
       "air_temp_c": -25.401,
       "air_pressure_hpa": 963.713,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.597
     },
     {
@@ -1280,7 +1280,7 @@
       "wind_speed_mps": 13.437,
       "air_temp_c": -25.382,
       "air_pressure_hpa": 963.719,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.586
     },
     {
@@ -1288,7 +1288,7 @@
       "wind_speed_mps": 13.422,
       "air_temp_c": -25.362,
       "air_pressure_hpa": 963.725,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.575
     },
     {
@@ -1296,7 +1296,7 @@
       "wind_speed_mps": 13.407,
       "air_temp_c": -25.343,
       "air_pressure_hpa": 963.732,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.564
     },
     {
@@ -1304,7 +1304,7 @@
       "wind_speed_mps": 13.392,
       "air_temp_c": -25.323,
       "air_pressure_hpa": 963.738,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.552
     },
     {
@@ -1312,7 +1312,7 @@
       "wind_speed_mps": 13.376,
       "air_temp_c": -25.303,
       "air_pressure_hpa": 963.744,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.541
     },
     {
@@ -1320,7 +1320,7 @@
       "wind_speed_mps": 13.36,
       "air_temp_c": -25.283,
       "air_pressure_hpa": 963.75,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.529
     },
     {
@@ -1328,7 +1328,7 @@
       "wind_speed_mps": 13.344,
       "air_temp_c": -25.263,
       "air_pressure_hpa": 963.756,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.517
     },
     {
@@ -1336,7 +1336,7 @@
       "wind_speed_mps": 13.327,
       "air_temp_c": -25.243,
       "air_pressure_hpa": 963.762,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.505
     },
     {
@@ -1344,7 +1344,7 @@
       "wind_speed_mps": 13.311,
       "air_temp_c": -25.222,
       "air_pressure_hpa": 963.768,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.493
     },
     {
@@ -1352,7 +1352,7 @@
       "wind_speed_mps": 13.294,
       "air_temp_c": -25.202,
       "air_pressure_hpa": 963.774,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.481
     },
     {
@@ -1360,7 +1360,7 @@
       "wind_speed_mps": 13.277,
       "air_temp_c": -25.182,
       "air_pressure_hpa": 963.78,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.468
     },
     {
@@ -1368,7 +1368,7 @@
       "wind_speed_mps": 13.26,
       "air_temp_c": -25.161,
       "air_pressure_hpa": 963.785,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.456
     },
     {
@@ -1376,7 +1376,7 @@
       "wind_speed_mps": 13.243,
       "air_temp_c": -25.14,
       "air_pressure_hpa": 963.791,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.443
     },
     {
@@ -1384,7 +1384,7 @@
       "wind_speed_mps": 13.226,
       "air_temp_c": -25.119,
       "air_pressure_hpa": 963.797,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.43
     },
     {
@@ -1392,7 +1392,7 @@
       "wind_speed_mps": 13.209,
       "air_temp_c": -25.099,
       "air_pressure_hpa": 963.802,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.417
     },
     {
@@ -1400,7 +1400,7 @@
       "wind_speed_mps": 13.191,
       "air_temp_c": -25.078,
       "air_pressure_hpa": 963.807,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.404
     },
     {
@@ -1408,7 +1408,7 @@
       "wind_speed_mps": 13.174,
       "air_temp_c": -25.057,
       "air_pressure_hpa": 963.813,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.391
     },
     {
@@ -1416,7 +1416,7 @@
       "wind_speed_mps": 13.156,
       "air_temp_c": -25.035,
       "air_pressure_hpa": 963.818,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.377
     },
     {
@@ -1424,7 +1424,7 @@
       "wind_speed_mps": 13.138,
       "air_temp_c": -25.014,
       "air_pressure_hpa": 963.823,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.364
     },
     {
@@ -1432,7 +1432,7 @@
       "wind_speed_mps": 13.121,
       "air_temp_c": -24.993,
       "air_pressure_hpa": 963.828,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.35
     },
     {
@@ -1440,7 +1440,7 @@
       "wind_speed_mps": 13.103,
       "air_temp_c": -24.971,
       "air_pressure_hpa": 963.833,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.336
     },
     {
@@ -1448,7 +1448,7 @@
       "wind_speed_mps": 13.085,
       "air_temp_c": -24.95,
       "air_pressure_hpa": 963.838,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.322
     },
     {
@@ -1456,7 +1456,7 @@
       "wind_speed_mps": 13.068,
       "air_temp_c": -24.928,
       "air_pressure_hpa": 963.843,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.308
     },
     {
@@ -1464,7 +1464,7 @@
       "wind_speed_mps": 13.05,
       "air_temp_c": -24.906,
       "air_pressure_hpa": 963.848,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.294
     },
     {
@@ -1472,7 +1472,7 @@
       "wind_speed_mps": 13.032,
       "air_temp_c": -24.885,
       "air_pressure_hpa": 963.853,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.279
     },
     {
@@ -1480,7 +1480,7 @@
       "wind_speed_mps": 13.015,
       "air_temp_c": -24.863,
       "air_pressure_hpa": 963.857,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.265
     },
     {
@@ -1488,7 +1488,7 @@
       "wind_speed_mps": 12.997,
       "air_temp_c": -24.841,
       "air_pressure_hpa": 963.862,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.25
     },
     {
@@ -1496,7 +1496,7 @@
       "wind_speed_mps": 12.98,
       "air_temp_c": -24.818,
       "air_pressure_hpa": 963.866,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.235
     },
     {
@@ -1504,7 +1504,7 @@
       "wind_speed_mps": 12.963,
       "air_temp_c": -24.796,
       "air_pressure_hpa": 963.871,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.22
     },
     {
@@ -1512,7 +1512,7 @@
       "wind_speed_mps": 12.946,
       "air_temp_c": -24.774,
       "air_pressure_hpa": 963.875,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.205
     },
     {
@@ -1520,7 +1520,7 @@
       "wind_speed_mps": 12.929,
       "air_temp_c": -24.752,
       "air_pressure_hpa": 963.879,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.19
     },
     {
@@ -1528,7 +1528,7 @@
       "wind_speed_mps": 12.912,
       "air_temp_c": -24.729,
       "air_pressure_hpa": 963.884,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.175
     },
     {
@@ -1536,7 +1536,7 @@
       "wind_speed_mps": 12.895,
       "air_temp_c": -24.707,
       "air_pressure_hpa": 963.888,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.159
     },
     {
@@ -1544,7 +1544,7 @@
       "wind_speed_mps": 12.879,
       "air_temp_c": -24.684,
       "air_pressure_hpa": 963.892,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.144
     },
     {
@@ -1552,7 +1552,7 @@
       "wind_speed_mps": 12.862,
       "air_temp_c": -24.661,
       "air_pressure_hpa": 963.896,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.128
     },
     {
@@ -1560,7 +1560,7 @@
       "wind_speed_mps": 12.846,
       "air_temp_c": -24.638,
       "air_pressure_hpa": 963.9,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.112
     },
     {
@@ -1568,7 +1568,7 @@
       "wind_speed_mps": 12.83,
       "air_temp_c": -24.615,
       "air_pressure_hpa": 963.904,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.096
     },
     {
@@ -1576,7 +1576,7 @@
       "wind_speed_mps": 12.815,
       "air_temp_c": -24.592,
       "air_pressure_hpa": 963.907,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.08
     },
     {
@@ -1584,7 +1584,7 @@
       "wind_speed_mps": 12.8,
       "air_temp_c": -24.569,
       "air_pressure_hpa": 963.911,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.063
     },
     {
@@ -1592,7 +1592,7 @@
       "wind_speed_mps": 12.785,
       "air_temp_c": -24.546,
       "air_pressure_hpa": 963.915,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.047
     },
     {
@@ -1600,7 +1600,7 @@
       "wind_speed_mps": 12.77,
       "air_temp_c": -24.523,
       "air_pressure_hpa": 963.918,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.03
     },
     {
@@ -1608,7 +1608,7 @@
       "wind_speed_mps": 12.755,
       "air_temp_c": -24.5,
       "air_pressure_hpa": 963.922,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.013
     },
     {
@@ -1616,7 +1616,7 @@
       "wind_speed_mps": 12.741,
       "air_temp_c": -24.476,
       "air_pressure_hpa": 963.925,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.997
     },
     {
@@ -1624,7 +1624,7 @@
       "wind_speed_mps": 12.727,
       "air_temp_c": -24.453,
       "air_pressure_hpa": 963.928,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.98
     },
     {
@@ -1632,7 +1632,7 @@
       "wind_speed_mps": 12.714,
       "air_temp_c": -24.429,
       "air_pressure_hpa": 963.932,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.963
     },
     {
@@ -1640,7 +1640,7 @@
       "wind_speed_mps": 12.701,
       "air_temp_c": -24.405,
       "air_pressure_hpa": 963.935,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.945
     },
     {
@@ -1648,7 +1648,7 @@
       "wind_speed_mps": 12.688,
       "air_temp_c": -24.381,
       "air_pressure_hpa": 963.938,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.928
     },
     {
@@ -1656,7 +1656,7 @@
       "wind_speed_mps": 12.676,
       "air_temp_c": -24.358,
       "air_pressure_hpa": 963.941,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.91
     },
     {
@@ -1664,7 +1664,7 @@
       "wind_speed_mps": 12.664,
       "air_temp_c": -24.334,
       "air_pressure_hpa": 963.944,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.893
     },
     {
@@ -1672,7 +1672,7 @@
       "wind_speed_mps": 12.652,
       "air_temp_c": -24.31,
       "air_pressure_hpa": 963.947,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.875
     },
     {
@@ -1680,7 +1680,7 @@
       "wind_speed_mps": 12.641,
       "air_temp_c": -24.286,
       "air_pressure_hpa": 963.95,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.857
     },
     {
@@ -1688,7 +1688,7 @@
       "wind_speed_mps": 12.63,
       "air_temp_c": -24.261,
       "air_pressure_hpa": 963.952,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.839
     },
     {
@@ -1696,7 +1696,7 @@
       "wind_speed_mps": 12.62,
       "air_temp_c": -24.237,
       "air_pressure_hpa": 963.955,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.821
     },
     {
@@ -1704,7 +1704,7 @@
       "wind_speed_mps": 12.61,
       "air_temp_c": -24.213,
       "air_pressure_hpa": 963.958,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.802
     },
     {
@@ -1712,7 +1712,7 @@
       "wind_speed_mps": 12.601,
       "air_temp_c": -24.188,
       "air_pressure_hpa": 963.96,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.784
     },
     {
@@ -1720,7 +1720,7 @@
       "wind_speed_mps": 12.592,
       "air_temp_c": -24.164,
       "air_pressure_hpa": 963.962,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.765
     },
     {
@@ -1728,7 +1728,7 @@
       "wind_speed_mps": 12.584,
       "air_temp_c": -24.139,
       "air_pressure_hpa": 963.965,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.747
     },
     {
@@ -1736,7 +1736,7 @@
       "wind_speed_mps": 12.576,
       "air_temp_c": -24.114,
       "air_pressure_hpa": 963.967,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.728
     },
     {
@@ -1744,7 +1744,7 @@
       "wind_speed_mps": 12.569,
       "air_temp_c": -24.09,
       "air_pressure_hpa": 963.969,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.709
     },
     {
@@ -1752,7 +1752,7 @@
       "wind_speed_mps": 12.562,
       "air_temp_c": -24.065,
       "air_pressure_hpa": 963.971,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.69
     },
     {
@@ -1760,7 +1760,7 @@
       "wind_speed_mps": 12.556,
       "air_temp_c": -24.04,
       "air_pressure_hpa": 963.973,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.671
     },
     {
@@ -1768,7 +1768,7 @@
       "wind_speed_mps": 12.551,
       "air_temp_c": -24.015,
       "air_pressure_hpa": 963.975,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.651
     },
     {
@@ -1776,7 +1776,7 @@
       "wind_speed_mps": 12.546,
       "air_temp_c": -23.99,
       "air_pressure_hpa": 963.977,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.632
     },
     {
@@ -1784,7 +1784,7 @@
       "wind_speed_mps": 12.541,
       "air_temp_c": -23.965,
       "air_pressure_hpa": 963.979,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.612
     },
     {
@@ -1792,7 +1792,7 @@
       "wind_speed_mps": 12.538,
       "air_temp_c": -23.94,
       "air_pressure_hpa": 963.981,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.593
     },
     {
@@ -1800,7 +1800,7 @@
       "wind_speed_mps": 12.534,
       "air_temp_c": -23.914,
       "air_pressure_hpa": 963.983,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.573
     },
     {
@@ -1808,7 +1808,7 @@
       "wind_speed_mps": 12.532,
       "air_temp_c": -23.889,
       "air_pressure_hpa": 963.984,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.553
     },
     {
@@ -1816,7 +1816,7 @@
       "wind_speed_mps": 12.53,
       "air_temp_c": -23.864,
       "air_pressure_hpa": 963.986,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.533
     },
     {
@@ -1824,7 +1824,7 @@
       "wind_speed_mps": 12.529,
       "air_temp_c": -23.838,
       "air_pressure_hpa": 963.987,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.513
     },
     {
@@ -1832,7 +1832,7 @@
       "wind_speed_mps": 12.528,
       "air_temp_c": -23.812,
       "air_pressure_hpa": 963.988,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.492
     },
     {
@@ -1840,7 +1840,7 @@
       "wind_speed_mps": 12.528,
       "air_temp_c": -23.787,
       "air_pressure_hpa": 963.99,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.472
     },
     {
@@ -1848,7 +1848,7 @@
       "wind_speed_mps": 12.529,
       "air_temp_c": -23.761,
       "air_pressure_hpa": 963.991,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.451
     },
     {
@@ -1856,7 +1856,7 @@
       "wind_speed_mps": 12.53,
       "air_temp_c": -23.735,
       "air_pressure_hpa": 963.992,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.43
     },
     {
@@ -1864,7 +1864,7 @@
       "wind_speed_mps": 12.532,
       "air_temp_c": -23.709,
       "air_pressure_hpa": 963.993,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.41
     },
     {
@@ -1872,7 +1872,7 @@
       "wind_speed_mps": 12.535,
       "air_temp_c": -23.683,
       "air_pressure_hpa": 963.994,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.389
     },
     {
@@ -1880,7 +1880,7 @@
       "wind_speed_mps": 12.539,
       "air_temp_c": -23.657,
       "air_pressure_hpa": 963.995,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.368
     },
     {
@@ -1888,7 +1888,7 @@
       "wind_speed_mps": 12.543,
       "air_temp_c": -23.631,
       "air_pressure_hpa": 963.996,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.346
     },
     {
@@ -1896,7 +1896,7 @@
       "wind_speed_mps": 12.548,
       "air_temp_c": -23.605,
       "air_pressure_hpa": 963.997,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.325
     },
     {
@@ -1904,7 +1904,7 @@
       "wind_speed_mps": 12.554,
       "air_temp_c": -23.579,
       "air_pressure_hpa": 963.997,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.304
     },
     {
@@ -1912,7 +1912,7 @@
       "wind_speed_mps": 12.56,
       "air_temp_c": -23.553,
       "air_pressure_hpa": 963.998,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.282
     },
     {
@@ -1920,7 +1920,7 @@
       "wind_speed_mps": 12.567,
       "air_temp_c": -23.526,
       "air_pressure_hpa": 963.998,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.26
     },
     {
@@ -1928,7 +1928,7 @@
       "wind_speed_mps": 12.575,
       "air_temp_c": -23.5,
       "air_pressure_hpa": 963.999,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.239
     },
     {
@@ -1936,71 +1936,71 @@
       "wind_speed_mps": 12.584,
       "air_temp_c": -23.474,
       "air_pressure_hpa": 963.999,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.217
     },
     {
       "minute": 242,
       "wind_speed_mps": 12.594,
       "air_temp_c": -23.447,
-      "air_pressure_hpa": 964,
-      "solar_irradiance_w_m2": 0,
+      "air_pressure_hpa": 964.0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.195
     },
     {
       "minute": 243,
       "wind_speed_mps": 12.604,
       "air_temp_c": -23.42,
-      "air_pressure_hpa": 964,
-      "solar_irradiance_w_m2": 0,
+      "air_pressure_hpa": 964.0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.173
     },
     {
       "minute": 244,
       "wind_speed_mps": 12.615,
       "air_temp_c": -23.394,
-      "air_pressure_hpa": 964,
-      "solar_irradiance_w_m2": 0,
+      "air_pressure_hpa": 964.0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.15
     },
     {
       "minute": 245,
       "wind_speed_mps": 12.627,
       "air_temp_c": -23.367,
-      "air_pressure_hpa": 964,
-      "solar_irradiance_w_m2": 0,
+      "air_pressure_hpa": 964.0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.128
     },
     {
       "minute": 246,
       "wind_speed_mps": 12.639,
       "air_temp_c": -23.34,
-      "air_pressure_hpa": 964,
-      "solar_irradiance_w_m2": 0,
+      "air_pressure_hpa": 964.0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.105
     },
     {
       "minute": 247,
       "wind_speed_mps": 12.653,
       "air_temp_c": -23.313,
-      "air_pressure_hpa": 964,
-      "solar_irradiance_w_m2": 0,
+      "air_pressure_hpa": 964.0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.083
     },
     {
       "minute": 248,
       "wind_speed_mps": 12.667,
       "air_temp_c": -23.286,
-      "air_pressure_hpa": 964,
-      "solar_irradiance_w_m2": 0,
+      "air_pressure_hpa": 964.0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.06
     },
     {
       "minute": 249,
       "wind_speed_mps": 12.682,
       "air_temp_c": -23.259,
-      "air_pressure_hpa": 964,
-      "solar_irradiance_w_m2": 0,
+      "air_pressure_hpa": 964.0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.037
     },
     {
@@ -2008,7 +2008,7 @@
       "wind_speed_mps": 12.698,
       "air_temp_c": -23.232,
       "air_pressure_hpa": 963.999,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.014
     },
     {
@@ -2016,7 +2016,7 @@
       "wind_speed_mps": 12.715,
       "air_temp_c": -23.205,
       "air_pressure_hpa": 963.999,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.991
     },
     {
@@ -2024,7 +2024,7 @@
       "wind_speed_mps": 12.733,
       "air_temp_c": -23.178,
       "air_pressure_hpa": 963.998,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.968
     },
     {
@@ -2032,7 +2032,7 @@
       "wind_speed_mps": 12.751,
       "air_temp_c": -23.151,
       "air_pressure_hpa": 963.998,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.945
     },
     {
@@ -2040,7 +2040,7 @@
       "wind_speed_mps": 12.77,
       "air_temp_c": -23.123,
       "air_pressure_hpa": 963.997,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.921
     },
     {
@@ -2048,7 +2048,7 @@
       "wind_speed_mps": 12.791,
       "air_temp_c": -23.096,
       "air_pressure_hpa": 963.996,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.898
     },
     {
@@ -2056,7 +2056,7 @@
       "wind_speed_mps": 12.812,
       "air_temp_c": -23.069,
       "air_pressure_hpa": 963.996,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.874
     },
     {
@@ -2064,7 +2064,7 @@
       "wind_speed_mps": 12.833,
       "air_temp_c": -23.041,
       "air_pressure_hpa": 963.995,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.85
     },
     {
@@ -2072,7 +2072,7 @@
       "wind_speed_mps": 12.856,
       "air_temp_c": -23.014,
       "air_pressure_hpa": 963.994,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.826
     },
     {
@@ -2080,7 +2080,7 @@
       "wind_speed_mps": 12.88,
       "air_temp_c": -22.986,
       "air_pressure_hpa": 963.993,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.803
     },
     {
@@ -2088,7 +2088,7 @@
       "wind_speed_mps": 12.904,
       "air_temp_c": -22.958,
       "air_pressure_hpa": 963.992,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.778
     },
     {
@@ -2096,7 +2096,7 @@
       "wind_speed_mps": 12.929,
       "air_temp_c": -22.931,
       "air_pressure_hpa": 963.991,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.754
     },
     {
@@ -2104,7 +2104,7 @@
       "wind_speed_mps": 12.956,
       "air_temp_c": -22.903,
       "air_pressure_hpa": 963.99,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.73
     },
     {
@@ -2112,7 +2112,7 @@
       "wind_speed_mps": 12.983,
       "air_temp_c": -22.875,
       "air_pressure_hpa": 963.988,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.706
     },
     {
@@ -2120,7 +2120,7 @@
       "wind_speed_mps": 13.011,
       "air_temp_c": -22.847,
       "air_pressure_hpa": 963.987,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.681
     },
     {
@@ -2128,7 +2128,7 @@
       "wind_speed_mps": 13.039,
       "air_temp_c": -22.819,
       "air_pressure_hpa": 963.985,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.656
     },
     {
@@ -2136,7 +2136,7 @@
       "wind_speed_mps": 13.069,
       "air_temp_c": -22.791,
       "air_pressure_hpa": 963.984,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.632
     },
     {
@@ -2144,7 +2144,7 @@
       "wind_speed_mps": 13.099,
       "air_temp_c": -22.763,
       "air_pressure_hpa": 963.982,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.607
     },
     {
@@ -2152,7 +2152,7 @@
       "wind_speed_mps": 13.131,
       "air_temp_c": -22.735,
       "air_pressure_hpa": 963.981,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.582
     },
     {
@@ -2160,7 +2160,7 @@
       "wind_speed_mps": 13.163,
       "air_temp_c": -22.707,
       "air_pressure_hpa": 963.979,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.557
     },
     {
@@ -2168,7 +2168,7 @@
       "wind_speed_mps": 13.196,
       "air_temp_c": -22.679,
       "air_pressure_hpa": 963.977,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.532
     },
     {
@@ -2176,7 +2176,7 @@
       "wind_speed_mps": 13.23,
       "air_temp_c": -22.651,
       "air_pressure_hpa": 963.975,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.506
     },
     {
@@ -2184,7 +2184,7 @@
       "wind_speed_mps": 13.265,
       "air_temp_c": -22.622,
       "air_pressure_hpa": 963.973,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.481
     },
     {
@@ -2192,7 +2192,7 @@
       "wind_speed_mps": 13.301,
       "air_temp_c": -22.594,
       "air_pressure_hpa": 963.971,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.455
     },
     {
@@ -2200,7 +2200,7 @@
       "wind_speed_mps": 13.337,
       "air_temp_c": -22.566,
       "air_pressure_hpa": 963.969,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.43
     },
     {
@@ -2208,7 +2208,7 @@
       "wind_speed_mps": 13.375,
       "air_temp_c": -22.537,
       "air_pressure_hpa": 963.967,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.404
     },
     {
@@ -2216,7 +2216,7 @@
       "wind_speed_mps": 13.413,
       "air_temp_c": -22.509,
       "air_pressure_hpa": 963.964,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.378
     },
     {
@@ -2224,7 +2224,7 @@
       "wind_speed_mps": 13.452,
       "air_temp_c": -22.48,
       "air_pressure_hpa": 963.962,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.353
     },
     {
@@ -2232,7 +2232,7 @@
       "wind_speed_mps": 13.493,
       "air_temp_c": -22.451,
       "air_pressure_hpa": 963.96,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.327
     },
     {
@@ -2240,7 +2240,7 @@
       "wind_speed_mps": 13.533,
       "air_temp_c": -22.423,
       "air_pressure_hpa": 963.957,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.3
     },
     {
@@ -2248,7 +2248,7 @@
       "wind_speed_mps": 13.575,
       "air_temp_c": -22.394,
       "air_pressure_hpa": 963.955,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.274
     },
     {
@@ -2256,7 +2256,7 @@
       "wind_speed_mps": 13.618,
       "air_temp_c": -22.365,
       "air_pressure_hpa": 963.952,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.248
     },
     {
@@ -2264,7 +2264,7 @@
       "wind_speed_mps": 13.661,
       "air_temp_c": -22.337,
       "air_pressure_hpa": 963.949,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.222
     },
     {
@@ -2272,7 +2272,7 @@
       "wind_speed_mps": 13.706,
       "air_temp_c": -22.308,
       "air_pressure_hpa": 963.946,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.195
     },
     {
@@ -2280,7 +2280,7 @@
       "wind_speed_mps": 13.751,
       "air_temp_c": -22.279,
       "air_pressure_hpa": 963.943,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.168
     },
     {
@@ -2288,7 +2288,7 @@
       "wind_speed_mps": 13.797,
       "air_temp_c": -22.25,
       "air_pressure_hpa": 963.94,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.142
     },
     {
@@ -2296,7 +2296,7 @@
       "wind_speed_mps": 13.844,
       "air_temp_c": -22.221,
       "air_pressure_hpa": 963.937,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.115
     },
     {
@@ -2304,7 +2304,7 @@
       "wind_speed_mps": 13.891,
       "air_temp_c": -22.192,
       "air_pressure_hpa": 963.934,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.088
     },
     {
@@ -2312,7 +2312,7 @@
       "wind_speed_mps": 13.94,
       "air_temp_c": -22.163,
       "air_pressure_hpa": 963.931,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.061
     },
     {
@@ -2320,7 +2320,7 @@
       "wind_speed_mps": 13.989,
       "air_temp_c": -22.134,
       "air_pressure_hpa": 963.928,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.034
     },
     {
@@ -2328,7 +2328,7 @@
       "wind_speed_mps": 14.039,
       "air_temp_c": -22.105,
       "air_pressure_hpa": 963.925,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.007
     },
     {
@@ -2336,7 +2336,7 @@
       "wind_speed_mps": 14.09,
       "air_temp_c": -22.076,
       "air_pressure_hpa": 963.921,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.98
     },
     {
@@ -2344,7 +2344,7 @@
       "wind_speed_mps": 14.142,
       "air_temp_c": -22.047,
       "air_pressure_hpa": 963.918,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.952
     },
     {
@@ -2352,7 +2352,7 @@
       "wind_speed_mps": 14.194,
       "air_temp_c": -22.017,
       "air_pressure_hpa": 963.914,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.925
     },
     {
@@ -2360,7 +2360,7 @@
       "wind_speed_mps": 14.248,
       "air_temp_c": -21.988,
       "air_pressure_hpa": 963.91,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.897
     },
     {
@@ -2368,7 +2368,7 @@
       "wind_speed_mps": 14.302,
       "air_temp_c": -21.959,
       "air_pressure_hpa": 963.907,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.87
     },
     {
@@ -2376,7 +2376,7 @@
       "wind_speed_mps": 14.357,
       "air_temp_c": -21.929,
       "air_pressure_hpa": 963.903,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.842
     },
     {
@@ -2384,7 +2384,7 @@
       "wind_speed_mps": 14.412,
       "air_temp_c": -21.9,
       "air_pressure_hpa": 963.899,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.814
     },
     {
@@ -2392,7 +2392,7 @@
       "wind_speed_mps": 14.468,
       "air_temp_c": -21.871,
       "air_pressure_hpa": 963.895,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.786
     },
     {
@@ -2400,7 +2400,7 @@
       "wind_speed_mps": 14.526,
       "air_temp_c": -21.841,
       "air_pressure_hpa": 963.891,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.758
     },
     {
@@ -2408,7 +2408,7 @@
       "wind_speed_mps": 14.583,
       "air_temp_c": -21.812,
       "air_pressure_hpa": 963.887,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.73
     },
     {
@@ -2416,7 +2416,7 @@
       "wind_speed_mps": 14.642,
       "air_temp_c": -21.782,
       "air_pressure_hpa": 963.883,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.702
     },
     {
@@ -2424,7 +2424,7 @@
       "wind_speed_mps": 14.701,
       "air_temp_c": -21.753,
       "air_pressure_hpa": 963.879,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.673
     },
     {
@@ -2432,7 +2432,7 @@
       "wind_speed_mps": 14.761,
       "air_temp_c": -21.723,
       "air_pressure_hpa": 963.874,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.645
     },
     {
@@ -2440,7 +2440,7 @@
       "wind_speed_mps": 14.822,
       "air_temp_c": -21.693,
       "air_pressure_hpa": 963.87,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.617
     },
     {
@@ -2448,7 +2448,7 @@
       "wind_speed_mps": 14.883,
       "air_temp_c": -21.664,
       "air_pressure_hpa": 963.866,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.588
     },
     {
@@ -2456,7 +2456,7 @@
       "wind_speed_mps": 14.946,
       "air_temp_c": -21.634,
       "air_pressure_hpa": 963.861,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.559
     },
     {
@@ -2464,7 +2464,7 @@
       "wind_speed_mps": 15.008,
       "air_temp_c": -21.604,
       "air_pressure_hpa": 963.856,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.531
     },
     {
@@ -2472,7 +2472,7 @@
       "wind_speed_mps": 15.072,
       "air_temp_c": -21.575,
       "air_pressure_hpa": 963.852,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.502
     },
     {
@@ -2480,7 +2480,7 @@
       "wind_speed_mps": 15.136,
       "air_temp_c": -21.545,
       "air_pressure_hpa": 963.847,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.473
     },
     {
@@ -2488,7 +2488,7 @@
       "wind_speed_mps": 15.201,
       "air_temp_c": -21.515,
       "air_pressure_hpa": 963.842,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.444
     },
     {
@@ -2496,7 +2496,7 @@
       "wind_speed_mps": 15.266,
       "air_temp_c": -21.485,
       "air_pressure_hpa": 963.837,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.415
     },
     {
@@ -2504,7 +2504,7 @@
       "wind_speed_mps": 15.332,
       "air_temp_c": -21.455,
       "air_pressure_hpa": 963.832,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.386
     },
     {
@@ -2512,7 +2512,7 @@
       "wind_speed_mps": 15.398,
       "air_temp_c": -21.425,
       "air_pressure_hpa": 963.827,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.357
     },
     {
@@ -2520,7 +2520,7 @@
       "wind_speed_mps": 15.466,
       "air_temp_c": -21.396,
       "air_pressure_hpa": 963.822,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.327
     },
     {
@@ -2528,7 +2528,7 @@
       "wind_speed_mps": 15.533,
       "air_temp_c": -21.366,
       "air_pressure_hpa": 963.817,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.298
     },
     {
@@ -2536,7 +2536,7 @@
       "wind_speed_mps": 15.602,
       "air_temp_c": -21.336,
       "air_pressure_hpa": 963.812,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.268
     },
     {
@@ -2544,7 +2544,7 @@
       "wind_speed_mps": 15.671,
       "air_temp_c": -21.306,
       "air_pressure_hpa": 963.806,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.239
     },
     {
@@ -2552,7 +2552,7 @@
       "wind_speed_mps": 15.74,
       "air_temp_c": -21.276,
       "air_pressure_hpa": 963.801,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.209
     },
     {
@@ -2560,7 +2560,7 @@
       "wind_speed_mps": 15.81,
       "air_temp_c": -21.246,
       "air_pressure_hpa": 963.796,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.179
     },
     {
@@ -2568,7 +2568,7 @@
       "wind_speed_mps": 15.881,
       "air_temp_c": -21.216,
       "air_pressure_hpa": 963.79,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.15
     },
     {
@@ -2576,7 +2576,7 @@
       "wind_speed_mps": 15.952,
       "air_temp_c": -21.185,
       "air_pressure_hpa": 963.784,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.12
     },
     {
@@ -2584,7 +2584,7 @@
       "wind_speed_mps": 16.023,
       "air_temp_c": -21.155,
       "air_pressure_hpa": 963.779,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.09
     },
     {
@@ -2592,7 +2592,7 @@
       "wind_speed_mps": 16.095,
       "air_temp_c": -21.125,
       "air_pressure_hpa": 963.773,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.06
     },
     {
@@ -2600,7 +2600,7 @@
       "wind_speed_mps": 16.168,
       "air_temp_c": -21.095,
       "air_pressure_hpa": 963.767,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.03
     },
     {
@@ -2608,7 +2608,7 @@
       "wind_speed_mps": 16.241,
       "air_temp_c": -21.065,
       "air_pressure_hpa": 963.761,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.999
     },
     {
@@ -2616,7 +2616,7 @@
       "wind_speed_mps": 16.314,
       "air_temp_c": -21.035,
       "air_pressure_hpa": 963.755,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.969
     },
     {
@@ -2624,7 +2624,7 @@
       "wind_speed_mps": 16.388,
       "air_temp_c": -21.004,
       "air_pressure_hpa": 963.749,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.939
     },
     {
@@ -2632,7 +2632,7 @@
       "wind_speed_mps": 16.463,
       "air_temp_c": -20.974,
       "air_pressure_hpa": 963.743,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.908
     },
     {
@@ -2640,7 +2640,7 @@
       "wind_speed_mps": 16.537,
       "air_temp_c": -20.944,
       "air_pressure_hpa": 963.737,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.878
     },
     {
@@ -2648,7 +2648,7 @@
       "wind_speed_mps": 16.612,
       "air_temp_c": -20.914,
       "air_pressure_hpa": 963.731,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.847
     },
     {
@@ -2656,7 +2656,7 @@
       "wind_speed_mps": 16.688,
       "air_temp_c": -20.883,
       "air_pressure_hpa": 963.724,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.817
     },
     {
@@ -2664,7 +2664,7 @@
       "wind_speed_mps": 16.764,
       "air_temp_c": -20.853,
       "air_pressure_hpa": 963.718,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.786
     },
     {
@@ -2672,7 +2672,7 @@
       "wind_speed_mps": 16.84,
       "air_temp_c": -20.823,
       "air_pressure_hpa": 963.711,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.755
     },
     {
@@ -2680,7 +2680,7 @@
       "wind_speed_mps": 16.916,
       "air_temp_c": -20.792,
       "air_pressure_hpa": 963.705,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.724
     },
     {
@@ -2688,7 +2688,7 @@
       "wind_speed_mps": 16.993,
       "air_temp_c": -20.762,
       "air_pressure_hpa": 963.698,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.693
     },
     {
@@ -2696,7 +2696,7 @@
       "wind_speed_mps": 17.07,
       "air_temp_c": -20.732,
       "air_pressure_hpa": 963.692,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.662
     },
     {
@@ -2704,7 +2704,7 @@
       "wind_speed_mps": 17.148,
       "air_temp_c": -20.701,
       "air_pressure_hpa": 963.685,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.631
     },
     {
@@ -2712,7 +2712,7 @@
       "wind_speed_mps": 17.226,
       "air_temp_c": -20.671,
       "air_pressure_hpa": 963.678,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.6
     },
     {
@@ -2720,7 +2720,7 @@
       "wind_speed_mps": 17.304,
       "air_temp_c": -20.641,
       "air_pressure_hpa": 963.671,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.569
     },
     {
@@ -2728,7 +2728,7 @@
       "wind_speed_mps": 17.382,
       "air_temp_c": -20.61,
       "air_pressure_hpa": 963.664,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.538
     },
     {
@@ -2736,7 +2736,7 @@
       "wind_speed_mps": 17.46,
       "air_temp_c": -20.58,
       "air_pressure_hpa": 963.657,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.506
     },
     {
@@ -2744,7 +2744,7 @@
       "wind_speed_mps": 17.539,
       "air_temp_c": -20.549,
       "air_pressure_hpa": 963.65,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.475
     },
     {
@@ -2752,7 +2752,7 @@
       "wind_speed_mps": 17.618,
       "air_temp_c": -20.519,
       "air_pressure_hpa": 963.643,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.443
     },
     {
@@ -2760,7 +2760,7 @@
       "wind_speed_mps": 17.697,
       "air_temp_c": -20.488,
       "air_pressure_hpa": 963.636,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.412
     },
     {
@@ -2768,7 +2768,7 @@
       "wind_speed_mps": 17.776,
       "air_temp_c": -20.458,
       "air_pressure_hpa": 963.628,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.38
     },
     {
@@ -2776,7 +2776,7 @@
       "wind_speed_mps": 17.855,
       "air_temp_c": -20.427,
       "air_pressure_hpa": 963.621,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.349
     },
     {
@@ -2784,7 +2784,7 @@
       "wind_speed_mps": 17.935,
       "air_temp_c": -20.397,
       "air_pressure_hpa": 963.613,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.317
     },
     {
@@ -2792,7 +2792,7 @@
       "wind_speed_mps": 18.014,
       "air_temp_c": -20.366,
       "air_pressure_hpa": 963.606,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.285
     },
     {
@@ -2800,7 +2800,7 @@
       "wind_speed_mps": 18.094,
       "air_temp_c": -20.336,
       "air_pressure_hpa": 963.598,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.253
     },
     {
@@ -2808,7 +2808,7 @@
       "wind_speed_mps": 18.174,
       "air_temp_c": -20.305,
       "air_pressure_hpa": 963.591,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.221
     },
     {
@@ -2816,7 +2816,7 @@
       "wind_speed_mps": 18.254,
       "air_temp_c": -20.275,
       "air_pressure_hpa": 963.583,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.189
     },
     {
@@ -2824,7 +2824,7 @@
       "wind_speed_mps": 18.334,
       "air_temp_c": -20.244,
       "air_pressure_hpa": 963.575,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.157
     },
     {
@@ -2832,7 +2832,7 @@
       "wind_speed_mps": 18.414,
       "air_temp_c": -20.214,
       "air_pressure_hpa": 963.567,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.125
     },
     {
@@ -2840,7 +2840,7 @@
       "wind_speed_mps": 18.494,
       "air_temp_c": -20.183,
       "air_pressure_hpa": 963.559,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.093
     },
     {
@@ -2848,7 +2848,7 @@
       "wind_speed_mps": 18.574,
       "air_temp_c": -20.153,
       "air_pressure_hpa": 963.551,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.061
     },
     {
@@ -2856,7 +2856,7 @@
       "wind_speed_mps": 18.653,
       "air_temp_c": -20.122,
       "air_pressure_hpa": 963.543,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.029
     },
     {
@@ -2864,7 +2864,7 @@
       "wind_speed_mps": 18.733,
       "air_temp_c": -20.092,
       "air_pressure_hpa": 963.535,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.996
     },
     {
@@ -2872,7 +2872,7 @@
       "wind_speed_mps": 18.813,
       "air_temp_c": -20.061,
       "air_pressure_hpa": 963.527,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.964
     },
     {
@@ -2880,15 +2880,15 @@
       "wind_speed_mps": 18.893,
       "air_temp_c": -20.031,
       "air_pressure_hpa": 963.519,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.931
     },
     {
       "minute": 360,
       "wind_speed_mps": 18.973,
-      "air_temp_c": -20,
+      "air_temp_c": -20.0,
       "air_pressure_hpa": 963.51,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.899
     },
     {
@@ -3848,7 +3848,7 @@
       "wind_speed_mps": 24.038,
       "air_temp_c": -16.5,
       "air_pressure_hpa": 962.081,
-      "solar_irradiance_w_m2": 360,
+      "solar_irradiance_w_m2": 360.0,
       "humidity_pct": 70.782
     },
     {
@@ -4774,7 +4774,7 @@
     {
       "minute": 596,
       "wind_speed_mps": 19.446,
-      "air_temp_c": -14,
+      "air_temp_c": -14.0,
       "air_pressure_hpa": 960.164,
       "solar_irradiance_w_m2": 617.16,
       "humidity_pct": 67.102
@@ -5750,7 +5750,7 @@
     {
       "minute": 718,
       "wind_speed_mps": 20.205,
-      "air_temp_c": -13,
+      "air_temp_c": -13.0,
       "air_pressure_hpa": 958.113,
       "solar_irradiance_w_m2": 719.973,
       "humidity_pct": 64.569
@@ -5758,7 +5758,7 @@
     {
       "minute": 719,
       "wind_speed_mps": 20.236,
-      "air_temp_c": -13,
+      "air_temp_c": -13.0,
       "air_pressure_hpa": 958.098,
       "solar_irradiance_w_m2": 719.993,
       "humidity_pct": 64.556
@@ -5766,15 +5766,15 @@
     {
       "minute": 720,
       "wind_speed_mps": 20.267,
-      "air_temp_c": -13,
+      "air_temp_c": -13.0,
       "air_pressure_hpa": 958.082,
-      "solar_irradiance_w_m2": 720,
+      "solar_irradiance_w_m2": 720.0,
       "humidity_pct": 64.544
     },
     {
       "minute": 721,
       "wind_speed_mps": 20.297,
-      "air_temp_c": -13,
+      "air_temp_c": -13.0,
       "air_pressure_hpa": 958.067,
       "solar_irradiance_w_m2": 719.993,
       "humidity_pct": 64.531
@@ -5782,7 +5782,7 @@
     {
       "minute": 722,
       "wind_speed_mps": 20.328,
-      "air_temp_c": -13,
+      "air_temp_c": -13.0,
       "air_pressure_hpa": 958.052,
       "solar_irradiance_w_m2": 719.973,
       "humidity_pct": 64.519
@@ -6433,7 +6433,7 @@
       "air_temp_c": -13.454,
       "air_pressure_hpa": 956.963,
       "solar_irradiance_w_m2": 673.297,
-      "humidity_pct": 64
+      "humidity_pct": 64.0
     },
     {
       "minute": 804,
@@ -6441,7 +6441,7 @@
       "air_temp_c": -13.465,
       "air_pressure_hpa": 956.952,
       "solar_irradiance_w_m2": 672.178,
-      "humidity_pct": 64
+      "humidity_pct": 64.0
     },
     {
       "minute": 805,
@@ -6449,7 +6449,7 @@
       "air_temp_c": -13.476,
       "air_pressure_hpa": 956.94,
       "solar_irradiance_w_m2": 671.046,
-      "humidity_pct": 64
+      "humidity_pct": 64.0
     },
     {
       "minute": 806,
@@ -6457,7 +6457,7 @@
       "air_temp_c": -13.487,
       "air_pressure_hpa": 956.929,
       "solar_irradiance_w_m2": 669.901,
-      "humidity_pct": 64
+      "humidity_pct": 64.0
     },
     {
       "minute": 807,
@@ -6465,7 +6465,7 @@
       "air_temp_c": -13.498,
       "air_pressure_hpa": 956.918,
       "solar_irradiance_w_m2": 668.743,
-      "humidity_pct": 64
+      "humidity_pct": 64.0
     },
     {
       "minute": 808,
@@ -6758,7 +6758,7 @@
     {
       "minute": 844,
       "wind_speed_mps": 19.297,
-      "air_temp_c": -14,
+      "air_temp_c": -14.0,
       "air_pressure_hpa": 956.548,
       "solar_irradiance_w_m2": 617.16,
       "humidity_pct": 64.116
@@ -7688,7 +7688,7 @@
       "wind_speed_mps": 10.229,
       "air_temp_c": -16.5,
       "air_pressure_hpa": 956.001,
-      "solar_irradiance_w_m2": 360,
+      "solar_irradiance_w_m2": 360.0,
       "humidity_pct": 65.761
     },
     {
@@ -7703,7 +7703,7 @@
       "minute": 962,
       "wind_speed_mps": 10.109,
       "air_temp_c": -16.553,
-      "air_pressure_hpa": 956,
+      "air_pressure_hpa": 956.0,
       "solar_irradiance_w_m2": 354.545,
       "humidity_pct": 65.805
     },
@@ -7711,7 +7711,7 @@
       "minute": 963,
       "wind_speed_mps": 10.05,
       "air_temp_c": -16.58,
-      "air_pressure_hpa": 956,
+      "air_pressure_hpa": 956.0,
       "solar_irradiance_w_m2": 351.807,
       "humidity_pct": 65.827
     },
@@ -7719,7 +7719,7 @@
       "minute": 964,
       "wind_speed_mps": 9.992,
       "air_temp_c": -16.606,
-      "air_pressure_hpa": 956,
+      "air_pressure_hpa": 956.0,
       "solar_irradiance_w_m2": 349.063,
       "humidity_pct": 65.85
     },
@@ -7727,7 +7727,7 @@
       "minute": 965,
       "wind_speed_mps": 9.935,
       "air_temp_c": -16.633,
-      "air_pressure_hpa": 956,
+      "air_pressure_hpa": 956.0,
       "solar_irradiance_w_m2": 346.312,
       "humidity_pct": 65.872
     },
@@ -7735,7 +7735,7 @@
       "minute": 966,
       "wind_speed_mps": 9.879,
       "air_temp_c": -16.66,
-      "air_pressure_hpa": 956,
+      "air_pressure_hpa": 956.0,
       "solar_irradiance_w_m2": 343.554,
       "humidity_pct": 65.895
     },
@@ -7743,7 +7743,7 @@
       "minute": 967,
       "wind_speed_mps": 9.824,
       "air_temp_c": -16.687,
-      "air_pressure_hpa": 956,
+      "air_pressure_hpa": 956.0,
       "solar_irradiance_w_m2": 340.79,
       "humidity_pct": 65.917
     },
@@ -7751,7 +7751,7 @@
       "minute": 968,
       "wind_speed_mps": 9.77,
       "air_temp_c": -16.714,
-      "air_pressure_hpa": 956,
+      "air_pressure_hpa": 956.0,
       "solar_irradiance_w_m2": 338.02,
       "humidity_pct": 65.94
     },
@@ -7759,7 +7759,7 @@
       "minute": 969,
       "wind_speed_mps": 9.716,
       "air_temp_c": -16.741,
-      "air_pressure_hpa": 956,
+      "air_pressure_hpa": 956.0,
       "solar_irradiance_w_m2": 335.242,
       "humidity_pct": 65.963
     },
@@ -8646,9 +8646,9 @@
     {
       "minute": 1080,
       "wind_speed_mps": 9.027,
-      "air_temp_c": -20,
+      "air_temp_c": -20.0,
       "air_pressure_hpa": 956.49,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.101
     },
     {
@@ -8656,7 +8656,7 @@
       "wind_speed_mps": 9.052,
       "air_temp_c": -20.031,
       "air_pressure_hpa": 956.498,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.134
     },
     {
@@ -8664,7 +8664,7 @@
       "wind_speed_mps": 9.077,
       "air_temp_c": -20.061,
       "air_pressure_hpa": 956.507,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.166
     },
     {
@@ -8672,7 +8672,7 @@
       "wind_speed_mps": 9.103,
       "air_temp_c": -20.092,
       "air_pressure_hpa": 956.515,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.199
     },
     {
@@ -8680,7 +8680,7 @@
       "wind_speed_mps": 9.128,
       "air_temp_c": -20.122,
       "air_pressure_hpa": 956.524,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.232
     },
     {
@@ -8688,7 +8688,7 @@
       "wind_speed_mps": 9.153,
       "air_temp_c": -20.153,
       "air_pressure_hpa": 956.532,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.264
     },
     {
@@ -8696,7 +8696,7 @@
       "wind_speed_mps": 9.178,
       "air_temp_c": -20.183,
       "air_pressure_hpa": 956.541,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.297
     },
     {
@@ -8704,7 +8704,7 @@
       "wind_speed_mps": 9.204,
       "air_temp_c": -20.214,
       "air_pressure_hpa": 956.55,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.33
     },
     {
@@ -8712,7 +8712,7 @@
       "wind_speed_mps": 9.229,
       "air_temp_c": -20.244,
       "air_pressure_hpa": 956.559,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.363
     },
     {
@@ -8720,7 +8720,7 @@
       "wind_speed_mps": 9.254,
       "air_temp_c": -20.275,
       "air_pressure_hpa": 956.568,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.396
     },
     {
@@ -8728,7 +8728,7 @@
       "wind_speed_mps": 9.279,
       "air_temp_c": -20.305,
       "air_pressure_hpa": 956.577,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.429
     },
     {
@@ -8736,7 +8736,7 @@
       "wind_speed_mps": 9.305,
       "air_temp_c": -20.336,
       "air_pressure_hpa": 956.586,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.462
     },
     {
@@ -8744,7 +8744,7 @@
       "wind_speed_mps": 9.33,
       "air_temp_c": -20.366,
       "air_pressure_hpa": 956.595,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.495
     },
     {
@@ -8752,7 +8752,7 @@
       "wind_speed_mps": 9.355,
       "air_temp_c": -20.397,
       "air_pressure_hpa": 956.604,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.529
     },
     {
@@ -8760,7 +8760,7 @@
       "wind_speed_mps": 9.38,
       "air_temp_c": -20.427,
       "air_pressure_hpa": 956.613,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.562
     },
     {
@@ -8768,7 +8768,7 @@
       "wind_speed_mps": 9.404,
       "air_temp_c": -20.458,
       "air_pressure_hpa": 956.623,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.595
     },
     {
@@ -8776,7 +8776,7 @@
       "wind_speed_mps": 9.429,
       "air_temp_c": -20.488,
       "air_pressure_hpa": 956.632,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.628
     },
     {
@@ -8784,7 +8784,7 @@
       "wind_speed_mps": 9.454,
       "air_temp_c": -20.519,
       "air_pressure_hpa": 956.641,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.662
     },
     {
@@ -8792,7 +8792,7 @@
       "wind_speed_mps": 9.478,
       "air_temp_c": -20.549,
       "air_pressure_hpa": 956.651,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.695
     },
     {
@@ -8800,7 +8800,7 @@
       "wind_speed_mps": 9.502,
       "air_temp_c": -20.58,
       "air_pressure_hpa": 956.661,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.729
     },
     {
@@ -8808,7 +8808,7 @@
       "wind_speed_mps": 9.526,
       "air_temp_c": -20.61,
       "air_pressure_hpa": 956.67,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.762
     },
     {
@@ -8816,7 +8816,7 @@
       "wind_speed_mps": 9.55,
       "air_temp_c": -20.641,
       "air_pressure_hpa": 956.68,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.796
     },
     {
@@ -8824,7 +8824,7 @@
       "wind_speed_mps": 9.573,
       "air_temp_c": -20.671,
       "air_pressure_hpa": 956.69,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.829
     },
     {
@@ -8832,7 +8832,7 @@
       "wind_speed_mps": 9.596,
       "air_temp_c": -20.701,
       "air_pressure_hpa": 956.699,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.863
     },
     {
@@ -8840,7 +8840,7 @@
       "wind_speed_mps": 9.62,
       "air_temp_c": -20.732,
       "air_pressure_hpa": 956.709,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.896
     },
     {
@@ -8848,7 +8848,7 @@
       "wind_speed_mps": 9.642,
       "air_temp_c": -20.762,
       "air_pressure_hpa": 956.719,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.93
     },
     {
@@ -8856,7 +8856,7 @@
       "wind_speed_mps": 9.665,
       "air_temp_c": -20.792,
       "air_pressure_hpa": 956.729,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.964
     },
     {
@@ -8864,7 +8864,7 @@
       "wind_speed_mps": 9.687,
       "air_temp_c": -20.823,
       "air_pressure_hpa": 956.739,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 69.998
     },
     {
@@ -8872,7 +8872,7 @@
       "wind_speed_mps": 9.709,
       "air_temp_c": -20.853,
       "air_pressure_hpa": 956.75,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.031
     },
     {
@@ -8880,7 +8880,7 @@
       "wind_speed_mps": 9.73,
       "air_temp_c": -20.883,
       "air_pressure_hpa": 956.76,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.065
     },
     {
@@ -8888,7 +8888,7 @@
       "wind_speed_mps": 9.752,
       "air_temp_c": -20.914,
       "air_pressure_hpa": 956.77,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.099
     },
     {
@@ -8896,7 +8896,7 @@
       "wind_speed_mps": 9.773,
       "air_temp_c": -20.944,
       "air_pressure_hpa": 956.78,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.133
     },
     {
@@ -8904,7 +8904,7 @@
       "wind_speed_mps": 9.793,
       "air_temp_c": -20.974,
       "air_pressure_hpa": 956.791,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.167
     },
     {
@@ -8912,7 +8912,7 @@
       "wind_speed_mps": 9.813,
       "air_temp_c": -21.004,
       "air_pressure_hpa": 956.801,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.201
     },
     {
@@ -8920,7 +8920,7 @@
       "wind_speed_mps": 9.833,
       "air_temp_c": -21.035,
       "air_pressure_hpa": 956.812,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.235
     },
     {
@@ -8928,7 +8928,7 @@
       "wind_speed_mps": 9.852,
       "air_temp_c": -21.065,
       "air_pressure_hpa": 956.822,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.269
     },
     {
@@ -8936,7 +8936,7 @@
       "wind_speed_mps": 9.871,
       "air_temp_c": -21.095,
       "air_pressure_hpa": 956.833,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.303
     },
     {
@@ -8944,7 +8944,7 @@
       "wind_speed_mps": 9.89,
       "air_temp_c": -21.125,
       "air_pressure_hpa": 956.844,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.337
     },
     {
@@ -8952,7 +8952,7 @@
       "wind_speed_mps": 9.908,
       "air_temp_c": -21.155,
       "air_pressure_hpa": 956.854,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.372
     },
     {
@@ -8960,7 +8960,7 @@
       "wind_speed_mps": 9.926,
       "air_temp_c": -21.185,
       "air_pressure_hpa": 956.865,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.406
     },
     {
@@ -8968,7 +8968,7 @@
       "wind_speed_mps": 9.943,
       "air_temp_c": -21.216,
       "air_pressure_hpa": 956.876,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.44
     },
     {
@@ -8976,7 +8976,7 @@
       "wind_speed_mps": 9.96,
       "air_temp_c": -21.246,
       "air_pressure_hpa": 956.887,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.474
     },
     {
@@ -8984,7 +8984,7 @@
       "wind_speed_mps": 9.976,
       "air_temp_c": -21.276,
       "air_pressure_hpa": 956.898,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.508
     },
     {
@@ -8992,7 +8992,7 @@
       "wind_speed_mps": 9.992,
       "air_temp_c": -21.306,
       "air_pressure_hpa": 956.909,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.543
     },
     {
@@ -9000,7 +9000,7 @@
       "wind_speed_mps": 10.007,
       "air_temp_c": -21.336,
       "air_pressure_hpa": 956.92,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.577
     },
     {
@@ -9008,7 +9008,7 @@
       "wind_speed_mps": 10.021,
       "air_temp_c": -21.366,
       "air_pressure_hpa": 956.931,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.611
     },
     {
@@ -9016,7 +9016,7 @@
       "wind_speed_mps": 10.036,
       "air_temp_c": -21.396,
       "air_pressure_hpa": 956.942,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.646
     },
     {
@@ -9024,7 +9024,7 @@
       "wind_speed_mps": 10.049,
       "air_temp_c": -21.425,
       "air_pressure_hpa": 956.954,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.68
     },
     {
@@ -9032,7 +9032,7 @@
       "wind_speed_mps": 10.062,
       "air_temp_c": -21.455,
       "air_pressure_hpa": 956.965,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.715
     },
     {
@@ -9040,7 +9040,7 @@
       "wind_speed_mps": 10.075,
       "air_temp_c": -21.485,
       "air_pressure_hpa": 956.976,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.749
     },
     {
@@ -9048,7 +9048,7 @@
       "wind_speed_mps": 10.087,
       "air_temp_c": -21.515,
       "air_pressure_hpa": 956.988,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.784
     },
     {
@@ -9056,7 +9056,7 @@
       "wind_speed_mps": 10.098,
       "air_temp_c": -21.545,
       "air_pressure_hpa": 956.999,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.818
     },
     {
@@ -9064,7 +9064,7 @@
       "wind_speed_mps": 10.109,
       "air_temp_c": -21.575,
       "air_pressure_hpa": 957.011,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.853
     },
     {
@@ -9072,7 +9072,7 @@
       "wind_speed_mps": 10.119,
       "air_temp_c": -21.604,
       "air_pressure_hpa": 957.023,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.887
     },
     {
@@ -9080,7 +9080,7 @@
       "wind_speed_mps": 10.129,
       "air_temp_c": -21.634,
       "air_pressure_hpa": 957.034,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.922
     },
     {
@@ -9088,7 +9088,7 @@
       "wind_speed_mps": 10.138,
       "air_temp_c": -21.664,
       "air_pressure_hpa": 957.046,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.956
     },
     {
@@ -9096,7 +9096,7 @@
       "wind_speed_mps": 10.146,
       "air_temp_c": -21.693,
       "air_pressure_hpa": 957.058,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 70.991
     },
     {
@@ -9104,7 +9104,7 @@
       "wind_speed_mps": 10.154,
       "air_temp_c": -21.723,
       "air_pressure_hpa": 957.07,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.026
     },
     {
@@ -9112,7 +9112,7 @@
       "wind_speed_mps": 10.161,
       "air_temp_c": -21.753,
       "air_pressure_hpa": 957.082,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.06
     },
     {
@@ -9120,7 +9120,7 @@
       "wind_speed_mps": 10.167,
       "air_temp_c": -21.782,
       "air_pressure_hpa": 957.094,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.095
     },
     {
@@ -9128,7 +9128,7 @@
       "wind_speed_mps": 10.173,
       "air_temp_c": -21.812,
       "air_pressure_hpa": 957.106,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.13
     },
     {
@@ -9136,7 +9136,7 @@
       "wind_speed_mps": 10.178,
       "air_temp_c": -21.841,
       "air_pressure_hpa": 957.118,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.164
     },
     {
@@ -9144,7 +9144,7 @@
       "wind_speed_mps": 10.182,
       "air_temp_c": -21.871,
       "air_pressure_hpa": 957.13,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.199
     },
     {
@@ -9152,7 +9152,7 @@
       "wind_speed_mps": 10.186,
       "air_temp_c": -21.9,
       "air_pressure_hpa": 957.142,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.234
     },
     {
@@ -9160,7 +9160,7 @@
       "wind_speed_mps": 10.189,
       "air_temp_c": -21.929,
       "air_pressure_hpa": 957.154,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.269
     },
     {
@@ -9168,7 +9168,7 @@
       "wind_speed_mps": 10.191,
       "air_temp_c": -21.959,
       "air_pressure_hpa": 957.167,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.303
     },
     {
@@ -9176,7 +9176,7 @@
       "wind_speed_mps": 10.193,
       "air_temp_c": -21.988,
       "air_pressure_hpa": 957.179,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.338
     },
     {
@@ -9184,7 +9184,7 @@
       "wind_speed_mps": 10.194,
       "air_temp_c": -22.017,
       "air_pressure_hpa": 957.191,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.373
     },
     {
@@ -9192,7 +9192,7 @@
       "wind_speed_mps": 10.194,
       "air_temp_c": -22.047,
       "air_pressure_hpa": 957.204,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.408
     },
     {
@@ -9200,7 +9200,7 @@
       "wind_speed_mps": 10.193,
       "air_temp_c": -22.076,
       "air_pressure_hpa": 957.216,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.443
     },
     {
@@ -9208,7 +9208,7 @@
       "wind_speed_mps": 10.192,
       "air_temp_c": -22.105,
       "air_pressure_hpa": 957.229,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.477
     },
     {
@@ -9216,7 +9216,7 @@
       "wind_speed_mps": 10.19,
       "air_temp_c": -22.134,
       "air_pressure_hpa": 957.241,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.512
     },
     {
@@ -9224,7 +9224,7 @@
       "wind_speed_mps": 10.187,
       "air_temp_c": -22.163,
       "air_pressure_hpa": 957.254,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.547
     },
     {
@@ -9232,7 +9232,7 @@
       "wind_speed_mps": 10.184,
       "air_temp_c": -22.192,
       "air_pressure_hpa": 957.267,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.582
     },
     {
@@ -9240,7 +9240,7 @@
       "wind_speed_mps": 10.179,
       "air_temp_c": -22.221,
       "air_pressure_hpa": 957.28,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.617
     },
     {
@@ -9248,7 +9248,7 @@
       "wind_speed_mps": 10.174,
       "air_temp_c": -22.25,
       "air_pressure_hpa": 957.292,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.652
     },
     {
@@ -9256,7 +9256,7 @@
       "wind_speed_mps": 10.169,
       "air_temp_c": -22.279,
       "air_pressure_hpa": 957.305,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.687
     },
     {
@@ -9264,7 +9264,7 @@
       "wind_speed_mps": 10.162,
       "air_temp_c": -22.308,
       "air_pressure_hpa": 957.318,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.721
     },
     {
@@ -9272,7 +9272,7 @@
       "wind_speed_mps": 10.155,
       "air_temp_c": -22.337,
       "air_pressure_hpa": 957.331,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.756
     },
     {
@@ -9280,7 +9280,7 @@
       "wind_speed_mps": 10.147,
       "air_temp_c": -22.365,
       "air_pressure_hpa": 957.344,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.791
     },
     {
@@ -9288,7 +9288,7 @@
       "wind_speed_mps": 10.138,
       "air_temp_c": -22.394,
       "air_pressure_hpa": 957.357,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.826
     },
     {
@@ -9296,7 +9296,7 @@
       "wind_speed_mps": 10.129,
       "air_temp_c": -22.423,
       "air_pressure_hpa": 957.37,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.861
     },
     {
@@ -9304,7 +9304,7 @@
       "wind_speed_mps": 10.118,
       "air_temp_c": -22.451,
       "air_pressure_hpa": 957.384,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.896
     },
     {
@@ -9312,7 +9312,7 @@
       "wind_speed_mps": 10.107,
       "air_temp_c": -22.48,
       "air_pressure_hpa": 957.397,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.931
     },
     {
@@ -9320,7 +9320,7 @@
       "wind_speed_mps": 10.095,
       "air_temp_c": -22.509,
       "air_pressure_hpa": 957.41,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 71.966
     },
     {
@@ -9328,7 +9328,7 @@
       "wind_speed_mps": 10.083,
       "air_temp_c": -22.537,
       "air_pressure_hpa": 957.423,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.001
     },
     {
@@ -9336,7 +9336,7 @@
       "wind_speed_mps": 10.069,
       "air_temp_c": -22.566,
       "air_pressure_hpa": 957.437,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.036
     },
     {
@@ -9344,7 +9344,7 @@
       "wind_speed_mps": 10.055,
       "air_temp_c": -22.594,
       "air_pressure_hpa": 957.45,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.071
     },
     {
@@ -9352,7 +9352,7 @@
       "wind_speed_mps": 10.04,
       "air_temp_c": -22.622,
       "air_pressure_hpa": 957.464,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.105
     },
     {
@@ -9360,7 +9360,7 @@
       "wind_speed_mps": 10.024,
       "air_temp_c": -22.651,
       "air_pressure_hpa": 957.477,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.14
     },
     {
@@ -9368,7 +9368,7 @@
       "wind_speed_mps": 10.008,
       "air_temp_c": -22.679,
       "air_pressure_hpa": 957.491,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.175
     },
     {
@@ -9376,7 +9376,7 @@
       "wind_speed_mps": 9.99,
       "air_temp_c": -22.707,
       "air_pressure_hpa": 957.504,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.21
     },
     {
@@ -9384,7 +9384,7 @@
       "wind_speed_mps": 9.972,
       "air_temp_c": -22.735,
       "air_pressure_hpa": 957.518,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.245
     },
     {
@@ -9392,7 +9392,7 @@
       "wind_speed_mps": 9.953,
       "air_temp_c": -22.763,
       "air_pressure_hpa": 957.532,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.28
     },
     {
@@ -9400,7 +9400,7 @@
       "wind_speed_mps": 9.933,
       "air_temp_c": -22.791,
       "air_pressure_hpa": 957.545,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.315
     },
     {
@@ -9408,7 +9408,7 @@
       "wind_speed_mps": 9.913,
       "air_temp_c": -22.819,
       "air_pressure_hpa": 957.559,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.35
     },
     {
@@ -9416,7 +9416,7 @@
       "wind_speed_mps": 9.892,
       "air_temp_c": -22.847,
       "air_pressure_hpa": 957.573,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.385
     },
     {
@@ -9424,7 +9424,7 @@
       "wind_speed_mps": 9.87,
       "air_temp_c": -22.875,
       "air_pressure_hpa": 957.587,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.419
     },
     {
@@ -9432,7 +9432,7 @@
       "wind_speed_mps": 9.847,
       "air_temp_c": -22.903,
       "air_pressure_hpa": 957.601,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.454
     },
     {
@@ -9440,7 +9440,7 @@
       "wind_speed_mps": 9.823,
       "air_temp_c": -22.931,
       "air_pressure_hpa": 957.615,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.489
     },
     {
@@ -9448,7 +9448,7 @@
       "wind_speed_mps": 9.799,
       "air_temp_c": -22.958,
       "air_pressure_hpa": 957.629,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.524
     },
     {
@@ -9456,7 +9456,7 @@
       "wind_speed_mps": 9.774,
       "air_temp_c": -22.986,
       "air_pressure_hpa": 957.643,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.559
     },
     {
@@ -9464,7 +9464,7 @@
       "wind_speed_mps": 9.748,
       "air_temp_c": -23.014,
       "air_pressure_hpa": 957.657,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.594
     },
     {
@@ -9472,7 +9472,7 @@
       "wind_speed_mps": 9.722,
       "air_temp_c": -23.041,
       "air_pressure_hpa": 957.671,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.628
     },
     {
@@ -9480,7 +9480,7 @@
       "wind_speed_mps": 9.694,
       "air_temp_c": -23.069,
       "air_pressure_hpa": 957.686,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.663
     },
     {
@@ -9488,7 +9488,7 @@
       "wind_speed_mps": 9.666,
       "air_temp_c": -23.096,
       "air_pressure_hpa": 957.7,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.698
     },
     {
@@ -9496,7 +9496,7 @@
       "wind_speed_mps": 9.637,
       "air_temp_c": -23.123,
       "air_pressure_hpa": 957.714,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.733
     },
     {
@@ -9504,7 +9504,7 @@
       "wind_speed_mps": 9.608,
       "air_temp_c": -23.151,
       "air_pressure_hpa": 957.729,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.767
     },
     {
@@ -9512,7 +9512,7 @@
       "wind_speed_mps": 9.577,
       "air_temp_c": -23.178,
       "air_pressure_hpa": 957.743,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.802
     },
     {
@@ -9520,7 +9520,7 @@
       "wind_speed_mps": 9.546,
       "air_temp_c": -23.205,
       "air_pressure_hpa": 957.757,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.837
     },
     {
@@ -9528,7 +9528,7 @@
       "wind_speed_mps": 9.514,
       "air_temp_c": -23.232,
       "air_pressure_hpa": 957.772,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.872
     },
     {
@@ -9536,7 +9536,7 @@
       "wind_speed_mps": 9.482,
       "air_temp_c": -23.259,
       "air_pressure_hpa": 957.786,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.906
     },
     {
@@ -9544,7 +9544,7 @@
       "wind_speed_mps": 9.449,
       "air_temp_c": -23.286,
       "air_pressure_hpa": 957.801,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.941
     },
     {
@@ -9552,7 +9552,7 @@
       "wind_speed_mps": 9.415,
       "air_temp_c": -23.313,
       "air_pressure_hpa": 957.815,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 72.976
     },
     {
@@ -9560,7 +9560,7 @@
       "wind_speed_mps": 9.38,
       "air_temp_c": -23.34,
       "air_pressure_hpa": 957.83,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.01
     },
     {
@@ -9568,7 +9568,7 @@
       "wind_speed_mps": 9.345,
       "air_temp_c": -23.367,
       "air_pressure_hpa": 957.845,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.045
     },
     {
@@ -9576,7 +9576,7 @@
       "wind_speed_mps": 9.309,
       "air_temp_c": -23.394,
       "air_pressure_hpa": 957.86,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.079
     },
     {
@@ -9584,7 +9584,7 @@
       "wind_speed_mps": 9.272,
       "air_temp_c": -23.42,
       "air_pressure_hpa": 957.874,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.114
     },
     {
@@ -9592,7 +9592,7 @@
       "wind_speed_mps": 9.235,
       "air_temp_c": -23.447,
       "air_pressure_hpa": 957.889,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.149
     },
     {
@@ -9600,7 +9600,7 @@
       "wind_speed_mps": 9.197,
       "air_temp_c": -23.474,
       "air_pressure_hpa": 957.904,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.183
     },
     {
@@ -9608,7 +9608,7 @@
       "wind_speed_mps": 9.158,
       "air_temp_c": -23.5,
       "air_pressure_hpa": 957.919,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.218
     },
     {
@@ -9616,7 +9616,7 @@
       "wind_speed_mps": 9.119,
       "air_temp_c": -23.526,
       "air_pressure_hpa": 957.934,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.252
     },
     {
@@ -9624,7 +9624,7 @@
       "wind_speed_mps": 9.079,
       "air_temp_c": -23.553,
       "air_pressure_hpa": 957.949,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.287
     },
     {
@@ -9632,7 +9632,7 @@
       "wind_speed_mps": 9.038,
       "air_temp_c": -23.579,
       "air_pressure_hpa": 957.964,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.321
     },
     {
@@ -9640,7 +9640,7 @@
       "wind_speed_mps": 8.997,
       "air_temp_c": -23.605,
       "air_pressure_hpa": 957.979,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.355
     },
     {
@@ -9648,7 +9648,7 @@
       "wind_speed_mps": 8.955,
       "air_temp_c": -23.631,
       "air_pressure_hpa": 957.994,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.39
     },
     {
@@ -9656,7 +9656,7 @@
       "wind_speed_mps": 8.913,
       "air_temp_c": -23.657,
       "air_pressure_hpa": 958.009,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.424
     },
     {
@@ -9664,7 +9664,7 @@
       "wind_speed_mps": 8.87,
       "air_temp_c": -23.683,
       "air_pressure_hpa": 958.024,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.459
     },
     {
@@ -9672,7 +9672,7 @@
       "wind_speed_mps": 8.826,
       "air_temp_c": -23.709,
       "air_pressure_hpa": 958.039,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.493
     },
     {
@@ -9680,7 +9680,7 @@
       "wind_speed_mps": 8.782,
       "air_temp_c": -23.735,
       "air_pressure_hpa": 958.055,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.527
     },
     {
@@ -9688,7 +9688,7 @@
       "wind_speed_mps": 8.737,
       "air_temp_c": -23.761,
       "air_pressure_hpa": 958.07,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.561
     },
     {
@@ -9696,7 +9696,7 @@
       "wind_speed_mps": 8.692,
       "air_temp_c": -23.787,
       "air_pressure_hpa": 958.085,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.596
     },
     {
@@ -9704,7 +9704,7 @@
       "wind_speed_mps": 8.646,
       "air_temp_c": -23.812,
       "air_pressure_hpa": 958.1,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.63
     },
     {
@@ -9712,7 +9712,7 @@
       "wind_speed_mps": 8.599,
       "air_temp_c": -23.838,
       "air_pressure_hpa": 958.116,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.664
     },
     {
@@ -9720,7 +9720,7 @@
       "wind_speed_mps": 8.552,
       "air_temp_c": -23.864,
       "air_pressure_hpa": 958.131,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.698
     },
     {
@@ -9728,7 +9728,7 @@
       "wind_speed_mps": 8.505,
       "air_temp_c": -23.889,
       "air_pressure_hpa": 958.147,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.732
     },
     {
@@ -9736,7 +9736,7 @@
       "wind_speed_mps": 8.457,
       "air_temp_c": -23.914,
       "air_pressure_hpa": 958.162,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.766
     },
     {
@@ -9744,7 +9744,7 @@
       "wind_speed_mps": 8.409,
       "air_temp_c": -23.94,
       "air_pressure_hpa": 958.178,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.8
     },
     {
@@ -9752,7 +9752,7 @@
       "wind_speed_mps": 8.36,
       "air_temp_c": -23.965,
       "air_pressure_hpa": 958.193,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.834
     },
     {
@@ -9760,7 +9760,7 @@
       "wind_speed_mps": 8.31,
       "air_temp_c": -23.99,
       "air_pressure_hpa": 958.209,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.868
     },
     {
@@ -9768,7 +9768,7 @@
       "wind_speed_mps": 8.26,
       "air_temp_c": -24.015,
       "air_pressure_hpa": 958.224,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.902
     },
     {
@@ -9776,7 +9776,7 @@
       "wind_speed_mps": 8.21,
       "air_temp_c": -24.04,
       "air_pressure_hpa": 958.24,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.936
     },
     {
@@ -9784,7 +9784,7 @@
       "wind_speed_mps": 8.159,
       "air_temp_c": -24.065,
       "air_pressure_hpa": 958.256,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 73.97
     },
     {
@@ -9792,7 +9792,7 @@
       "wind_speed_mps": 8.108,
       "air_temp_c": -24.09,
       "air_pressure_hpa": 958.272,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.004
     },
     {
@@ -9800,7 +9800,7 @@
       "wind_speed_mps": 8.057,
       "air_temp_c": -24.114,
       "air_pressure_hpa": 958.287,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.037
     },
     {
@@ -9808,7 +9808,7 @@
       "wind_speed_mps": 8.005,
       "air_temp_c": -24.139,
       "air_pressure_hpa": 958.303,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.071
     },
     {
@@ -9816,7 +9816,7 @@
       "wind_speed_mps": 7.953,
       "air_temp_c": -24.164,
       "air_pressure_hpa": 958.319,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.105
     },
     {
@@ -9824,7 +9824,7 @@
       "wind_speed_mps": 7.9,
       "air_temp_c": -24.188,
       "air_pressure_hpa": 958.335,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.139
     },
     {
@@ -9832,7 +9832,7 @@
       "wind_speed_mps": 7.847,
       "air_temp_c": -24.213,
       "air_pressure_hpa": 958.351,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.172
     },
     {
@@ -9840,7 +9840,7 @@
       "wind_speed_mps": 7.794,
       "air_temp_c": -24.237,
       "air_pressure_hpa": 958.367,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.206
     },
     {
@@ -9848,7 +9848,7 @@
       "wind_speed_mps": 7.74,
       "air_temp_c": -24.261,
       "air_pressure_hpa": 958.382,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.239
     },
     {
@@ -9856,7 +9856,7 @@
       "wind_speed_mps": 7.686,
       "air_temp_c": -24.286,
       "air_pressure_hpa": 958.398,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.273
     },
     {
@@ -9864,7 +9864,7 @@
       "wind_speed_mps": 7.632,
       "air_temp_c": -24.31,
       "air_pressure_hpa": 958.414,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.306
     },
     {
@@ -9872,7 +9872,7 @@
       "wind_speed_mps": 7.577,
       "air_temp_c": -24.334,
       "air_pressure_hpa": 958.431,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.34
     },
     {
@@ -9880,7 +9880,7 @@
       "wind_speed_mps": 7.522,
       "air_temp_c": -24.358,
       "air_pressure_hpa": 958.447,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.373
     },
     {
@@ -9888,7 +9888,7 @@
       "wind_speed_mps": 7.467,
       "air_temp_c": -24.381,
       "air_pressure_hpa": 958.463,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.406
     },
     {
@@ -9896,7 +9896,7 @@
       "wind_speed_mps": 7.412,
       "air_temp_c": -24.405,
       "air_pressure_hpa": 958.479,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.44
     },
     {
@@ -9904,7 +9904,7 @@
       "wind_speed_mps": 7.356,
       "air_temp_c": -24.429,
       "air_pressure_hpa": 958.495,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.473
     },
     {
@@ -9912,7 +9912,7 @@
       "wind_speed_mps": 7.301,
       "air_temp_c": -24.453,
       "air_pressure_hpa": 958.511,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.506
     },
     {
@@ -9920,7 +9920,7 @@
       "wind_speed_mps": 7.245,
       "air_temp_c": -24.476,
       "air_pressure_hpa": 958.527,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.539
     },
     {
@@ -9928,7 +9928,7 @@
       "wind_speed_mps": 7.189,
       "air_temp_c": -24.5,
       "air_pressure_hpa": 958.544,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.572
     },
     {
@@ -9936,7 +9936,7 @@
       "wind_speed_mps": 7.132,
       "air_temp_c": -24.523,
       "air_pressure_hpa": 958.56,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.605
     },
     {
@@ -9944,7 +9944,7 @@
       "wind_speed_mps": 7.076,
       "air_temp_c": -24.546,
       "air_pressure_hpa": 958.576,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.638
     },
     {
@@ -9952,7 +9952,7 @@
       "wind_speed_mps": 7.019,
       "air_temp_c": -24.569,
       "air_pressure_hpa": 958.592,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.671
     },
     {
@@ -9960,7 +9960,7 @@
       "wind_speed_mps": 6.963,
       "air_temp_c": -24.592,
       "air_pressure_hpa": 958.609,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.704
     },
     {
@@ -9968,7 +9968,7 @@
       "wind_speed_mps": 6.906,
       "air_temp_c": -24.615,
       "air_pressure_hpa": 958.625,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.737
     },
     {
@@ -9976,7 +9976,7 @@
       "wind_speed_mps": 6.849,
       "air_temp_c": -24.638,
       "air_pressure_hpa": 958.642,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.77
     },
     {
@@ -9984,7 +9984,7 @@
       "wind_speed_mps": 6.792,
       "air_temp_c": -24.661,
       "air_pressure_hpa": 958.658,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.802
     },
     {
@@ -9992,7 +9992,7 @@
       "wind_speed_mps": 6.735,
       "air_temp_c": -24.684,
       "air_pressure_hpa": 958.675,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.835
     },
     {
@@ -10000,7 +10000,7 @@
       "wind_speed_mps": 6.678,
       "air_temp_c": -24.707,
       "air_pressure_hpa": 958.691,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.868
     },
     {
@@ -10008,7 +10008,7 @@
       "wind_speed_mps": 6.621,
       "air_temp_c": -24.729,
       "air_pressure_hpa": 958.707,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.9
     },
     {
@@ -10016,7 +10016,7 @@
       "wind_speed_mps": 6.564,
       "air_temp_c": -24.752,
       "air_pressure_hpa": 958.724,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.933
     },
     {
@@ -10024,7 +10024,7 @@
       "wind_speed_mps": 6.507,
       "air_temp_c": -24.774,
       "air_pressure_hpa": 958.741,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.965
     },
     {
@@ -10032,7 +10032,7 @@
       "wind_speed_mps": 6.45,
       "air_temp_c": -24.796,
       "air_pressure_hpa": 958.757,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 74.997
     },
     {
@@ -10040,7 +10040,7 @@
       "wind_speed_mps": 6.393,
       "air_temp_c": -24.818,
       "air_pressure_hpa": 958.774,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.03
     },
     {
@@ -10048,7 +10048,7 @@
       "wind_speed_mps": 6.336,
       "air_temp_c": -24.841,
       "air_pressure_hpa": 958.79,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.062
     },
     {
@@ -10056,7 +10056,7 @@
       "wind_speed_mps": 6.279,
       "air_temp_c": -24.863,
       "air_pressure_hpa": 958.807,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.094
     },
     {
@@ -10064,7 +10064,7 @@
       "wind_speed_mps": 6.222,
       "air_temp_c": -24.885,
       "air_pressure_hpa": 958.824,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.126
     },
     {
@@ -10072,7 +10072,7 @@
       "wind_speed_mps": 6.165,
       "air_temp_c": -24.906,
       "air_pressure_hpa": 958.84,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.159
     },
     {
@@ -10080,7 +10080,7 @@
       "wind_speed_mps": 6.109,
       "air_temp_c": -24.928,
       "air_pressure_hpa": 958.857,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.191
     },
     {
@@ -10088,7 +10088,7 @@
       "wind_speed_mps": 6.052,
       "air_temp_c": -24.95,
       "air_pressure_hpa": 958.874,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.223
     },
     {
@@ -10096,7 +10096,7 @@
       "wind_speed_mps": 5.996,
       "air_temp_c": -24.971,
       "air_pressure_hpa": 958.891,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.255
     },
     {
@@ -10104,7 +10104,7 @@
       "wind_speed_mps": 5.94,
       "air_temp_c": -24.993,
       "air_pressure_hpa": 958.907,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.286
     },
     {
@@ -10112,7 +10112,7 @@
       "wind_speed_mps": 5.884,
       "air_temp_c": -25.014,
       "air_pressure_hpa": 958.924,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.318
     },
     {
@@ -10120,7 +10120,7 @@
       "wind_speed_mps": 5.828,
       "air_temp_c": -25.035,
       "air_pressure_hpa": 958.941,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.35
     },
     {
@@ -10128,7 +10128,7 @@
       "wind_speed_mps": 5.773,
       "air_temp_c": -25.057,
       "air_pressure_hpa": 958.958,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.382
     },
     {
@@ -10136,7 +10136,7 @@
       "wind_speed_mps": 5.718,
       "air_temp_c": -25.078,
       "air_pressure_hpa": 958.975,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.413
     },
     {
@@ -10144,7 +10144,7 @@
       "wind_speed_mps": 5.663,
       "air_temp_c": -25.099,
       "air_pressure_hpa": 958.992,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.445
     },
     {
@@ -10152,7 +10152,7 @@
       "wind_speed_mps": 5.608,
       "air_temp_c": -25.119,
       "air_pressure_hpa": 959.008,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.476
     },
     {
@@ -10160,7 +10160,7 @@
       "wind_speed_mps": 5.553,
       "air_temp_c": -25.14,
       "air_pressure_hpa": 959.025,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.508
     },
     {
@@ -10168,7 +10168,7 @@
       "wind_speed_mps": 5.499,
       "air_temp_c": -25.161,
       "air_pressure_hpa": 959.042,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.539
     },
     {
@@ -10176,7 +10176,7 @@
       "wind_speed_mps": 5.445,
       "air_temp_c": -25.182,
       "air_pressure_hpa": 959.059,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.57
     },
     {
@@ -10184,7 +10184,7 @@
       "wind_speed_mps": 5.392,
       "air_temp_c": -25.202,
       "air_pressure_hpa": 959.076,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.601
     },
     {
@@ -10192,7 +10192,7 @@
       "wind_speed_mps": 5.339,
       "air_temp_c": -25.222,
       "air_pressure_hpa": 959.093,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.633
     },
     {
@@ -10200,7 +10200,7 @@
       "wind_speed_mps": 5.286,
       "air_temp_c": -25.243,
       "air_pressure_hpa": 959.11,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.664
     },
     {
@@ -10208,7 +10208,7 @@
       "wind_speed_mps": 5.233,
       "air_temp_c": -25.263,
       "air_pressure_hpa": 959.127,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.695
     },
     {
@@ -10216,7 +10216,7 @@
       "wind_speed_mps": 5.181,
       "air_temp_c": -25.283,
       "air_pressure_hpa": 959.144,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.726
     },
     {
@@ -10224,7 +10224,7 @@
       "wind_speed_mps": 5.129,
       "air_temp_c": -25.303,
       "air_pressure_hpa": 959.161,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.756
     },
     {
@@ -10232,7 +10232,7 @@
       "wind_speed_mps": 5.078,
       "air_temp_c": -25.323,
       "air_pressure_hpa": 959.178,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.787
     },
     {
@@ -10240,7 +10240,7 @@
       "wind_speed_mps": 5.027,
       "air_temp_c": -25.343,
       "air_pressure_hpa": 959.196,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.818
     },
     {
@@ -10248,7 +10248,7 @@
       "wind_speed_mps": 4.977,
       "air_temp_c": -25.362,
       "air_pressure_hpa": 959.213,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.849
     },
     {
@@ -10256,7 +10256,7 @@
       "wind_speed_mps": 4.927,
       "air_temp_c": -25.382,
       "air_pressure_hpa": 959.23,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.879
     },
     {
@@ -10264,7 +10264,7 @@
       "wind_speed_mps": 4.878,
       "air_temp_c": -25.401,
       "air_pressure_hpa": 959.247,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.91
     },
     {
@@ -10272,7 +10272,7 @@
       "wind_speed_mps": 4.829,
       "air_temp_c": -25.421,
       "air_pressure_hpa": 959.264,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.94
     },
     {
@@ -10280,7 +10280,7 @@
       "wind_speed_mps": 4.78,
       "air_temp_c": -25.44,
       "air_pressure_hpa": 959.281,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 75.97
     },
     {
@@ -10288,7 +10288,7 @@
       "wind_speed_mps": 4.732,
       "air_temp_c": -25.459,
       "air_pressure_hpa": 959.298,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.001
     },
     {
@@ -10296,7 +10296,7 @@
       "wind_speed_mps": 4.685,
       "air_temp_c": -25.478,
       "air_pressure_hpa": 959.316,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.031
     },
     {
@@ -10304,7 +10304,7 @@
       "wind_speed_mps": 4.638,
       "air_temp_c": -25.497,
       "air_pressure_hpa": 959.333,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.061
     },
     {
@@ -10312,7 +10312,7 @@
       "wind_speed_mps": 4.592,
       "air_temp_c": -25.516,
       "air_pressure_hpa": 959.35,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.091
     },
     {
@@ -10320,7 +10320,7 @@
       "wind_speed_mps": 4.546,
       "air_temp_c": -25.535,
       "air_pressure_hpa": 959.367,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.121
     },
     {
@@ -10328,7 +10328,7 @@
       "wind_speed_mps": 4.501,
       "air_temp_c": -25.553,
       "air_pressure_hpa": 959.384,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.151
     },
     {
@@ -10336,7 +10336,7 @@
       "wind_speed_mps": 4.457,
       "air_temp_c": -25.572,
       "air_pressure_hpa": 959.402,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.181
     },
     {
@@ -10344,7 +10344,7 @@
       "wind_speed_mps": 4.413,
       "air_temp_c": -25.59,
       "air_pressure_hpa": 959.419,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.21
     },
     {
@@ -10352,7 +10352,7 @@
       "wind_speed_mps": 4.37,
       "air_temp_c": -25.609,
       "air_pressure_hpa": 959.436,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.24
     },
     {
@@ -10360,7 +10360,7 @@
       "wind_speed_mps": 4.327,
       "air_temp_c": -25.627,
       "air_pressure_hpa": 959.454,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.269
     },
     {
@@ -10368,7 +10368,7 @@
       "wind_speed_mps": 4.285,
       "air_temp_c": -25.645,
       "air_pressure_hpa": 959.471,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.299
     },
     {
@@ -10376,7 +10376,7 @@
       "wind_speed_mps": 4.244,
       "air_temp_c": -25.663,
       "air_pressure_hpa": 959.488,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.328
     },
     {
@@ -10384,7 +10384,7 @@
       "wind_speed_mps": 4.203,
       "air_temp_c": -25.681,
       "air_pressure_hpa": 959.505,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.358
     },
     {
@@ -10392,7 +10392,7 @@
       "wind_speed_mps": 4.164,
       "air_temp_c": -25.699,
       "air_pressure_hpa": 959.523,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.387
     },
     {
@@ -10400,7 +10400,7 @@
       "wind_speed_mps": 4.124,
       "air_temp_c": -25.716,
       "air_pressure_hpa": 959.54,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.416
     },
     {
@@ -10408,7 +10408,7 @@
       "wind_speed_mps": 4.086,
       "air_temp_c": -25.734,
       "air_pressure_hpa": 959.557,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.445
     },
     {
@@ -10416,7 +10416,7 @@
       "wind_speed_mps": 4.048,
       "air_temp_c": -25.752,
       "air_pressure_hpa": 959.575,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.474
     },
     {
@@ -10424,7 +10424,7 @@
       "wind_speed_mps": 4.011,
       "air_temp_c": -25.769,
       "air_pressure_hpa": 959.592,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.503
     },
     {
@@ -10432,7 +10432,7 @@
       "wind_speed_mps": 3.975,
       "air_temp_c": -25.786,
       "air_pressure_hpa": 959.61,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.532
     },
     {
@@ -10440,7 +10440,7 @@
       "wind_speed_mps": 3.94,
       "air_temp_c": -25.803,
       "air_pressure_hpa": 959.627,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.561
     },
     {
@@ -10448,7 +10448,7 @@
       "wind_speed_mps": 3.905,
       "air_temp_c": -25.82,
       "air_pressure_hpa": 959.644,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.589
     },
     {
@@ -10456,7 +10456,7 @@
       "wind_speed_mps": 3.872,
       "air_temp_c": -25.837,
       "air_pressure_hpa": 959.662,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.618
     },
     {
@@ -10464,7 +10464,7 @@
       "wind_speed_mps": 3.839,
       "air_temp_c": -25.854,
       "air_pressure_hpa": 959.679,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.646
     },
     {
@@ -10472,7 +10472,7 @@
       "wind_speed_mps": 3.807,
       "air_temp_c": -25.871,
       "air_pressure_hpa": 959.696,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.675
     },
     {
@@ -10480,7 +10480,7 @@
       "wind_speed_mps": 3.775,
       "air_temp_c": -25.887,
       "air_pressure_hpa": 959.714,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.703
     },
     {
@@ -10488,7 +10488,7 @@
       "wind_speed_mps": 3.745,
       "air_temp_c": -25.904,
       "air_pressure_hpa": 959.731,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.731
     },
     {
@@ -10496,7 +10496,7 @@
       "wind_speed_mps": 3.715,
       "air_temp_c": -25.92,
       "air_pressure_hpa": 959.749,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.759
     },
     {
@@ -10504,7 +10504,7 @@
       "wind_speed_mps": 3.686,
       "air_temp_c": -25.936,
       "air_pressure_hpa": 959.766,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.787
     },
     {
@@ -10512,7 +10512,7 @@
       "wind_speed_mps": 3.658,
       "air_temp_c": -25.952,
       "air_pressure_hpa": 959.784,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.815
     },
     {
@@ -10520,7 +10520,7 @@
       "wind_speed_mps": 3.631,
       "air_temp_c": -25.968,
       "air_pressure_hpa": 959.801,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.843
     },
     {
@@ -10528,15 +10528,15 @@
       "wind_speed_mps": 3.605,
       "air_temp_c": -25.984,
       "air_pressure_hpa": 959.818,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.871
     },
     {
       "minute": 1316,
       "wind_speed_mps": 3.58,
-      "air_temp_c": -26,
+      "air_temp_c": -26.0,
       "air_pressure_hpa": 959.836,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.898
     },
     {
@@ -10544,7 +10544,7 @@
       "wind_speed_mps": 3.556,
       "air_temp_c": -26.016,
       "air_pressure_hpa": 959.853,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.926
     },
     {
@@ -10552,7 +10552,7 @@
       "wind_speed_mps": 3.532,
       "air_temp_c": -26.031,
       "air_pressure_hpa": 959.871,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.953
     },
     {
@@ -10560,7 +10560,7 @@
       "wind_speed_mps": 3.51,
       "air_temp_c": -26.047,
       "air_pressure_hpa": 959.888,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 76.981
     },
     {
@@ -10568,7 +10568,7 @@
       "wind_speed_mps": 3.488,
       "air_temp_c": -26.062,
       "air_pressure_hpa": 959.906,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.008
     },
     {
@@ -10576,7 +10576,7 @@
       "wind_speed_mps": 3.468,
       "air_temp_c": -26.077,
       "air_pressure_hpa": 959.923,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.035
     },
     {
@@ -10584,7 +10584,7 @@
       "wind_speed_mps": 3.448,
       "air_temp_c": -26.092,
       "air_pressure_hpa": 959.941,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.062
     },
     {
@@ -10592,7 +10592,7 @@
       "wind_speed_mps": 3.43,
       "air_temp_c": -26.107,
       "air_pressure_hpa": 959.958,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.089
     },
     {
@@ -10600,7 +10600,7 @@
       "wind_speed_mps": 3.412,
       "air_temp_c": -26.122,
       "air_pressure_hpa": 959.975,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.116
     },
     {
@@ -10608,7 +10608,7 @@
       "wind_speed_mps": 3.395,
       "air_temp_c": -26.137,
       "air_pressure_hpa": 959.993,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.143
     },
     {
@@ -10616,7 +10616,7 @@
       "wind_speed_mps": 3.379,
       "air_temp_c": -26.152,
       "air_pressure_hpa": 960.01,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.17
     },
     {
@@ -10624,7 +10624,7 @@
       "wind_speed_mps": 3.365,
       "air_temp_c": -26.166,
       "air_pressure_hpa": 960.028,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.196
     },
     {
@@ -10632,7 +10632,7 @@
       "wind_speed_mps": 3.351,
       "air_temp_c": -26.181,
       "air_pressure_hpa": 960.045,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.223
     },
     {
@@ -10640,7 +10640,7 @@
       "wind_speed_mps": 3.338,
       "air_temp_c": -26.195,
       "air_pressure_hpa": 960.063,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.249
     },
     {
@@ -10648,7 +10648,7 @@
       "wind_speed_mps": 3.326,
       "air_temp_c": -26.209,
       "air_pressure_hpa": 960.08,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.275
     },
     {
@@ -10656,7 +10656,7 @@
       "wind_speed_mps": 3.315,
       "air_temp_c": -26.223,
       "air_pressure_hpa": 960.098,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.301
     },
     {
@@ -10664,7 +10664,7 @@
       "wind_speed_mps": 3.306,
       "air_temp_c": -26.237,
       "air_pressure_hpa": 960.115,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.328
     },
     {
@@ -10672,7 +10672,7 @@
       "wind_speed_mps": 3.297,
       "air_temp_c": -26.251,
       "air_pressure_hpa": 960.132,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.354
     },
     {
@@ -10680,7 +10680,7 @@
       "wind_speed_mps": 3.289,
       "air_temp_c": -26.265,
       "air_pressure_hpa": 960.15,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.379
     },
     {
@@ -10688,7 +10688,7 @@
       "wind_speed_mps": 3.282,
       "air_temp_c": -26.278,
       "air_pressure_hpa": 960.167,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.405
     },
     {
@@ -10696,7 +10696,7 @@
       "wind_speed_mps": 3.277,
       "air_temp_c": -26.292,
       "air_pressure_hpa": 960.185,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.431
     },
     {
@@ -10704,7 +10704,7 @@
       "wind_speed_mps": 3.272,
       "air_temp_c": -26.305,
       "air_pressure_hpa": 960.202,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.456
     },
     {
@@ -10712,7 +10712,7 @@
       "wind_speed_mps": 3.269,
       "air_temp_c": -26.318,
       "air_pressure_hpa": 960.22,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.482
     },
     {
@@ -10720,7 +10720,7 @@
       "wind_speed_mps": 3.266,
       "air_temp_c": -26.331,
       "air_pressure_hpa": 960.237,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.507
     },
     {
@@ -10728,7 +10728,7 @@
       "wind_speed_mps": 3.264,
       "air_temp_c": -26.344,
       "air_pressure_hpa": 960.254,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.533
     },
     {
@@ -10736,7 +10736,7 @@
       "wind_speed_mps": 3.264,
       "air_temp_c": -26.357,
       "air_pressure_hpa": 960.272,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.558
     },
     {
@@ -10744,7 +10744,7 @@
       "wind_speed_mps": 3.265,
       "air_temp_c": -26.37,
       "air_pressure_hpa": 960.289,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.583
     },
     {
@@ -10752,7 +10752,7 @@
       "wind_speed_mps": 3.266,
       "air_temp_c": -26.382,
       "air_pressure_hpa": 960.307,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.608
     },
     {
@@ -10760,7 +10760,7 @@
       "wind_speed_mps": 3.269,
       "air_temp_c": -26.395,
       "air_pressure_hpa": 960.324,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.633
     },
     {
@@ -10768,7 +10768,7 @@
       "wind_speed_mps": 3.273,
       "air_temp_c": -26.407,
       "air_pressure_hpa": 960.342,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.657
     },
     {
@@ -10776,7 +10776,7 @@
       "wind_speed_mps": 3.278,
       "air_temp_c": -26.419,
       "air_pressure_hpa": 960.359,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.682
     },
     {
@@ -10784,7 +10784,7 @@
       "wind_speed_mps": 3.283,
       "air_temp_c": -26.432,
       "air_pressure_hpa": 960.376,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.706
     },
     {
@@ -10792,7 +10792,7 @@
       "wind_speed_mps": 3.29,
       "air_temp_c": -26.444,
       "air_pressure_hpa": 960.394,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.731
     },
     {
@@ -10800,7 +10800,7 @@
       "wind_speed_mps": 3.298,
       "air_temp_c": -26.455,
       "air_pressure_hpa": 960.411,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.755
     },
     {
@@ -10808,7 +10808,7 @@
       "wind_speed_mps": 3.307,
       "air_temp_c": -26.467,
       "air_pressure_hpa": 960.428,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.779
     },
     {
@@ -10816,7 +10816,7 @@
       "wind_speed_mps": 3.317,
       "air_temp_c": -26.479,
       "air_pressure_hpa": 960.446,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.803
     },
     {
@@ -10824,7 +10824,7 @@
       "wind_speed_mps": 3.329,
       "air_temp_c": -26.49,
       "air_pressure_hpa": 960.463,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.827
     },
     {
@@ -10832,7 +10832,7 @@
       "wind_speed_mps": 3.341,
       "air_temp_c": -26.502,
       "air_pressure_hpa": 960.48,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.851
     },
     {
@@ -10840,7 +10840,7 @@
       "wind_speed_mps": 3.354,
       "air_temp_c": -26.513,
       "air_pressure_hpa": 960.498,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.875
     },
     {
@@ -10848,7 +10848,7 @@
       "wind_speed_mps": 3.369,
       "air_temp_c": -26.524,
       "air_pressure_hpa": 960.515,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.899
     },
     {
@@ -10856,7 +10856,7 @@
       "wind_speed_mps": 3.384,
       "air_temp_c": -26.535,
       "air_pressure_hpa": 960.532,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.922
     },
     {
@@ -10864,7 +10864,7 @@
       "wind_speed_mps": 3.4,
       "air_temp_c": -26.546,
       "air_pressure_hpa": 960.55,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.946
     },
     {
@@ -10872,7 +10872,7 @@
       "wind_speed_mps": 3.418,
       "air_temp_c": -26.557,
       "air_pressure_hpa": 960.567,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.969
     },
     {
@@ -10880,7 +10880,7 @@
       "wind_speed_mps": 3.436,
       "air_temp_c": -26.567,
       "air_pressure_hpa": 960.584,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 77.992
     },
     {
@@ -10888,7 +10888,7 @@
       "wind_speed_mps": 3.456,
       "air_temp_c": -26.578,
       "air_pressure_hpa": 960.601,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.015
     },
     {
@@ -10896,7 +10896,7 @@
       "wind_speed_mps": 3.477,
       "air_temp_c": -26.588,
       "air_pressure_hpa": 960.619,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.038
     },
     {
@@ -10904,7 +10904,7 @@
       "wind_speed_mps": 3.498,
       "air_temp_c": -26.598,
       "air_pressure_hpa": 960.636,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.061
     },
     {
@@ -10912,7 +10912,7 @@
       "wind_speed_mps": 3.521,
       "air_temp_c": -26.609,
       "air_pressure_hpa": 960.653,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.084
     },
     {
@@ -10920,7 +10920,7 @@
       "wind_speed_mps": 3.545,
       "air_temp_c": -26.619,
       "air_pressure_hpa": 960.67,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.106
     },
     {
@@ -10928,7 +10928,7 @@
       "wind_speed_mps": 3.57,
       "air_temp_c": -26.629,
       "air_pressure_hpa": 960.688,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.129
     },
     {
@@ -10936,7 +10936,7 @@
       "wind_speed_mps": 3.596,
       "air_temp_c": -26.638,
       "air_pressure_hpa": 960.705,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.151
     },
     {
@@ -10944,7 +10944,7 @@
       "wind_speed_mps": 3.622,
       "air_temp_c": -26.648,
       "air_pressure_hpa": 960.722,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.173
     },
     {
@@ -10952,7 +10952,7 @@
       "wind_speed_mps": 3.65,
       "air_temp_c": -26.657,
       "air_pressure_hpa": 960.739,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.196
     },
     {
@@ -10960,7 +10960,7 @@
       "wind_speed_mps": 3.679,
       "air_temp_c": -26.667,
       "air_pressure_hpa": 960.756,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.218
     },
     {
@@ -10968,7 +10968,7 @@
       "wind_speed_mps": 3.709,
       "air_temp_c": -26.676,
       "air_pressure_hpa": 960.773,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.24
     },
     {
@@ -10976,7 +10976,7 @@
       "wind_speed_mps": 3.74,
       "air_temp_c": -26.685,
       "air_pressure_hpa": 960.79,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.261
     },
     {
@@ -10984,7 +10984,7 @@
       "wind_speed_mps": 3.772,
       "air_temp_c": -26.694,
       "air_pressure_hpa": 960.808,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.283
     },
     {
@@ -10992,7 +10992,7 @@
       "wind_speed_mps": 3.805,
       "air_temp_c": -26.703,
       "air_pressure_hpa": 960.825,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.305
     },
     {
@@ -11000,7 +11000,7 @@
       "wind_speed_mps": 3.838,
       "air_temp_c": -26.712,
       "air_pressure_hpa": 960.842,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.326
     },
     {
@@ -11008,7 +11008,7 @@
       "wind_speed_mps": 3.873,
       "air_temp_c": -26.72,
       "air_pressure_hpa": 960.859,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.347
     },
     {
@@ -11016,7 +11016,7 @@
       "wind_speed_mps": 3.909,
       "air_temp_c": -26.729,
       "air_pressure_hpa": 960.876,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.368
     },
     {
@@ -11024,7 +11024,7 @@
       "wind_speed_mps": 3.946,
       "air_temp_c": -26.737,
       "air_pressure_hpa": 960.893,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.389
     },
     {
@@ -11032,7 +11032,7 @@
       "wind_speed_mps": 3.984,
       "air_temp_c": -26.745,
       "air_pressure_hpa": 960.91,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.41
     },
     {
@@ -11040,7 +11040,7 @@
       "wind_speed_mps": 4.022,
       "air_temp_c": -26.754,
       "air_pressure_hpa": 960.927,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.431
     },
     {
@@ -11048,7 +11048,7 @@
       "wind_speed_mps": 4.062,
       "air_temp_c": -26.761,
       "air_pressure_hpa": 960.944,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.452
     },
     {
@@ -11056,7 +11056,7 @@
       "wind_speed_mps": 4.102,
       "air_temp_c": -26.769,
       "air_pressure_hpa": 960.961,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.473
     },
     {
@@ -11064,7 +11064,7 @@
       "wind_speed_mps": 4.144,
       "air_temp_c": -26.777,
       "air_pressure_hpa": 960.978,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.493
     },
     {
@@ -11072,7 +11072,7 @@
       "wind_speed_mps": 4.186,
       "air_temp_c": -26.785,
       "air_pressure_hpa": 960.995,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.513
     },
     {
@@ -11080,7 +11080,7 @@
       "wind_speed_mps": 4.229,
       "air_temp_c": -26.792,
       "air_pressure_hpa": 961.012,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.534
     },
     {
@@ -11088,7 +11088,7 @@
       "wind_speed_mps": 4.274,
       "air_temp_c": -26.799,
       "air_pressure_hpa": 961.028,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.554
     },
     {
@@ -11096,7 +11096,7 @@
       "wind_speed_mps": 4.319,
       "air_temp_c": -26.807,
       "air_pressure_hpa": 961.045,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.574
     },
     {
@@ -11104,7 +11104,7 @@
       "wind_speed_mps": 4.365,
       "air_temp_c": -26.814,
       "air_pressure_hpa": 961.062,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.593
     },
     {
@@ -11112,7 +11112,7 @@
       "wind_speed_mps": 4.411,
       "air_temp_c": -26.821,
       "air_pressure_hpa": 961.079,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.613
     },
     {
@@ -11120,7 +11120,7 @@
       "wind_speed_mps": 4.459,
       "air_temp_c": -26.827,
       "air_pressure_hpa": 961.096,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.633
     },
     {
@@ -11128,7 +11128,7 @@
       "wind_speed_mps": 4.507,
       "air_temp_c": -26.834,
       "air_pressure_hpa": 961.112,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.652
     },
     {
@@ -11136,7 +11136,7 @@
       "wind_speed_mps": 4.557,
       "air_temp_c": -26.841,
       "air_pressure_hpa": 961.129,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.671
     },
     {
@@ -11144,7 +11144,7 @@
       "wind_speed_mps": 4.607,
       "air_temp_c": -26.847,
       "air_pressure_hpa": 961.146,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.691
     },
     {
@@ -11152,7 +11152,7 @@
       "wind_speed_mps": 4.658,
       "air_temp_c": -26.853,
       "air_pressure_hpa": 961.163,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.71
     },
     {
@@ -11160,7 +11160,7 @@
       "wind_speed_mps": 4.71,
       "air_temp_c": -26.859,
       "air_pressure_hpa": 961.179,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.729
     },
     {
@@ -11168,7 +11168,7 @@
       "wind_speed_mps": 4.762,
       "air_temp_c": -26.865,
       "air_pressure_hpa": 961.196,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.748
     },
     {
@@ -11176,7 +11176,7 @@
       "wind_speed_mps": 4.816,
       "air_temp_c": -26.871,
       "air_pressure_hpa": 961.213,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.766
     },
     {
@@ -11184,7 +11184,7 @@
       "wind_speed_mps": 4.87,
       "air_temp_c": -26.877,
       "air_pressure_hpa": 961.229,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.785
     },
     {
@@ -11192,7 +11192,7 @@
       "wind_speed_mps": 4.925,
       "air_temp_c": -26.883,
       "air_pressure_hpa": 961.246,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.803
     },
     {
@@ -11200,7 +11200,7 @@
       "wind_speed_mps": 4.98,
       "air_temp_c": -26.888,
       "air_pressure_hpa": 961.262,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.821
     },
     {
@@ -11208,7 +11208,7 @@
       "wind_speed_mps": 5.037,
       "air_temp_c": -26.894,
       "air_pressure_hpa": 961.279,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.84
     },
     {
@@ -11216,7 +11216,7 @@
       "wind_speed_mps": 5.094,
       "air_temp_c": -26.899,
       "air_pressure_hpa": 961.296,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.858
     },
     {
@@ -11224,7 +11224,7 @@
       "wind_speed_mps": 5.152,
       "air_temp_c": -26.904,
       "air_pressure_hpa": 961.312,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.876
     },
     {
@@ -11232,7 +11232,7 @@
       "wind_speed_mps": 5.21,
       "air_temp_c": -26.909,
       "air_pressure_hpa": 961.329,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.893
     },
     {
@@ -11240,7 +11240,7 @@
       "wind_speed_mps": 5.269,
       "air_temp_c": -26.914,
       "air_pressure_hpa": 961.345,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.911
     },
     {
@@ -11248,7 +11248,7 @@
       "wind_speed_mps": 5.329,
       "air_temp_c": -26.919,
       "air_pressure_hpa": 961.361,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.929
     },
     {
@@ -11256,7 +11256,7 @@
       "wind_speed_mps": 5.39,
       "air_temp_c": -26.923,
       "air_pressure_hpa": 961.378,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.946
     },
     {
@@ -11264,7 +11264,7 @@
       "wind_speed_mps": 5.451,
       "air_temp_c": -26.928,
       "air_pressure_hpa": 961.394,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.963
     },
     {
@@ -11272,7 +11272,7 @@
       "wind_speed_mps": 5.513,
       "air_temp_c": -26.932,
       "air_pressure_hpa": 961.41,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.98
     },
     {
@@ -11280,7 +11280,7 @@
       "wind_speed_mps": 5.575,
       "air_temp_c": -26.936,
       "air_pressure_hpa": 961.427,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 78.997
     },
     {
@@ -11288,7 +11288,7 @@
       "wind_speed_mps": 5.638,
       "air_temp_c": -26.94,
       "air_pressure_hpa": 961.443,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.014
     },
     {
@@ -11296,7 +11296,7 @@
       "wind_speed_mps": 5.701,
       "air_temp_c": -26.944,
       "air_pressure_hpa": 961.459,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.031
     },
     {
@@ -11304,7 +11304,7 @@
       "wind_speed_mps": 5.766,
       "air_temp_c": -26.948,
       "air_pressure_hpa": 961.476,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.047
     },
     {
@@ -11312,7 +11312,7 @@
       "wind_speed_mps": 5.83,
       "air_temp_c": -26.951,
       "air_pressure_hpa": 961.492,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.064
     },
     {
@@ -11320,7 +11320,7 @@
       "wind_speed_mps": 5.896,
       "air_temp_c": -26.955,
       "air_pressure_hpa": 961.508,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.08
     },
     {
@@ -11328,7 +11328,7 @@
       "wind_speed_mps": 5.961,
       "air_temp_c": -26.958,
       "air_pressure_hpa": 961.524,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.096
     },
     {
@@ -11336,7 +11336,7 @@
       "wind_speed_mps": 6.028,
       "air_temp_c": -26.962,
       "air_pressure_hpa": 961.54,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.112
     },
     {
@@ -11344,7 +11344,7 @@
       "wind_speed_mps": 6.094,
       "air_temp_c": -26.965,
       "air_pressure_hpa": 961.556,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.128
     },
     {
@@ -11352,7 +11352,7 @@
       "wind_speed_mps": 6.162,
       "air_temp_c": -26.968,
       "air_pressure_hpa": 961.572,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.144
     },
     {
@@ -11360,7 +11360,7 @@
       "wind_speed_mps": 6.23,
       "air_temp_c": -26.971,
       "air_pressure_hpa": 961.588,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.16
     },
     {
@@ -11368,7 +11368,7 @@
       "wind_speed_mps": 6.298,
       "air_temp_c": -26.973,
       "air_pressure_hpa": 961.604,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.175
     },
     {
@@ -11376,7 +11376,7 @@
       "wind_speed_mps": 6.366,
       "air_temp_c": -26.976,
       "air_pressure_hpa": 961.62,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.191
     },
     {
@@ -11384,7 +11384,7 @@
       "wind_speed_mps": 6.435,
       "air_temp_c": -26.978,
       "air_pressure_hpa": 961.636,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.206
     },
     {
@@ -11392,7 +11392,7 @@
       "wind_speed_mps": 6.505,
       "air_temp_c": -26.981,
       "air_pressure_hpa": 961.652,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.221
     },
     {
@@ -11400,7 +11400,7 @@
       "wind_speed_mps": 6.575,
       "air_temp_c": -26.983,
       "air_pressure_hpa": 961.668,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.236
     },
     {
@@ -11408,7 +11408,7 @@
       "wind_speed_mps": 6.645,
       "air_temp_c": -26.985,
       "air_pressure_hpa": 961.684,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.251
     },
     {
@@ -11416,7 +11416,7 @@
       "wind_speed_mps": 6.716,
       "air_temp_c": -26.987,
       "air_pressure_hpa": 961.7,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.265
     },
     {
@@ -11424,7 +11424,7 @@
       "wind_speed_mps": 6.787,
       "air_temp_c": -26.989,
       "air_pressure_hpa": 961.716,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.28
     },
     {
@@ -11432,7 +11432,7 @@
       "wind_speed_mps": 6.858,
       "air_temp_c": -26.99,
       "air_pressure_hpa": 961.731,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.294
     },
     {
@@ -11440,7 +11440,7 @@
       "wind_speed_mps": 6.93,
       "air_temp_c": -26.992,
       "air_pressure_hpa": 961.747,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.309
     },
     {
@@ -11448,7 +11448,7 @@
       "wind_speed_mps": 7.001,
       "air_temp_c": -26.993,
       "air_pressure_hpa": 961.763,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.323
     },
     {
@@ -11456,7 +11456,7 @@
       "wind_speed_mps": 7.074,
       "air_temp_c": -26.995,
       "air_pressure_hpa": 961.778,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.337
     },
     {
@@ -11464,7 +11464,7 @@
       "wind_speed_mps": 7.146,
       "air_temp_c": -26.996,
       "air_pressure_hpa": 961.794,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.351
     },
     {
@@ -11472,7 +11472,7 @@
       "wind_speed_mps": 7.219,
       "air_temp_c": -26.997,
       "air_pressure_hpa": 961.81,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.364
     },
     {
@@ -11480,7 +11480,7 @@
       "wind_speed_mps": 7.292,
       "air_temp_c": -26.998,
       "air_pressure_hpa": 961.825,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.378
     },
     {
@@ -11488,7 +11488,7 @@
       "wind_speed_mps": 7.365,
       "air_temp_c": -26.998,
       "air_pressure_hpa": 961.841,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.391
     },
     {
@@ -11496,7 +11496,7 @@
       "wind_speed_mps": 7.438,
       "air_temp_c": -26.999,
       "air_pressure_hpa": 961.856,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.405
     },
     {
@@ -11504,23 +11504,23 @@
       "wind_speed_mps": 7.512,
       "air_temp_c": -26.999,
       "air_pressure_hpa": 961.872,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.418
     },
     {
       "minute": 1438,
       "wind_speed_mps": 7.586,
-      "air_temp_c": -27,
+      "air_temp_c": -27.0,
       "air_pressure_hpa": 961.887,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.431
     },
     {
       "minute": 1439,
       "wind_speed_mps": 7.659,
-      "air_temp_c": -27,
+      "air_temp_c": -27.0,
       "air_pressure_hpa": 961.902,
-      "solar_irradiance_w_m2": 0,
+      "solar_irradiance_w_m2": 0.0,
       "humidity_pct": 79.444
     }
   ],
@@ -13896,171 +13896,171 @@
       },
       {
         "minute": 592,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 593,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 594,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 595,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 596,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 597,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 598,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 599,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 600,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 601,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 602,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 603,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 604,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 605,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 606,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 607,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 608,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 609,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 610,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 611,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 612,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 613,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 614,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 615,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 616,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 617,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 618,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 619,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 620,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 621,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 622,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 623,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 624,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 625,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 626,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 627,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 628,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 629,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 630,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 631,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 632,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 633,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 634,
@@ -15724,11 +15724,11 @@
       },
       {
         "minute": 1049,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 1050,
-        "p_kw": 1
+        "p_kw": 1.0
       },
       {
         "minute": 1051,
@@ -19734,19 +19734,19 @@
       },
       {
         "minute": 611,
-        "p_kw": 100
+        "p_kw": 100.0
       },
       {
         "minute": 612,
-        "p_kw": 100
+        "p_kw": 100.0
       },
       {
         "minute": 613,
-        "p_kw": 100
+        "p_kw": 100.0
       },
       {
         "minute": 614,
-        "p_kw": 100
+        "p_kw": 100.0
       },
       {
         "minute": 615,
@@ -22614,19 +22614,19 @@
       },
       {
         "minute": 1331,
-        "p_kw": 76
+        "p_kw": 76.0
       },
       {
         "minute": 1332,
-        "p_kw": 76
+        "p_kw": 76.0
       },
       {
         "minute": 1333,
-        "p_kw": 76
+        "p_kw": 76.0
       },
       {
         "minute": 1334,
-        "p_kw": 76
+        "p_kw": 76.0
       },
       {
         "minute": 1335,
@@ -23052,408 +23052,524 @@
   },
   "sources": [
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E9%A3%8E%E7%94%B5-1:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流风电-1",
       "name": "交流风电-1",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 3.0,
+      "min": 0.0,
+      "max": 10.1,
       "points": [
         {
-          "minute": 0,
-          "value": 3
+          "minute": 0.0,
+          "value": 3.0
         }
       ]
     },
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E9%A3%8E%E7%94%B5-2:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流风电-2",
       "name": "交流风电-2",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 3.0,
+      "min": 0.0,
+      "max": 10.1,
       "points": [
         {
-          "minute": 0,
-          "value": 3
+          "minute": 0.0,
+          "value": 3.0
         }
       ]
     },
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E9%A3%8E%E7%94%B5-3:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流风电-3",
       "name": "交流风电-3",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 3.0,
+      "min": 0.0,
+      "max": 10.1,
       "points": [
         {
-          "minute": 0,
-          "value": 3
+          "minute": 0.0,
+          "value": 3.0
         }
       ]
     },
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E9%A3%8E%E7%94%B5-4:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流风电-4",
       "name": "交流风电-4",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 3.0,
+      "min": 0.0,
+      "max": 10.1,
       "points": [
         {
-          "minute": 0,
-          "value": 3
+          "minute": 0.0,
+          "value": 3.0
         }
       ]
     },
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E9%A3%8E%E7%94%B5-5:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流风电-5",
       "name": "交流风电-5",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 3.0,
+      "min": 0.0,
+      "max": 10.1,
       "points": [
         {
-          "minute": 0,
-          "value": 3
+          "minute": 0.0,
+          "value": 3.0
         }
       ]
     },
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E9%A3%8E%E7%94%B5-6:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流风电-6",
       "name": "交流风电-6",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 3.0,
+      "min": 0.0,
+      "max": 10.1,
       "points": [
         {
-          "minute": 0,
-          "value": 3
+          "minute": 0.0,
+          "value": 3.0
         }
       ]
     },
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E9%A3%8E%E7%94%B5-7:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流风电-7",
       "name": "交流风电-7",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 3.0,
+      "min": 0.0,
+      "max": 10.1,
       "points": [
         {
-          "minute": 0,
-          "value": 3
+          "minute": 0.0,
+          "value": 3.0
         }
       ]
     },
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E9%A3%8E%E7%94%B5-8:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流风电-8",
       "name": "交流风电-8",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 3.0,
+      "min": 0.0,
+      "max": 10.1,
       "points": [
         {
-          "minute": 0,
-          "value": 3
+          "minute": 0.0,
+          "value": 3.0
         }
       ]
     },
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E9%A3%8E%E7%94%B5-9:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流风电-9",
       "name": "交流风电-9",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 3.0,
+      "min": 0.0,
+      "max": 10.1,
       "points": [
         {
-          "minute": 0,
-          "value": 3
+          "minute": 0.0,
+          "value": 3.0
         }
       ]
     },
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E9%A3%8E%E7%94%B5-10:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流风电-10",
       "name": "交流风电-10",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 3.0,
+      "min": 0.0,
+      "max": 10.1,
       "points": [
         {
-          "minute": 0,
-          "value": 3
+          "minute": 0.0,
+          "value": 3.0
         }
       ]
     },
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E7%94%B5%E5%8C%96%E5%AD%A6%E5%82%A8%E8%83%BD-23:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流电化学储能-23",
       "name": "交流电化学储能-23",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 0.0,
+      "min": -100.0,
+      "max": 100.0,
       "points": [
         {
-          "minute": 0,
-          "value": 0
+          "minute": 0.0,
+          "value": 0.0
         }
       ]
     },
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E9%A3%8E%E5%8A%9B%E5%8F%91%E7%94%B5%E6%9C%BA-24:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流风力发电机-24",
       "name": "交流风力发电机-24",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 0.0,
+      "min": 0.0,
+      "max": 50.0,
       "points": [
         {
-          "minute": 0,
-          "value": 0
+          "minute": 0.0,
+          "value": 0.0
         }
       ]
     },
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E5%85%89%E4%BC%8F%E5%8F%91%E7%94%B5%E6%9C%BA-25:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流光伏发电机-25",
       "name": "交流光伏发电机-25",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 0.0,
+      "min": 0.0,
+      "max": 20.0,
       "points": [
         {
-          "minute": 0,
-          "value": 0
+          "minute": 0.0,
+          "value": 0.0
         }
       ]
     },
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E7%94%B5%E5%8C%96%E5%AD%A6%E5%82%A8%E8%83%BD-26:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流电化学储能-26",
       "name": "交流电化学储能-26",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 0.0,
+      "min": -100.0,
+      "max": 100.0,
       "points": [
         {
-          "minute": 0,
-          "value": 0
+          "minute": 0.0,
+          "value": 0.0
         }
       ]
     },
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E6%9F%B4%E6%B2%B9%E5%8F%91%E7%94%B5%E6%9C%BA-27:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流柴油发电机-27",
       "name": "交流柴油发电机-27",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 0.0,
+      "min": 70.0,
+      "max": 300.0,
       "points": [
         {
-          "minute": 0,
-          "value": 0
+          "minute": 0.0,
+          "value": 0.0
         }
       ]
     },
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E6%9F%B4%E6%B2%B9%E5%8F%91%E7%94%B5%E6%9C%BA-28:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流柴油发电机-28",
       "name": "交流柴油发电机-28",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 0.0,
+      "min": 70.0,
+      "max": 300.0,
       "points": [
         {
-          "minute": 0,
-          "value": 0
+          "minute": 0.0,
+          "value": 0.0
         }
       ]
     },
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E6%9F%B4%E6%B2%B9%E5%8F%91%E7%94%B5%E6%9C%BA-29:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流柴油发电机-29",
       "name": "交流柴油发电机-29",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 0.0,
+      "min": 70.0,
+      "max": 300.0,
       "points": [
         {
-          "minute": 0,
-          "value": 0
+          "minute": 0.0,
+          "value": 0.0
         }
       ]
     },
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E6%9F%B4%E6%B2%B9%E5%8F%91%E7%94%B5%E6%9C%BA-30:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流柴油发电机-30",
       "name": "交流柴油发电机-30",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 0.0,
+      "min": 70.0,
+      "max": 300.0,
       "points": [
         {
-          "minute": 0,
-          "value": 0
+          "minute": 0.0,
+          "value": 0.0
         }
       ]
     },
     {
+      "key": "source:DCGenerator:%E7%9B%B4%E6%B5%81%E5%85%89%E4%BC%8F-1:p_set",
       "dev_type": "DCGenerator",
       "dev_name": "直流光伏-1",
       "name": "直流光伏-1",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 5.0,
+      "min": 0.0,
+      "max": 50.0,
       "points": [
         {
-          "minute": 0,
-          "value": 5
+          "minute": 0.0,
+          "value": 5.0
         }
       ]
     },
     {
+      "key": "source:DCGenerator:%E7%9B%B4%E6%B5%81%E5%85%89%E4%BC%8F-2:p_set",
       "dev_type": "DCGenerator",
       "dev_name": "直流光伏-2",
       "name": "直流光伏-2",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 5.0,
+      "min": 0.0,
+      "max": 50.0,
       "points": [
         {
-          "minute": 0,
-          "value": 5
+          "minute": 0.0,
+          "value": 5.0
         }
       ]
     },
     {
+      "key": "source:DCGenerator:%E7%9B%B4%E6%B5%81%E5%85%89%E4%BC%8F-3:p_set",
       "dev_type": "DCGenerator",
       "dev_name": "直流光伏-3",
       "name": "直流光伏-3",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 5.0,
+      "min": 0.0,
+      "max": 50.0,
       "points": [
         {
-          "minute": 0,
-          "value": 5
+          "minute": 0.0,
+          "value": 5.0
         }
       ]
     },
     {
+      "key": "source:DCGenerator:%E7%94%B5%E5%8C%96%E5%AD%A6%E5%82%A8%E8%83%BD-1:p_set",
       "dev_type": "DCGenerator",
       "dev_name": "电化学储能-1",
       "name": "电化学储能-1",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 0.0,
+      "min": -60.0,
+      "max": 60.0,
       "points": [
         {
-          "minute": 0,
-          "value": 0
+          "minute": 0.0,
+          "value": 0.0
         }
       ]
     },
     {
+      "key": "source:DCGenerator:%E7%94%B5%E5%8C%96%E5%AD%A6%E5%82%A8%E8%83%BD-2:p_set",
       "dev_type": "DCGenerator",
       "dev_name": "电化学储能-2",
       "name": "电化学储能-2",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 0.0,
+      "min": -60.0,
+      "max": 60.0,
       "points": [
         {
-          "minute": 0,
-          "value": 0
+          "minute": 0.0,
+          "value": 0.0
         }
       ]
     },
     {
+      "key": "source:DCGenerator:%E7%94%B5%E5%8C%96%E5%AD%A6%E5%82%A8%E8%83%BD-3:p_set",
       "dev_type": "DCGenerator",
       "dev_name": "电化学储能-3",
       "name": "电化学储能-3",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 0.0,
+      "min": -60.0,
+      "max": 60.0,
       "points": [
         {
-          "minute": 0,
-          "value": 0
+          "minute": 0.0,
+          "value": 0.0
         }
       ]
     },
     {
+      "key": "source:DCGenerator:%E7%94%B5%E5%8C%96%E5%AD%A6%E5%82%A8%E8%83%BD-4:p_set",
       "dev_type": "DCGenerator",
       "dev_name": "电化学储能-4",
       "name": "电化学储能-4",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 0.0,
+      "min": -60.0,
+      "max": 60.0,
       "points": [
         {
-          "minute": 0,
-          "value": 0
+          "minute": 0.0,
+          "value": 0.0
         }
       ]
     },
     {
+      "key": "source:DCGenerator:%E7%94%B5%E5%8C%96%E5%AD%A6%E5%82%A8%E8%83%BD-5:p_set",
       "dev_type": "DCGenerator",
       "dev_name": "电化学储能-5",
       "name": "电化学储能-5",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 0.0,
+      "min": -60.0,
+      "max": 60.0,
       "points": [
         {
-          "minute": 0,
-          "value": 0
+          "minute": 0.0,
+          "value": 0.0
         }
       ]
     },
     {
+      "key": "source:DCGenerator:%E7%94%B5%E5%8C%96%E5%AD%A6%E5%82%A8%E8%83%BD-6:p_set",
       "dev_type": "DCGenerator",
       "dev_name": "电化学储能-6",
       "name": "电化学储能-6",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 0.0,
+      "min": -60.0,
+      "max": 60.0,
       "points": [
         {
-          "minute": 0,
-          "value": 0
+          "minute": 0.0,
+          "value": 0.0
         }
       ]
     },
     {
+      "key": "source:DCGenerator:%E7%9B%B4%E6%B5%81%E7%87%83%E6%96%99%E7%94%B5%E6%B1%A0-1_%E7%9B%B4%E6%B5%81%E8%AE%BE%E5%A4%87%E7%AB%AF%E7%9B%B4%E6%B5%81%E7%94%B5%E6%BA%90:p_set",
       "dev_type": "DCGenerator",
       "dev_name": "直流燃料电池-1_直流设备端直流电源",
       "name": "直流燃料电池-1_直流设备端直流电源",
       "set_type": "p_set",
       "family": "electric",
       "unit": "kW",
+      "default_value": 0.0,
+      "min": 0.0,
+      "max": 30.0,
       "points": [
         {
-          "minute": 0,
-          "value": 0
+          "minute": 0.0,
+          "value": 0.0
         }
       ]
     },
     {
+      "key": "source:HydroSource:%E4%BA%A4%E6%B5%81%E7%94%B5%E5%88%B6%E6%B0%A2-1_%E6%B0%A2%E8%83%BD%E8%AE%BE%E5%A4%87%E7%AB%AF%E6%B0%A2%E6%BA%90:flow_set",
       "dev_type": "HydroSource",
       "dev_name": "交流电制氢-1_氢能设备端氢源",
       "name": "交流电制氢-1_氢能设备端氢源",
       "set_type": "flow_set",
       "family": "hydrogen",
       "unit": "Nm3/h",
+      "default_value": 10.0,
+      "min": 0.0,
+      "max": 10.0,
       "points": [
         {
-          "minute": 0,
-          "value": 10
+          "minute": 0.0,
+          "value": 10.0
         }
       ]
     }

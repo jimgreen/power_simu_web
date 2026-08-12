@@ -10,7 +10,7 @@ from simu.definition_editing import render_ebook_aligned
 
 
 class ControlSafetyBoundsTest(unittest.TestCase):
-    def _make_service(self):
+    def _make_service(self, *, enforce_runtime_setpoint_bounds=True):
         from simu.generate_simple_model import write_model_dir
         from simu.service import PolarMicrogridSimulator
 
@@ -20,7 +20,12 @@ class ControlSafetyBoundsTest(unittest.TestCase):
         source = root / "source"
         runtime = root / "runtime"
         write_model_dir(source)
-        service = PolarMicrogridSimulator(source, runtime, kernel=lambda _config: None)
+        service = PolarMicrogridSimulator(
+            source,
+            runtime,
+            kernel=lambda _config: None,
+            enforce_runtime_setpoint_bounds=enforce_runtime_setpoint_bounds,
+        )
         return service, runtime
 
     @staticmethod
@@ -114,6 +119,173 @@ class ControlSafetyBoundsTest(unittest.TestCase):
                     self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"),
                     str(value),
                 )
+
+    def test_simulator_boundary_accepts_out_of_bounds_remote_adjustment(self):
+        service, _runtime = self._make_service(enforce_runtime_setpoint_bounds=False)
+        self._add_fields(
+            service,
+            "ACGenerator",
+            "diesel_300kw",
+            {"p_min": 70, "p_max": 300},
+        )
+        service.remote_adjustment_response_ratio = 1.0
+
+        result = service.apply_student_commands(
+            {
+                "set_values": [
+                    {
+                        "dev_type": "ACGenerator",
+                        "dev_name": "diesel_300kw",
+                        "set_type": "p_set",
+                        "set_value": 0,
+                    }
+                ]
+            },
+            source="trainee-ui",
+        )
+        boundary, yt_ctrl = service._remote_adjustment_boundary_books(0, cycle_token=1)
+
+        self.assertEqual(result["set_values"], 1)
+        self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "0")
+        self.assertEqual(
+            service._set_value_from_book(
+                boundary,
+                ("ACGenerator", "diesel_300kw", "p_set"),
+            ),
+            0.0,
+        )
+        self.assertEqual(
+            service._set_value_from_book(
+                yt_ctrl,
+                ("ACGenerator", "diesel_300kw", "p_set"),
+            ),
+            0.0,
+        )
+        self.assertFalse(any("不安全目标已阻断" in str(item) for item in service.runtime_logs))
+
+    def test_simulator_ui_setpoint_override_can_exceed_device_limits(self):
+        service, _runtime = self._make_service(enforce_runtime_setpoint_bounds=False)
+        self._add_fields(
+            service,
+            "ACGenerator",
+            "diesel_300kw",
+            {"p_min": 70, "p_max": 300},
+        )
+
+        result = service.update_device_parameters(
+            {
+                "block_name": "ACGenerator",
+                "row_key": {"name": "diesel_300kw"},
+                "revision": service.definition_snapshot.revision,
+                "changes": {"p_set": 0},
+            }
+        )
+        boundary, _yt_ctrl = service._prepare_runtime_inputs(0, 0)
+
+        self.assertTrue(result["memory_updated"])
+        self.assertEqual(
+            service._set_value_from_book(
+                boundary,
+                ("ACGenerator", "diesel_300kw", "p_set"),
+            ),
+            0.0,
+        )
+
+    def test_simulator_boundary_ignores_voltage_flow_and_pressure_limits(self):
+        service, _runtime = self._make_service(enforce_runtime_setpoint_bounds=False)
+        self._add_fields(
+            service,
+            "ACGenerator",
+            "diesel_300kw",
+            {"v_min": 304, "v_max": 456},
+        )
+        self._add_hydrogen_controls(service)
+        service.remote_adjustment_response_ratio = 1.0
+
+        result = service.apply_student_commands(
+            {
+                "set_values": [
+                    {
+                        "dev_type": "ACGenerator",
+                        "dev_name": "diesel_300kw",
+                        "set_type": "v_set",
+                        "set_value": 500,
+                    },
+                    {
+                        "dev_type": "HydroSource",
+                        "dev_name": "hydrogen-source",
+                        "set_type": "flow_set",
+                        "set_value": 21,
+                    },
+                    {
+                        "dev_type": "HydroStorage",
+                        "dev_name": "hydrogen-storage",
+                        "set_type": "pressure_set",
+                        "set_value": 46,
+                    },
+                ]
+            },
+            source="trainee-ui",
+        )
+        boundary, _yt_ctrl = service._remote_adjustment_boundary_books(0, cycle_token=1)
+
+        self.assertEqual(result["set_values"], 3)
+        for key, expected in (
+            (("ACGenerator", "diesel_300kw", "v_set"), 500.0),
+            (("HydroSource", "hydrogen-source", "flow_set"), 21.0),
+            (("HydroStorage", "hydrogen-storage", "pressure_set"), 46.0),
+        ):
+            with self.subTest(key=key):
+                self.assertEqual(service._set_value_from_book(boundary, key), expected)
+
+    def test_simulator_boundary_still_rejects_non_finite_setpoints(self):
+        service, _runtime = self._make_service(enforce_runtime_setpoint_bounds=False)
+
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError,
+                r"不是有限数值.*本批指令未下发",
+            ):
+                service.apply_student_commands(
+                    {
+                        "set_values": [
+                            {
+                                "dev_type": "ACGenerator",
+                                "dev_name": "diesel_300kw",
+                                "set_type": "p_set",
+                                "set_value": value,
+                            }
+                        ]
+                    },
+                    source="trainee-ui",
+                )
+
+    def test_runtime_role_only_disables_bounds_for_simulator_services(self):
+        from simu.generate_simple_model import write_model_dir
+        from simu.service import MultiModelSimulator, SimulationModelSpec
+
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        root = Path(workspace.name)
+        source = root / "source"
+        write_model_dir(source)
+        spec = SimulationModelSpec("role-model", source, "role-model")
+
+        simulator = MultiModelSimulator(
+            [spec],
+            root / "simulator-runtime",
+            kernel=lambda _config: None,
+            runtime_role="simulator",
+        )
+        trainee = MultiModelSimulator(
+            [spec],
+            root / "trainee-runtime",
+            kernel=lambda _config: None,
+            runtime_role="trainee",
+        )
+
+        self.assertFalse(simulator.service_for("role-model").enforce_runtime_setpoint_bounds)
+        self.assertTrue(trainee.service_for("role-model").enforce_runtime_setpoint_bounds)
 
     def test_storage_alias_uses_capability_charge_and_discharge_limits(self):
         service, runtime = self._make_service()

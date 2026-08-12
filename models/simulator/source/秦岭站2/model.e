@@ -254,7 +254,7 @@
 # 8    风机变流器-8    acdc-converter  18       8        PH               NONE             0         0         380       0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
 # 9    风机变流器-9    acdc-converter  19       9        PH               NONE             0         0         380       0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
 # 10   风机变流器-10   acdc-converter  20       10       PH               NONE             0         0         380       0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
-# 13   DCAC变流器-1  dcac-converter  23       21       PQ               NONE             20        0         380       0         750       1         300             300       -300      10        -10       455.816214902  456       304       300       -300      230.946882217  900       600       0   0
+# 13   DCAC变流器-1  dcac-converter  23       21       PQ               NONE             0         0         380       0         750       1         300             300       -300      10        -10       455.816214902  456       304       300       -300      230.946882217  900       600       0   0
 # 14   DCAC变流器-2  dcac-converter  25       22       PQ               NONE             0         0         380       0         750       1         300             300       -300      10        -10       455.816214902  456       304       300       -300      230.946882217  900       600       0   0
 </DCACConverter>
 <HydroNode>
@@ -271,7 +271,7 @@
 </HydroLoad>
 <HydroStorage>
 @ idx  name       dev_type                 node  control_type  pressure_set  flow_set  alpha  run_stat  flow_min  flow_max  pressure  capacity  water_volume  initial_soc  pressure_max  pressure_min
-# 3    集装格式储氢罐-3  hydrogen-tank-container  1     PRESSURE      5             0         1      1         -10       10        5         1000      10            0.5          10            1
+# 3    集装格式储氢罐-3  hydrogen-tank-container  1     PRESSURE      1             0         1      1         -10       10        35        1000      10            0.5          10            1
 </HydroStorage>
 <AcE2Hydro>
 @ idx  name     control_type  run_stat  idx_ac_load_t1  idx_h2_unit_t2  e2h_coeff

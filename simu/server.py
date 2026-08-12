@@ -3406,6 +3406,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             model_id=str(args.model_id),
             model_name=str(args.model_id),
             clear_commands_on_start_and_reset=True,
+            enforce_runtime_setpoint_bounds=False,
         )
         server = make_http_server(
             (args.host, port),

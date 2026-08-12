@@ -3722,7 +3722,7 @@ body.is-vertical-splitter-dragging {
   min-height: 38px;
   padding: 4px 8px 0;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 2px;
   border-bottom: 1px solid var(--line);
   background: #f5f8f9;
@@ -3737,6 +3737,7 @@ body.is-vertical-splitter-dragging {
   color: var(--muted);
   background: transparent;
   font-weight: 700;
+  white-space: nowrap;
 }
 .renewable-metric-tabs button:hover {
   color: var(--teal-dark);
@@ -4867,6 +4868,27 @@ body.is-vertical-splitter-dragging {
 .tree-children[hidden] {
   display: none;
 }
+.tree-subgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tree-subgroup > .tree-parent-row {
+  grid-template-columns: 20px minmax(0, 1fr);
+}
+.tree-subgroup > .tree-parent-row .tree-collapse-toggle {
+  width: 20px;
+  min-height: 30px;
+}
+.tree-subgroup > .tree-parent-row .tree-type {
+  min-height: 30px;
+  padding-block: 5px;
+  background: #f1f6f7;
+  font-size: 12px;
+}
+.tree-grandchildren {
+  margin-left: 10px;
+}
 .tree-node {
   width: 100%;
   height: auto;
@@ -5959,6 +5981,49 @@ canvas {
 }
 .runtime-log-table {
   table-layout: fixed;
+}
+.runtime-log-table-resizable {
+  min-width: 100%;
+  width: max-content;
+}
+.runtime-log-table-resizable th {
+  position: relative;
+}
+.runtime-log-table.runtime-log-table-resizable th:nth-child(n),
+.runtime-log-table.runtime-log-table-resizable td:nth-child(n) {
+  width: auto;
+}
+.table-column-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -5px;
+  bottom: 0;
+  z-index: 3;
+  width: 12px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.table-column-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 20%;
+  right: 4px;
+  bottom: 20%;
+  width: 1px;
+  background: transparent;
+}
+.table-column-resize-handle:hover::after,
+.table-column-resize-handle:focus-visible::after,
+.is-resizing-table-column .table-column-resize-handle::after {
+  background: var(--teal);
+}
+.table-column-resize-handle:focus-visible {
+  outline: 0;
+}
+.is-resizing-table-column,
+.is-resizing-table-column * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 .runtime-log-table th:nth-child(1),
 .runtime-log-table td:nth-child(1) {

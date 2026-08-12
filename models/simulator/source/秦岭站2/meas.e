@@ -586,11 +586,11 @@
 # 584  HydroStorage.集装格式储氢罐-3.flow              HydroStorage   集装格式储氢罐-3           flow              10000.0  1      0.0
 # 585  HydroStorage.集装格式储氢罐-3.gas_quantity      HydroStorage   集装格式储氢罐-3           gas_quantity      10000.0  1      0.0
 # 586  HydroStorage.集装格式储氢罐-3.soc               HydroStorage   集装格式储氢罐-3           soc               10000.0  1      0.0
-# 587  Environment.weather.WIND_SPEED           Environment    weather             WIND_SPEED        1.0      1      12.0
+# 587  Environment.weather.WIND_SPEED           Environment    weather             WIND_SPEED        1.0      0      0.0
 # 588  Environment.weather.AIR_TEMP             Environment    weather             AIR_TEMP          1.0      1      -18.0
 # 589  Environment.weather.HUMIDITY             Environment    weather             HUMIDITY          1.0      1      72.0
 # 590  Environment.weather.AIR_PRESSURE         Environment    weather             AIR_PRESSURE      1.0      1      960.0
-# 591  Environment.weather.SOLAR_IRRADIANCE     Environment    weather             SOLAR_IRRADIANCE  1.0      1      0.0
+# 591  Environment.weather.SOLAR_IRRADIANCE     Environment    weather             SOLAR_IRRADIANCE  1.0      0      0.0
 # 592  ACNode.交流风电-1.run_stat                   ACNode         交流风电-1              RUN_STAT          1.0      1      1.0
 # 593  ACNode.交流风电-2.run_stat                   ACNode         交流风电-2              RUN_STAT          1.0      1      1.0
 # 594  ACNode.交流风电-3.run_stat                   ACNode         交流风电-3              RUN_STAT          1.0      1      1.0

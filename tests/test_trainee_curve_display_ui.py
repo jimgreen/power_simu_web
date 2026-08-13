@@ -31,6 +31,7 @@ class TraineeCurveDisplayUiTest(unittest.TestCase):
         self.assertIn("function drawCurveDisplay", self.script)
         self.assertIn("function renderCurveDisplayTable", self.script)
         self.assertIn("data-curve-display-tree-type", self.script)
+        self.assertIn("供能曲线", self.script)
         self.assertIn("电源曲线", self.script)
         self.assertIn("氢源曲线", self.script)
         self.assertIn("热源曲线", self.script)

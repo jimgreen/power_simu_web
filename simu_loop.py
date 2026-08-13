@@ -3009,9 +3009,34 @@ def update_storage_soc_book(
             except (TypeError, ValueError):
                 continue
         capacity = _safe_float((define or {}).get("emva", DEFAULT_STORAGE_CAPACITY_KWH), DEFAULT_STORAGE_CAPACITY_KWH) or DEFAULT_STORAGE_CAPACITY_KWH
+        soc_min = _safe_float((define or {}).get("soc_min", 0.0), 0.0)
+        soc_max = _safe_float((define or {}).get("soc_max", 1.0), 1.0)
+        soc_min = _clamp(float(soc_min if soc_min is not None else 0.0), 0.0, 1.0)
+        soc_max = _clamp(float(soc_max if soc_max is not None else 1.0), soc_min, 1.0)
         charge_efficiency, discharge_efficiency = _storage_efficiencies(define)
         soc_power = _storage_internal_power_for_soc(actual_power, charge_efficiency, discharge_efficiency)
-        next_soc = soc - soc_power * float(period_seconds) / 3600.0 / max(capacity, 1e-9)
+        bounded_soc = _clamp(soc, soc_min, soc_max)
+        raw_next_soc = bounded_soc - soc_power * float(period_seconds) / 3600.0 / max(capacity, 1e-9)
+        next_soc = _clamp(raw_next_soc, soc_min, soc_max)
+        if soc > soc_max + 1e-9 or soc < soc_min - 1e-9:
+            LOGGER.warning(
+                "Storage %s.%s SOC %.6f is outside model limits [%.6f, %.6f]; state integration starts from the nearest limit",
+                _dev_type,
+                source.get("name", ""),
+                soc,
+                soc_min,
+                soc_max,
+            )
+        if raw_next_soc > soc_max + 1e-9 or raw_next_soc < soc_min - 1e-9:
+            LOGGER.warning(
+                "Storage %s.%s solved power %.6f kW would move SOC to %.6f outside model limits [%.6f, %.6f]; SOC state was clamped",
+                _dev_type,
+                source.get("name", ""),
+                actual_power,
+                raw_next_soc,
+                soc_min,
+                soc_max,
+            )
         changed += _set_row_value(row, "soc_curr", format_number(next_soc))
     return changed
 

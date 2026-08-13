@@ -353,13 +353,13 @@ process.stdout.write(JSON.stringify(latestRenewableTrendSegment(points).map((poi
     def test_chart_creates_legend_nodes_only_for_selected_series(self):
         self.assertIn('id="renewableTrendLegend"', self.html)
         self.assertIn('class="renewable-trend-inline-legend"', self.html)
-        self.assertIn('aria-label="已选曲线图例，点击切换当前曲线，再次点击取消选择"', self.html)
+        self.assertIn('aria-label="已选曲线图例，点击显示或隐藏对应曲线"', self.html)
         self.assertIn("function renderRenewableTrendLegend", self.script)
         draw_block = self.script.split("function drawRenewableTrendChart", 1)[1].split(
             "function renewableMetricTotal",
             1,
         )[0]
-        self.assertIn("renderRenewableTrendLegend(visibleSeries)", draw_block)
+        self.assertIn("renderRenewableTrendLegend(selectedSeries)", draw_block)
         self.assertNotIn("renderRenewableTrendLegend(availableSeries)", draw_block)
         legend_block = self.script.split("function renderRenewableTrendLegend", 1)[1].split(
             "function drawRenewableTrendChart",
@@ -372,6 +372,7 @@ process.stdout.write(JSON.stringify(latestRenewableTrendSegment(points).map((poi
         self.assertIn('item.dataset.chartToggle = "renewableTrend"', legend_block)
         self.assertIn("item.dataset.chartSeries = series.key", legend_block)
         self.assertIn("item.dataset.chartLegendLabel = series.label", legend_block)
+        self.assertIn('item.dataset.chartLegendVisibility = "true"', legend_block)
         self.assertIn('syncChartLegendButtons("renewableTrend")', legend_block)
         self.assertIn("series.label", legend_block)
         self.assertIn("series.style", legend_block)
@@ -379,11 +380,9 @@ process.stdout.write(JSON.stringify(latestRenewableTrendSegment(points).map((poi
         self.assertIn('target?.closest("[data-chart-toggle][data-chart-series]")', self.script)
         self.assertIn('chartKey === "renewableTrend" ? drawRenewableTrendChart', self.script)
         self.assertIn("control.dataset.chartLegendLabel", self.script)
-        self.assertIn('chartKey === "renewableTrend" && !hidden', self.script)
-        self.assertIn('"点击设为当前曲线"', self.script)
-        self.assertIn('"再次点击取消选择"', self.script)
-        self.assertIn("visibleRenewableSeries", self.script)
-        self.assertIn("setChartSeriesSelected(chartKey, seriesKey, drawFn)", self.script)
+        self.assertIn('const actionLabel = hidden ? "点击显示曲线" : "点击隐藏曲线"', self.script)
+        self.assertIn('chartToggle.dataset.chartLegendVisibility === "true"', self.script)
+        self.assertIn("toggleChartLegendSeriesVisibility(chartKey, seriesKey, drawFn)", self.script)
         for css_hook in (
             ".renewable-trend-inline-legend",
             ".renewable-trend-inline-legend-item",
@@ -396,7 +395,8 @@ process.stdout.write(JSON.stringify(latestRenewableTrendSegment(points).map((poi
             ".renewable-trend-inline-legend-swatch.is-limit",
         ):
             self.assertIn(css_hook, self.styles)
-        self.assertNotIn(".renewable-trend-inline-legend-item.is-hidden", self.styles)
+        self.assertIn(".renewable-trend-inline-legend-item.is-hidden", self.styles)
+        self.assertNotIn(".renewable-trend-inline-legend-item.is-selected", self.styles)
 
         legend_function = "function renderRenewableTrendLegend" + self.script.split(
             "function renderRenewableTrendLegend",
@@ -610,7 +610,7 @@ process.stdout.write(JSON.stringify({{ single, multiple }}));
         self.assertGreater(payload["multiple"]["right"], payload["single"]["right"])
         self.assertGreater(payload["multiple"]["minCanvasWidth"], payload["single"]["minCanvasWidth"])
 
-    def test_selected_curve_drives_active_axis_highlight(self):
+    def test_canvas_selected_curve_drives_active_axis_without_marking_legend_selected(self):
         axes_block = self.script.split("function drawRenewableTrendAxes", 1)[1].split(
             "function renewableTrendAxisSummary",
             1,
@@ -622,7 +622,46 @@ process.stdout.write(JSON.stringify({{ single, multiple }}));
         self.assertIn("right + maxAxisOffset(side) - index * axisSlot", axes_block)
         self.assertIn("selectedSeries?.color", self.script)
         self.assertIn("group.series.find((series) => series.key === selectedSeriesKey)", self.script)
-        self.assertIn(".renewable-trend-inline-legend-item.is-selected", self.styles)
+        self.assertIn("selectChartSeriesAtPointer(chartKey, canvas, event, drawFn)", self.script)
+        self.assertNotIn(".renewable-trend-inline-legend-item.is-selected", self.styles)
+
+    def test_legend_visibility_is_independent_from_left_series_selection(self):
+        helpers = "function chartLegendHiddenSet" + self.script.split(
+            "function chartLegendHiddenSet",
+            1,
+        )[1].split("function selectedChartSeriesKey", 1)[0]
+        actions = "function setChartLegendSeriesVisibility" + self.script.split(
+            "function setChartLegendSeriesVisibility",
+            1,
+        )[1].split("function syncChartLegendButtons", 1)[0]
+        node_script = f"""
+const state = {{
+  chartSeriesHidden: {{ renewableTrend: [] }},
+  chartLegendSeriesHidden: {{ renewableTrend: [] }},
+}};
+function syncChartLegendButtons() {{}}
+{helpers}
+{actions}
+const series = [{{ key: "power" }}, {{ key: "target" }}];
+toggleChartLegendSeriesVisibility("renewableTrend", "target");
+const afterHide = {{
+  visible: visibleChartLegendSeries("renewableTrend", series).map((item) => item.key),
+  leftSelection: state.chartSeriesHidden.renewableTrend,
+}};
+toggleChartLegendSeriesVisibility("renewableTrend", "target");
+process.stdout.write(JSON.stringify({{
+  afterHide,
+  afterShow: visibleChartLegendSeries("renewableTrend", series).map((item) => item.key),
+}}));
+"""
+        result = subprocess.run(["node", "-e", node_script], check=True, capture_output=True, text=True)
+        self.assertEqual(
+            json.loads(result.stdout),
+            {
+                "afterHide": {"visible": ["power"], "leftSelection": []},
+                "afterShow": ["power", "target"],
+            },
+        )
 
     def test_backend_compact_trend_keeps_all_power_targets_and_storage_soc(self):
         for _metric_id, field in EXPECTED_TREND_SERIES.values():

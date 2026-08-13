@@ -137,9 +137,11 @@ process.stdout.write(JSON.stringify({
     diagramDeviceParameterEditable("node"),
     diagramDeviceParameterEditable("run_stat"),
     diagramDeviceParameterEditable("p_set"),
-    diagramDeviceParameterEditable("q_set"),
-    diagramDeviceParameterEditable("v_set"),
-    diagramDeviceParameterEditable("status"),
+                diagramDeviceParameterEditable("q_set"),
+                diagramDeviceParameterEditable("v_set"),
+                diagramDeviceParameterEditable("status"),
+                diagramDeviceParameterEditable("p"),
+                diagramDeviceParameterEditable("f"),
   ],
 }));
 """
@@ -149,14 +151,14 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(trainee["blocks"], ["ACGenerator", "ACWindGen"])
         self.assertEqual(
             simulator["editable"],
-            [True, True, False, True, True, True, True, True],
+            [True, True, False, True, True, True, True, True, False, False],
         )
         self.assertEqual(
             trainee["editable"],
-            [True, True, False, False, False, False, False, False],
+            [True, True, False, False, False, False, False, False, False, False],
         )
 
-    def test_converter_parameter_panels_hide_ambiguous_runtime_fields(self):
+    def test_device_parameter_panels_hide_realtime_measurement_fields(self):
         body = r"""
 const snapshot = {
   definitions: {
@@ -174,8 +176,8 @@ const snapshot = {
         rows: [{ idx: 3, name: "acac-1", p: 1, q: 2, u: 380, i: 3, p_set: 4, q_from_set: 1, q_to_set: -1 }],
       },
       ACGenerator: {
-        headers: ["idx", "name", "p", "q", "u", "i", "p_set"],
-        rows: [{ idx: 4, name: "source-1", p: 1, q: 2, u: 380, i: 3, p_set: 4 }],
+        headers: ["idx", "name", "p", "q", "u", "i", "f", "p_set"],
+        rows: [{ idx: 4, name: "source-1", p: 1, q: 2, u: 380, i: 3, f: 50, p_set: 4 }],
       },
     },
   },
@@ -193,15 +195,15 @@ process.stdout.write(JSON.stringify({
 """
         for script in (self.script, self.trainee_script):
             payload = self._run_helpers(body, script)
-            for converter in ("dcac", "dcdc", "acac"):
+            for device in ("dcac", "dcdc", "acac", "source"):
                 self.assertTrue(
-                    {"p", "q", "u", "i"}.isdisjoint(payload[converter]),
-                    converter,
+                    {"p", "q", "u", "i", "f"}.isdisjoint(payload[device]),
+                    device,
                 )
             self.assertTrue({"p_ac_set", "p_dc_set"}.issubset(payload["dcac"]))
             self.assertTrue({"p_set", "v_set"}.issubset(payload["dcdc"]))
             self.assertTrue({"p_set", "q_from_set", "q_to_set"}.issubset(payload["acac"]))
-            self.assertTrue({"p", "q", "u", "i"}.issubset(payload["source"]))
+            self.assertIn("p_set", payload["source"])
 
     def test_device_editor_includes_primary_and_linked_static_parameter_blocks(self):
         body = r"""

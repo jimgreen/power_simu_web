@@ -584,7 +584,7 @@ class StorageSocConstraintTest(unittest.TestCase):
 
         self.assertAlmostEqual(next_soc, 0.4)
 
-    def test_typed_ac_storage_soc_integration_remains_unclipped(self):
+    def test_typed_ac_storage_soc_integration_is_clamped_to_model_upper_limit(self):
         next_soc = self._integrate_typed_storage_soc(
             dev_type="ACGenerator",
             parameter_block="ACStorageGen",
@@ -597,7 +597,7 @@ class StorageSocConstraintTest(unittest.TestCase):
             period_seconds=3600.0,
         )
 
-        self.assertAlmostEqual(next_soc, 1.15)
+        self.assertAlmostEqual(next_soc, 0.9)
 
     def test_typed_storage_soc_rows_do_not_cross_match_same_named_ac_and_dc_generators(self):
         import simu_loop
@@ -1440,7 +1440,7 @@ class StorageSocConstraintTest(unittest.TestCase):
         executed_power, next_soc = self._run_storage_case(soc=0.0, p_set=10.0, period_seconds=60.0)
 
         self.assertAlmostEqual(executed_power, 0.0)
-        self.assertAlmostEqual(next_soc, 0.0)
+        self.assertAlmostEqual(next_soc, 0.2)
 
     def test_realtime_storage_power_bounds_follow_soc_limits(self):
         import simu_loop
@@ -1642,28 +1642,28 @@ class StorageSocConstraintTest(unittest.TestCase):
             storage_power_by_name={("DCGenerator", "storage-source"): actual_power},
         )
 
-        self.assertEqual(changed, 1)
+        self.assertIn(changed, (0, 1))
         return float(stat_book.data["StorageSoc"].data[0]["soc_curr"])
 
-    def test_soc_integration_preserves_operational_limit_violation_below_physical_full(self):
+    def test_soc_integration_clamps_to_model_upper_limit(self):
         next_soc = self._integrate_storage_soc(soc=0.9, actual_power=-5.0)
 
-        self.assertAlmostEqual(next_soc, 0.945)
+        self.assertAlmostEqual(next_soc, 0.9)
 
-    def test_soc_integration_preserves_value_above_physical_upper_bound(self):
+    def test_soc_integration_clamps_large_charge_to_model_upper_limit(self):
         next_soc = self._integrate_storage_soc(soc=0.9, actual_power=-20.0)
 
-        self.assertAlmostEqual(next_soc, 1.08)
+        self.assertAlmostEqual(next_soc, 0.9)
 
-    def test_soc_integration_preserves_value_below_physical_lower_bound(self):
+    def test_soc_integration_clamps_large_discharge_to_model_lower_limit(self):
         next_soc = self._integrate_storage_soc(soc=0.1, actual_power=20.0)
 
-        self.assertAlmostEqual(next_soc, -0.1222222222)
+        self.assertAlmostEqual(next_soc, 0.2)
 
-    def test_soc_integration_continues_from_existing_overbound_value(self):
+    def test_soc_integration_recovers_from_upper_limit_when_discharging(self):
         next_soc = self._integrate_storage_soc(soc=1.08, actual_power=20.0)
 
-        self.assertAlmostEqual(next_soc, 0.8577777778)
+        self.assertAlmostEqual(next_soc, 0.6777777778)
 
     def test_integrates_soc_from_actual_solved_storage_power_with_charge_efficiency_when_setpoint_is_zero(self):
         import simu_loop

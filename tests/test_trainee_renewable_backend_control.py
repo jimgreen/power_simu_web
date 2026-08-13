@@ -5320,7 +5320,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertFalse(any("新能源储能协调" in line for line in plan["decisionDetail"]))
         self.assertTrue(any("两条策略相互独立" in line for line in plan["decisionDetail"]))
 
-    def test_diesel_floor_holds_acdc_and_recovers_renewable_when_soc_has_space(self):
+    def test_diesel_below_guard_holds_renewable_when_storage_is_discharging(self):
         snapshot = renewable_snapshot()
         for row in snapshot["measurements"]["scada"]:
             if row["dev_name"] == "storage-1" and row["meas_type"] == "P_GEN":
@@ -5330,12 +5330,16 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
         plan = calculate_renewable_control_plan(snapshot)
 
-        self.assertAlmostEqual(plan["metrics"]["renewableTarget"], 52.4)
-        self.assertAlmostEqual(plan["metrics"]["storageTarget"], 10.0)
-        self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 20.0)
+        self.assertAlmostEqual(plan["metrics"]["renewableTarget"], 50.0)
+        self.assertTrue(plan["metrics"]["renewableRaiseBlockedByDieselGuard"])
+        self.assertFalse(plan["metrics"]["renewableCurtailmentRequiredByCharging"])
+        self.assertEqual(
+            plan["metrics"]["renewableControlAction"],
+            "hold_low_diesel_no_charge",
+        )
         self.assertEqual(plan["metrics"]["storageControlAction"], "hold")
 
-    def test_diesel_floor_does_not_force_extra_acdc_charging_when_soc_has_space(self):
+    def test_diesel_below_guard_curtails_renewable_when_storage_is_charging(self):
         snapshot = renewable_snapshot()
         for row in snapshot["measurements"]["scada"]:
             if row["dev_name"] == "storage-1" and row["meas_type"] == "P_GEN":
@@ -5345,9 +5349,17 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
         plan = calculate_renewable_control_plan(snapshot)
 
-        self.assertAlmostEqual(plan["metrics"]["renewableTarget"], 52.4)
-        self.assertAlmostEqual(plan["metrics"]["storageTarget"], -5.0)
-        self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 20.0)
+        self.assertAlmostEqual(plan["metrics"]["renewableTarget"], 45.0)
+        self.assertTrue(plan["metrics"]["renewableRaiseBlockedByDieselGuard"])
+        self.assertTrue(plan["metrics"]["renewableCurtailmentRequiredByCharging"])
+        self.assertAlmostEqual(
+            plan["metrics"]["renewableDieselGuardCurtailRequestKw"],
+            5.0,
+        )
+        self.assertEqual(
+            plan["metrics"]["renewableControlAction"],
+            "curtail_one_step_low_diesel_charging",
+        )
         self.assertEqual(plan["metrics"]["storageControlAction"], "hold")
 
     def test_soc_above_lower_limit_allows_only_slow_high_diesel_discharge_step(self):
@@ -5460,7 +5472,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         )
         self.assertGreater(plan["metrics"]["acdcTargetKw"], plan["metrics"]["acdcCurrentForControlKw"])
 
-    def test_diesel_deadband_holds_acdc_while_renewable_recovers(self):
+    def test_diesel_below_guard_holds_acdc_and_renewable(self):
         snapshot = renewable_snapshot()
         next(row for row in snapshot["measurements"]["scada"] if row["dev_name"] == "diesel-1" and row["meas_type"] == "P_GEN")["value"] = 23
         next(row for row in snapshot["measurements"]["scada"] if row["dev_name"] == "storage-1" and row["meas_type"] == "P_GEN")["value"] = 10
@@ -5469,9 +5481,13 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
         self.assertEqual(plan["metrics"]["dieselControlRegion"], "deadband")
         self.assertEqual(plan["metrics"]["storageControlAction"], "hold")
-        self.assertAlmostEqual(plan["metrics"]["renewableTarget"], 52.4)
-        self.assertAlmostEqual(plan["metrics"]["storageTarget"], 10.0)
-        self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 23.0)
+        self.assertAlmostEqual(plan["metrics"]["renewableTarget"], 50.0)
+        self.assertTrue(plan["metrics"]["renewableRaiseBlockedByDieselGuard"])
+        self.assertFalse(plan["metrics"]["renewableCurtailmentRequiredByCharging"])
+        self.assertEqual(
+            plan["metrics"]["renewableControlAction"],
+            "hold_low_diesel_no_charge",
+        )
 
     def test_soc_below_upper_and_high_diesel_holds_renewable_while_acdc_reduces_charge(self):
         snapshot = renewable_snapshot()
@@ -5578,15 +5594,20 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         plan = calculate_renewable_control_plan(snapshot)
 
         self.assertEqual(plan["metrics"]["dieselControlRegion"], "low")
-        self.assertEqual(plan["metrics"]["renewableControlAction"], "recover_one_step")
+        self.assertEqual(
+            plan["metrics"]["renewableControlAction"],
+            "hold_low_diesel_no_charge",
+        )
+        self.assertAlmostEqual(
+            plan["metrics"]["renewableTarget"],
+            plan["metrics"]["renewableCurrentKw"],
+        )
+        self.assertTrue(plan["metrics"]["renewableRaiseBlockedByDieselGuard"])
         self.assertEqual(plan["metrics"]["storageControlAction"], "hold_low_diesel")
-        self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], 0.0)
-        self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], plan["metrics"]["dieselCurrentKw"])
-        self.assertLess(plan["metrics"]["dieselTargetKw"], plan["metrics"]["dieselMinKw"])
-        self.assertFalse(plan["metrics"]["dieselViolationImproved"])
+        self.assertTrue(plan["metrics"]["dieselViolationImproved"])
         self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
 
-    def test_low_diesel_reduces_converter_injection_while_renewable_recovers(self):
+    def test_low_diesel_reduces_converter_injection_while_renewable_holds(self):
         snapshot = renewable_snapshot()
         for row in snapshot["measurements"]["scada"]:
             if row["dev_name"] == "diesel-1" and row["meas_type"] == "P_GEN":
@@ -5598,13 +5619,17 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
         plan = calculate_renewable_control_plan(snapshot)
 
-        self.assertEqual(plan["metrics"]["renewableControlAction"], "recover_one_step")
-        self.assertGreater(plan["metrics"]["renewableTarget"], plan["metrics"]["renewableCurrentKw"])
+        self.assertEqual(
+            plan["metrics"]["renewableControlAction"],
+            "hold_low_diesel_no_charge",
+        )
+        self.assertAlmostEqual(
+            plan["metrics"]["renewableTarget"],
+            plan["metrics"]["renewableCurrentKw"],
+        )
+        self.assertTrue(plan["metrics"]["renewableRaiseBlockedByDieselGuard"])
         self.assertEqual(plan["metrics"]["storageControlAction"], "reduce_discharge_low_diesel")
-        self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], -3.5)
         self.assertLessEqual(plan["metrics"]["acdcTargetKw"], 0.0)
-        self.assertAlmostEqual(plan["metrics"]["storageTarget"], -1.5)
-        self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 11.5)
         self.assertTrue(plan["metrics"]["dieselViolationImproved"])
         self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
 

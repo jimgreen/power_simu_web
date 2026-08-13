@@ -4421,11 +4421,13 @@ body.is-vertical-splitter-dragging {
   border-color: #c9dadd;
   background: #edf5f6;
 }
-.renewable-trend-inline-legend-item.is-selected {
-  border-color: var(--renewable-series-color, var(--teal));
-  background: #edf7f7;
-  color: var(--ink);
-  font-weight: 700;
+.renewable-trend-inline-legend-item.is-hidden {
+  color: #7d8b91;
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+.renewable-trend-inline-legend-item.is-hidden .renewable-trend-inline-legend-swatch {
+  filter: grayscale(1);
 }
 .renewable-trend-inline-legend-item:focus-visible {
   outline: 2px solid #2f7f83;

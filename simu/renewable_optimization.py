@@ -196,7 +196,11 @@ def _renewable_variable(
     if current is None or capacity is None or capacity < 0.0 or not all(key) or not component_id:
         return None
     step_kw = step_coefficient * max(0.0, capacity)
-    available = min(max(0.0, capacity), max(0.0, current) + step_kw)
+    normal_available = min(max(0.0, capacity), max(0.0, current) + step_kw)
+    available = normal_available
+    dispatch_upper = _number(row.get("dispatchUpperKw"))
+    if dispatch_upper is not None:
+        available = min(available, max(0.0, dispatch_upper))
     lower = max(0.0, current - step_kw)
     if lower > available + EPSILON:
         lower = available
@@ -208,7 +212,7 @@ def _renewable_variable(
         upper_kw=max(0.0, available),
         side=str(row.get("connectionSide", "")).strip().upper(),
         component_id=component_id,
-        renewable_available_kw=max(0.0, available),
+        renewable_available_kw=max(0.0, normal_available),
         safety_lower_kw=0.0,
         safety_upper_kw=max(0.0, available),
         requires_safety_correction=bool(

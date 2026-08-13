@@ -6617,23 +6617,17 @@ const DIAGRAM_DEFINITION_PROTECTED_FIELDS = new Set([
 const DIAGRAM_DEFINITION_IDENTITY_FIELDS = new Set([
   "idx", "name", "dev_name", "dev_type",
 ]);
-const DIAGRAM_CONVERTER_DEFINITION_BLOCKS = new Set([
-  "DCACCONVERTER", "DCDCCONVERTER", "ACACCONVERTER",
-]);
-const DIAGRAM_AMBIGUOUS_CONVERTER_FIELDS = new Set(["p", "q", "u", "i"]);
+const DIAGRAM_REALTIME_MEASUREMENT_FIELDS = new Set(["p", "q", "u", "i", "f"]);
 
 function diagramDefinitionDisplayHeaders(record) {
   const integratedFields = record?.integratedFields instanceof Set
     ? record.integratedFields
     : new Set(record?.integratedFields || []);
-  const converterBlock = DIAGRAM_CONVERTER_DEFINITION_BLOCKS.has(
-    normalizeDiagramMeasurementToken(record?.blockName),
-  );
   return (record?.headers || []).filter((field) => {
     const name = String(field || "").trim().toLowerCase();
     return !DIAGRAM_DEFINITION_IDENTITY_FIELDS.has(name)
       && !integratedFields.has(name)
-      && !(converterBlock && DIAGRAM_AMBIGUOUS_CONVERTER_FIELDS.has(name));
+      && !DIAGRAM_REALTIME_MEASUREMENT_FIELDS.has(name);
   });
 }
 
@@ -6673,6 +6667,7 @@ function diagramDeviceParameterEditable(field) {
   const name = String(field || "").trim().toLowerCase();
   return Boolean(name)
     && !DIAGRAM_DEFINITION_PROTECTED_FIELDS.has(name)
+    && !DIAGRAM_REALTIME_MEASUREMENT_FIELDS.has(name)
     && !name.startsWith("idx_");
 }
 
@@ -10472,6 +10467,11 @@ function curveFamilyKeys(family) {
   if (family === "environment") return [...ENV_CURVE_KEYS];
   if (family === "load") return allLoadCurveKeys();
   if (String(family).startsWith("load:")) return loadCurveFamilyKeys(String(family).slice(5));
+  if (family === "source") return allSourceCurveKeys();
+  if (String(family).startsWith("source:")) {
+    const sourceFamily = String(family).slice(7);
+    return curveSourceCatalog().filter((item) => item.family === sourceFamily).map((item) => item.key);
+  }
   if (SOURCE_CURVE_FAMILIES.some((item) => item.key === family)) {
     return curveSourceCatalog().filter((item) => item.family === family).map((item) => item.key);
   }
@@ -10683,6 +10683,10 @@ function renderCurveTree() {
     && selectedKeys.every((key) => loadKeys.includes(key));
   const envPartial = ENV_CURVE_KEYS.some((key) => selectedSet.has(key));
   const loadPartial = loadKeys.some((key) => selectedSet.has(key));
+  const sourceKeys = allSourceCurveKeys();
+  const sourceSelected = sourceKeys.length && sourceKeys.every((key) => selectedSet.has(key))
+    && selectedKeys.every((key) => sourceKeys.includes(key));
+  const sourcePartial = sourceKeys.some((key) => selectedSet.has(key));
   $("curveTreeSummary").textContent = `${ENV_CURVE_KEYS.length + loadDevices.length + allSourceCurveKeys().length} 条`;
   $("activeCurve").value = activeKey;
   $("activeCurveLabel").textContent = selectedCurveLabel();
@@ -10760,39 +10764,51 @@ function renderCurveTree() {
         }).join("")}
       </div>
     </div>
-    ${sourceGroups.map((group) => {
-      const keys = group.sources.map((source) => source.key);
-      const selected = keys.length && keys.every((key) => selectedSet.has(key))
-        && selectedKeys.every((key) => keys.includes(key));
-      const partial = keys.some((key) => selectedSet.has(key));
-      return `
-        <div class="tree-group">
-          ${curveTreeGroupHeader(
-            group.key,
-            group.label,
-            keys.length,
-            `data-curve-tree-type="source" data-curve-family="${escapeHtml(group.key)}" aria-pressed="${selected ? "true" : "false"}" aria-expanded="${curveTreeGroupCollapsed(group.key) ? "false" : "true"}"`,
-            selected ? "is-active" : partial ? "is-parent-active" : "",
-            "data-curve-tree-toggle",
-          )}
-          <div class="tree-children" ${curveTreeGroupCollapsed(group.key) ? "hidden" : ""}>
-            ${group.sources.map((source) => {
-              const key = source.key;
-              return `
-                <button
-                  type="button"
-                  class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""} ${editKey === key ? "is-edit-target" : ""} ${isCurveSeriesHidden(key) ? "is-hidden-series" : ""}"
-                  data-curve-tree-type="source"
-                  data-curve-key="${escapeHtml(key)}"
-                  aria-pressed="${selectedSet.has(key) ? "true" : "false"}"
-                >
-                  <span>${escapeHtml(source.name || source.dev_name || key)}</span>
-                  <small>${escapeHtml(source.unit || source.dev_type || "")}</small>
-                </button>`;
-            }).join("") || `<div class="empty-state compact">暂无${escapeHtml(group.label)}</div>`}
-          </div>
-        </div>`;
-    }).join("")}
+    <div class="tree-group">
+      ${curveTreeGroupHeader(
+        "source",
+        "供能曲线",
+        sourceKeys.length,
+        `data-curve-tree-type="source" data-curve-family="source" aria-pressed="${sourceSelected ? "true" : "false"}" aria-expanded="${curveTreeGroupCollapsed("source") ? "false" : "true"}"`,
+        sourceSelected ? "is-active" : sourcePartial ? "is-parent-active" : "",
+        "data-curve-tree-toggle",
+      )}
+      <div class="tree-children" ${curveTreeGroupCollapsed("source") ? "hidden" : ""}>
+        ${sourceGroups.map((group) => {
+          const groupKey = `source:${group.key}`;
+          const keys = group.sources.map((source) => source.key);
+          const selected = keys.length && keys.every((key) => selectedSet.has(key))
+            && selectedKeys.every((key) => keys.includes(key));
+          const partial = keys.some((key) => selectedSet.has(key));
+          return `
+            <div class="tree-subgroup">
+              ${curveTreeGroupHeader(
+                groupKey,
+                group.label,
+                keys.length,
+                `data-curve-tree-type="source" data-curve-family="${escapeHtml(groupKey)}" aria-pressed="${selected ? "true" : "false"}" aria-expanded="${curveTreeGroupCollapsed(groupKey) ? "false" : "true"}"`,
+                selected ? "is-active" : partial ? "is-parent-active" : "",
+              )}
+              <div class="tree-children tree-grandchildren" ${curveTreeGroupCollapsed(groupKey) ? "hidden" : ""}>
+                ${group.sources.map((source) => {
+                  const key = source.key;
+                  return `
+                    <button
+                      type="button"
+                      class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""} ${editKey === key ? "is-edit-target" : ""} ${isCurveSeriesHidden(key) ? "is-hidden-series" : ""}"
+                      data-curve-tree-type="source"
+                      data-curve-key="${escapeHtml(key)}"
+                      aria-pressed="${selectedSet.has(key) ? "true" : "false"}"
+                    >
+                      <span>${escapeHtml(source.name || source.dev_name || key)}</span>
+                      <small>${escapeHtml(source.unit || source.dev_type || "")}</small>
+                    </button>`;
+                }).join("") || `<div class="empty-state compact">暂无${escapeHtml(group.label)}</div>`}
+              </div>
+            </div>`;
+        }).join("")}
+      </div>
+    </div>
   `;
 }
 

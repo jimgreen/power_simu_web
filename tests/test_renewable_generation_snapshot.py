@@ -314,6 +314,81 @@ class RenewableControllerCommandLifecycleTest(unittest.TestCase):
         self.assertEqual(dispatched[1][1]["generation"], "1|21|00:21:00")
         self.assertTrue(dispatched[1][1]["replace_strategy_generation"])
 
+    def test_consecutive_generations_keep_unchanged_renewables_in_full_snapshot(self):
+        dispatched = []
+
+        def command_sink(model_id, payload):
+            dispatched.append((model_id, copy.deepcopy(payload)))
+            return {"set_values": len(payload.get("set_values", []))}
+
+        first_snapshot = renewable_snapshot()
+        second_snapshot = copy.deepcopy(first_snapshot)
+        second_snapshot["clock"].update(
+            {
+                "time": "12:01:00",
+                "minute": 721,
+                "absolute_minute": 721,
+            }
+        )
+        settings = RenewableControlSettings(step_coefficient=0.0)
+        plans = [
+            calculate_renewable_control_plan(first_snapshot, settings),
+            calculate_renewable_control_plan(second_snapshot, settings),
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            manager = make_control_manager(
+                self._service(temporary),
+                snapshot=first_snapshot,
+                command_sink=command_sink,
+            )
+            state = manager._state_for("shared")
+            state.loop_mode = "closed"
+            state.enabled = True
+            try:
+                with patch(
+                    "simu.renewable_control.calculate_renewable_control_plan",
+                    side_effect=plans,
+                ):
+                    manager.run_once(
+                        "shared",
+                        trigger="auto",
+                        allow_dispatch=True,
+                        record_log=False,
+                    )
+                    manager.run_once(
+                        "shared",
+                        trigger="auto",
+                        allow_dispatch=True,
+                        record_log=False,
+                    )
+            finally:
+                manager.close()
+
+        self.assertEqual(len(dispatched), 2)
+        for _model_id, payload in dispatched:
+            targets = {
+                (
+                    command.get("dev_type"),
+                    command.get("dev_name"),
+                    command.get("set_type"),
+                ): command.get("set_value")
+                for command in payload["set_values"]
+            }
+            self.assertAlmostEqual(
+                targets[("ACGenerator", "wind-1", "p_set")],
+                30.0,
+            )
+            self.assertAlmostEqual(
+                targets[("DCGenerator", "pv-1", "p_set")],
+                20.0,
+            )
+            self.assertTrue(payload["replace_strategy_generation"])
+        self.assertNotEqual(
+            dispatched[0][1]["generation"],
+            dispatched[1][1]["generation"],
+        )
+
 
 class BidirectionalAcdcSafetyTest(unittest.TestCase):
     def test_physical_limits_clamp_each_converter_in_both_directions(self):

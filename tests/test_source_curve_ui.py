@@ -45,12 +45,17 @@ class SourceCurveUiTest(unittest.TestCase):
 
     def test_simulator_source_curves_are_structured_editable_series(self):
         script = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        tree_body = javascript_function_body(script, "renderCurveTree", "renderCurveTreeLoading")
+        self.assertIn('"供能曲线"', tree_body)
         for label in ("电源曲线", "氢源曲线", "热源曲线"):
             self.assertIn(label, script)
         self.assertIn("function curveSourceCatalog", script)
         self.assertIn("...allSourceCurveKeys()", script)
         self.assertIn('String(key).startsWith("source:")', script)
         self.assertIn('data-curve-tree-type="source"', script)
+        self.assertIn('data-curve-family="source"', tree_body)
+        self.assertIn('const groupKey = `source:${group.key}`', tree_body)
+        self.assertIn("tree-children tree-grandchildren", tree_body)
         self.assertIn("state.curveSeries[source.key]", script)
         self.assertIn("keysToSave", script)
 
@@ -61,6 +66,7 @@ class SourceCurveUiTest(unittest.TestCase):
             "renderCurveDisplayTree",
             "renderCurveDisplayModeControls",
         )
+        self.assertIn('"供能曲线"', tree_body)
         for label in ("电源曲线", "氢源曲线", "热源曲线"):
             self.assertIn(label, script)
         self.assertIn("function curveDisplaySourceCatalog", script)
@@ -68,6 +74,9 @@ class SourceCurveUiTest(unittest.TestCase):
         self.assertIn('String(key).startsWith("source:")', script)
         self.assertIn("sourceGroups.map", tree_body)
         self.assertIn('data-curve-display-tree-type="source"', tree_body)
+        self.assertIn('data-curve-display-family="source"', tree_body)
+        self.assertIn('const groupKey = `source:${group.key}`', tree_body)
+        self.assertIn("tree-children tree-grandchildren", tree_body)
 
     def test_trainee_static_snapshot_retains_initialized_curves(self):
         exchange = (ROOT / "simu" / "trainee_exchange.py").read_text(encoding="utf-8")
@@ -98,6 +107,8 @@ class SourceCurveUiTest(unittest.TestCase):
         self.assertIn("localStorage.setItem(CURVE_DISPLAY_TREE_COLLAPSE_KEY", trainee)
         self.assertIn('const groupKey = `load:${group.key}`', simulator_tree)
         self.assertIn('const groupKey = `load:${group.key}`', trainee_tree)
+        self.assertIn('const groupKey = `source:${group.key}`', simulator_tree)
+        self.assertIn('const groupKey = `source:${group.key}`', trainee_tree)
         self.assertIn('data-curve-family="${escapeHtml(groupKey)}"', simulator_tree)
         self.assertIn('data-curve-display-family="${escapeHtml(groupKey)}"', trainee_tree)
 

@@ -220,6 +220,7 @@ const state = {
   renewableTrendWindowMinutes: 60,
   renewableTrendSeriesFilter: "",
   renewableTrendSelectedOnly: false,
+  chartLegendSeriesHidden: {},
   traceRunId: null,
   traceStepCount: null,
   renewableControl: {
@@ -904,6 +905,19 @@ function visibleChartSeries(chartKey, seriesDefs) {
   return (seriesDefs || []).filter((series) => !isChartSeriesHidden(chartKey, series.key));
 }
 
+function chartLegendHiddenSet(chartKey) {
+  const hidden = state.chartLegendSeriesHidden?.[chartKey] || [];
+  return new Set(hidden);
+}
+
+function isChartLegendSeriesHidden(chartKey, seriesKey) {
+  return chartLegendHiddenSet(chartKey).has(seriesKey);
+}
+
+function visibleChartLegendSeries(chartKey, seriesDefs) {
+  return (seriesDefs || []).filter((series) => !isChartLegendSeriesHidden(chartKey, series.key));
+}
+
 function selectedChartSeriesKey(chartKey, fallback = "") {
   return state.chartSeriesSelected?.[chartKey] || fallback || "";
 }
@@ -930,11 +944,36 @@ function toggleChartSeriesVisibility(chartKey, seriesKey, drawFn) {
   setChartSeriesVisibility(chartKey, seriesKey, isChartSeriesHidden(chartKey, seriesKey), drawFn);
 }
 
+function setChartLegendSeriesVisibility(chartKey, seriesKey, visible, drawFn) {
+  if (!chartKey || !seriesKey) return;
+  const hidden = chartLegendHiddenSet(chartKey);
+  if (visible) hidden.delete(seriesKey);
+  else hidden.add(seriesKey);
+  state.chartLegendSeriesHidden = {
+    ...(state.chartLegendSeriesHidden || {}),
+    [chartKey]: Array.from(hidden),
+  };
+  syncChartLegendButtons(chartKey);
+  if (typeof drawFn === "function") drawFn();
+}
+
+function toggleChartLegendSeriesVisibility(chartKey, seriesKey, drawFn) {
+  setChartLegendSeriesVisibility(
+    chartKey,
+    seriesKey,
+    isChartLegendSeriesHidden(chartKey, seriesKey),
+    drawFn,
+  );
+}
+
 function syncChartLegendButtons(chartKey) {
   document.querySelectorAll(`[data-chart-toggle="${chartKey}"]`).forEach((control) => {
     const seriesKey = control.dataset.chartSeries || "";
-    const hidden = isChartSeriesHidden(chartKey, seriesKey);
-    const selected = selectedChartSeriesKey(chartKey) === seriesKey;
+    const isLegendVisibilityControl = control.dataset.chartLegendVisibility === "true";
+    const hidden = isLegendVisibilityControl
+      ? isChartLegendSeriesHidden(chartKey, seriesKey)
+      : isChartSeriesHidden(chartKey, seriesKey);
+    const selected = !isLegendVisibilityControl && selectedChartSeriesKey(chartKey) === seriesKey;
     if (control.matches('input[type="checkbox"]')) {
       control.checked = !hidden;
       const item = control.closest(".renewable-trend-series-item");
@@ -947,9 +986,7 @@ function syncChartLegendButtons(chartKey) {
     control.setAttribute("aria-pressed", hidden ? "false" : "true");
     const legendLabel = control.dataset.chartLegendLabel || "";
     if (legendLabel) {
-      const actionLabel = chartKey === "renewableTrend" && !hidden
-        ? selected ? "再次点击取消选择" : "点击设为当前曲线"
-        : hidden ? "点击显示曲线" : "点击隐藏曲线";
+      const actionLabel = hidden ? "点击显示曲线" : "点击隐藏曲线";
       control.title = `${legendLabel}：${actionLabel}`;
       control.setAttribute("aria-label", `${legendLabel}，${actionLabel}`);
     }
@@ -5070,23 +5107,17 @@ const DIAGRAM_DEFINITION_PROTECTED_FIELDS = new Set([
 const DIAGRAM_DEFINITION_IDENTITY_FIELDS = new Set([
   "idx", "name", "dev_name", "dev_type",
 ]);
-const DIAGRAM_CONVERTER_DEFINITION_BLOCKS = new Set([
-  "DCACCONVERTER", "DCDCCONVERTER", "ACACCONVERTER",
-]);
-const DIAGRAM_AMBIGUOUS_CONVERTER_FIELDS = new Set(["p", "q", "u", "i"]);
+const DIAGRAM_REALTIME_MEASUREMENT_FIELDS = new Set(["p", "q", "u", "i", "f"]);
 
 function diagramDefinitionDisplayHeaders(record) {
   const integratedFields = record?.integratedFields instanceof Set
     ? record.integratedFields
     : new Set(record?.integratedFields || []);
-  const converterBlock = DIAGRAM_CONVERTER_DEFINITION_BLOCKS.has(
-    normalizeDiagramMeasurementToken(record?.blockName),
-  );
   return (record?.headers || []).filter((field) => {
     const name = String(field || "").trim().toLowerCase();
     return !DIAGRAM_DEFINITION_IDENTITY_FIELDS.has(name)
       && !integratedFields.has(name)
-      && !(converterBlock && DIAGRAM_AMBIGUOUS_CONVERTER_FIELDS.has(name));
+      && !DIAGRAM_REALTIME_MEASUREMENT_FIELDS.has(name);
   });
 }
 
@@ -5126,6 +5157,7 @@ function diagramDeviceParameterEditable(field) {
   const name = String(field || "").trim().toLowerCase();
   return Boolean(name)
     && !DIAGRAM_DEFINITION_PROTECTED_FIELDS.has(name)
+    && !DIAGRAM_REALTIME_MEASUREMENT_FIELDS.has(name)
     && !name.startsWith("idx_")
     && !name.endsWith("_set");
 }
@@ -9862,6 +9894,7 @@ async function setActiveModel(modelId, shouldRefresh = true) {
   state.lastCurveDisplayTableKey = "";
   state.chartSeriesHidden = {};
   state.chartSeriesSelected = {};
+  state.chartLegendSeriesHidden = {};
   state.chartCursors = {};
   state.chartSeriesHitData = {};
   state.chartPlotInfo = {};
@@ -11580,6 +11613,11 @@ function curveDisplayFamilyKeys(family, snapshot = state.snapshot || {}) {
   if (family === "environment") return [...CURVE_DISPLAY_ENV_KEYS];
   if (family === "load") return curveDisplayLoadKeys(snapshot);
   if (String(family).startsWith("load:")) return curveDisplayLoadFamilyKeys(String(family).slice(5), snapshot);
+  if (family === "source") return curveDisplaySourceKeys(snapshot);
+  if (String(family).startsWith("source:")) {
+    const sourceFamily = String(family).slice(7);
+    return curveDisplaySourceCatalog(snapshot).filter((item) => item.family === sourceFamily).map((item) => item.key);
+  }
   if (family === "electric") return curveDisplaySourceCatalog(snapshot).filter((item) => item.family === family).map((item) => item.key);
   if (family === "hydrogen") return curveDisplaySourceCatalog(snapshot).filter((item) => item.family === family).map((item) => item.key);
   if (family === "heat") return curveDisplaySourceCatalog(snapshot).filter((item) => item.family === family).map((item) => item.key);
@@ -11688,6 +11726,10 @@ function renderCurveDisplayTree(snapshot = state.snapshot || {}) {
     && selected.every((key) => loadKeys.includes(key));
   const envPartial = CURVE_DISPLAY_ENV_KEYS.some((key) => selectedSet.has(key));
   const loadPartial = loadKeys.some((key) => selectedSet.has(key));
+  const sourceKeys = curveDisplaySourceKeys(snapshot);
+  const sourceSelected = sourceKeys.length && sourceKeys.every((key) => selectedSet.has(key))
+    && selected.every((key) => sourceKeys.includes(key));
+  const sourcePartial = sourceKeys.some((key) => selectedSet.has(key));
   $("curveDisplayTreeSummary").textContent = `${CURVE_DISPLAY_ENV_KEYS.length + loadKeys.length + curveDisplaySourceKeys(snapshot).length} 条`;
   container.innerHTML = `
     <div class="tree-group">
@@ -11760,35 +11802,47 @@ function renderCurveDisplayTree(snapshot = state.snapshot || {}) {
         }).join("") || '<div class="empty-state compact">暂无负荷曲线</div>'}
       </div>
     </div>
-    ${sourceGroups.map((group) => {
-      const keys = group.sources.map((source) => source.key);
-      const groupSelected = keys.length && keys.every((key) => selectedSet.has(key))
-        && selected.every((key) => keys.includes(key));
-      const groupPartial = keys.some((key) => selectedSet.has(key));
-      return `
-        <div class="tree-group">
-          ${curveDisplayTreeGroupHeader(
-            group.key,
-            group.label,
-            keys.length,
-            `data-curve-display-tree-type="source" data-curve-display-family="${escapeHtml(group.key)}" aria-expanded="${curveDisplayTreeGroupCollapsed(group.key) ? "false" : "true"}"`,
-            groupSelected ? "is-active" : groupPartial ? "is-parent-active" : "",
-            "data-curve-display-tree-toggle",
-          )}
-          <div class="tree-children" ${curveDisplayTreeGroupCollapsed(group.key) ? "hidden" : ""}>
-            ${group.sources.map((source) => `
-              <button
-                type="button"
-                class="tree-node tree-child ${selectedSet.has(source.key) ? "is-active" : ""} ${isCurveDisplaySeriesHidden(source.key) ? "is-hidden-series" : ""}"
-                data-curve-display-tree-type="source"
-                data-curve-display-key="${escapeHtml(source.key)}"
-              >
-                <span>${escapeHtml(source.name || source.dev_name || source.key)}</span>
-                <small>${escapeHtml(source.unit || source.dev_type || "")}</small>
-              </button>`).join("") || `<div class="empty-state compact">暂无${escapeHtml(group.label)}</div>`}
-          </div>
-        </div>`;
-    }).join("")}`;
+    <div class="tree-group">
+      ${curveDisplayTreeGroupHeader(
+        "source",
+        "供能曲线",
+        sourceKeys.length,
+        `data-curve-display-tree-type="source" data-curve-display-family="source" aria-expanded="${curveDisplayTreeGroupCollapsed("source") ? "false" : "true"}"`,
+        sourceSelected ? "is-active" : sourcePartial ? "is-parent-active" : "",
+        "data-curve-display-tree-toggle",
+      )}
+      <div class="tree-children" ${curveDisplayTreeGroupCollapsed("source") ? "hidden" : ""}>
+        ${sourceGroups.map((group) => {
+          const groupKey = `source:${group.key}`;
+          const keys = group.sources.map((source) => source.key);
+          const groupSelected = keys.length && keys.every((key) => selectedSet.has(key))
+            && selected.every((key) => keys.includes(key));
+          const groupPartial = keys.some((key) => selectedSet.has(key));
+          return `
+            <div class="tree-subgroup">
+              ${curveDisplayTreeGroupHeader(
+                groupKey,
+                group.label,
+                keys.length,
+                `data-curve-display-tree-type="source" data-curve-display-family="${escapeHtml(groupKey)}" aria-expanded="${curveDisplayTreeGroupCollapsed(groupKey) ? "false" : "true"}"`,
+                groupSelected ? "is-active" : groupPartial ? "is-parent-active" : "",
+              )}
+              <div class="tree-children tree-grandchildren" ${curveDisplayTreeGroupCollapsed(groupKey) ? "hidden" : ""}>
+                ${group.sources.map((source) => `
+                  <button
+                    type="button"
+                    class="tree-node tree-child ${selectedSet.has(source.key) ? "is-active" : ""} ${isCurveDisplaySeriesHidden(source.key) ? "is-hidden-series" : ""}"
+                    data-curve-display-tree-type="source"
+                    data-curve-display-key="${escapeHtml(source.key)}"
+                  >
+                    <span>${escapeHtml(source.name || source.dev_name || source.key)}</span>
+                    <small>${escapeHtml(source.unit || source.dev_type || "")}</small>
+                  </button>`).join("") || `<div class="empty-state compact">暂无${escapeHtml(group.label)}</div>`}
+              </div>
+            </div>`;
+        }).join("")}
+      </div>
+    </div>`;
 }
 
 function renderCurveDisplayModeControls(snapshot = state.snapshot || {}) {
@@ -13408,15 +13462,21 @@ function setRenewableTrendBatchSeriesVisibility(visible, metrics = {}) {
     return;
   }
   const hidden = chartHiddenSet(chartKey);
+  const legendHidden = chartLegendHiddenSet(chartKey);
   inputs.forEach((input) => {
     const seriesKey = input.dataset.chartSeries || "";
     if (!seriesKey) return;
     if (visible) hidden.delete(seriesKey);
     else hidden.add(seriesKey);
+    legendHidden.delete(seriesKey);
   });
   state.chartSeriesHidden = {
     ...(state.chartSeriesHidden || {}),
     [chartKey]: Array.from(hidden),
+  };
+  state.chartLegendSeriesHidden = {
+    ...(state.chartLegendSeriesHidden || {}),
+    [chartKey]: Array.from(legendHidden),
   };
 
   const selectedKey = selectedChartSeriesKey(chartKey);
@@ -13676,6 +13736,7 @@ function renderRenewableTrendLegend(selectedSeries = []) {
       item.dataset.chartToggle = "renewableTrend";
       item.dataset.chartSeries = series.key;
       item.dataset.chartLegendLabel = series.label;
+      item.dataset.chartLegendVisibility = "true";
       item.style.setProperty("--renewable-series-color", series.color || "#23854a");
       const swatch = document.createElement("i");
       swatch.className = `renewable-trend-inline-legend-swatch${series.style ? ` is-${series.style}` : ""}`;
@@ -13702,7 +13763,8 @@ function drawRenewableTrendChart() {
   ensureRenewableTrendSeriesSelection(RENEWABLE_TREND_SERIES_DEFS);
   const metrics = state.renewableControl.lastPlan?.metrics || {};
   const availableSeries = RENEWABLE_TREND_SERIES_DEFS.filter((series) => renewableTrendSeriesAvailable(series, metrics));
-  const visibleSeries = visibleChartSeries(chartKey, availableSeries);
+  const selectedSeries = visibleChartSeries(chartKey, availableSeries);
+  const visibleSeries = visibleChartLegendSeries(chartKey, selectedSeries);
   const requestedSeriesKey = selectedChartSeriesKey(chartKey, visibleSeries[0]?.key || "");
   const selectedSeriesKey = visibleSeries.some((series) => series.key === requestedSeriesKey)
     ? requestedSeriesKey
@@ -13728,7 +13790,7 @@ function drawRenewableTrendChart() {
   const plot = { left, right, top, bottom };
   state.chartPlotInfo = { ...(state.chartPlotInfo || {}), [chartKey]: plot };
 
-  renderRenewableTrendLegend(visibleSeries);
+  renderRenewableTrendLegend(selectedSeries);
   renderRenewableTrendSeriesAvailability(metrics);
 
   for (let index = 0; index <= 4; index += 1) {
@@ -13780,7 +13842,12 @@ function drawRenewableTrendChart() {
     ctx.fillStyle = "#63717a";
     ctx.font = `${13 * ratio}px Microsoft YaHei, Arial`;
     ctx.textAlign = "center";
-    ctx.fillText(!visibleSeries.length ? "未选择曲线" : "暂无综合趋势数据", width / 2, height / 2);
+    const emptyText = !selectedSeries.length
+      ? "未选择曲线"
+      : !visibleSeries.length
+        ? "图例已隐藏全部曲线"
+        : "暂无综合趋势数据";
+    ctx.fillText(emptyText, width / 2, height / 2);
     return;
   }
 
@@ -18053,9 +18120,8 @@ document.addEventListener("click", (event) => {
       : chartKey === "commandTrace" ? drawCommandTraceChart
         : chartKey === "renewableTrend" ? drawRenewableTrendChart
           : null;
-    const visibleRenewableSeries = chartKey === "renewableTrend" && !isChartSeriesHidden(chartKey, seriesKey);
-    if (visibleRenewableSeries && selectedChartSeriesKey(chartKey) !== seriesKey) {
-      setChartSeriesSelected(chartKey, seriesKey, drawFn);
+    if (chartToggle.dataset.chartLegendVisibility === "true") {
+      toggleChartLegendSeriesVisibility(chartKey, seriesKey, drawFn);
     } else {
       toggleChartSeriesVisibility(chartKey, seriesKey, drawFn);
     }
@@ -18481,6 +18547,11 @@ if (renewableTrendSeriesPanel) {
       ? event.target.closest('input[data-chart-toggle="renewableTrend"][data-chart-series]')
       : null;
     if (!input) return;
+    setChartLegendSeriesVisibility(
+      "renewableTrend",
+      input.dataset.chartSeries || "",
+      true,
+    );
     setChartSeriesVisibility(
       "renewableTrend",
       input.dataset.chartSeries || "",

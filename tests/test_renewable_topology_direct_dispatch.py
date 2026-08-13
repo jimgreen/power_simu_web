@@ -247,7 +247,7 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
     def test_low_diesel_validation_preserves_one_step_and_publishes_final_targets(self):
         snapshot = renewable_snapshot()
         set_measurement_value(snapshot, "ACGenerator", "diesel-1", "P_GEN", 19.0)
-        set_measurement_value(snapshot, "DCGenerator", "storage-1", "P_GEN", 0.0)
+        set_measurement_value(snapshot, "DCGenerator", "storage-1", "P_GEN", -5.0)
         set_measurement_value(
             snapshot,
             "DCACConverter",
@@ -259,10 +259,15 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
         plan = calculate_renewable_control_plan(snapshot)
         rows = {row["dev_name"]: row for row in plan["commandRows"]}
 
-        # The below-floor diesel correction owns the AC-side margin. Renewable
-        # recovery may still use the same DC group's charging headroom, while
-        # the converter correction must restore diesel above its hard floor.
-        self.assertGreater(rows["pv-1"]["commandKw"], 20.0)
+        # Once diesel is below its lower protection-band boundary and storage
+        # SOC is still above its lower limit, renewable output has no recovery
+        # headroom.  A charging storage means the island already has surplus
+        # renewable energy, so the first stage must issue curtailment instead.
+        self.assertLess(rows["pv-1"]["commandKw"], 20.0)
+        self.assertLessEqual(rows["wind-1"]["commandKw"], 30.0)
+        self.assertTrue(plan["metrics"]["renewableRaiseBlockedByDieselGuard"])
+        self.assertTrue(plan["metrics"]["renewableCurtailmentRequiredByCharging"])
+        self.assertGreater(plan["metrics"]["renewableDieselGuardCurtailRequestKw"], 0.0)
         self.assertGreaterEqual(
             rows["diesel-1"]["commandKw"],
             rows["diesel-1"]["minKw"],
@@ -276,6 +281,46 @@ class RenewableTopologyDirectDispatchTest(unittest.TestCase):
             rows["grid-converter-1"]["signedMinTargetKw"] - 1e-9,
         )
         self.assertTrue(plan["metrics"]["optimizationApplied"])
+
+    def test_low_diesel_above_lower_soc_holds_renewable_when_storage_is_not_charging(self):
+        snapshot = renewable_snapshot()
+        set_measurement_value(snapshot, "ACGenerator", "diesel-1", "P_GEN", 19.0)
+        set_measurement_value(snapshot, "DCGenerator", "storage-1", "SOC", 0.50)
+        set_measurement_value(snapshot, "DCGenerator", "storage-1", "P_GEN", 0.0)
+
+        plan = calculate_renewable_control_plan(
+            snapshot,
+            RenewableControlSettings(diesel_power_protection_ratio=0.05),
+        )
+        rows = {row["dev_name"]: row for row in plan["commandRows"]}
+
+        self.assertAlmostEqual(rows["wind-1"]["commandKw"], 30.0)
+        self.assertAlmostEqual(rows["pv-1"]["commandKw"], 20.0)
+        self.assertTrue(plan["metrics"]["renewableRaiseBlockedByDieselGuard"])
+        self.assertFalse(plan["metrics"]["renewableCurtailmentRequiredByCharging"])
+        self.assertAlmostEqual(
+            plan["metrics"]["renewableDieselGuardCurtailRequestKw"],
+            0.0,
+        )
+
+    def test_unchanged_renewable_targets_remain_in_complete_generation_snapshot(self):
+        plan = calculate_renewable_control_plan(
+            renewable_snapshot(),
+            RenewableControlSettings(step_coefficient=0.0),
+        )
+        commands = command_map(plan)
+        rows = {
+            row["dev_name"]: row
+            for row in plan["commandRows"]
+            if row.get("technology") in {"wind", "pv"}
+        }
+
+        self.assertAlmostEqual(commands[("ACGenerator", "wind-1", "p_set")], 30.0)
+        self.assertAlmostEqual(commands[("DCGenerator", "pv-1", "p_set")], 20.0)
+        self.assertTrue(rows["wind-1"]["strategyCommand"])
+        self.assertTrue(rows["pv-1"]["strategyCommand"])
+        self.assertFalse(rows["wind-1"]["strategyTargetChanged"])
+        self.assertFalse(rows["pv-1"]["strategyTargetChanged"])
 
     def test_positive_acdc_power_is_not_counted_as_fake_dc_export(self):
         snapshot = renewable_snapshot()

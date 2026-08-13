@@ -9846,7 +9846,10 @@ def _apply_optimization_targets(
             and row.get("online")
             and direct_dispatch
         )
-        row["strategyCommand"] = changed
+        row["strategyTargetChanged"] = changed
+        # Each generation is a complete replacement snapshot.  A valid target
+        # must remain present even when it equals the current measurement.
+        row["strategyCommand"] = bool(row.get("online") and direct_dispatch)
         row["statusLabel"] = (
             f"{row.get('statusLabel', '')}·"
             f"{'拓扑岛优化' if direct_dispatch else '拓扑岛优化预测'}"
@@ -10831,6 +10834,28 @@ def calculate_renewable_control_plan(
         if renewable_curtail_capacity_step_kw > EPSILON
         else 0.0
     )
+    renewable_raise_blocked_by_diesel_guard = bool(
+        not renewable_storage_island
+        and storage_soc is not None
+        and storage_soc_lower_limit is not None
+        and storage_soc > storage_soc_lower_limit + EPSILON
+        and diesel_current_for_control < diesel_deadband_upper_kw - EPSILON
+    )
+    renewable_curtailment_required_by_charging = bool(
+        renewable_raise_blocked_by_diesel_guard
+        and storage_charge_current_kw > EPSILON
+    )
+    renewable_diesel_guard_curtail_request_kw = (
+        min(renewable_curtail_capacity_step_kw, storage_charge_current_kw)
+        if renewable_curtailment_required_by_charging
+        else 0.0
+    )
+    renewable_diesel_guard_curtail_scale = (
+        renewable_diesel_guard_curtail_request_kw
+        / renewable_curtail_capacity_step_kw
+        if renewable_curtail_capacity_step_kw > EPSILON
+        else 0.0
+    )
     high_soc_guard = storage_soc_region in {"high_guard", "above_upper"}
     soc_at_or_above_upper = (
         storage_soc is not None
@@ -11209,6 +11234,10 @@ def calculate_renewable_control_plan(
         and storage_charge_derating_actuator == "acdc"
     ):
         renewable_control_action = "hold_charge_derating_while_acdc_corrects"
+    elif renewable_curtailment_required_by_charging:
+        renewable_control_action = "curtail_one_step_low_diesel_charging"
+    elif renewable_raise_blocked_by_diesel_guard:
+        renewable_control_action = "hold_low_diesel_no_charge"
     elif storage_soc < storage_soc_upper_limit - EPSILON:
         renewable_control_action = "recover_one_step"
     elif (
@@ -11237,6 +11266,7 @@ def calculate_renewable_control_plan(
             "curtail_one_step_storage_island_no_charge_capacity",
             "curtail_one_step_above_soc_upper_deadband",
             "curtail_one_step_charge_derating",
+            "curtail_one_step_low_diesel_charging",
             "curtail_charge_safety",
         }
         else "hold"
@@ -11255,6 +11285,8 @@ def calculate_renewable_control_plan(
         if renewable_control_action == "curtail_one_step_full_soc"
         else renewable_derating_curtail_step_scale
         if renewable_control_action == "curtail_one_step_charge_derating"
+        else renewable_diesel_guard_curtail_scale
+        if renewable_control_action == "curtail_one_step_low_diesel_charging"
         else (
             renewable_charge_safety_curtail_delivered_kw
             / renewable_curtail_capacity_step_kw
@@ -11300,6 +11332,13 @@ def calculate_renewable_control_plan(
                 - renewable_curtail_base_steps.get(key, 0.0)
                 * renewable_derating_curtail_step_scale,
             )
+        elif renewable_control_action == "curtail_one_step_low_diesel_charging":
+            target_kw = max(
+                0.0,
+                current_kw
+                - renewable_curtail_base_steps.get(key, 0.0)
+                * renewable_diesel_guard_curtail_scale,
+            )
         elif renewable_control_action in {
             "recover_one_step",
             "recover_one_step_below_soc_lower_deadband",
@@ -11309,6 +11348,25 @@ def calculate_renewable_control_plan(
         else:
             target_kw = current_kw
         renewable_target_by_device[key] = _clamp(target_kw, 0.0, capacity_kw) if capacity_kw > EPSILON else 0.0
+
+    # Preserve the first-stage diesel/SOC decision as a hard renewable upper
+    # bound for every later topology repair and optimization pass.
+    if renewable_raise_blocked_by_diesel_guard:
+        for row in online_renewable:
+            key = (row["dev_type"], row["dev_name"])
+            current_kw = _number(row.get("planningCurrentKw"))
+            target_kw = _number(renewable_target_by_device.get(key))
+            if current_kw is None:
+                continue
+            row["dispatchUpperKw"] = min(
+                current_kw,
+                target_kw if target_kw is not None else current_kw,
+            )
+            row["dispatchUpperReason"] = (
+                "diesel_guard_storage_charging_curtailment"
+                if renewable_curtailment_required_by_charging
+                else "diesel_guard_no_renewable_recovery"
+            )
 
     island_component_plans: List[Dict[str, Any]] = []
     island_control_action_by_component: Dict[Tuple[str, str], str] = {}
@@ -12191,12 +12249,18 @@ def calculate_renewable_control_plan(
             row["commandKw"] = target
             row["targetKw"] = target
             row["optimizationSuggestedKw"] = target
-            row["strategyCommand"] = bool(
+            row["strategyTargetChanged"] = bool(
                 row.get("online")
                 and row.get("commandable")
                 and row.get("set_type")
                 and current is not None
                 and abs(target - current) > EPSILON
+            )
+            row["strategyCommand"] = bool(
+                row.get("online")
+                and row.get("commandable")
+                and row.get("set_type")
+                and current is not None
             )
         for component_plan in island_component_plans:
             component_key = (
@@ -12821,6 +12885,15 @@ def calculate_renewable_control_plan(
         "upperSocDeadbandActive": upper_soc_deadband_active,
         "renewableUpperBoundaryDistance": renewable_upper_boundary_distance,
         "renewableStorageChargingActive": renewable_storage_charging_active,
+        "renewableRaiseBlockedByDieselGuard": (
+            renewable_raise_blocked_by_diesel_guard
+        ),
+        "renewableCurtailmentRequiredByCharging": (
+            renewable_curtailment_required_by_charging
+        ),
+        "renewableDieselGuardCurtailRequestKw": (
+            renewable_diesel_guard_curtail_request_kw
+        ),
         "gridFormingStorageProtectionRatio": (
             settings.grid_forming_storage_protection_ratio
         ),
@@ -13040,6 +13113,17 @@ def calculate_renewable_control_plan(
         renewable_step_reason_text = "储能已不再充电，停止继续弃电并保持当前出力"
     elif renewable_control_action == "hold_full_soc_high_diesel_charging":
         renewable_step_reason_text = "SOC已到上限但柴发仍高，暂停新能源动作并等待ACDC回路降低储能充电"
+    elif renewable_control_action == "curtail_one_step_low_diesel_charging":
+        renewable_step_reason_text = (
+            f"储能SOC高于下限且仍充电 {storage_charge_current_kw:.2f} kW，柴发低于"
+            f"下限+死区 {diesel_deadband_upper_kw:.2f} kW；新能源禁止上调并按剩余充电功率"
+            f"弃电 {renewable_diesel_guard_curtail_request_kw:.2f} kW"
+        )
+    elif renewable_control_action == "hold_low_diesel_no_charge":
+        renewable_step_reason_text = (
+            f"储能SOC高于下限且柴发低于下限+死区 {diesel_deadband_upper_kw:.2f} kW；"
+            "新能源没有上调空间，储能未充电时保持当前出力"
+        )
     elif renewable_control_action == "curtail_charge_safety":
         renewable_step_reason_text = (
             f"ACDC目标作用后预计仍充电 {storage_predicted_charge_after_acdc_kw:.2f} kW，"

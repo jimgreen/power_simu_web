@@ -1407,10 +1407,28 @@ def _hydrogen_post_dispatch_plan(
     )
     diagnostics["interlockMode"] = hydrogen_mode_lock or "idle"
     diagnostics["interlockActive"] = bool(hydrogen_mode_lock)
+    conflict_stop_mode = ""
+    conflict_keep_mode = ""
     if hydrogen_mode_lock == "conflict":
+        initial_diesel_average_kw = diesel_current_kw / diesel_unit_count
+        conflict_stop_mode = (
+            "electrolyzer"
+            if initial_diesel_average_kw
+            > settings.fuel_cell_diesel_power_limit_kw + EPSILON
+            else "fuel_cell"
+        )
+        conflict_keep_mode = (
+            "fuel_cell" if conflict_stop_mode == "electrolyzer" else "electrolyzer"
+        )
+        diagnostics["interlockStopMode"] = conflict_stop_mode
+        diagnostics["interlockKeepMode"] = conflict_keep_mode
         diagnostics["warnings"].append(
-            "实时量测显示电制氢和燃料电池同时运行，本轮禁止两类设备继续启动或升功率；"
-            "仅允许降功率或安全停机"
+            "实时量测显示电制氢和燃料电池同时运行，"
+            f"柴发平均功率{initial_diesel_average_kw:.3f} kW/台"
+            f"{'高于' if conflict_stop_mode == 'electrolyzer' else '未高于'}"
+            f"燃料电池柴发功率限值{settings.fuel_cell_diesel_power_limit_kw:.3f} kW/台，"
+            f"本轮停止{'电制氢' if conflict_stop_mode == 'electrolyzer' else '燃料电池'}，"
+            f"保留{'燃料电池' if conflict_keep_mode == 'fuel_cell' else '电制氢'}运行"
         )
 
     online_storage = [row for row in storage_rows if row.get("online")]
@@ -1630,7 +1648,8 @@ def _hydrogen_post_dispatch_plan(
                     and hydrogen_storage_soc
                     < settings.electrolyzer_hydrogen_storage_soc_upper_limit
                     - EPSILON
-                    and hydrogen_mode_lock not in {"fuel_cell", "conflict"}
+                    and hydrogen_mode_lock != "fuel_cell"
+                    and conflict_stop_mode != "electrolyzer"
                 )
                 electrolyzer_reduce_required = bool(
                     diesel_reduce_margin_kw > EPSILON
@@ -1671,7 +1690,10 @@ def _hydrogen_post_dispatch_plan(
                     ),
                 )
                 if (
-                    hydrogen_mode_lock in {"electrolyzer", "conflict"}
+                    (
+                        hydrogen_mode_lock == "electrolyzer"
+                        or conflict_stop_mode == "fuel_cell"
+                    )
                     and fuel_cell_decision.action in {"start", "increase"}
                 ):
                     diagnostics["warnings"].append(
@@ -1687,10 +1709,19 @@ def _hydrogen_post_dispatch_plan(
                             fuel_cell_decision.diesel_reduce_margin_kw
                         ),
                     )
-            if hydrogen_mode_lock == "conflict" and current_power > EPSILON:
+            conflict_stops_device = bool(
+                hydrogen_mode_lock == "conflict"
+                and (
+                    (is_electrolyzer and conflict_stop_mode == "electrolyzer")
+                    or (not is_electrolyzer and conflict_stop_mode == "fuel_cell")
+                )
+            )
+            if conflict_stops_device and current_power > EPSILON:
                 requested_delta_kw = -current_power
                 device_action = "hydrogen_interlock_stop"
-                device_action_reason = "simultaneous_operation_interlock"
+                device_action_reason = (
+                    f"simultaneous_operation_stop_{conflict_stop_mode}"
+                )
             elif pressure_blocked:
                 requested_delta_kw = -current_power
             elif current_power > EPSILON and current_power < stop_threshold_kw - EPSILON:
@@ -1725,7 +1756,10 @@ def _hydrogen_post_dispatch_plan(
                     diagnostics["warnings"].append(
                         (
                             f"氢能设备{coupling_name}受燃料电池运行互锁，已禁止制氢启动"
-                            if hydrogen_mode_lock in {"fuel_cell", "conflict"}
+                            if (
+                                hydrogen_mode_lock == "fuel_cell"
+                                or conflict_stop_mode == "electrolyzer"
+                            )
                             else f"氢能设备{coupling_name}未同时满足平均柴发功率、电储SOC和本氢岛氢储SOC的制氢启动条件，已保持停机"
                         )
                     )

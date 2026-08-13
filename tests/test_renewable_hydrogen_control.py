@@ -1055,7 +1055,20 @@ def test_running_electrolyzer_blocks_fuel_cell_start():
     assert not any(row.get("dev_name") == "fuel-cell" for row in rows)
 
 
-def test_existing_simultaneous_operation_stops_both_hydrogen_modes():
+@pytest.mark.parametrize(
+    ("diesel_power", "expected_stop_mode", "expected_keep_mode", "expected_target"),
+    [
+        (90.0, "electrolyzer", "fuel_cell", {"electrolyzer-load": 0.0}),
+        (80.0, "fuel_cell", "electrolyzer", {"fuel-cell": 0.0}),
+        (70.0, "fuel_cell", "electrolyzer", {"fuel-cell": 0.0}),
+    ],
+)
+def test_existing_simultaneous_operation_stops_mode_selected_by_diesel_power(
+    diesel_power,
+    expected_stop_mode,
+    expected_keep_mode,
+    expected_target,
+):
     snapshot = _electrolyzer_snapshot(tank_soc=0.5, electric_power=4.0)
     snapshot["measurements"]["scada"] = [
         row
@@ -1099,8 +1112,8 @@ def test_existing_simultaneous_operation_stops_both_hydrogen_modes():
             "commandable": True,
             "strategyCommand": True,
             "set_type": "p_set",
-            "currentKw": 80.0,
-            "commandKw": 80.0,
+            "currentKw": diesel_power,
+            "commandKw": diesel_power,
             "minKw": 20.0,
             "capacityKw": 200.0,
         },
@@ -1116,19 +1129,30 @@ def test_existing_simultaneous_operation_stops_both_hydrogen_modes():
             fuel_cell_power_min_kw=3.0,
             fuel_cell_power_max_kw=20.0,
             fuel_cell_power_step_kw=3.0,
+            electrolyzer_diesel_power_limit_kw=80.0,
+            electrolyzer_diesel_power_deadband_kw=5.0,
+            electrolyzer_storage_soc_lower_limit=0.2,
+            electrolyzer_storage_soc_upper_limit=0.8,
+            electrolyzer_hydrogen_storage_soc_upper_limit=0.9,
+            fuel_cell_diesel_power_limit_kw=80.0,
+            fuel_cell_storage_soc_limit=0.5,
+            fuel_cell_hydrogen_storage_soc_upper_limit=0.8,
+            fuel_cell_hydrogen_storage_soc_lower_limit=0.2,
         ),
         topology,
         rows,
         [{"online": True, "socKnown": True, "soc": 0.5, "socMin": 0.2}],
-        diesel_current_kw=80.0,
+        diesel_current_kw=diesel_power,
     )
 
     assert result["interlockMode"] == "conflict"
     assert result["interlockActive"] is True
+    assert result["interlockStopMode"] == expected_stop_mode
+    assert result["interlockKeepMode"] == expected_keep_mode
     targets = {row["activeDevName"]: row["electricPowerKw"] for row in result["commands"]}
-    assert targets == {"electrolyzer-load": 0.0, "fuel-cell": 0.0}
+    assert targets == expected_target
     assert all(
-        row["controlReason"] == "simultaneous_operation_interlock"
+        row["controlReason"] == f"simultaneous_operation_stop_{expected_stop_mode}"
         for row in result["commands"]
     )
     assert any("同时运行" in warning for warning in result["warnings"])

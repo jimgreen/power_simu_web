@@ -663,6 +663,62 @@ process.stdout.write(JSON.stringify({{
             },
         )
 
+    def test_left_checkbox_selection_atomically_restores_the_series_and_legend(self):
+        helpers = "function chartHiddenSet" + self.script.split(
+            "function chartHiddenSet",
+            1,
+        )[1].split("function selectedChartSeriesKey", 1)[0]
+        action = "function setChartSeriesVisibility" + self.script.split(
+            "function setChartSeriesVisibility",
+            1,
+        )[1].split("function toggleChartSeriesVisibility", 1)[0]
+        node_script = f"""
+const state = {{
+  chartSeriesHidden: {{ renewableTrend: ["power"] }},
+  chartLegendSeriesHidden: {{ renewableTrend: ["power"] }},
+  chartSeriesSelected: {{}},
+}};
+let syncCount = 0;
+let drawCount = 0;
+function syncChartLegendButtons() {{ syncCount += 1; }}
+{helpers}
+{action}
+setChartSeriesVisibility("renewableTrend", "power", true, () => {{ drawCount += 1; }});
+const afterSelect = {{
+  leftHidden: state.chartSeriesHidden.renewableTrend,
+  legendHidden: state.chartLegendSeriesHidden.renewableTrend,
+  selected: state.chartSeriesSelected.renewableTrend,
+}};
+setChartSeriesVisibility("renewableTrend", "power", false, () => {{ drawCount += 1; }});
+process.stdout.write(JSON.stringify({{
+  afterSelect,
+  afterClear: {{
+    leftHidden: state.chartSeriesHidden.renewableTrend,
+    legendHidden: state.chartLegendSeriesHidden.renewableTrend,
+  }},
+  syncCount,
+  drawCount,
+}}));
+"""
+        result = subprocess.run(["node", "-e", node_script], check=True, capture_output=True, text=True)
+        self.assertEqual(
+            json.loads(result.stdout),
+            {
+                "afterSelect": {"leftHidden": [], "legendHidden": [], "selected": "power"},
+                "afterClear": {"leftHidden": ["power"], "legendHidden": []},
+                "syncCount": 2,
+                "drawCount": 2,
+            },
+        )
+
+        event_block = self.script.split(
+            'renewableTrendSeriesPanel.addEventListener("change"',
+            1,
+        )[1].split("initTraceChartInteractions", 1)[0]
+        self.assertIn("const visible = input.checked;", event_block)
+        self.assertIn("setChartSeriesVisibility(", event_block)
+        self.assertNotIn("setChartLegendSeriesVisibility(", event_block)
+
     def test_backend_compact_trend_keeps_all_power_targets_and_storage_soc(self):
         for _metric_id, field in EXPECTED_TREND_SERIES.values():
             with self.subTest(field=field):

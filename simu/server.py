@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import copy
 import gzip
 import hashlib
@@ -590,7 +591,7 @@ def _read_zip_text(archive: zipfile.ZipFile, entry_name: str, required: bool = T
         if required:
             raise ValueError(f"Definition archive is missing {entry_name}") from None
         return None
-    return data.decode("utf-8-sig")
+    return _decode_uploaded_definition_text(data, entry_name)
 
 
 def _normalize_diagram_svg_text(svg_text: Optional[str]) -> Optional[str]:
@@ -599,6 +600,13 @@ def _normalize_diagram_svg_text(svg_text: Optional[str]) -> Optional[str]:
     text = str(svg_text).lstrip("\ufeff")
     if not text.strip():
         return None
+    text = re.sub(
+        r'^(\s*<\?xml\b[^>]*?\bencoding\s*=\s*)(["\'])([^"\']+)(\2)',
+        lambda match: f'{match.group(1)}{match.group(2)}UTF-8{match.group(2)}',
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
     lower = text.lower()
     if "<svg" not in lower:
         raise ValueError("SVG图形文件必须包含 <svg> 根图形内容")
@@ -612,9 +620,10 @@ def _decode_optional_svg_payload(payload: Mapping[str, Any]) -> Optional[str]:
     if not data_base64:
         return None
     try:
-        return base64.b64decode(data_base64, validate=True).decode("utf-8-sig")
-    except (ValueError, UnicodeDecodeError) as exc:
-        raise ValueError("SVG图形文件解析失败") from exc
+        data = base64.b64decode(data_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("SVG图形文件 Base64 数据无效") from exc
+    return _decode_uploaded_definition_text(data, "SVG图形")
 
 
 def _write_model_diagram(target_dir: Path, diagram_svg_text: Optional[str], *, remove_when_absent: bool = False) -> bool:

@@ -932,9 +932,15 @@ function setChartSeriesSelected(chartKey, seriesKey, drawFn) {
 function setChartSeriesVisibility(chartKey, seriesKey, visible, drawFn) {
   if (!chartKey || !seriesKey) return;
   const hidden = chartHiddenSet(chartKey);
+  const legendHidden = chartLegendHiddenSet(chartKey);
   if (visible) hidden.delete(seriesKey);
   else hidden.add(seriesKey);
+  legendHidden.delete(seriesKey);
   state.chartSeriesHidden = { ...(state.chartSeriesHidden || {}), [chartKey]: Array.from(hidden) };
+  state.chartLegendSeriesHidden = {
+    ...(state.chartLegendSeriesHidden || {}),
+    [chartKey]: Array.from(legendHidden),
+  };
   state.chartSeriesSelected = { ...(state.chartSeriesSelected || {}), [chartKey]: seriesKey };
   syncChartLegendButtons(chartKey);
   if (typeof drawFn === "function") drawFn();
@@ -18547,15 +18553,12 @@ if (renewableTrendSeriesPanel) {
       ? event.target.closest('input[data-chart-toggle="renewableTrend"][data-chart-series]')
       : null;
     if (!input) return;
-    setChartLegendSeriesVisibility(
-      "renewableTrend",
-      input.dataset.chartSeries || "",
-      true,
-    );
+    const seriesKey = input.dataset.chartSeries || "";
+    const visible = input.checked;
     setChartSeriesVisibility(
       "renewableTrend",
-      input.dataset.chartSeries || "",
-      input.checked,
+      seriesKey,
+      visible,
       drawRenewableTrendChart,
     );
   });

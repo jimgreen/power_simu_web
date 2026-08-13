@@ -36,6 +36,55 @@ def _replace_efile_block(text: str, block_name: str, replacement: str) -> str:
 
 
 class DefinitionImportRefreshTest(unittest.TestCase):
+    def test_definition_archive_accepts_gb18030_e_and_svg_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            package_service = PolarMicrogridSimulator(
+                SIMPLE_MODEL_SOURCE,
+                temp_root / "package-runtime",
+                model_id="simple",
+            )
+            _filename, archive = make_definition_archive(package_service)
+            replacements: dict[str, bytes] = {}
+            with zipfile.ZipFile(BytesIO(archive), mode="r") as definition_archive:
+                for name in ("model.e", "meas.e", "control.e", "curves.e"):
+                    text = definition_archive.read(name).decode("utf-8-sig")
+                    replacements[name] = (
+                        text
+                        + f"\n<{name}_编码验证>\n@ name\n# 秦岭站\n</{name}_编码验证>\n"
+                    ).encode("gb18030")
+                replacements["diagram.svg"] = (
+                    '<?xml version="1.0" encoding="GB18030"?>'
+                    '<svg xmlns="http://www.w3.org/2000/svg"><text>秦岭站</text></svg>'
+                ).encode("gb18030")
+            archive = _rewrite_definition_archive(archive, replacements)
+
+            parsed = server_module._parse_definition_archive(archive)
+
+            self.assertIn("秦岭站", parsed["model_text"])
+            self.assertIn("秦岭站", parsed["meas_text"])
+            self.assertIn("秦岭站", parsed["control_text"])
+            self.assertIn("秦岭站", parsed["curves_text"])
+            self.assertIn("秦岭站", parsed["diagram_text"])
+            self.assertIn('encoding="UTF-8"', parsed["diagram_text"])
+
+            trainee_source = temp_root / "trainee-source"
+            copytree(ROOT / "models/trainee/source/默认模型", trainee_source)
+            trainee = PolarMicrogridSimulator(
+                trainee_source,
+                temp_root / "trainee-runtime",
+                model_id="trainee",
+            )
+            imported = import_definition_archive(trainee, archive)
+
+            self.assertGreater(imported["written"], 0)
+            for name in ("model.e", "meas.e", "control.e", "curves.e"):
+                saved_text = (trainee_source / name).read_text(encoding="utf-8")
+                self.assertIn("秦岭站", saved_text)
+            saved_diagram = (trainee_source / "diagram.svg").read_text(encoding="utf-8")
+            self.assertIn("秦岭站", saved_diagram)
+            self.assertIn('encoding="UTF-8"', saved_diagram)
+
     def test_imported_model_and_measurements_are_visible_immediately(self):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)

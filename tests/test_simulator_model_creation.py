@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import re
 import tempfile
 import threading
@@ -596,6 +597,115 @@ class SimulatorModelCreationTest(unittest.TestCase):
 
             self.assertEqual(body["model"]["id"], "国标编码模型")
             self.assertTrue((models_root / "国标编码模型/model.e").exists())
+
+    def test_svg_payload_decoder_accepts_utf8_bom_and_gb18030(self):
+        cases = {
+            "utf8": (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                '<svg xmlns="http://www.w3.org/2000/svg"><text>秦岭站</text></svg>'
+            ).encode("utf-8"),
+            "utf8-bom": (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                '<svg xmlns="http://www.w3.org/2000/svg"><text>秦岭站</text></svg>'
+            ).encode("utf-8-sig"),
+            "gb18030": (
+                '<?xml version="1.0" encoding="GB18030"?>'
+                '<svg xmlns="http://www.w3.org/2000/svg"><text>秦岭站</text></svg>'
+            ).encode("gb18030"),
+        }
+
+        for name, raw_svg in cases.items():
+            with self.subTest(encoding=name):
+                decoded = server_module._decode_optional_svg_payload(
+                    {"diagram_svg_base64": base64.b64encode(raw_svg).decode("ascii")}
+                )
+                normalized = server_module._normalize_diagram_svg_text(decoded)
+                self.assertIn("秦岭站", normalized)
+                self.assertIn('encoding="UTF-8"', normalized)
+
+    def test_svg_payload_decoder_reports_base64_and_text_encoding_separately(self):
+        with self.assertRaisesRegex(ValueError, "Base64 数据无效"):
+            server_module._decode_optional_svg_payload({"diagram_svg_base64": "%%%"})
+
+        invalid_bytes = base64.b64encode(b"\xff\xff\xff").decode("ascii")
+        with self.assertRaisesRegex(ValueError, "SVG图形.*文件编码无法识别"):
+            server_module._decode_optional_svg_payload({"diagram_svg_base64": invalid_bytes})
+
+    def test_svg_encoding_support_does_not_bypass_script_validation(self):
+        unsafe_svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg">'
+            '<text onclick="alert(1)">秦岭站</text></svg>'
+        ).encode("gb18030")
+        decoded = server_module._decode_optional_svg_payload(
+            {"diagram_svg_base64": base64.b64encode(unsafe_svg).decode("ascii")}
+        )
+
+        with self.assertRaisesRegex(ValueError, "不能包含脚本"):
+            server_module._normalize_diagram_svg_text(decoded)
+
+    def test_e_file_decoder_accepts_utf8_bom_and_gb18030_and_rejects_unknown_bytes(self):
+        e_text = "<Model>\n@ name\n# 秦岭站\n</Model>\n"
+        for encoding in ("utf-8", "utf-8-sig", "gb18030"):
+            with self.subTest(encoding=encoding):
+                decoded = server_module._decode_uploaded_definition_text(
+                    e_text.encode(encoding),
+                    "model.e",
+                )
+                self.assertIn("秦岭站", decoded)
+
+        with self.assertRaisesRegex(ValueError, "model.e 文件编码无法识别"):
+            server_module._decode_uploaded_definition_text(b"\xff\xff\xff", "model.e")
+
+    def test_update_model_endpoint_accepts_gb18030_model_and_svg_payloads(self):
+        from simu.server import make_http_server
+        from urllib.request import Request, urlopen
+
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            manager = self._manager(temp_root)
+            server = make_http_server(("127.0.0.1", 0), manager)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            port = server.server_address[1]
+            model_text = (SIMPLE_MODEL_SOURCE / "model.e").read_text(encoding="utf-8")
+            model_text = model_text.replace("diesel_300kw", "秦岭柴油机")
+            diagram_text = (
+                '<?xml version="1.0" encoding="GB18030"?>'
+                '<svg xmlns="http://www.w3.org/2000/svg"><text>秦岭站一次图</text></svg>'
+            )
+            try:
+                request = Request(
+                    f"http://127.0.0.1:{port}/api/models/update-definitions",
+                    data=json.dumps(
+                        {
+                            "model_id": "default-model",
+                            "data_base64": base64.b64encode(
+                                model_text.encode("gb18030")
+                            ).decode("ascii"),
+                            "diagram_svg_base64": base64.b64encode(
+                                diagram_text.encode("gb18030")
+                            ).decode("ascii"),
+                        },
+                        ensure_ascii=False,
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(request, timeout=15) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+            target_dir = manager.models_root / "default-model"
+            saved_model = target_dir.joinpath("model.e").read_text(encoding="utf-8")
+            saved_diagram = target_dir.joinpath("diagram.svg").read_text(encoding="utf-8")
+            self.assertEqual(body["model"]["id"], "default-model")
+            self.assertIn("秦岭柴油机", saved_model)
+            self.assertIn("秦岭站一次图", saved_diagram)
+            self.assertIn('encoding="UTF-8"', saved_diagram)
+            self.assertGreater(len(manager.service_for("default-model").definitions()["measurement"]), 0)
 
     def test_delete_model_rejects_running_model_and_removes_stopped_model_folder(self):
         with tempfile.TemporaryDirectory() as temporary:

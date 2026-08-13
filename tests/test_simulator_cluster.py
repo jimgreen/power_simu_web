@@ -684,6 +684,39 @@ def test_proxy_keeps_low_frequency_model_management_on_control_plane(tmp_path: P
             name: (models_root / "created" / name).read_bytes()
             for name in generated_names
         } == generated_before_link_update
+
+        gb18030_model_text = model_text.decode("utf-8-sig").replace(
+            "diesel_300kw",
+            "秦岭柴油机",
+        )
+        gb18030_diagram_text = (
+            '<?xml version="1.0" encoding="GB18030"?>'
+            '<svg xmlns="http://www.w3.org/2000/svg"><text>秦岭站一次图</text></svg>'
+        )
+        _, gb18030_updated = _json_request(
+            f"{base}/api/models/update-definitions",
+            method="POST",
+            payload={
+                "model_id": "created",
+                "service_host": "127.0.0.1",
+                "service_port": 9552,
+                "data_base64": base64.b64encode(
+                    gb18030_model_text.encode("gb18030")
+                ).decode("ascii"),
+                "diagram_svg_base64": base64.b64encode(
+                    gb18030_diagram_text.encode("gb18030")
+                ).decode("ascii"),
+            },
+        )
+        assert gb18030_updated["updated"]["measurement_count"] > 0
+        assert "秦岭柴油机" in (models_root / "created" / "model.e").read_text(
+            encoding="utf-8"
+        )
+        saved_diagram = (models_root / "created" / "diagram.svg").read_text(
+            encoding="utf-8"
+        )
+        assert "秦岭站一次图" in saved_diagram
+        assert 'encoding="UTF-8"' in saved_diagram
     finally:
         server.shutdown()
         server.server_close()

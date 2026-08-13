@@ -706,7 +706,7 @@ class SimulatorModelCreationTest(unittest.TestCase):
         self.assertIn('id="newModelSvgInput"', html)
         self.assertIn('accept=".svg,image/svg+xml"', html)
         self.assertIn('id="confirmNewModel" class="primary" type="button">新建</button>', html)
-        self.assertIn('src="/app.js?v=20260812-runtime-log-column-resize"', html)
+        self.assertIn('src="/app.js?v=20260813-hydrogen-coupling-metrics"', html)
         self.assertIn('href="/styles.css?v=20260812-runtime-log-column-resize"', html)
         self.assertIn("openNewModelDialog", script)
         self.assertIn("validateNewModelForm", script)

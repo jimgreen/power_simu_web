@@ -35,6 +35,12 @@ from simu.control_config import (
     default_integer,
     default_number,
 )
+from simu.fuel_cell_control import (
+    FuelCellControlDecision,
+    FuelCellControlInputs,
+    FuelCellControlParameters,
+    calculate_fuel_cell_power_decision,
+)
 from simu.model_semantics import (
     energy_coupling_control_bindings,
     grid_converter_keys as structured_grid_converter_keys,
@@ -877,6 +883,12 @@ def _hydrogen_pressure_states(
             else _measured(measurements, "HydroStorage", name, ("PRESSURE", "PRESS"))
         )
         pressure = pressure_measurement.value if pressure_measurement else None
+        soc_measurement = (
+            _measured(measurements, _device_type(device), name, ("SOC",))
+            if device
+            else _measured(measurements, "HydroStorage", name, ("SOC",))
+        )
+        soc = _live_soc_ratio(soc_measurement.value) if soc_measurement else None
         pressure_min = _number(row.get("pressure_min"))
         pressure_max = _number(row.get("pressure_max"))
         limits_valid = bool(
@@ -899,6 +911,9 @@ def _hydrogen_pressure_states(
                 "pressure": pressure,
                 "pressureKnown": pressure is not None,
                 "pressureSource": pressure_measurement.source if pressure_measurement else "missing",
+                "soc": soc,
+                "socKnown": soc is not None and math.isfinite(float(soc)),
+                "socSource": soc_measurement.source if soc_measurement else "missing",
                 "pressureMin": pressure_min,
                 "pressureMax": pressure_max,
                 "pressureDeadband": deadband,
@@ -1251,9 +1266,10 @@ def _hydrogen_post_dispatch_plan(
     storage_rows: Sequence[Mapping[str, Any]],
     *,
     diesel_current_kw: float,
-    diesel_deadband_upper_kw: float,
+    diesel_unit_count: int = 1,
     diesel_input_valid: bool = True,
 ) -> Dict[str, Any]:
+    diesel_unit_count = max(1, int(diesel_unit_count))
     pressure_states = _hydrogen_pressure_states(snapshot, measurements, settings)
     pressure_by_island = _hydrogen_pressure_states_by_island(
         pressure_states,
@@ -1272,6 +1288,10 @@ def _hydrogen_post_dispatch_plan(
         "balanceCorrectionKw": 0.0,
         "predictedDieselBeforeKw": diesel_current_kw,
         "predictedDieselAfterKw": diesel_current_kw,
+        "dieselUnitCount": diesel_unit_count,
+        "predictedDieselAverageBeforeKw": diesel_current_kw / diesel_unit_count,
+        "predictedDieselAverageAfterKw": diesel_current_kw / diesel_unit_count,
+        "electricStorageSocAverage": None,
         "atomic": True,
         "warnings": [],
     }
@@ -1319,32 +1339,94 @@ def _hydrogen_post_dispatch_plan(
         if row.get("set_type")
     }
 
+    # The two hydrogen conversion directions are physically exclusive.  Build
+    # the interlock from explicit coupling bindings and live endpoint values
+    # before planning either direction, so iteration order cannot start an
+    # electrolyzer while a fuel cell is already running (or vice versa).
+    active_hydrogen_modes: set[str] = set()
+    for coupling_type in ("AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"):
+        mode = (
+            "electrolyzer"
+            if coupling_type in {"AcE2Hydro", "DcE2Hydro"}
+            else "fuel_cell"
+        )
+        for coupling in _parameter_rows(snapshot, coupling_type):
+            coupling_name = _parameter_name(coupling).strip()
+            coupling_device = devices.get((coupling_type, coupling_name))
+            bindings = bindings_by_coupling.get((coupling_type, coupling_name), ())
+            power_binding = next(
+                (row for row in bindings if row.get("set_type") == "p_set"),
+                None,
+            )
+            flow_binding = next(
+                (row for row in bindings if row.get("set_type") == "flow_set"),
+                None,
+            )
+            if not power_binding or not flow_binding:
+                continue
+            power_type = str(power_binding.get("target_dev_type", ""))
+            power_name = str(power_binding.get("target_dev_name", ""))
+            flow_type = str(flow_binding.get("target_dev_type", ""))
+            flow_name = str(flow_binding.get("target_dev_name", ""))
+            power_device = devices.get((power_type, power_name))
+            flow_device = devices.get((flow_type, flow_name))
+            if (
+                not coupling_device
+                or not _is_online(coupling_device, measurements)
+                or not power_device
+                or not flow_device
+                or not _is_online(power_device, measurements)
+                or not _is_online(flow_device, measurements)
+            ):
+                continue
+            live_power = _measured(
+                measurements,
+                _device_type(power_device),
+                power_name,
+                ("P_LOAD", "P_GEN", "P", "P_AC", "P_DC"),
+            )
+            live_flow = _measured(
+                measurements,
+                _device_type(flow_device),
+                flow_name,
+                ("FLOW",),
+            )
+            if live_power is not None:
+                running = abs(live_power.value) > EPSILON
+            else:
+                running = live_flow is not None and abs(live_flow.value) > EPSILON
+            if running:
+                active_hydrogen_modes.add(mode)
+
+    hydrogen_mode_lock = (
+        next(iter(active_hydrogen_modes))
+        if len(active_hydrogen_modes) == 1
+        else "conflict"
+        if len(active_hydrogen_modes) > 1
+        else ""
+    )
+    diagnostics["interlockMode"] = hydrogen_mode_lock or "idle"
+    diagnostics["interlockActive"] = bool(hydrogen_mode_lock)
+    if hydrogen_mode_lock == "conflict":
+        diagnostics["warnings"].append(
+            "实时量测显示电制氢和燃料电池同时运行，本轮禁止两类设备继续启动或升功率；"
+            "仅允许降功率或安全停机"
+        )
+
     online_storage = [row for row in storage_rows if row.get("online")]
-    all_storage_above_electrolyzer_start = bool(
-        online_storage
-        and all(
-            row.get("socKnown")
-            and _number(row.get("soc")) is not None
-            and float(row["soc"]) > 0.80 + EPSILON
-            for row in online_storage
-        )
-    )
-    any_storage_below_electrolyzer_reduce = any(
-        row.get("socKnown")
-        and _number(row.get("soc")) is not None
-        and float(row["soc"]) < 0.40 - EPSILON
+    known_storage_soc = [
+        float(row["soc"])
         for row in online_storage
+        if row.get("socKnown")
+        and _number(row.get("soc")) is not None
+        and math.isfinite(float(row["soc"]))
+    ]
+    electric_storage_soc = (
+        sum(known_storage_soc) / len(known_storage_soc)
+        if online_storage and len(known_storage_soc) == len(online_storage)
+        else None
     )
-    all_storage_low = bool(
-        online_storage
-        and all(
-            row.get("socKnown")
-            and _number(row.get("soc")) is not None
-            and _number(row.get("socMin")) is not None
-            and float(row["soc"]) < float(row["socMin"]) - EPSILON
-            for row in online_storage
-        )
-    )
+    diagnostics["electricStorageSocAverage"] = electric_storage_soc
     coupling_types = ("AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE")
     planned: List[Dict[str, Any]] = []
     converter_correction = 0.0
@@ -1401,6 +1483,21 @@ def _hydrogen_post_dispatch_plan(
                     float(row["pressure"]) < float(row["lowGuard"])
                     for row in island_tanks
                 )
+            )
+            island_soc_values = [
+                float(row["soc"])
+                for row in island_tanks
+                if row.get("online")
+                and row.get("socKnown")
+                and _number(row.get("soc")) is not None
+                and math.isfinite(float(row["soc"]))
+            ]
+            online_island_tanks = [row for row in island_tanks if row.get("online")]
+            hydrogen_storage_soc = (
+                sum(island_soc_values) / len(island_soc_values)
+                if online_island_tanks
+                and len(island_soc_values) == len(online_island_tanks)
+                else None
             )
             power_row = model_rows.get((power_type, power_name), {})
             flow_row = model_rows.get((flow_type, flow_name), {})
@@ -1501,43 +1598,141 @@ def _hydrogen_post_dispatch_plan(
             power_hysteresis_stop = False
             safety_stop = pressure_blocked and current_power > EPSILON
             device_action = "electrolyzer" if is_electrolyzer else "fuel_cell"
+            device_action_reason = ""
             requested_delta_kw = 0.0
             required_start_delta_kw: Optional[float] = None
-            diesel_gap_kw = diesel_deadband_upper_kw - predicted_diesel_kw
-            if pressure_blocked:
+            predicted_diesel_average_kw = predicted_diesel_kw / diesel_unit_count
+            fuel_cell_decision = None
+            if is_electrolyzer:
+                diesel_raise_margin_kw = max(
+                    0.0,
+                    (
+                        settings.electrolyzer_diesel_power_limit_kw
+                        - predicted_diesel_average_kw
+                    )
+                    * diesel_unit_count,
+                )
+                diesel_reduce_margin_kw = max(
+                    0.0,
+                    (
+                        predicted_diesel_average_kw
+                        - settings.electrolyzer_diesel_power_limit_kw
+                        - settings.electrolyzer_diesel_power_deadband_kw
+                    )
+                    * diesel_unit_count,
+                )
+                electrolyzer_raise_allowed = bool(
+                    diesel_raise_margin_kw > EPSILON
+                    and electric_storage_soc is not None
+                    and electric_storage_soc
+                    > settings.electrolyzer_storage_soc_upper_limit + EPSILON
+                    and hydrogen_storage_soc is not None
+                    and hydrogen_storage_soc
+                    < settings.electrolyzer_hydrogen_storage_soc_upper_limit
+                    - EPSILON
+                    and hydrogen_mode_lock not in {"fuel_cell", "conflict"}
+                )
+                electrolyzer_reduce_required = bool(
+                    diesel_reduce_margin_kw > EPSILON
+                    or (
+                        electric_storage_soc is not None
+                        and electric_storage_soc
+                        < settings.electrolyzer_storage_soc_lower_limit - EPSILON
+                    )
+                    or (
+                        hydrogen_storage_soc is not None
+                        and hydrogen_storage_soc
+                        > settings.electrolyzer_hydrogen_storage_soc_upper_limit
+                        + EPSILON
+                    )
+                )
+            else:
+                fuel_cell_decision = calculate_fuel_cell_power_decision(
+                    FuelCellControlParameters(
+                        power_step_kw=step_kw,
+                        diesel_power_limit_kw=settings.fuel_cell_diesel_power_limit_kw,
+                        electric_storage_soc_limit=settings.fuel_cell_storage_soc_limit,
+                        hydrogen_storage_soc_start_limit=(
+                            settings.fuel_cell_hydrogen_storage_soc_upper_limit
+                        ),
+                        hydrogen_storage_soc_stop_limit=(
+                            settings.fuel_cell_hydrogen_storage_soc_lower_limit
+                        ),
+                    ),
+                    FuelCellControlInputs(
+                        current_power_kw=current_power,
+                        maximum_power_kw=allowed_power,
+                        start_threshold_kw=start_threshold_kw,
+                        stop_threshold_kw=stop_threshold_kw,
+                        diesel_average_power_kw=predicted_diesel_average_kw,
+                        diesel_unit_count=diesel_unit_count,
+                        electric_storage_soc_average=electric_storage_soc,
+                        hydrogen_storage_soc_average=hydrogen_storage_soc,
+                    ),
+                )
+                if (
+                    hydrogen_mode_lock in {"electrolyzer", "conflict"}
+                    and fuel_cell_decision.action in {"start", "increase"}
+                ):
+                    diagnostics["warnings"].append(
+                        f"氢能设备{coupling_name}受电制氢运行互锁，已禁止燃料电池启动或升功率"
+                    )
+                    fuel_cell_decision = FuelCellControlDecision(
+                        action="hold",
+                        reason="hydrogen_mode_interlock",
+                        diesel_raise_margin_kw=(
+                            fuel_cell_decision.diesel_raise_margin_kw
+                        ),
+                        diesel_reduce_margin_kw=(
+                            fuel_cell_decision.diesel_reduce_margin_kw
+                        ),
+                    )
+            if hydrogen_mode_lock == "conflict" and current_power > EPSILON:
+                requested_delta_kw = -current_power
+                device_action = "hydrogen_interlock_stop"
+                device_action_reason = "simultaneous_operation_interlock"
+            elif pressure_blocked:
                 requested_delta_kw = -current_power
             elif current_power > EPSILON and current_power < stop_threshold_kw - EPSILON:
                 requested_delta_kw = -current_power
                 power_hysteresis_stop = True
                 device_action = "power_hysteresis_stop"
+            elif electric_storage_soc is None or hydrogen_storage_soc is None:
+                diagnostics["warnings"].append(
+                    f"氢能设备{coupling_name}缺少完整的在线电储平均SOC或本氢岛氢储平均SOC，已按 fail closed 保持当前功率"
+                )
+                continue
             elif is_electrolyzer and current_power > EPSILON:
-                if diesel_gap_kw > EPSILON:
+                if electrolyzer_raise_allowed:
                     requested_delta_kw = min(
-                        diesel_gap_kw,
+                        diesel_raise_margin_kw,
                         step_kw,
                         max(0.0, allowed_power - current_power),
                     )
-                elif (
-                    any_storage_below_electrolyzer_reduce
-                    and diesel_gap_kw < -EPSILON
-                ):
+                elif electrolyzer_reduce_required:
                     device_action = "electrolyzer_reduce"
                     requested_delta_kw = -min(
-                        -diesel_gap_kw,
+                        (
+                            diesel_reduce_margin_kw
+                            if diesel_reduce_margin_kw > EPSILON
+                            else step_kw
+                        ),
                         step_kw,
                         current_power,
                     )
             elif is_electrolyzer:
-                if diesel_gap_kw <= EPSILON:
-                    continue
-                if not all_storage_above_electrolyzer_start:
+                if not electrolyzer_raise_allowed:
                     diagnostics["warnings"].append(
-                        f"氢能设备{coupling_name}处于停机状态，但并非所有在线储能SOC均严格大于80%，已保持停机"
+                        (
+                            f"氢能设备{coupling_name}受燃料电池运行互锁，已禁止制氢启动"
+                            if hydrogen_mode_lock in {"fuel_cell", "conflict"}
+                            else f"氢能设备{coupling_name}未同时满足平均柴发功率、电储SOC和本氢岛氢储SOC的制氢启动条件，已保持停机"
+                        )
                     )
                     continue
                 required_start_delta_kw = start_threshold_kw
                 if (
-                    required_start_delta_kw > diesel_gap_kw + EPSILON
+                    required_start_delta_kw > diesel_raise_margin_kw + EPSILON
                     or required_start_delta_kw > step_kw + EPSILON
                 ):
                     diagnostics["warnings"].append(
@@ -1546,30 +1741,22 @@ def _hydrogen_post_dispatch_plan(
                     )
                     continue
                 requested_delta_kw = required_start_delta_kw
-            elif current_power > EPSILON:
-                if all_storage_low and diesel_gap_kw < -EPSILON:
-                    requested_delta_kw = min(
-                        -diesel_gap_kw,
-                        step_kw,
-                        max(0.0, allowed_power - current_power),
-                    )
-                else:
-                    device_action = "fuel_cell_reduce"
-                    requested_delta_kw = -min(step_kw, current_power)
             else:
-                if not all_storage_low or diesel_gap_kw >= -EPSILON:
+                if fuel_cell_decision is None:
                     continue
-                required_start_delta_kw = start_threshold_kw
-                if (
-                    required_start_delta_kw > -diesel_gap_kw + EPSILON
-                    or required_start_delta_kw > step_kw + EPSILON
-                ):
+                requested_delta_kw = fuel_cell_decision.requested_delta_kw
+                required_start_delta_kw = fuel_cell_decision.required_start_delta_kw
+                device_action_reason = fuel_cell_decision.reason
+                if fuel_cell_decision.action in {"decrease", "stop"}:
+                    device_action = "fuel_cell_reduce"
+                if fuel_cell_decision.reason == "start_margin_insufficient":
                     diagnostics["warnings"].append(
                         f"氢能设备{coupling_name}需要一次达到启动功率"
                         f"{start_threshold_kw:.3f} kW，当前柴发裕度或配置步长不足，已保持停机"
                     )
                     continue
-                requested_delta_kw = required_start_delta_kw
+                if fuel_cell_decision.action == "hold":
+                    continue
 
             proposed_power = max(0.0, current_power + requested_delta_kw)
             if (
@@ -1761,6 +1948,10 @@ def _hydrogen_post_dispatch_plan(
                     "equivalentFlow": target_flow,
                     "dcTransferGroupId": dc_group_id,
                     "hydrogenIslandId": hydrogen_island_id,
+                    "dieselAverageBeforeKw": predicted_diesel_average_kw,
+                    "electricStorageSocAverage": electric_storage_soc,
+                    "hydrogenStorageSocAverage": hydrogen_storage_soc,
+                    "controlReason": device_action_reason,
                     "stepLimitKw": step_kw,
                     "minimumRunningPowerKw": minimum_running_power,
                     "physicalMinimumPowerKw": physical_minimum_power,
@@ -1773,6 +1964,12 @@ def _hydrogen_post_dispatch_plan(
                     "powerHysteresisStop": power_hysteresis_stop,
                 }
             )
+            if accepted_delta_kw > EPSILON and not hydrogen_mode_lock:
+                hydrogen_mode_lock = (
+                    "electrolyzer" if is_electrolyzer else "fuel_cell"
+                )
+                diagnostics["interlockMode"] = hydrogen_mode_lock
+                diagnostics["interlockActive"] = True
             predicted_diesel_kw += diesel_delta_kw
     diagnostics.update(
         {
@@ -1800,6 +1997,8 @@ def _hydrogen_post_dispatch_plan(
             "converterCorrectionKw": converter_correction,
             "balanceCorrectionKw": balance_correction,
             "predictedDieselAfterKw": predicted_diesel_kw,
+            "predictedDieselAverageAfterKw": predicted_diesel_kw
+            / diesel_unit_count,
         }
     )
     diagnostics.update(
@@ -1892,12 +2091,39 @@ class RenewableControlSettings:
         "electrolyzer_power_deadband_kw"
     )
     electrolyzer_power_step_kw: float = default_number("electrolyzer_power_step_kw")
+    electrolyzer_diesel_power_limit_kw: float = default_number(
+        "electrolyzer_diesel_power_limit_kw"
+    )
+    electrolyzer_diesel_power_deadband_kw: float = default_number(
+        "electrolyzer_diesel_power_deadband_kw"
+    )
+    electrolyzer_storage_soc_lower_limit: float = default_number(
+        "electrolyzer_storage_soc_lower_limit"
+    )
+    electrolyzer_storage_soc_upper_limit: float = default_number(
+        "electrolyzer_storage_soc_upper_limit"
+    )
+    electrolyzer_hydrogen_storage_soc_upper_limit: float = default_number(
+        "electrolyzer_hydrogen_storage_soc_upper_limit"
+    )
     fuel_cell_power_min_kw: float = default_number("fuel_cell_power_min_kw")
     fuel_cell_power_max_kw: float = default_number("fuel_cell_power_max_kw")
     fuel_cell_power_deadband_kw: float = default_number(
         "fuel_cell_power_deadband_kw"
     )
     fuel_cell_power_step_kw: float = default_number("fuel_cell_power_step_kw")
+    fuel_cell_diesel_power_limit_kw: float = default_number(
+        "fuel_cell_diesel_power_limit_kw"
+    )
+    fuel_cell_storage_soc_limit: float = default_number(
+        "fuel_cell_storage_soc_limit"
+    )
+    fuel_cell_hydrogen_storage_soc_upper_limit: float = default_number(
+        "fuel_cell_hydrogen_storage_soc_upper_limit"
+    )
+    fuel_cell_hydrogen_storage_soc_lower_limit: float = default_number(
+        "fuel_cell_hydrogen_storage_soc_lower_limit"
+    )
     converter_step_ratio: float = default_number("legacy_converter_step_ratio")
     storage_charge_derating_curve: Tuple[Tuple[float, float], ...] = DEFAULT_STORAGE_CHARGE_DERATING_CURVE
     storage_discharge_derating_curve: Tuple[Tuple[float, float], ...] = DEFAULT_STORAGE_DISCHARGE_DERATING_CURVE
@@ -1955,6 +2181,22 @@ class RenewableControlSettings:
             fuel_cell_power_min_kw,
             float(self.fuel_cell_power_max_kw),
         )
+        electrolyzer_storage_soc_lower_limit = _clamp(
+            float(self.electrolyzer_storage_soc_lower_limit), 0.0, 1.0
+        )
+        electrolyzer_storage_soc_upper_limit = _clamp(
+            float(self.electrolyzer_storage_soc_upper_limit),
+            electrolyzer_storage_soc_lower_limit,
+            1.0,
+        )
+        fuel_cell_hydrogen_storage_soc_lower_limit = _clamp(
+            float(self.fuel_cell_hydrogen_storage_soc_lower_limit), 0.0, 1.0
+        )
+        fuel_cell_hydrogen_storage_soc_upper_limit = _clamp(
+            float(self.fuel_cell_hydrogen_storage_soc_upper_limit),
+            fuel_cell_hydrogen_storage_soc_lower_limit,
+            1.0,
+        )
         return replace(
             self,
             interval_seconds=max(
@@ -2001,6 +2243,19 @@ class RenewableControlSettings:
                 EPSILON,
                 float(self.electrolyzer_power_step_kw),
             ),
+            electrolyzer_diesel_power_limit_kw=max(
+                0.0, float(self.electrolyzer_diesel_power_limit_kw)
+            ),
+            electrolyzer_diesel_power_deadband_kw=max(
+                0.0, float(self.electrolyzer_diesel_power_deadband_kw)
+            ),
+            electrolyzer_storage_soc_lower_limit=electrolyzer_storage_soc_lower_limit,
+            electrolyzer_storage_soc_upper_limit=electrolyzer_storage_soc_upper_limit,
+            electrolyzer_hydrogen_storage_soc_upper_limit=_clamp(
+                float(self.electrolyzer_hydrogen_storage_soc_upper_limit),
+                0.0,
+                1.0,
+            ),
             fuel_cell_power_min_kw=fuel_cell_power_min_kw,
             fuel_cell_power_max_kw=fuel_cell_power_max_kw,
             fuel_cell_power_deadband_kw=_clamp(
@@ -2012,6 +2267,14 @@ class RenewableControlSettings:
                 EPSILON,
                 float(self.fuel_cell_power_step_kw),
             ),
+            fuel_cell_diesel_power_limit_kw=max(
+                0.0, float(self.fuel_cell_diesel_power_limit_kw)
+            ),
+            fuel_cell_storage_soc_limit=_clamp(
+                float(self.fuel_cell_storage_soc_limit), 0.0, 1.0
+            ),
+            fuel_cell_hydrogen_storage_soc_upper_limit=fuel_cell_hydrogen_storage_soc_upper_limit,
+            fuel_cell_hydrogen_storage_soc_lower_limit=fuel_cell_hydrogen_storage_soc_lower_limit,
             converter_step_ratio=0.0,
             storage_charge_derating_curve=_normalized_derating_curve(
                 self.storage_charge_derating_curve,
@@ -2116,6 +2379,26 @@ class RenewableControlSettings:
                 "electrolyzer_power_step_kw",
                 "electrolyzerPowerStepKw",
             ),
+            "electrolyzer_diesel_power_limit_kw": (
+                "electrolyzer_diesel_power_limit_kw",
+                "electrolyzerDieselPowerLimitKw",
+            ),
+            "electrolyzer_diesel_power_deadband_kw": (
+                "electrolyzer_diesel_power_deadband_kw",
+                "electrolyzerDieselPowerDeadbandKw",
+            ),
+            "electrolyzer_storage_soc_lower_limit": (
+                "electrolyzer_storage_soc_lower_limit",
+                "electrolyzerStorageSocLowerLimit",
+            ),
+            "electrolyzer_storage_soc_upper_limit": (
+                "electrolyzer_storage_soc_upper_limit",
+                "electrolyzerStorageSocUpperLimit",
+            ),
+            "electrolyzer_hydrogen_storage_soc_upper_limit": (
+                "electrolyzer_hydrogen_storage_soc_upper_limit",
+                "electrolyzerHydrogenStorageSocUpperLimit",
+            ),
             "fuel_cell_power_min_kw": (
                 "fuel_cell_power_min_kw",
                 "fuelCellPowerMinKw",
@@ -2131,6 +2414,22 @@ class RenewableControlSettings:
             "fuel_cell_power_step_kw": (
                 "fuel_cell_power_step_kw",
                 "fuelCellPowerStepKw",
+            ),
+            "fuel_cell_diesel_power_limit_kw": (
+                "fuel_cell_diesel_power_limit_kw",
+                "fuelCellDieselPowerLimitKw",
+            ),
+            "fuel_cell_storage_soc_limit": (
+                "fuel_cell_storage_soc_limit",
+                "fuelCellStorageSocLimit",
+            ),
+            "fuel_cell_hydrogen_storage_soc_upper_limit": (
+                "fuel_cell_hydrogen_storage_soc_upper_limit",
+                "fuelCellHydrogenStorageSocUpperLimit",
+            ),
+            "fuel_cell_hydrogen_storage_soc_lower_limit": (
+                "fuel_cell_hydrogen_storage_soc_lower_limit",
+                "fuelCellHydrogenStorageSocLowerLimit",
             ),
             "command_valid_minutes": ("command_valid_minutes", "commandValidMinutes"),
             "optimization_renewable_curtailment_weight": (
@@ -2268,10 +2567,19 @@ class RenewableControlSettings:
             "electrolyzerPowerMaxKw": self.electrolyzer_power_max_kw,
             "electrolyzerPowerDeadbandKw": self.electrolyzer_power_deadband_kw,
             "electrolyzerPowerStepKw": self.electrolyzer_power_step_kw,
+            "electrolyzerDieselPowerLimitKw": self.electrolyzer_diesel_power_limit_kw,
+            "electrolyzerDieselPowerDeadbandKw": self.electrolyzer_diesel_power_deadband_kw,
+            "electrolyzerStorageSocLowerLimit": self.electrolyzer_storage_soc_lower_limit,
+            "electrolyzerStorageSocUpperLimit": self.electrolyzer_storage_soc_upper_limit,
+            "electrolyzerHydrogenStorageSocUpperLimit": self.electrolyzer_hydrogen_storage_soc_upper_limit,
             "fuelCellPowerMinKw": self.fuel_cell_power_min_kw,
             "fuelCellPowerMaxKw": self.fuel_cell_power_max_kw,
             "fuelCellPowerDeadbandKw": self.fuel_cell_power_deadband_kw,
             "fuelCellPowerStepKw": self.fuel_cell_power_step_kw,
+            "fuelCellDieselPowerLimitKw": self.fuel_cell_diesel_power_limit_kw,
+            "fuelCellStorageSocLimit": self.fuel_cell_storage_soc_limit,
+            "fuelCellHydrogenStorageSocUpperLimit": self.fuel_cell_hydrogen_storage_soc_upper_limit,
+            "fuelCellHydrogenStorageSocLowerLimit": self.fuel_cell_hydrogen_storage_soc_lower_limit,
             "storageChargeDeratingCurve": _derating_curve_payload(self.storage_charge_derating_curve),
             "storageDischargeDeratingCurve": _derating_curve_payload(self.storage_discharge_derating_curve),
             "commandValidMinutes": self.command_valid_minutes,
@@ -11852,7 +12160,7 @@ def calculate_renewable_control_plan(
         command_rows,
         storage_rows,
         diesel_current_kw=diesel_target,
-        diesel_deadband_upper_kw=diesel_deadband_upper_kw,
+        diesel_unit_count=len(online_diesel),
         diesel_input_valid=bool(
             online_diesel
             and len(measured_diesel) == len(online_diesel)
@@ -12605,8 +12913,11 @@ def calculate_renewable_control_plan(
                 f"目标电功率 {_finite_number(hydrogen_plan.get('targetElectricPowerKw')):.2f} kW，"
                 f"目标等效氢流量 {_finite_number(hydrogen_plan.get('targetEquivalentFlow')):.2f} Nm3/h，"
                 f"压力死区 {settings.hydrogen_pressure_deadband_ratio * 100:.2f}%（按各储氢罐压力范围计算）；"
-                "燃料电池仅在全部在线电化学储能SOC低于各自下限、柴发高于保护带上界，"
-                "且所有在线储氢罐压力不低于下限加死区时允许动作"
+                f"燃料电池启动需柴发平均功率>{settings.fuel_cell_diesel_power_limit_kw:.2f} kW/台、"
+                f"电储平均SOC<{settings.fuel_cell_storage_soc_limit * 100:.2f}%且本氢岛氢储平均SOC>"
+                f"{settings.fuel_cell_hydrogen_storage_soc_upper_limit * 100:.2f}%；运行后以氢储平均SOC>"
+                f"{settings.fuel_cell_hydrogen_storage_soc_lower_limit * 100:.2f}%维持升出力条件，"
+                "任一反向条件成立则按燃料电池步长降出力；储氢罐低压保护优先停机"
             )
         ),
         operating_mode_detail,

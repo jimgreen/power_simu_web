@@ -5198,6 +5198,10 @@ function normalizeDiagramMetricType(value) {
   return metricName;
 }
 
+function diagramMetricTypeFromElement(element) {
+  return String(element?.getAttribute?.("mti") || element?.getAttribute?.("mt") || "").trim();
+}
+
 function diagramMetricMeasurementTypes(devType, metricType) {
   const metricName = normalizeDiagramMetricType(metricType);
   const metricEntry = Object.entries(DIAGRAM_METRIC_MEASUREMENT_TYPES)
@@ -5532,7 +5536,7 @@ function compileDiagramMetricBindings(container) {
     }
     const owner = element.closest("[dev]");
     const device = devices.get(owner?.getAttribute("dev") || "");
-    const metricType = element.getAttribute("mt") || "";
+    const metricType = diagramMetricTypeFromElement(element);
     if (!device || !metricType) return null;
     return { element, ...device, metricType };
   }).filter(Boolean);
@@ -6411,7 +6415,9 @@ function diagramHoverTarget(container, target) {
   if (metricElement) {
     const owner = metricElement.closest("[dev]");
     const devId = String(owner?.getAttribute("dev") || "").trim();
-    const metricType = String(metricElement.getAttribute("mt") || "").trim();
+    const metricType = String(
+      metricElement.getAttribute("mti") || metricElement.getAttribute("mt") || "",
+    ).trim();
     if (devId && metricType) {
       return {
         kind: "metric",

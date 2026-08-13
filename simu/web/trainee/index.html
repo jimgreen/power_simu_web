@@ -1297,6 +1297,21 @@
                 <label>步长(kW/次决策)
                   <input id="electrolyzerPowerStepKw" type="number" min="0.001" step="0.1" value="2" />
                 </label>
+                <label>柴发平均功率限值(kW/台)
+                  <input id="electrolyzerDieselPowerLimitKw" type="number" min="0" step="0.1" value="80" />
+                </label>
+                <label>柴发平均功率死区(kW/台)
+                  <input id="electrolyzerDieselPowerDeadbandKw" type="number" min="0" step="0.1" value="5" />
+                </label>
+                <label>电储平均SOC下限(%)
+                  <input id="electrolyzerStorageSocLowerLimit" type="number" min="0" max="100" step="0.1" value="40" />
+                </label>
+                <label>电储平均SOC上限(%)
+                  <input id="electrolyzerStorageSocUpperLimit" type="number" min="0" max="100" step="0.1" value="80" />
+                </label>
+                <label>氢储平均SOC上限(%)
+                  <input id="electrolyzerHydrogenStorageSocUpperLimit" type="number" min="0" max="100" step="0.1" value="90" />
+                </label>
               </fieldset>
               <fieldset class="renewable-hydrogen-power-settings">
                 <legend>燃料电池功率参数</legend>
@@ -1311,6 +1326,18 @@
                 </label>
                 <label>步长(kW/次决策)
                   <input id="fuelCellPowerStepKw" type="number" min="0.001" step="0.1" value="3" />
+                </label>
+                <label>柴发平均功率限值(kW/台)
+                  <input id="fuelCellDieselPowerLimitKw" type="number" min="0" step="0.1" value="80" />
+                </label>
+                <label>电储平均SOC启停限值(%)
+                  <input id="fuelCellStorageSocLimit" type="number" min="0" max="100" step="0.1" value="40" />
+                </label>
+                <label>氢储平均SOC启动限值(%)
+                  <input id="fuelCellHydrogenStorageSocUpperLimit" type="number" min="0" max="100" step="0.1" value="80" />
+                </label>
+                <label>氢储平均SOC停机限值(%)
+                  <input id="fuelCellHydrogenStorageSocLowerLimit" type="number" min="0" max="100" step="0.1" value="20" />
                 </label>
               </fieldset>
             </div>
@@ -1522,6 +1549,6 @@
         </div>
       </form>
     </dialog>
-    <script src="/app.js?v=20260813-command-origin-filter"></script>
+    <script src="/app.js?v=20260813-hydrogen-coupling-metrics"></script>
   </body>
 </html>

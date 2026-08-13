@@ -57,6 +57,30 @@ process.stdout.write(JSON.stringify({
                 self.assertEqual(payload["storageSocAlias"][:2], ["SOC", "LEVEL"])
                 self.assertEqual(payload["switchStatus"][:2], ["STATUS", "RUN_STAT"])
 
+    def test_exported_metric_identifier_takes_priority_over_terminal_field(self):
+        body = """
+const exportedTerminalMetric = {
+  getAttribute(name) {
+    return { mt: "p", mti: "activePower" }[name] || "";
+  },
+};
+const legacyMetric = {
+  getAttribute(name) {
+    return { mt: "voltage" }[name] || "";
+  },
+};
+process.stdout.write(JSON.stringify([
+  diagramMetricTypeFromElement(exportedTerminalMetric),
+  diagramMetricTypeFromElement(legacyMetric),
+]));
+"""
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                self.assertEqual(
+                    self._run_helpers(path.read_text(encoding="utf-8"), body),
+                    ["activePower", "voltage"],
+                )
+
     def test_semantic_binding_uses_role_appropriate_measurement_channels(self):
         body = """
 const scadaRow = { dev_type: "ACGenerator", dev_name: "wind-1", meas_type: "P_GEN", value: 12.5 };

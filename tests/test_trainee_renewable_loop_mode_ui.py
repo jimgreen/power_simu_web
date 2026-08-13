@@ -198,6 +198,15 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             "fuelCellPowerMaxKw",
             "fuelCellPowerDeadbandKw",
             "fuelCellPowerStepKw",
+            "electrolyzerDieselPowerLimitKw",
+            "electrolyzerDieselPowerDeadbandKw",
+            "electrolyzerStorageSocLowerLimit",
+            "electrolyzerStorageSocUpperLimit",
+            "electrolyzerHydrogenStorageSocUpperLimit",
+            "fuelCellDieselPowerLimitKw",
+            "fuelCellStorageSocLimit",
+            "fuelCellHydrogenStorageSocUpperLimit",
+            "fuelCellHydrogenStorageSocLowerLimit",
         ):
             self.assertIn(f'id="{field_id}"', self.html)
             self.assertIn(field_id, self.script)
@@ -213,6 +222,15 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         self.assertIn("启动功率（下限+死区）不能大于上限", settings_block)
         self.assertIn("hydrogen_closed_loop_enabled", self.backend)
         self.assertIn("hydrogen_pressure_deadband_ratio", self.backend)
+        self.assertIn("electrolyzer_diesel_power_limit_kw", self.backend)
+        self.assertIn("electrolyzer_diesel_power_deadband_kw", self.backend)
+        self.assertIn("electrolyzer_storage_soc_lower_limit", self.backend)
+        self.assertIn("electrolyzer_storage_soc_upper_limit", self.backend)
+        self.assertIn("electrolyzer_hydrogen_storage_soc_upper_limit", self.backend)
+        self.assertIn("fuel_cell_diesel_power_limit_kw", self.backend)
+        self.assertIn("fuel_cell_storage_soc_limit", self.backend)
+        self.assertIn("fuel_cell_hydrogen_storage_soc_upper_limit", self.backend)
+        self.assertIn("fuel_cell_hydrogen_storage_soc_lower_limit", self.backend)
 
     def test_backend_does_not_use_dwell_or_pending_feedback_state(self):
         self.assertNotIn("def _stabilize_region", self.backend)
@@ -224,8 +242,11 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
     def test_soc_operational_limits_come_from_model_and_are_not_editable_in_ui(self):
         self.assertNotIn('id="renewableSocMin"', self.html)
         self.assertNotIn('id="renewableSocMax"', self.html)
-        self.assertNotIn("SOC下限", self.html)
-        self.assertNotIn("SOC上限", self.html)
+        protection_pane = self.html.split(
+            'id="renewableControlParameterPaneProtection"', 1
+        )[1].split('id="renewableControlParameterPaneHydrogen"', 1)[0]
+        self.assertNotIn("SOC下限", protection_pane)
+        self.assertNotIn("SOC上限", protection_pane)
         settings_block = self.script.split("async function updateRenewableSettings", 1)[1].split(
             "function renderClock",
             1,

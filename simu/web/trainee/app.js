@@ -249,10 +249,19 @@ const state = {
     electrolyzerPowerMaxKw: 50,
     electrolyzerPowerDeadbandKw: 0,
     electrolyzerPowerStepKw: 2,
+    electrolyzerDieselPowerLimitKw: 80,
+    electrolyzerDieselPowerDeadbandKw: 5,
+    electrolyzerStorageSocLowerLimit: 0.4,
+    electrolyzerStorageSocUpperLimit: 0.8,
+    electrolyzerHydrogenStorageSocUpperLimit: 0.9,
     fuelCellPowerMinKw: 3,
     fuelCellPowerMaxKw: 15,
     fuelCellPowerDeadbandKw: 0,
     fuelCellPowerStepKw: 3,
+    fuelCellDieselPowerLimitKw: 80,
+    fuelCellStorageSocLimit: 0.4,
+    fuelCellHydrogenStorageSocUpperLimit: 0.8,
+    fuelCellHydrogenStorageSocLowerLimit: 0.2,
     optimizationRenewableCurtailmentWeight: 1,
     optimizationDieselOutputWeight: 1,
     optimizationCurtailmentSquareWeight: 0.000001,
@@ -3657,6 +3666,10 @@ function normalizeDiagramMetricType(value) {
   return metricName;
 }
 
+function diagramMetricTypeFromElement(element) {
+  return String(element?.getAttribute?.("mti") || element?.getAttribute?.("mt") || "").trim();
+}
+
 function diagramMetricMeasurementTypes(devType, metricType) {
   const metricName = normalizeDiagramMetricType(metricType);
   const metricEntry = Object.entries(DIAGRAM_METRIC_MEASUREMENT_TYPES)
@@ -3975,7 +3988,7 @@ function compileDiagramMetricBindings(container) {
     }
     const owner = element.closest("[dev]");
     const device = devices.get(owner?.getAttribute("dev") || "");
-    const metricType = element.getAttribute("mt") || "";
+    const metricType = diagramMetricTypeFromElement(element);
     if (!device || !metricType) return null;
     return { element, ...device, metricType };
   }).filter(Boolean);
@@ -4853,7 +4866,9 @@ function diagramHoverTarget(container, target) {
   if (metricElement) {
     const owner = metricElement.closest("[dev]");
     const devId = String(owner?.getAttribute("dev") || "").trim();
-    const metricType = String(metricElement.getAttribute("mt") || "").trim();
+    const metricType = String(
+      metricElement.getAttribute("mti") || metricElement.getAttribute("mt") || "",
+    ).trim();
     if (devId && metricType) {
       return {
         kind: "metric",
@@ -12661,10 +12676,19 @@ function applyRenewableControlState(payload = {}) {
     electrolyzerPowerMaxKw: Math.max(0, toNumber(settings.electrolyzerPowerMaxKw, control.electrolyzerPowerMaxKw ?? 50)),
     electrolyzerPowerDeadbandKw: Math.max(0, toNumber(settings.electrolyzerPowerDeadbandKw, control.electrolyzerPowerDeadbandKw ?? 0)),
     electrolyzerPowerStepKw: Math.max(0.001, toNumber(settings.electrolyzerPowerStepKw, control.electrolyzerPowerStepKw ?? 2)),
+    electrolyzerDieselPowerLimitKw: Math.max(0, toNumber(settings.electrolyzerDieselPowerLimitKw, control.electrolyzerDieselPowerLimitKw ?? 80)),
+    electrolyzerDieselPowerDeadbandKw: Math.max(0, toNumber(settings.electrolyzerDieselPowerDeadbandKw, control.electrolyzerDieselPowerDeadbandKw ?? 5)),
+    electrolyzerStorageSocLowerLimit: Math.min(1, Math.max(0, toNumber(settings.electrolyzerStorageSocLowerLimit, control.electrolyzerStorageSocLowerLimit ?? 0.4))),
+    electrolyzerStorageSocUpperLimit: Math.min(1, Math.max(0, toNumber(settings.electrolyzerStorageSocUpperLimit, control.electrolyzerStorageSocUpperLimit ?? 0.8))),
+    electrolyzerHydrogenStorageSocUpperLimit: Math.min(1, Math.max(0, toNumber(settings.electrolyzerHydrogenStorageSocUpperLimit, control.electrolyzerHydrogenStorageSocUpperLimit ?? 0.9))),
     fuelCellPowerMinKw: Math.max(0, toNumber(settings.fuelCellPowerMinKw, control.fuelCellPowerMinKw ?? 3)),
     fuelCellPowerMaxKw: Math.max(0, toNumber(settings.fuelCellPowerMaxKw, control.fuelCellPowerMaxKw ?? 15)),
     fuelCellPowerDeadbandKw: Math.max(0, toNumber(settings.fuelCellPowerDeadbandKw, control.fuelCellPowerDeadbandKw ?? 0)),
     fuelCellPowerStepKw: Math.max(0.001, toNumber(settings.fuelCellPowerStepKw, control.fuelCellPowerStepKw ?? 3)),
+    fuelCellDieselPowerLimitKw: Math.max(0, toNumber(settings.fuelCellDieselPowerLimitKw, control.fuelCellDieselPowerLimitKw ?? 80)),
+    fuelCellStorageSocLimit: Math.min(1, Math.max(0, toNumber(settings.fuelCellStorageSocLimit, control.fuelCellStorageSocLimit ?? 0.4))),
+    fuelCellHydrogenStorageSocUpperLimit: Math.min(1, Math.max(0, toNumber(settings.fuelCellHydrogenStorageSocUpperLimit, control.fuelCellHydrogenStorageSocUpperLimit ?? 0.8))),
+    fuelCellHydrogenStorageSocLowerLimit: Math.min(1, Math.max(0, toNumber(settings.fuelCellHydrogenStorageSocLowerLimit, control.fuelCellHydrogenStorageSocLowerLimit ?? 0.2))),
     optimizationRenewableCurtailmentWeight: Math.max(0, toNumber(settings.optimizationRenewableCurtailmentWeight, control.optimizationRenewableCurtailmentWeight || 1)),
     optimizationDieselOutputWeight: Math.max(0, toNumber(settings.optimizationDieselOutputWeight, control.optimizationDieselOutputWeight || 1)),
     optimizationCurtailmentSquareWeight: Math.max(0, toNumber(settings.optimizationCurtailmentSquareWeight, control.optimizationCurtailmentSquareWeight || 0.000001)),
@@ -13752,6 +13776,12 @@ function populateRenewableControlParameters(control = state.renewableControl) {
     dieselPowerProtectionRatio: control.dieselPowerProtectionRatio,
     socDeadband: control.socDeadband,
     hydrogenPressureDeadbandRatio: control.hydrogenPressureDeadbandRatio,
+    electrolyzerStorageSocLowerLimit: control.electrolyzerStorageSocLowerLimit,
+    electrolyzerStorageSocUpperLimit: control.electrolyzerStorageSocUpperLimit,
+    electrolyzerHydrogenStorageSocUpperLimit: control.electrolyzerHydrogenStorageSocUpperLimit,
+    fuelCellStorageSocLimit: control.fuelCellStorageSocLimit,
+    fuelCellHydrogenStorageSocUpperLimit: control.fuelCellHydrogenStorageSocUpperLimit,
+    fuelCellHydrogenStorageSocLowerLimit: control.fuelCellHydrogenStorageSocLowerLimit,
   };
   Object.entries(ratioInputs).forEach(([id, value]) => {
     const input = $(id);
@@ -13766,10 +13796,13 @@ function populateRenewableControlParameters(control = state.renewableControl) {
     electrolyzerPowerMaxKw: control.electrolyzerPowerMaxKw,
     electrolyzerPowerDeadbandKw: control.electrolyzerPowerDeadbandKw,
     electrolyzerPowerStepKw: control.electrolyzerPowerStepKw,
+    electrolyzerDieselPowerLimitKw: control.electrolyzerDieselPowerLimitKw,
+    electrolyzerDieselPowerDeadbandKw: control.electrolyzerDieselPowerDeadbandKw,
     fuelCellPowerMinKw: control.fuelCellPowerMinKw,
     fuelCellPowerMaxKw: control.fuelCellPowerMaxKw,
     fuelCellPowerDeadbandKw: control.fuelCellPowerDeadbandKw,
     fuelCellPowerStepKw: control.fuelCellPowerStepKw,
+    fuelCellDieselPowerLimitKw: control.fuelCellDieselPowerLimitKw,
     optimizationRenewableCurtailmentWeight: control.optimizationRenewableCurtailmentWeight,
     optimizationDieselOutputWeight: control.optimizationDieselOutputWeight,
     optimizationCurtailmentSquareWeight: control.optimizationCurtailmentSquareWeight,
@@ -13855,6 +13888,12 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     dieselPowerProtectionRatio: control.dieselPowerProtectionRatio,
     socDeadband: control.socDeadband,
     hydrogenPressureDeadbandRatio: control.hydrogenPressureDeadbandRatio,
+    electrolyzerStorageSocLowerLimit: control.electrolyzerStorageSocLowerLimit,
+    electrolyzerStorageSocUpperLimit: control.electrolyzerStorageSocUpperLimit,
+    electrolyzerHydrogenStorageSocUpperLimit: control.electrolyzerHydrogenStorageSocUpperLimit,
+    fuelCellStorageSocLimit: control.fuelCellStorageSocLimit,
+    fuelCellHydrogenStorageSocUpperLimit: control.fuelCellHydrogenStorageSocUpperLimit,
+    fuelCellHydrogenStorageSocLowerLimit: control.fuelCellHydrogenStorageSocLowerLimit,
   };
   Object.entries(ratioInputs).forEach(([id, value]) => {
     const input = $(id);
@@ -13875,10 +13914,13 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     electrolyzerPowerMaxKw: control.electrolyzerPowerMaxKw,
     electrolyzerPowerDeadbandKw: control.electrolyzerPowerDeadbandKw,
     electrolyzerPowerStepKw: control.electrolyzerPowerStepKw,
+    electrolyzerDieselPowerLimitKw: control.electrolyzerDieselPowerLimitKw,
+    electrolyzerDieselPowerDeadbandKw: control.electrolyzerDieselPowerDeadbandKw,
     fuelCellPowerMinKw: control.fuelCellPowerMinKw,
     fuelCellPowerMaxKw: control.fuelCellPowerMaxKw,
     fuelCellPowerDeadbandKw: control.fuelCellPowerDeadbandKw,
     fuelCellPowerStepKw: control.fuelCellPowerStepKw,
+    fuelCellDieselPowerLimitKw: control.fuelCellDieselPowerLimitKw,
     optimizationRenewableCurtailmentWeight: control.optimizationRenewableCurtailmentWeight,
     optimizationDieselOutputWeight: control.optimizationDieselOutputWeight,
     optimizationCurtailmentSquareWeight: control.optimizationCurtailmentSquareWeight,
@@ -14222,6 +14264,9 @@ async function updateRenewableSettings() {
     fuelCellPowerMaxKw: Math.max(0, toNumber($("fuelCellPowerMaxKw")?.value, 15)),
     fuelCellPowerDeadbandKw: Math.max(0, toNumber($("fuelCellPowerDeadbandKw")?.value, 0)),
     fuelCellPowerStepKw: Math.max(0.001, toNumber($("fuelCellPowerStepKw")?.value, 3)),
+    electrolyzerDieselPowerLimitKw: Math.max(0, toNumber($("electrolyzerDieselPowerLimitKw")?.value, 80)),
+    electrolyzerDieselPowerDeadbandKw: Math.max(0, toNumber($("electrolyzerDieselPowerDeadbandKw")?.value, 5)),
+    fuelCellDieselPowerLimitKw: Math.max(0, toNumber($("fuelCellDieselPowerLimitKw")?.value, 80)),
   };
   const powerSettingError = [
     ["电制氢", powerSettings.electrolyzerPowerMinKw, powerSettings.electrolyzerPowerMaxKw, powerSettings.electrolyzerPowerDeadbandKw],
@@ -14233,6 +14278,20 @@ async function updateRenewableSettings() {
   }).find(Boolean);
   if (powerSettingError) {
     state.renewableControl.lastStatus = powerSettingError;
+    renderRenewableControl(state.snapshot || {});
+    return null;
+  }
+  const electrolyzerStorageSocLowerLimit = ratio("electrolyzerStorageSocLowerLimit", 40);
+  const electrolyzerStorageSocUpperLimit = ratio("electrolyzerStorageSocUpperLimit", 80);
+  const fuelCellHydrogenStorageSocLowerLimit = ratio("fuelCellHydrogenStorageSocLowerLimit", 20);
+  const fuelCellHydrogenStorageSocUpperLimit = ratio("fuelCellHydrogenStorageSocUpperLimit", 80);
+  const socSettingError = electrolyzerStorageSocLowerLimit > electrolyzerStorageSocUpperLimit
+    ? "电制氢电储平均SOC下限不能大于上限。"
+    : fuelCellHydrogenStorageSocLowerLimit > fuelCellHydrogenStorageSocUpperLimit
+      ? "燃料电池氢储平均SOC下限不能大于上限。"
+      : "";
+  if (socSettingError) {
+    state.renewableControl.lastStatus = socSettingError;
     renderRenewableControl(state.snapshot || {});
     return null;
   }
@@ -14253,6 +14312,12 @@ async function updateRenewableSettings() {
       socDeadband: ratio("socDeadband", 5),
       hydrogenClosedLoopEnabled: Boolean($("hydrogenClosedLoopEnabled")?.checked),
       hydrogenPressureDeadbandRatio: ratio("hydrogenPressureDeadbandRatio", 5, 0, 50),
+      electrolyzerStorageSocLowerLimit,
+      electrolyzerStorageSocUpperLimit,
+      electrolyzerHydrogenStorageSocUpperLimit: ratio("electrolyzerHydrogenStorageSocUpperLimit", 90),
+      fuelCellStorageSocLimit: ratio("fuelCellStorageSocLimit", 40),
+      fuelCellHydrogenStorageSocUpperLimit,
+      fuelCellHydrogenStorageSocLowerLimit,
       ...powerSettings,
       optimizationRenewableCurtailmentWeight: Math.max(0, toNumber($("optimizationRenewableCurtailmentWeight")?.value, 1)),
       optimizationDieselOutputWeight: Math.max(0, toNumber($("optimizationDieselOutputWeight")?.value, 1)),

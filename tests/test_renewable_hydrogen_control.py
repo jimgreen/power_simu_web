@@ -33,7 +33,13 @@ def _measurement(dev_type, dev_name, meas_type, value):
     }
 
 
-def _fuel_cell_snapshot(*, tank_pressure=20.0, include_pressure=True):
+def _fuel_cell_snapshot(
+    *,
+    tank_pressure=20.0,
+    tank_soc=0.9,
+    include_pressure=True,
+    include_tank_soc=True,
+):
     model = {
         "ACNode": _block([{"idx": 1, "name": "ac", "run_stat": 1}]),
         "DCNode": _block([{"idx": 1, "name": "dc", "run_stat": 1}]),
@@ -131,6 +137,8 @@ def _fuel_cell_snapshot(*, tank_pressure=20.0, include_pressure=True):
     ]
     if include_pressure:
         scada.append(_measurement("HydroStorage", "tank", "PRESSURE", tank_pressure))
+    if include_tank_soc:
+        scada.append(_measurement("HydroStorage", "tank", "SOC", tank_soc))
     return {
         "definitions": {
             "model": model,
@@ -171,11 +179,12 @@ def _add_second_parallel_converter(snapshot):
 def _electrolyzer_snapshot(
     *,
     tank_pressure=20.0,
+    tank_soc=0.5,
     electric_power=4.0,
     control_type="P",
     include_power_measurement=True,
 ):
-    snapshot = _fuel_cell_snapshot(tank_pressure=tank_pressure)
+    snapshot = _fuel_cell_snapshot(tank_pressure=tank_pressure, tank_soc=tank_soc)
     model = snapshot["definitions"]["model"]
     model["ACLoad"] = _block(
         [
@@ -271,8 +280,7 @@ def _run(
     snapshot,
     settings,
     *,
-    diesel_power=80.0,
-    upper_guard=40.0,
+    diesel_power=83.0,
     storage_soc=0.1,
     storage_soc_min=0.2,
 ):
@@ -313,7 +321,6 @@ def _run(
         command_rows,
         storage_rows,
         diesel_current_kw=diesel_power,
-        diesel_deadband_upper_kw=upper_guard,
     )
     return result, command_rows
 
@@ -323,9 +330,9 @@ def _run_electrolyzer(
     settings,
     *,
     diesel_power=20.0,
-    upper_guard=40.0,
     diesel_input_valid=True,
     storage_soc=0.9,
+    diesel_unit_count=1,
 ):
     measurements = _measurement_index(snapshot)
     topology = resolve_resource_topology(snapshot, ())
@@ -345,7 +352,7 @@ def _run_electrolyzer(
             }
         ],
         diesel_current_kw=diesel_power,
-        diesel_deadband_upper_kw=upper_guard,
+        diesel_unit_count=diesel_unit_count,
         diesel_input_valid=diesel_input_valid,
     )
     return result, rows
@@ -362,10 +369,19 @@ def test_hydrogen_setting_defaults_disabled_and_round_trips():
             "electrolyzerPowerMaxKw": 45,
             "electrolyzerPowerDeadbandKw": 1,
             "electrolyzerPowerStepKw": 2,
+            "electrolyzerDieselPowerLimitKw": 320,
+            "electrolyzerDieselPowerDeadbandKw": 15,
+            "electrolyzerStorageSocLowerLimit": 0.35,
+            "electrolyzerStorageSocUpperLimit": 0.82,
+            "electrolyzerHydrogenStorageSocUpperLimit": 0.88,
             "fuelCellPowerMinKw": 3,
             "fuelCellPowerMaxKw": 14,
             "fuelCellPowerDeadbandKw": 0.5,
             "fuelCellPowerStepKw": 1.5,
+            "fuelCellDieselPowerLimitKw": 360,
+            "fuelCellStorageSocLimit": 0.38,
+            "fuelCellHydrogenStorageSocUpperLimit": 0.75,
+            "fuelCellHydrogenStorageSocLowerLimit": 0.25,
         }
     )
     assert updated.hydrogen_closed_loop_enabled is True
@@ -375,10 +391,19 @@ def test_hydrogen_setting_defaults_disabled_and_round_trips():
     assert updated.payload()["electrolyzerPowerMaxKw"] == 45
     assert updated.payload()["electrolyzerPowerDeadbandKw"] == 1
     assert updated.payload()["electrolyzerPowerStepKw"] == 2
+    assert updated.payload()["electrolyzerDieselPowerLimitKw"] == 320
+    assert updated.payload()["electrolyzerDieselPowerDeadbandKw"] == 15
+    assert updated.payload()["electrolyzerStorageSocLowerLimit"] == 0.35
+    assert updated.payload()["electrolyzerStorageSocUpperLimit"] == 0.82
+    assert updated.payload()["electrolyzerHydrogenStorageSocUpperLimit"] == 0.88
     assert updated.payload()["fuelCellPowerMinKw"] == 3
     assert updated.payload()["fuelCellPowerMaxKw"] == 14
     assert updated.payload()["fuelCellPowerDeadbandKw"] == 0.5
     assert updated.payload()["fuelCellPowerStepKw"] == 1.5
+    assert updated.payload()["fuelCellDieselPowerLimitKw"] == 360
+    assert updated.payload()["fuelCellStorageSocLimit"] == 0.38
+    assert updated.payload()["fuelCellHydrogenStorageSocUpperLimit"] == 0.75
+    assert updated.payload()["fuelCellHydrogenStorageSocLowerLimit"] == 0.25
     json.dumps(updated.payload())
 
 
@@ -393,6 +418,15 @@ def test_hydrogen_power_settings_normalize_invalid_ranges():
             "fuelCellPowerMaxKw": 4,
             "fuelCellPowerDeadbandKw": 10,
             "fuelCellPowerStepKw": -2,
+            "electrolyzerDieselPowerLimitKw": -10,
+            "electrolyzerDieselPowerDeadbandKw": -2,
+            "electrolyzerStorageSocLowerLimit": 0.9,
+            "electrolyzerStorageSocUpperLimit": 0.2,
+            "electrolyzerHydrogenStorageSocUpperLimit": 2,
+            "fuelCellDieselPowerLimitKw": -20,
+            "fuelCellStorageSocLimit": -1,
+            "fuelCellHydrogenStorageSocUpperLimit": 0.1,
+            "fuelCellHydrogenStorageSocLowerLimit": 0.8,
         }
     )
 
@@ -404,6 +438,700 @@ def test_hydrogen_power_settings_normalize_invalid_ranges():
     assert settings.fuel_cell_power_max_kw == 8
     assert settings.fuel_cell_power_deadband_kw == 0
     assert settings.fuel_cell_power_step_kw > 0
+    assert settings.electrolyzer_diesel_power_limit_kw == 0
+    assert settings.electrolyzer_diesel_power_deadband_kw == 0
+    assert settings.electrolyzer_storage_soc_lower_limit == 0.9
+    assert settings.electrolyzer_storage_soc_upper_limit == 0.9
+    assert settings.electrolyzer_hydrogen_storage_soc_upper_limit == 1
+    assert settings.fuel_cell_diesel_power_limit_kw == 0
+    assert settings.fuel_cell_storage_soc_limit == 0
+    assert settings.fuel_cell_hydrogen_storage_soc_lower_limit == 0.8
+    assert settings.fuel_cell_hydrogen_storage_soc_upper_limit == 0.8
+
+
+def test_electrolyzer_uses_independent_diesel_and_storage_soc_start_limits():
+    settings = RenewableControlSettings(
+        hydrogen_closed_loop_enabled=True,
+        electrolyzer_power_min_kw=5.0,
+        electrolyzer_power_max_kw=20.0,
+        electrolyzer_power_deadband_kw=1.0,
+        electrolyzer_power_step_kw=6.0,
+        electrolyzer_diesel_power_limit_kw=100.0,
+        electrolyzer_diesel_power_deadband_kw=10.0,
+        electrolyzer_storage_soc_lower_limit=0.4,
+        electrolyzer_storage_soc_upper_limit=0.8,
+        electrolyzer_hydrogen_storage_soc_upper_limit=0.9,
+    )
+    started, rows = _run_electrolyzer(
+        _electrolyzer_snapshot(electric_power=0.0, tank_soc=0.89),
+        settings,
+        diesel_power=94.0,
+        storage_soc=0.81,
+    )
+
+    command = next(row for row in rows if row.get("dev_name") == "electrolyzer-load")
+    assert started["action"] == "electrolyzer"
+    assert command["commandKw"] == 6.0
+
+    held, held_rows = _run_electrolyzer(
+        _electrolyzer_snapshot(electric_power=4.0, tank_soc=0.89),
+        settings,
+        diesel_power=94.0,
+        storage_soc=0.79,
+    )
+    assert held["action"] == "hold"
+    assert held_rows == []
+
+
+@pytest.mark.parametrize(
+    ("diesel_power", "storage_soc", "tank_soc"),
+    (
+        (111.0, 0.8, 0.5),
+        (100.0, 0.39, 0.5),
+        (100.0, 0.8, 0.91),
+    ),
+)
+def test_running_electrolyzer_reduces_when_any_configured_stop_condition_is_true(
+    diesel_power,
+    storage_soc,
+    tank_soc,
+):
+    settings = RenewableControlSettings(
+        hydrogen_closed_loop_enabled=True,
+        electrolyzer_power_min_kw=2.0,
+        electrolyzer_power_max_kw=20.0,
+        electrolyzer_power_step_kw=2.0,
+        electrolyzer_diesel_power_limit_kw=100.0,
+        electrolyzer_diesel_power_deadband_kw=10.0,
+        electrolyzer_storage_soc_lower_limit=0.4,
+        electrolyzer_storage_soc_upper_limit=0.8,
+        electrolyzer_hydrogen_storage_soc_upper_limit=0.9,
+    )
+    result, rows = _run_electrolyzer(
+        _electrolyzer_snapshot(electric_power=8.0, tank_soc=tank_soc),
+        settings,
+        diesel_power=diesel_power,
+        storage_soc=storage_soc,
+    )
+
+    command = next(row for row in rows if row.get("dev_name") == "electrolyzer-load")
+    assert result["action"] == "electrolyzer_reduce"
+    assert command["commandKw"] == (7.0 if diesel_power == 111.0 else 6.0)
+
+
+def test_electrolyzer_holds_inside_configured_hysteresis_region():
+    settings = RenewableControlSettings(
+        hydrogen_closed_loop_enabled=True,
+        electrolyzer_diesel_power_limit_kw=100.0,
+        electrolyzer_diesel_power_deadband_kw=10.0,
+        electrolyzer_storage_soc_lower_limit=0.4,
+        electrolyzer_storage_soc_upper_limit=0.8,
+        electrolyzer_hydrogen_storage_soc_upper_limit=0.9,
+    )
+    result, rows = _run_electrolyzer(
+        _electrolyzer_snapshot(electric_power=8.0, tank_soc=0.9),
+        settings,
+        diesel_power=105.0,
+        storage_soc=0.6,
+    )
+
+    assert result["action"] == "hold"
+    assert rows == []
+
+
+def test_electrolyzer_uses_average_diesel_power_and_average_electric_storage_soc():
+    settings = RenewableControlSettings(
+        hydrogen_closed_loop_enabled=True,
+        electrolyzer_power_step_kw=2.0,
+        electrolyzer_diesel_power_limit_kw=100.0,
+        electrolyzer_diesel_power_deadband_kw=10.0,
+        electrolyzer_storage_soc_lower_limit=0.4,
+        electrolyzer_storage_soc_upper_limit=0.8,
+        electrolyzer_hydrogen_storage_soc_upper_limit=0.9,
+    )
+    snapshot = _electrolyzer_snapshot(electric_power=4.0, tank_soc=0.5)
+    measurements = _measurement_index(snapshot)
+    topology = resolve_resource_topology(snapshot, ())
+    rows = []
+    result = _hydrogen_post_dispatch_plan(
+        snapshot,
+        measurements,
+        settings,
+        topology,
+        rows,
+        [
+            {"online": True, "socKnown": True, "soc": 0.7, "socMin": 0.2},
+            {"online": True, "socKnown": True, "soc": 0.95, "socMin": 0.2},
+        ],
+        diesel_current_kw=190.0,
+        diesel_unit_count=2,
+    )
+
+    command = next(row for row in rows if row.get("dev_name") == "electrolyzer-load")
+    assert result["action"] == "electrolyzer"
+    assert result["electricPowerAdjustmentKw"] == 2.0
+    assert result["dieselUnitCount"] == 2
+    assert result["predictedDieselAverageBeforeKw"] == 95.0
+    assert result["electricStorageSocAverage"] == pytest.approx(0.825)
+    assert result["commands"][0]["hydrogenStorageSocAverage"] == 0.5
+    assert command["commandKw"] == 6.0
+
+
+def test_electrolyzer_fails_closed_on_partial_electric_storage_soc_average():
+    snapshot = _electrolyzer_snapshot(electric_power=4.0, tank_soc=0.5)
+    measurements = _measurement_index(snapshot)
+    topology = resolve_resource_topology(snapshot, ())
+    rows = []
+    result = _hydrogen_post_dispatch_plan(
+        snapshot,
+        measurements,
+        RenewableControlSettings(
+            hydrogen_closed_loop_enabled=True,
+            electrolyzer_diesel_power_limit_kw=100.0,
+            electrolyzer_storage_soc_upper_limit=0.8,
+            electrolyzer_hydrogen_storage_soc_upper_limit=0.9,
+        ),
+        topology,
+        rows,
+        [
+            {"online": True, "socKnown": True, "soc": 0.9, "socMin": 0.2},
+            {"online": True, "socKnown": False, "soc": None, "socMin": 0.2},
+        ],
+        diesel_current_kw=90.0,
+    )
+
+    assert result["action"] == "blocked"
+    assert rows == []
+    assert any("平均SOC" in warning and "fail closed" in warning for warning in result["warnings"])
+
+
+def test_fuel_cell_uses_diesel_electric_soc_and_hydrogen_soc_hysteresis():
+    settings = RenewableControlSettings(
+        hydrogen_closed_loop_enabled=True,
+        fuel_cell_power_min_kw=5.0,
+        fuel_cell_power_max_kw=20.0,
+        fuel_cell_power_deadband_kw=1.0,
+        fuel_cell_power_step_kw=6.0,
+        fuel_cell_diesel_power_limit_kw=100.0,
+        fuel_cell_storage_soc_limit=0.4,
+        fuel_cell_hydrogen_storage_soc_upper_limit=0.8,
+        fuel_cell_hydrogen_storage_soc_lower_limit=0.2,
+    )
+    result, rows = _run(
+        _fuel_cell_snapshot(tank_soc=0.81),
+        settings,
+        diesel_power=106.0,
+        storage_soc=0.39,
+    )
+
+    command = next(row for row in rows if row.get("dev_name") == "fuel-cell")
+    assert result["action"] == "fuel_cell"
+    assert command["commandKw"] == 6.0
+
+    running_snapshot = _fuel_cell_snapshot(tank_soc=0.3)
+    running_snapshot["measurements"]["scada"] = [
+        row
+        for row in running_snapshot["measurements"]["scada"]
+        if not (row["dev_type"] == "DCGenerator" and row["dev_name"] == "fuel-cell")
+    ]
+    running_snapshot["measurements"]["scada"].append(
+        _measurement("DCGenerator", "fuel-cell", "P_GEN", 6.0)
+    )
+    increased, increased_rows = _run(
+        running_snapshot,
+        settings,
+        diesel_power=110.0,
+        storage_soc=0.39,
+    )
+    increased_command = next(
+        row for row in increased_rows if row.get("dev_name") == "fuel-cell"
+    )
+    assert increased["action"] == "fuel_cell"
+    assert increased_command["commandKw"] == 12.0
+
+
+def test_fuel_cell_integration_uses_complete_diesel_and_soc_averages():
+    snapshot = _fuel_cell_snapshot(tank_soc=0.7)
+    tank_template = snapshot["definitions"]["model"]["HydroStorage"]["rows"][0]
+    second_tank = dict(tank_template, idx=2, name="tank-2")
+    snapshot["definitions"]["model"]["HydroStorage"]["rows"].append(second_tank)
+    snapshot["devices"].append(
+        {
+            "dev_type": "HydroStorage",
+            "model_block": "HydroStorage",
+            "dev_name": "tank-2",
+            "run_stat": 1,
+            "status": 1,
+            "set_types": [],
+            "set_values": {},
+            "raw": dict(second_tank),
+        }
+    )
+    snapshot["measurements"]["scada"].extend(
+        [
+            _measurement("HydroStorage", "tank-2", "PRESSURE", 20.0),
+            _measurement("HydroStorage", "tank-2", "SOC", 0.95),
+        ]
+    )
+    measurements = _measurement_index(snapshot)
+    topology = resolve_resource_topology(snapshot, ())
+    group_id = next(iter(topology.dc_transfer_groups))
+    rows = [
+        {
+            "dev_type": "DCACConverter",
+            "model_block": "DCACConverter",
+            "dev_name": "grid-converter",
+            "converterRole": "grid",
+            "converterDirection": "AC_TO_DC",
+            "online": True,
+            "commandable": True,
+            "strategyCommand": True,
+            "set_type": "p_ac_set",
+            "currentKw": 0,
+            "commandKw": 0,
+            "signedMinTargetKw": -50,
+            "signedMaxTargetKw": 50,
+            "dcTransferGroupId": group_id,
+        }
+    ]
+    result = _hydrogen_post_dispatch_plan(
+        snapshot,
+        measurements,
+        RenewableControlSettings(
+            hydrogen_closed_loop_enabled=True,
+            fuel_cell_power_min_kw=5.0,
+            fuel_cell_power_max_kw=20.0,
+            fuel_cell_power_deadband_kw=1.0,
+            fuel_cell_power_step_kw=6.0,
+            fuel_cell_diesel_power_limit_kw=100.0,
+            fuel_cell_storage_soc_limit=0.4,
+            fuel_cell_hydrogen_storage_soc_upper_limit=0.8,
+            fuel_cell_hydrogen_storage_soc_lower_limit=0.2,
+        ),
+        topology,
+        rows,
+        [
+            {"online": True, "socKnown": True, "soc": 0.1, "socMin": 0.2},
+            {"online": True, "socKnown": True, "soc": 0.65, "socMin": 0.2},
+        ],
+        diesel_current_kw=210.0,
+        diesel_unit_count=2,
+    )
+
+    fuel_command = next(row for row in rows if row.get("dev_name") == "fuel-cell")
+    assert result["action"] == "fuel_cell"
+    assert result["predictedDieselAverageBeforeKw"] == 105.0
+    assert result["electricStorageSocAverage"] == pytest.approx(0.375)
+    assert result["commands"][0]["hydrogenStorageSocAverage"] == pytest.approx(0.825)
+    assert result["commands"][0]["controlReason"] == "start_conditions_met"
+    assert fuel_command["commandKw"] == 6.0
+
+
+def test_fuel_cell_integration_fails_closed_on_partial_island_soc_average():
+    snapshot = _fuel_cell_snapshot(tank_soc=0.9)
+    tank_template = snapshot["definitions"]["model"]["HydroStorage"]["rows"][0]
+    second_tank = dict(tank_template, idx=2, name="tank-2")
+    snapshot["definitions"]["model"]["HydroStorage"]["rows"].append(second_tank)
+    snapshot["devices"].append(
+        {
+            "dev_type": "HydroStorage",
+            "model_block": "HydroStorage",
+            "dev_name": "tank-2",
+            "run_stat": 1,
+            "status": 1,
+            "set_types": [],
+            "set_values": {},
+            "raw": dict(second_tank),
+        }
+    )
+    snapshot["measurements"]["scada"].append(
+        _measurement("HydroStorage", "tank-2", "PRESSURE", 20.0)
+    )
+    result, rows = _run(
+        snapshot,
+        RenewableControlSettings(
+            hydrogen_closed_loop_enabled=True,
+            fuel_cell_diesel_power_limit_kw=80.0,
+            fuel_cell_storage_soc_limit=0.4,
+            fuel_cell_hydrogen_storage_soc_upper_limit=0.8,
+        ),
+        diesel_power=90.0,
+        storage_soc=0.1,
+    )
+
+    assert result["action"] == "blocked"
+    assert not any(row.get("dev_name") == "fuel-cell" for row in rows)
+    assert any("本氢岛氢储平均SOC" in warning for warning in result["warnings"])
+
+
+def test_full_renewable_plan_integrates_fuel_cell_converter_and_diesel_commands():
+    snapshot = _fuel_cell_snapshot(tank_soc=0.9)
+    model = snapshot["definitions"]["model"]
+    diesel = {
+        "idx": 1,
+        "name": "diesel",
+        "node": 1,
+        "control_type": "PH",
+        "p_min": 20,
+        "p_max": 200,
+        "run_stat": 1,
+    }
+    storage = {
+        "idx": 2,
+        "name": "storage",
+        "node": 1,
+        "control_type": "V",
+        "p_min": -40,
+        "p_max": 40,
+        "run_stat": 1,
+    }
+    model["ACGenerator"] = _block([diesel])
+    model["DCGenerator"]["rows"].append(storage)
+    for dev_type, row in (("ACGenerator", diesel), ("DCGenerator", storage)):
+        snapshot["devices"].append(
+            {
+                "dev_type": dev_type,
+                "model_block": dev_type,
+                "dev_name": row["name"],
+                "idx": row["idx"],
+                "run_stat": 1,
+                "status": 1,
+                "set_types": ["p_set"],
+                "set_values": {},
+                "raw": dict(row),
+            }
+        )
+    snapshot["device_parameters"] = {
+        "ACDieselGen": [
+            {
+                "idx": 1,
+                "idx_acgenerator": 1,
+                "rated_power": 200,
+                "p_min": 20,
+                "p_max": 200,
+            }
+        ],
+        "DCStorageGen": [
+            {
+                "idx": 1,
+                "idx_dcgenerator": 2,
+                "energy_capacity": 100,
+                "max_charge_power": 40,
+                "max_discharge_power": 40,
+                "soc_lower_limit": 0.2,
+                "soc_upper_limit": 0.9,
+            }
+        ],
+    }
+    snapshot["measurements"]["scada"].extend(
+        [
+            _measurement("ACGenerator", "diesel", "P_GEN", 105.0),
+            _measurement("DCGenerator", "storage", "P_GEN", 0.0),
+            _measurement("DCGenerator", "storage", "SOC", 0.3),
+            _measurement("DCACConverter", "grid-converter", "P_AC", 0.0),
+        ]
+    )
+    snapshot["definitions"]["control"]["SetValue"]["rows"].extend(
+        [
+            {"dev_type": "ACGenerator", "dev_name": "diesel", "set_type": "p_set"},
+            {"dev_type": "DCGenerator", "dev_name": "storage", "set_type": "p_set"},
+            {
+                "dev_type": "DCACConverter",
+                "dev_name": "grid-converter",
+                "set_type": "p_ac_set",
+            },
+        ]
+    )
+
+    plan = calculate_renewable_control_plan(
+        snapshot,
+        RenewableControlSettings(
+            hydrogen_closed_loop_enabled=True,
+            fuel_cell_power_min_kw=5.0,
+            fuel_cell_power_max_kw=20.0,
+            fuel_cell_power_deadband_kw=1.0,
+            fuel_cell_power_step_kw=6.0,
+            fuel_cell_diesel_power_limit_kw=70.0,
+            fuel_cell_storage_soc_limit=0.4,
+            fuel_cell_hydrogen_storage_soc_upper_limit=0.8,
+            fuel_cell_hydrogen_storage_soc_lower_limit=0.2,
+        ),
+    )
+
+    commands = {
+        (row["dev_type"], row["dev_name"], row["set_type"]): row["set_value"]
+        for row in plan["commands"]
+    }
+    hydrogen = plan["metrics"]["hydrogenControl"]
+    assert plan["dataQuality"]["dispatchAllowed"] is True
+    assert hydrogen["action"] == "fuel_cell"
+    assert hydrogen["commands"][0]["controlReason"] == "start_conditions_met"
+    assert commands[("DCGenerator", "fuel-cell", "p_set")] == 6.0
+    assert commands[("DCACConverter", "grid-converter", "p_ac_set")] == -26.0
+    assert commands[("ACGenerator", "diesel", "p_set")] == 79.0
+
+
+@pytest.mark.parametrize(
+    ("diesel_power", "storage_soc", "tank_soc"),
+    (
+        (99.0, 0.39, 0.5),
+        (110.0, 0.41, 0.5),
+        (110.0, 0.39, 0.19),
+    ),
+)
+def test_running_fuel_cell_reduces_when_any_configured_stop_condition_is_true(
+    diesel_power,
+    storage_soc,
+    tank_soc,
+):
+    snapshot = _fuel_cell_snapshot(tank_soc=tank_soc)
+    snapshot["measurements"]["scada"] = [
+        row
+        for row in snapshot["measurements"]["scada"]
+        if not (row["dev_type"] == "DCGenerator" and row["dev_name"] == "fuel-cell")
+    ]
+    snapshot["measurements"]["scada"].append(
+        _measurement("DCGenerator", "fuel-cell", "P_GEN", 8.0)
+    )
+    settings = RenewableControlSettings(
+        hydrogen_closed_loop_enabled=True,
+        fuel_cell_power_min_kw=2.0,
+        fuel_cell_power_max_kw=20.0,
+        fuel_cell_power_step_kw=2.0,
+        fuel_cell_diesel_power_limit_kw=100.0,
+        fuel_cell_storage_soc_limit=0.4,
+        fuel_cell_hydrogen_storage_soc_upper_limit=0.8,
+        fuel_cell_hydrogen_storage_soc_lower_limit=0.2,
+    )
+    result, rows = _run(
+        snapshot,
+        settings,
+        diesel_power=diesel_power,
+        storage_soc=storage_soc,
+    )
+
+    command = next(row for row in rows if row.get("dev_name") == "fuel-cell")
+    assert result["action"] == "fuel_cell_reduce"
+    assert command["commandKw"] == 6.0
+
+
+def test_electrolyzer_and_fuel_cell_cannot_start_in_the_same_cycle():
+    snapshot = _electrolyzer_snapshot(tank_soc=0.5, electric_power=0.0)
+    measurements = _measurement_index(snapshot)
+    topology = resolve_resource_topology(snapshot, ())
+    group_id = next(iter(topology.dc_transfer_groups))
+    rows = [
+        {
+            "dev_type": "DCACConverter",
+            "model_block": "DCACConverter",
+            "dev_name": "grid-converter",
+            "converterRole": "grid",
+            "converterDirection": "AC_TO_DC",
+            "online": True,
+            "commandable": True,
+            "strategyCommand": True,
+            "set_type": "p_ac_set",
+            "currentKw": 0.0,
+            "commandKw": 0.0,
+            "signedMinTargetKw": -50.0,
+            "signedMaxTargetKw": 50.0,
+            "transferCapacityKw": 50.0,
+            "dcTransferGroupId": group_id,
+        },
+        {
+            "category": "柴油发电",
+            "dev_type": "ACGenerator",
+            "model_block": "ACGenerator",
+            "dev_name": "diesel",
+            "online": True,
+            "commandable": True,
+            "strategyCommand": True,
+            "set_type": "p_set",
+            "currentKw": 80.0,
+            "commandKw": 80.0,
+            "minKw": 20.0,
+            "capacityKw": 200.0,
+        },
+    ]
+    result = _hydrogen_post_dispatch_plan(
+        snapshot,
+        measurements,
+        RenewableControlSettings(
+            hydrogen_closed_loop_enabled=True,
+            electrolyzer_power_min_kw=2.0,
+            electrolyzer_power_max_kw=20.0,
+            electrolyzer_power_step_kw=6.0,
+            electrolyzer_diesel_power_limit_kw=100.0,
+            electrolyzer_storage_soc_lower_limit=0.2,
+            electrolyzer_storage_soc_upper_limit=0.8,
+            electrolyzer_hydrogen_storage_soc_upper_limit=0.9,
+            fuel_cell_power_min_kw=5.0,
+            fuel_cell_power_max_kw=20.0,
+            fuel_cell_power_step_kw=6.0,
+            fuel_cell_diesel_power_limit_kw=70.0,
+            fuel_cell_storage_soc_limit=0.9,
+            fuel_cell_hydrogen_storage_soc_upper_limit=0.4,
+            fuel_cell_hydrogen_storage_soc_lower_limit=0.2,
+        ),
+        topology,
+        rows,
+        [{"online": True, "socKnown": True, "soc": 0.85, "socMin": 0.2}],
+        diesel_current_kw=80.0,
+    )
+
+    assert [row["couplingType"] for row in result["commands"]] == ["AcE2Hydro"]
+    assert result["interlockMode"] == "electrolyzer"
+    assert result["interlockActive"] is True
+    assert any("互锁" in warning for warning in result["warnings"])
+    assert not any(row.get("dev_name") == "fuel-cell" for row in rows)
+
+
+def test_running_fuel_cell_blocks_electrolyzer_start():
+    snapshot = _electrolyzer_snapshot(tank_soc=0.5, electric_power=0.0)
+    snapshot["measurements"]["scada"] = [
+        row
+        for row in snapshot["measurements"]["scada"]
+        if not (
+            row["dev_type"] == "DCGenerator"
+            and row["dev_name"] == "fuel-cell"
+            and row["meas_type"] == "P_GEN"
+        )
+    ]
+    snapshot["measurements"]["scada"].append(
+        _measurement("DCGenerator", "fuel-cell", "P_GEN", 5.0)
+    )
+    result, rows = _run_electrolyzer(
+        snapshot,
+        RenewableControlSettings(
+            hydrogen_closed_loop_enabled=True,
+            electrolyzer_power_min_kw=2.0,
+            electrolyzer_power_max_kw=20.0,
+            electrolyzer_power_step_kw=6.0,
+            electrolyzer_diesel_power_limit_kw=100.0,
+            electrolyzer_storage_soc_lower_limit=0.2,
+            electrolyzer_storage_soc_upper_limit=0.8,
+            electrolyzer_hydrogen_storage_soc_upper_limit=0.9,
+            fuel_cell_diesel_power_limit_kw=200.0,
+            fuel_cell_storage_soc_limit=0.1,
+        ),
+        diesel_power=80.0,
+        storage_soc=0.85,
+    )
+
+    assert result["interlockMode"] == "fuel_cell"
+    assert result["interlockActive"] is True
+    assert any("互锁" in warning for warning in result["warnings"])
+    assert not any(row.get("dev_name") == "electrolyzer-load" for row in rows)
+
+
+def test_running_electrolyzer_blocks_fuel_cell_start():
+    snapshot = _electrolyzer_snapshot(tank_soc=0.5, electric_power=4.0)
+    result, rows = _run(
+        snapshot,
+        RenewableControlSettings(
+            hydrogen_closed_loop_enabled=True,
+            electrolyzer_power_min_kw=2.0,
+            electrolyzer_power_max_kw=20.0,
+            electrolyzer_power_step_kw=2.0,
+            electrolyzer_diesel_power_limit_kw=200.0,
+            electrolyzer_storage_soc_lower_limit=0.2,
+            electrolyzer_storage_soc_upper_limit=0.95,
+            electrolyzer_hydrogen_storage_soc_upper_limit=0.9,
+            fuel_cell_power_min_kw=5.0,
+            fuel_cell_power_max_kw=20.0,
+            fuel_cell_power_step_kw=6.0,
+            fuel_cell_diesel_power_limit_kw=70.0,
+            fuel_cell_storage_soc_limit=0.9,
+            fuel_cell_hydrogen_storage_soc_upper_limit=0.4,
+            fuel_cell_hydrogen_storage_soc_lower_limit=0.2,
+        ),
+        diesel_power=80.0,
+        storage_soc=0.85,
+    )
+
+    assert result["interlockMode"] == "electrolyzer"
+    assert result["interlockActive"] is True
+    assert any("互锁" in warning for warning in result["warnings"])
+    assert not any(row.get("dev_name") == "fuel-cell" for row in rows)
+
+
+def test_existing_simultaneous_operation_stops_both_hydrogen_modes():
+    snapshot = _electrolyzer_snapshot(tank_soc=0.5, electric_power=4.0)
+    snapshot["measurements"]["scada"] = [
+        row
+        for row in snapshot["measurements"]["scada"]
+        if not (
+            row["dev_type"] == "DCGenerator"
+            and row["dev_name"] == "fuel-cell"
+            and row["meas_type"] == "P_GEN"
+        )
+    ]
+    snapshot["measurements"]["scada"].append(
+        _measurement("DCGenerator", "fuel-cell", "P_GEN", 5.0)
+    )
+    measurements = _measurement_index(snapshot)
+    topology = resolve_resource_topology(snapshot, ())
+    group_id = next(iter(topology.dc_transfer_groups))
+    rows = [
+        {
+            "dev_type": "DCACConverter",
+            "model_block": "DCACConverter",
+            "dev_name": "grid-converter",
+            "converterRole": "grid",
+            "converterDirection": "AC_TO_DC",
+            "online": True,
+            "commandable": True,
+            "strategyCommand": True,
+            "set_type": "p_ac_set",
+            "currentKw": 0.0,
+            "commandKw": 0.0,
+            "signedMinTargetKw": -50.0,
+            "signedMaxTargetKw": 50.0,
+            "transferCapacityKw": 50.0,
+            "dcTransferGroupId": group_id,
+        },
+        {
+            "category": "柴油发电",
+            "dev_type": "ACGenerator",
+            "model_block": "ACGenerator",
+            "dev_name": "diesel",
+            "online": True,
+            "commandable": True,
+            "strategyCommand": True,
+            "set_type": "p_set",
+            "currentKw": 80.0,
+            "commandKw": 80.0,
+            "minKw": 20.0,
+            "capacityKw": 200.0,
+        },
+    ]
+    result = _hydrogen_post_dispatch_plan(
+        snapshot,
+        measurements,
+        RenewableControlSettings(
+            hydrogen_closed_loop_enabled=True,
+            electrolyzer_power_min_kw=2.0,
+            electrolyzer_power_max_kw=20.0,
+            electrolyzer_power_step_kw=2.0,
+            fuel_cell_power_min_kw=3.0,
+            fuel_cell_power_max_kw=20.0,
+            fuel_cell_power_step_kw=3.0,
+        ),
+        topology,
+        rows,
+        [{"online": True, "socKnown": True, "soc": 0.5, "socMin": 0.2}],
+        diesel_current_kw=80.0,
+    )
+
+    assert result["interlockMode"] == "conflict"
+    assert result["interlockActive"] is True
+    targets = {row["activeDevName"]: row["electricPowerKw"] for row in result["commands"]}
+    assert targets == {"electrolyzer-load": 0.0, "fuel-cell": 0.0}
+    assert all(
+        row["controlReason"] == "simultaneous_operation_interlock"
+        for row in result["commands"]
+    )
+    assert any("同时运行" in warning for warning in result["warnings"])
 
 
 def test_disabled_hydrogen_control_emits_no_command_or_converter_change():
@@ -447,7 +1175,6 @@ def test_electrolyzer_power_rises_one_power_step_when_headroom_exists():
         _electrolyzer_snapshot(electric_power=4.0),
         settings,
         diesel_power=20.0,
-        upper_guard=40.0,
     )
     command = next(row for row in rows if row.get("dev_name") == "electrolyzer-load")
     assert result["action"] == "electrolyzer"
@@ -476,7 +1203,6 @@ def test_electrolyzer_start_requires_every_storage_soc_strictly_above_80_percent
         _electrolyzer_snapshot(electric_power=0.0),
         settings,
         diesel_power=34.0,
-        upper_guard=40.0,
         storage_soc=storage_soc,
     )
 
@@ -503,12 +1229,12 @@ def test_electrolyzer_does_not_start_unless_margin_reaches_start_threshold(
         electrolyzer_power_max_kw=20.0,
         electrolyzer_power_deadband_kw=1.0,
         electrolyzer_power_step_kw=6.0,
+        electrolyzer_diesel_power_limit_kw=40.0,
     )
     result, rows = _run_electrolyzer(
         _electrolyzer_snapshot(electric_power=0.0),
         settings,
         diesel_power=diesel_power,
-        upper_guard=40.0,
         storage_soc=0.81,
     )
 
@@ -527,13 +1253,13 @@ def test_running_electrolyzer_increase_equals_diesel_guard_gap_before_limits():
         electrolyzer_power_max_kw=20.0,
         electrolyzer_power_deadband_kw=1.0,
         electrolyzer_power_step_kw=10.0,
+        electrolyzer_diesel_power_limit_kw=40.0,
     )
     result, rows = _run_electrolyzer(
         _electrolyzer_snapshot(electric_power=4.0),
         settings,
         diesel_power=38.5,
-        upper_guard=40.0,
-        storage_soc=0.2,
+        storage_soc=0.81,
     )
 
     command = next(row for row in rows if row.get("dev_name") == "electrolyzer-load")
@@ -548,12 +1274,13 @@ def test_low_storage_soc_and_high_diesel_reduce_running_electrolyzer_one_step():
         electrolyzer_power_max_kw=20.0,
         electrolyzer_power_deadband_kw=1.0,
         electrolyzer_power_step_kw=2.0,
+        electrolyzer_diesel_power_limit_kw=40.0,
+        electrolyzer_diesel_power_deadband_kw=0.0,
     )
     result, rows = _run_electrolyzer(
         _electrolyzer_snapshot(electric_power=8.0),
         settings,
         diesel_power=45.0,
-        upper_guard=40.0,
         storage_soc=0.399,
     )
 
@@ -570,12 +1297,13 @@ def test_electrolyzer_reduction_below_lower_deadband_explicitly_stops():
         electrolyzer_power_max_kw=20.0,
         electrolyzer_power_deadband_kw=1.0,
         electrolyzer_power_step_kw=3.0,
+        electrolyzer_diesel_power_limit_kw=40.0,
+        electrolyzer_diesel_power_deadband_kw=0.0,
     )
     result, rows = _run_electrolyzer(
         _electrolyzer_snapshot(electric_power=6.0),
         settings,
         diesel_power=45.0,
-        upper_guard=40.0,
         storage_soc=0.399,
     )
 
@@ -597,7 +1325,6 @@ def test_configured_electrolyzer_upper_limit_only_tightens_model_boundary():
         _electrolyzer_snapshot(electric_power=6.0),
         settings,
         diesel_power=20.0,
-        upper_guard=40.0,
     )
 
     command = next(row for row in rows if row.get("dev_name") == "electrolyzer-load")
@@ -668,12 +1395,12 @@ def test_electrolyzer_power_step_is_clamped_by_diesel_headroom():
     settings = RenewableControlSettings(
         hydrogen_closed_loop_enabled=True,
         step_coefficient=0.1,
+        electrolyzer_diesel_power_limit_kw=40.0,
     )
     result, rows = _run_electrolyzer(
         _electrolyzer_snapshot(electric_power=4.0),
         settings,
         diesel_power=39.0,
-        upper_guard=40.0,
     )
     command = next(row for row in rows if row.get("dev_name") == "electrolyzer-load")
     assert result["electricPowerAdjustmentKw"] == 1.0
@@ -788,6 +1515,7 @@ def test_fuel_cell_start_requires_margin_for_minimum_plus_deadband():
         fuel_cell_power_max_kw=20.0,
         fuel_cell_power_deadband_kw=1.0,
         fuel_cell_power_step_kw=6.0,
+        fuel_cell_diesel_power_limit_kw=40.0,
     )
 
     blocked, blocked_rows = _run(
@@ -828,7 +1556,6 @@ def test_fuel_cell_start_requires_margin_for_minimum_plus_deadband():
         rows,
         [{"online": True, "socKnown": True, "soc": 0.1, "socMin": 0.2}],
         diesel_current_kw=46.0,
-        diesel_deadband_upper_kw=40.0,
     )
     fuel_row = next(row for row in rows if row.get("dev_name") == "fuel-cell")
     assert fuel_row["commandKw"] == 6.0
@@ -881,7 +1608,6 @@ def test_running_fuel_cell_reduction_below_lower_deadband_explicitly_stops():
         rows,
         [{"online": True, "socKnown": True, "soc": 0.5, "socMin": 0.2}],
         diesel_current_kw=40.0,
-        diesel_deadband_upper_kw=40.0,
     )
 
     fuel_row = next(row for row in rows if row.get("dev_name") == "fuel-cell")
@@ -944,12 +1670,14 @@ def test_dc_hydrogen_correction_shares_parallel_converter_headroom_and_dispatch_
     result = _hydrogen_post_dispatch_plan(
         snapshot,
         measurements,
-        RenewableControlSettings(hydrogen_closed_loop_enabled=True),
+        RenewableControlSettings(
+            hydrogen_closed_loop_enabled=True,
+            fuel_cell_diesel_power_limit_kw=40.0,
+        ),
         topology,
         rows,
         [{"online": True, "socKnown": True, "soc": 0.1, "socMin": 0.2}],
         diesel_current_kw=55,
-        diesel_deadband_upper_kw=40,
     )
 
     converters = {
@@ -1025,6 +1753,25 @@ def test_hydrogen_aggregate_metrics_follow_explicit_coupling_bindings():
             _measurement("HydroStorage", "tank", "FLOW", 0.8),
         ]
     )
+    snapshot["measurements"]["scada"] = [
+        row
+        for index, row in enumerate(snapshot["measurements"]["scada"])
+        if not (
+            row.get("dev_type") == "HydroStorage"
+            and row.get("dev_name") == "tank"
+            and row.get("meas_type") == "SOC"
+            and index
+            != max(
+                candidate_index
+                for candidate_index, candidate in enumerate(
+                    snapshot["measurements"]["scada"]
+                )
+                if candidate.get("dev_type") == "HydroStorage"
+                and candidate.get("dev_name") == "tank"
+                and candidate.get("meas_type") == "SOC"
+            )
+        )
+    ]
     settings = RenewableControlSettings(hydrogen_closed_loop_enabled=False)
     plan = calculate_renewable_control_plan(snapshot, settings)
     metrics = plan["metrics"]
@@ -1210,12 +1957,12 @@ def test_dc_hydrogen_increment_is_atomically_limited_by_remaining_converter_step
         RenewableControlSettings(
             hydrogen_closed_loop_enabled=True,
             step_coefficient=1.0,
+            fuel_cell_diesel_power_limit_kw=40.0,
         ),
         topology,
         rows,
         [{"online": True, "socKnown": True, "soc": 0.1, "socMin": 0.2}],
         diesel_current_kw=55,
-        diesel_deadband_upper_kw=40,
     )
 
     fuel_row = next(row for row in rows if row.get("dev_name") == "fuel-cell")
@@ -1274,16 +2021,28 @@ def test_hydrogen_settings_are_persisted_and_reloaded(tmp_path):
                     "electrolyzerPowerMaxKw": 42,
                     "electrolyzerPowerDeadbandKw": 1,
                     "electrolyzerPowerStepKw": 2.5,
+                    "electrolyzerDieselPowerLimitKw": 310,
+                    "electrolyzerDieselPowerDeadbandKw": 12,
+                    "electrolyzerStorageSocLowerLimit": 0.36,
+                    "electrolyzerStorageSocUpperLimit": 0.83,
+                    "electrolyzerHydrogenStorageSocUpperLimit": 0.87,
                     "fuelCellPowerMinKw": 3,
                     "fuelCellPowerMaxKw": 12,
                     "fuelCellPowerDeadbandKw": 0.5,
                     "fuelCellPowerStepKw": 1.5,
+                    "fuelCellDieselPowerLimitKw": 350,
+                    "fuelCellStorageSocLimit": 0.39,
+                    "fuelCellHydrogenStorageSocUpperLimit": 0.78,
+                    "fuelCellHydrogenStorageSocLowerLimit": 0.24,
                 },
             },
         )
         assert saved["settings"]["hydrogenClosedLoopEnabled"] is True
         assert saved["settings"]["hydrogenPressureDeadbandRatio"] == 0.12
         assert saved["settings"]["electrolyzerPowerMinKw"] == 4
+        assert saved["settings"]["electrolyzerDieselPowerLimitKw"] == 310
+        assert saved["settings"]["electrolyzerStorageSocUpperLimit"] == 0.83
+        assert saved["settings"]["fuelCellDieselPowerLimitKw"] == 350
         assert saved["settings"]["fuelCellPowerStepKw"] == 1.5
     finally:
         first.close()
@@ -1303,4 +2062,8 @@ def test_hydrogen_settings_are_persisted_and_reloaded(tmp_path):
     assert reloaded["settings"]["hydrogenClosedLoopEnabled"] is True
     assert reloaded["settings"]["hydrogenPressureDeadbandRatio"] == 0.12
     assert reloaded["settings"]["electrolyzerPowerMaxKw"] == 42
+    assert reloaded["settings"]["electrolyzerDieselPowerDeadbandKw"] == 12
+    assert reloaded["settings"]["electrolyzerHydrogenStorageSocUpperLimit"] == 0.87
     assert reloaded["settings"]["fuelCellPowerDeadbandKw"] == 0.5
+    assert reloaded["settings"]["fuelCellStorageSocLimit"] == 0.39
+    assert reloaded["settings"]["fuelCellHydrogenStorageSocLowerLimit"] == 0.24

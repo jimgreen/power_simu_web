@@ -14183,12 +14183,25 @@ class TraineeRenewableControlManager:
         result: str,
         detail: Any,
         *,
+        full_detail: Any = None,
         level: str = "info",
         simu_time: str = "--",
         persist_runtime: bool = True,
     ) -> Dict[str, Any]:
         state.log_seq += 1
         normalized_detail = detail if isinstance(detail, str) else "；".join(str(item) for item in detail if item)
+        detail_source = detail if full_detail is None else full_detail
+        if isinstance(detail_source, str):
+            normalized_full_detail = [detail_source] if detail_source.strip() else []
+        elif isinstance(detail_source, Sequence):
+            normalized_full_detail = [
+                str(item).strip()
+                for item in detail_source
+                if str(item).strip()
+            ]
+        else:
+            detail_text = str(detail_source).strip() if detail_source is not None else ""
+            normalized_full_detail = [detail_text] if detail_text else []
         entry = {
             "seq": state.log_seq,
             "wall_time": _now_text(),
@@ -14197,6 +14210,7 @@ class TraineeRenewableControlManager:
             "target": "新能源优先",
             "result": result,
             "detail": normalized_detail,
+            "full_detail": normalized_full_detail,
             "level": level,
         }
         state.logs.insert(0, entry)
@@ -15299,6 +15313,7 @@ class TraineeRenewableControlManager:
                                     "策略决策",
                                     "计算完成",
                                     _compact_decision_log_detail(plan),
+                                    full_detail=plan.get("decisionDetail", []),
                                     level=_decision_log_level(plan),
                                     simu_time=str(plan.get("time", "--")),
                                     persist_runtime=False,

@@ -4630,6 +4630,22 @@ body.is-vertical-splitter-dragging {
 .renewable-control-log-table .runtime-log-row td:nth-child(5) {
   color: inherit;
   font-weight: 400;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.renewable-control-log-table .runtime-log-row {
+  cursor: pointer;
+}
+.renewable-control-log-table .runtime-log-row:hover td {
+  background: #f5f8f9;
+}
+.renewable-control-log-table .runtime-log-row:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: -2px;
+}
+.renewable-control-log-table .runtime-log-row.is-selected td {
+  background: #eaf5f3;
 }
 .renewable-control-log-table .runtime-log-row.is-ok td:nth-child(4) {
   color: var(--green);
@@ -5376,6 +5392,79 @@ th {
 .renewable-control-parameters-dialog {
   width: min(800px, calc(100vw - 28px));
   max-height: min(720px, calc(100vh - 28px));
+}
+.renewable-control-log-detail-dialog {
+  width: min(900px, calc(100vw - 28px));
+  max-height: min(760px, calc(100vh - 28px));
+}
+.renewable-control-log-detail-dialog .remote-control-form {
+  max-height: min(760px, calc(100vh - 28px));
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 14px;
+  overflow: hidden;
+}
+.renewable-control-log-detail-meta {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  border: 1px solid var(--line);
+  background: var(--line);
+}
+.renewable-control-log-detail-meta > div {
+  min-width: 0;
+  padding: 9px 10px;
+  background: #fff;
+}
+.renewable-control-log-detail-meta dt {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.renewable-control-log-detail-meta dd {
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.renewable-control-log-detail-meta dd.is-ok { color: var(--green); }
+.renewable-control-log-detail-meta dd.is-warn { color: var(--amber); }
+.renewable-control-log-detail-meta dd.is-error { color: var(--red); }
+.renewable-control-log-detail-content {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+}
+.renewable-control-log-detail-content h3 {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: #f5f8f9;
+  font-size: 14px;
+}
+.renewable-control-log-detail-steps {
+  margin: 0;
+  padding: 6px 16px 10px 46px;
+}
+.renewable-control-log-detail-steps li {
+  padding: 8px 4px 8px 6px;
+  border-bottom: 1px solid #edf1f2;
+  line-height: 1.55;
+}
+.renewable-control-log-detail-steps li:last-child {
+  border-bottom: 0;
+}
+@media (max-width: 720px) {
+  .renewable-control-log-detail-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 .storage-power-derating-dialog {
   width: min(820px, calc(100vw - 28px));

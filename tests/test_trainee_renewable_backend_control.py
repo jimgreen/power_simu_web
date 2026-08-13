@@ -4879,6 +4879,56 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertIn("指令", joined)
         self.assertLess(len(joined), len("；".join(plan["decisionDetail"])))
 
+    def test_control_log_preserves_full_decision_detail_separately_from_summary(self):
+        plan = calculate_renewable_control_plan(renewable_snapshot())
+
+        with tempfile.TemporaryDirectory() as temporary:
+            service, exchange, manager, _dispatched = make_exchange_backed_control_manager(
+                temporary,
+                snapshot=renewable_snapshot(),
+            )
+            try:
+                state = manager._state_for("shared")
+                entry = manager._append_log(
+                    state,
+                    "策略决策",
+                    "计算完成",
+                    renewable_control_module._compact_decision_log_detail(plan),
+                    full_detail=plan["decisionDetail"],
+                    persist_runtime=False,
+                )
+                payload = manager.state("shared", compact=True)
+            finally:
+                manager.close()
+                exchange.close()
+
+        self.assertEqual(entry["full_detail"], plan["decisionDetail"])
+        self.assertEqual(payload["logs"][0]["full_detail"], plan["decisionDetail"])
+        self.assertLess(len(entry["detail"]), len("；".join(entry["full_detail"])))
+
+    def test_completed_control_cycle_logs_the_full_planner_decision_chain(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            service, exchange, manager, _dispatched = make_exchange_backed_control_manager(
+                temporary,
+                snapshot=renewable_snapshot(),
+            )
+            try:
+                payload = manager.run_once(
+                    "shared",
+                    trigger="manual",
+                    allow_dispatch=False,
+                    record_log=True,
+                )
+            finally:
+                manager.close()
+                exchange.close()
+
+        entry = next(item for item in payload["logs"] if item["result"] == "计算完成")
+        self.assertGreater(len(entry["full_detail"]), 10)
+        self.assertTrue(any("控制架构" in line for line in entry["full_detail"]))
+        self.assertTrue(any("ACDC策略" in line for line in entry["full_detail"]))
+        self.assertNotEqual(entry["detail"], "；".join(entry["full_detail"]))
+
     def test_signed_realtime_power_values_are_preserved_for_every_control_category(self):
         snapshot = renewable_snapshot()
         signed_values = {

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>极地微电网学员台</title>
-    <link rel="stylesheet" href="/styles.css?v=20260812-grouped-loads-column-resize" />
+    <link rel="stylesheet" href="/styles.css?v=20260813-renewable-log-detail" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -1222,6 +1222,26 @@
       </form>
     </dialog>
 
+    <dialog id="renewableControlLogDetailDialog" class="remote-control-dialog renewable-control-log-detail-dialog" aria-labelledby="renewableControlLogDetailTitle">
+      <section class="remote-control-form">
+        <div class="remote-control-head">
+          <div>
+            <h2 id="renewableControlLogDetailTitle">新能源控制决策详情</h2>
+            <p id="renewableControlLogDetailSequence">日志 --</p>
+          </div>
+          <button id="closeRenewableControlLogDetailDialog" class="dialog-close-button" type="button" aria-label="关闭决策详情窗口">×</button>
+        </div>
+        <dl id="renewableControlLogDetailMeta" class="renewable-control-log-detail-meta"></dl>
+        <section class="renewable-control-log-detail-content" aria-labelledby="renewableControlLogDetailStepsTitle">
+          <h3 id="renewableControlLogDetailStepsTitle">决策过程</h3>
+          <ol id="renewableControlLogDetailBody" class="renewable-control-log-detail-steps"></ol>
+        </section>
+        <div class="dialog-actions">
+          <button id="confirmRenewableControlLogDetailDialog" class="primary" type="button">关闭</button>
+        </div>
+      </section>
+    </dialog>
+
     <dialog id="renewableControlParametersDialog" class="remote-control-dialog renewable-control-parameters-dialog" aria-labelledby="renewableControlParametersTitle">
       <section class="remote-control-form">
         <div class="remote-control-head">
@@ -1549,6 +1569,6 @@
         </div>
       </form>
     </dialog>
-    <script src="/app.js?v=20260813-hydrogen-coupling-metrics"></script>
+    <script src="/app.js?v=20260813-renewable-log-detail"></script>
   </body>
 </html>

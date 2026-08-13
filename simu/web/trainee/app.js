@@ -292,6 +292,7 @@ const state = {
     strategyTab: "ac-wind",
     detailTab: "trend",
     logPage: 1,
+    selectedLogSeq: 0,
     lastControlLogRenderKey: "",
   },
   overviewBottomHeight: overviewInitialBottomHeight(),
@@ -12465,6 +12466,7 @@ function normalizeStorageDeratingCurve(points, fallback, direction) {
 }
 
 function resetRenewableControlView(modelId = state.activeModelId) {
+  closeRenewableControlLogDetailDialog();
   const control = state.renewableControl;
   Object.assign(control, {
     modelId: modelId || "",
@@ -12495,6 +12497,7 @@ function resetRenewableControlView(modelId = state.activeModelId) {
     parameterTab: "runtime",
     strategyTab: "ac-wind",
     logPage: 1,
+    selectedLogSeq: 0,
     lastControlLogRenderKey: "",
   });
   state.renewableTrendHistory = [];
@@ -12575,6 +12578,7 @@ function mergeRenewableControlLogDelta(current = [], incoming = [], reset = fals
 }
 
 function resetRenewableControlHistoryForLifecycle(control = state.renewableControl) {
+  closeRenewableControlLogDetailDialog();
   control.logs = [];
   control.revision = -1;
   control.planRevision = -1;
@@ -12582,6 +12586,7 @@ function resetRenewableControlHistoryForLifecycle(control = state.renewableContr
   control.lastPlan = null;
   control.performanceDiagnostics = null;
   control.logPage = 1;
+  control.selectedLogSeq = 0;
   control.lastControlLogRenderKey = "";
   state.renewableTrendHistory = [];
   if (state.chartPeriodOffsets) state.chartPeriodOffsets.renewableTrend = 0;
@@ -12729,6 +12734,10 @@ function applyRenewableControlState(payload = {}) {
   if (hasLastPlan) control.lastPlan = payload.lastPlan || null;
   if (hasPerformanceDiagnostics) {
     control.performanceDiagnostics = payload.performanceDiagnostics || null;
+  }
+  if (control.selectedLogSeq && !renewableControlLogBySeq(control.selectedLogSeq)) {
+    control.selectedLogSeq = 0;
+    closeRenewableControlLogDetailDialog();
   }
   state.renewableTrendHistory = mergeRenewableTrendDelta(
     state.renewableTrendHistory,
@@ -12957,6 +12966,68 @@ function renewableControlLogs() {
   return Array.isArray(state.renewableControl.logs) ? state.renewableControl.logs : [];
 }
 
+function renewableControlLogBySeq(seq) {
+  const normalizedSeq = Number(seq) || 0;
+  return renewableControlLogs().find((item) => (Number(item?.seq) || 0) === normalizedSeq) || null;
+}
+
+function renewableControlLogSummaryText(item = {}) {
+  const detail = runtimeLogDetailText(item.detail).trim();
+  if (!detail) return "--";
+  const parts = detail.split(/[；\n]+/).map((part) => part.trim()).filter(Boolean);
+  const preferred = parts.find((part) => /^(控制结果|告警|指令|撤销|下发)/.test(part));
+  const summary = preferred || parts[0] || detail;
+  return summary.length > 140 ? `${summary.slice(0, 137)}...` : summary;
+}
+
+function renewableControlLogDetailLines(item = {}) {
+  const source = Array.isArray(item.full_detail)
+    ? item.full_detail
+    : item.full_detail !== undefined && item.full_detail !== null
+      ? [item.full_detail]
+      : Array.isArray(item.detail)
+        ? item.detail
+        : String(item.detail || "").split(/[；\n]+/);
+  const lines = source.map((line) => String(line || "").trim()).filter(Boolean);
+  return lines.length ? lines : ["该条日志没有附加决策详情。"];
+}
+
+function selectRenewableControlLogRow(seq) {
+  const normalizedSeq = Number(seq) || 0;
+  if (!renewableControlLogBySeq(normalizedSeq)) return false;
+  state.renewableControl.selectedLogSeq = normalizedSeq;
+  document.querySelectorAll("#renewableControlLogTable [data-renewable-log-seq]").forEach((row) => {
+    const selected = (Number(row.dataset.renewableLogSeq) || 0) === normalizedSeq;
+    row.classList.toggle("is-selected", selected);
+    row.setAttribute("aria-selected", String(selected));
+  });
+  return true;
+}
+
+function openRenewableControlLogDetailDialog(seq) {
+  const item = renewableControlLogBySeq(seq);
+  const dialog = $("renewableControlLogDetailDialog");
+  const meta = $("renewableControlLogDetailMeta");
+  const body = $("renewableControlLogDetailBody");
+  if (!item || !dialog || !meta || !body) return;
+  selectRenewableControlLogRow(item.seq);
+  $("renewableControlLogDetailSequence").textContent = `日志 #${Number(item.seq) || "--"}`;
+  meta.innerHTML = `
+    <div><dt>本机时刻</dt><dd>${escapeHtml(runtimeLogWallTimeText(item.wall_time))}</dd></div>
+    <div><dt>仿真时刻</dt><dd>${escapeHtml(item.simu_time || "--")}</dd></div>
+    <div><dt>类型</dt><dd>${escapeHtml(item.type || "--")}</dd></div>
+    <div><dt>结果</dt><dd class="is-${escapeHtml(item.level || "info")}">${escapeHtml(item.result || "--")}</dd></div>`;
+  body.innerHTML = renewableControlLogDetailLines(item)
+    .map((line) => `<li><span>${escapeHtml(line)}</span></li>`)
+    .join("");
+  if (!dialog.open) dialog.showModal();
+}
+
+function closeRenewableControlLogDetailDialog() {
+  const dialog = $("renewableControlLogDetailDialog");
+  if (dialog?.open) dialog.close();
+}
+
 function renderRenewableMetricTabs() {
   const allowedTabs = new Set(["ac", "dc", "system", "hydrogen"]);
   const activeTab = allowedTabs.has(state.renewableControl.metricTab)
@@ -13141,7 +13212,8 @@ function renderRenewableControlLogs() {
   const page = state.renewableControl.logPage;
   const start = (page - 1) * RENEWABLE_CONTROL_LOG_PAGE_SIZE;
   const pageLogs = logs.slice(start, start + RENEWABLE_CONTROL_LOG_PAGE_SIZE);
-  const renderKey = `${page}|${logs.length}|${pageLogs.map((item) => item.seq).join(",")}`;
+  const selectedLogSeq = Number(state.renewableControl.selectedLogSeq) || 0;
+  const renderKey = `${page}|${logs.length}|${pageLogs.map((item) => item.seq).join(",")}|${selectedLogSeq}`;
   if (renderKey === state.renewableControl.lastControlLogRenderKey) return;
   state.renewableControl.lastControlLogRenderKey = renderKey;
   if (!pageLogs.length) {
@@ -13150,15 +13222,15 @@ function renderRenewableControlLogs() {
   }
   table.innerHTML = `
     <table class="runtime-log-table renewable-control-log-table">
-      <thead><tr><th>本机时刻</th><th>仿真时刻</th><th>类型</th><th>结果</th><th>决策过程</th></tr></thead>
+      <thead><tr><th>本机时刻</th><th>仿真时刻</th><th>类型</th><th>结果</th><th>决策摘要</th></tr></thead>
       <tbody>
         ${pageLogs.map((item) => `
-          <tr class="runtime-log-row is-${escapeHtml(item.level || "info")}">
+          <tr class="runtime-log-row is-${escapeHtml(item.level || "info")}${Number(item.seq) === selectedLogSeq ? " is-selected" : ""}" data-renewable-log-seq="${escapeHtml(item.seq)}" tabindex="0" aria-selected="${Number(item.seq) === selectedLogSeq}" aria-label="日志 ${escapeHtml(item.seq)}，双击查看详细决策过程">
             <td>${escapeHtml(runtimeLogWallTimeText(item.wall_time))}</td>
             <td class="mono-cell">${escapeHtml(item.simu_time || "--")}</td>
             <td>${escapeHtml(item.type || "")}</td>
             <td>${escapeHtml(item.result || "")}</td>
-            <td class="runtime-log-detail">${escapeHtml(runtimeLogDetailText(item.detail))}</td>
+            <td class="runtime-log-detail" title="${escapeHtml(renewableControlLogSummaryText(item))}">${escapeHtml(renewableControlLogSummaryText(item))}</td>
           </tr>
         `).join("")}
       </tbody>
@@ -18156,6 +18228,29 @@ $("saveRenewableControlParameters")?.addEventListener("click", saveRenewableCont
 $("renewableControlPeriod")?.addEventListener("input", syncRenewableControlPeriodConstraints);
 $("renewableControlParametersDialog")?.addEventListener("click", (event) => {
   if (event.target === $("renewableControlParametersDialog")) closeRenewableControlParametersDialog();
+});
+const renewableControlLogTable = $("renewableControlLogTable");
+renewableControlLogTable?.addEventListener("click", (event) => {
+  const row = event.target.closest("[data-renewable-log-seq]");
+  if (!row) return;
+  selectRenewableControlLogRow(row.dataset.renewableLogSeq);
+});
+renewableControlLogTable?.addEventListener("dblclick", (event) => {
+  const row = event.target.closest("[data-renewable-log-seq]");
+  if (!row) return;
+  openRenewableControlLogDetailDialog(row.dataset.renewableLogSeq);
+});
+renewableControlLogTable?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  const row = event.target.closest("[data-renewable-log-seq]");
+  if (!row) return;
+  event.preventDefault();
+  openRenewableControlLogDetailDialog(row.dataset.renewableLogSeq);
+});
+$("closeRenewableControlLogDetailDialog")?.addEventListener("click", closeRenewableControlLogDetailDialog);
+$("confirmRenewableControlLogDetailDialog")?.addEventListener("click", closeRenewableControlLogDetailDialog);
+$("renewableControlLogDetailDialog")?.addEventListener("click", (event) => {
+  if (event.target === $("renewableControlLogDetailDialog")) closeRenewableControlLogDetailDialog();
 });
 $("storagePowerDeratingButton")?.addEventListener("click", openStoragePowerDeratingDialog);
 $("closeStoragePowerDeratingDialog")?.addEventListener("click", closeStoragePowerDeratingDialog);

@@ -336,6 +336,34 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
         )[1].split("}", 1)[0]
         self.assertIn("width: auto;", detail_block)
 
+    def test_control_log_uses_summary_rows_and_opens_full_decision_dialog(self):
+        self.assertIn('id="renewableControlLogDetailDialog"', self.html)
+        self.assertIn('id="renewableControlLogDetailMeta"', self.html)
+        self.assertIn('id="renewableControlLogDetailBody"', self.html)
+        self.assertIn('id="closeRenewableControlLogDetailDialog"', self.html)
+        self.assertIn("function renewableControlLogSummaryText", self.script)
+        self.assertIn("function renewableControlLogBySeq", self.script)
+        self.assertIn("function openRenewableControlLogDetailDialog", self.script)
+        self.assertIn("function closeRenewableControlLogDetailDialog", self.script)
+        self.assertIn('data-renewable-log-seq="${escapeHtml(item.seq)}"', self.script)
+        self.assertIn('tabindex="0"', self.script)
+        self.assertIn('item.full_detail', self.script)
+        self.assertIn('addEventListener("dblclick"', self.script)
+        self.assertIn('addEventListener("keydown"', self.script)
+        self.assertIn('event.key !== "Enter"', self.script)
+        self.assertIn("closeRenewableControlLogDetailDialog();", self.script)
+        self.assertIn("<th>决策摘要</th>", self.script)
+
+        detail_cell = self.styles.split(
+            ".renewable-control-log-table .runtime-log-row td:nth-child(5) {",
+            1,
+        )[1].split("}", 1)[0]
+        self.assertIn("white-space: nowrap;", detail_cell)
+        self.assertIn("overflow: hidden;", detail_cell)
+        self.assertIn("text-overflow: ellipsis;", detail_cell)
+        self.assertIn(".renewable-control-log-detail-dialog", self.styles)
+        self.assertIn(".renewable-control-log-detail-steps", self.styles)
+
 
 if __name__ == "__main__":
     unittest.main()

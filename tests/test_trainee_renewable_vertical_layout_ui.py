@@ -54,6 +54,7 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
             "dc-balance-storage": "直流平衡储能",
             "diesel": "柴发",
             "converter": "ACDC变流",
+            "hydrogen": "氢能",
         }
         for key, label in expected_tabs.items():
             self.assertIn(f'data-renewable-strategy-tab="{key}"', self.html)
@@ -65,6 +66,13 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
         self.assertIn('strategyTab: "ac-wind"', self.script)
         self.assertIn("function renewableStrategyRows", self.script)
         self.assertIn("function renderRenewableStrategyTabs", self.script)
+        self.assertIn(
+            'hydrogen: { label: "氢能", categories: new Set(["氢能"]) }',
+            self.script,
+        )
+        self.assertNotIn('id="renewableStrategyDiagnostics"', self.html)
+        self.assertNotIn("function renewableStrategyDiagnosticRows", self.script)
+        self.assertNotIn("function renderRenewableStrategyDiagnostics", self.script)
         self.assertIn("RENEWABLE_CONTROL_LOG_PAGE_SIZE", self.script)
         self.assertIn("function renderRenewablePager", self.script)
         self.assertIn('data-renewable-pager="logs"', self.script)

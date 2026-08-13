@@ -10,7 +10,7 @@ from simu.fuel_cell_control import (
 def _parameters(**changes):
     values = {
         "power_step_kw": 6.0,
-        "diesel_power_limit_kw": 100.0,
+        "diesel_power_limit_ratio": 0.5,
         "electric_storage_soc_limit": 0.4,
         "hydrogen_storage_soc_start_limit": 0.8,
         "hydrogen_storage_soc_stop_limit": 0.2,
@@ -25,8 +25,8 @@ def _inputs(**changes):
         "maximum_power_kw": 20.0,
         "start_threshold_kw": 6.0,
         "stop_threshold_kw": 4.0,
-        "diesel_average_power_kw": 104.0,
-        "diesel_unit_count": 2,
+        "diesel_power_kw": 208.0,
+        "diesel_capacity_kw": 400.0,
         "electric_storage_soc_average": 0.39,
         "hydrogen_storage_soc_average": 0.81,
     }
@@ -46,7 +46,7 @@ def test_stopped_fuel_cell_starts_at_minimum_plus_deadband():
 @pytest.mark.parametrize(
     "changes",
     (
-        {"diesel_average_power_kw": 100.0},
+        {"diesel_power_kw": 200.0},
         {"electric_storage_soc_average": 0.4},
         {"hydrogen_storage_soc_average": 0.8},
     ),
@@ -64,7 +64,7 @@ def test_start_requires_all_average_thresholds_strictly(changes):
 def test_start_is_blocked_when_diesel_total_margin_cannot_reach_minimum():
     decision = calculate_fuel_cell_power_decision(
         _parameters(),
-        _inputs(diesel_average_power_kw=102.0),
+        _inputs(diesel_power_kw=204.0),
     )
 
     assert decision.action == "hold"
@@ -91,7 +91,7 @@ def test_increase_is_limited_by_total_diesel_margin():
         _parameters(),
         _inputs(
             current_power_kw=8.0,
-            diesel_average_power_kw=101.0,
+            diesel_power_kw=202.0,
             hydrogen_storage_soc_average=0.3,
         ),
     )
@@ -103,7 +103,7 @@ def test_increase_is_limited_by_total_diesel_margin():
 @pytest.mark.parametrize(
     ("changes", "reason"),
     (
-        ({"diesel_average_power_kw": 99.0}, "diesel_power_reduce"),
+        ({"diesel_power_kw": 198.0}, "diesel_power_reduce"),
         ({"electric_storage_soc_average": 0.41}, "storage_soc_reduce"),
         ({"hydrogen_storage_soc_average": 0.19}, "storage_soc_reduce"),
     ),
@@ -127,7 +127,7 @@ def test_reduction_stops_instead_of_entering_minimum_power_dead_zone():
         _parameters(power_step_kw=3.0),
         _inputs(
             current_power_kw=6.0,
-            diesel_average_power_kw=99.0,
+            diesel_power_kw=198.0,
         ),
     )
 
@@ -158,7 +158,7 @@ def test_equal_running_thresholds_are_a_hold_region():
         _parameters(),
         _inputs(
             current_power_kw=8.0,
-            diesel_average_power_kw=100.0,
+            diesel_power_kw=200.0,
             electric_storage_soc_average=0.4,
             hydrogen_storage_soc_average=0.2,
         ),

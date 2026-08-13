@@ -15,7 +15,7 @@ class FuelCellControlParameters:
     """Fuel-cell thresholds configured independently from electrolyzer control."""
 
     power_step_kw: float
-    diesel_power_limit_kw: float
+    diesel_power_limit_ratio: float
     electric_storage_soc_limit: float
     hydrogen_storage_soc_start_limit: float
     hydrogen_storage_soc_stop_limit: float
@@ -27,8 +27,8 @@ class FuelCellControlInputs:
     maximum_power_kw: float
     start_threshold_kw: float
     stop_threshold_kw: float
-    diesel_average_power_kw: float
-    diesel_unit_count: int
+    diesel_power_kw: float
+    diesel_capacity_kw: float
     electric_storage_soc_average: Optional[float]
     hydrogen_storage_soc_average: Optional[float]
 
@@ -53,9 +53,9 @@ def calculate_fuel_cell_power_decision(
 ) -> FuelCellControlDecision:
     """Return one-cycle start/increase/decrease/stop decision for a fuel cell.
 
-    Diesel thresholds use average kW per online diesel unit. Electric-storage
-    SOC uses the complete online fleet average, while hydrogen SOC uses the
-    complete average of online tanks in the fuel cell's hydrogen island.
+    Diesel thresholds use aggregate power divided by aggregate rated capacity.
+    Electric-storage SOC uses the complete online fleet average, while hydrogen
+    SOC uses the complete average of online tanks in the fuel cell's island.
     """
 
     electric_soc = inputs.electric_storage_soc_average
@@ -66,19 +66,21 @@ def calculate_fuel_cell_power_decision(
             reason="incomplete_average_input",
         )
 
-    diesel_count = max(1, int(inputs.diesel_unit_count))
     current_power = max(0.0, float(inputs.current_power_kw))
     maximum_power = max(0.0, float(inputs.maximum_power_kw))
     step_kw = max(0.0, float(parameters.power_step_kw))
-    diesel_average = float(inputs.diesel_average_power_kw)
-    diesel_limit = float(parameters.diesel_power_limit_kw)
+    diesel_capacity = max(0.0, float(inputs.diesel_capacity_kw))
+    if diesel_capacity <= EPSILON:
+        return FuelCellControlDecision(action="hold", reason="invalid_diesel_capacity")
+    diesel_power = float(inputs.diesel_power_kw)
+    diesel_limit = float(parameters.diesel_power_limit_ratio)
     diesel_raise_margin_kw = max(
         0.0,
-        (diesel_average - diesel_limit) * diesel_count,
+        diesel_power - diesel_limit * diesel_capacity,
     )
     diesel_reduce_margin_kw = max(
         0.0,
-        (diesel_limit - diesel_average) * diesel_count,
+        diesel_limit * diesel_capacity - diesel_power,
     )
 
     electric_soc_low = (

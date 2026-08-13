@@ -186,51 +186,60 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             self.assertNotIn(legacy_migration_field, self.html)
             self.assertIn(legacy_migration_field, self.script)
 
-    def test_hydrogen_closed_loop_control_is_explicit_and_saved(self):
-        self.assertIn('id="hydrogenClosedLoopEnabled" type="checkbox"', self.html)
+    def test_hydrogen_has_an_independent_closed_loop_switch(self):
+        self.assertIn('id="hydrogenClosedLoopEnabled"', self.html)
+        self.assertIn("hydrogenClosedLoopEnabled", self.script)
         self.assertIn('id="hydrogenPressureDeadbandRatio"', self.html)
         for field_id in (
-            "electrolyzerPowerMinKw",
-            "electrolyzerPowerMaxKw",
-            "electrolyzerPowerDeadbandKw",
-            "electrolyzerPowerStepKw",
-            "fuelCellPowerMinKw",
-            "fuelCellPowerMaxKw",
-            "fuelCellPowerDeadbandKw",
-            "fuelCellPowerStepKw",
-            "electrolyzerDieselPowerLimitKw",
-            "electrolyzerDieselPowerDeadbandKw",
+            "electrolyzerPowerMinRatio",
+            "electrolyzerPowerMaxRatio",
+            "electrolyzerPowerDeadbandRatio",
+            "electrolyzerPowerStepRatio",
+            "fuelCellPowerMinRatio",
+            "fuelCellPowerMaxRatio",
+            "fuelCellPowerDeadbandRatio",
+            "fuelCellPowerStepRatio",
+            "electrolyzerDieselPowerLimitRatio",
+            "electrolyzerDieselPowerDeadbandRatio",
             "electrolyzerStorageSocLowerLimit",
             "electrolyzerStorageSocUpperLimit",
             "electrolyzerHydrogenStorageSocUpperLimit",
-            "fuelCellDieselPowerLimitKw",
+            "fuelCellDieselPowerLimitRatio",
             "fuelCellStorageSocLimit",
             "fuelCellHydrogenStorageSocUpperLimit",
             "fuelCellHydrogenStorageSocLowerLimit",
         ):
             self.assertIn(f'id="{field_id}"', self.html)
             self.assertIn(field_id, self.script)
-        self.assertIn("hydrogenClosedLoopEnabled", self.script)
         settings_block = self.script.split("async function updateRenewableSettings", 1)[1].split(
             "function storagePowerDeratingRowHtml",
             1,
         )[0]
-        self.assertIn(
-            'hydrogenClosedLoopEnabled: Boolean($("hydrogenClosedLoopEnabled")?.checked)',
-            settings_block,
-        )
+        self.assertIn("hydrogenClosedLoopEnabled", settings_block)
         self.assertIn("启动功率（下限+死区）不能大于上限", settings_block)
         self.assertIn("hydrogen_closed_loop_enabled", self.backend)
         self.assertIn("hydrogen_pressure_deadband_ratio", self.backend)
-        self.assertIn("electrolyzer_diesel_power_limit_kw", self.backend)
-        self.assertIn("electrolyzer_diesel_power_deadband_kw", self.backend)
+        self.assertIn("electrolyzer_diesel_power_limit_ratio", self.backend)
+        self.assertIn("electrolyzer_diesel_power_deadband_ratio", self.backend)
         self.assertIn("electrolyzer_storage_soc_lower_limit", self.backend)
         self.assertIn("electrolyzer_storage_soc_upper_limit", self.backend)
         self.assertIn("electrolyzer_hydrogen_storage_soc_upper_limit", self.backend)
-        self.assertIn("fuel_cell_diesel_power_limit_kw", self.backend)
+        self.assertIn("fuel_cell_diesel_power_limit_ratio", self.backend)
         self.assertIn("fuel_cell_storage_soc_limit", self.backend)
         self.assertIn("fuel_cell_hydrogen_storage_soc_upper_limit", self.backend)
         self.assertIn("fuel_cell_hydrogen_storage_soc_lower_limit", self.backend)
+
+    def test_strategy_table_marks_open_loop_and_hydrogen_preview_rows_as_not_dispatched(self):
+        table_block = self.script.split(
+            'table.innerHTML = `\n    <table class="runtime-device-table renewable-command-table">',
+            1,
+        )[1].split("async function toggleRenewableAuto", 1)[0]
+        self.assertIn("row.dispatchEnabled === false", table_block)
+        self.assertIn('control.loopMode === "closed"', table_block)
+        self.assertIn('"仅预览"', table_block)
+        self.assertIn('"开环不下发"', table_block)
+        self.assertIn('"随策略下发"', table_block)
+        self.assertIn(".renewable-row-ready.is-preview", self.styles)
 
     def test_backend_does_not_use_dwell_or_pending_feedback_state(self):
         self.assertNotIn("def _stabilize_region", self.backend)

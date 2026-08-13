@@ -345,20 +345,24 @@ process.stdout.write(JSON.stringify(latestRenewableTrendSegment(points).map((poi
         self.assertIn("drawChartCursor", draw_block)
         self.assertIn("pixelPoints.length === 1", draw_block)
 
-    def test_chart_renders_a_clickable_adaptive_legend_for_all_available_series(self):
+    def test_chart_creates_legend_nodes_only_for_selected_series(self):
         self.assertIn('id="renewableTrendLegend"', self.html)
         self.assertIn('class="renewable-trend-inline-legend"', self.html)
-        self.assertIn('aria-label="曲线图例，点击图例可显示或隐藏曲线"', self.html)
+        self.assertIn('aria-label="已选曲线图例，点击可取消选择"', self.html)
         self.assertIn("function renderRenewableTrendLegend", self.script)
         draw_block = self.script.split("function drawRenewableTrendChart", 1)[1].split(
             "function renewableMetricTotal",
             1,
         )[0]
-        self.assertIn("renderRenewableTrendLegend(availableSeries)", draw_block)
+        self.assertIn("renderRenewableTrendLegend(visibleSeries)", draw_block)
+        self.assertNotIn("renderRenewableTrendLegend(availableSeries)", draw_block)
         legend_block = self.script.split("function renderRenewableTrendLegend", 1)[1].split(
             "function drawRenewableTrendChart",
             1,
         )[0]
+        self.assertIn("selectedSeries.forEach", legend_block)
+        self.assertIn("legend.replaceChildren(fragment)", legend_block)
+        self.assertIn("legend.hidden = !selectedSeries.length", legend_block)
         self.assertIn('document.createElement("button")', legend_block)
         self.assertIn('item.dataset.chartToggle = "renewableTrend"', legend_block)
         self.assertIn("item.dataset.chartSeries = series.key", legend_block)
@@ -370,12 +374,13 @@ process.stdout.write(JSON.stringify(latestRenewableTrendSegment(points).map((poi
         self.assertIn('target?.closest("[data-chart-toggle][data-chart-series]")', self.script)
         self.assertIn('chartKey === "renewableTrend" ? drawRenewableTrendChart', self.script)
         self.assertIn("control.dataset.chartLegendLabel", self.script)
+        self.assertIn('chartKey === "renewableTrend" && !hidden', self.script)
+        self.assertIn('"点击取消选择"', self.script)
         for css_hook in (
             ".renewable-trend-inline-legend",
             ".renewable-trend-inline-legend-item",
             ".renewable-trend-inline-legend-item:hover",
             ".renewable-trend-inline-legend-item:focus-visible",
-            ".renewable-trend-inline-legend-item.is-hidden",
             ".renewable-trend-inline-legend-swatch",
             ".renewable-trend-inline-legend-swatch.is-target",
             ".renewable-trend-inline-legend-swatch.is-available",
@@ -383,6 +388,64 @@ process.stdout.write(JSON.stringify(latestRenewableTrendSegment(points).map((poi
             ".renewable-trend-inline-legend-swatch.is-limit",
         ):
             self.assertIn(css_hook, self.styles)
+        self.assertNotIn(".renewable-trend-inline-legend-item.is-hidden", self.styles)
+
+        legend_function = "function renderRenewableTrendLegend" + self.script.split(
+            "function renderRenewableTrendLegend",
+            1,
+        )[1].split("function drawRenewableTrendChart", 1)[0]
+        node_script = f"""
+const legend = {{
+  dataset: {{}},
+  children: [{{ dataset: {{ chartSeries: "stale" }} }}],
+  hidden: false,
+  replaceChildren(fragment) {{ this.children = [...fragment.children]; }},
+}};
+function $(id) {{ return id === "renewableTrendLegend" ? legend : null; }}
+function syncChartLegendButtons() {{}}
+function makeElement(tag) {{
+  return {{
+    tag,
+    dataset: {{}},
+    style: {{ setProperty() {{}} }},
+    children: [],
+    append(...children) {{ this.children.push(...children); }},
+    setAttribute() {{}},
+  }};
+}}
+const document = {{
+  createDocumentFragment() {{
+    return {{ children: [], appendChild(item) {{ this.children.push(item); }} }};
+  }},
+  createElement: makeElement,
+}};
+{legend_function}
+const series = [
+  {{ key: "selected-a", label: "已选A", color: "#111", style: "power" }},
+  {{ key: "selected-b", label: "已选B", color: "#222", style: "target" }},
+];
+renderRenewableTrendLegend(series);
+const afterTwo = legend.children.map((item) => item.dataset.chartSeries);
+renderRenewableTrendLegend([series[1]]);
+const afterOne = legend.children.map((item) => item.dataset.chartSeries);
+renderRenewableTrendLegend([]);
+process.stdout.write(JSON.stringify({{
+  afterTwo,
+  afterOne,
+  afterZero: legend.children.map((item) => item.dataset.chartSeries),
+  hiddenAfterZero: legend.hidden,
+}}));
+"""
+        completed = subprocess.run(["node", "-e", node_script], check=True, capture_output=True, text=True)
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {
+                "afterTwo": ["selected-a", "selected-b"],
+                "afterOne": ["selected-b"],
+                "afterZero": [],
+                "hiddenAfterZero": True,
+            },
+        )
 
     def test_renewable_cursor_labels_align_with_each_series_point(self):
         draw_block = self.script.split("function drawRenewableTrendChart", 1)[1].split(

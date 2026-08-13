@@ -16,7 +16,7 @@ class TraineeRenewableTopologyUiTest(unittest.TestCase):
         cls.script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
         cls.styles = (ROOT / "simu/web/trainee/styles.css").read_text(encoding="utf-8")
 
-    def test_strategy_tabs_are_topology_aware_ten_category_tabs(self):
+    def test_strategy_tabs_are_topology_aware_eleven_category_tabs(self):
         expected_tabs = {
             "ac-wind": "交流风电",
             "dc-wind": "直流风电",
@@ -28,6 +28,7 @@ class TraineeRenewableTopologyUiTest(unittest.TestCase):
             "dc-balance-storage": "直流平衡储能",
             "diesel": "柴发",
             "converter": "ACDC变流",
+            "hydrogen": "氢能",
         }
         for key, label in expected_tabs.items():
             self.assertIn(f'data-renewable-strategy-tab="{key}"', self.html)
@@ -65,6 +66,7 @@ class TraineeRenewableTopologyUiTest(unittest.TestCase):
               "dc-balance-storage": { label: "直流平衡储能", categories: new Set(["直流平衡储能"]) },
               diesel: { label: "柴发", categories: new Set(["柴油发电"]) },
               converter: { label: "ACDC变流", categories: new Set(["交直流变流器"]) },
+              hydrogen: { label: "氢能", categories: new Set(["氢能"]) },
             };
             '''
         )
@@ -95,6 +97,8 @@ const plan = {{
     {{ dev_name: "AC风机", category: "直流风电", nativeType: "ACWindGen", parameterBlock: "ACWindGen" }},
     {{ dev_name: "AC跟网", category: "交流跟网储能" }},
     {{ dev_name: "DC平衡", category: "直流平衡储能" }},
+    {{ dev_name: "交流电制氢", category: "氢能" }},
+    {{ dev_name: "直流燃料电池", category: "氢能" }},
     {{ dev_name: "未知诊断", category: "UNRESOLVED" }},
   ],
 }};
@@ -103,6 +107,7 @@ const result = {{
   dcWind: renewableStrategyRows(plan, "dc-wind").map((row) => row.dev_name),
   acGridStorage: renewableStrategyRows(plan, "ac-grid-storage").map((row) => row.dev_name),
   dcBalanceStorage: renewableStrategyRows(plan, "dc-balance-storage").map((row) => row.dev_name),
+  hydrogen: renewableStrategyRows(plan, "hydrogen").map((row) => row.dev_name),
   fallback: renewableStrategyRows(plan, "not-a-tab").map((row) => row.dev_name),
 }};
 process.stdout.write(JSON.stringify(result));
@@ -115,6 +120,7 @@ process.stdout.write(JSON.stringify(result));
                 "dcWind": ["AC风机"],
                 "acGridStorage": ["AC跟网"],
                 "dcBalanceStorage": ["DC平衡"],
+                "hydrogen": ["交流电制氢", "直流燃料电池"],
                 "fallback": ["DC风机"],
             },
         )
@@ -195,9 +201,13 @@ process.stdout.write(JSON.stringify(result));
             count_metadata = f'{button["title"]} {button["ariaLabel"]}'
             self.assertIn(str(button["expectedCount"]), count_metadata, button)
 
-    def test_unresolved_rows_render_in_strategy_diagnostics_not_tabs(self):
-        self.assertIn('id="renewableStrategyDiagnostics"', self.html)
+    def test_unresolved_rows_have_no_diagnostic_panel_and_hydrogen_has_its_own_tab(self):
+        self.assertNotIn('id="renewableStrategyDiagnostics"', self.html)
         self.assertNotIn('data-renewable-strategy-tab="diagnostic"', self.html)
+        self.assertIn('data-renewable-strategy-tab="hydrogen"', self.html)
+        self.assertNotIn("function renewableStrategyDiagnosticRows", self.script)
+        self.assertNotIn("function renderRenewableStrategyDiagnostics", self.script)
+        self.assertNotIn("renewable-strategy-diagnostics", self.styles)
         mapping_match = re.search(
             r"const RENEWABLE_STRATEGY_TABS = \{.*?\n\};",
             self.script,
@@ -208,67 +218,31 @@ process.stdout.write(JSON.stringify(result));
             self.script,
             re.DOTALL,
         )
-        diagnostics_match = re.search(
-            r"function renewableStrategyDiagnosticRows\(plan\) \{.*?\n\}",
-            self.script,
-            re.DOTALL,
-        )
-        self.assertIn("function renderRenewableStrategyDiagnostics", self.script)
-        render_block = self.script.split("function renderRenewableStrategyDiagnostics", 1)[1].split(
-            "function renewableControlLogs",
-            1,
-        )[0]
         self.assertIsNotNone(mapping_match)
         self.assertIsNotNone(rows_match)
-        self.assertIsNotNone(diagnostics_match)
         node_script = f"""
-function escapeHtml(value) {{
-  return String(value ?? "").replace(/[&<>"']/g, (char) => (
-    {{ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }}[char]
-  ));
-}}
-const containers = {{
-  renewableStrategyDiagnostics: {{ innerHTML: "", hidden: true }},
-}};
-function $(id) {{ return containers[id] || null; }}
+const state = {{ renewableControl: {{ strategyTab: "ac-wind" }} }};
 {mapping_match.group(0)}
 {rows_match.group(0)}
-{diagnostics_match.group(0)}
-function renderRenewableStrategyDiagnostics{render_block}
 const plan = {{
   commandRows: [
     {{ dev_name: "bad-wind", category: "拓扑未解析新能源", topologyStatusLabel: "资源模型引用或端子无效", online: false, commandable: false }},
     {{ dev_name: "<bad-storage>", category: "拓扑未解析储能", topologyStatusLabel: "UNRESOLVED <bus>", resourceIdentityDiagnostic: "missing-model-reference", online: false, commandable: false }},
     {{ dev_name: "ok-wind", category: "交流风电", topologyStatusLabel: "拓扑正常", online: true, commandable: true }},
+    {{ dev_name: "electrolyzer", category: "氢能", online: true, commandable: true }},
+    {{ dev_name: "fuel-cell", category: "氢能", online: true, commandable: true }},
   ],
 }};
 const tabCounts = Object.keys(RENEWABLE_STRATEGY_TABS).map((key) => renewableStrategyRows(plan, key).length);
-renderRenewableStrategyDiagnostics(plan);
-const firstHtml = containers.renewableStrategyDiagnostics.innerHTML;
-const hiddenWithRows = containers.renewableStrategyDiagnostics.hidden;
-renderRenewableStrategyDiagnostics({{ commandRows: [] }});
 process.stdout.write(JSON.stringify({{
   tabCounts,
-  hiddenWithRows,
-  firstHtml,
-  hiddenAfterEmpty: containers.renewableStrategyDiagnostics.hidden,
-  htmlAfterEmpty: containers.renewableStrategyDiagnostics.innerHTML,
-  diagnostics: renewableStrategyDiagnosticRows(plan).map((row) => row.dev_name),
+  hydrogen: renewableStrategyRows(plan, "hydrogen").map((row) => row.dev_name),
 }}));
 """
         completed = subprocess.run(["node", "-e", node_script], check=True, capture_output=True, text=True)
         result = json.loads(completed.stdout)
-        self.assertEqual(sum(result["tabCounts"]), 1)
-        self.assertEqual(result["diagnostics"], ["bad-wind", "<bad-storage>"])
-        self.assertFalse(result["hiddenWithRows"])
-        self.assertIn("bad-wind", result["firstHtml"])
-        self.assertIn("资源模型引用或端子无效", result["firstHtml"])
-        self.assertIn("不可执行", result["firstHtml"])
-        self.assertIn("&lt;bad-storage&gt;", result["firstHtml"])
-        self.assertIn("UNRESOLVED &lt;bus&gt;", result["firstHtml"])
-        self.assertNotIn("<bad-storage>", result["firstHtml"])
-        self.assertTrue(result["hiddenAfterEmpty"])
-        self.assertEqual(result["htmlAfterEmpty"], "")
+        self.assertEqual(sum(result["tabCounts"]), 3)
+        self.assertEqual(result["hydrogen"], ["electrolyzer", "fuel-cell"])
 
     def test_reset_renewable_control_view_returns_strategy_tab_to_ac_wind(self):
         mapping_match = re.search(
@@ -299,6 +273,7 @@ const state = {{
   renewableControl: {{ strategyTab: "converter" }},
   renewableTrendHistory: [{{ minute: 1 }}],
 }};
+function closeRenewableControlLogDetailDialog() {{}}
 {mapping_match.group(0)}
 {rows_match.group(0)}
 function renderRenewableStrategyTabs{render_block}

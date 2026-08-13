@@ -4020,29 +4020,6 @@ body.is-vertical-splitter-dragging {
   background: #fff;
   box-shadow: inset 0 -2px 0 var(--teal);
 }
-.renewable-strategy-diagnostics {
-  flex: 0 0 auto;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--line);
-  background: #fff8ed;
-}
-.renewable-strategy-diagnostics[hidden] {
-  display: none;
-}
-.renewable-strategy-diagnostic-list {
-  display: grid;
-  gap: 4px;
-}
-.renewable-strategy-diagnostic-row {
-  min-width: 0;
-  min-height: 30px;
-  display: grid;
-  grid-template-columns: minmax(120px, 180px) minmax(260px, 1fr) 88px;
-  align-items: center;
-  gap: 8px;
-  color: #8a5600;
-  font-size: 12px;
-}
 .renewable-control-point {
   max-width: 260px;
   overflow: hidden;
@@ -4070,6 +4047,9 @@ body.is-vertical-splitter-dragging {
   color: var(--teal-dark);
   font-size: 12px;
   font-weight: 700;
+}
+.renewable-row-ready.is-preview {
+  color: var(--muted);
 }
 .renewable-trend-panel .panel-head {
   flex: 0 0 auto;
@@ -4443,16 +4423,6 @@ body.is-vertical-splitter-dragging {
 .renewable-trend-inline-legend-item:focus-visible {
   outline: 2px solid #2f7f83;
   outline-offset: 1px;
-}
-.renewable-trend-inline-legend-item.is-hidden {
-  color: #7e8d93;
-  opacity: 0.46;
-}
-.renewable-trend-inline-legend-item.is-hidden > span:last-child {
-  text-decoration: line-through;
-}
-.renewable-trend-inline-legend-item.is-hidden .renewable-trend-inline-legend-swatch {
-  filter: grayscale(1);
 }
 .renewable-trend-inline-legend-swatch {
   flex: 0 0 24px;

@@ -61,11 +61,6 @@ class SourceCurveUiTest(unittest.TestCase):
             "renderCurveDisplayTree",
             "renderCurveDisplayModeControls",
         )
-        diagnostics_body = javascript_function_body(
-            script,
-            "renderRenewableStrategyDiagnostics",
-            "renewableControlLogs",
-        )
         for label in ("电源曲线", "氢源曲线", "热源曲线"):
             self.assertIn(label, script)
         self.assertIn("function curveDisplaySourceCatalog", script)
@@ -73,7 +68,6 @@ class SourceCurveUiTest(unittest.TestCase):
         self.assertIn('String(key).startsWith("source:")', script)
         self.assertIn("sourceGroups.map", tree_body)
         self.assertIn('data-curve-display-tree-type="source"', tree_body)
-        self.assertNotIn("sourceGroups.map", diagnostics_body)
 
     def test_trainee_static_snapshot_retains_initialized_curves(self):
         exchange = (ROOT / "simu" / "trainee_exchange.py").read_text(encoding="utf-8")

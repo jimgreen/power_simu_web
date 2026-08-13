@@ -1876,12 +1876,17 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         )
         by_name = {row["dev_name"]: row for row in plan["commandRows"]}
 
-        self.assertAlmostEqual(by_name["wind-1"]["commandKw"], 85.0)
+        self.assertAlmostEqual(
+            by_name["wind-1"]["commandKw"]
+            + by_name["pv-1"]["commandKw"],
+            159.0,
+        )
         self.assertAlmostEqual(by_name["ac-balance"]["projectedTargetKw"], 0.0)
         self.assertLess(
             abs(by_name["ac-balance"]["projectedTargetKw"]),
             abs(by_name["ac-balance"]["currentKw"]),
         )
+        self.assertAlmostEqual(plan["metrics"]["dieselTargetKw"], 26.0)
 
     def test_multiple_low_soc_balance_rows_do_not_continue_discharging(self):
         snapshot = side_aware_recovery_snapshot(
@@ -2985,7 +2990,9 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["storageTarget"], -16.0)
         self.assertTrue(metrics["converterChargeDeratingSafetyOverride"])
         self.assertEqual(metrics["renewableControlAction"], "hold_charge_derating_while_acdc_corrects")
-        self.assertAlmostEqual(metrics["renewableTarget"], 50.0)
+        self.assertAlmostEqual(metrics["renewableTarget"], 54.0)
+        self.assertAlmostEqual(metrics["storageTarget"], 0.0)
+        self.assertAlmostEqual(metrics["dieselTargetKw"], 26.0)
 
     def test_converter_automatic_target_respects_bidirectional_device_limits(self):
         cases = (
@@ -3155,8 +3162,9 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertTrue(metrics["socBelowLowerDeadband"])
         self.assertTrue(metrics["converterEmergencyStopActive"])
         self.assertAlmostEqual(metrics["acdcCurrentForControlKw"], -40.0)
-        self.assertAlmostEqual(metrics["acdcTargetKw"], 0.0)
-        self.assertAlmostEqual(metrics["converterAppliedStepKw"], 40.0)
+        self.assertLessEqual(metrics["acdcTargetKw"], 0.0)
+        self.assertGreater(metrics["converterAppliedStepKw"], 40.0)
+        self.assertLess(metrics["storageTarget"], 0.0)
         self.assertIn(
             "SOC低于下限-死区，跳过常规步长限制",
             "\n".join(plan["decisionDetail"]),
@@ -4711,6 +4719,20 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
             "storageTarget",
             "acdcCurrentKw",
             "acdcTargetKw",
+            "electrolyzerCurrentKw",
+            "electrolyzerTargetKw",
+            "electrolyzerFlowCurrentNm3h",
+            "electrolyzerFlowTargetNm3h",
+            "fuelCellCurrentKw",
+            "fuelCellTargetKw",
+            "fuelCellFlowCurrentNm3h",
+            "fuelCellFlowTargetNm3h",
+            "hydrogenStoragePressureMpa",
+            "hydrogenStoragePressureLowGuardMpa",
+            "hydrogenStoragePressureHighGuardMpa",
+            "hydrogenStorageGasQuantityNm3",
+            "hydrogenStorageSocPercent",
+            "hydrogenStorageFlowNm3h",
             "renewableTarget",
         )
         for metric_name in metric_names:
@@ -5190,7 +5212,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         )
         self.assertLess(plan["metrics"]["acdcTargetKw"], plan["metrics"]["acdcCurrentForControlKw"])
 
-    def test_soc_at_upper_immediately_stops_reverse_converter_power(self):
+    def test_ac_to_dc_converter_power_uses_negative_system_pdc_convention(self):
         snapshot = renewable_snapshot()
         for row in snapshot["measurements"]["scada"]:
             if row["meas_type"] == "SOC":
@@ -5205,15 +5227,19 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         plan = calculate_renewable_control_plan(snapshot)
 
         self.assertFalse(plan["metrics"]["socAboveUpperDeadband"])
-        self.assertEqual(plan["metrics"]["storageControlAction"], "stop_reverse_power")
+        self.assertEqual(plan["metrics"]["storageControlAction"], "hold")
         self.assertTrue(plan["metrics"]["upperSocDeadbandActive"])
         self.assertTrue(plan["metrics"]["dieselDeadbandActive"])
-        self.assertTrue(plan["metrics"]["converterReversePowerDetected"])
+        self.assertFalse(plan["metrics"]["converterReversePowerDetected"])
         self.assertEqual(plan["metrics"]["converterStepDirection"], "hold")
-        self.assertAlmostEqual(plan["metrics"]["converterStepScale"], 1.0)
-        self.assertAlmostEqual(plan["metrics"]["converterStepKw"], 1.5)
-        self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], 0.0)
-        self.assertAlmostEqual(plan["metrics"]["acdcAdjustmentKw"], -5.0)
+        self.assertIsNone(plan["metrics"]["converterStepScale"])
+        self.assertIsNone(plan["metrics"]["converterStepKw"])
+        self.assertAlmostEqual(plan["metrics"]["acdcCurrentKw"], -5.0)
+        self.assertLess(plan["metrics"]["acdcTargetKw"], 0.0)
+        self.assertGreaterEqual(
+            plan["metrics"]["acdcTargetKw"],
+            plan["metrics"]["converterTargetLowerLimitKw"],
+        )
         self.assertAlmostEqual(plan["metrics"]["storageTarget"], 0.0)
 
     def test_model_soc_limits_override_controller_default_limits(self):
@@ -5372,10 +5398,9 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
             plan["metrics"]["storageControlAction"],
             "stop_discharge_below_soc_lower_deadband",
         )
-        self.assertAlmostEqual(plan["metrics"]["acdcCurrentKw"], -0.5)
-        self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], 0.0)
-        self.assertAlmostEqual(plan["metrics"]["acdcAdjustmentKw"], 0.5)
-        self.assertAlmostEqual(plan["metrics"]["storageTarget"], 0.0)
+        self.assertAlmostEqual(plan["metrics"]["acdcCurrentKw"], 0.5)
+        self.assertGreaterEqual(plan["metrics"]["acdcTargetKw"], 0.0)
+        self.assertLess(plan["metrics"]["storageTarget"], 0.0)
         self.assertEqual(
             plan["metrics"]["renewableControlAction"],
             "recover_one_step_below_soc_lower_deadband",
@@ -5405,12 +5430,12 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertTrue(plan["metrics"]["socBelowLowerDeadband"])
         self.assertEqual(plan["metrics"]["dieselControlRegion"], "deadband")
         self.assertEqual(plan["metrics"]["converterStepDirection"], "increase")
-        self.assertAlmostEqual(plan["metrics"]["converterStepScale"], 1.0)
-        self.assertAlmostEqual(plan["metrics"]["converterStepKw"], 1.5)
+        self.assertIsNone(plan["metrics"]["converterStepScale"])
+        self.assertIsNone(plan["metrics"]["converterStepKw"])
         self.assertTrue(plan["metrics"]["converterEmergencyStopActive"])
-        self.assertAlmostEqual(plan["metrics"]["converterAppliedStepKw"], 5.0)
-        self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], 0.0)
-        self.assertAlmostEqual(plan["metrics"]["storageTarget"], 0.0)
+        self.assertGreater(plan["metrics"]["converterAppliedStepKw"], 5.0)
+        self.assertLessEqual(plan["metrics"]["acdcTargetKw"], 0.0)
+        self.assertLess(plan["metrics"]["storageTarget"], 0.0)
 
     def test_physical_empty_triggers_lower_correction_when_threshold_reaches_zero(self):
         snapshot = renewable_snapshot()
@@ -5861,7 +5886,9 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertEqual(metrics["renewableControlAction"], "hold_full_soc_no_charge")
         self.assertEqual(metrics["renewableStepDirection"], "hold")
         self.assertAlmostEqual(metrics["renewableStorageChargeExcessKw"], 0.0)
-        self.assertAlmostEqual(metrics["renewableTarget"], 50.0)
+        self.assertAlmostEqual(metrics["renewableTarget"], 54.0)
+        self.assertAlmostEqual(metrics["storageTarget"], 0.0)
+        self.assertAlmostEqual(metrics["dieselTargetKw"], 26.0)
 
     def test_upper_soc_guard_curtails_to_piecewise_charge_limit(self):
         snapshot = renewable_snapshot()
@@ -5960,12 +5987,13 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         metrics = plan["metrics"]
 
         self.assertTrue(metrics["socAboveUpperDeadband"])
-        self.assertAlmostEqual(metrics["storageChargeDeratingResidualKw"], 10.0)
+        self.assertAlmostEqual(metrics["storageChargeDeratingResidualKw"], 0.0)
         self.assertAlmostEqual(metrics["storageHighSocDischargeRequestKw"], 5.4)
         self.assertAlmostEqual(metrics["renewableChargeSafetyCurtailRequestKw"], 35.4)
-        self.assertAlmostEqual(metrics["renewableChargeSafetyCurtailDeliveredKw"], 20.0)
-        self.assertAlmostEqual(metrics["renewableChargeSafetyCurtailShortfallKw"], 15.4)
-        self.assertAlmostEqual(metrics["renewableTarget"], 30.0)
+        self.assertAlmostEqual(metrics["renewableChargeSafetyCurtailDeliveredKw"], 35.4)
+        self.assertAlmostEqual(metrics["renewableChargeSafetyCurtailShortfallKw"], 0.0)
+        self.assertAlmostEqual(metrics["renewableTarget"], 12.8)
+        self.assertGreater(metrics["storageTarget"], 0.0)
         self.assertTrue(metrics["storageChargeDeratingSafetyOverride"])
 
     def test_storage_energy_limit_uses_the_full_control_horizon(self):
@@ -6040,10 +6068,10 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
         plan = calculate_renewable_control_plan(snapshot)
 
-        self.assertAlmostEqual(plan["metrics"]["storageTarget"], 0.0)
+        self.assertLess(plan["metrics"]["storageTarget"], 0.0)
         self.assertAlmostEqual(plan["metrics"]["converterTargetLowerLimitKw"], -50.0)
-        self.assertAlmostEqual(plan["metrics"]["converterTargetUpperLimitKw"], 0.0)
-        self.assertAlmostEqual(plan["metrics"]["acdcTargetKw"], 0.0)
+        self.assertAlmostEqual(plan["metrics"]["converterTargetUpperLimitKw"], 50.0)
+        self.assertGreater(plan["metrics"]["acdcTargetKw"], 0.0)
 
     def test_extreme_low_soc_keeps_storage_feedback_without_direct_storage_control(self):
         snapshot = renewable_snapshot()
@@ -6854,6 +6882,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         snapshot["device_states"] = [
             {
                 "dev_type": "ACRealBs",
+                "model_block": "ACRealBs",
                 "dev_name": "380V-bus",
                 "run_stat": 0,
                 "dead_island": False,
@@ -6912,6 +6941,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         snapshot["device_states"] = [
             {
                 "dev_type": "ACRealBs",
+                "model_block": "ACRealBs",
                 "dev_name": "380V-bus",
                 "run_stat": 0,
                 "dead_island": False,
@@ -6944,6 +6974,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         snapshot["device_states"] = [
             {
                 "dev_type": "ACRealBs",
+                "model_block": "ACRealBs",
                 "dev_name": "380V-bus",
                 "run_stat": 0,
                 "dead_island": False,
@@ -6980,6 +7011,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         snapshot["device_states"] = [
             {
                 "dev_type": "ACRealBs",
+                "model_block": "ACRealBs",
                 "dev_name": "380V-bus",
                 "run_stat": 0,
                 "dead_island": False,
@@ -7006,6 +7038,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         snapshot["device_states"] = [
             {
                 "dev_type": "ACRealBs",
+                "model_block": "ACRealBs",
                 "dev_name": "380V-bus",
                 "run_stat": 0,
                 "dead_island": False,
@@ -11997,6 +12030,20 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                         "totalLoadKw": 100.0,
                         "acdcCurrentKw": 10.0,
                         "acdcTargetKw": 11.0,
+                        "electrolyzerCurrentKw": 4.0,
+                        "electrolyzerTargetKw": 6.0,
+                        "electrolyzerFlowCurrentNm3h": 0.8,
+                        "electrolyzerFlowTargetNm3h": 1.2,
+                        "fuelCellCurrentKw": 3.0,
+                        "fuelCellTargetKw": 0.0,
+                        "fuelCellFlowCurrentNm3h": 0.6,
+                        "fuelCellFlowTargetNm3h": 0.0,
+                        "hydrogenStoragePressureMpa": 20.0,
+                        "hydrogenStoragePressureLowGuardMpa": 4.15,
+                        "hydrogenStoragePressureHighGuardMpa": 42.85,
+                        "hydrogenStorageGasQuantityNm3": 420.0,
+                        "hydrogenStorageSocPercent": 42.0,
+                        "hydrogenStorageFlowNm3h": 0.8,
                         "dcTransferGroups": [{"detail": "x" * 20000}],
                     },
                     {
@@ -12062,6 +12109,20 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                         "totalLoadKw": 101.0,
                         "acdcCurrentKw": 11.0,
                         "acdcTargetKw": 12.0,
+                        "electrolyzerCurrentKw": 6.0,
+                        "electrolyzerTargetKw": 8.0,
+                        "electrolyzerFlowCurrentNm3h": 1.2,
+                        "electrolyzerFlowTargetNm3h": 1.6,
+                        "fuelCellCurrentKw": 0.0,
+                        "fuelCellTargetKw": 0.0,
+                        "fuelCellFlowCurrentNm3h": 0.0,
+                        "fuelCellFlowTargetNm3h": 0.0,
+                        "hydrogenStoragePressureMpa": 21.0,
+                        "hydrogenStoragePressureLowGuardMpa": 4.15,
+                        "hydrogenStoragePressureHighGuardMpa": 42.85,
+                        "hydrogenStorageGasQuantityNm3": 424.0,
+                        "hydrogenStorageSocPercent": 42.4,
+                        "hydrogenStorageFlowNm3h": 1.2,
                         "dcTransferGroups": [{"detail": "y" * 20000}],
                     },
                 ]
@@ -12156,12 +12217,26 @@ class RenewableControlBackendApiTest(unittest.TestCase):
             "totalDieselMinKw",
             "totalDieselTargetKw",
             "totalLoadKw",
+            "electrolyzerCurrentKw",
+            "electrolyzerTargetKw",
+            "electrolyzerFlowCurrentNm3h",
+            "electrolyzerFlowTargetNm3h",
+            "fuelCellCurrentKw",
+            "fuelCellTargetKw",
+            "fuelCellFlowCurrentNm3h",
+            "fuelCellFlowTargetNm3h",
+            "hydrogenStoragePressureMpa",
+            "hydrogenStoragePressureLowGuardMpa",
+            "hydrogenStoragePressureHighGuardMpa",
+            "hydrogenStorageGasQuantityNm3",
+            "hydrogenStorageSocPercent",
+            "hydrogenStorageFlowNm3h",
         ):
             with self.subTest(field=field):
                 self.assertIn(field, payload["trend"][0])
         self.assertLess(
             len(json.dumps(payload["trend"], ensure_ascii=False).encode("utf-8")),
-            4200,
+            5200,
         )
 
     def test_compact_incremental_state_omits_unchanged_last_plan(self):

@@ -86,11 +86,15 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
 
     def test_metrics_use_single_row_ac_dc_system_and_hydrogen_tabs(self):
         self.assertIn('id="renewableMetricTabs"', self.html)
-        for key, label in (("ac", "交流"), ("dc", "直流"), ("system", "系统"), ("hydrogen", "氢能")):
+        for key, label in (("ac", "交流"), ("dc", "直流"), ("hydrogen", "氢能"), ("system", "系统")):
             with self.subTest(key=key):
                 self.assertIn(f'data-renewable-metric-tab="{key}"', self.html)
                 self.assertIn(f'>{label}</button>', self.html)
                 self.assertIn(f'data-renewable-metric-pane="{key}"', self.html)
+        tab_block = self.html.split('id="renewableMetricTabs"', 1)[1].split("</div>", 1)[0]
+        self.assertLess(tab_block.index('data-renewable-metric-tab="ac"'), tab_block.index('data-renewable-metric-tab="dc"'))
+        self.assertLess(tab_block.index('data-renewable-metric-tab="dc"'), tab_block.index('data-renewable-metric-tab="hydrogen"'))
+        self.assertLess(tab_block.index('data-renewable-metric-tab="hydrogen"'), tab_block.index('data-renewable-metric-tab="system"'))
         metric_tabs = self.styles.split(".renewable-metric-tabs {", 1)[1].split("}", 1)[0]
         metric_buttons = self.styles.split(".renewable-metric-tabs button {", 1)[1].split("}", 1)[0]
         self.assertIn("grid-template-columns: repeat(4, minmax(0, 1fr));", metric_tabs)

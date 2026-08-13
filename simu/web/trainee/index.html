@@ -818,8 +818,8 @@
                 <div id="renewableMetricTabs" class="renewable-metric-tabs" role="tablist" aria-label="统计指标范围">
                   <button id="renewableMetricTabAc" type="button" class="is-active" role="tab" data-renewable-metric-tab="ac" aria-controls="renewableMetricPaneAc" aria-selected="true">交流</button>
                   <button id="renewableMetricTabDc" type="button" role="tab" data-renewable-metric-tab="dc" aria-controls="renewableMetricPaneDc" aria-selected="false">直流</button>
-                  <button id="renewableMetricTabSystem" type="button" role="tab" data-renewable-metric-tab="system" aria-controls="renewableMetricPaneSystem" aria-selected="false">系统</button>
                   <button id="renewableMetricTabHydrogen" type="button" role="tab" data-renewable-metric-tab="hydrogen" aria-controls="renewableMetricPaneHydrogen" aria-selected="false">氢能</button>
+                  <button id="renewableMetricTabSystem" type="button" role="tab" data-renewable-metric-tab="system" aria-controls="renewableMetricPaneSystem" aria-selected="false">系统</button>
                 </div>
                 <div class="renewable-metric-panes">
                   <section id="renewableMetricPaneAc" class="renewable-metric-pane is-active" role="tabpanel" data-renewable-metric-pane="ac" aria-labelledby="renewableMetricTabAc">
@@ -960,7 +960,7 @@
                   <div class="panel-head compact-panel-head">
                     <h2>综合功率趋势</h2>
                     <div class="renewable-trend-head-meta">
-                      <strong id="renewableTrendSummary">0 点 · 左轴功率 / 右轴SOC</strong>
+                      <strong id="renewableTrendSummary">0 点 · 左轴无 · 右轴无</strong>
                       <div class="chart-period-navigation" data-chart-period-nav="renewableTrend" hidden aria-label="新能源综合功率曲线时段导航">
                         <button type="button" data-chart-period-action="previous" aria-label="上一时段" title="上一时段">&#8592;</button>
                         <button type="button" data-chart-period-action="current" aria-label="回到当前时段" title="回到当前时段">&#9673;</button>
@@ -1011,7 +1011,7 @@
                       <div id="renewableTrendSeriesGroups" class="renewable-trend-series-groups"></div>
                     </aside>
                     <div class="renewable-trend-chart-surface">
-                      <div id="renewableTrendLegend" class="renewable-trend-inline-legend" aria-label="已选曲线图例，点击可取消选择" hidden></div>
+                      <div id="renewableTrendLegend" class="renewable-trend-inline-legend" aria-label="已选曲线图例，点击切换当前曲线，再次点击取消选择" hidden></div>
                       <canvas id="renewableTrendChart" width="1500" height="320" aria-label="新能源控制综合功率与储能SOC趋势"></canvas>
                     </div>
                   </div>

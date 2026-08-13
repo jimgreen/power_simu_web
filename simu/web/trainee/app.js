@@ -350,8 +350,8 @@ const RENEWABLE_STRATEGY_TABS = {
 const RENEWABLE_TREND_SCOPE_DEFS = [
   { key: "ac", label: "交流" },
   { key: "dc", label: "直流" },
-  { key: "system", label: "系统" },
   { key: "hydrogen", label: "氢能" },
+  { key: "system", label: "系统" },
 ];
 const RENEWABLE_TREND_SERIES_DEFS = [
   { key: "acRenewableCurrent", metricId: "renewableAcCurrentKw", field: "acRenewableCurrentKw", label: "交流新能源当前值", scope: "ac", device: "renewable", deviceLabel: "新能源", curveLabel: "功率", group: "ac-renewable", color: "#23854a", axis: "left", unit: "kW", style: "power" },
@@ -948,7 +948,7 @@ function syncChartLegendButtons(chartKey) {
     const legendLabel = control.dataset.chartLegendLabel || "";
     if (legendLabel) {
       const actionLabel = chartKey === "renewableTrend" && !hidden
-        ? "点击取消选择"
+        ? selected ? "再次点击取消选择" : "点击设为当前曲线"
         : hidden ? "点击显示曲线" : "点击隐藏曲线";
       control.title = `${legendLabel}：${actionLabel}`;
       control.setAttribute("aria-label", `${legendLabel}，${actionLabel}`);
@@ -13525,36 +13525,142 @@ function renderRenewableTrendSeriesAvailability(metrics = {}) {
   applyRenewableTrendSeriesFilters(metrics);
 }
 
-function renewableTrendRightAxisScale(points = [], visibleSeries = []) {
-  const rightSeries = visibleSeries.filter((series) => series.axis === "right");
-  const rightAxisValues = points.flatMap((point) => (
-    rightSeries.map((series) => Number(point?.[series.field]))
-  )).filter((value) => Number.isFinite(value));
-  const onlySoc = rightSeries.length > 0 && rightSeries.every((series) => series.style === "soc");
-  if (!rightSeries.length || onlySoc) {
-    return {
-      min: 0,
-      max: 100,
-      label: "右轴SOC/%",
-      tickSuffix: "%",
-      values: rightAxisValues,
-    };
+function renewableTrendAxisScale(values = [], series = [], unit = "") {
+  const numericValues = values
+    .filter((value) => value !== null && value !== undefined && value !== "")
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value));
+  const onlySoc = unit === "%" && series.length > 0 && series.every((item) => item.style === "soc");
+  if (onlySoc) return { min: 0, max: 100, tickSuffix: "%" };
+  const includeZero = unit === "kW";
+  if (!numericValues.length) {
+    return includeZero
+      ? { min: -1, max: 1, tickSuffix: "" }
+      : { min: 0, max: 1, tickSuffix: unit === "%" ? "%" : "" };
   }
-  let rightAxisMin = rightAxisValues.length ? Math.min(0, ...rightAxisValues) : 0;
-  let rightAxisMax = rightAxisValues.length ? Math.max(1, ...rightAxisValues) : 1;
-  if (rightSeries.some((series) => series.style === "soc")) rightAxisMax = Math.max(100, rightAxisMax);
-  if (Math.abs(rightAxisMax - rightAxisMin) < 1e-9) rightAxisMax = rightAxisMin + 1;
-  const padding = Math.max((rightAxisMax - rightAxisMin) * 0.08, 0.1);
-  if (rightAxisMin < 0) rightAxisMin -= padding;
-  rightAxisMax += padding;
-  const units = Array.from(new Set(rightSeries.map((series) => series.unit).filter(Boolean)));
+  let minimum = Math.min(...numericValues);
+  let maximum = Math.max(...numericValues);
+  if (Math.abs(maximum - minimum) < 1e-9) {
+    const expansion = Math.max(Math.abs(maximum) * 0.08, includeZero ? 1 : 0.1);
+    minimum -= expansion;
+    maximum += expansion;
+  }
+  if (includeZero) {
+    minimum = Math.min(0, minimum);
+    maximum = Math.max(0, maximum);
+  }
+  const padding = Math.max((maximum - minimum) * 0.08, includeZero ? 1 : 0.01);
+  minimum = !includeZero && minimum >= 0 ? Math.max(0, minimum - padding) : minimum - padding;
+  maximum += padding;
+  if (Math.abs(maximum - minimum) < 1e-9) maximum = minimum + 1;
+  return { min: minimum, max: maximum, tickSuffix: unit === "%" ? "%" : "" };
+}
+
+function renewableTrendAxisGroups(points = [], visibleSeries = [], selectedSeriesKey = "") {
+  const grouped = { left: [], right: [] };
+  const byAxisKey = new Map();
+  visibleSeries.forEach((series) => {
+    const side = series.axis === "right" ? "right" : "left";
+    const unit = String(series.unit || "数值").trim() || "数值";
+    const key = `${side}|${unit}`;
+    let group = byAxisKey.get(key);
+    if (!group) {
+      group = { key, side, unit, series: [] };
+      byAxisKey.set(key, group);
+      grouped[side].push(group);
+    }
+    group.series.push(series);
+  });
+  ["left", "right"].forEach((side) => {
+    grouped[side].forEach((group) => {
+      const values = points.flatMap((point) => group.series.map((series) => {
+        const rawValue = point?.[series.field];
+        return rawValue === null || rawValue === undefined || rawValue === ""
+          ? Number.NaN
+          : Number(rawValue);
+      }))
+        .filter((value) => Number.isFinite(value));
+      const scale = renewableTrendAxisScale(values, group.series, group.unit);
+      const selectedSeries = group.series.find((series) => series.key === selectedSeriesKey);
+      Object.assign(group, scale, {
+        values,
+        seriesKeys: group.series.map((series) => series.key),
+        active: Boolean(selectedSeries),
+        color: selectedSeries?.color || group.series[0]?.color || "#63717a",
+      });
+    });
+  });
+  return grouped;
+}
+
+function renewableTrendChartLayout(leftAxisCount = 0, rightAxisCount = 0) {
+  const axisSlot = 58;
+  const edgePadding = 14;
+  const left = leftAxisCount > 0 ? edgePadding + leftAxisCount * axisSlot : 24;
+  const right = rightAxisCount > 0 ? edgePadding + rightAxisCount * axisSlot : 24;
+  const minPlotWidth = 280;
   return {
-    min: rightAxisMin,
-    max: rightAxisMax,
-    label: units.length ? `右轴/${units.join(" · ")}` : "右轴",
-    tickSuffix: "",
-    values: rightAxisValues,
+    axisSlot,
+    left,
+    right,
+    top: 30,
+    bottom: 38,
+    minCanvasWidth: Math.max(640, left + right + minPlotWidth),
   };
+}
+
+function renewableTrendAxisY(axis, value, top, plotHeight) {
+  const span = Math.max(1e-9, axis.max - axis.min);
+  const normalized = (clamp(value, axis.min, axis.max) - axis.min) / span;
+  return top + plotHeight - normalized * plotHeight;
+}
+
+function drawRenewableTrendAxes(ctx, axisGroups, plotBounds, ratio) {
+  const { left, right, top, plotHeight, axisSlot } = plotBounds;
+  const maxAxisOffset = (side) => Math.max(0, ((axisGroups[side] || []).length - 1) * axisSlot);
+  ["left", "right"].forEach((side) => {
+    (axisGroups[side] || []).forEach((axis, index) => {
+      const direction = side === "left" ? -1 : 1;
+      const axisX = side === "left"
+        ? left - maxAxisOffset(side) + index * axisSlot
+        : right + maxAxisOffset(side) - index * axisSlot;
+      const axisColor = axis.active ? axis.color : "#829198";
+      ctx.save();
+      ctx.globalAlpha = axis.active ? 1 : 0.58;
+      ctx.strokeStyle = axisColor;
+      ctx.fillStyle = axisColor;
+      ctx.lineWidth = (axis.active ? 1.8 : 1) * ratio;
+      ctx.beginPath();
+      ctx.moveTo(axisX, top);
+      ctx.lineTo(axisX, top + plotHeight);
+      ctx.stroke();
+      ctx.font = `${axis.active ? "700 " : ""}${10 * ratio}px Consolas, Microsoft YaHei, Arial`;
+      ctx.textAlign = side === "left" ? "right" : "left";
+      ctx.fillText(axis.unit, axisX + direction * 6 * ratio, top - 13 * ratio);
+      for (let tickIndex = 0; tickIndex <= 4; tickIndex += 1) {
+        const fraction = tickIndex / 4;
+        const y = top + plotHeight * fraction;
+        const value = axis.max - (axis.max - axis.min) * fraction;
+        ctx.beginPath();
+        ctx.moveTo(axisX, y);
+        ctx.lineTo(axisX + direction * 5 * ratio, y);
+        ctx.stroke();
+        ctx.fillText(
+          `${formatNumber(value)}${axis.tickSuffix}`,
+          axisX + direction * 8 * ratio,
+          y + 4 * ratio,
+        );
+      }
+      ctx.restore();
+    });
+  });
+}
+
+function renewableTrendAxisSummary(axisGroups = { left: [], right: [] }) {
+  const describe = (side) => (axisGroups[side] || []).map((axis) => axis.unit).join("、") || "无";
+  const active = [...(axisGroups.left || []), ...(axisGroups.right || [])].find((axis) => axis.active);
+  const activeText = active ? ` · 当前${active.side === "left" ? "左" : "右"}轴 ${active.unit}` : "";
+  return `左轴 ${describe("left")} · 右轴 ${describe("right")}${activeText}`;
 }
 
 function renderRenewableTrendLegend(selectedSeries = []) {
@@ -13590,21 +13696,6 @@ function drawRenewableTrendChart() {
   const canvas = $("renewableTrendChart");
   if (!canvas) return;
   const chartKey = "renewableTrend";
-  const ctx = canvas.getContext("2d");
-  const { width, height, ratio } = resizeCanvas(canvas);
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#fcfeff";
-  ctx.fillRect(0, 0, width, height);
-
-  const left = 72 * ratio;
-  const right = 70 * ratio;
-  const top = 30 * ratio;
-  const bottom = 38 * ratio;
-  const plotWidth = Math.max(1, width - left - right);
-  const plotHeight = Math.max(1, height - top - bottom);
-  const plot = { left, right, top, bottom };
-  state.chartPlotInfo = { ...(state.chartPlotInfo || {}), [chartKey]: plot };
-
   const range = renewableTrendWindowRange();
   syncChartPeriodNavigation("renewableTrend", range);
   const points = renewableTrendWindowPoints(range);
@@ -13612,26 +13703,34 @@ function drawRenewableTrendChart() {
   const metrics = state.renewableControl.lastPlan?.metrics || {};
   const availableSeries = RENEWABLE_TREND_SERIES_DEFS.filter((series) => renewableTrendSeriesAvailable(series, metrics));
   const visibleSeries = visibleChartSeries(chartKey, availableSeries);
+  const requestedSeriesKey = selectedChartSeriesKey(chartKey, visibleSeries[0]?.key || "");
+  const selectedSeriesKey = visibleSeries.some((series) => series.key === requestedSeriesKey)
+    ? requestedSeriesKey
+    : visibleSeries[0]?.key || "";
+  if (selectedSeriesKey && requestedSeriesKey !== selectedSeriesKey) {
+    state.chartSeriesSelected = { ...(state.chartSeriesSelected || {}), [chartKey]: selectedSeriesKey };
+  }
+  const axisGroups = renewableTrendAxisGroups(points, visibleSeries, selectedSeriesKey);
+  const layout = renewableTrendChartLayout(axisGroups.left.length, axisGroups.right.length);
+  canvas.style.minWidth = `${layout.minCanvasWidth}px`;
+  const ctx = canvas.getContext("2d");
+  const { width, height, ratio } = resizeCanvas(canvas);
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#fcfeff";
+  ctx.fillRect(0, 0, width, height);
+
+  const left = layout.left * ratio;
+  const right = layout.right * ratio;
+  const top = layout.top * ratio;
+  const bottom = layout.bottom * ratio;
+  const plotWidth = Math.max(1, width - left - right);
+  const plotHeight = Math.max(1, height - top - bottom);
+  const plot = { left, right, top, bottom };
+  state.chartPlotInfo = { ...(state.chartPlotInfo || {}), [chartKey]: plot };
+
   renderRenewableTrendLegend(visibleSeries);
   renderRenewableTrendSeriesAvailability(metrics);
-  const visiblePowerSeries = visibleSeries.filter((series) => series.axis !== "right");
-  const powerValues = points.flatMap((point) => visiblePowerSeries.map((series) => point[series.field]))
-    .filter((value) => Number.isFinite(value));
-  let powerMin = powerValues.length ? Math.min(0, ...powerValues) : -1;
-  let powerMax = powerValues.length ? Math.max(0, ...powerValues) : 1;
-  if (Math.abs(powerMax - powerMin) < 1e-9) {
-    powerMin -= 1;
-    powerMax += 1;
-  }
-  const powerPadding = Math.max(1, (powerMax - powerMin) * 0.08);
-  powerMin -= powerPadding;
-  powerMax += powerPadding;
-  const rightAxis = renewableTrendRightAxisScale(points, visibleSeries);
-  const rightAxisValues = rightAxis.values;
-  const rightAxisMin = rightAxis.min;
-  const rightAxisMax = rightAxis.max;
 
-  ctx.font = `${11 * ratio}px Consolas, Microsoft YaHei, Arial`;
   for (let index = 0; index <= 4; index += 1) {
     const fraction = index / 4;
     const y = top + plotHeight * fraction;
@@ -13641,22 +13740,16 @@ function drawRenewableTrendChart() {
     ctx.moveTo(left, y);
     ctx.lineTo(width - right, y);
     ctx.stroke();
-    ctx.fillStyle = "#63717a";
-    ctx.textAlign = "right";
-    ctx.fillText(formatNumber(powerMax - (powerMax - powerMin) * fraction), left - 8 * ratio, y + 4 * ratio);
-    ctx.fillStyle = "#76549b";
-    ctx.textAlign = "left";
-    const rightAxisValue = rightAxisMax - (rightAxisMax - rightAxisMin) * fraction;
-    ctx.fillText(`${formatNumber(rightAxisValue)}${rightAxis.tickSuffix}`, width - right + 8 * ratio, y + 4 * ratio);
   }
-  ctx.fillStyle = "#63717a";
-  ctx.textAlign = "left";
-  ctx.fillText("功率/kW", 8 * ratio, 16 * ratio);
-  ctx.fillStyle = "#76549b";
-  ctx.textAlign = "right";
-  ctx.fillText(rightAxis.label, width - 8 * ratio, 16 * ratio);
+  drawRenewableTrendAxes(ctx, axisGroups, {
+    left,
+    right: width - right,
+    top,
+    plotHeight,
+    axisSlot: layout.axisSlot * ratio,
+  }, ratio);
 
-  const xTicks = measurementTraceAxisTicks(range, width / ratio);
+  const xTicks = measurementTraceAxisTicks(range, plotWidth / ratio);
   xTicks.forEach((minute, tickIndex) => {
     const x = left + ((minute - range.startMinute) / range.windowMinutes) * plotWidth;
     ctx.strokeStyle = tickIndex === xTicks.length - 1 ? "#c9d6dc" : "#edf2f4";
@@ -13676,7 +13769,11 @@ function drawRenewableTrendChart() {
   });
 
   const summary = $("renewableTrendSummary");
-  if (summary) summary.textContent = `${traceWindowDataPointCount(points)} 点 · 左轴功率 / ${rightAxis.label}`;
+  if (summary) {
+    const summaryText = `${traceWindowDataPointCount(points)} 点 · ${renewableTrendAxisSummary(axisGroups)}`;
+    summary.textContent = summaryText;
+    summary.title = summaryText;
+  }
   if (!points.length || !visibleSeries.length) {
     state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: [] };
     syncChartLegendButtons(chartKey);
@@ -13688,12 +13785,14 @@ function drawRenewableTrendChart() {
   }
 
   const xForMinute = (minute) => left + ((minute - range.startMinute) / range.windowMinutes) * plotWidth;
-  const powerY = (value) => top + plotHeight - ((value - powerMin) / (powerMax - powerMin)) * plotHeight;
-  const rightY = (value) => top + plotHeight
-    - ((clamp(value, rightAxisMin, rightAxisMax) - rightAxisMin) / (rightAxisMax - rightAxisMin)) * plotHeight;
-  const selectedSeries = selectedChartSeriesKey(chartKey, visibleSeries[0]?.key || "");
+  const axisBySeriesKey = new Map();
+  [...axisGroups.left, ...axisGroups.right].forEach((axis) => {
+    axis.seriesKeys.forEach((seriesKey) => axisBySeriesKey.set(seriesKey, axis));
+  });
   const hitData = [];
   visibleSeries.forEach((series) => {
+    const seriesAxis = axisBySeriesKey.get(series.key);
+    if (!seriesAxis) return;
     const sampled = sampleCurvePointsForCanvas(
       points.map((point) => Number.isFinite(point[series.field]) ? point[series.field] : Number.NaN),
       plotWidth / ratio,
@@ -13701,7 +13800,7 @@ function drawRenewableTrendChart() {
     );
     const pixelPoints = [];
     ctx.strokeStyle = series.color;
-    ctx.lineWidth = (series.key === selectedSeries ? 3.2 : 2.2) * ratio;
+    ctx.lineWidth = (series.key === selectedSeriesKey ? 3.2 : 2.2) * ratio;
     const dashPattern = Array.isArray(series.dashPattern)
       ? series.dashPattern.map((value) => value * ratio)
       : series.dashed
@@ -13716,7 +13815,7 @@ function drawRenewableTrendChart() {
       const point = points[index];
       if (!point) return;
       const x = xForMinute(point.minute);
-      const y = series.axis === "right" ? rightY(value) : powerY(value);
+      const y = renewableTrendAxisY(seriesAxis, value, top, plotHeight);
       pixelPoints.push({ x, y, minute: point.minute, time: point.time, value });
       if (!started) {
         ctx.moveTo(x, y);
@@ -17954,7 +18053,12 @@ document.addEventListener("click", (event) => {
       : chartKey === "commandTrace" ? drawCommandTraceChart
         : chartKey === "renewableTrend" ? drawRenewableTrendChart
           : null;
-    toggleChartSeriesVisibility(chartKey, seriesKey, drawFn);
+    const visibleRenewableSeries = chartKey === "renewableTrend" && !isChartSeriesHidden(chartKey, seriesKey);
+    if (visibleRenewableSeries && selectedChartSeriesKey(chartKey) !== seriesKey) {
+      setChartSeriesSelected(chartKey, seriesKey, drawFn);
+    } else {
+      toggleChartSeriesVisibility(chartKey, seriesKey, drawFn);
+    }
     return;
   }
   if (target?.closest("#clearRuntimeLogs")) {

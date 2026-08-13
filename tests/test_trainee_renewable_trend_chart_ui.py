@@ -146,9 +146,13 @@ class TraineeRenewableTrendChartUiTest(unittest.TestCase):
         self.assertIn('data-renewable-series-scope="${escapeHtml(scope.key)}"', self.script)
         self.assertIn('data-renewable-series-device="${escapeHtml(device.key)}"', self.script)
         self.assertIn('data-chart-series="${escapeHtml(series.key)}"', self.script)
-        for scope, label in (("ac", "交流"), ("dc", "直流"), ("system", "系统"), ("hydrogen", "氢能")):
+        for scope, label in (("ac", "交流"), ("dc", "直流"), ("hydrogen", "氢能"), ("system", "系统")):
             with self.subTest(scope=scope):
                 self.assertIn(f'key: "{scope}", label: "{label}"', self.script)
+        scope_block = self.script.split("const RENEWABLE_TREND_SCOPE_DEFS = [", 1)[1].split("];", 1)[0]
+        self.assertLess(scope_block.index('key: "ac"'), scope_block.index('key: "dc"'))
+        self.assertLess(scope_block.index('key: "dc"'), scope_block.index('key: "hydrogen"'))
+        self.assertLess(scope_block.index('key: "hydrogen"'), scope_block.index('key: "system"'))
         for device_label in ("新能源", "风电", "光伏", "跟网储能", "构网储能", "柴发", "负荷", "AC/DC变流器", "环境", "电制氢", "燃料电池", "储氢罐"):
             with self.subTest(device_label=device_label):
                 self.assertIn(f'deviceLabel: "{device_label}"', self.series_block)
@@ -329,7 +333,7 @@ process.stdout.write(JSON.stringify(latestRenewableTrendSegment(points).map((poi
         )
         self.assertEqual(json.loads(result.stdout), [0, 1])
 
-    def test_chart_uses_current_target_power_series_and_live_soc_right_axis(self):
+    def test_chart_uses_current_target_series_and_per_unit_axes(self):
         draw_block = self.script.split("function drawRenewableTrendChart", 1)[1].split(
             "function renderRenewableControl",
             1,
@@ -340,15 +344,16 @@ process.stdout.write(JSON.stringify(latestRenewableTrendSegment(points).map((poi
         self.assertIn('axis: "right"', self.series_block)
         self.assertIn('field: "observedWindSpeed"', self.series_block)
         self.assertIn('field: "observedSolarIrradiance"', self.series_block)
-        self.assertIn("rightAxisValues", draw_block)
-        self.assertIn("rightAxisMax", draw_block)
+        self.assertIn("renewableTrendAxisGroups", draw_block)
+        self.assertIn("axisBySeriesKey", draw_block)
+        self.assertIn("renewableTrendAxisY", draw_block)
         self.assertIn("drawChartCursor", draw_block)
         self.assertIn("pixelPoints.length === 1", draw_block)
 
     def test_chart_creates_legend_nodes_only_for_selected_series(self):
         self.assertIn('id="renewableTrendLegend"', self.html)
         self.assertIn('class="renewable-trend-inline-legend"', self.html)
-        self.assertIn('aria-label="已选曲线图例，点击可取消选择"', self.html)
+        self.assertIn('aria-label="已选曲线图例，点击切换当前曲线，再次点击取消选择"', self.html)
         self.assertIn("function renderRenewableTrendLegend", self.script)
         draw_block = self.script.split("function drawRenewableTrendChart", 1)[1].split(
             "function renewableMetricTotal",
@@ -375,7 +380,10 @@ process.stdout.write(JSON.stringify(latestRenewableTrendSegment(points).map((poi
         self.assertIn('chartKey === "renewableTrend" ? drawRenewableTrendChart', self.script)
         self.assertIn("control.dataset.chartLegendLabel", self.script)
         self.assertIn('chartKey === "renewableTrend" && !hidden', self.script)
-        self.assertIn('"点击取消选择"', self.script)
+        self.assertIn('"点击设为当前曲线"', self.script)
+        self.assertIn('"再次点击取消选择"', self.script)
+        self.assertIn("visibleRenewableSeries", self.script)
+        self.assertIn("setChartSeriesSelected(chartKey, seriesKey, drawFn)", self.script)
         for css_hook in (
             ".renewable-trend-inline-legend",
             ".renewable-trend-inline-legend-item",
@@ -526,36 +534,95 @@ process.stdout.write(JSON.stringify(fillTexts.filter((item) => !item.text.starts
         self.assertEqual([label["y"] for label in labels], [100, 104, 108])
         self.assertTrue(all(label["x"] > 80 for label in labels))
 
-    def test_right_axis_preserves_soc_scale_and_expands_for_environment_values(self):
-        helper = "function renewableTrendRightAxisScale" + self.script.split(
-            "function renewableTrendRightAxisScale",
+    def test_axes_are_grouped_by_side_and_unit_with_independent_scales(self):
+        helper = "function renewableTrendAxisScale" + self.script.split(
+            "function renewableTrendAxisScale",
             1,
-        )[1].split("function drawRenewableTrendChart", 1)[0]
+        )[1].split("function renderRenewableTrendLegend", 1)[0]
         node_script = f"""
 {helper}
-const soc = renewableTrendRightAxisScale(
-  [{{ soc: 35 }}, {{ soc: 80 }}],
-  [{{ axis: "right", field: "soc", style: "soc", unit: "%" }}],
-);
-const weather = renewableTrendRightAxisScale(
-  [{{ wind: 4.5, solar: 0 }}, {{ wind: 8, solar: 820 }}],
+const points = [
+  {{ power: null, production: 300, soc: 35, wind: 4.5, solar: 0, pressure: 1.2 }},
+  {{ power: 20, production: 500, soc: 80, wind: 8, solar: 820, pressure: 1.5 }},
+];
+const groups = renewableTrendAxisGroups(
+  points,
   [
-    {{ axis: "right", field: "wind", style: "weather", unit: "m/s" }},
-    {{ axis: "right", field: "solar", style: "weather", unit: "W/m²" }},
+    {{ key: "power", axis: "left", field: "power", style: "power", unit: "kW", color: "#111" }},
+    {{ key: "production", axis: "left", field: "production", style: "flow", unit: "Nm³/h", color: "#222" }},
+    {{ key: "soc", axis: "right", field: "soc", style: "soc", unit: "%", color: "#333" }},
+    {{ key: "wind", axis: "right", field: "wind", style: "weather", unit: "m/s", color: "#444" }},
+    {{ key: "solar", axis: "right", field: "solar", style: "weather", unit: "W/m²", color: "#555" }},
+    {{ key: "pressure", axis: "right", field: "pressure", style: "pressure", unit: "MPa", color: "#666" }},
   ],
+  "pressure",
 );
-process.stdout.write(JSON.stringify({{ soc, weather }}));
+process.stdout.write(JSON.stringify({{
+  left: groups.left.map((axis) => ({{ key: axis.key, unit: axis.unit, min: axis.min, max: axis.max, active: axis.active }})),
+  right: groups.right.map((axis) => ({{ key: axis.key, unit: axis.unit, min: axis.min, max: axis.max, active: axis.active }})),
+  summary: renewableTrendAxisSummary(groups),
+}}));
 """
         result = subprocess.run(["node", "-e", node_script], check=True, capture_output=True, text=True)
         payload = json.loads(result.stdout)
-        self.assertEqual(payload["soc"]["min"], 0)
-        self.assertEqual(payload["soc"]["max"], 100)
-        self.assertEqual(payload["soc"]["tickSuffix"], "%")
-        self.assertIn("右轴SOC", payload["soc"]["label"])
-        self.assertEqual(payload["weather"]["min"], 0)
-        self.assertGreater(payload["weather"]["max"], 820)
-        self.assertIn("m/s", payload["weather"]["label"])
-        self.assertIn("W/m²", payload["weather"]["label"])
+        self.assertEqual([axis["unit"] for axis in payload["left"]], ["kW", "Nm³/h"])
+        self.assertEqual([axis["unit"] for axis in payload["right"]], ["%", "m/s", "W/m²", "MPa"])
+        soc_axis = payload["right"][0]
+        solar_axis = payload["right"][2]
+        pressure_axis = payload["right"][3]
+        self.assertEqual((soc_axis["min"], soc_axis["max"]), (0, 100))
+        self.assertGreater(solar_axis["max"], 820)
+        self.assertLess(pressure_axis["max"], 2)
+        self.assertTrue(pressure_axis["active"])
+        self.assertLess(payload["left"][0]["min"], 0)
+        self.assertGreater(payload["left"][0]["max"], 20)
+        self.assertFalse(any(axis["active"] for axis in payload["left"] + payload["right"][:3]))
+        self.assertIn("左轴 kW、Nm³/h", payload["summary"])
+        self.assertIn("右轴 %、m/s、W/m²、MPa", payload["summary"])
+        self.assertIn("当前右轴 MPa", payload["summary"])
+
+    def test_chart_draws_each_series_with_its_own_axis_and_reserves_multi_axis_space(self):
+        draw_block = self.script.split("function drawRenewableTrendChart", 1)[1].split(
+            "function renewableMetricTotal",
+            1,
+        )[0]
+        self.assertIn("renewableTrendAxisGroups(points, visibleSeries, selectedSeriesKey)", draw_block)
+        self.assertIn("renewableTrendChartLayout(axisGroups.left.length, axisGroups.right.length)", draw_block)
+        self.assertIn("axisBySeriesKey.get(series.key)", draw_block)
+        self.assertIn("renewableTrendAxisY(seriesAxis, value, top, plotHeight)", draw_block)
+        self.assertIn("canvas.style.minWidth = `${layout.minCanvasWidth}px`", draw_block)
+        self.assertIn("measurementTraceAxisTicks(range, plotWidth / ratio)", draw_block)
+        self.assertNotIn("renewableTrendRightAxisScale", self.script)
+
+        helper = "function renewableTrendChartLayout" + self.script.split(
+            "function renewableTrendChartLayout",
+            1,
+        )[1].split("function renewableTrendAxisY", 1)[0]
+        node_script = f"""
+{helper}
+const single = renewableTrendChartLayout(1, 1);
+const multiple = renewableTrendChartLayout(2, 4);
+process.stdout.write(JSON.stringify({{ single, multiple }}));
+"""
+        result = subprocess.run(["node", "-e", node_script], check=True, capture_output=True, text=True)
+        payload = json.loads(result.stdout)
+        self.assertGreater(payload["multiple"]["left"], payload["single"]["left"])
+        self.assertGreater(payload["multiple"]["right"], payload["single"]["right"])
+        self.assertGreater(payload["multiple"]["minCanvasWidth"], payload["single"]["minCanvasWidth"])
+
+    def test_selected_curve_drives_active_axis_highlight(self):
+        axes_block = self.script.split("function drawRenewableTrendAxes", 1)[1].split(
+            "function renewableTrendAxisSummary",
+            1,
+        )[0]
+        self.assertIn("axis.active ? axis.color", axes_block)
+        self.assertIn("axis.active ? 1 : 0.58", axes_block)
+        self.assertIn("axis.active ? 1.8 : 1", axes_block)
+        self.assertIn("maxAxisOffset", axes_block)
+        self.assertIn("right + maxAxisOffset(side) - index * axisSlot", axes_block)
+        self.assertIn("selectedSeries?.color", self.script)
+        self.assertIn("group.series.find((series) => series.key === selectedSeriesKey)", self.script)
+        self.assertIn(".renewable-trend-inline-legend-item.is-selected", self.styles)
 
     def test_backend_compact_trend_keeps_all_power_targets_and_storage_soc(self):
         for _metric_id, field in EXPECTED_TREND_SERIES.values():

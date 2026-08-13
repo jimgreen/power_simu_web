@@ -4379,7 +4379,8 @@ body.is-vertical-splitter-dragging {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   background: #fcfeff;
 }
 .renewable-trend-inline-legend {
@@ -4419,6 +4420,12 @@ body.is-vertical-splitter-dragging {
 .renewable-trend-inline-legend-item:hover {
   border-color: #c9dadd;
   background: #edf5f6;
+}
+.renewable-trend-inline-legend-item.is-selected {
+  border-color: var(--renewable-series-color, var(--teal));
+  background: #edf7f7;
+  color: var(--ink);
+  font-weight: 700;
 }
 .renewable-trend-inline-legend-item:focus-visible {
   outline: 2px solid #2f7f83;
@@ -4467,7 +4474,7 @@ body.is-vertical-splitter-dragging {
 .renewable-trend-chart-surface canvas {
   flex: 1 1 auto;
   width: 100%;
-  min-width: 0;
+  min-width: 640px;
   min-height: 110px;
   border: 0;
   border-radius: 0;

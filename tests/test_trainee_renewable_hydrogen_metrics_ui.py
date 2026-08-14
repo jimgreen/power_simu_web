@@ -28,8 +28,6 @@ class TraineeRenewableHydrogenMetricsUiTest(unittest.TestCase):
             "renewableFuelCellFlowCurrentNm3h",
             "renewableFuelCellFlowTargetNm3h",
             "renewableHydrogenStoragePressureMpa",
-            "renewableHydrogenStoragePressureLowGuardMpa",
-            "renewableHydrogenStoragePressureHighGuardMpa",
             "renewableHydrogenStorageGasQuantityNm3",
             "renewableHydrogenStorageSoc",
             "renewableHydrogenStorageFlowNm3h",
@@ -38,6 +36,15 @@ class TraineeRenewableHydrogenMetricsUiTest(unittest.TestCase):
             with self.subTest(metric_id=metric_id):
                 self.assertEqual(self.html.count(f'id="{metric_id}"'), 1)
                 self.assertIn(metric_id, self.script)
+
+        hydrogen_statistics = self.html.split(
+            'data-renewable-metric-pane="hydrogen"',
+            1,
+        )[1].split('data-renewable-metric-pane="system"', 1)[0]
+        self.assertNotIn("压力下限保护值", hydrogen_statistics)
+        self.assertNotIn("压力上限保护值", hydrogen_statistics)
+        self.assertNotIn("renewableHydrogenStoragePressureLowGuardMpa", hydrogen_statistics)
+        self.assertNotIn("renewableHydrogenStoragePressureHighGuardMpa", hydrogen_statistics)
 
     def test_curve_tree_has_independent_hydrogen_scope_and_device_groups(self):
         self.assertIn('{ key: "hydrogen", label: "氢能" }', self.script)

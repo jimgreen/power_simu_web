@@ -498,9 +498,12 @@
           <div class="curve-page-layout">
             <aside class="panel curve-tree-panel">
               <div class="panel-head">
-                <h2>曲线树</h2>
+                <h2>曲线列表</h2>
                 <span id="curveDisplayTreeSummary">0 条</span>
               </div>
+              <label class="device-tree-filter curve-tree-filter">
+                <input id="curveDisplayTreeFilter" type="search" aria-label="过滤曲线列表" placeholder="过滤曲线" autocomplete="off" />
+              </label>
               <div id="curveDisplayTree" class="curve-tree" aria-label="曲线显示树"></div>
             </aside>
 
@@ -909,8 +912,6 @@
                           <tr data-renewable-metric-group="hydrogen-fuel-cell"><th scope="row">燃料电池功率<span class="renewable-metric-unit">（kW）</span></th><td id="renewableFuelCellCurrentKw">--</td><td id="renewableFuelCellTargetKw">--</td></tr>
                           <tr data-renewable-metric-group="hydrogen-fuel-cell"><th scope="row">耗氢流量<span class="renewable-metric-unit">（Nm³/h）</span></th><td id="renewableFuelCellFlowCurrentNm3h">--</td><td id="renewableFuelCellFlowTargetNm3h">--</td></tr>
                           <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">储氢罐压力<span class="renewable-metric-unit">（MPa）</span></th><td id="renewableHydrogenStoragePressureMpa">--</td><td class="renewable-metric-empty">--</td></tr>
-                          <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">压力下限保护值<span class="renewable-metric-unit">（MPa）</span></th><td id="renewableHydrogenStoragePressureLowGuardMpa">--</td><td class="renewable-metric-empty">--</td></tr>
-                          <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">压力上限保护值<span class="renewable-metric-unit">（MPa）</span></th><td id="renewableHydrogenStoragePressureHighGuardMpa">--</td><td class="renewable-metric-empty">--</td></tr>
                           <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">储氢罐总储气量<span class="renewable-metric-unit">（Nm³）</span></th><td id="renewableHydrogenStorageGasQuantityNm3">--</td><td class="renewable-metric-empty">--</td></tr>
                           <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">储氢罐SOC<span class="renewable-metric-unit">（%）</span></th><td id="renewableHydrogenStorageSoc">--</td><td class="renewable-metric-empty">--</td></tr>
                           <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">储氢罐净流量<span class="renewable-metric-unit">（Nm³/h）</span></th><td id="renewableHydrogenStorageFlowNm3h">--</td><td class="renewable-metric-empty">--</td></tr>

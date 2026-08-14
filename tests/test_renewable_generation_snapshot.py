@@ -8,9 +8,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import simu_loop
+import simu.service as service_module
 from simu.generate_simple_model import write_model_dir
 from simu.renewable_control import RenewableControlSettings, calculate_renewable_control_plan
-from simu.service import PolarMicrogridSimulator
+from simu.service import COMMAND_HISTORY_RECENT_LIMIT, PolarMicrogridSimulator
 from tests.test_trainee_renewable_backend_control import (
     append_model_row,
     make_control_manager,
@@ -157,6 +158,147 @@ class AutomaticStrategyGenerationTest(unittest.TestCase):
         )
         self.assertEqual(service.command_history[-1]["strategy_id"], "renewable_priority")
         self.assertEqual(service.command_history[-1]["generation"], 2)
+
+    def test_identical_generation_retry_is_idempotent_without_materialize_or_persist(self):
+        service = self._service()
+        payload = {
+            "command_origin": "automatic",
+            "strategy_id": "renewable_priority",
+            "generation": "cycle-1",
+            "replace_strategy_generation": True,
+            "set_values": [
+                {
+                    "dev_type": "ESS",
+                    "dev_name": "ess01",
+                    "set_type": "p_set",
+                    "set_value": 20,
+                }
+            ],
+        }
+        first = service.apply_student_commands(
+            payload,
+            source="trainee-renewable-priority-backend",
+        )
+        history_size = len(service.command_history)
+
+        with patch.object(
+            service,
+            "_materialize_active_control_commands",
+            wraps=service._materialize_active_control_commands,
+        ) as materialize, patch.object(
+            service_module,
+            "_write_json",
+            wraps=service_module._write_json,
+        ) as write_json:
+            second = service.apply_student_commands(
+                copy.deepcopy(payload),
+                source="trainee-renewable-priority-backend",
+            )
+
+        command_writes = [
+            call
+            for call in write_json.call_args_list
+            if Path(call.args[0]) == service.commands_file
+        ]
+        self.assertEqual(second, first)
+        self.assertEqual(len(service.command_history), history_size)
+        self.assertEqual(materialize.call_count, 0)
+        self.assertEqual(command_writes, [])
+
+    def test_new_generation_materializes_once_and_persists_commands_once(self):
+        service = self._service()
+        source = "trainee-renewable-priority-backend"
+        base_payload = {
+            "command_origin": "automatic",
+            "strategy_id": "renewable_priority",
+            "replace_strategy_generation": True,
+            "set_values": [
+                {
+                    "dev_type": "ESS",
+                    "dev_name": "ess01",
+                    "set_type": "p_set",
+                    "set_value": 20,
+                }
+            ],
+        }
+        service.apply_student_commands(
+            {**base_payload, "generation": 1},
+            source=source,
+        )
+
+        with patch.object(
+            service,
+            "_materialize_active_control_commands",
+            wraps=service._materialize_active_control_commands,
+        ) as materialize, patch.object(
+            service_module,
+            "_write_json",
+            wraps=service_module._write_json,
+        ) as write_json:
+            service.apply_student_commands(
+                {**base_payload, "generation": 2},
+                source=source,
+            )
+
+        command_writes = [
+            call
+            for call in write_json.call_args_list
+            if Path(call.args[0]) == service.commands_file
+        ]
+        self.assertEqual(materialize.call_count, 1)
+        self.assertEqual(len(command_writes), 1)
+
+    def test_generation_replacement_does_not_rescan_unbounded_history(self):
+        service = self._service()
+        source = "trainee-renewable-priority-backend"
+        payload = {
+            "command_origin": "automatic",
+            "strategy_id": "renewable_priority",
+            "replace_strategy_generation": True,
+            "set_values": [
+                {
+                    "dev_type": "ESS",
+                    "dev_name": "ess01",
+                    "set_type": "p_set",
+                    "set_value": 20,
+                }
+            ],
+        }
+        service.apply_student_commands(
+            {**payload, "generation": 1},
+            source=source,
+        )
+        for index in range(1000):
+            service._append_command_history_entry(
+                {
+                    "command_origin": "manual",
+                    "manual_hold": True,
+                    "source": "performance-fixture",
+                    "sequence": index,
+                    "accepted": {"run_status": 0, "set_values": 0},
+                    "normalized": {"run_status": [], "set_values": []},
+                }
+            )
+
+        with patch.object(
+            service,
+            "_command_entry_is_active",
+            wraps=service._command_entry_is_active,
+        ) as active_check, patch.object(
+            service,
+            "_strategy_generation_entry_metadata",
+            wraps=service._strategy_generation_entry_metadata,
+        ) as generation_metadata:
+            service.apply_student_commands(
+                {**payload, "generation": 2},
+                source=source,
+            )
+
+        self.assertLessEqual(
+            active_check.call_count,
+            COMMAND_HISTORY_RECENT_LIMIT + 5,
+        )
+        self.assertLessEqual(generation_metadata.call_count, 5)
 
     def test_controller_stop_retires_generation_without_reverting_device_target(self):
         service = self._service()

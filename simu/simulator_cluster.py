@@ -120,11 +120,23 @@ class SimulatorClusterManager:
         self._log_handles: dict[str, Any] = {}
         self._states: dict[str, str] = {}
         self._errors: dict[str, str] = {}
+        self._adoption_deadlines: dict[str, float] = {}
+        self._adoption_next_probe_at: dict[str, float] = {}
         self._service_suggestion_cache: dict[str, Any] = {}
         self._service_suggestion_cached_at = 0.0
         self._registry = self._load_registry()
         self.default_model_id = ""
         self._sync_models_locked()
+        startup_adoption_deadline = time.monotonic() + self.startup_timeout_seconds
+        self._adoption_deadlines.update(
+            {
+                model_id: startup_adoption_deadline
+                for model_id in self._registry.get("services", {})
+            }
+        )
+        self._adoption_next_probe_at.update(
+            {model_id: 0.0 for model_id in self._registry.get("services", {})}
+        )
 
     def _load_registry(self) -> dict[str, Any]:
         if not self.registry_path.exists():
@@ -318,7 +330,7 @@ class SimulatorClusterManager:
             str(entry["host"]),
             int(entry["port"]),
             model_id,
-            min(1.0, self.startup_timeout_seconds),
+            min(5.0, self.startup_timeout_seconds),
         )
 
     def _close_log_handle_locked(self, model_id: str) -> None:
@@ -341,9 +353,26 @@ class SimulatorClusterManager:
             self._save_registry_locked()
         state = self._states.get(model_id, "stopped")
         if process is None and not entry.get("pid") and state in {"stopped", "failed"}:
-            return False, {}, self._errors.get(model_id, "")
+            # A child can finish starting after the proxy has already discarded
+            # the stale PID from the previous proxy process.  A listening port
+            # is cheap to detect and must be probed so the proxy can adopt that
+            # healthy independently running model service on the next catalog
+            # refresh instead of leaving the UI permanently at "stopped".
+            adoption_deadline = self._adoption_deadlines.get(model_id, 0.0)
+            now = time.monotonic()
+            if adoption_deadline <= now:
+                self._adoption_deadlines.pop(model_id, None)
+                self._adoption_next_probe_at.pop(model_id, None)
+                return False, {}, self._errors.get(model_id, "")
+            if self._adoption_next_probe_at.get(model_id, 0.0) > now:
+                return False, {}, self._errors.get(model_id, "")
+            self._adoption_next_probe_at[model_id] = now + self.poll_interval_seconds
+            if not self.port_checker(str(entry["host"]), int(entry["port"])):
+                return False, {}, self._errors.get(model_id, "")
         healthy, payload, error = self._probe_locked(model_id, entry)
         if healthy:
+            self._adoption_deadlines.pop(model_id, None)
+            self._adoption_next_probe_at.pop(model_id, None)
             self._states[model_id] = "running"
             self._errors[model_id] = ""
             process_payload = payload.get("process", {}) if isinstance(payload, Mapping) else {}
@@ -361,6 +390,10 @@ class SimulatorClusterManager:
             entry["pid"] = None
             self._states[model_id] = "stopped"
             self._errors[model_id] = ""
+            self._adoption_deadlines[model_id] = (
+                time.monotonic() + self.startup_timeout_seconds
+            )
+            self._adoption_next_probe_at[model_id] = 0.0
             self._save_registry_locked()
         elif self._states.get(model_id) == "running":
             self._states[model_id] = "failed"
@@ -509,6 +542,8 @@ class SimulatorClusterManager:
                 entry["pid"] = None
                 self._states[target_id] = "stopped"
                 self._errors[target_id] = ""
+                self._adoption_deadlines.pop(target_id, None)
+                self._adoption_next_probe_at.pop(target_id, None)
                 self._save_registry_locked()
             return self.model_info(target_id)
 
@@ -550,6 +585,8 @@ class SimulatorClusterManager:
             target_id, entry = self._entry_locked(model_id)
             healthy, payload, _error = self._probe_locked(target_id, entry)
             if healthy:
+                self._adoption_deadlines.pop(target_id, None)
+                self._adoption_next_probe_at.pop(target_id, None)
                 self._states[target_id] = "running"
                 process_payload = payload.get("process", {}) if isinstance(payload, Mapping) else {}
                 if isinstance(process_payload, Mapping) and process_payload.get("pid"):
@@ -639,6 +676,8 @@ class SimulatorClusterManager:
             target_id, entry = self._entry_locked(model_id)
             process = self._processes.get(target_id)
             self._states[target_id] = "stopping"
+            self._adoption_deadlines.pop(target_id, None)
+            self._adoption_next_probe_at.pop(target_id, None)
             if process is not None and process.poll() is None:
                 process.terminate()
                 try:

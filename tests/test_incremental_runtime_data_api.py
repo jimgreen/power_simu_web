@@ -248,6 +248,34 @@ class IncrementalRuntimeDataApiTest(unittest.TestCase):
         with self.assertRaisesRegex(MeasurementArrayMismatchError, "定义顺序签名缺失"):
             apply_measurement_delta({}, definitions, compact)
 
+    def test_measurement_array_frame_accepts_a_cached_local_definition_signature(self):
+        from simu.measurement_delta import (
+            apply_measurement_delta,
+            measurement_definition_signature,
+        )
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        service.latest_real_rows = [list(row) for row in service.measurement_rows]
+        service.latest_scada_rows = [list(row) for row in service.measurement_rows]
+        definitions = service.measurements()["definitions"]
+        compact = service.measurement_delta(after_seq=0, compact=True)
+        expected_signature = measurement_definition_signature(definitions)
+
+        with mock.patch(
+            "simu.measurement_delta.measurement_definition_signature",
+            side_effect=AssertionError("cached definition signatures must be reused"),
+        ):
+            merged = apply_measurement_delta(
+                {},
+                definitions,
+                compact,
+                expected_definition_signature=expected_signature,
+            )
+
+        self.assertEqual(merged["definition_signature"], expected_signature)
+        self.assertEqual(len(merged["scada"]), len(definitions))
+
     def test_compact_measurement_frame_aligns_runtime_rows_by_measurement_index_not_name(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)

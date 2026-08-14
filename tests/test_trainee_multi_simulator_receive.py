@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -842,6 +843,40 @@ class TraineeMultiSimulatorReceiveTest(unittest.TestCase):
 
         self.assertTrue(state["initialized"])
         self.assertEqual(state["teacher_model_name"], "Remote Alpha")
+
+    def test_trainee_receive_state_reuses_cached_json_until_file_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            manager = self._make_manager(Path(temporary))
+            service = manager.service_for("alpha")
+            service.set_trainee_receive_state(
+                {
+                    "initialized": True,
+                    "active": True,
+                    "teacher_model_id": "remote-alpha",
+                }
+            )
+
+            with patch(
+                "simu.service._read_json",
+                side_effect=AssertionError("unchanged receive state must stay in memory"),
+            ):
+                first = service.trainee_receive_state()
+                second = service.trainee_receive_state()
+
+            external = dict(second)
+            external["teacher_model_id"] = "remote-alpha-updated-externally"
+            service.trainee_receive_file.write_text(
+                json.dumps(external, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            service._trainee_receive_cache_next_stat_monotonic = 0.0
+            updated = service.trainee_receive_state()
+
+        self.assertEqual(first, second)
+        self.assertEqual(
+            updated["teacher_model_id"],
+            "remote-alpha-updated-externally",
+        )
 
     def test_trainee_receive_state_api_is_model_scoped_for_shared_web_pages(self):
         with tempfile.TemporaryDirectory() as temporary:

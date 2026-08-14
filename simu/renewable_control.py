@@ -57,6 +57,8 @@ from simu.resource_topology import (
     ResourceConnection,
     ResourceRef,
     ResourceTopology,
+    ResourceTopologyStaticContext,
+    prepare_resource_topology_static_context,
     resolve_resource_topology,
 )
 from simu.trainee_exchange import TraineeControlSnapshot
@@ -10949,6 +10951,7 @@ def calculate_renewable_control_plan(
     *,
     data_source: str = "remote",
     snapshot_age_seconds: float = 0.0,
+    topology_static_context: Optional[ResourceTopologyStaticContext] = None,
 ) -> Dict[str, Any]:
     plan_started = time.perf_counter()
     configured_settings = (settings or RenewableControlSettings()).normalized()
@@ -11019,10 +11022,15 @@ def calculate_renewable_control_plan(
     ]
     topology_started = time.perf_counter()
     input_processing_seconds = topology_started - plan_started
-    resource_topology = resolve_resource_topology(
-        snapshot,
-        (*resource_refs, *diesel_refs),
-    )
+    topology_resources = (*resource_refs, *diesel_refs)
+    if topology_static_context is None:
+        resource_topology = resolve_resource_topology(snapshot, topology_resources)
+    else:
+        resource_topology = resolve_resource_topology(
+            snapshot,
+            topology_resources,
+            static_context=topology_static_context,
+        )
     topology_finished = time.perf_counter()
     topology_analysis_seconds = topology_finished - topology_started
     converter_group_ids = {
@@ -14478,6 +14486,11 @@ class _ControllerState:
     logs: List[Dict[str, Any]] = field(default_factory=list)
     trend: List[Dict[str, Any]] = field(default_factory=list)
     trend_normalized: bool = False
+    topology_static_context: Optional[ResourceTopologyStaticContext] = field(
+        default=None,
+        repr=False,
+    )
+    topology_definition_revision: int = -1
     performance: _CyclePerformanceWindow = field(
         default_factory=_CyclePerformanceWindow,
         repr=False,
@@ -15166,14 +15179,56 @@ class TraineeRenewableControlManager:
             int(getattr(generation, "runtime_revision", 0)),
         )
 
+    @staticmethod
+    def _topology_definition_revision(view: TraineeControlSnapshot) -> Optional[int]:
+        lease = getattr(view, "control_lease", None)
+        generation = getattr(lease, "generation", None)
+        if generation is None:
+            return None
+        try:
+            return int(getattr(generation, "definition_revision"))
+        except (TypeError, ValueError):
+            return None
+
+    def _topology_static_context_for_plan(
+        self,
+        state: _ControllerState,
+        view: TraineeControlSnapshot,
+        snapshot: Mapping[str, Any],
+    ) -> ResourceTopologyStaticContext:
+        definition_revision = self._topology_definition_revision(view)
+        if definition_revision is None:
+            return prepare_resource_topology_static_context(snapshot)
+        with state.lock:
+            if (
+                state.topology_static_context is not None
+                and state.topology_definition_revision == definition_revision
+            ):
+                return state.topology_static_context
+        prepared = prepare_resource_topology_static_context(snapshot)
+        with state.lock:
+            if (
+                state.topology_static_context is not None
+                and state.topology_definition_revision == definition_revision
+            ):
+                return state.topology_static_context
+            state.topology_static_context = prepared
+            state.topology_definition_revision = definition_revision
+            return prepared
+
     def _control_snapshot(self, model_id: Optional[str]) -> TraineeControlSnapshot:
         return self._control_snapshot_for_service(self._service_for(model_id))
 
     def _control_snapshot_for_service(self, service: Any) -> TraineeControlSnapshot:
         provider = self._service_bound_provider(
             self.snapshot_provider,
-            "control_snapshot_for_service",
+            "control_calculation_snapshot_for_service",
         )
+        if provider is None:
+            provider = self._service_bound_provider(
+                self.snapshot_provider,
+                "control_snapshot_for_service",
+            )
         view = (
             provider(service)
             if provider is not None
@@ -15187,6 +15242,25 @@ class TraineeRenewableControlManager:
             raise RuntimeError("学员台实时交换服务返回的快照不是对象")
         return view
 
+    def _control_schedule_snapshot_for_service(
+        self,
+        service: Any,
+    ) -> TraineeControlSnapshot:
+        provider = self._service_bound_provider(
+            self.snapshot_provider,
+            "control_schedule_snapshot_for_service",
+        )
+        if provider is None:
+            return self._control_snapshot_for_service(service)
+        view = provider(service)
+        if not isinstance(view, TraineeControlSnapshot):
+            raise RuntimeError("学员台实时交换服务返回了无效调度快照契约")
+        if not view.ready:
+            raise RuntimeError(view.error or "学员台尚未收到实时数据")
+        if not isinstance(view.snapshot, Mapping):
+            raise RuntimeError("学员台实时交换服务返回的调度快照不是对象")
+        return view
+
     def _reject_without_receive_for_service(
         self,
         service: Any,
@@ -15195,11 +15269,16 @@ class TraineeRenewableControlManager:
         action_label: str,
         record_log: bool,
         raise_on_retired: bool,
+        serialize_result: bool = True,
     ) -> Optional[Dict[str, Any]]:
         if not self._service_lifecycle_valid(service, state):
             if raise_on_retired:
                 self._require_active_service_for_state(service, state)
-            return self._serialize_for_service(service, state)
+            return self._cycle_state_result(
+                service,
+                state,
+                serialize_result=serialize_result,
+            )
         prerequisite = self._receive_prerequisite_for_service(service)
         if prerequisite["canRun"]:
             return None
@@ -15213,7 +15292,11 @@ class TraineeRenewableControlManager:
                 ):
                     if raise_on_retired:
                         self._require_active_service_for_state_locked(service, state)
-                    return self._serialize_for_service(service, state)
+                    return self._cycle_state_result(
+                        service,
+                        state,
+                        serialize_result=serialize_result,
+                    )
                 state.enabled = False
                 prerequisite_status = str(
                     prerequisite["prerequisiteStatus"] or "接收尚未就绪。"
@@ -15242,7 +15325,11 @@ class TraineeRenewableControlManager:
         if runtime_log_entry is not None:
             self._persist_runtime_log_for_service(service, state, runtime_log_entry)
         self._wake_worker()
-        return self._serialize_for_service(service, state)
+        return self._cycle_state_result(
+            service,
+            state,
+            serialize_result=serialize_result,
+        )
 
     def _reject_without_receive(
         self,
@@ -15261,11 +15348,18 @@ class TraineeRenewableControlManager:
             raise_on_retired=True,
         )
 
-    def receive_state_changed_for_service(self, service: Any) -> Dict[str, Any]:
+    def receive_state_changed_for_service(
+        self,
+        service: Any,
+        *,
+        serialize_result: bool = True,
+    ) -> Dict[str, Any]:
         state = self._state_for_service(service)
         prerequisite = self._receive_prerequisite_for_service(service)
         runtime_log_entry = None
+        state_changed = False
         with state.lock:
+            revision_before = state.revision
             service_lock = getattr(service, "lock", None)
             with (service_lock if service_lock is not None else nullcontext()):
                 self._require_active_service_for_state_locked(service, state)
@@ -15330,10 +15424,16 @@ class TraineeRenewableControlManager:
                     if state.status != next_status:
                         state.status = next_status
                         state.revision += 1
+            state_changed = state.revision != revision_before
         if runtime_log_entry is not None:
             self._persist_runtime_log_for_service(service, state, runtime_log_entry)
-        self._wake_worker()
-        return self._serialize_for_service(service, state)
+        if state_changed:
+            self._wake_worker()
+        return self._cycle_state_result(
+            service,
+            state,
+            serialize_result=serialize_result,
+        )
 
     def receive_state_changed(self, model_id: Optional[str]) -> Dict[str, Any]:
         return self.receive_state_changed_for_service(self._service_for(model_id))
@@ -15349,6 +15449,8 @@ class TraineeRenewableControlManager:
             state.effective_target_snapshot = None
             state.pending_dispatch_clock_key = ""
             state.pending_dispatch_generation_key = ()
+            state.topology_static_context = None
+            state.topology_definition_revision = -1
         with self._states_lock:
             if self._states.get(state.model_id) is state:
                 self._states.pop(state.model_id, None)
@@ -15372,13 +15474,34 @@ class TraineeRenewableControlManager:
         state: _ControllerState,
         *,
         clear_sending: bool,
+        serialize_result: bool = True,
     ) -> Dict[str, Any]:
         if clear_sending:
             with state.lock:
                 if state.sending:
                     state.sending = False
                     state.revision += 1
-        return self._serialize_for_service(service, state)
+        return self._cycle_state_result(
+            service,
+            state,
+            serialize_result=serialize_result,
+        )
+
+    def _cycle_state_result(
+        self,
+        service: Any,
+        state: _ControllerState,
+        *,
+        serialize_result: bool,
+        serialization_options: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        if not serialize_result:
+            return {}
+        return self._serialize_for_service(
+            service,
+            state,
+            **dict(serialization_options or {}),
+        )
 
     def _busy_cycle_response(
         self,
@@ -15839,7 +15962,11 @@ class TraineeRenewableControlManager:
             previous_last = copy.deepcopy(previous_trend[-1]) if previous_trend else None
             was_normalized = state.trend_normalized
             candidate = _TrendCandidate(
-                trend=copy.deepcopy(previous_trend),
+                # Trend points are published as immutable records. A staged
+                # candidate only replaces the last record or appends a new one,
+                # so detaching the outer list is sufficient and avoids walking
+                # the complete simulation history on every control cycle.
+                trend=list(previous_trend),
                 trend_normalized=state.trend_normalized,
             )
         self._update_trend(candidate, plan, snapshot)
@@ -15959,7 +16086,10 @@ class TraineeRenewableControlManager:
 
     @staticmethod
     def _snapshot_for_calculation(view: TraineeControlSnapshot) -> Dict[str, Any]:
-        if bool(getattr(view, "snapshot_isolated", False)):
+        if bool(
+            getattr(view, "snapshot_isolated", False)
+            or getattr(view, "snapshot_read_only", False)
+        ):
             return view.snapshot
         return copy.deepcopy(dict(view.snapshot))
 
@@ -16052,6 +16182,7 @@ class TraineeRenewableControlManager:
         serialization_options: Optional[Mapping[str, Any]] = None,
         snapshot_view: Optional[TraineeControlSnapshot] = None,
         expected_receive_signature: Optional[Tuple[Any, ...]] = None,
+        serialize_result: bool = True,
     ) -> Dict[str, Any]:
         response_options = dict(serialization_options or {})
         blocked = self._reject_without_receive_for_service(
@@ -16060,19 +16191,35 @@ class TraineeRenewableControlManager:
             action_label="实时数据采集",
             record_log=False,
             raise_on_retired=raise_on_retired,
+            serialize_result=serialize_result,
         )
         if blocked is not None:
             return blocked
         if self._receive_prerequisite_for_service(service).get("controlFrozen"):
-            return self._serialize_for_service(service, state, **response_options)
+            return self._cycle_state_result(
+                service,
+                state,
+                serialize_result=serialize_result,
+                serialization_options=response_options,
+            )
         receive_signature = self._receive_state_signature_for_service(service)
         if (
             expected_receive_signature is not None
             and receive_signature != expected_receive_signature
         ):
-            return self._serialize_for_service(service, state, **response_options)
+            return self._cycle_state_result(
+                service,
+                state,
+                serialize_result=serialize_result,
+                serialization_options=response_options,
+            )
         if not state.run_lock.acquire(blocking=False):
-            return self._serialize_for_service(service, state, **response_options)
+            return self._cycle_state_result(
+                service,
+                state,
+                serialize_result=serialize_result,
+                serialization_options=response_options,
+            )
         cycle_started = time.perf_counter()
         cycle_phases: Dict[str, float] = {}
         cycle_plan: Optional[Dict[str, Any]] = None
@@ -16086,7 +16233,12 @@ class TraineeRenewableControlManager:
                     ):
                         if raise_on_retired:
                             self._require_active_service_for_state_locked(service, state)
-                        return self._serialize_for_service(service, state)
+                        return self._cycle_state_result(
+                            service,
+                            state,
+                            serialize_result=serialize_result,
+                            serialization_options=response_options,
+                        )
                 operation_epoch = state.operation_epoch
                 cycle_settings = state.settings
             snapshot_receive_started = time.perf_counter()
@@ -16102,6 +16254,7 @@ class TraineeRenewableControlManager:
                             service,
                             state,
                             clear_sending=False,
+                            serialize_result=serialize_result,
                         )
                     raise
             else:
@@ -16115,10 +16268,16 @@ class TraineeRenewableControlManager:
                     service,
                     state,
                     clear_sending=False,
+                    serialize_result=serialize_result,
                 )
             snapshot = self._snapshot_for_calculation(view)
             if self._snapshot_simulation_paused(snapshot):
-                return self._serialize_for_service(service, state, **response_options)
+                return self._cycle_state_result(
+                    service,
+                    state,
+                    serialize_result=serialize_result,
+                    serialization_options=response_options,
+                )
             source = view.source
             age = view.age_seconds
             blocked = self._reject_without_receive_for_service(
@@ -16127,6 +16286,7 @@ class TraineeRenewableControlManager:
                 action_label="实时数据采集",
                 record_log=False,
                 raise_on_retired=False,
+                serialize_result=serialize_result,
             )
             if blocked is not None:
                 return blocked
@@ -16135,16 +16295,23 @@ class TraineeRenewableControlManager:
                     service,
                     state,
                     clear_sending=False,
+                    serialize_result=serialize_result,
                 )
             cycle_phases["snapshotValidationMs"] = self._elapsed_milliseconds(
                 snapshot_validation_started
             )
             strategy_compute_started = time.perf_counter()
+            topology_static_context = self._topology_static_context_for_plan(
+                state,
+                view,
+                snapshot,
+            )
             plan = calculate_renewable_control_plan(
                 snapshot,
                 cycle_settings,
                 data_source=source,
                 snapshot_age_seconds=age,
+                topology_static_context=topology_static_context,
             )
             cycle_plan = plan
             cycle_phases["strategyComputeMs"] = self._elapsed_milliseconds(
@@ -16194,6 +16361,7 @@ class TraineeRenewableControlManager:
                     service,
                     state,
                     clear_sending=False,
+                    serialize_result=serialize_result,
                 )
             self._persist_trend_candidate_for_service(service, trend_candidate)
         finally:
@@ -16215,7 +16383,12 @@ class TraineeRenewableControlManager:
                     )
                     state.revision += 1
             state.run_lock.release()
-        return self._serialize_for_service(service, state, **response_options)
+        return self._cycle_state_result(
+            service,
+            state,
+            serialize_result=serialize_result,
+            serialization_options=response_options,
+        )
 
     def run_once(
         self,
@@ -16247,6 +16420,7 @@ class TraineeRenewableControlManager:
         raise_on_retired: bool,
         snapshot_view: Optional[TraineeControlSnapshot] = None,
         expected_receive_signature: Optional[Tuple[Any, ...]] = None,
+        serialize_result: bool = True,
     ) -> Dict[str, Any]:
         blocked = self._reject_without_receive_for_service(
             service,
@@ -16254,17 +16428,26 @@ class TraineeRenewableControlManager:
             action_label="实时控制" if trigger in {"start", "auto"} else "单次计算",
             record_log=record_log,
             raise_on_retired=raise_on_retired,
+            serialize_result=serialize_result,
         )
         if blocked is not None:
             return blocked
         if self._receive_prerequisite_for_service(service).get("controlFrozen"):
-            return self._serialize_for_service(service, state)
+            return self._cycle_state_result(
+                service,
+                state,
+                serialize_result=serialize_result,
+            )
         receive_signature = self._receive_state_signature_for_service(service)
         if (
             expected_receive_signature is not None
             and receive_signature != expected_receive_signature
         ):
-            return self._serialize_for_service(service, state)
+            return self._cycle_state_result(
+                service,
+                state,
+                serialize_result=serialize_result,
+            )
         wait_for_running_cycle = trigger in {"manual", "start"}
         if wait_for_running_cycle:
             acquired = state.run_lock.acquire(timeout=_USER_CONTROL_BUSY_WAIT_SECONDS)
@@ -16280,7 +16463,11 @@ class TraineeRenewableControlManager:
                     disable_control=trigger == "start",
                     raise_on_retired=raise_on_retired,
                 )
-            return self._serialize_for_service(service, state)
+            return self._cycle_state_result(
+                service,
+                state,
+                serialize_result=serialize_result,
+            )
         cycle_started = time.perf_counter()
         cycle_phases: Dict[str, float] = {}
         cycle_plan: Optional[Dict[str, Any]] = None
@@ -16293,6 +16480,7 @@ class TraineeRenewableControlManager:
                 action_label="实时控制" if trigger in {"start", "auto"} else "单次计算",
                 record_log=record_log,
                 raise_on_retired=raise_on_retired,
+                serialize_result=serialize_result,
             )
             if blocked is not None:
                 return blocked
@@ -16305,13 +16493,21 @@ class TraineeRenewableControlManager:
                     ):
                         if raise_on_retired:
                             self._require_active_service_for_state_locked(service, state)
-                        return self._serialize_for_service(service, state)
+                        return self._cycle_state_result(
+                            service,
+                            state,
+                            serialize_result=serialize_result,
+                        )
                 operation_epoch = state.operation_epoch
                 cycle_settings = state.settings
                 cycle_loop_mode = state.loop_mode
                 cycle_requires_enabled = trigger in {"start", "auto"}
                 if cycle_requires_enabled and not state.enabled:
-                    return self._serialize_for_service(service, state)
+                    return self._cycle_state_result(
+                        service,
+                        state,
+                        serialize_result=serialize_result,
+                    )
                 state.sending = True
                 state.revision += 1
             snapshot_receive_started = time.perf_counter()
@@ -16327,6 +16523,7 @@ class TraineeRenewableControlManager:
                             service,
                             state,
                             clear_sending=True,
+                            serialize_result=serialize_result,
                         )
                     raise
             else:
@@ -16340,6 +16537,7 @@ class TraineeRenewableControlManager:
                     service,
                     state,
                     clear_sending=True,
+                    serialize_result=serialize_result,
                 )
             snapshot = self._snapshot_for_calculation(view)
             if self._snapshot_simulation_paused(snapshot):
@@ -16347,6 +16545,7 @@ class TraineeRenewableControlManager:
                     service,
                     state,
                     clear_sending=True,
+                    serialize_result=serialize_result,
                 )
             source = view.source
             age = view.age_seconds
@@ -16357,26 +16556,38 @@ class TraineeRenewableControlManager:
                 action_label="实时控制" if trigger in {"start", "auto"} else "单次计算",
                 record_log=record_log,
                 raise_on_retired=False,
+                serialize_result=serialize_result,
             )
             if blocked is not None:
                 with state.lock:
                     state.sending = False
-                return self._serialize_for_service(service, state)
+                return self._cycle_state_result(
+                    service,
+                    state,
+                    serialize_result=serialize_result,
+                )
             if self._receive_state_signature_for_service(service) != receive_signature:
                 return self._serialize_cancelled_cycle(
                     service,
                     state,
                     clear_sending=True,
+                    serialize_result=serialize_result,
                 )
             cycle_phases["snapshotValidationMs"] = self._elapsed_milliseconds(
                 snapshot_validation_started
             )
             strategy_compute_started = time.perf_counter()
+            topology_static_context = self._topology_static_context_for_plan(
+                state,
+                view,
+                snapshot,
+            )
             plan = calculate_renewable_control_plan(
                 snapshot,
                 cycle_settings,
                 data_source=source,
                 snapshot_age_seconds=age,
+                topology_static_context=topology_static_context,
             )
             cycle_plan = plan
             cycle_phases["strategyComputeMs"] = self._elapsed_milliseconds(
@@ -16578,6 +16789,7 @@ class TraineeRenewableControlManager:
                     service,
                     state,
                     clear_sending=True,
+                    serialize_result=serialize_result,
                 )
             self._persist_trend_candidate_for_service(service, trend_candidate)
             for entry in committed_runtime_logs:
@@ -16755,7 +16967,11 @@ class TraineeRenewableControlManager:
                 state.revision += 1
             state.run_lock.release()
             self._drain_pending_strategy_cancel(service, state)
-        return self._serialize_for_service(service, state)
+        return self._cycle_state_result(
+            service,
+            state,
+            serialize_result=serialize_result,
+        )
 
     def _serialize_current_lifecycle(self, state: _ControllerState) -> Dict[str, Any]:
         try:
@@ -17480,15 +17696,22 @@ class TraineeRenewableControlManager:
             if not receive_prerequisite["canRun"]:
                 if state.enabled or state.desired_enabled:
                     try:
-                        self.receive_state_changed_for_service(target)
+                        self.receive_state_changed_for_service(
+                            target,
+                            serialize_result=False,
+                        )
                     except RuntimeError:
                         pass
+                next_deadlines.append(iteration_now + 1.0)
                 continue
             with state.lock:
                 resume_requested = bool(state.desired_enabled and not state.enabled)
             if resume_requested:
                 try:
-                    self.receive_state_changed_for_service(target)
+                    self.receive_state_changed_for_service(
+                        target,
+                        serialize_result=False,
+                    )
                 except RuntimeError:
                     continue
             collection_interval_seconds = max(
@@ -17517,27 +17740,47 @@ class TraineeRenewableControlManager:
             control_due = False
             if enabled:
                 try:
-                    control_view = self._control_snapshot_for_service(target)
+                    schedule_view = self._control_schedule_snapshot_for_service(target)
                 except (KeyError, RuntimeError):
-                    control_view = None
+                    schedule_view = None
                 if (
-                    control_view is not None
-                    and self._view_matches_controller_state(control_view, state)
+                    schedule_view is not None
+                    and self._view_matches_controller_state(schedule_view, state)
                 ):
-                    control_clock = self._simulation_control_clock(
-                        control_view.snapshot
+                    schedule_clock = self._simulation_control_clock(
+                        schedule_view.snapshot
                     )
-                    control_receive_signature = self._receive_state_signature_for_view(
-                        control_view
-                    )
+                    if not bool(
+                        getattr(schedule_view, "snapshot_schedule_only", False)
+                    ):
+                        control_view = schedule_view
+                        control_receive_signature = (
+                            self._receive_state_signature_for_view(schedule_view)
+                        )
                     with state.lock:
                         if state.enabled:
                             control_due = self._simulation_control_due_locked(
                                 state,
-                                control_clock,
+                                schedule_clock,
                                 control_interval_seconds,
                             )
             collection_due = iteration_now >= collection_deadline
+            if control_due:
+                if control_view is None:
+                    try:
+                        control_view = self._control_snapshot_for_service(target)
+                    except (KeyError, RuntimeError):
+                        control_view = None
+                if (
+                    control_view is None
+                    or not self._view_matches_controller_state(control_view, state)
+                ):
+                    control_due = False
+                else:
+                    control_clock = self._simulation_control_clock(control_view.snapshot)
+                    control_receive_signature = self._receive_state_signature_for_view(
+                        control_view
+                    )
             if not control_due and not collection_due:
                 next_deadline = collection_deadline
                 if enabled:
@@ -17579,6 +17822,7 @@ class TraineeRenewableControlManager:
                         "raise_on_retired": False,
                         "snapshot_view": control_view,
                         "expected_receive_signature": control_receive_signature,
+                        "serialize_result": False,
                     },
                     service=target,
                 )
@@ -17601,6 +17845,7 @@ class TraineeRenewableControlManager:
                         "raise_on_retired": False,
                         "snapshot_view": control_view,
                         "expected_receive_signature": control_receive_signature,
+                        "serialize_result": False,
                     },
                     service=target,
                 )

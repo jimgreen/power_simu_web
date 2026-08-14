@@ -27,7 +27,20 @@ class SimulationModeUiTest(unittest.TestCase):
             self.assertIn(f'data-curve-display-mode="{mode}"', trainee_html)
         self.assertIn("loadCurvesFromSnapshot", app_js)
         self.assertIn("switchSimulationMode", app_js)
-        self.assertIn("await saveCurves()", app_js)
+        switch_mode = app_js.split("async function switchSimulationMode", 1)[1].split(
+            "function renderCurveModeControls",
+            1,
+        )[0]
+        self.assertNotIn("saveCurves", switch_mode)
+        self.assertNotIn("await refresh()", switch_mode)
+        self.assertIn("curveModeHasUnsavedChanges()", switch_mode)
+        self.assertIn("openCurveModeSwitchDialog(nextMode)", switch_mode)
+        render_snapshot = app_js.split("function renderSnapshot", 1)[1].split(
+            "function appendRuntimeLog",
+            1,
+        )[0]
+        self.assertIn("shouldPreserveCurveDraft()", render_snapshot)
+        self.assertIn("if (!preserveCurveDraft)", render_snapshot)
         self.assertIn("simulationModeSelector", app_js)
         self.assertIn('hour: { key: "hour", label: "时曲线", pointCount: 3600, stepMinutes: 1 / 60', app_js)
         self.assertIn('week: { key: "week", label: "周曲线", pointCount: 10080, stepMinutes: 1', app_js)
@@ -49,6 +62,73 @@ class SimulationModeUiTest(unittest.TestCase):
         self.assertIn('state.pageSections?.curves?.querySelector("#curveStatus")', app_js)
         self.assertIn('setCurveStatus("已保存")', app_js)
         self.assertNotIn('$("curveStatus").textContent = "已保存"', app_js)
+
+    def test_curve_changes_are_mode_scoped_drafts_until_the_save_button_is_clicked(self):
+        app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        switch_mode = app_js.split("async function switchSimulationMode", 1)[1].split(
+            "function renderCurveModeControls",
+            1,
+        )[0]
+        save_curves = app_js.split("async function saveCurves", 1)[1].split(
+            "async function pushSettings",
+            1,
+        )[0]
+        save_click = app_js.split('$("saveCurves").addEventListener', 1)[1].split(
+            'document.addEventListener("click"',
+            1,
+        )[0]
+
+        self.assertIn("curveDirtyKeysByMode", app_js)
+        self.assertIn("curvePersistedMode", app_js)
+        self.assertIn("saveCurrentCurveModeDraft", app_js)
+        self.assertIn("restoreCurveModeDraft", app_js)
+        self.assertNotIn('api("/api/curves/series"', switch_mode)
+        self.assertIn('api("/api/curves/series"', save_curves)
+        self.assertIn("saveCurves().catch", save_click)
+        self.assertIn("state.curvePersistedMode = state.curveMode", save_curves)
+
+    def test_switching_modes_prompts_before_leaving_an_unsaved_curve_draft(self):
+        index_html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
+        app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="curveModeSwitchDialog"', index_html)
+        self.assertIn('id="saveCurveModeSwitch"', index_html)
+        self.assertIn('id="discardCurveModeSwitch"', index_html)
+        self.assertIn('id="cancelCurveModeSwitch"', index_html)
+        self.assertIn("function openCurveModeSwitchDialog", app_js)
+        self.assertIn("async function saveBeforeCurveModeSwitch", app_js)
+        self.assertIn("function switchCurveModeWithoutSaving", app_js)
+        self.assertIn("await saveCurves()", app_js)
+
+    def test_typical_curve_dialog_generates_only_a_local_curve_draft(self):
+        index_html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
+        app_js = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+
+        for element_id in (
+            "typicalCurveDialog",
+            "typicalCurveMin",
+            "typicalCurveMax",
+            "typicalCurveAverage",
+            "typicalCurveShape",
+            "confirmTypicalCurve",
+        ):
+            self.assertIn(f'id="{element_id}"', index_html)
+        for shape in ("step", "sawtooth", "sine", "random"):
+            self.assertIn(f'<option value="{shape}"', index_html)
+
+        self.assertIn("function openTypicalCurveDialog", app_js)
+        self.assertIn("function generateTypicalCurveValues", app_js)
+        self.assertIn("function confirmTypicalCurveGeneration", app_js)
+        self.assertIn("function curveObservedRange", app_js)
+        self.assertIn("{ hour: 4, day: 4, week: 7, month: 30, year: 12 }", app_js)
+        confirm_block = app_js.split("function confirmTypicalCurveGeneration", 1)[1].split(
+            "function syncCurvePayload",
+            1,
+        )[0]
+        self.assertIn("markCurveDirty(key)", confirm_block)
+        self.assertIn('setCurveStatus("已生成，待保存")', confirm_block)
+        self.assertNotIn("saveCurves", confirm_block)
+        self.assertNotIn('/api/curves/series', confirm_block)
 
     def test_simulator_curve_mode_tabs_keep_one_line_on_narrow_screens(self):
         styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")

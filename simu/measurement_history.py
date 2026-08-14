@@ -126,6 +126,7 @@ class MeasurementHistoryStore:
         measurements: Mapping[str, Any],
         *,
         definition_revision: int = 0,
+        definition_signature: Optional[str] = None,
         limit: Optional[int] = None,
         wall_time: Optional[str] = None,
     ) -> bool:
@@ -134,7 +135,11 @@ class MeasurementHistoryStore:
             for row in measurements.get("definitions", []) or []
             if isinstance(row, Mapping)
         ]
-        signature = measurement_definition_signature(definitions)
+        signature = (
+            str(definition_signature)
+            if definition_signature
+            else measurement_definition_signature(definitions)
+        )
         count = len(definitions)
         if count <= 0:
             return False

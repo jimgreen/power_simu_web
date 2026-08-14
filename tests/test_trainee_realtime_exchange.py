@@ -12,6 +12,7 @@ from urllib.request import urlopen
 from unittest.mock import patch
 
 from simu.generate_simple_model import write_model_dir
+from simu.measurement_delta import measurement_definition_signature
 from simu.server import make_http_server
 from simu.service import MultiModelSimulator, PolarMicrogridSimulator, SimulationModelSpec
 from simu.trainee_exchange import (
@@ -195,11 +196,115 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
 
         first = exchange.control_snapshot("trainee-local")
         original_clock = copy.deepcopy(first.snapshot.get("clock"))
+        original_measurement = copy.deepcopy(
+            first.snapshot["measurements"]["scada"][0]
+        )
         first.snapshot["clock"] = {"time": "mutated"}
+        first.snapshot["measurements"]["scada"][0]["value"] = "mutated"
 
         second = exchange.control_snapshot("trainee-local")
 
         self.assertEqual(second.snapshot.get("clock"), original_clock)
+        self.assertEqual(
+            second.snapshot["measurements"]["scada"][0],
+            original_measurement,
+        )
+
+    def test_control_calculation_snapshot_reuses_read_only_runtime_and_cached_definitions(self):
+        service = self.make_service()
+        runtime = service.snapshot(
+            include_static=True,
+            include_runtime_logs=True,
+            include_measurements=True,
+            include_devices=True,
+            include_commands=True,
+        )
+        runtime["runtime_logs"] = [{"seq": 1, "detail": "not needed by planner"}]
+        runtime.setdefault("commands", {})["history"] = [
+            {"command_id": "history-not-needed"}
+        ]
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+        exchange.publish_runtime_snapshot("trainee-local", runtime, received_at=time.time())
+
+        state = exchange._state_for_request_service(service)
+        with patch(
+            "simu.trainee_exchange.measurement_definition_signature",
+            wraps=measurement_definition_signature,
+        ) as signature:
+            first = exchange.control_calculation_snapshot_for_service(service)
+            second = exchange.control_calculation_snapshot_for_service(service)
+
+        self.assertTrue(first.snapshot_read_only)
+        self.assertIs(first.snapshot["clock"], state.runtime_snapshot["clock"])
+        self.assertIs(
+            first.snapshot["measurements"]["definitions"],
+            second.snapshot["measurements"]["definitions"],
+        )
+        self.assertEqual(signature.call_count, 1)
+        self.assertNotIn("runtime_logs", first.snapshot)
+        self.assertNotIn("commands", first.snapshot)
+
+    def test_control_calculation_snapshot_refreshes_runtime_values_without_rebuilding_static(self):
+        service = self.make_service()
+        runtime = service.snapshot(
+            include_static=True,
+            include_runtime_logs=False,
+            include_measurements=True,
+            include_devices=True,
+            include_commands=False,
+        )
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+        exchange.publish_runtime_snapshot("trainee-local", runtime, received_at=time.time())
+
+        first = exchange.control_calculation_snapshot_for_service(service)
+        definition_rows = first.snapshot["measurements"]["definitions"]
+        updated_runtime = copy.deepcopy(runtime)
+        updated_runtime["clock"]["time"] = "12:34:56"
+        updated_runtime["devices"][0]["run_stat"] = 0
+        updated_runtime["measurements"]["scada"][0]["value"] = 123.456
+        exchange.publish_runtime_snapshot(
+            "trainee-local",
+            updated_runtime,
+            received_at=time.time(),
+        )
+
+        second = exchange.control_calculation_snapshot_for_service(service)
+
+        self.assertEqual(second.snapshot["clock"]["time"], "12:34:56")
+        self.assertEqual(second.snapshot["devices"][0]["run_stat"], 0)
+        self.assertEqual(
+            float(second.snapshot["measurements"]["scada"][0]["value"]),
+            123.456,
+        )
+        self.assertIs(second.snapshot["measurements"]["definitions"], definition_rows)
+
+    def test_control_schedule_snapshot_reads_only_the_published_clock(self):
+        service = self.make_service()
+        runtime = service.snapshot(
+            include_static=True,
+            include_runtime_logs=True,
+            include_measurements=True,
+            include_devices=True,
+            include_commands=True,
+        )
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+        exchange.publish_runtime_snapshot("trainee-local", runtime, received_at=time.time())
+
+        with patch.object(
+            exchange,
+            "_control_static_snapshot_for_service",
+            side_effect=AssertionError("scheduling must not materialize static definitions"),
+        ):
+            view = exchange.control_schedule_snapshot_for_service(service)
+
+        state = exchange._state_for_request_service(service)
+        self.assertEqual(set(view.snapshot), {"clock"})
+        self.assertIs(view.snapshot["clock"], state.runtime_snapshot["clock"])
+        self.assertTrue(view.snapshot_read_only)
+        self.assertTrue(view.snapshot_schedule_only)
 
     def test_refresh_once_requests_dynamic_runtime_only(self):
         service = self.make_service()
@@ -239,6 +344,35 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
             view.snapshot["simulation_timing"],
             runtime["simulation_timing"],
         )
+
+    def test_background_refresh_skips_unused_control_snapshot_materialization(self):
+        service = self.make_service()
+        configure_receive(service)
+        runtime = service.snapshot(include_static=False, include_runtime_logs=False)
+        exchange = TraineeRealtimeExchange(
+            service,
+            request_json=lambda _url, **_kwargs: copy.deepcopy(runtime),
+            start_worker=False,
+        )
+        self.addCleanup(exchange.close)
+
+        with patch.object(
+            exchange,
+            "_refresh_result_for_service",
+            side_effect=AssertionError("background refresh must not materialize a control view"),
+        ) as materialize:
+            self.assertTrue(exchange._submit_refresh_for_service(service))
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                with exchange._refresh_pending_lock:
+                    if not exchange._refresh_pending:
+                        break
+                time.sleep(0.01)
+            materialize.assert_not_called()
+
+        with exchange._refresh_pending_lock:
+            self.assertEqual(exchange._refresh_pending, set())
+        self.assertGreater(exchange.receive_status("trainee-local")["revision"], 0)
 
     def test_refresh_uses_runtime_log_cursor_after_full_tail_and_merges_new_rows(self):
         service = self.make_service()

@@ -192,6 +192,19 @@ class _StructuralGraph:
 
 
 @dataclass(frozen=True)
+class ResourceTopologyStaticContext:
+    """Definition-only topology structures reusable across runtime samples."""
+
+    parsed: _ParsedModel = field(repr=False)
+    graph: _StructuralGraph = field(repr=False)
+    structural_anchor_indexes: Mapping[
+        str,
+        Mapping[NodeKey, _AnchorPath],
+    ] = field(repr=False)
+    invalid_converter_nodes: frozenset[NodeKey] = field(repr=False)
+
+
+@dataclass(frozen=True)
 class _OperatingState:
     run_stat: float
     status: float
@@ -542,10 +555,10 @@ def _hydrogen_edge_is_active(
     states: Mapping[DeviceKey, _OperatingState],
 ) -> bool:
     dev_name = _device_name(row)
-    if dev_name is None or not _is_active_state(_row_state(dev_type, row, states)):
+    state = _row_state(dev_type, row, states)
+    if dev_name is None or not _is_active_state(state):
         return False
-    status = _finite_number(row.get("status"))
-    if status is not None and status == 0.0:
+    if state.status == 0.0:
         return False
     control_type = str(row.get("control_type", "")).strip().upper()
     if control_type in {"CLOSE", "CLOSED", "OFF"}:
@@ -1535,9 +1548,11 @@ def _apply_active_topology(
     )
 
 
-def resolve_resource_topology(
-    snapshot: Mapping[str, object], resources: Sequence[ResourceRef]
-) -> ResourceTopology:
+def prepare_resource_topology_static_context(
+    snapshot: Mapping[str, object],
+) -> ResourceTopologyStaticContext:
+    """Build topology data that changes only when model definitions change."""
+
     parsed = _parse_model(snapshot)
     graph = _build_structural_graph(parsed)
     structural_anchor_indexes = _build_reverse_anchor_indexes(
@@ -1549,6 +1564,30 @@ def resolve_resource_topology(
         graph,
         parsed.anchors,
     )
+    return ResourceTopologyStaticContext(
+        parsed=parsed,
+        graph=graph,
+        structural_anchor_indexes=MappingProxyType(
+            {
+                domain: MappingProxyType(dict(index))
+                for domain, index in structural_anchor_indexes.items()
+            }
+        ),
+        invalid_converter_nodes=invalid_converter_nodes,
+    )
+
+
+def resolve_resource_topology(
+    snapshot: Mapping[str, object],
+    resources: Sequence[ResourceRef],
+    *,
+    static_context: ResourceTopologyStaticContext | None = None,
+) -> ResourceTopology:
+    context = static_context or prepare_resource_topology_static_context(snapshot)
+    parsed = context.parsed
+    graph = context.graph
+    structural_anchor_indexes = context.structural_anchor_indexes
+    invalid_converter_nodes = context.invalid_converter_nodes
     states = _operating_states(snapshot, parsed)
     active_graph = _build_active_graph(parsed, graph, states)
     active_anchor_indexes = _build_reverse_anchor_indexes(

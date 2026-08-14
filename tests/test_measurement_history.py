@@ -7,6 +7,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 from urllib.request import urlopen
 from urllib.request import Request
 
@@ -92,6 +93,29 @@ class MeasurementHistoryTest(unittest.TestCase):
         )
         self.assertEqual(next_history["frames"][-1]["simu_time"], "00:00:00")
         self.assertEqual(next_history["frames"][-1]["real_values"], [0.0])
+
+    def test_history_store_accepts_a_cached_definition_signature(self):
+        from simu.measurement_delta import measurement_definition_signature
+        from simu.measurement_history import MeasurementHistoryStore
+
+        service = self._make_service()
+        self._seed_measurements(service, 10.0, 9.5)
+        measurements = service.measurements()
+        signature = measurement_definition_signature(measurements["definitions"])
+        store = MeasurementHistoryStore()
+
+        with mock.patch(
+            "simu.measurement_history.measurement_definition_signature",
+            side_effect=AssertionError("history must reuse the validated signature"),
+        ):
+            appended = store.append(
+                {"run_id": 1, "step_count": 1, "absolute_minute": 1, "time": "00:01:00"},
+                measurements,
+                definition_revision=1,
+                definition_signature=signature,
+            )
+
+        self.assertTrue(appended)
 
     def test_simulator_clock_restart_and_time_regression_clear_old_history(self):
         service = self._make_service()

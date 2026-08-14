@@ -488,6 +488,49 @@ html[data-simulator-ui-mode="direct"] .model-switcher span {
 .model-service-field-grid .modal-field {
   grid-template-columns: 42px minmax(0, 1fr);
 }
+
+.curve-mode-switch-modal {
+  width: min(520px, calc(100vw - 32px));
+}
+
+.curve-mode-switch-actions {
+  flex-wrap: wrap;
+}
+
+.typical-curve-modal {
+  width: min(500px, calc(100vw - 32px));
+}
+
+.typical-curve-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+
+.typical-curve-fields .modal-field {
+  grid-template-columns: 60px minmax(0, 1fr);
+}
+
+.typical-curve-input {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+}
+
+.typical-curve-input small {
+  min-width: 34px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+@media (max-width: 520px) {
+  .typical-curve-fields {
+    grid-template-columns: 1fr;
+  }
+}
 .model-service-field-grid input[aria-invalid="true"] {
   border-color: var(--red);
   box-shadow: 0 0 0 2px rgba(194, 54, 54, 0.16);
@@ -2908,8 +2951,32 @@ input[type="range"] { padding: 0; accent-color: var(--teal); }
   flex-direction: column;
   gap: 6px;
   max-height: none;
-  overflow: auto;
+  overflow-anchor: none;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding-right: 2px;
+  scrollbar-color: #aebcc2 transparent;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+.curve-tree::-webkit-scrollbar {
+  width: 8px;
+}
+.curve-tree::-webkit-scrollbar-track {
+  background: transparent;
+}
+.curve-tree::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: #aebcc2;
+  background-clip: content-box;
+}
+.curve-tree::-webkit-scrollbar-thumb:hover {
+  background: #84949b;
+  background-clip: content-box;
+}
+.curve-tree-filter {
+  flex: 0 0 auto;
 }
 .curve-workspace {
   flex: 1;
@@ -3321,6 +3388,39 @@ input[type="range"] { padding: 0; accent-color: var(--teal); }
   background: #fff;
   font-size: 13px;
 }
+.curve-tree-item-main {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.curve-tree-item-main > .curve-tree-item-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.curve-tree .tree-node > small {
+  flex: 0 0 auto;
+}
+.curve-medium-marker {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid #b8c7cc;
+  border-radius: 4px;
+  background: #f2f6f7;
+  color: #52656d;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+}
+.curve-medium-marker.is-environment { border-color: #9ebbc7; background: #eef6f8; color: #2b6b7f; }
+.curve-medium-marker.is-electric { border-color: #8dbbbc; background: #e8f6f6; color: #17696a; }
+.curve-medium-marker.is-hydrogen { border-color: #b8a6ce; background: #f4eff9; color: #6b4a88; }
+.curve-medium-marker.is-heat { border-color: #d4aaa3; background: #fbefed; color: #9b4035; }
 .mode-table-panel {
   min-width: 0;
   display: flex;

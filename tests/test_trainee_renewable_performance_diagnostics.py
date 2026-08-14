@@ -16,11 +16,20 @@ from simu.renewable_control import (
 )
 from simu.renewable_optimization import optimize_topology_islands
 from simu.resource_topology import ResourceTopology
-from simu.trainee_exchange import TraineeControlSnapshot
+from simu.trainee_exchange import (
+    TraineeControlGeneration,
+    TraineeControlLease,
+    TraineeControlSnapshot,
+)
 from tests.test_renewable_optimization_dispatch import diesel, renewable
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class _HistoricalTrendDeepcopyBomb:
+    def __deepcopy__(self, _memo):
+        raise AssertionError("historical trend points must not be deep-copied per cycle")
 
 
 def test_cycle_performance_window_is_bounded_and_reports_linear_percentiles():
@@ -84,6 +93,411 @@ def test_control_manager_reuses_an_isolated_exchange_snapshot_without_copying():
     assert shared_copy == snapshot
     assert shared_copy is not snapshot
     assert shared_copy["clock"] is not snapshot["clock"]
+
+
+def test_control_manager_prefers_service_bound_read_only_calculation_snapshot(tmp_path):
+    service = SimpleNamespace(
+        model_id="shared",
+        service_instance_id="service-a",
+        runtime_dir=tmp_path,
+        lock=threading.RLock(),
+    )
+    view = TraineeControlSnapshot(
+        snapshot={"clock": {"time": "00:00:01"}},
+        source="trainee-live",
+        age_seconds=0.0,
+        error=None,
+        receive_active=True,
+        ready=True,
+        revision=1,
+        connection_signature=("learner", 1),
+        snapshot_read_only=True,
+    )
+
+    class SnapshotProvider:
+        def __init__(self):
+            self.calculation_calls = []
+
+        def control_snapshot(self, _model_id):
+            raise AssertionError("planner must not materialize the public control snapshot")
+
+        def control_calculation_snapshot_for_service(self, target):
+            self.calculation_calls.append(target)
+            return view
+
+    provider = SnapshotProvider()
+    manager = TraineeRenewableControlManager(
+        service,
+        snapshot_provider=provider.control_snapshot,
+        receive_status_provider=lambda _model_id: {},
+        command_sink=lambda _model_id, _payload: {},
+        start_worker=False,
+    )
+    try:
+        resolved = manager._control_snapshot_for_service(service)
+    finally:
+        manager.close()
+
+    assert resolved is view
+    assert provider.calculation_calls == [service]
+    assert TraineeRenewableControlManager._snapshot_for_calculation(view) is view.snapshot
+
+
+def test_control_manager_prefers_service_bound_clock_snapshot_for_scheduling(tmp_path):
+    service = SimpleNamespace(
+        model_id="shared",
+        service_instance_id="service-a",
+        runtime_dir=tmp_path,
+        lock=threading.RLock(),
+    )
+    view = TraineeControlSnapshot(
+        snapshot={"clock": {"time": "00:00:01"}},
+        source="trainee-live",
+        age_seconds=0.0,
+        error=None,
+        receive_active=True,
+        ready=True,
+        revision=1,
+        connection_signature=("learner", 1),
+        snapshot_read_only=True,
+    )
+
+    class SnapshotProvider:
+        def control_snapshot(self, _model_id):
+            raise AssertionError("scheduler must not materialize the control projection")
+
+        def control_schedule_snapshot_for_service(self, target):
+            assert target is service
+            return view
+
+    provider = SnapshotProvider()
+    manager = TraineeRenewableControlManager(
+        service,
+        snapshot_provider=provider.control_snapshot,
+        receive_status_provider=lambda _model_id: {},
+        command_sink=lambda _model_id, _payload: {},
+        start_worker=False,
+    )
+    try:
+        resolved = manager._control_schedule_snapshot_for_service(service)
+    finally:
+        manager.close()
+
+    assert resolved is view
+
+
+def test_control_manager_caches_static_topology_by_definition_revision(tmp_path):
+    service = SimpleNamespace(
+        model_id="shared",
+        service_instance_id="service-a",
+        runtime_dir=tmp_path,
+        lock=threading.RLock(),
+    )
+    snapshot = {
+        "definitions": {
+            "model": {
+                "ACNode": {
+                    "headers": ["idx", "name"],
+                    "rows": [{"idx": 1, "name": "node"}],
+                },
+                "ACRealBs": {
+                    "headers": ["idx", "name", "node"],
+                    "rows": [{"idx": 1, "name": "bus", "node": 1}],
+                },
+            }
+        },
+        "measurements": {"scada": [], "real": []},
+    }
+
+    def view_for_revision(revision):
+        generation = TraineeControlGeneration(
+            model_id="shared",
+            service_instance_id="service-a",
+            receive_epoch=1,
+            connection_signature=("teacher",),
+            definition_revision=revision,
+            runtime_revision=revision,
+        )
+        return TraineeControlSnapshot(
+            snapshot=snapshot,
+            source="trainee-live",
+            age_seconds=0.0,
+            error=None,
+            receive_active=True,
+            ready=True,
+            revision=revision,
+            connection_signature=("teacher",),
+            control_lease=TraineeControlLease(generation, lambda _expected: None),
+            snapshot_read_only=True,
+        )
+
+    manager = TraineeRenewableControlManager(
+        service,
+        snapshot_provider=lambda _model_id: None,
+        receive_status_provider=lambda _model_id: {
+            "receiveActive": True,
+            "ready": True,
+            "canRun": True,
+        },
+        command_sink=lambda _model_id, _payload: {},
+        start_worker=False,
+    )
+    state = manager._state_for("shared")
+    try:
+        with patch.object(
+            renewable_control_module,
+            "prepare_resource_topology_static_context",
+            wraps=renewable_control_module.prepare_resource_topology_static_context,
+        ) as prepare:
+            first = manager._topology_static_context_for_plan(
+                state,
+                view_for_revision(1),
+                snapshot,
+            )
+            second = manager._topology_static_context_for_plan(
+                state,
+                view_for_revision(1),
+                snapshot,
+            )
+            third = manager._topology_static_context_for_plan(
+                state,
+                view_for_revision(2),
+                snapshot,
+            )
+    finally:
+        manager.close()
+
+    assert prepare.call_count == 2
+    assert first is second
+    assert third is not second
+
+
+def test_trend_staging_detaches_the_list_without_deepcopying_older_points(tmp_path):
+    service = SimpleNamespace(
+        model_id="shared",
+        service_instance_id="service-a",
+        runtime_dir=tmp_path,
+        lock=threading.RLock(),
+    )
+    manager = TraineeRenewableControlManager(
+        service,
+        snapshot_provider=lambda _model_id: None,
+        receive_status_provider=lambda _model_id: {
+            "receiveActive": True,
+            "ready": True,
+            "canRun": True,
+        },
+        command_sink=lambda _model_id, _payload: {},
+        start_worker=False,
+    )
+    state = manager._state_for("shared")
+    historical = {
+        "sampleKey": "1|1|00:01:00",
+        "runId": 1,
+        "stepCount": 1,
+        "minute": 1.0,
+        "time": "00:01:00",
+        "payload": _HistoricalTrendDeepcopyBomb(),
+    }
+    latest = {
+        "sampleKey": "1|2|00:02:00",
+        "runId": 1,
+        "stepCount": 2,
+        "minute": 2.0,
+        "time": "00:02:00",
+    }
+    state.trend = [historical, latest]
+    state.trend_normalized = True
+
+    try:
+        candidate = manager._stage_trend(
+            state,
+            {"metrics": {}, "weather": {}},
+            {
+                "clock": {
+                    "run_id": 1,
+                    "step_count": 3,
+                    "absolute_minute": 3.0,
+                    "time": "00:03:00",
+                }
+            },
+        )
+    finally:
+        manager.close()
+
+    assert state.trend == [historical, latest]
+    assert candidate.trend is not state.trend
+    assert candidate.trend[:2] == state.trend
+    assert candidate.trend[0] is historical
+    assert candidate.trend[-1]["sampleKey"] == "1|3.0|00:03:00"
+
+
+def test_background_control_cycle_can_skip_unused_state_serialization(tmp_path):
+    service = SimpleNamespace(
+        model_id="shared",
+        service_instance_id="service-a",
+        runtime_dir=tmp_path,
+        lock=threading.RLock(),
+    )
+    snapshot = {
+        "clock": {
+            "state": "running",
+            "run_id": 1,
+            "step_count": 1,
+            "absolute_second": 60.0,
+            "absolute_minute": 1.0,
+            "time": "00:01:00",
+        }
+    }
+    view = TraineeControlSnapshot(
+        snapshot=snapshot,
+        source="trainee-live",
+        age_seconds=0.0,
+        error=None,
+        receive_active=True,
+        ready=True,
+        revision=1,
+        connection_signature=("learner", 1),
+        snapshot_isolated=True,
+    )
+    manager = TraineeRenewableControlManager(
+        service,
+        snapshot_provider=lambda _model_id: view,
+        receive_status_provider=lambda _model_id: {
+            "receiveActive": True,
+            "ready": True,
+            "canRun": True,
+            "canCalculate": True,
+            "canDispatch": True,
+            "revision": 1,
+            "connectionSignature": ["learner", 1],
+        },
+        command_sink=lambda _model_id, _payload: {},
+        start_worker=False,
+    )
+    state = manager._state_for("shared")
+    plan = {
+        "clockKey": "1|1|00:01:00",
+        "time": "00:01:00",
+        "weather": {},
+        "metrics": {},
+        "commands": [],
+        "runCommands": [],
+        "commandRows": [],
+        "warnings": [],
+        "dataQuality": {
+            "source": "trainee-live",
+            "status": "ok",
+            "dispatchAllowed": True,
+        },
+    }
+
+    try:
+        with (
+            patch.object(
+                renewable_control_module,
+                "calculate_renewable_control_plan",
+                return_value=plan,
+            ),
+            patch.object(
+                manager,
+                "_serialize_for_service",
+                side_effect=AssertionError("background result must not be serialized"),
+            ),
+        ):
+            result = manager._run_once_for_service(
+                service,
+                state,
+                trigger="preview",
+                allow_dispatch=False,
+                record_log=False,
+                raise_on_retired=False,
+                snapshot_view=view,
+                serialize_result=False,
+            )
+    finally:
+        manager.close()
+
+    assert result == {}
+    assert state.last_plan is not None
+
+
+def test_resume_pending_worker_sync_skips_unused_state_serialization(tmp_path):
+    service = SimpleNamespace(
+        model_id="shared",
+        service_instance_id="service-a",
+        runtime_dir=tmp_path,
+        lock=threading.RLock(),
+    )
+    services = SimpleNamespace(
+        service_for=lambda _model_id=None: service,
+        iter_services=lambda: [service],
+    )
+    manager = TraineeRenewableControlManager(
+        services,
+        snapshot_provider=lambda _model_id: None,
+        receive_status_provider=lambda _model_id: {
+            "receiveActive": True,
+            "ready": False,
+            "canRun": False,
+            "prerequisiteStatus": "waiting for first frame",
+        },
+        command_sink=lambda _model_id, _payload: {},
+        start_worker=False,
+    )
+    state = manager._state_for("shared")
+    state.desired_enabled = True
+    state.enabled = False
+
+    try:
+        with patch.object(
+            manager,
+            "receive_state_changed_for_service",
+            return_value={},
+        ) as synchronize:
+            manager._run_worker_iteration(now=100.0)
+            synchronize.assert_called_once_with(service, serialize_result=False)
+    finally:
+        manager.close()
+
+
+def test_unchanged_resume_pending_status_does_not_self_wake_worker(tmp_path):
+    service = SimpleNamespace(
+        model_id="shared",
+        service_instance_id="service-a",
+        runtime_dir=tmp_path,
+        lock=threading.RLock(),
+    )
+    services = SimpleNamespace(
+        service_for=lambda _model_id=None: service,
+        iter_services=lambda: [service],
+    )
+    manager = TraineeRenewableControlManager(
+        services,
+        snapshot_provider=lambda _model_id: None,
+        receive_status_provider=lambda _model_id: {
+            "receiveActive": True,
+            "ready": False,
+            "canRun": False,
+            "prerequisiteStatus": "waiting for first frame",
+        },
+        command_sink=lambda _model_id, _payload: {},
+        start_worker=False,
+    )
+    state = manager._state_for("shared")
+    state.desired_enabled = True
+    state.enabled = False
+
+    try:
+        manager.receive_state_changed_for_service(service, serialize_result=False)
+        manager._wake_event.clear()
+
+        manager.receive_state_changed_for_service(service, serialize_result=False)
+
+        assert not manager._wake_event.is_set()
+        assert manager._run_worker_iteration(now=100.0) == 1.0
+    finally:
+        manager.close()
 
 
 def test_optimizer_reports_iterations_and_actual_problem_size():

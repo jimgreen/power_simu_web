@@ -169,7 +169,7 @@ def test_cluster_suggests_unused_port_and_persists_custom_model_access_address(t
     assert reloaded_model["service"]["port"] == 9202
 
 
-def test_stopped_service_catalog_skips_health_probes_and_keeps_port_edit_responsive(tmp_path: Path):
+def test_startup_catalog_checks_ports_without_slow_health_probes_and_keeps_port_edit_responsive(tmp_path: Path):
     models_root = tmp_path / "models"
     _make_model(models_root, "model_a")
     _make_model(models_root, "model_b")
@@ -193,10 +193,11 @@ def test_stopped_service_catalog_skips_health_probes_and_keeps_port_edit_respons
     catalog = manager.catalog()
     assert [item["service"]["port"] for item in catalog["models"]] == [9101, 9102]
     assert health_checks == []
-    assert port_checks == [9103]
+    assert port_checks == [9101, 9102, 9103]
+    port_checks.clear()
 
     assert manager.catalog()["service_suggestion"]["port"] == 9103
-    assert port_checks == [9103]
+    assert port_checks == []
 
     save_calls = 0
     original_save_registry = manager._save_registry_locked
@@ -214,7 +215,7 @@ def test_stopped_service_catalog_skips_health_probes_and_keeps_port_edit_respons
 
     assert manager.catalog()["models"][1]["service"]["port"] == 9202
     assert health_checks == []
-    assert port_checks == [9103, 9202, 9102]
+    assert port_checks == [9202, 9102]
 
     unchanged = manager.configure_model_service("model_b", "127.0.0.1", 9202)
     assert unchanged["service"]["port"] == 9202
@@ -348,6 +349,104 @@ def test_catalog_clears_unhealthy_stale_pid_after_proxy_restart(tmp_path: Path):
     assert health_checks == ["only"]
     persisted = json.loads(reloaded.registry_path.read_text(encoding="utf-8"))
     assert persisted["services"]["only"]["pid"] is None
+
+
+def test_catalog_adopts_service_that_finishes_starting_after_initial_proxy_probe(tmp_path: Path):
+    models_root = tmp_path / "models"
+    _make_model(models_root, "only")
+    runtime_root = tmp_path / "runtime"
+    manager = SimulatorClusterManager(
+        sim_dir=tmp_path,
+        models_root=models_root,
+        runtime_root=runtime_root,
+        health_checker=lambda *_args: (False, {}, "not running"),
+    )
+    registry = json.loads(manager.registry_path.read_text(encoding="utf-8"))
+    registry["services"]["only"]["pid"] = 999999
+    manager.registry_path.write_text(json.dumps(registry), encoding="utf-8")
+
+    service_ready = False
+    health_checks: list[str] = []
+
+    def health_checker(_host, _port, model_id, _timeout):
+        health_checks.append(model_id)
+        if not service_ready:
+            return False, {}, "service is still starting"
+        return (
+            True,
+            {
+                "role": "simulator",
+                "model_id": model_id,
+                "process": {"pid": 5401},
+                "snapshot": {
+                    "model": {"id": model_id},
+                    "clock": {"state": "stopped"},
+                },
+            },
+            "",
+        )
+
+    reloaded = SimulatorClusterManager(
+        sim_dir=tmp_path,
+        models_root=models_root,
+        runtime_root=runtime_root,
+        health_checker=health_checker,
+        port_checker=lambda _host, port: port == 8711,
+    )
+
+    first = reloaded.catalog()
+    service_ready = True
+    second = reloaded.catalog()
+
+    assert first["models"][0]["service"]["state"] == "stopped"
+    assert first["models"][0]["service"]["pid"] is None
+    assert second["models"][0]["service"]["state"] == "running"
+    assert second["models"][0]["service"]["healthy"] is True
+    assert second["models"][0]["service"]["pid"] == 5401
+    assert health_checks == ["only", "only"]
+
+
+def test_catalog_does_not_mark_a_busy_healthy_service_stopped_after_one_second(tmp_path: Path):
+    models_root = tmp_path / "models"
+    _make_model(models_root, "only")
+    observed_timeouts: list[float] = []
+    listening_ports: set[int] = set()
+
+    def health_checker(_host, _port, model_id, timeout):
+        observed_timeouts.append(timeout)
+        if timeout < 2.5:
+            return False, {}, "health response exceeded one second"
+        return (
+            True,
+            {
+                "role": "simulator",
+                "model_id": model_id,
+                "process": {"pid": 5402},
+                "snapshot": {
+                    "model": {"id": model_id},
+                    "clock": {"state": "running"},
+                },
+            },
+            "",
+        )
+
+    manager = SimulatorClusterManager(
+        sim_dir=tmp_path,
+        models_root=models_root,
+        runtime_root=tmp_path / "runtime",
+        health_checker=health_checker,
+        port_checker=lambda _host, port: port in listening_ports,
+        startup_timeout_seconds=30.0,
+    )
+    listening_ports.add(int(manager._registry["services"]["only"]["port"]))
+
+    model = manager.catalog()["models"][0]
+
+    assert model["service"]["state"] == "running"
+    assert model["service"]["healthy"] is True
+    assert model["service"]["pid"] == 5402
+    assert model["clock_state"] == "running"
+    assert observed_timeouts == [5.0]
 
 
 def _free_port_pair() -> int:

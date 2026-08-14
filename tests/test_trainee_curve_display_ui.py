@@ -18,6 +18,7 @@ class TraineeCurveDisplayUiTest(unittest.TestCase):
         self.assertIn("曲线显示", self.html)
         self.assertIn('data-page="curves"', self.html)
         self.assertIn('id="curveDisplayTree"', self.html)
+        self.assertIn('id="curveDisplayTreeFilter"', self.html)
         self.assertIn('id="curveDisplayChart"', self.html)
         self.assertIn('id="curveDisplayTable"', self.html)
         self.assertIn("只读", self.html)
@@ -28,6 +29,8 @@ class TraineeCurveDisplayUiTest(unittest.TestCase):
         self.assertIn(".curve-table-wrap", self.styles)
         self.assertIn("function renderCurveDisplay", self.script)
         self.assertIn("function renderCurveDisplayTree", self.script)
+        self.assertIn("function curveDisplayTreeItemMatches", self.script)
+        self.assertIn('data-curve-medium="${escapeHtml(item.family)}"', self.script)
         self.assertIn("function drawCurveDisplay", self.script)
         self.assertIn("function renderCurveDisplayTable", self.script)
         self.assertIn("data-curve-display-tree-type", self.script)
@@ -42,6 +45,16 @@ class TraineeCurveDisplayUiTest(unittest.TestCase):
         self.assertNotIn('id="randomCurves"', self.html)
         self.assertNotIn('id="generateDenseCurves"', self.html)
         self.assertNotIn('contenteditable="true"', self.script)
+
+    def test_curve_switching_reuses_linear_resampling_results(self):
+        self.assertIn("curveDisplaySeriesCache: new WeakMap()", self.script)
+        self.assertIn("function curveDisplayPointPairs", self.script)
+        self.assertIn("let pairIndex = 0", self.script)
+        self.assertIn("while (pairIndex < pairs.length - 2", self.script)
+        self.assertIn("function curveDisplaySeriesMap", self.script)
+        self.assertIn("drawCurveDisplay(snapshot, seriesByKey)", self.script)
+        self.assertIn("renderCurveDisplayTable(snapshot, false, seriesByKey)", self.script)
+        self.assertNotIn("function interpolateCurveDisplay", self.script)
 
 
 if __name__ == "__main__":

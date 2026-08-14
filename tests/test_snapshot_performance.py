@@ -257,6 +257,34 @@ class SnapshotPerformanceTest(unittest.TestCase):
         self.assertEqual(compact.call_count, 2)
         self.assertEqual(first["runtime_signature"], third["runtime_signature"])
 
+    def test_multimodel_service_lookup_reuses_recent_directory_catalog(self):
+        from simu.generate_simple_model import write_model_dir
+        from simu.service import MultiModelSimulator
+
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        root = Path(workspace.name)
+        models_root = root / "models"
+        write_model_dir(models_root / "model-a")
+        write_model_dir(models_root / "model-b")
+        manager = MultiModelSimulator.discover(
+            root,
+            root / "runtime",
+            kernel=lambda _config: None,
+            models_dir=models_root,
+            runtime_role="trainee",
+        )
+
+        manager._next_directory_sync_at = 0.0
+        original = manager._directory_specs
+        with patch.object(manager, "_directory_specs", wraps=original) as scan:
+            first = manager.service_for("model-a")
+            second = manager.service_for("model-a")
+
+        self.assertIs(first, second)
+        self.assertEqual({service.model_id for service in manager.iter_services()}, {"model-a", "model-b"})
+        self.assertEqual(scan.call_count, 1)
+
     def test_snapshot_http_endpoint_supports_omitting_devices_and_commands(self):
         from simu.server import make_http_server
 
@@ -379,6 +407,49 @@ class SnapshotPerformanceTest(unittest.TestCase):
 
         command_writes = [call for call in write_json.call_args_list if call.args[0] == service.commands_file]
         self.assertEqual(len(command_writes), 1)
+
+    def test_automatic_command_history_does_not_persist_duplicate_plan_payloads(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        command_rows = [
+            {"dev_name": f"device-{index}", "detail": "x" * 1000}
+            for index in range(100)
+        ]
+
+        service.apply_student_commands(
+            {
+                "strategy_id": "renewable_priority",
+                "generation": "1|1|00:01:00",
+                "replace_strategy_generation": True,
+                "set_values": [
+                    {
+                        "dev_type": "ESS",
+                        "dev_name": "ess01",
+                        "set_type": "p_set",
+                        "set_value": 15,
+                    }
+                ],
+                "command_rows": command_rows,
+                "strategy": {
+                    "name": "renewable_priority",
+                    "trigger": "auto",
+                    "load_kw": 100,
+                    "decision_detail": "y" * 100000,
+                },
+            },
+            source="trainee-renewable-priority-backend",
+        )
+
+        entry = service.command_history[-1]
+        payload = entry["payload"]
+        self.assertNotIn("command_rows", payload)
+        self.assertNotIn("set_values", payload)
+        self.assertEqual(payload["command_rows_count"], 100)
+        self.assertEqual(payload["set_values_count"], 1)
+        self.assertEqual(payload["strategy"]["name"], "renewable_priority")
+        self.assertNotIn("decision_detail", payload["strategy"])
+        self.assertEqual(entry["normalized"]["set_values"][0]["set_value"], "15")
+        self.assertLess(service.commands_file.stat().st_size, 20_000)
 
 
 if __name__ == "__main__":

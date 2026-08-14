@@ -555,9 +555,17 @@ def _read_json(path: Path, default: Any) -> Any:
         return default
 
 
-def _write_json(path: Path, payload: Any) -> None:
+def _write_json(path: Path, payload: Any, *, compact: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":") if compact else None,
+            indent=None if compact else 2,
+        ),
+        encoding="utf-8",
+    )
 
 
 def _safe_model_id(value: Any) -> str:
@@ -1207,6 +1215,8 @@ class PolarMicrogridSimulator:
         self._device_runtime_frame_cache_value: Optional[Dict[str, Any]] = None
         self.command_history: List[Dict[str, Any]] = []
         self._command_history_persisted_signature: Optional[str] = None
+        self._strategy_generation_entries: Dict[str, List[Dict[str, Any]]] = {}
+        self._strategy_generation_index_token: Optional[Tuple[int, int, int]] = None
         self.runtime_logs: List[Dict[str, Any]] = []
         self._runtime_log_seq = 0
         self._runtime_log_persistence_lock = threading.RLock()
@@ -1312,6 +1322,10 @@ class PolarMicrogridSimulator:
         self.runtime_logs_file = self.runtime_dir / "runtime_logs.json"
         self.runtime_logs_journal_file = self.runtime_dir / "runtime_logs.jsonl"
         self.trainee_receive_file = self.runtime_dir / "trainee_receive.json"
+        self._trainee_receive_cache_lock = threading.RLock()
+        self._trainee_receive_cache_signature: Optional[Tuple[int, int, int]] = None
+        self._trainee_receive_cache_value: Optional[Dict[str, Any]] = None
+        self._trainee_receive_cache_next_stat_monotonic = 0.0
         # SVG definition edits are runtime overrides.  The source E files stay
         # immutable so an operator can always restore the model defaults.
         self.manual_definition_changes_file = self.runtime_dir / MANUAL_DEFINITION_CHANGES_FILE
@@ -1356,6 +1370,7 @@ class PolarMicrogridSimulator:
         self._source_measurement_statuses = self._read_source_measurement_statuses()
         self._apply_stored_system_parameters()
         self.command_history = self._read_command_history()
+        self._rebuild_strategy_generation_index()
         if self.clear_commands_on_start_and_reset:
             self._remove_automatic_command_history_for_restart()
         self._last_command_response_index = len(self.command_history)
@@ -1384,6 +1399,8 @@ class PolarMicrogridSimulator:
                 self.clock = ClockState()
                 self.command_history = []
                 self._command_history_persisted_signature = None
+                self._strategy_generation_entries = {}
+                self._strategy_generation_index_token = None
                 self.runtime_logs = []
                 self._runtime_log_seq = 0
                 self._runtime_log_journal_entry_count = 0
@@ -1963,10 +1980,35 @@ class PolarMicrogridSimulator:
         return normalized
 
     def trainee_receive_state(self) -> Dict[str, Any]:
-        raw = _read_json(self.trainee_receive_file, {})
-        if not isinstance(raw, Mapping):
-            raw = {}
-        return self._normalize_trainee_receive_state(raw)
+        now = time.monotonic()
+        with self._trainee_receive_cache_lock:
+            if (
+                self._trainee_receive_cache_value is not None
+                and now < self._trainee_receive_cache_next_stat_monotonic
+            ):
+                return dict(self._trainee_receive_cache_value)
+            try:
+                stat = self.trainee_receive_file.stat()
+                signature: Optional[Tuple[int, int, int]] = (
+                    int(stat.st_mtime_ns),
+                    int(stat.st_ctime_ns),
+                    int(stat.st_size),
+                )
+            except OSError:
+                signature = None
+            self._trainee_receive_cache_next_stat_monotonic = now + 0.25
+            if (
+                self._trainee_receive_cache_value is not None
+                and self._trainee_receive_cache_signature == signature
+            ):
+                return dict(self._trainee_receive_cache_value)
+            raw = _read_json(self.trainee_receive_file, {})
+            if not isinstance(raw, Mapping):
+                raw = {}
+            normalized = self._normalize_trainee_receive_state(raw)
+            self._trainee_receive_cache_signature = signature
+            self._trainee_receive_cache_value = normalized
+            return dict(normalized)
 
     def set_trainee_receive_state(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
         with self.lock:
@@ -1978,7 +2020,20 @@ class PolarMicrogridSimulator:
                 merged["updated_at"] = _now_text()
             normalized = self._normalize_trainee_receive_state(merged)
             _write_json(self.trainee_receive_file, normalized)
-            return normalized
+            try:
+                stat = self.trainee_receive_file.stat()
+                signature: Optional[Tuple[int, int, int]] = (
+                    int(stat.st_mtime_ns),
+                    int(stat.st_ctime_ns),
+                    int(stat.st_size),
+                )
+            except OSError:
+                signature = None
+            with self._trainee_receive_cache_lock:
+                self._trainee_receive_cache_signature = signature
+                self._trainee_receive_cache_value = normalized
+                self._trainee_receive_cache_next_stat_monotonic = time.monotonic() + 0.25
+            return dict(normalized)
 
     def _ensure_weather_measurements_in_file(self, meas_file: Path) -> bool:
         meas_file = Path(meas_file)
@@ -2121,12 +2176,13 @@ class PolarMicrogridSimulator:
         changed = self._repair_legacy_cancel_command_entries(history)
         history, definition_changed = self._filter_loaded_command_history_to_definitions(history)
         changed = changed or definition_changed
+        changed = self._compact_command_history_payloads(history) or changed
         compacted = self._compact_command_history(history)
         if len(compacted) != len(history):
             changed = True
             history = compacted
         if changed:
-            _write_json(self.commands_file, history)
+            _write_json(self.commands_file, history, compact=True)
         self._command_history_persisted_signature = self._command_history_signature(history)
         return history
 
@@ -2134,6 +2190,74 @@ class PolarMicrogridSimulator:
     def _command_history_signature(history: Sequence[Mapping[str, Any]]) -> str:
         encoded = json.dumps(history, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _compact_command_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
+        """Keep transport metadata without duplicating normalized controls or a full plan."""
+        compacted: Dict[str, Any] = {}
+        sequence_fields = {
+            "run_status": "run_status_count",
+            "runStatus": "run_status_count",
+            "set_values": "set_values_count",
+            "setValues": "set_values_count",
+            "setpoints": "set_values_count",
+            "command_rows": "command_rows_count",
+            "commandRows": "command_rows_count",
+        }
+        strategy_fields = (
+            "name",
+            "strategy_id",
+            "generation",
+            "replace_strategy_generation",
+            "loop_mode",
+            "trigger",
+            "time",
+            "load_kw",
+            "renewable_available_kw",
+            "renewable_used_kw",
+            "storage_kw",
+            "storage_current_kw",
+            "storage_soc",
+            "acdc_current_kw",
+            "acdc_target_kw",
+            "diesel_residual_kw",
+            "diesel_min_kw",
+            "diesel_target_kw",
+            "curtail_kw",
+            "data_quality",
+        )
+        for key, value in payload.items():
+            count_key = sequence_fields.get(str(key))
+            if count_key is not None:
+                if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                    compacted[count_key] = max(int(compacted.get(count_key, 0)), len(value))
+                continue
+            if key == "strategy" and isinstance(value, Mapping):
+                summary = {
+                    field: copy.deepcopy(value[field])
+                    for field in strategy_fields
+                    if field in value
+                }
+                if summary:
+                    compacted[key] = summary
+                continue
+            compacted[key] = copy.deepcopy(value)
+        return compacted
+
+    def _compact_command_history_payloads(
+        self,
+        history: Sequence[Dict[str, Any]],
+    ) -> bool:
+        changed = False
+        for entry in history:
+            payload = entry.get("payload")
+            if not isinstance(payload, Mapping):
+                continue
+            compacted = self._compact_command_payload(payload)
+            if compacted != payload:
+                entry["payload"] = compacted
+                changed = True
+        return changed
 
     def _preserve_command_history_entry(self, item: Mapping[str, Any]) -> bool:
         return (
@@ -2167,20 +2291,36 @@ class PolarMicrogridSimulator:
         ]
 
     def _trim_command_history(self) -> None:
+        self._ensure_strategy_generation_index()
         acknowledged_ids = {id(item) for item in self.command_history[: self._last_command_response_index]}
         compacted = self._compact_command_history(self.command_history)
         if len(compacted) == len(self.command_history):
+            self._strategy_generation_index_token = self._command_history_identity_token()
             return
         self.command_history = compacted
         self._last_command_response_index = sum(1 for item in self.command_history if id(item) in acknowledged_ids)
+        retained_ids = {id(item) for item in compacted}
+        self._strategy_generation_entries = {
+            strategy_id: [
+                entry for entry in entries if id(entry) in retained_ids
+            ]
+            for strategy_id, entries in self._strategy_generation_entries.items()
+            if any(id(entry) in retained_ids for entry in entries)
+        }
+        self._strategy_generation_index_token = self._command_history_identity_token()
 
-    def _write_command_history(self) -> None:
-        self._trim_command_history()
+    def _write_command_history(self, *, prepared: bool = False) -> None:
+        if not prepared:
+            self._prepare_command_history_for_persistence()
         signature = self._command_history_signature(self.command_history)
         if signature == self._command_history_persisted_signature and self.commands_file.exists():
             return
-        _write_json(self.commands_file, self.command_history)
+        _write_json(self.commands_file, self.command_history, compact=True)
         self._command_history_persisted_signature = signature
+
+    def _prepare_command_history_for_persistence(self) -> None:
+        self._trim_command_history()
+        self._compact_command_history_payloads(self.command_history)
 
     def _clear_command_history(self) -> Dict[str, int]:
         control_keys: set[Tuple[str, str, str, str]] = set()
@@ -2194,11 +2334,14 @@ class PolarMicrogridSimulator:
         }
         self.command_history = []
         self._last_command_response_index = 0
-        _write_json(self.commands_file, [])
+        self._strategy_generation_entries = {}
+        self._strategy_generation_index_token = self._command_history_identity_token()
+        _write_json(self.commands_file, [], compact=True)
         self._command_history_persisted_signature = self._command_history_signature([])
         return cleared
 
     def _remove_automatic_command_history_for_restart(self) -> Dict[str, int]:
+        self._ensure_strategy_generation_index()
         acknowledged_ids = {id(item) for item in self.command_history[: self._last_command_response_index]}
         retained: List[Dict[str, Any]] = []
         removed_keys: set[Tuple[str, str, str, str]] = set()
@@ -2215,6 +2358,8 @@ class PolarMicrogridSimulator:
             self._last_command_response_index = sum(
                 1 for item in self.command_history if id(item) in acknowledged_ids
             )
+            self._strategy_generation_entries = {}
+            self._strategy_generation_index_token = self._command_history_identity_token()
         self._force_control_targets_after_automatic_removal(removed_keys)
         self._write_command_history()
 
@@ -2903,6 +3048,105 @@ class PolarMicrogridSimulator:
         effective_ids = {id(entry) for entry in effective_by_control.values()}
         return [entry for entry in active_entries if id(entry) in effective_ids]
 
+    def _effective_active_control_command_views(
+        self,
+        absolute_minute: int | float,
+    ) -> List[Mapping[str, Any]]:
+        """Project active history to the last owner of each control point."""
+        active_entries = self._active_control_command_entries(absolute_minute)
+        owner_by_control: Dict[Tuple[str, str, str, str], int] = {}
+        simulator_ui_overrides = self._simulator_ui_control_override_keys()
+        for entry_index, entry in enumerate(active_entries):
+            normalized = entry.get("normalized", {})
+            if not isinstance(normalized, Mapping):
+                continue
+            run_items = normalized.get("run_status", [])
+            if isinstance(run_items, Sequence) and not isinstance(run_items, (str, bytes)):
+                for item in run_items:
+                    if not isinstance(item, Mapping):
+                        continue
+                    dev_type = str(item.get("dev_type", "")).strip()
+                    dev_name = str(item.get("dev_name", "")).strip()
+                    if not dev_type or not dev_name:
+                        continue
+                    if item.get("run_stat", "") != "":
+                        key = ("remote_control", dev_type, dev_name, "run_stat")
+                        if key not in simulator_ui_overrides:
+                            owner_by_control[key] = entry_index
+                    if item.get("status", "") != "":
+                        key = ("remote_control", dev_type, dev_name, "status")
+                        if key not in simulator_ui_overrides:
+                            owner_by_control[key] = entry_index
+            set_items = normalized.get("set_values", [])
+            if isinstance(set_items, Sequence) and not isinstance(set_items, (str, bytes)):
+                for item in set_items:
+                    if not isinstance(item, Mapping):
+                        continue
+                    dev_type = str(item.get("dev_type", "")).strip()
+                    dev_name = str(item.get("dev_name", "")).strip()
+                    set_type = str(item.get("set_type", "")).strip()
+                    key = ("remote_adjustment", dev_type, dev_name, set_type)
+                    if dev_type and dev_name and set_type and key not in simulator_ui_overrides:
+                        owner_by_control[key] = entry_index
+
+        projected: List[Mapping[str, Any]] = []
+        for entry_index, entry in enumerate(active_entries):
+            normalized = entry.get("normalized", {})
+            if not isinstance(normalized, Mapping):
+                continue
+            selected_run_by_device: Dict[Tuple[str, str], Dict[str, Any]] = {}
+            run_items = normalized.get("run_status", [])
+            if isinstance(run_items, Sequence) and not isinstance(run_items, (str, bytes)):
+                for item in run_items:
+                    if not isinstance(item, Mapping):
+                        continue
+                    dev_type = str(item.get("dev_type", "")).strip()
+                    dev_name = str(item.get("dev_name", "")).strip()
+                    if not dev_type or not dev_name:
+                        continue
+                    selected = {"dev_type": dev_type, "dev_name": dev_name}
+                    for field_name in ("run_stat", "status"):
+                        key = ("remote_control", dev_type, dev_name, field_name)
+                        if item.get(field_name, "") != "" and owner_by_control.get(key) == entry_index:
+                            selected[field_name] = item.get(field_name)
+                    if len(selected) > 2:
+                        selected_run_by_device[(dev_type, dev_name)] = selected
+            selected_set: List[Dict[str, Any]] = []
+            set_items = normalized.get("set_values", [])
+            if isinstance(set_items, Sequence) and not isinstance(set_items, (str, bytes)):
+                for item in set_items:
+                    if not isinstance(item, Mapping):
+                        continue
+                    key = (
+                        "remote_adjustment",
+                        str(item.get("dev_type", "")).strip(),
+                        str(item.get("dev_name", "")).strip(),
+                        str(item.get("set_type", "")).strip(),
+                    )
+                    if owner_by_control.get(key) == entry_index:
+                        selected_set.append(dict(item))
+            selected_run = list(selected_run_by_device.values())
+            if not selected_run and not selected_set:
+                continue
+
+            original_run = normalized.get("run_status", [])
+            original_set = normalized.get("set_values", [])
+            if selected_run == original_run and selected_set == original_set:
+                projected.append(entry)
+                continue
+            view = dict(entry)
+            view_normalized = dict(normalized)
+            view_normalized["run_status"] = selected_run
+            view_normalized["set_values"] = selected_set
+            view["normalized"] = view_normalized
+            accepted = entry.get("accepted", {})
+            view_accepted = dict(accepted) if isinstance(accepted, Mapping) else {}
+            view_accepted["run_status"] = len(selected_run)
+            view_accepted["set_values"] = len(selected_set)
+            view["accepted"] = view_accepted
+            projected.append(view)
+        return projected
+
     def _defined_run_control_fields(self) -> Dict[Tuple[str, str], set[str]]:
         fields: Dict[Tuple[str, str], set[str]] = {}
         for row in self._control_definition_rows("RunStat"):
@@ -3023,21 +3267,27 @@ class PolarMicrogridSimulator:
         persist: bool = False,
         additional_ui_overrides: Optional[set[Tuple[str, str, str, str]]] = None,
     ) -> Dict[str, int]:
+        active_entries = self._effective_active_control_command_views(absolute_minute)
+        allowed_set_keys = self._defined_set_control_keys()
+        active_adjustment_keys = self._remote_adjustment_keys_from_command_views(
+            active_entries,
+            allowed_set_keys=allowed_set_keys,
+        )
         book = self._base_stat_book_for_controls()
         run_block = _ensure_block(book, "RunStat", STAT_HEADERS["RunStat"])
         cb_block = _ensure_block(book, "CbOpenStat", STAT_HEADERS["CbOpenStat"])
         set_block = _ensure_block(book, "SetValue", STAT_HEADERS["SetValue"])
-        active_entries = self._active_control_command_entries(absolute_minute)
         allowed_run_fields = self._defined_run_control_fields()
-        allowed_set_keys = self._defined_set_control_keys()
         source_curve_defaults = self._apply_default_source_curves(
             book,
             absolute_minute,
             allowed_set_keys=allowed_set_keys,
+            active_command_keys=active_adjustment_keys,
         )
         load_curve_defaults = self._apply_default_non_electric_load_curves(
             book,
             absolute_minute,
+            active_command_keys=active_adjustment_keys,
         )
         applied_run = 0
         applied_set = 0
@@ -3209,6 +3459,7 @@ class PolarMicrogridSimulator:
         absolute_minute: int | float,
         *,
         allowed_set_keys: Optional[set[Tuple[str, str, str]]] = None,
+        active_command_keys: Optional[set[Tuple[str, str, str]]] = None,
     ) -> int:
         sources = self.curves.get("sources", [])
         if not isinstance(sources, Sequence) or isinstance(sources, (str, bytes)):
@@ -3216,7 +3467,11 @@ class PolarMicrogridSimulator:
         catalog = source_curve_catalog_by_identity(self.definition_snapshot.model_book)
         allowed = allowed_set_keys if allowed_set_keys is not None else self._defined_set_control_keys()
         manual_overrides = self._manual_source_curve_override_keys()
-        active_commands = self._active_remote_adjustment_keys(absolute_minute)
+        active_commands = (
+            active_command_keys
+            if active_command_keys is not None
+            else self._active_remote_adjustment_keys(absolute_minute)
+        )
         inactive_coupling_keys = self._inactive_coupling_default_curve_keys()
         curve_mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
         period_minutes = _simulation_mode_duration_minutes(curve_mode)
@@ -3264,6 +3519,8 @@ class PolarMicrogridSimulator:
         self,
         book: EBook,
         absolute_minute: int | float,
+        *,
+        active_command_keys: Optional[set[Tuple[str, str, str]]] = None,
     ) -> int:
         catalog = {
             str(item["key"]): item
@@ -3272,7 +3529,11 @@ class PolarMicrogridSimulator:
             and item.get("dev_type") in {"HydroLoad", "HeatLoad"}
         }
         manual_overrides = self._manual_source_curve_override_keys()
-        active_commands = self._active_remote_adjustment_keys(absolute_minute)
+        active_commands = (
+            active_command_keys
+            if active_command_keys is not None
+            else self._active_remote_adjustment_keys(absolute_minute)
+        )
         inactive_coupling_keys = self._inactive_coupling_default_curve_keys()
         curve_mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
         period_minutes = _simulation_mode_duration_minutes(curve_mode)
@@ -3312,15 +3573,24 @@ class PolarMicrogridSimulator:
             applied += 1
         return applied
 
-    def _active_remote_adjustment_keys(self, absolute_minute: int | float) -> set[Tuple[str, str, str]]:
-        allowed_set_keys = self._defined_set_control_keys()
+    def _remote_adjustment_keys_from_command_views(
+        self,
+        command_views: Sequence[Mapping[str, Any]],
+        *,
+        allowed_set_keys: Optional[set[Tuple[str, str, str]]] = None,
+    ) -> set[Tuple[str, str, str]]:
+        allowed = (
+            allowed_set_keys
+            if allowed_set_keys is not None
+            else self._defined_set_control_keys()
+        )
         active_keys: set[Tuple[str, str, str]] = set()
         simulator_ui_overrides = {
             (dev_type, dev_name, field_name)
             for kind, dev_type, dev_name, field_name in self._simulator_ui_control_override_keys()
             if kind == "remote_adjustment"
         }
-        for command in self._active_control_command_entries(absolute_minute):
+        for command in command_views:
             try:
                 _run_items, set_items = self._validated_command_entry_items(command)
             except ValueError:
@@ -3331,9 +3601,14 @@ class PolarMicrogridSimulator:
                     str(item.get("dev_name", "")),
                     str(item.get("set_type", "")),
                 )
-                if key in allowed_set_keys and key not in simulator_ui_overrides:
+                if key in allowed and key not in simulator_ui_overrides:
                     active_keys.add(key)
         return active_keys
+
+    def _active_remote_adjustment_keys(self, absolute_minute: int | float) -> set[Tuple[str, str, str]]:
+        return self._remote_adjustment_keys_from_command_views(
+            self._effective_active_control_command_views(absolute_minute)
+        )
 
     @staticmethod
     def _set_value_from_book(book: EBook, key: Tuple[str, str, str]) -> Optional[float]:
@@ -4115,6 +4390,13 @@ class PolarMicrogridSimulator:
                 changed = True
         return changed
 
+    def _command_history_identity_token(self) -> Tuple[int, int, int]:
+        return (
+            id(self.command_history),
+            len(self.command_history),
+            id(self.command_history[-1]) if self.command_history else 0,
+        )
+
     @staticmethod
     def _strategy_generation_entry_metadata(entry: Mapping[str, Any]) -> Tuple[str, Any, bool]:
         strategy_id, generation, replace_generation = _strategy_generation_metadata(entry)
@@ -4127,6 +4409,80 @@ class PolarMicrogridSimulator:
             replace_generation = replace_generation or payload_replace_generation
         return strategy_id, generation, replace_generation
 
+    def _entry_belongs_in_strategy_generation_index(
+        self,
+        entry: Mapping[str, Any],
+    ) -> Tuple[str, bool]:
+        if entry.get("cancelled") or _command_origin(entry) != "automatic":
+            return "", False
+        strategy_id, _generation, replace_generation = (
+            self._strategy_generation_entry_metadata(entry)
+        )
+        indexed = bool(
+            strategy_id
+            and (
+                replace_generation
+                or self._command_entry_has_accepted_controls(entry)
+            )
+        )
+        return strategy_id, indexed
+
+    def _rebuild_strategy_generation_index(self) -> None:
+        indexed: Dict[str, List[Dict[str, Any]]] = {}
+        for entry in self.command_history:
+            if not isinstance(entry, dict):
+                continue
+            strategy_id, include = self._entry_belongs_in_strategy_generation_index(
+                entry
+            )
+            if include:
+                indexed.setdefault(strategy_id, []).append(entry)
+        self._strategy_generation_entries = indexed
+        self._strategy_generation_index_token = self._command_history_identity_token()
+
+    def _ensure_strategy_generation_index(self) -> None:
+        if self._strategy_generation_index_token != self._command_history_identity_token():
+            self._rebuild_strategy_generation_index()
+
+    def _append_command_history_entry(self, entry: Dict[str, Any]) -> None:
+        self._ensure_strategy_generation_index()
+        self.command_history.append(entry)
+        strategy_id, include = self._entry_belongs_in_strategy_generation_index(entry)
+        if include:
+            self._strategy_generation_entries.setdefault(strategy_id, []).append(entry)
+        self._strategy_generation_index_token = self._command_history_identity_token()
+
+    def _matching_complete_strategy_snapshot(
+        self,
+        *,
+        strategy_id: str,
+        generation: Any,
+        run_items: Sequence[Mapping[str, Any]],
+        set_items: Sequence[Mapping[str, Any]],
+        absolute_minute: float,
+    ) -> Optional[Mapping[str, Any]]:
+        self._ensure_strategy_generation_index()
+        for entry in reversed(self._strategy_generation_entries.get(strategy_id, ())):
+            _entry_strategy_id, entry_generation, replace_generation = (
+                self._strategy_generation_entry_metadata(entry)
+            )
+            if (
+                not replace_generation
+                or not entry.get("snapshot_complete")
+                or not _strategy_generation_matches(entry_generation, generation)
+                or not self._command_entry_is_active(entry, absolute_minute)
+            ):
+                continue
+            normalized = entry.get("normalized", {})
+            if not isinstance(normalized, Mapping):
+                continue
+            if (
+                list(normalized.get("run_status", [])) == list(run_items)
+                and list(normalized.get("set_values", [])) == list(set_items)
+            ):
+                return entry
+        return None
+
     def _mark_strategy_generations_cancelled(
         self,
         *,
@@ -4138,17 +4494,18 @@ class PolarMicrogridSimulator:
         cancelled_absolute_minute: float,
         require_generation_match: bool,
     ) -> Tuple[int, set[Tuple[str, str, str, str]]]:
+        self._ensure_strategy_generation_index()
         cancelled_entries = 0
         cancelled_keys: set[Tuple[str, str, str, str]] = set()
-        for entry in self.command_history:
-            if not isinstance(entry, dict) or entry.get("cancelled"):
-                continue
-            if _command_origin(entry) != "automatic":
-                continue
+        indexed_entries = list(self._strategy_generation_entries.get(strategy_id, ()))
+        retained_entries: List[Dict[str, Any]] = []
+        for entry in indexed_entries:
             entry_strategy_id, entry_generation, replace_generation = self._strategy_generation_entry_metadata(entry)
             if entry_strategy_id != strategy_id:
+                retained_entries.append(entry)
                 continue
             if require_generation_match and not _strategy_generation_matches(entry_generation, generation):
+                retained_entries.append(entry)
                 continue
             # A strategy snapshot can legitimately contain no control points.  Keep
             # those records cancellable, but do not reinterpret unrelated metadata
@@ -4169,6 +4526,11 @@ class PolarMicrogridSimulator:
             entry["cancelled_run_id"] = int(self.clock.run_id)
             cancelled_entries += 1
             cancelled_keys.update(entry_keys)
+        if retained_entries:
+            self._strategy_generation_entries[strategy_id] = retained_entries
+        else:
+            self._strategy_generation_entries.pop(strategy_id, None)
+        self._strategy_generation_index_token = self._command_history_identity_token()
         return cancelled_entries, cancelled_keys
 
     def _cancel_strategy_generation(
@@ -4243,9 +4605,10 @@ class PolarMicrogridSimulator:
             },
             "payload": json.loads(json.dumps(payload, ensure_ascii=False, default=str)),
         }
-        self.command_history.append(cancel_entry)
+        self._append_command_history_entry(cancel_entry)
+        self._prepare_command_history_for_persistence()
         self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
-        self._write_command_history()
+        self._write_command_history(prepared=True)
         self._append_runtime_log(
             "控制指令",
             "学员台 /api/student/commands",
@@ -4354,9 +4717,10 @@ class PolarMicrogridSimulator:
                 },
                 "payload": json.loads(json.dumps(payload, ensure_ascii=False, default=str)),
             }
-            self.command_history.append(cancel_entry)
+            self._append_command_history_entry(cancel_entry)
+            self._prepare_command_history_for_persistence()
             self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
-            self._write_command_history()
+            self._write_command_history(prepared=True)
             time_payload = self._api_time_payload()
             cancelled_items = [
                 {
@@ -4465,11 +4829,14 @@ class PolarMicrogridSimulator:
                         for key in sorted(targets)
                     ],
                 },
-                "payload": json.loads(json.dumps(payload, ensure_ascii=False, default=str)),
+                "payload": self._compact_command_payload(
+                    json.loads(json.dumps(payload, ensure_ascii=False, default=str))
+                ),
             }
-            self.command_history.append(delete_entry)
+            self._append_command_history_entry(delete_entry)
+            self._prepare_command_history_for_persistence()
             self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
-            self._write_command_history()
+            self._write_command_history(prepared=True)
             time_payload = self._api_time_payload()
             deleted_items = [
                 {
@@ -6424,6 +6791,14 @@ class PolarMicrogridSimulator:
             requested_count = len(requested_run_items) + len(requested_set_items)
             ignored = requested_count - accepted_run - accepted_set if eligible_source else requested_count
             accepted = {"run_status": accepted_run, "set_values": accepted_set, "ignored": ignored}
+            if complete_strategy_snapshot and self._matching_complete_strategy_snapshot(
+                strategy_id=strategy_id,
+                generation=generation,
+                run_items=normalized_run_items,
+                set_items=normalized_set_items,
+                absolute_minute=issued_absolute_minute,
+            ) is not None:
+                return accepted
             valid_for_minutes = (
                 None
                 if expires_at_absolute_minute is None
@@ -6464,11 +6839,14 @@ class PolarMicrogridSimulator:
                     "run_status": normalized_run_items if eligible_source else [],
                     "set_values": normalized_set_items if eligible_source else [],
                 },
-                "payload": json.loads(json.dumps(payload, ensure_ascii=False, default=str)),
+                "payload": self._compact_command_payload(
+                    json.loads(json.dumps(payload, ensure_ascii=False, default=str))
+                ),
             }
-            self.command_history.append(command_entry)
+            self._append_command_history_entry(command_entry)
+            self._prepare_command_history_for_persistence()
             self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
-            self._write_command_history()
+            self._write_command_history(prepared=True)
             self._append_runtime_log(
                 "控制指令",
                 "学员台 /api/student/commands",
@@ -13034,7 +13412,7 @@ class PolarMicrogridSimulator:
             recent_commands = self.command_history[-50:]
             recent_ids = {id(entry) for entry in recent_commands}
             active_commands = self._active_control_command_entries(self.clock.absolute_minute)
-            effective_commands = self._effective_active_control_command_entries(self.clock.absolute_minute)
+            effective_commands = self._effective_active_control_command_views(self.clock.absolute_minute)
             pinned_commands = [
                 entry
                 for entry in active_commands
@@ -13145,6 +13523,10 @@ class MultiModelSimulator:
         self._services: Dict[str, PolarMicrogridSimulator] = {}
         self.lock = threading.RLock()
         self.default_model_id = ""
+        self._directory_sync_interval_seconds = 1.0
+        self._next_directory_sync_at = (
+            time.monotonic() + self._directory_sync_interval_seconds
+        )
         for spec in normalized_specs:
             if spec.model_id in self._services:
                 raise ValueError(f"Duplicate simulation model id: {spec.model_id}")
@@ -13307,8 +13689,12 @@ class MultiModelSimulator:
         with service.lock:
             service._retire_service_instance_locked()
 
-    def _sync_models_from_directory_locked(self) -> None:
+    def _sync_models_from_directory_locked(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and now < self._next_directory_sync_at:
+            return
         specs = self._unique_specs(self._directory_specs(self.models_root))
+        self._next_directory_sync_at = now + self._directory_sync_interval_seconds
         if not specs:
             return
         ordered_ids: List[str] = []
@@ -13401,7 +13787,7 @@ class MultiModelSimulator:
         target_id = _safe_model_id(model_id)
         with self.lock:
             if self.directory_backed:
-                self._sync_models_from_directory_locked()
+                self._sync_models_from_directory_locked(force=True)
             service = self._services.get(target_id)
             if service is None:
                 raise KeyError(f"Unknown simulation model: {model_id}")
@@ -13446,7 +13832,7 @@ class MultiModelSimulator:
         target_keys = {_model_key(new_model_id), _model_key(target_id)}
         with self.lock:
             if self.directory_backed:
-                self._sync_models_from_directory_locked()
+                self._sync_models_from_directory_locked(force=True)
             existing_keys = {
                 key
                 for existing_service in self._services.values()
@@ -13519,6 +13905,11 @@ class MultiModelSimulator:
                 self._sync_models_from_directory_locked()
             target = _safe_model_id(model_id or self.default_model_id)
             service = self._services.get(target)
+            if service is None and self.directory_backed:
+                # Cache misses may be a newly added external model. Refresh
+                # immediately without making hot lookups rescan the directory.
+                self._sync_models_from_directory_locked(force=True)
+                service = self._services.get(target)
         if service is None:
             raise KeyError(f"Unknown simulation model: {model_id}")
         return service
@@ -13535,7 +13926,7 @@ class MultiModelSimulator:
     def models(self) -> List[Dict[str, Any]]:
         with self.lock:
             if self.directory_backed:
-                self._sync_models_from_directory_locked()
+                self._sync_models_from_directory_locked(force=True)
             return [service.model_info() for service in self._services.values()]
 
     def trainee_receive_states(self) -> Dict[str, Dict[str, Any]]:

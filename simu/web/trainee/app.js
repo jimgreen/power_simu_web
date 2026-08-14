@@ -173,7 +173,9 @@ const state = {
   activeCurveDisplayKey: "wind_speed_mps",
   selectedCurveDisplayKeys: ["wind_speed_mps"],
   hiddenCurveDisplayKeys: [],
+  curveDisplayTreeSearch: "",
   curveDisplayTreeGroupCollapsed: readStoredCurveDisplayTreeCollapsedGroups(),
+  curveDisplaySeriesCache: new WeakMap(),
   curveDisplayCursor: { visible: false, x: 0, y: 0, index: 0 },
   curveDisplayLegendHitBoxes: [],
   lastCurveDisplayRenderKey: "",
@@ -11632,58 +11634,75 @@ function curveDisplayMetaForKey(key, snapshot = state.snapshot || {}) {
   };
 }
 
-function curveDisplayRoundValue(key, value, snapshot = state.snapshot || {}) {
-  const meta = curveDisplayMetaForKey(key, snapshot);
+function curveDisplayRoundValue(key, value, snapshot = state.snapshot || {}, meta = null) {
+  const resolvedMeta = meta || curveDisplayMetaForKey(key, snapshot);
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return 0;
-  return Number(numeric.toFixed(meta.digits));
+  return Number(numeric.toFixed(resolvedMeta.digits));
 }
 
-function interpolateCurveDisplay(points, minute, key, defaultValue = 0, snapshot = state.snapshot || {}) {
-  const pairs = (points || [])
+function curveDisplayPointPairs(points, key, snapshot = state.snapshot || {}) {
+  return (points || [])
     .map((point, index) => ({
       minute: Number(point.minute ?? index),
       value: curveDisplayPointValue(point, key, snapshot),
     }))
     .filter((point) => Number.isFinite(point.minute) && Number.isFinite(point.value))
     .sort((left, right) => left.minute - right.minute);
-  if (!pairs.length) return defaultValue;
-  if (pairs.length === 1) return pairs[0].value;
-  const target = Number(minute) || 0;
-  if (target <= pairs[0].minute) return pairs[0].value;
-  if (target >= pairs[pairs.length - 1].minute) return pairs[pairs.length - 1].value;
-  for (let idx = 0; idx < pairs.length - 1; idx += 1) {
-    const left = pairs[idx];
-    const right = pairs[idx + 1];
-    if (left.minute <= target && target <= right.minute) {
-      const span = Math.max(1e-9, right.minute - left.minute);
-      return left.value + ((target - left.minute) / span) * (right.value - left.value);
-    }
-  }
-  return defaultValue;
 }
 
 function curveDisplaySeries(key, snapshot = state.snapshot || {}) {
   const config = curveDisplayConfig(snapshot);
   const points = curveDisplayRawPoints(key, snapshot);
   const meta = curveDisplayMetaForKey(key, snapshot);
-  if (points.length === config.pointCount) {
-    return points.map((point) => curveDisplayRoundValue(key, curveDisplayPointValue(point, key, snapshot) ?? meta.min, snapshot));
+  const cacheKey = `${key}|${config.key}|${config.pointCount}|${config.stepMinutes}|${meta.digits}|${meta.min}`;
+  let cache = state.curveDisplaySeriesCache.get(points);
+  if (cache?.has(cacheKey)) return cache.get(cacheKey);
+  if (!cache) {
+    cache = new Map();
+    state.curveDisplaySeriesCache.set(points, cache);
   }
-  return Array.from({ length: config.pointCount }, (_unused, index) => (
-    curveDisplayRoundValue(key, interpolateCurveDisplay(points, curveDisplayPointMinute(index, snapshot), key, meta.min, snapshot), snapshot)
-  ));
+  let values;
+  if (points.length === config.pointCount) {
+    values = points.map((point) => {
+      const value = curveDisplayPointValue(point, key, snapshot);
+      return curveDisplayRoundValue(key, Number.isFinite(value) ? value : meta.min, snapshot, meta);
+    });
+  } else {
+    const pairs = curveDisplayPointPairs(points, key, snapshot);
+    let pairIndex = 0;
+    values = Array.from({ length: config.pointCount }, (_unused, index) => {
+      const target = curveDisplayPointMinute(index, snapshot);
+      let value = meta.min;
+      if (pairs.length === 1 || target <= pairs[0]?.minute) {
+        value = pairs[0]?.value ?? meta.min;
+      } else if (target >= pairs[pairs.length - 1]?.minute) {
+        value = pairs[pairs.length - 1]?.value ?? meta.min;
+      } else if (pairs.length > 1) {
+        while (pairIndex < pairs.length - 2 && target > pairs[pairIndex + 1].minute) pairIndex += 1;
+        const left = pairs[pairIndex];
+        const right = pairs[pairIndex + 1];
+        const span = Math.max(1e-9, right.minute - left.minute);
+        value = left.value + ((target - left.minute) / span) * (right.value - left.value);
+      }
+      return curveDisplayRoundValue(key, value, snapshot, meta);
+    });
+  }
+  cache.set(cacheKey, values);
+  return values;
+}
+
+function curveDisplaySeriesMap(keys, snapshot = state.snapshot || {}) {
+  return new Map((keys || []).map((key) => [key, curveDisplaySeries(key, snapshot)]));
 }
 
 function selectedCurveDisplayKeys(snapshot = state.snapshot || {}) {
   const available = new Set(curveDisplayAllKeys(snapshot));
   const selected = Array.from(new Set(state.selectedCurveDisplayKeys || []))
     .filter((key) => available.has(key));
-  if (!selected.length && available.has(state.activeCurveDisplayKey)) selected.push(state.activeCurveDisplayKey);
-  if (!selected.length) selected.push("wind_speed_mps");
   state.selectedCurveDisplayKeys = selected;
   if (!selected.includes(state.activeCurveDisplayKey)) {
-    state.activeCurveDisplayKey = selected[selected.length - 1] || "wind_speed_mps";
+    state.activeCurveDisplayKey = selected[selected.length - 1] || "";
   }
   return selected;
 }
@@ -11734,29 +11753,40 @@ function curveDisplayFamilyKeys(family, snapshot = state.snapshot || {}) {
 
 function setCurveDisplaySelection(keys, activeKey = keys?.[keys.length - 1], shouldRender = true) {
   const available = new Set(curveDisplayAllKeys(state.snapshot || {}));
+  const previous = new Set(state.selectedCurveDisplayKeys || []);
   const selected = Array.from(new Set(keys || [])).filter((key) => available.has(key));
-  if (!selected.length) selected.push("wind_speed_mps");
   state.selectedCurveDisplayKeys = selected;
-  state.activeCurveDisplayKey = selected.includes(activeKey) ? activeKey : selected[selected.length - 1] || "wind_speed_mps";
-  if (selected.length === 1) {
-    const hidden = curveDisplayHiddenSet();
-    hidden.delete(selected[0]);
-    state.hiddenCurveDisplayKeys = Array.from(hidden);
-  }
+  state.activeCurveDisplayKey = selected.includes(activeKey) ? activeKey : selected[selected.length - 1] || "";
+  const hidden = curveDisplayHiddenSet();
+  selected.filter((key) => !previous.has(key)).forEach((key) => hidden.delete(key));
+  state.hiddenCurveDisplayKeys = Array.from(hidden);
   state.lastCurveDisplayTableKey = "";
   if (shouldRender) renderCurveDisplay(state.snapshot || {}, true);
 }
 
-function selectCurveDisplayButton(button) {
-  if (!button) return;
-  const keys = button.dataset.curveDisplayFamily
-    ? curveDisplayFamilyKeys(button.dataset.curveDisplayFamily, state.snapshot || {})
-    : button.dataset.curveDisplayKey ? [button.dataset.curveDisplayKey] : [];
-  setCurveDisplaySelection(keys, button.dataset.curveDisplayKey || keys[0], true);
+function selectCurveDisplayButton(button, event = null) {
+  const key = button?.dataset.curveDisplayKey || "";
+  if (!key) return;
+  const selected = selectedCurveDisplayKeys(state.snapshot || {});
+  const selectedSet = new Set(selected);
+  const multiSelect = Boolean(event?.ctrlKey || event?.metaKey || event?.shiftKey);
+  const next = multiSelect
+    ? selectedSet.has(key)
+      ? selected.filter((selectedKey) => selectedKey !== key)
+      : [...selected, key]
+    : [key];
+  if (!multiSelect) {
+    const hidden = curveDisplayHiddenSet();
+    hidden.delete(key);
+    state.hiddenCurveDisplayKeys = Array.from(hidden);
+  }
+  const activeKey = next.includes(key) ? key : next[next.length - 1];
+  setCurveDisplaySelection(next, activeKey, true);
 }
 
 function curveDisplaySelectedLabel(snapshot = state.snapshot || {}) {
   const selected = selectedCurveDisplayKeys(snapshot);
+  if (!selected.length) return "未选择曲线";
   return selected.length <= 1 ? curveDisplayMetaForKey(selected[0], snapshot).label : `已选${selected.length}条`;
 }
 
@@ -11774,36 +11804,68 @@ function curveDisplayTreeGroupCollapsed(groupKey) {
   return Boolean(state.curveDisplayTreeGroupCollapsed?.[groupKey]);
 }
 
-function toggleCurveDisplayTreeGroup(groupKey) {
+function toggleCurveDisplayTreeGroup(groupKey, shouldRender = true) {
   if (!groupKey) return;
   state.curveDisplayTreeGroupCollapsed = {
     ...(state.curveDisplayTreeGroupCollapsed || {}),
     [groupKey]: !curveDisplayTreeGroupCollapsed(groupKey),
   };
   localStorage.setItem(CURVE_DISPLAY_TREE_COLLAPSE_KEY, JSON.stringify(state.curveDisplayTreeGroupCollapsed));
-  renderCurveDisplayTree(state.snapshot || {});
+  if (shouldRender) renderCurveDisplayTree(state.snapshot || {});
 }
 
-function curveDisplayTreeGroupHeader(groupKey, label, count, buttonAttrs, buttonClasses = "", toggleAttribute = "data-curve-display-tree-toggle") {
-  const collapsed = curveDisplayTreeGroupCollapsed(groupKey);
+function curveDisplayTreeGroupHeader(groupKey, label, count, buttonAttrs, buttonClasses = "", forceExpanded = false) {
+  const collapsed = !forceExpanded && curveDisplayTreeGroupCollapsed(groupKey);
   return `
-    <div class="tree-parent-row">
-      <button
-        type="button"
-        class="tree-collapse-toggle ${collapsed ? "is-collapsed" : ""}"
-        ${toggleAttribute}="${escapeHtml(groupKey)}"
-        aria-label="${collapsed ? "展开" : "折叠"}${escapeHtml(label)}"
-        aria-expanded="${collapsed ? "false" : "true"}"
-      ><span class="tree-toggle" aria-hidden="true"></span></button>
-      <button
-        type="button"
-        class="tree-node tree-type ${buttonClasses}"
-        ${buttonAttrs}
-      >
-        <span>${escapeHtml(label)}</span>
-        <strong>${count}</strong>
-      </button>
-    </div>`;
+    <button
+      type="button"
+      class="tree-node tree-type ${buttonClasses} ${collapsed ? "is-collapsed" : ""}"
+      data-curve-display-tree-toggle="${escapeHtml(groupKey)}"
+      aria-label="${collapsed ? "展开" : "折叠"}${escapeHtml(label)}"
+      aria-expanded="${collapsed ? "false" : "true"}"
+      ${buttonAttrs}
+    >
+      <span class="tree-title">
+        <i class="tree-toggle" aria-hidden="true"></i>
+        <span class="tree-title-text">${escapeHtml(label)}</span>
+      </span>
+      <strong>${count}</strong>
+    </button>`;
+}
+
+function curveDisplayTreeMediumMeta(family = "") {
+  return {
+    environment: { label: "环境", marker: "环", order: 0 },
+    electric: { label: "电", marker: "电", order: 1 },
+    hydrogen: { label: "氢", marker: "氢", order: 2 },
+    heat: { label: "热", marker: "热", order: 3 },
+    other: { label: "其他", marker: "其", order: 4 },
+  }[family] || { label: "其他", marker: "其", order: 4 };
+}
+
+function curveDisplayTreeItemMatches(item, query) {
+  if (!query) return true;
+  return [item.label, item.unit, item.medium?.label]
+    .some((value) => String(value || "").toLocaleLowerCase("zh-CN").includes(query));
+}
+
+function curveDisplayTreeChildHtml(item, type, selectedSet) {
+  return `
+    <button
+      type="button"
+      class="tree-node tree-child ${selectedSet.has(item.key) ? "is-active" : ""} ${isCurveDisplaySeriesHidden(item.key) ? "is-hidden-series" : ""}"
+      data-curve-display-tree-type="${escapeHtml(type)}"
+      data-curve-display-key="${escapeHtml(item.key)}"
+      data-curve-medium="${escapeHtml(item.family)}"
+      aria-pressed="${selectedSet.has(item.key) ? "true" : "false"}"
+      title="${escapeHtml(`${item.label} · ${item.medium.label} · ${item.unit || "无单位"}`)}"
+    >
+      <span class="curve-tree-item-main">
+        <i class="curve-medium-marker is-${escapeHtml(item.family)}" aria-hidden="true">${escapeHtml(item.medium.marker)}</i>
+        <span class="curve-tree-item-label">${escapeHtml(item.label)}</span>
+      </span>
+      <small>${escapeHtml(item.unit)}</small>
+    </button>`;
 }
 
 function renderCurveDisplayTree(snapshot = state.snapshot || {}) {
@@ -11813,144 +11875,58 @@ function renderCurveDisplayTree(snapshot = state.snapshot || {}) {
   const selectedSet = new Set(selected);
   const loadKeys = curveDisplayLoadKeys(snapshot);
   const loadDevices = curveDisplayLoads(snapshot);
-  const loadGroups = [
-    ...CURVE_DISPLAY_LOAD_FAMILIES.map((family) => ({
-      ...family,
-      loads: loadDevices.filter((load) => load.family === family.key),
-    })),
-    {
-      key: "other",
-      label: "其他负荷曲线",
-      loads: loadDevices.filter((load) => !CURVE_DISPLAY_LOAD_FAMILIES.some((family) => family.key === load.family)),
-    },
-  ].filter((group) => group.key !== "other" || group.loads.length);
-  const sourceGroups = CURVE_DISPLAY_SOURCE_FAMILIES.map((family) => ({
-    ...family,
-    sources: curveDisplaySourceCatalog(snapshot).filter((item) => item.family === family.key),
-  }));
-  const envSelected = CURVE_DISPLAY_ENV_KEYS.every((key) => selectedSet.has(key))
-    && selected.every((key) => CURVE_DISPLAY_ENV_KEYS.includes(key));
-  const loadSelected = loadKeys.length && loadKeys.every((key) => selectedSet.has(key))
-    && selected.every((key) => loadKeys.includes(key));
-  const envPartial = CURVE_DISPLAY_ENV_KEYS.some((key) => selectedSet.has(key));
-  const loadPartial = loadKeys.some((key) => selectedSet.has(key));
   const sourceKeys = curveDisplaySourceKeys(snapshot);
-  const sourceSelected = sourceKeys.length && sourceKeys.every((key) => selectedSet.has(key))
-    && selected.every((key) => sourceKeys.includes(key));
-  const sourcePartial = sourceKeys.some((key) => selectedSet.has(key));
-  $("curveDisplayTreeSummary").textContent = `${CURVE_DISPLAY_ENV_KEYS.length + loadKeys.length + curveDisplaySourceKeys(snapshot).length} 条`;
-  container.innerHTML = `
-    <div class="tree-group">
-      ${curveDisplayTreeGroupHeader(
-        "environment",
-        "环境曲线",
-        CURVE_DISPLAY_ENV_KEYS.length,
-        `data-curve-display-tree-type="environment" data-curve-display-family="environment" aria-expanded="${curveDisplayTreeGroupCollapsed("environment") ? "false" : "true"}"`,
-        envSelected ? "is-active" : envPartial ? "is-parent-active" : "",
-        "data-curve-display-tree-toggle",
-      )}
-      <div class="tree-children" ${curveDisplayTreeGroupCollapsed("environment") ? "hidden" : ""}>
-        ${CURVE_DISPLAY_ENV_KEYS.map((key) => {
-          const meta = curveDisplayMetaForKey(key, snapshot);
-          const shortLabel = key === "wind_speed_mps" ? "风" : key === "solar_irradiance_w_m2" ? "光" : "温";
-          return `
-            <button
-              type="button"
-              class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""} ${isCurveDisplaySeriesHidden(key) ? "is-hidden-series" : ""}"
-              data-curve-display-tree-type="environment"
-              data-curve-display-key="${escapeHtml(key)}"
-            >
-              <span>${shortLabel}</span>
-              <small>${escapeHtml(meta.unit)}</small>
-            </button>`;
-        }).join("")}
-      </div>
-    </div>
-    <div class="tree-group">
-      ${curveDisplayTreeGroupHeader(
-        "load",
-        "负荷曲线",
-        loadKeys.length,
-        `data-curve-display-tree-type="load" data-curve-display-family="load" aria-expanded="${curveDisplayTreeGroupCollapsed("load") ? "false" : "true"}"`,
-        loadSelected ? "is-active" : loadPartial ? "is-parent-active" : "",
-        "data-curve-display-tree-toggle",
-      )}
-      <div class="tree-children" ${curveDisplayTreeGroupCollapsed("load") ? "hidden" : ""}>
-        ${loadGroups.map((group) => {
-          const groupKey = `load:${group.key}`;
-          const keys = group.loads.map((load) => curveDisplayLoadKey(load.name));
-          const groupSelected = keys.length && keys.every((key) => selectedSet.has(key))
-            && selected.every((key) => keys.includes(key));
-          const groupPartial = keys.some((key) => selectedSet.has(key));
-          return `
-            <div class="tree-subgroup">
-              ${curveDisplayTreeGroupHeader(
-                groupKey,
-                group.label,
-                keys.length,
-                `data-curve-display-tree-type="load" data-curve-display-family="${escapeHtml(groupKey)}" aria-expanded="${curveDisplayTreeGroupCollapsed(groupKey) ? "false" : "true"}"`,
-                groupSelected ? "is-active" : groupPartial ? "is-parent-active" : "",
-              )}
-              <div class="tree-children tree-grandchildren" ${curveDisplayTreeGroupCollapsed(groupKey) ? "hidden" : ""}>
-                ${group.loads.map((load) => {
-                  const key = curveDisplayLoadKey(load.name);
-                  return `
-                    <button
-                      type="button"
-                      class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""} ${isCurveDisplaySeriesHidden(key) ? "is-hidden-series" : ""}"
-                      data-curve-display-tree-type="load"
-                      data-curve-display-key="${escapeHtml(key)}"
-                    >
-                      <span>${escapeHtml(load.name)}</span>
-                      <small>${escapeHtml(load.unit || load.devType)}</small>
-                    </button>`;
-                }).join("") || `<div class="empty-state compact">暂无${escapeHtml(group.label)}</div>`}
-              </div>
-            </div>`;
-        }).join("") || '<div class="empty-state compact">暂无负荷曲线</div>'}
-      </div>
-    </div>
-    <div class="tree-group">
-      ${curveDisplayTreeGroupHeader(
-        "source",
-        "供能曲线",
-        sourceKeys.length,
-        `data-curve-display-tree-type="source" data-curve-display-family="source" aria-expanded="${curveDisplayTreeGroupCollapsed("source") ? "false" : "true"}"`,
-        sourceSelected ? "is-active" : sourcePartial ? "is-parent-active" : "",
-        "data-curve-display-tree-toggle",
-      )}
-      <div class="tree-children" ${curveDisplayTreeGroupCollapsed("source") ? "hidden" : ""}>
-        ${sourceGroups.map((group) => {
-          const groupKey = `source:${group.key}`;
-          const keys = group.sources.map((source) => source.key);
-          const groupSelected = keys.length && keys.every((key) => selectedSet.has(key))
-            && selected.every((key) => keys.includes(key));
-          const groupPartial = keys.some((key) => selectedSet.has(key));
-          return `
-            <div class="tree-subgroup">
-              ${curveDisplayTreeGroupHeader(
-                groupKey,
-                group.label,
-                keys.length,
-                `data-curve-display-tree-type="source" data-curve-display-family="${escapeHtml(groupKey)}" aria-expanded="${curveDisplayTreeGroupCollapsed(groupKey) ? "false" : "true"}"`,
-                groupSelected ? "is-active" : groupPartial ? "is-parent-active" : "",
-              )}
-              <div class="tree-children tree-grandchildren" ${curveDisplayTreeGroupCollapsed(groupKey) ? "hidden" : ""}>
-                ${group.sources.map((source) => `
-                  <button
-                    type="button"
-                    class="tree-node tree-child ${selectedSet.has(source.key) ? "is-active" : ""} ${isCurveDisplaySeriesHidden(source.key) ? "is-hidden-series" : ""}"
-                    data-curve-display-tree-type="source"
-                    data-curve-display-key="${escapeHtml(source.key)}"
-                  >
-                    <span>${escapeHtml(source.name || source.dev_name || source.key)}</span>
-                    <small>${escapeHtml(source.unit || source.dev_type || "")}</small>
-                  </button>`).join("") || `<div class="empty-state compact">暂无${escapeHtml(group.label)}</div>`}
-              </div>
-            </div>`;
-        }).join("")}
-      </div>
-    </div>`;
+  const query = String(state.curveDisplayTreeSearch || "").trim().toLocaleLowerCase("zh-CN");
+  const environmentItems = CURVE_DISPLAY_ENV_KEYS.map((key) => {
+    const meta = curveDisplayMetaForKey(key, snapshot);
+    return { key, label: meta.label, unit: meta.unit, family: "environment", medium: curveDisplayTreeMediumMeta("environment") };
+  });
+  const loadItems = loadDevices.map((load) => ({
+    key: curveDisplayLoadKey(load.name),
+    label: load.name,
+    unit: load.unit || "",
+    family: curveDisplayTreeMediumMeta(load.family).label === "其他" ? "other" : load.family,
+    medium: curveDisplayTreeMediumMeta(load.family),
+  })).sort((left, right) => left.medium.order - right.medium.order || left.label.localeCompare(right.label, "zh-CN"));
+  const sourceItems = curveDisplaySourceCatalog(snapshot).map((source) => ({
+    key: source.key,
+    label: source.name || source.dev_name || source.key,
+    unit: source.unit || "",
+    family: curveDisplayTreeMediumMeta(source.family).label === "其他" ? "other" : source.family,
+    medium: curveDisplayTreeMediumMeta(source.family),
+  })).sort((left, right) => left.medium.order - right.medium.order || left.label.localeCompare(right.label, "zh-CN"));
+  const groups = [
+    { key: "environment", label: "环境曲线", type: "environment", keys: CURVE_DISPLAY_ENV_KEYS, items: environmentItems },
+    { key: "load", label: "负荷曲线", type: "load", keys: loadKeys, items: loadItems },
+    { key: "source", label: "供能曲线", type: "source", keys: sourceKeys, items: sourceItems },
+  ].map((group) => ({
+    ...group,
+    visibleItems: group.label.toLocaleLowerCase("zh-CN").includes(query)
+      ? group.items
+      : group.items.filter((item) => curveDisplayTreeItemMatches(item, query)),
+  }));
+  const total = groups.reduce((sum, group) => sum + group.items.length, 0);
+  const visibleTotal = groups.reduce((sum, group) => sum + group.visibleItems.length, 0);
+  $("curveDisplayTreeSummary").textContent = query ? `${visibleTotal}/${total} 条` : `${total} 条`;
+  container.innerHTML = groups.filter((group) => !query || group.visibleItems.length).map((group) => {
+    const groupSelected = group.keys.length && group.keys.every((key) => selectedSet.has(key));
+    const groupPartial = !groupSelected && group.keys.some((key) => selectedSet.has(key));
+    const collapsed = !query && curveDisplayTreeGroupCollapsed(group.key);
+    return `
+      <div class="tree-group">
+        ${curveDisplayTreeGroupHeader(
+          group.key,
+          group.label,
+          group.visibleItems.length,
+          `data-curve-display-tree-type="${escapeHtml(group.type)}" data-curve-display-family="${escapeHtml(group.key)}" aria-pressed="${groupSelected ? "true" : "false"}"`,
+          groupSelected ? "is-active" : groupPartial ? "is-parent-active" : "",
+          Boolean(query),
+        )}
+        <div class="tree-children" ${collapsed ? "hidden" : ""}>
+          ${group.visibleItems.map((item) => curveDisplayTreeChildHtml(item, group.type, selectedSet)).join("")}
+        </div>
+      </div>`;
+  }).join("") || `<div class="empty-state">未匹配“${escapeHtml(state.curveDisplayTreeSearch || "")}”</div>`;
 }
 
 function renderCurveDisplayModeControls(snapshot = state.snapshot || {}) {
@@ -12244,7 +12220,7 @@ function drawCurveDisplayCursor(ctx, canvas, plot, metas, seriesByKey, snapshot 
   ctx.restore();
 }
 
-function drawCurveDisplay(snapshot = state.snapshot || {}) {
+function drawCurveDisplay(snapshot = state.snapshot || {}, preparedSeries = null) {
   const canvas = $("curveDisplayChart");
   if (!canvas) return;
   resizeCurveDisplayCanvas();
@@ -12258,7 +12234,7 @@ function drawCurveDisplay(snapshot = state.snapshot || {}) {
   const bottom = height - plot.bottom;
   const allMetas = selectedCurveDisplayKeys(snapshot).map((key) => curveDisplayMetaForKey(key, snapshot));
   const metas = allMetas.filter((meta) => !isCurveDisplaySeriesHidden(meta.key));
-  const seriesByKey = new Map(allMetas.map((meta) => [meta.key, curveDisplaySeries(meta.key, snapshot)]));
+  const seriesByKey = preparedSeries || curveDisplaySeriesMap(allMetas.map((meta) => meta.key), snapshot);
   const activeKey = isCurveDisplaySeriesHidden(state.activeCurveDisplayKey) ? "" : state.activeCurveDisplayKey;
   const axisMeta = curveYAxisMeta(metas, activeKey);
   const legendColumns = width < 560 ? 2 : Math.max(1, allMetas.length);
@@ -12300,6 +12276,12 @@ function drawCurveDisplay(snapshot = state.snapshot || {}) {
     ctx.fillText("所有曲线已隐藏", (left + right) / 2, (top + bottom) / 2);
     ctx.textAlign = "left";
   }
+  if (!allMetas.length) {
+    ctx.fillStyle = "#63717a";
+    ctx.textAlign = "center";
+    ctx.fillText("未选择曲线", (left + right) / 2, (top + bottom) / 2);
+    ctx.textAlign = "left";
+  }
   allMetas.forEach((meta, metaIndex) => {
     const legendX = left + (metaIndex % legendColumns) * legendColumnWidth;
     const legendY = 20 + Math.floor(metaIndex / legendColumns) * 16;
@@ -12320,12 +12302,18 @@ function drawCurveDisplay(snapshot = state.snapshot || {}) {
   drawCurveDisplayCursor(ctx, canvas, plot, metas, seriesByKey, snapshot);
 }
 
-function renderCurveDisplayTable(snapshot = state.snapshot || {}, force = false) {
+function renderCurveDisplayTable(snapshot = state.snapshot || {}, force = false, preparedSeries = null) {
   const container = $("curveDisplayTable");
   if (!container) return;
   const config = curveDisplayConfig(snapshot);
   const metas = selectedCurveDisplayKeys(snapshot).map((key) => curveDisplayMetaForKey(key, snapshot));
-  const seriesByKey = new Map(metas.map((meta) => [meta.key, curveDisplaySeries(meta.key, snapshot)]));
+  if (!metas.length) {
+    state.lastCurveDisplayTableKey = "curveDisplay:empty";
+    container.removeAttribute("data-virtual-table");
+    container.innerHTML = '<div class="empty-state">未选择曲线</div>';
+    return;
+  }
+  const seriesByKey = preparedSeries || curveDisplaySeriesMap(metas.map((meta) => meta.key), snapshot);
   const tableKey = `curveDisplay:${state.activeModelId}:${config.key}`;
   const signature = JSON.stringify({
     model: state.activeModelId,
@@ -12382,11 +12370,13 @@ function renderCurveDisplay(snapshot = state.snapshot || {}, forceTable = false)
   });
   if (!forceTable && renderKey === state.lastCurveDisplayRenderKey) return;
   state.lastCurveDisplayRenderKey = renderKey;
+  const selectedKeys = selectedCurveDisplayKeys(snapshot);
+  const seriesByKey = curveDisplaySeriesMap(selectedKeys, snapshot);
   renderCurveDisplayTree(snapshot);
   renderCurveDisplayModeControls(snapshot);
   renderCurveDisplayLabels(snapshot);
-  drawCurveDisplay(snapshot);
-  renderCurveDisplayTable(snapshot);
+  drawCurveDisplay(snapshot, seriesByKey);
+  renderCurveDisplayTable(snapshot, false, seriesByKey);
 }
 
 function pointerPositionOnCurveDisplayCanvas(event) {
@@ -18296,6 +18286,11 @@ function handleTraineeTableFilterControl(target) {
 
 document.addEventListener("input", (event) => {
   if (handleTraineeTableFilterControl(event.target)) return;
+  if (event.target?.id === "curveDisplayTreeFilter") {
+    state.curveDisplayTreeSearch = event.target.value || "";
+    renderCurveDisplayTree(state.snapshot || {});
+    return;
+  }
   const input = event.target.closest?.("[data-device-tree-filter-scope]");
   if (!input) return;
   const scope = input.dataset.deviceTreeFilterScope || "";
@@ -18350,14 +18345,15 @@ document.addEventListener("click", (event) => {
   if (curveDisplayTreeToggle) {
     event.preventDefault();
     event.stopPropagation();
-    requestAnimationFrame(() => toggleCurveDisplayTreeGroup(
-      curveDisplayTreeToggle.dataset.curveDisplayTreeToggle || "",
-    ));
+    requestAnimationFrame(() => {
+      toggleCurveDisplayTreeGroup(curveDisplayTreeToggle.dataset.curveDisplayTreeToggle || "");
+    });
     return;
   }
   if (curveDisplayButton) {
     event.preventDefault();
-    requestAnimationFrame(() => selectCurveDisplayButton(curveDisplayButton));
+    const selectionEvent = { ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey };
+    requestAnimationFrame(() => selectCurveDisplayButton(curveDisplayButton, selectionEvent));
     return;
   }
   const commandTab = target?.closest("[data-command-tab]");

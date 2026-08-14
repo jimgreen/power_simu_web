@@ -3,7 +3,11 @@ from collections.abc import Mapping
 from unittest.mock import patch
 
 import simu.resource_topology as topology
-from simu.resource_topology import ResourceRef, resolve_resource_topology
+from simu.resource_topology import (
+    ResourceRef,
+    prepare_resource_topology_static_context,
+    resolve_resource_topology,
+)
 
 
 def block(rows):
@@ -651,6 +655,122 @@ class ResourceGridSideTopologyTest(unittest.TestCase):
         self.assertEqual(opened.connection_side, closed.connection_side)
         self.assertEqual(opened.structural_path, closed.structural_path)
         self.assertEqual(opened.busbar_name, closed.busbar_name)
+
+    def test_static_context_is_reused_while_runtime_switch_state_is_recomputed(self):
+        model = {
+            "ACNode": [
+                {"idx": 1, "name": "resource-node", "run_stat": 1},
+                {"idx": 2, "name": "bus-node", "run_stat": 1},
+            ],
+            "ACGenerator": [
+                {"idx": 1, "name": "wind", "node": 1, "run_stat": 1}
+            ],
+            "ACSwitch": [
+                {
+                    "idx": 1,
+                    "name": "collector-switch",
+                    "i_node": 1,
+                    "j_node": 2,
+                    "run_stat": 1,
+                    "status": 1,
+                }
+            ],
+            "ACRealBs": [{"idx": 1, "name": "ac-bus", "node": 2}],
+        }
+        closed_snapshot = snapshot_with_model(model)
+        opened_snapshot = snapshot_with_model(
+            model,
+            scada=[
+                {
+                    "dev_type": "ACSwitch",
+                    "dev_name": "collector-switch",
+                    "meas_type": "STATUS",
+                    "value": 0,
+                    "valid": 1,
+                }
+            ],
+        )
+        refs = [ResourceRef("wind", "ACGenerator", "wind")]
+
+        with patch.object(topology, "_parse_model", wraps=topology._parse_model) as parse:
+            static_context = prepare_resource_topology_static_context(closed_snapshot)
+            closed = resolve_resource_topology(
+                closed_snapshot,
+                refs,
+                static_context=static_context,
+            )
+            opened = resolve_resource_topology(
+                opened_snapshot,
+                refs,
+                static_context=static_context,
+            )
+
+        self.assertEqual(parse.call_count, 1)
+        self.assertTrue(closed.resources[("ACGenerator", "wind")].actively_connected)
+        self.assertFalse(opened.resources[("ACGenerator", "wind")].actively_connected)
+        self.assertEqual(
+            closed.resources[("ACGenerator", "wind")].structural_path,
+            opened.resources[("ACGenerator", "wind")].structural_path,
+        )
+
+    def test_static_context_recomputes_hydrogen_islands_from_runtime_valve_status(self):
+        model = {
+            "HydroNode": [
+                {"idx": 1, "name": "source-node", "run_stat": 1},
+                {"idx": 2, "name": "tank-node", "run_stat": 1},
+            ],
+            "HydroSource": [
+                {"idx": 1, "name": "source", "node": 1, "run_stat": 1}
+            ],
+            "HydroStorage": [
+                {"idx": 1, "name": "tank", "node": 2, "run_stat": 1}
+            ],
+            "HydroValve": [
+                {
+                    "idx": 1,
+                    "name": "valve",
+                    "i_node": 1,
+                    "j_node": 2,
+                    "run_stat": 1,
+                    "status": 1,
+                }
+            ],
+        }
+        connected_snapshot = snapshot_with_model(model)
+        isolated_snapshot = snapshot_with_model(
+            model,
+            device_states=[
+                {
+                    "dev_type": "HydroValve",
+                    "dev_name": "valve",
+                    "run_stat": 1,
+                    "status": 0,
+                }
+            ],
+        )
+        static_context = prepare_resource_topology_static_context(connected_snapshot)
+
+        connected = resolve_resource_topology(
+            connected_snapshot,
+            (),
+            static_context=static_context,
+        )
+        isolated = resolve_resource_topology(
+            isolated_snapshot,
+            (),
+            static_context=static_context,
+        )
+
+        self.assertEqual(len(connected.hydrogen_islands), 1)
+        self.assertEqual(len(isolated.hydrogen_islands), 2)
+        self.assertEqual(
+            connected.hydrogen_device_island_ids[("HydroSource", "source")],
+            connected.hydrogen_device_island_ids[("HydroStorage", "tank")],
+        )
+        self.assertNotEqual(
+            isolated.hydrogen_device_island_ids[("HydroSource", "source")],
+            isolated.hydrogen_device_island_ids[("HydroStorage", "tank")],
+        )
 
     def test_resource_and_required_path_device_state_control_connectivity(self):
         model = {

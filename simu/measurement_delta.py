@@ -205,6 +205,8 @@ def _apply_measurement_array_frame(
     measurements: Mapping[str, Any] | None,
     definitions: Sequence[Mapping[str, Any]],
     payload: Mapping[str, Any],
+    *,
+    expected_definition_signature: Optional[str] = None,
 ) -> Dict[str, Any]:
     definition_rows = list(definitions)
     if any(not isinstance(row, Mapping) for row in definition_rows):
@@ -214,7 +216,11 @@ def _apply_measurement_array_frame(
     except (TypeError, ValueError):
         raise MeasurementArrayMismatchError("实时量测数组长度不一致：count 无效") from None
 
-    expected_signature = measurement_definition_signature(definition_rows)
+    expected_signature = (
+        str(expected_definition_signature)
+        if expected_definition_signature
+        else measurement_definition_signature(definition_rows)
+    )
     received_signature = str(payload.get("definition_signature", "") or "")
     if not received_signature:
         raise MeasurementArrayMismatchError("实时量测定义顺序签名缺失，整帧数据已拒绝")
@@ -312,11 +318,18 @@ def apply_measurement_delta(
     measurements: Mapping[str, Any] | None,
     definitions: Sequence[Mapping[str, Any]],
     payload: Mapping[str, Any],
+    *,
+    expected_definition_signature: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Apply one measurement response without ever partially mutating the input."""
 
     if str(payload.get("encoding", "")) == COMPACT_MEASUREMENT_ENCODING:
-        return _apply_measurement_array_frame(measurements, definitions, payload)
+        return _apply_measurement_array_frame(
+            measurements,
+            definitions,
+            payload,
+            expected_definition_signature=expected_definition_signature,
+        )
 
     merged: Dict[str, Any] = copy.deepcopy(dict(measurements or {}))
     scada_only = _measurement_payload_is_scada_only(payload)

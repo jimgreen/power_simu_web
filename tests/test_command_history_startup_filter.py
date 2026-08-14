@@ -87,8 +87,10 @@ class CommandHistoryStartupFilterTest(unittest.TestCase):
                 "set_values": [{**valid_set, "set_value": "123"}],
             },
         )
-        self.assertEqual(retained["payload"]["run_status"], retained["normalized"]["run_status"])
-        self.assertEqual(retained["payload"]["set_values"], retained["normalized"]["set_values"])
+        self.assertNotIn("run_status", retained["payload"])
+        self.assertNotIn("set_values", retained["payload"])
+        self.assertEqual(retained["payload"]["run_status_count"], 1)
+        self.assertEqual(retained["payload"]["set_values_count"], 1)
         self.assertEqual(retained["accepted"], {"run_status": 1, "set_values": 1, "ignored": 2})
 
         persisted = json.loads(commands_file.read_text(encoding="utf-8"))

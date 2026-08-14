@@ -113,6 +113,56 @@ class ControlCommandValidityTest(unittest.TestCase):
         service._materialize_active_control_commands(1440)
         self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "10")
 
+    def test_materialization_applies_only_the_latest_automatic_owner_per_control_point(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        service.apply_student_commands(
+            {
+                "strategy_id": "renewable_priority",
+                "generation": 1,
+                "replace_strategy_generation": True,
+                "set_values": [
+                    {
+                        "dev_type": "ESS",
+                        "dev_name": "ess01",
+                        "set_type": "p_set",
+                        "set_value": 12,
+                    },
+                    {
+                        "dev_type": "ACGenerator",
+                        "dev_name": "wt01_10kw",
+                        "set_type": "p_set",
+                        "set_value": 6,
+                    },
+                ],
+            },
+            source="trainee-renewable-priority",
+        )
+        service.apply_student_commands(
+            {
+                "strategy_id": "renewable_priority",
+                "generation": 2,
+                "replace_strategy_generation": True,
+                "set_values": [
+                    {
+                        "dev_type": "ESS",
+                        "dev_name": "ess01",
+                        "set_type": "p_set",
+                        "set_value": 18,
+                    }
+                ],
+            },
+            source="trainee-renewable-priority",
+        )
+
+        applied = service._materialize_active_control_commands(service.clock.absolute_minute)
+
+        self.assertEqual(applied["active_commands"], 2)
+        self.assertEqual(applied["set_values"], 2)
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "18")
+        self.assertEqual(self._set_value(service, "ACGenerator", "wt01_10kw", "p_set"), "6")
+
     def test_automatic_control_command_is_valid_until_cycle_end(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)

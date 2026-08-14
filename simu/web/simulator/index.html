@@ -552,6 +552,9 @@
                 <h2>曲线列表</h2>
                 <span id="curveTreeSummary">0 条</span>
               </div>
+              <label class="device-tree-filter curve-tree-filter">
+                <input id="curveTreeFilter" type="search" aria-label="过滤曲线列表" placeholder="过滤曲线" autocomplete="off" />
+              </label>
               <input id="activeCurve" type="hidden" value="wind_speed_mps" />
               <div id="curveTree" class="curve-tree" aria-label="曲线树">
                 <div class="tree-group">
@@ -1278,6 +1281,69 @@
           <div class="modal-actions">
             <button id="cancelStartSimulation" type="button">取消</button>
             <button id="confirmStartSimulation" class="primary" type="submit">启动</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="curveModeSwitchDialog" class="modal-backdrop" hidden>
+        <section class="modal-card curve-mode-switch-modal" aria-modal="true" role="dialog" aria-labelledby="curveModeSwitchTitle">
+          <div class="modal-head">
+            <h2 id="curveModeSwitchTitle">切换仿真类型</h2>
+            <button id="closeCurveModeSwitchDialog" class="icon-button" type="button" title="关闭">
+              <svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z" /></svg>
+            </button>
+          </div>
+          <p id="curveModeSwitchHint" class="modal-hint">当前曲线存在未保存修改。</p>
+          <p id="curveModeSwitchMessage" class="modal-message" aria-live="polite"></p>
+          <div class="modal-actions curve-mode-switch-actions">
+            <button id="cancelCurveModeSwitch" type="button">取消</button>
+            <button id="discardCurveModeSwitch" type="button">不保存直接切换</button>
+            <button id="saveCurveModeSwitch" class="primary" type="button">保存并切换</button>
+          </div>
+        </section>
+      </div>
+
+      <div id="typicalCurveDialog" class="modal-backdrop" hidden>
+        <form id="typicalCurveForm" class="modal-card typical-curve-modal" aria-modal="true" role="dialog" aria-labelledby="typicalCurveTitle">
+          <div class="modal-head">
+            <h2 id="typicalCurveTitle">生成典型曲线</h2>
+            <button id="closeTypicalCurveDialog" class="icon-button" type="button" title="关闭">
+              <svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z" /></svg>
+            </button>
+          </div>
+          <p id="typicalCurveHint" class="modal-hint">选择参数后生成当前曲线的本地草稿。</p>
+          <div class="typical-curve-fields">
+            <label class="modal-field">最大值
+              <span class="typical-curve-input">
+                <input id="typicalCurveMax" name="typicalCurveMax" type="number" inputmode="decimal" required />
+                <small id="typicalCurveMaxUnit"></small>
+              </span>
+            </label>
+            <label class="modal-field">最小值
+              <span class="typical-curve-input">
+                <input id="typicalCurveMin" name="typicalCurveMin" type="number" inputmode="decimal" required />
+                <small id="typicalCurveMinUnit"></small>
+              </span>
+            </label>
+            <label class="modal-field">平均值
+              <span class="typical-curve-input">
+                <input id="typicalCurveAverage" name="typicalCurveAverage" type="number" inputmode="decimal" required />
+                <small id="typicalCurveAverageUnit"></small>
+              </span>
+            </label>
+            <label class="modal-field">曲线形状
+              <select id="typicalCurveShape" name="typicalCurveShape">
+                <option value="step">阶梯</option>
+                <option value="sawtooth">锯齿</option>
+                <option value="sine" selected>正弦</option>
+                <option value="random">随机</option>
+              </select>
+            </label>
+          </div>
+          <p id="typicalCurveMessage" class="modal-message" aria-live="polite"></p>
+          <div class="modal-actions">
+            <button id="cancelTypicalCurve" type="button">取消</button>
+            <button id="confirmTypicalCurve" class="primary" type="submit">确认</button>
           </div>
         </form>
       </div>

@@ -94,6 +94,11 @@ const state = {
   lastCurveEditorRenderKey: "",
   lastCurveEditorTableKey: "",
   curveDirtyKeys: new Set(),
+  curveDirtyKeysByMode: {},
+  curvePersistedMode: "",
+  pendingCurveModeSwitch: "",
+  curveModeSwitchSaving: false,
+  typicalCurveTargetKey: "",
   curveSeries: {},
   curveSeriesByMode: {},
   curveMode: localStorage.getItem("polarSimulatorCurveMode") || "year",
@@ -102,6 +107,7 @@ const state = {
   selectedCurveKeys: ["wind_speed_mps"],
   hiddenCurveKeys: [],
   curveEditKey: "",
+  curveTreeSearch: "",
   curveTreeGroupCollapsed: readStoredCurveTreeCollapsedGroups(),
   isCurveDragging: false,
   isCurveTreePointerDown: false,
@@ -4373,6 +4379,8 @@ async function setActiveModel(modelId, shouldRefresh = true) {
   state.lastCurveEditorRenderKey = "";
   state.lastCurveEditorTableKey = "";
   state.curveDirtyKeys = new Set();
+  state.curveDirtyKeysByMode = {};
+  state.curvePersistedMode = "";
   state.curveSeries = {};
   state.curveSeriesByMode = {};
   state.curvesLoadedModelId = "";
@@ -10053,7 +10061,8 @@ function loadNameFromCurveKey(key) {
 }
 
 function activeCurveKey() {
-  return state.activeCurveKey || $("activeCurve")?.value || "wind_speed_mps";
+  if (typeof state.activeCurveKey === "string") return state.activeCurveKey;
+  return $("activeCurve")?.value || "wind_speed_mps";
 }
 
 function allLoadCurveKeys() {
@@ -10163,6 +10172,21 @@ function curveLoadDevices() {
   }];
 }
 
+function curveObservedRange(key) {
+  const values = Array.isArray(state.curveSeries?.[key]) ? state.curveSeries[key] : [];
+  let minimum = Infinity;
+  let maximum = -Infinity;
+  values.forEach((rawValue) => {
+    const value = Number(rawValue);
+    if (!Number.isFinite(value)) return;
+    minimum = Math.min(minimum, value);
+    maximum = Math.max(maximum, value);
+  });
+  return Number.isFinite(minimum) && Number.isFinite(maximum)
+    ? { min: minimum, max: maximum }
+    : null;
+}
+
 function curveMetaForKey(key) {
   const meta = CURVE_META.find((item) => item.key === key);
   if (meta) return meta;
@@ -10174,6 +10198,15 @@ function curveMetaForKey(key) {
     const lower = Number(loadDevice?.min);
     const upper = Number(loadDevice?.max);
     const defaultValue = Number(loadDevice?.default_value);
+    const observed = curveObservedRange(key);
+    const referenceValues = [defaultValue, observed?.min, observed?.max].filter(Number.isFinite);
+    const referenceMinimum = referenceValues.length ? Math.min(...referenceValues) : 0;
+    const referenceMaximum = referenceValues.length ? Math.max(...referenceValues) : 0;
+    const resolvedMinimum = Number.isFinite(lower) ? Math.min(lower, referenceMinimum) : Math.min(0, referenceMinimum);
+    const upperIsUsable = Number.isFinite(upper) && upper > resolvedMinimum && upper >= referenceMaximum;
+    const resolvedMaximum = upperIsUsable
+      ? upper
+      : Math.max(1, referenceMaximum * 1.2, referenceMaximum + Math.abs(referenceMinimum) * 0.2);
     return {
       ...LOAD_CURVE_META,
       key,
@@ -10182,10 +10215,8 @@ function curveMetaForKey(key) {
       unit: loadDevice?.unit || LOAD_CURVE_META.unit,
       family: loadDevice?.family || "electric",
       devType: loadDevice?.dev_type || "",
-      min: Number.isFinite(lower) ? lower : 0,
-      max: Number.isFinite(upper) && upper > (Number.isFinite(lower) ? lower : 0)
-        ? upper
-        : Math.max(1, Number.isFinite(defaultValue) ? Math.abs(defaultValue) * 1.2 : LOAD_CURVE_META.max),
+      min: resolvedMinimum,
+      max: resolvedMaximum,
     };
   }
   if (String(key).startsWith("source:")) {
@@ -10194,13 +10225,23 @@ function curveMetaForKey(key) {
     const defaultValue = Number(source.default_value);
     const lower = Number(source.min);
     const upper = Number(source.max);
-    const span = Math.max(1, Math.abs(Number.isFinite(defaultValue) ? defaultValue : 0));
+    const observed = curveObservedRange(key);
+    const referenceValues = [defaultValue, observed?.min, observed?.max].filter(Number.isFinite);
+    const referenceMinimum = referenceValues.length ? Math.min(...referenceValues) : 0;
+    const referenceMaximum = referenceValues.length ? Math.max(...referenceValues) : 0;
+    const span = Math.max(1, referenceMaximum - referenceMinimum, Math.abs(referenceMinimum), Math.abs(referenceMaximum));
+    const resolvedMinimum = Number.isFinite(lower) && lower <= referenceMinimum
+      ? lower
+      : Math.min(0, referenceMinimum - span * 0.2);
+    const resolvedMaximum = Number.isFinite(upper) && upper > resolvedMinimum && upper >= referenceMaximum
+      ? upper
+      : Math.max(1, referenceMaximum + span * 0.2);
     return {
       key,
       label: source.name || source.dev_name || key,
       color: SOURCE_CURVE_COLORS[sourceIndex % SOURCE_CURVE_COLORS.length],
-      min: Number.isFinite(lower) ? lower : Math.min(0, (Number.isFinite(defaultValue) ? defaultValue : 0) - span),
-      max: Number.isFinite(upper) ? upper : Math.max(1, (Number.isFinite(defaultValue) ? defaultValue : 0) + span),
+      min: resolvedMinimum,
+      max: resolvedMaximum,
       digits: 3,
       unit: source.unit || "",
       family: source.family || "electric",
@@ -10221,11 +10262,9 @@ function selectedCurveKeys() {
   const selected = Array.from(new Set(state.selectedCurveKeys || []))
     .filter((key) => available.has(key));
   const activeKey = activeCurveKey();
-  if (!selected.length && available.has(activeKey)) selected.push(activeKey);
-  if (!selected.length) selected.push("wind_speed_mps");
   state.selectedCurveKeys = selected;
   if (!selected.includes(activeKey)) {
-    state.activeCurveKey = selected[selected.length - 1];
+    state.activeCurveKey = selected[selected.length - 1] || "";
   }
   return selected;
 }
@@ -10309,6 +10348,7 @@ function markCurveDirty(key) {
   if (!key) return;
   if (!(state.curveDirtyKeys instanceof Set)) state.curveDirtyKeys = new Set(state.curveDirtyKeys || []);
   state.curveDirtyKeys.add(key);
+  state.curveDirtyKeysByMode[state.curveMode] = new Set(state.curveDirtyKeys);
   state.curveDataRevision += 1;
   state.lastCurveEditorRenderKey = "";
   state.lastCurveEditorTableKey = "";
@@ -10318,26 +10358,119 @@ function markCurveKeysDirty(keys = []) {
   keys.forEach((key) => markCurveDirty(key));
 }
 
-function saveCurrentCurveModeSeries() {
-  if (!state.curveMode || !Object.keys(state.curveSeries || {}).length) return;
-  state.curveSeriesByMode[state.curveMode] = state.curveSeries;
+function saveCurrentCurveModeDraft() {
+  if (!state.curveMode) return;
+  if (Object.keys(state.curveSeries || {}).length) {
+    state.curveSeriesByMode[state.curveMode] = state.curveSeries;
+  }
+  state.curveDirtyKeysByMode[state.curveMode] = new Set(state.curveDirtyKeys || []);
+}
+
+function restoreCurveModeDraft(mode) {
+  state.curveSeries = state.curveSeriesByMode[mode] || {};
+  state.curveDirtyKeys = new Set(state.curveDirtyKeysByMode[mode] || []);
+}
+
+function curveModeHasUnsavedChanges() {
+  return state.curveMode !== state.curvePersistedMode || Boolean(state.curveDirtyKeys?.size);
+}
+
+function shouldPreserveCurveDraft() {
+  return Boolean(state.curvePersistedMode) && curveModeHasUnsavedChanges();
+}
+
+function curveModeSwitchLabel(mode) {
+  return CURVE_MODES[mode]?.simulationLabel || CURVE_MODES[mode]?.label || mode;
+}
+
+function setCurveModeSwitchBusy(isBusy) {
+  state.curveModeSwitchSaving = Boolean(isBusy);
+  const saveButton = $("saveCurveModeSwitch");
+  const discardButton = $("discardCurveModeSwitch");
+  const cancelButton = $("cancelCurveModeSwitch");
+  const closeButton = $("closeCurveModeSwitchDialog");
+  if (saveButton) {
+    saveButton.disabled = isBusy;
+    saveButton.textContent = isBusy ? "保存中" : "保存并切换";
+  }
+  if (discardButton) discardButton.disabled = isBusy;
+  if (cancelButton) cancelButton.disabled = isBusy;
+  if (closeButton) closeButton.disabled = isBusy;
+}
+
+function openCurveModeSwitchDialog(mode) {
+  const nextMode = CURVE_MODES[mode] ? mode : "";
+  const dialog = $("curveModeSwitchDialog");
+  if (!nextMode || !dialog) return;
+  state.pendingCurveModeSwitch = nextMode;
+  const hint = $("curveModeSwitchHint");
+  if (hint) {
+    hint.textContent = `当前${curveModeSwitchLabel(state.curveMode)}曲线存在未保存修改，是否保存后切换到${curveModeSwitchLabel(nextMode)}？`;
+  }
+  const message = $("curveModeSwitchMessage");
+  if (message) message.textContent = "";
+  setCurveModeSwitchBusy(false);
+  dialog.hidden = false;
+  $("saveCurveModeSwitch")?.focus();
+}
+
+function closeCurveModeSwitchDialog() {
+  if (state.curveModeSwitchSaving) return;
+  const dialog = $("curveModeSwitchDialog");
+  if (dialog) dialog.hidden = true;
+  state.pendingCurveModeSwitch = "";
+  const message = $("curveModeSwitchMessage");
+  if (message) message.textContent = "";
+}
+
+function applyCurveModeSwitch(mode) {
+  const nextMode = CURVE_MODES[mode] ? mode : "";
+  if (!nextMode || nextMode === state.curveMode) return;
+  setCurveMode(nextMode, true);
+  setCurveStatus("已修改，待保存");
+  renderCurveModeControls();
+}
+
+async function saveBeforeCurveModeSwitch() {
+  const nextMode = state.pendingCurveModeSwitch;
+  if (!nextMode || state.curveModeSwitchSaving) return;
+  setCurveModeSwitchBusy(true);
+  try {
+    await saveCurves();
+    state.curveModeSwitchSaving = false;
+    closeCurveModeSwitchDialog();
+    applyCurveModeSwitch(nextMode);
+  } catch (error) {
+    const message = $("curveModeSwitchMessage");
+    if (message) message.textContent = `保存失败：${apiErrorText(error)}`;
+    setCurveModeSwitchBusy(false);
+  }
+}
+
+function switchCurveModeWithoutSaving() {
+  const nextMode = state.pendingCurveModeSwitch;
+  if (!nextMode || state.curveModeSwitchSaving) return;
+  closeCurveModeSwitchDialog();
+  applyCurveModeSwitch(nextMode);
 }
 
 function setCurveMode(mode, shouldRender = true) {
   const nextMode = CURVE_MODES[mode] ? mode : "year";
-  saveCurrentCurveModeSeries();
+  saveCurrentCurveModeDraft();
   state.curveMode = nextMode;
   localStorage.setItem("polarSimulatorCurveMode", nextMode);
   state.curveEditKey = "";
   if (state.curveSeriesByMode[nextMode]) {
-    state.curveSeries = state.curveSeriesByMode[nextMode];
+    restoreCurveModeDraft(nextMode);
     ensureCurveSeries(selectedCurveKeys());
   } else {
+    state.curveDirtyKeys = new Set();
     generateCurves(0, nextMode, false);
   }
   if (shouldRender) {
     renderCurveEditor(true);
     renderFaults(true);
+    if (curveModeHasUnsavedChanges()) setCurveStatus("已修改，待保存");
   }
 }
 
@@ -10382,6 +10515,9 @@ function loadCurvesFromSnapshot(curves, modelId = state.activeModelId) {
   });
   ensureCurveSeries();
   state.curveSeriesByMode[mode] = state.curveSeries;
+  state.curveDirtyKeys = new Set();
+  state.curveDirtyKeysByMode = { [mode]: new Set() };
+  state.curvePersistedMode = mode;
   syncCurvePayload(false);
   state.curvesLoadedModelId = modelId || "loaded";
   state.curveDataRevision += 1;
@@ -10435,13 +10571,23 @@ function curveSummaryHasCatalog(summary = state.curveSummary) {
 function applyCurveSummary(summary, modelId = state.activeModelId) {
   if (!summary || typeof summary !== "object") return;
   const mode = CURVE_MODES[summary.mode] ? summary.mode : "day";
+  const initializesModel = state.curveSummaryLoadedModelId !== (modelId || "loaded");
+  const preserveCurveDraft = !initializesModel && shouldPreserveCurveDraft();
+  const resetsCurveDraft = initializesModel || !state.curvePersistedMode;
   state.curveSummary = summary;
   state.curveSummaryLoadedModelId = modelId || "loaded";
-  state.curveMode = mode;
   state.curveLoadError = "";
   state.lastCurveEditorRenderKey = "";
   state.lastCurveEditorTableKey = "";
-  localStorage.setItem("polarSimulatorCurveMode", mode);
+  if (!preserveCurveDraft) {
+    state.curveMode = mode;
+    state.curvePersistedMode = mode;
+    localStorage.setItem("polarSimulatorCurveMode", mode);
+  }
+  if (resetsCurveDraft) {
+    state.curveDirtyKeys = new Set();
+    state.curveDirtyKeysByMode = { [mode]: new Set() };
+  }
 }
 
 function isAbortRequestError(error) {
@@ -10488,8 +10634,12 @@ async function loadCurveSummary(modelId = state.activeModelId) {
 
 function applyCurveSeriesPayload(payload = {}, requestedKeys = []) {
   if (!payload || typeof payload !== "object") return;
-  if (CURVE_MODES[payload.mode]) {
+  const payloadMode = CURVE_MODES[payload.mode] ? payload.mode : "";
+  const preserveCurveDraft = shouldPreserveCurveDraft();
+  if (preserveCurveDraft && payloadMode && payloadMode !== state.curveMode) return;
+  if (payloadMode && !preserveCurveDraft) {
     state.curveMode = payload.mode;
+    state.curvePersistedMode = payload.mode;
     localStorage.setItem("polarSimulatorCurveMode", state.curveMode);
   }
   const series = payload.series && typeof payload.series === "object" ? payload.series : {};
@@ -10546,17 +10696,13 @@ async function ensureCurveSeriesLoaded(keys = selectedCurveKeys()) {
 
 async function switchSimulationMode(mode) {
   if (modelServiceDependentControlsDisabled() || simulationModeLocked()) return;
-  const selector = $("simulationModeSelector");
-  if (selector) selector.disabled = true;
-  try {
-    setCurveMode(mode, true);
-    await saveCurves();
-    await refresh();
-  } catch (error) {
-    alert(apiErrorText(error));
-  } finally {
-    renderCurveModeControls();
+  const nextMode = CURVE_MODES[mode] ? mode : "";
+  if (!nextMode || nextMode === state.curveMode) return;
+  if (curveModeHasUnsavedChanges()) {
+    openCurveModeSwitchDialog(nextMode);
+    return;
   }
+  applyCurveModeSwitch(nextMode);
 }
 
 function renderCurveModeControls() {
@@ -10620,6 +10766,7 @@ function curveFamilyKeys(family) {
 
 function selectedCurveLabel() {
   const selected = selectedCurveKeys();
+  if (!selected.length) return "未选择曲线";
   const editKey = curveEditKey(selected);
   const selectedLabel = selected.length <= 1 ? curveMetaForKey(selected[0]).label : `已选${selected.length}条`;
   return editKey && selected.length > 1 ? `${selectedLabel} · ${curveMetaForKey(editKey).label}` : selectedLabel;
@@ -10627,11 +10774,14 @@ function selectedCurveLabel() {
 
 function setSelectedCurves(keys, activeKey = keys?.[keys.length - 1], shouldRender = true) {
   const available = new Set(allCurveKeys());
+  const previous = new Set(state.selectedCurveKeys || []);
   const selected = Array.from(new Set(keys || [])).filter((key) => available.has(key));
-  if (!selected.length) selected.push("wind_speed_mps");
   const nextActiveKey = selected.includes(activeKey) ? activeKey : selected[selected.length - 1];
   state.selectedCurveKeys = selected;
-  state.activeCurveKey = nextActiveKey || "wind_speed_mps";
+  state.activeCurveKey = nextActiveKey || "";
+  const hidden = curveHiddenSet();
+  selected.filter((key) => !previous.has(key)).forEach((key) => hidden.delete(key));
+  state.hiddenCurveKeys = Array.from(hidden);
   if (state.curveEditKey && !selected.includes(state.curveEditKey)) {
     state.curveEditKey = "";
   }
@@ -10641,6 +10791,14 @@ function setSelectedCurves(keys, activeKey = keys?.[keys.length - 1], shouldRend
     renderCurveTree();
     drawCurves();
     renderHourlyTable();
+    if (selected.some((key) => !curveHasLoadedSeries(key))) {
+      void ensureCurveSeriesLoaded(selected).then((loaded) => {
+        if (!loaded) return;
+        renderCurveTree();
+        drawCurves();
+        renderHourlyTable(true);
+      });
+    }
   }
 }
 
@@ -10649,7 +10807,7 @@ function toggleCurveSelection(key, shouldRender = true) {
   const next = selected.includes(key)
     ? selected.filter((item) => item !== key)
     : [...selected, key];
-  setSelectedCurves(next.length ? next : selected, key, shouldRender);
+  setSelectedCurves(next, next.includes(key) ? key : next[next.length - 1], shouldRender);
 }
 
 function selectCurveFamily(family, shouldRender = true) {
@@ -10663,11 +10821,24 @@ function curveTreeButtonKeys(button) {
   return button.dataset.curveKey ? [button.dataset.curveKey] : [];
 }
 
-function selectCurveTreeButton(button, shouldRender = true) {
-  const keys = curveTreeButtonKeys(button);
-  if (!keys.length) return;
-  const activeKey = button.dataset.curveKey || keys[0];
-  setSelectedCurves(keys, activeKey, shouldRender);
+function selectCurveTreeButton(button, event = null, shouldRender = true) {
+  const key = button?.dataset.curveKey || "";
+  if (!key) return;
+  const selected = selectedCurveKeys();
+  const selectedSet = new Set(selected);
+  const multiSelect = Boolean(event?.ctrlKey || event?.metaKey || event?.shiftKey);
+  const next = multiSelect
+    ? selectedSet.has(key)
+      ? selected.filter((selectedKey) => selectedKey !== key)
+      : [...selected, key]
+    : [key];
+  if (!multiSelect) {
+    const hidden = curveHiddenSet();
+    hidden.delete(key);
+    state.hiddenCurveKeys = Array.from(hidden);
+  }
+  const activeKey = next.includes(key) ? key : next[next.length - 1];
+  setSelectedCurves(next, activeKey, shouldRender);
 }
 
 function resetCurveTreePointerSelection() {
@@ -10679,7 +10850,7 @@ function resetCurveTreePointerSelection() {
 }
 
 function beginCurveTreePointerSelection(event) {
-  if (event.button !== 0) return;
+  if (event.button !== 0 || !(event.ctrlKey || event.metaKey || event.shiftKey)) return;
   const button = event.target.closest("[data-curve-tree-type]");
   if (!button || !$("curveTree")?.contains(button)) return;
   state.isCurveTreePointerDown = true;
@@ -10761,36 +10932,68 @@ function curveTreeGroupCollapsed(groupKey) {
   return Boolean(state.curveTreeGroupCollapsed?.[groupKey]);
 }
 
-function toggleCurveTreeGroup(groupKey) {
+function toggleCurveTreeGroup(groupKey, shouldRender = true) {
   if (!groupKey) return;
   state.curveTreeGroupCollapsed = {
     ...(state.curveTreeGroupCollapsed || {}),
     [groupKey]: !curveTreeGroupCollapsed(groupKey),
   };
   localStorage.setItem(CURVE_TREE_COLLAPSE_KEY, JSON.stringify(state.curveTreeGroupCollapsed));
-  renderCurveTree();
+  if (shouldRender) renderCurveTree();
 }
 
-function curveTreeGroupHeader(groupKey, label, count, buttonAttrs, buttonClasses = "", toggleAttribute = "data-curve-tree-toggle") {
-  const collapsed = curveTreeGroupCollapsed(groupKey);
+function curveTreeGroupHeader(groupKey, label, count, buttonAttrs, buttonClasses = "", forceExpanded = false) {
+  const collapsed = !forceExpanded && curveTreeGroupCollapsed(groupKey);
   return `
-    <div class="tree-parent-row">
-      <button
-        type="button"
-        class="tree-collapse-toggle ${collapsed ? "is-collapsed" : ""}"
-        ${toggleAttribute}="${escapeHtml(groupKey)}"
-        aria-label="${collapsed ? "展开" : "折叠"}${escapeHtml(label)}"
-        aria-expanded="${collapsed ? "false" : "true"}"
-      ><span class="tree-toggle" aria-hidden="true"></span></button>
-      <button
-        type="button"
-        class="tree-node tree-type ${buttonClasses}"
-        ${buttonAttrs}
-      >
-        <span>${escapeHtml(label)}</span>
-        <strong>${count}</strong>
-      </button>
-    </div>`;
+    <button
+      type="button"
+      class="tree-node tree-type ${buttonClasses} ${collapsed ? "is-collapsed" : ""}"
+      data-curve-tree-toggle="${escapeHtml(groupKey)}"
+      aria-label="${collapsed ? "展开" : "折叠"}${escapeHtml(label)}"
+      aria-expanded="${collapsed ? "false" : "true"}"
+      ${buttonAttrs}
+    >
+      <span class="tree-title">
+        <i class="tree-toggle" aria-hidden="true"></i>
+        <span class="tree-title-text">${escapeHtml(label)}</span>
+      </span>
+      <strong>${count}</strong>
+    </button>`;
+}
+
+function curveTreeMediumMeta(family = "") {
+  return {
+    environment: { label: "环境", marker: "环", order: 0 },
+    electric: { label: "电", marker: "电", order: 1 },
+    hydrogen: { label: "氢", marker: "氢", order: 2 },
+    heat: { label: "热", marker: "热", order: 3 },
+    other: { label: "其他", marker: "其", order: 4 },
+  }[family] || { label: "其他", marker: "其", order: 4 };
+}
+
+function curveTreeItemMatches(item, query) {
+  if (!query) return true;
+  return [item.label, item.unit, item.medium?.label]
+    .some((value) => String(value || "").toLocaleLowerCase("zh-CN").includes(query));
+}
+
+function curveTreeChildHtml(item, type, selectedSet, editKey) {
+  return `
+    <button
+      type="button"
+      class="tree-node tree-child ${selectedSet.has(item.key) ? "is-active" : ""} ${editKey === item.key ? "is-edit-target" : ""} ${isCurveSeriesHidden(item.key) ? "is-hidden-series" : ""}"
+      data-curve-tree-type="${escapeHtml(type)}"
+      data-curve-key="${escapeHtml(item.key)}"
+      data-curve-medium="${escapeHtml(item.family)}"
+      aria-pressed="${selectedSet.has(item.key) ? "true" : "false"}"
+      title="${escapeHtml(`${item.label} · ${item.medium.label} · ${item.unit || "无单位"}`)}"
+    >
+      <span class="curve-tree-item-main">
+        <i class="curve-medium-marker is-${escapeHtml(item.family)}" aria-hidden="true">${escapeHtml(item.medium.marker)}</i>
+        <span class="curve-tree-item-label">${escapeHtml(item.label)}</span>
+      </span>
+      <small>${escapeHtml(item.unit)}</small>
+    </button>`;
 }
 
 function renderCurveTree() {
@@ -10802,154 +11005,60 @@ function renderCurveTree() {
   const selectedSet = new Set(selectedKeys);
   const loadDevices = curveLoadDevices();
   const loadKeys = allLoadCurveKeys();
-  const loadGroups = [
-    ...LOAD_CURVE_FAMILIES.map((family) => ({
-      ...family,
-      loads: loadDevices.filter((dev) => dev.family === family.key),
-    })),
-    {
-      key: "other",
-      label: "其他负荷曲线",
-      loads: loadDevices.filter((dev) => !LOAD_CURVE_FAMILIES.some((family) => family.key === dev.family)),
-    },
-  ].filter((group) => group.key !== "other" || group.loads.length);
-  const sourceGroups = SOURCE_CURVE_FAMILIES.map((family) => ({
-    ...family,
-    sources: curveSourceCatalog().filter((item) => item.family === family.key),
-  }));
-  const envSelected = ENV_CURVE_KEYS.every((key) => selectedSet.has(key))
-    && selectedKeys.every((key) => ENV_CURVE_KEYS.includes(key));
-  const loadSelected = loadKeys.every((key) => selectedSet.has(key))
-    && selectedKeys.every((key) => loadKeys.includes(key));
-  const envPartial = ENV_CURVE_KEYS.some((key) => selectedSet.has(key));
-  const loadPartial = loadKeys.some((key) => selectedSet.has(key));
   const sourceKeys = allSourceCurveKeys();
-  const sourceSelected = sourceKeys.length && sourceKeys.every((key) => selectedSet.has(key))
-    && selectedKeys.every((key) => sourceKeys.includes(key));
-  const sourcePartial = sourceKeys.some((key) => selectedSet.has(key));
-  $("curveTreeSummary").textContent = `${ENV_CURVE_KEYS.length + loadDevices.length + allSourceCurveKeys().length} 条`;
+  const query = String(state.curveTreeSearch || "").trim().toLocaleLowerCase("zh-CN");
+  const environmentItems = ENV_CURVE_KEYS.map((key) => {
+    const meta = curveMetaForKey(key);
+    return { key, label: meta.label, unit: meta.unit, family: "environment", medium: curveTreeMediumMeta("environment") };
+  });
+  const loadItems = loadDevices.map((dev) => ({
+    key: loadCurveKey(dev.dev_name),
+    label: dev.dev_name,
+    unit: dev.unit || "",
+    family: curveTreeMediumMeta(dev.family).label === "其他" ? "other" : dev.family,
+    medium: curveTreeMediumMeta(dev.family),
+  })).sort((left, right) => left.medium.order - right.medium.order || left.label.localeCompare(right.label, "zh-CN"));
+  const sourceItems = curveSourceCatalog().map((source) => ({
+    key: source.key,
+    label: source.name || source.dev_name || source.key,
+    unit: source.unit || "",
+    family: curveTreeMediumMeta(source.family).label === "其他" ? "other" : source.family,
+    medium: curveTreeMediumMeta(source.family),
+  })).sort((left, right) => left.medium.order - right.medium.order || left.label.localeCompare(right.label, "zh-CN"));
+  const groups = [
+    { key: "environment", label: "环境曲线", type: "environment", keys: ENV_CURVE_KEYS, items: environmentItems },
+    { key: "load", label: "负荷曲线", type: "load", keys: loadKeys, items: loadItems },
+    { key: "source", label: "供能曲线", type: "source", keys: sourceKeys, items: sourceItems },
+  ].map((group) => ({
+    ...group,
+    visibleItems: group.label.toLocaleLowerCase("zh-CN").includes(query)
+      ? group.items
+      : group.items.filter((item) => curveTreeItemMatches(item, query)),
+  }));
+  const total = groups.reduce((sum, group) => sum + group.items.length, 0);
+  const visibleTotal = groups.reduce((sum, group) => sum + group.visibleItems.length, 0);
+  $("curveTreeSummary").textContent = query ? `${visibleTotal}/${total} 条` : `${total} 条`;
   $("activeCurve").value = activeKey;
   $("activeCurveLabel").textContent = selectedCurveLabel();
-  container.innerHTML = `
-    <div class="tree-group">
-      ${curveTreeGroupHeader(
-        "environment",
-        "环境曲线",
-        ENV_CURVE_KEYS.length,
-        `data-curve-tree-type="environment" data-curve-family="environment" aria-pressed="${envSelected ? "true" : "false"}" aria-expanded="${curveTreeGroupCollapsed("environment") ? "false" : "true"}"`,
-        envSelected ? "is-active" : envPartial ? "is-parent-active" : "",
-        "data-curve-tree-toggle",
-      )}
-      <div class="tree-children" ${curveTreeGroupCollapsed("environment") ? "hidden" : ""}>
-        ${ENV_CURVE_KEYS.map((key) => {
-          const meta = curveMetaForKey(key);
-          const shortLabel = key === "wind_speed_mps" ? "风" : key === "solar_irradiance_w_m2" ? "光" : "温";
-          return `
-            <button
-              type="button"
-              class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""} ${editKey === key ? "is-edit-target" : ""} ${isCurveSeriesHidden(key) ? "is-hidden-series" : ""}"
-              data-curve-tree-type="environment"
-              data-curve-key="${escapeHtml(key)}"
-              aria-pressed="${selectedSet.has(key) ? "true" : "false"}"
-            >
-              <span>${shortLabel}</span>
-              <small>${escapeHtml(meta.unit)}</small>
-            </button>
-          `;
-        }).join("")}
-      </div>
-    </div>
-    <div class="tree-group">
-      ${curveTreeGroupHeader(
-        "load",
-        "负荷曲线",
-        loadDevices.length,
-        `data-curve-tree-type="load" data-curve-family="load" aria-pressed="${loadSelected ? "true" : "false"}" aria-expanded="${curveTreeGroupCollapsed("load") ? "false" : "true"}"`,
-        loadSelected ? "is-active" : loadPartial ? "is-parent-active" : "",
-        "data-curve-tree-toggle",
-      )}
-      <div id="curveLoadTree" class="tree-children" ${curveTreeGroupCollapsed("load") ? "hidden" : ""}>
-        ${loadGroups.map((group) => {
-          const groupKey = `load:${group.key}`;
-          const keys = group.loads.map((dev) => loadCurveKey(dev.dev_name));
-          const selected = keys.length && keys.every((key) => selectedSet.has(key))
-            && selectedKeys.every((key) => keys.includes(key));
-          const partial = keys.some((key) => selectedSet.has(key));
-          return `
-            <div class="tree-subgroup">
-              ${curveTreeGroupHeader(
-                groupKey,
-                group.label,
-                keys.length,
-                `data-curve-tree-type="load" data-curve-family="${escapeHtml(groupKey)}" aria-pressed="${selected ? "true" : "false"}" aria-expanded="${curveTreeGroupCollapsed(groupKey) ? "false" : "true"}"`,
-                selected ? "is-active" : partial ? "is-parent-active" : "",
-              )}
-              <div class="tree-children tree-grandchildren" ${curveTreeGroupCollapsed(groupKey) ? "hidden" : ""}>
-                ${group.loads.map((dev) => {
-                  const key = loadCurveKey(dev.dev_name);
-                  return `
-                    <button
-                      type="button"
-                      class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""} ${editKey === key ? "is-edit-target" : ""} ${isCurveSeriesHidden(key) ? "is-hidden-series" : ""}"
-                      data-curve-tree-type="load"
-                      data-curve-key="${escapeHtml(key)}"
-                      aria-pressed="${selectedSet.has(key) ? "true" : "false"}"
-                    >
-                      <span>${escapeHtml(dev.dev_name)}</span>
-                      <small>${escapeHtml(dev.unit || dev.dev_type)}</small>
-                    </button>`;
-                }).join("") || `<div class="empty-state compact">暂无${escapeHtml(group.label)}</div>`}
-              </div>
-            </div>`;
-        }).join("")}
-      </div>
-    </div>
-    <div class="tree-group">
-      ${curveTreeGroupHeader(
-        "source",
-        "供能曲线",
-        sourceKeys.length,
-        `data-curve-tree-type="source" data-curve-family="source" aria-pressed="${sourceSelected ? "true" : "false"}" aria-expanded="${curveTreeGroupCollapsed("source") ? "false" : "true"}"`,
-        sourceSelected ? "is-active" : sourcePartial ? "is-parent-active" : "",
-        "data-curve-tree-toggle",
-      )}
-      <div class="tree-children" ${curveTreeGroupCollapsed("source") ? "hidden" : ""}>
-        ${sourceGroups.map((group) => {
-          const groupKey = `source:${group.key}`;
-          const keys = group.sources.map((source) => source.key);
-          const selected = keys.length && keys.every((key) => selectedSet.has(key))
-            && selectedKeys.every((key) => keys.includes(key));
-          const partial = keys.some((key) => selectedSet.has(key));
-          return `
-            <div class="tree-subgroup">
-              ${curveTreeGroupHeader(
-                groupKey,
-                group.label,
-                keys.length,
-                `data-curve-tree-type="source" data-curve-family="${escapeHtml(groupKey)}" aria-pressed="${selected ? "true" : "false"}" aria-expanded="${curveTreeGroupCollapsed(groupKey) ? "false" : "true"}"`,
-                selected ? "is-active" : partial ? "is-parent-active" : "",
-              )}
-              <div class="tree-children tree-grandchildren" ${curveTreeGroupCollapsed(groupKey) ? "hidden" : ""}>
-                ${group.sources.map((source) => {
-                  const key = source.key;
-                  return `
-                    <button
-                      type="button"
-                      class="tree-node tree-child ${selectedSet.has(key) ? "is-active" : ""} ${editKey === key ? "is-edit-target" : ""} ${isCurveSeriesHidden(key) ? "is-hidden-series" : ""}"
-                      data-curve-tree-type="source"
-                      data-curve-key="${escapeHtml(key)}"
-                      aria-pressed="${selectedSet.has(key) ? "true" : "false"}"
-                    >
-                      <span>${escapeHtml(source.name || source.dev_name || key)}</span>
-                      <small>${escapeHtml(source.unit || source.dev_type || "")}</small>
-                    </button>`;
-                }).join("") || `<div class="empty-state compact">暂无${escapeHtml(group.label)}</div>`}
-              </div>
-            </div>`;
-        }).join("")}
-      </div>
-    </div>
-  `;
+  container.innerHTML = groups.filter((group) => !query || group.visibleItems.length).map((group) => {
+    const groupSelected = group.keys.length && group.keys.every((key) => selectedSet.has(key));
+    const groupPartial = !groupSelected && group.keys.some((key) => selectedSet.has(key));
+    const collapsed = !query && curveTreeGroupCollapsed(group.key);
+    return `
+      <div class="tree-group">
+        ${curveTreeGroupHeader(
+          group.key,
+          group.label,
+          group.visibleItems.length,
+          `data-curve-tree-type="${escapeHtml(group.type)}" data-curve-family="${escapeHtml(group.key)}" aria-pressed="${groupSelected ? "true" : "false"}"`,
+          groupSelected ? "is-active" : groupPartial ? "is-parent-active" : "",
+          Boolean(query),
+        )}
+        <div class="tree-children" ${collapsed ? "hidden" : ""}>
+          ${group.visibleItems.map((item) => curveTreeChildHtml(item, group.type, selectedSet, editKey)).join("")}
+        </div>
+      </div>`;
+  }).join("") || `<div class="empty-state">未匹配“${escapeHtml(state.curveTreeSearch || "")}”</div>`;
 }
 
 function setActiveCurve(key, shouldRender = true) {
@@ -11179,6 +11288,250 @@ function generateCurves(jitter = 0, mode = state.curveMode, shouldRender = true)
   markCurveKeysDirty(Object.keys(state.curveSeries));
   syncCurvePayload(false);
   if (shouldRender) renderCurveEditor(true);
+}
+
+function typicalCurveStatistics(values = []) {
+  const numericValues = values.map(Number).filter(Number.isFinite);
+  if (!numericValues.length) return { min: 0, max: 0, average: 0 };
+  const sum = numericValues.reduce((total, value) => total + value, 0);
+  return {
+    min: Math.min(...numericValues),
+    max: Math.max(...numericValues),
+    average: sum / numericValues.length,
+  };
+}
+
+function typicalCurveInputBounds(key, meta = curveMetaForKey(key)) {
+  const observed = curveObservedRange(key);
+  if (!observed) return { min: meta.min, max: meta.max };
+  const observedSpan = Math.max(
+    1,
+    observed.max - observed.min,
+    Math.abs(observed.min),
+    Math.abs(observed.max),
+  );
+  return {
+    min: Number.isFinite(Number(meta.min)) ? Number(meta.min) : observed.min - observedSpan,
+    max: Math.max(meta.max, observed.max + observedSpan),
+  };
+}
+
+function typicalCurveTargetKey() {
+  const selected = selectedCurveKeys();
+  const key = curveEditKey(selected) || activeCurveKey() || selected[0] || "";
+  return allCurveKeys().includes(key) ? key : "";
+}
+
+function typicalCurveCycleCount(mode = state.curveMode) {
+  return { hour: 4, day: 4, week: 7, month: 30, year: 12 }[mode] || 4;
+}
+
+function typicalCurveBaseValues(shape, pointCount) {
+  const count = Math.max(2, Math.floor(Number(pointCount) || 0));
+  const cycles = Math.max(1, Math.min(count - 1, typicalCurveCycleCount()));
+  const values = Array.from({ length: count }, (_unused, index) => {
+    if (shape === "random") return Math.random();
+    const cyclePosition = (index / Math.max(1, count - 1)) * cycles;
+    const phase = index === count - 1 ? 1 : cyclePosition - Math.floor(cyclePosition);
+    if (shape === "step") return Math.min(3, Math.floor(phase * 4)) / 3;
+    if (shape === "sawtooth") return phase;
+    return (1 - Math.cos(phase * Math.PI * 2)) / 2;
+  });
+  let minIndex = 0;
+  let maxIndex = 0;
+  values.forEach((value, index) => {
+    if (value < values[minIndex]) minIndex = index;
+    if (value > values[maxIndex]) maxIndex = index;
+  });
+  if (maxIndex === minIndex) maxIndex = count - 1;
+  const epsilon = Math.max(Number.EPSILON, 1 / (count * 1000));
+  values.forEach((value, index) => {
+    if (index === minIndex) values[index] = 0;
+    else if (index === maxIndex) values[index] = 1;
+    else values[index] = clamp(value, epsilon, 1 - epsilon);
+  });
+  return { values, minIndex, maxIndex };
+}
+
+function fitTypicalCurveNormalizedMean(values, targetAverage) {
+  const target = clamp(Number(targetAverage) || 0, 0, 1);
+  const meanFor = (exponent, raiseMean) => values.reduce((sum, value) => (
+    sum + (raiseMean ? 1 - ((1 - value) ** exponent) : value ** exponent)
+  ), 0) / values.length;
+  const currentMean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  if (Math.abs(currentMean - target) < 1e-12) return [...values];
+  const raiseMean = target > currentMean;
+  let low = 1;
+  let high = 2;
+  while (
+    high < 1048576
+    && (raiseMean ? meanFor(high, true) < target : meanFor(high, false) > target)
+  ) {
+    high *= 2;
+  }
+  for (let iteration = 0; iteration < 64; iteration += 1) {
+    const exponent = (low + high) / 2;
+    const mean = meanFor(exponent, raiseMean);
+    if (raiseMean ? mean < target : mean > target) low = exponent;
+    else high = exponent;
+  }
+  return values.map((value) => (
+    raiseMean ? 1 - ((1 - value) ** high) : value ** high
+  ));
+}
+
+function adjustTypicalCurveRoundedAverage(values, targetAverage, minimum, maximum, digits, anchors) {
+  const rounded = values.map((value) => Number(clamp(value, minimum, maximum).toFixed(digits)));
+  rounded[anchors.minIndex] = Number(minimum.toFixed(digits));
+  rounded[anchors.maxIndex] = Number(maximum.toFixed(digits));
+  const targetSum = targetAverage * rounded.length;
+  let difference = targetSum - rounded.reduce((sum, value) => sum + value, 0);
+  const candidates = rounded.map((_value, index) => index)
+    .filter((index) => index !== anchors.minIndex && index !== anchors.maxIndex);
+  candidates.forEach((index, candidateIndex) => {
+    if (Math.abs(difference) < (10 ** (-digits)) / 2) return;
+    const remaining = Math.max(1, candidates.length - candidateIndex);
+    const share = difference / remaining;
+    const next = Number(clamp(rounded[index] + share, minimum, maximum).toFixed(digits));
+    difference -= next - rounded[index];
+    rounded[index] = next;
+  });
+  return rounded;
+}
+
+function generateTypicalCurveValues(key, minimum, maximum, average, shape, pointCount = curvePointCount()) {
+  const meta = curveMetaForKey(key);
+  const digits = Math.max(0, Math.min(6, Number(meta.digits) || 0));
+  const roundedMinimum = Number(Number(minimum).toFixed(digits));
+  const roundedMaximum = Number(Number(maximum).toFixed(digits));
+  const roundedAverage = Number(Number(average).toFixed(digits));
+  if (roundedMaximum === roundedMinimum) {
+    return new Array(Math.max(2, pointCount)).fill(roundedMinimum);
+  }
+  const base = typicalCurveBaseValues(shape, pointCount);
+  const targetNormalizedMean = (roundedAverage - roundedMinimum) / (roundedMaximum - roundedMinimum);
+  const normalized = fitTypicalCurveNormalizedMean(base.values, targetNormalizedMean);
+  const scaled = normalized.map((value) => roundedMinimum + (roundedMaximum - roundedMinimum) * value);
+  return adjustTypicalCurveRoundedAverage(
+    scaled,
+    roundedAverage,
+    roundedMinimum,
+    roundedMaximum,
+    digits,
+    base,
+  );
+}
+
+function setTypicalCurveMessage(text = "", isError = false) {
+  const message = $("typicalCurveMessage");
+  if (!message) return;
+  message.textContent = text;
+  message.classList.toggle("is-error", Boolean(text) && isError);
+}
+
+async function openTypicalCurveDialog() {
+  const key = typicalCurveTargetKey();
+  if (!key) {
+    setCurveStatus("请先选择一条曲线");
+    return;
+  }
+  await ensureCurveSeriesLoaded([key]);
+  const values = state.curveSeries[key] || [];
+  if (!values.length) {
+    setCurveStatus("当前曲线尚未加载");
+    return;
+  }
+  const meta = curveMetaForKey(key);
+  const stats = typicalCurveStatistics(values);
+  const inputBounds = typicalCurveInputBounds(key, meta);
+  const digits = Math.max(0, Math.min(6, Number(meta.digits) || 0));
+  const step = String(10 ** (-digits));
+  const fields = [
+    ["typicalCurveMax", stats.max],
+    ["typicalCurveMin", stats.min],
+    ["typicalCurveAverage", stats.average],
+  ];
+  fields.forEach(([id, value]) => {
+    const input = $(id);
+    if (!input) return;
+    input.min = String(inputBounds.min);
+    input.max = String(inputBounds.max);
+    input.step = step;
+    input.value = Number(value).toFixed(digits);
+  });
+  ["typicalCurveMaxUnit", "typicalCurveMinUnit", "typicalCurveAverageUnit"].forEach((id) => {
+    const unit = $(id);
+    if (unit) unit.textContent = meta.unit || "无量纲";
+  });
+  const hint = $("typicalCurveHint");
+  if (hint) {
+    hint.textContent = `${meta.label} · ${curveModeSwitchLabel(state.curveMode)} · ${curvePointCount()}点；确认后仅更新本地草稿。`;
+  }
+  state.typicalCurveTargetKey = key;
+  setTypicalCurveMessage();
+  $("typicalCurveShape").value = "sine";
+  $("typicalCurveDialog").hidden = false;
+  $("typicalCurveMax").focus();
+  $("typicalCurveMax").select();
+}
+
+function closeTypicalCurveDialog() {
+  const dialog = $("typicalCurveDialog");
+  if (dialog) dialog.hidden = true;
+  state.typicalCurveTargetKey = "";
+  setTypicalCurveMessage();
+}
+
+function confirmTypicalCurveGeneration() {
+  const key = state.typicalCurveTargetKey;
+  if (!key || !allCurveKeys().includes(key)) {
+    setTypicalCurveMessage("当前曲线已失效，请关闭后重新选择。", true);
+    return;
+  }
+  const meta = curveMetaForKey(key);
+  const digits = Math.max(0, Math.min(6, Number(meta.digits) || 0));
+  const minimum = Number(Number($("typicalCurveMin").value).toFixed(digits));
+  const maximum = Number(Number($("typicalCurveMax").value).toFixed(digits));
+  const average = Number(Number($("typicalCurveAverage").value).toFixed(digits));
+  const allowedMinimum = Number($("typicalCurveMin").min);
+  const allowedMaximum = Number($("typicalCurveMax").max);
+  const shape = $("typicalCurveShape").value;
+  if (![minimum, maximum, average].every(Number.isFinite)) {
+    setTypicalCurveMessage("请输入有效的最大值、最小值和平均值。", true);
+    return;
+  }
+  if (minimum < allowedMinimum || maximum > allowedMaximum) {
+    setTypicalCurveMessage(`取值范围应在 ${allowedMinimum} 至 ${allowedMaximum} ${meta.unit || ""} 之间。`, true);
+    return;
+  }
+  if (minimum > maximum) {
+    setTypicalCurveMessage("最小值不能大于最大值。", true);
+    return;
+  }
+  if (minimum === maximum && average !== minimum) {
+    setTypicalCurveMessage("最大值与最小值相同时，平均值必须与其相同。", true);
+    return;
+  }
+  if (minimum < maximum && (average <= minimum || average >= maximum)) {
+    setTypicalCurveMessage("平均值必须严格位于最小值和最大值之间。", true);
+    return;
+  }
+  if (minimum < maximum) {
+    const span = maximum - minimum;
+    const pointCount = curvePointCount();
+    const feasibleMinimum = minimum + span / pointCount;
+    const feasibleMaximum = maximum - span / pointCount;
+    if (average < feasibleMinimum || average > feasibleMaximum) {
+      setTypicalCurveMessage("平均值过于接近上下限，当前点数无法同时呈现指定的最大值和最小值。", true);
+      return;
+    }
+  }
+  state.curveSeries[key] = generateTypicalCurveValues(key, minimum, maximum, average, shape);
+  state.curveSeriesByMode[state.curveMode] = state.curveSeries;
+  markCurveDirty(key);
+  renderCurveEditor(true);
+  setCurveStatus("已生成，待保存");
+  closeTypicalCurveDialog();
 }
 
 function syncCurvePayload(shouldStoreSeries = true) {
@@ -11444,6 +11797,18 @@ function drawCurves() {
     ctx.lineTo(lastX, lastY);
     ctx.stroke();
   });
+  if (!allMetas.length) {
+    ctx.fillStyle = "#63717a";
+    ctx.textAlign = "center";
+    ctx.fillText("未选择曲线", (left + right) / 2, (top + bottom) / 2);
+    ctx.textAlign = "left";
+  }
+  if (!metas.length && allMetas.length) {
+    ctx.fillStyle = "#63717a";
+    ctx.textAlign = "center";
+    ctx.fillText("所有曲线已隐藏", (left + right) / 2, (top + bottom) / 2);
+    ctx.textAlign = "left";
+  }
   allMetas.forEach((meta, metaIndex) => {
     const legendX = left + (metaIndex % legendColumns) * legendColumnWidth;
     const legendY = 20 + Math.floor(metaIndex / legendColumns) * 16;
@@ -11672,7 +12037,7 @@ function applyCurveDrag(event) {
   }
   markCurveDirty(editKey);
   drawCurves();
-  $("curveStatus").textContent = "已修改";
+  $("curveStatus").textContent = "已修改，待保存";
 }
 
 function formatCurveTableTime(minute) {
@@ -11712,6 +12077,12 @@ function renderHourlyTable(force = false) {
   const container = $("hourlyCurveTable");
   if (!container) return;
   const metas = visibleCurveMetas();
+  if (!metas.length) {
+    state.lastCurveEditorTableKey = "curveEditor:empty";
+    container.removeAttribute("data-virtual-table");
+    container.innerHTML = `<div class="empty-state">${selectedCurveKeys().length ? "所有曲线已隐藏" : "未选择曲线"}</div>`;
+    return;
+  }
   const pointCount = curvePointCount();
   const tableKey = `curveEditor:${state.activeModelId}:${state.curveMode}`;
   const signature = JSON.stringify({
@@ -11769,7 +12140,7 @@ function applyHourlyTableEdit(cell) {
   markCurveDirty(key);
   drawCurves();
   renderHourlyTable();
-  $("curveStatus").textContent = "已修改";
+  $("curveStatus").textContent = "已修改，待保存";
 }
 
 function initCurveEditor() {
@@ -13072,8 +13443,12 @@ function renderSnapshot(snapshot) {
     loadCurvesFromSnapshot(snapshot.curves, state.activeModelId);
   } else if (snapshot.curve_boundary?.mode) {
     const boundaryMode = CURVE_MODES[snapshot.curve_boundary.mode] ? snapshot.curve_boundary.mode : "day";
-    state.curveMode = boundaryMode;
-    localStorage.setItem("polarSimulatorCurveMode", boundaryMode);
+    const preserveCurveDraft = shouldPreserveCurveDraft();
+    if (!preserveCurveDraft) {
+      state.curveMode = boundaryMode;
+      state.curvePersistedMode = boundaryMode;
+      localStorage.setItem("polarSimulatorCurveMode", boundaryMode);
+    }
     state.curveSummary = {
       ...(state.curveSummary || {}),
       mode: boundaryMode,
@@ -16721,9 +17096,10 @@ function setCurveStatus(text) {
 async function saveCurves() {
   const config = curveModeConfig();
   const dirtyKeys = state.curveDirtyKeys instanceof Set ? Array.from(state.curveDirtyKeys) : [];
-  const keysToSave = Array.from(new Set([...dirtyKeys, ...selectedCurveKeys()]))
+  const modeChanged = state.curveMode !== state.curvePersistedMode;
+  const keysToSave = Array.from(new Set(modeChanged ? Object.keys(state.curveSeries || {}) : dirtyKeys))
     .filter((key) => curveHasLoadedSeries(key));
-  if (!keysToSave.length) {
+  if (!keysToSave.length && !modeChanged) {
     setCurveStatus("没有需要保存的曲线");
     return;
   }
@@ -16742,6 +17118,14 @@ async function saveCurves() {
     }),
   });
   state.curveDirtyKeys = new Set();
+  state.curveDirtyKeysByMode[state.curveMode] = new Set();
+  state.curvePersistedMode = state.curveMode;
+  state.curveSummary = {
+    ...(state.curveSummary || {}),
+    mode: state.curveMode,
+    point_count: config.pointCount,
+    time_step_minutes: config.stepMinutes,
+  };
   setCurveStatus("已保存");
 }
 
@@ -16801,6 +17185,26 @@ $("startSimulationForm").addEventListener("submit", (event) => {
   event.preventDefault();
   startSimulationFromDialog();
 });
+$("closeCurveModeSwitchDialog").addEventListener("click", closeCurveModeSwitchDialog);
+$("cancelCurveModeSwitch").addEventListener("click", closeCurveModeSwitchDialog);
+$("discardCurveModeSwitch").addEventListener("click", switchCurveModeWithoutSaving);
+$("saveCurveModeSwitch").addEventListener("click", saveBeforeCurveModeSwitch);
+$("curveModeSwitchDialog").addEventListener("click", (event) => {
+  if (event.target.id === "curveModeSwitchDialog") closeCurveModeSwitchDialog();
+});
+$("closeTypicalCurveDialog").addEventListener("click", closeTypicalCurveDialog);
+$("cancelTypicalCurve").addEventListener("click", closeTypicalCurveDialog);
+$("typicalCurveDialog").addEventListener("click", (event) => {
+  if (event.target.id === "typicalCurveDialog") closeTypicalCurveDialog();
+});
+$("typicalCurveForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  try {
+    confirmTypicalCurveGeneration();
+  } catch (error) {
+    setTypicalCurveMessage(`生成失败：${apiErrorText(error)}`, true);
+  }
+});
 $("closeNewModelDialog").addEventListener("click", closeNewModelDialog);
 $("cancelNewModel").addEventListener("click", closeNewModelDialog);
 $("newModelDialog").addEventListener("click", (event) => {
@@ -16851,6 +17255,14 @@ $("cloneModelForm").addEventListener("submit", (event) => {
 $("cloneModelName").addEventListener("input", () => validateCloneModelName());
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeModelContextMenu();
+  if (event.key === "Escape" && !$("typicalCurveDialog").hidden) {
+    closeTypicalCurveDialog();
+    return;
+  }
+  if (event.key === "Escape" && !$("curveModeSwitchDialog").hidden) {
+    closeCurveModeSwitchDialog();
+    return;
+  }
   if (event.key === "Escape" && !$("startSimulationDialog").hidden) {
     closeStartSimulationDialog();
     return;
@@ -16881,12 +17293,13 @@ document.addEventListener("keydown", (event) => {
 });
 
 $("generateDenseCurves").addEventListener("click", () => {
-  generateCurves(0);
-  $("curveStatus").textContent = "已生成";
+  openTypicalCurveDialog().catch((error) => {
+    setCurveStatus(`曲线加载失败：${apiErrorText(error)}`);
+  });
 });
 $("randomCurves").addEventListener("click", () => {
   generateCurves(Math.random() * 8 - 4);
-  $("curveStatus").textContent = "本地扰动";
+  $("curveStatus").textContent = "本地扰动，待保存";
 });
 $("saveCurves").addEventListener("click", () => {
   saveCurves().catch((error) => {
@@ -17000,6 +17413,11 @@ function handleSimulatorTableFilterControl(target) {
 
 document.addEventListener("input", (event) => {
   if (handleSimulatorTableFilterControl(event.target)) return;
+  if (event.target?.id === "curveTreeFilter") {
+    state.curveTreeSearch = event.target.value || "";
+    renderCurveTree();
+    return;
+  }
   const input = event.target.closest?.("[data-device-tree-filter-scope]");
   if (!input) return;
   const scope = input.dataset.deviceTreeFilterScope || "";
@@ -17076,7 +17494,7 @@ document.addEventListener("click", (event) => {
       event.preventDefault();
       return;
     }
-    selectCurveTreeButton(curveTreeButton);
+    selectCurveTreeButton(curveTreeButton, event);
     event.preventDefault();
     return;
   }

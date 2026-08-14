@@ -287,6 +287,15 @@ class TraineeControlSnapshot:
     receive_epoch: int = 0
     control_lease: Optional[TraineeControlLease] = field(default=None, repr=False, compare=False)
     snapshot_isolated: bool = False
+    snapshot_read_only: bool = False
+    snapshot_schedule_only: bool = False
+
+
+@dataclass(frozen=True)
+class _ControlStaticProjection:
+    snapshot: Dict[str, Any]
+    measurement_definitions: list[Dict[str, Any]]
+    measurement_definition_signature: str
 
 
 @dataclass
@@ -294,8 +303,10 @@ class _ExchangeState:
     model_id: str
     service_instance_id: str = ""
     runtime_snapshot: Optional[Dict[str, Any]] = None
-    control_static_snapshot: Optional[Dict[str, Any]] = None
+    control_static_snapshot: Optional[_ControlStaticProjection] = None
     control_static_definition_revision: int = -1
+    measurement_definition_signature: str = ""
+    measurement_definition_revision: int = -1
     received_at: float = 0.0
     last_error: str = ""
     revision: int = 0
@@ -358,19 +369,34 @@ def _device_key(device: Mapping[str, Any]) -> Tuple[str, str]:
 def _merge_remote_measurements_with_local_definitions(
     remote_measurements: Any,
     local_snapshot: Mapping[str, Any],
+    *,
+    normalized_definitions: Optional[Sequence[Mapping[str, Any]]] = None,
+    expected_signature: Optional[str] = None,
+    isolate_definitions: bool = True,
 ) -> Any:
     if not isinstance(remote_measurements, Mapping):
         return copy.deepcopy(remote_measurements)
-    definitions = local_snapshot.get("definitions")
-    local_rows = definitions.get("measurement") if isinstance(definitions, Mapping) else None
-    if not isinstance(local_rows, Sequence) or isinstance(local_rows, (str, bytes)):
-        local_measurements = local_snapshot.get("measurements")
-        local_rows = local_measurements.get("definitions") if isinstance(local_measurements, Mapping) else None
-    if not isinstance(local_rows, Sequence) or isinstance(local_rows, (str, bytes)):
-        return copy.deepcopy(remote_measurements)
-
-    normalized_rows = [dict(row) for row in local_rows if isinstance(row, Mapping)]
-    expected_signature = measurement_definition_signature(normalized_rows)
+    if normalized_definitions is None:
+        definitions = local_snapshot.get("definitions")
+        local_rows = definitions.get("measurement") if isinstance(definitions, Mapping) else None
+        if not isinstance(local_rows, Sequence) or isinstance(local_rows, (str, bytes)):
+            local_measurements = local_snapshot.get("measurements")
+            local_rows = (
+                local_measurements.get("definitions")
+                if isinstance(local_measurements, Mapping)
+                else None
+            )
+        if not isinstance(local_rows, Sequence) or isinstance(local_rows, (str, bytes)):
+            return copy.deepcopy(remote_measurements)
+        normalized_rows = [dict(row) for row in local_rows if isinstance(row, Mapping)]
+    elif isolate_definitions:
+        normalized_rows = [
+            dict(row) for row in normalized_definitions if isinstance(row, Mapping)
+        ]
+    else:
+        normalized_rows = normalized_definitions
+    if expected_signature is None:
+        expected_signature = measurement_definition_signature(normalized_rows)
     merged = dict(remote_measurements)
     merged["definitions"] = normalized_rows
     channels = ("scada",) if "real" not in remote_measurements else ("real", "scada")
@@ -439,8 +465,9 @@ def _merge_remote_runtime_devices(local_devices: Any, remote_devices: Any) -> An
 
 def _merge_runtime_snapshot_with_local_definitions(
     runtime_snapshot: Mapping[str, Any],
-    local_snapshot: Mapping[str, Any],
+    static_projection: _ControlStaticProjection,
 ) -> Dict[str, Any]:
+    local_snapshot = static_projection.snapshot
     merged = copy.deepcopy(dict(runtime_snapshot))
     for key in CONTROL_STATIC_FIELDS:
         if key in local_snapshot:
@@ -454,11 +481,72 @@ def _merge_runtime_snapshot_with_local_definitions(
         )
     if "measurements" in runtime_snapshot:
         merged["measurements"] = _merge_remote_measurements_with_local_definitions(
-            runtime_snapshot.get("measurements"),
+            merged.get("measurements"),
             local_snapshot,
+            normalized_definitions=static_projection.measurement_definitions,
+            expected_signature=static_projection.measurement_definition_signature,
         )
     if "static_meta" in local_snapshot:
         merged["static_meta"] = copy.deepcopy(local_snapshot["static_meta"])
+    return merged
+
+
+def _merge_remote_runtime_devices_read_only(local_devices: Any, remote_devices: Any) -> Any:
+    if not isinstance(local_devices, Sequence) or isinstance(local_devices, (str, bytes)):
+        return remote_devices
+    remote_by_key = {
+        _device_key(device): device
+        for device in remote_devices or []
+        if isinstance(device, Mapping)
+    }
+    runtime_fields = ("run_stat", "status", "mode", "set_values", "soc_curr")
+    merged_devices = []
+    for raw_local in local_devices:
+        if not isinstance(raw_local, Mapping):
+            merged_devices.append(raw_local)
+            continue
+        local_device = dict(raw_local)
+        remote_device = remote_by_key.get(_device_key(local_device))
+        if remote_device is not None:
+            for field_name in runtime_fields:
+                if field_name in remote_device:
+                    local_device[field_name] = remote_device[field_name]
+        merged_devices.append(local_device)
+    return merged_devices
+
+
+def _calculation_snapshot_projection(
+    runtime_snapshot: Mapping[str, Any],
+    static_projection: _ControlStaticProjection,
+) -> Dict[str, Any]:
+    """Build the planner's read-only view without copying published payload trees."""
+
+    local_snapshot = static_projection.snapshot
+    merged = {
+        key: value
+        for key, value in runtime_snapshot.items()
+        if key not in {"commands", "runtime_logs"}
+    }
+    for key in CONTROL_STATIC_FIELDS:
+        if key in local_snapshot:
+            merged[key] = local_snapshot[key]
+    if "model" in local_snapshot:
+        merged["model"] = local_snapshot["model"]
+    if "devices" in local_snapshot:
+        merged["devices"] = _merge_remote_runtime_devices_read_only(
+            local_snapshot.get("devices"),
+            runtime_snapshot.get("devices"),
+        )
+    if "measurements" in runtime_snapshot:
+        merged["measurements"] = _merge_remote_measurements_with_local_definitions(
+            runtime_snapshot.get("measurements"),
+            local_snapshot,
+            normalized_definitions=static_projection.measurement_definitions,
+            expected_signature=static_projection.measurement_definition_signature,
+            isolate_definitions=False,
+        )
+    if "static_meta" in local_snapshot:
+        merged["static_meta"] = local_snapshot["static_meta"]
     return merged
 
 
@@ -1039,10 +1127,24 @@ class TraineeRealtimeExchange:
             history_measurements = runtime.get("measurements")
             history_clock = runtime.get("measurement_clock") or runtime.get("clock")
             if isinstance(history_measurements, Mapping) and isinstance(history_clock, Mapping):
+                history_definitions = [
+                    row
+                    for row in history_measurements.get("definitions", []) or []
+                    if isinstance(row, Mapping)
+                ]
                 state.measurement_history.append(
                     history_clock,
                     history_measurements,
                     definition_revision=self._definition_revision(service),
+                    definition_signature=(
+                        self._measurement_definition_signature_for_service(
+                            service,
+                            state,
+                            history_definitions,
+                        )
+                        if history_definitions
+                        else None
+                    ),
                     wall_time=datetime.fromtimestamp(published_at).isoformat(timespec="seconds"),
                 )
             state.received_at = published_at
@@ -1162,7 +1264,7 @@ class TraineeRealtimeExchange:
         service: Any,
         state: _ExchangeState,
         definition_revision: int,
-    ) -> Dict[str, Any]:
+    ) -> _ControlStaticProjection:
         with state.lock:
             if (
                 state.control_static_snapshot is not None
@@ -1178,13 +1280,52 @@ class TraineeRealtimeExchange:
             include_commands=False,
             static_fields=list(CONTROL_STATIC_FIELDS),
         )
+        definitions = local.get("definitions")
+        measurement_rows = (
+            definitions.get("measurement") if isinstance(definitions, Mapping) else None
+        )
+        if not isinstance(measurement_rows, Sequence) or isinstance(
+            measurement_rows,
+            (str, bytes),
+        ):
+            measurement_rows = []
+        normalized_definitions = [
+            dict(row) for row in measurement_rows if isinstance(row, Mapping)
+        ]
+        projection = _ControlStaticProjection(
+            snapshot=local,
+            measurement_definitions=normalized_definitions,
+            measurement_definition_signature=measurement_definition_signature(
+                normalized_definitions
+            ),
+        )
         if self._definition_revision(service) != definition_revision:
-            return local
+            return projection
         with state.lock:
             if self._definition_revision(service) == definition_revision:
-                state.control_static_snapshot = local
+                state.control_static_snapshot = projection
                 state.control_static_definition_revision = definition_revision
-        return local
+        return projection
+
+    def _measurement_definition_signature_for_service(
+        self,
+        service: Any,
+        state: _ExchangeState,
+        definitions: Sequence[Mapping[str, Any]],
+    ) -> str:
+        definition_revision = self._definition_revision(service)
+        with state.lock:
+            if (
+                state.measurement_definition_signature
+                and state.measurement_definition_revision == definition_revision
+            ):
+                return state.measurement_definition_signature
+        signature = measurement_definition_signature(definitions)
+        with state.lock:
+            if self._definition_revision(service) == definition_revision:
+                state.measurement_definition_signature = signature
+                state.measurement_definition_revision = definition_revision
+        return signature
 
     def control_snapshot_for_service(self, service: Any) -> TraineeControlSnapshot:
         """Read one control view bound to a previously resolved service lifecycle."""
@@ -1222,12 +1363,12 @@ class TraineeRealtimeExchange:
                 receive_epoch,
                 lease,
             )
-        local = self._control_static_snapshot_for_service(
+        static_projection = self._control_static_snapshot_for_service(
             service,
             state,
             generation.definition_revision,
         )
-        merged = _merge_runtime_snapshot_with_local_definitions(runtime, local)
+        merged = _merge_runtime_snapshot_with_local_definitions(runtime, static_projection)
         age = max(0.0, time.time() - received_at) if received_at else 0.0
         source = "trainee-live" if not error else "trainee-cache"
         return TraineeControlSnapshot(
@@ -1242,6 +1383,125 @@ class TraineeRealtimeExchange:
             receive_epoch,
             lease,
             snapshot_isolated=True,
+        )
+
+    def control_calculation_snapshot_for_service(
+        self,
+        service: Any,
+    ) -> TraineeControlSnapshot:
+        """Return a read-only, allocation-light view for the renewable planner."""
+
+        state = self._state_for_request_service(service)
+        generation = self._control_generation_for_service(service, state)
+        lease = TraineeControlLease(
+            generation,
+            lambda expected: self.control_generation_guard_for_service(
+                service,
+                state,
+                expected,
+            ),
+        )
+        receive_state = service.trainee_receive_state()
+        active = bool(receive_state.get("active"))
+        with state.lock:
+            runtime = state.runtime_snapshot
+            received_at = state.received_at
+            error = state.last_error or None
+            revision = state.revision
+            signature = state.connection_signature
+            receive_epoch = state.receive_epoch
+        if runtime is None:
+            return TraineeControlSnapshot(
+                {},
+                "trainee-empty",
+                0.0,
+                error,
+                active,
+                False,
+                revision,
+                signature,
+                receive_epoch,
+                lease,
+            )
+        static_projection = self._control_static_snapshot_for_service(
+            service,
+            state,
+            generation.definition_revision,
+        )
+        merged = _calculation_snapshot_projection(runtime, static_projection)
+        age = max(0.0, time.time() - received_at) if received_at else 0.0
+        source = "trainee-live" if not error else "trainee-cache"
+        return TraineeControlSnapshot(
+            merged,
+            source,
+            age,
+            error,
+            active,
+            True,
+            revision,
+            signature,
+            receive_epoch,
+            lease,
+            snapshot_read_only=True,
+        )
+
+    def control_schedule_snapshot_for_service(
+        self,
+        service: Any,
+    ) -> TraineeControlSnapshot:
+        """Return only the published clock needed to schedule planner cycles."""
+
+        state = self._state_for_request_service(service)
+        generation = self._control_generation_for_service(service, state)
+        lease = TraineeControlLease(
+            generation,
+            lambda expected: self.control_generation_guard_for_service(
+                service,
+                state,
+                expected,
+            ),
+        )
+        receive_state = service.trainee_receive_state()
+        active = bool(receive_state.get("active"))
+        with state.lock:
+            runtime = state.runtime_snapshot
+            received_at = state.received_at
+            error = state.last_error or None
+            revision = state.revision
+            signature = state.connection_signature
+            receive_epoch = state.receive_epoch
+        if runtime is None:
+            return TraineeControlSnapshot(
+                {},
+                "trainee-empty",
+                0.0,
+                error,
+                active,
+                False,
+                revision,
+                signature,
+                receive_epoch,
+                lease,
+            )
+        clock = runtime.get("clock")
+        schedule_snapshot = {
+            "clock": clock if isinstance(clock, Mapping) else {},
+        }
+        age = max(0.0, time.time() - received_at) if received_at else 0.0
+        source = "trainee-live" if not error else "trainee-cache"
+        return TraineeControlSnapshot(
+            schedule_snapshot,
+            source,
+            age,
+            error,
+            active,
+            True,
+            revision,
+            signature,
+            receive_epoch,
+            lease,
+            snapshot_read_only=True,
+            snapshot_schedule_only=True,
         )
 
     def _receive_status_for_service(self, service: Any, state: _ExchangeState) -> Dict[str, Any]:
@@ -2036,10 +2296,29 @@ class TraineeRealtimeExchange:
                 raise
             return self._cancelled_refresh_view(state)
 
+    def _refresh_completion_for_service(
+        self,
+        service: Any,
+        state: _ExchangeState,
+        *,
+        materialize_result: bool,
+    ) -> TraineeControlSnapshot:
+        if materialize_result:
+            return self._refresh_result_for_service(service, state)
+        # Background refresh callers only need the publication side effect.
+        # Avoid rebuilding the complete static/runtime control snapshot for a
+        # return value that the executor immediately discards.
+        return self._cancelled_refresh_view(state)
+
     def refresh_once(self, model_id: Optional[str]) -> TraineeControlSnapshot:
         return self.refresh_once_for_service(self._service_for(model_id))
 
-    def refresh_once_for_service(self, service: Any) -> TraineeControlSnapshot:
+    def refresh_once_for_service(
+        self,
+        service: Any,
+        *,
+        materialize_result: bool = True,
+    ) -> TraineeControlSnapshot:
         state = self._state_for_live_service(service)
         runtime_settings = self._runtime_settings_for_service(service)
         with state.fetch_lock:
@@ -2068,7 +2347,11 @@ class TraineeRealtimeExchange:
                     publish_seconds=0.0,
                     total_seconds=time.monotonic() - refresh_started,
                 )
-                return self._refresh_result_for_service(service, state)
+                return self._refresh_completion_for_service(
+                    service,
+                    state,
+                    materialize_result=materialize_result,
+                )
             with state.lock:
                 remote_measurement_seq = state.remote_measurement_delta_seq
                 remote_runtime_log_seq = state.remote_runtime_log_seq
@@ -2111,7 +2394,11 @@ class TraineeRealtimeExchange:
                 current_signature = self._connection_signature(service)
                 if current_signature != signature:
                     self.notify_receive_state_changed_for_service(service)
-                    return self._refresh_result_for_service(service, state)
+                    return self._refresh_completion_for_service(
+                        service,
+                        state,
+                        materialize_result=materialize_result,
+                    )
                 self._commit_refresh_failure_for_service(
                     service,
                     state,
@@ -2128,11 +2415,19 @@ class TraineeRealtimeExchange:
                     publish_seconds=0.0,
                     total_seconds=time.monotonic() - refresh_started,
                 )
-                return self._refresh_result_for_service(service, state)
+                return self._refresh_completion_for_service(
+                    service,
+                    state,
+                    materialize_result=materialize_result,
+                )
             current_signature = self._connection_signature(service)
             if current_signature != signature:
                 self.notify_receive_state_changed_for_service(service)
-                return self._refresh_result_for_service(service, state)
+                return self._refresh_completion_for_service(
+                    service,
+                    state,
+                    materialize_result=materialize_result,
+                )
             request_duration = max(0.0, time.monotonic() - request_started)
             try:
                 response_size = len(
@@ -2238,6 +2533,15 @@ class TraineeRealtimeExchange:
                         previous_measurements,
                         definitions,
                         embedded_delta,
+                        expected_definition_signature=(
+                            self._measurement_definition_signature_for_service(
+                                service,
+                                state,
+                                definitions,
+                            )
+                            if definitions
+                            else None
+                        ),
                     )
                     try:
                         next_remote_measurement_seq = max(0, int(embedded_delta.get("seq", 0)))
@@ -2313,7 +2617,11 @@ class TraineeRealtimeExchange:
                     publish_seconds=0.0,
                     total_seconds=time.monotonic() - refresh_started,
                 )
-                return self._refresh_result_for_service(service, state)
+                return self._refresh_completion_for_service(
+                    service,
+                    state,
+                    materialize_result=materialize_result,
+                )
             processing_duration = time.monotonic() - processing_started
             publish_started = time.monotonic()
             published_revision = self._publish_runtime_snapshot_for_service(
@@ -2344,8 +2652,16 @@ class TraineeRealtimeExchange:
                 total_seconds=time.monotonic() - refresh_started,
             )
             if published_revision is None:
-                return self._refresh_result_for_service(service, state)
-            return self._refresh_result_for_service(service, state)
+                return self._refresh_completion_for_service(
+                    service,
+                    state,
+                    materialize_result=materialize_result,
+                )
+            return self._refresh_completion_for_service(
+                service,
+                state,
+                materialize_result=materialize_result,
+            )
 
     def notify_receive_state_changed_for_service(self, service: Any) -> None:
         """Synchronize a resolved service without acquiring the model registry lock."""
@@ -2408,6 +2724,10 @@ class TraineeRealtimeExchange:
         state = self._state_for_service(service)
         with state.lock:
             state.runtime_snapshot = None
+            state.control_static_snapshot = None
+            state.control_static_definition_revision = -1
+            state.measurement_definition_signature = ""
+            state.measurement_definition_revision = -1
             state.received_at = 0.0
             state.last_error = ""
             state.measurement_delta_seq = 0
@@ -2506,7 +2826,7 @@ class TraineeRealtimeExchange:
 
         def refresh_pending() -> None:
             try:
-                self.refresh_once_for_service(service)
+                self.refresh_once_for_service(service, materialize_result=False)
             except Exception:
                 pass
             finally:

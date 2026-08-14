@@ -10025,7 +10025,14 @@ async function loadModels() {
     }
     const preferred = state.activeModelId || catalog.active_model_id || state.models[0]?.id || "";
     const exists = state.models.some((model) => model.id === preferred);
-    await setActiveModel(exists ? preferred : state.models[0]?.id || "", false);
+    const nextId = exists ? preferred : state.models[0]?.id || "";
+    const activeModelAlreadyLoaded = Boolean(
+      nextId
+      && nextId === state.activeModelId
+      && String(state.snapshot?.model?.id || "") === nextId
+    );
+    if (activeModelAlreadyLoaded) renderModelSelector();
+    else await setActiveModel(nextId, false);
     if ($("modelManagementDialog")?.open) renderModelManagementList();
   } catch (_error) {
     state.models = [];

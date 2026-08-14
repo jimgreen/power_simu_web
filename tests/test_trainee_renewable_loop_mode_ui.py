@@ -201,9 +201,9 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             "fuelCellPowerStepRatio",
             "electrolyzerDieselPowerLimitRatio",
             "electrolyzerDieselPowerDeadbandRatio",
-            "electrolyzerStorageSocLowerLimit",
-            "electrolyzerStorageSocUpperLimit",
-            "electrolyzerHydrogenStorageSocUpperLimit",
+            "electrolyzerStorageSocStartMinimum",
+            "electrolyzerStorageSocStopMaximum",
+            "electrolyzerHydrogenStorageSocStopMinimum",
             "fuelCellDieselPowerLimitRatio",
             "fuelCellStorageSocLimit",
             "fuelCellHydrogenStorageSocUpperLimit",
@@ -217,13 +217,15 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         )[0]
         self.assertIn("hydrogenClosedLoopEnabled", settings_block)
         self.assertIn("启动功率（下限+死区）不能大于上限", settings_block)
+        self.assertNotIn("电制氢电储SOC下限不能大于上限", settings_block)
+        self.assertIn("电制氢启机SOC最小值必须大于停机SOC最大值", settings_block)
         self.assertIn("hydrogen_closed_loop_enabled", self.backend)
         self.assertIn("hydrogen_pressure_deadband_ratio", self.backend)
         self.assertIn("electrolyzer_diesel_power_limit_ratio", self.backend)
         self.assertIn("electrolyzer_diesel_power_deadband_ratio", self.backend)
-        self.assertIn("electrolyzer_storage_soc_lower_limit", self.backend)
-        self.assertIn("electrolyzer_storage_soc_upper_limit", self.backend)
-        self.assertIn("electrolyzer_hydrogen_storage_soc_upper_limit", self.backend)
+        self.assertIn("electrolyzer_storage_soc_start_minimum", self.backend)
+        self.assertIn("electrolyzer_storage_soc_stop_maximum", self.backend)
+        self.assertIn("electrolyzer_hydrogen_storage_soc_stop_minimum", self.backend)
         self.assertIn("fuel_cell_diesel_power_limit_ratio", self.backend)
         self.assertIn("fuel_cell_storage_soc_limit", self.backend)
         self.assertIn("fuel_cell_hydrogen_storage_soc_upper_limit", self.backend)

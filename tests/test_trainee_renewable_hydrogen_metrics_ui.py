@@ -129,8 +129,15 @@ class TraineeRenewableHydrogenMetricsUiTest(unittest.TestCase):
         self.assertNotIn("平均", parameter_dialog)
         self.assertNotIn("平均", hydrogen_statistics)
         self.assertNotIn("平均", hydrogen_series)
-        self.assertIn("启机门槛-电储SOC下限(%)", parameter_dialog)
-        self.assertIn("关机门槛-电储SOC上限(%)", parameter_dialog)
+        self.assertIn("制氢能力下限(%)", parameter_dialog)
+        self.assertIn("制氢能力上限(%)", parameter_dialog)
+        self.assertIn("制氢调节死区(%)", parameter_dialog)
+        self.assertIn("制氢调节步长(%)", parameter_dialog)
+        self.assertIn("启机柴发出力最大值(%)", parameter_dialog)
+        self.assertIn("柴发出力死区(%)", parameter_dialog)
+        self.assertIn("启机电SOC最小值(%)", parameter_dialog)
+        self.assertIn("停机电SOC最大值(%)", parameter_dialog)
+        self.assertIn("停机氢SOC最小值(%)", parameter_dialog)
 
     def test_parameter_dialog_only_closes_after_an_explicit_action(self):
         lifecycle_block = self.script.split(

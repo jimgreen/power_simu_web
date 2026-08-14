@@ -1718,10 +1718,10 @@ def _hydrogen_post_dispatch_plan(
                     diesel_raise_margin_kw > EPSILON
                     and electric_storage_soc is not None
                     and electric_storage_soc
-                    > settings.electrolyzer_storage_soc_upper_limit + EPSILON
+                    > settings.electrolyzer_storage_soc_start_minimum + EPSILON
                     and hydrogen_storage_soc is not None
                     and hydrogen_storage_soc
-                    < settings.electrolyzer_hydrogen_storage_soc_upper_limit
+                    < settings.electrolyzer_hydrogen_storage_soc_stop_minimum
                     - EPSILON
                     and hydrogen_mode_lock != "fuel_cell"
                     and conflict_stop_mode != "electrolyzer"
@@ -1731,12 +1731,12 @@ def _hydrogen_post_dispatch_plan(
                     or (
                         electric_storage_soc is not None
                         and electric_storage_soc
-                        < settings.electrolyzer_storage_soc_lower_limit - EPSILON
+                        < settings.electrolyzer_storage_soc_stop_maximum - EPSILON
                     )
                     or (
                         hydrogen_storage_soc is not None
                         and hydrogen_storage_soc
-                        > settings.electrolyzer_hydrogen_storage_soc_upper_limit
+                        > settings.electrolyzer_hydrogen_storage_soc_stop_minimum
                         + EPSILON
                     )
                 )
@@ -1844,20 +1844,20 @@ def _hydrogen_post_dispatch_plan(
                             )
                         if (
                             electric_storage_soc
-                            <= settings.electrolyzer_storage_soc_upper_limit + EPSILON
+                            <= settings.electrolyzer_storage_soc_start_minimum + EPSILON
                         ):
                             start_blockers.append(
                                 f"电储SOC{electric_storage_soc * 100:.3f}%未严格高于启机阈值"
-                                f"{settings.electrolyzer_storage_soc_upper_limit * 100:.3f}%"
+                                f"{settings.electrolyzer_storage_soc_start_minimum * 100:.3f}%"
                             )
                         if (
                             hydrogen_storage_soc
-                            >= settings.electrolyzer_hydrogen_storage_soc_upper_limit
+                            >= settings.electrolyzer_hydrogen_storage_soc_stop_minimum
                             - EPSILON
                         ):
                             start_blockers.append(
-                                f"本氢岛氢储SOC{hydrogen_storage_soc * 100:.3f}%未严格低于上限"
-                                f"{settings.electrolyzer_hydrogen_storage_soc_upper_limit * 100:.3f}%"
+                                f"本氢岛氢储SOC{hydrogen_storage_soc * 100:.3f}%未严格低于停机阈值"
+                                f"{settings.electrolyzer_hydrogen_storage_soc_stop_minimum * 100:.3f}%"
                             )
                         diagnostics["warnings"].append(
                             f"氢能设备{coupling_name}制氢启动条件未满足："
@@ -2244,14 +2244,14 @@ class RenewableControlSettings:
     electrolyzer_diesel_power_deadband_ratio: float = default_number(
         "electrolyzer_diesel_power_deadband_ratio"
     )
-    electrolyzer_storage_soc_lower_limit: float = default_number(
-        "electrolyzer_storage_soc_lower_limit"
+    electrolyzer_storage_soc_start_minimum: float = default_number(
+        "electrolyzer_storage_soc_start_minimum"
     )
-    electrolyzer_storage_soc_upper_limit: float = default_number(
-        "electrolyzer_storage_soc_upper_limit"
+    electrolyzer_storage_soc_stop_maximum: float = default_number(
+        "electrolyzer_storage_soc_stop_maximum"
     )
-    electrolyzer_hydrogen_storage_soc_upper_limit: float = default_number(
-        "electrolyzer_hydrogen_storage_soc_upper_limit"
+    electrolyzer_hydrogen_storage_soc_stop_minimum: float = default_number(
+        "electrolyzer_hydrogen_storage_soc_stop_minimum"
     )
     fuel_cell_power_min_ratio: float = default_number("fuel_cell_power_min_ratio")
     fuel_cell_power_max_ratio: float = default_number("fuel_cell_power_max_ratio")
@@ -2316,6 +2316,32 @@ class RenewableControlSettings:
     fuel_cell_power_deadband_kw: Optional[float] = None
     fuel_cell_power_step_kw: Optional[float] = None
     fuel_cell_diesel_power_limit_kw: Optional[float] = None
+    # Constructor-only compatibility. The legacy names described physical bounds,
+    # but their actual planner semantics were upper -> start and lower -> stop.
+    electrolyzer_storage_soc_lower_limit: Optional[float] = None
+    electrolyzer_storage_soc_upper_limit: Optional[float] = None
+    electrolyzer_hydrogen_storage_soc_upper_limit: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        if self.electrolyzer_storage_soc_upper_limit is not None:
+            object.__setattr__(
+                self,
+                "electrolyzer_storage_soc_start_minimum",
+                float(self.electrolyzer_storage_soc_upper_limit),
+            )
+        if self.electrolyzer_storage_soc_lower_limit is not None:
+            object.__setattr__(
+                self,
+                "electrolyzer_storage_soc_stop_maximum",
+                float(self.electrolyzer_storage_soc_lower_limit),
+            )
+        if self.electrolyzer_hydrogen_storage_soc_upper_limit is not None:
+            object.__setattr__(
+                self,
+                "electrolyzer_hydrogen_storage_soc_stop_minimum",
+                float(self.electrolyzer_hydrogen_storage_soc_upper_limit),
+            )
+
     def normalized(self) -> "RenewableControlSettings":
         minimum = _clamp(float(self.soc_min), 0.0, 1.0)
         maximum = _clamp(float(self.soc_max), minimum, 1.0)
@@ -2346,13 +2372,11 @@ class RenewableControlSettings:
             fuel_cell_power_min_ratio,
             1.0,
         )
-        electrolyzer_storage_soc_lower_limit = _clamp(
-            float(self.electrolyzer_storage_soc_lower_limit), 0.0, 1.0
+        electrolyzer_storage_soc_start_minimum = _clamp(
+            float(self.electrolyzer_storage_soc_start_minimum), 0.0, 1.0
         )
-        electrolyzer_storage_soc_upper_limit = _clamp(
-            float(self.electrolyzer_storage_soc_upper_limit),
-            electrolyzer_storage_soc_lower_limit,
-            1.0,
+        electrolyzer_storage_soc_stop_maximum = _clamp(
+            float(self.electrolyzer_storage_soc_stop_maximum), 0.0, 1.0
         )
         fuel_cell_hydrogen_storage_soc_lower_limit = _clamp(
             float(self.fuel_cell_hydrogen_storage_soc_lower_limit), 0.0, 1.0
@@ -2415,10 +2439,10 @@ class RenewableControlSettings:
             electrolyzer_diesel_power_deadband_ratio=_clamp(
                 float(self.electrolyzer_diesel_power_deadband_ratio), 0.0, 1.0
             ),
-            electrolyzer_storage_soc_lower_limit=electrolyzer_storage_soc_lower_limit,
-            electrolyzer_storage_soc_upper_limit=electrolyzer_storage_soc_upper_limit,
-            electrolyzer_hydrogen_storage_soc_upper_limit=_clamp(
-                float(self.electrolyzer_hydrogen_storage_soc_upper_limit),
+            electrolyzer_storage_soc_start_minimum=electrolyzer_storage_soc_start_minimum,
+            electrolyzer_storage_soc_stop_maximum=electrolyzer_storage_soc_stop_maximum,
+            electrolyzer_hydrogen_storage_soc_stop_minimum=_clamp(
+                float(self.electrolyzer_hydrogen_storage_soc_stop_minimum),
                 0.0,
                 1.0,
             ),
@@ -2486,6 +2510,9 @@ class RenewableControlSettings:
             optimization_max_iterations=max(
                 1, int(self.optimization_max_iterations)
             ),
+            electrolyzer_storage_soc_lower_limit=None,
+            electrolyzer_storage_soc_upper_limit=None,
+            electrolyzer_hydrogen_storage_soc_upper_limit=None,
         )
 
     def updated(self, payload: Mapping[str, Any]) -> "RenewableControlSettings":
@@ -2554,15 +2581,21 @@ class RenewableControlSettings:
                 "electrolyzer_diesel_power_deadband_ratio",
                 "electrolyzerDieselPowerDeadbandRatio",
             ),
-            "electrolyzer_storage_soc_lower_limit": (
-                "electrolyzer_storage_soc_lower_limit",
-                "electrolyzerStorageSocLowerLimit",
-            ),
-            "electrolyzer_storage_soc_upper_limit": (
+            "electrolyzer_storage_soc_start_minimum": (
+                "electrolyzer_storage_soc_start_minimum",
+                "electrolyzerStorageSocStartMinimum",
                 "electrolyzer_storage_soc_upper_limit",
                 "electrolyzerStorageSocUpperLimit",
             ),
-            "electrolyzer_hydrogen_storage_soc_upper_limit": (
+            "electrolyzer_storage_soc_stop_maximum": (
+                "electrolyzer_storage_soc_stop_maximum",
+                "electrolyzerStorageSocStopMaximum",
+                "electrolyzer_storage_soc_lower_limit",
+                "electrolyzerStorageSocLowerLimit",
+            ),
+            "electrolyzer_hydrogen_storage_soc_stop_minimum": (
+                "electrolyzer_hydrogen_storage_soc_stop_minimum",
+                "electrolyzerHydrogenStorageSocStopMinimum",
                 "electrolyzer_hydrogen_storage_soc_upper_limit",
                 "electrolyzerHydrogenStorageSocUpperLimit",
             ),
@@ -2759,9 +2792,9 @@ class RenewableControlSettings:
             "electrolyzerPowerStepRatio": self.electrolyzer_power_step_ratio,
             "electrolyzerDieselPowerLimitRatio": self.electrolyzer_diesel_power_limit_ratio,
             "electrolyzerDieselPowerDeadbandRatio": self.electrolyzer_diesel_power_deadband_ratio,
-            "electrolyzerStorageSocLowerLimit": self.electrolyzer_storage_soc_lower_limit,
-            "electrolyzerStorageSocUpperLimit": self.electrolyzer_storage_soc_upper_limit,
-            "electrolyzerHydrogenStorageSocUpperLimit": self.electrolyzer_hydrogen_storage_soc_upper_limit,
+            "electrolyzerStorageSocStartMinimum": self.electrolyzer_storage_soc_start_minimum,
+            "electrolyzerStorageSocStopMaximum": self.electrolyzer_storage_soc_stop_maximum,
+            "electrolyzerHydrogenStorageSocStopMinimum": self.electrolyzer_hydrogen_storage_soc_stop_minimum,
             "fuelCellPowerMinRatio": self.fuel_cell_power_min_ratio,
             "fuelCellPowerMaxRatio": self.fuel_cell_power_max_ratio,
             "fuelCellPowerDeadbandRatio": self.fuel_cell_power_deadband_ratio,
@@ -13908,6 +13941,16 @@ class TraineeRenewableControlManager:
     ) -> float:
         return _simulation_control_interval_seconds(control_interval_seconds)
 
+    @staticmethod
+    def _validate_electrolyzer_soc_hysteresis(
+        settings: RenewableControlSettings,
+    ) -> None:
+        if (
+            settings.electrolyzer_storage_soc_start_minimum
+            <= settings.electrolyzer_storage_soc_stop_maximum + EPSILON
+        ):
+            raise ValueError("电制氢启机SOC最小值必须大于停机SOC最大值。")
+
     def validate_runtime_settings_update_for_service(
         self,
         service: Any,
@@ -16336,6 +16379,7 @@ class TraineeRenewableControlManager:
                     self._validate_simulation_control_interval(
                         next_settings.interval_seconds,
                     )
+                    self._validate_electrolyzer_soc_hysteresis(next_settings)
                     self._persist_configuration(
                         service,
                         next_settings,

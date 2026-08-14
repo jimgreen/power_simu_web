@@ -373,9 +373,9 @@ def test_hydrogen_settings_round_trip_with_independent_closed_loop_switch():
             "electrolyzerPowerStepRatio": 0.02,
             "electrolyzerDieselPowerLimitRatio": 0.32,
             "electrolyzerDieselPowerDeadbandRatio": 0.15,
-            "electrolyzerStorageSocLowerLimit": 0.35,
-            "electrolyzerStorageSocUpperLimit": 0.82,
-            "electrolyzerHydrogenStorageSocUpperLimit": 0.88,
+            "electrolyzerStorageSocStartMinimum": 0.82,
+            "electrolyzerStorageSocStopMaximum": 0.35,
+            "electrolyzerHydrogenStorageSocStopMinimum": 0.88,
             "fuelCellPowerMinRatio": 0.03,
             "fuelCellPowerMaxRatio": 0.14,
             "fuelCellPowerDeadbandRatio": 0.005,
@@ -394,9 +394,9 @@ def test_hydrogen_settings_round_trip_with_independent_closed_loop_switch():
     assert updated.payload()["electrolyzerPowerStepRatio"] == 0.02
     assert updated.payload()["electrolyzerDieselPowerLimitRatio"] == 0.32
     assert updated.payload()["electrolyzerDieselPowerDeadbandRatio"] == 0.15
-    assert updated.payload()["electrolyzerStorageSocLowerLimit"] == 0.35
-    assert updated.payload()["electrolyzerStorageSocUpperLimit"] == 0.82
-    assert updated.payload()["electrolyzerHydrogenStorageSocUpperLimit"] == 0.88
+    assert updated.payload()["electrolyzerStorageSocStartMinimum"] == 0.82
+    assert updated.payload()["electrolyzerStorageSocStopMaximum"] == 0.35
+    assert updated.payload()["electrolyzerHydrogenStorageSocStopMinimum"] == 0.88
     assert updated.payload()["fuelCellPowerMinRatio"] == 0.03
     assert updated.payload()["fuelCellPowerMaxRatio"] == 0.14
     assert updated.payload()["fuelCellPowerDeadbandRatio"] == 0.005
@@ -421,9 +421,9 @@ def test_hydrogen_power_settings_normalize_invalid_ranges():
             "fuelCellPowerStepRatio": -2,
             "electrolyzerDieselPowerLimitRatio": -10,
             "electrolyzerDieselPowerDeadbandRatio": -2,
-            "electrolyzerStorageSocLowerLimit": 0.9,
-            "electrolyzerStorageSocUpperLimit": 0.2,
-            "electrolyzerHydrogenStorageSocUpperLimit": 2,
+            "electrolyzerStorageSocStartMinimum": -0.2,
+            "electrolyzerStorageSocStopMaximum": 1.9,
+            "electrolyzerHydrogenStorageSocStopMinimum": 2,
             "fuelCellDieselPowerLimitRatio": -20,
             "fuelCellStorageSocLimit": -1,
             "fuelCellHydrogenStorageSocUpperLimit": 0.1,
@@ -441,16 +441,41 @@ def test_hydrogen_power_settings_normalize_invalid_ranges():
     assert settings.fuel_cell_power_step_ratio > 0
     assert settings.electrolyzer_diesel_power_limit_ratio == 0
     assert settings.electrolyzer_diesel_power_deadband_ratio == 0
-    assert settings.electrolyzer_storage_soc_lower_limit == 0.9
-    assert settings.electrolyzer_storage_soc_upper_limit == 0.9
-    assert settings.electrolyzer_hydrogen_storage_soc_upper_limit == 1
+    assert settings.electrolyzer_storage_soc_start_minimum == 0
+    assert settings.electrolyzer_storage_soc_stop_maximum == 1
+    assert settings.electrolyzer_hydrogen_storage_soc_stop_minimum == 1
     assert settings.fuel_cell_diesel_power_limit_ratio == 0
     assert settings.fuel_cell_storage_soc_limit == 0
     assert settings.fuel_cell_hydrogen_storage_soc_lower_limit == 0.8
     assert settings.fuel_cell_hydrogen_storage_soc_upper_limit == 0.8
 
 
-def test_electrolyzer_uses_independent_diesel_and_storage_soc_start_limits():
+def test_legacy_electrolyzer_soc_threshold_names_migrate_by_control_semantics():
+    settings = RenewableControlSettings().updated(
+        {
+            "electrolyzerStorageSocUpperLimit": 0.6,
+            "electrolyzerStorageSocLowerLimit": 0.4,
+            "electrolyzerHydrogenStorageSocUpperLimit": 0.85,
+        }
+    )
+
+    assert settings.electrolyzer_storage_soc_start_minimum == 0.6
+    assert settings.electrolyzer_storage_soc_stop_maximum == 0.4
+    assert settings.electrolyzer_hydrogen_storage_soc_stop_minimum == 0.85
+    assert settings.payload()["electrolyzerStorageSocStartMinimum"] == 0.6
+    assert settings.payload()["electrolyzerStorageSocStopMaximum"] == 0.4
+
+    constructed = RenewableControlSettings(
+        electrolyzer_storage_soc_upper_limit=0.65,
+        electrolyzer_storage_soc_lower_limit=0.35,
+        electrolyzer_hydrogen_storage_soc_upper_limit=0.88,
+    ).normalized()
+    assert constructed.electrolyzer_storage_soc_start_minimum == 0.65
+    assert constructed.electrolyzer_storage_soc_stop_maximum == 0.35
+    assert constructed.electrolyzer_hydrogen_storage_soc_stop_minimum == 0.88
+
+
+def test_electrolyzer_soc_start_and_stop_thresholds_allow_hysteresis_order():
     settings = RenewableControlSettings(
         electrolyzer_power_min_kw=5.0,
         electrolyzer_power_max_kw=20.0,
@@ -458,15 +483,15 @@ def test_electrolyzer_uses_independent_diesel_and_storage_soc_start_limits():
         electrolyzer_power_step_kw=6.0,
         electrolyzer_diesel_power_limit_kw=100.0,
         electrolyzer_diesel_power_deadband_kw=10.0,
-        electrolyzer_storage_soc_lower_limit=0.4,
-        electrolyzer_storage_soc_upper_limit=0.8,
-        electrolyzer_hydrogen_storage_soc_upper_limit=0.9,
+        electrolyzer_storage_soc_start_minimum=0.6,
+        electrolyzer_storage_soc_stop_maximum=0.4,
+        electrolyzer_hydrogen_storage_soc_stop_minimum=0.9,
     )
     started, rows = _run_electrolyzer(
         _electrolyzer_snapshot(electric_power=0.0, tank_soc=0.89),
         settings,
         diesel_power=94.0,
-        storage_soc=0.81,
+        storage_soc=0.61,
     )
 
     command = next(row for row in rows if row.get("dev_name") == "electrolyzer-load")
@@ -477,7 +502,7 @@ def test_electrolyzer_uses_independent_diesel_and_storage_soc_start_limits():
         _electrolyzer_snapshot(electric_power=4.0, tank_soc=0.89),
         settings,
         diesel_power=94.0,
-        storage_soc=0.79,
+        storage_soc=0.59,
     )
     assert held["action"] == "hold"
     assert held_rows == []
@@ -502,9 +527,9 @@ def test_running_electrolyzer_reduces_when_any_configured_stop_condition_is_true
         electrolyzer_power_step_kw=2.0,
         electrolyzer_diesel_power_limit_kw=100.0,
         electrolyzer_diesel_power_deadband_kw=10.0,
-        electrolyzer_storage_soc_lower_limit=0.4,
-        electrolyzer_storage_soc_upper_limit=0.8,
-        electrolyzer_hydrogen_storage_soc_upper_limit=0.9,
+        electrolyzer_storage_soc_stop_maximum=0.4,
+        electrolyzer_storage_soc_start_minimum=0.8,
+        electrolyzer_hydrogen_storage_soc_stop_minimum=0.9,
     )
     result, rows = _run_electrolyzer(
         _electrolyzer_snapshot(electric_power=8.0, tank_soc=tank_soc),
@@ -524,9 +549,9 @@ def test_electrolyzer_holds_inside_configured_hysteresis_region():
     settings = RenewableControlSettings(
         electrolyzer_diesel_power_limit_kw=100.0,
         electrolyzer_diesel_power_deadband_kw=10.0,
-        electrolyzer_storage_soc_lower_limit=0.4,
-        electrolyzer_storage_soc_upper_limit=0.8,
-        electrolyzer_hydrogen_storage_soc_upper_limit=0.9,
+        electrolyzer_storage_soc_stop_maximum=0.4,
+        electrolyzer_storage_soc_start_minimum=0.8,
+        electrolyzer_hydrogen_storage_soc_stop_minimum=0.9,
     )
     result, rows = _run_electrolyzer(
         _electrolyzer_snapshot(electric_power=8.0, tank_soc=0.9),
@@ -544,9 +569,9 @@ def test_electrolyzer_uses_average_diesel_power_and_average_electric_storage_soc
         electrolyzer_power_step_kw=2.0,
         electrolyzer_diesel_power_limit_kw=100.0,
         electrolyzer_diesel_power_deadband_kw=10.0,
-        electrolyzer_storage_soc_lower_limit=0.4,
-        electrolyzer_storage_soc_upper_limit=0.8,
-        electrolyzer_hydrogen_storage_soc_upper_limit=0.9,
+        electrolyzer_storage_soc_stop_maximum=0.4,
+        electrolyzer_storage_soc_start_minimum=0.8,
+        electrolyzer_hydrogen_storage_soc_stop_minimum=0.9,
     )
     snapshot = _electrolyzer_snapshot(electric_power=4.0, tank_soc=0.5)
     measurements = _measurement_index(snapshot)
@@ -586,8 +611,8 @@ def test_electrolyzer_fails_closed_on_partial_electric_storage_soc_average():
         measurements,
         RenewableControlSettings(
             electrolyzer_diesel_power_limit_kw=100.0,
-            electrolyzer_storage_soc_upper_limit=0.8,
-            electrolyzer_hydrogen_storage_soc_upper_limit=0.9,
+            electrolyzer_storage_soc_start_minimum=0.8,
+            electrolyzer_hydrogen_storage_soc_stop_minimum=0.9,
         ),
         topology,
         rows,
@@ -988,9 +1013,9 @@ def test_electrolyzer_and_fuel_cell_cannot_start_in_the_same_cycle():
             electrolyzer_power_max_kw=20.0,
             electrolyzer_power_step_kw=6.0,
             electrolyzer_diesel_power_limit_kw=100.0,
-            electrolyzer_storage_soc_lower_limit=0.2,
-            electrolyzer_storage_soc_upper_limit=0.8,
-            electrolyzer_hydrogen_storage_soc_upper_limit=0.9,
+            electrolyzer_storage_soc_stop_maximum=0.2,
+            electrolyzer_storage_soc_start_minimum=0.8,
+            electrolyzer_hydrogen_storage_soc_stop_minimum=0.9,
             fuel_cell_power_min_kw=5.0,
             fuel_cell_power_max_kw=20.0,
             fuel_cell_power_step_kw=6.0,
@@ -1033,9 +1058,9 @@ def test_running_fuel_cell_blocks_electrolyzer_start():
             electrolyzer_power_max_kw=20.0,
             electrolyzer_power_step_kw=6.0,
             electrolyzer_diesel_power_limit_kw=100.0,
-            electrolyzer_storage_soc_lower_limit=0.2,
-            electrolyzer_storage_soc_upper_limit=0.8,
-            electrolyzer_hydrogen_storage_soc_upper_limit=0.9,
+            electrolyzer_storage_soc_stop_maximum=0.2,
+            electrolyzer_storage_soc_start_minimum=0.8,
+            electrolyzer_hydrogen_storage_soc_stop_minimum=0.9,
             fuel_cell_diesel_power_limit_kw=200.0,
             fuel_cell_storage_soc_limit=0.1,
         ),
@@ -1058,9 +1083,9 @@ def test_running_electrolyzer_blocks_fuel_cell_start():
             electrolyzer_power_max_kw=20.0,
             electrolyzer_power_step_kw=2.0,
             electrolyzer_diesel_power_limit_kw=200.0,
-            electrolyzer_storage_soc_lower_limit=0.2,
-            electrolyzer_storage_soc_upper_limit=0.95,
-            electrolyzer_hydrogen_storage_soc_upper_limit=0.9,
+            electrolyzer_storage_soc_stop_maximum=0.2,
+            electrolyzer_storage_soc_start_minimum=0.95,
+            electrolyzer_hydrogen_storage_soc_stop_minimum=0.9,
             fuel_cell_power_min_kw=5.0,
             fuel_cell_power_max_kw=20.0,
             fuel_cell_power_step_kw=6.0,
@@ -1154,9 +1179,9 @@ def test_existing_simultaneous_operation_stops_mode_selected_by_diesel_power(
             fuel_cell_power_step_kw=3.0,
             electrolyzer_diesel_power_limit_kw=80.0,
             electrolyzer_diesel_power_deadband_kw=5.0,
-            electrolyzer_storage_soc_lower_limit=0.2,
-            electrolyzer_storage_soc_upper_limit=0.8,
-            electrolyzer_hydrogen_storage_soc_upper_limit=0.9,
+            electrolyzer_storage_soc_stop_maximum=0.2,
+            electrolyzer_storage_soc_start_minimum=0.8,
+            electrolyzer_hydrogen_storage_soc_stop_minimum=0.9,
             fuel_cell_diesel_power_limit_kw=80.0,
             fuel_cell_storage_soc_limit=0.5,
             fuel_cell_hydrogen_storage_soc_upper_limit=0.8,
@@ -1351,8 +1376,8 @@ def test_electrolyzer_start_uses_minimum_power_even_when_normal_step_is_smaller(
             electrolyzer_power_deadband_ratio=0.0,
             electrolyzer_power_step_ratio=0.05,
             electrolyzer_diesel_power_limit_ratio=0.30,
-            electrolyzer_storage_soc_upper_limit=0.80,
-            electrolyzer_hydrogen_storage_soc_upper_limit=0.90,
+            electrolyzer_storage_soc_start_minimum=0.80,
+            electrolyzer_hydrogen_storage_soc_stop_minimum=0.90,
         ),
         diesel_power=20.0,
         storage_soc=0.90,
@@ -1436,9 +1461,9 @@ def test_electrolyzer_power_rises_one_power_step_when_headroom_exists():
 
 @pytest.mark.parametrize(
     ("storage_soc", "starts"),
-    ((0.799, False), (0.8, False), (0.801, True)),
+    ((0.699, False), (0.7, False), (0.701, True)),
 )
-def test_electrolyzer_start_requires_every_storage_soc_strictly_above_80_percent(
+def test_electrolyzer_start_requires_average_storage_soc_strictly_above_70_percent(
     storage_soc,
     starts,
 ):
@@ -1463,7 +1488,7 @@ def test_electrolyzer_start_requires_every_storage_soc_strictly_above_80_percent
     else:
         assert result["electricPowerAdjustmentKw"] == 0.0
         assert any(
-            "电储SOC" in warning and "80.000%" in warning
+            "电储SOC" in warning and "70.000%" in warning
             for warning in result["warnings"]
         )
 
@@ -2387,6 +2412,20 @@ def test_hydrogen_settings_are_persisted_and_reloaded(tmp_path):
         start_worker=False,
     )
     try:
+        with pytest.raises(
+            ValueError,
+            match="电制氢启机SOC最小值必须大于停机SOC最大值",
+        ):
+            first.apply_action(
+                "shared",
+                {
+                    "action": "update_settings",
+                    "settings": {
+                        "electrolyzerStorageSocStartMinimum": 0.3,
+                        "electrolyzerStorageSocStopMaximum": 0.7,
+                    },
+                },
+            )
         saved = first.apply_action(
             "shared",
             {
@@ -2400,9 +2439,9 @@ def test_hydrogen_settings_are_persisted_and_reloaded(tmp_path):
                     "electrolyzerPowerStepRatio": 0.025,
                     "electrolyzerDieselPowerLimitRatio": 0.31,
                     "electrolyzerDieselPowerDeadbandRatio": 0.12,
-                    "electrolyzerStorageSocLowerLimit": 0.36,
-                    "electrolyzerStorageSocUpperLimit": 0.83,
-                    "electrolyzerHydrogenStorageSocUpperLimit": 0.87,
+                    "electrolyzerStorageSocStartMinimum": 0.83,
+                    "electrolyzerStorageSocStopMaximum": 0.36,
+                    "electrolyzerHydrogenStorageSocStopMinimum": 0.87,
                     "fuelCellPowerMinRatio": 0.03,
                     "fuelCellPowerMaxRatio": 0.12,
                     "fuelCellPowerDeadbandRatio": 0.005,
@@ -2418,7 +2457,8 @@ def test_hydrogen_settings_are_persisted_and_reloaded(tmp_path):
         assert saved["settings"]["hydrogenPressureDeadbandRatio"] == 0.12
         assert saved["settings"]["electrolyzerPowerMinRatio"] == 0.04
         assert saved["settings"]["electrolyzerDieselPowerLimitRatio"] == 0.31
-        assert saved["settings"]["electrolyzerStorageSocUpperLimit"] == 0.83
+        assert saved["settings"]["electrolyzerStorageSocStartMinimum"] == 0.83
+        assert saved["settings"]["electrolyzerStorageSocStopMaximum"] == 0.36
         assert saved["settings"]["fuelCellDieselPowerLimitRatio"] == 0.35
         assert saved["settings"]["fuelCellPowerStepRatio"] == 0.015
     finally:
@@ -2440,7 +2480,7 @@ def test_hydrogen_settings_are_persisted_and_reloaded(tmp_path):
     assert reloaded["settings"]["hydrogenPressureDeadbandRatio"] == 0.12
     assert reloaded["settings"]["electrolyzerPowerMaxRatio"] == 0.42
     assert reloaded["settings"]["electrolyzerDieselPowerDeadbandRatio"] == 0.12
-    assert reloaded["settings"]["electrolyzerHydrogenStorageSocUpperLimit"] == 0.87
+    assert reloaded["settings"]["electrolyzerHydrogenStorageSocStopMinimum"] == 0.87
     assert reloaded["settings"]["fuelCellPowerDeadbandRatio"] == 0.005
     assert reloaded["settings"]["fuelCellStorageSocLimit"] == 0.39
     assert reloaded["settings"]["fuelCellHydrogenStorageSocLowerLimit"] == 0.24

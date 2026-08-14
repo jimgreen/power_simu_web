@@ -166,6 +166,7 @@ const state = {
   runtimeLogSeq: 0,
   seenCommandHistoryKeys: new Set(),
   selectedManagementModelId: "",
+  modelLifecycleOperationActive: false,
   cloneSourceModelId: "",
   modelFilter: { dev_type: "all", dev_name: "" },
   activeModelParamTab: "",
@@ -9312,26 +9313,22 @@ function traineeReceiveStateForModel(modelId) {
 function modelManagementState(model) {
   const modelId = String(model?.id || "");
   const context = traineeReceiveStateForModel(modelId);
-  if (context.receiveMode) return "receiving";
   if (!context.modelInitialized) return "uninitialized";
-  if (context.frozen) return "frozen";
-  return String(model?.clock_state || "stopped");
+  if (context.receiveMode) return "received";
+  return "stopped";
 }
 
 function modelManagementStateText(value) {
   return {
-    receiving: "接收中",
+    received: "已接收",
     uninitialized: "未初始化",
-    frozen: "已冻结",
-    running: "运行中",
-    paused: "暂停中",
     stopped: "已停止",
   }[value] || value || "--";
 }
 
 function canEditManagedModel(model) {
   const stateText = modelManagementState(model);
-  return stateText !== "receiving" && stateText !== "running" && stateText !== "paused";
+  return stateText !== "received";
 }
 
 function setModelManagementMessage(text, kind = "") {
@@ -9368,10 +9365,21 @@ function updateModelContextMenuActions() {
   const selected = selectedManagementModel();
   const hasSelected = Boolean(selected);
   const editable = selected ? canEditManagedModel(selected) : false;
+  const lifecycleState = selected ? modelManagementState(selected) : "";
   const menu = $("modelContextMenu");
+  const lifecycleButton = menu?.querySelector('[data-model-context-action="lifecycle"]');
   const exportButton = menu?.querySelector('[data-model-context-action="export"]');
   const cloneButton = menu?.querySelector('[data-model-context-action="clone"]');
   const deleteButton = menu?.querySelector('[data-model-context-action="delete"]');
+  if (lifecycleButton) {
+    lifecycleButton.textContent = lifecycleState === "uninitialized"
+      ? "初始化"
+      : (lifecycleState === "received" ? "停止接收" : "启动接收");
+    lifecycleButton.disabled = !hasSelected || state.modelLifecycleOperationActive;
+    lifecycleButton.title = !hasSelected
+      ? "请选择模型"
+      : `${lifecycleButton.textContent} ${selected.name || selected.id || "选中模型"}`;
+  }
   if (exportButton) exportButton.disabled = !hasSelected;
   if (cloneButton) cloneButton.disabled = !hasSelected;
   if (deleteButton) {
@@ -9444,7 +9452,7 @@ async function openModelManagementDialog() {
     await loadModels();
     ensureSelectedManagementModelId();
     renderModelManagementList();
-    setModelManagementMessage("可新建待初始化模型；右键模型节点可导出、复制或删除。", "ok");
+    setModelManagementMessage("右键模型节点可按状态初始化、启动接收或停止接收，也可导出、复制或删除。", "ok");
   } catch (error) {
     renderModelManagementList();
     setModelManagementMessage(apiErrorText(error), "error");
@@ -9479,7 +9487,7 @@ function handleModelManagementAction(event) {
   const item = event.target instanceof Element ? event.target.closest(".model-management-item[data-model-id]") : null;
   if (!item) return;
   setSelectedManagementModel(item.dataset.modelId || "");
-  setModelManagementMessage("可新建待初始化模型；右键模型节点可导出、复制或删除。", "ok");
+  setModelManagementMessage("右键模型节点可按状态初始化、启动接收或停止接收，也可导出、复制或删除。", "ok");
 }
 
 function handleModelManagementKeydown(event) {
@@ -9833,6 +9841,9 @@ function handleModelContextMenuAction(event) {
   const action = button.dataset.modelContextAction || "";
   closeModelContextMenu();
   switch (action) {
+    case "lifecycle":
+      handleSelectedManagementModelLifecycle();
+      break;
     case "export":
       exportDefinitionsArchive(selectedManagementModelId(), button);
       break;
@@ -9845,6 +9856,81 @@ function handleModelContextMenuAction(event) {
     default:
       break;
   }
+}
+
+async function initializeSelectedManagementModel(modelId = selectedManagementModelId()) {
+  const target = modelById(modelId);
+  if (!target) {
+    setModelManagementMessage("请选择要初始化的模型。", "error");
+    return;
+  }
+  if (modelManagementState(target) !== "uninitialized") return;
+  try {
+    if (target.id !== state.activeModelId) await setActiveModel(target.id, false);
+    closeModelManagementDialog();
+    openReceiveLinkDialog();
+  } catch (error) {
+    setModelManagementMessage(`打开初始化窗口失败：${apiErrorText(error)}`, "error");
+  }
+}
+
+async function setManagedModelReceiveActive(modelId, active) {
+  const target = modelById(modelId);
+  if (!target || state.modelLifecycleOperationActive) return;
+  const context = traineeReceiveStateForModel(target.id);
+  if (!context.modelInitialized) {
+    setModelManagementMessage("模型尚未初始化，请先执行初始化。", "error");
+    return;
+  }
+  if (Boolean(context.receiveMode) === Boolean(active)) return;
+  const actionText = active ? "启动接收" : "停止接收";
+  const modelName = target.name || target.id;
+  state.modelLifecycleOperationActive = true;
+  updateModelContextMenuActions();
+  setModelManagementMessage(`正在${actionText}：${modelName}`);
+  try {
+    if (target.id === state.activeModelId) {
+      if (active) {
+        await startReceiveMode();
+        if (!state.receiveMode) throw new Error("启动接收失败，请检查模型初始化信息和交互链路。");
+      } else {
+        await toggleReceiveMode();
+        if (state.receiveMode) throw new Error("停止接收失败。");
+      }
+    } else {
+      await setTraineeReceiveActive(target.id, active);
+    }
+    renderModelManagementList();
+    setModelManagementMessage(`已${actionText}：${modelName}`, "ok");
+    addRuntimeLog("模型管理", modelName, actionText, "操作成功", "ok");
+  } catch (error) {
+    try {
+      await syncActiveReceiveStateFromBackend(target.id);
+    } catch (_syncError) {
+      // Keep the last known model state when the local service cannot be queried.
+    }
+    renderModelManagementList();
+    const message = apiErrorText(error);
+    setModelManagementMessage(`${actionText}失败：${message}`, "error");
+    addRuntimeLog("模型管理", modelName, `${actionText}失败`, message, "warn");
+  } finally {
+    state.modelLifecycleOperationActive = false;
+    updateModelContextMenuActions();
+  }
+}
+
+function handleSelectedManagementModelLifecycle() {
+  const target = selectedManagementModel();
+  if (!target) {
+    setModelManagementMessage("请选择要操作的模型。", "error");
+    return;
+  }
+  const lifecycleState = modelManagementState(target);
+  if (lifecycleState === "uninitialized") {
+    initializeSelectedManagementModel(target.id);
+    return;
+  }
+  setManagedModelReceiveActive(target.id, lifecycleState !== "received");
 }
 
 function renderModelSelector() {

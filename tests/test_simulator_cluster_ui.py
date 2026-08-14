@@ -15,6 +15,33 @@ def test_simulator_header_has_selected_model_service_start_stop_control():
     assert '"/api/simulator-services/stop"' in script
 
 
+def test_model_management_context_menu_tracks_selected_model_service_state():
+    html = (ROOT / "simu/web/simulator/index.html").read_text(encoding="utf-8")
+    script = (ROOT / "simu/web/simulator/app.js").read_text(encoding="utf-8")
+
+    assert 'data-model-context-action="service-toggle"' in html
+    menu_state_block = script.split("function updateModelContextMenuActions", 1)[1].split(
+        "\n}", 1
+    )[0]
+    assert 'serviceState === "running"' in menu_state_block
+    assert 'running ? "停止" : "启动"' in menu_state_block
+    assert 'serviceState === "starting" || serviceState === "stopping"' in menu_state_block
+    assert "state.modelServiceOperationActive" in menu_state_block
+
+    action_block = script.split("function handleModelContextMenuAction", 1)[1].split(
+        "\n}", 1
+    )[0]
+    assert 'case "service-toggle"' in action_block
+    assert "toggleSelectedManagementModelService()" in action_block
+
+    service_block = script.split("async function setModelServiceRunning", 1)[1].split(
+        "\n}", 1
+    )[0]
+    assert 'body: JSON.stringify({ model_id: targetModelId })' in service_block
+    assert 'shouldRun ? "/api/simulator-services/start"' in service_block
+    assert 'targetModelId === state.activeModelId' in service_block
+
+
 def test_interaction_link_sits_between_service_control_and_simulation_mode():
     html = (ROOT / "simu/web/simulator/index.html").read_text(encoding="utf-8")
     styles = (ROOT / "simu/web/simulator/styles.css").read_text(encoding="utf-8")

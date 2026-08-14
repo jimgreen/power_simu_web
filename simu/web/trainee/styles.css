@@ -312,9 +312,13 @@ h1 {
   background: #edf2f4;
   color: var(--muted);
 }
-.model-state-pill[data-state="receiving"] {
+.model-state-pill[data-state="received"] {
   background: rgba(43, 126, 216, 0.12);
   color: #2b6cb0;
+}
+.model-state-pill[data-state="uninitialized"] {
+  background: rgba(188, 79, 65, 0.12);
+  color: #8f4a42;
 }
 .model-state-pill[data-state="frozen"] {
   background: rgba(232, 169, 66, 0.16);

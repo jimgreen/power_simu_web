@@ -1767,10 +1767,24 @@ function updateModelContextMenuActions() {
   const clockState = selected ? modelClockState(selected) : "";
   const serviceState = String(selected?.service?.state || "stopped");
   const menu = $("modelContextMenu");
+  const serviceButton = menu?.querySelector('[data-model-context-action="service-toggle"]');
   const exportButton = menu?.querySelector('[data-model-context-action="export"]');
   const cloneButton = menu?.querySelector('[data-model-context-action="clone"]');
   const updateButton = menu?.querySelector('[data-model-context-action="update"]');
   const deleteButton = menu?.querySelector('[data-model-context-action="delete"]');
+  if (serviceButton) {
+    const running = serviceState === "running";
+    const transitioning = serviceState === "starting" || serviceState === "stopping";
+    serviceButton.textContent = serviceState === "starting"
+      ? "启动中"
+      : (serviceState === "stopping" ? "停止中" : (running ? "停止" : "启动"));
+    serviceButton.disabled = !hasSelected || state.modelServiceOperationActive || transitioning;
+    serviceButton.title = !hasSelected
+      ? "请选择模型"
+      : (transitioning
+        ? modelServiceStateText(serviceState)
+        : `${running ? "停止" : "启动"} ${selected.name || selected.id || "选中模型"}的模拟服务`);
+  }
   if (exportButton) exportButton.disabled = !hasSelected;
   if (cloneButton) cloneButton.disabled = !hasSelected;
   if (updateButton) {
@@ -4065,7 +4079,7 @@ function handleModelManagementAction(event) {
   const modelId = item.dataset.modelId || "";
   if (!modelId) return;
   setSelectedManagementModel(modelId);
-  setModelManagementMessage("右键模型节点可导出、复制、修改或删除。", "ok");
+  setModelManagementMessage("右键模型节点可启动或停止服务，也可导出、复制、修改或删除。", "ok");
 }
 
 function handleModelManagementKeydown(event) {
@@ -4076,7 +4090,7 @@ function handleModelManagementKeydown(event) {
   event.preventDefault();
   const modelId = item.dataset.modelId || "";
   setSelectedManagementModel(modelId);
-  setModelManagementMessage("右键模型节点可导出、复制、修改或删除。", "ok");
+  setModelManagementMessage("右键模型节点可启动或停止服务，也可导出、复制、修改或删除。", "ok");
 }
 
 function closeModelContextMenu() {
@@ -4117,6 +4131,9 @@ function handleModelContextMenuAction(event) {
   const action = button.dataset.modelContextAction || "";
   closeModelContextMenu();
   switch (action) {
+    case "service-toggle":
+      toggleSelectedManagementModelService();
+      break;
     case "export":
       exportDefinitionsArchive(selectedManagementModelId(), button);
       break;
@@ -4451,49 +4468,90 @@ async function refreshServiceCatalog(force = false) {
   }
 }
 
-async function toggleActiveModelService() {
+async function setModelServiceRunning(modelId, shouldRun, { managementAction = false } = {}) {
   if (directSimulatorServiceMode) return;
-  if (!state.activeModelId || state.modelServiceOperationActive) return;
-  const running = activeModelService().state === "running";
-  const path = running ? "/api/simulator-services/stop" : "/api/simulator-services/start";
+  const targetModelId = String(modelId || "").trim();
+  if (!targetModelId || state.modelServiceOperationActive) return;
+  const targetModel = state.models.find((model) => String(model.id || "") === targetModelId);
+  if (!targetModel) {
+    if (managementAction) setModelManagementMessage("请选择要操作的模型。", "error");
+    return;
+  }
+  const serviceState = String(targetModel?.service?.state || "stopped");
+  if (serviceState === "starting" || serviceState === "stopping") return;
+  const running = serviceState === "running";
+  if (running === shouldRun) return;
+  const path = shouldRun ? "/api/simulator-services/start" : "/api/simulator-services/stop";
+  const actionText = shouldRun ? "启动" : "停止";
+  const modelName = targetModel.name || targetModel.id || targetModelId;
   state.modelServiceOperationActive = true;
-  const activeModel = state.models.find((model) => model.id === state.activeModelId);
-  if (activeModel?.service) activeModel.service.state = running ? "stopping" : "starting";
+  targetModel.service = targetModel.service || {};
+  targetModel.service.state = shouldRun ? "starting" : "stopping";
   renderModelServiceControl();
+  renderModelManagementList();
+  if (managementAction) setModelManagementMessage(`正在${actionText}模拟服务：${modelName}`);
   try {
     const payload = await api(path, {
       method: "POST",
-      body: JSON.stringify({ model_id: state.activeModelId }),
+      body: JSON.stringify({ model_id: targetModelId }),
       modelScoped: false,
       controlPlane: true,
-      timeoutMs: running ? 15000 : 45000,
+      timeoutMs: shouldRun ? 45000 : 15000,
     });
     state.models = normalizeModels(Array.isArray(payload.models) ? payload.models : state.models);
     state.serviceCatalogLastLoadedAt = Date.now();
     renderModelSelector();
-    if (activeModelServiceRunning()) {
-      resetWebRuntimeSettingsState();
-      await loadWebRuntimeSettings(true);
-      await refresh();
-    } else {
-      state.snapshot = null;
-      $("simState").textContent = "stopped";
-      const solverInfo = $("solverInfo");
-      if (solverInfo) solverInfo.textContent = "模拟服务已停止";
+    if (targetModelId === state.activeModelId) {
+      if (activeModelServiceRunning()) {
+        resetWebRuntimeSettingsState();
+        await loadWebRuntimeSettings(true);
+        await refresh();
+      } else {
+        state.snapshot = null;
+        $("simState").textContent = "stopped";
+        const solverInfo = $("solverInfo");
+        if (solverInfo) solverInfo.textContent = "模拟服务已停止";
+      }
     }
+    if (managementAction) setModelManagementMessage(`已${actionText}模拟服务：${modelName}`, "ok");
   } catch (error) {
     await refreshServiceCatalog(true);
     const message = apiErrorText(error);
-    const stateElement = $("modelServiceState");
-    if (stateElement) {
-      stateElement.textContent = "操作失败";
-      stateElement.dataset.state = "failed";
-      stateElement.title = message;
+    if (targetModelId === state.activeModelId) {
+      const stateElement = $("modelServiceState");
+      if (stateElement) {
+        stateElement.textContent = "操作失败";
+        stateElement.dataset.state = "failed";
+        stateElement.title = message;
+      }
     }
+    if (managementAction) setModelManagementMessage(`${actionText}模拟服务失败：${message}`, "error");
   } finally {
     state.modelServiceOperationActive = false;
     renderModelServiceControl();
+    renderModelManagementList();
   }
+}
+
+async function toggleActiveModelService() {
+  if (!state.activeModelId) return;
+  await setModelServiceRunning(
+    state.activeModelId,
+    activeModelService().state !== "running",
+  );
+}
+
+async function toggleSelectedManagementModelService() {
+  const selected = selectedManagementModel();
+  if (!selected) {
+    setModelManagementMessage("请选择要操作的模型。", "error");
+    return;
+  }
+  await setModelServiceRunning(
+    selected.id,
+    String(selected?.service?.state || "stopped") !== "running",
+    { managementAction: true },
+  );
 }
 
 function escapeHtml(value) {

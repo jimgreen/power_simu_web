@@ -75,6 +75,7 @@ class TraineeTopbarLayoutUiTest(unittest.TestCase):
         self.assertIn('id="newModelButton"', html)
         self.assertNotIn('id="importDefinitionsButton"', html)
         self.assertNotIn('id="definitionArchiveInput"', html)
+        self.assertIn('data-model-context-action="lifecycle"', html)
         self.assertIn('data-model-context-action="export"', html)
         self.assertIn('data-model-context-action="clone"', html)
         self.assertNotIn('data-model-context-action="update"', html)
@@ -95,6 +96,7 @@ class TraineeTopbarLayoutUiTest(unittest.TestCase):
         self.assertIn("openModelManagementDialog", app_js)
         self.assertIn("renderModelManagementList", app_js)
         self.assertIn("handleModelContextMenuAction", app_js)
+        self.assertIn("handleSelectedManagementModelLifecycle", app_js)
         self.assertIn("selectedManagementModelId", app_js)
         self.assertIn("openNewModelDialog", app_js)
         self.assertIn("createNewModelSlot", app_js)
@@ -108,6 +110,30 @@ class TraineeTopbarLayoutUiTest(unittest.TestCase):
         self.assertIn('api("/api/models/clone"', app_js)
         self.assertIn('api("/api/models/delete"', app_js)
         self.assertIn('api("/api/export-definitions?format=json', app_js)
+
+    def test_model_management_lifecycle_state_drives_context_action(self):
+        app_js = (ROOT / "simu" / "web" / "trainee" / "app.js").read_text(encoding="utf-8")
+        css = (ROOT / "simu" / "web" / "trainee" / "styles.css").read_text(encoding="utf-8")
+
+        state_block = app_js.split("function modelManagementState(model)", 1)[1].split("\n}", 1)[0]
+        self.assertIn('if (!context.modelInitialized) return "uninitialized"', state_block)
+        self.assertIn('if (context.receiveMode) return "received"', state_block)
+        self.assertIn('return "stopped"', state_block)
+
+        text_block = app_js.split("function modelManagementStateText(value)", 1)[1].split("\n}", 1)[0]
+        self.assertIn('received: "已接收"', text_block)
+        self.assertIn('uninitialized: "未初始化"', text_block)
+        self.assertIn('stopped: "已停止"', text_block)
+
+        menu_block = app_js.split("function updateModelContextMenuActions()", 1)[1].split("\n}", 1)[0]
+        self.assertIn('? "初始化"', menu_block)
+        self.assertIn('lifecycleState === "received" ? "停止接收" : "启动接收"', menu_block)
+        self.assertIn("state.modelLifecycleOperationActive", menu_block)
+        self.assertIn('.model-state-pill[data-state="uninitialized"]', css)
+
+        receive_block = app_js.split("async function setManagedModelReceiveActive", 1)[1].split("\n}", 1)[0]
+        self.assertIn("await setTraineeReceiveActive(target.id, active)", receive_block)
+        self.assertIn("target.id === state.activeModelId", receive_block)
 
 
 if __name__ == "__main__":

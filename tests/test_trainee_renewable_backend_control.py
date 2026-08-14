@@ -1234,6 +1234,8 @@ TASK8_METRIC_KEYS = (
     "dcGridFormingStorageCurrentKw",
     "dcGridFormingStorageTargetKw",
     "dcGridFormingStorageSoc",
+    "acStorageSoc",
+    "dcStorageSoc",
     "acDieselCurrentKw",
     "acDieselMinKw",
     "acDieselTargetKw",
@@ -1250,6 +1252,7 @@ TASK8_METRIC_KEYS = (
     "totalGridFormingStorageCurrentKw",
     "totalGridFormingStorageTargetKw",
     "totalGridFormingStorageSoc",
+    "totalStorageSoc",
     "totalDieselCurrentKw",
     "totalDieselMinKw",
     "totalDieselTargetKw",
@@ -7156,6 +7159,8 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["dcGridFollowingStorageSoc"], 0.80)
         self.assertAlmostEqual(metrics["acGridFormingStorageSoc"], 0.40)
         self.assertAlmostEqual(metrics["dcGridFormingStorageSoc"], 1.20)
+        self.assertAlmostEqual(metrics["acStorageSoc"], 1.0 / 3.0)
+        self.assertAlmostEqual(metrics["dcStorageSoc"], 36.0 / 35.0)
         self.assertAlmostEqual(metrics["acDieselCurrentKw"], 60.0)
         self.assertAlmostEqual(metrics["dcDieselCurrentKw"], 0.0)
         self.assertAlmostEqual(metrics["acLoadKw"], 100.0)
@@ -7164,6 +7169,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["totalGridFollowingStorageCurrentKw"], -6.0)
         self.assertAlmostEqual(metrics["totalGridFormingStorageCurrentKw"], -2.0)
         self.assertAlmostEqual(metrics["totalStorageCurrentKw"], -8.0)
+        self.assertAlmostEqual(metrics["totalStorageSoc"], 0.82)
         self.assertAlmostEqual(metrics["totalDieselCurrentKw"], 60.0)
         self.assertAlmostEqual(metrics["totalLoadKw"], 100.0)
         self.assertAlmostEqual(metrics["storageCurrentKw"], -8.0)
@@ -10964,6 +10970,9 @@ class RenewableControlBackendApiTest(unittest.TestCase):
         ):
             expected_breakdown[trend_key] = plan["metrics"][metric_key]
         for trend_key, metric_key in (
+            ("acStorageSocPercent", "acStorageSoc"),
+            ("dcStorageSocPercent", "dcStorageSoc"),
+            ("totalStorageSocPercent", "totalStorageSoc"),
             ("totalGridFollowingStorageSocPercent", "totalGridFollowingStorageSoc"),
             ("totalGridFormingStorageSocPercent", "totalGridFormingStorageSoc"),
         ):
@@ -12030,8 +12039,10 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                         "dcPvTargetKw": 31.0,
                         "acStorageCurrentKw": 4.0,
                         "acStorageTargetKw": 5.0,
+                        "acStorageSocPercent": 50.0,
                         "dcStorageCurrentKw": 6.0,
                         "dcStorageTargetKw": 7.0,
+                        "dcStorageSocPercent": 60.0,
                         "acGridFollowingStorageCurrentKw": 1.0,
                         "acGridFollowingStorageTargetKw": 1.5,
                         "dcGridFollowingStorageCurrentKw": 2.0,
@@ -12058,6 +12069,7 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                         "totalPvTargetKw": 42.0,
                         "totalStorageCurrentKw": 10.0,
                         "totalStorageTargetKw": 12.0,
+                        "totalStorageSocPercent": 55.0,
                         "totalGridFollowingStorageCurrentKw": 3.0,
                         "totalGridFollowingStorageTargetKw": 4.0,
                         "totalGridFollowingStorageSocPercent": 45.0,
@@ -12115,8 +12127,10 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                         "dcPvTargetKw": 31.0,
                         "acStorageCurrentKw": 5.0,
                         "acStorageTargetKw": 6.0,
+                        "acStorageSocPercent": 49.9,
                         "dcStorageCurrentKw": 7.0,
                         "dcStorageTargetKw": 8.0,
+                        "dcStorageSocPercent": 59.9,
                         "acGridFollowingStorageCurrentKw": 1.5,
                         "acGridFollowingStorageTargetKw": 2.0,
                         "dcGridFollowingStorageCurrentKw": 2.5,
@@ -12143,6 +12157,7 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                         "totalPvTargetKw": 42.5,
                         "totalStorageCurrentKw": 12.0,
                         "totalStorageTargetKw": 14.0,
+                        "totalStorageSocPercent": 54.9,
                         "totalGridFollowingStorageCurrentKw": 4.0,
                         "totalGridFollowingStorageTargetKw": 5.0,
                         "totalGridFollowingStorageSocPercent": 44.9,
@@ -12261,10 +12276,13 @@ class RenewableControlBackendApiTest(unittest.TestCase):
             "totalGridFormingStorageSocPercent",
             "acStorageCurrentKw",
             "acStorageTargetKw",
+            "acStorageSocPercent",
             "dcStorageCurrentKw",
             "dcStorageTargetKw",
+            "dcStorageSocPercent",
             "totalStorageCurrentKw",
             "totalStorageTargetKw",
+            "totalStorageSocPercent",
             "totalDieselCurrentKw",
             "totalDieselMinKw",
             "totalDieselTargetKw",

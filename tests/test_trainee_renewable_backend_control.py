@@ -1304,7 +1304,7 @@ def task8_metrics_snapshot() -> dict:
 
 
 class RenewableControlPlannerDataQualityTest(unittest.TestCase):
-    def test_automatic_commands_default_to_two_hour_validity(self):
+    def test_command_validity_setting_remains_transport_metadata(self):
         settings = RenewableControlSettings()
 
         self.assertEqual(settings.command_valid_minutes, 120.0)
@@ -6475,6 +6475,161 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
         self.assertTrue(any("风电wind-1" in issue and "额定容量" in issue for issue in plan["dataQuality"]["issues"]))
 
+    def test_pv_overcapacity_is_clamped_without_retiring_the_device(self):
+        snapshot = renewable_snapshot()
+        pv_power = next(
+            row
+            for row in snapshot["measurements"]["scada"]
+            if row["dev_name"] == "pv-1" and row["meas_type"] == "P_GEN"
+        )
+        pv_power["value"] = 81.0
+
+        plan = calculate_renewable_control_plan(snapshot)
+        pv_row = next(row for row in plan["commandRows"] if row["dev_name"] == "pv-1")
+
+        self.assertTrue(pv_row["online"])
+        self.assertTrue(pv_row["commandable"])
+        self.assertTrue(pv_row["strategyCommand"])
+        self.assertAlmostEqual(pv_row["commandKw"], 80.0)
+        self.assertEqual(
+            pv_row["boundaryCorrectionReason"],
+            "measurement_above_upper_limit_correction",
+        )
+        self.assertTrue(any(command["dev_name"] == "pv-1" for command in plan["commands"]))
+        self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
+        self.assertEqual(plan["runCommands"], [])
+
+    def test_negative_renewable_measurement_is_corrected_inside_bounds_without_retirement(self):
+        for dev_name in ("wind-1", "pv-1"):
+            with self.subTest(dev_name=dev_name):
+                snapshot = renewable_snapshot()
+                power = next(
+                    row
+                    for row in snapshot["measurements"]["scada"]
+                    if row["dev_name"] == dev_name and row["meas_type"] == "P_GEN"
+                )
+                power["value"] = -0.5
+
+                plan = calculate_renewable_control_plan(snapshot)
+                device_row = next(
+                    row for row in plan["commandRows"] if row["dev_name"] == dev_name
+                )
+                command = next(
+                    row for row in plan["commands"] if row["dev_name"] == dev_name
+                )
+
+                self.assertTrue(device_row["online"])
+                self.assertTrue(device_row["commandable"])
+                self.assertTrue(device_row["strategyCommand"])
+                self.assertGreaterEqual(device_row["commandKw"], 0.0)
+                self.assertLessEqual(device_row["commandKw"], device_row["capacityKw"])
+                self.assertAlmostEqual(command["set_value"], device_row["commandKw"])
+                self.assertEqual(
+                    device_row["boundaryCorrectionReason"],
+                    "measurement_below_lower_limit_correction",
+                )
+                self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
+                self.assertEqual(plan["runCommands"], [])
+
+    def test_storage_soc_and_power_overruns_reverse_toward_safe_bounds_without_retirement(self):
+        cases = (
+            (1.3, -10.0, 0.0, 40.0, "measurement_below_lower_limit_correction"),
+            (-0.2, 10.0, -40.0, 0.0, "measurement_above_upper_limit_correction"),
+            (0.6, 100.0, -40.0, 40.0, "measurement_above_upper_limit_correction"),
+        )
+        for soc, current, lower, upper, reason in cases:
+            with self.subTest(soc=soc, current=current):
+                snapshot = direct_grid_storage_snapshot(
+                    include_ac_storage=True,
+                    include_dc_storage=False,
+                    ac_soc=soc,
+                    ac_current_kw=current,
+                )
+
+                plan = calculate_renewable_control_plan(snapshot)
+                storage = next(
+                    row
+                    for row in plan["commandRows"]
+                    if row["dev_name"] == "ac-grid-storage"
+                )
+                command = next(
+                    row
+                    for row in plan["commands"]
+                    if row["dev_name"] == "ac-grid-storage"
+                )
+
+                self.assertTrue(storage["online"])
+                self.assertTrue(storage["commandable"])
+                self.assertTrue(storage["strategyCommand"])
+                self.assertGreaterEqual(storage["commandKw"], lower)
+                self.assertLessEqual(storage["commandKw"], upper)
+                self.assertAlmostEqual(command["set_value"], storage["commandKw"])
+                self.assertEqual(storage["boundaryCorrectionReason"], reason)
+                self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
+                self.assertEqual(plan["runCommands"], [])
+
+    def test_diesel_measurement_outside_limits_keeps_setpoint_dispatch_active(self):
+        for current, reason in (
+            (250.0, "measurement_above_upper_limit_correction"),
+            (10.0, "measurement_below_lower_limit_correction"),
+        ):
+            with self.subTest(current=current):
+                snapshot = side_aware_recovery_snapshot(diesel_power_kw=current)
+                snapshot["definitions"]["control"]["SetValue"]["rows"].append(
+                    {
+                        "dev_type": "ACGenerator",
+                        "dev_name": "diesel-1",
+                        "set_type": "p_set",
+                    }
+                )
+
+                plan = calculate_renewable_control_plan(snapshot)
+                diesel = next(
+                    row for row in plan["commandRows"] if row["dev_name"] == "diesel-1"
+                )
+                command = next(
+                    row for row in plan["commands"] if row["dev_name"] == "diesel-1"
+                )
+
+                self.assertTrue(diesel["online"])
+                self.assertTrue(diesel["commandable"])
+                self.assertTrue(diesel["strategyCommand"])
+                self.assertGreaterEqual(command["set_value"], 20.0)
+                self.assertLessEqual(command["set_value"], 200.0)
+                self.assertEqual(diesel["boundaryCorrectionReason"], reason)
+                self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
+                self.assertEqual(plan["runCommands"], [])
+
+    def test_dcac_measurement_outside_limits_keeps_signed_dispatch_active(self):
+        snapshot = side_aware_recovery_snapshot(
+            diesel_power_kw=60.0,
+            converter_power_kw=80.0,
+            converter_capacity_kw=50.0,
+        )
+
+        plan = calculate_renewable_control_plan(snapshot)
+        converter = next(
+            row
+            for row in plan["commandRows"]
+            if row["dev_name"] == "grid-converter-1"
+        )
+        command = next(
+            row for row in plan["commands"] if row["dev_name"] == "grid-converter-1"
+        )
+
+        self.assertTrue(converter["online"])
+        self.assertTrue(converter["commandable"])
+        self.assertTrue(converter["strategyCommand"])
+        self.assertEqual(converter["set_type"], "p_ac_set")
+        self.assertAlmostEqual(converter["commandKw"], 50.0, places=5)
+        self.assertAlmostEqual(command["set_value"], 50.0, places=5)
+        self.assertEqual(
+            converter["boundaryCorrectionReason"],
+            "measurement_above_upper_limit_correction",
+        )
+        self.assertTrue(plan["dataQuality"]["dispatchAllowed"])
+        self.assertEqual(plan["runCommands"], [])
+
     def test_unknown_environment_and_missing_live_power_blocks_dispatch(self):
         snapshot = renewable_snapshot()
         snapshot["measurements"]["scada"] = [
@@ -9642,11 +9797,11 @@ class RenewableControlBackendApiTest(unittest.TestCase):
             "cancel_strategy_generation",
         )
         self.assertFalse(controller_state["enabled"])
-        self.assertIn("正在撤销自动指令", stop_status)
-        self.assertIn("已撤销自动指令", controller_state["status"])
+        self.assertIn("正在结束当前策略代次", stop_status)
+        self.assertIn("已下发指令保持有效", controller_state["status"])
         self.assertTrue(stop_logs)
         self.assertTrue(
-            any(item["result"] == "自动指令撤销" for item in controller_state["logs"])
+            any(item["result"] == "策略代次结束" for item in controller_state["logs"])
         )
         self.assertEqual(controller_state["lastSentAt"], "prior-sent")
         self.assertFalse(

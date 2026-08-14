@@ -13449,6 +13449,9 @@ function renewableMetricGroupConfiguredCount(metrics = {}, group = "") {
     "dc-grid-following-storage": ["dcGridFollowingStorageCount"],
     "ac-grid-forming-storage": ["acGridFormingStorageCount"],
     "dc-grid-forming-storage": ["dcGridFormingStorageCount"],
+    "hydrogen-electrolyzer": ["configuredElectrolyzerCount"],
+    "hydrogen-fuel-cell": ["configuredFuelCellCount"],
+    "hydrogen-storage": ["configuredHydrogenStorageCount"],
   };
   if (directKeys[group]) return renewableMetricCount(metrics, directKeys[group]);
   const aggregateGroups = {
@@ -13467,6 +13470,8 @@ function renewableMetricGroupConfiguredCount(metrics = {}, group = "") {
 }
 
 function renewableMetricGroupAvailable(metrics = {}, group = "") {
+  const configuredCount = renewableMetricGroupConfiguredCount(metrics, group);
+  if (configuredCount !== null) return configuredCount > 0;
   const count = renewableMetricGroupCount(metrics, group);
   return count === null || count > 0;
 }
@@ -17283,7 +17288,10 @@ function remoteAdjustmentMeasurementTypeCandidates(dev, setType) {
     if (normalized && !candidates.includes(normalized)) candidates.push(normalized);
   });
 
-  if (measurementKey.includes("_")) add(exactType);
+  if (measurementKey.includes("_")) {
+    add(exactType);
+    return candidates;
+  }
   if (measurementKey.includes("soc")) add("SOC");
   if (family === "generator") {
     add(`${quantity}_GEN`);
@@ -17322,14 +17330,19 @@ function remoteAdjustmentMeasurementRowIsValid(row) {
   return !Number.isFinite(numeric) || numeric !== 0;
 }
 
+function remoteAdjustmentDeviceTypeKey(value) {
+  const type = String(value || "").trim().toUpperCase();
+  return type === "ACDCCONVERTER" ? "DCACCONVERTER" : type;
+}
+
 function remoteAdjustmentMeasurement(dev, setType, snapshot = state.snapshot || {}) {
-  const targetType = String(deviceType(dev) || "").trim().toUpperCase();
+  const targetType = remoteAdjustmentDeviceTypeKey(deviceType(dev));
   const targetName = String(deviceName(dev) || "").trim();
   const measurements = snapshot.measurements || {};
   const candidates = remoteAdjustmentMeasurementTypeCandidates(dev, setType);
   for (const candidate of candidates) {
     const match = (measurements.scada || []).find((row) => (
-      String(row?.dev_type || "").trim().toUpperCase() === targetType
+      remoteAdjustmentDeviceTypeKey(row?.dev_type) === targetType
       && String(row?.dev_name || "").trim() === targetName
       && remoteAdjustmentMeasTypeMatchesSetType(row?.meas_type, candidate)
       && remoteAdjustmentMeasurementRowIsValid(row)

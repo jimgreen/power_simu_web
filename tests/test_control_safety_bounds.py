@@ -55,7 +55,7 @@ class ControlSafetyBoundsTest(unittest.TestCase):
         key = f"{dev_type}.{dev_name}.{set_type}"
         return str(service.latest_control_values()["values"].get(key, ""))
 
-    def test_power_command_above_or_below_limits_is_rejected_without_side_effects(self):
+    def test_power_command_above_or_below_limits_is_clamped_and_applied(self):
         service, runtime = self._make_service()
         self._add_fields(
             service,
@@ -63,32 +63,33 @@ class ControlSafetyBoundsTest(unittest.TestCase):
             "diesel_300kw",
             {"p_min": 30, "p_max": 300},
         )
-        history_before = list(service.command_history)
-        stat_before = render_ebook_aligned(service.runtime_stat_book)
-
-        for unsafe_value in (29.9, 300.1):
-            with self.subTest(unsafe_value=unsafe_value), self.assertRaisesRegex(
-                ValueError,
-                r"遥调安全校验失败.*ACGenerator/diesel_300kw.*p_set.*未下发",
-            ):
-                service.apply_student_commands(
+        for requested, expected in ((29.9, "30"), (300.1, "300")):
+            with self.subTest(requested=requested):
+                result = service.apply_student_commands(
                     {
                         "set_values": [
                             {
                                 "dev_type": "ACGenerator",
                                 "dev_name": "diesel_300kw",
                                 "set_type": "p_set",
-                                "set_value": unsafe_value,
+                                "set_value": requested,
                             }
                         ]
                     },
                     source="trainee-ui",
                 )
+                self.assertEqual(result["set_values"], 1)
+                self.assertEqual(
+                    service.command_history[-1]["normalized"]["set_values"][0]["set_value"],
+                    expected,
+                )
+                self.assertEqual(
+                    self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"),
+                    expected,
+                )
 
-        self.assertEqual(service.command_history, history_before)
-        self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "80")
-        self.assertEqual(render_ebook_aligned(service.runtime_stat_book), stat_before)
-        self.assertFalse((runtime / "commands.json").exists())
+        self.assertTrue((runtime / "commands.json").exists())
+        self.assertTrue(any(item.get("result") == "越界值已限幅并继续下发" for item in service.runtime_logs))
 
     def test_values_equal_to_power_limits_are_allowed(self):
         service, _runtime = self._make_service()
@@ -260,7 +261,7 @@ class ControlSafetyBoundsTest(unittest.TestCase):
                     source="trainee-ui",
                 )
 
-    def test_runtime_role_only_disables_bounds_for_simulator_services(self):
+    def test_runtime_roles_both_clamp_setpoints_to_real_bounds(self):
         from simu.generate_simple_model import write_model_dir
         from simu.service import MultiModelSimulator, SimulationModelSpec
 
@@ -284,36 +285,31 @@ class ControlSafetyBoundsTest(unittest.TestCase):
             runtime_role="trainee",
         )
 
-        self.assertFalse(simulator.service_for("role-model").enforce_runtime_setpoint_bounds)
+        self.assertTrue(simulator.service_for("role-model").enforce_runtime_setpoint_bounds)
         self.assertTrue(trainee.service_for("role-model").enforce_runtime_setpoint_bounds)
 
-    def test_storage_alias_uses_capability_charge_and_discharge_limits(self):
+    def test_storage_alias_clamps_to_capability_charge_and_discharge_limits(self):
         service, runtime = self._make_service()
-        history_before = list(service.command_history)
-        stat_before = render_ebook_aligned(service.runtime_stat_book)
 
-        for unsafe_value in (-40.1, 40.1):
-            with self.subTest(unsafe_value=unsafe_value), self.assertRaisesRegex(
-                ValueError,
-                r"ESS/ess01.*p_set.*p_(min|max)",
-            ):
-                service.apply_student_commands(
+        for requested, expected in ((-40.1, "-40"), (40.1, "40")):
+            with self.subTest(requested=requested):
+                result = service.apply_student_commands(
                     {
                         "set_values": [
                             {
                                 "dev_type": "ESS",
                                 "dev_name": "ess01",
                                 "set_type": "p_set",
-                                "set_value": unsafe_value,
+                                "set_value": requested,
                             }
                         ]
                     },
                     source="trainee-ui",
                 )
+                self.assertEqual(result["set_values"], 1)
+                self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), expected)
 
-        self.assertEqual(service.command_history, history_before)
-        self.assertEqual(render_ebook_aligned(service.runtime_stat_book), stat_before)
-        self.assertFalse((runtime / "commands.json").exists())
+        self.assertTrue((runtime / "commands.json").exists())
 
     def test_invalid_runtime_control_binary_is_rejected_atomically(self):
         service, runtime = self._make_service()
@@ -338,7 +334,7 @@ class ControlSafetyBoundsTest(unittest.TestCase):
         self.assertEqual(render_ebook_aligned(service.runtime_stat_book), stat_before)
         self.assertFalse((runtime / "commands.json").exists())
 
-    def test_mixed_safe_and_unsafe_command_batch_is_rejected_atomically(self):
+    def test_mixed_safe_and_out_of_bounds_command_batch_is_clamped_and_applied(self):
         service, runtime = self._make_service()
         self._add_fields(
             service,
@@ -346,33 +342,32 @@ class ControlSafetyBoundsTest(unittest.TestCase):
             "diesel_300kw",
             {"p_min": 30, "p_max": 300},
         )
-        history_before = list(service.command_history)
-        stat_before = render_ebook_aligned(service.runtime_stat_book)
+        result = service.apply_student_commands(
+            {
+                "set_values": [
+                    {
+                        "dev_type": "ACGenerator",
+                        "dev_name": "diesel_300kw",
+                        "set_type": "p_set",
+                        "set_value": 100,
+                    },
+                    {
+                        "dev_type": "ACGenerator",
+                        "dev_name": "diesel_300kw",
+                        "set_type": "p_set",
+                        "set_value": 301,
+                    },
+                ]
+            },
+            source="trainee-ui",
+        )
 
-        with self.assertRaisesRegex(ValueError, "本批指令未下发"):
-            service.apply_student_commands(
-                {
-                    "set_values": [
-                        {
-                            "dev_type": "ACGenerator",
-                            "dev_name": "diesel_300kw",
-                            "set_type": "p_set",
-                            "set_value": 100,
-                        },
-                        {
-                            "dev_type": "ACGenerator",
-                            "dev_name": "diesel_300kw",
-                            "set_type": "p_set",
-                            "set_value": 301,
-                        },
-                    ]
-                },
-                source="trainee-ui",
-            )
-
-        self.assertEqual(service.command_history, history_before)
-        self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "80")
-        self.assertEqual(render_ebook_aligned(service.runtime_stat_book), stat_before)
+        self.assertEqual(result["set_values"], 2)
+        self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "300")
+        self.assertEqual(
+            [item["set_value"] for item in service.command_history[-1]["normalized"]["set_values"]],
+            ["100", "300"],
+        )
 
     def test_legacy_load_setpoint_alias_cannot_bypass_power_limits(self):
         service, runtime = self._make_service()
@@ -383,43 +378,42 @@ class ControlSafetyBoundsTest(unittest.TestCase):
             {"p_min": 0, "p_max": 100},
         )
         revision_before = service.definition_snapshot.revision
-        history_before = list(service.command_history)
-        stat_before = render_ebook_aligned(service.runtime_stat_book)
+        result = service.apply_student_commands(
+            {
+                "set_values": [
+                    {
+                        "dev_type": "ACLoad",
+                        "dev_name": "load_ac_1",
+                        "set_type": "p_set",
+                        "set_value": 101,
+                    }
+                ]
+            },
+            source="trainee-ui",
+        )
+        self.assertEqual(result["set_values"], 1)
+        self.assertEqual(self._set_value(service, "ACLoad", "load_ac_1", "p_set"), "100")
 
-        with self.assertRaisesRegex(ValueError, r"p_set.*p_max"):
-            service.apply_student_commands(
-                {
-                    "set_values": [
-                        {
-                            "dev_type": "ACLoad",
-                            "dev_name": "load_ac_1",
-                            "set_type": "p_set",
-                            "set_value": 101,
-                        }
-                    ]
-                },
-                source="trainee-ui",
-            )
-        with self.assertRaisesRegex(
-            ValueError,
-            r"人工修改安全校验失败.*ACLoad/load_ac_1.*pv0.*p_max.*未生效",
-        ):
-            service.update_device_parameters(
-                {
-                    "block_name": "ACLoad",
-                    "row_key": {"name": "load_ac_1", "idx": "1"},
-                    "revision": revision_before,
-                    "changes": {"pv0": 101},
-                }
-            )
+        service.update_device_parameters(
+            {
+                "block_name": "ACLoad",
+                "row_key": {"name": "load_ac_1", "idx": "1"},
+                "revision": revision_before,
+                "changes": {"pv0": 101},
+            }
+        )
 
-        self.assertEqual(service.definition_snapshot.revision, revision_before)
-        self.assertEqual(service.command_history, history_before)
-        self.assertEqual(render_ebook_aligned(service.runtime_stat_book), stat_before)
-        self.assertFalse((runtime / "commands.json").exists())
-        self.assertFalse(service.manual_definition_changes_file.exists())
+        row = next(
+            item
+            for item in service.definition_snapshot.model_book.data["ACLoad"].data
+            if item.get("name") == "load_ac_1"
+        )
+        self.assertEqual(row["pv0"], "100")
+        self.assertGreater(service.definition_snapshot.revision, revision_before)
+        self.assertTrue((runtime / "commands.json").exists())
+        self.assertTrue(service.manual_definition_changes_file.exists())
 
-    def test_voltage_flow_pressure_and_converter_terminal_limits_are_enforced(self):
+    def test_voltage_flow_pressure_and_converter_terminal_limits_are_clamped(self):
         service, _runtime = self._make_service()
         self._add_fields(
             service,
@@ -448,16 +442,13 @@ class ControlSafetyBoundsTest(unittest.TestCase):
         )
 
         cases = (
-            ("ACGenerator", "diesel_300kw", "v_set", 500, "v_max"),
-            ("DCACConverter", "grid_inv_acp", "p_ac_set", -51, "ac_p_min"),
-            ("DCACConverter", "grid_inv_acp", "p_dc_set", 51, "dc_p_max"),
+            ("ACGenerator", "diesel_300kw", "v_set", 500, "456"),
+            ("DCACConverter", "grid_inv_acp", "p_ac_set", -51, "-50"),
+            ("DCACConverter", "grid_inv_acp", "p_dc_set", 51, "50"),
         )
-        for dev_type, dev_name, set_type, value, bound in cases:
-            with self.subTest(set_type=set_type), self.assertRaisesRegex(
-                ValueError,
-                rf"{set_type}.*{bound}",
-            ):
-                service.apply_student_commands(
+        for dev_type, dev_name, set_type, value, expected in cases:
+            with self.subTest(set_type=set_type):
+                result = service.apply_student_commands(
                     {
                         "set_values": [
                             {
@@ -470,21 +461,21 @@ class ControlSafetyBoundsTest(unittest.TestCase):
                     },
                     source="trainee-ui",
                 )
+                self.assertEqual(result["set_values"], 1)
+                self.assertEqual(self._set_value(service, dev_type, dev_name, set_type), expected)
 
         self._add_hydrogen_controls(service)
-        for dev_name, set_type, value, bound in (
-            ("hydrogen-source", "flow_set", 21, "flow_max"),
-            ("hydrogen-storage", "pressure_set", 46, "pressure_max"),
+        for dev_name, set_type, value, expected in (
+            ("hydrogen-source", "flow_set", 21, "20"),
+            ("hydrogen-storage", "pressure_set", 46, "45"),
         ):
-            with self.subTest(set_type=set_type), self.assertRaisesRegex(
-                ValueError,
-                rf"{set_type}.*{bound}",
-            ):
-                service.apply_student_commands(
+            with self.subTest(set_type=set_type):
+                dev_type = "HydroSource" if set_type == "flow_set" else "HydroStorage"
+                result = service.apply_student_commands(
                     {
                         "set_values": [
                             {
-                                "dev_type": "HydroSource" if set_type == "flow_set" else "HydroStorage",
+                                "dev_type": dev_type,
                                 "dev_name": dev_name,
                                 "set_type": set_type,
                                 "set_value": value,
@@ -493,6 +484,8 @@ class ControlSafetyBoundsTest(unittest.TestCase):
                     },
                     source="trainee-ui",
                 )
+                self.assertEqual(result["set_values"], 1)
+                self.assertEqual(self._set_value(service, dev_type, dev_name, set_type), expected)
 
     @staticmethod
     def _add_hydrogen_controls(service):
@@ -557,7 +550,7 @@ class ControlSafetyBoundsTest(unittest.TestCase):
             ]
         )
 
-    def test_defensive_materialization_skips_old_unsafe_persisted_command(self):
+    def test_defensive_materialization_clamps_old_out_of_bounds_command(self):
         service, runtime = self._make_service()
         self._add_fields(
             service,
@@ -586,13 +579,13 @@ class ControlSafetyBoundsTest(unittest.TestCase):
 
         result = service._materialize_active_control_commands(0, persist=True)
 
-        self.assertEqual(result["set_values"], 0)
-        self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "80")
+        self.assertEqual(result["set_values"], 1)
+        self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "300")
         self.assertNotIn("301", service.files["stat"].read_text(encoding="utf-8"))
         self.assertNotIn("301", service.files["yt_ctrl"].read_text(encoding="utf-8"))
         self.assertTrue(any("安全边界" in str(item) for item in service.runtime_logs))
 
-    def test_defensive_materialization_rejects_an_unsafe_history_entry_atomically(self):
+    def test_defensive_materialization_clamps_adjustment_and_keeps_remote_control(self):
         service, runtime = self._make_service()
         self._add_fields(
             service,
@@ -628,13 +621,13 @@ class ControlSafetyBoundsTest(unittest.TestCase):
 
         result = service._materialize_active_control_commands(0, persist=True)
 
-        self.assertEqual(result["run_status"], 0)
-        self.assertEqual(result["set_values"], 0)
+        self.assertEqual(result["run_status"], 1)
+        self.assertEqual(result["set_values"], 1)
         self.assertEqual(
             self._set_value(service, "ACGenerator", "wt01_10kw", "run_stat"),
-            "1",
+            "0",
         )
-        self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "80")
+        self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "300")
         self.assertNotIn("301", service.files["stat"].read_text(encoding="utf-8"))
         self.assertNotIn("301", service.files["yt_ctrl"].read_text(encoding="utf-8"))
         self.assertTrue(runtime.is_dir())
@@ -671,18 +664,18 @@ class ControlSafetyBoundsTest(unittest.TestCase):
 
         self.assertEqual(
             service._set_value_from_book(boundary, ("ESS", "ess01", "p_set")),
-            20.0,
+            40.0,
         )
         self.assertTrue(
             any(
                 item.get("type") == "控制安全边界"
                 and item.get("target") == "遥调逐步响应"
-                and "安全目标" in str(item)
+                and item.get("result") == "越界中间值已限幅并继续执行"
                 for item in service.runtime_logs
             )
         )
 
-    def test_unsafe_loaded_history_is_removed_before_startup_materialization(self):
+    def test_out_of_bounds_loaded_history_is_repaired_before_startup_materialization(self):
         from simu.generate_simple_model import write_model_dir
         from simu.service import EBook, PolarMicrogridSimulator
         from simu.definition_editing import render_ebook_aligned
@@ -727,11 +720,18 @@ class ControlSafetyBoundsTest(unittest.TestCase):
 
             service = PolarMicrogridSimulator(source, runtime, kernel=lambda _config: None)
 
-            self.assertEqual(service.command_history, [])
-            self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "80")
-            self.assertEqual(json.loads((runtime / "commands.json").read_text(encoding="utf-8")), [])
+            self.assertEqual(len(service.command_history), 1)
+            self.assertEqual(
+                service.command_history[0]["normalized"]["set_values"][0]["set_value"],
+                "300",
+            )
+            self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "300")
+            self.assertEqual(
+                json.loads((runtime / "commands.json").read_text(encoding="utf-8")),
+                service.command_history,
+            )
 
-    def test_loaded_history_batch_is_removed_atomically_when_one_control_is_unsafe(self):
+    def test_loaded_history_batch_repairs_out_of_bounds_member_and_keeps_other_controls(self):
         from simu.generate_simple_model import write_model_dir
         from simu.service import EBook, PolarMicrogridSimulator
 
@@ -788,13 +788,20 @@ class ControlSafetyBoundsTest(unittest.TestCase):
 
             service = PolarMicrogridSimulator(source, runtime, kernel=lambda _config: None)
 
-            self.assertEqual(service.command_history, [])
+            self.assertEqual(len(service.command_history), 1)
             self.assertEqual(
                 self._set_value(service, "ACGenerator", "wt01_10kw", "run_stat"),
-                "1",
+                "0",
             )
-            self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "80")
-            self.assertEqual(json.loads((runtime / "commands.json").read_text(encoding="utf-8")), [])
+            self.assertEqual(self._set_value(service, "ACGenerator", "diesel_300kw", "p_set"), "300")
+            self.assertEqual(
+                [item["set_value"] for item in service.command_history[0]["normalized"]["set_values"]],
+                ["100", "300"],
+            )
+            self.assertEqual(
+                json.loads((runtime / "commands.json").read_text(encoding="utf-8")),
+                service.command_history,
+            )
 
     def test_loaded_history_with_invalid_binary_control_is_removed_atomically(self):
         from simu.generate_simple_model import write_model_dir

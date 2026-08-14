@@ -353,6 +353,32 @@ def validate_setpoint_safety_bounds(
     return number, bounds
 
 
+def clamp_setpoint_safety_bounds(
+    current: Mapping[str, Any],
+    setpoint: Any,
+    value: Any,
+) -> tuple[
+    float,
+    tuple[str, float | None, str, float | None] | None,
+    bool,
+]:
+    """Clamp a finite analog setpoint to its configured device boundaries."""
+
+    field = str(setpoint or "").strip()
+    number = _finite_number(value, field or "set_value")
+    bounds = configured_setpoint_bounds(current, field)
+    if bounds is None:
+        return number, None, False
+    _lower_name, lower, _upper_name, upper = bounds
+    clamped = number
+    if lower is not None:
+        clamped = max(clamped, float(lower))
+    if upper is not None:
+        clamped = min(clamped, float(upper))
+    tolerance = 1e-9 * max(1.0, abs(number), abs(clamped))
+    return clamped, bounds, abs(clamped - number) > tolerance
+
+
 def normalize_device_changes(
     current: Mapping[str, Any],
     changes: Mapping[str, Any],
@@ -410,16 +436,23 @@ def normalize_device_changes(
         if str(field).endswith("_set")
         or _normalized_field_name(field) in {"pv0", "qv0"}
     ):
-        if (
-            allow_out_of_bounds_setpoints
-            and _normalized_field_name(setpoint) in changed_fields
-        ):
+        normalized_setpoint = _normalized_field_name(setpoint)
+        if allow_out_of_bounds_setpoints and normalized_setpoint in changed_fields:
             continue
         candidates = _setpoint_bound_candidates(merged, setpoint)
         related_fields = {setpoint, *(field for pair in candidates for field in pair)}
         if not (related_fields & changed_fields):
             continue
-        validate_setpoint_safety_bounds(merged, setpoint, merged[setpoint])
+        if normalized_setpoint in changed_fields:
+            clamped, _bounds, _changed = clamp_setpoint_safety_bounds(
+                merged,
+                setpoint,
+                merged[setpoint],
+            )
+            normalized[setpoint] = _number_text(clamped)
+            merged[setpoint] = normalized[setpoint]
+        else:
+            validate_setpoint_safety_bounds(merged, setpoint, merged[setpoint])
     return normalized
 
 

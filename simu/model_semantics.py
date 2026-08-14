@@ -215,6 +215,8 @@ def validate_hydrogen_power_setpoint_safety(
     dev_name: Any,
     set_type: Any,
     value: Any,
+    *,
+    clamp_to_bounds: bool = False,
 ) -> Dict[str, Any] | None:
     """Validate the hydrogen-side flow implied by an active electric P control.
 
@@ -330,9 +332,37 @@ def validate_hydrogen_power_setpoint_safety(
         abs(flow_min) if flow_min is not None else 0.0,
         abs(flow_max) if flow_max is not None else 0.0,
     )
-    outside_lower = flow_min is not None and flow < flow_min - tolerance
+    # Zero is the valid stopped state even when the equipment declares a
+    # positive minimum operating flow.
+    outside_lower = (
+        abs(number) > tolerance
+        and flow_min is not None
+        and flow < flow_min - tolerance
+    )
     outside_upper = flow_max is not None and flow > flow_max + tolerance
     if outside_lower or outside_upper:
+        if clamp_to_bounds:
+            safe_flow = flow
+            if flow_min is not None:
+                safe_flow = max(safe_flow, flow_min)
+            if flow_max is not None:
+                safe_flow = min(safe_flow, flow_max)
+            safe_magnitude = (
+                safe_flow / coefficient
+                if coupling_type in {"AcE2Hydro", "DcE2Hydro"}
+                else safe_flow * coefficient
+            )
+            safe_power = math.copysign(safe_magnitude, number)
+            result.update(
+                {
+                    "requested_p_set": number,
+                    "requested_flow": flow,
+                    "p_set": safe_power,
+                    "flow": safe_flow,
+                    "clamped": True,
+                }
+            )
+            return result
         bounds = []
         if flow_min is not None:
             bounds.append(f"flow_min={_semantic_number_text(flow_min)}")
@@ -345,6 +375,7 @@ def validate_hydrogen_power_setpoint_safety(
             f"{_semantic_number_text(flow)} Nm3/h，超出 "
             f"{hydrogen_type}/{hydrogen_name} 的 {', '.join(bounds)}"
         )
+    result["clamped"] = False
     return result
 
 

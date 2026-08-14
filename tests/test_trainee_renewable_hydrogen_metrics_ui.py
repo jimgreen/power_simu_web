@@ -51,6 +51,27 @@ class TraineeRenewableHydrogenMetricsUiTest(unittest.TestCase):
         )[1].split("]);", 1)[0]
         self.assertNotRegex(default_block, r"electrolyzer|fuelCell|hydrogenStorage")
 
+    def test_retired_hydrogen_devices_stay_available_by_configured_count(self):
+        expected_configured_counts = {
+            "hydrogen-electrolyzer": "configuredElectrolyzerCount",
+            "hydrogen-fuel-cell": "configuredFuelCellCount",
+            "hydrogen-storage": "configuredHydrogenStorageCount",
+        }
+        configured_count_block = self.script.split(
+            "function renewableMetricGroupConfiguredCount",
+            1,
+        )[1].split("function renewableMetricGroupAvailable", 1)[0]
+        availability_block = self.script.split(
+            "function renewableMetricGroupAvailable",
+            1,
+        )[1].split("function renderRenewableMetricAvailability", 1)[0]
+
+        for group, metric_key in expected_configured_counts.items():
+            with self.subTest(group=group):
+                self.assertIn(f'"{group}": ["{metric_key}"]', configured_count_block)
+        self.assertIn("renewableMetricGroupConfiguredCount(metrics, group)", availability_block)
+        self.assertRegex(availability_block, r"configuredCount\s*>\s*0")
+
     def test_parameter_dialog_is_four_accessible_pages_and_keeps_all_inputs_once(self):
         expected_tabs = {
             "runtime": "运行与步长",

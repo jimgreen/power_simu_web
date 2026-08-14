@@ -981,19 +981,34 @@ def _hydrogen_operating_metrics(
         "electrolyzer": {"currentPower": [], "targetPower": [], "currentFlow": [], "targetFlow": []},
         "fuelCell": {"currentPower": [], "targetPower": [], "currentFlow": [], "targetFlow": []},
     }
+    configured_counts = {"electrolyzer": 0, "fuelCell": 0}
     online_counts = {"electrolyzer": 0, "fuelCell": 0}
+
+    def append_inactive_metrics(
+        values: MutableMapping[str, List[float]],
+        command: Mapping[str, Any],
+    ) -> None:
+        target_power = _number(command.get("electricPowerKw"), 0.0) or 0.0
+        target_flow = _number(command.get("equivalentFlow"), 0.0) or 0.0
+        values["currentPower"].append(0.0)
+        values["targetPower"].append(float(target_power))
+        values["currentFlow"].append(0.0)
+        values["targetFlow"].append(float(target_flow))
+
     for coupling_type in ("AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"):
         category = "electrolyzer" if coupling_type in {"AcE2Hydro", "DcE2Hydro"} else "fuelCell"
         coefficient_field = "e2h_coeff" if category == "electrolyzer" else "h2e_coeff"
         for coupling in _parameter_rows(snapshot, coupling_type):
+            configured_counts[category] += 1
             coupling_name = _parameter_name(coupling).strip()
             coupling_device = devices.get((coupling_type, coupling_name))
             bindings = bindings_by_coupling.get((coupling_type, coupling_name), ())
-            if (
-                not coupling_device
-                or not _is_online(coupling_device, measurements)
-                or len(bindings) != 2
-            ):
+            values = category_values[category]
+            command = command_by_coupling.get((coupling_type, coupling_name), {})
+            if coupling_device and not _is_online(coupling_device, measurements):
+                append_inactive_metrics(values, command)
+                continue
+            if not coupling_device or len(bindings) != 2:
                 continue
             power_binding = next((row for row in bindings if row.get("set_type") == "p_set"), None)
             flow_binding = next((row for row in bindings if row.get("set_type") == "flow_set"), None)
@@ -1015,6 +1030,8 @@ def _hydrogen_operating_metrics(
                 or not _is_online(power_device, measurements)
                 or not _is_online(flow_device, measurements)
             ):
+                if power_device and flow_device:
+                    append_inactive_metrics(values, command)
                 continue
             online_counts[category] += 1
             power_measurement = _measured(
@@ -1045,14 +1062,12 @@ def _hydrogen_operating_metrics(
                         if category == "electrolyzer"
                         else current_power / coefficient
                     )
-            command = command_by_coupling.get((coupling_type, coupling_name), {})
             target_power = _number(command.get("electricPowerKw"))
             target_flow = _number(command.get("equivalentFlow"))
             if target_power is None:
                 target_power = current_power
             if target_flow is None:
                 target_flow = current_flow
-            values = category_values[category]
             if current_power is not None and math.isfinite(current_power):
                 values["currentPower"].append(float(current_power))
             if target_power is not None and math.isfinite(target_power):
@@ -1077,7 +1092,9 @@ def _hydrogen_operating_metrics(
         for row in pressure_states
         if isinstance(row, Mapping)
     }
+    configured_storage_count = 0
     for storage in _parameter_rows(snapshot, "HydroStorage"):
+        configured_storage_count += 1
         storage_name = _parameter_name(storage).strip()
         storage_device = devices.get(("HydroStorage", storage_name))
         if not storage_device or not _is_online(storage_device, measurements):
@@ -1111,6 +1128,9 @@ def _hydrogen_operating_metrics(
     electrolyzer = category_values["electrolyzer"]
     fuel_cell = category_values["fuelCell"]
     return {
+        "configuredElectrolyzerCount": configured_counts["electrolyzer"],
+        "configuredFuelCellCount": configured_counts["fuelCell"],
+        "configuredHydrogenStorageCount": configured_storage_count,
         "onlineElectrolyzerCount": online_counts["electrolyzer"],
         "onlineFuelCellCount": online_counts["fuelCell"],
         "onlineHydrogenStorageCount": online_storage_count,
@@ -1303,14 +1323,6 @@ def _hydrogen_post_dispatch_plan(
         if settings.electrolyzer_diesel_power_limit_kw is not None
         and diesel_capacity_kw > EPSILON
         else settings.electrolyzer_diesel_power_limit_ratio
-    )
-    electrolyzer_diesel_deadband_ratio = (
-        float(settings.electrolyzer_diesel_power_deadband_kw)
-        * diesel_unit_count
-        / diesel_capacity_kw
-        if settings.electrolyzer_diesel_power_deadband_kw is not None
-        and diesel_capacity_kw > EPSILON
-        else settings.electrolyzer_diesel_power_deadband_ratio
     )
     fuel_cell_diesel_limit_ratio = (
         float(settings.fuel_cell_diesel_power_limit_kw)
@@ -1834,15 +1846,6 @@ def _hydrogen_post_dispatch_plan(
                     electrolyzer_diesel_limit_ratio * diesel_capacity_kw
                     - predicted_diesel_kw,
                 )
-                diesel_reduce_margin_kw = max(
-                    0.0,
-                    predicted_diesel_kw
-                    - (
-                        electrolyzer_diesel_limit_ratio
-                        + electrolyzer_diesel_deadband_ratio
-                    )
-                    * diesel_capacity_kw,
-                )
                 electrolyzer_raise_allowed = bool(
                     diesel_raise_margin_kw > EPSILON
                     and electric_storage_soc is not None
@@ -1856,12 +1859,9 @@ def _hydrogen_post_dispatch_plan(
                     and conflict_stop_mode != "electrolyzer"
                 )
                 electrolyzer_reduce_required = bool(
-                    diesel_reduce_margin_kw > EPSILON
-                    or (
-                        electric_storage_soc is not None
-                        and electric_storage_soc
-                        < settings.electrolyzer_storage_soc_stop_maximum - EPSILON
-                    )
+                    electric_storage_soc is not None
+                    and electric_storage_soc
+                    < settings.electrolyzer_storage_soc_stop_maximum - EPSILON
                     or (
                         hydrogen_storage_soc is not None
                         and hydrogen_storage_soc
@@ -1929,6 +1929,16 @@ def _hydrogen_post_dispatch_plan(
             elif pressure_blocked:
                 requested_delta_kw = -current_power
                 device_action_reason = "pressure_safety_stop"
+            elif current_power > allowed_power + EPSILON:
+                requested_delta_kw = allowed_power - current_power
+                device_action = (
+                    "electrolyzer_reduce" if is_electrolyzer else "fuel_cell_reduce"
+                )
+                device_action_reason = "above_upper_power_limit_correction"
+                diagnostics["warnings"].append(
+                    f"氢能设备{coupling_name}实时功率{current_power:.3f} kW高于有效上限"
+                    f"{allowed_power:.3f} kW，本轮纠偏至上限并保留完整运行快照"
+                )
             elif (
                 is_electrolyzer
                 and current_power > EPSILON
@@ -1976,8 +1986,6 @@ def _hydrogen_post_dispatch_plan(
                 elif electrolyzer_reduce_required:
                     device_action = "electrolyzer_reduce"
                     reduce_reasons: List[str] = []
-                    if diesel_reduce_margin_kw > EPSILON:
-                        reduce_reasons.append("diesel_above_stop_threshold")
                     if (
                         electric_storage_soc
                         < settings.electrolyzer_storage_soc_stop_maximum - EPSILON
@@ -1991,11 +1999,6 @@ def _hydrogen_post_dispatch_plan(
                         reduce_reasons.append("hydrogen_storage_soc_above_stop_threshold")
                     device_action_reason = "+".join(reduce_reasons) or "reduce_condition_met"
                     requested_delta_kw = -min(
-                        (
-                            diesel_reduce_margin_kw
-                            if diesel_reduce_margin_kw > EPSILON
-                            else step_kw
-                        ),
                         step_kw,
                         current_power,
                     )
@@ -2084,6 +2087,9 @@ def _hydrogen_post_dispatch_plan(
                     if maintain_stopped_snapshot:
                         device_action = "hydrogen_stopped_hold"
                         device_action_reason = fuel_cell_decision.reason
+                    elif current_power > EPSILON:
+                        device_action = "hold"
+                        device_action_reason = fuel_cell_decision.reason or "hold_region"
                     else:
                         decision_trace.update(
                             {
@@ -2110,14 +2116,17 @@ def _hydrogen_post_dispatch_plan(
                 and not pressure_blocked
                 and not maintain_stopped_snapshot
             ):
-                decision_trace.update(
-                    {
-                        "action": "hold",
-                        "controlReason": device_action_reason or "hold_region",
-                    }
-                )
-                diagnostics["decisionTraces"].append(decision_trace)
-                continue
+                if current_power <= EPSILON:
+                    decision_trace.update(
+                        {
+                            "action": "hold",
+                            "controlReason": device_action_reason or "hold_region",
+                        }
+                    )
+                    diagnostics["decisionTraces"].append(decision_trace)
+                    continue
+                device_action = "hold"
+                device_action_reason = device_action_reason or "hold_region"
             active_set_type = str(
                 active_binding.get("target_set_type", active_binding.get("set_type", ""))
             )
@@ -2156,6 +2165,9 @@ def _hydrogen_post_dispatch_plan(
                 else ""
             )
             accepted_delta_kw = requested_delta_kw
+            adjustment_requested = abs(requested_delta_kw) > EPSILON
+            atomic_hold_reason = ""
+            atomic_hold_blockers: List[str] = []
             converter_rows: List[MutableMapping[str, Any]] = []
             converter_request_kw = 0.0
             if electric_side == "DC" and abs(accepted_delta_kw) > EPSILON:
@@ -2171,36 +2183,31 @@ def _hydrogen_post_dispatch_plan(
                     diagnostics["warnings"].append(
                         f"氢能设备{coupling_name}直流拓扑组无可调ACDC，已取消本设备氢能增量"
                     )
-                    decision_trace.update(
-                        {
-                            "action": "blocked",
-                            "controlReason": "dcac_control_margin_unavailable",
-                            "blockers": ["直流拓扑组无可调ACDC"],
-                        }
+                    accepted_delta_kw = 0.0
+                    atomic_hold_reason = "dcac_control_margin_unavailable"
+                    atomic_hold_blockers = ["直流拓扑组无可调ACDC"]
+                else:
+                    converter_request_kw = (
+                        -accepted_delta_kw if is_electrolyzer else accepted_delta_kw
                     )
-                    diagnostics["decisionTraces"].append(decision_trace)
-                    continue
-                converter_request_kw = (
-                    -accepted_delta_kw if is_electrolyzer else accepted_delta_kw
-                )
-                converter_probe = [copy.deepcopy(row) for row in converter_rows]
-                converter_delivered_kw = _allocate_converter_ac_injection_delta(
-                    converter_probe,
-                    converter_request_kw,
-                    step_ratio=settings.converter_step_ratio,
-                )
-                accepted_magnitude = min(
-                    abs(accepted_delta_kw),
-                    abs(converter_delivered_kw),
-                )
-                accepted_delta_kw = math.copysign(
-                    accepted_magnitude,
-                    accepted_delta_kw,
-                )
-                converter_request_kw = math.copysign(
-                    accepted_magnitude,
-                    converter_request_kw,
-                )
+                    converter_probe = [copy.deepcopy(row) for row in converter_rows]
+                    converter_delivered_kw = _allocate_converter_ac_injection_delta(
+                        converter_probe,
+                        converter_request_kw,
+                        step_ratio=settings.converter_step_ratio,
+                    )
+                    accepted_magnitude = min(
+                        abs(accepted_delta_kw),
+                        abs(converter_delivered_kw),
+                    )
+                    accepted_delta_kw = math.copysign(
+                        accepted_magnitude,
+                        accepted_delta_kw,
+                    )
+                    converter_request_kw = math.copysign(
+                        accepted_magnitude,
+                        converter_request_kw,
+                    )
 
             diesel_delta_kw = (
                 accepted_delta_kw if is_electrolyzer else -accepted_delta_kw
@@ -2224,22 +2231,19 @@ def _hydrogen_post_dispatch_plan(
                         accepted_magnitude,
                         converter_request_kw,
                     )
-            if abs(accepted_delta_kw) <= EPSILON and not (
+            if adjustment_requested and abs(accepted_delta_kw) <= EPSILON and not (
                 (pressure_blocked and current_power <= EPSILON)
                 or maintain_stopped_snapshot
             ):
-                diagnostics["warnings"].append(
-                    f"氢能设备{coupling_name}的氢端、ACDC步长或平衡设备无共同调节裕度，已原子保持"
-                )
-                decision_trace.update(
-                    {
-                        "action": "blocked",
-                        "controlReason": "atomic_margin_unavailable",
-                        "blockers": ["氢端、ACDC或平衡设备无共同调节裕度"],
-                    }
-                )
-                diagnostics["decisionTraces"].append(decision_trace)
-                continue
+                if not atomic_hold_reason:
+                    diagnostics["warnings"].append(
+                        f"氢能设备{coupling_name}的氢端、ACDC步长或平衡设备无共同调节裕度，已原子保持"
+                    )
+                    atomic_hold_reason = "atomic_margin_unavailable"
+                    atomic_hold_blockers = ["氢端、ACDC或平衡设备无共同调节裕度"]
+                device_action = "blocked"
+                device_action_reason = atomic_hold_reason
+                decision_trace["blockers"] = atomic_hold_blockers
 
             if (
                 required_start_delta_kw is not None
@@ -2259,35 +2263,45 @@ def _hydrogen_post_dispatch_plan(
                 diagnostics["decisionTraces"].append(decision_trace)
                 continue
             target_power = max(0.0, current_power + accepted_delta_kw)
+            requested_target_power = target_power
+            if target_power > EPSILON:
+                if target_power > allowed_power + EPSILON:
+                    target_power = allowed_power
+                elif target_power < physical_minimum_power - EPSILON:
+                    target_power = (
+                        0.0
+                        if accepted_delta_kw < -EPSILON
+                        else physical_minimum_power
+                    )
+            if abs(target_power - requested_target_power) > EPSILON:
+                setpoint_delta_kw = target_power - current_power
+                unpaired_delta_kw = setpoint_delta_kw - accepted_delta_kw
+                diagnostics["warnings"].append(
+                    f"氢能设备{coupling_name}目标{requested_target_power:.3f} kW越过有效运行边界，"
+                    f"已限幅为{target_power:.3f} kW并继续产生、下发指令；"
+                    f"未能原子配对的电侧变化为{unpaired_delta_kw:.3f} kW，将由潮流平衡设备响应"
+                )
+                device_action = (
+                    "electrolyzer_boundary_correction"
+                    if is_electrolyzer
+                    else "fuel_cell_boundary_correction"
+                )
+                device_action_reason = "target_boundary_clamped_and_dispatched"
+                decision_trace["boundaryRequestedPowerKw"] = requested_target_power
+                decision_trace["boundaryClampedPowerKw"] = target_power
+                decision_trace["unpairedElectricalDeltaKw"] = unpaired_delta_kw
+                accepted_delta_kw = setpoint_delta_kw
             target_flow = (
                 target_power * float(coefficient)
                 if is_electrolyzer
                 else target_power / float(coefficient)
             )
-            if target_power > EPSILON and (
-                target_power < physical_minimum_power - EPSILON
-                or target_power > allowed_power + EPSILON
-                or target_flow < max(0.0, float(flow_min)) - EPSILON
-                or target_flow > max(0.0, float(flow_max)) + EPSILON
-            ):
-                diagnostics["warnings"].append(
-                    f"氢能设备{coupling_name}原子限幅后目标落入设备禁运区，已保持当前值"
-                )
-                decision_trace.update(
-                    {
-                        "action": "blocked",
-                        "controlReason": "target_in_forbidden_operating_region",
-                        "blockers": ["原子限幅后目标落入设备禁运区"],
-                    }
-                )
-                diagnostics["decisionTraces"].append(decision_trace)
-                continue
             set_value = target_power if active_set_type == "p_set" else target_flow
             run_stat_target: Optional[int] = None
-            if target_power <= EPSILON:
-                run_stat_target = 0
-            elif required_start_delta_kw is not None:
+            if target_power > EPSILON and not coupling_online:
                 run_stat_target = 1
+            elif target_power <= EPSILON and coupling_online:
+                run_stat_target = 0
             if run_stat_target is not None:
                 coupling_key = (coupling_type, coupling_name)
                 if coupling_key not in run_status_control_keys:
@@ -3253,6 +3267,8 @@ def _normalized_generation_current(
     if measured is None:
         return None, None
     current = measured.value
+    if current < 0.0:
+        quality.add(f"{label}实时有功 {current:g} kW 低于新能源功率下限 0 kW")
     if capacity_kw > 0 and current > capacity_kw:
         quality.add(
             f"{label}实时有功 {current:g} kW 超过额定容量 {capacity_kw:g} kW"
@@ -3370,7 +3386,6 @@ def _renewable_rows(
             and identity_valid
             and set_type
             and recovery_ready
-            and signed_baseline_valid
         )
 
         if not topology_valid:
@@ -3383,7 +3398,7 @@ def _renewable_rows(
             quality.add(f"新能源{name}缺少有效p_set有功遥调点，本轮仅保留诊断")
         if online and planning_current is not None and planning_current < 0.0:
             quality.add(
-                f"新能源{name}实时有功 {planning_current:g} kW 为负，本轮保持原值且不下发自动设点"
+                f"新能源{name}实时有功 {planning_current:g} kW 为负，按真实下限 0 kW 形成纠偏设点"
             )
 
         status_label = (
@@ -3401,7 +3416,7 @@ def _renewable_rows(
             if not capability_known
             else "实时有功未知"
             if planning_current is None
-            else "实时有功为负·保持原值"
+            else "实时有功低于下限·校正至0"
             if not signed_baseline_valid
             else "实时有功超过容量·校正至额定上限"
             if not capacity_baseline_valid
@@ -4701,6 +4716,101 @@ def _converter_signed_bounds_kw(row: Mapping[str, Any]) -> Tuple[float, float]:
 def _clamp_converter_target_kw(row: Mapping[str, Any], target_kw: Any) -> float:
     minimum, maximum = _converter_signed_bounds_kw(row)
     return _clamp(_finite_number(target_kw), minimum, maximum)
+
+
+def _final_command_power_bounds_kw(
+    row: Mapping[str, Any],
+) -> Optional[Tuple[float, float]]:
+    if row.get("category") == "氢能":
+        return None
+    if row.get("technology") in {"wind", "pv"}:
+        capacity = _number(row.get("capacityKw"))
+        if capacity is not None and capacity >= 0.0:
+            return 0.0, float(capacity)
+        return None
+    if row.get("technology") == "storage":
+        if row.get("limitsValid") and row.get("socKnown"):
+            return _grid_storage_signed_power_bounds_kw(row)
+        return None
+    if row.get("category") == "柴油发电":
+        minimum = _number(row.get("minKw"))
+        maximum = _number(row.get("capacityKw"))
+        if minimum is not None and maximum is not None and minimum <= maximum:
+            return float(minimum), float(maximum)
+        return None
+    if _is_grid_converter_row(row) and row.get("limitsValid"):
+        return _converter_signed_bounds_kw(row)
+    return None
+
+
+def _clamp_final_command_rows_to_boundaries(
+    rows: Sequence[MutableMapping[str, Any]],
+) -> List[str]:
+    """Keep finite out-of-bound telemetry controllable and issue a safe target."""
+
+    warnings: List[str] = []
+    for row in rows:
+        if (
+            not row.get("online")
+            or row.get("commandable") is False
+            or not row.get("set_type")
+        ):
+            continue
+        bounds = _final_command_power_bounds_kw(row)
+        if bounds is None:
+            continue
+        minimum, maximum = bounds
+        if not (
+            math.isfinite(minimum)
+            and math.isfinite(maximum)
+            and minimum <= maximum
+        ):
+            continue
+        current = _number(row.get("currentKw"))
+        target = _number(row.get("commandKw"))
+        if target is None:
+            if current is None:
+                continue
+            target = current
+        safe_target = _clamp(float(target), minimum, maximum)
+        target_was_clamped = abs(safe_target - float(target)) > EPSILON
+        current_outside = bool(
+            current is not None
+            and (current < minimum - EPSILON or current > maximum + EPSILON)
+        )
+        if not target_was_clamped and not current_outside:
+            continue
+        row["commandKw"] = safe_target
+        for field in (
+            "targetKw",
+            "projectedTargetKw",
+            "optimizationSuggestedKw",
+        ):
+            if field in row:
+                row[field] = safe_target
+        row["strategyCommand"] = True
+        row["strategyTargetChanged"] = bool(
+            current is not None and abs(safe_target - current) > EPSILON
+        )
+        reason = (
+            "measurement_below_lower_limit_correction"
+            if current is not None and current < minimum - EPSILON
+            else "measurement_above_upper_limit_correction"
+            if current is not None and current > maximum + EPSILON
+            else "target_below_lower_limit_clamped"
+            if target < minimum - EPSILON
+            else "target_above_upper_limit_clamped"
+        )
+        row["boundaryCorrection"] = True
+        row["boundaryCorrectionReason"] = reason
+        name = str(row.get("dev_name", ""))
+        category = str(row.get("category", row.get("technology", "设备")))
+        warnings.append(
+            f"{category}{name}实时值或策略目标越过有效功率边界"
+            f"[{minimum:.3f}, {maximum:.3f}] kW，已限幅为{safe_target:.3f} kW；"
+            "设备保持在线，遥调策略继续产生并下发"
+        )
+    return warnings
 
 
 def _converter_ac_injection_bounds_kw(
@@ -10538,7 +10648,8 @@ def _hydrogen_reason_text(reason: Any) -> str:
         "invalid_operating_envelope": "设备功率或流量运行区间无效",
         "active_setpoint_unavailable": "活动遥调点不可用",
         "dcac_control_margin_unavailable": "直流拓扑组无可调DCAC",
-        "target_in_forbidden_operating_region": "目标落入设备禁运区",
+        "target_boundary_clamped_and_dispatched": "目标越界后已限幅并继续下发",
+        "above_upper_power_limit_correction": "实时功率越上限，纠偏至有效上限",
     }
     if normalized in labels:
         return labels[normalized]
@@ -10590,14 +10701,6 @@ def _hydrogen_business_decision_detail(
         and diesel_capacity_kw > EPSILON
         else settings.electrolyzer_diesel_power_limit_ratio
     )
-    electrolyzer_diesel_deadband_ratio = (
-        float(settings.electrolyzer_diesel_power_deadband_kw)
-        * diesel_unit_count
-        / diesel_capacity_kw
-        if settings.electrolyzer_diesel_power_deadband_kw is not None
-        and diesel_capacity_kw > EPSILON
-        else settings.electrolyzer_diesel_power_deadband_ratio
-    )
     fuel_cell_diesel_limit_ratio = (
         float(settings.fuel_cell_diesel_power_limit_kw)
         * diesel_unit_count
@@ -10622,11 +10725,10 @@ def _hydrogen_business_decision_detail(
             f"{electrolyzer_diesel_limit_ratio * 100:.2f}%、电储SOC>"
             f"{settings.electrolyzer_storage_soc_start_minimum * 100:.2f}%、本氢岛氢储SOC<"
             f"{settings.electrolyzer_hydrogen_storage_soc_stop_minimum * 100:.2f}%时，"
-            "直接启至最小运行功率+调节死区；运行态有裕度则按步长升功率。柴发负载率>"
-            f"{(electrolyzer_diesel_limit_ratio + electrolyzer_diesel_deadband_ratio) * 100:.2f}%、"
+            "直接启至最小运行功率+调节死区；运行态仅在柴发低于启机限值且有裕度时按步长升功率。"
             f"电储SOC<{settings.electrolyzer_storage_soc_stop_maximum * 100:.2f}%或氢储SOC>"
             f"{settings.electrolyzer_hydrogen_storage_soc_stop_minimum * 100:.2f}%时按步长降功率，"
-            "低于停机回差阈值则停机"
+            "低于停机回差阈值则停机；柴发功率偏高不触发电制氢降功率或停机"
         ),
         (
             "【4. 氢能控制】燃料电池规则：停机态同时满足柴发负载率>"
@@ -13222,6 +13324,9 @@ def calculate_renewable_control_plan(
         ),
         apply_electrical_corrections=settings.hydrogen_closed_loop_enabled,
     )
+    strategy_boundary_warnings = _clamp_final_command_rows_to_boundaries(
+        command_rows
+    )
     diesel_by_name = {
         str(row.get("dev_name", "")): float(row["commandKw"])
         for row in command_rows
@@ -13340,6 +13445,7 @@ def calculate_renewable_control_plan(
 
     warnings: List[str] = []
     warnings.extend(str(item) for item in hydrogen_plan.get("warnings", []))
+    warnings.extend(strategy_boundary_warnings)
     if any(
         row.get("technology") == "wind"
         and row.get("online")
@@ -13610,6 +13716,9 @@ def calculate_renewable_control_plan(
         "hydrogenClosedLoopEnabled": settings.hydrogen_closed_loop_enabled,
         "hydrogenPressureDeadbandRatio": settings.hydrogen_pressure_deadband_ratio,
         "hydrogenControl": hydrogen_plan,
+        "configuredElectrolyzerCount": hydrogen_plan.get("configuredElectrolyzerCount", 0),
+        "configuredFuelCellCount": hydrogen_plan.get("configuredFuelCellCount", 0),
+        "configuredHydrogenStorageCount": hydrogen_plan.get("configuredHydrogenStorageCount", 0),
         "onlineElectrolyzerCount": hydrogen_plan.get("onlineElectrolyzerCount", 0),
         "onlineFuelCellCount": hydrogen_plan.get("onlineFuelCellCount", 0),
         "onlineHydrogenStorageCount": hydrogen_plan.get("onlineHydrogenStorageCount", 0),
@@ -16997,13 +17106,13 @@ class TraineeRenewableControlManager:
                     and not state.enabled
                 ):
                     state.status = (
-                        "实时控制已停止，但自动指令撤销失败："
-                        f"{exc}；残留指令将在有效期结束后退出。"
+                        "实时控制已停止，但策略代次结束状态登记失败："
+                        f"{exc}；已下发指令仍按本仿真周期保持有效。"
                     )
                     runtime_log_entry = self._append_log(
                         state,
                         "策略控制",
-                        "自动指令撤销失败",
+                        "策略代次结束登记失败",
                         state.status,
                         level="error",
                         simu_time=(
@@ -17029,15 +17138,16 @@ class TraineeRenewableControlManager:
                     state.strategy_generation_active = False
                     state.effective_target_snapshot = None
                     state.status = (
-                        "实时控制已在学员台后台停止，已撤销自动指令。"
+                        "实时控制已在学员台后台停止，当前策略代次已结束；"
+                        "已下发指令保持有效，直至仿真重置或周期归零。"
                     )
                     runtime_log_entry = self._append_log(
                         state,
                         "策略控制",
-                        "自动指令撤销",
+                        "策略代次结束",
                         (
-                            f"撤销策略代次 {cancelled_generations} 个，"
-                            f"控制点 {cancelled_controls} 个。"
+                            f"结束策略代次 {cancelled_generations} 个，"
+                            f"涉及控制点 {cancelled_controls} 个；已下发控制值不撤销。"
                         ),
                         level="ok",
                         simu_time=(
@@ -17296,7 +17406,8 @@ class TraineeRenewableControlManager:
                         else 0
                     )
                     state.status = (
-                        "实时控制已在学员台后台停止，正在撤销自动指令。"
+                        "实时控制已在学员台后台停止，正在结束当前策略代次；"
+                        "已下发指令保持有效。"
                         if state.strategy_cancel_pending
                         else "实时控制已在学员台后台停止。"
                     )

@@ -122,7 +122,7 @@ class TraineeRemoteAdjustmentUiTest(unittest.TestCase):
         self.assertIn("if (manualHold) return acceptedCount > 0;", active_block)
         self.assertIn("currentMinute < expires && issued <= currentMinute", active_block)
 
-    def test_remote_adjustment_measurement_uses_exact_side_and_valid_live_source(self):
+    def test_remote_adjustment_measurement_uses_exact_side_and_valid_scada_only(self):
         self.assertIn("function remoteAdjustmentMeasurementTypeCandidates", self.script)
         helper = "function remoteAdjustmentMeasurementTypeCandidates" + self.script.split(
             "function remoteAdjustmentMeasurementTypeCandidates",
@@ -140,6 +140,7 @@ const snapshot = {
       { dev_type: "DCACConverter", dev_name: "ACDC变流器-1", meas_type: "V_AC", valid: 1, value: 380 },
       { dev_type: "DCACConverter", dev_name: "ACDC变流器-1", meas_type: "V_DC", valid: 0, value: 999 },
       { dev_type: "DCACConverter", dev_name: "ACDC变流器-1", meas_type: "P_AC", valid: 0, value: 88 },
+      { dev_type: "DCACConverter", dev_name: "ACDC变流器-2", meas_type: "P_DC", valid: 1, value: 9.0 },
     ],
     real: [
       { dev_type: "DCACConverter", dev_name: "ACDC变流器-1", meas_type: "V_DC", valid: 1, value: 750 },
@@ -167,9 +168,9 @@ process.stdout.write(JSON.stringify({
             json.loads(result.stdout),
             {
                 "acVoltage": 380,
-                "dcVoltage": 750,
-                "acPower": -42.5,
-                "dcPower": 42.5,
+                "dcVoltage": None,
+                "acPower": None,
+                "dcPower": None,
                 "acdcDcPower": 9.0,
             },
         )

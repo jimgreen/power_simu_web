@@ -43,7 +43,7 @@ class AutomaticStrategyGenerationTest(unittest.TestCase):
         )
         return str(row["run_stat"])
 
-    def test_generation_keeps_remote_control_and_setpoint_atomic_and_cancels_together(self):
+    def test_generation_overwrites_matching_controls_and_stop_keeps_them_latched(self):
         service = self._service()
 
         stopped = service.apply_student_commands(
@@ -112,9 +112,9 @@ class AutomaticStrategyGenerationTest(unittest.TestCase):
         self.assertEqual(cancelled["cancelled_generations"], 1)
         self.assertEqual(cancelled["cancelled_controls"], 2)
         self.assertEqual(self._ess_run_stat(service), "1")
-        self.assertEqual(self._ess_value(service), "10")
+        self.assertEqual(self._ess_value(service), "20")
 
-    def test_empty_generation_atomically_replaces_previous_snapshot(self):
+    def test_empty_generation_does_not_restore_omitted_control_points(self):
         service = self._service()
 
         first = service.apply_student_commands(
@@ -149,7 +149,7 @@ class AutomaticStrategyGenerationTest(unittest.TestCase):
         )
 
         self.assertEqual(second["set_values"], 0)
-        self.assertEqual(self._ess_value(service), "10")
+        self.assertEqual(self._ess_value(service), "20")
         self.assertTrue(service.command_history[-2]["cancelled"])
         self.assertEqual(
             service.command_history[-2]["cancelled_reason"],
@@ -158,7 +158,7 @@ class AutomaticStrategyGenerationTest(unittest.TestCase):
         self.assertEqual(service.command_history[-1]["strategy_id"], "renewable_priority")
         self.assertEqual(service.command_history[-1]["generation"], 2)
 
-    def test_current_strategy_generation_can_be_cancelled_without_point_names(self):
+    def test_controller_stop_retires_generation_without_reverting_device_target(self):
         service = self._service()
         service.apply_student_commands(
             {
@@ -189,13 +189,13 @@ class AutomaticStrategyGenerationTest(unittest.TestCase):
         )
 
         self.assertEqual(result["cancelled_generations"], 1)
-        self.assertEqual(self._ess_value(service), "10")
+        self.assertEqual(self._ess_value(service), "20")
         self.assertEqual(
             service.command_history[-1]["cancelled_reason"],
             "controller_stopped",
         )
 
-    def test_controller_stop_can_cancel_all_generations_without_tracking_one_generation(self):
+    def test_controller_stop_keeps_latest_point_value_for_the_simulation_cycle(self):
         service = self._service()
         for generation, value in ((11, 20), (12, 30)):
             service.apply_student_commands(
@@ -227,7 +227,7 @@ class AutomaticStrategyGenerationTest(unittest.TestCase):
         )
 
         self.assertEqual(result["cancelled_generations"], 1)
-        self.assertEqual(self._ess_value(service), "10")
+        self.assertEqual(self._ess_value(service), "30")
         self.assertEqual(
             service.command_history[-2]["cancelled_reason"],
             "controller_stopped",
@@ -254,7 +254,7 @@ class RenewableControllerCommandLifecycleTest(unittest.TestCase):
             "dataQuality": {"dispatchAllowed": True},
         }
 
-    def test_dispatch_uses_replaceable_generation_and_stop_revokes_all_generations(self):
+    def test_dispatch_uses_replaceable_generation_and_stop_retires_generation_only(self):
         dispatched = []
 
         def command_sink(model_id, payload):
@@ -309,7 +309,7 @@ class RenewableControllerCommandLifecycleTest(unittest.TestCase):
         self.assertTrue(cancel_payload["cancel_all_generations"])
         self.assertEqual(cancel_payload["reason"], "controller_stopped")
         self.assertFalse(stopped["enabled"])
-        self.assertIn("已撤销自动指令", stopped["status"])
+        self.assertIn("已下发指令保持有效", stopped["status"])
 
     def test_retired_controller_clears_effective_hydrogen_generation_snapshot(self):
         with tempfile.TemporaryDirectory() as temporary:

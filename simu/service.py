@@ -50,6 +50,7 @@ except ImportError:  # pragma: no cover - legacy package compatibility.
     from hybrid_power_system_analysis.simu import simu_loop
 
 from simu.definition_editing import (
+    clamp_setpoint_safety_bounds,
     DefinitionSnapshot,
     MEASUREMENT_STATUS_TOKENS,
     MEASUREMENT_STATUS_VALIDITY,
@@ -59,7 +60,6 @@ from simu.definition_editing import (
     normalize_measurement_changes,
     ratio_parameter_number,
     require_definition_revision,
-    validate_setpoint_safety_bounds,
 )
 from simu.device_roles import (
     AC_TO_DC,
@@ -2145,10 +2145,25 @@ class PolarMicrogridSimulator:
     def _compact_command_history(self, history: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
         recent_start = max(0, len(history) - COMMAND_HISTORY_RECENT_LIMIT)
         recent_ids = {id(item) for item in history[recent_start:]}
+        current_run_id = int(_to_float(self.clock.run_id, 0) or 0)
+        latest_automatic_owner: Dict[Tuple[str, str, str, str], int] = {}
+        for item in history:
+            if (
+                _command_origin(item) != "automatic"
+                or not self._command_entry_has_recorded_controls(item)
+                or int(_to_float(item.get("run_id"), -1)) != current_run_id
+                or self._automatic_command_was_reset(item)
+            ):
+                continue
+            for key in self._command_entry_control_keys(item):
+                latest_automatic_owner[key] = id(item)
+        latched_automatic_ids = set(latest_automatic_owner.values())
         return [
             item
             for item in history
-            if id(item) in recent_ids or self._preserve_command_history_entry(item)
+            if id(item) in recent_ids
+            or id(item) in latched_automatic_ids
+            or self._preserve_command_history_entry(item)
         ]
 
     def _trim_command_history(self) -> None:
@@ -2757,10 +2772,31 @@ class PolarMicrogridSimulator:
         absolute_minute: int | float,
         run_id: Optional[int] = None,
     ) -> bool:
-        if not self._command_entry_has_accepted_controls(item):
-            return False
         current = float(absolute_minute)
         manual_hold = _manual_command_holds_across_clock_lifecycle(item)
+        if not manual_hold and _command_origin(item) == "automatic":
+            if (
+                not self._command_entry_has_recorded_controls(item)
+                or self._automatic_command_was_reset(item)
+            ):
+                return False
+            entry_run_id = _to_float(item.get("run_id"), None)
+            expected_run_id = int(
+                run_id
+                if run_id is not None
+                else (_to_float(self.clock.run_id, 0) or 0)
+            )
+            if entry_run_id is None or int(entry_run_id) != expected_run_id:
+                return False
+            issued = _to_float(item.get("issued_absolute_minute"), None)
+            if issued is None or issued > current + 1e-9:
+                return False
+            cycle_minutes = float(self._simulation_cycle_minutes())
+            issued_cycle = math.floor((issued + 1e-9) / cycle_minutes)
+            current_cycle = math.floor((current + 1e-9) / cycle_minutes)
+            return issued_cycle == current_cycle
+        if not self._command_entry_has_accepted_controls(item):
+            return False
         if manual_hold:
             return True
         if not manual_hold:
@@ -2772,22 +2808,28 @@ class PolarMicrogridSimulator:
         expires = _to_float(item.get("expires_at_absolute_minute"), None)
         if issued is None or expires is None:
             return False
-        if _command_origin(item) == "automatic":
-            cycle_minutes = float(self._simulation_cycle_minutes())
-            issued_cycle = math.floor((issued + 1e-9) / cycle_minutes)
-            current_cycle = math.floor((current + 1e-9) / cycle_minutes)
-            if issued_cycle != current_cycle:
-                return False
         return current < expires and (manual_hold or issued <= current)
 
-    def _command_entry_has_accepted_controls(self, item: Mapping[str, Any]) -> bool:
-        if not isinstance(item, Mapping) or not item.get("eligible_source") or item.get("cancelled"):
+    @staticmethod
+    def _automatic_command_was_reset(item: Mapping[str, Any]) -> bool:
+        reason = str(item.get("cancelled_reason", "")).strip().casefold()
+        return reason.startswith("simulation_") or reason == "runtime_reset"
+
+    def _command_entry_has_recorded_controls(self, item: Mapping[str, Any]) -> bool:
+        if not isinstance(item, Mapping) or not item.get("eligible_source"):
             return False
         accepted = item.get("accepted", {})
         if not isinstance(accepted, Mapping):
             return False
-        accepted_count = int(_to_float(accepted.get("run_status"), 0) or 0) + int(_to_float(accepted.get("set_values"), 0) or 0)
+        accepted_count = int(_to_float(accepted.get("run_status"), 0) or 0) + int(
+            _to_float(accepted.get("set_values"), 0) or 0
+        )
         return accepted_count > 0
+
+    def _command_entry_has_accepted_controls(self, item: Mapping[str, Any]) -> bool:
+        return self._command_entry_has_recorded_controls(item) and not item.get(
+            "cancelled"
+        )
 
     def _command_entry_can_be_cancelled(
         self,
@@ -3440,24 +3482,69 @@ class PolarMicrogridSimulator:
                 "set_value": _number_text(number),
             }
         try:
-            number, _bounds = validate_setpoint_safety_bounds(
+            requested_number = _to_float(value, None)
+            if requested_number is None or not math.isfinite(requested_number):
+                raise ValueError(f"{set_type}={value} 不是有限数值")
+            number, bounds, device_clamped = clamp_setpoint_safety_bounds(
                 target,
                 target_set_type,
-                value,
+                requested_number,
             )
-            validate_hydrogen_power_setpoint_safety(
+            hydrogen_safety = validate_hydrogen_power_setpoint_safety(
                 self.definition_snapshot.model_book,
                 dev_type,
                 dev_name,
                 target_set_type,
                 number,
+                clamp_to_bounds=True,
+            )
+            hydrogen_clamped = bool(
+                hydrogen_safety and hydrogen_safety.get("clamped")
+            )
+            if hydrogen_clamped:
+                number = float(hydrogen_safety["p_set"])
+            number, _final_bounds, electrical_reclamped = (
+                clamp_setpoint_safety_bounds(
+                    target,
+                    target_set_type,
+                    number,
+                )
             )
         except ValueError as exc:
             raise ValueError(
-                f"遥调安全校验失败：{dev_type}/{dev_name} 的 "
-                f"{set_type}={_number_text(value)} 超出允许范围（{exc}）；"
+                f"遥调数值或模型校验失败：{dev_type}/{dev_name} 的 "
+                f"{set_type}={_number_text(value)} 无法形成有效有限目标（{exc}）；"
                 "本批指令未下发，仿真边界未修改。"
             ) from exc
+        if device_clamped or hydrogen_clamped or electrical_reclamped:
+            bound_text = ""
+            if bounds is not None:
+                lower_name, lower, upper_name, upper = bounds
+                parts = []
+                if lower is not None:
+                    parts.append(f"{lower_name}={_number_text(lower)}")
+                if upper is not None:
+                    parts.append(f"{upper_name}={_number_text(upper)}")
+                bound_text = "，设备边界 " + "，".join(parts)
+            detail = [
+                (
+                    f"{dev_type}/{dev_name}.{set_type} 请求值 "
+                    f"{_number_text(requested_number)} 已限幅为 {_number_text(number)}"
+                    f"{bound_text}"
+                ),
+                "设备运行状态保持不变；限幅后的遥调指令继续登记、物化并送入潮流边界。",
+            ]
+            if hydrogen_clamped:
+                detail.append("电氢转换目标同时按显式耦合关系和氢端流量边界完成限幅。")
+            if electrical_reclamped:
+                detail.append("电端与氢端边界没有完全重合，最终以电端设备边界为准并保留告警。")
+            self._append_runtime_log(
+                "控制安全边界",
+                "遥调指令限幅",
+                "越界值已限幅并继续下发",
+                detail,
+                level="warn",
+            )
         return {
             "dev_type": dev_type,
             "dev_name": dev_name,
@@ -3635,6 +3722,7 @@ class PolarMicrogridSimulator:
 
             executed_value = float(state.get("executed_value", target))
             try:
+                requested_executed_value = executed_value
                 safe_executed = self._validated_set_command_item(
                     {
                         "dev_type": key[0],
@@ -3645,6 +3733,30 @@ class PolarMicrogridSimulator:
                     strict=True,
                 )
                 executed_value = float(safe_executed["set_value"])
+                if not math.isclose(
+                    executed_value,
+                    requested_executed_value,
+                    rel_tol=1e-9,
+                    abs_tol=1e-9,
+                ):
+                    state["executed_value"] = executed_value
+                    state["target_value"] = float(target)
+                    self._append_runtime_log(
+                        "控制安全边界",
+                        "遥调逐步响应",
+                        "越界中间值已限幅并继续执行",
+                        [
+                            (
+                                f"逐步响应中间值 {_number_text(requested_executed_value)} "
+                                f"已限幅为 {_number_text(executed_value)}。"
+                            ),
+                            (
+                                f"安全目标 {_number_text(target)} 保持不变；后续周期继续按响应步长"
+                                "向该目标调节。"
+                            ),
+                        ],
+                        level="warn",
+                    )
             except ValueError as exc:
                 unsafe_executed = executed_value
                 executed_value = float(target)
@@ -3791,9 +3903,9 @@ class PolarMicrogridSimulator:
         for entry in self.command_history:
             if not isinstance(entry, dict):
                 continue
-            if entry.get("cancelled") or _command_origin(entry) != "automatic":
+            if _command_origin(entry) != "automatic":
                 continue
-            if not self._command_entry_has_accepted_controls(entry):
+            if not self._command_entry_has_recorded_controls(entry):
                 continue
             entry_keys = self._command_entry_control_keys(entry)
             if not entry_keys:
@@ -4137,7 +4249,7 @@ class PolarMicrogridSimulator:
         self._append_runtime_log(
             "控制指令",
             "学员台 /api/student/commands",
-            "策略代次撤销成功" if cancelled_entries else "无可撤销策略代次",
+            "策略代次已结束" if cancelled_entries else "无可结束策略代次",
             [
                 f"来源 {source}",
                 (
@@ -4145,7 +4257,11 @@ class PolarMicrogridSimulator:
                     if cancel_all_generations
                     else f"策略 {strategy_id or '--'}，代次 {generation if generation not in (None, '') else '--'}"
                 ),
-                f"撤销代次 {cancelled_entries} 个，撤销控制点 {len(cancelled_keys)} 个，原因 {reason}",
+                (
+                    f"结束代次 {cancelled_entries} 个，涉及控制点 {len(cancelled_keys)} 个，"
+                    f"原因 {reason}"
+                ),
+                "已下发的自动遥控和遥调不随策略代次结束而撤销，继续锁存至仿真重置、归零重启或本仿真周期结束。",
             ],
             level="ok" if cancelled_entries else "warn",
         )
@@ -4181,6 +4297,8 @@ class PolarMicrogridSimulator:
                     if not isinstance(entry, dict):
                         continue
                     if not self._command_entry_can_be_cancelled(entry, current, int(self.clock.run_id)):
+                        continue
+                    if _command_origin(entry) == "automatic":
                         continue
                     if origin_filter != "all" and _command_origin(entry) != origin_filter:
                         continue
@@ -4292,6 +4410,8 @@ class PolarMicrogridSimulator:
                     if not isinstance(entry, dict):
                         continue
                     if not self._command_entry_can_be_cancelled(entry, current, int(self.clock.run_id)):
+                        continue
+                    if _command_origin(entry) == "automatic":
                         continue
                     matched = self._command_entry_control_keys(entry) & target_keys
                     if not matched:
@@ -6288,13 +6408,17 @@ class PolarMicrogridSimulator:
                 and generation not in (None, "")
                 and replace_strategy_generation
             )
-            expires_at_absolute_minute = None if manual_hold else _command_expires_at(payload, None, issued_absolute_minute)
-            if expires_at_absolute_minute is not None and command_origin == "automatic":
+            expires_at_absolute_minute = (
+                None
+                if manual_hold
+                else _command_expires_at(payload, None, issued_absolute_minute)
+            )
+            if command_origin == "automatic":
                 cycle_minutes = float(self._simulation_cycle_minutes())
                 cycle_end = (
                     math.floor((issued_absolute_minute + 1e-9) / cycle_minutes) + 1
                 ) * cycle_minutes
-                expires_at_absolute_minute = min(expires_at_absolute_minute, cycle_end)
+                expires_at_absolute_minute = cycle_end
             accepted_run = len(normalized_run_items) if eligible_source else 0
             accepted_set = len(normalized_set_items) if eligible_source else 0
             requested_count = len(requested_run_items) + len(requested_set_items)
@@ -8208,7 +8332,7 @@ class PolarMicrogridSimulator:
                         level="ok",
                         simu_time=minute_to_time(self.clock.minute),
                     )
-            elif starts_new_lifecycle or time_reset_requested:
+            elif starts_new_lifecycle or action == "stop" or time_reset_requested:
                 cleared = self._clear_automatic_commands_for_simulation_restart()
                 if cleared["entries"]:
                     self._write_command_history()
@@ -12163,19 +12287,71 @@ class PolarMicrogridSimulator:
                 ) from exc
             if "p_set" in normalized_changes and self.enforce_runtime_setpoint_bounds:
                 try:
-                    validate_hydrogen_power_setpoint_safety(
+                    hydrogen_safety = validate_hydrogen_power_setpoint_safety(
                         model_book,
                         block_name,
                         str(row.get("name", row.get("dev_name", ""))).strip(),
                         "p_set",
                         normalized_changes["p_set"],
+                        clamp_to_bounds=True,
                     )
+                    if hydrogen_safety and hydrogen_safety.get("clamped"):
+                        normalized_changes["p_set"] = _number_text(
+                            hydrogen_safety["p_set"]
+                        )
+                    prospective_row = {**row, **normalized_changes}
+                    final_power, _bounds, _clamped = (
+                        clamp_setpoint_safety_bounds(
+                            prospective_row,
+                            "p_set",
+                            normalized_changes["p_set"],
+                        )
+                    )
+                    normalized_changes["p_set"] = _number_text(final_power)
                 except ValueError as exc:
                     dev_name = str(row.get("name", row.get("dev_name", ""))).strip()
                     raise ValueError(
-                        f"人工修改安全校验失败：{block_name}/{dev_name} 的跨域换算超出允许范围"
-                        f"（{exc}）；修改未生效，人工覆盖层、运行控制文件和仿真边界均未更新。"
+                        f"人工修改模型校验失败：{block_name}/{dev_name} 的跨域换算无法形成"
+                        f"有效有限目标（{exc}）；修改未生效，人工覆盖层、运行控制文件和"
+                        "仿真边界均未更新。"
                     ) from exc
+            clamped_setpoint_details = []
+            for field_name, normalized_value in normalized_changes.items():
+                normalized_field = str(field_name).strip().casefold()
+                if not (
+                    normalized_field.endswith("_set")
+                    or normalized_field in {"pv0", "qv0"}
+                ):
+                    continue
+                requested_number = _to_float(changes.get(field_name), None)
+                normalized_number = _to_float(normalized_value, None)
+                if (
+                    requested_number is not None
+                    and normalized_number is not None
+                    and not math.isclose(
+                        requested_number,
+                        normalized_number,
+                        rel_tol=1e-9,
+                        abs_tol=1e-9,
+                    )
+                ):
+                    clamped_setpoint_details.append(
+                        f"{field_name} 请求值 {_number_text(requested_number)} 已限幅为 "
+                        f"{_number_text(normalized_number)}"
+                    )
+            if clamped_setpoint_details:
+                dev_name = str(row.get("name", row.get("dev_name", ""))).strip()
+                self._append_runtime_log(
+                    "控制安全边界",
+                    "人工遥调限幅",
+                    "越界值已限幅并继续生效",
+                    [
+                        f"{block_name}/{dev_name}",
+                        *clamped_setpoint_details,
+                        "设备运行状态保持不变，限幅后的设定值继续写入运行控制边界。",
+                    ],
+                    level="warn",
+                )
             row.update(normalized_changes)
             runtime_override_keys: set[Tuple[str, str, str, str]] = set()
             dev_name = str(row.get("name", row.get("dev_name", ""))).strip()
@@ -12959,7 +13135,7 @@ class MultiModelSimulator:
         self.directory_backed = directory_backed
         self.runtime_role = str(runtime_role or "").strip().lower()
         self.clear_commands_on_start_and_reset = self.runtime_role == "simulator"
-        self.enforce_runtime_setpoint_bounds = self.runtime_role != "simulator"
+        self.enforce_runtime_setpoint_bounds = True
         self.kernel = kernel
         self.kernel_runner = kernel_runner
         self.period_seconds = period_seconds

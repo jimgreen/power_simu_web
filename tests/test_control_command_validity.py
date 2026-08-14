@@ -88,7 +88,7 @@ class ControlCommandValidityTest(unittest.TestCase):
         self.assertEqual(result["ignored"], 1)
         self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "10")
 
-    def test_strategy_control_command_expires_without_refresh(self):
+    def test_strategy_control_command_ignores_short_ttl_until_cycle_reset(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
 
@@ -107,9 +107,13 @@ class ControlCommandValidityTest(unittest.TestCase):
         self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
         service.step()
         service.step()
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
+        service.clock.absolute_minute = 1440
+        service.clock.minute = 0
+        service._materialize_active_control_commands(1440)
         self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "10")
 
-    def test_automatic_control_command_defaults_to_two_hour_validity(self):
+    def test_automatic_control_command_is_valid_until_cycle_end(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
 
@@ -124,15 +128,17 @@ class ControlCommandValidityTest(unittest.TestCase):
         )
 
         self.assertEqual(result["set_values"], 1)
-        self.assertEqual(service.command_history[-1]["valid_for_minutes"], 120.0)
-        self.assertEqual(service.command_history[-1]["expires_at_absolute_minute"], 120.0)
+        self.assertEqual(service.command_history[-1]["valid_for_minutes"], 1440.0)
+        self.assertEqual(service.command_history[-1]["expires_at_absolute_minute"], 1440.0)
         for _ in range(120):
             service.step()
         self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
-        service.step()
+        service.clock.absolute_minute = 1440
+        service.clock.minute = 0
+        service._materialize_active_control_commands(1440)
         self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "10")
 
-    def test_strategy_control_command_can_remain_active_until_absolute_expiry(self):
+    def test_explicit_automatic_expiry_does_not_shorten_cycle_latch(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
 
@@ -153,7 +159,7 @@ class ControlCommandValidityTest(unittest.TestCase):
         self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
         for _ in range(5):
             service.step()
-        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "10")
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
 
     def test_manual_control_commands_have_no_time_limit(self):
         workspace, service = self._make_service()
@@ -175,7 +181,7 @@ class ControlCommandValidityTest(unittest.TestCase):
             service.step()
         self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
 
-    def test_explicit_command_origin_controls_manual_hold_and_automatic_expiry(self):
+    def test_explicit_command_origin_controls_manual_priority_and_cycle_latch(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)
 
@@ -211,7 +217,7 @@ class ControlCommandValidityTest(unittest.TestCase):
 
         self.assertEqual(automatic_entry["command_origin"], "automatic")
         self.assertFalse(automatic_entry["manual_hold"])
-        self.assertEqual(automatic_entry["expires_at_absolute_minute"], 1.0)
+        self.assertEqual(automatic_entry["expires_at_absolute_minute"], 1440.0)
         self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
 
         service.clock.absolute_minute = 2
@@ -271,6 +277,42 @@ class ControlCommandValidityTest(unittest.TestCase):
             include_device_states=False,
         )["commands"]["effective"]
         self.assertEqual(effective, [manual_entry])
+
+    def test_clock_stop_zero_reset_immediately_clears_automatic_commands(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        service.apply_student_commands(
+            {
+                "command_origin": "automatic",
+                "run_status": [
+                    {
+                        "dev_type": "ACGenerator",
+                        "dev_name": "wt01_10kw",
+                        "run_stat": 0,
+                    }
+                ],
+                "set_values": [
+                    {
+                        "dev_type": "ESS",
+                        "dev_name": "ess01",
+                        "set_type": "p_set",
+                        "set_value": 20,
+                    }
+                ],
+            },
+            source="trainee-automatic-control",
+        )
+        automatic_entry = service.command_history[-1]
+        self.assertEqual(self._run_stat(service, "ACGenerator", "wt01_10kw"), "0")
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
+
+        stopped = service.control_clock({"action": "stop"})
+
+        self.assertEqual(stopped["absolute_minute"], 0.0)
+        self.assertTrue(automatic_entry["cancelled"])
+        self.assertEqual(automatic_entry["cancelled_reason"], "simulation_restart")
+        self.assertEqual(self._run_stat(service, "ACGenerator", "wt01_10kw"), "1")
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "10")
 
     def test_zero_start_from_pause_starts_new_lifecycle_and_old_automatic_command_cannot_reactivate(self):
         workspace, service = self._make_service()
@@ -611,7 +653,7 @@ class ControlCommandValidityTest(unittest.TestCase):
         service.clock.absolute_minute = 6
         service.clock.minute = 6
         service._materialize_active_control_commands(6)
-        self.assertEqual(self._set_value(service, "DCACConverter", "grid_inv_acp", "p_set"), "-45")
+        self.assertEqual(self._set_value(service, "DCACConverter", "grid_inv_acp", "p_set"), "0")
 
     def test_manual_acdc_active_power_command_with_stale_trainee_expiry_survives_next_step(self):
         from simu.service import PolarMicrogridSimulator
@@ -917,6 +959,53 @@ class ControlCommandValidityTest(unittest.TestCase):
         self.assertEqual(result["missing"], 0)
         by_name = {item["name"]: item for item in service.latest_control_values()["items"]}
         self.assertFalse(by_name["ACGenerator.diesel_300kw.run_stat"]["active"])
+
+    def test_automatic_adjustment_cannot_be_cancelled_or_deleted_before_simulation_reset(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        service.apply_student_commands(
+            {
+                "command_origin": "automatic",
+                "strategy_id": "renewable_priority",
+                "generation": 1,
+                "replace_strategy_generation": True,
+                "set_values": [
+                    {
+                        "dev_type": "ESS",
+                        "dev_name": "ess01",
+                        "set_type": "p_set",
+                        "set_value": 20,
+                    }
+                ],
+            },
+            source="trainee-renewable-priority-backend",
+        )
+
+        cancelled = service.cancel_student_commands(
+            {
+                "command_origin": "automatic",
+                "cancel_commands": [{"name": "ESS.ess01.p_set"}],
+            },
+            source="trainee-ui",
+        )
+        deleted = service.delete_active_commands(
+            {"commands": [{"name": "ESS.ess01.p_set"}]},
+            source="simulator-ui",
+        )
+
+        self.assertEqual(cancelled["remote_adjustments"], 0)
+        self.assertEqual(cancelled["missing"], 1)
+        self.assertEqual(deleted["remote_adjustments"], 0)
+        self.assertEqual(deleted["missing"], 1)
+        self.assertEqual(self._set_value(service, "ESS", "ess01", "p_set"), "20")
+        self.assertTrue(
+            any(
+                entry.get("command_origin") == "automatic"
+                and entry.get("accepted", {}).get("set_values") == 1
+                and not entry.get("cancelled")
+                for entry in service.command_history
+            )
+        )
 
 
 if __name__ == "__main__":

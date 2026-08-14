@@ -102,6 +102,41 @@ class TraineeRenewableHydrogenMetricsUiTest(unittest.TestCase):
             r'input\[type="checkbox"\]\s*\{[^}]*width:\s*42px;[^}]*height:\s*22px;',
         )
 
+    def test_hydrogen_ui_labels_do_not_claim_values_are_averages(self):
+        parameter_dialog = self.html.split(
+            'id="renewableControlParametersDialog"',
+            1,
+        )[1].split('id="storagePowerDeratingDialog"', 1)[0]
+        hydrogen_statistics = self.html.split(
+            'data-renewable-metric-pane="hydrogen"',
+            1,
+        )[1].split('data-renewable-metric-pane="system"', 1)[0]
+        hydrogen_series = "\n".join(
+            line for line in self.script.splitlines() if 'scope: "hydrogen"' in line
+        )
+
+        self.assertNotIn("平均", parameter_dialog)
+        self.assertNotIn("平均", hydrogen_statistics)
+        self.assertNotIn("平均", hydrogen_series)
+        self.assertIn("启机门槛-电储SOC下限(%)", parameter_dialog)
+        self.assertIn("关机门槛-电储SOC上限(%)", parameter_dialog)
+
+    def test_parameter_dialog_only_closes_after_an_explicit_action(self):
+        lifecycle_block = self.script.split(
+            '$("renewableControlParametersButton")?.addEventListener',
+            1,
+        )[1].split('const renewableControlLogTable', 1)[0]
+
+        self.assertIn(
+            '$("renewableControlParametersDialog")?.addEventListener("cancel"',
+            lifecycle_block,
+        )
+        self.assertIn("event.preventDefault()", lifecycle_block)
+        self.assertNotIn(
+            '$("renewableControlParametersDialog")?.addEventListener("click"',
+            lifecycle_block,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

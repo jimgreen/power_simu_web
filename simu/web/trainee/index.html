@@ -905,11 +905,11 @@
                           <tr data-renewable-metric-group="hydrogen-electrolyzer"><th scope="row">产氢流量<span class="renewable-metric-unit">（Nm³/h）</span></th><td id="renewableElectrolyzerFlowCurrentNm3h">--</td><td id="renewableElectrolyzerFlowTargetNm3h">--</td></tr>
                           <tr data-renewable-metric-group="hydrogen-fuel-cell"><th scope="row">燃料电池功率<span class="renewable-metric-unit">（kW）</span></th><td id="renewableFuelCellCurrentKw">--</td><td id="renewableFuelCellTargetKw">--</td></tr>
                           <tr data-renewable-metric-group="hydrogen-fuel-cell"><th scope="row">耗氢流量<span class="renewable-metric-unit">（Nm³/h）</span></th><td id="renewableFuelCellFlowCurrentNm3h">--</td><td id="renewableFuelCellFlowTargetNm3h">--</td></tr>
-                          <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">储氢罐平均压力<span class="renewable-metric-unit">（MPa）</span></th><td id="renewableHydrogenStoragePressureMpa">--</td><td class="renewable-metric-empty">--</td></tr>
-                          <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">平均压力下限保护值<span class="renewable-metric-unit">（MPa）</span></th><td id="renewableHydrogenStoragePressureLowGuardMpa">--</td><td class="renewable-metric-empty">--</td></tr>
-                          <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">平均压力上限保护值<span class="renewable-metric-unit">（MPa）</span></th><td id="renewableHydrogenStoragePressureHighGuardMpa">--</td><td class="renewable-metric-empty">--</td></tr>
+                          <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">储氢罐压力<span class="renewable-metric-unit">（MPa）</span></th><td id="renewableHydrogenStoragePressureMpa">--</td><td class="renewable-metric-empty">--</td></tr>
+                          <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">压力下限保护值<span class="renewable-metric-unit">（MPa）</span></th><td id="renewableHydrogenStoragePressureLowGuardMpa">--</td><td class="renewable-metric-empty">--</td></tr>
+                          <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">压力上限保护值<span class="renewable-metric-unit">（MPa）</span></th><td id="renewableHydrogenStoragePressureHighGuardMpa">--</td><td class="renewable-metric-empty">--</td></tr>
                           <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">储氢罐总储气量<span class="renewable-metric-unit">（Nm³）</span></th><td id="renewableHydrogenStorageGasQuantityNm3">--</td><td class="renewable-metric-empty">--</td></tr>
-                          <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">储氢罐平均SOC<span class="renewable-metric-unit">（%）</span></th><td id="renewableHydrogenStorageSoc">--</td><td class="renewable-metric-empty">--</td></tr>
+                          <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">储氢罐SOC<span class="renewable-metric-unit">（%）</span></th><td id="renewableHydrogenStorageSoc">--</td><td class="renewable-metric-empty">--</td></tr>
                           <tr data-renewable-metric-group="hydrogen-storage"><th scope="row">储氢罐净流量<span class="renewable-metric-unit">（Nm³/h）</span></th><td id="renewableHydrogenStorageFlowNm3h">--</td><td class="renewable-metric-empty">--</td></tr>
                         </tbody>
                       </table>
@@ -1325,13 +1325,13 @@
                 <label>柴发负载率死区(%)
                   <input id="electrolyzerDieselPowerDeadbandRatio" type="number" min="0" max="100" step="0.1" value="5" />
                 </label>
-                <label>电储平均SOC下限(%)
+                <label>启机门槛-电储SOC下限(%)
                   <input id="electrolyzerStorageSocLowerLimit" type="number" min="0" max="100" step="0.1" value="40" />
                 </label>
-                <label>电储平均SOC上限(%)
+                <label>关机门槛-电储SOC上限(%)
                   <input id="electrolyzerStorageSocUpperLimit" type="number" min="0" max="100" step="0.1" value="80" />
                 </label>
-                <label>氢储平均SOC上限(%)
+                <label>氢储SOC上限(%)
                   <input id="electrolyzerHydrogenStorageSocUpperLimit" type="number" min="0" max="100" step="0.1" value="90" />
                 </label>
               </fieldset>
@@ -1352,13 +1352,13 @@
                 <label>柴发负载率限值(%)
                   <input id="fuelCellDieselPowerLimitRatio" type="number" min="0" max="100" step="0.1" value="80" />
                 </label>
-                <label>电储平均SOC启停限值(%)
+                <label>电储SOC启停限值(%)
                   <input id="fuelCellStorageSocLimit" type="number" min="0" max="100" step="0.1" value="40" />
                 </label>
-                <label>氢储平均SOC启动限值(%)
+                <label>氢储SOC启动限值(%)
                   <input id="fuelCellHydrogenStorageSocUpperLimit" type="number" min="0" max="100" step="0.1" value="80" />
                 </label>
-                <label>氢储平均SOC停机限值(%)
+                <label>氢储SOC停机限值(%)
                   <input id="fuelCellHydrogenStorageSocLowerLimit" type="number" min="0" max="100" step="0.1" value="20" />
                 </label>
               </fieldset>

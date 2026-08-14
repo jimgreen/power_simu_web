@@ -430,11 +430,11 @@ const RENEWABLE_TREND_SERIES_DEFS = [
   { key: "fuelCellTarget", metricId: "renewableFuelCellTargetKw", field: "fuelCellTargetKw", label: "燃料电池目标功率", scope: "hydrogen", device: "fuel-cell", deviceLabel: "燃料电池", curveLabel: "目标", group: "hydrogen-fuel-cell", color: "#c06e00", axis: "left", unit: "kW", style: "target", dashed: true },
   { key: "fuelCellFlowCurrent", metricId: "renewableFuelCellFlowCurrentNm3h", field: "fuelCellFlowCurrentNm3h", label: "实时耗氢流量", scope: "hydrogen", device: "fuel-cell", deviceLabel: "燃料电池", curveLabel: "耗氢流量", group: "hydrogen-fuel-cell", color: "#e0932f", axis: "right", unit: "Nm³/h", style: "flow" },
   { key: "fuelCellFlowTarget", metricId: "renewableFuelCellFlowTargetNm3h", field: "fuelCellFlowTargetNm3h", label: "目标耗氢流量", scope: "hydrogen", device: "fuel-cell", deviceLabel: "燃料电池", curveLabel: "流量目标", group: "hydrogen-fuel-cell", color: "#e0932f", axis: "right", unit: "Nm³/h", style: "target", dashed: true },
-  { key: "hydrogenStoragePressure", metricId: "renewableHydrogenStoragePressureMpa", field: "hydrogenStoragePressureMpa", label: "储氢罐平均压力", scope: "hydrogen", device: "hydrogen-storage", deviceLabel: "储氢罐", curveLabel: "平均压力", group: "hydrogen-storage", color: "#6358a9", axis: "right", unit: "MPa", style: "pressure" },
-  { key: "hydrogenStoragePressureLowGuard", metricId: "renewableHydrogenStoragePressureLowGuardMpa", field: "hydrogenStoragePressureLowGuardMpa", label: "储氢罐平均压力下限保护值", scope: "hydrogen", device: "hydrogen-storage", deviceLabel: "储氢罐", curveLabel: "压力下限", group: "hydrogen-storage", color: "#6358a9", axis: "right", unit: "MPa", style: "limit", dashPattern: [10, 4, 2, 4] },
-  { key: "hydrogenStoragePressureHighGuard", metricId: "renewableHydrogenStoragePressureHighGuardMpa", field: "hydrogenStoragePressureHighGuardMpa", label: "储氢罐平均压力上限保护值", scope: "hydrogen", device: "hydrogen-storage", deviceLabel: "储氢罐", curveLabel: "压力上限", group: "hydrogen-storage", color: "#8b55a4", axis: "right", unit: "MPa", style: "limit", dashPattern: [10, 4, 2, 4] },
+  { key: "hydrogenStoragePressure", metricId: "renewableHydrogenStoragePressureMpa", field: "hydrogenStoragePressureMpa", label: "储氢罐压力", scope: "hydrogen", device: "hydrogen-storage", deviceLabel: "储氢罐", curveLabel: "压力", group: "hydrogen-storage", color: "#6358a9", axis: "right", unit: "MPa", style: "pressure" },
+  { key: "hydrogenStoragePressureLowGuard", metricId: "renewableHydrogenStoragePressureLowGuardMpa", field: "hydrogenStoragePressureLowGuardMpa", label: "储氢罐压力下限保护值", scope: "hydrogen", device: "hydrogen-storage", deviceLabel: "储氢罐", curveLabel: "压力下限", group: "hydrogen-storage", color: "#6358a9", axis: "right", unit: "MPa", style: "limit", dashPattern: [10, 4, 2, 4] },
+  { key: "hydrogenStoragePressureHighGuard", metricId: "renewableHydrogenStoragePressureHighGuardMpa", field: "hydrogenStoragePressureHighGuardMpa", label: "储氢罐压力上限保护值", scope: "hydrogen", device: "hydrogen-storage", deviceLabel: "储氢罐", curveLabel: "压力上限", group: "hydrogen-storage", color: "#8b55a4", axis: "right", unit: "MPa", style: "limit", dashPattern: [10, 4, 2, 4] },
   { key: "hydrogenStorageGasQuantity", metricId: "renewableHydrogenStorageGasQuantityNm3", field: "hydrogenStorageGasQuantityNm3", label: "储氢罐总储气量", scope: "hydrogen", device: "hydrogen-storage", deviceLabel: "储氢罐", curveLabel: "总储气量", group: "hydrogen-storage", color: "#3b6fa1", axis: "right", unit: "Nm³", style: "quantity" },
-  { key: "hydrogenStorageSoc", metricId: "renewableHydrogenStorageSoc", field: "hydrogenStorageSocPercent", label: "储氢罐平均SOC", scope: "hydrogen", device: "hydrogen-storage", deviceLabel: "储氢罐", curveLabel: "平均SOC", group: "hydrogen-storage", color: "#8b55a4", axis: "right", unit: "%", style: "soc", dashPattern: [2, 4] },
+  { key: "hydrogenStorageSoc", metricId: "renewableHydrogenStorageSoc", field: "hydrogenStorageSocPercent", label: "储氢罐SOC", scope: "hydrogen", device: "hydrogen-storage", deviceLabel: "储氢罐", curveLabel: "SOC", group: "hydrogen-storage", color: "#8b55a4", axis: "right", unit: "%", style: "soc", dashPattern: [2, 4] },
   { key: "hydrogenStorageFlow", metricId: "renewableHydrogenStorageFlowNm3h", field: "hydrogenStorageFlowNm3h", label: "储氢罐净流量", scope: "hydrogen", device: "hydrogen-storage", deviceLabel: "储氢罐", curveLabel: "净流量", group: "hydrogen-storage", color: "#2d8ba4", axis: "right", unit: "Nm³/h", style: "flow" },
 ];
 const RENEWABLE_TREND_DEFAULT_VISIBLE_SERIES = new Set([
@@ -14542,9 +14542,9 @@ async function updateRenewableSettings() {
   const fuelCellHydrogenStorageSocLowerLimit = ratio("fuelCellHydrogenStorageSocLowerLimit", 20);
   const fuelCellHydrogenStorageSocUpperLimit = ratio("fuelCellHydrogenStorageSocUpperLimit", 80);
   const socSettingError = electrolyzerStorageSocLowerLimit > electrolyzerStorageSocUpperLimit
-    ? "电制氢电储平均SOC下限不能大于上限。"
+    ? "电制氢电储SOC下限不能大于上限。"
     : fuelCellHydrogenStorageSocLowerLimit > fuelCellHydrogenStorageSocUpperLimit
-      ? "燃料电池氢储平均SOC下限不能大于上限。"
+      ? "燃料电池氢储SOC下限不能大于上限。"
       : "";
   if (socSettingError) {
     state.renewableControl.lastStatus = socSettingError;
@@ -18410,8 +18410,9 @@ $("closeRenewableControlParametersDialog")?.addEventListener("click", closeRenew
 $("cancelRenewableControlParametersDialog")?.addEventListener("click", closeRenewableControlParametersDialog);
 $("saveRenewableControlParameters")?.addEventListener("click", saveRenewableControlParameters);
 $("renewableControlPeriod")?.addEventListener("input", syncRenewableControlPeriodConstraints);
-$("renewableControlParametersDialog")?.addEventListener("click", (event) => {
-  if (event.target === $("renewableControlParametersDialog")) closeRenewableControlParametersDialog();
+$("renewableControlParametersDialog")?.addEventListener("cancel", (event) => {
+  // This editor contains many values. Keep unsaved edits until the user explicitly closes it.
+  event.preventDefault();
 });
 const renewableControlLogTable = $("renewableControlLogTable");
 renewableControlLogTable?.addEventListener("click", (event) => {

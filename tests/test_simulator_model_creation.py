@@ -105,7 +105,18 @@ class SimulatorModelCreationTest(unittest.TestCase):
             self.assertGreater(len(devices), 0)
 
     def test_generated_model_removes_ambiguous_converter_runtime_fields(self):
-        model_text = """<DCACConverter>
+        model_text = """<ACNode>
+@ idx name vbase run_stat
+# 1 ac-1 380 1
+# 3 ac-3 380 1
+# 4 ac-4 380 1
+</ACNode>
+<DCNode>
+@ idx name vbase run_stat
+# 2 dc-2 750 1
+# 3 dc-3 750 1
+</DCNode>
+<DCACConverter>
 @ idx name ac_node dc_node ac_control_type dc_control_type p_ac_set p_dc_set run_stat p q u i
 # 1 dcac-1 1 2 PQ NONE 3 -3 1 30 4 380 8
 </DCACConverter>
@@ -140,18 +151,35 @@ class SimulatorModelCreationTest(unittest.TestCase):
         self.assertIn("q_from_set", model_book.data["ACACConverter"].header_list)
         self.assertIn("q_to_set", model_book.data["ACACConverter"].header_list)
 
-    def test_generated_model_rejects_active_dcdc_zero_voltage_reference(self):
-        model_text = """<DCDCConverter>
+    def test_generated_model_repairs_active_dcdc_zero_voltage_reference(self):
+        model_text = """<DCNode>
+@ idx name vbase run_stat
+# 1 controlled-node 400 1
+# 2 other-node 750 1
+</DCNode>
+<DCDCConverter>
 @ idx name i_node j_node i_control_type j_control_type p_set i_set v_set run_stat
 # 1 invalid-dcdc 1 2 V NONE 0 0 0 1
 </DCDCConverter>
 """
 
-        with self.assertRaisesRegex(
-            ValueError,
-            r"DCDCConverter\.invalid-dcdc.*V 控制.*v_set.*必须大于 0.*雅可比奇异",
-        ):
-            server_module._generated_model_artifacts(model_text)
+        artifacts = server_module._generated_model_artifacts(model_text)
+
+        converter = artifacts["model_book"].data["DCDCConverter"].data[0]
+        self.assertEqual(float(converter["v_set"]), 400.0)
+        set_values = artifacts["control_book"].data["SetValue"].data
+        self.assertEqual(
+            float(
+                next(
+                    row["set_value"]
+                    for row in set_values
+                    if row["dev_type"] == "DCDCConverter"
+                    and row["dev_name"] == "invalid-dcdc"
+                    and row["set_type"] == "v_set"
+                )
+            ),
+            400.0,
+        )
 
     def test_create_model_from_uploaded_model_e_generates_ac_and_dc_storage_state(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -761,7 +761,8 @@ def _ebook_from_blocks(blocks: Mapping[str, tuple[Sequence[str], Sequence[Mappin
     return book
 
 
-def _remove_ambiguous_converter_runtime_fields(model_book: EBook) -> None:
+def _remove_ambiguous_converter_runtime_fields(model_book: EBook) -> int:
+    removed = 0
     for block_name in CONVERTER_MODEL_BLOCKS:
         block = model_book.data.get(block_name)
         if block is None:
@@ -771,11 +772,13 @@ def _remove_ambiguous_converter_runtime_fields(model_book: EBook) -> None:
             for field in getattr(block, "header_list", [])
             if str(field).strip().casefold() not in AMBIGUOUS_CONVERTER_RUNTIME_FIELDS
         ]
+        removed += len(getattr(block, "header_list", [])) - len(headers)
         block.header_list = headers
         block.data = [
             {field: row.get(field, "") for field in headers}
             for row in getattr(block, "data", [])
         ]
+    return removed
 
 
 def _row_name(row: Mapping[str, Any]) -> str:
@@ -832,13 +835,66 @@ def _validate_dcac_converter_schema(model_book: EBook) -> None:
         )
 
 
-def _validate_dcdc_voltage_controls(model_book: EBook) -> None:
-    simu_loop.validate_voltage_control_boundaries(model_book)
+def _repair_fixed_boundaries(model_book: EBook) -> list[dict]:
+    return simu_loop.repair_fixed_boundary_setpoints(model_book)
+
+
+_FIXED_BOUNDARY_CONTROL_FIELD_ALIASES = {
+    "pressure_set": {"pressure_set", "p_set"},
+    "supply_temperature_set": {"supply_temperature_set", "supply_temperature"},
+    "return_temperature_set": {"return_temperature_set", "return_temperature"},
+    "enthalpy_set": {"enthalpy_set", "h_set"},
+}
+
+
+def _repair_fixed_boundary_control_rows(model_book: EBook, control_book: EBook) -> list[dict]:
+    """Repair invalid effective boundaries introduced by persisted SetValue rows."""
+    set_block = control_book.data.get("SetValue")
+    if set_block is None or not getattr(set_block, "data", []):
+        return []
+
+    effective_book = copy.deepcopy(model_book)
+
+    run_block = control_book.data.get("RunStat")
+    for run_row in [] if run_block is None else getattr(run_block, "data", []):
+        dev_type = str(run_row.get("dev_type", "")).strip()
+        dev_name = str(run_row.get("dev_name", "")).strip()
+        block = effective_book.data.get(dev_type)
+        if block is None:
+            continue
+        targets = [row for row in block.data if _row_name(row) == dev_name]
+        if len(targets) == 1:
+            targets[0]["run_stat"] = run_row.get("run_stat", "")
+
+    applied_rows: dict[tuple[str, str, str], list[dict]] = {}
+    for control_row in set_block.data:
+        dev_type = str(control_row.get("dev_type", "")).strip()
+        dev_name = str(control_row.get("dev_name", "")).strip()
+        set_type = str(control_row.get("set_type", "")).strip()
+        block = effective_book.data.get(dev_type)
+        if not dev_type or not dev_name or not set_type or block is None:
+            continue
+        targets = [row for row in block.data if _row_name(row) == dev_name]
+        if len(targets) != 1:
+            continue
+        targets[0][set_type] = control_row.get("set_value", "")
+        applied_rows.setdefault((dev_type, dev_name, set_type), []).append(control_row)
+
+    corrections = _repair_fixed_boundaries(effective_book)
+    for item in corrections:
+        dev_type = str(item["device_type"])
+        dev_name = str(item["name"])
+        field = str(item["field"])
+        set_types = _FIXED_BOUNDARY_CONTROL_FIELD_ALIASES.get(field, {field})
+        for set_type in set_types:
+            for control_row in applied_rows.get((dev_type, dev_name, set_type), ()):
+                control_row["set_value"] = format(item["replacement"], ".15g")
+    return corrections
 
 
 def _ensure_dcac_dcp_control_rows(model_book: EBook, control_book: EBook) -> None:
     _validate_dcac_converter_schema(model_book)
-    _validate_dcdc_voltage_controls(model_book)
+    _repair_fixed_boundaries(model_book)
     converter_block = model_book.data.get("DCACConverter")
     converter_rows = [] if converter_block is None else list(getattr(converter_block, "data", []))
     if not converter_rows:
@@ -919,6 +975,7 @@ def _storage_source_rows(model_book: EBook) -> list[dict]:
 
 
 def _generated_control_blocks(model_book: EBook) -> Mapping[str, tuple[Sequence[str], Sequence[Mapping[str, Any]]]]:
+    _repair_fixed_boundaries(model_book)
     run_rows: list[dict[str, Any]] = []
     cb_rows: list[dict[str, Any]] = []
     set_rows: list[dict[str, Any]] = []
@@ -1195,7 +1252,7 @@ def _generated_model_artifacts(model_text: str) -> Mapping[str, Any]:
     if not _model_book_has_power_model(model_book):
         raise ValueError("model.e 中未找到可识别的电网模型设备块")
     _validate_dcac_converter_schema(model_book)
-    _validate_dcdc_voltage_controls(model_book)
+    _repair_fixed_boundaries(model_book)
 
     control_blocks = _generated_control_blocks(model_book)
     return {
@@ -1498,10 +1555,11 @@ def _parse_definition_archive(data: bytes) -> Mapping[str, Any]:
 
     assert model_text is not None and meas_text is not None and control_text is not None and curves_text is not None
     model_book = _book_from_text(model_text)
-    _remove_ambiguous_converter_runtime_fields(model_book)
-    model_text = render_ebook_aligned(model_book)
+    removed_runtime_fields = _remove_ambiguous_converter_runtime_fields(model_book)
     _validate_dcac_converter_schema(model_book)
-    _validate_dcdc_voltage_controls(model_book)
+    fixed_boundary_corrections = _repair_fixed_boundaries(model_book)
+    if removed_runtime_fields or fixed_boundary_corrections:
+        model_text = render_ebook_aligned(model_book)
     measurement_book = _book_from_text(meas_text)
     measurement_block = measurement_book.data.get("Measurement")
     measurement_rows = (
@@ -1526,6 +1584,7 @@ def _parse_definition_archive(data: bytes) -> Mapping[str, Any]:
         )
     control_book = _book_from_text(control_text)
     _ensure_dcac_dcp_control_rows(model_book, control_book)
+    _repair_fixed_boundary_control_rows(model_book, control_book)
     return {
         "model_text": model_text,
         "meas_text": meas_text,
@@ -1666,6 +1725,7 @@ def make_definition_archive(service: PolarMicrogridSimulator) -> tuple[str, byte
         )
         export_control_book = _book_from_text(render_ebook_aligned(service.control_book))
         _ensure_dcac_dcp_control_rows(snapshot.model_book, export_control_book)
+        _repair_fixed_boundary_control_rows(snapshot.model_book, export_control_book)
         control_text = render_ebook_aligned(export_control_book)
         definition_defaults = {
             "version": 1,

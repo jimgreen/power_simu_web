@@ -326,7 +326,7 @@ class InMemoryKernelRuntimeTest(unittest.TestCase):
                     self.assertGreater(p_dc, 0.0)
                 self.assertAlmostEqual(sum(measured_p_ac), sum(expected_p_ac), delta=0.02)
 
-    def test_runtime_rejects_active_dcdc_zero_voltage_reference_before_solving(self):
+    def test_runtime_repairs_active_dcdc_zero_voltage_reference_before_solving(self):
         import simu_loop
 
         model_path = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "simple_model" / "model.e"
@@ -334,11 +334,11 @@ class InMemoryKernelRuntimeTest(unittest.TestCase):
         converter = model_book.data["DCDCConverter"].data[0]
         converter["v_set"] = "0"
 
-        with self.assertRaisesRegex(
-            ValueError,
-            r"DCDCConverter\.pv01_dcdc.*V 控制.*v_set.*必须大于 0.*雅可比奇异",
-        ):
-            simu_loop.solve_hybrid_snapshot_from_book(model_book, model_path)
+        snapshot, solver_info = simu_loop.solve_hybrid_snapshot_from_book(model_book, model_path)
+
+        self.assertEqual(float(converter["v_set"]), 300.0)
+        self.assertIn("iter=", solver_info)
+        self.assertIsNotNone(snapshot)
 
     def test_qinling_parallel_grid_converters_solve_for_all_side_control_combinations(self):
         import simu_loop

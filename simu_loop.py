@@ -73,6 +73,9 @@ from simu.device_roles import (  # noqa: E402
     converter_effective_control_types,
     converter_power_setpoint_fields,
 )
+from simu.fixed_boundaries import (  # noqa: E402
+    repair_fixed_boundary_setpoints as _repair_fixed_boundary_setpoints,
+)
 from simu.model_semantics import (  # noqa: E402
     energy_coupling_control_bindings,
     grid_converter_keys,
@@ -3137,6 +3140,7 @@ def solve_ac_snapshot(e_file: Path) -> Tuple[Snapshot, str]:
 
 def solve_ac_snapshot_from_book(model_book: EBook, source: Optional[Path] = None) -> Tuple[Snapshot, str]:
     source_path = Path(source or getattr(model_book, "file_path", "memory_model.e"))
+    repair_fixed_boundary_setpoints(model_book)
     network = ACPowerNetwork()
     network.source = str(source_path)
     network.read_from_model(_ebook_to_efile_rows(model_book))
@@ -3204,33 +3208,29 @@ def _read_lf_network_from_book(model_book: EBook, source: Path) -> object:
     return attach_multi_energy_context(network, context)
 
 
-def validate_voltage_control_boundaries(model_book: EBook) -> None:
-    """Reject active voltage controls whose reference cannot define a live grid."""
-    block = model_book.data.get("DCDCConverter")
-    if block is None:
-        return
-    for row in block.data:
-        if not _is_running_row(row):
-            continue
-        control_types = {
-            str(row.get(field, "")).strip().upper()
-            for field in ("control_type", "i_control_type", "j_control_type")
-        }
-        if "V" not in control_types:
-            continue
-        voltage = _safe_float(row.get("v_set"), None)
-        if voltage is not None and math.isfinite(voltage) and voltage > 0.0:
-            continue
-        name = str(row.get("name", "")).strip() or str(row.get("idx", "")).strip() or "未命名设备"
-        raise ValueError(
-            f"DCDCConverter.{name} 投入运行并采用 V 控制时，v_set 必须大于 0；"
-            "零或无效的电压参考会使直流参考电压为 0，并导致潮流雅可比奇异"
+def repair_fixed_boundary_setpoints(model_book: EBook) -> List[dict]:
+    corrections = _repair_fixed_boundary_setpoints(model_book)
+    for item in corrections:
+        LOGGER.warning(
+            "固定边界已修正 %s.%s.%s: %r -> %s (%s)",
+            item["device_type"],
+            item["name"],
+            item["field"],
+            item["original"],
+            format_number(item["replacement"]),
+            item["reference"],
         )
+    return corrections
+
+
+def validate_voltage_control_boundaries(model_book: EBook) -> None:
+    """Backward-compatible entry point for the unified fixed-boundary repair."""
+    repair_fixed_boundary_setpoints(model_book)
 
 
 def solve_hybrid_snapshot_from_book(model_book: EBook, source: Optional[Path] = None) -> Tuple[Snapshot, str]:
     source_path = Path(source or getattr(model_book, "file_path", "memory_model.e"))
-    validate_voltage_control_boundaries(model_book)
+    repair_fixed_boundary_setpoints(model_book)
     network = _read_lf_network_from_book(model_book, source_path)
     calc = HybridPowerFlowCalc(network, verbose=False)
     with contextlib.redirect_stdout(io.StringIO()):

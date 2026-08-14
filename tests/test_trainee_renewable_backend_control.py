@@ -4931,7 +4931,7 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
         self.assertEqual(payload["logs"][0]["full_detail"], plan["decisionDetail"])
         self.assertLess(len(entry["detail"]), len("；".join(entry["full_detail"])))
 
-    def test_completed_control_cycle_logs_the_full_planner_decision_chain(self):
+    def test_completed_control_cycle_logs_four_business_decisions_and_all_device_targets(self):
         with tempfile.TemporaryDirectory() as temporary:
             service, exchange, manager, _dispatched = make_exchange_backed_control_manager(
                 temporary,
@@ -4950,8 +4950,21 @@ class RenewableControlPlannerDataQualityTest(unittest.TestCase):
 
         entry = next(item for item in payload["logs"] if item["result"] == "计算完成")
         self.assertGreater(len(entry["full_detail"]), 10)
-        self.assertTrue(any("控制架构" in line for line in entry["full_detail"]))
-        self.assertTrue(any("ACDC策略" in line for line in entry["full_detail"]))
+        joined = "\n".join(entry["full_detail"])
+        for section in (
+            "【1. 新能源优先】输入",
+            "【1. 新能源优先】输出",
+            "【2. 柴发最小】输入",
+            "【2. 柴发最小】输出",
+            "【3. 储能均衡】输入",
+            "【3. 储能均衡】输出",
+            "【4. 氢能控制】",
+            "【总策略】",
+        ):
+            with self.subTest(section=section):
+                self.assertIn(section, joined)
+        self.assertIn("当前值、目标值和控制点", joined)
+        self.assertNotIn("phase=topology", joined)
         self.assertNotEqual(entry["detail"], "；".join(entry["full_detail"]))
 
     def test_signed_realtime_power_values_are_preserved_for_every_control_category(self):

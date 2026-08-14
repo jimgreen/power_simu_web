@@ -165,6 +165,50 @@ class InMemoryKernelRuntimeTest(unittest.TestCase):
         self.assertAlmostEqual(zero_branch_power, load_power, places=6)
         self.assertAlmostEqual(breaker_power, load_power, places=6)
 
+    def test_ieee118_electrolyzer_feeder_supports_overlimit_boundary(self):
+        import simu_loop
+
+        model_path = (
+            Path(__file__).resolve().parents[1]
+            / "models"
+            / "simulator"
+            / "source"
+            / "IEEE118"
+            / "model.e"
+        )
+        model_book = simu_loop.EBook(model_path)
+        electrolyzer = next(
+            row
+            for row in model_book.data["ACLoad"].data
+            if row.get("dev_type") == "ac-electrolyzer"
+        )
+        feeder = next(
+            row
+            for row in model_book.data["ACBranch"].data
+            if str(row.get("i_node")) == "21"
+            and str(row.get("j_node")) == "22"
+        )
+        requested_power = float(electrolyzer["p_max"]) * 1.2
+        electrolyzer["p_set"] = str(requested_power)
+        electrolyzer["v_min"] = "400"
+
+        self.assertAlmostEqual(float(feeder["r"]), 0.005)
+        self.assertAlmostEqual(float(feeder["x"]), 0.05)
+        snapshot, _solver_info = simu_loop.solve_hybrid_snapshot_from_book(
+            model_book,
+            model_path,
+        )
+
+        self.assertAlmostEqual(
+            snapshot.value("ACLoad", electrolyzer["name"], "P_LOAD"),
+            requested_power,
+            places=6,
+        )
+        self.assertLess(
+            snapshot.value("ACLoad", electrolyzer["name"], "V_LOAD"),
+            float(electrolyzer["v_min"]),
+        )
+
     def test_dcac_converter_terminal_powers_follow_ac_terminal_setpoint_sign(self):
         import simu_loop
 

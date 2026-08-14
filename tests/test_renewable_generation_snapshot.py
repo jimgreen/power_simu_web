@@ -34,6 +34,86 @@ class AutomaticStrategyGenerationTest(unittest.TestCase):
         values = service.latest_control_values()["values"]
         return str(values["ESS.ess01.p_set"])
 
+    @staticmethod
+    def _ess_run_stat(service: PolarMicrogridSimulator) -> str:
+        row = next(
+            row
+            for row in service.runtime_stat_book.data["RunStat"].data
+            if row.get("dev_type") == "ESS" and row.get("dev_name") == "ess01"
+        )
+        return str(row["run_stat"])
+
+    def test_generation_keeps_remote_control_and_setpoint_atomic_and_cancels_together(self):
+        service = self._service()
+
+        stopped = service.apply_student_commands(
+            {
+                "command_origin": "automatic",
+                "strategy_id": "renewable_priority",
+                "generation": 1,
+                "replace_strategy_generation": True,
+                "run_status": [
+                    {"dev_type": "ESS", "dev_name": "ess01", "run_stat": 0}
+                ],
+                "set_values": [
+                    {
+                        "dev_type": "ESS",
+                        "dev_name": "ess01",
+                        "set_type": "p_set",
+                        "set_value": 0,
+                    }
+                ],
+            },
+            source="trainee-renewable-priority-backend",
+        )
+
+        self.assertEqual(stopped["run_status"], 1)
+        self.assertEqual(stopped["set_values"], 1)
+        self.assertEqual(self._ess_run_stat(service), "0")
+        self.assertEqual(self._ess_value(service), "0")
+
+        started = service.apply_student_commands(
+            {
+                "command_origin": "automatic",
+                "strategy_id": "renewable_priority",
+                "generation": 2,
+                "replace_strategy_generation": True,
+                "run_status": [
+                    {"dev_type": "ESS", "dev_name": "ess01", "run_stat": 1}
+                ],
+                "set_values": [
+                    {
+                        "dev_type": "ESS",
+                        "dev_name": "ess01",
+                        "set_type": "p_set",
+                        "set_value": 20,
+                    }
+                ],
+            },
+            source="trainee-renewable-priority-backend",
+        )
+
+        self.assertEqual(started["run_status"], 1)
+        self.assertEqual(started["set_values"], 1)
+        self.assertEqual(self._ess_run_stat(service), "1")
+        self.assertEqual(self._ess_value(service), "20")
+        self.assertTrue(service.command_history[-2]["cancelled"])
+
+        cancelled = service.apply_student_commands(
+            {
+                "action": "cancel_strategy_generation",
+                "strategy_id": "renewable_priority",
+                "cancel_all_generations": True,
+                "reason": "controller_stopped",
+            },
+            source="trainee-renewable-priority-backend",
+        )
+
+        self.assertEqual(cancelled["cancelled_generations"], 1)
+        self.assertEqual(cancelled["cancelled_controls"], 2)
+        self.assertEqual(self._ess_run_stat(service), "1")
+        self.assertEqual(self._ess_value(service), "10")
+
     def test_empty_generation_atomically_replaces_previous_snapshot(self):
         service = self._service()
 

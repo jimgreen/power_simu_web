@@ -13010,7 +13010,9 @@ function renderRenewablePager(kind, totalCount) {
 }
 
 function renewableRemoteAdjustmentPointName(row = {}) {
-  if (!row.dev_type || !row.dev_name || !row.set_type) return "--";
+  if (!row.dev_type || !row.dev_name) return "--";
+  if (row.commandKind === "run_status") return `${row.dev_type}.${row.dev_name}.run_stat`;
+  if (!row.set_type) return "--";
   return `${row.dev_type}.${row.dev_name}.${row.set_type}`;
 }
 
@@ -13047,6 +13049,7 @@ function renewableIndirectControlText(row = {}) {
 }
 
 function renewableRowBoundaryText(row = {}) {
+  if (row.commandKind === "run_status") return "退出 / 投入";
   if (row.category === "柴油发电") return `下限 ${formatNumber(row.minKw)} / 容量 ${formatNumber(row.capacityKw)}`;
   if (String(row.category || "").includes("储能")) return `充 ${formatNumber(row.chargePower)} / 放 ${formatNumber(row.dischargePower)}`;
   if (row.category === "交直流变流器") return Number.isFinite(row.transferCapacityKw)
@@ -14492,7 +14495,8 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     status.classList.toggle("is-error", !hasDecisionSnapshot && control.enabled);
   }
   if (summary) {
-    summary.textContent = `${plan?.commands?.length || 0} 条 · ${plan?.time || "--"} · ${loopModeLabel} · ${renewableDataSourceLabel(plan?.dataQuality?.source)}`;
+    const commandCount = (plan?.commands?.length || 0) + (plan?.runCommands?.length || 0);
+    summary.textContent = `${commandCount} 条 · ${plan?.time || "--"} · ${loopModeLabel} · ${renewableDataSourceLabel(plan?.dataQuality?.source)}`;
   }
   renderRenewableMetricTabs();
   renderRenewableDetailTabs();
@@ -14510,7 +14514,7 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
       <thead>
         <tr>
           <th>设备名称</th>
-          <th>遥调点名称</th>
+          <th>遥调/遥控点名称</th>
           <th>并网侧</th>
           <th>接入状态</th>
           <th>接入母线</th>
@@ -14547,12 +14551,19 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
           const indirectControlDevices = row.indirectControlDevices;
           const indirectText = renewableIndirectControlText({ indirectControlDevices });
           const boundaryText = renewableRowBoundaryText(row);
+          const runControl = row.commandKind === "run_status";
           const currentValue = renewableRowControlPointPower(row, row.currentKw);
           const targetValue = renewableRowControlPointPower(row, balanceStorage
             ? optionalNumber(row.projectedTargetKw)
             : optionalNumber(row.targetKw ?? row.commandKw));
           const actionDisabled = !commandable || balanceStorage;
           const previewOnly = row.dispatchEnabled === false;
+          const currentText = runControl
+            ? (Number(currentValue) ? "投入" : "退出")
+            : Number.isFinite(currentValue) ? `${formatNumber(currentValue)} kW` : "--";
+          const targetText = runControl
+            ? (Number(targetValue) ? "投入" : "退出")
+            : Number.isFinite(targetValue) ? `${formatNumber(targetValue)} kW` : "--";
           const executionText = previewOnly
             ? "仅预览"
             : control.loopMode === "closed"
@@ -14569,9 +14580,9 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
             <td class="renewable-topology-text" title="${escapeHtml(renewableTopologyTitle(pathText))}">${escapeHtml(pathText)}</td>
             <td class="renewable-topology-text" title="${escapeHtml(renewableTopologyTitle(topologyStatusText))}">${escapeHtml(topologyStatusText)}</td>
             <td class="renewable-topology-text" title="${escapeHtml(renewableTopologyTitle(indirectText))}">${escapeHtml(indirectText)}</td>
-            <td class="numeric-cell">${Number.isFinite(currentValue) ? `${formatNumber(currentValue)} kW` : "--"}</td>
+            <td class="numeric-cell">${currentText}</td>
             <td class="numeric-cell" title="${escapeHtml(boundaryText)}">${escapeHtml(boundaryText)}</td>
-            <td class="numeric-cell">${Number.isFinite(targetValue) ? `${formatNumber(targetValue)} kW` : "--"}</td>
+            <td class="numeric-cell">${targetText}</td>
             <td class="numeric-cell">${row.soc === undefined ? "--" : formatNumber(row.soc)}</td>
             <td>${actionDisabled
               ? `<button type="button" class="renewable-row-action" disabled title="${escapeHtml(disabledReason || "不可直接下发")}">不可执行</button>`

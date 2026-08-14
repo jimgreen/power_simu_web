@@ -320,7 +320,7 @@ class TraineeRenewableVerticalLayoutUiTest(unittest.TestCase):
             "async function toggleRenewableAuto",
             1,
         )[0]
-        self.assertIn("<th>遥调点名称</th>", render_block)
+        self.assertIn("<th>遥调/遥控点名称</th>", render_block)
         self.assertIn("renewableRemoteAdjustmentPointName(row)", render_block)
         self.assertIn("function renewableRemoteAdjustmentPointName", self.script)
         self.assertIn("`${row.dev_type}.${row.dev_name}.${row.set_type}`", self.script)

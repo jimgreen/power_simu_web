@@ -50,6 +50,13 @@
 # ACBranch       交流线路（自适应）-30        1
 # ACLoad         交流负荷-1              1
 # ACLoad         交流电制氢-1_交流设备端交流电负荷  1
+# ACGenerator    交流电化学储能-23          1
+# ACGenerator    交流光伏发电机-25          1
+# ACGenerator    交流电化学储能-26          1
+# ACGenerator    交流柴油发电机-27          1
+# ACGenerator    交流柴油发电机-28          1
+# ACGenerator    交流柴油发电机-29          1
+# ACGenerator    交流柴油发电机-30          1
 # ACGenerator    交流风电-1              1
 # ACGenerator    交流风电-2              1
 # ACGenerator    交流风电-3              1
@@ -60,14 +67,7 @@
 # ACGenerator    交流风电-8              1
 # ACGenerator    交流风电-9              1
 # ACGenerator    交流风电-10             1
-# ACGenerator    交流电化学储能-23          1
 # ACGenerator    交流风力发电机-24          1
-# ACGenerator    交流光伏发电机-25          1
-# ACGenerator    交流电化学储能-26          1
-# ACGenerator    交流柴油发电机-27          1
-# ACGenerator    交流柴油发电机-28          1
-# ACGenerator    交流柴油发电机-29          1
-# ACGenerator    交流柴油发电机-30          1
 # ACZeroBranch   交流零阻抗支路（自适应）-1      1
 # ACBreak        交流断路器-1             1
 # ACBreak        交流断路器-2             1
@@ -194,42 +194,9 @@
 # ACLoad         交流负荷-1              q_set     50.0
 # ACLoad         交流电制氢-1_交流设备端交流电负荷  p_set     0
 # ACLoad         交流电制氢-1_交流设备端交流电负荷  q_set     0.0
-# ACGenerator    交流风电-1              p_set     3.0
-# ACGenerator    交流风电-1              q_set     0.5
-# ACGenerator    交流风电-1              v_set     380
-# ACGenerator    交流风电-2              p_set     3.0
-# ACGenerator    交流风电-2              q_set     0.5
-# ACGenerator    交流风电-2              v_set     380
-# ACGenerator    交流风电-3              p_set     3.0
-# ACGenerator    交流风电-3              q_set     0.5
-# ACGenerator    交流风电-3              v_set     380
-# ACGenerator    交流风电-4              p_set     3.0
-# ACGenerator    交流风电-4              q_set     0.5
-# ACGenerator    交流风电-4              v_set     380
-# ACGenerator    交流风电-5              p_set     3.0
-# ACGenerator    交流风电-5              q_set     0.5
-# ACGenerator    交流风电-5              v_set     380
-# ACGenerator    交流风电-6              p_set     3.0
-# ACGenerator    交流风电-6              q_set     0.5
-# ACGenerator    交流风电-6              v_set     380
-# ACGenerator    交流风电-7              p_set     3.0
-# ACGenerator    交流风电-7              q_set     0.5
-# ACGenerator    交流风电-7              v_set     380
-# ACGenerator    交流风电-8              p_set     3.0
-# ACGenerator    交流风电-8              q_set     0.5
-# ACGenerator    交流风电-8              v_set     380
-# ACGenerator    交流风电-9              p_set     3.0
-# ACGenerator    交流风电-9              q_set     0.5
-# ACGenerator    交流风电-9              v_set     380
-# ACGenerator    交流风电-10             p_set     3.0
-# ACGenerator    交流风电-10             q_set     0.5
-# ACGenerator    交流风电-10             v_set     380
 # ACGenerator    交流电化学储能-23          p_set     0.0
 # ACGenerator    交流电化学储能-23          q_set     0.0
 # ACGenerator    交流电化学储能-23          v_set     380
-# ACGenerator    交流风力发电机-24          p_set     0
-# ACGenerator    交流风力发电机-24          q_set     0
-# ACGenerator    交流风力发电机-24          v_set     380
 # ACGenerator    交流光伏发电机-25          p_set     0
 # ACGenerator    交流光伏发电机-25          q_set     0
 # ACGenerator    交流光伏发电机-25          v_set     380
@@ -248,6 +215,39 @@
 # ACGenerator    交流柴油发电机-30          p_set     0
 # ACGenerator    交流柴油发电机-30          q_set     0
 # ACGenerator    交流柴油发电机-30          v_set     380
+# ACGenerator    交流风电-1              p_set     0
+# ACGenerator    交流风电-1              q_set     0
+# ACGenerator    交流风电-1              v_set     380
+# ACGenerator    交流风电-2              p_set     0
+# ACGenerator    交流风电-2              q_set     0
+# ACGenerator    交流风电-2              v_set     380
+# ACGenerator    交流风电-3              p_set     0
+# ACGenerator    交流风电-3              q_set     0
+# ACGenerator    交流风电-3              v_set     380
+# ACGenerator    交流风电-4              p_set     0
+# ACGenerator    交流风电-4              q_set     0
+# ACGenerator    交流风电-4              v_set     380
+# ACGenerator    交流风电-5              p_set     0
+# ACGenerator    交流风电-5              q_set     0
+# ACGenerator    交流风电-5              v_set     380
+# ACGenerator    交流风电-6              p_set     0
+# ACGenerator    交流风电-6              q_set     0
+# ACGenerator    交流风电-6              v_set     380
+# ACGenerator    交流风电-7              p_set     0
+# ACGenerator    交流风电-7              q_set     0
+# ACGenerator    交流风电-7              v_set     380
+# ACGenerator    交流风电-8              p_set     0
+# ACGenerator    交流风电-8              q_set     0
+# ACGenerator    交流风电-8              v_set     380
+# ACGenerator    交流风电-9              p_set     0
+# ACGenerator    交流风电-9              q_set     0
+# ACGenerator    交流风电-9              v_set     380
+# ACGenerator    交流风电-10             p_set     0
+# ACGenerator    交流风电-10             q_set     0
+# ACGenerator    交流风电-10             v_set     380
+# ACGenerator    交流风力发电机-24          p_set     0
+# ACGenerator    交流风力发电机-24          q_set     0
+# ACGenerator    交流风力发电机-24          v_set     380
 # DCLoad         直流负荷-1              p_set     0
 # DCGenerator    直流光伏-1              p_set     5.0
 # DCGenerator    直流光伏-1              v_set     400
@@ -290,10 +290,10 @@
 # DCDCConverter  光伏变流器-3             v_set     400
 # DCDCConverter  储能变流器-1             p_set     0
 # DCDCConverter  储能变流器-1             i_set     0
-# DCDCConverter  储能变流器-1             v_set     400
+# DCDCConverter  储能变流器-1             v_set     500
 # DCDCConverter  储能变流器-2             p_set     0
 # DCDCConverter  储能变流器-2             i_set     0
-# DCDCConverter  储能变流器-2             v_set     400
+# DCDCConverter  储能变流器-2             v_set     500
 # DCDCConverter  储能变流器-3             p_set     0
 # DCDCConverter  储能变流器-3             i_set     0
 # DCDCConverter  储能变流器-3             v_set     750
@@ -422,5 +422,5 @@
 </StorageSoc>
 <HydroStorageState>
 @ dev_type      idx  name       pressure  flow  gas_quantity  soc
-# HydroStorage  3    集装格式储氢罐-3  5         0     500           0.5
+# HydroStorage  4    集装格式储氢罐-3  5         0     500           0.5
 </HydroStorageState>

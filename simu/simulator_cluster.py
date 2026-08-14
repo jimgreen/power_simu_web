@@ -20,6 +20,7 @@ from urllib.request import Request, urlopen
 
 HealthResult = tuple[bool, Mapping[str, Any], str]
 HealthChecker = Callable[[str, int, str, float], HealthResult]
+ClockStateChecker = Callable[[str, int, str, float], str]
 
 
 def _safe_model_id(value: Any) -> str:
@@ -85,6 +86,7 @@ class SimulatorClusterManager:
         random_seed: Optional[int] = None,
         process_factory: Callable[..., Any] = subprocess.Popen,
         health_checker: Optional[HealthChecker] = None,
+        clock_state_checker: Optional[ClockStateChecker] = None,
         port_checker: Optional[Callable[[str, int], bool]] = None,
         startup_timeout_seconds: float = 30.0,
         shutdown_timeout_seconds: float = 8.0,
@@ -101,6 +103,7 @@ class SimulatorClusterManager:
         self.random_seed = random_seed
         self.process_factory = process_factory
         self.health_checker = health_checker or self._default_health_checker
+        self.clock_state_checker = clock_state_checker or self._default_clock_state_checker
         self.port_checker = port_checker or self._port_is_open
         self.startup_timeout_seconds = max(0.01, float(startup_timeout_seconds))
         self.shutdown_timeout_seconds = max(0.01, float(shutdown_timeout_seconds))
@@ -238,8 +241,8 @@ class SimulatorClusterManager:
             raise KeyError(f"Unknown simulation model: {model_id}")
         return target_id, entry
 
-    @staticmethod
-    def _default_health_checker(host: str, port: int, model_id: str, timeout: float) -> HealthResult:
+    @classmethod
+    def _default_health_checker(cls, host: str, port: int, model_id: str, timeout: float) -> HealthResult:
         request = Request(
             f"http://{host}:{port}/api/health",
             headers={"Accept": "application/json"},
@@ -257,8 +260,33 @@ class SimulatorClusterManager:
             return False, {}, "health response is not an object"
         actual_model_id = str(payload.get("model_id") or "")
         healthy = bool(payload.get("ok")) and actual_model_id == model_id
+        if healthy and not cls._clock_state_from_payload(payload, model_id):
+            try:
+                payload = dict(payload)
+                payload["snapshot"] = cls._fetch_snapshot(host, port, model_id, timeout)
+            except RuntimeError:
+                pass
         error = "" if healthy else f"unexpected service on {host}:{port}"
         return healthy, payload, error
+
+    @staticmethod
+    def _fetch_snapshot(host: str, port: int, model_id: str, timeout: float) -> Mapping[str, Any]:
+        request = Request(
+            f"http://{host}:{port}/api/snapshot",
+            headers={"Accept": "application/json"},
+        )
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                data = response.read().decode("utf-8")
+        except (HTTPError, URLError, OSError) as exc:
+            raise RuntimeError(f"无法核实模型 {model_id} 的仿真时钟状态: {exc}") from exc
+        try:
+            payload = json.loads(data) if data else {}
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"模型 {model_id} 的仿真时钟状态响应无效") from exc
+        if not isinstance(payload, Mapping) or not SimulatorClusterManager._clock_state_from_payload(payload, model_id):
+            raise RuntimeError(f"无法核实模型 {model_id} 的仿真时钟状态")
+        return payload
 
     @staticmethod
     def _port_is_open(host: str, port: int) -> bool:
@@ -267,6 +295,23 @@ class SimulatorClusterManager:
                 return True
         except OSError:
             return False
+
+    @staticmethod
+    def _default_clock_state_checker(host: str, port: int, model_id: str, timeout: float) -> str:
+        payload = SimulatorClusterManager._fetch_snapshot(host, port, model_id, timeout)
+        return SimulatorClusterManager._clock_state_from_payload(payload, model_id)
+
+    @staticmethod
+    def _clock_state_from_payload(payload: Mapping[str, Any], model_id: str) -> str:
+        snapshot = payload.get("snapshot", payload)
+        if not isinstance(snapshot, Mapping):
+            return ""
+        actual_model_id = str(snapshot.get("model", {}).get("id") or "")
+        clock = snapshot.get("clock", {})
+        state = str(clock.get("state") or "") if isinstance(clock, Mapping) else ""
+        if actual_model_id == model_id and state in {"running", "paused", "stopped"}:
+            return state
+        return ""
 
     def _probe_locked(self, model_id: str, entry: Mapping[str, Any]) -> HealthResult:
         return self.health_checker(
@@ -323,7 +368,7 @@ class SimulatorClusterManager:
         return healthy, payload, error
 
     def _service_payload_locked(self, model_id: str, entry: dict[str, Any]) -> dict[str, Any]:
-        healthy, _payload, error = self._reconcile_locked(model_id, entry)
+        healthy, payload, error = self._reconcile_locked(model_id, entry)
         state = self._states.get(model_id, "stopped")
         if not healthy and state not in {"starting", "stopping", "failed"}:
             state = "stopped"
@@ -337,6 +382,7 @@ class SimulatorClusterManager:
             "base_url": f"http://{host}:{port}",
             "pid": entry.get("pid"),
             "healthy": healthy,
+            "clock_state": self._clock_state_from_payload(payload, model_id) if healthy else "stopped",
             "error": self._errors.get(model_id, "") or (error if state == "failed" else ""),
         }
 
@@ -344,12 +390,13 @@ class SimulatorClusterManager:
         with self.lock:
             target_id, entry = self._entry_locked(model_id)
             service = self._service_payload_locked(target_id, entry)
+            clock_state = str(service.get("clock_state") or "")
             return {
                 "id": target_id,
                 "name": target_id,
                 "sim_dir": str(self.models_root / target_id),
                 "runtime_dir": str(self.runtime_root / target_id),
-                "clock_state": "running" if service["healthy"] else "stopped",
+                "clock_state": clock_state or ("unknown" if service["healthy"] else "stopped"),
                 "service": service,
             }
 
@@ -633,6 +680,17 @@ class SimulatorClusterManager:
             if healthy or (process is not None and process.poll() is None):
                 raise ValueError(f"模型模拟服务运行中，无法修改: {target_id}")
             return target_id, self.models_root / target_id, self.runtime_root / target_id
+
+    def simulation_clock_state(self, model_id: Any) -> str:
+        with self.lock:
+            target_id, entry = self._entry_locked(model_id)
+            healthy, _payload, error = self._reconcile_locked(target_id, entry)
+            if not healthy:
+                raise RuntimeError(error or f"模型 {target_id} 的模拟服务未运行，无法核实仿真时钟状态")
+            host = str(entry["host"])
+            port = int(entry["port"])
+            timeout = min(2.0, self.startup_timeout_seconds)
+        return self.clock_state_checker(host, port, target_id, timeout)
 
     def validate_new_model_name(self, new_model_id: Any) -> str:
         target_id = _safe_model_id(new_model_id)

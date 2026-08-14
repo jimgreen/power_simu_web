@@ -222,78 +222,128 @@ def make_simulator_proxy_server(
             requested_model_id = payload.get("model_id", payload.get("model"))
             model_data = str(payload.get("data_base64") or "")
             diagram_data = str(payload.get("diagram_svg_base64") or "")
-
-            if not model_data and not diagram_data:
-                current_model = manager.model_info(requested_model_id)
-                current_service = current_model.get("service", {})
-                model = manager.configure_model_service(
-                    requested_model_id,
-                    payload.get("service_host", current_service.get("host")),
-                    payload.get("service_port", current_service.get("port")),
-                )
-                service = model.get("service", {})
-                address = {
-                    "host": service.get("host"),
-                    "port": service.get("port"),
-                    "access_link": service.get("access_link"),
-                    "base_url": service.get("base_url"),
-                }
-                updated = {"service": address}
-                self._send_json({"model": {**model, "updated": updated}, "updated": updated})
-                return
-
             helpers = self._server_helpers()
-            target_id, target_dir, _runtime_dir = manager.require_stopped(requested_model_id)
-            current_model = manager.model_info(target_id)
+            current_model = manager.model_info(requested_model_id)
+            target_id = str(current_model.get("id") or requested_model_id or "")
             current_service = current_model.get("service", {})
+            service_was_running = (
+                str(current_service.get("state") or "") == "running"
+                and current_service.get("healthy") is True
+            )
             requested_host = payload.get("service_host", current_service.get("host"))
             requested_port = payload.get("service_port", current_service.get("port"))
-            address = manager.validate_service_address(
-                requested_host,
-                requested_port,
-                exclude_model_id=target_id,
-            )
+            if service_was_running:
+                if str(requested_host or "") != str(current_service.get("host") or ""):
+                    raise ValueError("模拟服务运行时不能修改访问地址，请先停止模拟服务")
+                try:
+                    requested_port_number = int(requested_port)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("访问端口必须是 1-65535 的整数") from exc
+                if requested_port_number != int(current_service.get("port", 0) or 0):
+                    raise ValueError("模拟服务运行时不能修改访问端口，请先停止模拟服务")
+                address = {
+                    "host": str(current_service.get("host") or ""),
+                    "port": requested_port_number,
+                    "access_link": str(current_service.get("access_link") or ""),
+                    "base_url": str(current_service.get("base_url") or ""),
+                }
+            else:
+                address = manager.validate_service_address(
+                    requested_host,
+                    requested_port,
+                    exclude_model_id=target_id,
+                )
             service_changed = (
                 address["host"] != str(current_service.get("host") or "")
                 or address["port"] != int(current_service.get("port", 0) or 0)
             )
-            updated: dict[str, Any] = {
-                "service": address,
-            }
+            model_text = None
+            artifacts = None
+            diagram_svg_text = None
             if model_data:
                 model_text = helpers._decode_uploaded_definition_text(
                     self._decode_base64(payload, "data_base64", "model.e data")
                 )
-                artifacts = helpers._generated_model_artifacts(model_text)
-                written = helpers._write_generated_model_artifacts(
-                    target_dir,
-                    artifacts,
-                    diagram_svg_text=helpers._decode_optional_svg_payload(payload),
-                    remove_diagram_when_absent=bool(payload.get("replace_diagram", False)),
-                    preserve_existing_curves=True,
-                )
-                manager.clear_model_runtime(target_id)
-                updated.update(
-                    {
-                        "files": written,
-                        "measurement_count": len(artifacts["meas_book"].data["Measurement"].data),
-                        "curve_points": artifacts["curves_payload"]["point_count"],
-                    }
-                )
+                diagram_svg_text = helpers._decode_optional_svg_payload(payload)
             elif diagram_data:
-                diagram_written = helpers._write_model_diagram(
-                    target_dir,
-                    helpers._decode_optional_svg_payload(payload),
-                )
-                updated["diagram"] = {
-                    "updated": bool(diagram_written),
-                    "filename": "diagram.svg" if diagram_written else "",
-                }
-            if service_changed:
-                model = manager.configure_model_service(target_id, address["host"], address["port"])
-            else:
-                model = manager.model_info(target_id)
-            self._send_json({"model": {**model, "updated": updated}, "updated": updated, **manager.catalog()})
+                diagram_svg_text = helpers._decode_optional_svg_payload(payload)
+
+            service_stopped_for_update = False
+            restart_attempted = False
+            if service_was_running and (model_data or diagram_data):
+                if not bool(payload.get("restart_service", False)):
+                    raise ValueError(f"模型模拟服务运行中，无法修改: {target_id}")
+                clock_state = manager.simulation_clock_state(target_id)
+                if clock_state != "stopped":
+                    raise ValueError(f"模型仿真时钟为 {clock_state}，请先停止仿真后再修改: {target_id}")
+                manager.stop(target_id)
+                service_stopped_for_update = True
+
+            if model_text is not None:
+                try:
+                    artifacts = helpers._generated_model_artifacts(model_text)
+                except Exception:
+                    if service_stopped_for_update:
+                        try:
+                            manager.start(target_id)
+                        except Exception as restart_exc:
+                            raise RuntimeError(f"模型校验失败，且原模拟服务恢复失败: {restart_exc}")
+                    raise
+
+            updated: dict[str, Any] = {
+                "service": address,
+            }
+            try:
+                _target_id, target_dir, _runtime_dir = manager.require_stopped(target_id)
+                if model_data and artifacts is not None:
+                    written = helpers._write_generated_model_artifacts(
+                        target_dir,
+                        artifacts,
+                        diagram_svg_text=diagram_svg_text,
+                        remove_diagram_when_absent=bool(payload.get("replace_diagram", False)),
+                        preserve_existing_curves=True,
+                    )
+                    manager.clear_model_runtime(target_id)
+                    updated.update(
+                        {
+                            "files": written,
+                            "measurement_count": len(artifacts["meas_book"].data["Measurement"].data),
+                            "curve_points": artifacts["curves_payload"]["point_count"],
+                        }
+                    )
+                elif diagram_data:
+                    diagram_written = helpers._write_model_diagram(target_dir, diagram_svg_text)
+                    updated["diagram"] = {
+                        "updated": bool(diagram_written),
+                        "filename": "diagram.svg" if diagram_written else "",
+                    }
+                if service_changed:
+                    model = manager.configure_model_service(target_id, address["host"], address["port"])
+                else:
+                    model = manager.model_info(target_id)
+                if service_was_running:
+                    restart_attempted = True
+                    service = manager.start(target_id)
+                    model = manager.model_info(target_id)
+                    updated["service_restart"] = {
+                        "was_running": True,
+                        "restarted": str(service.get("state") or "") == "running",
+                    }
+            except Exception as exc:
+                if service_stopped_for_update and not restart_attempted:
+                    try:
+                        manager.start(target_id)
+                    except Exception as restart_exc:
+                        raise RuntimeError(
+                            f"模型修改失败，且原模拟服务恢复失败: {exc}; {restart_exc}"
+                        ) from exc
+                elif service_stopped_for_update and restart_attempted:
+                    raise RuntimeError(f"模型文件已保存，但模拟服务恢复失败: {exc}") from exc
+                raise
+            response = {"model": {**model, "updated": updated}, "updated": updated}
+            if model_data or diagram_data:
+                response.update(manager.catalog())
+            self._send_json(response)
 
         def _write_parsed_archive(self, target_dir: Path, parsed: Mapping[str, Any]) -> Mapping[str, Any]:
             helpers = self._server_helpers()

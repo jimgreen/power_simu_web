@@ -832,8 +832,13 @@ def _validate_dcac_converter_schema(model_book: EBook) -> None:
         )
 
 
+def _validate_dcdc_voltage_controls(model_book: EBook) -> None:
+    simu_loop.validate_voltage_control_boundaries(model_book)
+
+
 def _ensure_dcac_dcp_control_rows(model_book: EBook, control_book: EBook) -> None:
     _validate_dcac_converter_schema(model_book)
+    _validate_dcdc_voltage_controls(model_book)
     converter_block = model_book.data.get("DCACConverter")
     converter_rows = [] if converter_block is None else list(getattr(converter_block, "data", []))
     if not converter_rows:
@@ -1190,6 +1195,7 @@ def _generated_model_artifacts(model_text: str) -> Mapping[str, Any]:
     if not _model_book_has_power_model(model_book):
         raise ValueError("model.e 中未找到可识别的电网模型设备块")
     _validate_dcac_converter_schema(model_book)
+    _validate_dcdc_voltage_controls(model_book)
 
     control_blocks = _generated_control_blocks(model_book)
     return {
@@ -1495,6 +1501,7 @@ def _parse_definition_archive(data: bytes) -> Mapping[str, Any]:
     _remove_ambiguous_converter_runtime_fields(model_book)
     model_text = render_ebook_aligned(model_book)
     _validate_dcac_converter_schema(model_book)
+    _validate_dcdc_voltage_controls(model_book)
     measurement_book = _book_from_text(meas_text)
     measurement_block = measurement_book.data.get("Measurement")
     measurement_rows = (
@@ -2405,6 +2412,10 @@ def make_http_server(
                     "role": role,
                     "model_id": target.model_id,
                     "model_name": target.model_name,
+                    "snapshot": {
+                        "model": {"id": target.model_id},
+                        "clock": target.clock_state(),
+                    },
                     "process": _process_health_payload(),
                     "compute": dict(getattr(target, "latest_compute", {}) or {}),
                 }

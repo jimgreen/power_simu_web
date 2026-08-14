@@ -140,6 +140,12 @@ class InMemoryKernelRuntimeTest(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         model_path = root / "models" / "simulator" / "source" / "\u79e6\u5cad\u7ad9" / "model.e"
         model_book = simu_loop.EBook(model_path)
+        load_row = next(
+            row
+            for row in model_book.data["ACLoad"].data
+            if row.get("name") == "\u4ea4\u6d41\u8d1f\u8377-1"
+        )
+        load_row["p_set"] = "10"
 
         snapshot, _solver_info = simu_loop.solve_hybrid_snapshot_from_book(
             model_book,
@@ -319,6 +325,20 @@ class InMemoryKernelRuntimeTest(unittest.TestCase):
                     self.assertLess(p_ac, 0.0)
                     self.assertGreater(p_dc, 0.0)
                 self.assertAlmostEqual(sum(measured_p_ac), sum(expected_p_ac), delta=0.02)
+
+    def test_runtime_rejects_active_dcdc_zero_voltage_reference_before_solving(self):
+        import simu_loop
+
+        model_path = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "simple_model" / "model.e"
+        model_book = simu_loop.EBook(model_path)
+        converter = model_book.data["DCDCConverter"].data[0]
+        converter["v_set"] = "0"
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"DCDCConverter\.pv01_dcdc.*V 控制.*v_set.*必须大于 0.*雅可比奇异",
+        ):
+            simu_loop.solve_hybrid_snapshot_from_book(model_book, model_path)
 
     def test_qinling_parallel_grid_converters_solve_for_all_side_control_combinations(self):
         import simu_loop

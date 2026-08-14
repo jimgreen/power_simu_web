@@ -1765,6 +1765,7 @@ function updateModelContextMenuActions() {
   const selected = selectedManagementModel();
   const hasSelected = Boolean(selected);
   const clockState = selected ? modelClockState(selected) : "";
+  const serviceState = String(selected?.service?.state || "stopped");
   const menu = $("modelContextMenu");
   const exportButton = menu?.querySelector('[data-model-context-action="export"]');
   const cloneButton = menu?.querySelector('[data-model-context-action="clone"]');
@@ -1773,11 +1774,16 @@ function updateModelContextMenuActions() {
   if (exportButton) exportButton.disabled = !hasSelected;
   if (cloneButton) cloneButton.disabled = !hasSelected;
   if (updateButton) {
-    const canUpdate = hasSelected && clockState === "stopped";
+    const canUpdate = hasSelected && (
+      clockState === "stopped"
+      || (serviceState === "running" && clockState === "unknown")
+    );
     updateButton.disabled = !canUpdate;
     updateButton.title = !hasSelected
       ? "请选择模型"
-      : (clockState === "stopped" ? "导入修改后的模型与图形数据" : "模型运行中或暂停中，不能修改");
+      : (clockState === "stopped"
+        ? "导入修改后的模型与图形数据"
+        : (canUpdate ? "打开后核实仿真时钟状态" : "模型运行中或暂停中，不能修改"));
   }
   if (deleteButton) {
     const canDelete = hasSelected && models.length > 1 && clockState === "stopped";
@@ -2031,7 +2037,57 @@ function setUpdateModelBusy(isBusy) {
   if (portInput) portInput.disabled = isBusy;
 }
 
-function validateUpdateModelForm(showBlank = false) {
+function formatSelectedModelFile(file) {
+  if (!file) return "";
+  const size = Number(file.size);
+  let sizeText = "";
+  if (Number.isFinite(size) && size >= 0) {
+    sizeText = size < 1024
+      ? `${size} B`
+      : size < 1024 * 1024
+        ? `${(size / 1024).toFixed(1)} KB`
+        : `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return [String(file.name || "").trim(), sizeText].filter(Boolean).join(" · ");
+}
+
+function renderPendingUpdateModelFiles() {
+  const filename = $("updateModelFilename");
+  const svgFilename = $("updateModelSvgFilename");
+  if (filename) {
+    filename.textContent = pendingUpdateModelFile
+      ? formatSelectedModelFile(pendingUpdateModelFile)
+      : "未选择，保持当前文件";
+  }
+  if (svgFilename) {
+    svgFilename.textContent = pendingUpdateModelSvgFile
+      ? formatSelectedModelFile(pendingUpdateModelSvgFile)
+      : "未选择，保持当前图形";
+  }
+}
+
+function updateModelSelectionMessage() {
+  if (pendingUpdateModelFile && pendingUpdateModelSvgFile) {
+    return `已选择 E 文件“${pendingUpdateModelFile.name}”和 SVG 图“${pendingUpdateModelSvgFile.name}”，确认后导入。`;
+  }
+  if (pendingUpdateModelFile) {
+    return `已选择 E 文件“${pendingUpdateModelFile.name}”；SVG 图保持不变。`;
+  }
+  if (pendingUpdateModelSvgFile) {
+    return `已选择 SVG 图“${pendingUpdateModelSvgFile.name}”；E 文件保持不变。`;
+  }
+  return "未选择新文件，仅保存访问链接。";
+}
+
+function openUpdateModelFilePicker(inputId) {
+  const input = $(inputId);
+  if (!(input instanceof HTMLInputElement)) return;
+  // Clear the native input so selecting the same file again still emits change.
+  input.value = "";
+  input.click();
+}
+
+function validateUpdateModelForm(showSelection = false) {
   const confirm = $("confirmUpdateModel");
   const hostInput = $("updateModelServiceHost");
   const portInput = $("updateModelServicePort");
@@ -2066,21 +2122,43 @@ function validateUpdateModelForm(showBlank = false) {
     return false;
   }
   if (confirm) confirm.disabled = false;
-  setUpdateModelMessage(showBlank ? "未选择的文件将保持不变。" : "");
+  setUpdateModelMessage(showSelection ? updateModelSelectionMessage() : "");
   return true;
 }
 
-function openUpdateModelDialog(modelId = selectedManagementModelId()) {
+async function openUpdateModelDialog(modelId = selectedManagementModelId()) {
   const target = normalizeModels(state.models).find((model) => String(model.id || "") === String(modelId || ""));
   if (!target) {
     setModelManagementMessage("请选择要修改的模型。", "error");
     return;
   }
-  if (modelClockState(target) !== "stopped") {
+  let refreshedTarget = target;
+  const serviceBase = String(target?.service?.base_url || "").replace(/\/$/, "");
+  if (String(target?.service?.state || "") === "running" && serviceBase) {
+    try {
+      const response = await fetch(`${serviceBase}/api/snapshot`, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const snapshot = await response.json();
+      refreshedTarget = {
+        ...target,
+        clock_state: String(snapshot?.clock?.state || "unknown"),
+      };
+      state.models = normalizeModels(state.models).map((model) => (
+        String(model.id || "") === String(modelId || "") ? refreshedTarget : model
+      ));
+    } catch (error) {
+      setModelManagementMessage(`无法核实模型仿真时钟状态：${apiErrorText(error)}`, "error");
+      return;
+    }
+  }
+  if (modelClockState(refreshedTarget) !== "stopped") {
     setModelManagementMessage("模型运行中或暂停中，不能修改。", "error");
     return;
   }
-  state.updateTargetModelId = String(target.id || "");
+  state.updateTargetModelId = String(refreshedTarget.id || "");
   pendingUpdateModelFile = null;
   pendingUpdateModelSvgFile = null;
   const dialog = $("updateModelDialog");
@@ -2091,10 +2169,9 @@ function openUpdateModelDialog(modelId = selectedManagementModelId()) {
   const portInput = $("updateModelServicePort");
   if (fileInput) fileInput.value = "";
   if (svgInput) svgInput.value = "";
-  $("updateModelTargetName").textContent = target.name || target.id || "--";
-  $("updateModelFilename").textContent = "未选择文件";
-  $("updateModelSvgFilename").textContent = "未选择图形";
-  const endpoint = modelServiceEndpoint(target);
+  $("updateModelTargetName").textContent = refreshedTarget.name || refreshedTarget.id || "--";
+  renderPendingUpdateModelFiles();
+  const endpoint = modelServiceEndpoint(refreshedTarget);
   if (hostInput) hostInput.value = endpoint.host;
   if (portInput) portInput.value = String(endpoint.port || "");
   updateServiceAddressPreview("updateModelServiceHost", "updateModelServicePort", "updateModelServicePreview");
@@ -2117,19 +2194,17 @@ function closeUpdateModelDialog() {
 }
 
 function handleUpdateModelFileSelected(event) {
-  const file = event.target.files?.[0] || null;
+  const file = event.currentTarget?.files?.[0] || null;
   pendingUpdateModelFile = file;
-  const filename = $("updateModelFilename");
-  if (filename) filename.textContent = file?.name || "未选择文件";
-  validateUpdateModelForm(Boolean(file));
+  renderPendingUpdateModelFiles();
+  validateUpdateModelForm(true);
 }
 
 function handleUpdateModelSvgFileSelected(event) {
-  const file = event.target.files?.[0] || null;
+  const file = event.currentTarget?.files?.[0] || null;
   pendingUpdateModelSvgFile = file;
-  const filename = $("updateModelSvgFilename");
-  if (filename) filename.textContent = file?.name || "未选择图形";
-  validateUpdateModelForm(Boolean(pendingUpdateModelFile));
+  renderPendingUpdateModelFiles();
+  validateUpdateModelForm(true);
 }
 
 async function updateModelFromFile() {
@@ -2154,6 +2229,7 @@ async function updateModelFromFile() {
       model_id: modelId,
       service_host: serviceAddress.host,
       service_port: serviceAddress.port,
+      restart_service: Boolean(file || diagramFile),
     };
     if (file) {
       payload.filename = file.name;
@@ -2187,7 +2263,13 @@ async function updateModelFromFile() {
     state.selectedManagementModelId = modelId;
     renderModelSelector();
     renderModelManagementList();
-    setModelManagementMessage(file || diagramFile ? "模型已修改。" : "访问链接已修改。", "ok");
+    const serviceRestarted = result.updated?.service_restart?.restarted === true;
+    setModelManagementMessage(
+      file || diagramFile
+        ? `模型已修改${serviceRestarted ? "，模拟服务已自动重启" : ""}。`
+        : `访问链接已修改${serviceRestarted ? "，模拟服务已自动重启" : ""}。`,
+      "ok",
+    );
     if (updatedActiveModel && (file || diagramFile)) {
       invalidateManualDefinitionChanges();
       if (currentPageName() === "manual-changes") loadManualDefinitionChanges();
@@ -16679,9 +16761,9 @@ $("cancelUpdateModel").addEventListener("click", closeUpdateModelDialog);
 $("updateModelDialog").addEventListener("click", (event) => {
   if (event.target.id === "updateModelDialog") closeUpdateModelDialog();
 });
-$("selectUpdateModelFile").addEventListener("click", () => $("updateModelFileInput").click());
+$("selectUpdateModelFile").addEventListener("click", () => openUpdateModelFilePicker("updateModelFileInput"));
 $("updateModelFileInput").addEventListener("change", handleUpdateModelFileSelected);
-$("selectUpdateModelSvgFile").addEventListener("click", () => $("updateModelSvgInput").click());
+$("selectUpdateModelSvgFile").addEventListener("click", () => openUpdateModelFilePicker("updateModelSvgInput"));
 $("updateModelSvgInput").addEventListener("change", handleUpdateModelSvgFileSelected);
 $("updateModelServiceHost").addEventListener("input", () => validateUpdateModelForm());
 $("updateModelServicePort").addEventListener("input", () => validateUpdateModelForm());

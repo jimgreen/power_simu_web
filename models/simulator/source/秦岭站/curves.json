@@ -23052,6 +23052,132 @@
   },
   "sources": [
     {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E7%94%B5%E5%8C%96%E5%AD%A6%E5%82%A8%E8%83%BD-23:p_set",
+      "dev_type": "ACGenerator",
+      "dev_name": "交流电化学储能-23",
+      "name": "交流电化学储能-23",
+      "set_type": "p_set",
+      "family": "electric",
+      "unit": "kW",
+      "default_value": 0.0,
+      "min": -100.0,
+      "max": 100.0,
+      "points": [
+        {
+          "minute": 0.0,
+          "value": 0.0
+        }
+      ]
+    },
+    {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E5%85%89%E4%BC%8F%E5%8F%91%E7%94%B5%E6%9C%BA-25:p_set",
+      "dev_type": "ACGenerator",
+      "dev_name": "交流光伏发电机-25",
+      "name": "交流光伏发电机-25",
+      "set_type": "p_set",
+      "family": "electric",
+      "unit": "kW",
+      "default_value": 0.0,
+      "min": 0.0,
+      "max": 20.0,
+      "points": [
+        {
+          "minute": 0.0,
+          "value": 0.0
+        }
+      ]
+    },
+    {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E7%94%B5%E5%8C%96%E5%AD%A6%E5%82%A8%E8%83%BD-26:p_set",
+      "dev_type": "ACGenerator",
+      "dev_name": "交流电化学储能-26",
+      "name": "交流电化学储能-26",
+      "set_type": "p_set",
+      "family": "electric",
+      "unit": "kW",
+      "default_value": 0.0,
+      "min": -100.0,
+      "max": 100.0,
+      "points": [
+        {
+          "minute": 0.0,
+          "value": 0.0
+        }
+      ]
+    },
+    {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E6%9F%B4%E6%B2%B9%E5%8F%91%E7%94%B5%E6%9C%BA-27:p_set",
+      "dev_type": "ACGenerator",
+      "dev_name": "交流柴油发电机-27",
+      "name": "交流柴油发电机-27",
+      "set_type": "p_set",
+      "family": "electric",
+      "unit": "kW",
+      "default_value": 0.0,
+      "min": 70.0,
+      "max": 300.0,
+      "points": [
+        {
+          "minute": 0.0,
+          "value": 0.0
+        }
+      ]
+    },
+    {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E6%9F%B4%E6%B2%B9%E5%8F%91%E7%94%B5%E6%9C%BA-28:p_set",
+      "dev_type": "ACGenerator",
+      "dev_name": "交流柴油发电机-28",
+      "name": "交流柴油发电机-28",
+      "set_type": "p_set",
+      "family": "electric",
+      "unit": "kW",
+      "default_value": 0.0,
+      "min": 70.0,
+      "max": 300.0,
+      "points": [
+        {
+          "minute": 0.0,
+          "value": 0.0
+        }
+      ]
+    },
+    {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E6%9F%B4%E6%B2%B9%E5%8F%91%E7%94%B5%E6%9C%BA-29:p_set",
+      "dev_type": "ACGenerator",
+      "dev_name": "交流柴油发电机-29",
+      "name": "交流柴油发电机-29",
+      "set_type": "p_set",
+      "family": "electric",
+      "unit": "kW",
+      "default_value": 0.0,
+      "min": 70.0,
+      "max": 300.0,
+      "points": [
+        {
+          "minute": 0.0,
+          "value": 0.0
+        }
+      ]
+    },
+    {
+      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E6%9F%B4%E6%B2%B9%E5%8F%91%E7%94%B5%E6%9C%BA-30:p_set",
+      "dev_type": "ACGenerator",
+      "dev_name": "交流柴油发电机-30",
+      "name": "交流柴油发电机-30",
+      "set_type": "p_set",
+      "family": "electric",
+      "unit": "kW",
+      "default_value": 0.0,
+      "min": 70.0,
+      "max": 300.0,
+      "points": [
+        {
+          "minute": 0.0,
+          "value": 0.0
+        }
+      ]
+    },
+    {
       "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E9%A3%8E%E7%94%B5-1:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流风电-1",
@@ -23232,24 +23358,6 @@
       ]
     },
     {
-      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E7%94%B5%E5%8C%96%E5%AD%A6%E5%82%A8%E8%83%BD-23:p_set",
-      "dev_type": "ACGenerator",
-      "dev_name": "交流电化学储能-23",
-      "name": "交流电化学储能-23",
-      "set_type": "p_set",
-      "family": "electric",
-      "unit": "kW",
-      "default_value": 0.0,
-      "min": -100.0,
-      "max": 100.0,
-      "points": [
-        {
-          "minute": 0.0,
-          "value": 0.0
-        }
-      ]
-    },
-    {
       "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E9%A3%8E%E5%8A%9B%E5%8F%91%E7%94%B5%E6%9C%BA-24:p_set",
       "dev_type": "ACGenerator",
       "dev_name": "交流风力发电机-24",
@@ -23260,114 +23368,6 @@
       "default_value": 0.0,
       "min": 0.0,
       "max": 50.0,
-      "points": [
-        {
-          "minute": 0.0,
-          "value": 0.0
-        }
-      ]
-    },
-    {
-      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E5%85%89%E4%BC%8F%E5%8F%91%E7%94%B5%E6%9C%BA-25:p_set",
-      "dev_type": "ACGenerator",
-      "dev_name": "交流光伏发电机-25",
-      "name": "交流光伏发电机-25",
-      "set_type": "p_set",
-      "family": "electric",
-      "unit": "kW",
-      "default_value": 0.0,
-      "min": 0.0,
-      "max": 20.0,
-      "points": [
-        {
-          "minute": 0.0,
-          "value": 0.0
-        }
-      ]
-    },
-    {
-      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E7%94%B5%E5%8C%96%E5%AD%A6%E5%82%A8%E8%83%BD-26:p_set",
-      "dev_type": "ACGenerator",
-      "dev_name": "交流电化学储能-26",
-      "name": "交流电化学储能-26",
-      "set_type": "p_set",
-      "family": "electric",
-      "unit": "kW",
-      "default_value": 0.0,
-      "min": -100.0,
-      "max": 100.0,
-      "points": [
-        {
-          "minute": 0.0,
-          "value": 0.0
-        }
-      ]
-    },
-    {
-      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E6%9F%B4%E6%B2%B9%E5%8F%91%E7%94%B5%E6%9C%BA-27:p_set",
-      "dev_type": "ACGenerator",
-      "dev_name": "交流柴油发电机-27",
-      "name": "交流柴油发电机-27",
-      "set_type": "p_set",
-      "family": "electric",
-      "unit": "kW",
-      "default_value": 0.0,
-      "min": 70.0,
-      "max": 300.0,
-      "points": [
-        {
-          "minute": 0.0,
-          "value": 0.0
-        }
-      ]
-    },
-    {
-      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E6%9F%B4%E6%B2%B9%E5%8F%91%E7%94%B5%E6%9C%BA-28:p_set",
-      "dev_type": "ACGenerator",
-      "dev_name": "交流柴油发电机-28",
-      "name": "交流柴油发电机-28",
-      "set_type": "p_set",
-      "family": "electric",
-      "unit": "kW",
-      "default_value": 0.0,
-      "min": 70.0,
-      "max": 300.0,
-      "points": [
-        {
-          "minute": 0.0,
-          "value": 0.0
-        }
-      ]
-    },
-    {
-      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E6%9F%B4%E6%B2%B9%E5%8F%91%E7%94%B5%E6%9C%BA-29:p_set",
-      "dev_type": "ACGenerator",
-      "dev_name": "交流柴油发电机-29",
-      "name": "交流柴油发电机-29",
-      "set_type": "p_set",
-      "family": "electric",
-      "unit": "kW",
-      "default_value": 0.0,
-      "min": 70.0,
-      "max": 300.0,
-      "points": [
-        {
-          "minute": 0.0,
-          "value": 0.0
-        }
-      ]
-    },
-    {
-      "key": "source:ACGenerator:%E4%BA%A4%E6%B5%81%E6%9F%B4%E6%B2%B9%E5%8F%91%E7%94%B5%E6%9C%BA-30:p_set",
-      "dev_type": "ACGenerator",
-      "dev_name": "交流柴油发电机-30",
-      "name": "交流柴油发电机-30",
-      "set_type": "p_set",
-      "family": "electric",
-      "unit": "kW",
-      "default_value": 0.0,
-      "min": 70.0,
-      "max": 300.0,
       "points": [
         {
           "minute": 0.0,

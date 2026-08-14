@@ -140,6 +140,19 @@ class SimulatorModelCreationTest(unittest.TestCase):
         self.assertIn("q_from_set", model_book.data["ACACConverter"].header_list)
         self.assertIn("q_to_set", model_book.data["ACACConverter"].header_list)
 
+    def test_generated_model_rejects_active_dcdc_zero_voltage_reference(self):
+        model_text = """<DCDCConverter>
+@ idx name i_node j_node i_control_type j_control_type p_set i_set v_set run_stat
+# 1 invalid-dcdc 1 2 V NONE 0 0 0 1
+</DCDCConverter>
+"""
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"DCDCConverter\.invalid-dcdc.*V 控制.*v_set.*必须大于 0.*雅可比奇异",
+        ):
+            server_module._generated_model_artifacts(model_text)
+
     def test_create_model_from_uploaded_model_e_generates_ac_and_dc_storage_state(self):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
@@ -816,7 +829,7 @@ class SimulatorModelCreationTest(unittest.TestCase):
         self.assertIn('id="newModelSvgInput"', html)
         self.assertIn('accept=".svg,image/svg+xml"', html)
         self.assertIn('id="confirmNewModel" class="primary" type="button">新建</button>', html)
-        self.assertIn('src="/app.js?v=20260813-hydrogen-coupling-metrics"', html)
+        self.assertIn('src="/app.js?v=20260814-model-import-selection"', html)
         self.assertIn('href="/styles.css?v=20260812-runtime-log-column-resize"', html)
         self.assertIn("openNewModelDialog", script)
         self.assertIn("validateNewModelForm", script)
@@ -834,7 +847,15 @@ class SimulatorModelCreationTest(unittest.TestCase):
         self.assertIn("diagram_svg_base64", script)
         self.assertIn("service_host", script)
         self.assertIn("service_port", script)
-        self.assertIn("未选择的文件将保持不变", script)
+        self.assertIn("renderPendingUpdateModelFiles", script)
+        self.assertIn("openUpdateModelFilePicker", script)
+        self.assertIn('input.value = ""', script)
+        self.assertIn("event.currentTarget", script)
+        self.assertIn("待导入 E 文件", html)
+        self.assertIn("待导入 SVG 图", html)
+        self.assertIn("已选择 E 文件", script)
+        self.assertIn("已选择 SVG 图", script)
+        self.assertNotIn("未选择的文件将保持不变", script)
         self.assertNotIn('if (!file || !validateUpdateModelForm(true))', script)
         self.assertIn('id="updateModelServiceHost"', html)
         self.assertIn('id="updateModelServicePort"', html)

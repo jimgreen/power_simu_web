@@ -4330,6 +4330,13 @@
 </LoadCurve>
 <SourceCurve>
 @ idx  dev_type     dev_name            set_type  family    unit   minute  value
+# 1    ACGenerator  交流电化学储能-23          p_set     electric  kW     0       0
+# 1    ACGenerator  交流光伏发电机-25          p_set     electric  kW     0       0
+# 1    ACGenerator  交流电化学储能-26          p_set     electric  kW     0       0
+# 1    ACGenerator  交流柴油发电机-27          p_set     electric  kW     0       0
+# 1    ACGenerator  交流柴油发电机-28          p_set     electric  kW     0       0
+# 1    ACGenerator  交流柴油发电机-29          p_set     electric  kW     0       0
+# 1    ACGenerator  交流柴油发电机-30          p_set     electric  kW     0       0
 # 1    ACGenerator  交流风电-1              p_set     electric  kW     0       3
 # 1    ACGenerator  交流风电-2              p_set     electric  kW     0       3
 # 1    ACGenerator  交流风电-3              p_set     electric  kW     0       3
@@ -4340,14 +4347,7 @@
 # 1    ACGenerator  交流风电-8              p_set     electric  kW     0       3
 # 1    ACGenerator  交流风电-9              p_set     electric  kW     0       3
 # 1    ACGenerator  交流风电-10             p_set     electric  kW     0       3
-# 1    ACGenerator  交流电化学储能-23          p_set     electric  kW     0       0
 # 1    ACGenerator  交流风力发电机-24          p_set     electric  kW     0       0
-# 1    ACGenerator  交流光伏发电机-25          p_set     electric  kW     0       0
-# 1    ACGenerator  交流电化学储能-26          p_set     electric  kW     0       0
-# 1    ACGenerator  交流柴油发电机-27          p_set     electric  kW     0       0
-# 1    ACGenerator  交流柴油发电机-28          p_set     electric  kW     0       0
-# 1    ACGenerator  交流柴油发电机-29          p_set     electric  kW     0       0
-# 1    ACGenerator  交流柴油发电机-30          p_set     electric  kW     0       0
 # 1    DCGenerator  直流光伏-1              p_set     electric  kW     0       5
 # 1    DCGenerator  直流光伏-2              p_set     electric  kW     0       5
 # 1    DCGenerator  直流光伏-3              p_set     electric  kW     0       5

@@ -99,6 +99,35 @@ def test_cluster_assigns_stable_unique_ports_and_builds_one_model_child_command(
     assert [item["service"]["port"] for item in manager_reloaded.models()] == [9101, 9102]
 
 
+def test_cluster_catalog_uses_clock_state_reported_by_healthy_model_service(tmp_path: Path):
+    models_root = tmp_path / "models"
+    _make_model(models_root, "only")
+    manager = SimulatorClusterManager(
+        sim_dir=tmp_path,
+        models_root=models_root,
+        runtime_root=tmp_path / "runtime",
+        health_checker=lambda _host, _port, model_id, _timeout: (
+            True,
+            {
+                "ok": True,
+                "model_id": model_id,
+                "snapshot": {
+                    "model": {"id": model_id},
+                    "clock": {"state": "stopped"},
+                },
+            },
+            "",
+        ),
+        port_checker=lambda *_args: False,
+    )
+    manager._registry["services"]["only"]["pid"] = 4321
+
+    model = manager.model_info("only")
+
+    assert model["service"]["state"] == "running"
+    assert model["service"]["healthy"] is True
+    assert model["clock_state"] == "stopped"
+
 def test_cluster_suggests_unused_port_and_persists_custom_model_access_address(tmp_path: Path):
     models_root = tmp_path / "models"
     _make_model(models_root, "model_a")
@@ -717,6 +746,189 @@ def test_proxy_keeps_low_frequency_model_management_on_control_plane(tmp_path: P
         )
         assert "秦岭站一次图" in saved_diagram
         assert 'encoding="UTF-8"' in saved_diagram
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_proxy_updates_stopped_clock_model_and_restores_running_service(tmp_path: Path):
+    models_root = tmp_path / "models"
+    shutil.copytree(SIMPLE_MODEL_SOURCE, models_root / "source")
+    running = {"source"}
+    clock_states = {"source": "stopped"}
+    commands: list[list[str]] = []
+
+    def process_factory(command, **_kwargs):
+        commands.append(list(command))
+        model_id = command[command.index("--model-id") + 1]
+        running.add(model_id)
+        return FakeProcess(pid=5300 + len(commands))
+
+    def health_checker(_host, _port, model_id, _timeout):
+        return (
+            model_id in running,
+            {"role": "simulator", "model_id": model_id, "process": {"pid": 5300}},
+            "" if model_id in running else "not running",
+        )
+
+    manager = SimulatorClusterManager(
+        sim_dir=Path(__file__).resolve().parents[1],
+        models_root=models_root,
+        runtime_root=tmp_path / "runtime",
+        health_checker=health_checker,
+        clock_state_checker=lambda _host, _port, model_id, _timeout: clock_states[model_id],
+        port_checker=lambda *_args: False,
+        process_factory=process_factory,
+        startup_timeout_seconds=0.2,
+        poll_interval_seconds=0.001,
+    )
+    manager._registry["services"]["source"]["pid"] = 5300
+    manager._states["source"] = "running"
+    original_stop = manager.stop
+
+    def stop_and_mark(model_id):
+        running.discard(str(model_id))
+        return original_stop(model_id)
+
+    manager.stop = stop_and_mark  # type: ignore[method-assign]
+
+    static_root = tmp_path / "static"
+    static_root.mkdir()
+    (static_root / "index.html").write_text("proxy-ui", encoding="utf-8")
+    server = make_simulator_proxy_server(("127.0.0.1", 0), manager, static_root=static_root)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        updated_text = (SIMPLE_MODEL_SOURCE / "model.e").read_text(encoding="utf-8-sig").replace(
+            "diesel_300kw",
+            "restored_service_diesel",
+        )
+        _, response = _json_request(
+            f"{base}/api/models/update-definitions",
+            method="POST",
+            payload={
+                "model_id": "source",
+                "restart_service": True,
+                "data_base64": base64.b64encode(updated_text.encode("utf-8")).decode("ascii"),
+            },
+        )
+        assert "restored_service_diesel" in (models_root / "source" / "model.e").read_text(encoding="utf-8")
+        assert response["updated"]["service_restart"] == {"was_running": True, "restarted": True}
+        assert response["model"]["service"]["state"] == "running"
+        assert running == {"source"}
+        assert len(commands) == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_proxy_refuses_running_clock_before_stopping_service(tmp_path: Path):
+    models_root = tmp_path / "models"
+    shutil.copytree(SIMPLE_MODEL_SOURCE, models_root / "source")
+    running = {"source"}
+
+    def health_checker(_host, _port, model_id, _timeout):
+        return model_id in running, {"model_id": model_id, "process": {"pid": 5400}}, ""
+
+    manager = SimulatorClusterManager(
+        sim_dir=Path(__file__).resolve().parents[1],
+        models_root=models_root,
+        runtime_root=tmp_path / "runtime",
+        health_checker=health_checker,
+        clock_state_checker=lambda *_args: "running",
+        port_checker=lambda *_args: False,
+    )
+    manager._registry["services"]["source"]["pid"] = 5400
+    manager._states["source"] = "running"
+    stopped: list[str] = []
+    manager.stop = lambda model_id: stopped.append(str(model_id))  # type: ignore[method-assign]
+
+    static_root = tmp_path / "static"
+    static_root.mkdir()
+    (static_root / "index.html").write_text("proxy-ui", encoding="utf-8")
+    server = make_simulator_proxy_server(("127.0.0.1", 0), manager, static_root=static_root)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(HTTPError) as error:
+            _json_request(
+                f"http://127.0.0.1:{server.server_address[1]}/api/models/update-definitions",
+                method="POST",
+                payload={
+                    "model_id": "source",
+                    "restart_service": True,
+                    "diagram_svg_base64": base64.b64encode(b"<svg/>").decode("ascii"),
+                },
+            )
+        assert error.value.code == 400
+        assert "仿真时钟" in json.loads(error.value.read().decode("utf-8"))["error"]
+        assert stopped == []
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_proxy_restores_running_service_when_uploaded_model_is_invalid(tmp_path: Path):
+    models_root = tmp_path / "models"
+    shutil.copytree(SIMPLE_MODEL_SOURCE, models_root / "source")
+    running = {"source"}
+    commands: list[list[str]] = []
+
+    def process_factory(command, **_kwargs):
+        commands.append(list(command))
+        running.add(command[command.index("--model-id") + 1])
+        return FakeProcess(pid=5500 + len(commands))
+
+    def health_checker(_host, _port, model_id, _timeout):
+        return (
+            model_id in running,
+            {"model_id": model_id, "process": {"pid": 5500}},
+            "" if model_id in running else "not running",
+        )
+
+    manager = SimulatorClusterManager(
+        sim_dir=Path(__file__).resolve().parents[1],
+        models_root=models_root,
+        runtime_root=tmp_path / "runtime",
+        health_checker=health_checker,
+        clock_state_checker=lambda *_args: "stopped",
+        port_checker=lambda *_args: False,
+        process_factory=process_factory,
+        startup_timeout_seconds=0.2,
+        poll_interval_seconds=0.001,
+    )
+    manager._registry["services"]["source"]["pid"] = 5500
+    manager._states["source"] = "running"
+    original_stop = manager.stop
+
+    def stop_and_mark(model_id):
+        running.discard(str(model_id))
+        return original_stop(model_id)
+
+    manager.stop = stop_and_mark  # type: ignore[method-assign]
+
+    static_root = tmp_path / "static"
+    static_root.mkdir()
+    (static_root / "index.html").write_text("proxy-ui", encoding="utf-8")
+    server = make_simulator_proxy_server(("127.0.0.1", 0), manager, static_root=static_root)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(HTTPError) as error:
+            _json_request(
+                f"http://127.0.0.1:{server.server_address[1]}/api/models/update-definitions",
+                method="POST",
+                payload={
+                    "model_id": "source",
+                    "restart_service": True,
+                    "data_base64": base64.b64encode(b"not an E model").decode("ascii"),
+                },
+            )
+        assert error.value.code == 400
+        assert running == {"source"}
+        assert len(commands) == 1
+        assert manager.model_info("source")["service"]["state"] == "running"
     finally:
         server.shutdown()
         server.server_close()

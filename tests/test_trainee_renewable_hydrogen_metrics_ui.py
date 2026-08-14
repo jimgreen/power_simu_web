@@ -76,6 +76,32 @@ class TraineeRenewableHydrogenMetricsUiTest(unittest.TestCase):
         self.assertIn(".renewable-control-parameter-pane[hidden]", self.styles)
         self.assertIn("overflow-y: auto;", self.styles)
 
+    def test_hydrogen_parameter_page_uses_balanced_controls_and_one_scroll_region(self):
+        self.assertIn(
+            'class="renewable-hydrogen-overview-field renewable-control-toggle-field"',
+            self.html,
+        )
+        self.assertIn('class="renewable-control-parameter-footer"', self.html)
+        dialog_style = re.search(
+            r"\.renewable-control-parameters-dialog\s*\{(?P<body>[^}]*)\}",
+            self.styles,
+        )
+        self.assertIsNotNone(dialog_style)
+        dialog_body = dialog_style.group("body")
+        self.assertRegex(dialog_body, r"(?m)^\s*height:\s*auto;")
+        self.assertRegex(dialog_body, r"(?m)^\s*overflow:\s*hidden;")
+        self.assertNotRegex(dialog_body, r"(?m)^\s*height:\s*min\(")
+        self.assertRegex(
+            self.styles,
+            r"\.renewable-hydrogen-power-settings\s*\{[^}]*"
+            r"grid-column:\s*auto;[^}]*"
+            r"grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);",
+        )
+        self.assertRegex(
+            self.styles,
+            r'input\[type="checkbox"\]\s*\{[^}]*width:\s*42px;[^}]*height:\s*22px;',
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

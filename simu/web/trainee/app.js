@@ -364,6 +364,8 @@ const RENEWABLE_TREND_SERIES_DEFS = [
   { key: "acPvCurrent", metricId: "renewableAcPvCurrentKw", field: "acPvCurrentKw", label: "交流光伏当前值", scope: "ac", device: "pv", deviceLabel: "光伏", curveLabel: "功率", group: "ac-pv", color: "#c17a00", axis: "left", unit: "kW", style: "power" },
   { key: "acPvTarget", metricId: "renewableAcPvTargetKw", field: "acPvTargetKw", label: "交流光伏目标值", scope: "ac", device: "pv", deviceLabel: "光伏", curveLabel: "目标", group: "ac-pv", color: "#c17a00", axis: "left", unit: "kW", style: "target", dashed: true },
   { key: "acPvMaxAvailable", metricId: "renewableAcPvMaxAvailableKw", field: "acPvMaxAvailableKw", label: "交流光伏最大可发", scope: "ac", device: "pv", deviceLabel: "光伏", curveLabel: "最大可发", group: "ac-pv", color: "#c17a00", axis: "left", unit: "kW", style: "available", dashPattern: [5, 3, 1, 3] },
+  { key: "acStorageCurrent", metricId: "renewableAcStorageCurrentKw", field: "acStorageCurrentKw", label: "交流储能当前值", scope: "ac", device: "storage", deviceLabel: "储能", curveLabel: "功率", group: "ac-storage", color: "#426a75", axis: "left", unit: "kW", style: "power" },
+  { key: "acStorageTarget", metricId: "renewableAcStorageTargetKw", field: "acStorageTargetKw", label: "交流储能目标值", scope: "ac", device: "storage", deviceLabel: "储能", curveLabel: "目标", group: "ac-storage", color: "#426a75", axis: "left", unit: "kW", style: "target", dashed: true },
   { key: "acGridFollowingStorageCurrent", metricId: "renewableAcGridFollowingStorageCurrentKw", field: "acGridFollowingStorageCurrentKw", label: "交流跟网储能当前值", scope: "ac", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "功率", group: "ac-grid-following-storage", color: "#315aa6", axis: "left", unit: "kW", style: "power" },
   { key: "acGridFollowingStorageTarget", metricId: "renewableAcGridFollowingStorageTargetKw", field: "acGridFollowingStorageTargetKw", label: "交流跟网储能目标值", scope: "ac", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "目标", group: "ac-grid-following-storage", color: "#315aa6", axis: "left", unit: "kW", style: "target", dashed: true },
   { key: "acGridFollowingStorageSoc", metricId: "renewableAcGridFollowingStorageSoc", field: "acGridFollowingStorageSocPercent", label: "交流跟网储能SOC", scope: "ac", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "SOC", group: "ac-grid-following-storage", color: "#315aa6", axis: "right", unit: "%", style: "soc", dashPattern: [2, 4] },
@@ -383,6 +385,8 @@ const RENEWABLE_TREND_SERIES_DEFS = [
   { key: "dcPvCurrent", metricId: "renewableDcPvCurrentKw", field: "dcPvCurrentKw", label: "直流光伏当前值", scope: "dc", device: "pv", deviceLabel: "光伏", curveLabel: "功率", group: "dc-pv", color: "#d66f3c", axis: "left", unit: "kW", style: "power" },
   { key: "dcPvTarget", metricId: "renewableDcPvTargetKw", field: "dcPvTargetKw", label: "直流光伏目标值", scope: "dc", device: "pv", deviceLabel: "光伏", curveLabel: "目标", group: "dc-pv", color: "#d66f3c", axis: "left", unit: "kW", style: "target", dashed: true },
   { key: "dcPvMaxAvailable", metricId: "renewableDcPvMaxAvailableKw", field: "dcPvMaxAvailableKw", label: "直流光伏最大可发", scope: "dc", device: "pv", deviceLabel: "光伏", curveLabel: "最大可发", group: "dc-pv", color: "#d66f3c", axis: "left", unit: "kW", style: "available", dashPattern: [5, 3, 1, 3] },
+  { key: "dcStorageCurrent", metricId: "renewableDcStorageCurrentKw", field: "dcStorageCurrentKw", label: "直流储能当前值", scope: "dc", device: "storage", deviceLabel: "储能", curveLabel: "功率", group: "dc-storage", color: "#357987", axis: "left", unit: "kW", style: "power" },
+  { key: "dcStorageTarget", metricId: "renewableDcStorageTargetKw", field: "dcStorageTargetKw", label: "直流储能目标值", scope: "dc", device: "storage", deviceLabel: "储能", curveLabel: "目标", group: "dc-storage", color: "#357987", axis: "left", unit: "kW", style: "target", dashed: true },
   { key: "dcGridFollowingStorageCurrent", metricId: "renewableDcGridFollowingStorageCurrentKw", field: "dcGridFollowingStorageCurrentKw", label: "直流跟网储能当前值", scope: "dc", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "功率", group: "dc-grid-following-storage", color: "#2f80c4", axis: "left", unit: "kW", style: "power" },
   { key: "dcGridFollowingStorageTarget", metricId: "renewableDcGridFollowingStorageTargetKw", field: "dcGridFollowingStorageTargetKw", label: "直流跟网储能目标值", scope: "dc", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "目标", group: "dc-grid-following-storage", color: "#2f80c4", axis: "left", unit: "kW", style: "target", dashed: true },
   { key: "dcGridFollowingStorageSoc", metricId: "renewableDcGridFollowingStorageSoc", field: "dcGridFollowingStorageSocPercent", label: "直流跟网储能SOC", scope: "dc", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "SOC", group: "dc-grid-following-storage", color: "#2f80c4", axis: "right", unit: "%", style: "soc", dashPattern: [2, 4] },
@@ -402,6 +406,8 @@ const RENEWABLE_TREND_SERIES_DEFS = [
   { key: "totalPvCurrent", metricId: "renewableTotalPvCurrentKw", field: "totalPvCurrentKw", label: "总光伏当前值", scope: "system", device: "pv", deviceLabel: "光伏", curveLabel: "功率", group: "system-pv", color: "#ba7200", axis: "left", unit: "kW", style: "power" },
   { key: "totalPvTarget", metricId: "renewableTotalPvTargetKw", field: "totalPvTargetKw", label: "总光伏目标值", scope: "system", device: "pv", deviceLabel: "光伏", curveLabel: "目标", group: "system-pv", color: "#ba7200", axis: "left", unit: "kW", style: "target", dashed: true },
   { key: "totalPvMaxAvailable", metricId: "renewableTotalPvMaxAvailableKw", field: "totalPvMaxAvailableKw", label: "总光伏最大可发", scope: "system", device: "pv", deviceLabel: "光伏", curveLabel: "最大可发", group: "system-pv", color: "#ba7200", axis: "left", unit: "kW", style: "available", dashPattern: [5, 3, 1, 3] },
+  { key: "totalStorageCurrent", metricId: "renewableTotalStorageCurrentKw", field: "totalStorageCurrentKw", label: "系统储能当前值", scope: "system", device: "storage", deviceLabel: "储能", curveLabel: "功率", group: "system-storage", color: "#365f6b", axis: "left", unit: "kW", style: "power" },
+  { key: "totalStorageTarget", metricId: "renewableTotalStorageTargetKw", field: "totalStorageTargetKw", label: "系统储能目标值", scope: "system", device: "storage", deviceLabel: "储能", curveLabel: "目标", group: "system-storage", color: "#365f6b", axis: "left", unit: "kW", style: "target", dashed: true },
   { key: "totalGridFollowingStorageCurrent", metricId: "renewableTotalGridFollowingStorageCurrentKw", field: "totalGridFollowingStorageCurrentKw", label: "总跟网储能当前值", scope: "system", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "功率", group: "system-grid-following-storage", color: "#294f95", axis: "left", unit: "kW", style: "power" },
   { key: "totalGridFollowingStorageTarget", metricId: "renewableTotalGridFollowingStorageTargetKw", field: "totalGridFollowingStorageTargetKw", label: "总跟网储能目标值", scope: "system", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "目标", group: "system-grid-following-storage", color: "#294f95", axis: "left", unit: "kW", style: "target", dashed: true },
   { key: "totalGridFollowingStorageSoc", metricId: "renewableTotalGridFollowingStorageSoc", field: "totalGridFollowingStorageSocPercent", label: "总跟网储能SOC", scope: "system", device: "grid-following-storage", deviceLabel: "跟网储能", curveLabel: "SOC", group: "system-grid-following-storage", color: "#294f95", axis: "right", unit: "%", style: "soc", dashPattern: [2, 4] },
@@ -13313,6 +13319,9 @@ function renewableMetricGroupCount(metrics = {}, group = "") {
     "system-renewable": ["ac-renewable", "dc-renewable"],
     "system-wind": ["ac-wind", "dc-wind"],
     "system-pv": ["ac-pv", "dc-pv"],
+    "ac-storage": ["ac-grid-following-storage", "ac-grid-forming-storage"],
+    "dc-storage": ["dc-grid-following-storage", "dc-grid-forming-storage"],
+    "system-storage": ["ac-storage", "dc-storage"],
     "system-grid-following-storage": ["ac-grid-following-storage", "dc-grid-following-storage"],
     "system-grid-forming-storage": ["ac-grid-forming-storage", "dc-grid-forming-storage"],
     "system-diesel": ["ac-diesel", "dc-diesel"],
@@ -13337,6 +13346,9 @@ function renewableMetricGroupConfiguredCount(metrics = {}, group = "") {
   const aggregateGroups = {
     "system-grid-following-storage": ["ac-grid-following-storage", "dc-grid-following-storage"],
     "system-grid-forming-storage": ["ac-grid-forming-storage", "dc-grid-forming-storage"],
+    "ac-storage": ["ac-grid-following-storage", "ac-grid-forming-storage"],
+    "dc-storage": ["dc-grid-following-storage", "dc-grid-forming-storage"],
+    "system-storage": ["ac-storage", "dc-storage"],
   };
   const childGroups = aggregateGroups[group];
   if (!childGroups) return null;
@@ -14186,6 +14198,20 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     renewableAcPvCurrentKw: renewableMetricPowerText(metrics.acPvCurrentKw),
     renewableAcPvTargetKw: renewableMetricPowerText(metrics.acPvTargetKw),
     renewableAcPvMaxAvailableKw: renewableMetricPowerText(metrics.acPvMaxAvailableKw),
+    renewableAcStorageCurrentKw: storagePowerText(
+      renewableMetricValue(metrics, "acStorageCurrentKw", [
+        "acGridFollowingStorageCurrentKw",
+        "acGridFormingStorageCurrentKw",
+      ]),
+      "ac-storage",
+    ),
+    renewableAcStorageTargetKw: storagePowerText(
+      renewableMetricValue(metrics, "acStorageTargetKw", [
+        "acGridFollowingStorageTargetKw",
+        "acGridFormingStorageTargetKw",
+      ]),
+      "ac-storage",
+    ),
     renewableDcCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcRenewableCurrentKw", ["dcWindCurrentKw", "dcPvCurrentKw"])),
     renewableDcTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "dcRenewableTargetKw", ["dcWindTargetKw", "dcPvTargetKw"])),
     renewableDcMaxAvailableKw: renewableMetricPowerText(metrics.dcRenewableMaxAvailableKw),
@@ -14195,6 +14221,20 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     renewableDcPvCurrentKw: renewableMetricPowerText(metrics.dcPvCurrentKw),
     renewableDcPvTargetKw: renewableMetricPowerText(metrics.dcPvTargetKw),
     renewableDcPvMaxAvailableKw: renewableMetricPowerText(metrics.dcPvMaxAvailableKw),
+    renewableDcStorageCurrentKw: storagePowerText(
+      renewableMetricValue(metrics, "dcStorageCurrentKw", [
+        "dcGridFollowingStorageCurrentKw",
+        "dcGridFormingStorageCurrentKw",
+      ]),
+      "dc-storage",
+    ),
+    renewableDcStorageTargetKw: storagePowerText(
+      renewableMetricValue(metrics, "dcStorageTargetKw", [
+        "dcGridFollowingStorageTargetKw",
+        "dcGridFormingStorageTargetKw",
+      ]),
+      "dc-storage",
+    ),
     renewableAcGridFollowingStorageCurrentKw: storagePowerText(
       renewableMetricValue(metrics, "acGridFollowingStorageCurrentKw", ["acGridStorageCurrentKw"]),
       "ac-grid-following-storage",
@@ -14260,6 +14300,14 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     renewableTotalPvCurrentKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalPvCurrentKw", ["acPvCurrentKw", "dcPvCurrentKw"])),
     renewableTotalPvTargetKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalPvTargetKw", ["acPvTargetKw", "dcPvTargetKw"])),
     renewableTotalPvMaxAvailableKw: renewableMetricPowerText(renewableMetricValue(metrics, "totalPvMaxAvailableKw", ["pvMaxAvailableKw"])),
+    renewableTotalStorageCurrentKw: storagePowerText(
+      renewableMetricValue(metrics, "totalStorageCurrentKw", ["acStorageCurrentKw", "dcStorageCurrentKw"]),
+      "system-storage",
+    ),
+    renewableTotalStorageTargetKw: storagePowerText(
+      renewableMetricValue(metrics, "totalStorageTargetKw", ["acStorageTargetKw", "dcStorageTargetKw"]),
+      "system-storage",
+    ),
     renewableTotalGridFollowingStorageCurrentKw: storagePowerText(
       metrics.totalGridFollowingStorageCurrentKw,
       "system-grid-following-storage",

@@ -66,6 +66,37 @@ class TraineeRenewableStorageAcdcMetricsUiTest(unittest.TestCase):
                     self.html,
                 )
 
+    def test_storage_aggregate_is_the_grid_following_plus_grid_forming_total(self):
+        expected_rows = (
+            ("renewableAcStorageCurrentKw", "renewableAcStorageTargetKw", "ac-storage"),
+            ("renewableDcStorageCurrentKw", "renewableDcStorageTargetKw", "dc-storage"),
+            ("renewableTotalStorageCurrentKw", "renewableTotalStorageTargetKw", "system-storage"),
+        )
+        for current_id, target_id, group_name in expected_rows:
+            with self.subTest(group_name=group_name):
+                self.assertIn(
+                    f'data-renewable-metric-group="{group_name}"',
+                    self.html,
+                )
+                self.assertIn(
+                    f'<th scope="row">储能<span class="renewable-metric-unit">（kW）</span></th>'
+                    f'<td id="{current_id}">--</td>'
+                    f'<td id="{target_id}">--</td>',
+                    self.html,
+                )
+
+        for metric_key in (
+            "acStorageCurrentKw",
+            "acStorageTargetKw",
+            "dcStorageCurrentKw",
+            "dcStorageTargetKw",
+            "totalStorageCurrentKw",
+            "totalStorageTargetKw",
+        ):
+            with self.subTest(metric_key=metric_key):
+                self.assertIn(f'"{metric_key}"', self.backend)
+                self.assertIn(metric_key, self.script)
+
         for group_name in (
             "ac-wind",
             "ac-pv",
@@ -210,7 +241,7 @@ process.stdout.write(JSON.stringify([
         helpers = "function renewableMetricCount" + self.script.split(
             "function renewableMetricCount",
             1,
-        )[1].split("function openRenewableControlParametersDialog", 1)[0]
+        )[1].split("function populateRenewableControlParameters", 1)[0]
         node_script = f"""
 function formatNumber(value) {{ return String(value); }}
 function formatOverviewNumber(value) {{ return String(value); }}
@@ -260,6 +291,9 @@ const metrics = {{
 }};
 process.stdout.write(JSON.stringify({{
   acGridFollowing: renewableMetricGroupCount(metrics, "ac-grid-following-storage"),
+  acStorage: renewableMetricGroupCount(metrics, "ac-storage"),
+  dcStorage: renewableMetricGroupCount(metrics, "dc-storage"),
+  systemStorage: renewableMetricGroupCount(metrics, "system-storage"),
   systemGridFollowing: renewableMetricGroupCount(metrics, "system-grid-following-storage"),
   systemGridForming: renewableMetricGroupCount(metrics, "system-grid-forming-storage"),
   emptyAvailable: renewableMetricGroupAvailable(metrics, "system-grid-following-storage"),
@@ -271,6 +305,9 @@ process.stdout.write(JSON.stringify({{
             json.loads(result.stdout),
             {
                 "acGridFollowing": 0,
+                "acStorage": 0,
+                "dcStorage": 1,
+                "systemStorage": 1,
                 "systemGridFollowing": 0,
                 "systemGridForming": 1,
                 "emptyAvailable": False,

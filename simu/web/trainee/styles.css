@@ -5369,8 +5369,13 @@ th {
   width: min(680px, calc(100vw - 28px));
 }
 .renewable-control-parameters-dialog {
-  width: min(800px, calc(100vw - 28px));
-  max-height: min(720px, calc(100vh - 28px));
+  width: min(920px, calc(100vw - 24px));
+  height: auto;
+  max-height: min(760px, calc(100dvh - 24px));
+  overflow: hidden;
+}
+body:has(.renewable-control-parameters-dialog[open]) {
+  overflow: hidden;
 }
 .renewable-control-log-detail-dialog {
   width: min(900px, calc(100vw - 28px));
@@ -5475,14 +5480,26 @@ th {
 }
 .dialog-close-button:hover { border-color: var(--line); background: #f5f8f9; color: var(--ink); }
 .renewable-control-parameters-dialog .remote-control-form {
-  max-height: min(720px, calc(100vh - 28px));
+  box-sizing: border-box;
+  height: auto;
+  max-height: min(760px, calc(100dvh - 24px));
+  padding: 16px 18px;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   overflow: hidden;
+}
+.renewable-control-parameters-dialog .remote-control-head {
+  padding-bottom: 10px;
+}
+.renewable-control-parameters-dialog .remote-control-head h2 {
+  font-size: 18px;
+}
+.renewable-control-parameters-dialog .remote-control-head p {
+  margin-top: 2px;
 }
 .renewable-control-parameter-tabs {
   min-width: 0;
-  margin-top: 14px;
+  margin-top: 8px;
   display: flex;
   align-items: end;
   gap: 2px;
@@ -5494,7 +5511,7 @@ th {
 .renewable-control-parameter-tabs button {
   flex: 1 0 150px;
   min-width: 150px;
-  height: 38px;
+  height: 36px;
   padding: 0 12px;
   border-color: transparent;
   border-bottom: 0;
@@ -5519,10 +5536,10 @@ th {
 }
 .renewable-control-parameter-pane {
   height: 100%;
-  padding: 16px 2px 4px;
+  padding: 10px 2px 4px;
   overflow-x: hidden;
   overflow-y: auto;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: auto;
 }
 .renewable-control-parameter-pane[hidden] {
   display: none;
@@ -5531,7 +5548,7 @@ th {
   margin: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px 12px;
 }
 .renewable-control-parameter-fields label,
 .renewable-control-parameter-row {
@@ -5550,31 +5567,102 @@ th {
   height: 38px;
 }
 .renewable-control-parameter-fields .renewable-control-toggle-field {
-  grid-template-columns: minmax(0, 1fr) 42px;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
 }
 .renewable-control-parameter-fields .renewable-control-toggle-field input[type="checkbox"] {
-  width: 20px;
-  height: 20px;
+  position: relative;
+  width: 42px;
+  height: 22px;
+  margin: 0;
+  appearance: none;
+  border: 0;
+  border-radius: 11px;
+  background: #b7c1c5;
+  cursor: pointer;
   justify-self: end;
-  accent-color: var(--accent);
+  transition: background-color 0.16s ease;
+}
+.renewable-control-parameter-fields .renewable-control-toggle-field input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(23, 42, 51, 0.28);
+  transition: transform 0.16s ease;
+}
+.renewable-control-parameter-fields .renewable-control-toggle-field input[type="checkbox"]:checked {
+  background: var(--teal);
+}
+.renewable-control-parameter-fields .renewable-control-toggle-field input[type="checkbox"]:checked::before {
+  transform: translateX(20px);
+}
+.renewable-control-parameter-fields .renewable-control-toggle-field input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+.renewable-hydrogen-overview-field {
+  min-height: 50px;
+  padding: 7px 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(116px, 156px);
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f7f9fa;
+}
+.renewable-hydrogen-overview-field > input[type="number"] {
+  height: 34px;
 }
 .renewable-hydrogen-power-settings {
-  grid-column: 1 / -1;
+  grid-column: auto;
   min-width: 0;
   margin: 0;
-  padding: 12px;
+  padding: 10px 12px 12px;
   border: 1px solid var(--line);
   border-radius: 6px;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  align-content: start;
+}
+.renewable-hydrogen-power-settings > label {
+  grid-template-rows: minmax(20px, auto) 34px;
+  gap: 5px;
+  align-content: start;
+}
+.renewable-hydrogen-power-settings > label > input {
+  height: 34px;
 }
 .renewable-hydrogen-power-settings legend {
   padding: 0 6px;
   color: var(--ink);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 800;
+}
+.renewable-control-parameter-footer {
+  min-width: 0;
+  margin-top: 6px;
+  padding-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid var(--line);
+}
+.renewable-control-parameter-footer .remote-control-hint,
+.renewable-control-parameter-footer .dialog-actions {
+  margin: 0;
+}
+.renewable-control-parameter-footer .remote-control-hint {
+  min-width: 0;
+}
+.renewable-control-parameter-footer .dialog-actions {
+  flex: 0 0 auto;
 }
 .renewable-control-parameter-row {
   grid-column: 1 / -1;
@@ -6210,7 +6298,8 @@ canvas {
 @media (max-height: 780px) and (min-width: 821px) {
   .renewable-control-parameters-dialog,
   .renewable-control-parameters-dialog .remote-control-form {
-    max-height: calc(100vh - 20px);
+    height: auto;
+    max-height: calc(100dvh - 20px);
   }
   .overview-dashboard {
     --overview-main-min-height: 580px;
@@ -6375,10 +6464,12 @@ canvas {
     grid-template-columns: 1fr;
   }
   .renewable-control-parameters-dialog {
-    max-height: calc(100vh - 20px);
+    height: auto;
+    max-height: calc(100dvh - 20px);
   }
   .renewable-control-parameters-dialog .remote-control-form {
-    max-height: calc(100vh - 20px);
+    height: auto;
+    max-height: calc(100dvh - 20px);
     padding: 14px;
   }
   .renewable-control-parameter-tabs button {
@@ -6390,8 +6481,14 @@ canvas {
     grid-column: auto;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  #renewableControlParameterPaneHydrogen .renewable-control-parameter-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .renewable-control-parameter-row {
     grid-column: auto;
+  }
+  .renewable-control-parameter-footer {
+    align-items: flex-end;
   }
   .overview-dashboard {
     grid-template-rows: auto auto auto;
@@ -6528,5 +6625,38 @@ canvas {
   }
   .metric-grid dd {
     font-size: 20px;
+  }
+}
+
+@media (max-width: 560px) {
+  .renewable-control-parameter-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    overflow: visible;
+    border-bottom: 0;
+    white-space: normal;
+  }
+  .renewable-control-parameter-tabs button {
+    width: 100%;
+    min-width: 0;
+    height: 36px;
+    padding: 0 6px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+  }
+  .renewable-hydrogen-power-settings {
+    grid-template-columns: 1fr;
+  }
+  #renewableControlParameterPaneHydrogen .renewable-control-parameter-fields {
+    grid-template-columns: 1fr;
+  }
+  .renewable-control-parameter-footer {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .renewable-control-parameter-footer .dialog-actions {
+    justify-content: flex-end;
   }
 }

@@ -18,6 +18,8 @@ EXPECTED_TREND_SERIES = {
     "acPvCurrent": ("renewableAcPvCurrentKw", "acPvCurrentKw"),
     "acPvTarget": ("renewableAcPvTargetKw", "acPvTargetKw"),
     "acPvMaxAvailable": ("renewableAcPvMaxAvailableKw", "acPvMaxAvailableKw"),
+    "acStorageCurrent": ("renewableAcStorageCurrentKw", "acStorageCurrentKw"),
+    "acStorageTarget": ("renewableAcStorageTargetKw", "acStorageTargetKw"),
     "acGridFollowingStorageCurrent": ("renewableAcGridFollowingStorageCurrentKw", "acGridFollowingStorageCurrentKw"),
     "acGridFollowingStorageTarget": ("renewableAcGridFollowingStorageTargetKw", "acGridFollowingStorageTargetKw"),
     "acGridFollowingStorageSoc": ("renewableAcGridFollowingStorageSoc", "acGridFollowingStorageSocPercent"),
@@ -37,6 +39,8 @@ EXPECTED_TREND_SERIES = {
     "dcPvCurrent": ("renewableDcPvCurrentKw", "dcPvCurrentKw"),
     "dcPvTarget": ("renewableDcPvTargetKw", "dcPvTargetKw"),
     "dcPvMaxAvailable": ("renewableDcPvMaxAvailableKw", "dcPvMaxAvailableKw"),
+    "dcStorageCurrent": ("renewableDcStorageCurrentKw", "dcStorageCurrentKw"),
+    "dcStorageTarget": ("renewableDcStorageTargetKw", "dcStorageTargetKw"),
     "dcGridFollowingStorageCurrent": ("renewableDcGridFollowingStorageCurrentKw", "dcGridFollowingStorageCurrentKw"),
     "dcGridFollowingStorageTarget": ("renewableDcGridFollowingStorageTargetKw", "dcGridFollowingStorageTargetKw"),
     "dcGridFollowingStorageSoc": ("renewableDcGridFollowingStorageSoc", "dcGridFollowingStorageSocPercent"),
@@ -56,6 +60,8 @@ EXPECTED_TREND_SERIES = {
     "totalPvCurrent": ("renewableTotalPvCurrentKw", "totalPvCurrentKw"),
     "totalPvTarget": ("renewableTotalPvTargetKw", "totalPvTargetKw"),
     "totalPvMaxAvailable": ("renewableTotalPvMaxAvailableKw", "totalPvMaxAvailableKw"),
+    "totalStorageCurrent": ("renewableTotalStorageCurrentKw", "totalStorageCurrentKw"),
+    "totalStorageTarget": ("renewableTotalStorageTargetKw", "totalStorageTargetKw"),
     "totalGridFollowingStorageCurrent": ("renewableTotalGridFollowingStorageCurrentKw", "totalGridFollowingStorageCurrentKw"),
     "totalGridFollowingStorageTarget": ("renewableTotalGridFollowingStorageTargetKw", "totalGridFollowingStorageTargetKw"),
     "totalGridFollowingStorageSoc": ("renewableTotalGridFollowingStorageSoc", "totalGridFollowingStorageSocPercent"),
@@ -153,7 +159,7 @@ class TraineeRenewableTrendChartUiTest(unittest.TestCase):
         self.assertLess(scope_block.index('key: "ac"'), scope_block.index('key: "dc"'))
         self.assertLess(scope_block.index('key: "dc"'), scope_block.index('key: "hydrogen"'))
         self.assertLess(scope_block.index('key: "hydrogen"'), scope_block.index('key: "system"'))
-        for device_label in ("新能源", "风电", "光伏", "跟网储能", "构网储能", "柴发", "负荷", "AC/DC变流器", "环境", "电制氢", "燃料电池", "储氢罐"):
+        for device_label in ("新能源", "风电", "光伏", "储能", "跟网储能", "构网储能", "柴发", "负荷", "AC/DC变流器", "环境", "电制氢", "燃料电池", "储氢罐"):
             with self.subTest(device_label=device_label):
                 self.assertIn(f'deviceLabel: "{device_label}"', self.series_block)
         for curve_label in ("功率", "目标", "最大可发", "SOC", "下限", "风速", "太阳辐照度"):
@@ -176,7 +182,10 @@ class TraineeRenewableTrendChartUiTest(unittest.TestCase):
         self.assertIn("renewableTrendSeriesAvailable(series, metrics)", draw_block)
         self.assertIn("renderRenewableTrendSeriesAvailability(metrics)", draw_block)
         self.assertIn('group: "ac-grid-following-storage"', self.series_block)
+        self.assertIn('group: "ac-storage"', self.series_block)
         self.assertIn('group: "dc-grid-forming-storage"', self.series_block)
+        self.assertIn('group: "dc-storage"', self.series_block)
+        self.assertIn('group: "system-storage"', self.series_block)
         self.assertIn('group: "system-acdc"', self.series_block)
 
     def test_curve_selector_supports_keyword_selected_only_and_batch_selection(self):

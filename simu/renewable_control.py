@@ -1828,25 +1828,48 @@ def _hydrogen_post_dispatch_plan(
                     )
             elif is_electrolyzer:
                 if not electrolyzer_raise_allowed:
-                    diagnostics["warnings"].append(
-                        (
+                    if (
+                        hydrogen_mode_lock == "fuel_cell"
+                        or conflict_stop_mode == "electrolyzer"
+                    ):
+                        diagnostics["warnings"].append(
                             f"氢能设备{coupling_name}受燃料电池运行互锁，已禁止制氢启动"
-                            if (
-                                hydrogen_mode_lock == "fuel_cell"
-                                or conflict_stop_mode == "electrolyzer"
-                            )
-                            else f"氢能设备{coupling_name}未同时满足平均柴发功率、电储SOC和本氢岛氢储SOC的制氢启动条件，已保持停机"
                         )
-                    )
+                    else:
+                        start_blockers: List[str] = []
+                        if diesel_raise_margin_kw <= EPSILON:
+                            start_blockers.append(
+                                f"柴发负载率{predicted_diesel_load_ratio * 100:.3f}%未低于启机限值"
+                                f"{electrolyzer_diesel_limit_ratio * 100:.3f}%"
+                            )
+                        if (
+                            electric_storage_soc
+                            <= settings.electrolyzer_storage_soc_upper_limit + EPSILON
+                        ):
+                            start_blockers.append(
+                                f"电储SOC{electric_storage_soc * 100:.3f}%未严格高于启机阈值"
+                                f"{settings.electrolyzer_storage_soc_upper_limit * 100:.3f}%"
+                            )
+                        if (
+                            hydrogen_storage_soc
+                            >= settings.electrolyzer_hydrogen_storage_soc_upper_limit
+                            - EPSILON
+                        ):
+                            start_blockers.append(
+                                f"本氢岛氢储SOC{hydrogen_storage_soc * 100:.3f}%未严格低于上限"
+                                f"{settings.electrolyzer_hydrogen_storage_soc_upper_limit * 100:.3f}%"
+                            )
+                        diagnostics["warnings"].append(
+                            f"氢能设备{coupling_name}制氢启动条件未满足："
+                            f"{'；'.join(start_blockers) or '存在未识别的启机阻断条件'}；已保持停机"
+                        )
                     continue
                 required_start_delta_kw = start_threshold_kw
-                if (
-                    required_start_delta_kw > diesel_raise_margin_kw + EPSILON
-                    or required_start_delta_kw > step_kw + EPSILON
-                ):
+                if required_start_delta_kw > diesel_raise_margin_kw + EPSILON:
                     diagnostics["warnings"].append(
                         f"氢能设备{coupling_name}需要一次达到启动功率"
-                        f"{start_threshold_kw:.3f} kW，当前柴发裕度或配置步长不足，已保持停机"
+                        f"{start_threshold_kw:.3f} kW，当前柴发调节裕度仅"
+                        f"{diesel_raise_margin_kw:.3f} kW，已保持停机"
                     )
                     continue
                 requested_delta_kw = required_start_delta_kw
@@ -1861,7 +1884,7 @@ def _hydrogen_post_dispatch_plan(
                 if fuel_cell_decision.reason == "start_margin_insufficient":
                     diagnostics["warnings"].append(
                         f"氢能设备{coupling_name}需要一次达到启动功率"
-                        f"{start_threshold_kw:.3f} kW，当前柴发裕度或配置步长不足，已保持停机"
+                        f"{start_threshold_kw:.3f} kW，当前柴发调节裕度或设备功率上限不足，已保持停机"
                     )
                     continue
                 if fuel_cell_decision.action == "hold":

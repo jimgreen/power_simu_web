@@ -1341,6 +1341,31 @@ def test_hydrogen_power_ratios_use_each_devices_explicit_rated_capacity():
     assert command["commandKw"] == pytest.approx(6.0)
 
 
+def test_electrolyzer_start_uses_minimum_power_even_when_normal_step_is_smaller():
+    snapshot = _electrolyzer_snapshot(electric_power=0.0, tank_soc=0.5)
+    result, rows = _run_electrolyzer(
+        snapshot,
+        RenewableControlSettings(
+            electrolyzer_power_min_ratio=0.10,
+            electrolyzer_power_max_ratio=0.80,
+            electrolyzer_power_deadband_ratio=0.0,
+            electrolyzer_power_step_ratio=0.05,
+            electrolyzer_diesel_power_limit_ratio=0.30,
+            electrolyzer_storage_soc_upper_limit=0.80,
+            electrolyzer_hydrogen_storage_soc_upper_limit=0.90,
+        ),
+        diesel_power=20.0,
+        storage_soc=0.90,
+    )
+
+    command = next(row for row in rows if row.get("dev_name") == "electrolyzer-load")
+    decision = result["commands"][0]
+    assert result["action"] == "electrolyzer"
+    assert decision["configuredMinimumPowerKw"] == pytest.approx(2.0)
+    assert decision["stepLimitKw"] == pytest.approx(1.0)
+    assert command["commandKw"] == pytest.approx(2.0)
+
+
 def test_legacy_absolute_setting_keys_migrate_as_percent_values():
     migrated = RenewableControlSettings().updated(
         {
@@ -1437,6 +1462,10 @@ def test_electrolyzer_start_requires_every_storage_soc_strictly_above_80_percent
         assert result["commands"][0]["startThresholdKw"] == 6.0
     else:
         assert result["electricPowerAdjustmentKw"] == 0.0
+        assert any(
+            "电储SOC" in warning and "80.000%" in warning
+            for warning in result["warnings"]
+        )
 
 
 @pytest.mark.parametrize(
@@ -2248,7 +2277,7 @@ def test_closed_hydrogen_valve_splits_island_and_fails_only_disconnected_device(
     assert any("没有在线储氢罐" in warning for warning in result["warnings"])
 
 
-def test_hydrogen_start_below_real_minimum_fails_closed_when_step_is_too_small():
+def test_hydrogen_start_jumps_to_real_minimum_when_normal_step_is_too_small():
     snapshot = _electrolyzer_snapshot(electric_power=0.0)
     snapshot["definitions"]["model"]["ACLoad"]["rows"][0]["p_min"] = 5.0
     snapshot["definitions"]["model"]["HydroSource"]["rows"][0]["flow_min"] = 1.5
@@ -2260,9 +2289,11 @@ def test_hydrogen_start_below_real_minimum_fails_closed_when_step_is_too_small()
         ),
     )
 
-    assert result["action"] == "blocked"
-    assert rows == []
-    assert any("启动功率" in warning for warning in result["warnings"])
+    command = next(row for row in rows if row.get("dev_name") == "electrolyzer-load")
+    assert result["action"] == "electrolyzer"
+    assert command["commandKw"] == pytest.approx(7.5)
+    assert result["commands"][0]["startThresholdKw"] == pytest.approx(7.5)
+    assert result["commands"][0]["stepLimitKw"] < result["commands"][0]["startThresholdKw"]
 
 
 def test_dc_hydrogen_increment_is_atomically_limited_by_remaining_converter_step():

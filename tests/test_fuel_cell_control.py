@@ -43,6 +43,17 @@ def test_stopped_fuel_cell_starts_at_minimum_plus_deadband():
     assert decision.diesel_raise_margin_kw == 8.0
 
 
+def test_stopped_fuel_cell_jumps_to_start_threshold_when_normal_step_is_smaller():
+    decision = calculate_fuel_cell_power_decision(
+        _parameters(power_step_kw=2.0),
+        _inputs(),
+    )
+
+    assert decision.action == "start"
+    assert decision.requested_delta_kw == 6.0
+    assert decision.required_start_delta_kw == 6.0
+
+
 @pytest.mark.parametrize(
     "changes",
     (

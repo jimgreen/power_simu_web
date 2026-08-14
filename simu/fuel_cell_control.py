@@ -121,7 +121,6 @@ def calculate_fuel_cell_power_decision(
         required_start = max(0.0, float(inputs.start_threshold_kw))
         if (
             required_start > diesel_raise_margin_kw + EPSILON
-            or required_start > step_kw + EPSILON
             or required_start > maximum_power + EPSILON
         ):
             return FuelCellControlDecision(

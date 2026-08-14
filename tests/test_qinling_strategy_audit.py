@@ -38,7 +38,7 @@ class QinlingStrategyAuditTest(unittest.TestCase):
         by_key = {resource.key: resource for resource in self.inventory.resources}
         for resource in self.inventory.by_technology("wind"):
             raw = resource.device["raw"]
-            expected = 50.0 if resource.source_index == "24" else 10.1
+            expected = 50.0 if resource.source_index == "41" else 10.1
             self.assertEqual(float(raw["p_min"]), 0.0)
             self.assertEqual(float(raw["p_max"]), expected)
         for resource in self.inventory.by_technology("pv"):
@@ -49,9 +49,17 @@ class QinlingStrategyAuditTest(unittest.TestCase):
             self.assertEqual(float(resource.parameter["reference_irradiance"]), 1000.0)
         for resource in self.inventory.by_technology("storage"):
             raw = resource.device["raw"]
-            expected = 100.0 if resource.side == "AC" else 60.0
+            expected = (
+                5.0
+                if resource.source_index == "26"
+                else 100.0
+                if resource.side == "AC"
+                else 60.0
+            )
             self.assertEqual(float(raw["p_min"]), -expected)
             self.assertEqual(float(raw["p_max"]), expected)
+            self.assertEqual(float(resource.parameter["max_charge_power"]), expected)
+            self.assertEqual(float(resource.parameter["max_discharge_power"]), expected)
         for resource in self.inventory.by_technology("diesel"):
             raw = resource.device["raw"]
             self.assertEqual(float(raw["p_min"]), 70.0)
@@ -100,7 +108,9 @@ class QinlingStrategyAuditTest(unittest.TestCase):
         )
         self.assertEqual(first["summary"]["overall_pass"], 8)
         self.assertEqual(first["summary"]["overall_fail"], 0)
-        self.assertEqual(first["summary"]["operational_summary"]["warning_scenarios"], 0)
+        operational = first["summary"]["operational_summary"]
+        self.assertEqual(operational["warning_scenarios"], operational["balance_slack_scenarios"])
+        self.assertGreater(operational["warning_scenarios"], 0)
         for scenario in first["scenarios"]:
             self.assertLess(abs(scenario["values"]["initial_ac_balance_residual_kw"]), 1e-7)
             self.assertLess(abs(scenario["values"]["initial_dc_balance_residual_kw"]), 1e-7)
@@ -112,6 +122,8 @@ class QinlingStrategyAuditTest(unittest.TestCase):
                     for check in scenario["checks"].values()
                 )
             )
+            for warning in scenario["warnings"]:
+                self.assertIn("最小功率平衡松弛继续形成策略", warning)
 
     def test_parallel_converter_checker_rejects_non_proportional_targets(self):
         rows = [

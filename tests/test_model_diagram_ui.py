@@ -45,7 +45,12 @@ class ModelDiagramUiTest(unittest.TestCase):
                 )[0]
                 self.assertIn("diagramMeasurementMaps(snapshot)", binding_block)
                 self.assertIn("diagramControlMap(snapshot)", binding_block)
-                self.assertIn("querySelectorAll", binding_block)
+                self.assertIn("diagramRealtimeBindings(container)", binding_block)
+                helper_block = script.split("function diagramRealtimeBindings", 1)[1].split(
+                    "function diagramBindingValue",
+                    1,
+                )[0]
+                self.assertIn("querySelectorAll", helper_block)
                 self.assertIn("diagramBindingValue", script)
 
 

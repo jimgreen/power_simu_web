@@ -658,6 +658,26 @@ def _generate_candidate(
     add("Environment", "weather", "WIND_SPEED", wind_speed)
     add("Environment", "weather", "SOLAR_IRRADIANCE", irradiance)
     add("Environment", "weather", "AIR_TEMP", temperature)
+    for device in snapshot.get("devices", []) or []:
+        if not isinstance(device, Mapping):
+            continue
+        model_block = str(device.get("model_block", "")).strip()
+        name = str(device.get("dev_name", "")).strip()
+        raw = _raw(device)
+        if not name:
+            continue
+        if model_block == "HydroStorage":
+            pressure = _number(raw.get("pressure"), _number(raw.get("pressure_set")))
+            soc = _number(raw.get("soc"), _number(raw.get("initial_soc")))
+            flow = _number(raw.get("flow"), _number(raw.get("flow_set"), 0.0))
+            if pressure is not None:
+                add(model_block, name, "PRESSURE", pressure)
+            if soc is not None:
+                add(model_block, name, "SOC", soc)
+            if flow is not None:
+                add(model_block, name, "FLOW", flow)
+        elif model_block in {"HydroSource", "HydroLoad"}:
+            add(model_block, name, "FLOW", 0.0)
     for resource in (*ac_renewables, *dc_renewables):
         add(resource.model_block, resource.key[1], "P_GEN", renewable_values[resource.key])
     for resource in ac_storage:

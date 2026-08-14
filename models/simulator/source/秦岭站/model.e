@@ -97,11 +97,11 @@
 @ idx  name        dev_type          node  control_type  p_set  p_max  p_min  q_set  q_max  q_min  v_set  alpha  run_stat  rated_capacity  rated_voltage  v_max  v_min  p  q  u  f  regable
 # 23   交流电化学储能-23  ac-storage        33    PQ            0.0    100    -100   0.0    100    -100   380    1.0    1         100             380            456    304    0  0  0  0  1
 # 25   交流光伏发电机-25  ac-pv-source      35    PV            0      20     0      0      20     -20    380    1.0    1         20              10             456    304    0  0  0  0  1
-# 26   交流电化学储能-26  ac-storage        36    PH            0.0    100    -100   0.0    5      -5     380    1.0    1         5               380            456    304    0  0  0  0  1
-# 27   交流柴油发电机-27  ac-diesel-source  26    PH            0      300    70     0      300    -300   380    1.0    1         300             380            456    304    0  0  0  0  0
-# 28   交流柴油发电机-28  ac-diesel-source  27    PH            0      300    70     0      300    -300   380    1.0    1         300             380            456    304    0  0  0  0  0
-# 29   交流柴油发电机-29  ac-diesel-source  28    PH            0      300    70     0      300    -300   380    1.0    1         300             380            456    304    0  0  0  0  0
-# 30   交流柴油发电机-30  ac-diesel-source  29    PH            0      300    70     0      300    -300   380    1.0    1         300             380            456    304    0  0  0  0  0
+# 26   交流电化学储能-26  ac-storage        36    PH            0.0    5      -5     0.0    5      -5     380    1.0    1         5               380            456    304    0  0  0  0  1
+# 27   交流柴油发电机-27  ac-diesel-source  26    PH            70     300    70     0      300    -300   380    1.0    1         300             380            456    304    0  0  0  0  0
+# 28   交流柴油发电机-28  ac-diesel-source  27    PH            70     300    70     0      300    -300   380    1.0    1         300             380            456    304    0  0  0  0  0
+# 29   交流柴油发电机-29  ac-diesel-source  28    PH            70     300    70     0      300    -300   380    1.0    1         300             380            456    304    0  0  0  0  0
+# 30   交流柴油发电机-30  ac-diesel-source  29    PH            70     300    70     0      300    -300   380    1.0    1         300             380            456    304    0  0  0  0  0
 # 31   交流风电-1      ac-wind-source    1     PV            0      10.1   0      0      10.1   -10.1  380    1.0    1         10.1            380            456    304    0  0  0  0  1
 # 32   交流风电-2      ac-wind-source    2     PV            0      10.1   0      0      10.1   -10.1  380    1.0    1         10.1            380            456    304    0  0  0  0  1
 # 33   交流风电-3      ac-wind-source    3     PV            0      10.1   0      0      10.1   -10.1  380    1.0    1         10.1            380            456    304    0  0  0  0  1
@@ -120,19 +120,19 @@
 </ACZeroBranch>
 <ACBreak>
 @ idx  name     dev_type        i_node  j_node  status  run_stat  i  rated_capacity  i_max
-# 1    交流断路器-1  ac-breaker      23      24      1       1         0  0               0
-# 2    交流断路器-2  ac-breaker      25      24      1       1         0  0               0
-# 3    盒型开关-3   ac-box-breaker  24      26      1       1         0  0               0
-# 4    盒型开关-4   ac-box-breaker  24      27      1       1         0  0               0
-# 5    盒型开关-5   ac-box-breaker  24      28      1       1         0  0               0
-# 6    盒型开关-6   ac-box-breaker  24      29      1       1         0  0               0
-# 7    盒型开关-7   ac-box-breaker  24      30      1       1         0  0               0
-# 8    盒型开关-8   ac-box-breaker  24      21      1       1         0  0               0
-# 9    盒型开关-9   ac-box-breaker  31      22      1       1         0  0               0
-# 10   盒型开关-10  ac-box-breaker  24      33      1       1         0  0               0
-# 11   盒型开关-11  ac-box-breaker  24      34      1       1         0  0               0
-# 12   盒型开关-12  ac-box-breaker  24      35      1       1         0  0               0
-# 13   盒型开关-13  ac-box-breaker  36      24      1       1         0  0               0
+# 1    交流断路器-1  ac-breaker      23      24      1       1         0  300             455.816214902
+# 2    交流断路器-2  ac-breaker      25      24      1       1         0  300             455.816214902
+# 3    盒型开关-3   ac-box-breaker  24      26      1       1         0  300             455.816214902
+# 4    盒型开关-4   ac-box-breaker  24      27      1       1         0  300             455.816214902
+# 5    盒型开关-5   ac-box-breaker  24      28      1       1         0  300             455.816214902
+# 6    盒型开关-6   ac-box-breaker  24      29      1       1         0  300             455.816214902
+# 7    盒型开关-7   ac-box-breaker  24      30      1       1         0  300             455.816214902
+# 8    盒型开关-8   ac-box-breaker  24      21      1       1         0  300             455.816214902
+# 9    盒型开关-9   ac-box-breaker  31      22      1       1         0  300             455.816214902
+# 10   盒型开关-10  ac-box-breaker  24      33      1       1         0  300             455.816214902
+# 11   盒型开关-11  ac-box-breaker  24      34      1       1         0  300             455.816214902
+# 12   盒型开关-12  ac-box-breaker  24      35      1       1         0  300             455.816214902
+# 13   盒型开关-13  ac-box-breaker  36      24      1       1         0  300             455.816214902
 </ACBreak>
 <DCNode>
 @ idx  name        vbase  run_stat
@@ -243,19 +243,19 @@
 # 9    储能变流器-6  dcdc-converter  20      34      V               NONE            0      0      750    1         5               5        -5       3.84911470362  900      600      5        -5       5.77367205543  600      400      0   0
 </DCDCConverter>
 <DCACConverter>
-@ idx  name       dev_type        ac_node  dc_node  ac_control_type  dc_control_type  p_ac_set  q_ac_set  v_ac_set  p_dc_set  v_dc_set  run_stat  rated_capacity  ac_p_max  ac_p_min  ac_q_max  ac_q_min  ac_i_max       ac_v_max  ac_v_min  dc_p_max  dc_p_min  dc_i_max       dc_v_max  dc_v_min  r1  r2
-# 1    风机变流器-1    acdc-converter  11       1        PH               NONE             0         0         380       0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
-# 2    风机变流器-2    acdc-converter  12       2        PH               NONE             0         0         380       0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
-# 3    风机变流器-3    acdc-converter  13       3        PH               NONE             0         0         380       0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
-# 4    风机变流器-4    acdc-converter  14       4        PH               NONE             0         0         380       0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
-# 5    风机变流器-5    acdc-converter  15       5        PH               NONE             0         0         380       0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
-# 6    风机变流器-6    acdc-converter  16       6        PH               NONE             0         0         380       0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
-# 7    风机变流器-7    acdc-converter  17       7        PH               NONE             0         0         380       0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
-# 8    风机变流器-8    acdc-converter  18       8        PH               NONE             0         0         380       0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
-# 9    风机变流器-9    acdc-converter  19       9        PH               NONE             0         0         380       0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
-# 10   风机变流器-10   acdc-converter  20       10       PH               NONE             0         0         380       0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
-# 13   DCAC变流器-1  dcac-converter  23       21       PQ               NONE             0         0         380       0         750       1         300             300       -300      10        -10       455.816214902  456       304       300       -300      230.946882217  900       600       0   0
-# 14   DCAC变流器-2  dcac-converter  25       22       PQ               NONE             0         0         380       0         750       1         300             300       -300      10        -10       455.816214902  456       304       300       -300      230.946882217  900       600       0   0
+@ idx  name       dev_type        ac_node  dc_node  ac_control_type  dc_control_type  p_ac_set  q_ac_set  v_ac_set  p_dc_set  i_dc_set  v_dc_set  run_stat  rated_capacity  ac_p_max  ac_p_min  ac_q_max  ac_q_min  ac_i_max       ac_v_max  ac_v_min  dc_p_max  dc_p_min  dc_i_max       dc_v_max  dc_v_min  r1  r2
+# 1    风机变流器-1    acdc-converter  11       1        PH               NONE             0         0         380       0         0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
+# 2    风机变流器-2    acdc-converter  12       2        PH               NONE             0         0         380       0         0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
+# 3    风机变流器-3    acdc-converter  13       3        PH               NONE             0         0         380       0         0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
+# 4    风机变流器-4    acdc-converter  14       4        PH               NONE             0         0         380       0         0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
+# 5    风机变流器-5    acdc-converter  15       5        PH               NONE             0         0         380       0         0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
+# 6    风机变流器-6    acdc-converter  16       6        PH               NONE             0         0         380       0         0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
+# 7    风机变流器-7    acdc-converter  17       7        PH               NONE             0         0         380       0         0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
+# 8    风机变流器-8    acdc-converter  18       8        PH               NONE             0         0         380       0         0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
+# 9    风机变流器-9    acdc-converter  19       9        PH               NONE             0         0         380       0         0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
+# 10   风机变流器-10   acdc-converter  20       10       PH               NONE             0         0         380       0         0         750       1         10              10        -10       10        -10       15.1938738301  456       304       10        -10       7.69822940724  900       600       0   0
+# 13   DCAC变流器-1  dcac-converter  23       21       PQ               NONE             0         0         380       0         0         750       1         300             300       -300      10        -10       455.816214902  456       304       300       -300      230.946882217  900       600       0   0
+# 14   DCAC变流器-2  dcac-converter  25       22       PQ               NONE             0         0         380       0         0         750       1         300             300       -300      10        -10       455.816214902  456       304       300       -300      230.946882217  900       600       0   0
 </DCACConverter>
 <HydroNode>
 @ idx  name       pressure  run_stat
@@ -270,8 +270,8 @@
 # 2    直流燃料电池-1_氢能设备端氢荷  dc-fuel-cell  1     FLOW          2             10        1         10              5             0.1           10        0
 </HydroLoad>
 <HydroStorage>
-@ idx  name       dev_type                 node  control_type  pressure_set  flow_set  alpha  run_stat  flow_min  flow_max  pressure  rated_capacity  water_volume  initial_soc  pressure_max  pressure_min
-# 4    集装格式储氢罐-3  hydrogen-tank-container  1     PRESSURE      1             0         1      1         20        -20       1         1000            10            0.5          10            1
+@ idx  name       dev_type                 node  control_type  pressure_set  flow_set  alpha  run_stat  flow_min  flow_max  pressure  rated_capacity  water_volume  initial_soc  pressure_max  pressure_min  soc  soc_upper_limit  soc_lower_limit
+# 4    集装格式储氢罐-3  hydrogen-tank-container  1     PRESSURE      1             0         1      1         -20       20        1         1000            10            0.5          10            1             0.5  0.9              0.1
 </HydroStorage>
 <AcE2Hydro>
 @ idx  name     dev_type         control_type  run_stat  e2h_coeff  idx_ac_load_t1  idx_h2_unit_t2
@@ -302,27 +302,27 @@
 # 3    3                Mono-550W        0.25               200         25          1000                  25                     -0.004
 </DCPVGen>
 <DCStorageGen>
-@ idx  idx_dcgenerator  storage_technology  battery_rack_count  energy_capacity  charge_discharge_efficiency  max_charge_power  max_discharge_power  state_of_charge  soc_upper_limit  soc_lower_limit  soc
-# 1    4                lithium             20                  60               0.95                         60                60                   0.5              0.9              0.2              0
-# 2    5                lithium             20                  60               0.95                         60                60                   0.5              0.9              0.2              0
-# 3    6                lithium             20                  60               0.95                         60                60                   0.5              0.9              0.2              0
-# 4    7                lithium             20                  60               0.95                         60                60                   0.5              0.9              0.2              0
-# 5    8                lithium             20                  60               0.95                         60                60                   0.5              0.9              0.2              0
-# 6    9                lithium             20                  60               0.95                         60                60                   0.5              0.9              0.2              0
+@ idx  idx_dcgenerator  storage_technology  battery_rack_count  energy_capacity  charge_discharge_efficiency  max_charge_power  max_discharge_power  soc  soc_upper_limit  soc_lower_limit
+# 1    4                lithium             20                  60               0.95                         60                60                   0.5  0.9              0.1
+# 2    5                lithium             20                  60               0.95                         60                60                   0.5  0.9              0.1
+# 3    6                lithium             20                  60               0.95                         60                60                   0.5  0.9              0.1
+# 4    7                lithium             20                  60               0.95                         60                60                   0.5  0.9              0.1
+# 5    8                lithium             20                  60               0.95                         60                60                   0.5  0.9              0.1
+# 6    9                lithium             20                  60               0.95                         60                60                   0.5  0.9              0.1
 </DCStorageGen>
 <ACStorageGen>
-@ idx  idx_acgenerator  storage_technology  battery_rack_count  energy_capacity  charge_discharge_efficiency  max_charge_power  max_discharge_power  state_of_charge  soc_upper_limit  soc_lower_limit  soc
-# 1    23               lithium             20                  200              0.9                          100               100                  0.5              0.9              0.2              0
-# 2    26               lithium             20                  100              0.9                          100               100                  0.5              0.9              0.2              0
+@ idx  idx_acgenerator  storage_technology  battery_rack_count  energy_capacity  charge_discharge_efficiency  max_charge_power  max_discharge_power  soc  soc_upper_limit  soc_lower_limit
+# 1    23               lithium             20                  200              0.9                          100               100                  0.5  0.9              0.1
+# 2    26               lithium             20                  100              0.9                          5                 5                    0.5  0.9              0.1
 </ACStorageGen>
 <ACPVGen>
 @ idx  idx_acgenerator  pv_module_model  module_efficiency  array_area  mppt_count  reference_irradiance  reference_temperature  temperature_coefficient
 # 1    25               Mono-550W        0.213              100000      100         1000                  25                     -0.004
 </ACPVGen>
 <ACDieselGen>
-@ idx  idx_acgenerator  diesel_unit_model  fuel_grade  specific_fuel_consumption  fuel_tank_capacity  rated_speed  start_time
-# 1    27               DG-2500            0#柴油        200                        20                  1500         10
-# 2    28               DG-2500            0#柴油        200                        20                  1500         10
-# 3    29               DG-2500            0#柴油        200                        20                  1500         10
-# 4    30               DG-2500            0#柴油        200                        20                  1500         10
+@ idx  idx_acgenerator  diesel_unit_model  fuel_grade  specific_fuel_consumption  fuel_tank_capacity  rated_speed  start_time  rated_power  p_min  p_max
+# 1    27               DG-2500            0#柴油        200                        20                  1500         10          300          70     300
+# 2    28               DG-2500            0#柴油        200                        20                  1500         10          300          70     300
+# 3    29               DG-2500            0#柴油        200                        20                  1500         10          300          70     300
+# 4    30               DG-2500            0#柴油        200                        20                  1500         10          300          70     300
 </ACDieselGen>

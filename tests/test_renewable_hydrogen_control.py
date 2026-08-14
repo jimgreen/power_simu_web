@@ -408,6 +408,24 @@ def test_hydrogen_settings_round_trip_with_independent_closed_loop_switch():
     json.dumps(updated.payload())
 
 
+def test_electrolyzer_recommended_defaults():
+    payload = RenewableControlSettings().payload()
+
+    expected = {
+        "electrolyzerPowerMinRatio": 0.20,
+        "electrolyzerPowerMaxRatio": 0.90,
+        "electrolyzerPowerDeadbandRatio": 0.10,
+        "electrolyzerPowerStepRatio": 0.10,
+        "electrolyzerDieselPowerLimitRatio": 0.35,
+        "electrolyzerDieselPowerDeadbandRatio": 0.05,
+        "electrolyzerStorageSocStartMinimum": 0.70,
+        "electrolyzerStorageSocStopMaximum": 0.30,
+        "electrolyzerHydrogenStorageSocStopMinimum": 0.90,
+    }
+    for key, value in expected.items():
+        assert payload[key] == pytest.approx(value)
+
+
 def test_hydrogen_power_settings_normalize_invalid_ranges():
     settings = RenewableControlSettings().updated(
         {
@@ -1472,6 +1490,7 @@ def test_electrolyzer_start_requires_average_storage_soc_strictly_above_70_perce
         electrolyzer_power_max_kw=20.0,
         electrolyzer_power_deadband_kw=1.0,
         electrolyzer_power_step_kw=6.0,
+        electrolyzer_diesel_power_limit_ratio=0.8,
     )
     result, rows = _run_electrolyzer(
         _electrolyzer_snapshot(electric_power=0.0),
@@ -1682,7 +1701,9 @@ def test_electrolyzer_power_step_is_clamped_by_diesel_headroom():
 def test_electrolyzer_power_step_is_clamped_by_power_and_flow_limits():
     settings = RenewableControlSettings(
         step_coefficient=0.1,
+        electrolyzer_power_deadband_ratio=0.0,
         electrolyzer_power_step_ratio=0.1,
+        electrolyzer_diesel_power_limit_ratio=0.8,
     )
     snapshot = _electrolyzer_snapshot(electric_power=4.0)
     snapshot["definitions"]["model"]["ACLoad"]["rows"][0]["p_max"] = 4.7
@@ -2302,7 +2323,7 @@ def test_closed_hydrogen_valve_splits_island_and_fails_only_disconnected_device(
     assert any("没有在线储氢罐" in warning for warning in result["warnings"])
 
 
-def test_hydrogen_start_jumps_to_real_minimum_when_normal_step_is_too_small():
+def test_hydrogen_start_jumps_to_deadband_threshold_when_normal_step_is_too_small():
     snapshot = _electrolyzer_snapshot(electric_power=0.0)
     snapshot["definitions"]["model"]["ACLoad"]["rows"][0]["p_min"] = 5.0
     snapshot["definitions"]["model"]["HydroSource"]["rows"][0]["flow_min"] = 1.5
@@ -2316,8 +2337,10 @@ def test_hydrogen_start_jumps_to_real_minimum_when_normal_step_is_too_small():
 
     command = next(row for row in rows if row.get("dev_name") == "electrolyzer-load")
     assert result["action"] == "electrolyzer"
-    assert command["commandKw"] == pytest.approx(7.5)
-    assert result["commands"][0]["startThresholdKw"] == pytest.approx(7.5)
+    assert command["commandKw"] == pytest.approx(9.5)
+    assert result["commands"][0]["minimumRunningPowerKw"] == pytest.approx(7.5)
+    assert result["commands"][0]["powerDeadbandKw"] == pytest.approx(2.0)
+    assert result["commands"][0]["startThresholdKw"] == pytest.approx(9.5)
     assert result["commands"][0]["stepLimitKw"] < result["commands"][0]["startThresholdKw"]
 
 

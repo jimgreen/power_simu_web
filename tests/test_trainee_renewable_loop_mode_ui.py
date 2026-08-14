@@ -231,6 +231,33 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         self.assertIn("fuel_cell_hydrogen_storage_soc_upper_limit", self.backend)
         self.assertIn("fuel_cell_hydrogen_storage_soc_lower_limit", self.backend)
 
+    def test_electrolyzer_recommended_defaults_are_rendered_as_percentages(self):
+        expected_percentages = {
+            "electrolyzerPowerMinRatio": "20",
+            "electrolyzerPowerMaxRatio": "90",
+            "electrolyzerPowerDeadbandRatio": "10",
+            "electrolyzerPowerStepRatio": "10",
+            "electrolyzerDieselPowerLimitRatio": "35",
+            "electrolyzerDieselPowerDeadbandRatio": "5",
+            "electrolyzerStorageSocStartMinimum": "70",
+            "electrolyzerStorageSocStopMaximum": "30",
+            "electrolyzerHydrogenStorageSocStopMinimum": "90",
+        }
+        for field_id, percentage in expected_percentages.items():
+            self.assertRegex(
+                self.html,
+                rf'id="{field_id}"[^>]*value="{percentage}"',
+            )
+
+        for fallback in (
+            'electrolyzerPowerMinRatio: ratio("electrolyzerPowerMinRatio", 20)',
+            'electrolyzerPowerMaxRatio: ratio("electrolyzerPowerMaxRatio", 90)',
+            'electrolyzerPowerDeadbandRatio: ratio("electrolyzerPowerDeadbandRatio", 10)',
+            'electrolyzerPowerStepRatio: ratio("electrolyzerPowerStepRatio", 10, 0.001, 100)',
+            'electrolyzerDieselPowerLimitRatio: ratio("electrolyzerDieselPowerLimitRatio", 35)',
+        ):
+            self.assertIn(fallback, self.script)
+
     def test_strategy_table_marks_open_loop_and_hydrogen_preview_rows_as_not_dispatched(self):
         table_block = self.script.split(
             'table.innerHTML = `\n    <table class="runtime-device-table renewable-command-table">',

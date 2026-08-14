@@ -82,15 +82,26 @@ class TraineeRenewableHydrogenMetricsUiTest(unittest.TestCase):
             self.html,
         )
         self.assertIn('class="renewable-control-parameter-footer"', self.html)
+        self.assertIn('id="renewableControlParametersMessage"', self.html)
         dialog_style = re.search(
             r"\.renewable-control-parameters-dialog\s*\{(?P<body>[^}]*)\}",
             self.styles,
         )
         self.assertIsNotNone(dialog_style)
         dialog_body = dialog_style.group("body")
-        self.assertRegex(dialog_body, r"(?m)^\s*height:\s*auto;")
+        self.assertRegex(dialog_body, r"(?m)^\s*height:\s*fit-content;")
         self.assertRegex(dialog_body, r"(?m)^\s*overflow:\s*hidden;")
         self.assertNotRegex(dialog_body, r"(?m)^\s*height:\s*min\(")
+        self.assertRegex(
+            self.styles,
+            r"\.renewable-control-parameters-dialog \.remote-control-form\s*\{[^}]*"
+            r"grid-template-rows:\s*auto auto auto auto;",
+        )
+        self.assertRegex(
+            self.styles,
+            r"\.renewable-control-parameter-pane\s*\{[^}]*height:\s*auto;[^}]*"
+            r"max-height:\s*calc\(100dvh - 190px\);",
+        )
         self.assertRegex(
             self.styles,
             r"\.renewable-hydrogen-power-settings\s*\{[^}]*"
@@ -136,6 +147,17 @@ class TraineeRenewableHydrogenMetricsUiTest(unittest.TestCase):
             '$("renewableControlParametersDialog")?.addEventListener("click"',
             lifecycle_block,
         )
+
+    def test_saving_control_parameters_keeps_the_dialog_open(self):
+        save_block = self.script.split(
+            "async function saveRenewableControlParameters()",
+            1,
+        )[1].split("function storagePowerDeratingRowHtml", 1)[0]
+
+        self.assertIn("await updateRenewableSettings()", save_block)
+        self.assertNotIn("closeRenewableControlParametersDialog", save_block)
+        self.assertIn('setRenewableControlParametersMessage("正在保存控制参数...")', save_block)
+        self.assertIn('"控制参数已保存并生效。"', save_block)
 
 
 if __name__ == "__main__":

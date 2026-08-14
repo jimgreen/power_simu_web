@@ -14140,8 +14140,17 @@ function openRenewableControlParametersDialog() {
   if (dialog && !dialog.open) {
     populateRenewableControlParameters();
     renderRenewableControlParameterTabs("runtime");
+    setRenewableControlParametersMessage();
     dialog.showModal();
   }
+}
+
+function setRenewableControlParametersMessage(message = "", status = "") {
+  const node = $("renewableControlParametersMessage");
+  if (!node) return;
+  node.textContent = message || "参数修改后点击保存，写入学员台 WEB 后台，并供下次启动加载。";
+  if (status) node.dataset.state = status;
+  else delete node.dataset.state;
 }
 
 function closeRenewableControlParametersDialog() {
@@ -14687,8 +14696,19 @@ async function updateRenewableSettings() {
 }
 
 async function saveRenewableControlParameters() {
+  setRenewableControlParametersMessage("正在保存控制参数...");
   const response = await updateRenewableSettings();
-  if (response) closeRenewableControlParametersDialog();
+  if (response) {
+    setRenewableControlParametersMessage(
+      response.status || "控制参数已保存并生效。",
+      "ok",
+    );
+    return;
+  }
+  setRenewableControlParametersMessage(
+    state.renewableControl.lastStatus || "控制参数保存失败，请检查输入后重试。",
+    "error",
+  );
 }
 
 function storagePowerDeratingRowHtml(direction, point, index) {

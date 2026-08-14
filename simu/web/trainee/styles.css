@@ -5374,7 +5374,7 @@ th {
 }
 .renewable-control-parameters-dialog {
   width: min(920px, calc(100vw - 24px));
-  height: auto;
+  height: fit-content;
   max-height: min(760px, calc(100dvh - 24px));
   overflow: hidden;
 }
@@ -5489,7 +5489,7 @@ body:has(.renewable-control-parameters-dialog[open]) {
   max-height: min(760px, calc(100dvh - 24px));
   padding: 16px 18px;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto auto;
   overflow: hidden;
 }
 .renewable-control-parameters-dialog .remote-control-head {
@@ -5536,10 +5536,12 @@ body:has(.renewable-control-parameters-dialog[open]) {
 }
 .renewable-control-parameter-panes {
   min-height: 0;
+  max-height: calc(100dvh - 190px);
   overflow: hidden;
 }
 .renewable-control-parameter-pane {
-  height: 100%;
+  height: auto;
+  max-height: calc(100dvh - 190px);
   padding: 10px 2px 4px;
   overflow-x: hidden;
   overflow-y: auto;
@@ -5664,6 +5666,12 @@ body:has(.renewable-control-parameters-dialog[open]) {
 }
 .renewable-control-parameter-footer .remote-control-hint {
   min-width: 0;
+}
+.renewable-control-parameter-footer .remote-control-hint[data-state="ok"] {
+  color: var(--teal-dark);
+}
+.renewable-control-parameter-footer .remote-control-hint[data-state="error"] {
+  color: var(--red);
 }
 .renewable-control-parameter-footer .dialog-actions {
   flex: 0 0 auto;
@@ -6300,7 +6308,10 @@ canvas {
 }
 
 @media (max-height: 780px) and (min-width: 821px) {
-  .renewable-control-parameters-dialog,
+  .renewable-control-parameters-dialog {
+    height: fit-content;
+    max-height: calc(100dvh - 20px);
+  }
   .renewable-control-parameters-dialog .remote-control-form {
     height: auto;
     max-height: calc(100dvh - 20px);
@@ -6468,7 +6479,7 @@ canvas {
     grid-template-columns: 1fr;
   }
   .renewable-control-parameters-dialog {
-    height: auto;
+    height: fit-content;
     max-height: calc(100dvh - 20px);
   }
   .renewable-control-parameters-dialog .remote-control-form {
@@ -6659,6 +6670,10 @@ canvas {
     align-items: stretch;
     flex-direction: column;
     gap: 8px;
+  }
+  .renewable-control-parameter-panes,
+  .renewable-control-parameter-pane {
+    max-height: calc(100dvh - 260px);
   }
   .renewable-control-parameter-footer .dialog-actions {
     justify-content: flex-end;

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>极地微电网学员台</title>
-    <link rel="stylesheet" href="/styles.css?v=20260814-model-lifecycle-context-action" />
+    <link rel="stylesheet" href="/styles.css?v=20260814-renewable-parameter-dialog-fit" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -1404,7 +1404,7 @@
           </section>
         </div>
         <div class="renewable-control-parameter-footer">
-          <p class="remote-control-hint">参数修改后点击保存，写入学员台 WEB 后台，并供下次启动加载。</p>
+          <p id="renewableControlParametersMessage" class="remote-control-hint" aria-live="polite">参数修改后点击保存，写入学员台 WEB 后台，并供下次启动加载。</p>
           <div class="dialog-actions">
             <button id="cancelRenewableControlParametersDialog" type="button">取消</button>
             <button id="saveRenewableControlParameters" class="primary" type="button">保存</button>
@@ -1577,6 +1577,6 @@
         </div>
       </form>
     </dialog>
-    <script src="/app.js?v=20260814-storage-soc-trend"></script>
+    <script src="/app.js?v=20260814-renewable-parameter-save-stays-open"></script>
   </body>
 </html>

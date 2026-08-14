@@ -25,7 +25,7 @@
   "electrolyzer_storage_soc_stop_maximum": 0.30,
   "electrolyzer_hydrogen_storage_soc_stop_minimum": 0.90,
   "fuel_cell_power_min_ratio": 0.03,
-  "fuel_cell_power_max_ratio": 0.15,
+  "fuel_cell_power_max_ratio": 0.90,
   "fuel_cell_power_deadband_ratio": 0.0,
   "fuel_cell_power_step_ratio": 0.03,
   "fuel_cell_diesel_power_limit_ratio": 0.80,

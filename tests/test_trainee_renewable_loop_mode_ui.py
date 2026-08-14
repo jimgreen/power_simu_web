@@ -258,6 +258,17 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         ):
             self.assertIn(fallback, self.script)
 
+    def test_fuel_cell_recommended_power_ceiling_is_ninety_percent(self):
+        self.assertRegex(
+            self.html,
+            r'id="fuelCellPowerMaxRatio"[^>]*value="90"',
+        )
+        self.assertIn(
+            'fuelCellPowerMaxRatio: ratio("fuelCellPowerMaxRatio", 90)',
+            self.script,
+        )
+        self.assertIn("fuelCellPowerMaxRatio: 0.90", self.script)
+
     def test_strategy_table_marks_open_loop_and_hydrogen_preview_rows_as_not_dispatched(self):
         table_block = self.script.split(
             'table.innerHTML = `\n    <table class="runtime-device-table renewable-command-table">',

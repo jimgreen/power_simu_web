@@ -267,7 +267,7 @@
 </HydroSource>
 <HydroLoad>
 @ idx  name              dev_type      node  control_type  pressure_set  flow_set  run_stat  rated_capacity  pressure_max  pressure_min  flow_max  flow_min
-# 2    直流燃料电池-1_氢能设备端氢荷  dc-fuel-cell  1     FLOW          2             10        1         10              5             0.1           10        0
+# 2    直流燃料电池-1_氢能设备端氢荷  dc-fuel-cell  1     FLOW          2             10        1         20              5             0.1           20        0
 </HydroLoad>
 <HydroStorage>
 @ idx  name       dev_type                 node  control_type  pressure_set  flow_set  alpha  run_stat  flow_min  flow_max  pressure  rated_capacity  water_volume  initial_soc  pressure_max  pressure_min  soc  soc_upper_limit  soc_lower_limit

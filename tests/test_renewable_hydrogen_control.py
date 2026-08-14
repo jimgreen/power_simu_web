@@ -24,6 +24,9 @@ from simu.resource_topology import resolve_resource_topology
 from simu.model_semantics import energy_coupling_control_bindings
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 def _block(rows):
     return {"rows": rows}
 
@@ -36,6 +39,68 @@ def _measurement(dev_type, dev_name, meas_type, value):
         "value": value,
         "valid": 1,
     }
+
+
+def test_default_fuel_cell_power_ceiling_is_ninety_percent():
+    settings = RenewableControlSettings()
+
+    assert settings.fuel_cell_power_max_ratio == pytest.approx(0.90)
+
+
+@pytest.mark.parametrize(
+    "relative_model",
+    (
+        "models/simulator/source/新模型2/model.e",
+        "models/simulator/source/秦岭站/model.e",
+        "models/simulator/source/秦岭站2/model.e",
+        "models/trainee/source/新模型/model.e",
+        "models/trainee/source/默认模型/model.e",
+    ),
+)
+def test_bundled_fuel_cell_hydrogen_bounds_cover_rated_electric_power(
+    relative_model,
+):
+    book = simu_loop.EBook(ROOT / relative_model)
+    coupling = book.data["Hydro2DcE"].data[0]
+    generator = next(
+        row
+        for row in book.data["DCGenerator"].data
+        if str(row.get("idx")) == str(coupling["idx_dc_unit_t1"])
+    )
+    hydrogen_load = next(
+        row
+        for row in book.data["HydroLoad"].data
+        if str(row.get("idx")) == str(coupling["idx_h2_load_t2"])
+    )
+    coefficient = float(coupling["h2e_coeff"])
+    required_flow = float(generator["p_max"]) / coefficient
+
+    assert float(hydrogen_load["rated_capacity"]) >= required_flow
+    assert float(hydrogen_load["flow_max"]) >= required_flow
+    assert any(
+        float(row["flow_min"]) <= -required_flow
+        and float(row["flow_max"]) >= required_flow
+        for row in book.data["HydroStorage"].data
+    )
+
+
+def test_default_fuel_cell_ceiling_allows_twenty_seven_kw_target():
+    snapshot = _fuel_cell_snapshot()
+    for row in snapshot["measurements"]["scada"]:
+        if row["dev_type"] == "DCGenerator" and row["meas_type"] == "P_GEN":
+            row["value"] = 15.0
+        if row["dev_type"] == "HydroLoad" and row["meas_type"] == "FLOW":
+            row["value"] = 10.0
+
+    result, rows = _run(
+        snapshot,
+        RenewableControlSettings(fuel_cell_power_step_ratio=1.0),
+        diesel_power=100.0,
+    )
+    command = next(row for row in rows if row.get("dev_name") == "fuel-cell")
+
+    assert result["commands"][0]["configuredMaximumPowerKw"] == pytest.approx(27.0)
+    assert command["commandKw"] == pytest.approx(27.0)
 
 
 def _fuel_cell_snapshot(

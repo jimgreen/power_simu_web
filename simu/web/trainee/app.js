@@ -13020,32 +13020,6 @@ function renewableRowControlPointPower(row = {}, value = null) {
   return row.set_type === "p_dc_set" ? -numeric : numeric;
 }
 
-function renewableTopologyCellText(value) {
-  if (Array.isArray(value)) return value.length ? value.map((item) => renewableTopologyCellText(item)).join(" -> ") : "--";
-  const text = String(value ?? "").trim();
-  return text || "--";
-}
-
-function renewableConverterPathText(row = {}) {
-  if (!Array.isArray(row.converterPath) || !row.converterPath.length) return "--";
-  const names = row.converterPath.map((device) => (
-    Array.isArray(device)
-      ? device[1]
-      : device?.dev_name ?? device?.devName ?? device?.name ?? device
-  ));
-  return names.map((name) => String(name ?? "").trim()).filter(Boolean).join(" -> ") || "--";
-}
-
-function renewableIndirectControlText(row = {}) {
-  const devices = Array.isArray(row.indirectControlDevices) ? row.indirectControlDevices : [];
-  if (!devices.length) return "--";
-  return devices.map((device) => (
-    Array.isArray(device)
-      ? device[1]
-      : device?.dev_name ?? device?.devName ?? device?.name ?? device
-  )).map((name) => String(name ?? "").trim()).filter(Boolean).join(" -> ") || "--";
-}
-
 function renewableRowBoundaryText(row = {}) {
   if (row.commandKind === "run_status") return "退出 / 投入";
   if (row.category === "柴油发电") return `下限 ${formatNumber(row.minKw)} / 容量 ${formatNumber(row.capacityKw)}`;
@@ -13064,10 +13038,6 @@ function renewableRowStatusLabel(row = {}) {
   if (row.online) return "可控";
   if (row.activelyConnected === false) return "当前断开";
   return "停用";
-}
-
-function renewableTopologyTitle(text) {
-  return text === "--" ? "" : text;
 }
 
 function renewableStrategyRows(plan, tabKey = state.renewableControl.strategyTab) {
@@ -14555,13 +14525,7 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
         <tr>
           <th>设备名称</th>
           <th>遥调/遥控点名称</th>
-          <th>并网侧</th>
           <th>接入状态</th>
-          <th>接入母线</th>
-          <th>传输组</th>
-          <th>接入路径</th>
-          <th>拓扑状态</th>
-          <th>间接调节设备</th>
           <th>当前值</th>
           <th>可用边界</th>
           <th>目标值</th>
@@ -14581,15 +14545,7 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
                 ? "平衡储能仅间接调节"
                 : "";
           const pointName = renewableRemoteAdjustmentPointName(row);
-          const gridSideText = renewableTopologyCellText(row.gridSide ?? row.connectionSide);
           const connectionText = row.connectionStatusLabel || (row.activelyConnected === false ? "当前断开" : renewableRowStatusLabel(row));
-          const busText = renewableTopologyCellText(row.bus ?? row.busbarName ?? row.busbarNode);
-          const transferGroupText = renewableTopologyCellText(row.transferGroup || row.dcTransferGroupId || "--");
-          const converterPath = row.converterPath;
-          const pathText = renewableConverterPathText({ converterPath });
-          const topologyStatusText = renewableTopologyCellText(row.topologyStatusLabel);
-          const indirectControlDevices = row.indirectControlDevices;
-          const indirectText = renewableIndirectControlText({ indirectControlDevices });
           const boundaryText = renewableRowBoundaryText(row);
           const runControl = row.commandKind === "run_status";
           const currentValue = renewableRowControlPointPower(row, row.currentKw);
@@ -14613,13 +14569,7 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
           <tr class="${commandable && !balanceStorage ? "" : "is-muted"}">
             <td class="renewable-topology-text" title="${escapeHtml(row.dev_name)}">${escapeHtml(row.dev_name)}</td>
             <td class="renewable-control-point" title="${escapeHtml(pointName)}">${escapeHtml(pointName)}</td>
-            <td class="renewable-topology-text" title="${escapeHtml(renewableTopologyTitle(gridSideText))}">${escapeHtml(gridSideText)}</td>
             <td><span class="status-pill ${commandable ? "is-ok" : "is-off"}">${escapeHtml(connectionText)}</span></td>
-            <td class="renewable-topology-text" title="${escapeHtml(renewableTopologyTitle(busText))}">${escapeHtml(busText)}</td>
-            <td class="renewable-topology-text" title="${escapeHtml(renewableTopologyTitle(transferGroupText))}">${escapeHtml(transferGroupText)}</td>
-            <td class="renewable-topology-text" title="${escapeHtml(renewableTopologyTitle(pathText))}">${escapeHtml(pathText)}</td>
-            <td class="renewable-topology-text" title="${escapeHtml(renewableTopologyTitle(topologyStatusText))}">${escapeHtml(topologyStatusText)}</td>
-            <td class="renewable-topology-text" title="${escapeHtml(renewableTopologyTitle(indirectText))}">${escapeHtml(indirectText)}</td>
             <td class="numeric-cell">${currentText}</td>
             <td class="numeric-cell" title="${escapeHtml(boundaryText)}">${escapeHtml(boundaryText)}</td>
             <td class="numeric-cell">${targetText}</td>

@@ -36,21 +36,31 @@ class TraineeRenewableTopologyUiTest(unittest.TestCase):
         for old_key in ("wind", "pv", "storage"):
             self.assertNotIn(f'data-renewable-strategy-tab="{old_key}"', self.html)
 
-    def test_strategy_table_includes_topology_headings(self):
+    def test_strategy_table_keeps_operational_columns_and_removes_topology_details(self):
         render_block = self.script.split("function renderRenewableControl(snapshot", 1)[1].split(
             "async function toggleRenewableAuto",
             1,
         )[0]
         for heading in (
-            "并网侧",
+            "设备名称",
+            "遥调/遥控点名称",
             "接入状态",
+            "当前值",
+            "可用边界",
+            "目标值",
+            "SOC",
+            "执行",
+        ):
+            self.assertIn(f"<th>{heading}</th>", render_block)
+        for heading in (
+            "并网侧",
             "接入母线",
             "传输组",
             "接入路径",
             "拓扑状态",
             "间接调节设备",
         ):
-            self.assertIn(f"<th>{heading}</th>", render_block)
+            self.assertNotIn(f"<th>{heading}</th>", render_block)
 
     def test_strategy_tab_mapping_is_exact_and_defaults_to_ac_wind(self):
         expected_mapping = textwrap.dedent(
@@ -317,26 +327,28 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(result["acWindText"], "交流风电")
         self.assertEqual(result["converterSelected"], "false")
 
-    def test_strategy_rendering_uses_backend_topology_fields_verbatim(self):
+    def test_strategy_rendering_uses_only_backend_operational_fields(self):
         render_block = self.script.split("function renderRenewableControl(snapshot", 1)[1].split(
             "async function toggleRenewableAuto",
             1,
         )[0]
         for token in (
-            "row.gridSide",
             "row.connectionStatusLabel",
+            "projectedTargetKw",
+            "targetKw",
+            "currentKw",
+            "当前断开",
+        ):
+            self.assertIn(token, render_block)
+        for token in (
+            "row.gridSide",
             "row.bus",
             "row.transferGroup",
             "row.converterPath",
             "row.topologyStatusLabel",
             "row.indirectControlDevices",
-            "projectedTargetKw",
-            "targetKw",
-            "当前断开",
         ):
-            self.assertIn(token, render_block)
-        self.assertIn('.join(" -> ")', self.script)
-        self.assertIn('row.transferGroup || row.dcTransferGroupId || "--"', render_block)
+            self.assertNotIn(token, render_block)
         self.assertNotIn('data-renewable-strategy-tab="diagnostic"', self.html)
 
     def test_balance_storage_has_no_enabled_direct_command_action(self):
@@ -444,7 +456,8 @@ process.stdout.write(JSON.stringify([...storageSocRatiosByDevice(snapshot).entri
         self.assertIn("width: 118px;", button_block)
         self.assertIn("overflow: hidden;", button_block)
         self.assertIn("text-overflow: ellipsis;", button_block)
-        self.assertIn("min-width: 1480px;", table_block)
+        self.assertIn("min-width: 1020px;", table_block)
+        self.assertIn("table-layout: fixed;", table_block)
         self.assertIn(".renewable-topology-text", self.styles)
 
 

@@ -3948,7 +3948,7 @@ body.is-vertical-splitter-dragging {
 }
 .renewable-command-table {
   width: 100%;
-  min-width: 1480px;
+  min-width: 1020px;
   table-layout: fixed;
 }
 .runtime-device-table.renewable-command-table th,
@@ -3956,33 +3956,21 @@ body.is-vertical-splitter-dragging {
   text-align: right;
 }
 .renewable-command-table th:nth-child(1),
-.renewable-command-table td:nth-child(1) { width: 120px; }
+.renewable-command-table td:nth-child(1) { width: 150px; }
 .renewable-command-table th:nth-child(2),
-.renewable-command-table td:nth-child(2) { width: 190px; }
+.renewable-command-table td:nth-child(2) { width: 220px; }
 .renewable-command-table th:nth-child(3),
-.renewable-command-table td:nth-child(3) { width: 76px; }
+.renewable-command-table td:nth-child(3) { width: 110px; }
 .renewable-command-table th:nth-child(4),
-.renewable-command-table td:nth-child(4) { width: 96px; }
+.renewable-command-table td:nth-child(4) { width: 100px; }
 .renewable-command-table th:nth-child(5),
-.renewable-command-table td:nth-child(5) { width: 140px; }
+.renewable-command-table td:nth-child(5) { width: 160px; }
 .renewable-command-table th:nth-child(6),
-.renewable-command-table td:nth-child(6) { width: 110px; }
+.renewable-command-table td:nth-child(6) { width: 100px; }
 .renewable-command-table th:nth-child(7),
-.renewable-command-table td:nth-child(7) { width: 170px; }
+.renewable-command-table td:nth-child(7) { width: 80px; }
 .renewable-command-table th:nth-child(8),
-.renewable-command-table td:nth-child(8) { width: 150px; }
-.renewable-command-table th:nth-child(9),
-.renewable-command-table td:nth-child(9) { width: 160px; }
-.renewable-command-table th:nth-child(10),
-.renewable-command-table td:nth-child(10) { width: 92px; }
-.renewable-command-table th:nth-child(11),
-.renewable-command-table td:nth-child(11) { width: 130px; }
-.renewable-command-table th:nth-child(12),
-.renewable-command-table td:nth-child(12) { width: 92px; }
-.renewable-command-table th:nth-child(13),
-.renewable-command-table td:nth-child(13) { width: 72px; }
-.renewable-command-table th:nth-child(14),
-.renewable-command-table td:nth-child(14) { width: 96px; }
+.renewable-command-table td:nth-child(8) { width: 110px; }
 .renewable-strategy-tabs {
   flex: 0 0 auto;
   min-height: 38px;

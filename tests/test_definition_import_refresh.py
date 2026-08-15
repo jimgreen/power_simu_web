@@ -7,6 +7,7 @@ import zipfile
 from io import BytesIO
 from pathlib import Path
 from shutil import copytree
+from unittest.mock import patch
 from urllib.request import Request, urlopen
 
 import simu.server as server_module
@@ -35,7 +36,32 @@ def _replace_efile_block(text: str, block_name: str, replacement: str) -> str:
     return text[:start] + replacement.strip() + text[end:]
 
 
+def _matching_svg(model_text: str, extra: str = "") -> str:
+    model_book = server_module._book_from_text(model_text)
+    uses = []
+    for block_name in sorted(server_module._SVG_REQUIRED_MODEL_BLOCKS):
+        block = model_book.data.get(block_name)
+        for row in [] if block is None else block.data:
+            idx = str(row.get("idx", "")).strip()
+            name = str(row.get("name", "")).strip()
+            if idx and name:
+                uses.append(
+                    f'<use id="{block_name}-{idx}" dev-id="{block_name}-{idx}" '
+                    f'idx="{idx}" name="{name}" />'
+                )
+    return '<svg xmlns="http://www.w3.org/2000/svg">' + extra + "".join(uses) + "</svg>"
+
+
 class DefinitionImportRefreshTest(unittest.TestCase):
+    def setUp(self):
+        power_flow = patch.object(
+            server_module.simu_loop,
+            "solve_hybrid_snapshot_from_book",
+            return_value=(object(), "iter=2, normF=1.000e-09"),
+        )
+        power_flow.start()
+        self.addCleanup(power_flow.stop)
+
     def test_definition_archive_accepts_gb18030_e_and_svg_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
@@ -55,7 +81,10 @@ class DefinitionImportRefreshTest(unittest.TestCase):
                     ).encode("gb18030")
                 replacements["diagram.svg"] = (
                     '<?xml version="1.0" encoding="GB18030"?>'
-                    '<svg xmlns="http://www.w3.org/2000/svg"><text>秦岭站</text></svg>'
+                    + _matching_svg(
+                        replacements["model.e"].decode("gb18030"),
+                        "<text>秦岭站</text>",
+                    )
                 ).encode("gb18030")
             archive = _rewrite_definition_archive(archive, replacements)
 
@@ -290,7 +319,7 @@ class DefinitionImportRefreshTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "control_type"):
                 import_definition_archive(trainee, archive)
 
-    def test_import_definition_archive_requires_converter_p_dc_set(self):
+    def test_import_definition_archive_repairs_converter_p_dc_set(self):
         with tempfile.TemporaryDirectory() as temporary:
             temp_root = Path(temporary)
             package_service = PolarMicrogridSimulator(
@@ -321,8 +350,22 @@ class DefinitionImportRefreshTest(unittest.TestCase):
                 model_id="trainee",
             )
 
-            with self.assertRaisesRegex(ValueError, "p_dc_set"):
-                import_definition_archive(trainee, archive)
+            imported = import_definition_archive(trainee, archive)
+
+            saved_book = server_module._book_from_text(
+                (trainee_source / "model.e").read_text(encoding="utf-8")
+            )
+            converter = saved_book.data["DCACConverter"].data[0]
+            self.assertEqual(float(converter["p_dc_set"]), 0.0)
+            self.assertIn("p_dc_set", saved_book.data["DCACConverter"].header_list)
+            self.assertTrue(imported["validation"]["ok"])
+            self.assertTrue(
+                any(
+                    repair["block"] == "DCACConverter"
+                    and repair["field"] == "p_dc_set"
+                    for repair in imported["validation"]["repairs"]
+                )
+            )
 
     def test_import_definition_archive_removes_ambiguous_converter_runtime_fields(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -370,7 +413,11 @@ class DefinitionImportRefreshTest(unittest.TestCase):
             temp_root = Path(temporary)
             package_source = temp_root / "package-source"
             copytree(SIMPLE_MODEL_SOURCE, package_source)
-            diagram_text = '<svg xmlns="http://www.w3.org/2000/svg"><text data-meas-name="Environment.weather.WIND_SPEED"></text></svg>'
+            model_text = (package_source / "model.e").read_text(encoding="utf-8")
+            diagram_text = _matching_svg(
+                model_text,
+                '<text data-meas-name="Environment.weather.WIND_SPEED"></text>',
+            )
             (package_source / "diagram.svg").write_text(diagram_text, encoding="utf-8")
             package_service = PolarMicrogridSimulator(package_source, temp_root / "package-runtime", model_id="simple")
 

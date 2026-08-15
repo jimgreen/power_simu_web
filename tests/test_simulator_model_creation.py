@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from shutil import copytree
 from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 import simu_loop
 import simu.server as server_module
@@ -57,6 +59,46 @@ class SimulatorModelCreationTest(unittest.TestCase):
             temp_root / "runtime",
             models_dir=models_root,
         )
+
+    @staticmethod
+    def _matching_svg(model_text: str) -> str:
+        model_book = server_module._book_from_text(model_text)
+        visible_blocks = (
+            "ACRealBs",
+            "DCRealBs",
+            "ACBranch",
+            "DCBranch",
+            "ACZeroBranch",
+            "DCZeroBranch",
+            "ACSwitch",
+            "DCSwitch",
+            "ACBreak",
+            "DCBreak",
+            "ACLoad",
+            "DCLoad",
+            "ACGenerator",
+            "DCGenerator",
+            "DCDCConverter",
+            "DCACConverter",
+            "ACACConverter",
+            "AcE2Hydro",
+            "DcE2Hydro",
+            "Hydro2AcE",
+            "Hydro2DcE",
+            "HydroStorage",
+        )
+        uses = []
+        for block_name in visible_blocks:
+            block = model_book.data.get(block_name)
+            for row in [] if block is None else block.data:
+                idx = str(row.get("idx", "")).strip()
+                name = str(row.get("name", "")).strip()
+                if idx and name:
+                    uses.append(
+                        f'<use id="{block_name}-{idx}" dev-id="{block_name}-{idx}" '
+                        f'idx="{idx}" name="{name}" />'
+                    )
+        return '<svg xmlns="http://www.w3.org/2000/svg">' + "".join(uses) + "</svg>"
 
     def test_create_model_from_uploaded_model_e_generates_runtime_definitions(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -181,6 +223,266 @@ class SimulatorModelCreationTest(unittest.TestCase):
             r"ACGenerator.*control_type.*p_set.*q_set.*v_set",
         ):
             server_module._generated_model_artifacts(model_text)
+
+    def test_model_preflight_repairs_safe_generator_defaults_and_reports_power_flow(self):
+        model_text = """<ACNode>
+@ idx name vbase run_stat
+# 1 generator-node 380 1
+</ACNode>
+<ACGenerator>
+@ idx name node control_type p_max p_min q_max q_min rated_voltage run_stat
+# 1 generator 1 V 100 0 100 -100 380 1
+</ACGenerator>
+"""
+        diagram_text = self._matching_svg(model_text)
+
+        with patch.object(
+            server_module.simu_loop,
+            "solve_hybrid_snapshot_from_book",
+            return_value=(object(), "iter=2, normF=1.000e-09"),
+        ):
+            preflight = server_module._preflight_model_import(
+                model_text,
+                diagram_svg_text=diagram_text,
+                source_label="repairable-model.e",
+            )
+
+        self.assertTrue(preflight["validation"]["ok"])
+        checks = {
+            item["id"]: item
+            for item in preflight["validation"]["checks"]
+        }
+        self.assertEqual(checks["schema"]["status"], "repaired")
+        self.assertEqual(checks["power_flow"]["status"], "passed")
+        self.assertEqual(checks["diagram"]["status"], "passed")
+        generator = preflight["artifacts"]["model_book"].data["ACGenerator"].data[0]
+        self.assertEqual(float(generator["p_set"]), 0.0)
+        self.assertEqual(float(generator["q_set"]), 0.0)
+        self.assertEqual(float(generator["v_set"]), 380.0)
+        self.assertEqual(float(generator["p"]), 0.0)
+        self.assertEqual(float(generator["q"]), 0.0)
+        self.assertEqual(float(generator["u"]), 380.0)
+        self.assertEqual(float(generator["i"]), 0.0)
+        generator_headers = set(
+            preflight["artifacts"]["model_book"].data["ACGenerator"].header_list
+        )
+        self.assertTrue(
+            {"p_set", "q_set", "v_set", "p", "q", "u", "i"}
+            <= generator_headers
+        )
+
+    def test_model_preflight_repairs_load_setpoint_and_runtime_fields(self):
+        model_text = """<ACNode>
+@ idx name vbase run_stat
+# 1 load-node 380 1
+</ACNode>
+<ACLoad>
+@ idx name node pbase pv0 p_max p_min q_max q_min run_stat
+# 1 load 1 1 90 100 0 60 -60 1
+</ACLoad>
+"""
+
+        with patch.object(
+            server_module.simu_loop,
+            "solve_hybrid_snapshot_from_book",
+            return_value=(object(), "iter=2, normF=1.000e-09"),
+        ):
+            preflight = server_module._preflight_model_import(
+                model_text,
+                diagram_svg_text=self._matching_svg(model_text),
+                source_label="repairable-load.e",
+            )
+
+        self.assertTrue(preflight["validation"]["ok"])
+        load_block = preflight["artifacts"]["model_book"].data["ACLoad"]
+        load = load_block.data[0]
+        self.assertEqual(float(load["p_set"]), 1.0)
+        self.assertEqual(float(load["p"]), 0.0)
+        self.assertEqual(float(load["q"]), 0.0)
+        self.assertEqual(float(load["u"]), 380.0)
+        self.assertEqual(float(load["i"]), 0.0)
+        self.assertTrue({"p_set", "p", "q", "u", "i"} <= set(load_block.header_list))
+        repaired_fields = {
+            item["field"] for item in preflight["validation"]["repairs"]
+        }
+        self.assertTrue({"p_set", "p", "q", "u", "i"} <= repaired_fields)
+
+    def test_model_preflight_repairs_safe_converter_defaults(self):
+        model_text = """<ACNode>
+@ idx name vbase run_stat
+# 1 ac-node 380 1
+</ACNode>
+<DCNode>
+@ idx name vbase run_stat
+# 1 dc-node-1 720 1
+# 2 dc-node-2 750 1
+</DCNode>
+<DCDCConverter>
+@ idx name i_node j_node i_control_type j_control_type run_stat
+# 1 dcdc 1 2 V NONE 1
+</DCDCConverter>
+<DCACConverter>
+@ idx name ac_node dc_node ac_control_type dc_control_type p_ac_set p_dc_set run_stat
+# 1 dcac 1 1 NONE P 0 0 1
+</DCACConverter>
+"""
+
+        with patch.object(
+            server_module.simu_loop,
+            "solve_hybrid_snapshot_from_book",
+            return_value=(object(), "iter=2, normF=1.000e-09"),
+        ):
+            preflight = server_module._preflight_model_import(
+                model_text,
+                diagram_svg_text=self._matching_svg(model_text),
+                source_label="repairable-converter.e",
+            )
+
+        self.assertTrue(preflight["validation"]["ok"])
+        model_book = preflight["artifacts"]["model_book"]
+        dcdc_block = model_book.data["DCDCConverter"]
+        dcdc = dcdc_block.data[0]
+        self.assertEqual(float(dcdc["p_set"]), 0.0)
+        self.assertEqual(float(dcdc["i_set"]), 0.0)
+        self.assertEqual(float(dcdc["v_set"]), 720.0)
+        self.assertTrue({"p_set", "i_set", "v_set"} <= set(dcdc_block.header_list))
+
+        dcac_block = model_book.data["DCACConverter"]
+        dcac = dcac_block.data[0]
+        expected = {
+            "p_ac_set": 0.0,
+            "p_dc_set": 0.0,
+            "q_ac_set": 0.0,
+            "i_dc_set": 0.0,
+            "v_ac_set": 380.0,
+            "v_dc_set": 720.0,
+        }
+        for field, value in expected.items():
+            with self.subTest(field=field):
+                self.assertEqual(float(dcac[field]), value)
+        self.assertTrue(set(expected) <= set(dcac_block.header_list))
+
+    def test_model_preflight_rejects_unrepairable_schema_with_structured_result(self):
+        model_text = """<ACNode>
+@ idx name vbase run_stat
+# 1 generator-node 380 1
+</ACNode>
+<ACGenerator>
+@ idx name node p_max p_min q_max q_min run_stat
+# 1 generator 1 100 0 100 -100 1
+</ACGenerator>
+"""
+
+        with self.assertRaises(server_module.ModelPreflightError) as raised:
+            server_module._preflight_model_import(
+                model_text,
+                diagram_svg_text=self._matching_svg(model_text),
+                source_label="missing-control-type.e",
+            )
+
+        report = raised.exception.validation
+        self.assertFalse(report["ok"])
+        schema = next(item for item in report["checks"] if item["id"] == "schema")
+        self.assertEqual(schema["status"], "failed")
+        self.assertIn("control_type", schema["message"])
+        power_flow = next(item for item in report["checks"] if item["id"] == "power_flow")
+        self.assertEqual(power_flow["status"], "blocked")
+
+    def test_model_preflight_rejects_svg_model_mismatch(self):
+        model_text = (SIMPLE_MODEL_SOURCE / "model.e").read_text(encoding="utf-8")
+        mismatched_svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg">'
+            '<use id="ACGenerator-999" dev-id="ACGenerator-999" idx="999" name="ghost" />'
+            "</svg>"
+        )
+
+        with self.assertRaises(server_module.ModelPreflightError) as raised:
+            server_module._preflight_model_import(
+                model_text,
+                diagram_svg_text=mismatched_svg,
+                source_label="mismatched-diagram.e",
+            )
+
+        diagram = next(
+            item for item in raised.exception.validation["checks"]
+            if item["id"] == "diagram"
+        )
+        self.assertEqual(diagram["status"], "failed")
+        self.assertTrue(diagram["details"]["missing_in_svg"])
+        self.assertTrue(diagram["details"]["unknown_in_model"])
+
+    def test_model_preflight_ignores_svg_measurement_overlay_device_references(self):
+        model_text = (SIMPLE_MODEL_SOURCE / "model.e").read_text(encoding="utf-8")
+        diagram_text = self._matching_svg(model_text).replace(
+            "</svg>",
+            '<g class="mg" dev="ACGenerator-1"><text>量测框</text></g></svg>',
+        )
+
+        with patch.object(
+            server_module.simu_loop,
+            "solve_hybrid_snapshot_from_book",
+            return_value=(object(), "iter=2, normF=1.000e-09"),
+        ):
+            preflight = server_module._preflight_model_import(
+                model_text,
+                diagram_svg_text=diagram_text,
+                source_label="measurement-overlay.e",
+            )
+
+        diagram = next(
+            item for item in preflight["validation"]["checks"]
+            if item["id"] == "diagram"
+        )
+        self.assertEqual(diagram["status"], "passed")
+
+    def test_model_preflight_rejects_duplicate_svg_stable_device_index(self):
+        model_text = (SIMPLE_MODEL_SOURCE / "model.e").read_text(encoding="utf-8")
+        diagram_text = self._matching_svg(model_text).replace(
+            "</svg>",
+            '<use id="ACGenerator-1-copy" dev-id="ACGenerator-1-copy" '
+            'idx="1" name="wt01_10kw" dev-type="ACGenerator" /></svg>',
+        )
+
+        with patch.object(
+            server_module.simu_loop,
+            "solve_hybrid_snapshot_from_book",
+            return_value=(object(), "iter=2, normF=1.000e-09"),
+        ):
+            with self.assertRaises(server_module.ModelPreflightError) as raised:
+                server_module._preflight_model_import(
+                    model_text,
+                    diagram_svg_text=diagram_text,
+                    source_label="duplicate-svg-index.e",
+                )
+
+        diagram = next(
+            item for item in raised.exception.validation["checks"]
+            if item["id"] == "diagram"
+        )
+        self.assertEqual(diagram["status"], "failed")
+        self.assertTrue(diagram["details"]["duplicate_devices"])
+
+    def test_model_preflight_rejects_nonconvergent_power_flow(self):
+        model_text = (SIMPLE_MODEL_SOURCE / "model.e").read_text(encoding="utf-8")
+
+        with patch.object(
+            server_module.simu_loop,
+            "solve_hybrid_snapshot_from_book",
+            side_effect=RuntimeError("rc=1, iter=20, normF=4.200e+01"),
+        ):
+            with self.assertRaises(server_module.ModelPreflightError) as raised:
+                server_module._preflight_model_import(
+                    model_text,
+                    diagram_svg_text=self._matching_svg(model_text),
+                    source_label="nonconvergent.e",
+                )
+
+        power_flow = next(
+            item for item in raised.exception.validation["checks"]
+            if item["id"] == "power_flow"
+        )
+        self.assertEqual(power_flow["status"], "failed")
+        self.assertIn("normF=4.200e+01", power_flow["message"])
 
     def test_generated_model_repairs_active_dcdc_zero_voltage_reference(self):
         model_text = """<DCNode>
@@ -641,7 +943,9 @@ class SimulatorModelCreationTest(unittest.TestCase):
                     "filename": "model.e",
                     "data_base64": base64.b64encode(model_text.encode("utf-8")).decode("ascii"),
                     "diagram_filename": "diagram.svg",
-                    "diagram_svg_base64": base64.b64encode(b'<svg xmlns="http://www.w3.org/2000/svg"></svg>').decode("ascii"),
+                    "diagram_svg_base64": base64.b64encode(
+                        self._matching_svg(model_text).encode("utf-8")
+                    ).decode("ascii"),
                 }
                 request = Request(
                     f"http://127.0.0.1:{port}/api/models/create",
@@ -659,6 +963,123 @@ class SimulatorModelCreationTest(unittest.TestCase):
             self.assertTrue((models_root / "接口新模型/model.e").exists())
             self.assertTrue((models_root / "接口新模型/diagram.svg").exists())
             self.assertIn("接口新模型", {model["id"] for model in body["models"]})
+            self.assertTrue(body["validation"]["ok"])
+            self.assertEqual(
+                [item["id"] for item in body["validation"]["checks"]],
+                ["power_flow", "schema", "diagram"],
+            )
+            saved_model = simu_loop.EBook(models_root / "接口新模型/model.e")
+            self.assertTrue(
+                {"p", "q", "u", "i"}
+                <= set(saved_model.data["ACGenerator"].header_list)
+            )
+            self.assertTrue(
+                {"p_set", "p", "q", "u", "i"}
+                <= set(saved_model.data["ACLoad"].header_list)
+            )
+
+    def test_create_model_endpoint_returns_failed_preflight_without_writing_model(self):
+        from simu.server import make_http_server
+
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            manager = self._manager(temp_root)
+            server = make_http_server(("127.0.0.1", 0), manager)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            port = server.server_address[1]
+            invalid_model_text = """<ACNode>
+@ idx name vbase run_stat
+# 1 generator-node 380 1
+</ACNode>
+<ACGenerator>
+@ idx name node p_max p_min q_max q_min run_stat
+# 1 generator 1 100 0 100 -100 1
+</ACGenerator>
+"""
+            payload = {
+                "name": "预校核失败模型",
+                "filename": "invalid-model.e",
+                "data_base64": base64.b64encode(
+                    invalid_model_text.encode("utf-8")
+                ).decode("ascii"),
+                "diagram_filename": "diagram.svg",
+                "diagram_svg_base64": base64.b64encode(
+                    self._matching_svg(invalid_model_text).encode("utf-8")
+                ).decode("ascii"),
+            }
+            request = Request(
+                f"http://127.0.0.1:{port}/api/models/create",
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with self.assertRaises(HTTPError) as raised:
+                    urlopen(request, timeout=10)
+                response_body = json.loads(
+                    raised.exception.read().decode("utf-8")
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+            self.assertEqual(raised.exception.code, 400)
+            self.assertFalse(response_body["validation"]["ok"])
+            self.assertIn("预校核", response_body["error"])
+            self.assertFalse((manager.models_root / "预校核失败模型").exists())
+
+    def test_update_model_endpoint_failed_preflight_keeps_existing_definitions_unchanged(self):
+        from simu.server import make_http_server
+
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            manager = self._manager(temp_root)
+            target_dir = manager.models_root / "default-model"
+            before = self._tree_bytes(target_dir)
+            server = make_http_server(("127.0.0.1", 0), manager)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            invalid_model_text = """<ACNode>
+@ idx name vbase run_stat
+# 1 generator-node 380 1
+</ACNode>
+<ACGenerator>
+@ idx name node p_max p_min q_max q_min run_stat
+# 1 generator 1 100 0 100 -100 1
+</ACGenerator>
+"""
+            request = Request(
+                f"http://127.0.0.1:{server.server_address[1]}/api/models/update-definitions",
+                data=json.dumps(
+                    {
+                        "model_id": "default-model",
+                        "filename": "invalid-model.e",
+                        "data_base64": base64.b64encode(
+                            invalid_model_text.encode("utf-8")
+                        ).decode("ascii"),
+                        "diagram_svg_base64": base64.b64encode(
+                            self._matching_svg(invalid_model_text).encode("utf-8")
+                        ).decode("ascii"),
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with self.assertRaises(HTTPError) as raised:
+                    urlopen(request, timeout=10)
+                response_body = json.loads(raised.exception.read().decode("utf-8"))
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+            self.assertEqual(raised.exception.code, 400)
+            self.assertFalse(response_body["validation"]["ok"])
+            self.assertEqual(self._tree_bytes(target_dir), before)
 
     def test_create_model_endpoint_accepts_gb18030_model_e_payload(self):
         from simu.server import make_http_server
@@ -772,9 +1193,10 @@ class SimulatorModelCreationTest(unittest.TestCase):
             port = server.server_address[1]
             model_text = (SIMPLE_MODEL_SOURCE / "model.e").read_text(encoding="utf-8")
             model_text = model_text.replace("diesel_300kw", "秦岭柴油机")
-            diagram_text = (
+            diagram_text = self._matching_svg(model_text).replace(
+                '<svg xmlns="http://www.w3.org/2000/svg">',
                 '<?xml version="1.0" encoding="GB18030"?>'
-                '<svg xmlns="http://www.w3.org/2000/svg"><text>秦岭站一次图</text></svg>'
+                '<svg xmlns="http://www.w3.org/2000/svg"><text>秦岭站一次图</text>',
             )
             try:
                 request = Request(
@@ -919,6 +1341,8 @@ class SimulatorModelCreationTest(unittest.TestCase):
         self.assertIn('accept=".e"', html)
         self.assertIn('id="newModelSvgInput"', html)
         self.assertIn('accept=".svg,image/svg+xml"', html)
+        self.assertIn('id="newModelValidation"', html)
+        self.assertIn('id="newModelValidationChecks"', html)
         self.assertIn('id="confirmNewModel" class="primary" type="button">新建</button>', html)
         self.assertIn('src="/app.js?v=20260814-model-service-context-action"', html)
         self.assertIn('href="/styles.css?v=20260812-runtime-log-column-resize"', html)
@@ -936,6 +1360,9 @@ class SimulatorModelCreationTest(unittest.TestCase):
         )
         self.assertIn("data_base64", script)
         self.assertIn("diagram_svg_base64", script)
+        self.assertIn("renderModelPreflightResult", script)
+        self.assertIn('apiErrorPayload(error)?.validation', script)
+        self.assertIn("正在预校核必要字段、E/SVG 匹配性和潮流收敛性", script)
         self.assertIn("service_host", script)
         self.assertIn("service_port", script)
         self.assertIn("renderPendingUpdateModelFiles", script)
@@ -944,6 +1371,8 @@ class SimulatorModelCreationTest(unittest.TestCase):
         self.assertIn("event.currentTarget", script)
         self.assertIn("待导入 E 文件", html)
         self.assertIn("待导入 SVG 图", html)
+        self.assertIn('id="updateModelValidation"', html)
+        self.assertIn('id="updateModelValidationChecks"', html)
         self.assertIn("已选择 E 文件", script)
         self.assertIn("已选择 SVG 图", script)
         self.assertNotIn("未选择的文件将保持不变", script)
@@ -977,6 +1406,8 @@ class SimulatorModelCreationTest(unittest.TestCase):
             ),
         )
         self.assertIn("模型已存在", script)
+        self.assertIn(".model-preflight-result", styles)
+        self.assertIn(".model-preflight-check", styles)
 
 
 if __name__ == "__main__":

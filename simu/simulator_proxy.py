@@ -78,7 +78,11 @@ def make_simulator_proxy_server(
             except KeyError as exc:
                 self._send_json({"error": str(exc)}, status=404)
             except (OSError, RuntimeError, ValueError) as exc:
-                self._send_json({"error": str(exc)}, status=400)
+                error_payload = {"error": str(exc)}
+                validation = getattr(exc, "validation", None)
+                if isinstance(validation, Mapping):
+                    error_payload["validation"] = dict(validation)
+                self._send_json(error_payload, status=400)
 
         def _send_trainee_link(self) -> None:
             values = parse_qs(urlparse(self.path).query)
@@ -151,7 +155,11 @@ def make_simulator_proxy_server(
             except KeyError as exc:
                 self._send_json({"error": str(exc)}, status=404)
             except (OSError, RuntimeError, ValueError) as exc:
-                self._send_json({"error": str(exc)}, status=400)
+                body: dict[str, Any] = {"error": str(exc)}
+                validation = getattr(exc, "validation", None)
+                if isinstance(validation, Mapping):
+                    body["validation"] = dict(validation)
+                self._send_json(body, status=400)
 
         @staticmethod
         def _server_helpers():
@@ -182,8 +190,13 @@ def make_simulator_proxy_server(
             model_text = helpers._decode_uploaded_definition_text(
                 self._decode_base64(payload, "data_base64", "model.e data")
             )
-            artifacts = helpers._generated_model_artifacts(model_text)
             diagram_svg_text = helpers._decode_optional_svg_payload(payload)
+            preflight = helpers._preflight_model_import(
+                model_text,
+                diagram_svg_text=diagram_svg_text,
+                source_label=str(payload.get("filename") or "model.e"),
+            )
+            artifacts = preflight["artifacts"]
             with manager.lock:
                 recovered_dir = helpers._recover_incomplete_model_directory(manager, name)
                 target_id = manager.validate_new_model_name(name)
@@ -214,6 +227,7 @@ def make_simulator_proxy_server(
                             "recovered_incomplete_directory": str(recovered_dir) if recovered_dir else "",
                         },
                     },
+                    "validation": preflight["validation"],
                     **manager.catalog(),
                 }
             )
@@ -257,6 +271,13 @@ def make_simulator_proxy_server(
                 address["host"] != str(current_service.get("host") or "")
                 or address["port"] != int(current_service.get("port", 0) or 0)
             )
+            definitions_changed = bool(model_data or diagram_data)
+            if service_was_running and definitions_changed:
+                if not bool(payload.get("restart_service", False)):
+                    raise ValueError(f"模型模拟服务运行中，无法修改: {target_id}")
+                clock_state = manager.simulation_clock_state(target_id)
+                if clock_state != "stopped":
+                    raise ValueError(f"模型仿真时钟为 {clock_state}，请先停止仿真后再修改: {target_id}")
             model_text = None
             artifacts = None
             diagram_svg_text = None
@@ -268,27 +289,35 @@ def make_simulator_proxy_server(
             elif diagram_data:
                 diagram_svg_text = helpers._decode_optional_svg_payload(payload)
 
+            preflight = None
+            if model_data or diagram_data:
+                target_dir_for_preflight = (manager.models_root / target_id).resolve()
+                candidate_model_text = model_text
+                if candidate_model_text is None:
+                    candidate_model_text = helpers._decode_uploaded_definition_text(
+                        (target_dir_for_preflight / "model.e").read_bytes()
+                    )
+                candidate_diagram_text = diagram_svg_text
+                if candidate_diagram_text is None:
+                    current_diagram_path = target_dir_for_preflight / "diagram.svg"
+                    if current_diagram_path.exists() and current_diagram_path.is_file():
+                        candidate_diagram_text = helpers._decode_uploaded_definition_text(
+                            current_diagram_path.read_bytes(),
+                            "SVG图形",
+                        )
+                preflight = helpers._preflight_model_import(
+                    candidate_model_text,
+                    diagram_svg_text=candidate_diagram_text,
+                    source_label=str(payload.get("filename") or "model.e"),
+                )
+                if model_text is not None:
+                    artifacts = preflight["artifacts"]
+
             service_stopped_for_update = False
             restart_attempted = False
-            if service_was_running and (model_data or diagram_data):
-                if not bool(payload.get("restart_service", False)):
-                    raise ValueError(f"模型模拟服务运行中，无法修改: {target_id}")
-                clock_state = manager.simulation_clock_state(target_id)
-                if clock_state != "stopped":
-                    raise ValueError(f"模型仿真时钟为 {clock_state}，请先停止仿真后再修改: {target_id}")
+            if service_was_running and definitions_changed:
                 manager.stop(target_id)
                 service_stopped_for_update = True
-
-            if model_text is not None:
-                try:
-                    artifacts = helpers._generated_model_artifacts(model_text)
-                except Exception:
-                    if service_stopped_for_update:
-                        try:
-                            manager.start(target_id)
-                        except Exception as restart_exc:
-                            raise RuntimeError(f"模型校验失败，且原模拟服务恢复失败: {restart_exc}")
-                    raise
 
             updated: dict[str, Any] = {
                 "service": address,
@@ -341,6 +370,8 @@ def make_simulator_proxy_server(
                     raise RuntimeError(f"模型文件已保存，但模拟服务恢复失败: {exc}") from exc
                 raise
             response = {"model": {**model, "updated": updated}, "updated": updated}
+            if preflight is not None:
+                response["validation"] = preflight["validation"]
             if model_data or diagram_data:
                 response.update(manager.catalog())
             self._send_json(response)
@@ -382,9 +413,14 @@ def make_simulator_proxy_server(
             helpers = self._server_helpers()
             archive_data = self._decode_base64(payload, "data_base64", "definition archive data")
             parsed = helpers._parse_definition_archive(archive_data)
+            source_label = str(payload.get("filename") or "definitions.zip/model.e")
             if payload.get("create_model"):
                 name = payload.get("name", payload.get("model_name"))
                 target_id = manager.validate_new_model_name(name)
+                preflight = helpers._preflight_parsed_definition_archive(
+                    parsed,
+                    source_label=source_label,
+                )
                 target_dir = manager.models_root / target_id
                 try:
                     imported = self._write_parsed_archive(target_dir, parsed)
@@ -393,14 +429,31 @@ def make_simulator_proxy_server(
                     if target_dir.exists():
                         shutil.rmtree(target_dir)
                     raise
-                self._send_json({"model": {**model, "imported": imported}, "imported": imported, **manager.catalog()})
+                self._send_json(
+                    {
+                        "model": {**model, "imported": imported},
+                        "imported": imported,
+                        "validation": preflight["validation"],
+                        **manager.catalog(),
+                    }
+                )
                 return
             target_id, target_dir, _runtime_dir = manager.require_stopped(
                 payload.get("model_id", payload.get("model"))
             )
+            preflight = helpers._preflight_parsed_definition_archive(
+                parsed,
+                source_label=source_label,
+            )
             imported = self._write_parsed_archive(target_dir, parsed)
             manager.clear_model_runtime(target_id)
-            self._send_json({"imported": imported, **manager.catalog()})
+            self._send_json(
+                {
+                    "imported": imported,
+                    "validation": preflight["validation"],
+                    **manager.catalog(),
+                }
+            )
 
         def _read_json(self) -> Mapping[str, Any]:
             length = int(self.headers.get("Content-Length", "0") or 0)

@@ -336,11 +336,14 @@ const DIAGRAM_MEASUREMENT_FIELD_LABELS = Object.freeze({
   I_LOAD: "i",
 });
 let pendingImportDefinitionFile = null;
+let importModelCreationComplete = false;
 let pendingNewModelFile = null;
 let pendingNewModelSvgFile = null;
 let newModelCreationActive = false;
+let newModelCreationComplete = false;
 let pendingUpdateModelFile = null;
 let pendingUpdateModelSvgFile = null;
+let updateModelSaveComplete = false;
 
 function chartHiddenSet(chartKey) {
   const hidden = state.chartSeriesHidden?.[chartKey] || [];
@@ -1630,6 +1633,97 @@ function setNewModelMessage(text, kind = "") {
   message.classList.toggle("is-ok", kind === "ok");
 }
 
+function modelPreflightDetailLines(validation) {
+  const lines = [];
+  const checks = Array.isArray(validation?.checks) ? validation.checks : [];
+  checks.forEach((check) => {
+    const details = check?.details && typeof check.details === "object" ? check.details : {};
+    [
+      ["missing_in_svg", "E 中缺少对应 SVG 图元"],
+      ["unknown_in_model", "SVG 中无法定位到 E 的设备"],
+      ["name_mismatches", "稳定索引对应名称不一致"],
+      ["dangling_edges", "SVG 连线端点未绑定图元"],
+      ["identity_issues", "SVG 图元身份字段不完整"],
+      ["duplicate_devices", "SVG 设备稳定索引重复"],
+    ].forEach(([key, label]) => {
+      const values = Array.isArray(details[key]) ? details[key] : [];
+      if (!values.length) return;
+      const shown = values.slice(0, 6).map((value) => String(value));
+      const omitted = values.length - shown.length;
+      lines.push({
+        checkId: String(check.id || ""),
+        text: `${label}：${shown.join("、")}${omitted > 0 ? `（另有 ${omitted} 项）` : ""}`,
+      });
+    });
+  });
+  const repairs = Array.isArray(validation?.repairs) ? validation.repairs : [];
+  if (repairs.length) {
+    const shown = repairs.slice(0, 8).map((repair) => {
+      const target = [repair?.block, repair?.device].filter(Boolean).join("/");
+      return `${target || "设备"}.${repair?.field || "字段"}=${repair?.value ?? ""}`;
+    });
+    const omitted = repairs.length - shown.length;
+    lines.push({
+      checkId: "schema",
+      text: `自动补值：${shown.join("、")}${omitted > 0 ? `（另有 ${omitted} 项）` : ""}`,
+    });
+  }
+  return lines;
+}
+
+function renderModelPreflightResult(scope, validation) {
+  const container = $(`${scope}Validation`);
+  const summary = $(`${scope}ValidationSummary`);
+  const list = $(`${scope}ValidationChecks`);
+  if (!container || !summary || !list) return;
+  if (!validation || typeof validation !== "object") {
+    container.hidden = true;
+    container.removeAttribute("data-status");
+    summary.textContent = "";
+    list.innerHTML = "";
+    return;
+  }
+
+  const statusText = {
+    passed: "通过",
+    repaired: "已补齐",
+    warning: "警告",
+    failed: "失败",
+    blocked: "未执行",
+  };
+  const detailsByCheck = new Map();
+  modelPreflightDetailLines(validation).forEach((item) => {
+    if (!detailsByCheck.has(item.checkId)) detailsByCheck.set(item.checkId, []);
+    detailsByCheck.get(item.checkId).push(item.text);
+  });
+  const checks = Array.isArray(validation.checks) ? validation.checks : [];
+  const duration = Number(validation.duration_ms);
+  summary.textContent = `${validation.summary || (validation.ok ? "模型预校核通过。" : "模型预校核未通过。")}${Number.isFinite(duration) ? `（${Math.round(duration)} ms）` : ""}`;
+  list.innerHTML = checks.map((check) => {
+    const status = String(check?.status || "blocked");
+    const detailLines = detailsByCheck.get(String(check?.id || "")) || [];
+    return `
+      <li class="model-preflight-check is-${escapeHtml(status)}">
+        <div class="model-preflight-check-head">
+          <strong>${escapeHtml(check?.label || check?.id || "校验项")}</strong>
+          <span>${escapeHtml(statusText[status] || status)}</span>
+        </div>
+        <p>${escapeHtml(check?.message || "未返回说明。")}</p>
+        ${detailLines.map((line) => `<small>${escapeHtml(line)}</small>`).join("")}
+      </li>
+    `;
+  }).join("");
+  container.dataset.status = validation.ok ? "passed" : "failed";
+  container.hidden = false;
+}
+
+function invalidateModelPreflight(scope) {
+  renderModelPreflightResult(scope, null);
+  if (scope === "importModel") importModelCreationComplete = false;
+  if (scope === "newModel") newModelCreationComplete = false;
+  if (scope === "updateModel") updateModelSaveComplete = false;
+}
+
 function setNewModelBusy(isBusy) {
   const confirm = $("confirmNewModel");
   const button = $("newModelButton");
@@ -1638,16 +1732,19 @@ function setNewModelBusy(isBusy) {
   const portInput = $("newModelServicePort");
   const selectButton = $("selectNewModelFile");
   const selectSvgButton = $("selectNewModelSvgFile");
+  const cancel = $("cancelNewModel");
+  const disabled = isBusy || newModelCreationComplete;
   if (confirm) {
-    confirm.disabled = isBusy;
-    confirm.textContent = isBusy ? "新建中" : "新建";
+    confirm.disabled = disabled;
+    confirm.textContent = newModelCreationComplete ? "已新建" : (isBusy ? "预校核中" : "新建");
   }
   if (button) button.disabled = isBusy;
-  if (input) input.disabled = isBusy;
-  if (hostInput) hostInput.disabled = isBusy;
-  if (portInput) portInput.disabled = isBusy;
-  if (selectButton) selectButton.disabled = isBusy;
-  if (selectSvgButton) selectSvgButton.disabled = isBusy;
+  if (input) input.disabled = disabled;
+  if (hostInput) hostInput.disabled = disabled;
+  if (portInput) portInput.disabled = disabled;
+  if (selectButton) selectButton.disabled = disabled;
+  if (selectSvgButton) selectSvgButton.disabled = disabled;
+  if (cancel) cancel.textContent = newModelCreationComplete ? "关闭" : "取消";
 }
 
 function uniqueNewModelName(baseName = "新模型") {
@@ -1671,6 +1768,10 @@ function suggestedNewModelName(filename) {
 function validateNewModelForm(showBlank = false) {
   const input = $("newModelName");
   const confirm = $("confirmNewModel");
+  if (newModelCreationComplete) {
+    if (confirm) confirm.disabled = true;
+    return true;
+  }
   const name = String(input?.value || "").trim();
   if (!name) {
     if (confirm) confirm.disabled = true;
@@ -1908,6 +2009,8 @@ function openNewModelDialog() {
   if (!dialog || !input) return;
   pendingNewModelFile = null;
   pendingNewModelSvgFile = null;
+  newModelCreationComplete = false;
+  renderModelPreflightResult("newModel", null);
   if (fileInput) fileInput.value = "";
   if (svgInput) svgInput.value = "";
   if (filename) filename.textContent = "未选择文件";
@@ -1944,6 +2047,8 @@ function closeNewModelDialog() {
   if (dialog) dialog.hidden = true;
   pendingNewModelFile = null;
   pendingNewModelSvgFile = null;
+  newModelCreationComplete = false;
+  renderModelPreflightResult("newModel", null);
   const fileInput = $("newModelFileInput");
   const svgInput = $("newModelSvgInput");
   const filename = $("newModelFilename");
@@ -1957,6 +2062,7 @@ function closeNewModelDialog() {
 }
 
 function handleNewModelFileSelected(event) {
+  invalidateModelPreflight("newModel");
   const file = event.target.files?.[0] || null;
   pendingNewModelFile = file;
   const filename = $("newModelFilename");
@@ -1969,6 +2075,7 @@ function handleNewModelFileSelected(event) {
 }
 
 function handleNewModelSvgFileSelected(event) {
+  invalidateModelPreflight("newModel");
   const file = event.target.files?.[0] || null;
   pendingNewModelSvgFile = file;
   const filename = $("newModelSvgFilename");
@@ -1993,8 +2100,9 @@ async function createNewModelFromFile() {
     return;
   }
   newModelCreationActive = true;
+  renderModelPreflightResult("newModel", null);
   setNewModelBusy(true);
-  setNewModelMessage("正在读取 model.e 并生成模型定义...");
+  setNewModelMessage("正在预校核必要字段、E/SVG 匹配性和潮流收敛性；通过后才正式写入...");
   try {
     const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
     const diagramSvgBase64 = pendingNewModelSvgFile
@@ -2015,11 +2123,15 @@ async function createNewModelFromFile() {
     captureServiceSuggestion(result);
     state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
     const newModelId = result.model?.id || result.active_model_id || name;
-    closeNewModelDialog();
+    renderModelPreflightResult("newModel", result.validation);
+    newModelCreationComplete = true;
     state.selectedManagementModelId = newModelId;
     renderModelSelector();
     renderModelManagementList();
+    setNewModelMessage("模型预校核通过并已正式新建。", "ok");
+    setModelManagementMessage("模型预校核通过并已正式新建。", "ok");
   } catch (error) {
+    renderModelPreflightResult("newModel", apiErrorPayload(error)?.validation);
     const message = apiErrorText(error);
     if (message.includes("已存在")) await loadModels();
     setNewModelMessage(
@@ -2029,7 +2141,7 @@ async function createNewModelFromFile() {
   } finally {
     newModelCreationActive = false;
     setNewModelBusy(false);
-    if (!$("newModelDialog").hidden) validateNewModelForm();
+    if (!newModelCreationComplete && !$("newModelDialog").hidden) validateNewModelForm();
   }
 }
 
@@ -2047,14 +2159,17 @@ function setUpdateModelBusy(isBusy) {
   const selectSvg = $("selectUpdateModelSvgFile");
   const hostInput = $("updateModelServiceHost");
   const portInput = $("updateModelServicePort");
+  const cancel = $("cancelUpdateModel");
+  const disabled = isBusy || updateModelSaveComplete;
   if (confirm) {
-    confirm.disabled = isBusy;
-    confirm.textContent = isBusy ? "保存中" : "确认";
+    confirm.disabled = disabled;
+    confirm.textContent = updateModelSaveComplete ? "已修改" : (isBusy ? "预校核中" : "确认");
   }
-  if (selectFile) selectFile.disabled = isBusy;
-  if (selectSvg) selectSvg.disabled = isBusy;
-  if (hostInput) hostInput.disabled = isBusy;
-  if (portInput) portInput.disabled = isBusy;
+  if (selectFile) selectFile.disabled = disabled;
+  if (selectSvg) selectSvg.disabled = disabled;
+  if (hostInput) hostInput.disabled = disabled;
+  if (portInput) portInput.disabled = disabled;
+  if (cancel) cancel.textContent = updateModelSaveComplete ? "关闭" : "取消";
 }
 
 function formatSelectedModelFile(file) {
@@ -2111,6 +2226,10 @@ function validateUpdateModelForm(showSelection = false) {
   const confirm = $("confirmUpdateModel");
   const hostInput = $("updateModelServiceHost");
   const portInput = $("updateModelServicePort");
+  if (updateModelSaveComplete) {
+    if (confirm) confirm.disabled = true;
+    return true;
+  }
   hostInput?.removeAttribute("aria-invalid");
   portInput?.removeAttribute("aria-invalid");
   const target = state.models.find((model) => model.id === state.updateTargetModelId);
@@ -2181,6 +2300,8 @@ async function openUpdateModelDialog(modelId = selectedManagementModelId()) {
   state.updateTargetModelId = String(refreshedTarget.id || "");
   pendingUpdateModelFile = null;
   pendingUpdateModelSvgFile = null;
+  updateModelSaveComplete = false;
+  renderModelPreflightResult("updateModel", null);
   const dialog = $("updateModelDialog");
   if (!dialog) return;
   const fileInput = $("updateModelFileInput");
@@ -2205,6 +2326,8 @@ function closeUpdateModelDialog() {
   state.updateTargetModelId = "";
   pendingUpdateModelFile = null;
   pendingUpdateModelSvgFile = null;
+  updateModelSaveComplete = false;
+  renderModelPreflightResult("updateModel", null);
   const fileInput = $("updateModelFileInput");
   const svgInput = $("updateModelSvgInput");
   if (fileInput) fileInput.value = "";
@@ -2214,6 +2337,7 @@ function closeUpdateModelDialog() {
 }
 
 function handleUpdateModelFileSelected(event) {
+  invalidateModelPreflight("updateModel");
   const file = event.currentTarget?.files?.[0] || null;
   pendingUpdateModelFile = file;
   renderPendingUpdateModelFiles();
@@ -2221,6 +2345,7 @@ function handleUpdateModelFileSelected(event) {
 }
 
 function handleUpdateModelSvgFileSelected(event) {
+  invalidateModelPreflight("updateModel");
   const file = event.currentTarget?.files?.[0] || null;
   pendingUpdateModelSvgFile = file;
   renderPendingUpdateModelFiles();
@@ -2236,9 +2361,10 @@ async function updateModelFromFile() {
   const updatedActiveModel = String(modelId || "") === String(state.activeModelId || "");
   let updateFailed = false;
   let invalidServiceAddress = false;
+  const needsPreflight = Boolean(file || diagramFile);
+  if (needsPreflight) renderModelPreflightResult("updateModel", null);
   setUpdateModelBusy(true);
-  if (file) setUpdateModelMessage("正在保存模型定义与访问链接...");
-  else if (diagramFile) setUpdateModelMessage("正在保存 SVG 图与访问链接...");
+  if (file || diagramFile) setUpdateModelMessage("正在预校核必要字段、E/SVG 匹配性和潮流收敛性；通过后才正式写入...");
   else setUpdateModelMessage("正在保存访问链接...");
   try {
     const dataBase64 = file ? arrayBufferToBase64(await file.arrayBuffer()) : "";
@@ -2279,7 +2405,6 @@ async function updateModelFromFile() {
         if (!replaced) state.models.push(updatedModel);
       }
     }
-    closeUpdateModelDialog();
     state.selectedManagementModelId = modelId;
     renderModelSelector();
     renderModelManagementList();
@@ -2290,6 +2415,13 @@ async function updateModelFromFile() {
         : `访问链接已修改${serviceRestarted ? "，模拟服务已自动重启" : ""}。`,
       "ok",
     );
+    if (needsPreflight) {
+      renderModelPreflightResult("updateModel", result.validation);
+      updateModelSaveComplete = true;
+      setUpdateModelMessage("模型预校核通过并已正式修改。", "ok");
+    } else {
+      closeUpdateModelDialog();
+    }
     if (updatedActiveModel && (file || diagramFile)) {
       invalidateManualDefinitionChanges();
       if (currentPageName() === "manual-changes") loadManualDefinitionChanges();
@@ -2297,6 +2429,9 @@ async function updateModelFromFile() {
     }
   } catch (error) {
     updateFailed = true;
+    if (needsPreflight) {
+      renderModelPreflightResult("updateModel", apiErrorPayload(error)?.validation);
+    }
     const message = apiErrorText(error);
     setUpdateModelMessage(`保存失败：${message}`, "error");
     if (message.includes("已分配给模型") || message.includes("不同模型不能共用同一 IP 和端口")) {
@@ -2311,7 +2446,9 @@ async function updateModelFromFile() {
       portInput?.focus();
       portInput?.select();
     }
-    if (!updateFailed && !$("updateModelDialog").hidden) validateUpdateModelForm();
+    if (!updateFailed && !$("updateModelDialog").hidden) {
+      if (!updateModelSaveComplete) validateUpdateModelForm();
+    }
   }
 }
 
@@ -2368,12 +2505,18 @@ function closeCloneModelDialog() {
   state.cloneSourceModelId = "";
 }
 
-function apiErrorText(error) {
+function apiErrorPayload(error) {
+  if (error?.payload && typeof error.payload === "object") return error.payload;
   try {
-    return JSON.parse(error.message)?.error || error.message;
+    const parsed = JSON.parse(error?.message || "");
+    return parsed && typeof parsed === "object" ? parsed : null;
   } catch (_parseError) {
-    return error.message || "操作失败";
+    return null;
   }
+}
+
+function apiErrorText(error) {
+  return apiErrorPayload(error)?.error || error?.message || "操作失败";
 }
 
 function modelKey(value) {
@@ -2485,6 +2628,10 @@ function suggestedImportModelName(filename) {
 function validateImportModelName(showBlank = false) {
   const input = $("importModelName");
   const confirm = $("confirmImportModel");
+  if (importModelCreationComplete) {
+    if (confirm) confirm.disabled = true;
+    return true;
+  }
   const name = String(input?.value || "").trim();
   if (!name) {
     if (confirm) confirm.disabled = true;
@@ -2506,6 +2653,8 @@ function openImportModelDialog(file) {
   const input = $("importModelName");
   if (!dialog || !input || !file) return;
   pendingImportDefinitionFile = file;
+  importModelCreationComplete = false;
+  renderModelPreflightResult("importModel", null);
   const active = state.models.find((model) => model.id === state.activeModelId) || state.models[0] || {};
   $("importModelFilename").textContent = file.name;
   $("importTemplateModelName").textContent = active.name || active.id || "当前模型";
@@ -2522,6 +2671,8 @@ function closeImportModelDialog() {
   const dialog = $("importModelDialog");
   if (dialog) dialog.hidden = true;
   pendingImportDefinitionFile = null;
+  importModelCreationComplete = false;
+  renderModelPreflightResult("importModel", null);
   const fileInput = $("importDefinitionsInput");
   if (fileInput) fileInput.value = "";
 }
@@ -2540,12 +2691,15 @@ function setImportModelBusy(isBusy) {
   const confirm = $("confirmImportModel");
   const input = $("importModelName");
   const button = $("importDefinitionsButton");
+  const cancel = $("cancelImportModel");
+  const disabled = isBusy || importModelCreationComplete;
   if (confirm) {
-    confirm.disabled = isBusy;
-    confirm.textContent = isBusy ? "导入中" : "导入";
+    confirm.disabled = disabled;
+    confirm.textContent = importModelCreationComplete ? "已导入" : (isBusy ? "预校核中" : "导入");
   }
-  if (input) input.disabled = isBusy;
+  if (input) input.disabled = disabled;
   if (button) button.disabled = isBusy;
+  if (cancel) cancel.textContent = importModelCreationComplete ? "关闭" : "取消";
 }
 
 async function importDefinitionModel() {
@@ -2556,8 +2710,9 @@ async function importDefinitionModel() {
     input?.focus();
     return;
   }
+  renderModelPreflightResult("importModel", null);
   setImportModelBusy(true);
-  setImportModelMessage("正在创建模型文件夹并导入定义数据...");
+  setImportModelMessage("正在预校核必要字段、E/SVG 匹配性和潮流收敛性；通过后才正式写入...");
   try {
     const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
     const result = await api("/api/models/import-definitions", {
@@ -2573,11 +2728,15 @@ async function importDefinitionModel() {
     });
     state.models = normalizeModels(Array.isArray(result.models) ? result.models : []);
     const newModelId = result.model?.id || result.active_model_id || name;
-    closeImportModelDialog();
+    renderModelPreflightResult("importModel", result.validation);
+    importModelCreationComplete = true;
     state.selectedManagementModelId = newModelId;
     renderModelSelector();
     renderModelManagementList();
+    setImportModelMessage("定义包预校核通过并已正式导入。", "ok");
+    setModelManagementMessage("定义包预校核通过并已正式导入。", "ok");
   } catch (error) {
+    renderModelPreflightResult("importModel", apiErrorPayload(error)?.validation);
     const message = apiErrorText(error);
     if (message.includes("已存在")) await loadModels();
     setImportModelMessage(
@@ -17215,9 +17374,18 @@ $("newModelForm").addEventListener("submit", (event) => {
   createNewModelFromFile();
 });
 $("confirmNewModel").addEventListener("click", createNewModelFromFile);
-$("newModelName").addEventListener("input", () => validateNewModelForm());
-$("newModelServiceHost").addEventListener("input", () => validateNewModelForm());
-$("newModelServicePort").addEventListener("input", () => validateNewModelForm());
+$("newModelName").addEventListener("input", () => {
+  invalidateModelPreflight("newModel");
+  validateNewModelForm();
+});
+$("newModelServiceHost").addEventListener("input", () => {
+  invalidateModelPreflight("newModel");
+  validateNewModelForm();
+});
+$("newModelServicePort").addEventListener("input", () => {
+  invalidateModelPreflight("newModel");
+  validateNewModelForm();
+});
 $("closeUpdateModelDialog").addEventListener("click", closeUpdateModelDialog);
 $("cancelUpdateModel").addEventListener("click", closeUpdateModelDialog);
 $("updateModelDialog").addEventListener("click", (event) => {
@@ -17227,8 +17395,14 @@ $("selectUpdateModelFile").addEventListener("click", () => openUpdateModelFilePi
 $("updateModelFileInput").addEventListener("change", handleUpdateModelFileSelected);
 $("selectUpdateModelSvgFile").addEventListener("click", () => openUpdateModelFilePicker("updateModelSvgInput"));
 $("updateModelSvgInput").addEventListener("change", handleUpdateModelSvgFileSelected);
-$("updateModelServiceHost").addEventListener("input", () => validateUpdateModelForm());
-$("updateModelServicePort").addEventListener("input", () => validateUpdateModelForm());
+$("updateModelServiceHost").addEventListener("input", () => {
+  invalidateModelPreflight("updateModel");
+  validateUpdateModelForm();
+});
+$("updateModelServicePort").addEventListener("input", () => {
+  invalidateModelPreflight("updateModel");
+  validateUpdateModelForm();
+});
 $("updateModelForm").addEventListener("submit", (event) => {
   event.preventDefault();
   updateModelFromFile();
@@ -17242,7 +17416,10 @@ $("importModelForm").addEventListener("submit", (event) => {
   event.preventDefault();
   importDefinitionModel();
 });
-$("importModelName").addEventListener("input", () => validateImportModelName());
+$("importModelName").addEventListener("input", () => {
+  invalidateModelPreflight("importModel");
+  validateImportModelName();
+});
 $("closeCloneModelDialog").addEventListener("click", closeCloneModelDialog);
 $("cancelCloneModel").addEventListener("click", closeCloneModelDialog);
 $("cloneModelDialog").addEventListener("click", (event) => {

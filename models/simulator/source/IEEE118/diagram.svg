@@ -19,8 +19,8 @@ symbol{overflow:visible}
 .ldcv330{fill:none;stroke:#7f1d1d;color:#7f1d1d}
 .dcv35{fill:#a855f7;stroke:#a855f7;stroke-width:1;color:#a855f7}
 .ldcv35{fill:none;stroke:#a855f7;color:#a855f7}
-.dcv400{fill:hsl(345 72% 42%);stroke:hsl(345 72% 42%);stroke-width:1;color:hsl(345 72% 42%)}
-.ldcv400{fill:none;stroke:hsl(345 72% 42%);color:hsl(345 72% 42%)}
+.dcv400{fill:#561d7f;stroke:#561d7f;stroke-width:1;color:#561d7f}
+.ldcv400{fill:none;stroke:#561d7f;color:#561d7f}
 .dcv500{fill:#dc2626;stroke:#dc2626;stroke-width:1;color:#dc2626}
 .ldcv500{fill:none;stroke:#dc2626;color:#dc2626}
 .dcv6{fill:#0ea5e9;stroke:#0ea5e9;stroke-width:1;color:#0ea5e9}
@@ -53,8 +53,8 @@ symbol{overflow:visible}
 .lkv345{fill:none;stroke:#7f1d1d;color:#7f1d1d}
 .kv35{fill:#a855f7;stroke:#a855f7;stroke-width:1;color:#a855f7}
 .lkv35{fill:none;stroke:#a855f7;color:#a855f7}
-.kv380{fill:hsl(259 72% 42%);stroke:hsl(259 72% 42%);stroke-width:1;color:hsl(259 72% 42%)}
-.lkv380{fill:none;stroke:hsl(259 72% 42%);color:hsl(259 72% 42%)}
+.kv380{fill:#1d7f3a;stroke:#1d7f3a;stroke-width:1;color:#1d7f3a}
+.lkv380{fill:none;stroke:#1d7f3a;color:#1d7f3a}
 .kv500{fill:#dc2626;stroke:#dc2626;stroke-width:1;color:#dc2626}
 .lkv500{fill:none;stroke:#dc2626;color:#dc2626}
 .kv6{fill:#0ea5e9;stroke:#0ea5e9;stroke-width:1;color:#0ea5e9}
@@ -72,7 +72,7 @@ symbol{overflow:visible}
   
   
   <g transform="translate(-79 -3.008)">
-  <line x1="-46" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.4" stroke-linecap="round"/>
+  <line x1="-46" y1="0" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.4" stroke-linecap="round"/>
 </g>
   
   
@@ -86,7 +86,7 @@ symbol{overflow:visible}
   
   
   <g transform="translate(79 0)">
-  <line x1="-46" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.4" stroke-linecap="round"/>
+  <line x1="-46" y1="0" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.4" stroke-linecap="round"/>
 </g>
   
   
@@ -100,7 +100,7 @@ symbol{overflow:visible}
   <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="-42" y="-21.333333333333332" width="84" height="42.666666666666664" rx="6" fill="#ecfeff"></rect><path d="M -41 0 C -38 -9, -33 -9, -30 0 C -27 9, -22 9, -19 0"></path><g><path d="M 22 -7 H 36 M 25 7 H 33"></path><path d="M 29 -7 V 7" stroke-width="1.4"></path></g><path d="M -7 0 H 7 M 2 -5 L 7 0 L 2 5"></path></g></g>
   
   <g transform="translate(-87 0)">
-  <line x1="24" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.2" stroke-linecap="round"/>
+  <line x1="24" y1="0" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.2" stroke-linecap="round"/>
 </g>
 <g transform="translate(87 0)">
   <line x1="-24" y1="0" x2="0" y2="0" stroke="#0891b2" stroke-width="2.2" stroke-linecap="round"/>
@@ -233,7 +233,7 @@ symbol{overflow:visible}
   <g transform="scale(1.5)"><g fill="#ffffff" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><path d="M -22 -12 H 22 V 14 H -22 Z"></path><path d="M -7 -12 V 14 M 8 -12 V 14 M -22 1 H 22"></path><path d="M 0 -22 V -17 M -18 -20 L -14 -16 M 18 -20 L 14 -16"></path></g></g>
   
   <g transform="translate(79 0)">
-  <line x1="-46" y1="0" x2="0" y2="0" stroke="hsl(345 72% 42%)" stroke-width="2.2" stroke-linecap="round"/>
+  <line x1="-46" y1="0" x2="0" y2="0" stroke="#561d7f" stroke-width="2.2" stroke-linecap="round"/>
 </g>
   
   
@@ -261,7 +261,7 @@ symbol{overflow:visible}
   <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="-42" y="-21.333333333333332" width="84" height="42.666666666666664" rx="6" fill="#ecfeff"></rect><g><path d="M -40 -7 H -26 M -37 7 H -29"></path><path d="M -33 -7 V 7" stroke-width="1.4"></path></g><g><path d="M 22 -7 H 36 M 25 7 H 33"></path><path d="M 29 -7 V 7" stroke-width="1.4"></path></g><path d="M -7 0 H 7 M 2 -5 L 7 0 L 2 5"></path><g class="converter-terminal-order-markers" stroke-width="1.4"><g transform="translate(-30 -15.33333) matrix(1 0 0 1 0 0)"><path d="M -1.4875 -1.9125 L 0 -3.825 V 3.825 M -2.04 3.825 H 2.04"></path></g><g transform="translate(30 -15.33333) matrix(1 0 0 1 0 0)"><path d="M -2.55 -1.87 C -2.21 -3.995, 2.55 -3.995, 2.55 -1.53 C 2.55 0.17, 1.19 1.02, -2.55 3.825 H 2.55"></path></g></g></g></g>
   
   <g transform="translate(-87 0)">
-  <line x1="24" y1="0" x2="0" y2="0" stroke="hsl(345 72% 42%)" stroke-width="2.2" stroke-linecap="round"/>
+  <line x1="24" y1="0" x2="0" y2="0" stroke="#561d7f" stroke-width="2.2" stroke-linecap="round"/>
 </g>
 <g transform="translate(87 0)">
   <line x1="-24" y1="0" x2="0" y2="0" stroke="#0891b2" stroke-width="2.2" stroke-linecap="round"/>
@@ -319,10 +319,10 @@ symbol{overflow:visible}
   <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="-42" y1="0" x2="-20" y2="0"></line><line x1="20" y1="0" x2="42" y2="0"></line><rect x="-20" y="-15" width="40" height="30" rx="5" fill="#eef2ff"></rect><path d="M -10 -8 V 8 M 10 -8 V 8"></path><path d="M -8 8 L 8 -8"></path></g></g>
   
   <g transform="translate(-79 0)">
-  <line x1="16" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="16" y1="0" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.5" stroke-linecap="round"/>
 </g>
 <g transform="translate(79 0)">
-  <line x1="-16" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="-16" y1="0" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.5" stroke-linecap="round"/>
 </g>
   
   
@@ -336,10 +336,10 @@ symbol{overflow:visible}
   <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="-42" y1="0" x2="-20" y2="0"></line><line x1="20" y1="0" x2="42" y2="0"></line><rect x="-20" y="-15" width="40" height="30" rx="5" fill="#eef2ff"></rect><path d="M -10 -8 V 8 M 10 -8 V 8"></path><path d="M -10 0 H 10"></path></g></g>
   
   <g transform="translate(-79 0)">
-  <line x1="16" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="16" y1="0" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.5" stroke-linecap="round"/>
 </g>
 <g transform="translate(79 0)">
-  <line x1="-16" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="-16" y1="0" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.5" stroke-linecap="round"/>
 </g>
   
   
@@ -353,10 +353,10 @@ symbol{overflow:visible}
   <g transform="scale(1.5)"><g class="box-breaker-glyph" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><line x1="-42" y1="0" x2="-21" y2="0"></line><line x1="21" y1="0" x2="42" y2="0"></line><rect x="-21" y="-10" width="42" height="20" rx="2" fill="#ffffff"></rect></g></g>
   
   <g transform="translate(-79 0)">
-  <line x1="16" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="16" y1="0" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.5" stroke-linecap="round"/>
 </g>
 <g transform="translate(79 0)">
-  <line x1="-16" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="-16" y1="0" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.5" stroke-linecap="round"/>
 </g>
   
   
@@ -370,10 +370,10 @@ symbol{overflow:visible}
   <g transform="scale(1.5)"><g class="box-breaker-glyph" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><line x1="-42" y1="0" x2="-21" y2="0"></line><line x1="21" y1="0" x2="42" y2="0"></line><rect x="-21" y="-10" width="42" height="20" rx="2" fill="currentColor"></rect></g></g>
   
   <g transform="translate(-79 0)">
-  <line x1="16" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="16" y1="0" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.5" stroke-linecap="round"/>
 </g>
 <g transform="translate(79 0)">
-  <line x1="-16" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="-16" y1="0" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.5" stroke-linecap="round"/>
 </g>
   
   
@@ -382,7 +382,7 @@ symbol{overflow:visible}
   </g>
 </symbol>
 <symbol id="symbol_ACRealBs_ac-bus-vertical_default" viewBox="-75 -18 150 36" overflow="visible">
-  <title>交流母线（竖向）</title>
+  <title>交流母线</title>
   <g transform="rotate(90) scale(8.97333 1)">
   <g transform="scale(1.5)"><rect class="bus-glyph" x="-50" y="-4" width="100" height="8" fill="currentColor" stroke="currentColor" stroke-width="0"></rect></g>
   
@@ -399,7 +399,7 @@ symbol{overflow:visible}
   <g transform="scale(1.5)"><g class="electric-load-glyph" fill="#ffffff" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"><path d="M -22.22222222222222 -15.11111111111111 L 22.22222222222222 -15.11111111111111 L 0 15.11111111111111 Z"></path></g></g>
   
   <g transform="translate(0 -55)">
-  <line x1="0" y1="32.33333" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="0" y1="32.33333" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.5" stroke-linecap="round"/>
 </g>
   
   
@@ -425,7 +425,7 @@ symbol{overflow:visible}
   <g transform="scale(1.5)"><g class="ac-electrolyzer-glyph" fill="none" stroke="#7c3aed" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><rect x="-44" y="-23.666666666666668" width="88" height="47.333333333333336" rx="6" fill="#ffffff"></rect><path d="M -24 0 H -12 M 12 0 H 24"></path><path class="ac-wave-marker" d="M -29 -13 C -25 -19 -20 -19 -16 -13 S -7 -7 -3 -13"></path><path d="M -7 -12 L -1 -2 H -7 L -1 12"></path></g></g>
   <g transform="scale(1.5)"><g transform="translate(11 1) matrix(-1 0 0 -1 0 0)"><text x="0" y="0" fill="#7c3aed" stroke="none" font-size="13" font-weight="800" text-anchor="middle" dominant-baseline="middle">H2</text></g></g>
   <g transform="translate(-87 0)">
-  <line x1="21" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.3" stroke-linecap="round"/>
+  <line x1="21" y1="0" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.3" stroke-linecap="round"/>
 </g>
 <g transform="translate(87 0)">
   <line x1="-21" y1="0" x2="0" y2="0" stroke="#7c3aed" stroke-width="2.3" stroke-linecap="round"/>
@@ -473,7 +473,7 @@ symbol{overflow:visible}
   <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="-28" y="-16" width="56" height="32" rx="4" fill="#f0fdf4"></rect><rect x="28" y="-7.04" width="6" height="14.08" rx="1.5" fill="#f0fdf4"></rect><path d="M -9.333333333333332 -11 V 11"></path><path d="M 9.333333333333336 -11 V 11"></path><path d="M -21 0 H -13 M 13 0 H 21 M 17 -4 V 4"></path></g></g>
   
   <g transform="translate(79 0)">
-  <line x1="-28" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.4" stroke-linecap="round"/>
+  <line x1="-28" y1="0" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.4" stroke-linecap="round"/>
 </g>
   
   
@@ -487,7 +487,7 @@ symbol{overflow:visible}
   
   
   <g transform="translate(-79 -3.008)">
-  <line x1="46" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.4" stroke-linecap="round"/>
+  <line x1="46" y1="0" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.4" stroke-linecap="round"/>
 </g>
   
   
@@ -501,7 +501,7 @@ symbol{overflow:visible}
   <g transform="scale(1.5)"><g fill="#ffffff" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><path d="M -22 -12 H 22 V 14 H -22 Z"></path><path d="M -7 -12 V 14 M 8 -12 V 14 M -22 1 H 22"></path><path d="M 0 -22 V -17 M -18 -20 L -14 -16 M 18 -20 L 14 -16"></path></g></g>
   
   <g transform="translate(-79 0)">
-  <line x1="46" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.2" stroke-linecap="round"/>
+  <line x1="46" y1="0" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.2" stroke-linecap="round"/>
 </g>
   
   
@@ -515,7 +515,7 @@ symbol{overflow:visible}
   <g transform="scale(1.5)"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="-28" y="-16" width="56" height="32" rx="4" fill="#f0fdf4"></rect><rect x="28" y="-7.04" width="6" height="14.08" rx="1.5" fill="#f0fdf4"></rect><path d="M -9.333333333333332 -11 V 11"></path><path d="M 9.333333333333336 -11 V 11"></path><path d="M -21 0 H -13 M 13 0 H 21 M 17 -4 V 4"></path></g></g>
   
   <g transform="translate(79 0)">
-  <line x1="-28" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.4" stroke-linecap="round"/>
+  <line x1="-28" y1="0" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.4" stroke-linecap="round"/>
 </g>
   
   
@@ -529,7 +529,7 @@ symbol{overflow:visible}
   <g transform="scale(1.5)"><g class="diesel-source-glyph" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><rect x="-28" y="-12" width="56" height="32" rx="5" fill="#fff7ed"></rect><circle cx="-17" cy="4" r="7" fill="#fff7ed"></circle><path d="M -6 -5 H 18 M -6 13 H 14"></path><path d="M -21 20 V 26 H 22 V 20"></path><path d="M 19 -12 V -26 H 27"></path><path d="M 27 -28 C 32 -34, 39 -33, 42 -39" stroke-width="1.6"></path><path d="M -3 -16 L 7 -16 L 1 -4 H 10 L -4 15 L 1 -4 H -7 Z" fill="#fff7ed"></path></g></g>
   
   <g transform="translate(-79 0)">
-  <line x1="46" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.3" stroke-linecap="round"/>
+  <line x1="46" y1="0" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.3" stroke-linecap="round"/>
 </g>
   
   
@@ -546,7 +546,7 @@ symbol{overflow:visible}
   <line x1="24" y1="0" x2="0" y2="0" stroke="#0891b2" stroke-width="2.2" stroke-linecap="round"/>
 </g>
 <g transform="translate(87 0)">
-  <line x1="-24" y1="0" x2="0" y2="0" stroke="hsl(259 72% 42%)" stroke-width="2.2" stroke-linecap="round"/>
+  <line x1="-24" y1="0" x2="0" y2="0" stroke="#1d7f3a" stroke-width="2.2" stroke-linecap="round"/>
 </g>
   
   
@@ -612,26 +612,26 @@ symbol{overflow:visible}
 <path id="edge-19" class="ldcv750" source-dev-id="DCBreak-18" target-dev-id="DCRealBs-1" d="M 900 488 L 872 488 L 820 488 L 788 488" fill="none" stroke="#0891b2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
 <path id="edge-20" class="ldcv750" source-dev-id="DCBreak-29" target-dev-id="DCRealBs-1" d="M 900 997 L 872 997 L 820 997 L 788 997" fill="none" stroke="#0891b2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
 <path id="edge-21" class="ldcv750" source-dev-id="DCBreak-30" target-dev-id="DCRealBs-1" d="M 900 1189 L 872 1189 L 820 1189 L 788 1189" fill="none" stroke="#0891b2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-22" class="lkv380" source-dev-id="ACBreak-1" target-dev-id="ACRealBs-1" d="M 1390 997 L 1418 997 L 1695 997 L 1727 997" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-23" class="lkv380" source-dev-id="ACBreak-2" target-dev-id="ACRealBs-1" d="M 1390 1189 L 1418 1189 L 1695 1189 L 1695 1191 L 1727 1191" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-24" class="lkv380" source-dev-id="ACBreak-3" target-dev-id="ACRealBs-1" d="M 1800 628 L 1772 628 L 1755 628 L 1727 628" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-25" class="lkv380" source-dev-id="ACBreak-4" target-dev-id="ACRealBs-1" d="M 1800 759 L 1772 759 L 1755 759 L 1727 759" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-26" class="lkv380" source-dev-id="ACBreak-5" target-dev-id="ACRealBs-1" d="M 1800 885 L 1772 885 L 1755 885 L 1727 885" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-27" class="lkv380" source-dev-id="ACBreak-6" target-dev-id="ACRealBs-1" d="M 1800 997 L 1772 997 L 1755 997 L 1727 997" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-28" class="lkv380" source-dev-id="ACBreak-7" target-dev-id="ACRealBs-1" d="M 1800 1211 L 1772 1211 L 1755 1211 L 1727 1211" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-29" class="lkv380" source-dev-id="ACBreak-8" target-dev-id="ACRealBs-1" d="M 1800 1557 L 1772 1557 L 1759 1557 L 1727 1557" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-22" class="lkv380" source-dev-id="ACBreak-1" target-dev-id="ACRealBs-1" d="M 1390 997 L 1418 997 L 1695 997 L 1727 997" fill="none" stroke="#1d7f3a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-23" class="lkv380" source-dev-id="ACBreak-2" target-dev-id="ACRealBs-1" d="M 1390 1189 L 1418 1189 L 1695 1189 L 1695 1191 L 1727 1191" fill="none" stroke="#1d7f3a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-24" class="lkv380" source-dev-id="ACBreak-3" target-dev-id="ACRealBs-1" d="M 1800 628 L 1772 628 L 1755 628 L 1727 628" fill="none" stroke="#1d7f3a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-25" class="lkv380" source-dev-id="ACBreak-4" target-dev-id="ACRealBs-1" d="M 1800 759 L 1772 759 L 1755 759 L 1727 759" fill="none" stroke="#1d7f3a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-26" class="lkv380" source-dev-id="ACBreak-5" target-dev-id="ACRealBs-1" d="M 1800 885 L 1772 885 L 1755 885 L 1727 885" fill="none" stroke="#1d7f3a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-27" class="lkv380" source-dev-id="ACBreak-6" target-dev-id="ACRealBs-1" d="M 1800 997 L 1772 997 L 1755 997 L 1727 997" fill="none" stroke="#1d7f3a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-28" class="lkv380" source-dev-id="ACBreak-7" target-dev-id="ACRealBs-1" d="M 1800 1211 L 1772 1211 L 1755 1211 L 1727 1211" fill="none" stroke="#1d7f3a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-29" class="lkv380" source-dev-id="ACBreak-8" target-dev-id="ACRealBs-1" d="M 1800 1557 L 1772 1557 L 1759 1557 L 1727 1557" fill="none" stroke="#1d7f3a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
 <path id="edge-30" class="ldcv750" source-dev-id="DCBreak-31" target-dev-id="DCRealBs-1" d="M 900 1399 L 872 1399 L 820 1399 L 788 1399" fill="none" stroke="#0891b2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
 <path id="edge-31" class="ldcv750" source-dev-id="DCBreak-33" target-dev-id="DCLoad-1" d="M 939 1605 L 1029 1605 L 1029 1682" fill="none" stroke="#0891b2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-32" class="lkv380" source-dev-id="ACBreak-10" target-dev-id="ACRealBs-1" d="M 1800 482 L 1772 482 L 1759 482 L 1727 482" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-33" class="lkv380" source-dev-id="ACGenerator-23" target-dev-id="ACBreak-10" d="M 2029 482 L 2001 482 L 1986 482 L 1958 482" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-34" class="lkv380" source-dev-id="ACBreak-11" target-dev-id="ACRealBs-1" d="M 1800 358 L 1727 358" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-35" class="lkv380" source-dev-id="ACGenerator-41" target-dev-id="ACBreak-11" d="M 2029 358 L 2001 358 L 1986 358 L 1958 358" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-36" class="lkv380" source-dev-id="ACBreak-12" target-dev-id="ACRealBs-1" d="M 1800 1424 L 1772 1424 L 1759 1424 L 1727 1424" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-37" class="lkv380" source-dev-id="ACGenerator-25" target-dev-id="ACBreak-12" d="M 2029 1424 L 2001 1424 L 1986 1424 L 1958 1424" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-38" class="lkv380" source-dev-id="ACGenerator-27" target-dev-id="ACBreak-3" d="M 2029 628 L 2001 628 L 1986 628 L 1958 628" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-39" class="lkv380" source-dev-id="ACGenerator-30" target-dev-id="ACBreak-6" d="M 2034 997 L 2006 997 L 1986 997 L 1958 997" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-40" class="lkv380" source-dev-id="ACGenerator-29" target-dev-id="ACBreak-5" d="M 2034 885 L 2006 885 L 1986 885 L 1958 885" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path id="edge-41" class="lkv380" source-dev-id="ACGenerator-28" target-dev-id="ACBreak-4" d="M 2034 759 L 2006 759 L 1986 759 L 1958 759" fill="none" stroke="hsl(259 72% 42%)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-32" class="lkv380" source-dev-id="ACBreak-10" target-dev-id="ACRealBs-1" d="M 1800 482 L 1772 482 L 1759 482 L 1727 482" fill="none" stroke="#1d7f3a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-33" class="lkv380" source-dev-id="ACGenerator-23" target-dev-id="ACBreak-10" d="M 2029 482 L 2001 482 L 1986 482 L 1958 482" fill="none" stroke="#1d7f3a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-34" class="lkv380" source-dev-id="ACBreak-11" target-dev-id="ACRealBs-1" d="M 1800 358 L 1727 358" fill="none" stroke="#1d7f3a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-35" class="lkv380" source-dev-id="ACGenerator-41" target-dev-id="ACBreak-11" d="M 2029 358 L 2001 358 L 1986 358 L 1958 358" fill="none" stroke="#1d7f3a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-36" class="lkv380" source-dev-id="ACBreak-12" target-dev-id="ACRealBs-1" d="M 1800 1424 L 1772 1424 L 1759 1424 L 1727 1424" fill="none" stroke="#1d7f3a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-37" class="lkv380" source-dev-id="ACGenerator-25" target-dev-id="ACBreak-12" d="M 2029 1424 L 2001 1424 L 1986 1424 L 1958 1424" fill="none" stroke="#1d7f3a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-38" class="lkv380" source-dev-id="ACGenerator-27" target-dev-id="ACBreak-3" d="M 2029 628 L 2001 628 L 1986 628 L 1958 628" fill="none" stroke="#1d7f3a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-39" class="lkv380" source-dev-id="ACGenerator-30" target-dev-id="ACBreak-6" d="M 2034 997 L 2006 997 L 1986 997 L 1958 997" fill="none" stroke="#1d7f3a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-40" class="lkv380" source-dev-id="ACGenerator-29" target-dev-id="ACBreak-5" d="M 2034 885 L 2006 885 L 1986 885 L 1958 885" fill="none" stroke="#1d7f3a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="edge-41" class="lkv380" source-dev-id="ACGenerator-28" target-dev-id="ACBreak-4" d="M 2034 759 L 2006 759 L 1986 759 L 1958 759" fill="none" stroke="#1d7f3a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
 <path id="edge-42" source-dev-id="AcE2Hydro-1" target-dev-id="HydroStorage-4" d="M 1688 1931 L 1660 1931 L 1593 1931 L 1565 1931" fill="none" stroke="#7c3aed" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
 <line class="export-boundary-bus-internal-connector" source-dev-id="AcE2Hydro-1" target-dev-id="HydroStorage-4" x1="1565" y1="1931" x2="1555" y2="1931" stroke="#7c3aed" stroke-width="2.4" stroke-linecap="round"/>
 <path id="edge-43" source-dev-id="Hydro2DcE-2" target-dev-id="HydroStorage-4" d="M 1236 1857 L 1236 1927 L 1415 1927" fill="none" stroke="#7c3aed" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>

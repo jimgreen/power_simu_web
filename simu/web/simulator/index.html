@@ -1411,7 +1411,14 @@
             <input id="newModelSvgInput" type="file" accept=".svg,image/svg+xml" hidden />
             <span id="newModelSvgFilename">未选择图形</span>
           </div>
-          <p class="modal-hint">将读取上传的 model.e，并自动生成 meas.e、control.e、stat.e、weather.e、curves.e 等定义文件。</p>
+          <p class="modal-hint">正式新建前将校验必要字段、E/SVG 设备匹配性，并利用候选 E 文件执行一次潮流计算。</p>
+          <section id="newModelValidation" class="model-preflight-result" aria-label="新建模型预校核结果" hidden>
+            <div class="model-preflight-summary">
+              <strong>预校核结果</strong>
+              <span id="newModelValidationSummary"></span>
+            </div>
+            <ol id="newModelValidationChecks" class="model-preflight-checks"></ol>
+          </section>
           <p id="newModelMessage" class="modal-message" aria-live="polite"></p>
           <div class="modal-actions">
             <button id="cancelNewModel" type="button">取消</button>
@@ -1455,7 +1462,14 @@
             <input id="updateModelSvgInput" type="file" accept=".svg,image/svg+xml" hidden />
             <span>导入修改后的 SVG 图形；未选择时保留现有接线图</span>
           </div>
-          <p class="modal-hint">只有停止状态的模型可以修改；访问链接可以单独保存，模型定义文件保持不变。</p>
+          <p class="modal-hint">正式修改前将对候选 E 文件与候选 SVG 执行完整预校核；仅修改访问链接时不触碰模型定义。</p>
+          <section id="updateModelValidation" class="model-preflight-result" aria-label="修改模型预校核结果" hidden>
+            <div class="model-preflight-summary">
+              <strong>预校核结果</strong>
+              <span id="updateModelValidationSummary"></span>
+            </div>
+            <ol id="updateModelValidationChecks" class="model-preflight-checks"></ol>
+          </section>
           <p id="updateModelMessage" class="modal-message" aria-live="polite"></p>
           <div class="modal-actions">
             <button id="cancelUpdateModel" type="button">取消</button>
@@ -1485,7 +1499,7 @@
       </div>
 
       <div id="importModelDialog" class="modal-backdrop" hidden>
-        <form id="importModelForm" class="modal-card" aria-modal="true" role="dialog" aria-labelledby="importModelTitle">
+        <form id="importModelForm" class="modal-card model-editor-modal" aria-modal="true" role="dialog" aria-labelledby="importModelTitle">
           <div class="modal-head">
             <h2 id="importModelTitle">导入定义</h2>
             <button id="closeImportModelDialog" class="icon-button" type="button" title="关闭">
@@ -1499,7 +1513,14 @@
           <label class="modal-field">新模型名称
             <input id="importModelName" name="importModelName" type="text" autocomplete="off" required />
           </label>
-          <p class="modal-hint">定义包将导入为独立模型文件夹，必须包含模型定义、量测定义、控制定义、曲线定义与 SVG 图形。</p>
+          <p class="modal-hint">正式导入前将校验定义包内 model.e 的必要字段、E/SVG 设备匹配性和潮流收敛性。</p>
+          <section id="importModelValidation" class="model-preflight-result" aria-label="导入模型预校核结果" hidden>
+            <div class="model-preflight-summary">
+              <strong>预校核结果</strong>
+              <span id="importModelValidationSummary"></span>
+            </div>
+            <ol id="importModelValidationChecks" class="model-preflight-checks"></ol>
+          </section>
           <p id="importModelMessage" class="modal-message" aria-live="polite"></p>
           <div class="modal-actions">
             <button id="cancelImportModel" type="button">取消</button>

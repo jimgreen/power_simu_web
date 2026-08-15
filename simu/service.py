@@ -1424,6 +1424,10 @@ class PolarMicrogridSimulator:
                 self._fault_restore = {}
                 self._last_scada_values = {}
                 self._clear_manual_definition_changes_unlocked()
+                with self._trainee_receive_cache_lock:
+                    self._trainee_receive_cache_signature = None
+                    self._trainee_receive_cache_value = None
+                    self._trainee_receive_cache_next_stat_monotonic = 0.0
 
                 self._load_runtime_state_from_disk()
                 return {"removed": removed}

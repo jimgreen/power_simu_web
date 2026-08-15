@@ -13466,6 +13466,37 @@ function renewableMetricGroupAvailable(metrics = {}, group = "") {
   return count === null || count > 0;
 }
 
+function renewableMetricsWithCommandRowCounts(plan = {}) {
+  const metrics = { ...(plan?.metrics || {}) };
+  const storageRows = (plan?.commandRows || []).filter((row) => row?.technology === "storage");
+  if (!storageRows.length) return metrics;
+
+  const count = (side, role, onlineOnly = false) => storageRows.filter((row) => (
+    String(row?.connectionSide || "").toUpperCase() === side
+    && row?.role === role
+    && (!onlineOnly || row?.online === true)
+  )).length;
+  const roles = [
+    ["GridFollowing", "grid_following"],
+    ["GridForming", "balance"],
+  ];
+  for (const side of ["AC", "DC"]) {
+    const sideKey = side === "AC" ? "Ac" : "Dc";
+    for (const [metricRole, rowRole] of roles) {
+      metrics[`${sideKey[0].toLowerCase()}${sideKey.slice(1)}${metricRole}StorageCount`] = count(
+        side,
+        rowRole,
+      );
+      metrics[`online${sideKey}${metricRole}StorageCount`] = count(
+        side,
+        rowRole,
+        true,
+      );
+    }
+  }
+  return metrics;
+}
+
 function renderRenewableMetricAvailability(metrics = {}) {
   document.querySelectorAll("[data-renewable-metric-group]").forEach((card) => {
     const alwaysVisible = card.dataset.renewableMetricAlways === "true";
@@ -14293,7 +14324,7 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
         ? "等待接收后恢复"
         : "已停止";
   }
-  const metrics = plan?.metrics || {};
+  const metrics = renewableMetricsWithCommandRowCounts(plan);
   const planWeather = plan?.weather || {};
   const snapshotWeather = currentWeatherLoad(snapshot);
   const observedWindSpeed = optionalNumber(planWeather.observedWindSpeed) ?? snapshotWeather.windSpeed;

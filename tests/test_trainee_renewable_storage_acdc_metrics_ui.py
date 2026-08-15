@@ -315,6 +315,46 @@ process.stdout.write(JSON.stringify({{
             },
         )
 
+    def test_metric_group_counts_fall_back_to_structured_storage_command_rows(self):
+        helpers = "function renewableMetricCount" + self.script.split(
+            "function renewableMetricCount",
+            1,
+        )[1].split("function renderRenewableMetricAvailability", 1)[0]
+        node_script = f"""
+{helpers}
+const metrics = renewableMetricsWithCommandRowCounts({{
+  metrics: {{
+    acGridFollowingStorageCount: 0,
+    onlineAcGridFollowingStorageCount: 0,
+  }},
+  commandRows: [
+    {{ technology: "storage", connectionSide: "AC", role: "grid_following", online: true }},
+    {{ technology: "storage", connectionSide: "AC", role: "balance", online: false }},
+    {{ technology: "wind", connectionSide: "AC", role: "grid_following", online: true }},
+  ],
+}});
+process.stdout.write(JSON.stringify({{
+  configuredGridFollowing: metrics.acGridFollowingStorageCount,
+  configuredGridForming: metrics.acGridFormingStorageCount,
+  onlineGridFollowing: metrics.onlineAcGridFollowingStorageCount,
+  onlineGridForming: metrics.onlineAcGridFormingStorageCount,
+  gridFollowingAvailable: renewableMetricGroupAvailable(metrics, "ac-grid-following-storage"),
+  gridFormingAvailable: renewableMetricGroupAvailable(metrics, "ac-grid-forming-storage"),
+}}));
+"""
+        result = subprocess.run(["node", "-e", node_script], check=True, capture_output=True, text=True)
+        self.assertEqual(
+            json.loads(result.stdout),
+            {
+                "configuredGridFollowing": 1,
+                "configuredGridForming": 1,
+                "onlineGridFollowing": 1,
+                "onlineGridForming": 0,
+                "gridFollowingAvailable": True,
+                "gridFormingAvailable": True,
+            },
+        )
+
     def test_backend_reads_signed_storage_power_soc_efficiency_and_boundaries(self):
         storage_block = self.backend.split("def _storage_rows", 1)[1].split("def _converter_rows", 1)[0]
         efficiency_block = self.backend.split("def _storage_efficiency", 1)[1].split("def _live_soc_ratio", 1)[0]

@@ -18,6 +18,7 @@ import shutil
 import threading
 import time
 import zipfile
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
@@ -641,7 +642,8 @@ def _fallback_definition_diagram_svg(service: PolarMicrogridSimulator) -> str:
     model_id = html.escape(str(getattr(service, "model_id", "model") or "model"))
     model_name = html.escape(str(getattr(service, "model_name", model_id) or model_id))
     return (
-        '<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">'
+        '<svg xmlns="http://www.w3.org/2000/svg" data-model-diagram="fallback" '
+        'width="960" height="540" viewBox="0 0 960 540">'
         '<rect width="960" height="540" fill="#f8fafc"/>'
         '<rect x="220" y="190" width="520" height="160" rx="12" fill="#ffffff" stroke="#94a3b8" stroke-width="2"/>'
         '<text x="480" y="250" text-anchor="middle" font-family="Arial, sans-serif" '
@@ -842,11 +844,368 @@ _REQUIRED_POWER_MODEL_FIELDS = {
     "DCGenerator": {"node", "control_type", "p_set", "v_set", "i_set"},
 }
 
+_SAFE_DEFAULT_MODEL_FIELDS = {
+    "ACRealBs": {"u", "f"},
+    "DCRealBs": {"u", "i"},
+    "ACBranch": {"p", "q", "i"},
+    "ACZeroBranch": {"p", "q", "i"},
+    "ACSwitch": {"p", "q", "i"},
+    "ACBreak": {"p", "q", "i"},
+    "DCBranch": {"p", "u", "i"},
+    "DCZeroBranch": {"p", "i"},
+    "DCSwitch": {"p", "i"},
+    "DCBreak": {"p", "i"},
+    "ACGenerator": {"p", "q", "u", "i"},
+    "DCGenerator": {"p", "u", "i"},
+    "ACLoad": {"p_set", "p", "q", "u", "i"},
+    "DCLoad": {"p_set", "p", "u", "i"},
+    "DCDCConverter": {"p_set", "i_set", "v_set"},
+    "DCACConverter": {
+        "p_ac_set",
+        "p_dc_set",
+        "q_ac_set",
+        "i_dc_set",
+        "v_ac_set",
+        "v_dc_set",
+    },
+}
+
+_SVG_REQUIRED_MODEL_BLOCKS = {
+    "ACRealBs",
+    "DCRealBs",
+    "ACBranch",
+    "DCBranch",
+    "ACZeroBranch",
+    "DCZeroBranch",
+    "ACSwitch",
+    "DCSwitch",
+    "ACBreak",
+    "DCBreak",
+    "ACLoad",
+    "DCLoad",
+    "ACGenerator",
+    "DCGenerator",
+    "DCDCConverter",
+    "DCACConverter",
+    "ACACConverter",
+    "AcE2Hydro",
+    "DcE2Hydro",
+    "Hydro2AcE",
+    "Hydro2DcE",
+    "HydroSource",
+    "HydroLoad",
+    "HydroPipe",
+    "HydroValve",
+    "HydroCompressor",
+    "HydroPressRegulator",
+    "HydroStopValve",
+    "HydroStorage",
+}
+
+
+class ModelPreflightError(ValueError):
+    """A failed, non-mutating model import validation."""
+
+    def __init__(self, validation: Mapping[str, Any]) -> None:
+        self.validation = dict(validation)
+        super().__init__(str(self.validation.get("summary") or "模型预校核未通过"))
+
+
+def _xml_local_name(value: Any) -> str:
+    return str(value or "").rsplit("}", 1)[-1]
+
+
+def _diagram_svg_inventory(svg_text: Optional[str]) -> Mapping[str, Any]:
+    normalized = _normalize_diagram_svg_text(svg_text)
+    if normalized is None:
+        return {"svg": None, "devices": [], "edge_device_ids": []}
+    try:
+        root = ET.fromstring(normalized)
+    except ET.ParseError as exc:
+        raise ValueError(f"SVG图形 XML 解析失败: {exc}") from exc
+    if _xml_local_name(root.tag).casefold() != "svg":
+        raise ValueError("SVG图形文件的根元素必须是 <svg>")
+    if str(root.attrib.get("data-model-diagram", "")).strip().casefold() == "fallback":
+        return {"svg": None, "devices": [], "edge_device_ids": []}
+
+    devices: list[dict[str, str]] = []
+    edge_device_ids: list[str] = []
+    for element in root.iter():
+        attributes = {
+            _xml_local_name(key): str(value or "").strip()
+            for key, value in element.attrib.items()
+        }
+        for field in ("source-dev-id", "target-dev-id"):
+            value = attributes.get(field, "")
+            if value:
+                edge_device_ids.append(value)
+        tag = _xml_local_name(element.tag).casefold()
+        # ``dev`` is a measurement-overlay reference such as ``ACGenerator-31``;
+        # it is not a device type and must not be counted as another SVG device.
+        explicit_type = attributes.get("dev-type", attributes.get("device-type", ""))
+        device_id = attributes.get("dev-id", "")
+        if tag != "use" and (tag != "g" or not device_id):
+            continue
+        if not device_id and tag == "use":
+            candidate_id = attributes.get("id", "")
+            if "-" in candidate_id and not candidate_id.startswith(("label_", "measure_")):
+                device_id = candidate_id
+        if not device_id:
+            continue
+        devices.append(
+            {
+                "dev_id": device_id,
+                "dev_type": explicit_type,
+                "idx": attributes.get("idx", ""),
+                "name": attributes.get("name", ""),
+                "node": attributes.get("node", ""),
+            }
+        )
+    return {
+        "svg": normalized,
+        "devices": devices,
+        "edge_device_ids": sorted(set(edge_device_ids)),
+    }
+
+
+def _resolve_svg_devices(model_book: EBook, inventory: Mapping[str, Any]) -> list[dict[str, str]]:
+    block_names = {
+        str(name)
+        for name in model_book.data
+    } | set(_SVG_REQUIRED_MODEL_BLOCKS)
+    resolved: list[dict[str, str]] = []
+    for source in inventory.get("devices", []):
+        if not isinstance(source, Mapping):
+            continue
+        item = {str(key): str(value or "").strip() for key, value in source.items()}
+        dev_type = item.get("dev_type", "")
+        dev_id = item.get("dev_id", "")
+        idx = item.get("idx", "")
+        if not dev_type and dev_id:
+            for block_name in sorted(block_names, key=len, reverse=True):
+                prefix = f"{block_name}-"
+                if dev_id.startswith(prefix):
+                    dev_type = block_name
+                    if not idx:
+                        idx = dev_id[len(prefix):]
+                    break
+        item["dev_type"] = dev_type
+        item["idx"] = idx
+        resolved.append(item)
+    return resolved
+
+
+def _preflight_number_text(value: float) -> str:
+    text = format(float(value), ".15g")
+    return "0" if text in {"-0", "-0.0"} else text
+
+
+def _bounded_zero_default(row: Mapping[str, Any], minimum_field: str, maximum_field: str) -> str:
+    lower = _to_float(row.get(minimum_field), None)
+    upper = _to_float(row.get(maximum_field), None)
+    value = 0.0
+    if lower is not None:
+        value = max(value, float(lower))
+    if upper is not None:
+        value = min(value, float(upper))
+    return _preflight_number_text(value)
+
+
+def _node_base_voltage(model_book: EBook, domain: str, node_idx: Any) -> Optional[float]:
+    normalized_idx = str(node_idx or "").strip()
+    node_block = model_book.data.get(f"{domain}Node")
+    if normalized_idx and node_block is not None:
+        for node_row in getattr(node_block, "data", []):
+            if str(node_row.get("idx", "")).strip() != normalized_idx:
+                continue
+            voltage = _to_float(node_row.get("vbase", node_row.get("voltage")), None)
+            if voltage is not None and float(voltage) > 0.0:
+                return float(voltage)
+    return None
+
+
+def _connected_node_voltage(
+    model_book: EBook,
+    block_name: str,
+    row: Mapping[str, Any],
+    field: str = "v_set",
+) -> Optional[float]:
+    candidates: list[tuple[str, Any]] = []
+    if field == "v_ac_set":
+        candidates.append(("AC", row.get("ac_node")))
+    elif field == "v_dc_set":
+        candidates.append(("DC", row.get("dc_node")))
+    elif block_name == "DCDCConverter":
+        candidates.extend(("DC", row.get(key)) for key in ("i_node", "j_node"))
+    elif block_name.startswith("AC"):
+        candidates.append(("AC", row.get("node", row.get("i_node"))))
+    else:
+        candidates.append(("DC", row.get("node", row.get("i_node"))))
+    for domain, node_idx in candidates:
+        voltage = _node_base_voltage(model_book, domain, node_idx)
+        if voltage is not None:
+            return voltage
+    rated = _to_float(row.get("rated_voltage"), None)
+    return float(rated) if rated is not None and float(rated) > 0.0 else None
+
+
+def _safe_model_field_default(
+    model_book: EBook,
+    block_name: str,
+    row: Mapping[str, Any],
+    field: str,
+) -> tuple[Optional[str], str]:
+    if field in {"v_set", "v_ac_set", "v_dc_set", "u"}:
+        voltage = _connected_node_voltage(model_book, block_name, row, field)
+        if voltage is not None:
+            return _preflight_number_text(voltage), "额定电压或连接节点基准电压"
+        if field == "u":
+            return "0", "运行量初值"
+        return None, ""
+    if field == "p_set" and block_name in {"ACLoad", "DCLoad"}:
+        pbase = _to_float(row.get("pbase"), None)
+        if pbase is not None:
+            # ACLoad/DCLoad expose p_set as the writable alias of pbase.  Copying
+            # pbase preserves the original ZIP load pbase*pv0 operating point.
+            return _preflight_number_text(float(pbase)), "静态负荷模型 pbase"
+        return _bounded_zero_default(row, "p_min", "p_max"), "功率上下限内的零值"
+    if field in {"p_set", "p_ac_set", "p_dc_set"}:
+        minimum_field = "p_min"
+        maximum_field = "p_max"
+        if field == "p_ac_set":
+            minimum_field, maximum_field = "ac_p_min", "ac_p_max"
+        elif field == "p_dc_set":
+            minimum_field, maximum_field = "dc_p_min", "dc_p_max"
+        return _bounded_zero_default(row, minimum_field, maximum_field), "功率上下限内的零值"
+    if field in {"q_set", "q_ac_set"}:
+        minimum_field, maximum_field = ("q_min", "q_max")
+        if field == "q_ac_set":
+            minimum_field, maximum_field = ("ac_q_min", "ac_q_max")
+        return _bounded_zero_default(row, minimum_field, maximum_field), "无功上下限内的零值"
+    if field in {"i_set", "i_dc_set"}:
+        minimum_field, maximum_field = ("i_min", "i_max")
+        if field == "i_dc_set":
+            minimum_field, maximum_field = ("dc_i_min", "dc_i_max")
+        return _bounded_zero_default(row, minimum_field, maximum_field), "电流上下限内的零值"
+    if field == "f":
+        return "50", "交流额定频率"
+    if field in {"p", "q", "i"}:
+        return "0", "运行量初值"
+    return None, ""
+
+
+def _repair_power_model_schema(
+    model_book: EBook,
+    svg_devices: Sequence[Mapping[str, Any]],
+) -> list[dict[str, str]]:
+    """Fill only deterministic defaults; ambiguous topology/control stays invalid."""
+
+    repairs: list[dict[str, str]] = []
+    resolved_svg = _resolve_svg_devices(model_book, {"devices": list(svg_devices)})
+
+    def svg_row(block_name: str, row: Mapping[str, Any]) -> Optional[Mapping[str, str]]:
+        idx = str(row.get("idx", "")).strip()
+        name = str(row.get("name", "")).strip()
+        matches = [
+            item
+            for item in resolved_svg
+            if item.get("dev_type") == block_name
+            and (
+                (idx and item.get("idx") == idx)
+                or (name and item.get("name") == name)
+            )
+        ]
+        if len(matches) != 1:
+            return None
+        match = matches[0]
+        svg_name = str(match.get("name", "")).strip()
+        return match if not svg_name or not name or svg_name == name else None
+
+    candidate_blocks = set(_REQUIRED_POWER_MODEL_FIELDS) | set(_SAFE_DEFAULT_MODEL_FIELDS)
+    for block_name in sorted(candidate_blocks):
+        candidate_fields = (
+            set(_REQUIRED_POWER_MODEL_FIELDS.get(block_name, set()))
+            | set(_SAFE_DEFAULT_MODEL_FIELDS.get(block_name, set()))
+        )
+        block = model_book.data.get(block_name)
+        if block is None or not getattr(block, "data", []):
+            continue
+        headers = list(getattr(block, "header_list", []))
+        for field in sorted(candidate_fields):
+            field_was_missing = field not in headers
+            repaired_any = False
+            for row in block.data:
+                if str(row.get(field, "")).strip():
+                    continue
+                replacement: Optional[str] = None
+                source = ""
+                if field == "node":
+                    diagram_row = svg_row(block_name, row)
+                    svg_node = str((diagram_row or {}).get("node", "")).strip()
+                    if svg_node:
+                        replacement = svg_node
+                        source = "SVG设备节点"
+                else:
+                    replacement, source = _safe_model_field_default(
+                        model_book,
+                        block_name,
+                        row,
+                        field,
+                    )
+                if replacement is None:
+                    continue
+                row[field] = replacement
+                repaired_any = True
+                repairs.append(
+                    {
+                        "block": block_name,
+                        "device": str(row.get("name", row.get("idx", ""))).strip(),
+                        "field": field,
+                        "value": replacement,
+                        "source": source,
+                    }
+                )
+            if field_was_missing and repaired_any:
+                headers.append(field)
+        block.header_list = headers
+    return repairs
+
 
 def _validate_power_model_schema(model_book: EBook) -> None:
     """Reject definitions that silently remove a bus anchor or generator control."""
 
     issues: list[str] = []
+    for block_name in sorted(_SVG_REQUIRED_MODEL_BLOCKS):
+        block = model_book.data.get(block_name)
+        if block is None or not getattr(block, "data", []):
+            continue
+        headers = {
+            str(field).strip()
+            for field in getattr(block, "header_list", [])
+            if str(field).strip()
+        }
+        missing_identity_fields = sorted({"idx", "name"} - headers)
+        if missing_identity_fields:
+            issues.append(
+                f"{block_name} 缺少设备身份字段: {', '.join(missing_identity_fields)}"
+            )
+        seen_indices: set[str] = set()
+        seen_names: set[str] = set()
+        for position, row in enumerate(getattr(block, "data", []), start=1):
+            idx = str(row.get("idx", "")).strip()
+            name = str(row.get("name", "")).strip()
+            if not idx:
+                issues.append(f"{block_name} 第 {position} 行的稳定索引 idx 为空")
+            elif idx in seen_indices:
+                issues.append(f"{block_name} 的稳定索引 idx={idx} 重复")
+            else:
+                seen_indices.add(idx)
+            if not name:
+                issues.append(f"{block_name} 第 {position} 行的设备名称 name 为空")
+            elif name in seen_names:
+                issues.append(f"{block_name} 的设备名称 name={name} 重复")
+            else:
+                seen_names.add(name)
     for block_name, required_fields in _REQUIRED_POWER_MODEL_FIELDS.items():
         block = model_book.data.get(block_name)
         if block is None or not getattr(block, "data", []):
@@ -859,12 +1218,176 @@ def _validate_power_model_schema(model_book: EBook) -> None:
         missing = sorted(required_fields - headers)
         if missing:
             issues.append(f"{block_name} 缺少必需字段: {', '.join(missing)}")
+        for row in getattr(block, "data", []):
+            device = str(row.get("name", row.get("idx", ""))).strip() or "未命名设备"
+            empty = sorted(
+                field
+                for field in required_fields & headers
+                if not str(row.get(field, "")).strip()
+            )
+            if empty:
+                issues.append(f"{block_name}/{device} 的必需字段为空: {', '.join(empty)}")
     if issues:
         raise ValueError(
             "model.e 关键潮流字段不完整："
             + "；".join(issues)
             + "。已拒绝更新，以免对应电网被静默判为死岛。"
         )
+
+
+def _expected_svg_model_rows(model_book: EBook) -> list[tuple[str, str, str]]:
+    coupled_endpoints = {
+        (
+            str(binding.get("target_dev_type", "")).strip(),
+            str(binding.get("target_dev_name", "")).strip(),
+        )
+        for bindings in energy_coupling_control_bindings(model_book).values()
+        for binding in bindings
+    }
+    expected: list[tuple[str, str, str]] = []
+    for block_name in sorted(_SVG_REQUIRED_MODEL_BLOCKS):
+        block = model_book.data.get(block_name)
+        for row in [] if block is None else getattr(block, "data", []):
+            idx = str(row.get("idx", "")).strip()
+            name = str(row.get("name", "")).strip()
+            if not idx or not name or (block_name, name) in coupled_endpoints:
+                continue
+            expected.append((block_name, idx, name))
+    return expected
+
+
+def _diagram_model_match_result(
+    model_book: EBook,
+    inventory: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    if inventory.get("svg") is None:
+        return {
+            "id": "diagram",
+            "label": "E/SVG 匹配性",
+            "status": "warning",
+            "message": "未提供 SVG 图形，已跳过 E/SVG 匹配性校验。",
+            "details": {
+                "missing_in_svg": [],
+                "unknown_in_model": [],
+                "name_mismatches": [],
+                "dangling_edges": [],
+                "identity_issues": [],
+                "duplicate_devices": [],
+            },
+        }
+
+    expected = _expected_svg_model_rows(model_book)
+    by_type_idx = {(block, idx): name for block, idx, name in expected}
+    all_model_rows = {
+        (str(block_name), str(row.get("idx", "")).strip()): str(row.get("name", "")).strip()
+        for block_name, block in model_book.data.items()
+        for row in getattr(block, "data", [])
+        if str(row.get("idx", "")).strip()
+    }
+    resolved = _resolve_svg_devices(model_book, inventory)
+    matched: set[tuple[str, str]] = set()
+    unknown: list[str] = []
+    name_mismatches: list[str] = []
+    identity_issues: list[str] = []
+    svg_device_ids: set[str] = set()
+    svg_identity_counts: dict[tuple[str, str], int] = {}
+    for item in resolved:
+        block_name = str(item.get("dev_type", "")).strip()
+        idx = str(item.get("idx", "")).strip()
+        name = str(item.get("name", "")).strip()
+        dev_id = str(item.get("dev_id", "")).strip()
+        if dev_id:
+            svg_device_ids.add(dev_id)
+        if block_name and idx:
+            identity = (block_name, idx)
+            svg_identity_counts[identity] = svg_identity_counts.get(identity, 0) + 1
+        if not block_name or not idx or not name:
+            missing_fields = [
+                field
+                for field, value in (("dev_type", block_name), ("idx", idx), ("name", name))
+                if not value
+            ]
+            identity_issues.append(
+                f"{dev_id or '--'} 缺少 {', '.join(missing_fields)}"
+            )
+            continue
+        model_name = all_model_rows.get((block_name, idx))
+        if model_name is None:
+            unknown.append(dev_id or f"{block_name}/{name or idx or '--'}")
+            continue
+        if name and model_name and name != model_name:
+            name_mismatches.append(
+                f"{block_name}-{idx}: SVG={name}, E={model_name}"
+            )
+            continue
+        if (block_name, idx) in by_type_idx:
+            matched.add((block_name, idx))
+
+    missing = [
+        f"{block_name}-{idx}/{name}"
+        for block_name, idx, name in expected
+        if (block_name, idx) not in matched
+    ]
+    dangling_edges = [
+        device_id
+        for device_id in inventory.get("edge_device_ids", [])
+        if str(device_id) not in svg_device_ids
+    ]
+    duplicate_devices = [
+        f"{block_name}-{idx} 出现 {count} 次"
+        for (block_name, idx), count in sorted(svg_identity_counts.items())
+        if count > 1
+    ]
+    details = {
+        "expected_device_count": len(expected),
+        "svg_device_count": len(resolved),
+        "matched_device_count": len(matched),
+        "missing_in_svg": missing,
+        "unknown_in_model": sorted(set(unknown)),
+        "name_mismatches": sorted(set(name_mismatches)),
+        "dangling_edges": sorted(set(dangling_edges)),
+        "identity_issues": sorted(set(identity_issues)),
+        "duplicate_devices": duplicate_devices,
+    }
+    mismatch_count = sum(
+        len(details[key])
+        for key in (
+            "missing_in_svg",
+            "unknown_in_model",
+            "name_mismatches",
+            "dangling_edges",
+            "identity_issues",
+            "duplicate_devices",
+        )
+    )
+    if mismatch_count:
+        summary_parts = []
+        if missing:
+            summary_parts.append(f"E 中有 {len(missing)} 台设备未出现在 SVG")
+        if unknown:
+            summary_parts.append(f"SVG 中有 {len(set(unknown))} 台设备无法在 E 中定位")
+        if name_mismatches:
+            summary_parts.append(f"有 {len(set(name_mismatches))} 台设备名称不一致")
+        if dangling_edges:
+            summary_parts.append(f"有 {len(set(dangling_edges))} 个连线端点未绑定图元")
+        if identity_issues:
+            summary_parts.append(f"有 {len(set(identity_issues))} 个 SVG 图元身份字段不完整")
+        if duplicate_devices:
+            summary_parts.append(f"有 {len(duplicate_devices)} 个 SVG 设备稳定索引重复")
+        return {
+            "id": "diagram",
+            "label": "E/SVG 匹配性",
+            "status": "failed",
+            "message": "；".join(summary_parts) + "。",
+            "details": details,
+        }
+    return {
+        "id": "diagram",
+        "label": "E/SVG 匹配性",
+        "status": "passed",
+        "message": f"E 与 SVG 的 {len(expected)} 台可视设备身份、索引和名称一致。",
+        "details": details,
+    }
 
 
 def _repair_fixed_boundaries(model_book: EBook) -> list[dict]:
@@ -1257,7 +1780,13 @@ def _generated_curves_payload(model_book: EBook) -> dict[str, Any]:
     }
 
 
-def _generated_model_artifacts(model_text: str) -> Mapping[str, Any]:
+def _generated_model_artifacts(
+    model_text: str,
+    *,
+    svg_devices: Sequence[Mapping[str, Any]] = (),
+    allow_schema_repairs: bool = False,
+    schema_repairs: Optional[list[dict[str, str]]] = None,
+) -> Mapping[str, Any]:
     if not str(model_text or "").strip():
         raise ValueError("model.e 不能为空")
     model_book = _book_from_text(model_text)
@@ -1283,6 +1812,10 @@ def _generated_model_artifacts(model_text: str) -> Mapping[str, Any]:
                 )
     if not _model_book_has_power_model(model_book):
         raise ValueError("model.e 中未找到可识别的电网模型设备块")
+    if allow_schema_repairs:
+        repairs = _repair_power_model_schema(model_book, svg_devices)
+        if schema_repairs is not None:
+            schema_repairs.extend(repairs)
     _validate_power_model_schema(model_book)
     _validate_dcac_converter_schema(model_book)
     _repair_fixed_boundaries(model_book)
@@ -1295,6 +1828,161 @@ def _generated_model_artifacts(model_text: str) -> Mapping[str, Any]:
         "meas_book": _generated_measurement_book(model_book, control_blocks),
         "weather_book": _generated_weather_book(),
         "curves_payload": _generated_curves_payload(model_book),
+    }
+
+
+def _preflight_model_import(
+    model_text: str,
+    *,
+    diagram_svg_text: Optional[str] = None,
+    source_label: str = "model.e",
+) -> Mapping[str, Any]:
+    """Validate and solve an uploaded model without touching its target folder."""
+
+    started = time.perf_counter()
+    schema_repairs: list[dict[str, str]] = []
+    inventory: Mapping[str, Any]
+    diagram_parse_error = ""
+    try:
+        inventory = _diagram_svg_inventory(diagram_svg_text)
+    except ValueError as exc:
+        inventory = {"svg": diagram_svg_text, "devices": [], "edge_device_ids": []}
+        diagram_parse_error = str(exc)
+
+    artifacts: Optional[Mapping[str, Any]] = None
+    schema_error = ""
+    try:
+        artifacts = _generated_model_artifacts(
+            model_text,
+            svg_devices=inventory.get("devices", []),
+            allow_schema_repairs=True,
+            schema_repairs=schema_repairs,
+        )
+        schema_check: Mapping[str, Any] = {
+            "id": "schema",
+            "label": "必要字段",
+            "status": "repaired" if schema_repairs else "passed",
+            "message": (
+                f"已自动补齐 {len(schema_repairs)} 个可确定的必要字段默认值。"
+                if schema_repairs
+                else "必要字段完整，无需自动补值。"
+            ),
+            "repairs": schema_repairs,
+        }
+    except (ValueError, OSError) as exc:
+        schema_error = str(exc)
+        schema_check = {
+            "id": "schema",
+            "label": "必要字段",
+            "status": "failed",
+            "message": schema_error,
+            "repairs": schema_repairs,
+        }
+
+    if diagram_parse_error:
+        diagram_check: Mapping[str, Any] = {
+            "id": "diagram",
+            "label": "E/SVG 匹配性",
+            "status": "failed",
+            "message": diagram_parse_error,
+            "details": {
+                "missing_in_svg": [],
+                    "unknown_in_model": [],
+                    "name_mismatches": [],
+                    "dangling_edges": [],
+                    "identity_issues": [],
+                    "duplicate_devices": [],
+            },
+        }
+    elif artifacts is None:
+        diagram_check = {
+            "id": "diagram",
+            "label": "E/SVG 匹配性",
+            "status": "blocked",
+            "message": "E 文件必要字段校验失败，无法继续核对 SVG 设备身份。",
+            "details": {
+                "missing_in_svg": [],
+                "unknown_in_model": [],
+                "name_mismatches": [],
+                "dangling_edges": [],
+                "identity_issues": [],
+                "duplicate_devices": [],
+            },
+        }
+    else:
+        diagram_check = _diagram_model_match_result(artifacts["model_book"], inventory)
+
+    if artifacts is None:
+        power_flow_check: Mapping[str, Any] = {
+            "id": "power_flow",
+            "label": "单次潮流",
+            "status": "blocked",
+            "message": "E 文件必要字段校验失败，未执行潮流计算。",
+            "solver_info": "",
+        }
+    else:
+        power_flow_started = time.perf_counter()
+        try:
+            _snapshot, solver_info = simu_loop.solve_hybrid_snapshot_from_book(
+                copy.deepcopy(artifacts["model_book"]),
+                Path(Path(str(source_label or "model.e")).name or "model.e"),
+            )
+            power_flow_check = {
+                "id": "power_flow",
+                "label": "单次潮流",
+                "status": "passed",
+                "message": f"潮流计算收敛：{solver_info}",
+                "solver_info": solver_info,
+                "duration_ms": round((time.perf_counter() - power_flow_started) * 1000.0, 3),
+            }
+        except Exception as exc:
+            power_flow_check = {
+                "id": "power_flow",
+                "label": "单次潮流",
+                "status": "failed",
+                "message": f"潮流计算不收敛或无法建立网络：{exc}",
+                "solver_info": str(exc),
+                "duration_ms": round((time.perf_counter() - power_flow_started) * 1000.0, 3),
+            }
+
+    checks = [power_flow_check, schema_check, diagram_check]
+    failed_checks = [
+        item
+        for item in checks
+        if item.get("status") in {"failed", "blocked"}
+    ]
+    ok = not failed_checks
+    signature_source = (
+        str(model_text or "")
+        + "\0"
+        + str(inventory.get("svg") or diagram_svg_text or "")
+    ).encode("utf-8", errors="replace")
+    if ok:
+        summary = (
+            "模型预校核通过：必要字段、E/SVG 匹配性和单次潮流均满足加载条件。"
+            if inventory.get("svg") is not None
+            else "模型预校核通过：必要字段和单次潮流满足加载条件；未提供 SVG，匹配性校验已跳过。"
+        )
+    else:
+        failed_labels = "、".join(str(item.get("label") or item.get("id")) for item in failed_checks)
+        summary = f"模型预校核未通过：{failed_labels}。模型文件未写入。"
+    validation = {
+        "ok": ok,
+        "status": "passed" if ok else "failed",
+        "summary": summary,
+        "source": str(source_label or "model.e"),
+        "checks": checks,
+        "repairs": schema_repairs,
+        "signature": hashlib.sha256(signature_source).hexdigest(),
+        "duration_ms": round((time.perf_counter() - started) * 1000.0, 3),
+    }
+    if not ok:
+        raise ModelPreflightError(validation)
+    assert artifacts is not None
+    return {
+        "artifacts": artifacts,
+        "diagram_svg_text": inventory.get("svg"),
+        "validation": validation,
     }
 
 
@@ -1459,9 +2147,14 @@ def create_model_from_efile(
     model_text: str,
     *,
     diagram_svg_text: Optional[str] = None,
+    preflight_result: Optional[Mapping[str, Any]] = None,
 ) -> Mapping[str, Any]:
     """Create one simulator source model folder from an uploaded model.e file."""
-    artifacts = _generated_model_artifacts(model_text)
+    artifacts = (
+        preflight_result["artifacts"]
+        if preflight_result is not None
+        else _generated_model_artifacts(model_text)
+    )
     with manager.lock:
         recovered_dir = _recover_incomplete_model_directory(manager, new_model_name)
         target_id = manager.validate_new_model_name(new_model_name)
@@ -1480,7 +2173,7 @@ def create_model_from_efile(
             raise
     meas_book = artifacts["meas_book"]
     curves_payload = artifacts["curves_payload"]
-    return {
+    result = {
         **model_info,
         "created": {
             "files": written,
@@ -1489,6 +2182,9 @@ def create_model_from_efile(
             "recovered_incomplete_directory": str(recovered_dir) if recovered_dir else "",
         },
     }
+    if preflight_result is not None:
+        result["validation"] = preflight_result["validation"]
+    return result
 
 
 def update_model_from_efile(
@@ -1498,10 +2194,15 @@ def update_model_from_efile(
     *,
     diagram_svg_text: Optional[str] = None,
     replace_diagram: bool = False,
+    preflight_result: Optional[Mapping[str, Any]] = None,
 ) -> Mapping[str, Any]:
     """Replace an existing stopped model's source definitions from an uploaded model.e file."""
     target = manager.service_for(model_id)
-    artifacts = _generated_model_artifacts(model_text)
+    artifacts = (
+        preflight_result["artifacts"]
+        if preflight_result is not None
+        else _generated_model_artifacts(model_text)
+    )
     target_dir = Path(target.sim_dir).resolve()
     try:
         target_dir.relative_to(manager.models_root.resolve())
@@ -1522,7 +2223,7 @@ def update_model_from_efile(
             )
             target.reset_runtime_for_model_change()
             model_info = target.model_info()
-    return {
+    result = {
         **model_info,
         "updated": {
             "files": written,
@@ -1530,6 +2231,9 @@ def update_model_from_efile(
             "curve_points": artifacts["curves_payload"]["point_count"],
         },
     }
+    if preflight_result is not None:
+        result["validation"] = preflight_result["validation"]
+    return result
 
 
 def _parse_definition_archive(data: bytes) -> Mapping[str, Any]:
@@ -1589,10 +2293,15 @@ def _parse_definition_archive(data: bytes) -> Mapping[str, Any]:
     assert model_text is not None and meas_text is not None and control_text is not None and curves_text is not None
     model_book = _book_from_text(model_text)
     removed_runtime_fields = _remove_ambiguous_converter_runtime_fields(model_book)
+    diagram_inventory = _diagram_svg_inventory(diagram_text)
+    schema_repairs = _repair_power_model_schema(
+        model_book,
+        diagram_inventory.get("devices", []),
+    )
     _validate_power_model_schema(model_book)
     _validate_dcac_converter_schema(model_book)
     fixed_boundary_corrections = _repair_fixed_boundaries(model_book)
-    if removed_runtime_fields or fixed_boundary_corrections:
+    if removed_runtime_fields or schema_repairs or fixed_boundary_corrections:
         model_text = render_ebook_aligned(model_book)
     measurement_book = _book_from_text(meas_text)
     measurement_block = measurement_book.data.get("Measurement")
@@ -1625,6 +2334,7 @@ def _parse_definition_archive(data: bytes) -> Mapping[str, Any]:
         "control_text": render_ebook_aligned(control_book),
         "curves_text": curves_text,
         "diagram_text": _normalize_diagram_svg_text(diagram_text),
+        "schema_repairs": schema_repairs,
         "definition_defaults": definition_defaults,
         "curves_payload": _curves_from_definition_text(curves_text),
     }
@@ -1690,9 +2400,43 @@ def _apply_parsed_definition_archive(
             return _apply_parsed_definition_archive_locked(service, parsed)
 
 
-def import_definition_archive(service: PolarMicrogridSimulator, data: bytes) -> Mapping[str, Any]:
+def _preflight_parsed_definition_archive(
+    parsed: Mapping[str, Any],
+    *,
+    source_label: str = "definitions.zip/model.e",
+) -> Mapping[str, Any]:
+    preflight = _preflight_model_import(
+        str(parsed["model_text"]),
+        diagram_svg_text=parsed.get("diagram_text"),
+        source_label=source_label,
+    )
+    prior_repairs = list(parsed.get("schema_repairs", []))
+    if not prior_repairs:
+        return preflight
+    validation = copy.deepcopy(preflight["validation"])
+    validation["repairs"] = prior_repairs + list(validation.get("repairs", []))
+    for check in validation.get("checks", []):
+        if check.get("id") != "schema":
+            continue
+        check["status"] = "repaired"
+        check["repairs"] = validation["repairs"]
+        check["message"] = (
+            f"已自动补齐 {len(validation['repairs'])} 个可确定的必要字段默认值。"
+        )
+        break
+    return {**preflight, "validation": validation}
+
+
+def import_definition_archive(
+    service: PolarMicrogridSimulator,
+    data: bytes,
+    *,
+    source_label: str = "definitions.zip/model.e",
+) -> Mapping[str, Any]:
     parsed = _parse_definition_archive(data)
-    return _apply_parsed_definition_archive(service, parsed)
+    preflight = _preflight_parsed_definition_archive(parsed, source_label=source_label)
+    imported = _apply_parsed_definition_archive(service, parsed)
+    return {**imported, "validation": preflight["validation"]}
 
 
 def import_definition_model(
@@ -1700,14 +2444,21 @@ def import_definition_model(
     source_model_id: Optional[str],
     new_model_name: Any,
     data: bytes,
+    *,
+    source_label: str = "definitions.zip/model.e",
 ) -> Mapping[str, Any]:
     manager.validate_new_model_name(new_model_name)
     parsed = _parse_definition_archive(data)
+    preflight = _preflight_parsed_definition_archive(parsed, source_label=source_label)
 
     model_info = manager.clone_model(source_model_id, new_model_name)
     imported_service = manager.service_for(str(model_info["id"]))
     imported = _apply_parsed_definition_archive(imported_service, parsed)
-    return {**model_info, "imported": imported}
+    return {
+        **model_info,
+        "imported": imported,
+        "validation": preflight["validation"],
+    }
 
 
 def make_definition_archive(service: PolarMicrogridSimulator) -> tuple[str, bytes]:
@@ -2918,17 +3669,25 @@ def make_http_server(
                     model_data = base64.b64decode(data_base64, validate=True)
                     model_text = _decode_uploaded_definition_text(model_data)
                     diagram_svg_text = _decode_optional_svg_payload(payload)
+                    preflight = _preflight_model_import(
+                        model_text,
+                        diagram_svg_text=diagram_svg_text,
+                        source_label=str(payload.get("filename") or "model.e"),
+                    )
                     model = create_model_from_efile(
                         service,  # type: ignore[arg-type]
                         model_name,
                         model_text,
                         diagram_svg_text=diagram_svg_text,
+                        preflight_result=preflight,
                     )
+                except ModelPreflightError as exc:
+                    raise JsonApiError(400, str(exc), {"validation": exc.validation}) from exc
                 except (UnicodeDecodeError, ValueError, OSError) as exc:
                     raise JsonApiError(400, str(exc)) from exc
                 catalog = dict(self._model_catalog())
                 catalog["active_model_id"] = model["id"]
-                self._send_json({"model": model, **catalog})
+                self._send_json({"model": model, "validation": model.get("validation"), **catalog})
                 return
             if path == "/api/models/update-definitions":
                 if not hasattr(service, "service_for") or not hasattr(service, "models_root"):
@@ -2944,18 +3703,39 @@ def make_http_server(
                     model_data = base64.b64decode(data_base64, validate=True)
                     model_text = _decode_uploaded_definition_text(model_data)
                     diagram_svg_text = _decode_optional_svg_payload(payload)
+                    target_service = service.service_for(model_id)  # type: ignore[union-attr]
+                    candidate_diagram = diagram_svg_text
+                    if candidate_diagram is None:
+                        current_diagram_path = Path(target_service.sim_dir) / DIAGRAM_FILE_NAME
+                        if current_diagram_path.exists() and current_diagram_path.is_file():
+                            candidate_diagram = current_diagram_path.read_text(encoding="utf-8-sig")
+                    preflight = _preflight_model_import(
+                        model_text,
+                        diagram_svg_text=candidate_diagram,
+                        source_label=str(payload.get("filename") or "model.e"),
+                    )
                     model = update_model_from_efile(
                         service,  # type: ignore[arg-type]
                         model_id,
                         model_text,
                         diagram_svg_text=diagram_svg_text,
                         replace_diagram=bool(payload.get("replace_diagram", False)),
+                        preflight_result=preflight,
                     )
+                except ModelPreflightError as exc:
+                    raise JsonApiError(400, str(exc), {"validation": exc.validation}) from exc
                 except (UnicodeDecodeError, ValueError, OSError, KeyError) as exc:
                     raise JsonApiError(400, str(exc)) from exc
                 catalog = dict(self._model_catalog())
                 catalog["active_model_id"] = model["id"]
-                self._send_json({"model": model, "updated": model["updated"], **catalog})
+                self._send_json(
+                    {
+                        "model": model,
+                        "updated": model["updated"],
+                        "validation": model.get("validation"),
+                        **catalog,
+                    }
+                )
                 return
             if path == "/api/models/clone":
                 if not hasattr(service, "clone_model"):
@@ -3013,16 +3793,36 @@ def make_http_server(
                             self._request_model_id(payload),
                             model_name,
                             archive_data,
+                            source_label=str(payload.get("filename") or "definitions.zip/model.e"),
                         )
                         catalog = dict(self._model_catalog())
                         catalog["active_model_id"] = model["id"]
-                        self._send_json({"model": model, "imported": model["imported"], **catalog})
+                        self._send_json(
+                            {
+                                "model": model,
+                                "imported": model["imported"],
+                                "validation": model.get("validation"),
+                                **catalog,
+                            }
+                        )
                         return
                     self._reject_active_trainee_receive_model(payload, "修改")
-                    imported = import_definition_archive(self._target_service(payload), archive_data)
+                    imported = import_definition_archive(
+                        self._target_service(payload),
+                        archive_data,
+                        source_label=str(payload.get("filename") or "definitions.zip/model.e"),
+                    )
+                except ModelPreflightError as exc:
+                    raise JsonApiError(400, str(exc), {"validation": exc.validation}) from exc
                 except (ValueError, OSError) as exc:
                     raise JsonApiError(400, str(exc)) from exc
-                self._send_json({"imported": imported, **self._model_catalog()})
+                self._send_json(
+                    {
+                        "imported": imported,
+                        "validation": imported.get("validation"),
+                        **self._model_catalog(),
+                    }
+                )
                 return
 
             if path == "/api/trainee/connect":

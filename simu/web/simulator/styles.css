@@ -465,6 +465,81 @@ html[data-simulator-ui-mode="direct"] .model-switcher span {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.model-preflight-result {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.model-preflight-result[hidden] {
+  display: none;
+}
+.model-preflight-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.model-preflight-summary strong {
+  white-space: nowrap;
+}
+.model-preflight-result[data-status="passed"] .model-preflight-summary strong {
+  color: var(--green);
+}
+.model-preflight-result[data-status="failed"] .model-preflight-summary strong {
+  color: var(--red);
+}
+.model-preflight-checks {
+  max-height: min(260px, 32vh);
+  margin: 0;
+  padding: 0 4px 0 0;
+  overflow: auto;
+  list-style: none;
+}
+.model-preflight-check {
+  display: grid;
+  gap: 3px;
+  padding: 7px 0 7px 10px;
+  border-left: 3px solid var(--line);
+}
+.model-preflight-check + .model-preflight-check {
+  border-top: 1px solid #edf1f1;
+}
+.model-preflight-check.is-passed {
+  border-left-color: var(--green);
+}
+.model-preflight-check.is-repaired,
+.model-preflight-check.is-warning {
+  border-left-color: var(--amber);
+}
+.model-preflight-check.is-failed {
+  border-left-color: var(--red);
+}
+.model-preflight-check-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+.model-preflight-check-head span {
+  color: var(--muted);
+  font-weight: 700;
+}
+.model-preflight-check p,
+.model-preflight-check small {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.model-preflight-check small {
+  color: var(--ink);
+}
 .model-service-config {
   min-width: 0;
   margin: 0;

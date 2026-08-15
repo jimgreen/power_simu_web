@@ -1091,6 +1091,96 @@ def test_full_renewable_plan_previews_open_hydrogen_and_dispatches_closed_hydrog
     assert closed_hydrogen["balanceCorrectionKw"] == pytest.approx(-6.0)
 
 
+def test_fuel_cell_dcac_command_row_uses_the_same_active_dc_transfer_group():
+    plan = calculate_renewable_control_plan(
+        _integrated_fuel_cell_snapshot(),
+        _integrated_fuel_cell_settings(hydrogen_closed_loop_enabled=True),
+    )
+
+    converter = next(
+        row
+        for row in plan["commandRows"]
+        if row.get("model_block") == "DCACConverter"
+        and row.get("dev_name") == "grid-converter"
+    )
+    hydrogen = plan["metrics"]["hydrogenControl"]
+
+    assert converter["online"] is True
+    assert converter["commandable"] is True
+    assert converter["dcTransferGroupId"]
+    assert hydrogen["action"] == "fuel_cell"
+    assert not any("无可调" in warning for warning in hydrogen["warnings"])
+
+
+def test_fuel_cell_reports_invalid_dcac_bus_anchor_instead_of_missing_converter():
+    snapshot = _integrated_fuel_cell_snapshot()
+    snapshot["definitions"]["model"]["ACRealBs"]["rows"][0].pop("node")
+
+    plan = calculate_renewable_control_plan(
+        snapshot,
+        _integrated_fuel_cell_settings(hydrogen_closed_loop_enabled=True),
+    )
+    hydrogen = plan["metrics"]["hydrogenControl"]
+
+    assert hydrogen["action"] == "blocked"
+    assert any(
+        "已配置DCAC" in warning and "未同时接入有效真实母线" in warning
+        for warning in hydrogen["warnings"]
+    )
+    assert not any("无可调" in warning for warning in hydrogen["warnings"])
+
+
+def test_fuel_cell_reports_the_dcac_runtime_condition_when_control_is_unavailable():
+    snapshot = _integrated_fuel_cell_snapshot()
+    snapshot["measurements"]["scada"] = [
+        row
+        for row in snapshot["measurements"]["scada"]
+        if not (
+            row["dev_type"] == "DCACConverter"
+            and row["dev_name"] == "grid-converter"
+        )
+    ]
+
+    plan = calculate_renewable_control_plan(
+        snapshot,
+        _integrated_fuel_cell_settings(hydrogen_closed_loop_enabled=True),
+    )
+    warnings = plan["metrics"]["hydrogenControl"]["warnings"]
+
+    assert any(
+        "DCAC当前不可调" in warning and "缺少有效实时有功" in warning
+        for warning in warnings
+    )
+
+
+def test_fuel_cell_only_reports_unconfigured_dcac_when_the_group_has_none():
+    snapshot = _integrated_fuel_cell_snapshot()
+    snapshot["definitions"]["model"].pop("DCACConverter")
+    snapshot["devices"] = [
+        row
+        for row in snapshot["devices"]
+        if row.get("model_block") != "DCACConverter"
+    ]
+    snapshot["measurements"]["scada"] = [
+        row
+        for row in snapshot["measurements"]["scada"]
+        if row["dev_type"] != "DCACConverter"
+    ]
+    snapshot["definitions"]["control"]["SetValue"]["rows"] = [
+        row
+        for row in snapshot["definitions"]["control"]["SetValue"]["rows"]
+        if row["dev_type"] != "DCACConverter"
+    ]
+
+    plan = calculate_renewable_control_plan(
+        snapshot,
+        _integrated_fuel_cell_settings(hydrogen_closed_loop_enabled=True),
+    )
+    warnings = plan["metrics"]["hydrogenControl"]["warnings"]
+
+    assert any("直流拓扑组未配置DCAC" in warning for warning in warnings)
+
+
 def test_electrolyzer_start_adds_run_command_before_power_setpoint():
     snapshot = _set_coupling_run_state(
         _electrolyzer_snapshot(electric_power=0.0),

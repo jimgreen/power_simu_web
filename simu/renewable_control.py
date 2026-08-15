@@ -44,6 +44,7 @@ from simu.fuel_cell_control import (
 from simu.model_semantics import (
     energy_coupling_control_bindings,
     grid_converter_keys as structured_grid_converter_keys,
+    model_rows,
 )
 from simu.renewable_capability import (
     renewable_weather_available_kw as _renewable_weather_available_kw,
@@ -1186,6 +1187,58 @@ def _node_in_dc_transfer_group(
     return matches[0] if len(matches) == 1 else ""
 
 
+def _dcac_unavailable_detail(
+    snapshot: Mapping[str, Any],
+    resource_topology: ResourceTopology,
+    command_rows: Sequence[Mapping[str, Any]],
+    dc_group_id: str,
+) -> str:
+    if not dc_group_id:
+        return "直流设备未接入唯一有效直流拓扑组"
+
+    group = resource_topology.dc_transfer_groups.get(dc_group_id)
+    if group is None:
+        return "直流设备所属拓扑组已失效"
+
+    diagnostic_rows = [
+        row
+        for row in command_rows
+        if _is_grid_converter_row(row)
+        and str(row.get("dcTransferGroupId", "")) == dc_group_id
+    ]
+    if diagnostic_rows:
+        details = sorted(
+            {
+                str(row.get("statusLabel", "")).split("·仅保留诊断", 1)[0].strip()
+                for row in diagnostic_rows
+                if str(row.get("statusLabel", "")).strip()
+            }
+        )
+        suffix = f"（{'；'.join(details)}）" if details else ""
+        return f"直流拓扑组DCAC当前不可调{suffix}"
+
+    dc_nodes = set(group.dc_nodes)
+    structural_keys = {
+        (block_name, str(row.get("name", "")).strip())
+        for block_name in ("ACDCConverter", "DCACConverter")
+        for row in model_rows(snapshot, block_name)
+        if str(row.get("name", "")).strip()
+        and str(row.get("dc_node", "")).strip() in dc_nodes
+    }
+    if not structural_keys:
+        return "直流拓扑组未配置DCAC"
+
+    dispatchable_keys = structured_grid_converter_keys(snapshot)
+    if not structural_keys.intersection(dispatchable_keys):
+        return "直流拓扑组已配置DCAC，但其交/直流端未同时接入有效真实母线"
+
+    active_keys = set(group.converter_keys)
+    if not structural_keys.intersection(active_keys):
+        return "直流拓扑组已配置DCAC，但当前离线或未活动接入交流电网"
+
+    return "直流拓扑组DCAC已活动接入，但运行设备或遥调定义缺失"
+
+
 def _allocate_converter_ac_injection_delta(
     converter_rows: Sequence[MutableMapping[str, Any]],
     delta_kw: float,
@@ -2182,12 +2235,18 @@ def _hydrogen_post_dispatch_plan(
                     and str(row.get("dcTransferGroupId", "")) == dc_group_id
                 ]
                 if not dc_group_id or not converter_rows:
+                    dcac_detail = _dcac_unavailable_detail(
+                        snapshot,
+                        resource_topology,
+                        command_rows,
+                        dc_group_id,
+                    )
                     diagnostics["warnings"].append(
-                        f"氢能设备{coupling_name}直流拓扑组无可调ACDC，已取消本设备氢能增量"
+                        f"氢能设备{coupling_name}{dcac_detail}，已取消本设备氢能增量"
                     )
                     accepted_delta_kw = 0.0
                     atomic_hold_reason = "dcac_control_margin_unavailable"
-                    atomic_hold_blockers = ["直流拓扑组无可调ACDC"]
+                    atomic_hold_blockers = [dcac_detail]
                 else:
                     converter_request_kw = (
                         -accepted_delta_kw if is_electrolyzer else accepted_delta_kw
@@ -2239,10 +2298,10 @@ def _hydrogen_post_dispatch_plan(
             ):
                 if not atomic_hold_reason:
                     diagnostics["warnings"].append(
-                        f"氢能设备{coupling_name}的氢端、ACDC步长或平衡设备无共同调节裕度，已原子保持"
+                        f"氢能设备{coupling_name}的氢端、DCAC步长或平衡设备无共同调节裕度，已原子保持"
                     )
                     atomic_hold_reason = "atomic_margin_unavailable"
-                    atomic_hold_blockers = ["氢端、ACDC或平衡设备无共同调节裕度"]
+                    atomic_hold_blockers = ["氢端、DCAC或平衡设备无共同调节裕度"]
                 device_action = "blocked"
                 device_action_reason = atomic_hold_reason
                 decision_trace["blockers"] = atomic_hold_blockers
@@ -2252,14 +2311,14 @@ def _hydrogen_post_dispatch_plan(
                 and accepted_delta_kw < required_start_delta_kw - EPSILON
             ):
                 diagnostics["warnings"].append(
-                    f"氢能设备{coupling_name}当前氢端、ACDC或平衡设备共同裕度不足以一次达到"
+                    f"氢能设备{coupling_name}当前氢端、DCAC或平衡设备共同裕度不足以一次达到"
                     f"启动功率{start_threshold_kw:.3f} kW，已保持停机"
                 )
                 decision_trace.update(
                     {
                         "action": "hold",
                         "controlReason": "atomic_start_margin_insufficient",
-                        "blockers": ["氢端、ACDC或平衡设备共同裕度不足以一次达到启机功率"],
+                        "blockers": ["氢端、DCAC或平衡设备共同裕度不足以一次达到启机功率"],
                     }
                 )
                 diagnostics["decisionTraces"].append(decision_trace)
@@ -10649,7 +10708,7 @@ def _hydrogen_reason_text(reason: Any) -> str:
         "incomplete_average_input": "SOC平均值输入不完整",
         "invalid_operating_envelope": "设备功率或流量运行区间无效",
         "active_setpoint_unavailable": "活动遥调点不可用",
-        "dcac_control_margin_unavailable": "直流拓扑组无可调DCAC",
+        "dcac_control_margin_unavailable": "直流拓扑组DCAC控制裕度不可用",
         "target_boundary_clamped_and_dispatched": "目标越界后已限幅并继续下发",
         "above_upper_power_limit_correction": "实时功率越上限，纠偏至有效上限",
     }

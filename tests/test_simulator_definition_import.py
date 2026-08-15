@@ -32,6 +32,14 @@ class SimulatorDefinitionImportTest(unittest.TestCase):
             imported = import_definition_model(manager, "默认模型", "导入模型", archive)
 
             self.assertEqual(imported["id"], "导入模型")
+            self.assertTrue(imported["validation"]["ok"])
+            self.assertEqual(
+                next(
+                    check for check in imported["validation"]["checks"]
+                    if check["id"] == "diagram"
+                )["status"],
+                "warning",
+            )
             self.assertTrue((models_root / "导入模型/model.e").exists())
             self.assertEqual(
                 len(manager.service_for("导入模型").devices()),
@@ -59,8 +67,11 @@ class SimulatorDefinitionImportTest(unittest.TestCase):
         self.assertIn('id="importDefinitionsButton"', html)
         self.assertIn('id="importModelDialog"', html)
         self.assertIn('id="importModelName"', html)
+        self.assertIn('id="importModelValidation"', html)
+        self.assertIn('id="importModelValidationChecks"', html)
         self.assertIn("SVG 图形", html)
         self.assertIn("validateImportModelName", script)
+        self.assertIn('renderModelPreflightResult("importModel"', script)
         self.assertIn("模型已存在", script)
         self.assertIn("create_model: true", script)
 

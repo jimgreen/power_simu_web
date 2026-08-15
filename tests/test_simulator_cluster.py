@@ -13,6 +13,7 @@ import pytest
 
 from simu.simulator_cluster import SimulatorClusterManager
 from simu.simulator_proxy import make_simulator_proxy_server
+from simu import server as server_module
 from tests.model_fixtures import SIMPLE_MODEL_SOURCE
 
 
@@ -21,6 +22,22 @@ def _make_model(root: Path, model_id: str) -> Path:
     model_dir.mkdir(parents=True)
     (model_dir / "model.e").write_text("<Bus::1>\n@id\n1\n", encoding="utf-8")
     return model_dir
+
+
+def _matching_svg(model_text: str, extra: str = "") -> str:
+    model_book = server_module._book_from_text(model_text)
+    uses = []
+    for block_name in sorted(server_module._SVG_REQUIRED_MODEL_BLOCKS):
+        block = model_book.data.get(block_name)
+        for row in [] if block is None else block.data:
+            idx = str(row.get("idx", "")).strip()
+            name = str(row.get("name", "")).strip()
+            if idx and name:
+                uses.append(
+                    f'<use id="{block_name}-{idx}" dev-id="{block_name}-{idx}" '
+                    f'idx="{idx}" name="{name}" />'
+                )
+    return '<svg xmlns="http://www.w3.org/2000/svg">' + extra + "".join(uses) + "</svg>"
 
 
 class FakeProcess:
@@ -795,7 +812,7 @@ def test_proxy_keeps_low_frequency_model_management_on_control_plane(tmp_path: P
         assert unchanged["model"]["service"]["access_link"] == "127.0.0.1:9552"
         assert unchanged["updated"]["service"]["port"] == 9552
 
-        diagram_text = '<svg xmlns="http://www.w3.org/2000/svg"><text>updated</text></svg>'
+        diagram_text = _matching_svg(model_text.decode("utf-8-sig"), "<text>updated</text>")
         _, diagram_only = _json_request(
             f"{base}/api/models/update-definitions",
             method="POST",
@@ -819,7 +836,7 @@ def test_proxy_keeps_low_frequency_model_management_on_control_plane(tmp_path: P
         )
         gb18030_diagram_text = (
             '<?xml version="1.0" encoding="GB18030"?>'
-            '<svg xmlns="http://www.w3.org/2000/svg"><text>秦岭站一次图</text></svg>'
+            + _matching_svg(gb18030_model_text, "<text>秦岭站一次图</text>")
         )
         _, gb18030_updated = _json_request(
             f"{base}/api/models/update-definitions",
@@ -1026,7 +1043,7 @@ def test_proxy_restores_running_service_when_uploaded_model_is_invalid(tmp_path:
             )
         assert error.value.code == 400
         assert running == {"source"}
-        assert len(commands) == 1
+        assert commands == []
         assert manager.model_info("source")["service"]["state"] == "running"
     finally:
         server.shutdown()

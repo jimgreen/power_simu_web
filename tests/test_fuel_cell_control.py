@@ -11,6 +11,7 @@ def _parameters(**changes):
     values = {
         "power_step_kw": 6.0,
         "diesel_power_limit_ratio": 0.5,
+        "diesel_power_stop_minimum_ratio": 0.3,
         "electric_storage_soc_limit": 0.4,
         "hydrogen_storage_soc_start_limit": 0.8,
         "hydrogen_storage_soc_stop_limit": 0.2,
@@ -131,7 +132,7 @@ def test_increase_is_limited_by_total_diesel_margin():
 @pytest.mark.parametrize(
     ("changes", "reason"),
     (
-        ({"diesel_power_kw": 198.0}, "diesel_power_reduce"),
+        ({"diesel_power_kw": 118.0}, "diesel_power_reduce"),
         ({"electric_storage_soc_average": 0.41}, "storage_soc_reduce"),
         ({"hydrogen_storage_soc_average": 0.19}, "storage_soc_reduce"),
     ),
@@ -150,6 +151,22 @@ def test_running_fuel_cell_reduces_one_step_on_any_reverse_condition(
     assert decision.reason == reason
 
 
+def test_running_fuel_cell_holds_between_start_and_stop_diesel_thresholds():
+    decision = calculate_fuel_cell_power_decision(
+        _parameters(),
+        _inputs(
+            current_power_kw=10.0,
+            diesel_power_kw=160.0,
+            electric_storage_soc_average=0.39,
+            hydrogen_storage_soc_average=0.3,
+        ),
+    )
+
+    assert decision.action == "hold"
+    assert decision.requested_delta_kw == 0.0
+    assert decision.reason == "hold_region"
+
+
 def test_reduction_stops_instead_of_entering_minimum_power_dead_zone():
     decision = calculate_fuel_cell_power_decision(
         _parameters(power_step_kw=3.0),
@@ -157,7 +174,7 @@ def test_reduction_stops_instead_of_entering_minimum_power_dead_zone():
             current_power_kw=4.0,
             start_threshold_kw=8.0,
             stop_threshold_kw=2.0,
-            diesel_power_kw=198.0,
+            diesel_power_kw=118.0,
         ),
     )
 

@@ -1330,6 +1330,9 @@
                 <label>柴发出力死区(%)
                   <input id="electrolyzerDieselPowerDeadbandRatio" type="number" min="0" max="100" step="0.1" value="5" />
                 </label>
+                <label>停机柴发最大值(%)
+                  <input id="electrolyzerDieselPowerStopMaximumRatio" type="number" min="0" max="100" step="0.1" value="50" title="柴发出力严格大于该值时，电制氢逐步降功率直至停机" />
+                </label>
                 <label>启机电SOC最小值(%)
                   <input id="electrolyzerStorageSocStartMinimum" type="number" min="0" max="100" step="0.1" value="70" title="电储SOC严格大于该值时，满足电制氢启机条件之一" />
                 </label>
@@ -1356,6 +1359,9 @@
                 </label>
                 <label>启机柴发出力最小值(%)
                   <input id="fuelCellDieselPowerLimitRatio" type="number" min="0" max="100" step="0.1" value="50" />
+                </label>
+                <label>停机柴发最小值(%)
+                  <input id="fuelCellDieselPowerStopMinimumRatio" type="number" min="0" max="100" step="0.1" value="30" title="柴发出力严格小于该值时，燃料电池逐步降功率直至停机" />
                 </label>
                 <label>启机电SOC最大值(%)
                   <input id="fuelCellStorageSocLimit" type="number" min="0" max="100" step="0.1" value="30" />
@@ -1578,6 +1584,6 @@
         </div>
       </form>
     </dialog>
-    <script src="/app.js?v=20260814-electrolyzer-control-thresholds"></script>
+    <script src="/app.js?v=20260815-hydrogen-diesel-hysteresis-2"></script>
   </body>
 </html>

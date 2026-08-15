@@ -205,10 +205,12 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             "fuelCellPowerStepRatio",
             "electrolyzerDieselPowerLimitRatio",
             "electrolyzerDieselPowerDeadbandRatio",
+            "electrolyzerDieselPowerStopMaximumRatio",
             "electrolyzerStorageSocStartMinimum",
             "electrolyzerStorageSocStopMaximum",
             "electrolyzerHydrogenStorageSocStopMinimum",
             "fuelCellDieselPowerLimitRatio",
+            "fuelCellDieselPowerStopMinimumRatio",
             "fuelCellStorageSocLimit",
             "fuelCellHydrogenStorageSocUpperLimit",
             "fuelCellHydrogenStorageSocLowerLimit",
@@ -223,6 +225,8 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         self.assertIn("启动功率（下限+死区）不能大于上限", settings_block)
         self.assertNotIn("电制氢电储SOC下限不能大于上限", settings_block)
         self.assertIn("电制氢启机SOC最小值必须大于停机SOC最大值", settings_block)
+        self.assertIn("电制氢启机柴发门槛必须小于停机柴发门槛", settings_block)
+        self.assertIn("燃料电池启机柴发门槛必须大于停机柴发门槛", settings_block)
         self.assertIn(
             "燃料电池停机氢SOC最大值不能大于启机氢SOC最小值",
             settings_block,
@@ -231,10 +235,12 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         self.assertIn("hydrogen_pressure_deadband_ratio", self.backend)
         self.assertIn("electrolyzer_diesel_power_limit_ratio", self.backend)
         self.assertIn("electrolyzer_diesel_power_deadband_ratio", self.backend)
+        self.assertIn("electrolyzer_diesel_power_stop_maximum_ratio", self.backend)
         self.assertIn("electrolyzer_storage_soc_start_minimum", self.backend)
         self.assertIn("electrolyzer_storage_soc_stop_maximum", self.backend)
         self.assertIn("electrolyzer_hydrogen_storage_soc_stop_minimum", self.backend)
         self.assertIn("fuel_cell_diesel_power_limit_ratio", self.backend)
+        self.assertIn("fuel_cell_diesel_power_stop_minimum_ratio", self.backend)
         self.assertIn("fuel_cell_storage_soc_limit", self.backend)
         self.assertIn("fuel_cell_hydrogen_storage_soc_upper_limit", self.backend)
         self.assertIn("fuel_cell_hydrogen_storage_soc_lower_limit", self.backend)
@@ -247,6 +253,7 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             "electrolyzerPowerStepRatio": "10",
             "electrolyzerDieselPowerLimitRatio": "35",
             "electrolyzerDieselPowerDeadbandRatio": "5",
+            "electrolyzerDieselPowerStopMaximumRatio": "50",
             "electrolyzerStorageSocStartMinimum": "70",
             "electrolyzerStorageSocStopMaximum": "30",
             "electrolyzerHydrogenStorageSocStopMinimum": "90",
@@ -263,6 +270,7 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             'electrolyzerPowerDeadbandRatio: ratio("electrolyzerPowerDeadbandRatio", 10)',
             'electrolyzerPowerStepRatio: ratio("electrolyzerPowerStepRatio", 10, 0.001, 100)',
             'electrolyzerDieselPowerLimitRatio: ratio("electrolyzerDieselPowerLimitRatio", 35)',
+            'electrolyzerDieselPowerStopMaximumRatio: ratio("electrolyzerDieselPowerStopMaximumRatio", 50)',
         ):
             self.assertIn(fallback, self.script)
 
@@ -273,6 +281,7 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             "fuelCellPowerDeadbandRatio": "10",
             "fuelCellPowerStepRatio": "10",
             "fuelCellDieselPowerLimitRatio": "50",
+            "fuelCellDieselPowerStopMinimumRatio": "30",
             "fuelCellStorageSocLimit": "30",
             "fuelCellHydrogenStorageSocUpperLimit": "30",
             "fuelCellHydrogenStorageSocLowerLimit": "20",
@@ -289,6 +298,7 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             "燃电出力死区(%)",
             "燃电出力步长(%)",
             "启机柴发出力最小值(%)",
+            "停机柴发最小值(%)",
             "启机电SOC最大值(%)",
             "启机氢SOC最小值(%)",
             "停机氢SOC最大值(%)",
@@ -301,6 +311,7 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             'fuelCellPowerDeadbandRatio: ratio("fuelCellPowerDeadbandRatio", 10)',
             'fuelCellPowerStepRatio: ratio("fuelCellPowerStepRatio", 10, 0.001, 100)',
             'fuelCellDieselPowerLimitRatio: ratio("fuelCellDieselPowerLimitRatio", 50)',
+            'fuelCellDieselPowerStopMinimumRatio: ratio("fuelCellDieselPowerStopMinimumRatio", 30)',
             'fuelCellStorageSocLimit: ratio("fuelCellStorageSocLimit", 30)',
             'fuelCellHydrogenStorageSocUpperLimit", 30',
         ):
@@ -312,6 +323,7 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             "fuelCellPowerDeadbandRatio: 0.10",
             "fuelCellPowerStepRatio: 0.10",
             "fuelCellDieselPowerLimitRatio: 0.50",
+            "fuelCellDieselPowerStopMinimumRatio: 0.30",
             "fuelCellStorageSocLimit: 0.3",
             "fuelCellHydrogenStorageSocUpperLimit: 0.3",
             "fuelCellHydrogenStorageSocLowerLimit: 0.2",

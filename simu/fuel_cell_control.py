@@ -16,6 +16,7 @@ class FuelCellControlParameters:
 
     power_step_kw: float
     diesel_power_limit_ratio: float
+    diesel_power_stop_minimum_ratio: float
     electric_storage_soc_limit: float
     hydrogen_storage_soc_start_limit: float
     hydrogen_storage_soc_stop_limit: float
@@ -77,14 +78,15 @@ def calculate_fuel_cell_power_decision(
     if diesel_capacity <= EPSILON:
         return FuelCellControlDecision(action="hold", reason="invalid_diesel_capacity")
     diesel_power = float(inputs.diesel_power_kw)
-    diesel_limit = float(parameters.diesel_power_limit_ratio)
+    diesel_start_limit = float(parameters.diesel_power_limit_ratio)
+    diesel_stop_limit = float(parameters.diesel_power_stop_minimum_ratio)
     diesel_raise_margin_kw = max(
         0.0,
-        diesel_power - diesel_limit * diesel_capacity,
+        diesel_power - diesel_start_limit * diesel_capacity,
     )
     diesel_reduce_margin_kw = max(
         0.0,
-        diesel_limit * diesel_capacity - diesel_power,
+        diesel_stop_limit * diesel_capacity - diesel_power,
     )
 
     electric_soc_low = (

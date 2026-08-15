@@ -506,6 +506,7 @@ class RenewableControlParameterizationTest(unittest.TestCase):
             "electrolyzer_power_step_ratio": 0.10,
             "electrolyzer_diesel_power_limit_ratio": 0.35,
             "electrolyzer_diesel_power_deadband_ratio": 0.05,
+            "electrolyzer_diesel_power_stop_maximum_ratio": 0.50,
             "electrolyzer_storage_soc_start_minimum": 0.70,
             "electrolyzer_storage_soc_stop_maximum": 0.30,
             "electrolyzer_hydrogen_storage_soc_stop_minimum": 0.90,
@@ -514,6 +515,7 @@ class RenewableControlParameterizationTest(unittest.TestCase):
             "fuel_cell_power_deadband_ratio": 0.10,
             "fuel_cell_power_step_ratio": 0.10,
             "fuel_cell_diesel_power_limit_ratio": 0.50,
+            "fuel_cell_diesel_power_stop_minimum_ratio": 0.30,
             "fuel_cell_storage_soc_limit": 0.30,
             "fuel_cell_hydrogen_storage_soc_upper_limit": 0.30,
             "fuel_cell_hydrogen_storage_soc_lower_limit": 0.20,
@@ -533,6 +535,47 @@ class RenewableControlParameterizationTest(unittest.TestCase):
         )
         self.assertFalse(customized.hydrogen_closed_loop_enabled)
         self.assertAlmostEqual(customized.fuel_cell_power_min_ratio, 0.42)
+
+    def test_legacy_hydrogen_settings_gain_valid_diesel_hysteresis(self):
+        electrolyzer = RenewableControlSettings().updated(
+            {
+                "electrolyzerDieselPowerLimitRatio": 0.80,
+                "electrolyzerDieselPowerDeadbandRatio": 0.05,
+            }
+        )
+        fuel_cell = RenewableControlSettings().updated(
+            {
+                "fuelCellDieselPowerLimitRatio": 0.20,
+            }
+        )
+
+        self.assertAlmostEqual(
+            electrolyzer.electrolyzer_diesel_power_stop_maximum_ratio,
+            0.85,
+        )
+        self.assertLess(
+            electrolyzer.electrolyzer_diesel_power_limit_ratio,
+            electrolyzer.electrolyzer_diesel_power_stop_maximum_ratio,
+        )
+        self.assertAlmostEqual(
+            fuel_cell.fuel_cell_diesel_power_stop_minimum_ratio,
+            0.19,
+        )
+        self.assertGreater(
+            fuel_cell.fuel_cell_diesel_power_limit_ratio,
+            fuel_cell.fuel_cell_diesel_power_stop_minimum_ratio,
+        )
+
+        explicitly_invalid = RenewableControlSettings().updated(
+            {
+                "electrolyzerDieselPowerLimitRatio": 0.80,
+                "electrolyzerDieselPowerStopMaximumRatio": 0.50,
+            }
+        )
+        self.assertEqual(
+            explicitly_invalid.electrolyzer_diesel_power_stop_maximum_ratio,
+            0.50,
+        )
 
     def test_storage_efficiency_uses_model_value_and_only_falls_back_when_missing(self):
         from simu.renewable_control import _storage_efficiency

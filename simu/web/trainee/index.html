@@ -1305,7 +1305,7 @@
           <section id="renewableControlParameterPaneHydrogen" class="renewable-control-parameter-pane" role="tabpanel" data-renewable-parameter-pane="hydrogen" aria-labelledby="renewableControlParameterTabHydrogen" hidden>
             <div class="renewable-control-parameter-fields">
               <label class="renewable-hydrogen-overview-field renewable-control-toggle-field">氢能闭环控制
-                <input id="hydrogenClosedLoopEnabled" type="checkbox" />
+                <input id="hydrogenClosedLoopEnabled" type="checkbox" checked />
               </label>
               <label class="renewable-hydrogen-overview-field">氢储罐压力死区(%)
                 <input id="hydrogenPressureDeadbandRatio" type="number" min="0" max="50" step="0.1" value="5" />
@@ -1342,28 +1342,28 @@
               </fieldset>
               <fieldset class="renewable-hydrogen-power-settings">
                 <legend>燃料电池功率参数</legend>
-                <label>下限(额定功率%)
-                  <input id="fuelCellPowerMinRatio" type="number" min="0" max="100" step="0.1" value="3" />
+                <label>燃电出力下限(%)
+                  <input id="fuelCellPowerMinRatio" type="number" min="0" max="100" step="0.1" value="20" />
                 </label>
-                <label>上限(额定功率%)
+                <label>燃电出力上限(%)
                   <input id="fuelCellPowerMaxRatio" type="number" min="0" max="100" step="0.1" value="90" />
                 </label>
-                <label>死区(额定功率%)
-                  <input id="fuelCellPowerDeadbandRatio" type="number" min="0" max="100" step="0.1" value="0" />
+                <label>燃电出力死区(%)
+                  <input id="fuelCellPowerDeadbandRatio" type="number" min="0" max="100" step="0.1" value="10" />
                 </label>
-                <label>步长(额定功率%/次)
-                  <input id="fuelCellPowerStepRatio" type="number" min="0.001" max="100" step="0.1" value="3" />
+                <label>燃电出力步长(%)
+                  <input id="fuelCellPowerStepRatio" type="number" min="0.001" max="100" step="0.1" value="10" />
                 </label>
-                <label>柴发负载率限值(%)
-                  <input id="fuelCellDieselPowerLimitRatio" type="number" min="0" max="100" step="0.1" value="80" />
+                <label>启机柴发出力最小值(%)
+                  <input id="fuelCellDieselPowerLimitRatio" type="number" min="0" max="100" step="0.1" value="50" />
                 </label>
-                <label>电储SOC启停限值(%)
-                  <input id="fuelCellStorageSocLimit" type="number" min="0" max="100" step="0.1" value="40" />
+                <label>启机电SOC最大值(%)
+                  <input id="fuelCellStorageSocLimit" type="number" min="0" max="100" step="0.1" value="30" />
                 </label>
-                <label>氢储SOC启动限值(%)
-                  <input id="fuelCellHydrogenStorageSocUpperLimit" type="number" min="0" max="100" step="0.1" value="80" />
+                <label>启机氢SOC最小值(%)
+                  <input id="fuelCellHydrogenStorageSocUpperLimit" type="number" min="0" max="100" step="0.1" value="30" />
                 </label>
-                <label>氢储SOC停机限值(%)
+                <label>停机氢SOC最大值(%)
                   <input id="fuelCellHydrogenStorageSocLowerLimit" type="number" min="0" max="100" step="0.1" value="20" />
                 </label>
               </fieldset>

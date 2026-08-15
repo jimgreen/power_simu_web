@@ -187,7 +187,11 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
             self.assertIn(legacy_migration_field, self.script)
 
     def test_hydrogen_has_an_independent_closed_loop_switch(self):
-        self.assertIn('id="hydrogenClosedLoopEnabled"', self.html)
+        self.assertRegex(
+            self.html,
+            r'id="hydrogenClosedLoopEnabled"[^>]*checked',
+        )
+        self.assertIn("hydrogenClosedLoopEnabled: true", self.script)
         self.assertIn("hydrogenClosedLoopEnabled", self.script)
         self.assertIn('id="hydrogenPressureDeadbandRatio"', self.html)
         for field_id in (
@@ -219,6 +223,10 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         self.assertIn("启动功率（下限+死区）不能大于上限", settings_block)
         self.assertNotIn("电制氢电储SOC下限不能大于上限", settings_block)
         self.assertIn("电制氢启机SOC最小值必须大于停机SOC最大值", settings_block)
+        self.assertIn(
+            "燃料电池停机氢SOC最大值不能大于启机氢SOC最小值",
+            settings_block,
+        )
         self.assertIn("hydrogen_closed_loop_enabled", self.backend)
         self.assertIn("hydrogen_pressure_deadband_ratio", self.backend)
         self.assertIn("electrolyzer_diesel_power_limit_ratio", self.backend)
@@ -258,16 +266,57 @@ class TraineeRenewableLoopModeUiTest(unittest.TestCase):
         ):
             self.assertIn(fallback, self.script)
 
-    def test_fuel_cell_recommended_power_ceiling_is_ninety_percent(self):
-        self.assertRegex(
-            self.html,
-            r'id="fuelCellPowerMaxRatio"[^>]*value="90"',
-        )
-        self.assertIn(
+    def test_fuel_cell_recommended_defaults_and_labels_are_rendered(self):
+        expected_percentages = {
+            "fuelCellPowerMinRatio": "20",
+            "fuelCellPowerMaxRatio": "90",
+            "fuelCellPowerDeadbandRatio": "10",
+            "fuelCellPowerStepRatio": "10",
+            "fuelCellDieselPowerLimitRatio": "50",
+            "fuelCellStorageSocLimit": "30",
+            "fuelCellHydrogenStorageSocUpperLimit": "30",
+            "fuelCellHydrogenStorageSocLowerLimit": "20",
+        }
+        for field_id, percentage in expected_percentages.items():
+            self.assertRegex(
+                self.html,
+                rf'id="{field_id}"[^>]*value="{percentage}"',
+            )
+
+        for label in (
+            "燃电出力下限(%)",
+            "燃电出力上限(%)",
+            "燃电出力死区(%)",
+            "燃电出力步长(%)",
+            "启机柴发出力最小值(%)",
+            "启机电SOC最大值(%)",
+            "启机氢SOC最小值(%)",
+            "停机氢SOC最大值(%)",
+        ):
+            self.assertIn(label, self.html)
+
+        for fallback in (
+            'fuelCellPowerMinRatio: ratio("fuelCellPowerMinRatio", 20)',
             'fuelCellPowerMaxRatio: ratio("fuelCellPowerMaxRatio", 90)',
-            self.script,
-        )
-        self.assertIn("fuelCellPowerMaxRatio: 0.90", self.script)
+            'fuelCellPowerDeadbandRatio: ratio("fuelCellPowerDeadbandRatio", 10)',
+            'fuelCellPowerStepRatio: ratio("fuelCellPowerStepRatio", 10, 0.001, 100)',
+            'fuelCellDieselPowerLimitRatio: ratio("fuelCellDieselPowerLimitRatio", 50)',
+            'fuelCellStorageSocLimit: ratio("fuelCellStorageSocLimit", 30)',
+            'fuelCellHydrogenStorageSocUpperLimit", 30',
+        ):
+            self.assertIn(fallback, self.script)
+
+        for initial_value in (
+            "fuelCellPowerMinRatio: 0.20",
+            "fuelCellPowerMaxRatio: 0.90",
+            "fuelCellPowerDeadbandRatio: 0.10",
+            "fuelCellPowerStepRatio: 0.10",
+            "fuelCellDieselPowerLimitRatio: 0.50",
+            "fuelCellStorageSocLimit: 0.3",
+            "fuelCellHydrogenStorageSocUpperLimit: 0.3",
+            "fuelCellHydrogenStorageSocLowerLimit: 0.2",
+        ):
+            self.assertIn(initial_value, self.script)
 
     def test_strategy_table_marks_open_loop_and_hydrogen_preview_rows_as_not_dispatched(self):
         table_block = self.script.split(

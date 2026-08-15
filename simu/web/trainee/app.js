@@ -247,7 +247,7 @@ const state = {
     gridFormingStorageProtectionRatio: 0.05,
     dieselPowerProtectionRatio: 0.03,
     socDeadband: 0.05,
-    hydrogenClosedLoopEnabled: false,
+    hydrogenClosedLoopEnabled: true,
     hydrogenPressureDeadbandRatio: 0.05,
     electrolyzerPowerMinRatio: 0.20,
     electrolyzerPowerMaxRatio: 0.90,
@@ -258,13 +258,13 @@ const state = {
     electrolyzerStorageSocStartMinimum: 0.7,
     electrolyzerStorageSocStopMaximum: 0.3,
     electrolyzerHydrogenStorageSocStopMinimum: 0.9,
-    fuelCellPowerMinRatio: 0.03,
+    fuelCellPowerMinRatio: 0.20,
     fuelCellPowerMaxRatio: 0.90,
-    fuelCellPowerDeadbandRatio: 0,
-    fuelCellPowerStepRatio: 0.03,
-    fuelCellDieselPowerLimitRatio: 0.80,
-    fuelCellStorageSocLimit: 0.4,
-    fuelCellHydrogenStorageSocUpperLimit: 0.8,
+    fuelCellPowerDeadbandRatio: 0.10,
+    fuelCellPowerStepRatio: 0.10,
+    fuelCellDieselPowerLimitRatio: 0.50,
+    fuelCellStorageSocLimit: 0.3,
+    fuelCellHydrogenStorageSocUpperLimit: 0.3,
     fuelCellHydrogenStorageSocLowerLimit: 0.2,
     optimizationRenewableCurtailmentWeight: 1,
     optimizationDieselOutputWeight: 1,
@@ -12827,7 +12827,11 @@ function applyRenewableControlState(payload = {}) {
       control.dieselPowerProtectionRatio || 0.03,
     )),
     socDeadband: Math.max(0, toNumber(settings.socDeadband, control.socDeadband || 0.05)),
-    hydrogenClosedLoopEnabled: Boolean(settings.hydrogenClosedLoopEnabled),
+    hydrogenClosedLoopEnabled: Boolean(
+      settings.hydrogenClosedLoopEnabled
+        ?? control.hydrogenClosedLoopEnabled
+        ?? true,
+    ),
     hydrogenPressureDeadbandRatio: Math.min(0.5, Math.max(0, toNumber(
       settings.hydrogenPressureDeadbandRatio,
       control.hydrogenPressureDeadbandRatio || 0.05,
@@ -12850,13 +12854,13 @@ function applyRenewableControlState(payload = {}) {
       settings.electrolyzerHydrogenStorageSocStopMinimum ?? settings.electrolyzerHydrogenStorageSocUpperLimit,
       control.electrolyzerHydrogenStorageSocStopMinimum ?? 0.9,
     ))),
-    fuelCellPowerMinRatio: Math.min(1, Math.max(0, toNumber(settings.fuelCellPowerMinRatio, control.fuelCellPowerMinRatio ?? 0.03))),
+    fuelCellPowerMinRatio: Math.min(1, Math.max(0, toNumber(settings.fuelCellPowerMinRatio, control.fuelCellPowerMinRatio ?? 0.20))),
     fuelCellPowerMaxRatio: Math.min(1, Math.max(0, toNumber(settings.fuelCellPowerMaxRatio, control.fuelCellPowerMaxRatio ?? 0.90))),
-    fuelCellPowerDeadbandRatio: Math.min(1, Math.max(0, toNumber(settings.fuelCellPowerDeadbandRatio, control.fuelCellPowerDeadbandRatio ?? 0))),
-    fuelCellPowerStepRatio: Math.min(1, Math.max(0.00001, toNumber(settings.fuelCellPowerStepRatio, control.fuelCellPowerStepRatio ?? 0.03))),
-    fuelCellDieselPowerLimitRatio: Math.min(1, Math.max(0, toNumber(settings.fuelCellDieselPowerLimitRatio, control.fuelCellDieselPowerLimitRatio ?? 0.80))),
-    fuelCellStorageSocLimit: Math.min(1, Math.max(0, toNumber(settings.fuelCellStorageSocLimit, control.fuelCellStorageSocLimit ?? 0.4))),
-    fuelCellHydrogenStorageSocUpperLimit: Math.min(1, Math.max(0, toNumber(settings.fuelCellHydrogenStorageSocUpperLimit, control.fuelCellHydrogenStorageSocUpperLimit ?? 0.8))),
+    fuelCellPowerDeadbandRatio: Math.min(1, Math.max(0, toNumber(settings.fuelCellPowerDeadbandRatio, control.fuelCellPowerDeadbandRatio ?? 0.10))),
+    fuelCellPowerStepRatio: Math.min(1, Math.max(0.00001, toNumber(settings.fuelCellPowerStepRatio, control.fuelCellPowerStepRatio ?? 0.10))),
+    fuelCellDieselPowerLimitRatio: Math.min(1, Math.max(0, toNumber(settings.fuelCellDieselPowerLimitRatio, control.fuelCellDieselPowerLimitRatio ?? 0.50))),
+    fuelCellStorageSocLimit: Math.min(1, Math.max(0, toNumber(settings.fuelCellStorageSocLimit, control.fuelCellStorageSocLimit ?? 0.3))),
+    fuelCellHydrogenStorageSocUpperLimit: Math.min(1, Math.max(0, toNumber(settings.fuelCellHydrogenStorageSocUpperLimit, control.fuelCellHydrogenStorageSocUpperLimit ?? 0.3))),
     fuelCellHydrogenStorageSocLowerLimit: Math.min(1, Math.max(0, toNumber(settings.fuelCellHydrogenStorageSocLowerLimit, control.fuelCellHydrogenStorageSocLowerLimit ?? 0.2))),
     optimizationRenewableCurtailmentWeight: Math.max(0, toNumber(settings.optimizationRenewableCurtailmentWeight, control.optimizationRenewableCurtailmentWeight || 1)),
     optimizationDieselOutputWeight: Math.max(0, toNumber(settings.optimizationDieselOutputWeight, control.optimizationDieselOutputWeight || 1)),
@@ -14670,13 +14674,13 @@ async function updateRenewableSettings() {
     electrolyzerPowerMaxRatio: ratio("electrolyzerPowerMaxRatio", 90),
     electrolyzerPowerDeadbandRatio: ratio("electrolyzerPowerDeadbandRatio", 10),
     electrolyzerPowerStepRatio: ratio("electrolyzerPowerStepRatio", 10, 0.001, 100),
-    fuelCellPowerMinRatio: ratio("fuelCellPowerMinRatio", 3),
+    fuelCellPowerMinRatio: ratio("fuelCellPowerMinRatio", 20),
     fuelCellPowerMaxRatio: ratio("fuelCellPowerMaxRatio", 90),
-    fuelCellPowerDeadbandRatio: ratio("fuelCellPowerDeadbandRatio", 0),
-    fuelCellPowerStepRatio: ratio("fuelCellPowerStepRatio", 3, 0.001, 100),
+    fuelCellPowerDeadbandRatio: ratio("fuelCellPowerDeadbandRatio", 10),
+    fuelCellPowerStepRatio: ratio("fuelCellPowerStepRatio", 10, 0.001, 100),
     electrolyzerDieselPowerLimitRatio: ratio("electrolyzerDieselPowerLimitRatio", 35),
     electrolyzerDieselPowerDeadbandRatio: ratio("electrolyzerDieselPowerDeadbandRatio", 5),
-    fuelCellDieselPowerLimitRatio: ratio("fuelCellDieselPowerLimitRatio", 80),
+    fuelCellDieselPowerLimitRatio: ratio("fuelCellDieselPowerLimitRatio", 50),
   };
   const powerSettingError = [
     ["电制氢", powerSettings.electrolyzerPowerMinRatio, powerSettings.electrolyzerPowerMaxRatio, powerSettings.electrolyzerPowerDeadbandRatio],
@@ -14694,11 +14698,11 @@ async function updateRenewableSettings() {
   const electrolyzerStorageSocStartMinimum = ratio("electrolyzerStorageSocStartMinimum", 70);
   const electrolyzerStorageSocStopMaximum = ratio("electrolyzerStorageSocStopMaximum", 30);
   const fuelCellHydrogenStorageSocLowerLimit = ratio("fuelCellHydrogenStorageSocLowerLimit", 20);
-  const fuelCellHydrogenStorageSocUpperLimit = ratio("fuelCellHydrogenStorageSocUpperLimit", 80);
+  const fuelCellHydrogenStorageSocUpperLimit = ratio("fuelCellHydrogenStorageSocUpperLimit", 30);
   const socSettingError = electrolyzerStorageSocStartMinimum <= electrolyzerStorageSocStopMaximum
     ? "电制氢启机SOC最小值必须大于停机SOC最大值。"
     : fuelCellHydrogenStorageSocLowerLimit > fuelCellHydrogenStorageSocUpperLimit
-      ? "燃料电池氢储SOC下限不能大于上限。"
+      ? "燃料电池停机氢SOC最大值不能大于启机氢SOC最小值。"
       : "";
   if (socSettingError) {
     state.renewableControl.lastStatus = socSettingError;
@@ -14721,7 +14725,7 @@ async function updateRenewableSettings() {
       electrolyzerStorageSocStartMinimum,
       electrolyzerStorageSocStopMaximum,
       electrolyzerHydrogenStorageSocStopMinimum: ratio("electrolyzerHydrogenStorageSocStopMinimum", 90),
-      fuelCellStorageSocLimit: ratio("fuelCellStorageSocLimit", 40),
+      fuelCellStorageSocLimit: ratio("fuelCellStorageSocLimit", 30),
       fuelCellHydrogenStorageSocUpperLimit,
       fuelCellHydrogenStorageSocLowerLimit,
       ...powerSettings,

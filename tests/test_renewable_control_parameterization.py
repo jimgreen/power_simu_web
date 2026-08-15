@@ -4,7 +4,7 @@ import inspect
 import unittest
 from pathlib import Path
 
-from simu.control_config import default_integer, default_number
+from simu.control_config import default_boolean, default_integer, default_number
 from simu.renewable_control import (
     RenewableControlSettings,
     calculate_renewable_control_plan,
@@ -495,6 +495,44 @@ class RenewableControlParameterizationTest(unittest.TestCase):
 
         self.assertNotIn("storage_default_soc", defaults)
         self.assertNotIn("storage_default_efficiency", defaults)
+
+    def test_hydrogen_control_defaults_match_the_recommended_parameter_set(self):
+        settings = RenewableControlSettings()
+        expected = {
+            "hydrogen_pressure_deadband_ratio": 0.05,
+            "electrolyzer_power_min_ratio": 0.20,
+            "electrolyzer_power_max_ratio": 0.90,
+            "electrolyzer_power_deadband_ratio": 0.10,
+            "electrolyzer_power_step_ratio": 0.10,
+            "electrolyzer_diesel_power_limit_ratio": 0.35,
+            "electrolyzer_diesel_power_deadband_ratio": 0.05,
+            "electrolyzer_storage_soc_start_minimum": 0.70,
+            "electrolyzer_storage_soc_stop_maximum": 0.30,
+            "electrolyzer_hydrogen_storage_soc_stop_minimum": 0.90,
+            "fuel_cell_power_min_ratio": 0.20,
+            "fuel_cell_power_max_ratio": 0.90,
+            "fuel_cell_power_deadband_ratio": 0.10,
+            "fuel_cell_power_step_ratio": 0.10,
+            "fuel_cell_diesel_power_limit_ratio": 0.50,
+            "fuel_cell_storage_soc_limit": 0.30,
+            "fuel_cell_hydrogen_storage_soc_upper_limit": 0.30,
+            "fuel_cell_hydrogen_storage_soc_lower_limit": 0.20,
+        }
+
+        self.assertTrue(default_boolean("hydrogen_closed_loop_enabled"))
+        self.assertTrue(settings.hydrogen_closed_loop_enabled)
+        for field_name, value in expected.items():
+            self.assertAlmostEqual(getattr(settings, field_name), value)
+        self.assertEqual(settings.updated({}), settings.normalized())
+
+        customized = settings.updated(
+            {
+                "hydrogenClosedLoopEnabled": False,
+                "fuelCellPowerMinRatio": 0.42,
+            }
+        )
+        self.assertFalse(customized.hydrogen_closed_loop_enabled)
+        self.assertAlmostEqual(customized.fuel_cell_power_min_ratio, 0.42)
 
     def test_storage_efficiency_uses_model_value_and_only_falls_back_when_missing(self):
         from simu.renewable_control import _storage_efficiency

@@ -2106,7 +2106,8 @@ def test_electrolyzer_decision_detail_shows_rule_inputs_output_and_reason():
     assert "启机时忽略普通步长限制，直接达到最小运行功率+步长" in joined
     assert "升功率时按一个步长增加" in joined
     assert "降功率时按一个步长降低" in joined
-    assert "低于最小运行功率-步长时停机" in joined
+    assert "本轮控制策略严格低于出力下限-死区时停机" in joined
+    assert "等于该阈值时不提前停机" in joined
 
 
 def test_hydrogen_decision_trace_keeps_electrolyzer_start_blockers():
@@ -2320,6 +2321,37 @@ def test_electrolyzer_reduction_below_lower_deadband_explicitly_stops():
     assert result["action"] == "power_hysteresis_stop"
     assert command["commandKw"] == 0.0
     assert result["commands"][0]["powerHysteresisStop"] is True
+
+
+def test_electrolyzer_reduction_at_lower_deadband_boundary_keeps_running():
+    snapshot = _electrolyzer_snapshot(electric_power=7.0)
+    snapshot["definitions"]["model"]["ACLoad"]["rows"][0]["p_min"] = 5.0
+    next(
+        row
+        for row in snapshot["devices"]
+        if row.get("dev_name") == "electrolyzer-load"
+    )["raw"]["p_min"] = 5.0
+    settings = RenewableControlSettings(
+        electrolyzer_power_min_kw=5.0,
+        electrolyzer_power_max_kw=20.0,
+        electrolyzer_power_deadband_kw=1.0,
+        electrolyzer_power_step_kw=3.0,
+        electrolyzer_diesel_power_limit_kw=40.0,
+        electrolyzer_diesel_power_deadband_kw=0.0,
+        electrolyzer_storage_soc_stop_maximum=0.4,
+    )
+    result, rows = _run_electrolyzer(
+        snapshot,
+        settings,
+        diesel_power=45.0,
+        storage_soc=0.399,
+    )
+
+    command = next(row for row in rows if row.get("dev_name") == "electrolyzer-load")
+    assert result["action"] == "electrolyzer_reduce"
+    assert command["commandKw"] == pytest.approx(4.0)
+    assert result["commands"][0]["stopThresholdKw"] == pytest.approx(4.0)
+    assert result["commands"][0]["powerHysteresisStop"] is False
 
 
 def test_configured_electrolyzer_upper_limit_only_tightens_model_boundary():
@@ -2778,7 +2810,7 @@ def test_subthreshold_fuel_cell_residual_starts_at_minimum_plus_step():
     settings = RenewableControlSettings(
         fuel_cell_power_min_kw=3.0,
         fuel_cell_power_max_kw=20.0,
-        fuel_cell_power_deadband_kw=6.0,
+        fuel_cell_power_deadband_kw=2.0,
         fuel_cell_power_step_kw=1.0,
         fuel_cell_diesel_power_limit_kw=40.0,
         fuel_cell_storage_soc_limit=0.4,
@@ -2802,14 +2834,26 @@ def test_subthreshold_fuel_cell_residual_starts_at_minimum_plus_step():
     assert result["action"] == "fuel_cell"
     assert command["minimumRunningPowerKw"] == pytest.approx(3.0)
     assert command["startThresholdKw"] == pytest.approx(4.0)
-    assert command["stopThresholdKw"] == pytest.approx(2.0)
+    assert command["stopThresholdKw"] == pytest.approx(1.0)
     assert command["stepLimitKw"] == pytest.approx(1.0)
     assert command["electricDeltaKw"] == pytest.approx(3.99)
     assert command["electricPowerKw"] == pytest.approx(4.0)
     assert fuel_row["commandKw"] == pytest.approx(4.0)
 
 
-def test_running_fuel_cell_reduction_below_lower_deadband_explicitly_stops():
+@pytest.mark.parametrize(
+    ("current_power", "expected_action", "expected_target", "expected_stop"),
+    (
+        (6.0, "power_hysteresis_stop", 0.0, True),
+        (7.0, "fuel_cell_reduce", 4.0, False),
+    ),
+)
+def test_running_fuel_cell_shutdown_uses_strict_lower_minus_deadband_boundary(
+    current_power,
+    expected_action,
+    expected_target,
+    expected_stop,
+):
     snapshot = _fuel_cell_snapshot(tank_pressure=20.0)
     snapshot["measurements"]["scada"] = [
         row
@@ -2817,7 +2861,7 @@ def test_running_fuel_cell_reduction_below_lower_deadband_explicitly_stops():
         if not (row["dev_type"] == "DCGenerator" and row["dev_name"] == "fuel-cell")
     ]
     snapshot["measurements"]["scada"].append(
-        _measurement("DCGenerator", "fuel-cell", "P_GEN", 4.0)
+        _measurement("DCGenerator", "fuel-cell", "P_GEN", current_power)
     )
     settings = RenewableControlSettings(
         fuel_cell_power_min_kw=5.0,
@@ -2857,8 +2901,22 @@ def test_running_fuel_cell_reduction_below_lower_deadband_explicitly_stops():
     )
 
     fuel_row = next(row for row in rows if row.get("dev_name") == "fuel-cell")
-    assert result["action"] == "power_hysteresis_stop"
-    assert fuel_row["commandKw"] == 0.0
+    command = result["commands"][0]
+    assert result["action"] == expected_action
+    assert fuel_row["commandKw"] == pytest.approx(expected_target)
+    assert command["stopThresholdKw"] == pytest.approx(4.0)
+    assert command["powerHysteresisStop"] is expected_stop
+    run_status_rows = [
+        row
+        for row in rows
+        if row.get("commandKind") == "run_status"
+        and row.get("dev_name") == "fuel-coupling"
+    ]
+    if expected_stop:
+        assert len(run_status_rows) == 1
+        assert run_status_rows[0]["run_stat"] == 0
+    else:
+        assert run_status_rows == []
 
 
 def test_pressure_just_below_guard_blocks_fuel_cell():

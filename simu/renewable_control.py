@@ -1857,16 +1857,15 @@ def _hydrogen_post_dispatch_plan(
             )
             if is_electrolyzer:
                 start_threshold_kw = minimum_running_power + power_deadband_kw
-                stop_threshold_kw = max(
-                    physical_minimum_power,
-                    minimum_running_power - power_deadband_kw,
-                )
             else:
-                # Fuel-cell start/stop hysteresis follows the normal power step:
-                # start at minimum + one step, and stop only after a reduction
-                # would move strictly below minimum - one step.
+                # Fuel-cell startup keeps its dedicated minimum-plus-step rule.
                 start_threshold_kw = minimum_running_power + step_kw
-                stop_threshold_kw = max(0.0, minimum_running_power - step_kw)
+            # Both hydrogen devices stop only when the resulting strategy is
+            # strictly below the effective lower limit minus the deadband.
+            stop_threshold_kw = max(
+                0.0,
+                minimum_running_power - power_deadband_kw,
+            )
             maintain_stopped_snapshot = not coupling_online
             predicted_diesel_load_ratio = predicted_diesel_kw / diesel_capacity_kw
             decision_trace: Dict[str, Any] = {
@@ -2379,29 +2378,42 @@ def _hydrogen_post_dispatch_plan(
                 continue
             target_power = max(0.0, current_power + accepted_delta_kw)
             requested_target_power = target_power
-            if target_power > EPSILON:
+            if power_hysteresis_stop:
+                # A hysteresis stop is a device state transition: issue the
+                # stop remote control and zero setpoint directly, even when
+                # DCAC or balance-device headroom cannot pair the full delta.
+                target_power = 0.0
+            elif target_power > EPSILON:
                 if target_power > allowed_power + EPSILON:
                     target_power = allowed_power
                 elif target_power < physical_minimum_power - EPSILON:
-                    target_power = (
-                        0.0
-                        if accepted_delta_kw < -EPSILON
-                        else physical_minimum_power
-                    )
+                    if accepted_delta_kw > EPSILON:
+                        target_power = physical_minimum_power
+                    elif target_power < stop_threshold_kw - EPSILON:
+                        target_power = 0.0
             if abs(target_power - requested_target_power) > EPSILON:
                 setpoint_delta_kw = target_power - current_power
                 unpaired_delta_kw = setpoint_delta_kw - accepted_delta_kw
-                diagnostics["warnings"].append(
-                    f"氢能设备{coupling_name}目标{requested_target_power:.3f} kW越过有效运行边界，"
-                    f"已限幅为{target_power:.3f} kW并继续产生、下发指令；"
-                    f"未能原子配对的电侧变化为{unpaired_delta_kw:.3f} kW，将由潮流平衡设备响应"
-                )
-                device_action = (
-                    "electrolyzer_boundary_correction"
-                    if is_electrolyzer
-                    else "fuel_cell_boundary_correction"
-                )
-                device_action_reason = "target_boundary_clamped_and_dispatched"
+                if power_hysteresis_stop:
+                    diagnostics["warnings"].append(
+                        f"氢能设备{coupling_name}本轮策略目标严格低于出力下限-死区"
+                        f"{stop_threshold_kw:.3f} kW，已直接产生停机遥控和0遥调；"
+                        f"未能原子配对的电侧变化为{unpaired_delta_kw:.3f} kW，将由潮流平衡设备响应"
+                    )
+                    device_action = "power_hysteresis_stop"
+                    device_action_reason = "below_stop_threshold"
+                else:
+                    diagnostics["warnings"].append(
+                        f"氢能设备{coupling_name}目标{requested_target_power:.3f} kW越过有效运行边界，"
+                        f"已限幅为{target_power:.3f} kW并继续产生、下发指令；"
+                        f"未能原子配对的电侧变化为{unpaired_delta_kw:.3f} kW，将由潮流平衡设备响应"
+                    )
+                    device_action = (
+                        "electrolyzer_boundary_correction"
+                        if is_electrolyzer
+                        else "fuel_cell_boundary_correction"
+                    )
+                    device_action_reason = "target_boundary_clamped_and_dispatched"
                 decision_trace["boundaryRequestedPowerKw"] = requested_target_power
                 decision_trace["boundaryClampedPowerKw"] = target_power
                 decision_trace["unpairedElectricalDeltaKw"] = unpaired_delta_kw
@@ -10944,7 +10956,8 @@ def _hydrogen_business_decision_detail(
             f"柴发负载率>{electrolyzer_diesel_stop_maximum_ratio * 100:.2f}%、电储SOC<"
             f"{settings.electrolyzer_storage_soc_stop_maximum * 100:.2f}%或氢储SOC>"
             f"{settings.electrolyzer_hydrogen_storage_soc_stop_minimum * 100:.2f}%时按步长降功率，"
-            f"低于停机回差阈值则停机；柴发负载率处于{electrolyzer_diesel_limit_ratio * 100:.2f}%至"
+            "本轮控制策略严格低于出力下限-死区时停机，等于该阈值时不提前停机；"
+            f"柴发负载率处于{electrolyzer_diesel_limit_ratio * 100:.2f}%至"
             f"{electrolyzer_diesel_stop_maximum_ratio * 100:.2f}%之间时不因柴发条件调节"
         ),
         (
@@ -10956,7 +10969,8 @@ def _hydrogen_business_decision_detail(
             f"运行态氢储SOC>{settings.fuel_cell_hydrogen_storage_soc_lower_limit * 100:.2f}%"
             "且其余升功率条件满足时，升功率时按一个步长增加；"
             f"柴发负载率<{fuel_cell_diesel_stop_minimum_ratio * 100:.2f}%或任一储能反向条件成立时，"
-            "降功率时按一个步长降低，低于最小运行功率-步长时停机；"
+            "降功率时按一个步长降低，本轮控制策略严格低于出力下限-死区时停机，"
+            "等于该阈值时不提前停机；"
             f"柴发负载率处于{fuel_cell_diesel_stop_minimum_ratio * 100:.2f}%至"
             f"{fuel_cell_diesel_limit_ratio * 100:.2f}%之间时不因柴发条件调节；"
             "储氢低压保护优先停机"
@@ -14379,7 +14393,8 @@ def calculate_renewable_control_plan(
             f"{settings.fuel_cell_hydrogen_storage_soc_lower_limit * 100:.2f}%维持升出力条件，"
             "启机时忽略普通步长限制并直接达到最小运行功率+步长；运行后满足升功率条件则按一个步长增加，"
             f"柴发负载率<{settings.fuel_cell_diesel_power_stop_minimum_ratio * 100:.2f}%或任一储能反向条件成立则"
-            "按一个步长降低，低于最小运行功率-步长时停机；储氢罐低压保护优先停机"
+            "按一个步长降低，本轮控制策略严格低于出力下限-死区时停机，"
+            "等于该阈值时不提前停机；储氢罐低压保护优先停机"
         ),
         operating_mode_detail,
         control_architecture_detail,

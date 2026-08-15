@@ -182,6 +182,21 @@ def test_reduction_stops_instead_of_entering_minimum_power_dead_zone():
     assert decision.requested_delta_kw == -4.0
 
 
+def test_reduction_to_exact_stop_threshold_keeps_fuel_cell_running():
+    decision = calculate_fuel_cell_power_decision(
+        _parameters(power_step_kw=3.0),
+        _inputs(
+            current_power_kw=7.0,
+            start_threshold_kw=8.0,
+            stop_threshold_kw=4.0,
+            diesel_power_kw=118.0,
+        ),
+    )
+
+    assert decision.action == "decrease"
+    assert decision.requested_delta_kw == -3.0
+
+
 @pytest.mark.parametrize(
     "changes",
     (

@@ -835,6 +835,38 @@ def _validate_dcac_converter_schema(model_book: EBook) -> None:
         )
 
 
+_REQUIRED_POWER_MODEL_FIELDS = {
+    "ACRealBs": {"node"},
+    "DCRealBs": {"node"},
+    "ACGenerator": {"node", "control_type", "p_set", "q_set", "v_set"},
+    "DCGenerator": {"node", "control_type", "p_set", "v_set", "i_set"},
+}
+
+
+def _validate_power_model_schema(model_book: EBook) -> None:
+    """Reject definitions that silently remove a bus anchor or generator control."""
+
+    issues: list[str] = []
+    for block_name, required_fields in _REQUIRED_POWER_MODEL_FIELDS.items():
+        block = model_book.data.get(block_name)
+        if block is None or not getattr(block, "data", []):
+            continue
+        headers = {
+            str(field).strip()
+            for field in getattr(block, "header_list", [])
+            if str(field).strip()
+        }
+        missing = sorted(required_fields - headers)
+        if missing:
+            issues.append(f"{block_name} 缺少必需字段: {', '.join(missing)}")
+    if issues:
+        raise ValueError(
+            "model.e 关键潮流字段不完整："
+            + "；".join(issues)
+            + "。已拒绝更新，以免对应电网被静默判为死岛。"
+        )
+
+
 def _repair_fixed_boundaries(model_book: EBook) -> list[dict]:
     return simu_loop.repair_fixed_boundary_setpoints(model_book)
 
@@ -1251,6 +1283,7 @@ def _generated_model_artifacts(model_text: str) -> Mapping[str, Any]:
                 )
     if not _model_book_has_power_model(model_book):
         raise ValueError("model.e 中未找到可识别的电网模型设备块")
+    _validate_power_model_schema(model_book)
     _validate_dcac_converter_schema(model_book)
     _repair_fixed_boundaries(model_book)
 
@@ -1556,6 +1589,7 @@ def _parse_definition_archive(data: bytes) -> Mapping[str, Any]:
     assert model_text is not None and meas_text is not None and control_text is not None and curves_text is not None
     model_book = _book_from_text(model_text)
     removed_runtime_fields = _remove_ambiguous_converter_runtime_fields(model_book)
+    _validate_power_model_schema(model_book)
     _validate_dcac_converter_schema(model_book)
     fixed_boundary_corrections = _repair_fixed_boundaries(model_book)
     if removed_runtime_fields or fixed_boundary_corrections:

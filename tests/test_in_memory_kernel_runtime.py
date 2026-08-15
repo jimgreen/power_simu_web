@@ -209,6 +209,44 @@ class InMemoryKernelRuntimeTest(unittest.TestCase):
             float(electrolyzer["v_min"]),
         )
 
+    def test_ieee118_keeps_ac_bus_and_balancing_generators_in_power_flow(self):
+        import simu_loop
+
+        model_path = (
+            Path(__file__).resolve().parents[1]
+            / "models"
+            / "simulator"
+            / "source"
+            / "IEEE118"
+            / "model.e"
+        )
+        model_book = simu_loop.EBook(model_path)
+        real_bus = model_book.data["ACRealBs"].data[0]
+        bus_node = next(
+            row
+            for row in model_book.data["ACNode"].data
+            if str(row.get("idx")) == str(real_bus.get("node"))
+        )
+        diesel = next(
+            row
+            for row in model_book.data["ACGenerator"].data
+            if str(row.get("idx")) == "27"
+        )
+
+        self.assertEqual(str(real_bus.get("node")), "24")
+        self.assertEqual(str(diesel.get("control_type")).upper(), "PH")
+        snapshot, solver_info = simu_loop.solve_hybrid_snapshot_from_book(
+            model_book,
+            model_path,
+        )
+
+        self.assertRegex(solver_info, r"^iter=\d+, normF=\d\.\d{3}e[+-]\d+$")
+        self.assertGreater(snapshot.value("ACNode", bus_node["name"], "V"), 0.0)
+        self.assertGreater(
+            abs(snapshot.value("ACGenerator", diesel["name"], "P_GEN")),
+            0.0,
+        )
+
     def test_dcac_converter_terminal_powers_follow_ac_terminal_setpoint_sign(self):
         import simu_loop
 

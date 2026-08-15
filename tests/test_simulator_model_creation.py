@@ -151,6 +151,37 @@ class SimulatorModelCreationTest(unittest.TestCase):
         self.assertIn("q_from_set", model_book.data["ACACConverter"].header_list)
         self.assertIn("q_to_set", model_book.data["ACACConverter"].header_list)
 
+    def test_generated_model_rejects_ac_real_bus_without_node_reference(self):
+        model_text = """<ACNode>
+@ idx name vbase run_stat
+# 1 ac-bus-node 380 1
+</ACNode>
+<ACRealBs>
+@ idx name run_stat u f
+# 1 ac-bus 1 0 0
+</ACRealBs>
+"""
+
+        with self.assertRaisesRegex(ValueError, r"ACRealBs.*node"):
+            server_module._generated_model_artifacts(model_text)
+
+    def test_generated_model_rejects_ac_generator_without_control_boundaries(self):
+        model_text = """<ACNode>
+@ idx name vbase run_stat
+# 1 generator-node 380 1
+</ACNode>
+<ACGenerator>
+@ idx name node p_max p_min q_max q_min run_stat
+# 1 generator 1 100 0 100 -100 1
+</ACGenerator>
+"""
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"ACGenerator.*control_type.*p_set.*q_set.*v_set",
+        ):
+            server_module._generated_model_artifacts(model_text)
+
     def test_generated_model_repairs_active_dcdc_zero_voltage_reference(self):
         model_text = """<DCNode>
 @ idx name vbase run_stat
@@ -439,6 +470,37 @@ class SimulatorModelCreationTest(unittest.TestCase):
             self.assertIn("diagram.svg", updated["updated"]["files"])
             self.assertEqual((models_root / "默认模型" / "diagram.svg").read_text(encoding="utf-8"), diagram_text)
             self.assertGreater(len(manager.service_for("默认模型").definitions()["measurement"]), 0)
+
+    def test_update_model_rejects_incomplete_ac_controls_without_overwriting_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            models_root = temp_root / "models"
+            copytree(SIMPLE_MODEL_SOURCE, models_root / "default-model")
+            manager = MultiModelSimulator.discover(
+                models_root.parent,
+                temp_root / "runtime",
+                models_dir=models_root,
+            )
+            target_dir = models_root / "default-model"
+            source_before = self._tree_bytes(target_dir)
+            invalid_model_text = """<ACNode>
+@ idx name vbase run_stat
+# 1 generator-node 380 1
+</ACNode>
+<ACGenerator>
+@ idx name node p_max p_min q_max q_min run_stat
+# 1 generator 1 100 0 100 -100 1
+</ACGenerator>
+"""
+
+            with self.assertRaisesRegex(ValueError, r"ACGenerator.*control_type"):
+                server_module.update_model_from_efile(
+                    manager,
+                    "default-model",
+                    invalid_model_text,
+                )
+
+            self.assertEqual(self._tree_bytes(target_dir), source_before)
 
     def test_update_model_cannot_write_deleted_recreated_service_paths(self):
         with tempfile.TemporaryDirectory() as temporary:

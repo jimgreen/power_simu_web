@@ -792,13 +792,13 @@ def test_fuel_cell_uses_diesel_electric_soc_and_hydrogen_soc_hysteresis():
     result, rows = _run(
         _fuel_cell_snapshot(tank_soc=0.81),
         settings,
-        diesel_power=106.0,
+        diesel_power=111.0,
         storage_soc=0.39,
     )
 
     command = next(row for row in rows if row.get("dev_name") == "fuel-cell")
     assert result["action"] == "fuel_cell"
-    assert command["commandKw"] == 6.0
+    assert command["commandKw"] == 11.0
 
     running_snapshot = _fuel_cell_snapshot(tank_soc=0.3)
     running_snapshot["measurements"]["scada"] = [
@@ -885,17 +885,17 @@ def test_fuel_cell_integration_uses_complete_diesel_and_soc_averages():
             {"online": True, "socKnown": True, "soc": 0.1, "socMin": 0.2},
             {"online": True, "socKnown": True, "soc": 0.65, "socMin": 0.2},
         ],
-        diesel_current_kw=210.0,
+        diesel_current_kw=211.0,
         diesel_unit_count=2,
     )
 
     fuel_command = next(row for row in rows if row.get("dev_name") == "fuel-cell")
     assert result["action"] == "fuel_cell"
-    assert result["predictedDieselAverageBeforeKw"] == 105.0
+    assert result["predictedDieselAverageBeforeKw"] == 105.5
     assert result["electricStorageSocAverage"] == pytest.approx(0.375)
     assert result["commands"][0]["hydrogenStorageSocAverage"] == pytest.approx(0.825)
     assert result["commands"][0]["controlReason"] == "start_conditions_met"
-    assert fuel_command["commandKw"] == 6.0
+    assert fuel_command["commandKw"] == 11.0
 
 
 def test_fuel_cell_integration_fails_closed_on_partial_island_soc_average():
@@ -1049,8 +1049,8 @@ def test_full_renewable_plan_previews_open_hydrogen_and_dispatches_closed_hydrog
     assert open_hydrogen["action"] == "fuel_cell"
     assert open_hydrogen["dispatchMode"] == "open-loop-preview"
     assert open_hydrogen["commands"][0]["controlReason"] == "start_conditions_met"
-    assert open_plan["metrics"]["fuelCellTargetKw"] == pytest.approx(6.0)
-    assert open_hydrogen_row["commandKw"] == pytest.approx(6.0)
+    assert open_plan["metrics"]["fuelCellTargetKw"] == pytest.approx(11.0)
+    assert open_hydrogen_row["commandKw"] == pytest.approx(11.0)
     assert open_hydrogen_row["dispatchEnabled"] is False
     open_run_row = next(
         row
@@ -1084,11 +1084,11 @@ def test_full_renewable_plan_previews_open_hydrogen_and_dispatches_closed_hydrog
             "run_stat": 1,
         }
     ]
-    assert closed_commands[("DCGenerator", "fuel-cell", "p_set")] == 6.0
-    assert closed_commands[("DCACConverter", "grid-converter", "p_ac_set")] == -26.0
-    assert closed_commands[("ACGenerator", "diesel", "p_set")] == 79.0
-    assert closed_hydrogen["converterCorrectionKw"] == pytest.approx(6.0)
-    assert closed_hydrogen["balanceCorrectionKw"] == pytest.approx(-6.0)
+    assert closed_commands[("DCGenerator", "fuel-cell", "p_set")] == 11.0
+    assert closed_commands[("DCACConverter", "grid-converter", "p_ac_set")] == -31.0
+    assert closed_commands[("ACGenerator", "diesel", "p_set")] == 74.0
+    assert closed_hydrogen["converterCorrectionKw"] == pytest.approx(11.0)
+    assert closed_hydrogen["balanceCorrectionKw"] == pytest.approx(-11.0)
 
 
 def test_fuel_cell_dcac_command_row_uses_the_same_active_dc_transfer_group():
@@ -1244,7 +1244,7 @@ def test_fuel_cell_start_adds_run_command_before_power_setpoint():
     assert run_row["dev_name"] == "fuel-coupling"
     assert run_row["run_stat"] == 1
     assert rows.index(run_row) < rows.index(set_row)
-    assert set_row["commandKw"] == pytest.approx(6.0)
+    assert set_row["commandKw"] == pytest.approx(11.0)
 
 
 @pytest.mark.parametrize(
@@ -1576,7 +1576,7 @@ def test_running_electrolyzer_blocks_fuel_cell_start():
             fuel_cell_hydrogen_storage_soc_upper_limit=0.4,
             fuel_cell_hydrogen_storage_soc_lower_limit=0.2,
         ),
-        diesel_power=80.0,
+        diesel_power=81.0,
         storage_soc=0.85,
     )
 
@@ -2095,6 +2095,10 @@ def test_electrolyzer_decision_detail_shows_rule_inputs_output_and_reason():
     assert "目标6.00 kW" in joined
     assert "启机条件满足，直接达到启机功率" in joined
     assert "燃料电池规则" in joined
+    assert "启机时忽略普通步长限制，直接达到最小运行功率+步长" in joined
+    assert "升功率时按一个步长增加" in joined
+    assert "降功率时按一个步长降低" in joined
+    assert "低于最小运行功率-步长时停机" in joined
 
 
 def test_hydrogen_decision_trace_keeps_electrolyzer_start_blockers():
@@ -2142,6 +2146,7 @@ def test_subthreshold_residuals_do_not_block_same_cycle_electrolyzer_start():
         electrolyzer_diesel_power_limit_kw=40.0,
         fuel_cell_power_min_kw=0.9,
         fuel_cell_power_deadband_kw=0.0,
+        fuel_cell_power_step_kw=0.3,
     )
 
     result, rows = _run_electrolyzer(
@@ -2630,19 +2635,23 @@ def test_pressure_at_guard_allows_incremental_fuel_cell_and_dc_acdc_correction()
         fuel_cell_power_step_ratio=0.1,
         fuel_cell_power_min_ratio=0.1,
     )
-    result, rows = _run(_fuel_cell_snapshot(tank_pressure=4.15), settings)
+    result, rows = _run(
+        _fuel_cell_snapshot(tank_pressure=4.15),
+        settings,
+        diesel_power=86.0,
+    )
     fuel_row = next(row for row in rows if row.get("dev_name") == "fuel-cell")
     converter_row = next(row for row in rows if row.get("dev_name") == "grid-converter")
     assert result["action"] == "fuel_cell"
-    assert result["electricPowerAdjustmentKw"] == 3.0
-    assert result["targetElectricPowerKw"] == 3.0
-    assert result["commands"][0]["equivalentFlow"] == 2.0
+    assert result["electricPowerAdjustmentKw"] == 6.0
+    assert result["targetElectricPowerKw"] == 6.0
+    assert result["commands"][0]["equivalentFlow"] == 4.0
     assert result["commands"][0]["stepLimitKw"] == 3.0
-    assert fuel_row["commandKw"] == 3.0
-    assert converter_row["commandKw"] == -3.0
+    assert fuel_row["commandKw"] == 6.0
+    assert converter_row["commandKw"] == -6.0
 
 
-def test_fuel_cell_start_requires_margin_for_minimum_plus_deadband():
+def test_fuel_cell_start_requires_margin_for_minimum_plus_step():
     settings = RenewableControlSettings(
         fuel_cell_power_min_kw=5.0,
         fuel_cell_power_max_kw=20.0,
@@ -2654,10 +2663,10 @@ def test_fuel_cell_start_requires_margin_for_minimum_plus_deadband():
     blocked, blocked_rows = _run(
         _fuel_cell_snapshot(tank_pressure=20.0),
         settings,
-        diesel_power=45.0,
+        diesel_power=44.0,
     )
     assert blocked_rows[0]["commandKw"] == 0.0
-    assert any("启动功率" in warning for warning in blocked["warnings"])
+    assert any("最小运行功率+步长" in warning for warning in blocked["warnings"])
 
     measurements = _measurement_index(_fuel_cell_snapshot(tank_pressure=20.0))
     snapshot = _fuel_cell_snapshot(tank_pressure=20.0)
@@ -2688,11 +2697,63 @@ def test_fuel_cell_start_requires_margin_for_minimum_plus_deadband():
         topology,
         rows,
         [{"online": True, "socKnown": True, "soc": 0.1, "socMin": 0.2}],
-        diesel_current_kw=46.0,
+        diesel_current_kw=51.0,
     )
     fuel_row = next(row for row in rows if row.get("dev_name") == "fuel-cell")
-    assert fuel_row["commandKw"] == 6.0
-    assert started["commands"][0]["startThresholdKw"] == 6.0
+    assert fuel_row["commandKw"] == 11.0
+    assert started["commands"][0]["startThresholdKw"] == 11.0
+    assert started["commands"][0]["minimumRunningPowerKw"] == 5.0
+
+
+def test_subthreshold_fuel_cell_residual_starts_at_minimum_plus_step():
+    snapshot = _fuel_cell_snapshot(tank_pressure=20.0, tank_soc=0.5)
+    fuel_model = snapshot["definitions"]["model"]["DCGenerator"]["rows"][0]
+    fuel_model["p_min"] = 3.0
+    fuel_device = next(
+        row
+        for row in snapshot["devices"]
+        if row.get("dev_type") == "DCGenerator"
+        and row.get("dev_name") == "fuel-cell"
+    )
+    fuel_device["raw"]["p_min"] = 3.0
+    for row in snapshot["measurements"]["scada"]:
+        if row.get("dev_type") == "DCGenerator" and row.get("dev_name") == "fuel-cell":
+            row["value"] = 0.01
+        elif row.get("dev_type") == "HydroLoad" and row.get("dev_name") == "fuel-hydrogen":
+            row["value"] = 0.01 / 1.5
+
+    settings = RenewableControlSettings(
+        fuel_cell_power_min_kw=3.0,
+        fuel_cell_power_max_kw=20.0,
+        fuel_cell_power_deadband_kw=6.0,
+        fuel_cell_power_step_kw=1.0,
+        fuel_cell_diesel_power_limit_kw=40.0,
+        fuel_cell_storage_soc_limit=0.4,
+        fuel_cell_hydrogen_storage_soc_upper_limit=0.3,
+        fuel_cell_hydrogen_storage_soc_lower_limit=0.2,
+    )
+
+    result, rows = _run(
+        snapshot,
+        settings,
+        diesel_power=46.0,
+        storage_soc=0.1,
+    )
+
+    fuel_row = next(
+        row
+        for row in rows
+        if row.get("dev_name") == "fuel-cell" and row.get("set_type") == "p_set"
+    )
+    command = result["commands"][0]
+    assert result["action"] == "fuel_cell"
+    assert command["minimumRunningPowerKw"] == pytest.approx(3.0)
+    assert command["startThresholdKw"] == pytest.approx(4.0)
+    assert command["stopThresholdKw"] == pytest.approx(2.0)
+    assert command["stepLimitKw"] == pytest.approx(1.0)
+    assert command["electricDeltaKw"] == pytest.approx(3.99)
+    assert command["electricPowerKw"] == pytest.approx(4.0)
+    assert fuel_row["commandKw"] == pytest.approx(4.0)
 
 
 def test_running_fuel_cell_reduction_below_lower_deadband_explicitly_stops():
@@ -2703,7 +2764,7 @@ def test_running_fuel_cell_reduction_below_lower_deadband_explicitly_stops():
         if not (row["dev_type"] == "DCGenerator" and row["dev_name"] == "fuel-cell")
     ]
     snapshot["measurements"]["scada"].append(
-        _measurement("DCGenerator", "fuel-cell", "P_GEN", 6.0)
+        _measurement("DCGenerator", "fuel-cell", "P_GEN", 4.0)
     )
     settings = RenewableControlSettings(
         fuel_cell_power_min_kw=5.0,
@@ -2817,11 +2878,11 @@ def test_dc_hydrogen_correction_shares_parallel_converter_headroom_and_dispatch_
         for row in rows
         if row.get("model_block") == "DCACConverter"
     }
-    assert result["converterCorrectionKw"] == pytest.approx(3.0)
-    assert converters["grid-converter"]["commandKw"] == pytest.approx(-41.5)
-    assert converters["grid-converter-2"]["commandKw"] == pytest.approx(-1.5)
-    assert _dispatch_setpoint_value(converters["grid-converter"]) == pytest.approx(-41.5)
-    assert _dispatch_setpoint_value(converters["grid-converter-2"]) == pytest.approx(1.5)
+    assert result["converterCorrectionKw"] == pytest.approx(6.0)
+    assert converters["grid-converter"]["commandKw"] == pytest.approx(-43.0)
+    assert converters["grid-converter-2"]["commandKw"] == pytest.approx(-3.0)
+    assert _dispatch_setpoint_value(converters["grid-converter"]) == pytest.approx(-43.0)
+    assert _dispatch_setpoint_value(converters["grid-converter-2"]) == pytest.approx(3.0)
 
 
 def test_hydrogen_aggregate_metrics_follow_explicit_coupling_bindings():
@@ -3065,13 +3126,13 @@ def test_open_main_loop_calculates_hydrogen_targets_and_trend_without_dispatch(
     assert controller_state["loopMode"] == "open"
     assert dispatched == []
     assert hydrogen["action"] == "fuel_cell"
-    assert plan["metrics"]["fuelCellTargetKw"] == pytest.approx(6.0)
-    assert hydrogen_row["commandKw"] == pytest.approx(6.0)
-    assert trend_point["fuelCellTargetKw"] == pytest.approx(6.0)
+    assert plan["metrics"]["fuelCellTargetKw"] == pytest.approx(11.0)
+    assert hydrogen_row["commandKw"] == pytest.approx(11.0)
+    assert trend_point["fuelCellTargetKw"] == pytest.approx(11.0)
     if hydrogen_closed_loop_enabled:
         assert hydrogen["dispatchMode"] == "closed-loop-atomic"
-        assert plan["metrics"]["acdcTargetKw"] == pytest.approx(26.0)
-        assert plan["metrics"]["acDieselTargetKw"] == pytest.approx(79.0)
+        assert plan["metrics"]["acdcTargetKw"] == pytest.approx(31.0)
+        assert plan["metrics"]["acDieselTargetKw"] == pytest.approx(74.0)
     else:
         assert hydrogen["dispatchMode"] == "open-loop-preview"
         assert plan["metrics"]["acdcTargetKw"] == pytest.approx(20.0)
@@ -3146,7 +3207,7 @@ def test_closed_main_loop_dispatches_hydrogen_only_when_hydrogen_loop_is_closed(
         for row in payload["set_values"]
     }
     assert payload["strategy"]["loop_mode"] == "closed"
-    assert controller_state["trend"][-1]["fuelCellTargetKw"] == pytest.approx(6.0)
+    assert controller_state["trend"][-1]["fuelCellTargetKw"] == pytest.approx(11.0)
     if hydrogen_closed_loop_enabled:
         assert payload["run_status"] == [
             {
@@ -3155,9 +3216,9 @@ def test_closed_main_loop_dispatches_hydrogen_only_when_hydrogen_loop_is_closed(
                 "run_stat": 1,
             }
         ]
-        assert commands[("DCGenerator", "fuel-cell", "p_set")] == pytest.approx(6.0)
-        assert commands[("DCACConverter", "grid-converter", "p_ac_set")] == pytest.approx(-26.0)
-        assert commands[("ACGenerator", "diesel", "p_set")] == pytest.approx(79.0)
+        assert commands[("DCGenerator", "fuel-cell", "p_set")] == pytest.approx(11.0)
+        assert commands[("DCACConverter", "grid-converter", "p_ac_set")] == pytest.approx(-31.0)
+        assert commands[("ACGenerator", "diesel", "p_set")] == pytest.approx(74.0)
     else:
         assert payload["run_status"] == []
         assert ("DCGenerator", "fuel-cell", "p_set") not in commands

@@ -23,9 +23,10 @@ def _inputs(**changes):
     values = {
         "current_power_kw": 0.0,
         "maximum_power_kw": 20.0,
-        "start_threshold_kw": 6.0,
-        "stop_threshold_kw": 4.0,
-        "diesel_power_kw": 208.0,
+        "minimum_power_kw": 5.0,
+        "start_threshold_kw": 11.0,
+        "stop_threshold_kw": 0.0,
+        "diesel_power_kw": 212.0,
         "diesel_capacity_kw": 400.0,
         "electric_storage_soc_average": 0.39,
         "hydrogen_storage_soc_average": 0.81,
@@ -34,24 +35,40 @@ def _inputs(**changes):
     return FuelCellControlInputs(**values)
 
 
-def test_stopped_fuel_cell_starts_at_minimum_plus_deadband():
+def test_stopped_fuel_cell_starts_directly_at_minimum_plus_step():
     decision = calculate_fuel_cell_power_decision(_parameters(), _inputs())
 
     assert decision.action == "start"
-    assert decision.requested_delta_kw == 6.0
-    assert decision.required_start_delta_kw == 6.0
-    assert decision.diesel_raise_margin_kw == 8.0
+    assert decision.requested_delta_kw == 11.0
+    assert decision.required_start_delta_kw == 11.0
+    assert decision.diesel_raise_margin_kw == 12.0
 
 
-def test_stopped_fuel_cell_jumps_to_start_threshold_when_normal_step_is_smaller():
+def test_stopped_fuel_cell_ignores_ramp_limit_and_jumps_to_minimum_plus_step():
     decision = calculate_fuel_cell_power_decision(
         _parameters(power_step_kw=2.0),
-        _inputs(),
+        _inputs(start_threshold_kw=7.0, stop_threshold_kw=3.0),
     )
 
     assert decision.action == "start"
-    assert decision.requested_delta_kw == 6.0
-    assert decision.required_start_delta_kw == 6.0
+    assert decision.requested_delta_kw == 7.0
+    assert decision.required_start_delta_kw == 7.0
+
+
+def test_subthreshold_residual_starts_at_minimum_plus_step():
+    decision = calculate_fuel_cell_power_decision(
+        _parameters(power_step_kw=1.0),
+        _inputs(
+            current_power_kw=0.01,
+            minimum_power_kw=3.0,
+            start_threshold_kw=4.0,
+            stop_threshold_kw=2.0,
+        ),
+    )
+
+    assert decision.action == "start"
+    assert decision.requested_delta_kw == pytest.approx(3.99)
+    assert decision.required_start_delta_kw == pytest.approx(3.99)
 
 
 @pytest.mark.parametrize(
@@ -72,7 +89,7 @@ def test_start_requires_all_average_thresholds_strictly(changes):
     assert decision.reason == "start_conditions_not_met"
 
 
-def test_start_is_blocked_when_diesel_total_margin_cannot_reach_minimum():
+def test_start_is_blocked_when_diesel_total_margin_cannot_reach_minimum_plus_step():
     decision = calculate_fuel_cell_power_decision(
         _parameters(),
         _inputs(diesel_power_kw=204.0),
@@ -137,13 +154,15 @@ def test_reduction_stops_instead_of_entering_minimum_power_dead_zone():
     decision = calculate_fuel_cell_power_decision(
         _parameters(power_step_kw=3.0),
         _inputs(
-            current_power_kw=6.0,
+            current_power_kw=4.0,
+            start_threshold_kw=8.0,
+            stop_threshold_kw=2.0,
             diesel_power_kw=198.0,
         ),
     )
 
     assert decision.action == "stop"
-    assert decision.requested_delta_kw == -6.0
+    assert decision.requested_delta_kw == -4.0
 
 
 @pytest.mark.parametrize(

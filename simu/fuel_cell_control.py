@@ -25,6 +25,7 @@ class FuelCellControlParameters:
 class FuelCellControlInputs:
     current_power_kw: float
     maximum_power_kw: float
+    minimum_power_kw: float
     start_threshold_kw: float
     stop_threshold_kw: float
     diesel_power_kw: float
@@ -68,6 +69,9 @@ def calculate_fuel_cell_power_decision(
 
     current_power = max(0.0, float(inputs.current_power_kw))
     maximum_power = max(0.0, float(inputs.maximum_power_kw))
+    minimum_power = max(0.0, float(inputs.minimum_power_kw))
+    start_threshold = max(minimum_power, float(inputs.start_threshold_kw))
+    stop_threshold = max(0.0, float(inputs.stop_threshold_kw))
     step_kw = max(0.0, float(parameters.power_step_kw))
     diesel_capacity = max(0.0, float(inputs.diesel_capacity_kw))
     if diesel_capacity <= EPSILON:
@@ -104,7 +108,13 @@ def calculate_fuel_cell_power_decision(
         < float(parameters.hydrogen_storage_soc_stop_limit) - EPSILON
     )
 
-    running = current_power > EPSILON
+    # A small positive telemetry residue below the stop threshold is still an
+    # operationally stopped fuel cell.  Treating any value above EPSILON as
+    # running traps the controller in a stop loop instead of allowing a start.
+    running = bool(
+        current_power > EPSILON
+        and current_power >= stop_threshold - EPSILON
+    )
     if not running:
         start_allowed = bool(
             diesel_raise_margin_kw > EPSILON
@@ -118,10 +128,12 @@ def calculate_fuel_cell_power_decision(
                 diesel_raise_margin_kw=diesel_raise_margin_kw,
                 diesel_reduce_margin_kw=diesel_reduce_margin_kw,
             )
-        required_start = max(0.0, float(inputs.start_threshold_kw))
+        # Starting is a state transition, not a normal ramp.  Move directly to
+        # minimum running power plus one step and ignore the regular ramp limit.
+        required_start = max(0.0, start_threshold - current_power)
         if (
             required_start > diesel_raise_margin_kw + EPSILON
-            or required_start > maximum_power + EPSILON
+            or start_threshold > maximum_power + EPSILON
         ):
             return FuelCellControlDecision(
                 action="hold",

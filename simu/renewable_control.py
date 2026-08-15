@@ -1565,6 +1565,7 @@ def _hydrogen_post_dispatch_plan(
                         else settings.electrolyzer_power_deadband_ratio
                         * rated_power_kw
                     )
+                    running_hysteresis_kw = power_deadband_kw
                     flow_power_min = max(0.0, flow_min) / coefficient
                 else:
                     configured_minimum = (
@@ -1577,6 +1578,11 @@ def _hydrogen_post_dispatch_plan(
                         if settings.fuel_cell_power_deadband_kw is not None
                         else settings.fuel_cell_power_deadband_ratio * rated_power_kw
                     )
+                    running_hysteresis_kw = (
+                        float(settings.fuel_cell_power_step_kw)
+                        if settings.fuel_cell_power_step_kw is not None
+                        else settings.fuel_cell_power_step_ratio * rated_power_kw
+                    )
                     flow_power_min = max(0.0, flow_min) * coefficient
                 physical_minimum_power = max(0.0, power_min, flow_power_min)
                 minimum_running_power = max(
@@ -1584,8 +1590,8 @@ def _hydrogen_post_dispatch_plan(
                     configured_minimum,
                 )
                 running_threshold_kw = max(
-                    physical_minimum_power,
-                    minimum_running_power - power_deadband_kw,
+                    0.0,
+                    minimum_running_power - running_hysteresis_kw,
                 )
             running = bool(
                 current_power > EPSILON
@@ -1843,11 +1849,18 @@ def _hydrogen_post_dispatch_plan(
                 physical_minimum_power,
                 configured_minimum,
             )
-            start_threshold_kw = minimum_running_power + power_deadband_kw
-            stop_threshold_kw = max(
-                physical_minimum_power,
-                minimum_running_power - power_deadband_kw,
-            )
+            if is_electrolyzer:
+                start_threshold_kw = minimum_running_power + power_deadband_kw
+                stop_threshold_kw = max(
+                    physical_minimum_power,
+                    minimum_running_power - power_deadband_kw,
+                )
+            else:
+                # Fuel-cell start/stop hysteresis follows the normal power step:
+                # start at minimum + one step, and stop only after a reduction
+                # would move strictly below minimum - one step.
+                start_threshold_kw = minimum_running_power + step_kw
+                stop_threshold_kw = max(0.0, minimum_running_power - step_kw)
             maintain_stopped_snapshot = not coupling_online
             predicted_diesel_load_ratio = predicted_diesel_kw / diesel_capacity_kw
             decision_trace: Dict[str, Any] = {
@@ -1872,7 +1885,6 @@ def _hydrogen_post_dispatch_plan(
             }
             if (
                 minimum_running_power > allowed_power + EPSILON
-                or start_threshold_kw > allowed_power + EPSILON
             ):
                 diagnostics["warnings"].append(
                     f"氢能设备{coupling_name}配置上下限与模型功率/流量边界无有效运行区间，"
@@ -1940,6 +1952,7 @@ def _hydrogen_post_dispatch_plan(
                     FuelCellControlInputs(
                         current_power_kw=current_power,
                         maximum_power_kw=allowed_power,
+                        minimum_power_kw=minimum_running_power,
                         start_threshold_kw=start_threshold_kw,
                         stop_threshold_kw=stop_threshold_kw,
                         diesel_power_kw=predicted_diesel_kw,
@@ -2009,6 +2022,19 @@ def _hydrogen_post_dispatch_plan(
                 )
                 requested_delta_kw = required_start_delta_kw
                 device_action_reason = "entry_conditions_met_direct_start"
+            elif (
+                not is_electrolyzer
+                and current_power > EPSILON
+                and current_power < stop_threshold_kw - EPSILON
+                and fuel_cell_decision is not None
+                and fuel_cell_decision.action == "start"
+            ):
+                # A sub-threshold telemetry residue is operationally stopped.
+                # If all fuel-cell entry predicates hold, bypass the normal
+                # ramp limit and recover directly to minimum power plus one step.
+                requested_delta_kw = fuel_cell_decision.requested_delta_kw
+                required_start_delta_kw = fuel_cell_decision.required_start_delta_kw
+                device_action_reason = fuel_cell_decision.reason
             elif current_power > EPSILON and current_power < stop_threshold_kw - EPSILON:
                 requested_delta_kw = -current_power
                 power_hysteresis_stop = True
@@ -2126,14 +2152,14 @@ def _hydrogen_post_dispatch_plan(
                     device_action = "fuel_cell_reduce"
                 if fuel_cell_decision.reason == "start_margin_insufficient":
                     diagnostics["warnings"].append(
-                        f"氢能设备{coupling_name}需要一次达到启动功率"
+                        f"氢能设备{coupling_name}需要一次达到最小运行功率+步长"
                         f"{start_threshold_kw:.3f} kW，当前柴发调节裕度或设备功率上限不足，已保持停机"
                     )
                     decision_trace.update(
                         {
                             "action": "hold",
                             "controlReason": fuel_cell_decision.reason,
-                            "blockers": ["柴发调节裕度或设备功率上限不足以一次达到启机功率"],
+                            "blockers": ["柴发调节裕度或设备功率上限不足以一次达到最小运行功率+步长"],
                         }
                     )
                     diagnostics["decisionTraces"].append(decision_trace)
@@ -2312,13 +2338,13 @@ def _hydrogen_post_dispatch_plan(
             ):
                 diagnostics["warnings"].append(
                     f"氢能设备{coupling_name}当前氢端、DCAC或平衡设备共同裕度不足以一次达到"
-                    f"启动功率{start_threshold_kw:.3f} kW，已保持停机"
+                    f"最小运行功率+步长{start_threshold_kw:.3f} kW，已保持停机"
                 )
                 decision_trace.update(
                     {
                         "action": "hold",
                         "controlReason": "atomic_start_margin_insufficient",
-                        "blockers": ["氢端、DCAC或平衡设备共同裕度不足以一次达到启机功率"],
+                        "blockers": ["氢端、DCAC或平衡设备共同裕度不足以一次达到最小运行功率+步长"],
                     }
                 )
                 diagnostics["decisionTraces"].append(decision_trace)
@@ -10795,9 +10821,12 @@ def _hydrogen_business_decision_detail(
             "【4. 氢能控制】燃料电池规则：停机态同时满足柴发负载率>"
             f"{fuel_cell_diesel_limit_ratio * 100:.2f}%、电储SOC<"
             f"{settings.fuel_cell_storage_soc_limit * 100:.2f}%、本氢岛氢储SOC>"
-            f"{settings.fuel_cell_hydrogen_storage_soc_upper_limit * 100:.2f}%时启机；运行态氢储SOC>"
-            f"{settings.fuel_cell_hydrogen_storage_soc_lower_limit * 100:.2f}%且其余升功率条件满足时按步长升功率，"
-            "任一反向条件成立则降功率，储氢低压保护优先停机"
+            f"{settings.fuel_cell_hydrogen_storage_soc_upper_limit * 100:.2f}%时启机；"
+            "启机时忽略普通步长限制，直接达到最小运行功率+步长；"
+            f"运行态氢储SOC>{settings.fuel_cell_hydrogen_storage_soc_lower_limit * 100:.2f}%"
+            "且其余升功率条件满足时，升功率时按一个步长增加；"
+            "任一反向条件成立时，降功率时按一个步长降低，低于最小运行功率-步长时停机；"
+            "储氢低压保护优先停机"
         ),
         (
             "【4. 氢能控制】公共输入：柴发预测负载率 "
@@ -14214,7 +14243,8 @@ def calculate_renewable_control_plan(
             f"电储平均SOC<{settings.fuel_cell_storage_soc_limit * 100:.2f}%且本氢岛氢储平均SOC>"
             f"{settings.fuel_cell_hydrogen_storage_soc_upper_limit * 100:.2f}%；运行后以氢储平均SOC>"
             f"{settings.fuel_cell_hydrogen_storage_soc_lower_limit * 100:.2f}%维持升出力条件，"
-            "任一反向条件成立则按燃料电池步长降出力；储氢罐低压保护优先停机"
+            "启机时忽略普通步长限制并直接达到最小运行功率+步长；运行后满足升功率条件则按一个步长增加，"
+            "任一反向条件成立则按一个步长降低，低于最小运行功率-步长时停机；储氢罐低压保护优先停机"
         ),
         operating_mode_detail,
         control_architecture_detail,

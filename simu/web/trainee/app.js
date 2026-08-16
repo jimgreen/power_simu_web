@@ -2610,13 +2610,12 @@ function teacherSnapshotPollAddress(page = currentPageName(), forceStaticKeys = 
   if (pageNeedsCommands(page) && state.snapshot?.command_signature) {
     params.set("after_command_signature", state.snapshot.command_signature);
   }
-  params.set("command_history", pageNeedsCommandHistory(page) ? "1" : "0");
+  params.set("command_history", "0");
   if (pageNeedsMeasurementDelta(page)) {
     params.set("measurement_after_seq", String(state.measurementDeltaSeq || 0));
     params.set("measurement_compact", "1");
   }
-  if (pageNeedsRuntimeLogs(page)) params.set("log_limit", String(snapshotLogLimit(page)));
-  else params.set("logs", "0");
+  params.set("logs", "0");
   params.set("static", "0");
   params.set("static_meta", "0");
   params.set("lite", "1");

@@ -13,6 +13,7 @@ from simu.server import make_http_server
 from simu.service import PolarMicrogridSimulator
 from simu.trainee_data_policy import (
     FLAG_REAL_PRESENT,
+    strip_trainee_remote_details_from_snapshot,
     strip_trainee_truth_from_measurement_delta,
     strip_trainee_truth_from_measurement_history,
     strip_trainee_truth_from_snapshot,
@@ -45,9 +46,28 @@ class TraineeMeasurementVisibilityTest(unittest.TestCase):
             "measurement_history": {
                 "frames": [{"real_values": [10.0], "scada_values": [9.8]}]
             },
+            "runtime_logs": [{"seq": 1, "detail": ["模拟台日志"]}],
+            "runtime_logs_delta": {
+                "items": [{"seq": 2, "detail": ["模拟台增量日志"]}],
+            },
+            "alarms": [{"detail": "模拟台告警明细"}],
+            "warnings": [{"detail": "模拟台告警明细"}],
+            "commands": {
+                "history": [{"source": "teacher-history"}],
+                "effective": [{"source": "teacher-effective"}],
+            },
+            "compute": {
+                "status": "failed",
+                "measurement_frame_stale": True,
+                "error": "solver detail must stay local",
+            },
+            "result": {
+                "solver_info": "failed",
+                "error": "solver detail must stay local",
+            },
         }
 
-        projected = strip_trainee_truth_from_snapshot(copy.deepcopy(snapshot))
+        projected = strip_trainee_remote_details_from_snapshot(copy.deepcopy(snapshot))
 
         self.assertEqual(projected["measurements"]["value_channels"], ["scada"])
         self.assertNotIn("real", projected["measurements"])
@@ -58,9 +78,20 @@ class TraineeMeasurementVisibilityTest(unittest.TestCase):
         self.assertEqual(delta["items"][0]["value"], 9.8)
         self.assertIsNone(delta["rows"][0][1])
         self.assertEqual(delta["rows"][0][5] & FLAG_REAL_PRESENT, 0)
-        history = projected["measurement_history"]
-        self.assertEqual(history["value_channels"], ["scada"])
-        self.assertNotIn("real_values", history["frames"][0])
+        self.assertNotIn("measurement_history", projected)
+        self.assertNotIn("runtime_logs", projected)
+        self.assertNotIn("runtime_logs_delta", projected)
+        self.assertNotIn("alarms", projected)
+        self.assertNotIn("warnings", projected)
+        self.assertEqual(
+            projected["commands"],
+            {"effective": [{"source": "teacher-effective"}]},
+        )
+        self.assertEqual(projected["compute"]["status"], "failed")
+        self.assertTrue(projected["compute"]["measurement_frame_stale"])
+        self.assertNotIn("error", projected["compute"])
+        self.assertEqual(projected["result"]["solver_info"], "failed")
+        self.assertNotIn("error", projected["result"])
 
     def test_individual_delta_and_history_projection_are_scada_only(self):
         delta = strip_trainee_truth_from_measurement_delta(
@@ -74,6 +105,25 @@ class TraineeMeasurementVisibilityTest(unittest.TestCase):
         self.assertEqual(delta["value_channels"], ["scada"])
         self.assertEqual(history["frames"], [{"scada_values": [3.9]}])
         self.assertEqual(history["value_channels"], ["scada"])
+
+    def test_local_trainee_projection_keeps_local_logs_and_scada_history(self):
+        snapshot = {
+            "runtime_logs": [{"seq": 1, "detail": ["学员台本地日志"]}],
+            "commands": {"history": [{"source": "trainee-local"}]},
+            "measurement_history": {
+                "frames": [{"real_values": [4.0], "scada_values": [3.9]}],
+            },
+        }
+
+        projected = strip_trainee_truth_from_snapshot(copy.deepcopy(snapshot))
+
+        self.assertEqual(projected["runtime_logs"], snapshot["runtime_logs"])
+        self.assertEqual(projected["commands"], snapshot["commands"])
+        self.assertEqual(
+            projected["measurement_history"]["frames"],
+            [{"scada_values": [3.9]}],
+        )
+        self.assertEqual(projected["measurement_history"]["value_channels"], ["scada"])
 
     def test_scada_only_delta_replaces_any_previous_truth_channel(self):
         definitions = [

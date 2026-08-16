@@ -9,7 +9,18 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, ContextManager, Dict, Iterator, Mapping, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Callable,
+    ContextManager,
+    Dict,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
@@ -30,8 +41,9 @@ try:
     )
     from .measurement_history import MeasurementHistoryStore
     from .trainee_data_policy import (
+        project_trainee_interstation_snapshot,
+        strip_trainee_remote_details_from_snapshot,
         strip_trainee_truth_from_measurement_history,
-        strip_trainee_truth_from_snapshot,
     )
 except ImportError:  # pragma: no cover - legacy package compatibility.
     from command_frame import CommandFrameMismatchError, command_payload_signature
@@ -49,8 +61,9 @@ except ImportError:  # pragma: no cover - legacy package compatibility.
     )
     from measurement_history import MeasurementHistoryStore
     from trainee_data_policy import (
+        project_trainee_interstation_snapshot,
+        strip_trainee_remote_details_from_snapshot,
         strip_trainee_truth_from_measurement_history,
-        strip_trainee_truth_from_snapshot,
     )
 
 
@@ -59,10 +72,6 @@ CONTROL_STATIC_FIELDS = ("definitions", "settings", "device_parameters", "curves
 
 class TraineeExchangeLifecycleError(RuntimeError):
     """Raised when an exchange request outlives its captured service generation."""
-
-
-class RuntimeLogDeltaError(RuntimeError):
-    """Raised when a remote runtime-log delta cannot be merged safely."""
 
 
 def _request_json(
@@ -113,84 +122,6 @@ def _url_with_query(path: str, **overrides: Any) -> str:
             parsed.fragment,
         )
     )
-
-
-def _runtime_log_seq(row: Mapping[str, Any]) -> int:
-    try:
-        seq = int(row.get("seq", 0))
-    except (TypeError, ValueError) as exc:
-        raise RuntimeLogDeltaError("运行日志增量包含无效序号") from exc
-    if seq <= 0:
-        raise RuntimeLogDeltaError("运行日志增量包含无效序号")
-    return seq
-
-
-def _runtime_log_cursor(rows: Any) -> int:
-    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes, bytearray)):
-        return 0
-    cursor = 0
-    for row in rows:
-        if not isinstance(row, Mapping):
-            continue
-        try:
-            cursor = max(cursor, int(row.get("seq", 0)))
-        except (TypeError, ValueError):
-            continue
-    return max(0, cursor)
-
-
-def _merge_runtime_log_delta(
-    previous_rows: Any,
-    payload: Mapping[str, Any],
-    *,
-    after_seq: int,
-    limit: int,
-) -> Tuple[list[Dict[str, Any]], int]:
-    raw_items = payload.get("items", payload.get("logs", []))
-    if not isinstance(raw_items, Sequence) or isinstance(
-        raw_items,
-        (str, bytes, bytearray),
-    ):
-        raise RuntimeLogDeltaError("运行日志增量不是有效数组")
-    try:
-        latest_seq = max(0, int(payload.get("latest_seq", after_seq)))
-    except (TypeError, ValueError) as exc:
-        raise RuntimeLogDeltaError("运行日志增量包含无效最新序号") from exc
-    reset = bool(payload.get("reset"))
-    if not reset and latest_seq < after_seq:
-        raise RuntimeLogDeltaError("运行日志增量序号回退但未声明重置")
-
-    rows_by_seq: Dict[int, Dict[str, Any]] = {}
-    if not reset and isinstance(previous_rows, Sequence) and not isinstance(
-        previous_rows,
-        (str, bytes, bytearray),
-    ):
-        for row in previous_rows:
-            if not isinstance(row, Mapping):
-                continue
-            try:
-                seq = _runtime_log_seq(row)
-            except RuntimeLogDeltaError:
-                continue
-            rows_by_seq[seq] = dict(row)
-
-    received_max = 0
-    for row in raw_items:
-        if not isinstance(row, Mapping):
-            raise RuntimeLogDeltaError("运行日志增量项目不是对象")
-        seq = _runtime_log_seq(row)
-        if seq > latest_seq:
-            raise RuntimeLogDeltaError("运行日志增量项目序号超过最新序号")
-        rows_by_seq[seq] = dict(row)
-        received_max = max(received_max, seq)
-
-    capped_limit = max(1, int(limit))
-    merged = [rows_by_seq[seq] for seq in sorted(rows_by_seq)][-capped_limit:]
-    if reset:
-        next_seq = received_max if received_max else latest_seq
-    else:
-        next_seq = max(after_seq, received_max)
-    return merged, max(0, next_seq)
 
 
 @dataclass(frozen=True)
@@ -314,7 +245,6 @@ class _ExchangeState:
     connection_signature: Tuple[Any, ...] = ()
     measurement_delta_seq: int = 0
     remote_measurement_delta_seq: int = 0
-    remote_runtime_log_seq: int = 0
     remote_command_signature: str = ""
     remote_device_runtime_signature: str = ""
     measurement_delta_state: Dict[str, Dict[str, Any]] = field(default_factory=dict)
@@ -513,6 +443,124 @@ def _merge_remote_runtime_devices_read_only(local_devices: Any, remote_devices: 
                     local_device[field_name] = remote_device[field_name]
         merged_devices.append(local_device)
     return merged_devices
+
+
+def _measurement_runtime_key(row: Mapping[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(row.get("runtime_dev_type", row.get("dev_type", ""))).strip(),
+        str(
+            row.get(
+                "runtime_dev_name",
+                row.get("dev_name", row.get("name", "")),
+            )
+        ).strip(),
+        str(row.get("meas_type", "")).strip().upper(),
+    )
+
+
+def _hydrate_measurement_backed_device_runtime(
+    devices: Any,
+    device_states: Any,
+    measurements: Any,
+) -> None:
+    """Restore RUN_STAT, STATUS, and SOC from the already accepted SCADA frame."""
+
+    if not isinstance(measurements, Mapping):
+        return
+    definitions = [
+        row
+        for row in measurements.get("definitions", []) or []
+        if isinstance(row, Mapping)
+    ]
+    measurement_keys = {_measurement_runtime_key(row) for row in definitions}
+    scada_by_key = {
+        _measurement_runtime_key(row): row
+        for row in measurements.get("scada", []) or []
+        if isinstance(row, Mapping)
+    }
+
+    def hydrate_row(row: MutableMapping[str, Any], measurement_type: str, field_name: str) -> None:
+        key = (*_device_key(row), measurement_type)
+        if key not in measurement_keys:
+            return
+        measurement = scada_by_key.get(key)
+        valid = (
+            isinstance(measurement, Mapping)
+            and int(float(measurement.get("valid", 0) or 0)) == 1
+            and measurement.get("value") is not None
+        )
+        if valid:
+            row[field_name] = measurement.get("value")
+        elif measurement_type in {"RUN_STAT", "STATUS"}:
+            row[field_name] = 0
+        else:
+            row.pop(field_name, None)
+
+    if isinstance(devices, Sequence) and not isinstance(devices, (str, bytes)):
+        for row in devices:
+            if not isinstance(row, MutableMapping):
+                continue
+            for measurement_type, field_name in (
+                ("RUN_STAT", "run_stat"),
+                ("STATUS", "status"),
+                ("SOC", "soc_curr"),
+            ):
+                hydrate_row(row, measurement_type, field_name)
+    if isinstance(device_states, Sequence) and not isinstance(device_states, (str, bytes)):
+        for row in device_states:
+            if isinstance(row, MutableMapping):
+                hydrate_row(row, "RUN_STAT", "run_stat")
+
+
+def _restore_local_runtime_derivatives(service: Any, snapshot: MutableMapping[str, Any]) -> None:
+    """Rebuild fields that do not need to cross the simulator/trainee boundary."""
+
+    clock = snapshot.get("clock") if isinstance(snapshot.get("clock"), Mapping) else {}
+    model = dict(service.model_info())
+    if clock.get("state") is not None:
+        model["clock_state"] = clock.get("state")
+    snapshot["model"] = model
+
+    parameters = dict(service.system_parameters())
+    clock_parameter_fields = {
+        "clock_speed": "speed",
+        "clock_step_seconds": "step_seconds",
+        "clock_step_minutes": "step_minutes",
+        "effective_step_seconds": "effective_step_seconds",
+        "effective_step_minutes": "effective_step_minutes",
+    }
+    for parameter_name, clock_name in clock_parameter_fields.items():
+        if clock.get(clock_name) is not None:
+            parameters[parameter_name] = clock.get(clock_name)
+    snapshot["system_parameters"] = parameters
+    snapshot["simulation_timing"] = {
+        "simulation_step_seconds": float(
+            clock.get("effective_step_seconds", parameters.get("effective_step_seconds", 0.0))
+            or 0.0
+        ),
+        "simulation_period_seconds": float(
+            parameters.get("compute_interval_seconds", getattr(service, "compute_interval_seconds", 0.0))
+            or 0.0
+        ),
+    }
+    snapshot["curve_boundary"] = service.curve_boundary(
+        absolute_minute=clock.get("absolute_minute", clock.get("minute", 0.0))
+    )
+
+    measurements = snapshot.get("measurements")
+    if not isinstance(measurements, Mapping):
+        return
+    summary = dict(service._summary(measurements))
+    compute = snapshot.get("compute") if isinstance(snapshot.get("compute"), Mapping) else {}
+    compute_status = str(compute.get("status", "") or "").strip().lower()
+    power_flow_alarm_count = int(compute_status in {"failed", "timeout"})
+    summary["power_flow_alarm_count"] = power_flow_alarm_count
+    summary["alarm_count"] = int(summary.get("measurement_alarm_count", 0) or 0) + power_flow_alarm_count
+    commands = snapshot.get("commands")
+    effective_commands = commands.get("effective", []) if isinstance(commands, Mapping) else []
+    summary["command_count"] = len(effective_commands) if isinstance(effective_commands, Sequence) else 0
+    snapshot["summary"] = summary
+    snapshot["power_summary"] = service._latest_power_summary(measurements)
 
 
 def _calculation_snapshot_projection(
@@ -1040,7 +1088,6 @@ class TraineeRealtimeExchange:
         request_duration_seconds: Optional[float] = None,
         response_size_bytes: Optional[int] = None,
         remote_measurement_delta_seq: Optional[int] = None,
-        remote_runtime_log_seq: Optional[int] = None,
         remote_command_signature: Optional[str] = None,
         remote_device_runtime_signature: Optional[str] = None,
         accepted_measurement_frame: Optional[Mapping[str, Any]] = None,
@@ -1051,7 +1098,7 @@ class TraineeRealtimeExchange:
         history_limit = max(1, int(runtime_settings["measurement_delta_history_limit"]))
         published_at = float(received_at if received_at is not None else time.time())
         runtime = dict(snapshot) if snapshot_owned else copy.deepcopy(dict(snapshot))
-        strip_trainee_truth_from_snapshot(runtime)
+        strip_trainee_remote_details_from_snapshot(runtime)
         remote_measurements = runtime.get("measurements")
         if isinstance(remote_measurements, Mapping) and not measurement_frame_unchanged:
             if snapshot_owned:
@@ -1171,8 +1218,6 @@ class TraineeRealtimeExchange:
                 state.last_response_size_bytes = max(0, int(response_size_bytes))
             if remote_measurement_delta_seq is not None:
                 state.remote_measurement_delta_seq = max(0, int(remote_measurement_delta_seq))
-            if remote_runtime_log_seq is not None:
-                state.remote_runtime_log_seq = max(0, int(remote_runtime_log_seq))
             if remote_command_signature is not None:
                 state.remote_command_signature = str(remote_command_signature)
             if remote_device_runtime_signature is not None:
@@ -1532,7 +1577,6 @@ class TraineeRealtimeExchange:
             refresh_total_duration = state.last_refresh_total_duration_seconds
             response_size = state.last_response_size_bytes
             remote_measurement_seq = state.remote_measurement_delta_seq
-            remote_runtime_log_seq = state.remote_runtime_log_seq
             remote_command_signature = state.remote_command_signature
             remote_device_runtime_signature = state.remote_device_runtime_signature
             accepted_measurement_frames = state.accepted_measurement_frame_count
@@ -1625,7 +1669,6 @@ class TraineeRealtimeExchange:
             "refreshTotalDurationSeconds": refresh_total_duration,
             "responseSizeBytes": response_size,
             "remoteMeasurementSeq": remote_measurement_seq,
-            "remoteRuntimeLogSeq": remote_runtime_log_seq,
             "remoteCommandSignature": remote_command_signature,
             "remoteDeviceRuntimeSignature": remote_device_runtime_signature,
             "acceptedMeasurementFrameCount": accepted_measurement_frames,
@@ -2232,7 +2275,6 @@ class TraineeRealtimeExchange:
             state.last_error = ""
             state.measurement_delta_seq = 0
             state.remote_measurement_delta_seq = 0
-            state.remote_runtime_log_seq = 0
             state.remote_command_signature = ""
             state.remote_device_runtime_signature = ""
             state.measurement_delta_state = {}
@@ -2354,17 +2396,12 @@ class TraineeRealtimeExchange:
                 )
             with state.lock:
                 remote_measurement_seq = state.remote_measurement_delta_seq
-                remote_runtime_log_seq = state.remote_runtime_log_seq
                 remote_command_signature = state.remote_command_signature
                 remote_device_runtime_signature = state.remote_device_runtime_signature
             snapshot_path = _url_with_query(
                 connection["snapshot_path"],
                 lite=1,
-                logs=1,
-                log_limit=max(5, int(runtime_settings["runtime_log_page_size"])),
-                runtime_log_after_seq=(
-                    remote_runtime_log_seq if remote_runtime_log_seq > 0 else None
-                ),
+                logs=0,
                 after_command_signature=remote_command_signature or None,
                 commands=1,
                 command_history=0,
@@ -2441,11 +2478,10 @@ class TraineeRealtimeExchange:
             except (TypeError, ValueError):
                 response_size = 0
             current_payload = copy.deepcopy(dict(current))
-            strip_trainee_truth_from_snapshot(current_payload)
+            project_trainee_interstation_snapshot(current_payload)
             processing_started = time.monotonic()
             embedded_delta = current_payload.pop("measurement_delta", None)
             device_runtime_frame = current_payload.pop("device_runtime", None)
-            runtime_logs_delta = current_payload.pop("runtime_logs_delta", None)
             advertised_command_signature = str(
                 current_payload.pop("command_signature", "") or ""
             ).strip()
@@ -2453,14 +2489,35 @@ class TraineeRealtimeExchange:
                 current_payload.pop("device_runtime_signature", "") or ""
             ).strip()
             next_remote_measurement_seq: Optional[int] = None
-            next_remote_runtime_log_seq: Optional[int] = None
             next_remote_command_signature: Optional[str] = None
             next_remote_device_runtime_signature: Optional[str] = None
             accepted_measurement_frame: Optional[Mapping[str, Any]] = None
             measurement_frame_unchanged = False
             try:
-                if runtime_logs_delta is not None and not isinstance(runtime_logs_delta, Mapping):
-                    raise RuntimeLogDeltaError("运行日志增量不是有效对象")
+                with state.lock:
+                    previous_measurements = (
+                        (state.runtime_snapshot or {}).get("measurements", {})
+                    )
+                if not isinstance(previous_measurements, Mapping):
+                    previous_measurements = {}
+                definitions = previous_measurements.get("definitions", [])
+                if not definitions:
+                    local = service.snapshot(
+                        include_static=True,
+                        include_runtime_logs=False,
+                        include_measurements=False,
+                        include_static_meta=False,
+                        include_devices=False,
+                        include_device_states=False,
+                        include_commands=False,
+                        static_fields=["definitions"],
+                    )
+                    definitions = (
+                        local.get("definitions", {}).get("measurement", [])
+                        if isinstance(local.get("definitions"), Mapping)
+                        else []
+                    )
+                runtime_definitions = service.measurement_runtime_definitions(definitions)
                 if isinstance(device_runtime_frame, Mapping):
                     frame_signature = str(
                         device_runtime_frame.get("runtime_signature", "") or ""
@@ -2479,6 +2536,7 @@ class TraineeRealtimeExchange:
                         service.devices(),
                         service.device_states(),
                         device_runtime_frame,
+                        measurement_definitions=runtime_definitions,
                     )
                     next_remote_device_runtime_signature = (
                         advertised_device_runtime_signature or frame_signature
@@ -2508,38 +2566,17 @@ class TraineeRealtimeExchange:
                             "device runtime signature changed without frame content"
                         )
                 if isinstance(embedded_delta, Mapping):
-                    with state.lock:
-                        previous_measurements = (
-                            (state.runtime_snapshot or {}).get("measurements", {})
-                        )
-                    definitions = previous_measurements.get("definitions", [])
-                    if not definitions:
-                        local = service.snapshot(
-                            include_static=True,
-                            include_runtime_logs=False,
-                            include_measurements=False,
-                            include_static_meta=False,
-                            include_devices=False,
-                            include_device_states=False,
-                            include_commands=False,
-                            static_fields=["definitions"],
-                        )
-                        definitions = (
-                            local.get("definitions", {}).get("measurement", [])
-                            if isinstance(local.get("definitions"), Mapping)
-                            else []
-                        )
                     current_payload["measurements"] = apply_measurement_delta(
                         previous_measurements,
-                        definitions,
+                        runtime_definitions,
                         embedded_delta,
                         expected_definition_signature=(
                             self._measurement_definition_signature_for_service(
                                 service,
                                 state,
-                                definitions,
+                                runtime_definitions,
                             )
-                            if definitions
+                            if runtime_definitions
                             else None
                         ),
                     )
@@ -2554,24 +2591,6 @@ class TraineeRealtimeExchange:
                         accepted_measurement_frame = embedded_delta
                     elif str(embedded_delta.get("encoding", "")) == "measurement-arrays-v1":
                         measurement_frame_unchanged = True
-                if isinstance(runtime_logs_delta, Mapping):
-                    with state.lock:
-                        previous_runtime_logs = list(
-                            (state.runtime_snapshot or {}).get("runtime_logs", [])
-                        )
-                    (
-                        current_payload["runtime_logs"],
-                        next_remote_runtime_log_seq,
-                    ) = _merge_runtime_log_delta(
-                        previous_runtime_logs,
-                        runtime_logs_delta,
-                        after_seq=remote_runtime_log_seq,
-                        limit=max(5, int(runtime_settings["runtime_log_page_size"])),
-                    )
-                elif "runtime_logs" in current_payload:
-                    next_remote_runtime_log_seq = _runtime_log_cursor(
-                        current_payload.get("runtime_logs")
-                    )
                 commands_payload = current_payload.get("commands")
                 if advertised_command_signature:
                     if isinstance(commands_payload, Mapping):
@@ -2592,11 +2611,16 @@ class TraineeRealtimeExchange:
                     next_remote_command_signature = advertised_command_signature
                 elif isinstance(commands_payload, Mapping):
                     next_remote_command_signature = command_payload_signature(commands_payload)
+                _hydrate_measurement_backed_device_runtime(
+                    current_payload.get("devices"),
+                    current_payload.get("device_states"),
+                    current_payload.get("measurements"),
+                )
+                _restore_local_runtime_derivatives(service, current_payload)
             except (
                 CommandFrameMismatchError,
                 MeasurementArrayMismatchError,
                 DeviceRuntimeFrameMismatchError,
-                RuntimeLogDeltaError,
             ) as exc:
                 self._commit_refresh_failure_for_service(
                     service,
@@ -2635,7 +2659,6 @@ class TraineeRealtimeExchange:
                 request_duration_seconds=request_duration,
                 response_size_bytes=response_size,
                 remote_measurement_delta_seq=next_remote_measurement_seq,
-                remote_runtime_log_seq=next_remote_runtime_log_seq,
                 remote_command_signature=next_remote_command_signature,
                 remote_device_runtime_signature=next_remote_device_runtime_signature,
                 accepted_measurement_frame=accepted_measurement_frame,
@@ -2732,7 +2755,6 @@ class TraineeRealtimeExchange:
             state.last_error = ""
             state.measurement_delta_seq = 0
             state.remote_measurement_delta_seq = 0
-            state.remote_runtime_log_seq = 0
             state.remote_command_signature = ""
             state.remote_device_runtime_signature = ""
             state.measurement_delta_state = {}
@@ -2775,7 +2797,6 @@ class TraineeRealtimeExchange:
             state.last_error = ""
             state.measurement_delta_seq = 0
             state.remote_measurement_delta_seq = 0
-            state.remote_runtime_log_seq = 0
             state.remote_command_signature = ""
             state.remote_device_runtime_signature = ""
             state.measurement_delta_state = {}

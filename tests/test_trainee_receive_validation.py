@@ -422,17 +422,16 @@ def test_frozen_trainee_bootstraps_missing_page_snapshot_before_short_circuit():
     )
 
 
-def test_trainee_receive_overview_keeps_teacher_runtime_logs_for_power_flow():
+def test_trainee_receive_poll_omits_teacher_logs_and_command_history():
     script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
     block = script.split("function teacherSnapshotPollAddress(page = currentPageName(), forceStaticKeys = null)", 1)[1].split(
         "function measurementDeltaPathFromSnapshotPath",
         1,
     )[0]
 
-    assert "function pageNeedsRuntimeLogs" in script
-    assert 'return ["overview", "history"].includes(page);' in script
-    assert "if (pageNeedsRuntimeLogs(page)) params.set(\"log_limit\", String(snapshotLogLimit(page)));" in block
-    assert 'else params.set("logs", "0");' in block
+    assert 'params.set("logs", "0");' in block
+    assert "log_limit" not in block
+    assert 'params.set("command_history", "0");' in block
     assert 'params.set("measurements", "0");' in block
     assert 'return `/api/trainee/snapshot?${params.toString()}`;' in block
 

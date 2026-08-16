@@ -57,9 +57,15 @@ except ImportError:  # pragma: no cover - direct module execution.
     from simu.command_frame import command_payload_signature
 
 try:
-    from .device_runtime_frame import compact_device_runtime_frame
+    from .device_runtime_frame import (
+        compact_device_runtime_frame,
+        compact_device_runtime_supplement_frame,
+    )
 except ImportError:  # pragma: no cover - direct module execution.
-    from simu.device_runtime_frame import compact_device_runtime_frame
+    from simu.device_runtime_frame import (
+        compact_device_runtime_frame,
+        compact_device_runtime_supplement_frame,
+    )
 
 try:
     from .definition_editing import (
@@ -94,6 +100,8 @@ try:
     from .simulator_proxy import make_simulator_proxy_server
     from .trainee_exchange import TraineeExchangeLifecycleError, TraineeRealtimeExchange
     from .trainee_data_policy import (
+        project_trainee_interstation_snapshot,
+        strip_trainee_remote_details_from_snapshot,
         strip_trainee_truth_from_measurement_delta,
         strip_trainee_truth_from_measurement_history,
         strip_trainee_truth_from_measurements,
@@ -132,6 +140,8 @@ except ImportError:  # pragma: no cover - legacy package compatibility.
     from simulator_proxy import make_simulator_proxy_server
     from trainee_exchange import TraineeExchangeLifecycleError, TraineeRealtimeExchange
     from trainee_data_policy import (
+        project_trainee_interstation_snapshot,
+        strip_trainee_remote_details_from_snapshot,
         strip_trainee_truth_from_measurement_delta,
         strip_trainee_truth_from_measurement_history,
         strip_trainee_truth_from_measurements,
@@ -3270,6 +3280,7 @@ def make_http_server(
                 self._send_json(target.manual_definition_changes())
             elif path == "/api/snapshot":
                 lite = self._truthy_query("lite")
+                trainee_view = self._truthy_query("trainee_view")
                 compact_device_runtime = self._truthy_query("device_runtime_compact")
                 include_static, static_fields = self._static_query(default_include_static=not lite)
                 default_log_limit = 20 if lite else 300
@@ -3304,6 +3315,12 @@ def make_http_server(
                     include_command_history=not self._falsey_query("command_history"),
                 )
                 measurement_after_seq = self._optional_int_query("measurement_after_seq")
+                periodic_trainee_frame = bool(
+                    trainee_view
+                    and lite
+                    and measurement_after_seq is not None
+                    and compact_device_runtime
+                )
                 if measurement_after_seq is not None:
                     snapshot_payload["measurement_delta"] = target.measurement_delta(
                         after_seq=max(0, measurement_after_seq),
@@ -3314,6 +3331,10 @@ def make_http_server(
                         after_seq=max(0, runtime_log_after_seq),
                         limit=log_limit,
                     )
+                if trainee_view:
+                    strip_trainee_remote_details_from_snapshot(snapshot_payload)
+                elif role == "trainee":
+                    strip_trainee_truth_from_snapshot(snapshot_payload)
                 commands_payload = snapshot_payload.get("commands")
                 if isinstance(commands_payload, Mapping):
                     command_signature = command_payload_signature(commands_payload)
@@ -3321,15 +3342,24 @@ def make_http_server(
                     if after_command_signature == command_signature:
                         snapshot_payload.pop("commands", None)
                 if compact_device_runtime:
-                    device_runtime_frame = target.device_runtime_frame()
+                    if periodic_trainee_frame:
+                        measurement_definitions = target.measurements().get("definitions", [])
+                        device_runtime_frame = compact_device_runtime_supplement_frame(
+                            target.devices(),
+                            target.device_states(),
+                            target.measurement_runtime_definitions(measurement_definitions),
+                            definition_revision=target.definition_snapshot.revision,
+                        )
+                    else:
+                        device_runtime_frame = target.device_runtime_frame()
                     device_runtime_signature = str(
                         device_runtime_frame.get("runtime_signature", "")
                     ).strip()
                     snapshot_payload["device_runtime_signature"] = device_runtime_signature
                     if after_device_runtime_signature != device_runtime_signature:
                         snapshot_payload["device_runtime"] = device_runtime_frame
-                if role == "trainee" or self._truthy_query("trainee_view"):
-                    strip_trainee_truth_from_snapshot(snapshot_payload)
+                if periodic_trainee_frame:
+                    project_trainee_interstation_snapshot(snapshot_payload)
                 self._send_json(snapshot_payload)
             elif path == "/api/runtime-logs":
                 self._send_json(
@@ -3463,6 +3493,7 @@ def make_http_server(
                             target.model_id,
                             **delta_options,
                         )
+                strip_trainee_remote_details_from_snapshot(snapshot_payload)
                 trainee_snapshot_query = parse_qs(urlparse(self.path).query)
                 after_command_signature = str(
                     (trainee_snapshot_query.get("after_command_signature") or [""])[0]
@@ -3493,7 +3524,6 @@ def make_http_server(
                     snapshot_payload["device_runtime_signature"] = device_runtime_signature
                     if after_device_runtime_signature != device_runtime_signature:
                         snapshot_payload["device_runtime"] = device_runtime_frame
-                strip_trainee_truth_from_snapshot(snapshot_payload)
                 self._send_json(snapshot_payload)
             elif path == "/api/trainee/measurements/delta":
                 if exchange is None:

@@ -206,7 +206,9 @@ class IncrementalRuntimeDataApiTest(unittest.TestCase):
         self.addCleanup(workspace.cleanup)
         service.latest_real_rows = [list(row) for row in service.measurement_rows]
         service.latest_scada_rows = [list(row) for row in service.measurement_rows]
-        definitions = service.measurements()["definitions"]
+        definitions = service.measurement_runtime_definitions(
+            service.measurements()["definitions"]
+        )
         compact = service.measurement_delta(after_seq=0, compact=True)
         compact["count"] += 1
 
@@ -589,6 +591,172 @@ class IncrementalRuntimeDataApiTest(unittest.TestCase):
         self.assertEqual(len(decoded_devices), len(full_devices))
         self.assertEqual(len(decoded_states), len(full_states))
         self.assertLess(compact_size, full_size * 0.25)
+
+    def test_trainee_view_uses_measurement_deduplicated_device_supplement_and_slim_envelope(self):
+        from simu.server import make_http_server
+        from simu.trainee_data_policy import INTERSTATION_SNAPSHOT_FIELDS
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        definitions = service.measurements()["definitions"]
+        measurement_keys = {
+            (
+                str(row.get("runtime_dev_type", row.get("dev_type", ""))).strip(),
+                str(row.get("runtime_dev_name", row.get("dev_name", ""))).strip(),
+                str(row.get("meas_type", "")).strip().upper(),
+            )
+            for row in definitions
+        }
+        devices_by_position = sorted(
+            service.devices(),
+            key=lambda row: (
+                str(row.get("dev_type", "")).strip(),
+                str(row.get("dev_name", row.get("name", ""))).strip(),
+            ),
+        )
+        states_by_position = sorted(
+            service.device_states(),
+            key=lambda row: (
+                str(row.get("dev_type", "")).strip(),
+                str(row.get("dev_name", row.get("name", ""))).strip(),
+            ),
+        )
+        server = make_http_server(("127.0.0.1", 0), service, role="simulator")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        port = server.server_address[1]
+        path = (
+            "/api/snapshot?trainee_view=1&lite=1&logs=0&measurements=0"
+            "&measurement_after_seq=0&measurement_compact=1"
+            "&commands=1&command_history=0&static=0&static_meta=0"
+            "&devices=0&device_states=0&device_runtime_compact=1"
+        )
+        with urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertLessEqual(set(payload), set(INTERSTATION_SNAPSHOT_FIELDS))
+        for redundant_field in (
+            "model",
+            "summary",
+            "power_summary",
+            "curve_boundary",
+            "system_parameters",
+            "simulation_timing",
+            "result",
+        ):
+            self.assertNotIn(redundant_field, payload)
+        for transport_only_compute_field in (
+            "mode",
+            "http_pid",
+            "worker_pid",
+            "compute_ms",
+            "round_trip_ms",
+            "resident_model",
+        ):
+            self.assertNotIn(transport_only_compute_field, payload.get("compute", {}))
+        self.assertEqual(
+            payload["device_runtime"]["encoding"],
+            "device-runtime-supplement-arrays-v1",
+        )
+        frame = payload["device_runtime"]
+        for redundant_field in (
+            "device_run_stats",
+            "device_statuses",
+            "device_soc_present",
+            "state_run_stats",
+        ):
+            self.assertNotIn(redundant_field, frame)
+        for position in frame["device_run_stat_indices"]:
+            row = devices_by_position[position]
+            self.assertNotIn(
+                (row["dev_type"], row["dev_name"], "RUN_STAT"),
+                measurement_keys,
+            )
+        for position in frame["device_status_indices"]:
+            row = devices_by_position[position]
+            self.assertNotIn(
+                (row["dev_type"], row["dev_name"], "STATUS"),
+                measurement_keys,
+            )
+        for position in frame["device_soc_indices"]:
+            row = devices_by_position[position]
+            self.assertNotIn(
+                (row["dev_type"], row["dev_name"], "SOC"),
+                measurement_keys,
+            )
+        for position in frame["state_run_stat_indices"]:
+            row = states_by_position[position]
+            self.assertNotIn(
+                (row["dev_type"], row["dev_name"], "RUN_STAT"),
+                measurement_keys,
+            )
+
+    def test_device_supplement_signature_ignores_measurement_backed_run_status_and_soc(self):
+        from simu.device_runtime_frame import compact_device_runtime_supplement_frame
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        definitions = service.measurement_runtime_definitions(
+            service.measurements()["definitions"]
+        )
+        devices = service.devices()
+        states = service.device_states()
+        measurement_keys = {
+            (
+                str(row.get("runtime_dev_type", row.get("dev_type", ""))).strip(),
+                str(row.get("runtime_dev_name", row.get("dev_name", ""))).strip(),
+                str(row.get("meas_type", "")).strip().upper(),
+            )
+            for row in definitions
+        }
+        first = compact_device_runtime_supplement_frame(
+            devices,
+            states,
+            definitions,
+            definition_revision=service.definition_snapshot.revision,
+        )
+        changed = copy.deepcopy(devices)
+        run_device = next(
+            row
+            for row in changed
+            if (
+                str(row.get("dev_type", "")),
+                str(row.get("dev_name", "")),
+                "RUN_STAT",
+            )
+            in measurement_keys
+        )
+        run_device["run_stat"] = 1 - int(run_device.get("run_stat", 0) or 0)
+        soc_device = next(
+            row
+            for row in changed
+            if (
+                str(row.get("dev_type", "")),
+                str(row.get("dev_name", "")),
+                "SOC",
+            )
+            in measurement_keys
+        )
+        soc_device["soc_curr"] = 0.123
+        second = compact_device_runtime_supplement_frame(
+            changed,
+            states,
+            definitions,
+            definition_revision=service.definition_snapshot.revision,
+        )
+
+        self.assertEqual(second["runtime_signature"], first["runtime_signature"])
+        changed[0]["mode"] = "changed-mode"
+        third = compact_device_runtime_supplement_frame(
+            changed,
+            states,
+            definitions,
+            definition_revision=service.definition_snapshot.revision,
+        )
+        self.assertNotEqual(third["runtime_signature"], first["runtime_signature"])
 
     def test_snapshot_omits_unchanged_compact_device_runtime_after_signature_cursor(self):
         from simu.server import make_http_server

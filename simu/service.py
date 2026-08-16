@@ -1236,6 +1236,7 @@ class PolarMicrogridSimulator:
         self.latest_result: Dict[str, Any] = {}
         self.latest_measurements: Dict[str, Any] = {}
         self.latest_measurement_clock: Dict[str, Any] = {}
+        self._automatic_runtime_state_invalidated = False
         self.latest_model_book: Optional[EBook] = None
         self.latest_device_states: List[Dict[str, Any]] = []
         self.latest_compute: Dict[str, Any] = {
@@ -8646,6 +8647,70 @@ class PolarMicrogridSimulator:
                 "modes": len(self.local_settings.get("modes", [])),
             }
 
+    def _invalidate_automatic_runtime_state_for_simulation_reset(self) -> None:
+        """Drop the completed automatic frame while preserving manual definitions and controls."""
+
+        # Keep the current, possibly manually edited definition rows available to
+        # clients, but detach every calculated value from the new lifecycle.
+        current_measurements = self.measurements()
+        definitions = [
+            dict(row)
+            for row in current_measurements.get("definitions", [])
+            if isinstance(row, Mapping)
+        ]
+        self.latest_real_rows = []
+        self.latest_scada_rows = []
+        self._automatic_runtime_state_invalidated = True
+        self.latest_measurements = {
+            "definitions": definitions,
+            "real": [],
+            "scada": [],
+        }
+        self.latest_measurement_clock = {}
+        self.latest_result = {}
+        self.latest_model_book = None
+        self.latest_device_states = []
+        self._last_scada_values = {}
+        self._latest_power_summary_cache_key = None
+        self._latest_power_summary_cache_value = None
+        self._device_runtime_frame_cache_key = None
+        self._device_runtime_frame_cache_value = None
+        self._measurement_history.clear()
+
+        # Keep the sequence monotonic across a same-service clock reset.  The
+        # empty history then forces every cursor from the previous lifecycle to
+        # receive a full reset frame instead of accidentally matching by seq.
+        self._measurement_delta_seq += 1
+        self._measurement_delta_state = self._measurement_delta_current_items(
+            self.latest_measurements,
+            measurement_clock=self.clock.as_dict(),
+        )
+        self._measurement_delta_history = []
+        self._measurement_delta_definition_signature = measurement_definition_signature(
+            definitions
+        )
+        self._measurement_delta_definition_count = len(definitions)
+        self._measurement_delta_definition_revision = self.definition_snapshot.revision
+        self._measurement_delta_step_count = self.clock.step_count
+        self._measurement_delta_runtime_marker = self._measurement_delta_runtime_state_marker()
+
+        compute = dict(self.latest_compute)
+        self.latest_compute = {
+            "mode": str(compute.get("mode", "embedded")),
+            "http_pid": int(compute.get("http_pid", os.getpid()) or os.getpid()),
+            "worker_pid": int(compute.get("worker_pid", 0) or 0),
+            "compute_ms": 0.0,
+            "round_trip_ms": 0.0,
+            "status": "idle",
+            "resident_model": bool(compute.get("resident_model", self.kernel_runner is None)),
+        }
+
+        for path in (self.files["real"], self.files["scada"]):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
     def control_clock(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
         with self.lock:
             action = str(payload.get("action", "")).lower()
@@ -8770,8 +8835,7 @@ class PolarMicrogridSimulator:
                 self._reset_storage_soc_to_initial()
                 self._reset_hydrogen_storage_state_to_initial()
             if history_reset_requested:
-                self._measurement_history.clear()
-                self.latest_measurement_clock = {}
+                self._invalidate_automatic_runtime_state_for_simulation_reset()
             if action in ("start", "stop") or commands_cleared or time_reset_requested:
                 self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
             if action == "step":
@@ -8898,6 +8962,7 @@ class PolarMicrogridSimulator:
                 self._store_kernel_measurement_rows(kernel_result)
                 self._apply_measurement_faults(minute, absolute_minute)
                 self._apply_measurement_statuses(minute, absolute_minute)
+                self._automatic_runtime_state_invalidated = False
                 self.latest_measurements = self.measurements()
                 measurement_updated_at = time.time()
                 measurement_clock = self.clock.as_dict()
@@ -8924,6 +8989,7 @@ class PolarMicrogridSimulator:
                 self.clock.absolute_minute = round(next_absolute_minute, 9)
                 self.clock.minute = self.clock.absolute_minute % 1440.0
                 self.clock.step_count += 1
+                self.clock.updated_at = measurement_updated_at
                 if crossed_cycle_start:
                     self._reset_storage_soc_to_initial()
                     self._reset_hydrogen_storage_state_to_initial()
@@ -8955,17 +9021,18 @@ class PolarMicrogridSimulator:
                             level="ok",
                             simu_time=minute_to_time(self.clock.minute),
                         )
-                self.clock.updated_at = measurement_updated_at
-                self._refresh_measurement_delta_state(
-                    measurements=self.latest_measurements,
-                    measurement_clock=measurement_clock,
-                )
-                self._measurement_delta_step_count = self.clock.step_count
-                self._measurement_history.append(
-                    measurement_clock,
-                    self.latest_measurements,
-                    definition_revision=self.definition_snapshot.revision,
-                )
+                    self._invalidate_automatic_runtime_state_for_simulation_reset()
+                else:
+                    self._refresh_measurement_delta_state(
+                        measurements=self.latest_measurements,
+                        measurement_clock=measurement_clock,
+                    )
+                    self._measurement_delta_step_count = self.clock.step_count
+                    self._measurement_history.append(
+                        measurement_clock,
+                        self.latest_measurements,
+                        definition_revision=self.definition_snapshot.revision,
+                    )
                 if return_snapshot:
                     return self.snapshot()
                 return None
@@ -9626,6 +9693,12 @@ class PolarMicrogridSimulator:
                 row["weight"] = definition.get("weight", row.get("weight"))
                 row["valid"] = definition.get("valid", row.get("valid"))
         measurements = self._with_realtime_measurements({"definitions": definitions, "real": real, "scada": scada})
+        if self._automatic_runtime_state_invalidated:
+            # Before the first successful calculation of a lifecycle, weather
+            # and signal projections are definitions only, not valid automatic
+            # real/scada samples from a previous run.
+            measurements["real"] = []
+            measurements["scada"] = []
         for channel_rows in measurements.values():
             for row in channel_rows:
                 status, fixed_value = self._measurement_status_override(row)
@@ -9756,6 +9829,50 @@ class PolarMicrogridSimulator:
         self._measurement_delta_step_count = self.clock.step_count
         self._measurement_delta_runtime_marker = self._measurement_delta_runtime_state_marker()
         return current
+
+    def measurement_runtime_definitions(
+        self,
+        definitions: Optional[Sequence[Mapping[str, Any]]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Attach local runtime-device identities without changing wire point identity."""
+
+        with self.lock:
+            definition_snapshot = self.definition_snapshot
+            rows = [
+                dict(row)
+                for row in (
+                    definitions
+                    if definitions is not None
+                    else self.measurements().get("definitions", [])
+                )
+                if isinstance(row, Mapping)
+            ]
+            if self._measurement_bindings_cache_revision != definition_snapshot.revision:
+                self._measurement_bindings_cache = simu_loop.compile_measurement_bindings(
+                    definition_snapshot.measurement_rows,
+                    definition_snapshot.model_book,
+                )
+                self._measurement_bindings_cache_revision = definition_snapshot.revision
+            bindings = self._measurement_bindings_cache
+            if len(bindings) != len(rows):
+                return rows
+            storage_resource_by_protocol_key = {
+                protocol_key: resource_key
+                for resource_key, protocol_keys in self._storage_runtime_protocol_keys().items()
+                for protocol_key in protocol_keys
+            }
+            for row, binding in zip(rows, bindings):
+                runtime_key = (binding.target_type, binding.target_name)
+                if str(row.get("meas_type", "")).strip().upper() == "SOC":
+                    runtime_key = storage_resource_by_protocol_key.get(
+                        (
+                            str(row.get("dev_type", "")).strip(),
+                            str(row.get("dev_name", "")).strip(),
+                        ),
+                        runtime_key,
+                    )
+                row["runtime_dev_type"], row["runtime_dev_name"] = runtime_key
+            return rows
 
     def measurement_delta(self, after_seq: int | float = 0, *, compact: bool = False) -> Dict[str, Any]:
         """Return changed measurement values keyed by measurement name."""
@@ -13297,8 +13414,14 @@ class PolarMicrogridSimulator:
             "diagram": self._path_static_signature([self.source_files.get("diagram")]),
         }
 
-    def curve_boundary(self) -> Dict[str, Any]:
-        target_minute = float(_to_float(self.clock.absolute_minute, 0.0) or 0.0)
+    def curve_boundary(self, absolute_minute: Optional[int | float] = None) -> Dict[str, Any]:
+        target_minute = float(
+            _to_float(
+                self.clock.absolute_minute if absolute_minute is None else absolute_minute,
+                0.0,
+            )
+            or 0.0
+        )
         cache_key = (self._curve_revision, target_minute, id(self.curves))
         if (
             cache_key == self._curve_boundary_cache_key
@@ -13391,7 +13514,6 @@ class PolarMicrogridSimulator:
                         _measurement_definition_row_to_dict(row, median_deviations)
                         for row in definition_snapshot.measurement_rows
                     ]
-                measurements = self._with_realtime_measurements(measurements)
         try:
             log_limit = max(0, int(runtime_log_limit))
         except (TypeError, ValueError):

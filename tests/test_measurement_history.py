@@ -40,8 +40,8 @@ class MeasurementHistoryTest(unittest.TestCase):
 
     def test_simulator_history_accumulates_without_a_browser_and_queries_selected_indices(self):
         service = self._make_service()
-        self._seed_measurements(service, 10.0, 9.5)
         service.control_clock({"action": "start"})
+        self._seed_measurements(service, 10.0, 9.5)
 
         service.step(advance_minutes=1)
         self._seed_measurements(service, 11.0, 10.5)
@@ -60,39 +60,116 @@ class MeasurementHistoryTest(unittest.TestCase):
             json.dumps(payload, ensure_ascii=False),
         )
 
-    def test_simulator_measurement_sample_keeps_the_computed_time_across_cycle_boundary(self):
+    def test_simulator_cycle_reset_invalidates_the_previous_automatic_measurement_frame(self):
         service = self._make_service()
-        self._seed_measurements(service, 23.59, 23.5)
         service.control_clock({"action": "start", "minute": 1439})
+        self._seed_measurements(service, 23.59, 23.5)
 
         snapshot = service.step(advance_minutes=1)
 
         self.assertEqual(snapshot["clock"]["absolute_minute"], 1440)
         self.assertEqual(snapshot["clock"]["time"], "00:00:00")
-        self.assertEqual(snapshot["measurement_clock"]["absolute_minute"], 1439)
-        self.assertEqual(snapshot["measurement_clock"]["time"], "23:59:00")
-        self.assertEqual(snapshot["measurement_clock"]["step_count"], 1)
+        self.assertEqual(snapshot["measurement_clock"], {})
+        self.assertEqual(snapshot["measurements"]["real"], [])
+        self.assertEqual(snapshot["measurements"]["scada"], [])
+        self.assertEqual(snapshot["result"], {})
 
         history = service.measurement_history(indices=[0])
-        self.assertEqual(len(history["frames"]), 1)
-        self.assertEqual(history["frames"][0]["absolute_minute"], 1439)
-        self.assertEqual(history["frames"][0]["simu_time"], "23:59:00")
-        self.assertEqual(history["frames"][0]["real_values"], [23.59])
+        self.assertEqual(history["frames"], [])
 
         delta = service.measurement_delta(after_seq=0, compact=True)
-        self.assertEqual(delta["absolute_minute"], 1439)
-        self.assertEqual(delta["simu_time"], "23:59:00")
-        self.assertEqual(delta["measurement_clock"]["absolute_minute"], 1439)
+        self.assertTrue(delta["reset"])
+        self.assertEqual(delta["absolute_minute"], 1440)
+        self.assertEqual(delta["simu_time"], "00:00:00")
+        self.assertTrue(all(value is None for value in delta["real_values"]))
+        self.assertTrue(all(value is None for value in delta["scada_values"]))
 
         self._seed_measurements(service, 0.0, 0.0)
         service.step(advance_minutes=1)
         next_history = service.measurement_history(indices=[0])
         self.assertEqual(
             [frame["absolute_minute"] for frame in next_history["frames"]],
-            [1439, 1440],
+            [1440],
         )
         self.assertEqual(next_history["frames"][-1]["simu_time"], "00:00:00")
         self.assertEqual(next_history["frames"][-1]["real_values"], [0.0])
+
+    def test_simulator_stop_invalidates_runtime_measurements_and_old_delta_cursor(self):
+        service = self._make_service()
+        service.control_clock({"action": "start"})
+        self._seed_measurements(service, 30.0, 30.5)
+        service.step(advance_minutes=1)
+        service.latest_model_book = object()
+        service.latest_device_states = [{"name": "fuel-cell", "p_kw": 30.0}]
+        service._last_scada_values = {"fuel-cell|P_GEN": 30.5}
+        service.files["real"].write_text("previous real.e", encoding="utf-8")
+        service.files["scada"].write_text("previous scada.e", encoding="utf-8")
+        old_delta = service.measurement_delta(after_seq=0)
+
+        service.control_clock({"action": "stop"})
+
+        self.assertEqual(service.latest_real_rows, [])
+        self.assertEqual(service.latest_scada_rows, [])
+        self.assertEqual(service.latest_measurements["real"], [])
+        self.assertEqual(service.latest_measurements["scada"], [])
+        self.assertEqual(service.latest_measurement_clock, {})
+        self.assertEqual(service.latest_result, {})
+        self.assertIsNone(service.latest_model_book)
+        self.assertEqual(service.latest_device_states, [])
+        self.assertEqual(service._last_scada_values, {})
+        self.assertFalse(service.files["real"].exists())
+        self.assertFalse(service.files["scada"].exists())
+        self.assertEqual(service.measurement_history(indices=[0])["frames"], [])
+
+        reset_delta = service.measurement_delta(after_seq=old_delta["seq"])
+        self.assertTrue(reset_delta["reset"])
+        self.assertGreater(reset_delta["seq"], old_delta["seq"])
+        self.assertTrue(
+            all(
+                item["real_value"] is None and item["scada_value"] is None
+                for item in reset_delta["items"]
+            )
+        )
+
+    def test_simulator_start_invalidates_a_preexisting_automatic_frame(self):
+        service = self._make_service()
+        service.update_device_parameters(
+            {
+                "block_name": "ACGenerator",
+                "row_key": {"idx": "2", "name": "diesel_300kw"},
+                "revision": service.definition_snapshot.revision,
+                "changes": {"p_set": 95},
+            }
+        )
+        self._seed_measurements(service, 30.0, 30.5)
+        service.latest_measurements = service.measurements()
+        service.latest_measurement_clock = {
+            **service.clock.as_dict(),
+            "step_count": 9,
+            "updated_at": 123.0,
+        }
+        service.latest_result = {"solver_info": "previous lifecycle"}
+        service.files["real"].write_text("previous real.e", encoding="utf-8")
+        service.files["scada"].write_text("previous scada.e", encoding="utf-8")
+
+        clock = service.control_clock({"action": "start"})
+        snapshot = service.snapshot(include_static=False, include_runtime_logs=False)
+
+        self.assertEqual(clock["run_id"], 1)
+        self.assertEqual(clock["step_count"], 0)
+        self.assertEqual(snapshot["measurement_clock"], {})
+        self.assertEqual(snapshot["measurements"]["real"], [])
+        self.assertEqual(snapshot["measurements"]["scada"], [])
+        self.assertEqual(snapshot["result"], {})
+        self.assertFalse(service.files["real"].exists())
+        self.assertFalse(service.files["scada"].exists())
+        diesel = next(
+            row
+            for row in service.definition_snapshot.model_book.data["ACGenerator"].data
+            if row.get("name") == "diesel_300kw"
+        )
+        self.assertEqual(diesel["p_set"], "95")
+        self.assertEqual(service.manual_definition_changes()["count"], 1)
 
     def test_history_store_accepts_a_cached_definition_signature(self):
         from simu.measurement_delta import measurement_definition_signature

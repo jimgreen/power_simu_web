@@ -64,10 +64,15 @@ class PowerFlowFailureLogTest(unittest.TestCase):
         self.assertEqual(snapshot["summary"]["measurement_alarm_count"], 0)
         self.assertEqual(snapshot["summary"]["alarm_count"], 1)
 
-        from simu.trainee_data_policy import strip_trainee_truth_from_snapshot
+        from simu.trainee_data_policy import strip_trainee_remote_details_from_snapshot
 
-        trainee_snapshot = strip_trainee_truth_from_snapshot(deepcopy(snapshot))
-        self.assertEqual(trainee_snapshot["compute"], snapshot["compute"])
+        trainee_snapshot = strip_trainee_remote_details_from_snapshot(deepcopy(snapshot))
+        self.assertEqual(trainee_snapshot["compute"]["status"], "failed")
+        self.assertEqual(trainee_snapshot["compute"]["result_discarded"], True)
+        self.assertEqual(trainee_snapshot["compute"]["measurement_frame_stale"], True)
+        self.assertNotIn("error", trainee_snapshot["compute"])
+        self.assertEqual(trainee_snapshot["result"]["solver_info"], "failed")
+        self.assertNotIn("error", trainee_snapshot["result"])
 
     def test_previous_successful_frame_is_marked_stale_until_solver_recovers(self):
         from simu.generate_simple_model import write_model_dir

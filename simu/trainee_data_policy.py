@@ -1,8 +1,9 @@
-"""Trainee-facing measurement projection.
+"""Trainee-facing realtime-data projection.
 
-The trainee boundary carries SCADA measurements only. Simulation truth remains
-inside the simulator process and is removed from snapshots, deltas, and history
-before a trainee connection can consume or expose it.
+The trainee boundary carries SCADA measurements and current runtime state only.
+Simulation truth, remote logs, alarm details, and remote history remain inside
+the simulator process and are removed before a trainee connection can consume
+or expose them.
 """
 
 from __future__ import annotations
@@ -12,6 +13,50 @@ from typing import Any
 
 
 FLAG_REAL_PRESENT = 2
+
+INTERSTATION_SNAPSHOT_FIELDS = (
+    "clock",
+    "measurement_clock",
+    "compute",
+    "commands",
+    "command_signature",
+    "measurement_delta",
+    "device_runtime_signature",
+    "device_runtime",
+)
+
+INTERSTATION_COMPUTE_FIELDS = (
+    "status",
+    "simu_time",
+    "absolute_minute",
+    "measurement_frame_stale",
+    "last_successful_simu_time",
+    "result_discarded",
+)
+
+NON_REALTIME_SNAPSHOT_FIELDS = (
+    "runtime_logs",
+    "runtime_logs_delta",
+    "measurement_history",
+    "command_history",
+    "alarm_history",
+    "warning_history",
+    "alarms",
+    "alarm_details",
+    "warnings",
+    "warning_details",
+)
+
+DIAGNOSTIC_DETAIL_FIELDS = (
+    "error",
+    "errors",
+    "detail",
+    "details",
+    "exception",
+    "stack",
+    "stacktrace",
+    "traceback",
+)
 
 
 def strip_trainee_truth_from_measurements(measurements: Any) -> Any:
@@ -96,4 +141,56 @@ def strip_trainee_truth_from_snapshot(snapshot: MutableMapping[str, Any]) -> Mut
         snapshot["measurement_history"] = strip_trainee_truth_from_measurement_history(
             snapshot.get("measurement_history")
         )
+    return snapshot
+
+
+def strip_trainee_remote_details_from_snapshot(
+    snapshot: MutableMapping[str, Any],
+) -> MutableMapping[str, Any]:
+    """Keep local diagnostics local while projecting a simulator-to-trainee frame."""
+
+    strip_trainee_truth_from_snapshot(snapshot)
+    for field_name in NON_REALTIME_SNAPSHOT_FIELDS:
+        snapshot.pop(field_name, None)
+
+    commands = snapshot.get("commands")
+    if isinstance(commands, Mapping):
+        current_commands = dict(commands)
+        current_commands.pop("history", None)
+        snapshot["commands"] = current_commands
+
+    for field_name in ("compute", "result"):
+        payload = snapshot.get(field_name)
+        if not isinstance(payload, Mapping):
+            continue
+        current = dict(payload)
+        for detail_field in DIAGNOSTIC_DETAIL_FIELDS:
+            current.pop(detail_field, None)
+        snapshot[field_name] = current
+    return snapshot
+
+
+def project_trainee_interstation_snapshot(
+    snapshot: MutableMapping[str, Any],
+) -> MutableMapping[str, Any]:
+    """Reduce one simulator-to-trainee poll to transport-essential runtime fields."""
+
+    strip_trainee_remote_details_from_snapshot(snapshot)
+    compute = snapshot.get("compute")
+    if isinstance(compute, Mapping):
+        snapshot["compute"] = {
+            field_name: compute.get(field_name)
+            for field_name in INTERSTATION_COMPUTE_FIELDS
+            if field_name in compute
+        }
+    delta = snapshot.get("measurement_delta")
+    if isinstance(delta, Mapping):
+        compact_delta = dict(delta)
+        for redundant_field in ("model_id", "model_name", "measurement_clock"):
+            compact_delta.pop(redundant_field, None)
+        snapshot["measurement_delta"] = compact_delta
+    allowed = set(INTERSTATION_SNAPSHOT_FIELDS)
+    for field_name in tuple(snapshot):
+        if field_name not in allowed:
+            snapshot.pop(field_name, None)
     return snapshot

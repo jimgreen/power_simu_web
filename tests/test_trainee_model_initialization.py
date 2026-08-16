@@ -227,7 +227,7 @@ class TraineeModelInitializationTest(unittest.TestCase):
             try:
                 simulator_port = simulator_server.server_address[1]
                 trainee_port = trainee_server.server_address[1]
-                link = f"http://127.0.0.1:{simulator_port}/api/trainee-link"
+                link = f"http://127.0.0.1:{simulator_port}"
                 payload = self._post_json(
                     f"http://127.0.0.1:{trainee_port}/api/trainee/model-initialize",
                     {"model_id": "local_b", "link": link},
@@ -255,6 +255,7 @@ class TraineeModelInitializationTest(unittest.TestCase):
             self.assertTrue(payload["receive_state"]["initialized"])
             self.assertFalse(payload["receive_state"]["active"])
             self.assertTrue(receive_state["initialized"])
+            self.assertEqual(receive_state["interaction_link"], link)
             self.assertEqual(receive_state["teacher_model_id"], "remote_model")
             self.assertEqual(
                 receive_state["snapshot_path"],
@@ -342,10 +343,14 @@ class TraineeModelInitializationTest(unittest.TestCase):
                 )
                 proxy_thread = threading.Thread(target=proxy_server.serve_forever, daemon=True)
                 proxy_thread.start()
-                link = (
-                    f"http://127.0.0.1:{proxy_server.server_address[1]}"
-                    "/api/trainee-link?model_id=remote_model"
-                )
+                proxy_base = f"http://127.0.0.1:{proxy_server.server_address[1]}"
+                with urlopen(
+                    f"{proxy_base}/api/trainee-link?model_id=remote_model",
+                    timeout=5,
+                ) as response:
+                    discovered = json.loads(response.read().decode("utf-8"))
+                link = discovered["link"]
+                self.assertEqual(link, f"http://127.0.0.1:{simulator_port}")
                 self._post_json(
                     f"http://127.0.0.1:{trainee_port}/api/trainee/model-initialize",
                     {"model_id": "local_b", "link": link},

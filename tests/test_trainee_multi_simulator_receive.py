@@ -1234,7 +1234,7 @@ class TraineeMultiSimulatorReceiveTest(unittest.TestCase):
             try:
                 simulator_port = simulator_server.server_address[1]
                 trainee_port = trainee_server.server_address[1]
-                link = f"http://127.0.0.1:{simulator_port}/api/trainee-link?model_id=alpha"
+                link = f"http://127.0.0.1:{simulator_port}"
                 body = json.dumps({"link": link}).encode("utf-8")
                 request = Request(
                     f"http://127.0.0.1:{trainee_port}/api/trainee/connect",
@@ -1251,6 +1251,7 @@ class TraineeMultiSimulatorReceiveTest(unittest.TestCase):
                 simulator_server.server_close()
 
         self.assertEqual(payload["connection"]["model_id"], "alpha")
+        self.assertEqual(payload["connection"]["link"], f"http://127.0.0.1:{simulator_port}")
         self.assertEqual(payload["connection"]["teacher_api_base"], f"http://127.0.0.1:{simulator_port}")
         self.assertEqual(payload["snapshot"]["model"]["id"], "alpha")
 

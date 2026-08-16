@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 try:
@@ -110,14 +110,9 @@ def make_simulator_proxy_server(
                 raise RuntimeError(
                     f"模型服务标识不一致：请求 {model_id}，实际 {actual_model_id or '空'}"
                 )
-            host = self.headers.get("Host")
-            if not host:
-                server_host, server_port = self.server.server_address[:2]
-                host = f"{server_host}:{server_port}"
-            scheme = self.headers.get("X-Forwarded-Proto", "http").split(",", 1)[0].strip() or "http"
-            proxy_base = f"{scheme}://{host}".rstrip("/")
             result = dict(payload)
-            result["link"] = f"{proxy_base}/api/trainee-link?model_id={quote(model_id, safe='')}"
+            result["link"] = service_base
+            result["teacher_api_base"] = service_base
             result["discovery_via_proxy"] = True
             self._send_json(result)
 

@@ -501,7 +501,7 @@ def test_modified_service_address_is_used_by_direct_interaction_link(tmp_path: P
         with urlopen(f"{service['base_url']}/api/trainee-link", timeout=5) as response:
             interaction = json.loads(response.read().decode("utf-8"))
         assert interaction["teacher_api_base"] == service["base_url"]
-        assert interaction["link"] == f"{service['base_url']}/api/trainee-link"
+        assert interaction["link"] == service["base_url"]
 
         static_root = tmp_path / "static"
         static_root.mkdir()
@@ -516,7 +516,8 @@ def test_modified_service_address_is_used_by_direct_interaction_link(tmp_path: P
         with urlopen(f"{proxy_base}/api/trainee-link?model_id=model_a", timeout=5) as response:
             discovered = json.loads(response.read().decode("utf-8"))
         assert discovered["teacher_api_base"] == service["base_url"]
-        assert discovered["link"] == f"{proxy_base}/api/trainee-link?model_id=model_a"
+        assert discovered["link"] == service["base_url"]
+        assert discovered["link"] != proxy_base
     finally:
         if proxy_server is not None:
             proxy_server.shutdown()
@@ -575,7 +576,7 @@ def test_real_per_model_services_run_on_distinct_ports_and_remain_independent(tm
         with urlopen(f"{proxy_base}/api/trainee-link?model_id=model_b", timeout=5) as response:
             interaction = json.loads(response.read().decode("utf-8"))
         assert interaction["model_id"] == "model_b"
-        assert interaction["link"] == f"{proxy_base}/api/trainee-link?model_id=model_b"
+        assert interaction["link"] == service_b["base_url"]
         assert interaction["teacher_api_base"] == service_b["base_url"]
 
         manager.stop("model_a")

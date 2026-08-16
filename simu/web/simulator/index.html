@@ -33,7 +33,7 @@
             <button id="modelServiceToggle" class="model-service-toggle" type="button">启动</button>
             <span id="modelServiceState" class="model-service-state" data-state="stopped">已停止</span>
           </div>
-          <button id="traineeLinkButton" class="trainee-link-button" type="button">交互链接</button>
+          <button id="traineeLinkButton" class="trainee-link-button" type="button">交互地址</button>
           <label class="simulation-mode-switcher"><span>仿真模式</span>
             <select id="simulationModeSelector" title="选择时、日、周、月或年仿真">
               <option value="hour">时仿真</option>
@@ -1532,7 +1532,7 @@
       <div id="traineeLinkDialog" class="modal-backdrop" hidden>
         <form id="traineeLinkForm" class="modal-card trainee-link-modal" aria-modal="true" role="dialog" aria-labelledby="traineeLinkTitle">
           <div class="modal-head">
-            <h2 id="traineeLinkTitle">学员台交互链接</h2>
+            <h2 id="traineeLinkTitle">学员台交互地址</h2>
             <button id="closeTraineeLinkDialog" class="icon-button" type="button" title="关闭">
               <svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z" /></svg>
             </button>
@@ -1541,17 +1541,17 @@
             <div><dt>模型</dt><dd id="traineeLinkModelName">--</dd></div>
             <div><dt>复用方式</dt><dd>多学员台共享</dd></div>
           </dl>
-          <label class="modal-field trainee-link-field">交互链接
+          <label class="modal-field trainee-link-field">模拟台服务地址
             <input id="traineeLinkValue" type="text" readonly autocomplete="off" />
           </label>
-          <p id="traineeLinkMessage" class="modal-message">将此链接发给学员台，学员点击“启动接收”后输入该链接即可接入当前模型。</p>
+          <p id="traineeLinkMessage" class="modal-message">只需将协议、IP 和端口发给学员台，具体接口路径由学员台内部组织。</p>
           <div class="modal-actions">
             <button id="cancelTraineeLinkDialog" type="button">关闭</button>
-            <button id="copyTraineeLink" class="primary" type="button">复制链接</button>
+            <button id="copyTraineeLink" class="primary" type="button">复制地址</button>
           </div>
         </form>
       </div>
     </div>
-    <script src="/app.js?v=20260814-model-service-context-action"></script>
+    <script src="/app.js?v=20260816-service-origin-link"></script>
   </body>
 </html>

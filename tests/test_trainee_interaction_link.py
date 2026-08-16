@@ -47,7 +47,9 @@ class TraineeInteractionLinkTest(unittest.TestCase):
         self.assertEqual(payload["model_id"], "simple_model")
         self.assertEqual(payload["model_name"], "简单模型")
         self.assertTrue(payload["shareable"])
-        self.assertEqual(payload["link"], f"http://127.0.0.1:{port}/api/trainee-link")
+        self.assertEqual(payload["link"], f"http://127.0.0.1:{port}")
+        self.assertNotIn("/api/", payload["link"])
+        self.assertNotIn("?", payload["link"])
         self.assertEqual(payload["teacher_api_base"], f"http://127.0.0.1:{port}")
         self.assertEqual(
             payload["snapshot_path"],
@@ -79,14 +81,14 @@ class TraineeInteractionLinkTest(unittest.TestCase):
         self.assertIn("generatedTraineeLink", script)
         generated_block = script.split("function generatedTraineeLink", 1)[1].split("\n}", 1)[0]
         self.assertIn("activeModelServiceBase", generated_block)
-        self.assertIn("/api/trainee-link", generated_block)
+        self.assertNotIn("/api/trainee-link", generated_block)
         self.assertNotIn("controlPlaneApiBase", generated_block)
         self.assertNotIn("model_id", generated_block)
         open_dialog_block = script.split("async function openTraineeLinkDialog", 1)[1].split("\n}", 1)[0]
         self.assertIn('api("/api/trainee-link", { modelScoped: false })', open_dialog_block)
         self.assertNotIn("controlPlane: true", open_dialog_block)
         self.assertIn("setTraineeLinkCopyEnabled", script)
-        self.assertIn("交互链接已自动生成", script)
+        self.assertIn("模拟台服务地址已自动生成", script)
         self.assertIn("copyTraineeLink", script)
         self.assertIn(".trainee-link-modal", styles)
 
@@ -99,7 +101,9 @@ class TraineeInteractionLinkTest(unittest.TestCase):
         self.assertIn('id="traineeRunToggle"', html)
         self.assertIn('id="receiveLinkDialog"', html)
         self.assertIn('id="receiveLinkInput"', html)
-        self.assertIn("一个链接可供多个学员台", html)
+        self.assertIn("一个服务地址可供多个学员台", html)
+        self.assertIn('placeholder="http://127.0.0.1:8711"', html)
+        self.assertNotIn("/api/trainee-link?model_id=", html)
         self.assertIn("openReceiveLinkDialog", script)
         self.assertIn("initializeModelFromLink", script)
         self.assertIn('api("/api/trainee/model-initialize"', script)
@@ -110,8 +114,14 @@ class TraineeInteractionLinkTest(unittest.TestCase):
         self.assertIn('$("traineeRunToggle").addEventListener("click", toggleReceiveMode);', script)
         self.assertNotIn("fetch(url.href", script)
         self.assertNotIn("legacyTeacherInteractionConnection", script)
+        normalize_block = script.split("function normalizeConnectionUrl", 1)[1].split("\n}", 1)[0]
+        self.assertIn("url.origin", normalize_block)
+        self.assertIn("url.pathname", normalize_block)
+        self.assertIn("url.search", normalize_block)
         receive_address_block = script.split("function teacherReceiveAddress", 1)[1].split("\n}", 1)[0]
         self.assertIn("state.interactionLink", receive_address_block)
+        self.assertIn("state.teacherApiBase || state.interactionLink", receive_address_block)
+        self.assertIn("normalizeConnectionUrl(configuredAddress)", receive_address_block)
         self.assertIn(".receive-link-dialog", styles)
 
 

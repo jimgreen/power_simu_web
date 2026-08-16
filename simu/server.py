@@ -2883,7 +2883,6 @@ def make_http_server(
             model_id = str(model.get("id", target.model_id))
             base_url = self._request_base_url()
             encoded_model_id = quote(model_id, safe="")
-            link = f"{base_url}/api/trainee-link"
             external_api = {
                 "devices": f"/api/external/devices?model_id={encoded_model_id}",
                 "realtime_inputs": f"{external_realtime_inputs_path}?model_id={encoded_model_id}",
@@ -2900,7 +2899,7 @@ def make_http_server(
                 "type": "polar-microgrid-trainee-link",
                 "version": 1,
                 "role": "simulator",
-                "link": link,
+                "link": base_url,
                 "teacher_api_base": base_url,
                 "model_id": model_id,
                 "model_name": model.get("name", model_id),
@@ -2953,88 +2952,43 @@ def make_http_server(
             except json.JSONDecodeError as exc:
                 raise JsonApiError(502, "模拟台返回内容不是有效 JSON") from exc
 
-        def _legacy_trainee_connection_from_link(self, raw_link: str) -> Optional[Mapping[str, Any]]:
-            parsed = urlparse(str(raw_link or "").strip())
-            if parsed.path.rstrip("/") not in {"/api/trainee-link", "/api/client-link"}:
-                return None
-            query = parse_qs(parsed.query)
-            model_id = str((query.get("model_id") or query.get("model") or [""])[0]).strip()
-            if not model_id:
-                return None
-            encoded_model_id = quote(model_id, safe="")
+        def _resolve_trainee_connection(self, raw_link: str) -> Mapping[str, Any]:
+            raw = str(raw_link or "").strip()
+            if not raw:
+                raise JsonApiError(400, "请输入模拟台服务地址")
+            parsed = urlparse(raw)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise JsonApiError(400, "模拟台服务地址必须是完整的 http 或 https 地址")
+            if parsed.username or parsed.password:
+                raise JsonApiError(400, "模拟台服务地址不能包含用户名或密码")
             base_url = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+            payload = self._json_request_to_url(f"{base_url}/api/trainee-link")
+            if not isinstance(payload, Mapping):
+                raise JsonApiError(400, "模拟台服务返回的连接信息不是对象")
+            if payload.get("type") != "polar-microgrid-trainee-link" or payload.get("role") != "simulator":
+                raise JsonApiError(400, "模拟台服务地址无效，请使用模拟台生成的服务地址")
+            model_id = str(payload.get("model_id") or "").strip()
+            if not model_id:
+                raise JsonApiError(400, "模拟台连接信息缺少模型标识")
+            encoded_model_id = quote(model_id, safe="")
             snapshot_path = self._with_query_overrides(
                 f"/api/snapshot?model_id={encoded_model_id}",
                 {"trainee_view": 1},
             )
-            return {
-                "link": str(raw_link),
-                "teacher_api_base": base_url,
-                "model_id": model_id,
-                "model_name": model_id,
-                "snapshot_path": snapshot_path,
-                "command_path": f"/api/student/commands?model_id={encoded_model_id}",
-                "measurement_delta_path": self._with_query_overrides(
-                    f"/api/measurements/delta?model_id={encoded_model_id}",
-                    {"trainee_view": 1},
-                ),
-                "definition_archive_path": (
-                    f"/api/export-definitions?format=json&model_id={encoded_model_id}"
-                ),
-            }
-
-        def _resolve_trainee_connection(self, raw_link: str) -> Mapping[str, Any]:
-            raw = str(raw_link or "").strip()
-            if not raw:
-                raise JsonApiError(400, "请输入模拟台生成的交互链接")
-            parsed = urlparse(raw)
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                raise JsonApiError(400, "交互链接必须是完整的 http 或 https 地址")
-            try:
-                payload = self._json_request_to_url(raw)
-            except JsonApiError as exc:
-                if exc.status == 404:
-                    legacy = self._legacy_trainee_connection_from_link(raw)
-                    if legacy is not None:
-                        return legacy
-                raise
-            if not isinstance(payload, Mapping):
-                raise JsonApiError(400, "交互链接返回内容不是对象")
-            if payload.get("type") != "polar-microgrid-trainee-link" or payload.get("role") != "simulator":
-                raise JsonApiError(400, "交互链接无效，请使用模拟台生成的链接")
-            model_id = str(payload.get("model_id") or (parse_qs(parsed.query).get("model_id") or [""])[0]).strip()
-            if not model_id:
-                raise JsonApiError(400, "交互链接缺少模型标识")
-            encoded_model_id = quote(model_id, safe="")
-            base_url = str(payload.get("teacher_api_base") or f"{parsed.scheme}://{parsed.netloc}").rstrip("/")
-            snapshot_path = self._with_query_overrides(
-                str(payload.get("snapshot_path") or f"/api/snapshot?model_id={encoded_model_id}"),
-                {"trainee_view": 1},
-            )
             measurement_delta_path = self._with_query_overrides(
-                str(
-                    payload.get("measurement_delta_path")
-                    or self._measurement_delta_path_from_snapshot_path(snapshot_path)
-                ),
+                f"/api/measurements/delta?model_id={encoded_model_id}",
                 {"trainee_view": 1},
             )
             return {
-                "link": str(payload.get("link") or raw),
+                "link": base_url,
                 "teacher_api_base": base_url,
                 "model_id": model_id,
                 "model_name": str(payload.get("model_name") or model_id),
                 "snapshot_path": snapshot_path,
-                "command_path": str(payload.get("command_path") or f"/api/student/commands?model_id={encoded_model_id}"),
+                "command_path": f"/api/student/commands?model_id={encoded_model_id}",
                 "measurement_delta_path": measurement_delta_path,
-                "definition_archive_path": str(
-                    payload.get("definition_archive_path")
-                    or f"/api/export-definitions?format=json&model_id={encoded_model_id}"
-                ),
+                "definition_archive_path": f"/api/export-definitions?format=json&model_id={encoded_model_id}",
             }
-
-        def _measurement_delta_path_from_snapshot_path(self, snapshot_path: str) -> str:
-            parsed = urlparse(snapshot_path or "/api/snapshot")
-            return urlunparse(("", "", "/api/measurements/delta", "", parsed.query, ""))
 
         def _with_query_overrides(self, path: str, overrides: Mapping[str, Any]) -> str:
             parsed = urlparse(path or "")

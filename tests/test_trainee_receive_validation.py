@@ -654,16 +654,19 @@ def test_manual_telecontrol_and_teleadjust_commands_require_teacher_link():
     assert "fetch(connectionApiUrl(connection" not in script
 
 
-def test_trainee_accepts_legacy_teacher_link_when_link_route_is_missing():
+def test_trainee_resolves_service_origin_with_internal_api_paths():
     script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
     server = (ROOT / "simu/server.py").read_text(encoding="utf-8")
 
     assert "function legacyTeacherInteractionConnection" not in script
-    assert '"/api/trainee-link"' in server
-    assert '"/api/client-link"' in server
-    assert "Unknown API route" not in script
-    assert "response.status === 404" not in script
-    assert "def _legacy_trainee_connection_from_link" in server
-    assert "exc.status == 404" in server
-    assert "snapshot_path" in server
-    assert "command_path" in server
+    assert "def _legacy_trainee_connection_from_link" not in server
+    resolver = server.split("def _resolve_trainee_connection", 1)[1].split(
+        "def _with_query_overrides",
+        1,
+    )[0]
+    assert 'self._json_request_to_url(f"{base_url}/api/trainee-link")' in resolver
+    assert 'payload.get("snapshot_path")' not in resolver
+    assert 'payload.get("command_path")' not in resolver
+    assert 'payload.get("measurement_delta_path")' not in resolver
+    assert 'payload.get("definition_archive_path")' not in resolver
+    assert '"link": base_url' in resolver

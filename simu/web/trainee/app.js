@@ -2577,7 +2577,14 @@ function teacherSnapshotPath() {
 }
 
 function teacherReceiveAddress() {
-  if (state.interactionLink) return state.interactionLink;
+  const configuredAddress = state.teacherApiBase || state.interactionLink;
+  if (configuredAddress) {
+    try {
+      return normalizeConnectionUrl(configuredAddress);
+    } catch (_error) {
+      return configuredAddress;
+    }
+  }
   const base = state.teacherApiBase || "";
   const path = teacherSnapshotPath();
   if (!base) return path;
@@ -8248,7 +8255,16 @@ function openReceiveLinkDialog() {
   const dialog = $("receiveLinkDialog");
   const input = $("receiveLinkInput");
   if (!dialog || !input) return;
-  input.value = state.interactionLink || localStorage.getItem("polarTeacherInteractionLink") || "";
+  const storedAddress = state.teacherApiBase
+    || state.interactionLink
+    || localStorage.getItem("polarTeacherApiUrl")
+    || localStorage.getItem("polarTeacherInteractionLink")
+    || "";
+  try {
+    input.value = storedAddress ? normalizeConnectionUrl(storedAddress) : "";
+  } catch (_error) {
+    input.value = storedAddress;
+  }
   setReceiveLinkMessage(`远端定义将覆盖当前本地模型：${state.activeModelId || "--"}。`);
   $("confirmReceiveLink").disabled = false;
   dialog.showModal();
@@ -8283,36 +8299,36 @@ function closeReceiveWarningDialog() {
 
 function normalizeConnectionUrl(value) {
   const raw = String(value || "").trim();
-  if (!raw) throw new Error("请输入模拟台生成的交互链接。");
-  const url = new URL(raw, location.href);
-  if (!/^https?:$/.test(url.protocol)) throw new Error("交互链接必须是 http 或 https 地址。");
-  return url;
+  if (!raw) throw new Error("请输入模拟台服务地址。");
+  const url = new URL(raw);
+  if (!/^https?:$/.test(url.protocol)) throw new Error("模拟台服务地址必须是 http 或 https 地址。");
+  if (url.username || url.password) throw new Error("模拟台服务地址不能包含用户名或密码。");
+  if (url.pathname !== "/" || url.search || url.hash) {
+    url.pathname = "/";
+    url.search = "";
+    url.hash = "";
+  }
+  return url.origin;
 }
 
 function teacherConnectionFromPayload(payload = {}, fallbackLink = "") {
   const connection = payload.connection || payload.receive_state || payload;
-  const fallbackUrl = fallbackLink ? normalizeConnectionUrl(fallbackLink) : null;
+  const serviceAddress = normalizeConnectionUrl(
+    fallbackLink || connection.link || connection.interaction_link || connection.teacher_api_base || connection.teacherApiBase,
+  );
   const modelId = connection.model_id || connection.teacher_model_id || connection.modelId || connection.teacherModelId
-    || fallbackUrl?.searchParams.get("model_id") || "";
+    || "";
+  const encodedModelId = encodeURIComponent(modelId);
+  const snapshotPath = `/api/snapshot?model_id=${encodedModelId}&trainee_view=1`;
   return {
-    link: connection.link || connection.interaction_link || fallbackUrl?.href || "",
-    teacherApiBase: String(
-      connection.teacher_api_base || connection.teacherApiBase || fallbackUrl?.origin || "",
-    ).replace(/\/$/, ""),
+    link: serviceAddress,
+    teacherApiBase: serviceAddress,
     modelId: String(modelId),
     modelName: String(connection.model_name || connection.teacher_model_name || connection.modelName || modelId),
-    snapshotPath: String(connection.snapshot_path || connection.snapshotPath || `/api/snapshot?model_id=${encodeURIComponent(modelId)}`),
-    commandPath: String(connection.command_path || connection.commandPath || `/api/student/commands?model_id=${encodeURIComponent(modelId)}`),
-    measurementDeltaPath: String(
-      connection.measurement_delta_path || connection.measurementDeltaPath || measurementDeltaPathFromSnapshotPath(
-        connection.snapshot_path || connection.snapshotPath || `/api/snapshot?model_id=${encodeURIComponent(modelId)}`,
-      ),
-    ),
-    definitionArchivePath: String(
-      connection.definition_archive_path
-      || connection.definitionArchivePath
-      || `/api/export-definitions?format=json&model_id=${encodeURIComponent(modelId)}`,
-    ),
+    snapshotPath,
+    commandPath: `/api/student/commands?model_id=${encodedModelId}`,
+    measurementDeltaPath: measurementDeltaPathFromSnapshotPath(snapshotPath),
+    definitionArchivePath: `/api/export-definitions?format=json&model_id=${encodedModelId}`,
   };
 }
 
@@ -8992,7 +9008,7 @@ async function initializeModelFromLink() {
   confirmButton.disabled = true;
   setReceiveLinkMessage("正在下载并覆盖当前本地模型定义。");
   try {
-    const normalizedLink = normalizeConnectionUrl(input.value).href;
+    const normalizedLink = normalizeConnectionUrl(input.value);
     const result = await api("/api/trainee/model-initialize", {
       method: "POST",
       modelScoped: false,

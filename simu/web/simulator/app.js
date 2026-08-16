@@ -4341,7 +4341,7 @@ function generatedTraineeLink(modelId) {
   void modelId;
   const serviceBase = activeModelServiceBase();
   if (!serviceBase) return "";
-  return `${serviceBase}/api/trainee-link`;
+  return serviceBase;
 }
 
 function modelServiceStateLabel(service = activeModelService()) {
@@ -4401,7 +4401,7 @@ async function openTraineeLinkDialog() {
   input.value = generatedTraineeLink(currentModel.id);
   modelName.textContent = currentModel.name || currentModel.id || "--";
   setTraineeLinkCopyEnabled(Boolean(input.value));
-  setTraineeLinkMessage("交互链接已自动生成，正在与模拟台服务校验。", input.value ? "ok" : "");
+  setTraineeLinkMessage("模拟台服务地址已自动生成，正在校验服务。", input.value ? "ok" : "");
   input.focus();
   input.select();
   if (button) button.disabled = true;
@@ -4410,12 +4410,12 @@ async function openTraineeLinkDialog() {
     input.value = payload.link || input.value;
     modelName.textContent = payload.model_name || payload.model_id || "--";
     setTraineeLinkCopyEnabled(Boolean(input.value));
-    setTraineeLinkMessage("将此链接发给学员台，学员点击“启动接收”后输入该链接即可接入当前模型。", "ok");
+    setTraineeLinkMessage("将此服务地址发给学员台；具体接口路径由学员台内部组织。", "ok");
     input.focus();
     input.select();
   } catch (error) {
     setTraineeLinkCopyEnabled(Boolean(input.value));
-    setTraineeLinkMessage(`已按当前模型生成链接，但服务校验失败：${apiErrorText(error)}`, input.value ? "error" : "error");
+    setTraineeLinkMessage(`已按当前模型生成服务地址，但校验失败：${apiErrorText(error)}`, "error");
   } finally {
     if (button) button.disabled = false;
   }
@@ -4424,7 +4424,7 @@ async function openTraineeLinkDialog() {
 async function copyTraineeLink() {
   const input = $("traineeLinkValue");
   if (!input?.value) {
-    setTraineeLinkMessage("暂无可复制的交互链接。", "error");
+    setTraineeLinkMessage("暂无可复制的模拟台服务地址。", "error");
     return;
   }
   try {
@@ -4435,11 +4435,11 @@ async function copyTraineeLink() {
       input.select();
       document.execCommand("copy");
     }
-    setTraineeLinkMessage("交互链接已复制。", "ok");
+    setTraineeLinkMessage("模拟台服务地址已复制。", "ok");
   } catch (_error) {
     input.focus();
     input.select();
-    setTraineeLinkMessage("复制失败，请手动复制输入框中的链接。", "error");
+    setTraineeLinkMessage("复制失败，请手动复制输入框中的服务地址。", "error");
   }
 }
 

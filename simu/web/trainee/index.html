@@ -1531,10 +1531,10 @@
           </div>
           <button id="receiveLinkClose" class="dialog-close-button" type="button" aria-label="关闭模型初始化窗口">×</button>
         </div>
-        <label class="receive-link-field">交互链接
-          <input id="receiveLinkInput" type="url" autocomplete="off" placeholder="http://127.0.0.1:8710/api/trainee-link?model_id=..." />
+        <label class="receive-link-field">模拟台服务地址
+          <input id="receiveLinkInput" type="url" autocomplete="off" placeholder="http://127.0.0.1:8711" />
         </label>
-        <p id="receiveLinkMessage" class="remote-control-hint">一个链接可供多个学员台同时接入同一个模拟台模型。</p>
+        <p id="receiveLinkMessage" class="remote-control-hint">一个服务地址可供多个学员台同时接入；具体接口路径由学员台内部组织。</p>
         <div class="dialog-actions">
           <button id="receiveLinkCancel" type="button">取消</button>
           <button id="confirmReceiveLink" class="primary" type="button">开始初始化</button>
@@ -1584,6 +1584,6 @@
         </div>
       </form>
     </dialog>
-    <script src="/app.js?v=20260815-hydrogen-diesel-hysteresis-2"></script>
+    <script src="/app.js?v=20260816-service-origin-link"></script>
   </body>
 </html>

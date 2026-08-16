@@ -9,6 +9,7 @@ import threading
 import unittest
 from pathlib import Path
 from unittest import mock
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 
@@ -591,6 +592,111 @@ class IncrementalRuntimeDataApiTest(unittest.TestCase):
         self.assertEqual(len(decoded_devices), len(full_devices))
         self.assertEqual(len(decoded_states), len(full_states))
         self.assertLess(compact_size, full_size * 0.25)
+
+    def test_snapshot_can_embed_measurement_deduplicated_device_runtime_for_local_ui(self):
+        from simu.server import make_http_server
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        server = make_http_server(("127.0.0.1", 0), service, role="simulator")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        port = server.server_address[1]
+        path = (
+            "/api/snapshot?lite=1&logs=0&measurements=0&commands=0&static=0"
+            "&measurement_after_seq=0&measurement_compact=1"
+            "&devices=0&device_states=0&device_runtime_compact=1"
+            "&device_runtime_supplement=1"
+        )
+        with urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        frame = payload["device_runtime"]
+        self.assertEqual(frame["encoding"], "device-runtime-supplement-arrays-v1")
+        for redundant_field in (
+            "device_run_stats",
+            "device_statuses",
+            "device_soc_present",
+            "state_run_stats",
+        ):
+            self.assertNotIn(redundant_field, frame)
+
+    def test_trainee_ui_frame_combines_snapshot_receive_state_and_renewable_delta(self):
+        from simu.server import make_http_server
+        from simu.trainee_exchange import TraineeRealtimeExchange
+
+        class RenewableStub:
+            def state_for_service(self, target, **options):
+                return {
+                    "modelId": target.model_id,
+                    "compact": bool(options.get("compact")),
+                    "planRevision": 3,
+                }
+
+            def close(self):
+                return None
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        service.set_trainee_receive_state(
+            {
+                "initialized": True,
+                "active": True,
+                "interaction_link": "http://teacher.invalid/api/trainee-link?model_id=teacher",
+                "teacher_api_base": "http://teacher.invalid",
+                "snapshot_path": "/api/snapshot?model_id=teacher",
+                "command_path": "/api/student/commands?model_id=teacher",
+                "teacher_model_id": "teacher",
+            }
+        )
+        exchange = TraineeRealtimeExchange(service, start_worker=False)
+        self.addCleanup(exchange.close)
+        exchange.publish_runtime_snapshot(
+            service.model_id,
+            service.snapshot(include_static=False, include_runtime_logs=False),
+        )
+        server = make_http_server(
+            ("127.0.0.1", 0),
+            service,
+            role="trainee",
+            trainee_exchange=exchange,
+            renewable_control_manager=RenewableStub(),
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        port = server.server_address[1]
+        path = (
+            "/api/trainee/ui-frame?view=renewable&compact=1"
+            "&logs=0&measurements=0&measurement_after_seq=0&measurement_compact=1"
+            "&devices=0&device_states=0&device_runtime_compact=1"
+            "&device_runtime_supplement=1&commands=0&command_history=0"
+            "&static=0&static_meta=0"
+        )
+        with urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as response:
+            first = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(first["encoding"], "trainee-ui-frame-v1")
+        self.assertIn("snapshot", first)
+        self.assertIn("measurement_delta", first["snapshot"])
+        self.assertIn("receive_state", first)
+        self.assertEqual(first["renewable_control"]["planRevision"], 3)
+        self.assertTrue(first["renewable_control"]["compact"])
+
+        cursor = quote(first["receive_state_revision"], safe="")
+        with urlopen(
+            f"http://127.0.0.1:{port}{path}&after_receive_state_revision={cursor}",
+            timeout=5,
+        ) as response:
+            unchanged = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(unchanged["receive_state_revision"], first["receive_state_revision"])
+        self.assertNotIn("receive_state", unchanged)
 
     def test_trainee_view_uses_measurement_deduplicated_device_supplement_and_slim_envelope(self):
         from simu.server import make_http_server

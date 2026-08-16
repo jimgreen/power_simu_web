@@ -19,6 +19,7 @@ class LightweightSnapshotUiTest(unittest.TestCase):
 const STATIC_SNAPSHOT_KEYS = ["files", "source_files", "work_files", "definitions", "curves", "settings", "device_parameters", "diagram"];
 function staticMetaSignature(meta) {{ return JSON.stringify(meta || null); }}
 function staticMetaMatches(left, right) {{ return staticMetaSignature(left) === staticMetaSignature(right); }}
+function traineeMeasurementOnlySnapshot(value) {{ return value; }}
 {merge_source}
 const oldDiagram = {{ svg: "old-svg" }};
 const changedModel = mergeSnapshot(
@@ -43,6 +44,79 @@ process.stdout.write(JSON.stringify([
   Object.hasOwn(changedMeta, "diagram"),
   Object.hasOwn(unchangedMeta, "diagram"),
   unchangedCommands.commands === commands,
+]));
+"""
+        result = subprocess.run(["node", "-e", node_script], check=True, capture_output=True, text=True)
+        return json.loads(result.stdout)
+
+    def _device_supplement_results(self, script: str):
+        runtime_source = "const DEVICE_RUNTIME_ENCODING" + script.split(
+            "const DEVICE_RUNTIME_ENCODING",
+            1,
+        )[1].split("function canUseCompactDeviceRuntime", 1)[0]
+        node_script = f"""
+const state = {{
+  snapshot: null,
+  deviceRuntimeSignature: "",
+  deviceRuntimeNeedsFullRefresh: false,
+  deviceRuntimeWarning: "",
+}};
+{runtime_source}
+const devices = [
+  {{ dev_type: "ACGenerator", dev_name: "g1", run_stat: 9, status: 9, soc_curr: 0.1 }},
+  {{ dev_type: "ACGenerator", dev_name: "g2", run_stat: 9, status: 9, soc_curr: 0.1 }},
+];
+const deviceStates = [
+  {{ dev_type: "ACGenerator", dev_name: "g1", run_stat: 9 }},
+  {{ dev_type: "ACGenerator", dev_name: "g2", run_stat: 9 }},
+];
+const measurements = {{
+  definitions: [
+    {{ dev_type: "ACGenerator", dev_name: "g1", meas_type: "RUN_STAT" }},
+    {{ dev_type: "ACGenerator", dev_name: "g1", meas_type: "STATUS" }},
+    {{ dev_type: "ACGenerator", dev_name: "g1", meas_type: "SOC" }},
+  ],
+  scada: [
+    {{ dev_type: "ACGenerator", dev_name: "g1", meas_type: "RUN_STAT", valid: 1, value: 1 }},
+    {{ dev_type: "ACGenerator", dev_name: "g1", meas_type: "STATUS", valid: 1, value: 1 }},
+    {{ dev_type: "ACGenerator", dev_name: "g1", meas_type: "SOC", valid: 1, value: 0.8 }},
+  ],
+}};
+const previous = {{ devices, device_states: deviceStates, measurements }};
+state.snapshot = previous;
+const frame = {{
+  encoding: DEVICE_RUNTIME_SUPPLEMENT_ENCODING,
+  runtime_signature: "sig",
+  device_count: devices.length,
+  device_signature: deviceRuntimeOrderSignature(devices, "devices"),
+  device_modes: ["auto", "manual"],
+  device_set_values: [{{ p_set: 1 }}, {{ p_set: 2 }}],
+  device_run_stat_indices: [1],
+  device_run_stat_values: [0],
+  device_status_indices: [1],
+  device_status_values: [0],
+  device_soc_indices: [1],
+  device_soc_values: [0.2],
+  state_count: deviceStates.length,
+  state_signature: deviceRuntimeOrderSignature(deviceStates, "device_states"),
+  state_run_stat_indices: [1],
+  state_run_stat_values: [0],
+  state_dead_islands: [false, true],
+}};
+const applied = applyDeviceRuntimePayload(previous, {{
+  device_runtime_signature: "sig",
+  device_runtime: frame,
+}});
+process.stdout.write(JSON.stringify([
+  applied.devices[0].run_stat,
+  applied.devices[0].status,
+  applied.devices[0].soc_curr,
+  applied.devices[0].mode,
+  applied.devices[1].run_stat,
+  applied.devices[1].status,
+  applied.devices[1].soc_curr,
+  applied.device_states[0].run_stat,
+  applied.device_states[1].run_stat,
 ]));
 """
         result = subprocess.run(["node", "-e", node_script], check=True, capture_output=True, text=True)
@@ -115,7 +189,7 @@ process.stdout.write(JSON.stringify([
         )
         self.assertIn('params.set("command_history", pageNeedsCommandHistory(page) ? "1" : "0");', script)
         self.assertIn(
-            'params.set("command_history", pageNeedsCommandHistory(page) ? "1" : "0");',
+            'params.set("command_history", "0");',
             teacher_poll_source,
         )
         self.assertIn('return page === "commands";', script)
@@ -127,7 +201,7 @@ process.stdout.write(JSON.stringify([
         self.assertIn("applyDeviceRuntimePayload(state.snapshot, await api(snapshotPollPath(page)))", script)
         self.assertIn("ensureLocalDefinitionSnapshot", script)
         self.assertIn("mergeTeacherSnapshotWithLocalDefinitions", script)
-        self.assertIn("await teacherSnapshotApi(page)", script)
+        self.assertIn("await api(traineeUiFramePath(page))", script)
         self.assertIn("applyDeviceRuntimePayload", script)
 
     def test_static_snapshot_merge_drops_previous_model_or_changed_revision_fields(self):
@@ -149,6 +223,16 @@ process.stdout.write(JSON.stringify([
 
         self.assertIn('const STATIC_CACHE_STORAGE_KEY = "polarSimulatorStaticCacheV2";', simulator_script)
         self.assertIn('const STATIC_CACHE_STORAGE_KEY = "polarTraineeStaticCacheV2";', trainee_script)
+
+    def test_frontends_decode_device_supplements_and_restore_measurement_backed_fields(self):
+        simulator_script = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")
+        trainee_script = (ROOT / "simu" / "web" / "trainee" / "app.js").read_text(encoding="utf-8")
+
+        for script in (simulator_script, trainee_script):
+            self.assertEqual(
+                self._device_supplement_results(script),
+                [1, 1, 0.8, "auto", 0, 0, 0.2, 1, 0],
+            )
 
     def test_frontends_cache_stable_model_options_and_svg_binding_queries(self):
         simulator_script = (ROOT / "simu" / "web" / "simulator" / "app.js").read_text(encoding="utf-8")

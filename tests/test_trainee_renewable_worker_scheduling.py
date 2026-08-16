@@ -136,6 +136,9 @@ def test_worker_iteration_waits_only_until_next_collection_deadline(tmp_path):
 def test_receive_and_control_actions_wake_worker(tmp_path):
     manager = _manager(tmp_path, receive_active=True)
     service = manager.services.service_for("shared")
+    state = manager._state_for("shared")
+    with state.lock:
+        state.desired_enabled = True
     wake_event = _CountingEvent()
     manager._wake_event = wake_event
     manager._run_once_for_service = lambda *_args, **_kwargs: {"enabled": True}

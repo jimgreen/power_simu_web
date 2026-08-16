@@ -176,6 +176,7 @@ const state = {
   measurementDeltaSeq: 0,
   measurementDeltaRequestActive: false,
   embeddedMeasurementDeltaReceived: false,
+  embeddedRuntimeLogDeltaReceived: false,
   measurementArrayWarning: "",
   systemParameters: {
     clock_speed: 1,
@@ -3486,6 +3487,7 @@ function pageNeedsCommandHistory(page = currentPageName()) {
 }
 
 const DEVICE_RUNTIME_ENCODING = "device-runtime-arrays-v1";
+const DEVICE_RUNTIME_SUPPLEMENT_ENCODING = "device-runtime-supplement-arrays-v1";
 
 function deviceRuntimeIdentity(row = {}) {
   return [
@@ -3541,6 +3543,55 @@ function validatedDeviceRuntimeArray(payload, name, expected) {
   return values;
 }
 
+function validatedDeviceRuntimeSparseValues(payload, prefix, count) {
+  const indices = payload?.[`${prefix}_indices`];
+  const values = payload?.[`${prefix}_values`];
+  if (!Array.isArray(indices) || !Array.isArray(values) || indices.length !== values.length) {
+    throw new Error(`${prefix} sparse length mismatch`);
+  }
+  let previous = -1;
+  return indices.map((rawIndex, position) => {
+    const index = Number(rawIndex);
+    if (!Number.isInteger(index) || index < 0 || index >= count || index <= previous) {
+      throw new Error(`${prefix} indices must be unique, ordered, and in range`);
+    }
+    previous = index;
+    return [index, values[position]];
+  });
+}
+
+function measurementBackedRuntimeKey(row = {}, measurementType = null) {
+  const [devType, devName] = deviceRuntimeIdentity(row);
+  return `${devType}\u0000${devName}\u0000${String(measurementType ?? row.meas_type ?? "").trim().toUpperCase()}`;
+}
+
+function hydrateMeasurementBackedDeviceRuntime(snapshot = state.snapshot || {}) {
+  const measurements = snapshot?.measurements || {};
+  const definitions = Array.isArray(measurements.definitions)
+    ? measurements.definitions
+    : (snapshot?.definitions?.measurement || []);
+  const definitionKeys = new Set(definitions.map((row) => measurementBackedRuntimeKey(row)));
+  const scadaByKey = new Map(
+    (measurements.scada || []).map((row) => [measurementBackedRuntimeKey(row), row]),
+  );
+  const hydrate = (row, measurementType, fieldName) => {
+    const key = measurementBackedRuntimeKey(row, measurementType);
+    if (!definitionKeys.has(key)) return;
+    const measurement = scadaByKey.get(key);
+    const valid = Number(measurement?.valid ?? 0) === 1 && measurement?.value !== null && measurement?.value !== undefined;
+    if (valid) row[fieldName] = measurement.value;
+    else if (["RUN_STAT", "STATUS"].includes(measurementType)) row[fieldName] = 0;
+    else delete row[fieldName];
+  };
+  (snapshot.devices || []).forEach((row) => {
+    hydrate(row, "RUN_STAT", "run_stat");
+    hydrate(row, "STATUS", "status");
+    hydrate(row, "SOC", "soc_curr");
+  });
+  (snapshot.device_states || []).forEach((row) => hydrate(row, "RUN_STAT", "run_stat"));
+  return snapshot;
+}
+
 function rejectDeviceRuntimeFrame(incoming, message) {
   state.deviceRuntimeSignature = "";
   state.deviceRuntimeNeedsFullRefresh = true;
@@ -3569,7 +3620,8 @@ function applyDeviceRuntimePayload(previous, incoming) {
     return rejectDeviceRuntimeFrame(incoming, "设备运行签名变化但未携带运行帧");
   }
   try {
-    if (String(frame.encoding || "") !== DEVICE_RUNTIME_ENCODING) {
+    const encoding = String(frame.encoding || "");
+    if (![DEVICE_RUNTIME_ENCODING, DEVICE_RUNTIME_SUPPLEMENT_ENCODING].includes(encoding)) {
       throw new Error(`unsupported encoding ${frame.encoding || "--"}`);
     }
     if (String(frame.runtime_signature || "") !== advertisedSignature) {
@@ -3584,25 +3636,36 @@ function applyDeviceRuntimePayload(previous, incoming) {
     if (String(frame.device_signature || "") !== deviceRuntimeOrderSignature(baseDevices, "devices")) {
       throw new Error("device signature mismatch");
     }
-    const runStats = validatedDeviceRuntimeArray(frame, "device_run_stats", deviceCount);
-    const statuses = validatedDeviceRuntimeArray(frame, "device_statuses", deviceCount);
     const modes = validatedDeviceRuntimeArray(frame, "device_modes", deviceCount);
     const setValues = validatedDeviceRuntimeArray(frame, "device_set_values", deviceCount);
-    const socPresent = validatedDeviceRuntimeArray(frame, "device_soc_present", deviceCount);
-    const socValues = validatedDeviceRuntimeArray(frame, "device_soc_values", deviceCount);
-    const stateRunStats = validatedDeviceRuntimeArray(frame, "state_run_stats", stateCount);
     const stateDeadIslands = validatedDeviceRuntimeArray(frame, "state_dead_islands", stateCount);
+    const completeFrame = encoding === DEVICE_RUNTIME_ENCODING;
+    const runStats = completeFrame ? validatedDeviceRuntimeArray(frame, "device_run_stats", deviceCount) : [];
+    const statuses = completeFrame ? validatedDeviceRuntimeArray(frame, "device_statuses", deviceCount) : [];
+    const socPresent = completeFrame ? validatedDeviceRuntimeArray(frame, "device_soc_present", deviceCount) : [];
+    const socValues = completeFrame ? validatedDeviceRuntimeArray(frame, "device_soc_values", deviceCount) : [];
+    const stateRunStats = completeFrame ? validatedDeviceRuntimeArray(frame, "state_run_stats", stateCount) : [];
+    const runSparse = completeFrame ? [] : validatedDeviceRuntimeSparseValues(frame, "device_run_stat", deviceCount);
+    const statusSparse = completeFrame ? [] : validatedDeviceRuntimeSparseValues(frame, "device_status", deviceCount);
+    const socSparse = completeFrame ? [] : validatedDeviceRuntimeSparseValues(frame, "device_soc", deviceCount);
+    const stateRunSparse = completeFrame ? [] : validatedDeviceRuntimeSparseValues(frame, "state_run_stat", stateCount);
 
     const decodedDevices = baseDevices.map((row) => ({ ...row, set_values: { ...(row?.set_values || {}) } }));
     orderedDeviceRuntimeRows(decodedDevices, "devices").forEach((row, index) => {
-      row.run_stat = runStats[index];
-      row.status = statuses[index];
+      if (completeFrame) {
+        row.run_stat = runStats[index];
+        row.status = statuses[index];
+      }
       row.mode = modes[index];
       row.set_values = setValues[index] && typeof setValues[index] === "object"
         ? { ...setValues[index] }
         : {};
-      if (socPresent[index]) row.soc_curr = socValues[index];
+      if (completeFrame && socPresent[index]) row.soc_curr = socValues[index];
     });
+    const orderedDevices = orderedDeviceRuntimeRows(decodedDevices, "devices");
+    runSparse.forEach(([index, value]) => { orderedDevices[index].run_stat = value; });
+    statusSparse.forEach(([index, value]) => { orderedDevices[index].status = value; });
+    socSparse.forEach(([index, value]) => { orderedDevices[index].soc_curr = value; });
 
     const baseStates = Array.isArray(incoming.device_states) ? incoming.device_states : previous?.device_states;
     let decodedStates = null;
@@ -3613,9 +3676,11 @@ function applyDeviceRuntimePayload(previous, incoming) {
       }
       decodedStates = baseStates.map((row) => ({ ...row }));
       orderedDeviceRuntimeRows(decodedStates, "device_states").forEach((row, index) => {
-        row.run_stat = stateRunStats[index];
+        if (completeFrame) row.run_stat = stateRunStats[index];
         row.dead_island = Boolean(stateDeadIslands[index]);
       });
+      const orderedStates = orderedDeviceRuntimeRows(decodedStates, "device_states");
+      stateRunSparse.forEach(([index, value]) => { orderedStates[index].run_stat = value; });
     }
 
     const applied = { ...incoming, devices: decodedDevices };
@@ -3624,6 +3689,7 @@ function applyDeviceRuntimePayload(previous, incoming) {
     state.deviceRuntimeSignature = advertisedSignature;
     state.deviceRuntimeNeedsFullRefresh = false;
     state.deviceRuntimeWarning = "";
+    hydrateMeasurementBackedDeviceRuntime({ ...(previous || {}), ...applied });
     return applied;
   } catch (error) {
     return rejectDeviceRuntimeFrame(incoming, error?.message || String(error));
@@ -3677,7 +3743,13 @@ function snapshotPollPath(page = currentPageName(), forceStaticKeys = null) {
     );
   const params = new URLSearchParams();
   const compactDeviceRuntime = !Array.isArray(forceStaticKeys) && canUseCompactDeviceRuntime(page);
-  params.set("logs", "0");
+  if (!Array.isArray(forceStaticKeys) && pageNeedsRuntimeLogDelta(page)) {
+    params.set("logs", "1");
+    params.set("runtime_log_after_seq", String(state.runtimeLogBackendSeq || 0));
+    params.set("log_limit", String(Math.max(20, Math.round(activeRuntimeSetting("runtime_log_delta_batch_size")))));
+  } else {
+    params.set("logs", "0");
+  }
   params.set("measurements", "0");
   params.set("devices", pageNeedsDevices(page) ? "1" : "0");
   params.set("device_states", pageNeedsDeviceStates(page) ? "1" : "0");
@@ -3688,6 +3760,7 @@ function snapshotPollPath(page = currentPageName(), forceStaticKeys = null) {
     if (state.deviceRuntimeSignature) {
       params.set("after_device_runtime_signature", state.deviceRuntimeSignature);
     }
+    if (pageNeedsMeasurementDelta(page)) params.set("device_runtime_supplement", "1");
   }
   params.set("commands", pageNeedsCommands(page) ? "1" : "0");
   if (pageNeedsCommands(page) && state.snapshot?.command_signature) {
@@ -3740,6 +3813,19 @@ function mergeRuntimeLogItems(items = [], { reset = false, latestSeq = 0, total 
     state.runtimeLogTotal = Math.max(Number(state.runtimeLogTotal) || 0, state.runtimeLogs.length);
   }
   state.runtimeLogSeq = Math.max(state.runtimeLogSeq, state.runtimeLogBackendSeq);
+}
+
+function applyEmbeddedRuntimeLogDelta(snapshot) {
+  const payload = snapshot?.runtime_logs_delta;
+  state.embeddedRuntimeLogDeltaReceived = Boolean(payload);
+  if (!payload) return false;
+  delete snapshot.runtime_logs_delta;
+  mergeRuntimeLogItems(payload.items || payload.logs || [], {
+    reset: Boolean(payload.reset),
+    latestSeq: payload.latest_seq,
+    total: payload.total,
+  });
+  return true;
 }
 
 async function refreshRuntimeLogs(renderNow = false) {
@@ -4055,7 +4141,9 @@ function applyEmbeddedMeasurementDelta(snapshot) {
   if (!payload) return false;
   delete snapshot.measurement_delta;
   state.snapshot = snapshot;
-  return applyMeasurementDelta(payload);
+  const changed = applyMeasurementDelta(payload);
+  if (changed) hydrateMeasurementBackedDeviceRuntime(state.snapshot);
+  return changed;
 }
 
 async function refreshMeasurementDelta(renderNow = false) {
@@ -4064,6 +4152,7 @@ async function refreshMeasurementDelta(renderNow = false) {
   try {
     const payload = await api(`/api/measurements/delta?after_seq=${state.measurementDeltaSeq}&compact=1`);
     const changed = applyMeasurementDelta(payload);
+    if (changed) hydrateMeasurementBackedDeviceRuntime(state.snapshot);
     if (changed && renderNow && currentPageName() === "measurements") renderMeasurementCompareTable();
     return changed;
   } catch (error) {
@@ -4076,17 +4165,18 @@ async function refreshMeasurementDelta(renderNow = false) {
 
 async function refreshSnapshotPayload(page = currentPageName()) {
   state.embeddedMeasurementDeltaReceived = false;
-  const incoming = applyDeviceRuntimePayload(state.snapshot, await api(snapshotPollPath(page)));
+  state.embeddedRuntimeLogDeltaReceived = false;
+  const response = await api(snapshotPollPath(page));
+  applyEmbeddedRuntimeLogDelta(response);
+  const incoming = applyDeviceRuntimePayload(state.snapshot, response);
   let embeddedMeasurementDelta = incoming?.measurement_delta || null;
   if (incoming?.measurement_delta) delete incoming.measurement_delta;
   let snapshot = mergeSnapshot(state.snapshot, incoming);
   snapshot = restoreStaticSnapshotCache(snapshot, page);
   let requiredStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
   if (requiredStaticKeys.length) {
-    const staticIncoming = applyDeviceRuntimePayload(
-      snapshot,
-      await api(snapshotPollPath(page, requiredStaticKeys)),
-    );
+    const staticResponse = await api(snapshotPollPath(page, requiredStaticKeys));
+    const staticIncoming = applyDeviceRuntimePayload(snapshot, staticResponse);
     if (staticIncoming?.measurement_delta) {
       embeddedMeasurementDelta = staticIncoming.measurement_delta;
       delete staticIncoming.measurement_delta;
@@ -12422,7 +12512,9 @@ async function refresh() {
     const activePage = currentPageName();
     const snapshot = await refreshSnapshotPayload(activePage);
     const deltaRequests = [];
-    if (pageNeedsRuntimeLogDelta(activePage)) deltaRequests.push(refreshRuntimeLogs(false));
+    if (pageNeedsRuntimeLogDelta(activePage) && !state.embeddedRuntimeLogDeltaReceived) {
+      deltaRequests.push(refreshRuntimeLogs(false));
+    }
     if (pageNeedsMeasurementDelta(activePage) && !state.embeddedMeasurementDeltaReceived) {
       deltaRequests.push(refreshMeasurementDelta(false));
     }

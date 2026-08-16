@@ -14674,6 +14674,38 @@ _COMPACT_TREND_FIELDS = (
 )
 
 
+def _compact_plan_for_ui(plan: Any) -> Any:
+    """Project one optimizer plan onto fields consumed by the trainee browser."""
+
+    if not isinstance(plan, Mapping):
+        return None
+    payload = {
+        key: _json_safe_copy(plan.get(key))
+        for key in (
+            "clockKey",
+            "time",
+            "weather",
+            "commandRows",
+            "metrics",
+            "dataQuality",
+        )
+        if key in plan
+    }
+    commands = plan.get("commands")
+    run_commands = plan.get("runCommands")
+    payload["commandCount"] = (
+        len(commands)
+        if isinstance(commands, Sequence) and not isinstance(commands, (str, bytes))
+        else 0
+    )
+    payload["runCommandCount"] = (
+        len(run_commands)
+        if isinstance(run_commands, Sequence) and not isinstance(run_commands, (str, bytes))
+        else 0
+    )
+    return payload
+
+
 class TraineeRenewableControlLifecycleError(RuntimeError):
     """Raised when a controller request outlives its captured model service."""
 
@@ -17345,7 +17377,11 @@ class TraineeRenewableControlManager:
                 **prerequisite,
             }
             if not plan_cursor_matches:
-                payload["lastPlan"] = copy.deepcopy(state.last_plan)
+                payload["lastPlan"] = (
+                    _compact_plan_for_ui(state.last_plan)
+                    if compact
+                    else copy.deepcopy(state.last_plan)
+                )
             if not performance_cursor_matches:
                 payload["performanceDiagnostics"] = state.performance.payload()
             return payload

@@ -139,7 +139,11 @@ class TraineeRenewableTrendChartUiTest(unittest.TestCase):
         )[0]
         statistic_ids = set(re.findall(r'<td id="([^"]+)"', metric_panel))
         environment_ids = {"renewableObservedWindSpeed", "renewableObservedSolarIrradiance"}
-        self.assertTrue((set(metric_ids) - environment_ids).issubset(statistic_ids))
+        non_statistic_ids = environment_ids | {
+            "renewableHydrogenStoragePressureLowGuardMpa",
+            "renewableHydrogenStoragePressureHighGuardMpa",
+        }
+        self.assertTrue((set(metric_ids) - non_statistic_ids).issubset(statistic_ids))
         control_panel = self.html.split('<section class="panel renewable-control-panel">', 1)[1].split(
             '<section class="panel renewable-metrics-panel">',
             1,

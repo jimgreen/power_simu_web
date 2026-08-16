@@ -128,6 +128,7 @@ const state = {
   frozen: false,
   receiveEpoch: 0,
   lastReceiveAt: "",
+  receiveStateRevision: "",
   snapshotSource: "",
   lastTeacherSnapshotLogKey: "",
   interactionLink: "",
@@ -622,6 +623,7 @@ function defaultModelContext(modelId = state.activeModelId) {
     teacherMeasurementDeltaPath: "",
     teacherDefinitionArchivePath: "",
     lastReceiveAt: "",
+    receiveStateRevision: "",
     snapshotSource: "",
     lastTeacherSnapshotLogKey: "",
     receiveReconnectAttempts: 0,
@@ -679,6 +681,7 @@ function serializableModelContext(context) {
     teacherMeasurementDeltaPath: context.teacherMeasurementDeltaPath || "",
     teacherDefinitionArchivePath: context.teacherDefinitionArchivePath || "",
     lastReceiveAt: context.lastReceiveAt || "",
+    receiveStateRevision: context.receiveStateRevision || "",
   };
 }
 
@@ -710,6 +713,7 @@ function captureActiveModelContext(overrides = {}) {
     teacherMeasurementDeltaPath: state.teacherMeasurementDeltaPath,
     teacherDefinitionArchivePath: state.teacherDefinitionArchivePath,
     lastReceiveAt: state.lastReceiveAt,
+    receiveStateRevision: state.receiveStateRevision,
     snapshotSource: state.snapshotSource,
     lastTeacherSnapshotLogKey: state.lastTeacherSnapshotLogKey,
     receiveReconnectAttempts: state.receiveReconnectAttempts,
@@ -767,6 +771,7 @@ function restoreModelContext(modelId = state.activeModelId) {
   state.teacherMeasurementDeltaPath = context.teacherMeasurementDeltaPath || "";
   state.teacherDefinitionArchivePath = context.teacherDefinitionArchivePath || "";
   state.lastReceiveAt = context.lastReceiveAt || "";
+  state.receiveStateRevision = context.receiveStateRevision || "";
   state.snapshotSource = context.snapshotSource || "";
   state.lastTeacherSnapshotLogKey = context.lastTeacherSnapshotLogKey || "";
   state.receiveReconnectAttempts = Number(context.receiveReconnectAttempts) || 0;
@@ -2366,6 +2371,7 @@ function pageNeedsCommandHistory(page = currentPageName()) {
 }
 
 const DEVICE_RUNTIME_ENCODING = "device-runtime-arrays-v1";
+const DEVICE_RUNTIME_SUPPLEMENT_ENCODING = "device-runtime-supplement-arrays-v1";
 
 function deviceRuntimeIdentity(row = {}) {
   return [
@@ -2421,6 +2427,55 @@ function validatedDeviceRuntimeArray(payload, name, expected) {
   return values;
 }
 
+function validatedDeviceRuntimeSparseValues(payload, prefix, count) {
+  const indices = payload?.[`${prefix}_indices`];
+  const values = payload?.[`${prefix}_values`];
+  if (!Array.isArray(indices) || !Array.isArray(values) || indices.length !== values.length) {
+    throw new Error(`${prefix} sparse length mismatch`);
+  }
+  let previous = -1;
+  return indices.map((rawIndex, position) => {
+    const index = Number(rawIndex);
+    if (!Number.isInteger(index) || index < 0 || index >= count || index <= previous) {
+      throw new Error(`${prefix} indices must be unique, ordered, and in range`);
+    }
+    previous = index;
+    return [index, values[position]];
+  });
+}
+
+function measurementBackedRuntimeKey(row = {}, measurementType = null) {
+  const [devType, devName] = deviceRuntimeIdentity(row);
+  return `${devType}\u0000${devName}\u0000${String(measurementType ?? row.meas_type ?? "").trim().toUpperCase()}`;
+}
+
+function hydrateMeasurementBackedDeviceRuntime(snapshot = state.snapshot || {}) {
+  const measurements = snapshot?.measurements || {};
+  const definitions = Array.isArray(measurements.definitions)
+    ? measurements.definitions
+    : (snapshot?.definitions?.measurement || []);
+  const definitionKeys = new Set(definitions.map((row) => measurementBackedRuntimeKey(row)));
+  const scadaByKey = new Map(
+    (measurements.scada || []).map((row) => [measurementBackedRuntimeKey(row), row]),
+  );
+  const hydrate = (row, measurementType, fieldName) => {
+    const key = measurementBackedRuntimeKey(row, measurementType);
+    if (!definitionKeys.has(key)) return;
+    const measurement = scadaByKey.get(key);
+    const valid = Number(measurement?.valid ?? 0) === 1 && measurement?.value !== null && measurement?.value !== undefined;
+    if (valid) row[fieldName] = measurement.value;
+    else if (["RUN_STAT", "STATUS"].includes(measurementType)) row[fieldName] = 0;
+    else delete row[fieldName];
+  };
+  (snapshot.devices || []).forEach((row) => {
+    hydrate(row, "RUN_STAT", "run_stat");
+    hydrate(row, "STATUS", "status");
+    hydrate(row, "SOC", "soc_curr");
+  });
+  (snapshot.device_states || []).forEach((row) => hydrate(row, "RUN_STAT", "run_stat"));
+  return snapshot;
+}
+
 function rejectDeviceRuntimeFrame(incoming, message) {
   state.deviceRuntimeSignature = "";
   state.deviceRuntimeNeedsFullRefresh = true;
@@ -2449,7 +2504,8 @@ function applyDeviceRuntimePayload(previous, incoming) {
     return rejectDeviceRuntimeFrame(incoming, "设备运行签名变化但未携带运行帧");
   }
   try {
-    if (String(frame.encoding || "") !== DEVICE_RUNTIME_ENCODING) {
+    const encoding = String(frame.encoding || "");
+    if (![DEVICE_RUNTIME_ENCODING, DEVICE_RUNTIME_SUPPLEMENT_ENCODING].includes(encoding)) {
       throw new Error(`unsupported encoding ${frame.encoding || "--"}`);
     }
     if (String(frame.runtime_signature || "") !== advertisedSignature) {
@@ -2464,25 +2520,36 @@ function applyDeviceRuntimePayload(previous, incoming) {
     if (String(frame.device_signature || "") !== deviceRuntimeOrderSignature(baseDevices, "devices")) {
       throw new Error("device signature mismatch");
     }
-    const runStats = validatedDeviceRuntimeArray(frame, "device_run_stats", deviceCount);
-    const statuses = validatedDeviceRuntimeArray(frame, "device_statuses", deviceCount);
     const modes = validatedDeviceRuntimeArray(frame, "device_modes", deviceCount);
     const setValues = validatedDeviceRuntimeArray(frame, "device_set_values", deviceCount);
-    const socPresent = validatedDeviceRuntimeArray(frame, "device_soc_present", deviceCount);
-    const socValues = validatedDeviceRuntimeArray(frame, "device_soc_values", deviceCount);
-    const stateRunStats = validatedDeviceRuntimeArray(frame, "state_run_stats", stateCount);
     const stateDeadIslands = validatedDeviceRuntimeArray(frame, "state_dead_islands", stateCount);
+    const completeFrame = encoding === DEVICE_RUNTIME_ENCODING;
+    const runStats = completeFrame ? validatedDeviceRuntimeArray(frame, "device_run_stats", deviceCount) : [];
+    const statuses = completeFrame ? validatedDeviceRuntimeArray(frame, "device_statuses", deviceCount) : [];
+    const socPresent = completeFrame ? validatedDeviceRuntimeArray(frame, "device_soc_present", deviceCount) : [];
+    const socValues = completeFrame ? validatedDeviceRuntimeArray(frame, "device_soc_values", deviceCount) : [];
+    const stateRunStats = completeFrame ? validatedDeviceRuntimeArray(frame, "state_run_stats", stateCount) : [];
+    const runSparse = completeFrame ? [] : validatedDeviceRuntimeSparseValues(frame, "device_run_stat", deviceCount);
+    const statusSparse = completeFrame ? [] : validatedDeviceRuntimeSparseValues(frame, "device_status", deviceCount);
+    const socSparse = completeFrame ? [] : validatedDeviceRuntimeSparseValues(frame, "device_soc", deviceCount);
+    const stateRunSparse = completeFrame ? [] : validatedDeviceRuntimeSparseValues(frame, "state_run_stat", stateCount);
 
     const decodedDevices = baseDevices.map((row) => ({ ...row, set_values: { ...(row?.set_values || {}) } }));
     orderedDeviceRuntimeRows(decodedDevices, "devices").forEach((row, index) => {
-      row.run_stat = runStats[index];
-      row.status = statuses[index];
+      if (completeFrame) {
+        row.run_stat = runStats[index];
+        row.status = statuses[index];
+      }
       row.mode = modes[index];
       row.set_values = setValues[index] && typeof setValues[index] === "object"
         ? { ...setValues[index] }
         : {};
-      if (socPresent[index]) row.soc_curr = socValues[index];
+      if (completeFrame && socPresent[index]) row.soc_curr = socValues[index];
     });
+    const orderedDevices = orderedDeviceRuntimeRows(decodedDevices, "devices");
+    runSparse.forEach(([index, value]) => { orderedDevices[index].run_stat = value; });
+    statusSparse.forEach(([index, value]) => { orderedDevices[index].status = value; });
+    socSparse.forEach(([index, value]) => { orderedDevices[index].soc_curr = value; });
 
     const baseStates = Array.isArray(incoming.device_states) ? incoming.device_states : previous?.device_states;
     let decodedStates = null;
@@ -2493,9 +2560,11 @@ function applyDeviceRuntimePayload(previous, incoming) {
       }
       decodedStates = baseStates.map((row) => ({ ...row }));
       orderedDeviceRuntimeRows(decodedStates, "device_states").forEach((row, index) => {
-        row.run_stat = stateRunStats[index];
+        if (completeFrame) row.run_stat = stateRunStats[index];
         row.dead_island = Boolean(stateDeadIslands[index]);
       });
+      const orderedStates = orderedDeviceRuntimeRows(decodedStates, "device_states");
+      stateRunSparse.forEach(([index, value]) => { orderedStates[index].run_stat = value; });
     }
 
     const applied = { ...incoming, devices: decodedDevices };
@@ -2504,6 +2573,7 @@ function applyDeviceRuntimePayload(previous, incoming) {
     state.deviceRuntimeSignature = advertisedSignature;
     state.deviceRuntimeNeedsFullRefresh = false;
     state.deviceRuntimeWarning = "";
+    hydrateMeasurementBackedDeviceRuntime({ ...(previous || {}), ...applied });
     return applied;
   } catch (error) {
     return rejectDeviceRuntimeFrame(incoming, error?.message || String(error));
@@ -2541,6 +2611,7 @@ function snapshotPollPath(page = currentPageName(), forceStaticKeys = null) {
     if (state.deviceRuntimeSignature) {
       params.set("after_device_runtime_signature", state.deviceRuntimeSignature);
     }
+    if (pageNeedsMeasurementDelta(page)) params.set("device_runtime_supplement", "1");
   }
   params.set("commands", pageNeedsCommands(page) ? "1" : "0");
   if (pageNeedsCommands(page) && state.snapshot?.command_signature) {
@@ -2605,6 +2676,7 @@ function teacherSnapshotPollAddress(page = currentPageName(), forceStaticKeys = 
     if (state.deviceRuntimeSignature) {
       params.set("after_device_runtime_signature", state.deviceRuntimeSignature);
     }
+    if (pageNeedsMeasurementDelta(page)) params.set("device_runtime_supplement", "1");
   }
   params.set("commands", pageNeedsCommands(page) ? "1" : "0");
   if (pageNeedsCommands(page) && state.snapshot?.command_signature) {
@@ -2620,6 +2692,68 @@ function teacherSnapshotPollAddress(page = currentPageName(), forceStaticKeys = 
   params.set("static_meta", "0");
   params.set("lite", "1");
   return `/api/trainee/snapshot?${params.toString()}`;
+}
+
+function traineeUiFramePath(page = currentPageName()) {
+  const snapshotUrl = new URL(teacherSnapshotPollAddress(page), location.href);
+  const params = new URLSearchParams(snapshotUrl.search);
+  params.set("view", page);
+  params.set("compact", "1");
+  if (state.receiveStateRevision) {
+    params.set("after_receive_state_revision", state.receiveStateRevision);
+  }
+  if (page === "renewable") {
+    const renewableUrl = new URL(renewableControlApiPath(false), location.href);
+    renewableUrl.searchParams.forEach((value, key) => params.set(key, value));
+  }
+  return `/api/trainee/ui-frame?${params.toString()}`;
+}
+
+function applyTraineeUiFrame(payload = {}) {
+  if (!payload || payload.encoding !== "trainee-ui-frame-v1") {
+    throw new Error("学员台周期帧编码无效");
+  }
+  const previousReceiveMode = state.receiveMode;
+  const previousLink = state.interactionLink;
+  const previousInitialized = state.modelInitialized;
+  const previousInitializedAt = state.modelInitializedAt;
+  if (payload.receive_state && typeof payload.receive_state === "object") {
+    mergeBackendReceiveState(state.activeModelId, payload.receive_state, true);
+    state.lastReceiveStateSyncAtMs = Date.now();
+  }
+  const receiveStateRevision = String(payload.receive_state_revision || "");
+  if (receiveStateRevision && receiveStateRevision !== state.receiveStateRevision) {
+    state.receiveStateRevision = receiveStateRevision;
+    const key = contextKey();
+    state.modelContexts[key] = {
+      ...activeModelContext(),
+      receiveStateRevision,
+    };
+  }
+  if (
+    state.modelInitialized !== previousInitialized
+    || state.modelInitializedAt !== previousInitializedAt
+  ) {
+    state.localDefinitionSnapshot = null;
+    state.localDefinitionModelId = "";
+    state.snapshot = null;
+    state.measurementDeltaSeq = 0;
+    invalidateManualDefinitionChanges();
+    clearStaticSnapshotCacheForModel(state.activeModelId);
+  }
+  if (state.receiveMode !== previousReceiveMode || state.interactionLink !== previousLink) {
+    state.receiveEpoch += 1;
+    state.receiveRequestActive = false;
+    if (state.receiveMode) {
+      state.frozen = false;
+      state.lastReceiveAt = "";
+      state.snapshotSource = "";
+    }
+  }
+  if (payload.renewable_control && typeof payload.renewable_control === "object") {
+    applyRenewableControlState(payload.renewable_control);
+  }
+  return payload.snapshot && typeof payload.snapshot === "object" ? payload.snapshot : null;
 }
 
 function measurementDeltaPathFromSnapshotPath(snapshotPath = "") {
@@ -2886,7 +3020,9 @@ function applyEmbeddedMeasurementDelta(snapshot) {
   if (!payload) return false;
   delete snapshot.measurement_delta;
   state.snapshot = snapshot;
-  return applyMeasurementDelta(payload);
+  const changed = applyMeasurementDelta(payload);
+  if (changed) hydrateMeasurementBackedDeviceRuntime(state.snapshot);
+  return changed;
 }
 
 async function refreshMeasurementDelta(renderNow = false) {
@@ -2897,6 +3033,7 @@ async function refreshMeasurementDelta(renderNow = false) {
       ? await api(teacherMeasurementDeltaAddress())
       : await api(`/api/measurements/delta?after_seq=${state.measurementDeltaSeq}&compact=1`);
     const changed = applyMeasurementDelta(payload);
+    if (changed) hydrateMeasurementBackedDeviceRuntime(state.snapshot);
     if (changed && renderNow && currentPageName() === "measurements") renderMeasurements(state.snapshot || {});
     return changed;
   } finally {
@@ -10096,7 +10233,7 @@ async function refreshLocalSnapshotPayload(page = currentPageName()) {
 }
 
 async function refresh() {
-  await syncActiveReceiveStateBeforeRefresh();
+  if (!state.receiveMode) await syncActiveReceiveStateBeforeRefresh();
   if (state.receiveMode) {
     await refreshFromTeacher(state.receiveEpoch);
     return;
@@ -10141,9 +10278,15 @@ async function refreshFromTeacher(epoch = state.receiveEpoch) {
   try {
     const page = currentPageName();
     await ensureLocalDefinitionSnapshot(state.activeModelId);
+    const uiFrame = await api(traineeUiFramePath(page));
+    const frameSnapshot = applyTraineeUiFrame(uiFrame);
+    if (!state.receiveMode || epoch !== state.receiveEpoch || !frameSnapshot) {
+      renderReceiveMode();
+      return;
+    }
     const remoteSnapshot = applyDeviceRuntimePayload(
       state.snapshot,
-      await teacherSnapshotApi(page),
+      frameSnapshot,
     );
     state.embeddedMeasurementDeltaReceived = false;
     const embeddedMeasurementDelta = remoteSnapshot?.measurement_delta || null;
@@ -10157,9 +10300,6 @@ async function refreshFromTeacher(epoch = state.receiveEpoch) {
     }
     if (pageNeedsMeasurementDelta(page) && !state.embeddedMeasurementDeltaReceived) {
       await refreshMeasurementDelta(false);
-    }
-    if (page === "renewable") {
-      await refreshRenewableControlState({ preview: false, render: false });
     }
     acceptTeacherSnapshot(state.snapshot, epoch);
   } catch (_error) {
@@ -14520,7 +14660,8 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     status.classList.toggle("is-error", !hasDecisionSnapshot && control.enabled);
   }
   if (summary) {
-    const commandCount = (plan?.commands?.length || 0) + (plan?.runCommands?.length || 0);
+    const commandCount = Number(plan?.commandCount ?? plan?.commands?.length ?? 0)
+      + Number(plan?.runCommandCount ?? plan?.runCommands?.length ?? 0);
     summary.textContent = `${commandCount} 条 · ${plan?.time || "--"} · ${loopModeLabel} · ${renewableDataSourceLabel(plan?.dataQuality?.source)}`;
   }
   renderRenewableMetricTabs();

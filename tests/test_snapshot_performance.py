@@ -35,6 +35,18 @@ class SnapshotPerformanceTest(unittest.TestCase):
         self.assertIn("measurements", snapshot)
         self.assertIn("devices", snapshot)
 
+    def test_path_mapping_static_meta_ignores_runtime_file_content_updates(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        before = service.static_meta()
+        runtime_stat = Path(service.files["stat"])
+        runtime_stat.write_bytes(runtime_stat.read_bytes() + b"\n")
+
+        after = service.static_meta()
+
+        for key in ("files", "source_files", "work_files"):
+            self.assertEqual(after[key], before[key])
+
     def test_lite_snapshot_omits_static_payload_and_caps_logs(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)

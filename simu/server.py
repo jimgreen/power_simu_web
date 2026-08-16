@@ -2605,6 +2605,7 @@ def make_http_server(
             command_sink=exchange.submit_commands,
         )
     renewable_control_path = "/api/trainee/renewable-control"
+    trainee_ui_frame_path = "/api/trainee/ui-frame"
     external_realtime_inputs_path = "/api/external/realtime-inputs"
     static_asset_cache: dict[Path, dict[str, Any]] = {}
     static_asset_cache_lock = threading.RLock()
@@ -3054,9 +3055,126 @@ def make_http_server(
                 "static",
                 "static_meta",
                 "device_runtime_compact",
+                "device_runtime_supplement",
                 "after_device_runtime_signature",
             )
             return {key: values[key][0] for key in allowed if values.get(key)}
+
+        def _renewable_state_payload(self, target: PolarMicrogridSimulator) -> Mapping[str, Any]:
+            if role != "trainee" or renewable_manager is None:
+                raise JsonApiError(404, f"Unknown API route: {urlparse(self.path).path}")
+            renewable_query = parse_qs(urlparse(self.path).query)
+            options = {
+                "refresh": self._truthy_query("refresh"),
+                "compact": self._truthy_query("compact"),
+                "after_log_seq": self._int_query(
+                    "after_log_seq",
+                    0,
+                    0,
+                    2_000_000_000,
+                ),
+                "after_trend_sample_key": str(
+                    (renewable_query.get("after_trend_sample_key") or [""])[0]
+                ),
+                "after_plan_revision": self._optional_int_query("after_plan_revision"),
+                "after_performance_revision": self._optional_int_query(
+                    "after_performance_revision"
+                ),
+                "after_controller_instance_id": str(
+                    (renewable_query.get("after_controller_instance_id") or [""])[0]
+                ),
+            }
+            state_for_service = getattr(renewable_manager, "state_for_service", None)
+            if callable(state_for_service):
+                return state_for_service(target, **options)
+            if not captured_service_is_current(target):
+                raise JsonApiError(
+                    409,
+                    "新能源控制请求所属模型生命周期已失效或已退休。",
+                )
+            return renewable_manager.state(target.model_id, **options)
+
+        def _trainee_snapshot_payload(
+            self,
+            target: PolarMicrogridSimulator,
+        ) -> Dict[str, Any]:
+            if exchange is None:
+                raise JsonApiError(404, f"Unknown API route: {urlparse(self.path).path}")
+            snapshot_for_service = getattr(exchange, "snapshot_for_service", None)
+            if callable(snapshot_for_service):
+                snapshot_payload = snapshot_for_service(
+                    target,
+                    options=self._trainee_snapshot_query_overrides(),
+                    refresh=self._truthy_query("refresh"),
+                )
+            else:
+                if not captured_service_is_current(target):
+                    raise JsonApiError(
+                        409,
+                        "学员台快照请求所属模型生命周期已失效或已退休。",
+                    )
+                snapshot_payload = exchange.snapshot(
+                    target.model_id,
+                    options=self._trainee_snapshot_query_overrides(),
+                    refresh=self._truthy_query("refresh"),
+                )
+            measurement_after_seq = self._optional_int_query("measurement_after_seq")
+            if measurement_after_seq is not None:
+                delta_for_service = getattr(exchange, "measurement_delta_for_service", None)
+                if callable(delta_for_service):
+                    snapshot_payload["measurement_delta"] = delta_for_service(
+                        target,
+                        after_seq=max(0, measurement_after_seq),
+                        compact=self._truthy_query("measurement_compact"),
+                    )
+                else:
+                    delta_options = {"after_seq": max(0, measurement_after_seq)}
+                    if self._truthy_query("measurement_compact"):
+                        delta_options["compact"] = True
+                    snapshot_payload["measurement_delta"] = exchange.measurement_delta(
+                        target.model_id,
+                        **delta_options,
+                    )
+            strip_trainee_remote_details_from_snapshot(snapshot_payload)
+            trainee_snapshot_query = parse_qs(urlparse(self.path).query)
+            after_command_signature = str(
+                (trainee_snapshot_query.get("after_command_signature") or [""])[0]
+            ).strip()
+            commands_payload = snapshot_payload.get("commands")
+            if isinstance(commands_payload, Mapping):
+                command_signature = command_payload_signature(commands_payload)
+                snapshot_payload["command_signature"] = command_signature
+                if after_command_signature == command_signature:
+                    snapshot_payload.pop("commands", None)
+            if self._truthy_query("device_runtime_compact"):
+                if self._truthy_query("device_runtime_supplement"):
+                    device_runtime_frame = compact_device_runtime_supplement_frame(
+                        snapshot_payload.get("devices", []),
+                        snapshot_payload.get("device_states", []),
+                        target.measurement_definitions(),
+                        definition_revision=target.definition_snapshot.revision,
+                    )
+                else:
+                    device_runtime_frame = compact_device_runtime_frame(
+                        snapshot_payload.get("devices", []),
+                        snapshot_payload.get("device_states", []),
+                        definition_revision=target.definition_snapshot.revision,
+                    )
+                device_runtime_signature = str(
+                    device_runtime_frame.get("runtime_signature", "")
+                ).strip()
+                after_device_runtime_signature = str(
+                    (
+                        trainee_snapshot_query.get("after_device_runtime_signature")
+                        or [""]
+                    )[0]
+                ).strip()
+                snapshot_payload.pop("devices", None)
+                snapshot_payload.pop("device_states", None)
+                snapshot_payload["device_runtime_signature"] = device_runtime_signature
+                if after_device_runtime_signature != device_runtime_signature:
+                    snapshot_payload["device_runtime"] = device_runtime_frame
+            return snapshot_payload
 
         def _handle_trainee_connect(self, payload: Mapping[str, Any]) -> None:
             connection = self._resolve_trainee_connection(str(payload.get("link", payload.get("interaction_link", ""))))
@@ -3234,46 +3352,35 @@ def make_http_server(
                     health["power_flow_worker"] = diagnostics()
                 self._send_json(health)
             elif path == renewable_control_path:
-                if role != "trainee" or renewable_manager is None:
+                self._send_json(self._renewable_state_payload(target))
+            elif path == trainee_ui_frame_path:
+                if role != "trainee":
                     raise JsonApiError(404, f"Unknown API route: {path}")
-                renewable_query = parse_qs(urlparse(self.path).query)
-                renewable_state_options = {
-                    "refresh": self._truthy_query("refresh"),
-                    "compact": self._truthy_query("compact"),
-                    "after_log_seq": self._int_query(
-                        "after_log_seq",
-                        0,
-                        0,
-                        2_000_000_000,
-                    ),
-                    "after_trend_sample_key": str(
-                        (renewable_query.get("after_trend_sample_key") or [""])[0]
-                    ),
-                    "after_plan_revision": self._optional_int_query("after_plan_revision"),
-                    "after_performance_revision": self._optional_int_query(
-                        "after_performance_revision"
-                    ),
-                    "after_controller_instance_id": str(
-                        (renewable_query.get("after_controller_instance_id") or [""])[0]
-                    ),
+                receive_state = target.trainee_receive_state()
+                receive_state_revision = hashlib.sha256(
+                    json.dumps(
+                        receive_state,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    ).encode("utf-8")
+                ).hexdigest()[:20]
+                query = parse_qs(urlparse(self.path).query)
+                after_receive_state_revision = str(
+                    (query.get("after_receive_state_revision") or [""])[0]
+                ).strip()
+                frame: Dict[str, Any] = {
+                    "encoding": "trainee-ui-frame-v1",
+                    "receive_state_revision": receive_state_revision,
                 }
-                state_for_service = getattr(renewable_manager, "state_for_service", None)
-                if callable(state_for_service):
-                    state_payload = state_for_service(
-                        target,
-                        **renewable_state_options,
-                    )
-                else:
-                    if not captured_service_is_current(target):
-                        raise JsonApiError(
-                            409,
-                            "新能源控制请求所属模型生命周期已失效或已退休。",
-                        )
-                    state_payload = renewable_manager.state(
-                        target.model_id,
-                        **renewable_state_options,
-                    )
-                self._send_json(state_payload)
+                if after_receive_state_revision != receive_state_revision:
+                    frame["receive_state"] = receive_state
+                if receive_state.get("active"):
+                    frame["snapshot"] = self._trainee_snapshot_payload(target)
+                if str((query.get("view") or [""])[0]).strip() == "renewable":
+                    frame["renewable_control"] = self._renewable_state_payload(target)
+                self._send_json(frame)
             elif path == "/api/models":
                 self._send_json(self._model_catalog())
             elif path == MANUAL_DEFINITION_CHANGES_PATH:
@@ -3282,6 +3389,7 @@ def make_http_server(
                 lite = self._truthy_query("lite")
                 trainee_view = self._truthy_query("trainee_view")
                 compact_device_runtime = self._truthy_query("device_runtime_compact")
+                supplement_device_runtime = self._truthy_query("device_runtime_supplement")
                 include_static, static_fields = self._static_query(default_include_static=not lite)
                 default_log_limit = 20 if lite else 300
                 log_limit = self._int_query("log_limit", default_log_limit)
@@ -3342,12 +3450,16 @@ def make_http_server(
                     if after_command_signature == command_signature:
                         snapshot_payload.pop("commands", None)
                 if compact_device_runtime:
-                    if periodic_trainee_frame:
-                        measurement_definitions = target.measurements().get("definitions", [])
+                    if periodic_trainee_frame or supplement_device_runtime:
+                        measurement_definitions = target.measurement_definitions()
+                        if periodic_trainee_frame:
+                            measurement_definitions = target.measurement_runtime_definitions(
+                                measurement_definitions
+                            )
                         device_runtime_frame = compact_device_runtime_supplement_frame(
                             target.devices(),
                             target.device_states(),
-                            target.measurement_runtime_definitions(measurement_definitions),
+                            measurement_definitions,
                             definition_revision=target.definition_snapshot.revision,
                         )
                     else:
@@ -3456,75 +3568,7 @@ def make_http_server(
                     diagnostics = exchange.receive_status(target.model_id)
                 self._send_json(diagnostics)
             elif path == "/api/trainee/snapshot":
-                if exchange is None:
-                    raise JsonApiError(404, f"Unknown API route: {path}")
-                snapshot_for_service = getattr(exchange, "snapshot_for_service", None)
-                if callable(snapshot_for_service):
-                    snapshot_payload = snapshot_for_service(
-                        target,
-                        options=self._trainee_snapshot_query_overrides(),
-                        refresh=self._truthy_query("refresh"),
-                    )
-                else:
-                    if not captured_service_is_current(target):
-                        raise JsonApiError(
-                            409,
-                            "学员台快照请求所属模型生命周期已失效或已退休。",
-                        )
-                    snapshot_payload = exchange.snapshot(
-                        target.model_id,
-                        options=self._trainee_snapshot_query_overrides(),
-                        refresh=self._truthy_query("refresh"),
-                    )
-                measurement_after_seq = self._optional_int_query("measurement_after_seq")
-                if measurement_after_seq is not None:
-                    delta_for_service = getattr(exchange, "measurement_delta_for_service", None)
-                    if callable(delta_for_service):
-                        snapshot_payload["measurement_delta"] = delta_for_service(
-                            target,
-                            after_seq=max(0, measurement_after_seq),
-                            compact=self._truthy_query("measurement_compact"),
-                        )
-                    else:
-                        delta_options = {"after_seq": max(0, measurement_after_seq)}
-                        if self._truthy_query("measurement_compact"):
-                            delta_options["compact"] = True
-                        snapshot_payload["measurement_delta"] = exchange.measurement_delta(
-                            target.model_id,
-                            **delta_options,
-                        )
-                strip_trainee_remote_details_from_snapshot(snapshot_payload)
-                trainee_snapshot_query = parse_qs(urlparse(self.path).query)
-                after_command_signature = str(
-                    (trainee_snapshot_query.get("after_command_signature") or [""])[0]
-                ).strip()
-                commands_payload = snapshot_payload.get("commands")
-                if isinstance(commands_payload, Mapping):
-                    command_signature = command_payload_signature(commands_payload)
-                    snapshot_payload["command_signature"] = command_signature
-                    if after_command_signature == command_signature:
-                        snapshot_payload.pop("commands", None)
-                if self._truthy_query("device_runtime_compact"):
-                    device_runtime_frame = compact_device_runtime_frame(
-                        snapshot_payload.get("devices", []),
-                        snapshot_payload.get("device_states", []),
-                        definition_revision=target.definition_snapshot.revision,
-                    )
-                    device_runtime_signature = str(
-                        device_runtime_frame.get("runtime_signature", "")
-                    ).strip()
-                    after_device_runtime_signature = str(
-                        (
-                            trainee_snapshot_query.get("after_device_runtime_signature")
-                            or [""]
-                        )[0]
-                    ).strip()
-                    snapshot_payload.pop("devices", None)
-                    snapshot_payload.pop("device_states", None)
-                    snapshot_payload["device_runtime_signature"] = device_runtime_signature
-                    if after_device_runtime_signature != device_runtime_signature:
-                        snapshot_payload["device_runtime"] = device_runtime_frame
-                self._send_json(snapshot_payload)
+                self._send_json(self._trainee_snapshot_payload(target))
             elif path == "/api/trainee/measurements/delta":
                 if exchange is None:
                     raise JsonApiError(404, f"Unknown API route: {path}")

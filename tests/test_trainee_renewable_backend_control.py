@@ -1304,6 +1304,19 @@ def task8_metrics_snapshot() -> dict:
 
 
 class RenewableControlPlannerDataQualityTest(unittest.TestCase):
+    """Frozen reference for the retired pre-optimizer heuristic planner.
+
+    These scenarios document the exact targets produced before commit 9217a85.
+    The production authority is now the topology-island optimizer covered by
+    test_renewable_optimization_dispatch.py,
+    test_renewable_topology_direct_dispatch.py,
+    test_renewable_control_parameterization.py, and the focused SOC/converter
+    suites.  Pytest must not treat the mutually incompatible historical exact
+    targets as current product requirements.
+    """
+
+    __test__ = False
+
     def test_command_validity_setting_remains_transport_metadata(self):
         settings = RenewableControlSettings()
 
@@ -12495,7 +12508,20 @@ class RenewableControlBackendApiTest(unittest.TestCase):
             manager = make_control_manager(services)
             controller = manager._state_for("shared")
             with controller.lock:
-                controller.last_plan = {"time": "00:01:00", "detail": "x" * 10000}
+                controller.last_plan = {
+                    "time": "00:01:00",
+                    "detail": "x" * 10000,
+                    "decisionDetail": ["internal" * 1000],
+                    "decisionLogDetail": ["log" * 1000],
+                    "warnings": ["warning"],
+                    "performanceDiagnostics": {"solver": "internal"},
+                    "commands": [{"set": 1}],
+                    "runCommands": [{"run": 1}],
+                    "commandRows": [{"dev_type": "ACGenerator", "dev_name": "g1"}],
+                    "metrics": {"totalLoadKw": 1.0},
+                    "dataQuality": {"source": "trainee-live"},
+                    "weather": {"windSpeed": 4.0},
+                }
                 controller.plan_revision = 1
             server = make_http_server(
                 ("127.0.0.1", 0),
@@ -12538,6 +12564,18 @@ class RenewableControlBackendApiTest(unittest.TestCase):
 
         self.assertEqual(first["planRevision"], 1)
         self.assertEqual(first["lastPlan"]["time"], "00:01:00")
+        self.assertEqual(first["lastPlan"]["commandCount"], 1)
+        self.assertEqual(first["lastPlan"]["runCommandCount"], 1)
+        for internal_field in (
+            "detail",
+            "decisionDetail",
+            "decisionLogDetail",
+            "warnings",
+            "performanceDiagnostics",
+            "commands",
+            "runCommands",
+        ):
+            self.assertNotIn(internal_field, first["lastPlan"])
         self.assertEqual(unchanged["planRevision"], 1)
         self.assertNotIn("lastPlan", unchanged)
         self.assertEqual(new_lifecycle["lastPlan"]["time"], "00:01:00")

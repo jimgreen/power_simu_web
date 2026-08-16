@@ -9676,13 +9676,18 @@ class PolarMicrogridSimulator:
     def _with_realtime_measurements(self, measurements: Mapping[str, Sequence[Mapping[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
         return self._with_signal_measurements(self._with_weather_measurements(measurements))
 
-    def measurements(self) -> Dict[str, List[Dict[str, Any]]]:
+    def measurement_definitions(self) -> List[Dict[str, Any]]:
+        """Return the wire-visible measurement definition order without live values."""
+
         definition_snapshot = self.definition_snapshot
         median_deviations = _measurement_median_deviation_map(definition_snapshot)
-        definitions = [
+        return [
             _measurement_definition_row_to_dict(row, median_deviations)
             for row in definition_snapshot.measurement_rows
         ]
+
+    def measurements(self) -> Dict[str, List[Dict[str, Any]]]:
+        definitions = self.measurement_definitions()
         real = [_measurement_row_to_dict(row) for row in self.latest_real_rows]
         scada = [_measurement_row_to_dict(row) for row in self.latest_scada_rows]
         for rows in (real, scada):
@@ -13390,6 +13395,18 @@ class PolarMicrogridSimulator:
             signatures.append(f"{index}:{path.name}:1:{stat.st_size}:{stat.st_mtime_ns}")
         return {"signature": "|".join(signatures)}
 
+    def _path_mapping_signature(self, paths: Sequence[Path | str | None]) -> Dict[str, Any]:
+        """Version a path mapping without coupling it to mutable file contents."""
+
+        signatures: List[str] = []
+        for index, raw_path in enumerate(paths):
+            if raw_path is None:
+                signatures.append(f"{index}:<none>")
+                continue
+            path = Path(raw_path).resolve(strict=False)
+            signatures.append(f"{index}:{path}")
+        return {"signature": "|".join(signatures)}
+
     def static_meta(self) -> Dict[str, Any]:
         definition_revision = self.definition_snapshot.revision
         definition_paths = [
@@ -13404,9 +13421,9 @@ class PolarMicrogridSimulator:
         device_parameters_meta = self._path_static_signature([self.source_files.get("model")])
         device_parameters_meta["revision"] = definition_revision
         return {
-            "files": self._path_static_signature(list(self.files.values())),
-            "source_files": self._path_static_signature(list(self.source_files.values())),
-            "work_files": self._path_static_signature(list(self.work_files.values())),
+            "files": self._path_mapping_signature(list(self.files.values())),
+            "source_files": self._path_mapping_signature(list(self.source_files.values())),
+            "work_files": self._path_mapping_signature(list(self.work_files.values())),
             "definitions": definitions_meta,
             "curves": self._path_static_signature([self.source_curves_file, self.curves_file]),
             "settings": self._path_static_signature([self.sim_dir / "local_settings.json", self.settings_file]),

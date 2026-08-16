@@ -60,7 +60,10 @@ def test_default_fuel_cell_power_ceiling_is_ninety_percent():
 def test_bundled_fuel_cell_hydrogen_bounds_cover_rated_electric_power(
     relative_model,
 ):
-    book = simu_loop.EBook(ROOT / relative_model)
+    model_path = ROOT / relative_model
+    if not model_path.is_file():
+        pytest.skip(f"bundled model not present: {relative_model}")
+    book = simu_loop.EBook(model_path)
     coupling = book.data["Hydro2DcE"].data[0]
     generator = next(
         row

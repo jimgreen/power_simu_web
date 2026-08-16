@@ -1240,15 +1240,14 @@ body.is-vertical-splitter-dragging {
   --diesel-flow-color: #c84f4f;
   --energy-device-icon-size: 60px;
   --energy-device-icon-glyph-size: 40px;
-  --energy-trunk-y: 55%;
+  --energy-hydrogen-y: 14%;
+  --energy-summary-y: 32%;
+  --energy-trunk-y: 50%;
+  --energy-forming-y: 86%;
   --energy-bus-inset: clamp(255px, 29.2%, 338px);
   --energy-edge-inset-y: clamp(10px, 3.5cqh, 28px);
   --energy-stack-gap: clamp(4px, 1.5cqh, 12px);
   --energy-list-gap: clamp(3px, 1.25cqh, 10px);
-  --energy-summary-top: clamp(124px, 25cqh, 160px);
-  --energy-hydrogen-top: clamp(6px, 1.8cqh, 16px);
-  --energy-central-upper-shift: clamp(12px, calc(13cqh - 45px), 72px);
-  --energy-storage-gap: clamp(122px, 19cqh, 150px);
   position: relative;
   width: min(100%, 1540px);
   min-height: 0;
@@ -1649,11 +1648,11 @@ body.is-vertical-splitter-dragging {
   position: absolute;
   z-index: 3;
   left: 50%;
-  top: calc(var(--energy-summary-top) + var(--energy-central-upper-shift));
+  top: var(--energy-summary-y);
   width: min(320px, 36%);
   min-width: 280px;
   padding: clamp(6px, 2cqh, 12px) 10px;
-  transform: translateX(-50%);
+  transform: translate(-50%, -50%);
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   border: 1px solid #d5e1e4;
@@ -1694,11 +1693,12 @@ body.is-vertical-splitter-dragging {
   z-index: 3;
   left: var(--energy-bus-inset);
   right: var(--energy-bus-inset);
-  top: calc(var(--energy-hydrogen-top) + var(--energy-central-upper-shift));
+  top: var(--energy-hydrogen-y);
   min-width: 0;
   display: grid;
   grid-template-columns: 15px minmax(160px, 1fr) 10px minmax(154px, 0.95fr) 10px minmax(160px, 1fr) 15px;
   align-items: center;
+  transform: translateY(-50%);
   pointer-events: none;
 }
 .energy-hydrogen-chain[hidden],
@@ -1894,7 +1894,6 @@ body.is-vertical-splitter-dragging {
   grid-column: 1 / -1;
   grid-row: 1;
   left: 50%;
-  top: calc(var(--energy-trunk-y) + var(--energy-storage-gap));
   width: min(300px, 76%);
   min-width: 0;
   transform: translateX(-50%);
@@ -2053,10 +2052,10 @@ body.is-vertical-splitter-dragging {
   z-index: 2;
   left: var(--energy-bus-inset);
   right: var(--energy-bus-inset);
-  top: calc(var(--energy-trunk-y) + var(--energy-storage-gap));
+  top: var(--energy-forming-y);
   width: auto;
   min-width: 0;
-  transform: none;
+  transform: translateY(-50%);
   display: grid;
   gap: var(--energy-stack-gap);
 }
@@ -2334,6 +2333,7 @@ body.is-vertical-splitter-dragging {
     grid-row: auto;
     left: auto;
     right: auto;
+    transform: none;
     width: 100%;
     grid-template-columns: repeat(3, minmax(190px, 1fr));
     gap: 8px;
@@ -2380,9 +2380,6 @@ body.is-vertical-splitter-dragging {
   .energy-flow-map {
     --energy-device-icon-size: 52px;
     --energy-device-icon-glyph-size: 34px;
-    --energy-summary-top: clamp(86px, 28cqh, 112px);
-    --energy-hydrogen-top: 2px;
-    --energy-storage-gap: clamp(116px, 29cqh, 128px);
   }
   .energy-device-card {
     min-height: 64px;
@@ -2587,7 +2584,6 @@ body.is-vertical-splitter-dragging {
     line-height: 12px;
   }
   .energy-green-share {
-    top: calc(var(--energy-summary-top) + var(--energy-central-upper-shift));
     padding: clamp(4px, 2cqh, 8px) 8px;
   }
   .energy-green-metric {
@@ -2644,9 +2640,6 @@ body.is-vertical-splitter-dragging {
   .energy-device-card {
     min-height: clamp(38px, 15cqh, 50px);
     padding: 2px 7px;
-  }
-  .energy-flow-map {
-    --energy-hydrogen-top: 1px;
   }
   .energy-hydrogen-device,
   .energy-hydrogen-card {

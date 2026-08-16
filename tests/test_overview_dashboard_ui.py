@@ -397,8 +397,8 @@ class OverviewDashboardUiTest(unittest.TestCase):
         )[0]
         self.assertIn("--energy-device-icon-size: 52px;", medium)
         self.assertIn("--energy-device-icon-glyph-size: 34px;", medium)
-        self.assertIn("--energy-summary-top: clamp(86px, 28cqh, 112px);", medium)
-        self.assertIn("--energy-storage-gap: clamp(116px, 29cqh, 128px);", medium)
+        self.assertNotIn("--energy-summary-y:", medium)
+        self.assertNotIn("--energy-forming-y:", medium)
         self.assertIn("min-height: 64px;", medium)
         self.assertIn("padding: 7px 12px;", medium)
 
@@ -596,12 +596,9 @@ class OverviewDashboardUiTest(unittest.TestCase):
         summary_block = styles.split(".energy-green-share {", 1)[1].split("}", 1)[0]
         self.assertIn("position: absolute;", summary_block)
         self.assertIn("left: 50%;", summary_block)
-        self.assertIn(
-            "top: calc(var(--energy-summary-top) + var(--energy-central-upper-shift));",
-            summary_block,
-        )
+        self.assertIn("top: var(--energy-summary-y);", summary_block)
         self.assertIn("width: min(320px, 36%);", summary_block)
-        self.assertIn("transform: translateX(-50%);", summary_block)
+        self.assertIn("transform: translate(-50%, -50%);", summary_block)
         self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", summary_block)
         metric_block = styles.split(".energy-green-metric {", 1)[1].split("}", 1)[0]
         self.assertIn("justify-items: center;", metric_block)
@@ -691,6 +688,7 @@ class OverviewDashboardUiTest(unittest.TestCase):
         compact = styles.split("@container (max-width: 760px) {", 1)[1]
         self.assertIn(".energy-hydrogen-chain", compact)
         self.assertIn("position: static;", compact)
+        self.assertIn("transform: none;", compact)
 
         narrow = styles.split("@container (max-width: 940px) and (min-width: 761px) {", 1)[1]
         narrow_card = narrow.split(".energy-hydrogen-card {", 1)[1].split("}", 1)[0]
@@ -728,10 +726,7 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn('data-overview-group="acGridFormingStorage"', html)
 
         compact_summary_block = compact_styles.split(".energy-green-share {", 1)[1].split("}", 1)[0]
-        self.assertIn(
-            "top: calc(var(--energy-summary-top) + var(--energy-central-upper-shift));",
-            compact_summary_block,
-        )
+        self.assertNotIn("top:", compact_summary_block)
 
     def test_overview_energy_flow_has_dynamic_power_arrows(self):
         html = (ROOT / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
@@ -767,7 +762,8 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("left: var(--energy-bus-inset);", block)
         self.assertIn("right: var(--energy-bus-inset);", block)
         self.assertIn("width: auto;", block)
-        self.assertIn("transform: none;", block)
+        self.assertIn("top: var(--energy-forming-y);", block)
+        self.assertIn("transform: translateY(-50%);", block)
         self.assertIn(
             '.energy-grid-forming-stack [data-overview-group-wrapper="dcGridFormingStorage"] {\n'
             "  grid-column: 1;\n"
@@ -878,8 +874,10 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("--energy-edge-inset-y: clamp(10px, 3.5cqh, 28px);", energy_flow_block)
         self.assertIn("--energy-stack-gap: clamp(4px, 1.5cqh, 12px);", energy_flow_block)
         self.assertIn("--energy-list-gap: clamp(3px, 1.25cqh, 10px);", energy_flow_block)
-        self.assertIn("--energy-summary-top: clamp(124px, 25cqh, 160px);", energy_flow_block)
-        self.assertIn("--energy-storage-gap: clamp(122px, 19cqh, 150px);", energy_flow_block)
+        self.assertIn("--energy-hydrogen-y: 14%;", energy_flow_block)
+        self.assertIn("--energy-summary-y: 32%;", energy_flow_block)
+        self.assertIn("--energy-trunk-y: 50%;", energy_flow_block)
+        self.assertIn("--energy-forming-y: 86%;", energy_flow_block)
         self.assertIn("min-height: 0;", energy_board_block)
         self.assertIn("place-items: center;", energy_board_block)
         self.assertIn("container-type: size;", energy_board_block)
@@ -917,16 +915,16 @@ class OverviewDashboardUiTest(unittest.TestCase):
         )
         self.assertIn(responsive_bus_height, left_bus_block)
         self.assertIn(responsive_bus_height, right_bus_block)
-        self.assertIn(
-            "top: calc(var(--energy-summary-top) + var(--energy-central-upper-shift));",
-            green_summary_block,
-        )
+        self.assertIn("top: var(--energy-summary-y);", green_summary_block)
+        self.assertIn("transform: translate(-50%, -50%);", green_summary_block)
         self.assertIn("gap: var(--energy-stack-gap);", forming_stack_block)
-        self.assertNotIn("--energy-storage-gap: 36px;", low_height_flow_block)
+        self.assertIn("top: var(--energy-forming-y);", forming_stack_block)
+        self.assertIn("transform: translateY(-50%);", forming_stack_block)
+        self.assertNotIn("--energy-forming-y:", low_height_flow_block)
         self.assertNotIn("top: 40px;", low_height_styles)
         self.assertIn("position: absolute;", storage_wrap_block)
         self.assertIn("grid-column: 1 / -1;", storage_wrap_block)
-        self.assertIn("top: calc(var(--energy-trunk-y) + var(--energy-storage-gap));", storage_wrap_block)
+        self.assertNotIn("top:", storage_wrap_block)
         self.assertIn("left: 50%;", storage_wrap_block)
         self.assertIn("transform: translateX(-50%);", storage_wrap_block)
         self.assertIn("top: 50%;", storage_branch_block)
@@ -940,8 +938,8 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("min-height: 82px;", styles)
         self.assertIn("@container (max-height: 320px)", styles)
         compact_styles = styles.split("@container (max-height: 320px) {", 1)[1]
-        self.assertNotIn("--energy-summary-top:", compact_styles.split(".energy-acdc-converter", 1)[0])
-        self.assertNotIn("--energy-storage-gap:", compact_styles.split(".energy-acdc-converter", 1)[0])
+        self.assertNotIn("--energy-summary-y:", compact_styles)
+        self.assertNotIn("--energy-forming-y:", compact_styles)
         self.assertIn("min-height: clamp(38px, 15cqh, 50px);", styles)
         self.assertIn("display: none;", styles.split("@container (max-height: 320px) {", 1)[1])
         self.assertIn(".energy-device.storage small", styles)
@@ -961,7 +959,7 @@ class OverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("--overview-main-min-height: 580px;", dashboard_block)
         self.assertIn("min-height: var(--overview-main-min-height);", main_grid_block)
 
-    def test_overview_central_upper_group_moves_down_responsively(self):
+    def test_overview_central_rows_keep_fixed_relative_positions_when_height_changes(self):
         styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
 
         flow_block = styles.split(".energy-flow-map {", 1)[1].split("}", 1)[0]
@@ -972,20 +970,29 @@ class OverviewDashboardUiTest(unittest.TestCase):
         )[0]
         compact_block = styles.split("@container (max-height: 320px) {", 1)[1]
 
-        self.assertIn("--energy-central-upper-shift: clamp(12px, calc(13cqh - 45px), 72px);", flow_block)
-        self.assertIn("--energy-hydrogen-top: clamp(6px, 1.8cqh, 16px);", flow_block)
-        self.assertIn(
-            "top: calc(var(--energy-summary-top) + var(--energy-central-upper-shift));",
-            summary_block,
-        )
-        self.assertIn(
-            "top: calc(var(--energy-hydrogen-top) + var(--energy-central-upper-shift));",
-            hydrogen_block,
-        )
-        self.assertIn("--energy-hydrogen-top: 2px;", medium_block)
-        self.assertIn("--energy-hydrogen-top: 1px;", compact_block)
-        self.assertNotIn("margin-top:", summary_block)
-        self.assertNotIn("margin-top:", hydrogen_block)
+        self.assertIn("--energy-hydrogen-y: 14%;", flow_block)
+        self.assertIn("--energy-summary-y: 32%;", flow_block)
+        self.assertIn("--energy-trunk-y: 50%;", flow_block)
+        self.assertIn("--energy-forming-y: 86%;", flow_block)
+        self.assertIn("top: var(--energy-summary-y);", summary_block)
+        self.assertIn("transform: translate(-50%, -50%);", summary_block)
+        self.assertIn("top: var(--energy-hydrogen-y);", hydrogen_block)
+        self.assertIn("transform: translateY(-50%);", hydrogen_block)
+        for legacy_variable in (
+            "--energy-summary-top",
+            "--energy-hydrogen-top",
+            "--energy-central-upper-shift",
+            "--energy-storage-gap",
+        ):
+            self.assertNotIn(legacy_variable, styles)
+        for anchor_variable in (
+            "--energy-hydrogen-y:",
+            "--energy-summary-y:",
+            "--energy-trunk-y:",
+            "--energy-forming-y:",
+        ):
+            self.assertNotIn(anchor_variable, medium_block)
+            self.assertNotIn(anchor_variable, compact_block)
 
     def test_overview_storage_cards_connect_horizontally_to_their_own_bus(self):
         styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")
@@ -1005,12 +1012,13 @@ class OverviewDashboardUiTest(unittest.TestCase):
         low_height_styles = styles[low_height_start:mobile_start]
         low_height_flow_block = css_block(".energy-flow-map", low_height_styles)
 
-        self.assertIn("--energy-trunk-y: 55%;", energy_flow_block)
+        self.assertIn("--energy-trunk-y: 50%;", energy_flow_block)
+        self.assertIn("--energy-forming-y: 86%;", energy_flow_block)
         self.assertIn("--energy-bus-inset: clamp(255px, 29.2%, 338px);", energy_flow_block)
-        self.assertIn("--energy-storage-gap:", energy_flow_block)
         self.assertIn("top: var(--energy-trunk-y);", trunk_block)
         self.assertIn("transform: translateY(-50%);", trunk_block)
-        self.assertIn("top: calc(var(--energy-trunk-y) + var(--energy-storage-gap));", storage_stack_block)
+        self.assertIn("top: var(--energy-forming-y);", storage_stack_block)
+        self.assertIn("transform: translateY(-50%);", storage_stack_block)
         self.assertIn("top: 50%;", storage_branch_block)
         self.assertIn("height: var(--flow-thickness);", storage_branch_block)
         self.assertIn("width: max(22px, calc((100% - var(--energy-storage-card-width)) / 2 + 2px));", storage_branch_block)

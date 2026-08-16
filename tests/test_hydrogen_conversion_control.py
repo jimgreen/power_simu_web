@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 import math
 import random
 import re
@@ -292,6 +293,42 @@ def test_power_control_drives_hydrogen_flow_and_realtime_measurements(tmp_path):
     assert _measurement(snapshot, "HydroSource", rows["h2_source"]["name"], "flow") == pytest.approx(0.4)
     assert _measurement(snapshot, "HydroLoad", rows["h2_load"]["name"], "flow") == pytest.approx(3.0)
     assert {result.status for result in snapshot.coupling_results} == {"balanced"}
+
+
+def test_stopped_conversion_endpoints_emit_zero_instead_of_missing(tmp_path):
+    model_book = simu_loop.EBook(_write_conversion_model(tmp_path))
+    model_book.data["AcE2Hydro"].data[0]["run_stat"] = 0
+    model_book.data["Hydro2DcE"].data[0]["run_stat"] = 0
+    snapshot = SimpleNamespace(fluid_results={})
+
+    for dev_type, dev_name in (
+        ("HydroSource", "electrolyzer_h2_source"),
+        ("HydroLoad", "fuel_cell_h2_load"),
+    ):
+        for meas_type in ("FLOW", "PRESSURE"):
+            row = ["1", "point", dev_type, dev_name, meas_type, "1", "0", "8"]
+            assert simu_loop._measurement_value(
+                snapshot,
+                row,
+                model_book=model_book,
+            ) == 0.0
+
+    model_book.data["AcE2Hydro"].data[0]["run_stat"] = 1
+    running_row = [
+        "1",
+        "point",
+        "HydroSource",
+        "electrolyzer_h2_source",
+        "FLOW",
+        "1",
+        "0",
+        "8",
+    ]
+    assert simu_loop._measurement_value(
+        snapshot,
+        running_row,
+        model_book=model_book,
+    ) is None
 
 
 def test_hydrogen_inline_device_measurements_use_i_to_j_signed_flow(tmp_path):

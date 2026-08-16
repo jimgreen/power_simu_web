@@ -168,6 +168,7 @@ const state = {
   runtimeLogPage: 1,
   runtimeLogPageSize: 20,
   runtimeLogSeq: 0,
+  runtimeLogSelectedSeq: 0,
   runtimeLogBackendSeq: 0,
   runtimeLogRequestActive: false,
   runtimeLogHistoryRequestActive: false,
@@ -10221,6 +10222,81 @@ function runtimeLogDetailText(detail) {
   return String(detail || "");
 }
 
+function runtimeLogDetailLines(item = {}) {
+  const detail = item.full_detail !== undefined && item.full_detail !== null
+    ? item.full_detail
+    : item.detail;
+  const source = Array.isArray(detail) ? detail : [detail];
+  const lines = source.flatMap((part) => {
+    if (part && typeof part === "object" && !Array.isArray(part)) {
+      return Object.entries(part).map(([key, value]) => `${key}: ${value}`);
+    }
+    return runtimeLogDetailText(part).split(/[；\n]+/);
+  }).map((line) => String(line || "").trim()).filter(Boolean);
+  return lines.length ? lines : ["该条日志没有附加详细信息。"];
+}
+
+function runtimeLogSummaryText(item = {}) {
+  const lines = runtimeLogDetailLines(item);
+  const preferred = lines.find((line) => /^(?:结果|告警|缺失测点|求解|指令|撤销|下发)/.test(line));
+  const summary = String(preferred || lines[0] || "--")
+    .replace(/^(?:计算摘要|控制响应|输入边界|详细信息)\s*[：:]?\s*/, "")
+    .trim() || "--";
+  return summary.length > 120 ? `${summary.slice(0, 117)}...` : summary;
+}
+
+function runtimeLogBySeq(seq) {
+  const normalizedSeq = Number(seq) || 0;
+  return state.runtimeLogs.find((item) => (Number(item?.seq) || 0) === normalizedSeq) || null;
+}
+
+function selectRuntimeLogRow(seq) {
+  const normalizedSeq = Number(seq) || 0;
+  if (!runtimeLogBySeq(normalizedSeq)) return false;
+  state.runtimeLogSelectedSeq = normalizedSeq;
+  document.querySelectorAll("#runtimeLogTable [data-runtime-log-seq]").forEach((row) => {
+    const selected = (Number(row.dataset.runtimeLogSeq) || 0) === normalizedSeq;
+    row.classList.toggle("is-selected", selected);
+    row.setAttribute("aria-selected", String(selected));
+  });
+  return true;
+}
+
+function openRuntimeLogDetailDialog(seq) {
+  const item = runtimeLogBySeq(seq);
+  const dialog = $("runtimeLogDetailDialog");
+  const meta = $("runtimeLogDetailMeta");
+  const body = $("runtimeLogDetailBody");
+  if (!item || !dialog || !meta || !body) return;
+  selectRuntimeLogRow(item.seq);
+  $("runtimeLogDetailSequence").textContent = `日志 #${Number(item.seq) || "--"}`;
+  meta.innerHTML = `
+    <div><dt>本机时刻</dt><dd>${escapeHtml(runtimeLogWallTimeText(item.wall_time))}</dd></div>
+    <div><dt>仿真时刻</dt><dd>${escapeHtml(item.simu_time || "--")}</dd></div>
+    <div><dt>类型 / 对象</dt><dd>${escapeHtml([item.type, item.target].filter(Boolean).join(" · ") || "--")}</dd></div>
+    <div><dt>结果</dt><dd class="is-${escapeHtml(item.level || "info")}">${escapeHtml(item.result || "--")}</dd></div>`;
+  body.innerHTML = runtimeLogDetailLines(item)
+    .map((line) => `<li><span>${escapeHtml(line)}</span></li>`)
+    .join("");
+  if (!dialog.open) dialog.showModal();
+}
+
+function closeRuntimeLogDetailDialog() {
+  const dialog = $("runtimeLogDetailDialog");
+  if (dialog?.open) dialog.close();
+}
+
+function handleRuntimeLogTableActivation(event) {
+  if (event.type === "keydown" && event.key !== "Enter") return;
+  const row = event.target instanceof Element ? event.target.closest("[data-runtime-log-seq]") : null;
+  if (!row) return;
+  selectRuntimeLogRow(row.dataset.runtimeLogSeq);
+  if (event.type === "dblclick" || event.type === "keydown") {
+    event.preventDefault();
+    openRuntimeLogDetailDialog(row.dataset.runtimeLogSeq);
+  }
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -13923,18 +13999,24 @@ function renderRuntimeLogs() {
           <th>类型</th>
           <th>对象</th>
           <th>结果</th>
-          <th>详情</th>
+          <th>概要</th>
         </tr>
       </thead>
       <tbody>
         ${logs.map((item) => `
-          <tr class="runtime-log-row is-${escapeHtml(item.level || "info")}">
+          <tr
+            class="runtime-log-row is-${escapeHtml(item.level || "info")}${(Number(item.seq) || 0) === state.runtimeLogSelectedSeq ? " is-selected" : ""}"
+            data-runtime-log-seq="${escapeHtml(item.seq)}"
+            tabindex="0"
+            aria-selected="${(Number(item.seq) || 0) === state.runtimeLogSelectedSeq ? "true" : "false"}"
+            aria-label="日志 ${escapeHtml(item.seq)}，双击查看详细信息"
+          >
             <td class="mono-cell">${escapeHtml(runtimeLogWallTimeText(item.wall_time))}</td>
             <td class="mono-cell">${escapeHtml(item.simu_time)}</td>
             <td>${escapeHtml(item.type)}</td>
             <td>${escapeHtml(item.target)}</td>
             <td>${escapeHtml(item.result)}</td>
-            <td class="runtime-log-detail">${escapeHtml(runtimeLogDetailText(item.detail))}</td>
+            <td class="runtime-log-detail" title="双击查看详细信息">${escapeHtml(runtimeLogSummaryText(item))}</td>
           </tr>
         `).join("")}
       </tbody>
@@ -14213,6 +14295,8 @@ async function clearRuntimeLogs() {
     await api("/api/runtime-logs/clear", { method: "POST", body: "{}" });
     state.runtimeLogs = [];
     state.runtimeLogSeq = 0;
+    state.runtimeLogSelectedSeq = 0;
+    closeRuntimeLogDetailDialog();
     state.runtimeLogPage = 1;
     state.runtimeLogTypeFilter = "all";
     renderRuntimeLogs();
@@ -17600,6 +17684,15 @@ $("runtimeLogTypeFilter").addEventListener("change", (event) => {
   renderRuntimeLogs();
 });
 $("clearRuntimeLogs").addEventListener("click", clearRuntimeLogs);
+const runtimeLogTableNode = $("runtimeLogTable");
+runtimeLogTableNode.addEventListener("click", handleRuntimeLogTableActivation);
+runtimeLogTableNode.addEventListener("dblclick", handleRuntimeLogTableActivation);
+runtimeLogTableNode.addEventListener("keydown", handleRuntimeLogTableActivation);
+$("closeRuntimeLogDetailDialog").addEventListener("click", closeRuntimeLogDetailDialog);
+$("confirmRuntimeLogDetailDialog").addEventListener("click", closeRuntimeLogDetailDialog);
+$("runtimeLogDetailDialog").addEventListener("click", (event) => {
+  if (event.target === $("runtimeLogDetailDialog")) closeRuntimeLogDetailDialog();
+});
 $("runtimeLogPager").addEventListener("click", async (event) => {
   const button = event.target instanceof Element ? event.target.closest("[data-runtime-log-page]") : null;
   if (!button) return;

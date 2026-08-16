@@ -6716,6 +6716,20 @@ class PolarMicrogridSimulator:
             ),
             *self._power_flow_summary_lines(real_measurements),
         ]
+        missing_measurements = [
+            item
+            for item in (result.get("missing_measurements") or [])
+            if isinstance(item, Mapping)
+        ]
+        if missing_measurements:
+            missing_preview = "，".join(
+                f"{item.get('dev_type', '')}.{item.get('dev_name', '')}.{item.get('meas_type', '')}"
+                for item in missing_measurements[:12]
+            )
+            power_flow_detail.append(
+                f"缺失测点 {missing_preview}"
+                + (f"，其余 {len(missing_measurements) - 12} 条" if len(missing_measurements) > 12 else "")
+            )
         has_missing = int(_to_float(result.get("missing"), 0) or 0) != 0
         self._append_runtime_log_batch(
             (
@@ -9494,6 +9508,11 @@ class PolarMicrogridSimulator:
         return {
             "updated": getattr(result, "updated", 0),
             "missing": getattr(result, "missing", 0),
+            "missing_measurements": [
+                dict(item)
+                for item in (getattr(result, "missing_measurements", None) or [])
+                if isinstance(item, Mapping)
+            ],
             "overlay_updates": getattr(result, "overlay_updates", 0),
             "solver_info": getattr(result, "solver_info", ""),
             "real_file": str(getattr(result, "real_file", self.files["real"])),

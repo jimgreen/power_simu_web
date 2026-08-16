@@ -165,6 +165,7 @@ const state = {
   runtimeLogPage: 1,
   runtimeLogPageSize: 20,
   runtimeLogSeq: 0,
+  runtimeLogSelectedSeq: 0,
   seenCommandHistoryKeys: new Set(),
   selectedManagementModelId: "",
   modelLifecycleOperationActive: false,
@@ -288,9 +289,7 @@ const state = {
     revision: -1,
     planRevision: -1,
     settingsRevision: -1,
-    performanceRevision: -1,
     lastPlan: null,
-    performanceDiagnostics: null,
     lastCalculatedAt: "",
     lastSentAt: "",
     lastStatus: "请选择单次计算或启动实时控制。",
@@ -9437,6 +9436,81 @@ function runtimeLogDetailText(detail) {
   return String(detail || "");
 }
 
+function runtimeLogDetailLines(item = {}) {
+  const detail = item.full_detail !== undefined && item.full_detail !== null
+    ? item.full_detail
+    : item.detail;
+  const source = Array.isArray(detail) ? detail : [detail];
+  const lines = source.flatMap((part) => {
+    if (part && typeof part === "object" && !Array.isArray(part)) {
+      return Object.entries(part).map(([key, value]) => `${key}: ${value}`);
+    }
+    return runtimeLogDetailText(part).split(/[；\n]+/);
+  }).map((line) => String(line || "").trim()).filter(Boolean);
+  return lines.length ? lines : ["该条日志没有附加详细信息。"];
+}
+
+function runtimeLogSummaryText(item = {}) {
+  const lines = runtimeLogDetailLines(item);
+  const preferred = lines.find((line) => /^(?:结果|告警|缺失测点|求解|指令|撤销|下发)/.test(line));
+  const summary = String(preferred || lines[0] || "--")
+    .replace(/^(?:计算摘要|控制响应|输入边界|详细信息)\s*[：:]?\s*/, "")
+    .trim() || "--";
+  return summary.length > 120 ? `${summary.slice(0, 117)}...` : summary;
+}
+
+function runtimeLogBySeq(seq) {
+  const normalizedSeq = Number(seq) || 0;
+  return state.runtimeLogs.find((item) => (Number(item?.seq) || 0) === normalizedSeq) || null;
+}
+
+function selectRuntimeLogRow(seq) {
+  const normalizedSeq = Number(seq) || 0;
+  if (!runtimeLogBySeq(normalizedSeq)) return false;
+  state.runtimeLogSelectedSeq = normalizedSeq;
+  document.querySelectorAll("#commandHistory [data-runtime-log-seq]").forEach((row) => {
+    const selected = (Number(row.dataset.runtimeLogSeq) || 0) === normalizedSeq;
+    row.classList.toggle("is-selected", selected);
+    row.setAttribute("aria-selected", String(selected));
+  });
+  return true;
+}
+
+function openRuntimeLogDetailDialog(seq) {
+  const item = runtimeLogBySeq(seq);
+  const dialog = $("runtimeLogDetailDialog");
+  const meta = $("runtimeLogDetailMeta");
+  const body = $("runtimeLogDetailBody");
+  if (!item || !dialog || !meta || !body) return;
+  selectRuntimeLogRow(item.seq);
+  $("runtimeLogDetailSequence").textContent = `日志 #${Number(item.seq) || "--"}`;
+  meta.innerHTML = `
+    <div><dt>本机时刻</dt><dd>${escapeHtml(runtimeLogWallTimeText(item.wall_time))}</dd></div>
+    <div><dt>仿真时刻</dt><dd>${escapeHtml(item.simu_time || "--")}</dd></div>
+    <div><dt>类型 / 对象</dt><dd>${escapeHtml([item.type, item.target].filter(Boolean).join(" · ") || "--")}</dd></div>
+    <div><dt>结果</dt><dd class="is-${escapeHtml(item.level || "info")}">${escapeHtml(item.result || "--")}</dd></div>`;
+  body.innerHTML = runtimeLogDetailLines(item)
+    .map((line) => `<li><span>${escapeHtml(line)}</span></li>`)
+    .join("");
+  if (!dialog.open) dialog.showModal();
+}
+
+function closeRuntimeLogDetailDialog() {
+  const dialog = $("runtimeLogDetailDialog");
+  if (dialog?.open) dialog.close();
+}
+
+function handleRuntimeLogTableActivation(event) {
+  if (event.type === "keydown" && event.key !== "Enter") return;
+  const row = event.target instanceof Element ? event.target.closest("[data-runtime-log-seq]") : null;
+  if (!row) return;
+  selectRuntimeLogRow(row.dataset.runtimeLogSeq);
+  if (event.type === "dblclick" || event.type === "keydown") {
+    event.preventDefault();
+    openRuntimeLogDetailDialog(row.dataset.runtimeLogSeq);
+  }
+}
+
 function setImportStatus(text, kind = "") {
   const target = $("importStatus");
   if (!target) return;
@@ -12723,6 +12797,7 @@ function renewableControlApiPath(preview = false) {
   const params = new URLSearchParams();
   if (preview) params.set("refresh", "1");
   params.set("compact", "1");
+  params.set("performance", "0");
   const latestLogSeq = (state.renewableControl.logs || []).reduce(
     (latest, item) => Math.max(latest, Number(item?.seq) || 0),
     0,
@@ -12730,7 +12805,6 @@ function renewableControlApiPath(preview = false) {
   if (latestLogSeq > 0) params.set("after_log_seq", String(latestLogSeq));
   const planRevision = Number(state.renewableControl.planRevision);
   const settingsRevision = Number(state.renewableControl.settingsRevision);
-  const performanceRevision = Number(state.renewableControl.performanceRevision);
   const controllerInstanceId = String(state.renewableControl.controllerInstanceId || "");
   if (Number.isFinite(planRevision) && planRevision >= 0 && controllerInstanceId) {
     params.set("after_plan_revision", String(planRevision));
@@ -12738,9 +12812,6 @@ function renewableControlApiPath(preview = false) {
   }
   if (Number.isFinite(settingsRevision) && settingsRevision >= 0 && controllerInstanceId) {
     params.set("after_settings_revision", String(settingsRevision));
-  }
-  if (Number.isFinite(performanceRevision) && performanceRevision >= 0 && controllerInstanceId) {
-    params.set("after_performance_revision", String(performanceRevision));
   }
   const latestTrendSampleKey = String(
     state.renewableTrendHistory?.[state.renewableTrendHistory.length - 1]?.sampleKey || "",
@@ -12804,9 +12875,7 @@ function resetRenewableControlView(modelId = state.activeModelId) {
     revision: -1,
     planRevision: -1,
     settingsRevision: -1,
-    performanceRevision: -1,
     lastPlan: null,
-    performanceDiagnostics: null,
     lastCalculatedAt: "",
     lastSentAt: "",
     lastStatus: "正在读取学员台后台控制状态。",
@@ -12901,9 +12970,7 @@ function resetRenewableControlHistoryForLifecycle(control = state.renewableContr
   control.revision = -1;
   control.planRevision = -1;
   control.settingsRevision = -1;
-  control.performanceRevision = -1;
   control.lastPlan = null;
-  control.performanceDiagnostics = null;
   control.logPage = 1;
   control.selectedLogSeq = 0;
   control.lastControlLogRenderKey = "";
@@ -12925,12 +12992,7 @@ function applyRenewableControlState(payload = {}) {
   const incomingRevision = Number(payload.revision);
   const incomingPlanRevision = Number(payload.planRevision);
   const incomingSettingsRevision = Number(payload.settingsRevision);
-  const incomingPerformanceRevision = Number(payload.performanceRevision);
   const hasLastPlan = Object.prototype.hasOwnProperty.call(payload, "lastPlan");
-  const hasPerformanceDiagnostics = Object.prototype.hasOwnProperty.call(
-    payload,
-    "performanceDiagnostics",
-  );
   if (
     !controllerLifecycleChanged
     &&
@@ -13056,9 +13118,6 @@ function applyRenewableControlState(payload = {}) {
     settingsRevision: Number.isFinite(incomingSettingsRevision)
       ? incomingSettingsRevision
       : control.settingsRevision,
-    performanceRevision: Number.isFinite(incomingPerformanceRevision)
-      ? incomingPerformanceRevision
-      : control.performanceRevision,
     lastCalculatedAt: payload.lastCalculatedAt || "",
     lastSentAt: payload.lastSentAt || "",
     lastStatus: payload.status || "学员台后台控制状态已同步。",
@@ -13070,9 +13129,6 @@ function applyRenewableControlState(payload = {}) {
     ),
   });
   if (hasLastPlan) control.lastPlan = payload.lastPlan || null;
-  if (hasPerformanceDiagnostics) {
-    control.performanceDiagnostics = payload.performanceDiagnostics || null;
-  }
   if (control.selectedLogSeq && !renewableControlLogBySeq(control.selectedLogSeq)) {
     control.selectedLogSeq = 0;
     closeRenewableControlLogDetailDialog();
@@ -13341,7 +13397,7 @@ function renderRenewableControlParameterTabs(requestedTab = "") {
 
 function renderRenewableDetailTabs() {
   const requestedTab = state.renewableControl.detailTab;
-  const activeTab = ["trend", "logs", "performance"].includes(requestedTab)
+  const activeTab = ["trend", "logs"].includes(requestedTab)
     ? requestedTab
     : "trend";
   state.renewableControl.detailTab = activeTab;
@@ -13358,117 +13414,9 @@ function renderRenewableDetailTabs() {
   });
   if (activeTab === "logs") {
     renderRenewableControlLogs();
-  } else if (activeTab === "performance") {
-    renderRenewablePerformanceDiagnostics();
   } else {
     requestAnimationFrame(drawRenewableTrendChart);
   }
-}
-
-function renewablePerformanceMsText(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return "--";
-  if (number < 1) return `${number.toFixed(3)} ms`;
-  if (number < 100) return `${number.toFixed(2)} ms`;
-  return `${number.toFixed(1)} ms`;
-}
-
-function renderRenewablePerformanceDiagnostics() {
-  const summary = $("renewablePerformanceSummary");
-  const solverNode = $("renewableSolverDiagnostics");
-  const tableNode = $("renewablePerformanceTable");
-  if (!summary || !solverNode || !tableNode) return;
-  const diagnostics = state.renewableControl.performanceDiagnostics;
-  const sampleCount = Number(diagnostics?.sampleCount) || 0;
-  summary.textContent = `${sampleCount} 个周期 · 窗口 ${Number(diagnostics?.historyLimit) || 120}`;
-  if (!sampleCount || !diagnostics?.latest) {
-    solverNode.innerHTML = "";
-    tableNode.innerHTML = '<div class="empty-state compact">暂无控制周期性能数据</div>';
-    return;
-  }
-
-  const latest = diagnostics.latest || {};
-  const solver = latest.solver && typeof latest.solver === "object" ? latest.solver : {};
-  const islandCount = Number(solver.islandCount) || 0;
-  const solvedIslandCount = Number(solver.solvedIslandCount) || 0;
-  const unassignedDeviceCount = Number(solver.unassignedDeviceCount) || 0;
-  const dispatchText = !latest.dispatchAttempted
-    ? "未下发"
-    : latest.dispatchSuccess === true
-      ? "成功"
-      : latest.dispatchSuccess === false
-        ? "失败"
-        : "处理中";
-  const solverStatus = unassignedDeviceCount > 0
-    ? "存在未分配设备"
-    : islandCount <= 0
-    ? "无优化问题"
-    : solver.success === false
-      ? "失败"
-      : "成功";
-  solverNode.innerHTML = `
-    <dl class="renewable-solver-diagnostic-grid">
-      <div><dt>求解状态</dt><dd class="${solver.success === false ? "is-error" : "is-ok"}">${escapeHtml(solverStatus)}</dd></div>
-      <div><dt>求解迭代</dt><dd>${Math.max(0, Number(solver.iterations) || 0)}</dd></div>
-      <div><dt>拓扑岛</dt><dd>${solvedIslandCount} / ${islandCount}</dd></div>
-      <div><dt>变量</dt><dd>${Math.max(0, Number(solver.variableCount) || 0)}</dd></div>
-      <div><dt>约束</dt><dd>${Math.max(0, Number(solver.constraintCount) || 0)}</dd></div>
-      <div><dt>边界</dt><dd>${Math.max(0, Number(solver.boundCount) || 0)}</dd></div>
-      <div><dt>未分配设备</dt><dd class="${unassignedDeviceCount > 0 ? "is-error" : ""}">${Math.max(0, unassignedDeviceCount)}</dd></div>
-      <div><dt>指令下发</dt><dd>${escapeHtml(dispatchText)}</dd></div>
-      <div><dt>仿真时刻</dt><dd>${escapeHtml(latest.simulationTime || "--")}</dd></div>
-    </dl>
-  `;
-
-  const labels = {
-    exchangeRequestMs: "实时帧 HTTP 请求",
-    exchangeProcessingMs: "实时帧合并处理",
-    exchangePublishMs: "实时帧快照发布",
-    exchangeTotalMs: "实时通信总耗时",
-    snapshotReceiveMs: "快照接收",
-    snapshotValidationMs: "快照校验与复制",
-    inputProcessingMs: "量测与输入整理",
-    topologyAnalysisMs: "拓扑分析",
-    strategyPreparationMs: "优化前策略准备",
-    optimizationBuildMs: "优化问题构建",
-    optimizationSolveMs: "SciPy 求解",
-    storageBalanceMs: "储能均衡",
-    optimizationPostprocessMs: "优化结果后处理",
-    optimizationTotalMs: "优化器总耗时",
-    strategyPostprocessMs: "策略与指令后处理",
-    strategyComputeMs: "控制计划计算总计",
-    trendPostprocessMs: "趋势数据整理",
-    commandSerializeMs: "指令序列化",
-    commandDispatchMs: "指令下发通信",
-    cycleTotalMs: "控制周期总耗时",
-  };
-  const order = Object.keys(labels);
-  const phaseStats = diagnostics.phaseStats && typeof diagnostics.phaseStats === "object"
-    ? diagnostics.phaseStats
-    : {};
-  const rows = order
-    .filter((key) => phaseStats[key])
-    .map((key) => {
-      const item = phaseStats[key] || {};
-      return `
-        <tr class="${["exchangeTotalMs", "optimizationTotalMs", "strategyComputeMs", "cycleTotalMs"].includes(key) ? "is-total" : ""}">
-          <th scope="row">${escapeHtml(labels[key])}</th>
-          <td>${renewablePerformanceMsText(item.latestMs)}</td>
-          <td>${renewablePerformanceMsText(item.p50Ms)}</td>
-          <td>${renewablePerformanceMsText(item.p95Ms)}</td>
-          <td>${renewablePerformanceMsText(item.maxMs)}</td>
-        </tr>
-      `;
-    })
-    .join("");
-  tableNode.innerHTML = rows
-    ? `
-      <table class="renewable-performance-table">
-        <thead><tr><th>阶段</th><th>最新</th><th>P50</th><th>P95</th><th>最大</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    `
-    : '<div class="empty-state compact">当前周期没有可统计的分项耗时</div>';
 }
 
 function renderRenewableControlLogs() {
@@ -17817,16 +17765,22 @@ function renderHistory() {
   commandHistory.innerHTML = `
     <table class="runtime-log-table runtime-log-table-resizable">
       ${runtimeLogColgroupHtml()}
-      <thead><tr><th>本机时刻</th><th>仿真时刻</th><th>类型</th><th>对象</th><th>结果</th><th>详情</th></tr></thead>
+      <thead><tr><th>本机时刻</th><th>仿真时刻</th><th>类型</th><th>对象</th><th>结果</th><th>概要</th></tr></thead>
       <tbody>
         ${logs.map((item) => `
-          <tr class="runtime-log-row is-${escapeHtml(item.level || "info")}">
+          <tr
+            class="runtime-log-row is-${escapeHtml(item.level || "info")}${(Number(item.seq) || 0) === state.runtimeLogSelectedSeq ? " is-selected" : ""}"
+            data-runtime-log-seq="${escapeHtml(item.seq)}"
+            tabindex="0"
+            aria-selected="${(Number(item.seq) || 0) === state.runtimeLogSelectedSeq ? "true" : "false"}"
+            aria-label="日志 ${escapeHtml(item.seq)}，双击查看详细信息"
+          >
             <td>${escapeHtml(runtimeLogWallTimeText(item.wall_time))}</td>
             <td class="mono-cell">${escapeHtml(item.simu_time || "--")}</td>
             <td>${escapeHtml(item.type || "")}</td>
             <td>${escapeHtml(item.target || "")}</td>
             <td>${escapeHtml(item.result || "")}</td>
-            <td class="runtime-log-detail">${escapeHtml(runtimeLogDetailText(item.detail))}</td>
+            <td class="runtime-log-detail" title="双击查看详细信息">${escapeHtml(runtimeLogSummaryText(item))}</td>
           </tr>
         `).join("")}
       </tbody>
@@ -17897,6 +17851,8 @@ function renderTraineeRuntimeLogPager(logs = filteredTraineeRuntimeLogs()) {
 function clearTraineeRuntimeLogs() {
   state.runtimeLogs = [];
   state.runtimeLogSeq = 0;
+  state.runtimeLogSelectedSeq = 0;
+  closeRuntimeLogDetailDialog();
   state.runtimeLogPage = 1;
   state.runtimeLogTypeFilter = "all";
   state.renewableControl.logPage = 1;
@@ -18801,7 +18757,7 @@ document.querySelectorAll("[data-renewable-parameter-tab]").forEach((button) => 
 document.querySelectorAll("[data-renewable-detail-tab]").forEach((button) => {
   button.addEventListener("click", () => {
     const tab = button.dataset.renewableDetailTab || "trend";
-    state.renewableControl.detailTab = ["trend", "logs", "performance"].includes(tab)
+    state.renewableControl.detailTab = ["trend", "logs"].includes(tab)
       ? tab
       : "trend";
     renderRenewableDetailTabs();
@@ -18820,6 +18776,15 @@ $("renewableControlLogPager")?.addEventListener("click", (event) => {
   renderRenewableControlLogs();
 });
 $("clearRuntimeLogs").addEventListener("click", clearTraineeRuntimeLogs);
+const runtimeLogTableNode = $("commandHistory");
+runtimeLogTableNode.addEventListener("click", handleRuntimeLogTableActivation);
+runtimeLogTableNode.addEventListener("dblclick", handleRuntimeLogTableActivation);
+runtimeLogTableNode.addEventListener("keydown", handleRuntimeLogTableActivation);
+$("closeRuntimeLogDetailDialog").addEventListener("click", closeRuntimeLogDetailDialog);
+$("confirmRuntimeLogDetailDialog").addEventListener("click", closeRuntimeLogDetailDialog);
+$("runtimeLogDetailDialog").addEventListener("click", (event) => {
+  if (event.target === $("runtimeLogDetailDialog")) closeRuntimeLogDetailDialog();
+});
 $("saveBackendRuntimeParameters").addEventListener("click", () => saveWebRuntimeSettings("backend"));
 $("undoBackendRuntimeParameters").addEventListener("click", () => undoWebRuntimeSettings("backend"));
 $("restoreBackendRuntimeParameterDefaults").addEventListener("click", () => restoreWebRuntimeDefaults("backend"));

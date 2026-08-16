@@ -1253,12 +1253,32 @@
                 <span id="runtimeLogSummary">最近 0 条</span>
               </div>
             </div>
-            <div class="sr-only">本机时刻 仿真时刻 类型 对象 结果 详情</div>
+            <div class="sr-only">本机时刻 仿真时刻 类型 对象 结果 概要；双击日志行查看详细信息</div>
             <div id="runtimeLogTable" class="runtime-log-wrap" data-log-role="runtime-table"></div>
             <div id="runtimeLogPager" class="runtime-log-pager" aria-label="运行日志分页"></div>
           </section>
         </section>
       </main>
+
+      <dialog id="runtimeLogDetailDialog" class="runtime-log-detail-dialog" aria-labelledby="runtimeLogDetailTitle">
+        <section class="runtime-log-detail-shell">
+          <div class="runtime-log-detail-head">
+            <div>
+              <h2 id="runtimeLogDetailTitle">运行日志详情</h2>
+              <p id="runtimeLogDetailSequence">日志 --</p>
+            </div>
+            <button id="closeRuntimeLogDetailDialog" class="runtime-log-detail-close" type="button" aria-label="关闭运行日志详情">×</button>
+          </div>
+          <dl id="runtimeLogDetailMeta" class="runtime-log-detail-meta"></dl>
+          <section class="runtime-log-detail-content" aria-labelledby="runtimeLogDetailContentTitle">
+            <h3 id="runtimeLogDetailContentTitle">详细信息</h3>
+            <ol id="runtimeLogDetailBody" class="runtime-log-detail-lines"></ol>
+          </section>
+          <div class="runtime-log-detail-actions">
+            <button id="confirmRuntimeLogDetailDialog" class="primary" type="button">关闭</button>
+          </div>
+        </section>
+      </dialog>
 
       <div id="startSimulationDialog" class="modal-backdrop" hidden>
         <form id="startSimulationForm" class="modal-card start-simulation-modal" aria-modal="true" role="dialog" aria-labelledby="startSimulationTitle">

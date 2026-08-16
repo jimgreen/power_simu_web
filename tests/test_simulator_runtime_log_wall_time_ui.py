@@ -13,8 +13,8 @@ class SimulatorRuntimeLogWallTimeUiTest(unittest.TestCase):
         cls.styles = (ROOT / "simu/web/simulator/styles.css").read_text(encoding="utf-8")
 
     def test_runtime_log_table_has_wall_and_simulation_time_columns(self):
-        self.assertIn("本机时刻 仿真时刻 类型 对象 结果 详情", self.html)
-        self.assertNotIn("序号 本机时刻 仿真时刻 类型 对象 结果 详情", self.html)
+        self.assertIn("本机时刻 仿真时刻 类型 对象 结果 概要", self.html)
+        self.assertNotIn("序号 本机时刻 仿真时刻 类型 对象 结果 概要", self.html)
         self.assertIn("<th>本机时刻</th>", self.script)
         self.assertIn("<th>仿真时刻</th>", self.script)
         self.assertNotIn("<th>序号</th>", self.script)

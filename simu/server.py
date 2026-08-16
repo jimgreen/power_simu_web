@@ -3070,6 +3070,7 @@ def make_http_server(
             options = {
                 "refresh": self._truthy_query("refresh"),
                 "compact": self._truthy_query("compact"),
+                "include_performance": not self._falsey_query("performance"),
                 "after_log_seq": self._int_query(
                     "after_log_seq",
                     0,

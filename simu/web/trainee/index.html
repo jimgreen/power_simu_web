@@ -960,7 +960,6 @@
                 <div id="renewableDetailTabs" class="renewable-detail-tabs" role="tablist" aria-label="新能源控制曲线与日志">
                   <button type="button" class="is-active" role="tab" data-renewable-detail-tab="trend" aria-selected="true">曲线</button>
                   <button type="button" role="tab" data-renewable-detail-tab="logs" aria-selected="false">日志</button>
-                  <button type="button" role="tab" data-renewable-detail-tab="performance" aria-selected="false">性能</button>
                 </div>
                 <div class="renewable-detail-body">
                   <section class="renewable-detail-pane renewable-trend-panel is-active" data-renewable-detail-pane="trend" role="tabpanel">
@@ -1033,16 +1032,6 @@
                   <div id="renewableControlLogPager" class="runtime-log-pager" aria-label="控制日志分页"></div>
                   </section>
 
-                  <section class="renewable-detail-pane renewable-performance-panel" data-renewable-detail-pane="performance" role="tabpanel" hidden>
-                    <div class="panel-head">
-                      <h2>控制周期性能</h2>
-                      <span id="renewablePerformanceSummary">0 个周期</span>
-                    </div>
-                    <div class="renewable-performance-body">
-                      <div id="renewableSolverDiagnostics" class="renewable-solver-diagnostics"></div>
-                      <div id="renewablePerformanceTable" class="renewable-performance-table-wrap"></div>
-                    </div>
-                  </section>
                 </div>
               </section>
             </div>
@@ -1228,6 +1217,26 @@
           <button id="confirmCloneModel" class="primary" type="submit">复制</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="runtimeLogDetailDialog" class="runtime-log-detail-dialog" aria-labelledby="runtimeLogDetailTitle">
+      <section class="runtime-log-detail-shell">
+        <div class="runtime-log-detail-head">
+          <div>
+            <h2 id="runtimeLogDetailTitle">运行日志详情</h2>
+            <p id="runtimeLogDetailSequence">日志 --</p>
+          </div>
+          <button id="closeRuntimeLogDetailDialog" class="runtime-log-detail-close" type="button" aria-label="关闭运行日志详情">×</button>
+        </div>
+        <dl id="runtimeLogDetailMeta" class="runtime-log-detail-meta"></dl>
+        <section class="runtime-log-detail-content" aria-labelledby="runtimeLogDetailContentTitle">
+          <h3 id="runtimeLogDetailContentTitle">详细信息</h3>
+          <ol id="runtimeLogDetailBody" class="runtime-log-detail-lines"></ol>
+        </section>
+        <div class="runtime-log-detail-actions">
+          <button id="confirmRuntimeLogDetailDialog" class="primary" type="button">关闭</button>
+        </div>
+      </section>
     </dialog>
 
     <dialog id="renewableControlLogDetailDialog" class="remote-control-dialog renewable-control-log-detail-dialog" aria-labelledby="renewableControlLogDetailTitle">

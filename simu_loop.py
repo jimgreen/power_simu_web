@@ -182,6 +182,7 @@ class SimulationResult:
     real_rows: Optional[List[List[str]]] = None
     scada_rows: Optional[List[List[str]]] = None
     device_states: Optional[List[Dict[str, Any]]] = None
+    missing_measurements: Optional[List[Dict[str, str]]] = None
 
 
 def default_config() -> SimulationConfig:
@@ -3499,6 +3500,73 @@ def _hydrogen_inline_flow_is_deterministic_zero(
     )
 
 
+def _hydrogen_conversion_endpoint_is_deterministic_zero(
+    model_book: Optional[EBook],
+    dev_type: str,
+    dev_name: str,
+) -> bool:
+    """Return whether an absent converter endpoint has a defined stopped value."""
+    if model_book is None or dev_type not in {"HydroSource", "HydroLoad"}:
+        return False
+    endpoint = _model_row(model_book, dev_type, dev_name)
+    if endpoint is None:
+        return False
+    if not _is_running_row(endpoint):
+        return True
+
+    endpoint_idx = str(endpoint.get("idx", "")).strip()
+    if not endpoint_idx:
+        return False
+    parent_specs = (
+        (
+            ("AcE2Hydro", "DcE2Hydro"),
+            ("idx_h2_unit_t2", "idx_hydrosource", "idx_h2_unit", "idx_hydro_source"),
+        )
+        if dev_type == "HydroSource"
+        else (
+            ("Hydro2AcE", "Hydro2DcE"),
+            ("idx_h2_load_t2", "idx_hydroload", "idx_h2_load", "idx_hydro_load"),
+        )
+    )
+    parent_types, reference_fields = parent_specs
+    parents = []
+    for parent_type in parent_types:
+        for parent in _book_rows(model_book, parent_type):
+            reference = next(
+                (
+                    str(parent.get(field, "")).strip()
+                    for field in reference_fields
+                    if str(parent.get(field, "")).strip()
+                ),
+                "",
+            )
+            if reference == endpoint_idx:
+                parents.append(parent)
+    return bool(parents) and all(not _is_running_row(parent) for parent in parents)
+
+
+def _measurement_device_is_stopped(
+    model_book: Optional[EBook],
+    dev_type: str,
+    dev_name: str,
+    binding: Optional[MeasurementBinding] = None,
+) -> bool:
+    """Return whether the concrete model device behind a point is stopped."""
+    if model_book is None:
+        return False
+
+    model_row = None
+    if binding is not None and binding.target_present:
+        model_row = _model_row(
+            model_book,
+            str(binding.target_type).strip(),
+            str(binding.target_name).strip(),
+        )
+    if model_row is None:
+        model_row = _model_row(model_book, str(dev_type).strip(), str(dev_name).strip())
+    return model_row is not None and not _is_running_row(model_row)
+
+
 def _hydrogen_conversion_measurement_value(
     snapshot,
     dev_type: str,
@@ -3555,44 +3623,25 @@ def _measurement_value(
     binding: Optional[MeasurementBinding] = None,
     hydrogen_storage_state: Optional[Mapping[object, Mapping[str, float]]] = None,
 ) -> Optional[float]:
-    dev_type, dev_name, meas_type = row[2], row[3], str(row[4]).strip().upper()
+    dev_type = str(row[2]).strip()
+    dev_name = str(row[3]).strip()
+    meas_type = str(row[4]).strip().upper()
+    device_is_stopped = _measurement_device_is_stopped(
+        model_book,
+        dev_type,
+        dev_name,
+        binding,
+    )
     if meas_type in SIGNAL_MEASUREMENT_TYPES:
-        return None if signal_values is None else signal_values.get((dev_type, dev_name, meas_type))
-    if dev_type == "Environment" and dev_name == "weather":
-        return _weather_measurement_value(meas_type, weather)
-    if dev_type in {
-        "HydroSource",
-        "HydroLoad",
-        "HydroPipe",
-        "HydroValve",
-        "HydroStopValve",
-        "HydroCompressor",
-        "HydroPressRegulator",
-    }:
-        value = _fluid_endpoint_measurement_value(
-            snapshot,
-            dev_type,
-            dev_name,
-            meas_type,
-        )
+        value = None if signal_values is None else signal_values.get((dev_type, dev_name, meas_type))
         if value is not None:
             return value
-        if meas_type == "FLOW" and _hydrogen_inline_flow_is_deterministic_zero(
-            model_book,
-            dev_type,
-            dev_name,
-        ):
-            # A disabled, closed, disconnected, or otherwise absent transport
-            # edge must not retain a stale nonzero definition value.
+        if meas_type == "RUN_STAT" and device_is_stopped:
             return 0.0
         return None
-    if dev_type in {"AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"}:
-        return _hydrogen_conversion_measurement_value(
-            snapshot,
-            dev_type,
-            dev_name,
-            meas_type,
-        )
+    if dev_type == "Environment" and dev_name == "weather":
+        return _weather_measurement_value(meas_type, weather)
+
     target_present = False
     if binding is not None:
         target_type = binding.target_type
@@ -3617,6 +3666,7 @@ def _measurement_value(
                 target_type, target_name = resolved[0]
             elif _model_row(model_book, dev_type, dev_name) is not None:
                 target_type, target_name = dev_type, dev_name
+
     if dev_type == "HydroStorage" or target_type == "HydroStorage":
         field = {
             "PRESSURE": "pressure",
@@ -3625,8 +3675,8 @@ def _measurement_value(
             "SOC": "soc",
         }.get(meas_type)
         if field is None:
-            return None
-        if field is not None and hydrogen_storage_state is not None:
+            return 0.0 if device_is_stopped else None
+        if hydrogen_storage_state is not None:
             for key in (
                 (dev_type, dev_name),
                 (target_type, target_name),
@@ -3636,25 +3686,75 @@ def _measurement_value(
                 values = hydrogen_storage_state.get(key)
                 if values is not None and field in values:
                     return values[field]
+            if not device_is_stopped:
+                return None
+
+    if meas_type == "SOC":
+        if storage_soc is not None:
+            for key in (
+                (dev_type, dev_name),
+                (target_type, target_name),
+                dev_name,
+                target_name,
+            ):
+                if key in storage_soc:
+                    return storage_soc[key]
+        if not device_is_stopped:
             return None
+
+    if device_is_stopped:
+        # A stopped device still owns a valid point in every simulation frame.
+        # Stateful inventory measurements above keep their live values; all
+        # remaining operating measurements have a deterministic zero value.
+        return 0.0
+
+    if dev_type in {
+        "HydroSource",
+        "HydroLoad",
+        "HydroPipe",
+        "HydroValve",
+        "HydroStopValve",
+        "HydroCompressor",
+        "HydroPressRegulator",
+    }:
+        value = _fluid_endpoint_measurement_value(
+            snapshot,
+            dev_type,
+            dev_name,
+            meas_type,
+        )
+        if value is not None:
+            return value
+        if meas_type in {"FLOW", "PRESSURE"} and _hydrogen_conversion_endpoint_is_deterministic_zero(
+            model_book,
+            dev_type,
+            dev_name,
+        ):
+            # A converter endpoint omitted from the fluid result because every
+            # explicitly linked parent is stopped has a known zero operating value.
+            return 0.0
+        if meas_type == "FLOW" and _hydrogen_inline_flow_is_deterministic_zero(
+            model_book,
+            dev_type,
+            dev_name,
+        ):
+            # A disabled, closed, disconnected, or otherwise absent transport
+            # edge must not retain a stale nonzero definition value.
+            return 0.0
+        return None
+    if dev_type in {"AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"}:
+        return _hydrogen_conversion_measurement_value(
+            snapshot,
+            dev_type,
+            dev_name,
+            meas_type,
+        )
     if meas_type == "I" and target_type in GENERIC_CURRENT_BRANCH_TYPES:
         for terminal_meas_type in ("I_FROM", "I_TO"):
             value = snapshot.value(target_type, target_name, terminal_meas_type)
             number = _safe_float(value, None)
             if number is not None:
                 return number
-        return None
-    if meas_type == "SOC":
-        if storage_soc is None:
-            return None
-        for key in (
-            (dev_type, dev_name),
-            (target_type, target_name),
-            dev_name,
-            target_name,
-        ):
-            if key in storage_soc:
-                return storage_soc[key]
         return None
     if target_type == "ACBreak":
         dev = snapshot.ac_devices.get("ACBreak", {}).get(target_name)
@@ -3681,6 +3781,7 @@ def build_real_rows(
     weather_file: Optional[Path] = None,
     device_states: Optional[Sequence[Mapping[str, Any]]] = None,
     model_book: Optional[EBook] = None,
+    missing_measurements: Optional[List[Dict[str, str]]] = None,
 ) -> Tuple[List[str], List[List[str]], List[str], int, int]:
     before, rows, after = parse_measurement_rows(meas_file)
     rows, _added = reconcile_hydrogen_inline_flow_measurements(model_book, rows)
@@ -3703,6 +3804,7 @@ def build_real_rows(
         after,
         model_book=model_book,
         hydrogen_storage_state=hydrogen_storage_state,
+        missing_measurements=missing_measurements,
     )
 
 
@@ -3796,6 +3898,7 @@ def build_real_rows_from_data(
     model_book: Optional[EBook] = None,
     measurement_bindings: Optional[Sequence[MeasurementBinding]] = None,
     hydrogen_storage_state: Optional[Mapping[object, Mapping[str, float]]] = None,
+    missing_measurements: Optional[List[Dict[str, str]]] = None,
 ) -> Tuple[List[str], List[List[str]], List[str], int, int]:
     rows = []
     for source_row in measurement_rows:
@@ -3821,6 +3924,16 @@ def build_real_rows_from_data(
         )
         if value is None:
             missing += 1
+            if missing_measurements is not None:
+                missing_measurements.append(
+                    {
+                        "idx": str(row[0]),
+                        "name": str(row[1]),
+                        "dev_type": str(row[2]),
+                        "dev_name": str(row[3]),
+                        "meas_type": str(row[4]).strip().upper(),
+                    }
+                )
             continue
         row[7] = format_number(float(value))
         updated += 1
@@ -4051,6 +4164,7 @@ def run_once(
             _signal_measurement_values_from_book(stat_book),
             device_states,
         )
+        missing_measurements: List[Dict[str, str]] = []
         before, real_rows, after, updated, missing = build_real_rows_from_data(
             meas_rows,
             snapshot,
@@ -4066,6 +4180,7 @@ def run_once(
                 else None
             ),
             hydrogen_storage_state=hydrogen_storage_state,
+            missing_measurements=missing_measurements,
         )
         scada_rows = add_noise_to_rows(
             real_rows,
@@ -4090,6 +4205,7 @@ def run_once(
             real_rows=real_rows,
             scada_rows=scada_rows,
             device_states=device_states,
+            missing_measurements=missing_measurements,
         )
 
     work_dir = config.real_file.parent / ".simu_loop_work"
@@ -4113,6 +4229,7 @@ def run_once(
     )
     device_states = collect_device_operating_states(snapshot, model_book)
 
+    missing_measurements = []
     before, real_rows, after, updated, missing = build_real_rows(
         config.meas_file,
         snapshot,
@@ -4120,6 +4237,7 @@ def run_once(
         config.weather_file,
         device_states,
         model_book,
+        missing_measurements,
     )
     scada_rows = add_noise_to_rows(
         real_rows,
@@ -4144,6 +4262,7 @@ def run_once(
         real_rows=real_rows,
         scada_rows=scada_rows,
         device_states=device_states,
+        missing_measurements=missing_measurements,
     )
 
 

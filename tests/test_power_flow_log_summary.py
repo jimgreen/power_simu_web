@@ -104,6 +104,41 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertEqual([entry["type"] for entry in persisted], ["控制响应", "潮流计算"])
         self.assertEqual([entry["seq"] for entry in persisted], [1, 2])
 
+    def test_power_flow_log_names_missing_measurements(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        service._append_power_flow_log(
+            {
+                "solver_info": "iter=2",
+                "updated": 8,
+                "missing": 1,
+                "overlay_updates": 0,
+                "missing_measurements": [
+                    {
+                        "idx": "232",
+                        "name": "交流电制氢-1_氢能设备端氢源.FLOW",
+                        "dev_type": "HydroSource",
+                        "dev_name": "交流电制氢-1_氢能设备端氢源",
+                        "meas_type": "FLOW",
+                    }
+                ],
+            },
+            {"real": []},
+            minute=0,
+            absolute_minute=0,
+            clock_advance=1,
+            period_seconds=60.0,
+            command_response_lines=[],
+        )
+
+        log = service.runtime_logs[-1]
+        self.assertEqual(log["result"], "有缺失")
+        self.assertIn(
+            "缺失测点 HydroSource.交流电制氢-1_氢能设备端氢源.FLOW",
+            "\n".join(log["detail"]),
+        )
+
     def test_power_flow_summary_preserves_signed_realtime_measurements(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)

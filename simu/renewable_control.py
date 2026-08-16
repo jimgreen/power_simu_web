@@ -17449,6 +17449,7 @@ class TraineeRenewableControlManager:
         after_settings_revision: Optional[int] = None,
         after_performance_revision: Optional[int] = None,
         after_controller_instance_id: str = "",
+        include_performance: bool = True,
     ) -> Dict[str, Any]:
         with state.lock:
             requested_log_seq = max(0, int(after_log_seq or 0))
@@ -17504,7 +17505,7 @@ class TraineeRenewableControlManager:
                 and int(after_plan_revision) == state.plan_revision
                 and str(after_controller_instance_id or "") == state.service_instance_id
             )
-            performance_cursor_matches = (
+            performance_cursor_matches = include_performance and (
                 after_performance_revision is not None
                 and int(after_performance_revision) == state.performance.revision
                 and str(after_controller_instance_id or "") == state.service_instance_id
@@ -17540,7 +17541,6 @@ class TraineeRenewableControlManager:
                 ),
                 "planRevision": state.plan_revision,
                 "settingsRevision": state.settings_revision,
-                "performanceRevision": state.performance.revision,
                 "lastCalculatedAt": state.last_calculated_at,
                 "lastSentAt": state.last_sent_at,
                 "lastDispatchedClockKey": state.last_dispatched_clock_key,
@@ -17554,6 +17554,8 @@ class TraineeRenewableControlManager:
                 "latestTrendSampleKey": str(state.trend[-1].get("sampleKey", "")) if state.trend else "",
                 **prerequisite,
             }
+            if include_performance:
+                payload["performanceRevision"] = state.performance.revision
             if not plan_cursor_matches:
                 payload["lastPlan"] = (
                     _compact_plan_for_ui(state.last_plan)
@@ -17562,7 +17564,7 @@ class TraineeRenewableControlManager:
                 )
             if not settings_cursor_matches:
                 payload["settings"] = state.settings.payload()
-            if not performance_cursor_matches:
+            if include_performance and not performance_cursor_matches:
                 payload["performanceDiagnostics"] = state.performance.payload()
             return payload
 
@@ -17578,6 +17580,7 @@ class TraineeRenewableControlManager:
         after_settings_revision: Optional[int] = None,
         after_performance_revision: Optional[int] = None,
         after_controller_instance_id: str = "",
+        include_performance: bool = True,
     ) -> Dict[str, Any]:
         prerequisite = self._receive_prerequisite_for_service(service)
         return self._serialize_with_prerequisite(
@@ -17590,6 +17593,7 @@ class TraineeRenewableControlManager:
             after_settings_revision=after_settings_revision,
             after_performance_revision=after_performance_revision,
             after_controller_instance_id=after_controller_instance_id,
+            include_performance=include_performance,
         )
 
     def _serialize(
@@ -17603,6 +17607,7 @@ class TraineeRenewableControlManager:
         after_settings_revision: Optional[int] = None,
         after_performance_revision: Optional[int] = None,
         after_controller_instance_id: str = "",
+        include_performance: bool = True,
     ) -> Dict[str, Any]:
         try:
             service = self._service_for(state.model_id)
@@ -17632,6 +17637,7 @@ class TraineeRenewableControlManager:
                 after_settings_revision=after_settings_revision,
                 after_performance_revision=after_performance_revision,
                 after_controller_instance_id=after_controller_instance_id,
+                include_performance=include_performance,
             )
         return self._serialize_for_service(
             service,
@@ -17643,6 +17649,7 @@ class TraineeRenewableControlManager:
             after_settings_revision=after_settings_revision,
             after_performance_revision=after_performance_revision,
             after_controller_instance_id=after_controller_instance_id,
+            include_performance=include_performance,
         )
 
     def state(
@@ -17657,6 +17664,7 @@ class TraineeRenewableControlManager:
         after_settings_revision: Optional[int] = None,
         after_performance_revision: Optional[int] = None,
         after_controller_instance_id: str = "",
+        include_performance: bool = True,
     ) -> Dict[str, Any]:
         service = self._service_for(model_id)
         return self.state_for_service(
@@ -17669,6 +17677,7 @@ class TraineeRenewableControlManager:
             after_settings_revision=after_settings_revision,
             after_performance_revision=after_performance_revision,
             after_controller_instance_id=after_controller_instance_id,
+            include_performance=include_performance,
         )
 
     def state_for_service(
@@ -17683,6 +17692,7 @@ class TraineeRenewableControlManager:
         after_settings_revision: Optional[int] = None,
         after_performance_revision: Optional[int] = None,
         after_controller_instance_id: str = "",
+        include_performance: bool = True,
     ) -> Dict[str, Any]:
         state = self._state_for_live_service(service)
         serialization_options = {
@@ -17693,6 +17703,7 @@ class TraineeRenewableControlManager:
             "after_settings_revision": after_settings_revision,
             "after_performance_revision": after_performance_revision,
             "after_controller_instance_id": after_controller_instance_id,
+            "include_performance": include_performance,
         }
         now = time.monotonic()
         collection_interval_seconds = self._collection_interval_seconds_for_service(

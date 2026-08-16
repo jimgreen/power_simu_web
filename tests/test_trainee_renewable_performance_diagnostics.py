@@ -837,6 +837,7 @@ def test_performance_revision_cursor_omits_unchanged_aggregate(tmp_path):
             after_performance_revision=first["performanceRevision"],
             after_controller_instance_id=first["controllerInstanceId"],
         )
+        suppressed = manager.state("shared", compact=True, include_performance=False)
     finally:
         manager.close()
 
@@ -844,23 +845,19 @@ def test_performance_revision_cursor_omits_unchanged_aggregate(tmp_path):
     assert "performanceDiagnostics" not in unchanged
     assert changed["performanceRevision"] == first["performanceRevision"] + 1
     assert changed["performanceDiagnostics"]["sampleCount"] == 2
+    assert "performanceRevision" not in suppressed
+    assert "performanceDiagnostics" not in suppressed
 
 
-def test_trainee_ui_has_performance_tab_and_renders_phase_percentiles():
+def test_trainee_ui_removes_performance_tab_and_suppresses_diagnostics_payload():
     html = (ROOT / "simu/web/trainee/index.html").read_text(encoding="utf-8")
     script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
 
-    assert 'data-renewable-detail-tab="performance"' in html
-    assert 'data-renewable-detail-pane="performance"' in html
-    assert 'id="renewablePerformanceTable"' in html
-    assert "function renderRenewablePerformanceDiagnostics" in script
-    assert "performanceDiagnostics" in script
-    assert 'params.set("after_performance_revision"' in script
+    assert 'data-renewable-detail-tab="performance"' not in html
+    assert 'data-renewable-detail-pane="performance"' not in html
+    assert 'id="renewablePerformanceTable"' not in html
+    assert "function renderRenewablePerformanceDiagnostics" not in script
+    assert "performanceDiagnostics" not in script
+    assert 'params.set("performance", "0")' in script
+    assert 'params.set("after_performance_revision"' not in script
     assert 'params.set("after_settings_revision"' in script
-    assert "unassignedDeviceCount" in script
-    assert 'exchangeRequestMs: "实时帧 HTTP 请求"' in script
-    assert 'exchangeProcessingMs: "实时帧合并处理"' in script
-    assert 'exchangePublishMs: "实时帧快照发布"' in script
-    assert 'exchangeTotalMs: "实时通信总耗时"' in script
-    assert "p50Ms" in script
-    assert "p95Ms" in script

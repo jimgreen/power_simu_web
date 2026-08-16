@@ -5004,12 +5004,20 @@ canvas {
 }
 .runtime-log-table td:nth-child(6),
 .runtime-log-table .runtime-log-detail {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   line-height: 18px;
 }
 .runtime-log-table .runtime-log-detail {
   color: #34464e;
+}
+.runtime-log-row[data-runtime-log-seq] { cursor: pointer; }
+.runtime-log-row[data-runtime-log-seq]:focus-visible,
+.runtime-log-row[data-runtime-log-seq].is-selected {
+  outline: 2px solid rgba(0, 140, 140, 0.45);
+  outline-offset: -2px;
+  background: #eef8f8;
 }
 .runtime-log-row.is-ok td:nth-child(5) {
   color: var(--green);
@@ -5022,6 +5030,45 @@ canvas {
 .runtime-log-row.is-error td:nth-child(5) {
   color: var(--red);
   font-weight: 700;
+}
+.runtime-log-detail-dialog {
+  width: min(900px, calc(100vw - 28px));
+  max-height: min(760px, calc(100vh - 28px));
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 20px 60px rgba(23, 42, 51, 0.24);
+}
+.runtime-log-detail-dialog::backdrop { background: rgba(23, 42, 51, 0.42); }
+.runtime-log-detail-shell {
+  max-height: min(760px, calc(100vh - 28px));
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 14px;
+  padding: 20px;
+  overflow: hidden;
+}
+.runtime-log-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.runtime-log-detail-head h2 { margin: 0; font-size: 20px; }
+.runtime-log-detail-head p { margin: 5px 0 0; color: var(--muted); font-weight: 700; }
+.runtime-log-detail-close { width: 34px; height: 34px; padding: 0; border-color: transparent; background: transparent; font-size: 22px; }
+.runtime-log-detail-meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin: 0; border: 1px solid var(--line); background: var(--line); }
+.runtime-log-detail-meta > div { min-width: 0; padding: 9px 10px; background: #fff; }
+.runtime-log-detail-meta dt { margin-bottom: 4px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.runtime-log-detail-meta dd { margin: 0; overflow: hidden; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-log-detail-meta dd.is-ok { color: var(--green); }
+.runtime-log-detail-meta dd.is-warn { color: var(--amber); }
+.runtime-log-detail-meta dd.is-error { color: var(--red); }
+.runtime-log-detail-content { min-height: 0; overflow: auto; border: 1px solid var(--line); }
+.runtime-log-detail-content h3 { position: sticky; top: 0; z-index: 1; margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--line); background: #f5f8f9; font-size: 14px; }
+.runtime-log-detail-lines { margin: 0; padding: 6px 16px 10px 46px; }
+.runtime-log-detail-lines li { padding: 8px 4px 8px 6px; border-bottom: 1px solid #edf1f2; line-height: 1.55; }
+.runtime-log-detail-lines li:last-child { border-bottom: 0; }
+.runtime-log-detail-actions { display: flex; justify-content: flex-end; }
+@media (max-width: 720px) {
+  .runtime-log-detail-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .runtime-log-pager {
   flex: 0 0 auto;

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import gzip
+import http.client
 import json
 import threading
 import time
@@ -72,6 +73,165 @@ CONTROL_STATIC_FIELDS = ("definitions", "settings", "device_parameters", "curves
 
 class TraineeExchangeLifecycleError(RuntimeError):
     """Raised when an exchange request outlives its captured service generation."""
+
+
+@dataclass
+class _JsonConnectionSlot:
+    connection: Any
+    lock: threading.RLock = field(default_factory=threading.RLock)
+
+
+class _PersistentJsonClient:
+    """Small thread-safe HTTP/1.1 pool used by the realtime data plane."""
+
+    def __init__(
+        self,
+        *,
+        http_connection_factory: Callable[..., Any] = http.client.HTTPConnection,
+        https_connection_factory: Callable[..., Any] = http.client.HTTPSConnection,
+    ) -> None:
+        self._http_connection_factory = http_connection_factory
+        self._https_connection_factory = https_connection_factory
+        self._connections: Dict[Tuple[str, str, int], _JsonConnectionSlot] = {}
+        self._lock = threading.RLock()
+        self._closed = False
+
+    @staticmethod
+    def _origin(url: str) -> Tuple[Tuple[str, str, int], str]:
+        parsed = urlparse(url)
+        scheme = str(parsed.scheme or "").lower()
+        hostname = str(parsed.hostname or "")
+        if scheme not in {"http", "https"} or not hostname:
+            raise RuntimeError(f"学员台实时数据源地址无效：{url}")
+        port = int(parsed.port or (443 if scheme == "https" else 80))
+        path = parsed.path or "/"
+        if parsed.params:
+            path = f"{path};{parsed.params}"
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+        return (scheme, hostname, port), path
+
+    def _connection_for(
+        self,
+        origin: Tuple[str, str, int],
+        timeout: float,
+    ) -> _JsonConnectionSlot:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("学员台实时数据连接池已关闭")
+            existing = self._connections.get(origin)
+            if existing is not None:
+                return existing
+            scheme, hostname, port = origin
+            factory = (
+                self._https_connection_factory
+                if scheme == "https"
+                else self._http_connection_factory
+            )
+            slot = _JsonConnectionSlot(
+                connection=factory(hostname, port=port, timeout=timeout)
+            )
+            self._connections[origin] = slot
+            return slot
+
+    def _discard(
+        self,
+        origin: Tuple[str, str, int],
+        slot: _JsonConnectionSlot,
+    ) -> None:
+        with self._lock:
+            if self._connections.get(origin) is slot:
+                self._connections.pop(origin, None)
+        try:
+            slot.connection.close()
+        except OSError:
+            pass
+
+    def request(
+        self,
+        url: str,
+        *,
+        method: str = "GET",
+        payload: Optional[Mapping[str, Any]] = None,
+        timeout: float = 8.0,
+    ) -> Any:
+        origin, path = self._origin(url)
+        request_method = str(method or "GET").upper()
+        body = None
+        headers = {
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+            "Connection": "keep-alive",
+        }
+        if request_method in {"POST", "PUT"}:
+            body = json.dumps(payload or {}, ensure_ascii=False, default=str).encode(
+                "utf-8"
+            )
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            headers["Content-Length"] = str(len(body))
+
+        last_error: Optional[BaseException] = None
+        attempt_count = 2 if request_method in {"GET", "HEAD", "OPTIONS"} else 1
+        for attempt in range(attempt_count):
+            slot = self._connection_for(origin, timeout)
+            response_body = b""
+            response_status = 0
+            response_reason = ""
+            response_will_close = False
+            try:
+                with slot.lock:
+                    slot.connection.timeout = timeout
+                    socket = getattr(slot.connection, "sock", None)
+                    if socket is not None:
+                        socket.settimeout(timeout)
+                    slot.connection.request(
+                        request_method,
+                        path,
+                        body=body,
+                        headers=headers,
+                    )
+                    response = slot.connection.getresponse()
+                    response_body = response.read()
+                    response_status = int(getattr(response, "status", 0) or 0)
+                    response_reason = str(getattr(response, "reason", "") or "")
+                    response_will_close = bool(
+                        getattr(response, "will_close", False)
+                    )
+                    if str(response.getheader("Content-Encoding", "")).lower() == "gzip":
+                        response_body = gzip.decompress(response_body)
+            except (OSError, http.client.HTTPException) as exc:
+                last_error = exc
+                self._discard(origin, slot)
+                if attempt + 1 < attempt_count:
+                    continue
+                break
+
+            if response_will_close:
+                self._discard(origin, slot)
+            text = response_body.decode("utf-8", errors="replace")
+            if response_status >= 400:
+                raise RuntimeError(text or response_reason or f"HTTP {response_status}")
+            try:
+                return json.loads(text) if text else {}
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("学员台实时数据源返回内容不是有效 JSON") from exc
+
+        detail = str(last_error or "连接失败")
+        raise RuntimeError(f"学员台实时数据源不可达：{detail}")
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            slots = list(self._connections.values())
+            self._connections.clear()
+        for slot in slots:
+            with slot.lock:
+                try:
+                    slot.connection.close()
+                except OSError:
+                    pass
 
 
 def _request_json(
@@ -696,7 +856,16 @@ class TraineeRealtimeExchange:
         start_worker: bool = True,
     ) -> None:
         self.services = services
-        self.request_json = request_json or _request_json
+        self._request_client = (
+            _PersistentJsonClient()
+            if request_json is None
+            else None
+        )
+        self.request_json = (
+            request_json
+            if request_json is not None
+            else self._request_client.request
+        )
         self._poll_interval_override = (
             max(0.1, float(poll_interval_seconds))
             if poll_interval_seconds is not None
@@ -2956,5 +3125,7 @@ class TraineeRealtimeExchange:
             # No exchange task may outlive close. Normal HTTP refreshes have a
             # finite request timeout, and no service/exchange lock is held here.
             self._refresh_executor.shutdown(wait=True, cancel_futures=True)
+            if self._request_client is not None:
+                self._request_client.close()
             with self._refresh_pending_lock:
                 self._refresh_pending.clear()

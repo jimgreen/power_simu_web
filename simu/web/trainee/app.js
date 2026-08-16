@@ -287,6 +287,7 @@ const state = {
     actionActive: false,
     revision: -1,
     planRevision: -1,
+    settingsRevision: -1,
     performanceRevision: -1,
     lastPlan: null,
     performanceDiagnostics: null,
@@ -12728,11 +12729,15 @@ function renewableControlApiPath(preview = false) {
   );
   if (latestLogSeq > 0) params.set("after_log_seq", String(latestLogSeq));
   const planRevision = Number(state.renewableControl.planRevision);
+  const settingsRevision = Number(state.renewableControl.settingsRevision);
   const performanceRevision = Number(state.renewableControl.performanceRevision);
   const controllerInstanceId = String(state.renewableControl.controllerInstanceId || "");
   if (Number.isFinite(planRevision) && planRevision >= 0 && controllerInstanceId) {
     params.set("after_plan_revision", String(planRevision));
     params.set("after_controller_instance_id", controllerInstanceId);
+  }
+  if (Number.isFinite(settingsRevision) && settingsRevision >= 0 && controllerInstanceId) {
+    params.set("after_settings_revision", String(settingsRevision));
   }
   if (Number.isFinite(performanceRevision) && performanceRevision >= 0 && controllerInstanceId) {
     params.set("after_performance_revision", String(performanceRevision));
@@ -12798,6 +12803,7 @@ function resetRenewableControlView(modelId = state.activeModelId) {
     actionActive: false,
     revision: -1,
     planRevision: -1,
+    settingsRevision: -1,
     performanceRevision: -1,
     lastPlan: null,
     performanceDiagnostics: null,
@@ -12894,6 +12900,7 @@ function resetRenewableControlHistoryForLifecycle(control = state.renewableContr
   control.logs = [];
   control.revision = -1;
   control.planRevision = -1;
+  control.settingsRevision = -1;
   control.performanceRevision = -1;
   control.lastPlan = null;
   control.performanceDiagnostics = null;
@@ -12917,6 +12924,7 @@ function applyRenewableControlState(payload = {}) {
   );
   const incomingRevision = Number(payload.revision);
   const incomingPlanRevision = Number(payload.planRevision);
+  const incomingSettingsRevision = Number(payload.settingsRevision);
   const incomingPerformanceRevision = Number(payload.performanceRevision);
   const hasLastPlan = Object.prototype.hasOwnProperty.call(payload, "lastPlan");
   const hasPerformanceDiagnostics = Object.prototype.hasOwnProperty.call(
@@ -13045,6 +13053,9 @@ function applyRenewableControlState(payload = {}) {
     planRevision: Number.isFinite(incomingPlanRevision)
       ? incomingPlanRevision
       : control.planRevision,
+    settingsRevision: Number.isFinite(incomingSettingsRevision)
+      ? incomingSettingsRevision
+      : control.settingsRevision,
     performanceRevision: Number.isFinite(incomingPerformanceRevision)
       ? incomingPerformanceRevision
       : control.performanceRevision,

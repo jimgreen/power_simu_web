@@ -2665,6 +2665,7 @@ def make_http_server(
 
     class PolarMicrogridHandler(BaseHTTPRequestHandler):
         server_version = "PolarMicrogridHTTP/0.1"
+        protocol_version = "HTTP/1.1"
 
         def log_message(self, fmt: str, *args: Any) -> None:
             return
@@ -2672,6 +2673,7 @@ def make_http_server(
         def do_OPTIONS(self) -> None:
             self.send_response(204)
             self._cors()
+            self.send_header("Content-Length", "0")
             self.end_headers()
 
         def do_GET(self) -> None:
@@ -2707,6 +2709,7 @@ def make_http_server(
                         self.send_response(302)
                         self._cors(cache_control="no-cache")
                         self.send_header("Location", "/?ui=direct")
+                        self.send_header("Content-Length", "0")
                         self.end_headers()
                         return
                 self._serve_static(static_root)
@@ -3077,6 +3080,9 @@ def make_http_server(
                     (renewable_query.get("after_trend_sample_key") or [""])[0]
                 ),
                 "after_plan_revision": self._optional_int_query("after_plan_revision"),
+                "after_settings_revision": self._optional_int_query(
+                    "after_settings_revision"
+                ),
                 "after_performance_revision": self._optional_int_query(
                     "after_performance_revision"
                 ),
@@ -4069,6 +4075,7 @@ def make_http_server(
                 self._cors(cache_control="no-cache")
                 self.send_header("ETag", etag)
                 self.send_header("Vary", "Accept-Encoding")
+                self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
             self.send_response(200)
@@ -4163,6 +4170,7 @@ def make_http_server(
             self.send_header("Cache-Control", cache_control)
 
     class ManagedThreadingHTTPServer(ThreadingHTTPServer):
+        daemon_threads = True
         _trainee_exchange_closed = False
         _renewable_manager_closed = False
         _service_closed = False

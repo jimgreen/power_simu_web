@@ -4,6 +4,7 @@ import copy
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,6 +79,30 @@ class PowerFlowLogSummaryTest(unittest.TestCase):
         self.assertIn("风力发电总功率 8 kW（1 台）", text)
         self.assertNotIn("风力发电总功率 16 kW", text)
         self.assertIn("新能源限值", control_text)
+
+    def test_power_flow_log_persists_the_cycle_as_one_journal_batch(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+
+        with mock.patch.object(
+            service,
+            "_append_runtime_log_journal_batch",
+            wraps=service._append_runtime_log_journal_batch,
+        ) as append_batch:
+            service._append_power_flow_log(
+                {"solver_info": "iter=1", "updated": 1, "missing": 0, "overlay_updates": 0},
+                {"real": []},
+                minute=0,
+                absolute_minute=0,
+                clock_advance=1,
+                period_seconds=60.0,
+                command_response_lines=[],
+            )
+
+        append_batch.assert_called_once()
+        persisted = append_batch.call_args.args[0]
+        self.assertEqual([entry["type"] for entry in persisted], ["控制响应", "潮流计算"])
+        self.assertEqual([entry["seq"] for entry in persisted], [1, 2])
 
     def test_power_flow_summary_preserves_signed_realtime_measurements(self):
         workspace, service = self._make_service()

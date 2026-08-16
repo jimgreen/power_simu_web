@@ -1351,7 +1351,91 @@ def _allocate_row_command_delta(
     return delivered if increase else -delivered
 
 
-def _hydrogen_post_dispatch_plan(
+def _optimization_island_id_for_components(
+    optimization_result: Optional[RenewableDispatchOptimizationResult],
+    *component_ids: str,
+) -> str:
+    candidates = {
+        str(component_id).strip()
+        for component_id in component_ids
+        if str(component_id).strip()
+    }
+    if optimization_result is not None and candidates:
+        for island in optimization_result.islands:
+            if candidates.intersection(island.component_ids):
+                return island.island_id
+    return next(iter(sorted(candidates)), "UNRESOLVED")
+
+
+def _publish_final_acdc_coordination(
+    command_rows: Sequence[MutableMapping[str, Any]],
+    coordinated_converter_rows: Sequence[Mapping[str, Any]],
+) -> None:
+    """Publish AC/DC targets only after all island hydrogen decisions finish."""
+
+    coordinated_by_key = {
+        (str(row.get("dev_type", "")), str(row.get("dev_name", ""))): row
+        for row in coordinated_converter_rows
+        if _is_grid_converter_row(row)
+    }
+    for row in command_rows:
+        if not _is_grid_converter_row(row):
+            continue
+        coordinated = coordinated_by_key.get(
+            (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        )
+        if coordinated is None:
+            continue
+        row["commandKw"] = coordinated.get("commandKw", row.get("commandKw"))
+        row["strategyCommand"] = coordinated.get(
+            "strategyCommand",
+            row.get("strategyCommand"),
+        )
+
+
+def _topology_island_hydrogen_plans(
+    planned: Sequence[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in planned:
+        island_id = str(row.get("topologyIslandId", "UNRESOLVED")) or "UNRESOLVED"
+        grouped.setdefault(island_id, []).append(dict(row))
+    return [
+        {
+            "topologyIslandId": island_id,
+            "hydrogenCommands": grouped[island_id],
+            "acdcCoordinationStage": "final",
+        }
+        for island_id in sorted(grouped)
+    ]
+
+
+def _hydrogen_electric_resource_refs(
+    snapshot: Mapping[str, Any],
+) -> Tuple[ResourceRef, ...]:
+    """Resolve hydrogen electric endpoints through the same graph as wind/PV."""
+
+    refs: Dict[Tuple[str, str], ResourceRef] = {}
+    for bindings in energy_coupling_control_bindings(snapshot).values():
+        power_binding = next(
+            (row for row in bindings if row.get("set_type") == "p_set"),
+            None,
+        )
+        if power_binding is None:
+            continue
+        dev_type = str(power_binding.get("target_dev_type", "")).strip()
+        dev_name = str(power_binding.get("target_dev_name", "")).strip()
+        if not dev_type or not dev_name:
+            continue
+        refs[(dev_type, dev_name)] = ResourceRef(
+            "hydrogen",
+            dev_type,
+            dev_name,
+        )
+    return tuple(refs[key] for key in sorted(refs))
+
+
+def _optimize_hydrogen_within_topology_islands(
     snapshot: Mapping[str, Any],
     measurements: Mapping[Tuple[str, str, str], MeasurementValue],
     settings: RenewableControlSettings,
@@ -1364,7 +1448,25 @@ def _hydrogen_post_dispatch_plan(
     diesel_unit_count: int = 1,
     diesel_input_valid: bool = True,
     apply_electrical_corrections: bool = True,
+    optimization_result: Optional[RenewableDispatchOptimizationResult] = None,
 ) -> Dict[str, Any]:
+    hydrogen_electric_refs = _hydrogen_electric_resource_refs(snapshot)
+    hydrogen_electric_connections = dict(resource_topology.resources)
+    missing_hydrogen_refs = tuple(
+        resource
+        for resource in hydrogen_electric_refs
+        if (resource.dev_type, resource.dev_name)
+        not in hydrogen_electric_connections
+    )
+    if missing_hydrogen_refs:
+        # Direct algorithm callers may provide a topology resolved before
+        # hydrogen endpoints were registered. Resolve only those endpoints
+        # through the same graph instead of falling back to type/name guesses.
+        supplemental_topology = resolve_resource_topology(
+            snapshot,
+            missing_hydrogen_refs,
+        )
+        hydrogen_electric_connections.update(supplemental_topology.resources)
     diesel_unit_count = max(1, int(diesel_unit_count))
     diesel_capacity_kw = (
         max(0.0, float(diesel_capacity_kw))
@@ -1399,6 +1501,14 @@ def _hydrogen_post_dispatch_plan(
         resource_topology,
     )
     diagnostics: Dict[str, Any] = {
+        "optimizationScope": "topology-island",
+        "coordinationSequence": [
+            "renewable-diesel-storage",
+            "hydrogen",
+            "acdc-final",
+        ],
+        "acdcCoordinationStage": "final",
+        "topologyIslandPlans": [],
         "closedLoopEnabled": bool(apply_electrical_corrections),
         "dispatchMode": (
             "closed-loop-atomic"
@@ -1661,6 +1771,16 @@ def _hydrogen_post_dispatch_plan(
     converter_correction = 0.0
     balance_correction = 0.0
     predicted_diesel_kw = float(diesel_current_kw)
+    # Hydrogen feasibility probes and successive devices share a private AC/DC
+    # working set.  The public command rows are left untouched until every
+    # hydrogen decision has completed, so the converter is the final island
+    # coordination stage instead of an input that is repeatedly published and
+    # corrected during hydrogen planning.
+    coordinated_converter_rows: List[MutableMapping[str, Any]] = [
+        copy.deepcopy(row)
+        for row in command_rows
+        if _is_grid_converter_row(row)
+    ]
     diesel_command_rows = [
         row
         for row in command_rows
@@ -1746,6 +1866,35 @@ def _hydrogen_post_dispatch_plan(
                 or not _is_online(flow_device, measurements)
             ):
                 continue
+            power_connection = hydrogen_electric_connections.get(
+                (power_type, power_name)
+            )
+            if (
+                power_connection is None
+                or power_connection.connection_side not in {"AC", "DC"}
+                or not power_connection.actively_connected
+                or not power_connection.grid_component_id
+            ):
+                topology_label = (
+                    power_connection.topology_status_label
+                    if power_connection is not None
+                    else "未纳入资源拓扑"
+                )
+                diagnostics["warnings"].append(
+                    f"氢能设备{coupling_name}的电端{power_type}.{power_name}"
+                    f"并网侧拓扑无效（{topology_label}），已按 fail closed 禁止自动调节"
+                )
+                continue
+            # The final real-bus side is resolved from the active graph, exactly
+            # like wind/PV.  Converter crossings are part of active_path; no
+            # endpoint type or device-name prefix is used as a side heuristic.
+            electric_side = power_connection.connection_side
+            electric_component_id = power_connection.grid_component_id
+            dc_group_id = (
+                power_connection.dc_transfer_group_id
+                if electric_side == "DC"
+                else ""
+            )
             coefficient_field = "e2h_coeff" if is_electrolyzer else "h2e_coeff"
             coefficient = _number(coupling.get(coefficient_field))
             if coefficient is None or coefficient <= EPSILON:
@@ -2266,11 +2415,10 @@ def _hydrogen_post_dispatch_plan(
                 )
                 diagnostics["decisionTraces"].append(decision_trace)
                 continue
-            electric_side = "AC" if power_type.startswith("AC") else "DC"
-            dc_group_id = (
-                _node_in_dc_transfer_group(resource_topology, power_row.get("node"))
-                if electric_side == "DC"
-                else ""
+            topology_island_id = _optimization_island_id_for_components(
+                optimization_result,
+                electric_component_id,
+                dc_group_id,
             )
             accepted_delta_kw = requested_delta_kw
             adjustment_requested = abs(requested_delta_kw) > EPSILON
@@ -2281,7 +2429,7 @@ def _hydrogen_post_dispatch_plan(
             if electric_side == "DC" and abs(accepted_delta_kw) > EPSILON:
                 converter_rows = [
                     row
-                    for row in command_rows
+                    for row in coordinated_converter_rows
                     if _is_grid_converter_row(row)
                     and row.get("online")
                     and row.get("commandable") is not False
@@ -2529,12 +2677,17 @@ def _hydrogen_post_dispatch_plan(
                     "activeSetType": active_set_type,
                     "setValue": set_value,
                     "electricSide": electric_side,
+                    "electricBusbarType": power_connection.busbar_type,
+                    "electricBusbarName": power_connection.busbar_name,
+                    "electricConverterPath": list(power_connection.converter_path),
                     "currentElectricPowerKw": current_power,
                     "electricPowerKw": target_power,
                     "targetElectricPowerKw": target_power,
                     "electricDeltaKw": accepted_delta_kw,
                     "equivalentFlow": target_flow,
                     "dcTransferGroupId": dc_group_id,
+                    "electricComponentId": electric_component_id,
+                    "topologyIslandId": topology_island_id,
                     "hydrogenIslandId": hydrogen_island_id,
                     "dieselLoadRatioBefore": predicted_diesel_load_ratio,
                     "electricStorageSocAverage": electric_storage_soc,
@@ -2561,6 +2714,11 @@ def _hydrogen_post_dispatch_plan(
                 diagnostics["interlockMode"] = hydrogen_mode_lock
                 diagnostics["interlockActive"] = True
             predicted_diesel_kw += diesel_delta_kw
+    if apply_electrical_corrections:
+        _publish_final_acdc_coordination(
+            command_rows,
+            coordinated_converter_rows,
+        )
     diagnostics.update(
         {
             "action": (
@@ -2584,6 +2742,7 @@ def _hydrogen_post_dispatch_plan(
                 float(row["equivalentFlow"]) for row in planned
             ),
             "commands": planned,
+            "topologyIslandPlans": _topology_island_hydrogen_plans(planned),
             "converterCorrectionKw": converter_correction,
             "balanceCorrectionKw": balance_correction,
             "predictedDieselAfterKw": predicted_diesel_kw,
@@ -11255,9 +11414,19 @@ def calculate_renewable_control_plan(
         )
         for row in diesel_rows
     ]
+    hydrogen_electric_refs = _hydrogen_electric_resource_refs(snapshot)
     topology_started = time.perf_counter()
     input_processing_seconds = topology_started - plan_started
-    topology_resources = (*resource_refs, *diesel_refs)
+    topology_resource_by_key = {
+        (resource.dev_type, resource.dev_name): resource
+        for resource in (*resource_refs, *diesel_refs)
+    }
+    for resource in hydrogen_electric_refs:
+        topology_resource_by_key.setdefault(
+            (resource.dev_type, resource.dev_name),
+            resource,
+        )
+    topology_resources = tuple(topology_resource_by_key.values())
     if topology_static_context is None:
         resource_topology = resolve_resource_topology(snapshot, topology_resources)
     else:
@@ -13549,7 +13718,7 @@ def calculate_renewable_control_plan(
         )
         renewable_effective_step_ratio = settings.step_coefficient * renewable_step_scale
 
-    hydrogen_plan = _hydrogen_post_dispatch_plan(
+    hydrogen_plan = _optimize_hydrogen_within_topology_islands(
         snapshot,
         measurements,
         settings,
@@ -13566,6 +13735,7 @@ def calculate_renewable_control_plan(
             and len(measured_diesel) == len(online_diesel)
         ),
         apply_electrical_corrections=settings.hydrogen_closed_loop_enabled,
+        optimization_result=optimization_result,
     )
     strategy_boundary_warnings = _clamp_final_command_rows_to_boundaries(
         command_rows
@@ -14751,6 +14921,7 @@ class _ControllerState:
     control_clock_last_second: Optional[float] = None
     control_clock_last_step_count: Optional[int] = None
     background_cycle_pending: bool = False
+    settings_revision: int = 1
     plan_revision: int = 0
     revision: int = 0
     log_seq: int = 0
@@ -17275,6 +17446,7 @@ class TraineeRenewableControlManager:
         after_log_seq: int = 0,
         after_trend_sample_key: str = "",
         after_plan_revision: Optional[int] = None,
+        after_settings_revision: Optional[int] = None,
         after_performance_revision: Optional[int] = None,
         after_controller_instance_id: str = "",
     ) -> Dict[str, Any]:
@@ -17337,6 +17509,12 @@ class TraineeRenewableControlManager:
                 and int(after_performance_revision) == state.performance.revision
                 and str(after_controller_instance_id or "") == state.service_instance_id
             )
+            settings_cursor_matches = (
+                after_settings_revision is not None
+                and int(after_settings_revision) == state.settings_revision
+                and str(after_controller_instance_id or "")
+                == state.service_instance_id
+            )
             control_frozen = bool(prerequisite.get("controlFrozen"))
             payload = {
                 "modelId": state.model_id,
@@ -17355,13 +17533,13 @@ class TraineeRenewableControlManager:
                 ),
                 "loopMode": state.loop_mode,
                 "sending": state.sending,
-                "settings": state.settings.payload(),
                 "status": (
                     "模拟台已暂停，学员台保持冻结；恢复后将继续原运行状态。"
                     if control_frozen
                     else state.status
                 ),
                 "planRevision": state.plan_revision,
+                "settingsRevision": state.settings_revision,
                 "performanceRevision": state.performance.revision,
                 "lastCalculatedAt": state.last_calculated_at,
                 "lastSentAt": state.last_sent_at,
@@ -17382,6 +17560,8 @@ class TraineeRenewableControlManager:
                     if compact
                     else copy.deepcopy(state.last_plan)
                 )
+            if not settings_cursor_matches:
+                payload["settings"] = state.settings.payload()
             if not performance_cursor_matches:
                 payload["performanceDiagnostics"] = state.performance.payload()
             return payload
@@ -17395,6 +17575,7 @@ class TraineeRenewableControlManager:
         after_log_seq: int = 0,
         after_trend_sample_key: str = "",
         after_plan_revision: Optional[int] = None,
+        after_settings_revision: Optional[int] = None,
         after_performance_revision: Optional[int] = None,
         after_controller_instance_id: str = "",
     ) -> Dict[str, Any]:
@@ -17406,6 +17587,7 @@ class TraineeRenewableControlManager:
             after_log_seq=after_log_seq,
             after_trend_sample_key=after_trend_sample_key,
             after_plan_revision=after_plan_revision,
+            after_settings_revision=after_settings_revision,
             after_performance_revision=after_performance_revision,
             after_controller_instance_id=after_controller_instance_id,
         )
@@ -17418,6 +17600,7 @@ class TraineeRenewableControlManager:
         after_log_seq: int = 0,
         after_trend_sample_key: str = "",
         after_plan_revision: Optional[int] = None,
+        after_settings_revision: Optional[int] = None,
         after_performance_revision: Optional[int] = None,
         after_controller_instance_id: str = "",
     ) -> Dict[str, Any]:
@@ -17446,6 +17629,7 @@ class TraineeRenewableControlManager:
                 after_log_seq=after_log_seq,
                 after_trend_sample_key=after_trend_sample_key,
                 after_plan_revision=after_plan_revision,
+                after_settings_revision=after_settings_revision,
                 after_performance_revision=after_performance_revision,
                 after_controller_instance_id=after_controller_instance_id,
             )
@@ -17456,6 +17640,7 @@ class TraineeRenewableControlManager:
             after_log_seq=after_log_seq,
             after_trend_sample_key=after_trend_sample_key,
             after_plan_revision=after_plan_revision,
+            after_settings_revision=after_settings_revision,
             after_performance_revision=after_performance_revision,
             after_controller_instance_id=after_controller_instance_id,
         )
@@ -17469,6 +17654,7 @@ class TraineeRenewableControlManager:
         after_log_seq: int = 0,
         after_trend_sample_key: str = "",
         after_plan_revision: Optional[int] = None,
+        after_settings_revision: Optional[int] = None,
         after_performance_revision: Optional[int] = None,
         after_controller_instance_id: str = "",
     ) -> Dict[str, Any]:
@@ -17480,6 +17666,7 @@ class TraineeRenewableControlManager:
             after_log_seq=after_log_seq,
             after_trend_sample_key=after_trend_sample_key,
             after_plan_revision=after_plan_revision,
+            after_settings_revision=after_settings_revision,
             after_performance_revision=after_performance_revision,
             after_controller_instance_id=after_controller_instance_id,
         )
@@ -17493,6 +17680,7 @@ class TraineeRenewableControlManager:
         after_log_seq: int = 0,
         after_trend_sample_key: str = "",
         after_plan_revision: Optional[int] = None,
+        after_settings_revision: Optional[int] = None,
         after_performance_revision: Optional[int] = None,
         after_controller_instance_id: str = "",
     ) -> Dict[str, Any]:
@@ -17502,6 +17690,7 @@ class TraineeRenewableControlManager:
             "after_log_seq": after_log_seq,
             "after_trend_sample_key": after_trend_sample_key,
             "after_plan_revision": after_plan_revision,
+            "after_settings_revision": after_settings_revision,
             "after_performance_revision": after_performance_revision,
             "after_controller_instance_id": after_controller_instance_id,
         }
@@ -17733,6 +17922,7 @@ class TraineeRenewableControlManager:
                     )
                     if next_settings != state.settings:
                         state.operation_epoch += 1
+                        state.settings_revision += 1
                     state.settings = next_settings
                     state.status = (
                         "新能源实时控制参数已更新并持久化；"

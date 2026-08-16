@@ -17,6 +17,7 @@ from simu.server import make_http_server
 from simu.service import MultiModelSimulator, PolarMicrogridSimulator, SimulationModelSpec
 from simu.trainee_exchange import (
     CONTROL_STATIC_FIELDS,
+    _PersistentJsonClient,
     TraineeControlSnapshot,
     TraineeRealtimeExchange,
 )
@@ -82,6 +83,94 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
         )
         self.addCleanup(workspace.cleanup)
         return service
+
+    def test_persistent_json_client_reuses_one_connection_per_origin(self):
+        class FakeResponse:
+            status = 200
+            reason = "OK"
+            will_close = False
+
+            @staticmethod
+            def read():
+                return b'{"ok":true}'
+
+            @staticmethod
+            def getheader(_name, default=""):
+                return default
+
+        class FakeConnection:
+            def __init__(self, host, port=None, timeout=None):
+                self.host = host
+                self.port = port
+                self.timeout = timeout
+                self.requests = []
+                self.closed = False
+                self.sock = None
+
+            def request(self, method, path, body=None, headers=None):
+                self.requests.append((method, path, body, dict(headers or {})))
+
+            @staticmethod
+            def getresponse():
+                return FakeResponse()
+
+            def close(self):
+                self.closed = True
+
+        created = []
+
+        def factory(host, port=None, timeout=None):
+            connection = FakeConnection(host, port, timeout)
+            created.append(connection)
+            return connection
+
+        client = _PersistentJsonClient(http_connection_factory=factory)
+        try:
+            first = client.request("http://teacher.local:8713/api/snapshot?lite=1")
+            second = client.request("http://teacher.local:8713/api/health")
+        finally:
+            client.close()
+
+        self.assertEqual(first, {"ok": True})
+        self.assertEqual(second, {"ok": True})
+        self.assertEqual(len(created), 1)
+        self.assertEqual(
+            [request[1] for request in created[0].requests],
+            ["/api/snapshot?lite=1", "/api/health"],
+        )
+        self.assertTrue(created[0].closed)
+
+    def test_persistent_json_client_does_not_retry_control_post_after_transport_failure(self):
+        class FailingConnection:
+            sock = None
+
+            @staticmethod
+            def request(_method, _path, body=None, headers=None):
+                raise OSError("response connection lost")
+
+            @staticmethod
+            def close():
+                return None
+
+        created = []
+
+        def factory(_host, port=None, timeout=None):
+            connection = FailingConnection()
+            created.append(connection)
+            return connection
+
+        client = _PersistentJsonClient(http_connection_factory=factory)
+        try:
+            with self.assertRaisesRegex(RuntimeError, "response connection lost"):
+                client.request(
+                    "http://teacher.local:8713/api/control",
+                    method="POST",
+                    payload={"set_values": []},
+                )
+        finally:
+            client.close()
+
+        self.assertEqual(len(created), 1)
 
     def test_control_snapshot_uses_runtime_values_but_local_static_parameters(self):
         service = self.make_service()

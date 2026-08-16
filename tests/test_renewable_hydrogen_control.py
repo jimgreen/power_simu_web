@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import threading
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 import simu_loop
@@ -15,12 +16,12 @@ from simu.renewable_control import (
     _dispatch_setpoint_value,
     _hydrogen_business_decision_detail,
     _hydrogen_operating_metrics,
-    _hydrogen_post_dispatch_plan,
+    _optimize_hydrogen_within_topology_islands,
     _measurement_index,
     calculate_renewable_control_plan,
 )
 from simu.trainee_exchange import TraineeControlSnapshot
-from simu.resource_topology import resolve_resource_topology
+from simu.resource_topology import ResourceRef, resolve_resource_topology
 from simu.model_semantics import energy_coupling_control_bindings
 
 
@@ -421,7 +422,7 @@ def _run(
             "socMin": storage_soc_min,
         }
     ]
-    result = _hydrogen_post_dispatch_plan(
+    result = _optimize_hydrogen_within_topology_islands(
         snapshot,
         measurements,
         settings,
@@ -446,7 +447,7 @@ def _run_electrolyzer(
     measurements = _measurement_index(snapshot)
     topology = resolve_resource_topology(snapshot, ())
     rows = []
-    result = _hydrogen_post_dispatch_plan(
+    result = _optimize_hydrogen_within_topology_islands(
         snapshot,
         measurements,
         settings,
@@ -736,7 +737,7 @@ def test_electrolyzer_uses_average_diesel_power_and_average_electric_storage_soc
     measurements = _measurement_index(snapshot)
     topology = resolve_resource_topology(snapshot, ())
     rows = []
-    result = _hydrogen_post_dispatch_plan(
+    result = _optimize_hydrogen_within_topology_islands(
         snapshot,
         measurements,
         settings,
@@ -765,7 +766,7 @@ def test_electrolyzer_fails_closed_on_partial_electric_storage_soc_average():
     measurements = _measurement_index(snapshot)
     topology = resolve_resource_topology(snapshot, ())
     rows = []
-    result = _hydrogen_post_dispatch_plan(
+    result = _optimize_hydrogen_within_topology_islands(
         snapshot,
         measurements,
         RenewableControlSettings(
@@ -875,7 +876,7 @@ def test_fuel_cell_integration_uses_complete_diesel_and_soc_averages():
             "dcTransferGroupId": group_id,
         }
     ]
-    result = _hydrogen_post_dispatch_plan(
+    result = _optimize_hydrogen_within_topology_islands(
         snapshot,
         measurements,
         RenewableControlSettings(
@@ -1086,6 +1087,15 @@ def test_full_renewable_plan_previews_open_hydrogen_and_dispatches_closed_hydrog
     }
     closed_hydrogen = closed_plan["metrics"]["hydrogenControl"]
     assert closed_hydrogen["dispatchMode"] == "closed-loop-atomic"
+    assert closed_hydrogen["optimizationScope"] == "topology-island"
+    assert closed_hydrogen["coordinationSequence"] == [
+        "renewable-diesel-storage",
+        "hydrogen",
+        "acdc-final",
+    ]
+    assert closed_hydrogen["acdcCoordinationStage"] == "final"
+    assert closed_hydrogen["topologyIslandPlans"]
+    assert closed_hydrogen["topologyIslandPlans"][0]["hydrogenCommands"]
     assert closed_plan["runCommands"] == [
         {
             "dev_type": "Hydro2DcE",
@@ -1496,7 +1506,7 @@ def test_electrolyzer_and_fuel_cell_cannot_start_in_the_same_cycle():
             "capacityKw": 200.0,
         },
     ]
-    result = _hydrogen_post_dispatch_plan(
+    result = _optimize_hydrogen_within_topology_islands(
         snapshot,
         measurements,
         RenewableControlSettings(
@@ -1674,7 +1684,7 @@ def test_existing_simultaneous_operation_stops_mode_selected_by_diesel_power(
             "capacityKw": 200.0,
         },
     ]
-    result = _hydrogen_post_dispatch_plan(
+    result = _optimize_hydrogen_within_topology_islands(
         snapshot,
         measurements,
         RenewableControlSettings(
@@ -2620,7 +2630,7 @@ def test_atomic_zero_margin_keeps_running_electrolyzer_setpoint_in_snapshot():
         }
     ]
 
-    result = _hydrogen_post_dispatch_plan(
+    result = _optimize_hydrogen_within_topology_islands(
         snapshot,
         measurements,
         RenewableControlSettings(
@@ -2778,7 +2788,7 @@ def test_fuel_cell_start_requires_margin_for_minimum_plus_step():
             "dcTransferGroupId": group_id,
         }
     ]
-    started = _hydrogen_post_dispatch_plan(
+    started = _optimize_hydrogen_within_topology_islands(
         snapshot,
         measurements,
         settings,
@@ -2893,7 +2903,7 @@ def test_running_fuel_cell_shutdown_uses_strict_lower_minus_deadband_boundary(
             "dcTransferGroupId": group_id,
         }
     ]
-    result = _hydrogen_post_dispatch_plan(
+    result = _optimize_hydrogen_within_topology_islands(
         snapshot,
         measurements,
         settings,
@@ -2973,7 +2983,7 @@ def test_dc_hydrogen_correction_shares_parallel_converter_headroom_and_dispatch_
             "dcTransferGroupId": group_id,
         },
     ]
-    result = _hydrogen_post_dispatch_plan(
+    result = _optimize_hydrogen_within_topology_islands(
         snapshot,
         measurements,
         RenewableControlSettings(
@@ -2997,6 +3007,82 @@ def test_dc_hydrogen_correction_shares_parallel_converter_headroom_and_dispatch_
     assert converters["grid-converter-2"]["commandKw"] == pytest.approx(-3.0)
     assert _dispatch_setpoint_value(converters["grid-converter"]) == pytest.approx(-43.0)
     assert _dispatch_setpoint_value(converters["grid-converter-2"]) == pytest.approx(3.0)
+
+
+def test_hydrogen_grid_side_comes_from_resolved_topology_and_fails_closed_when_invalid():
+    snapshot = _fuel_cell_snapshot(tank_pressure=20.0)
+    measurements = _measurement_index(snapshot)
+    topology = resolve_resource_topology(
+        snapshot,
+        (ResourceRef("hydrogen", "DCGenerator", "fuel-cell"),),
+    )
+    connection = topology.resources[("DCGenerator", "fuel-cell")]
+    assert connection.connection_side == "DC"
+    assert connection.busbar_type == "DCRealBs"
+    assert connection.grid_component_id
+    invalid_connection = replace(
+        connection,
+        connection_side="UNRESOLVED",
+        actively_connected=False,
+        grid_component_id="",
+        dc_transfer_group_id="",
+    )
+    unresolved_topology = replace(
+        topology,
+        resources=MappingProxyType(
+            {("DCGenerator", "fuel-cell"): invalid_connection}
+        ),
+    )
+    group_id = next(iter(topology.dc_transfer_groups))
+    rows = [
+        {
+            "dev_type": "DCACConverter",
+            "model_block": "DCACConverter",
+            "dev_name": "grid-converter",
+            "converterRole": "grid",
+            "converterDirection": "AC_TO_DC",
+            "online": True,
+            "commandable": True,
+            "strategyCommand": True,
+            "set_type": "p_ac_set",
+            "currentKw": 0.0,
+            "commandKw": 0.0,
+            "signedMinTargetKw": -50.0,
+            "signedMaxTargetKw": 50.0,
+            "dcTransferGroupId": group_id,
+        }
+    ]
+
+    result = _optimize_hydrogen_within_topology_islands(
+        snapshot,
+        measurements,
+        RenewableControlSettings(fuel_cell_diesel_power_limit_kw=40.0),
+        unresolved_topology,
+        rows,
+        [{"online": True, "socKnown": True, "soc": 0.1, "socMin": 0.2}],
+        diesel_current_kw=55.0,
+    )
+
+    assert result["commands"] == []
+    assert any("并网侧拓扑" in warning for warning in result["warnings"])
+    assert not any(row.get("dev_name") == "fuel-cell" for row in rows)
+
+
+def test_hydrogen_grid_side_crosses_converter_to_final_real_bus():
+    snapshot = _integrated_fuel_cell_snapshot()
+    snapshot["definitions"]["model"]["DCRealBs"]["rows"] = []
+    plan = calculate_renewable_control_plan(
+        snapshot,
+        _integrated_fuel_cell_settings(hydrogen_closed_loop_enabled=True),
+    )
+    hydrogen = plan["metrics"]["hydrogenControl"]
+    command = hydrogen["commands"][0]
+    assert command["electricSide"] == "AC"
+    assert command["electricBusbarType"] == "ACRealBs"
+    assert command["electricConverterPath"] == [
+        ("DCACConverter", "grid-converter")
+    ]
+    assert hydrogen["converterCorrectionKw"] == pytest.approx(0.0)
 
 
 def test_hydrogen_aggregate_metrics_follow_explicit_coupling_bindings():
@@ -3466,7 +3552,7 @@ def test_dc_hydrogen_increment_is_atomically_limited_by_remaining_converter_step
             "dcTransferGroupId": group_id,
         }
     ]
-    result = _hydrogen_post_dispatch_plan(
+    result = _optimize_hydrogen_within_topology_islands(
         snapshot,
         measurements,
         RenewableControlSettings(

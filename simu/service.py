@@ -85,6 +85,7 @@ from simu.model_semantics import (
 from simu.measurement_delta import (
     compact_measurement_delta,
     measurement_definition_signature,
+    measurement_row_index,
     measurement_rows_by_definition_index,
 )
 from simu.measurement_history import MeasurementHistoryStore
@@ -125,6 +126,16 @@ DEFAULT_WEATHER: Dict[str, Optional[float]] = {
     "load_kw": 100.0,
 }
 UNKNOWN_WEATHER_VALUE = "NA"
+
+
+@dataclass(frozen=True)
+class _MeasurementDefinitionLayout:
+    snapshot: DefinitionSnapshot
+    rows: Tuple[Dict[str, Any], ...]
+    signature: str
+    first_index: int
+    contiguous: bool
+    positions: Mapping[int, int]
 
 
 class ServiceInstanceRetiredError(RuntimeError):
@@ -1209,6 +1220,9 @@ class PolarMicrogridSimulator:
         self._source_curve_catalog_cache_value: Tuple[Dict[str, Any], ...] = ()
         self._measurement_bindings_cache_revision = -1
         self._measurement_bindings_cache: Tuple[simu_loop.MeasurementBinding, ...] = ()
+        self._measurement_definition_layout: Optional[
+            _MeasurementDefinitionLayout
+        ] = None
         self._latest_power_summary_cache_key: Optional[Tuple[Any, ...]] = None
         self._latest_power_summary_cache_value: Optional[Dict[str, Any]] = None
         self._device_runtime_frame_cache_key: Optional[Tuple[Any, ...]] = None
@@ -1491,6 +1505,7 @@ class PolarMicrogridSimulator:
             self._definition_publish_epoch = epoch_after + 2
             self._internal_power_converter_keys_cache = None
             self._power_flow_connection_sides_cache = None
+            self._measurement_definition_layout = None
             self._measurement_delta_step_count = None
             return candidate
 
@@ -1554,6 +1569,7 @@ class PolarMicrogridSimulator:
                 self._definition_publish_epoch = epoch + 2
             self._internal_power_converter_keys_cache = None
             self._power_flow_connection_sides_cache = None
+            self._measurement_definition_layout = None
             self._measurement_delta_step_count = None
 
     def _reconcile_source_dcp_controls_unlocked(
@@ -1892,21 +1908,32 @@ class PolarMicrogridSimulator:
                 self.runtime_logs_journal_file.unlink()
             self._runtime_log_journal_entry_count = 0
 
-    def _append_runtime_log_journal(self, entry: Mapping[str, Any]) -> None:
+    def _append_runtime_log_journal_batch(
+        self,
+        entries: Sequence[Mapping[str, Any]],
+    ) -> None:
+        pending = [dict(entry) for entry in entries]
+        if not pending:
+            return
         with self._runtime_log_persistence_lock:
             if not self.runtime_logs_file.exists():
                 _write_json(self.runtime_logs_file, [])
             self.runtime_logs_journal_file.parent.mkdir(parents=True, exist_ok=True)
             with self.runtime_logs_journal_file.open("a", encoding="utf-8", newline="\n") as stream:
-                stream.write(json.dumps(dict(entry), ensure_ascii=False, separators=(",", ":")))
-                stream.write("\n")
-            self._runtime_log_journal_entry_count += 1
+                stream.writelines(
+                    f"{json.dumps(entry, ensure_ascii=False, separators=(',', ':'))}\n"
+                    for entry in pending
+                )
+            self._runtime_log_journal_entry_count += len(pending)
             journal_size = self.runtime_logs_journal_file.stat().st_size
             if (
                 self._runtime_log_journal_entry_count >= self.runtime_log_journal_entry_limit
                 or journal_size >= self.runtime_log_journal_byte_limit
             ):
                 self._write_runtime_logs()
+
+    def _append_runtime_log_journal(self, entry: Mapping[str, Any]) -> None:
+        self._append_runtime_log_journal_batch((entry,))
 
     def _default_trainee_receive_state(self) -> Dict[str, Any]:
         return {
@@ -4984,21 +5011,44 @@ class PolarMicrogridSimulator:
         level: str = "info",
         simu_time: Optional[str] = None,
     ) -> None:
+        self._append_runtime_log_batch(
+            (
+                {
+                    "log_type": log_type,
+                    "target": target,
+                    "result": result,
+                    "detail": detail,
+                    "level": level,
+                    "simu_time": simu_time,
+                },
+            )
+        )
+
+    def _append_runtime_log_batch(
+        self,
+        entries: Sequence[Mapping[str, Any]],
+    ) -> None:
+        if not entries:
+            return
         with self._runtime_log_persistence_lock:
-            self._runtime_log_seq += 1
-            entry = {
-                "seq": self._runtime_log_seq,
-                "wall_time": _now_text(),
-                "simu_time": simu_time or minute_to_time(self.clock.minute),
-                "type": log_type,
-                "target": target,
-                "result": result,
-                "detail": _format_log_detail(detail),
-                "level": level,
-            }
-            self.runtime_logs.append(entry)
+            journal_entries: List[Dict[str, Any]] = []
+            for raw_entry in entries:
+                self._runtime_log_seq += 1
+                entry = {
+                    "seq": self._runtime_log_seq,
+                    "wall_time": _now_text(),
+                    "simu_time": raw_entry.get("simu_time")
+                    or minute_to_time(self.clock.minute),
+                    "type": str(raw_entry.get("log_type", raw_entry.get("type", ""))),
+                    "target": str(raw_entry.get("target", "")),
+                    "result": str(raw_entry.get("result", "")),
+                    "detail": _format_log_detail(raw_entry.get("detail", "")),
+                    "level": str(raw_entry.get("level", "info")),
+                }
+                self.runtime_logs.append(entry)
+                journal_entries.append(entry)
             self.runtime_logs = self.runtime_logs[-RUNTIME_LOG_HISTORY_LIMIT:]
-            self._append_runtime_log_journal(entry)
+            self._append_runtime_log_journal_batch(journal_entries)
 
     def clear_runtime_logs(self) -> Dict[str, int]:
         with self._runtime_log_persistence_lock:
@@ -6657,14 +6707,6 @@ class PolarMicrogridSimulator:
             *self._compact_command_response_lines(command_response_lines),
             *self._input_boundary_lines(minute, absolute_minute, clock_advance, period_seconds),
         ]
-        self._append_runtime_log(
-            "控制响应",
-            "运行边界 / 控制指令",
-            "完成",
-            control_detail,
-            level="ok",
-            simu_time=simu_time,
-        )
         power_flow_detail = [
             (
                 f"计算摘要 时刻 {simu_time}，累计分钟 {absolute_minute}，推进 {clock_advance} min，"
@@ -6674,13 +6716,26 @@ class PolarMicrogridSimulator:
             ),
             *self._power_flow_summary_lines(real_measurements),
         ]
-        self._append_runtime_log(
-            "潮流计算",
-            "内存模型 / 量测快照",
-            "完成" if int(_to_float(result.get("missing"), 0) or 0) == 0 else "有缺失",
-            power_flow_detail,
-            level="ok" if int(_to_float(result.get("missing"), 0) or 0) == 0 else "warn",
-            simu_time=simu_time,
+        has_missing = int(_to_float(result.get("missing"), 0) or 0) != 0
+        self._append_runtime_log_batch(
+            (
+                {
+                    "log_type": "控制响应",
+                    "target": "运行边界 / 控制指令",
+                    "result": "完成",
+                    "detail": control_detail,
+                    "level": "ok",
+                    "simu_time": simu_time,
+                },
+                {
+                    "log_type": "潮流计算",
+                    "target": "内存模型 / 量测快照",
+                    "result": "有缺失" if has_missing else "完成",
+                    "detail": power_flow_detail,
+                    "level": "warn" if has_missing else "ok",
+                    "simu_time": simu_time,
+                },
+            )
         )
 
     def _power_flow_failure_result(self, error: BaseException) -> str:
@@ -9023,15 +9078,20 @@ class PolarMicrogridSimulator:
                         )
                     self._invalidate_automatic_runtime_state_for_simulation_reset()
                 else:
+                    definition_signature = (
+                        self._measurement_definition_signature_for_current_revision()
+                    )
                     self._refresh_measurement_delta_state(
                         measurements=self.latest_measurements,
                         measurement_clock=measurement_clock,
+                        definition_signature=definition_signature,
                     )
                     self._measurement_delta_step_count = self.clock.step_count
                     self._measurement_history.append(
                         measurement_clock,
                         self.latest_measurements,
                         definition_revision=self.definition_snapshot.revision,
+                        definition_signature=definition_signature,
                     )
                 if return_snapshot:
                     return self.snapshot()
@@ -9676,22 +9736,92 @@ class PolarMicrogridSimulator:
     def _with_realtime_measurements(self, measurements: Mapping[str, Sequence[Mapping[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
         return self._with_signal_measurements(self._with_weather_measurements(measurements))
 
+    def _compiled_measurement_definitions(
+        self,
+    ) -> _MeasurementDefinitionLayout:
+        """Compile immutable definition metadata once for each published revision."""
+
+        definition_snapshot = self.definition_snapshot
+        cached = self._measurement_definition_layout
+        if cached is not None and cached.snapshot is definition_snapshot:
+            return cached
+
+        median_deviations = _measurement_median_deviation_map(definition_snapshot)
+        definitions = tuple(
+            _measurement_definition_row_to_dict(row, median_deviations)
+            for row in definition_snapshot.measurement_rows
+        )
+        signature = measurement_definition_signature(definitions)
+        first_index = measurement_row_index(definitions[0]) if definitions else 0
+        contiguous = first_index >= 0 and all(
+            measurement_row_index(definition) == first_index + position
+            for position, definition in enumerate(definitions)
+        )
+        positions = (
+            {}
+            if contiguous
+            else {
+                measurement_row_index(definition): position
+                for position, definition in enumerate(definitions)
+                if measurement_row_index(definition) >= 0
+            }
+        )
+        compiled = _MeasurementDefinitionLayout(
+            snapshot=definition_snapshot,
+            rows=definitions,
+            signature=signature,
+            first_index=first_index,
+            contiguous=contiguous,
+            positions=positions,
+        )
+        # Publish the complete layout with one reference assignment. Concurrent
+        # readers can use either complete revision and will retry on snapshot mismatch.
+        self._measurement_definition_layout = compiled
+        return compiled
+
+    def _measurement_definition_signature_for_current_revision(self) -> str:
+        return self._compiled_measurement_definitions().signature
+
+    def _align_rows_with_compiled_measurement_definitions(
+        self,
+        rows: Sequence[Mapping[str, Any]],
+    ) -> List[Optional[Mapping[str, Any]]]:
+        layout = self._compiled_measurement_definitions()
+        definitions = layout.rows
+        aligned: List[Optional[Mapping[str, Any]]] = [None] * len(definitions)
+        row_list = list(rows)
+        positional_fallback = len(row_list) == len(definitions)
+        first_index = layout.first_index
+        for row_position, row in enumerate(row_list):
+            if not isinstance(row, Mapping):
+                continue
+            index = measurement_row_index(row)
+            if layout.contiguous:
+                position = (
+                    index - first_index
+                    if first_index <= index < first_index + len(aligned)
+                    else None
+                )
+            else:
+                position = layout.positions.get(index)
+            if position is None and positional_fallback:
+                position = row_position
+            if position is not None and 0 <= position < len(aligned):
+                aligned[position] = row
+        return aligned
+
     def measurement_definitions(self) -> List[Dict[str, Any]]:
         """Return the wire-visible measurement definition order without live values."""
 
-        definition_snapshot = self.definition_snapshot
-        median_deviations = _measurement_median_deviation_map(definition_snapshot)
-        return [
-            _measurement_definition_row_to_dict(row, median_deviations)
-            for row in definition_snapshot.measurement_rows
-        ]
+        layout = self._compiled_measurement_definitions()
+        return [dict(row) for row in layout.rows]
 
     def measurements(self) -> Dict[str, List[Dict[str, Any]]]:
         definitions = self.measurement_definitions()
         real = [_measurement_row_to_dict(row) for row in self.latest_real_rows]
         scada = [_measurement_row_to_dict(row) for row in self.latest_scada_rows]
         for rows in (real, scada):
-            aligned_rows = measurement_rows_by_definition_index(definitions, rows)
+            aligned_rows = self._align_rows_with_compiled_measurement_definitions(rows)
             for definition, row in zip(definitions, aligned_rows):
                 if row is None:
                     continue
@@ -9782,6 +9912,7 @@ class PolarMicrogridSimulator:
         self,
         measurements: Optional[Mapping[str, Sequence[Mapping[str, Any]]]] = None,
         measurement_clock: Optional[Mapping[str, Any]] = None,
+        definition_signature: Optional[str] = None,
     ) -> Dict[str, Dict[str, Any]]:
         measurement_payload = dict(measurements or self.measurements())
         sample_clock = dict(measurement_clock or self.latest_measurement_clock or self.clock.as_dict())
@@ -9790,8 +9921,15 @@ class PolarMicrogridSimulator:
             for row in measurement_payload.get("definitions", []) or []
             if isinstance(row, Mapping)
         ]
-        definition_signature = measurement_definition_signature(definitions)
-        definition_changed = definition_signature != self._measurement_delta_definition_signature
+        current_definition_signature = (
+            str(definition_signature)
+            if definition_signature
+            else measurement_definition_signature(definitions)
+        )
+        definition_changed = (
+            current_definition_signature
+            != self._measurement_delta_definition_signature
+        )
         current = self._measurement_delta_current_items(
             measurement_payload,
             measurement_clock=sample_clock,
@@ -9828,7 +9966,7 @@ class PolarMicrogridSimulator:
             )
             self._measurement_delta_history = self._measurement_delta_history[-200:]
             self._measurement_delta_state = current
-        self._measurement_delta_definition_signature = definition_signature
+        self._measurement_delta_definition_signature = current_definition_signature
         self._measurement_delta_definition_count = len(definitions)
         self._measurement_delta_definition_revision = self.definition_snapshot.revision
         self._measurement_delta_step_count = self.clock.step_count
@@ -9897,7 +10035,11 @@ class PolarMicrogridSimulator:
             ):
                 current = self._measurement_delta_state
             else:
-                current = self._refresh_measurement_delta_state()
+                current = self._refresh_measurement_delta_state(
+                    definition_signature=(
+                        self._measurement_definition_signature_for_current_revision()
+                    )
+                )
             reset = False
             frame = after != self._measurement_delta_seq
             if compact and frame:

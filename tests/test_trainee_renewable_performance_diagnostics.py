@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 import simu.renewable_control as renewable_control_module
+import simu.renewable_optimization as renewable_optimization_module
 from simu.renewable_control import (
     CYCLE_PERFORMANCE_HISTORY_LIMIT,
     TraineeRenewableControlManager,
@@ -549,6 +550,46 @@ def test_optimizer_reports_iterations_and_actual_problem_size():
     assert result.postprocess_seconds >= 0.0
 
 
+def test_optimizer_skips_redundant_feasibility_lp_for_in_bounds_current_state():
+    topology = ResourceTopology(
+        resources={},
+        dc_transfer_groups={},
+        converter_component_ids={},
+    )
+
+    with patch(
+        "simu.renewable_optimization.linprog",
+        wraps=renewable_optimization_module.linprog,
+    ) as feasibility_solver:
+        result = optimize_topology_islands(
+            topology,
+            renewable_rows=[
+                renewable(
+                    "wind-a",
+                    side="AC",
+                    component="AC:1",
+                    current=10.0,
+                    capacity=20.0,
+                )
+            ],
+            diesel_rows=[
+                diesel(
+                    "diesel-a",
+                    component="AC:1",
+                    current=20.0,
+                    minimum=5.0,
+                    maximum=40.0,
+                )
+            ],
+            storage_rows=[],
+            converter_rows=[],
+            step_coefficient=1.0,
+        )
+
+    assert result.all_success is True
+    feasibility_solver.assert_not_called()
+
+
 def test_optimizer_diagnostics_report_unassigned_devices_without_a_solved_island():
     topology = ResourceTopology(
         resources={},
@@ -815,6 +856,7 @@ def test_trainee_ui_has_performance_tab_and_renders_phase_percentiles():
     assert "function renderRenewablePerformanceDiagnostics" in script
     assert "performanceDiagnostics" in script
     assert 'params.set("after_performance_revision"' in script
+    assert 'params.set("after_settings_revision"' in script
     assert "unassignedDeviceCount" in script
     assert 'exchangeRequestMs: "实时帧 HTTP 请求"' in script
     assert 'exchangeProcessingMs: "实时帧合并处理"' in script

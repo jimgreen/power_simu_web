@@ -279,6 +279,32 @@ class IncrementalRuntimeDataApiTest(unittest.TestCase):
         self.assertEqual(merged["definition_signature"], expected_signature)
         self.assertEqual(len(merged["scada"]), len(definitions))
 
+    def test_measurement_definitions_and_signature_are_compiled_once_per_revision(self):
+        import simu.service as service_module
+
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        expected_count = len(service.definition_snapshot.measurement_rows)
+
+        with mock.patch(
+            "simu.service._measurement_definition_row_to_dict",
+            wraps=service_module._measurement_definition_row_to_dict,
+        ) as convert_definition, mock.patch(
+            "simu.service.measurement_definition_signature",
+            wraps=service_module.measurement_definition_signature,
+        ) as build_signature:
+            first = service.measurement_definitions()
+            second = service.measurement_definitions()
+            cached_signature = service._measurement_definition_signature_for_current_revision()
+            repeated_signature = service._measurement_definition_signature_for_current_revision()
+
+        self.assertEqual(first, second)
+        self.assertIsNot(first, second)
+        self.assertIsNot(first[0], second[0])
+        self.assertEqual(convert_definition.call_count, expected_count)
+        self.assertEqual(build_signature.call_count, 1)
+        self.assertEqual(cached_signature, repeated_signature)
+
     def test_compact_measurement_frame_aligns_runtime_rows_by_measurement_index_not_name(self):
         workspace, service = self._make_service()
         self.addCleanup(workspace.cleanup)

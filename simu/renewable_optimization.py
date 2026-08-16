@@ -992,10 +992,42 @@ def _solve_island(
             method="highs",
         )
 
-    feasibility = exact_balance_feasibility(normal_lower, normal_upper)
+    def already_feasible(
+        values: np.ndarray,
+        active_lower: np.ndarray,
+        active_upper: np.ndarray,
+    ) -> bool:
+        if (
+            values.shape != active_lower.shape
+            or not np.all(np.isfinite(values))
+            or np.any(values < active_lower)
+            or np.any(values > active_upper)
+        ):
+            return False
+        equality_matrix, equality_rhs = combined_equalities(matrix, rhs)
+        if equality_matrix.shape[0] == 0:
+            return True
+        residual = equality_matrix @ values - equality_rhs
+        return bool(
+            np.all(np.isfinite(residual))
+            and np.max(np.abs(residual)) <= EPSILON
+        )
+
+    feasibility_values: Optional[np.ndarray] = None
+    feasibility_success = already_feasible(current, normal_lower, normal_upper)
+    if feasibility_success:
+        # ``rhs`` is built from the current operating point. In the common
+        # topology-stable case that point is already inside all active bounds,
+        # so a separate HiGHS feasibility solve would only rediscover it.
+        feasibility_values = current.copy()
+    else:
+        feasibility = exact_balance_feasibility(normal_lower, normal_upper)
+        feasibility_success = bool(feasibility.success and feasibility.x is not None)
+        if feasibility_success:
+            feasibility_values = np.asarray(feasibility.x, dtype=float)
     active_lower = normal_lower
     active_upper = normal_upper
-    if not feasibility.success and any(
+    if not feasibility_success and any(
         item.kind == "storage" and item.requires_safety_correction
         for item in ordered
     ):
@@ -1013,8 +1045,9 @@ def _solve_island(
             safety_lower,
             normal_upper,
         )
-        if safety_feasibility.success:
-            feasibility = safety_feasibility
+        if safety_feasibility.success and safety_feasibility.x is not None:
+            feasibility_success = True
+            feasibility_values = np.asarray(safety_feasibility.x, dtype=float)
             active_lower = safety_lower
 
     renewable_indexes = [index for index, item in enumerate(ordered) if item.kind == "renewable"]
@@ -1347,7 +1380,7 @@ def _solve_island(
     solved, values, solved_balance_delta, success, solver_converged = solve_with_bounds(
         active_lower,
         active_upper,
-        feasibility.x if feasibility.success else None,
+        feasibility_values if feasibility_success else None,
     )
     solver_seconds = time.perf_counter() - solver_started
     if not success:

@@ -12539,6 +12539,7 @@ class RenewableControlBackendApiTest(unittest.TestCase):
 
                 cursor_path = (
                     f"{path}&after_plan_revision={first['planRevision']}"
+                    f"&after_settings_revision={first['settingsRevision']}"
                     f"&after_controller_instance_id={first['controllerInstanceId']}"
                 )
                 with urlopen(f"{base}{cursor_path}", timeout=5) as response:
@@ -12578,6 +12579,8 @@ class RenewableControlBackendApiTest(unittest.TestCase):
             self.assertNotIn(internal_field, first["lastPlan"])
         self.assertEqual(unchanged["planRevision"], 1)
         self.assertNotIn("lastPlan", unchanged)
+        self.assertEqual(unchanged["settingsRevision"], first["settingsRevision"])
+        self.assertNotIn("settings", unchanged)
         self.assertEqual(new_lifecycle["lastPlan"]["time"], "00:01:00")
         self.assertEqual(changed["planRevision"], 2)
         self.assertEqual(changed["lastPlan"]["time"], "00:02:00")

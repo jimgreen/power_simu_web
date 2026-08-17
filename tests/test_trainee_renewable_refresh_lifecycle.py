@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -82,7 +85,8 @@ def test_controller_lifecycle_reset_clears_stale_logs_and_trend_cursors():
 
     assert "control.logs = []" in reset_block
     assert "control.revision = -1" in reset_block
-    assert "state.renewableTrendHistory = []" in reset_block
+    assert "resetRenewableTrendHistoryHydration({ clearHistory: true })" in reset_block
+    assert 'control.latestTrendSampleKey = ""' in reset_block
     assert "control.lastControlLogRenderKey = \"\"" in reset_block
 
 
@@ -90,7 +94,7 @@ def test_browser_uses_cached_renewable_state_and_plan_revision_cursor():
     script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
     state_block = script.split("renewableControl: {", 1)[1].split("overviewBottomHeight", 1)[0]
     path_block = script.split("function renewableControlApiPath", 1)[1].split(
-        "function storageDeratingRatio",
+        "function renewableTrendHistoryApiPath",
         1,
     )[0]
     apply_block = script.split("function applyRenewableControlState", 1)[1].split(
@@ -101,6 +105,129 @@ def test_browser_uses_cached_renewable_state_and_plan_revision_cursor():
     assert "planRevision: -1" in state_block
     assert 'params.set("after_plan_revision"' in path_block
     assert 'params.set("after_controller_instance_id"' in path_block
+    assert 'params.set("trend", "0")' in path_block
+    assert "after_trend_sample_key" not in path_block
     assert 'Object.prototype.hasOwnProperty.call(payload, "lastPlan")' in apply_block
     assert "control.lastPlan = payload.lastPlan || null" in apply_block
+    assert "renewableTrendDeltaItems(payload)" in apply_block
     assert "refreshRenewableControlState({ preview: true })" not in script
+
+
+def test_browser_decodes_versioned_trend_rows_without_changing_legacy_points():
+    node = shutil.which("node")
+    if not node:
+        return
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+    decoder = "function renewableTrendDeltaItems" + script.split(
+        "function renewableTrendDeltaItems",
+        1,
+    )[1].split("function mergeRenewableTrendDelta", 1)[0]
+    payloads = {
+        "legacy": {"trend": [{"sampleKey": "legacy", "value": None}]},
+        "encoded": {
+            "trendEncoding": "arrays-v1",
+            "trendFields": ["sampleKey", "value", "optional"],
+            "trendRows": [["sample-1", None, None], ["sample-2", 2, 3]],
+            "trendMissing": [[0, [2]]],
+        },
+        "delta": {
+            "trendEncoding": "arrays-v1",
+            "trendRows": [["sample-2", 4, 5]],
+        },
+    }
+    node_script = (
+        f"{decoder}\n"
+        f"const payloads = {json.dumps(payloads)};\n"
+        "console.log(JSON.stringify({"
+        "legacy: renewableTrendDeltaItems(payloads.legacy),"
+        "encoded: renewableTrendDeltaItems(payloads.encoded),"
+        "delta: renewableTrendDeltaItems(payloads.delta)"
+        "}));"
+    )
+    completed = subprocess.run(
+        [node, "-e", node_script],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    decoded = json.loads(completed.stdout)
+
+    assert decoded["legacy"] == [{"sampleKey": "legacy", "value": None}]
+    assert decoded["encoded"] == [
+        {"sampleKey": "sample-1", "value": None},
+        {"sampleKey": "sample-2", "value": 2, "optional": 3},
+    ]
+    assert decoded["delta"] == [
+        {"sampleKey": "sample-2", "value": 4, "optional": 5},
+    ]
+
+
+def test_browser_lazy_loads_only_missing_visible_renewable_trend_fields():
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+    history_path_block = script.split(
+        "function renewableTrendHistoryApiPath",
+        1,
+    )[1].split("function renewableTrendLifecycleChanged", 1)[0]
+    ensure_block = script.split(
+        "async function ensureRenewableTrendHistoryForVisibleSeries",
+        1,
+    )[1].split("async function refreshRenewableControlState", 1)[0]
+
+    assert '"/api/trainee/renewable-control/trend"' in history_path_block
+    assert 'params.set("fields", requestedFields.join(","))' in history_path_block
+    assert 'params.set("after_trend_sample_key", cursor)' in history_path_block
+    assert "renewableTrendRequestedFields()" in ensure_block
+    assert "renewableTrendFieldCursors" in ensure_block
+    assert "latestTrendSampleKey" in ensure_block
+
+
+def test_partial_renewable_trend_field_merge_preserves_already_loaded_curves():
+    node = shutil.which("node")
+    if not node:
+        return
+    script = (ROOT / "simu/web/trainee/app.js").read_text(encoding="utf-8")
+    merger = "function mergeRenewableTrendFieldDelta" + script.split(
+        "function mergeRenewableTrendFieldDelta",
+        1,
+    )[1].split("function mergeRenewableTrendDelta", 1)[0]
+    node_script = f"""
+{merger}
+const merged = mergeRenewableTrendFieldDelta(
+  [
+    {{sampleKey: "sample-1", runId: 1, stepCount: 1, minute: 1, fieldA: 10}},
+    {{sampleKey: "sample-2", runId: 1, stepCount: 2, minute: 2, fieldA: 11}},
+  ],
+  [
+    {{sampleKey: "sample-1", runId: 1, stepCount: 1, minute: 1, fieldB: 20}},
+    {{sampleKey: "sample-2", runId: 1, stepCount: 2, minute: 2, fieldB: 21}},
+  ],
+);
+console.log(JSON.stringify(merged));
+"""
+    completed = subprocess.run(
+        [node, "-e", node_script],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert json.loads(completed.stdout) == [
+        {
+            "sampleKey": "sample-1",
+            "runId": 1,
+            "stepCount": 1,
+            "minute": 1,
+            "fieldA": 10,
+            "fieldB": 20,
+        },
+        {
+            "sampleKey": "sample-2",
+            "runId": 1,
+            "stepCount": 2,
+            "minute": 2,
+            "fieldA": 11,
+            "fieldB": 21,
+        },
+    ]

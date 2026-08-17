@@ -14842,6 +14842,62 @@ _COMPACT_TREND_FIELDS = (
     "observedWindSpeed",
     "observedSolarIrradiance",
 )
+_TREND_ARRAY_ENCODING = "arrays-v1"
+_TREND_IDENTITY_FIELDS = (
+    "sampleKey",
+    "runId",
+    "stepCount",
+    "minute",
+    "time",
+)
+
+
+def _compact_trend_payload(
+    trend: Sequence[Mapping[str, Any]],
+    *,
+    trend_encoding: str = "",
+    include_fields: bool = True,
+    fields: Sequence[str] = _COMPACT_TREND_FIELDS,
+) -> Dict[str, Any]:
+    field_names = tuple(str(field) for field in fields)
+    if str(trend_encoding or "").strip().casefold() != _TREND_ARRAY_ENCODING:
+        return {
+            "trend": [
+                {
+                    key: _json_safe_copy(point.get(key))
+                    for key in field_names
+                    if key in point
+                }
+                for point in trend
+            ]
+        }
+
+    rows: List[List[Any]] = []
+    missing_rows: List[List[Any]] = []
+    for row_index, point in enumerate(trend):
+        rows.append(
+            [
+                _json_safe_copy(point.get(key))
+                for key in field_names
+            ]
+        )
+        missing_indices = [
+            field_index
+            for field_index, key in enumerate(field_names)
+            if key not in point
+        ]
+        if missing_indices:
+            missing_rows.append([row_index, missing_indices])
+
+    payload: Dict[str, Any] = {
+        "trendEncoding": _TREND_ARRAY_ENCODING,
+        "trendRows": rows,
+    }
+    if include_fields:
+        payload["trendFields"] = list(field_names)
+    if missing_rows:
+        payload["trendMissing"] = missing_rows
+    return payload
 
 
 def _compact_plan_for_ui(plan: Any) -> Any:
@@ -17437,6 +17493,41 @@ class TraineeRenewableControlManager:
             current = state
         return self._serialize(current)
 
+    @staticmethod
+    def _trend_delta_locked(
+        state: _ControllerState,
+        *,
+        after_trend_sample_key: str = "",
+        after_controller_instance_id: str = "",
+    ) -> Tuple[Sequence[Mapping[str, Any]], bool]:
+        requested_sample_key = str(after_trend_sample_key or "")
+        requested_controller_instance_id = str(after_controller_instance_id or "")
+        if (
+            requested_controller_instance_id
+            and requested_controller_instance_id != state.service_instance_id
+        ):
+            requested_sample_key = ""
+        trend_reset = not requested_sample_key
+        trend: Sequence[Mapping[str, Any]] = state.trend
+        if requested_sample_key:
+            matching_index = next(
+                (
+                    index
+                    for index in range(len(state.trend) - 1, -1, -1)
+                    if str(state.trend[index].get("sampleKey", ""))
+                    == requested_sample_key
+                ),
+                None,
+            )
+            if matching_index is None:
+                trend_reset = True
+            else:
+                trend_reset = False
+                # Include the cursor point so a recomputed simulation instant
+                # replaces the browser's previous value instead of duplicating it.
+                trend = state.trend[matching_index:]
+        return trend, trend_reset
+
     def _serialize_with_prerequisite(
         self,
         state: _ControllerState,
@@ -17445,11 +17536,13 @@ class TraineeRenewableControlManager:
         compact: bool = False,
         after_log_seq: int = 0,
         after_trend_sample_key: str = "",
+        trend_encoding: str = "",
         after_plan_revision: Optional[int] = None,
         after_settings_revision: Optional[int] = None,
         after_performance_revision: Optional[int] = None,
         after_controller_instance_id: str = "",
         include_performance: bool = True,
+        include_trend: bool = True,
     ) -> Dict[str, Any]:
         with state.lock:
             requested_log_seq = max(0, int(after_log_seq or 0))
@@ -17464,42 +17557,28 @@ class TraineeRenewableControlManager:
                 ]
             )
 
-            requested_controller_instance_id = str(after_controller_instance_id or "")
-            requested_sample_key = str(after_trend_sample_key or "")
-            if (
-                requested_controller_instance_id
-                and requested_controller_instance_id != state.service_instance_id
-            ):
-                requested_sample_key = ""
-            trend_reset = not requested_sample_key
-            trend = state.trend
-            if requested_sample_key:
-                matching_index = next(
-                    (
-                        index
-                        for index in range(len(state.trend) - 1, -1, -1)
-                        if str(state.trend[index].get("sampleKey", "")) == requested_sample_key
-                    ),
-                    None,
+            trend_payload: Dict[str, Any] = {}
+            if include_trend:
+                trend, trend_reset = self._trend_delta_locked(
+                    state,
+                    after_trend_sample_key=after_trend_sample_key,
+                    after_controller_instance_id=after_controller_instance_id,
                 )
-                if matching_index is None:
-                    trend_reset = True
-                else:
-                    trend_reset = False
-                    # Include the cursor point so the browser can replace a sample
-                    # that was recomputed within the same simulation instant.
-                    trend = state.trend[matching_index:]
-            if compact:
-                serialized_trend = [
+                trend_payload = (
                     {
-                        key: _json_safe_copy(point.get(key))
-                        for key in _COMPACT_TREND_FIELDS
-                        if key in point
+                        "trendReset": trend_reset,
+                        **_compact_trend_payload(
+                            trend,
+                            trend_encoding=trend_encoding,
+                            include_fields=trend_reset,
+                        ),
                     }
-                    for point in trend
-                ]
-            else:
-                serialized_trend = copy.deepcopy(trend)
+                    if compact
+                    else {
+                        "trend": copy.deepcopy(trend),
+                        "trendReset": trend_reset,
+                    }
+                )
             plan_cursor_matches = (
                 after_plan_revision is not None
                 and int(after_plan_revision) == state.plan_revision
@@ -17549,9 +17628,8 @@ class TraineeRenewableControlManager:
                 "logs": copy.deepcopy(logs),
                 "logsReset": logs_reset,
                 "latestLogSeq": state.log_seq,
-                "trend": serialized_trend,
-                "trendReset": trend_reset,
                 "latestTrendSampleKey": str(state.trend[-1].get("sampleKey", "")) if state.trend else "",
+                **trend_payload,
                 **prerequisite,
             }
             if include_performance:
@@ -17576,11 +17654,13 @@ class TraineeRenewableControlManager:
         compact: bool = False,
         after_log_seq: int = 0,
         after_trend_sample_key: str = "",
+        trend_encoding: str = "",
         after_plan_revision: Optional[int] = None,
         after_settings_revision: Optional[int] = None,
         after_performance_revision: Optional[int] = None,
         after_controller_instance_id: str = "",
         include_performance: bool = True,
+        include_trend: bool = True,
     ) -> Dict[str, Any]:
         prerequisite = self._receive_prerequisite_for_service(service)
         return self._serialize_with_prerequisite(
@@ -17589,11 +17669,13 @@ class TraineeRenewableControlManager:
             compact=compact,
             after_log_seq=after_log_seq,
             after_trend_sample_key=after_trend_sample_key,
+            trend_encoding=trend_encoding,
             after_plan_revision=after_plan_revision,
             after_settings_revision=after_settings_revision,
             after_performance_revision=after_performance_revision,
             after_controller_instance_id=after_controller_instance_id,
             include_performance=include_performance,
+            include_trend=include_trend,
         )
 
     def _serialize(
@@ -17603,11 +17685,13 @@ class TraineeRenewableControlManager:
         compact: bool = False,
         after_log_seq: int = 0,
         after_trend_sample_key: str = "",
+        trend_encoding: str = "",
         after_plan_revision: Optional[int] = None,
         after_settings_revision: Optional[int] = None,
         after_performance_revision: Optional[int] = None,
         after_controller_instance_id: str = "",
         include_performance: bool = True,
+        include_trend: bool = True,
     ) -> Dict[str, Any]:
         try:
             service = self._service_for(state.model_id)
@@ -17633,11 +17717,13 @@ class TraineeRenewableControlManager:
                 compact=compact,
                 after_log_seq=after_log_seq,
                 after_trend_sample_key=after_trend_sample_key,
+                trend_encoding=trend_encoding,
                 after_plan_revision=after_plan_revision,
                 after_settings_revision=after_settings_revision,
                 after_performance_revision=after_performance_revision,
                 after_controller_instance_id=after_controller_instance_id,
                 include_performance=include_performance,
+                include_trend=include_trend,
             )
         return self._serialize_for_service(
             service,
@@ -17645,12 +17731,70 @@ class TraineeRenewableControlManager:
             compact=compact,
             after_log_seq=after_log_seq,
             after_trend_sample_key=after_trend_sample_key,
+            trend_encoding=trend_encoding,
             after_plan_revision=after_plan_revision,
             after_settings_revision=after_settings_revision,
             after_performance_revision=after_performance_revision,
             after_controller_instance_id=after_controller_instance_id,
             include_performance=include_performance,
+            include_trend=include_trend,
         )
+
+    def trend_history_for_service(
+        self,
+        service: Any,
+        *,
+        fields: Sequence[str],
+        after_trend_sample_key: str = "",
+        after_controller_instance_id: str = "",
+        trend_encoding: str = _TREND_ARRAY_ENCODING,
+    ) -> Dict[str, Any]:
+        requested_fields: List[str] = []
+        invalid_fields: List[str] = []
+        allowed_fields = set(_COMPACT_TREND_FIELDS)
+        for raw_field in fields:
+            field = str(raw_field or "").strip()
+            if not field or field in _TREND_IDENTITY_FIELDS:
+                continue
+            if field not in allowed_fields:
+                invalid_fields.append(field)
+                continue
+            if field not in requested_fields:
+                requested_fields.append(field)
+        if invalid_fields:
+            raise ValueError(
+                "不支持的新能源趋势字段：" + "、".join(invalid_fields[:8])
+            )
+        if not requested_fields:
+            raise ValueError("至少需要指定一个新能源趋势字段")
+
+        state = self._state_for_live_service(service)
+        with state.lock:
+            service_lock = getattr(service, "lock", None)
+            with (service_lock if service_lock is not None else nullcontext()):
+                self._require_active_service_for_state_locked(service, state)
+            trend, trend_reset = self._trend_delta_locked(
+                state,
+                after_trend_sample_key=after_trend_sample_key,
+                after_controller_instance_id=after_controller_instance_id,
+            )
+            selected_fields = (*_TREND_IDENTITY_FIELDS, *requested_fields)
+            return {
+                "modelId": state.model_id,
+                "controllerInstanceId": state.service_instance_id,
+                "trendReset": trend_reset,
+                "latestTrendSampleKey": (
+                    str(state.trend[-1].get("sampleKey", ""))
+                    if state.trend
+                    else ""
+                ),
+                **_compact_trend_payload(
+                    trend,
+                    trend_encoding=trend_encoding,
+                    include_fields=True,
+                    fields=selected_fields,
+                ),
+            }
 
     def state(
         self,
@@ -17660,11 +17804,13 @@ class TraineeRenewableControlManager:
         compact: bool = False,
         after_log_seq: int = 0,
         after_trend_sample_key: str = "",
+        trend_encoding: str = "",
         after_plan_revision: Optional[int] = None,
         after_settings_revision: Optional[int] = None,
         after_performance_revision: Optional[int] = None,
         after_controller_instance_id: str = "",
         include_performance: bool = True,
+        include_trend: bool = True,
     ) -> Dict[str, Any]:
         service = self._service_for(model_id)
         return self.state_for_service(
@@ -17673,11 +17819,13 @@ class TraineeRenewableControlManager:
             compact=compact,
             after_log_seq=after_log_seq,
             after_trend_sample_key=after_trend_sample_key,
+            trend_encoding=trend_encoding,
             after_plan_revision=after_plan_revision,
             after_settings_revision=after_settings_revision,
             after_performance_revision=after_performance_revision,
             after_controller_instance_id=after_controller_instance_id,
             include_performance=include_performance,
+            include_trend=include_trend,
         )
 
     def state_for_service(
@@ -17688,22 +17836,26 @@ class TraineeRenewableControlManager:
         compact: bool = False,
         after_log_seq: int = 0,
         after_trend_sample_key: str = "",
+        trend_encoding: str = "",
         after_plan_revision: Optional[int] = None,
         after_settings_revision: Optional[int] = None,
         after_performance_revision: Optional[int] = None,
         after_controller_instance_id: str = "",
         include_performance: bool = True,
+        include_trend: bool = True,
     ) -> Dict[str, Any]:
         state = self._state_for_live_service(service)
         serialization_options = {
             "compact": compact,
             "after_log_seq": after_log_seq,
             "after_trend_sample_key": after_trend_sample_key,
+            "trend_encoding": trend_encoding,
             "after_plan_revision": after_plan_revision,
             "after_settings_revision": after_settings_revision,
             "after_performance_revision": after_performance_revision,
             "after_controller_instance_id": after_controller_instance_id,
             "include_performance": include_performance,
+            "include_trend": include_trend,
         }
         now = time.monotonic()
         collection_interval_seconds = self._collection_interval_seconds_for_service(

@@ -284,6 +284,9 @@ const state = {{
   renewableTrendHistory: [{{ minute: 1 }}],
 }};
 function closeRenewableControlLogDetailDialog() {{}}
+function resetRenewableTrendHistoryHydration({{ clearHistory = false }} = {{}}) {{
+  if (clearHistory) state.renewableTrendHistory = [];
+}}
 {mapping_match.group(0)}
 {rows_match.group(0)}
 function renderRenewableStrategyTabs{render_block}

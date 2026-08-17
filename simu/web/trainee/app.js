@@ -222,6 +222,9 @@ const state = {
   measurementHistoryRequests: {},
   measurementHistoryGeneration: 0,
   renewableTrendHistory: [],
+  renewableTrendFieldCursors: {},
+  renewableTrendHistoryRequests: {},
+  renewableTrendHistoryGeneration: 0,
   renewableTrendWindowMinutes: 60,
   renewableTrendSeriesFilter: "",
   renewableTrendSelectedOnly: false,
@@ -292,6 +295,7 @@ const state = {
     lastPlan: null,
     lastCalculatedAt: "",
     lastSentAt: "",
+    latestTrendSampleKey: "",
     lastStatus: "请选择单次计算或启动实时控制。",
     logs: [],
     metricTab: "ac",
@@ -636,6 +640,7 @@ function defaultModelContext(modelId = state.activeModelId) {
     lastMeasurementTraceKey: "",
     commandTraceHistory: [],
     renewableTrendHistory: [],
+    renewableTrendFieldCursors: {},
     traceRunId: null,
     traceStepCount: null,
   };
@@ -726,6 +731,7 @@ function captureActiveModelContext(overrides = {}) {
     lastMeasurementTraceKey: state.lastMeasurementTraceKey,
     commandTraceHistory: state.commandTraceHistory,
     renewableTrendHistory: state.renewableTrendHistory,
+    renewableTrendFieldCursors: state.renewableTrendFieldCursors,
     traceRunId: state.traceRunId,
     traceStepCount: state.traceStepCount,
     ...overrides,
@@ -784,6 +790,12 @@ function restoreModelContext(modelId = state.activeModelId) {
   state.lastMeasurementTraceKey = context.lastMeasurementTraceKey || "";
   state.commandTraceHistory = Array.isArray(context.commandTraceHistory) ? context.commandTraceHistory : [];
   state.renewableTrendHistory = Array.isArray(context.renewableTrendHistory) ? context.renewableTrendHistory : [];
+  state.renewableTrendHistoryGeneration = (Number(state.renewableTrendHistoryGeneration) || 0) + 1;
+  state.renewableTrendHistoryRequests = {};
+  state.renewableTrendFieldCursors = context.renewableTrendFieldCursors
+    && typeof context.renewableTrendFieldCursors === "object"
+    ? { ...context.renewableTrendFieldCursors }
+    : {};
   state.traceRunId = context.traceRunId ?? null;
   state.traceStepCount = context.traceStepCount ?? null;
 }
@@ -9105,8 +9117,7 @@ async function startReceiveMode() {
     resetMeasurementHistoryHydration();
     state.commandTraceHistory = [];
     resetChartPeriodOffsets("commandTrace");
-    state.renewableTrendHistory = [];
-    resetChartPeriodOffsets("renewableTrend");
+    resetRenewableTrendHistoryHydration({ clearHistory: true });
     state.lastReceiveAt = "";
     state.snapshotSource = "";
     state.lastTeacherSnapshotLogKey = "";
@@ -9172,8 +9183,7 @@ async function initializeModelFromLink() {
     resetMeasurementHistoryHydration();
     state.commandTraceHistory = [];
     resetChartPeriodOffsets("commandTrace");
-    state.renewableTrendHistory = [];
-    resetChartPeriodOffsets("renewableTrend");
+    resetRenewableTrendHistoryHydration({ clearHistory: true });
     state.lastReceiveAt = "";
     state.snapshot = null;
     state.snapshotSource = "local";
@@ -10376,6 +10386,9 @@ async function refreshFromTeacher(epoch = state.receiveEpoch) {
     if (pageNeedsMeasurementDelta(page) && !state.embeddedMeasurementDeltaReceived) {
       await refreshMeasurementDelta(false);
     }
+    if (page === "renewable") {
+      await ensureRenewableTrendHistoryForVisibleSeries({ render: false });
+    }
     acceptTeacherSnapshot(state.snapshot, epoch);
   } catch (_error) {
     if (!state.receiveMode || epoch !== state.receiveEpoch) return;
@@ -10421,8 +10434,7 @@ function renderSnapshot(snapshot) {
     resetMeasurementHistoryHydration();
     state.commandTraceHistory = [];
     resetChartPeriodOffsets("commandTrace");
-    state.renewableTrendHistory = [];
-    resetChartPeriodOffsets("renewableTrend");
+    resetRenewableTrendHistoryHydration({ clearHistory: true });
     state.selectedMeasurementKey = "";
   }
   state.traceRunId = runId;
@@ -12797,6 +12809,7 @@ function renewableControlApiPath(preview = false) {
   const params = new URLSearchParams();
   if (preview) params.set("refresh", "1");
   params.set("compact", "1");
+  params.set("trend", "0");
   params.set("performance", "0");
   const latestLogSeq = (state.renewableControl.logs || []).reduce(
     (latest, item) => Math.max(latest, Number(item?.seq) || 0),
@@ -12813,11 +12826,25 @@ function renewableControlApiPath(preview = false) {
   if (Number.isFinite(settingsRevision) && settingsRevision >= 0 && controllerInstanceId) {
     params.set("after_settings_revision", String(settingsRevision));
   }
-  const latestTrendSampleKey = String(
-    state.renewableTrendHistory?.[state.renewableTrendHistory.length - 1]?.sampleKey || "",
-  );
-  if (latestTrendSampleKey) params.set("after_trend_sample_key", latestTrendSampleKey);
   return `/api/trainee/renewable-control?${params.toString()}`;
+}
+
+function renewableTrendHistoryApiPath(fields = [], cursor = "") {
+  const path = "/api/trainee/renewable-control/trend";
+  const params = new URLSearchParams();
+  const requestedFields = Array.from(new Set(
+    (Array.isArray(fields) ? fields : [])
+      .map((field) => String(field || "").trim())
+      .filter(Boolean),
+  ));
+  params.set("fields", requestedFields.join(","));
+  params.set("trend_encoding", "arrays-v1");
+  if (cursor) params.set("after_trend_sample_key", cursor);
+  const controllerInstanceId = String(state.renewableControl.controllerInstanceId || "");
+  if (controllerInstanceId) {
+    params.set("after_controller_instance_id", controllerInstanceId);
+  }
+  return `${path}?${params.toString()}`;
 }
 
 function storageDeratingRatio(value) {
@@ -12853,6 +12880,19 @@ function normalizeStorageDeratingCurve(points, fallback, direction) {
   });
 }
 
+function resetRenewableTrendHistoryHydration({ clearHistory = false } = {}) {
+  state.renewableTrendHistoryGeneration = (
+    Number(state.renewableTrendHistoryGeneration) || 0
+  ) + 1;
+  state.renewableTrendHistoryRequests = {};
+  state.renewableTrendFieldCursors = {};
+  renewableTrendDeltaItems.fields = [];
+  if (clearHistory) {
+    state.renewableTrendHistory = [];
+    if (state.chartPeriodOffsets) state.chartPeriodOffsets.renewableTrend = 0;
+  }
+}
+
 function resetRenewableControlView(modelId = state.activeModelId) {
   closeRenewableControlLogDetailDialog();
   const control = state.renewableControl;
@@ -12878,6 +12918,7 @@ function resetRenewableControlView(modelId = state.activeModelId) {
     lastPlan: null,
     lastCalculatedAt: "",
     lastSentAt: "",
+    latestTrendSampleKey: "",
     lastStatus: "正在读取学员台后台控制状态。",
     logs: [],
     metricTab: "ac",
@@ -12887,8 +12928,7 @@ function resetRenewableControlView(modelId = state.activeModelId) {
     selectedLogSeq: 0,
     lastControlLogRenderKey: "",
   });
-  state.renewableTrendHistory = [];
-  if (state.chartPeriodOffsets) state.chartPeriodOffsets.renewableTrend = 0;
+  resetRenewableTrendHistoryHydration({ clearHistory: true });
 }
 
 function renewableDataSourceLabel(source = "") {
@@ -12925,6 +12965,62 @@ function latestRenewableTrendSegment(points = []) {
     if (renewableTrendLifecycleChanged(source[index - 1], source[index])) segmentStart = index;
   }
   return source.slice(segmentStart);
+}
+
+function renewableTrendDeltaItems(payload = {}) {
+  const legacyTrend = Array.isArray(payload?.trend) ? payload.trend : [];
+  if (payload?.trendEncoding !== "arrays-v1") return legacyTrend;
+
+  const providedFields = Array.isArray(payload.trendFields)
+    ? payload.trendFields.filter((field) => typeof field === "string" && field)
+    : [];
+  if (providedFields.length) renewableTrendDeltaItems.fields = providedFields;
+  const fields = Array.isArray(renewableTrendDeltaItems.fields)
+    ? renewableTrendDeltaItems.fields
+    : [];
+  if (!fields.length || !Array.isArray(payload.trendRows)) return legacyTrend;
+
+  const missingByRow = new Map();
+  (Array.isArray(payload.trendMissing) ? payload.trendMissing : []).forEach((entry) => {
+    if (!Array.isArray(entry) || !Number.isInteger(Number(entry[0]))) return;
+    missingByRow.set(
+      Number(entry[0]),
+      new Set(
+        (Array.isArray(entry[1]) ? entry[1] : [])
+          .map((index) => Number(index))
+          .filter((index) => Number.isInteger(index) && index >= 0),
+      ),
+    );
+  });
+  return payload.trendRows.map((row, rowIndex) => {
+    if (!Array.isArray(row)) return null;
+    const missing = missingByRow.get(rowIndex) || new Set();
+    const point = {};
+    fields.forEach((field, fieldIndex) => {
+      if (fieldIndex < row.length && !missing.has(fieldIndex)) point[field] = row[fieldIndex];
+    });
+    return point;
+  }).filter((point) => point !== null);
+}
+renewableTrendDeltaItems.fields = [];
+
+function mergeRenewableTrendFieldDelta(current = [], incoming = []) {
+  const merged = new Map();
+  (Array.isArray(current) ? current : []).forEach((point) => {
+    const sampleKey = String(point?.sampleKey || "");
+    if (sampleKey) merged.set(sampleKey, { ...point });
+  });
+  (Array.isArray(incoming) ? incoming : []).forEach((point) => {
+    const sampleKey = String(point?.sampleKey || "");
+    if (!sampleKey) return;
+    merged.set(sampleKey, { ...(merged.get(sampleKey) || {}), ...point });
+  });
+  return Array.from(merged.values()).sort((left, right) => (
+    (Number(left?.runId) || 0) - (Number(right?.runId) || 0)
+    || (Number(left?.stepCount) || 0) - (Number(right?.stepCount) || 0)
+    || (Number(left?.minute) || 0) - (Number(right?.minute) || 0)
+    || String(left?.sampleKey || "").localeCompare(String(right?.sampleKey || ""))
+  ));
 }
 
 function mergeRenewableTrendDelta(current = [], incoming = [], reset = false) {
@@ -12974,8 +13070,8 @@ function resetRenewableControlHistoryForLifecycle(control = state.renewableContr
   control.logPage = 1;
   control.selectedLogSeq = 0;
   control.lastControlLogRenderKey = "";
-  state.renewableTrendHistory = [];
-  if (state.chartPeriodOffsets) state.chartPeriodOffsets.renewableTrend = 0;
+  control.latestTrendSampleKey = "";
+  resetRenewableTrendHistoryHydration({ clearHistory: true });
 }
 
 function applyRenewableControlState(payload = {}) {
@@ -12993,6 +13089,10 @@ function applyRenewableControlState(payload = {}) {
   const incomingPlanRevision = Number(payload.planRevision);
   const incomingSettingsRevision = Number(payload.settingsRevision);
   const hasLastPlan = Object.prototype.hasOwnProperty.call(payload, "lastPlan");
+  const hasTrendPayload = (
+    Object.prototype.hasOwnProperty.call(payload, "trend")
+    || Object.prototype.hasOwnProperty.call(payload, "trendRows")
+  );
   if (
     !controllerLifecycleChanged
     &&
@@ -13120,6 +13220,9 @@ function applyRenewableControlState(payload = {}) {
       : control.settingsRevision,
     lastCalculatedAt: payload.lastCalculatedAt || "",
     lastSentAt: payload.lastSentAt || "",
+    latestTrendSampleKey: String(
+      payload.latestTrendSampleKey ?? control.latestTrendSampleKey ?? "",
+    ),
     lastStatus: payload.status || "学员台后台控制状态已同步。",
     revision: Number.isFinite(incomingRevision) ? incomingRevision : control.revision,
     logs: mergeRenewableControlLogDelta(
@@ -13133,12 +13236,134 @@ function applyRenewableControlState(payload = {}) {
     control.selectedLogSeq = 0;
     closeRenewableControlLogDetailDialog();
   }
-  state.renewableTrendHistory = mergeRenewableTrendDelta(
-    state.renewableTrendHistory,
-    payload.trend,
-    payload.trendReset !== false,
-  );
+  if (hasTrendPayload) {
+    state.renewableTrendHistory = mergeRenewableTrendDelta(
+      state.renewableTrendHistory,
+      renewableTrendDeltaItems(payload),
+      payload.trendReset !== false,
+    );
+  }
   return true;
+}
+
+function renewableTrendRequestedFields() {
+  const chartKey = "renewableTrend";
+  ensureRenewableTrendSeriesSelection(RENEWABLE_TREND_SERIES_DEFS);
+  const metrics = state.renewableControl.lastPlan?.metrics || {};
+  const availableSeries = RENEWABLE_TREND_SERIES_DEFS.filter(
+    (series) => renewableTrendSeriesAvailable(series, metrics),
+  );
+  const selectedSeries = visibleChartSeries(chartKey, availableSeries);
+  const visibleSeries = visibleChartLegendSeries(chartKey, selectedSeries);
+  return Array.from(new Set(visibleSeries.map((series) => series.field).filter(Boolean)));
+}
+
+function mergeRenewableTrendHistoryPayload(
+  payload,
+  requestedFields,
+  cursor,
+  { generation, modelId, controllerInstanceId },
+) {
+  if (!payload || payload.trendEncoding !== "arrays-v1") return false;
+  if (
+    (Number(state.renewableTrendHistoryGeneration) || 0) !== generation
+    || state.activeModelId !== modelId
+    || String(state.renewableControl.controllerInstanceId || "") !== controllerInstanceId
+    || String(payload.controllerInstanceId || "") !== controllerInstanceId
+  ) {
+    return false;
+  }
+  if (cursor && payload.trendReset !== false) {
+    state.renewableTrendHistory = [];
+    state.renewableTrendFieldCursors = {};
+    renewableTrendDeltaItems.fields = [];
+    resetChartPeriodOffsets("renewableTrend");
+  }
+  const incoming = renewableTrendDeltaItems(payload);
+  state.renewableTrendHistory = mergeRenewableTrendFieldDelta(
+    state.renewableTrendHistory,
+    incoming,
+  );
+  const latestTrendSampleKey = String(payload.latestTrendSampleKey || "");
+  const nextCursors = { ...(state.renewableTrendFieldCursors || {}) };
+  requestedFields.forEach((field) => {
+    nextCursors[field] = latestTrendSampleKey;
+  });
+  state.renewableTrendFieldCursors = nextCursors;
+  state.renewableControl.latestTrendSampleKey = latestTrendSampleKey;
+  return incoming.length > 0;
+}
+
+async function requestRenewableTrendHistoryFields(fields, cursor, context) {
+  const requestedFields = Array.from(new Set(fields)).sort();
+  const requestKey = [
+    context.generation,
+    context.modelId,
+    context.controllerInstanceId,
+    cursor,
+    requestedFields.join(","),
+  ].join("|");
+  const existingRequest = state.renewableTrendHistoryRequests?.[requestKey];
+  if (existingRequest) return existingRequest;
+  const request = api(renewableTrendHistoryApiPath(requestedFields, cursor))
+    .then((payload) => mergeRenewableTrendHistoryPayload(
+      payload,
+      requestedFields,
+      cursor,
+      context,
+    ))
+    .catch((error) => {
+      console.warn("新能源趋势历史加载失败", error);
+      return false;
+    })
+    .finally(() => {
+      delete state.renewableTrendHistoryRequests[requestKey];
+    });
+  state.renewableTrendHistoryRequests[requestKey] = request;
+  return request;
+}
+
+async function ensureRenewableTrendHistoryForVisibleSeries({ render = true } = {}) {
+  if (currentPageName() !== "renewable" || !state.activeModelId) return false;
+  const controllerInstanceId = String(
+    state.renewableControl.controllerInstanceId || "",
+  );
+  const latestTrendSampleKey = String(
+    state.renewableControl.latestTrendSampleKey || "",
+  );
+  if (!controllerInstanceId || !latestTrendSampleKey) return false;
+  const requestedFields = renewableTrendRequestedFields();
+  if (!requestedFields.length) return false;
+
+  const cursors = state.renewableTrendFieldCursors || {};
+  const fieldsByCursor = new Map();
+  requestedFields.forEach((field) => {
+    const loaded = Object.prototype.hasOwnProperty.call(cursors, field);
+    const cursor = loaded ? String(cursors[field] || "") : "";
+    if (loaded && cursor === latestTrendSampleKey) return;
+    if (!fieldsByCursor.has(cursor)) fieldsByCursor.set(cursor, []);
+    fieldsByCursor.get(cursor).push(field);
+  });
+  if (!fieldsByCursor.size) return false;
+
+  const context = {
+    generation: Number(state.renewableTrendHistoryGeneration) || 0,
+    modelId: state.activeModelId,
+    controllerInstanceId,
+  };
+  let changed = false;
+  const groups = Array.from(fieldsByCursor.entries()).sort(([left], [right]) => (
+    Number(Boolean(right)) - Number(Boolean(left))
+  ));
+  for (const [cursor, fields] of groups) {
+    if ((Number(state.renewableTrendHistoryGeneration) || 0) !== context.generation) break;
+    changed = await requestRenewableTrendHistoryFields(fields, cursor, context) || changed;
+  }
+  if (changed) {
+    persistActiveModelContext();
+    if (render && currentPageName() === "renewable") drawRenewableTrendChart();
+  }
+  return changed;
 }
 
 async function refreshRenewableControlState({ preview = false, render = true } = {}) {
@@ -13150,6 +13375,9 @@ async function refreshRenewableControlState({ preview = false, render = true } =
     const payload = await api(renewableControlApiPath(preview));
     if (requestedModelId !== state.activeModelId) return null;
     applyRenewableControlState(payload);
+    if (currentPageName() === "renewable") {
+      await ensureRenewableTrendHistoryForVisibleSeries({ render: false });
+    }
     return payload;
   } catch (error) {
     if (requestedModelId === state.activeModelId) {
@@ -13171,12 +13399,15 @@ async function runRenewableControlAction(action, payload = {}) {
   control.actionActive = true;
   renderRenewableControl(state.snapshot || {});
   try {
-    const response = await api("/api/trainee/renewable-control", {
+    const response = await api("/api/trainee/renewable-control?trend=0", {
       method: "POST",
       body: JSON.stringify({ action, ...payload }),
     });
     if (requestedModelId !== state.activeModelId) return null;
     applyRenewableControlState(response);
+    if (currentPageName() === "renewable") {
+      await ensureRenewableTrendHistoryForVisibleSeries({ render: false });
+    }
     return response;
   } catch (error) {
     if (requestedModelId === state.activeModelId) {
@@ -13740,6 +13971,7 @@ function setRenewableTrendBatchSeriesVisibility(visible, metrics = {}) {
   }
   syncChartLegendButtons(chartKey);
   drawRenewableTrendChart();
+  ensureRenewableTrendHistoryForVisibleSeries();
 }
 
 function applyRenewableTrendSeriesFilters(metrics = {}) {
@@ -18901,6 +19133,7 @@ if (renewableTrendSeriesPanel) {
       visible,
       drawRenewableTrendChart,
     );
+    if (visible) ensureRenewableTrendHistoryForVisibleSeries();
   });
 }
 initTraceChartInteractions("measurementTrace", "measurementTraceChart", drawMeasurementTraceChart);

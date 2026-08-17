@@ -12390,6 +12390,35 @@ class RenewableControlBackendApiTest(unittest.TestCase):
                 )
                 with urlopen(f"{base}{path}", timeout=5) as response:
                     payload = json.loads(response.read().decode("utf-8"))
+                with urlopen(
+                    f"{base}/api/trainee/renewable-control?model_id=shared"
+                    "&compact=1&trend_encoding=arrays-v1",
+                    timeout=5,
+                ) as response:
+                    encoded_payload = json.loads(response.read().decode("utf-8"))
+                with urlopen(
+                    f"{base}{path}&trend_encoding=arrays-v1",
+                    timeout=5,
+                ) as response:
+                    encoded_delta = json.loads(response.read().decode("utf-8"))
+                with urlopen(
+                    f"{base}/api/trainee/renewable-control?model_id=shared"
+                    "&compact=1&performance=0&trend=0",
+                    timeout=5,
+                ) as response:
+                    state_without_trend = json.loads(response.read().decode("utf-8"))
+                history_path = (
+                    "/api/trainee/renewable-control/trend?model_id=shared"
+                    "&fields=acLoadKw,totalLoadKw&trend_encoding=arrays-v1"
+                )
+                with urlopen(f"{base}{history_path}", timeout=5) as response:
+                    history_payload = json.loads(response.read().decode("utf-8"))
+                with urlopen(
+                    f"{base}{history_path}&after_trend_sample_key=sample-1"
+                    f"&after_controller_instance_id={payload['controllerInstanceId']}",
+                    timeout=5,
+                ) as response:
+                    history_delta = json.loads(response.read().decode("utf-8"))
             finally:
                 server.shutdown()
                 server.server_close()
@@ -12489,6 +12518,81 @@ class RenewableControlBackendApiTest(unittest.TestCase):
             len(json.dumps(payload["trend"], ensure_ascii=False).encode("utf-8")),
             5200,
         )
+        self.assertNotIn("trendEncoding", payload)
+        self.assertNotIn("trendFields", payload)
+        self.assertNotIn("trendRows", payload)
+        self.assertNotIn("trend", encoded_payload)
+        self.assertEqual(encoded_payload["trendEncoding"], "arrays-v1")
+        fields = encoded_payload["trendFields"]
+        missing_by_row = {
+            int(row_index): set(field_indices)
+            for row_index, field_indices in encoded_payload.get("trendMissing", [])
+        }
+        decoded_trend = [
+            {
+                field: row[field_index]
+                for field_index, field in enumerate(fields)
+                if field_index < len(row)
+                and field_index not in missing_by_row.get(row_index, set())
+            }
+            for row_index, row in enumerate(encoded_payload["trendRows"])
+        ]
+        self.assertEqual(decoded_trend, payload["trend"])
+        self.assertTrue(encoded_payload["trendReset"])
+        self.assertFalse(encoded_delta["trendReset"])
+        self.assertNotIn("trendFields", encoded_delta)
+        self.assertEqual(encoded_delta["trendRows"], encoded_payload["trendRows"])
+        self.assertEqual(
+            encoded_payload["latestTrendSampleKey"],
+            payload["latestTrendSampleKey"],
+        )
+        encoded_trend_bytes = len(
+            json.dumps(
+                {
+                    key: encoded_payload[key]
+                    for key in ("trendEncoding", "trendFields", "trendRows")
+                    if key in encoded_payload
+                }
+                | (
+                    {"trendMissing": encoded_payload["trendMissing"]}
+                    if "trendMissing" in encoded_payload
+                    else {}
+                ),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        )
+        legacy_trend_bytes = len(
+            json.dumps(payload["trend"], ensure_ascii=False).encode("utf-8")
+        )
+        self.assertLess(encoded_trend_bytes, legacy_trend_bytes)
+        for trend_key in (
+            "trend",
+            "trendEncoding",
+            "trendFields",
+            "trendRows",
+            "trendMissing",
+            "trendReset",
+        ):
+            self.assertNotIn(trend_key, state_without_trend)
+        self.assertEqual(state_without_trend["latestTrendSampleKey"], "sample-2")
+        self.assertEqual(
+            history_payload["trendFields"],
+            [
+                "sampleKey",
+                "runId",
+                "stepCount",
+                "minute",
+                "time",
+                "acLoadKw",
+                "totalLoadKw",
+            ],
+        )
+        self.assertEqual(len(history_payload["trendRows"]), 2)
+        self.assertTrue(history_payload["trendReset"])
+        self.assertNotIn("dcLoadKw", history_payload["trendFields"])
+        self.assertEqual(history_delta["trendFields"], history_payload["trendFields"])
+        self.assertFalse(history_delta["trendReset"])
+        self.assertEqual(len(history_delta["trendRows"]), 2)
 
     def test_compact_incremental_state_omits_unchanged_last_plan(self):
         with tempfile.TemporaryDirectory() as temporary:

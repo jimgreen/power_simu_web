@@ -2652,6 +2652,7 @@ def make_http_server(
             command_sink=exchange.submit_commands,
         )
     renewable_control_path = "/api/trainee/renewable-control"
+    renewable_control_trend_path = f"{renewable_control_path}/trend"
     trainee_ui_frame_path = "/api/trainee/ui-frame"
     external_realtime_inputs_path = "/api/external/realtime-inputs"
     static_asset_cache: dict[Path, dict[str, Any]] = {}
@@ -3118,6 +3119,7 @@ def make_http_server(
                 "refresh": self._truthy_query("refresh"),
                 "compact": self._truthy_query("compact"),
                 "include_performance": not self._falsey_query("performance"),
+                "include_trend": not self._falsey_query("trend"),
                 "after_log_seq": self._int_query(
                     "after_log_seq",
                     0,
@@ -3138,6 +3140,11 @@ def make_http_server(
                     (renewable_query.get("after_controller_instance_id") or [""])[0]
                 ),
             }
+            trend_encoding = str(
+                (renewable_query.get("trend_encoding") or [""])[0]
+            ).strip()
+            if trend_encoding.casefold() == "arrays-v1":
+                options["trend_encoding"] = "arrays-v1"
             state_for_service = getattr(renewable_manager, "state_for_service", None)
             if callable(state_for_service):
                 return state_for_service(target, **options)
@@ -3147,6 +3154,43 @@ def make_http_server(
                     "新能源控制请求所属模型生命周期已失效或已退休。",
                 )
             return renewable_manager.state(target.model_id, **options)
+
+        def _renewable_trend_payload(
+            self,
+            target: PolarMicrogridSimulator,
+        ) -> Mapping[str, Any]:
+            if role != "trainee" or renewable_manager is None:
+                raise JsonApiError(404, f"Unknown API route: {urlparse(self.path).path}")
+            query = parse_qs(urlparse(self.path).query)
+            requested_fields = [
+                field.strip()
+                for value in query.get("fields", [])
+                for field in str(value).split(",")
+                if field.strip()
+            ]
+            if len(requested_fields) > 128:
+                raise JsonApiError(400, "单次新能源趋势查询字段不能超过 128 个")
+            trend_history = getattr(
+                renewable_manager,
+                "trend_history_for_service",
+                None,
+            )
+            if not callable(trend_history):
+                raise JsonApiError(404, "当前新能源控制器不支持趋势历史按需查询")
+            try:
+                return trend_history(
+                    target,
+                    fields=requested_fields,
+                    after_trend_sample_key=str(
+                        (query.get("after_trend_sample_key") or [""])[0]
+                    ),
+                    after_controller_instance_id=str(
+                        (query.get("after_controller_instance_id") or [""])[0]
+                    ),
+                    trend_encoding="arrays-v1",
+                )
+            except ValueError as exc:
+                raise JsonApiError(400, str(exc)) from exc
 
         def _trainee_snapshot_payload(
             self,
@@ -3405,6 +3449,8 @@ def make_http_server(
                 if callable(diagnostics):
                     health["power_flow_worker"] = diagnostics()
                 self._send_json(health)
+            elif path == renewable_control_trend_path:
+                self._send_json(self._renewable_trend_payload(target))
             elif path == renewable_control_path:
                 self._send_json(self._renewable_state_payload(target))
             elif path == trainee_ui_frame_path:
@@ -3712,6 +3758,17 @@ def make_http_server(
                     )
                 except ValueError as exc:
                     raise JsonApiError(400, str(exc)) from exc
+                if self._falsey_query("trend") and isinstance(result, Mapping):
+                    result = dict(result)
+                    for trend_key in (
+                        "trend",
+                        "trendEncoding",
+                        "trendFields",
+                        "trendRows",
+                        "trendMissing",
+                        "trendReset",
+                    ):
+                        result.pop(trend_key, None)
                 self._send_json(result)
                 return
             if path == "/api/trainee/model-initialize":

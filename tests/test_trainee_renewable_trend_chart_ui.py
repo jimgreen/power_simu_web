@@ -262,25 +262,24 @@ class TraineeRenewableTrendChartUiTest(unittest.TestCase):
         )[1].split("}", 1)[0]
         self.assertIn("accent-color: var(--teal);", toggle_input_block)
 
-    def test_history_is_generated_once_by_the_backend_and_mirrored_by_browser_pages(self):
+    def test_history_is_generated_once_by_backend_and_loaded_by_curve_field_on_demand(self):
         self.assertIn("def _update_trend", self.backend)
         self.assertIn("state.trend.append(point)", self.backend)
-        self.assertIn("serialized_trend = copy.deepcopy(trend)", self.backend)
-        self.assertIn('"trend": serialized_trend', self.backend)
-        apply_block = self.script.split("function applyRenewableControlState", 1)[1].split(
-            "async function refreshRenewableControlState",
-            1,
-        )[0]
-        self.assertIn("payload.trend", apply_block)
-        self.assertIn("state.renewableTrendHistory", apply_block)
+        self.assertIn("def trend_history_for_service", self.backend)
+        self.assertIn("fields=selected_fields", self.backend)
+        self.assertIn('params.set("trend", "0")', self.script)
+        self.assertIn("function renewableTrendHistoryApiPath", self.script)
+        self.assertIn("function ensureRenewableTrendHistoryForVisibleSeries", self.script)
+        self.assertIn("renewableTrendFieldCursors", self.script)
         self.assertNotIn("function appendRenewableTrend", self.script)
 
-    def test_browser_requests_compact_deltas_and_merges_the_inclusive_tail(self):
+    def test_browser_requests_compact_state_and_lazy_trend_field_deltas(self):
         for helper in ("mergeRenewableTrendDelta", "mergeRenewableControlLogDelta"):
             if f"function {helper}" not in self.script:
                 self.fail(f"{helper} is missing")
         self.assertIn('params.set("compact", "1");', self.script)
         self.assertIn('params.set("after_log_seq"', self.script)
+        self.assertIn('params.set("trend", "0");', self.script)
         self.assertIn('params.set("after_trend_sample_key"', self.script)
 
         helpers = "function renewableTrendLifecycleChanged" + self.script.split(
@@ -323,7 +322,10 @@ process.stdout.write(JSON.stringify({ trend, logs }));
             1,
         )[0]
         lifecycle_block = render_block.split("if (traceLifecycleChanged)", 1)[1].split("}", 1)[0]
-        self.assertIn("state.renewableTrendHistory = [];", lifecycle_block)
+        self.assertIn(
+            "resetRenewableTrendHistoryHydration({ clearHistory: true",
+            lifecycle_block,
+        )
 
     def test_browser_keeps_only_latest_monotonic_backend_trend_segment(self):
         if "function renewableTrendLifecycleChanged" not in self.script:

@@ -104,6 +104,58 @@ class RemoteAdjustmentResponseTest(unittest.TestCase):
             15.8,
         )
 
+    def test_load_flow_failure_backtracks_only_this_cycles_remote_adjustment(self):
+        from simu.generate_simple_model import write_model_dir
+        from simu.service import PolarMicrogridSimulator
+
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        root = Path(workspace.name)
+        source = root / "source"
+        runtime = root / "runtime"
+        write_model_dir(source)
+        boundaries = []
+
+        def feasibility_limited_kernel(config):
+            value = self._book_set_value(config.yt_ctrl_book, "ESS", "ess01", "p_set")
+            boundaries.append(value)
+            if value > 14.0:
+                raise RuntimeError(
+                    "Hybrid load flow failed for in-memory model model.e: "
+                    "rc=-1, iter=20, normF=1.000e-02"
+                )
+            return None
+
+        service = PolarMicrogridSimulator(
+            source,
+            runtime,
+            kernel=feasibility_limited_kernel,
+        )
+        self._set_real_measurement(service, "ESS", "ess01", "P", 10.0)
+        self._send_adjustment(service, 20.0)
+
+        snapshot = service.step(advance_minutes=1)
+
+        self.assertEqual(boundaries, [17.0, 13.5])
+        self.assertEqual(snapshot["compute"]["status"], "ok")
+        self.assertEqual(snapshot["compute"]["boundary_backtracked"], True)
+        self.assertEqual(snapshot["compute"]["boundary_backtrack_factor"], 0.5)
+        self.assertEqual(snapshot["result"]["boundary_backtrack"]["factor"], 0.5)
+        self.assertEqual(snapshot["clock"]["step_count"], 1)
+        self.assertEqual(service.clock.state, "stopped")
+        self.assertEqual(
+            service.latest_control_values()["values"]["ESS.ess01.p_set"],
+            20.0,
+        )
+        recovery_log = next(
+            item
+            for item in reversed(service.runtime_logs)
+            if item["result"] == "自动回退后收敛"
+        )
+        self.assertEqual(recovery_log["level"], "warn")
+        self.assertIn("17", "\n".join(recovery_log["detail"]))
+        self.assertIn("13.5", "\n".join(recovery_log["detail"]))
+
     def test_simulator_sends_out_of_bounds_smooth_boundary_to_kernel(self):
         workspace, service, boundaries = self._make_service(
             enforce_runtime_setpoint_bounds=False

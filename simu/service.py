@@ -21,7 +21,7 @@ import time
 import uuid
 from bisect import bisect_left
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -126,6 +126,11 @@ DEFAULT_WEATHER: Dict[str, Optional[float]] = {
     "load_kw": 100.0,
 }
 UNKNOWN_WEATHER_VALUE = "NA"
+
+# A failed remote-adjustment step is retried against the last successful true
+# measurement. The requested target remains active; only this calculation's
+# movement toward it is reduced until a feasible load-flow boundary is found.
+POWER_FLOW_BACKTRACK_FACTORS = (0.5, 0.25, 0.1, 0.0)
 
 
 @dataclass(frozen=True)
@@ -4986,6 +4991,162 @@ class PolarMicrogridSimulator:
             mode="embedded",
         )
 
+    @staticmethod
+    def _is_load_flow_convergence_failure(error: BaseException) -> bool:
+        if isinstance(error, PowerFlowTimeoutError):
+            return False
+        text = f"{type(error).__name__}: {error}".casefold()
+        return any(
+            marker in text
+            for marker in (
+                "load flow failed",
+                "power flow failed",
+                "潮流计算失败",
+                "潮流未收敛",
+            )
+        )
+
+    def _power_flow_backtrack_candidates(
+        self,
+        config: simu_loop.SimulationConfig,
+        absolute_minute: int | float,
+    ) -> Dict[Tuple[str, str, str], Tuple[float, float]]:
+        tracked_keys = self._active_remote_adjustment_keys(absolute_minute) | set(
+            self._remote_adjustment_execution
+        )
+        candidates: Dict[Tuple[str, str, str], Tuple[float, float]] = {}
+        for key in sorted(tracked_keys):
+            candidate = self._set_value_from_book(config.yt_ctrl_book, key)
+            if candidate is None:
+                candidate = self._set_value_from_book(config.dev_stat_book, key)
+            actual = self._latest_true_remote_adjustment_value(key)
+            if candidate is None or actual is None:
+                continue
+            candidate = float(candidate)
+            actual = float(actual)
+            if not math.isfinite(candidate) or not math.isfinite(actual):
+                continue
+            tolerance = max(1e-9, abs(candidate) * 1e-9, abs(actual) * 1e-9)
+            if abs(candidate - actual) <= tolerance:
+                continue
+            candidates[key] = (actual, candidate)
+        return candidates
+
+    def _config_with_power_flow_backtrack(
+        self,
+        config: simu_loop.SimulationConfig,
+        candidates: Mapping[Tuple[str, str, str], Tuple[float, float]],
+        factor: float,
+    ) -> Tuple[simu_loop.SimulationConfig, List[Dict[str, Any]]]:
+        stat_book = simu_loop._clone_ebook(config.dev_stat_book)
+        yt_ctrl_book = simu_loop._clone_ebook(config.yt_ctrl_book)
+        controls: List[Dict[str, Any]] = []
+        for key, (actual, candidate) in candidates.items():
+            accepted = actual + (candidate - actual) * float(factor)
+            self._write_boundary_set_value(stat_book, key, accepted)
+            self._write_boundary_set_value(yt_ctrl_book, key, accepted)
+            controls.append(
+                {
+                    "key": key,
+                    "actual": float(actual),
+                    "candidate": float(candidate),
+                    "accepted": float(accepted),
+                }
+            )
+        return (
+            replace(
+                config,
+                dev_stat_book=stat_book,
+                yt_ctrl_book=yt_ctrl_book,
+            ),
+            controls,
+        )
+
+    def _execute_kernel_with_power_flow_backtrack(
+        self,
+        config: simu_loop.SimulationConfig,
+        candidates: Mapping[Tuple[str, str, str], Tuple[float, float]],
+    ) -> Tuple[PowerFlowExecution, Optional[Dict[str, Any]]]:
+        started = time.perf_counter()
+        try:
+            return self._execute_kernel(config), None
+        except Exception as initial_error:
+            if not candidates or not self._is_load_flow_convergence_failure(initial_error):
+                raise
+
+            failed_factors = [1.0]
+            for attempt, factor in enumerate(POWER_FLOW_BACKTRACK_FACTORS, start=1):
+                retry_config, controls = self._config_with_power_flow_backtrack(
+                    config,
+                    candidates,
+                    factor,
+                )
+                try:
+                    execution = self._execute_kernel(retry_config)
+                except Exception as retry_error:
+                    if not self._is_load_flow_convergence_failure(retry_error):
+                        raise
+                    failed_factors.append(float(factor))
+                    continue
+
+                elapsed = max(0.0, time.perf_counter() - started)
+                execution = replace(
+                    execution,
+                    compute_seconds=elapsed,
+                    round_trip_seconds=elapsed,
+                )
+                return execution, {
+                    "factor": float(factor),
+                    "attempts": int(attempt),
+                    "failed_factors": failed_factors,
+                    "initial_error": f"{type(initial_error).__name__}: {initial_error}",
+                    "controls": controls,
+                }
+            raise initial_error
+
+    def _record_power_flow_backtrack(
+        self,
+        info: Mapping[str, Any],
+        minute: int | float,
+    ) -> None:
+        controls = [item for item in info.get("controls", ()) if isinstance(item, Mapping)]
+        factor = float(info.get("factor", 0.0) or 0.0)
+        for item in controls:
+            key = item.get("key")
+            if not isinstance(key, tuple) or len(key) != 3:
+                continue
+            state = self._remote_adjustment_execution.get(key)
+            if state is not None:
+                state["executed_value"] = float(item.get("accepted", 0.0) or 0.0)
+
+        preview = []
+        for item in controls[:8]:
+            key = item.get("key")
+            if not isinstance(key, tuple) or len(key) != 3:
+                continue
+            preview.append(
+                f"{key[0]}.{key[1]}.{key[2]}: "
+                f"{format_number(item.get('candidate'))} -> {format_number(item.get('accepted'))}"
+            )
+        detail = [
+            f"初始遥调边界潮流未收敛：{info.get('initial_error', '')}",
+            (
+                f"已将 {len(controls)} 个本轮遥调增量按 {format_number(factor * 100.0)}% "
+                "接受并重算，潮流恢复收敛"
+            ),
+            "原遥调目标继续保留；后续周期从本次可行结果继续向目标响应",
+        ]
+        if preview:
+            detail.append("边界回退 " + "，".join(preview) + (" ..." if len(controls) > 8 else ""))
+        self._append_runtime_log(
+            "潮流计算",
+            "遥调边界 / 潮流可行域",
+            "自动回退后收敛",
+            detail,
+            level="warn",
+            simu_time=minute_to_time(minute),
+        )
+
     def _record_compute_execution(self, execution: PowerFlowExecution, status: str = "ok") -> None:
         self.latest_compute = {
             "mode": execution.mode,
@@ -8953,10 +9114,17 @@ class PolarMicrogridSimulator:
                     dev_stat_book=boundary_stat_book,
                     yt_ctrl_book=boundary_yt_ctrl_book,
                 )
+                backtrack_candidates = self._power_flow_backtrack_candidates(
+                    config,
+                    absolute_minute,
+                )
 
             execution_started = time.perf_counter()
             try:
-                execution = self._execute_kernel(config)
+                execution, backtrack_info = self._execute_kernel_with_power_flow_backtrack(
+                    config,
+                    backtrack_candidates,
+                )
             except Exception as exc:
                 elapsed = max(0.0, time.perf_counter() - execution_started)
                 compute_status = "timeout" if isinstance(exc, PowerFlowTimeoutError) else "failed"
@@ -9022,6 +9190,16 @@ class PolarMicrogridSimulator:
                     self._merge_execution_runtime_stat_book(execution.runtime_stat_book)
                 kernel_result = execution.result
                 self._record_compute_execution(execution)
+                if backtrack_info is not None:
+                    self.latest_compute.update(
+                        {
+                            "boundary_backtracked": True,
+                            "boundary_backtrack_factor": float(backtrack_info["factor"]),
+                            "boundary_backtrack_attempts": int(backtrack_info["attempts"]),
+                            "boundary_backtrack_control_count": len(backtrack_info["controls"]),
+                        }
+                    )
+                    self._record_power_flow_backtrack(backtrack_info, minute)
                 self.latest_model_book = getattr(kernel_result, "model_book", None)
                 self.latest_device_states = [
                     dict(item)
@@ -9039,6 +9217,12 @@ class PolarMicrogridSimulator:
                 measurement_clock["updated_at"] = measurement_updated_at
                 self.latest_measurement_clock = measurement_clock
                 result_dict = self._kernel_result_dict(kernel_result)
+                if backtrack_info is not None:
+                    result_dict["boundary_backtrack"] = {
+                        "factor": float(backtrack_info["factor"]),
+                        "attempts": int(backtrack_info["attempts"]),
+                        "control_count": len(backtrack_info["controls"]),
+                    }
                 self.latest_result = result_dict
                 command_response_lines = self._collect_command_response_lines(result_dict)
                 self._append_power_flow_log(

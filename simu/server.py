@@ -854,6 +854,46 @@ _REQUIRED_POWER_MODEL_FIELDS = {
     "DCGenerator": {"node", "control_type", "p_set", "v_set", "i_set"},
 }
 
+# Before AC generator control boundaries were serialized explicitly, the power
+# flow parser interpreted an omitted ``control_type`` as PQ.  Keep that exact
+# legacy meaning only for the recognizable old table layout; a current table
+# with one accidentally deleted field must still fail closed.
+_LEGACY_AC_GENERATOR_HEADERS = {
+    "idx",
+    "name",
+    "node",
+    "p_max",
+    "p_min",
+    "q_max",
+    "q_min",
+    "run_stat",
+    "rated_capacity",
+    "rated_voltage",
+    "v_max",
+    "v_min",
+    "regable",
+    "p",
+    "q",
+    "u",
+    "f",
+}
+_EXPLICIT_AC_GENERATOR_CONTROL_HEADERS = {
+    "dev_type",
+    "alpha",
+    "control_type",
+    "p_set",
+    "q_set",
+    "v_set",
+}
+
+
+def _legacy_ac_generator_uses_default_pq(headers: Sequence[str]) -> bool:
+    normalized = {str(field).strip() for field in headers if str(field).strip()}
+    return (
+        _LEGACY_AC_GENERATOR_HEADERS <= normalized
+        and not (_EXPLICIT_AC_GENERATOR_CONTROL_HEADERS & normalized)
+    )
+
 _SAFE_DEFAULT_MODEL_FIELDS = {
     "ACRealBs": {"u", "f"},
     "DCRealBs": {"u", "i"},
@@ -1141,6 +1181,10 @@ def _repair_power_model_schema(
         if block is None or not getattr(block, "data", []):
             continue
         headers = list(getattr(block, "header_list", []))
+        legacy_ac_generator_default = (
+            block_name == "ACGenerator"
+            and _legacy_ac_generator_uses_default_pq(headers)
+        )
         for field in sorted(candidate_fields):
             field_was_missing = field not in headers
             repaired_any = False
@@ -1155,6 +1199,9 @@ def _repair_power_model_schema(
                     if svg_node:
                         replacement = svg_node
                         source = "SVG设备节点"
+                elif field == "control_type" and legacy_ac_generator_default:
+                    replacement = "PQ"
+                    source = "旧版潮流内核 ACGenerator 缺省控制模式"
                 else:
                     replacement, source = _safe_model_field_default(
                         model_book,

@@ -271,6 +271,75 @@ class SimulatorModelCreationTest(unittest.TestCase):
             <= generator_headers
         )
 
+    def test_model_preflight_restores_legacy_ac_generator_control_default(self):
+        model_text = """<ACNode>
+@ idx name vbase run_stat
+# 1 generator-node 380 1
+</ACNode>
+<ACGenerator>
+@ idx name node p_max p_min q_max q_min run_stat rated_capacity rated_voltage v_max v_min regable p q u f
+# 1 legacy-generator 1 100 0 100 -100 1 100 380 456 304 1 0 0 0 0
+</ACGenerator>
+"""
+
+        with patch.object(
+            server_module.simu_loop,
+            "solve_hybrid_snapshot_from_book",
+            return_value=(object(), "iter=2, normF=1.000e-09"),
+        ):
+            preflight = server_module._preflight_model_import(
+                model_text,
+                diagram_svg_text=self._matching_svg(model_text),
+                source_label="legacy-generator-model.e",
+            )
+
+        self.assertTrue(preflight["validation"]["ok"])
+        checks = {
+            item["id"]: item
+            for item in preflight["validation"]["checks"]
+        }
+        self.assertEqual(checks["schema"]["status"], "repaired")
+        generator_block = preflight["artifacts"]["model_book"].data["ACGenerator"]
+        self.assertIn("control_type", generator_block.header_list)
+        self.assertEqual(generator_block.data[0]["control_type"], "PQ")
+        control_repairs = [
+            item
+            for item in preflight["validation"]["repairs"]
+            if item["block"] == "ACGenerator" and item["field"] == "control_type"
+        ]
+        self.assertEqual(len(control_repairs), 1)
+        self.assertEqual(control_repairs[0]["value"], "PQ")
+        self.assertIn("旧版", control_repairs[0]["source"])
+
+    def test_model_preflight_does_not_mask_modern_generator_control_deletion(self):
+        model_text = """<ACNode>
+@ idx name vbase run_stat
+# 1 generator-node 380 1
+</ACNode>
+<ACGenerator>
+@ idx name dev_type node p_set p_max p_min q_set q_max q_min v_set alpha run_stat rated_capacity rated_voltage v_max v_min regable p q u f
+# 1 damaged-generator ac-diesel-source 1 70 100 70 0 100 -100 380 1 1 100 380 456 304 1 0 0 0 0
+</ACGenerator>
+"""
+
+        with self.assertRaises(server_module.ModelPreflightError) as raised:
+            server_module._preflight_model_import(
+                model_text,
+                diagram_svg_text=self._matching_svg(model_text),
+                source_label="modern-generator-missing-control.e",
+            )
+
+        schema = next(
+            item
+            for item in raised.exception.validation["checks"]
+            if item["id"] == "schema"
+        )
+        self.assertEqual(schema["status"], "failed")
+        self.assertIn("control_type", schema["message"])
+        self.assertFalse(
+            any(item["field"] == "control_type" for item in schema["repairs"])
+        )
+
     def test_model_preflight_repairs_load_setpoint_and_runtime_fields(self):
         model_text = """<ACNode>
 @ idx name vbase run_stat

@@ -4275,6 +4275,11 @@ def _solve_snapshot_from_book(
     model_book: EBook,
     source: Path,
 ) -> Tuple[object, str]:
+    # Re-apply the final switch command after every runtime/manual overlay.
+    # Some overlays are materialized after apply_dev_stat_book(), so doing this
+    # immediately before topology construction guarantees that both the kernel
+    # and the post-solve result commit observe the same closed_status value.
+    apply_closed_status_boundaries(model_book, None)
     if solver is solve_hybrid_snapshot:
         return solve_hybrid_snapshot_from_book(model_book, source)
     if solver is solve_ac_snapshot:

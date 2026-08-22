@@ -56,6 +56,37 @@ class ClosedStatusControlTest(unittest.TestCase):
         self.assertEqual(str(stat_row["closed_status"]), "0")
         self.assertEqual(str(stat_row["status"]), "0")
 
+    def test_solver_entry_reapplies_the_latest_closed_status_set(self):
+        model_book = simu_loop.EBook(
+            {
+                "ACBreak": [
+                    {
+                        "idx": "1",
+                        "name": "breaker",
+                        "status": "1",
+                        "closed_status_set": "0",
+                        "closed_status": "1",
+                        "run_stat": "1",
+                    }
+                ]
+            }
+        )
+        captured = {}
+
+        def fake_solver(rows):
+            captured["breaker"] = dict(rows["ACBreak"][0])
+            return object(), "fake-solver"
+
+        simu_loop._solve_snapshot_from_book(
+            fake_solver,
+            model_book,
+            Path("closed-status.e"),
+        )
+
+        self.assertEqual(str(captured["breaker"]["closed_status_set"]), "0")
+        self.assertEqual(str(captured["breaker"]["closed_status"]), "0")
+        self.assertEqual(str(captured["breaker"]["status"]), "1")
+
     def test_qinling_remote_open_uses_set_boundary_then_commits_actual_status(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -123,6 +154,78 @@ class ClosedStatusControlTest(unittest.TestCase):
             self.assertEqual(str(calculated["closed_status"]), "0")
             self.assertEqual(str(model_result["closed_status_set"]), "0")
             self.assertEqual(str(model_result["closed_status"]), "0")
+            self.assertEqual(device["closed_status_set"], 0)
+            self.assertEqual(device["closed_status"], 0)
+            self.assertEqual(float(status_measurement["value"]), 0.0)
+
+    def test_simulator_parameter_edit_commits_closed_status_after_next_power_flow(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            runtime = root / "runtime"
+            copytree(
+                ROOT / "models" / "simulator" / "source" / "IEEE118",
+                source,
+            )
+            service = PolarMicrogridSimulator(
+                source,
+                runtime,
+                model_id="closed-status-ui",
+            )
+
+            service.step(advance_seconds=1.0)
+            breaker = next(
+                row
+                for row in service.runtime_stat_book.data["CbOpenStat"].data
+                if row.get("dev_type") == "ACBreak"
+                and row.get("dev_name") == "盒型开关-3"
+            )
+            dev_type = str(breaker["dev_type"])
+            dev_name = str(breaker["dev_name"])
+            model_row = next(
+                row
+                for row in service.definition_snapshot.model_book.data[dev_type].data
+                if row.get("name") == dev_name
+            )
+
+            updated = service.update_device_parameters(
+                {
+                    "block_name": dev_type,
+                    "row_key": {"idx": model_row.get("idx"), "name": dev_name},
+                    "revision": service.definition_snapshot.revision,
+                    "changes": {"closed_status_set": 0},
+                }
+            )
+
+            commanded = next(
+                row
+                for row in service.runtime_stat_book.data["CbOpenStat"].data
+                if row.get("dev_type") == dev_type and row.get("dev_name") == dev_name
+            )
+            self.assertEqual(updated["runtime_control"]["closed_status_set"], 0)
+            self.assertEqual(str(commanded["closed_status_set"]), "0")
+            self.assertEqual(str(commanded["closed_status"]), "1")
+
+            snapshot = service.step(advance_seconds=1.0)
+            calculated = next(
+                row
+                for row in service.runtime_stat_book.data["CbOpenStat"].data
+                if row.get("dev_type") == dev_type and row.get("dev_name") == dev_name
+            )
+            device = next(
+                row
+                for row in snapshot["devices"]
+                if row.get("dev_type") == dev_type and row.get("dev_name") == dev_name
+            )
+            status_measurement = next(
+                row
+                for row in snapshot["measurements"]["real"]
+                if row.get("dev_type") == dev_type
+                and row.get("dev_name") == dev_name
+                and str(row.get("meas_type", "")).upper() == "STATUS"
+            )
+            self.assertEqual(str(calculated["closed_status_set"]), "0")
+            self.assertEqual(str(calculated["closed_status"]), "0")
             self.assertEqual(device["closed_status_set"], 0)
             self.assertEqual(device["closed_status"], 0)
             self.assertEqual(float(status_measurement["value"]), 0.0)

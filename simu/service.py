@@ -192,7 +192,9 @@ STAT_HEADERS = {
         "soc",
     ),
 }
-RUNTIME_CONTROL_STATUS_FIELDS = frozenset(("run_stat", "status"))
+RUNTIME_CONTROL_STATUS_FIELDS = frozenset(
+    ("run_stat", "status", "closed_status_set")
+)
 RUNTIME_CONTROL_SETPOINT_FIELDS = frozenset(
     (
         "p_set",
@@ -3498,7 +3500,8 @@ class PolarMicrogridSimulator:
             if not dev_type or not dev_name:
                 continue
             if field_name in RUNTIME_CONTROL_STATUS_FIELDS:
-                keys.add(("remote_control", dev_type, dev_name, field_name))
+                control_field = "run_stat" if field_name == "run_stat" else "status"
+                keys.add(("remote_control", dev_type, dev_name, control_field))
                 continue
             set_type = self._runtime_control_set_type(dev_type, field_name)
             if set_type:
@@ -13047,6 +13050,8 @@ class PolarMicrogridSimulator:
     def _runtime_control_set_type(block_name: str, field_name: str) -> Optional[str]:
         normalized_block = str(block_name or "").strip()
         normalized_field = str(field_name or "").strip().casefold()
+        if normalized_field in RUNTIME_CONTROL_STATUS_FIELDS:
+            return None
         alias = RUNTIME_CONTROL_SETPOINT_ALIASES.get(
             (normalized_block, normalized_field)
         )
@@ -13186,10 +13191,11 @@ class PolarMicrogridSimulator:
             effective["run_stat"] = _json_scalar(
                 run_stats.get(key, requested["run_stat"])
             )
-        if "status" in requested:
-            effective["status"] = _json_scalar(
-                cb_status_set.get(key, requested["status"])
-            )
+        for requested_field in ("status", "closed_status_set"):
+            if requested_field in requested:
+                effective[requested_field] = _json_scalar(
+                    cb_status_set.get(key, requested[requested_field])
+                )
         requested_set_values = requested["set_values"]
         if requested_set_values:
             current_set_values = set_values.get(key, {})
@@ -13327,8 +13333,11 @@ class PolarMicrogridSimulator:
                 for field_name in normalized_changes:
                     normalized_field = str(field_name).strip().casefold()
                     if normalized_field in RUNTIME_CONTROL_STATUS_FIELDS:
+                        control_field = (
+                            "run_stat" if normalized_field == "run_stat" else "status"
+                        )
                         runtime_override_keys.add(
-                            ("remote_control", block_name, dev_name, normalized_field)
+                            ("remote_control", block_name, dev_name, control_field)
                         )
                         continue
                     set_type = self._runtime_control_set_type(block_name, normalized_field)

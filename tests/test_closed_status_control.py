@@ -124,6 +124,10 @@ class ClosedStatusControlTest(unittest.TestCase):
                 if row.get("dev_type") == dev_type and row.get("dev_name") == dev_name
             )
             self.assertEqual(accepted["run_status"], 1)
+            self.assertEqual(accepted["received_by"], "simulator")
+            self.assertEqual(accepted["receive_state"], "completed")
+            self.assertNotIn("queued", accepted)
+            self.assertEqual(service.runtime_logs[-1]["result"], "接收完成，立即生效")
             self.assertEqual(str(commanded["closed_status_set"]), "0")
             self.assertEqual(str(commanded["closed_status"]), "1")
 
@@ -299,6 +303,10 @@ class ClosedStatusControlTest(unittest.TestCase):
             self.assertEqual(result["run_status"], 1)
             self.assertEqual(result["ignored"], 0)
             self.assertEqual(result["queued"], 1)
+            self.assertEqual(result["received_by"], "simulator")
+            self.assertEqual(result["receive_state"], "completed")
+            self.assertEqual(result["queue_owner"], "simulator")
+            self.assertEqual(result["queue_state"], "waiting")
             self.assertEqual(
                 result["blocked"],
                 [
@@ -317,9 +325,18 @@ class ClosedStatusControlTest(unittest.TestCase):
             )
             self.assertIn("模拟台人工修改", result["blocked"][0]["message"])
             history = service.command_history[-1]
+            self.assertEqual(history["received_by"], "simulator")
+            self.assertEqual(history["receive_state"], "completed")
             self.assertEqual(history["queued_at_acceptance"], 1)
+            self.assertEqual(history["queue_owner_at_acceptance"], "simulator")
+            self.assertEqual(history["queue_state_at_acceptance"], "waiting")
             self.assertEqual(history["blocked_at_acceptance"], result["blocked"])
             self.assertEqual(history["normalized"]["run_status"][0]["status"], "1")
+            self.assertEqual(service.runtime_logs[-1]["result"], "接收完成，模拟台排队")
+            self.assertIn(
+                "学员台不保存等待任务",
+                "\n".join(service.runtime_logs[-1]["detail"]),
+            )
             queued_boundary = next(
                 row
                 for row in service.runtime_stat_book.data["CbOpenStat"].data

@@ -43,6 +43,10 @@ const queued = remoteControlCommandAcceptance({
   run_status: 1,
   ignored: 0,
   queued: 1,
+  received_by: "simulator",
+  receive_state: "completed",
+  queue_owner: "simulator",
+  queue_state: "waiting",
   blocked: [{ reason: "simulator_manual_override", message: "模拟台人工修改已固定开关状态" }],
 });
 process.stdout.write(JSON.stringify({ rejected, accepted, wrapped, queued }));
@@ -63,6 +67,10 @@ process.stdout.write(JSON.stringify({ rejected, accepted, wrapped, queued }));
                     "accepted": 1,
                     "ignored": 0,
                     "queued": 1,
+                    "receivedBy": "simulator",
+                    "receiveState": "completed",
+                    "queueOwner": "simulator",
+                    "queueState": "waiting",
                     "blocked": [
                         {
                             "reason": "simulator_manual_override",
@@ -144,7 +152,16 @@ process.stdout.write(JSON.stringify({
         self.assertIn("if (!acceptance.ok)", send_block)
         self.assertIn("await waitForRemoteControlFeedback", send_block)
         self.assertIn("if (acceptance.queued > 0)", send_block)
-        self.assertIn("已记录，排队等待", send_block)
+        self.assertIn("下发完成", send_block)
+        self.assertIn("接收完成，模拟台排队", send_block)
+        self.assertIn("接收完成，遥控生效", send_block)
+        self.assertIn("模拟台已接管", self.script)
+        self.assertIn("学员台不保存等待任务", self.script)
+        self.assertNotIn("已记录，排队等待", send_block)
+        self.assertLess(
+            send_block.index('pending.run_status.delete(`${deviceKey(dev)}|${commandType}`)'),
+            send_block.index("await refresh();"),
+        )
         self.assertIn("feedback.confirmed", send_block)
         self.assertIn("当前已经是", send_block)
         self.assertIn("未重复下发", send_block)

@@ -3606,13 +3606,15 @@ class PolarMicrogridSimulator:
             if reason == "higher_priority_manual_command":
                 message = (
                     f"更高优先级的学员人工指令已将 {dev_type}/{dev_name} 的 {override_field} "
-                    f"设为 {override_value}；本自动指令已记录并排队，在该人工指令取消或失效后"
+                    f"设为 {override_value}；本自动指令已由模拟台记录并在模拟台后台排队；"
+                    "在该人工指令取消或失效后"
                     "若仍在自身有效期内，将按优先级执行。"
                 )
             else:
                 message = (
                     f"模拟台人工修改已将 {dev_type}/{dev_name} 的 {override_field} "
-                    f"固定为 {override_value}；本指令已记录并排队，恢复该人工修改后，"
+                    f"固定为 {override_value}；本指令已由模拟台记录并在模拟台后台排队；"
+                    "恢复该人工修改后，"
                     "仍有效的排队指令将按优先级执行。"
                 )
             blocked.append(
@@ -5544,7 +5546,8 @@ class PolarMicrogridSimulator:
             if queued_controls:
                 lines.append(
                     f"已登记为有效控制指令；其中 {len(queued_controls)} 个控制点被更高优先级控制阻断，"
-                    "保持排队并在高优先级覆盖取消后执行届时仍有效的最高优先级指令"
+                    "由模拟台持久化保管并在模拟台后台排队；学员台不保存等待任务；"
+                    "高优先级覆盖取消后执行届时仍有效的最高优先级指令"
                 )
                 lines.extend(
                     str(item.get("message", ""))
@@ -7247,9 +7250,15 @@ class PolarMicrogridSimulator:
                 if eligible_source
                 else []
             )
-            response: Dict[str, Any] = dict(accepted)
+            response: Dict[str, Any] = {
+                **accepted,
+                "received_by": "simulator",
+                "receive_state": "completed",
+            }
             if queued_controls:
                 response["queued"] = len(queued_controls)
+                response["queue_owner"] = "simulator"
+                response["queue_state"] = "waiting"
                 response["blocked"] = copy.deepcopy(queued_controls)
             if complete_strategy_snapshot and self._matching_complete_strategy_snapshot(
                 strategy_id=strategy_id,
@@ -7282,6 +7291,8 @@ class PolarMicrogridSimulator:
                 "received_absolute_minute": issued_absolute_minute,
                 "run_id": int(self.clock.run_id),
                 "source": source,
+                "received_by": "simulator",
+                "receive_state": "completed",
                 "eligible_source": eligible_source,
                 "manual_hold": manual_hold,
                 "command_origin": command_origin,
@@ -7305,6 +7316,8 @@ class PolarMicrogridSimulator:
             }
             if queued_controls:
                 command_entry["queued_at_acceptance"] = len(queued_controls)
+                command_entry["queue_owner_at_acceptance"] = "simulator"
+                command_entry["queue_state_at_acceptance"] = "waiting"
                 command_entry["blocked_at_acceptance"] = copy.deepcopy(queued_controls)
             self._append_command_history_entry(command_entry)
             self._prepare_command_history_for_persistence()
@@ -7314,12 +7327,16 @@ class PolarMicrogridSimulator:
                 "控制指令",
                 "学员台 /api/student/commands",
                 (
-                    "策略快照已替换"
+                    "接收完成，策略快照已替换"
                     if complete_strategy_snapshot
                     else (
-                        "已记录并排队"
+                        "接收完成，模拟台排队"
                         if queued_controls
-                        else ("接受成功" if accepted_run or accepted_set else "无有效指令")
+                        else (
+                            "接收完成，立即生效"
+                            if accepted_run or accepted_set
+                            else "接收完成，未采纳"
+                        )
                     )
                 ),
                 self._command_accept_detail(

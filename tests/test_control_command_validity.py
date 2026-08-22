@@ -697,7 +697,15 @@ class ControlCommandValidityTest(unittest.TestCase):
         self.assertEqual(queued["set_values"], 1)
         self.assertEqual(queued["ignored"], 0)
         self.assertEqual(queued["queued"], 1)
+        self.assertEqual(queued["received_by"], "simulator")
+        self.assertEqual(queued["receive_state"], "completed")
+        self.assertEqual(queued["queue_owner"], "simulator")
+        self.assertEqual(queued["queue_state"], "waiting")
         self.assertEqual(queued["blocked"][0]["reason"], "higher_priority_manual_command")
+        self.assertEqual(automatic_entry["queue_owner_at_acceptance"], "simulator")
+        self.assertEqual(automatic_entry["queue_state_at_acceptance"], "waiting")
+        self.assertEqual(automatic_entry["received_by"], "simulator")
+        self.assertEqual(automatic_entry["receive_state"], "completed")
         self.assertEqual(automatic_entry["blocked_at_acceptance"], queued["blocked"])
         self.assertEqual(
             automatic_entry["normalized"]["set_values"][0]["set_value"],

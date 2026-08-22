@@ -74,7 +74,16 @@ class TraineeRemoteAdjustmentUiTest(unittest.TestCase):
             1,
         )[0]
         self.assertIn("commandSubmissionQueueState(result, \"set_values\")", send_block)
-        self.assertIn("已记录，排队等待", send_block)
+        self.assertIn("下发完成", send_block)
+        self.assertIn("接收完成，模拟台排队", send_block)
+        self.assertIn("接收完成，遥调生效", send_block)
+        self.assertIn("模拟台已接管", self.script)
+        self.assertIn("学员台不保存等待任务", self.script)
+        self.assertNotIn("已记录，排队等待", send_block)
+        self.assertLess(
+            send_block.index("pending.set_values.delete(row.key)"),
+            send_block.index("await refresh();"),
+        )
 
     def test_successful_remote_adjustment_closes_only_top_operation_dialog(self):
         success_block = self.script.split("async function sendRemoteAdjustmentCommand()", 1)[1].split(

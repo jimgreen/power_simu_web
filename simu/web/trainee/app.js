@@ -18506,12 +18506,37 @@ function commandSubmissionQueueState(result = {}, acceptedField = "run_status") 
   const accepted = Number.isFinite(Number(acceptedValue)) ? Math.max(0, Number(acceptedValue)) : 0;
   const ignored = Number.isFinite(Number(ignoredValue)) ? Math.max(0, Number(ignoredValue)) : 0;
   const queued = Number.isFinite(Number(queuedValue)) ? Math.max(0, Number(queuedValue)) : 0;
-  return { accepted, ignored, queued, blocked, ok: accepted > 0 && ignored === 0 };
+  const receivedBy = String(
+    result?.received_by ?? wrapped.received_by ?? (accepted > 0 ? "simulator" : ""),
+  ).trim().toLowerCase();
+  const receiveState = String(
+    result?.receive_state ?? wrapped.receive_state ?? (accepted > 0 ? "completed" : ""),
+  ).trim().toLowerCase();
+  const queueOwner = String(
+    result?.queue_owner ?? wrapped.queue_owner ?? (queued > 0 ? "simulator" : ""),
+  ).trim().toLowerCase();
+  const queueState = String(
+    result?.queue_state ?? wrapped.queue_state ?? (queued > 0 ? "waiting" : ""),
+  ).trim().toLowerCase();
+  return {
+    accepted,
+    ignored,
+    queued,
+    receivedBy,
+    receiveState,
+    queueOwner,
+    queueState,
+    blocked,
+    ok: accepted > 0 && ignored === 0,
+  };
 }
 
-function queuedCommandMessage(submission = {}, fallback = "命令已记录，等待高优先级控制取消后执行。") {
-  const message = submission?.blocked?.find((item) => String(item?.message || "").trim())?.message;
-  return String(message || fallback);
+function queuedCommandMessage(submission = {}) {
+  const backendMessage = String(
+    submission?.blocked?.find((item) => String(item?.message || "").trim())?.message || "",
+  ).trim();
+  const ownerMessage = "模拟台已接管该指令并负责后台等待；学员台不保存等待任务。";
+  return backendMessage ? `${ownerMessage}${backendMessage}` : ownerMessage;
 }
 
 function remoteControlFeedbackSnapshotPath() {
@@ -18588,6 +18613,13 @@ async function sendRemoteControlCommand() {
     if (!acceptance.ok) {
       throw new Error(`模拟台未接受遥控指令：接受 ${acceptance.accepted} 条，忽略 ${acceptance.ignored} 条`);
     }
+    addRuntimeLog(
+      "人工遥控",
+      targetName,
+      "下发完成",
+      `${deviceName(dev)} → ${requestedText}；模拟台接收完成；接受 ${acceptance.accepted} 条`,
+      "ok",
+    );
     if (acceptance.queued > 0) {
       const queueMessage = queuedCommandMessage(acceptance);
       pending.run_status.delete(`${deviceKey(dev)}|${commandType}`);
@@ -18598,7 +18630,7 @@ async function sendRemoteControlCommand() {
       addRuntimeLog(
         "模拟台响应",
         targetName,
-        "已记录，排队等待",
+        "接收完成，模拟台排队",
         `${deviceName(dev)} → ${requestedText}；${queueMessage}`,
         "warn",
       );
@@ -18616,7 +18648,7 @@ async function sendRemoteControlCommand() {
     addRuntimeLog(
       "模拟台响应",
       targetName,
-      feedback.confirmed ? "遥控完成" : "已接受待反馈",
+      feedback.confirmed ? "接收完成，遥控生效" : "接收完成，待状态反馈",
       feedback.confirmed
         ? `${deviceName(dev)} → ${requestedText}；模拟台状态反馈已一致`
         : `${deviceName(dev)} → ${requestedText}；接受 ${acceptance.accepted} 条，但状态反馈尚未到位`,
@@ -18718,17 +18750,24 @@ async function sendRemoteAdjustmentCommand() {
     if (!submission.ok) {
       throw new Error(`模拟台未接受遥调指令：接受 ${submission.accepted} 条，忽略 ${submission.ignored} 条`);
     }
+    addRuntimeLog(
+      "人工遥调",
+      targetName,
+      "下发完成",
+      `${row.name} → ${formatNumber(setValue)}；模拟台接收完成；接受 ${submission.accepted} 条`,
+      "ok",
+    );
     if (submission.queued > 0) {
       const queueMessage = queuedCommandMessage(submission);
+      pending.set_values.delete(row.key);
+      updatePendingCount();
       addRuntimeLog(
         "模拟台响应",
         targetName,
-        "已记录，排队等待",
+        "接收完成，模拟台排队",
         `${row.name} → ${formatNumber(setValue)}；${queueMessage}`,
         "warn",
       );
-      pending.set_values.delete(row.key);
-      updatePendingCount();
       await refresh();
       closeRemoteAdjustmentDialog();
       return;
@@ -18736,7 +18775,7 @@ async function sendRemoteAdjustmentCommand() {
     addRuntimeLog(
       "模拟台响应",
       targetName,
-      "遥调成功",
+      "接收完成，遥调生效",
       `${row.name} → ${formatNumber(setValue)}；接受 ${result.set_values || 0} 条`,
       "ok",
     );

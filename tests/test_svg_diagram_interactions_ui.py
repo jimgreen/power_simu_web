@@ -1635,6 +1635,42 @@ process.stdout.write(JSON.stringify(payload));
                 payload = self._run_helpers(path.read_text(encoding="utf-8"), body)
                 self.assertEqual(payload, {"calculated": 0, "legacy": 1})
 
+    def test_switch_definition_rows_show_runtime_setpoint_and_calculated_status(self):
+        body = """
+const records = [{
+  blockName: "ACBreak",
+  headers: ["idx", "name", "closed_status_set", "closed_status", "status"],
+  row: {
+    idx: 3,
+    name: "盒型开关-3",
+    closed_status_set: 1,
+    closed_status: 1,
+    status: 1,
+  },
+}];
+applyDiagramDeviceDefinitionRuntimeValues(records, {
+  dev_type: "ACBreak",
+  dev_name: "盒型开关-3",
+  closed_status_set: 0,
+  closed_status: 0,
+  status: 1,
+});
+process.stdout.write(JSON.stringify(records[0].row));
+"""
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                payload = self._run_helpers(path.read_text(encoding="utf-8"), body)
+                self.assertEqual(
+                    payload,
+                    {
+                        "idx": 3,
+                        "name": "盒型开关-3",
+                        "closed_status_set": 0,
+                        "closed_status": 0,
+                        "status": 0,
+                    },
+                )
+
     def test_measurement_rows_never_fall_back_to_the_device_tooltip(self):
         body = """
 global.Element = class Element {

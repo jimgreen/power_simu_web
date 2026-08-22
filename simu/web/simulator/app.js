@@ -5817,6 +5817,44 @@ function diagramSwitchActualValue(device, maps) {
   return diagramSwitchMeasurementRow(device, maps)?.value ?? null;
 }
 
+function diagramDeviceDefinitionRuntimeValue(live, field) {
+  if (!live || typeof live !== "object") return { present: false, value: undefined };
+  const name = String(field || "").trim().toLowerCase();
+  const ownValue = (source, key) => (
+    source
+    && Object.prototype.hasOwnProperty.call(source, key)
+    && source[key] !== null
+    && source[key] !== ""
+      ? { present: true, value: source[key] }
+      : null
+  );
+  if (name === "closed_status_set") {
+    return ownValue(live, "closed_status_set")
+      || ownValue(live.set_values, "closed_status_set")
+      || { present: false, value: undefined };
+  }
+  if (name === "closed_status") {
+    return ownValue(live, "closed_status")
+      || { present: false, value: undefined };
+  }
+  if (name === "status") {
+    return ownValue(live, "closed_status")
+      || ownValue(live, "status")
+      || { present: false, value: undefined };
+  }
+  return { present: false, value: undefined };
+}
+
+function applyDiagramDeviceDefinitionRuntimeValues(records = [], live = null) {
+  const primaryRecord = records[0];
+  if (!primaryRecord?.row || !live) return records;
+  (primaryRecord.headers || Object.keys(primaryRecord.row)).forEach((field) => {
+    const runtime = diagramDeviceDefinitionRuntimeValue(live, field);
+    if (runtime.present) primaryRecord.row[field] = runtime.value;
+  });
+  return records;
+}
+
 function setDiagramSwitchElementState(element, switchState) {
   element.setAttribute("data-diagram-switch-state", switchState);
   element.classList.toggle("is-diagram-switch-open", switchState === "open");
@@ -7719,6 +7757,7 @@ function diagramSingleDeviceTooltipData(container, device, snapshot) {
   if (!device) return null;
   const { device: resolvedDevice, definition, live, raw, svgIdx } = diagramDeviceData(container, device, snapshot);
   const definitionRecords = diagramDeviceDefinitionRecords(resolvedDevice, snapshot);
+  applyDiagramDeviceDefinitionRuntimeValues(definitionRecords, live);
   const idx = live?.raw?.idx ?? definition?.idx ?? raw.idx ?? svgIdx ?? "--";
   const identityRows = [
     ["设备类型", resolvedDevice.devType || "--", "identity:type"],

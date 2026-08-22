@@ -230,6 +230,122 @@ class ClosedStatusControlTest(unittest.TestCase):
             self.assertEqual(device["closed_status"], 0)
             self.assertEqual(float(status_measurement["value"]), 0.0)
 
+    def test_manual_override_queues_remote_close_until_override_is_reset(self):
+        from simu.generate_simple_model import write_model_dir
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            runtime = root / "runtime"
+            write_model_dir(source)
+            model_path = source / "model.e"
+            model_path.write_text(
+                model_path.read_text(encoding="utf-8")
+                + (
+                    "<ACBreak>\n"
+                    "@ idx name dev_type i_node j_node status closed_status_set run_stat closed_status\n"
+                    "# 5 盒型开关-5 ac-box-breaker 1 2 1 1 1 1\n"
+                    "</ACBreak>\n"
+                ),
+                encoding="utf-8",
+            )
+            breaker_control = (
+                "<CbOpenStat>\n"
+                "@ dev_type dev_name closed_status_set closed_status status\n"
+                "# ACBreak 盒型开关-5 1 1 1\n"
+                "</CbOpenStat>\n"
+            )
+            for file_name in ("stat.e", "control.e"):
+                control_path = source / file_name
+                control_path.write_text(
+                    control_path.read_text(encoding="utf-8") + breaker_control,
+                    encoding="utf-8",
+                )
+            service = PolarMicrogridSimulator(
+                source,
+                runtime,
+                model_id="queued-closed-status",
+                kernel=lambda _config: None,
+            )
+            breaker = next(
+                row
+                for row in service.definition_snapshot.model_book.data["ACBreak"].data
+                if str(row.get("name")) == "盒型开关-5"
+            )
+            dev_name = str(breaker["name"])
+
+            service.update_device_parameters(
+                {
+                    "block_name": "ACBreak",
+                    "row_key": {"idx": breaker.get("idx"), "name": dev_name},
+                    "revision": service.definition_snapshot.revision,
+                    "changes": {"closed_status_set": 0},
+                }
+            )
+            result = service.apply_student_commands(
+                {
+                    "manual_hold": True,
+                    "run_status": [
+                        {
+                            "dev_type": "ACBreak",
+                            "dev_name": dev_name,
+                            "status": 1,
+                        }
+                    ],
+                },
+                source="trainee-ui",
+            )
+
+            self.assertEqual(result["run_status"], 1)
+            self.assertEqual(result["ignored"], 0)
+            self.assertEqual(result["queued"], 1)
+            self.assertEqual(
+                result["blocked"],
+                [
+                    {
+                        "kind": "remote_control",
+                        "dev_type": "ACBreak",
+                        "dev_name": dev_name,
+                        "field": "status",
+                        "reason": "simulator_manual_override",
+                        "override_field": "closed_status_set",
+                        "override_value": "0",
+                        "modified_at": result["blocked"][0]["modified_at"],
+                        "message": result["blocked"][0]["message"],
+                    }
+                ],
+            )
+            self.assertIn("模拟台人工修改", result["blocked"][0]["message"])
+            history = service.command_history[-1]
+            self.assertEqual(history["queued_at_acceptance"], 1)
+            self.assertEqual(history["blocked_at_acceptance"], result["blocked"])
+            self.assertEqual(history["normalized"]["run_status"][0]["status"], "1")
+            queued_boundary = next(
+                row
+                for row in service.runtime_stat_book.data["CbOpenStat"].data
+                if row.get("dev_type") == "ACBreak" and row.get("dev_name") == dev_name
+            )
+            self.assertEqual(str(queued_boundary["closed_status_set"]), "0")
+
+            change = service.manual_definition_changes()["changes"][0]
+            service.reset_manual_definition_changes(
+                {
+                    "revision": service.definition_snapshot.revision,
+                    "change_ids": [change["id"]],
+                }
+            )
+
+            released_boundary = next(
+                row
+                for row in service.runtime_stat_book.data["CbOpenStat"].data
+                if row.get("dev_type") == "ACBreak" and row.get("dev_name") == dev_name
+            )
+            self.assertEqual(str(released_boundary["closed_status_set"]), "1")
+            self.assertEqual(
+                service.command_history[-1]["normalized"]["run_status"][0]["status"],
+                "1",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

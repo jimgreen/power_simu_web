@@ -39,7 +39,13 @@ class TraineeRemoteControlDialogUiTest(unittest.TestCase):
 const rejected = remoteControlCommandAcceptance({ run_status: 0, ignored: 1 });
 const accepted = remoteControlCommandAcceptance({ run_status: 1, ignored: 0 });
 const wrapped = remoteControlCommandAcceptance({ accepted: { remote_controls: 1, ignored: 0 } });
-process.stdout.write(JSON.stringify({ rejected, accepted, wrapped }));
+const queued = remoteControlCommandAcceptance({
+  run_status: 1,
+  ignored: 0,
+  queued: 1,
+  blocked: [{ reason: "simulator_manual_override", message: "模拟台人工修改已固定开关状态" }],
+});
+process.stdout.write(JSON.stringify({ rejected, accepted, wrapped, queued }));
 """
         result = subprocess.run(
             ["node", "-e", f"{helper}\n{body}"],
@@ -53,6 +59,19 @@ process.stdout.write(JSON.stringify({ rejected, accepted, wrapped }));
                 "rejected": {"accepted": 0, "ignored": 1, "ok": False},
                 "accepted": {"accepted": 1, "ignored": 0, "ok": True},
                 "wrapped": {"accepted": 1, "ignored": 0, "ok": True},
+                "queued": {
+                    "accepted": 1,
+                    "ignored": 0,
+                    "queued": 1,
+                    "blocked": [
+                        {
+                            "reason": "simulator_manual_override",
+                            "message": "模拟台人工修改已固定开关状态",
+                        }
+                    ],
+                    "ok": True,
+                    "ready": False,
+                },
             },
         )
 
@@ -124,6 +143,8 @@ process.stdout.write(JSON.stringify({
         self.assertIn("remoteControlCommandAcceptance(result)", send_block)
         self.assertIn("if (!acceptance.ok)", send_block)
         self.assertIn("await waitForRemoteControlFeedback", send_block)
+        self.assertIn("if (acceptance.queued > 0)", send_block)
+        self.assertIn("已记录，排队等待", send_block)
         self.assertIn("feedback.confirmed", send_block)
         self.assertIn("当前已经是", send_block)
         self.assertIn("未重复下发", send_block)

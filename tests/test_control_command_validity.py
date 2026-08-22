@@ -677,7 +677,7 @@ class ControlCommandValidityTest(unittest.TestCase):
             source="trainee-ui",
         )
         manual_entry = service.command_history[-1]
-        service.apply_student_commands(
+        queued = service.apply_student_commands(
             {
                 "valid_for_minutes": 5,
                 "strategy": {"name": "renewable_priority"},
@@ -693,6 +693,16 @@ class ControlCommandValidityTest(unittest.TestCase):
             source="trainee-renewable-priority",
         )
         automatic_entry = service.command_history[-1]
+
+        self.assertEqual(queued["set_values"], 1)
+        self.assertEqual(queued["ignored"], 0)
+        self.assertEqual(queued["queued"], 1)
+        self.assertEqual(queued["blocked"][0]["reason"], "higher_priority_manual_command")
+        self.assertEqual(automatic_entry["blocked_at_acceptance"], queued["blocked"])
+        self.assertEqual(
+            automatic_entry["normalized"]["set_values"][0]["set_value"],
+            "0",
+        )
 
         result = service.cancel_student_commands(
             {

@@ -3484,8 +3484,10 @@ class PolarMicrogridSimulator:
                 keys.add((dev_type, dev_name, set_type))
         return keys
 
-    def _simulator_ui_control_override_keys(self) -> set[Tuple[str, str, str, str]]:
-        keys: set[Tuple[str, str, str, str]] = set()
+    def _simulator_ui_control_override_details(
+        self,
+    ) -> Dict[Tuple[str, str, str, str], Dict[str, Any]]:
+        details: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
         for item in self._manual_definition_changes.values():
             if item.get("kind") != "device" or item.get("effective") is False:
                 continue
@@ -3501,12 +3503,148 @@ class PolarMicrogridSimulator:
                 continue
             if field_name in RUNTIME_CONTROL_STATUS_FIELDS:
                 control_field = "run_stat" if field_name == "run_stat" else "status"
-                keys.add(("remote_control", dev_type, dev_name, control_field))
+                key = ("remote_control", dev_type, dev_name, control_field)
+                details[key] = {
+                    "reason": "simulator_manual_override",
+                    "override_field": field_name,
+                    "override_value": _number_text(item.get("current_value", "")),
+                    "modified_at": str(item.get("modified_at", "")),
+                }
                 continue
             set_type = self._runtime_control_set_type(dev_type, field_name)
             if set_type:
-                keys.add(("remote_adjustment", dev_type, dev_name, set_type))
-        return keys
+                key = ("remote_adjustment", dev_type, dev_name, set_type)
+                details[key] = {
+                    "reason": "simulator_manual_override",
+                    "override_field": field_name,
+                    "override_value": _number_text(item.get("current_value", "")),
+                    "modified_at": str(item.get("modified_at", "")),
+                }
+        return details
+
+    def _simulator_ui_control_override_keys(self) -> set[Tuple[str, str, str, str]]:
+        return set(self._simulator_ui_control_override_details())
+
+    def _student_controls_queued_by_higher_priority(
+        self,
+        run_items: Sequence[Mapping[str, Any]],
+        set_items: Sequence[Mapping[str, Any]],
+        *,
+        command_origin: str,
+        absolute_minute: int | float,
+    ) -> List[Dict[str, Any]]:
+        override_details = self._simulator_ui_control_override_details()
+        simulator_override_keys = set(override_details)
+        if str(command_origin).strip().casefold() == "automatic":
+            recent_start = max(0, len(self.command_history) - COMMAND_HISTORY_RECENT_LIMIT)
+            for index, entry in enumerate(self.command_history):
+                if index < recent_start and not self._preserve_command_history_entry(entry):
+                    continue
+                if (
+                    _command_origin(entry) != "manual"
+                    or not self._command_entry_has_accepted_controls(entry)
+                    or not self._command_entry_is_active(
+                        entry,
+                        absolute_minute,
+                        int(_to_float(self.clock.run_id, 0) or 0),
+                    )
+                ):
+                    continue
+                normalized = entry.get("normalized", {})
+                if not isinstance(normalized, Mapping):
+                    continue
+                for item in normalized.get("run_status", []):
+                    if not isinstance(item, Mapping):
+                        continue
+                    dev_type = str(item.get("dev_type", "")).strip()
+                    dev_name = str(item.get("dev_name", "")).strip()
+                    if not dev_type or not dev_name:
+                        continue
+                    for field_name in ("run_stat", "status"):
+                        if item.get(field_name, "") == "":
+                            continue
+                        key = ("remote_control", dev_type, dev_name, field_name)
+                        if key not in simulator_override_keys:
+                            override_details[key] = {
+                                "reason": "higher_priority_manual_command",
+                                "override_field": field_name,
+                                "override_value": _number_text(item.get(field_name, "")),
+                                "modified_at": str(
+                                    entry.get("received_wall_time", entry.get("time", ""))
+                                ),
+                            }
+                for item in normalized.get("set_values", []):
+                    if not isinstance(item, Mapping):
+                        continue
+                    dev_type = str(item.get("dev_type", "")).strip()
+                    dev_name = str(item.get("dev_name", "")).strip()
+                    set_type = str(item.get("set_type", "")).strip()
+                    if not dev_type or not dev_name or not set_type:
+                        continue
+                    key = ("remote_adjustment", dev_type, dev_name, set_type)
+                    if key not in simulator_override_keys:
+                        override_details[key] = {
+                            "reason": "higher_priority_manual_command",
+                            "override_field": set_type,
+                            "override_value": _number_text(item.get("set_value", "")),
+                            "modified_at": str(
+                                entry.get("received_wall_time", entry.get("time", ""))
+                            ),
+                        }
+        blocked: List[Dict[str, Any]] = []
+        seen: set[Tuple[str, str, str, str]] = set()
+
+        def append_blocked(key: Tuple[str, str, str, str]) -> None:
+            if key in seen or key not in override_details:
+                return
+            seen.add(key)
+            kind, dev_type, dev_name, field_name = key
+            detail = override_details[key]
+            reason = str(detail.get("reason", "simulator_manual_override"))
+            override_field = str(detail.get("override_field", field_name))
+            override_value = str(detail.get("override_value", ""))
+            if reason == "higher_priority_manual_command":
+                message = (
+                    f"更高优先级的学员人工指令已将 {dev_type}/{dev_name} 的 {override_field} "
+                    f"设为 {override_value}；本自动指令已记录并排队，在该人工指令取消或失效后"
+                    "若仍在自身有效期内，将按优先级执行。"
+                )
+            else:
+                message = (
+                    f"模拟台人工修改已将 {dev_type}/{dev_name} 的 {override_field} "
+                    f"固定为 {override_value}；本指令已记录并排队，恢复该人工修改后，"
+                    "仍有效的排队指令将按优先级执行。"
+                )
+            blocked.append(
+                {
+                    "kind": kind,
+                    "dev_type": dev_type,
+                    "dev_name": dev_name,
+                    "field": field_name,
+                    "reason": reason,
+                    "override_field": override_field,
+                    "override_value": override_value,
+                    "modified_at": str(detail.get("modified_at", "")),
+                    "message": message,
+                }
+            )
+
+        for item in run_items:
+            dev_type = str(item.get("dev_type", "")).strip()
+            dev_name = str(item.get("dev_name", "")).strip()
+            if not dev_type or not dev_name:
+                continue
+            if item.get("run_stat", "") != "":
+                append_blocked(("remote_control", dev_type, dev_name, "run_stat"))
+            if item.get("status", "") != "":
+                append_blocked(("remote_control", dev_type, dev_name, "status"))
+        for item in set_items:
+            dev_type = str(item.get("dev_type", "")).strip()
+            dev_name = str(item.get("dev_name", "")).strip()
+            set_type = str(item.get("set_type", "")).strip()
+            if dev_type and dev_name and set_type:
+                append_blocked(("remote_adjustment", dev_type, dev_name, set_type))
+        return blocked
 
     def _inactive_coupling_default_curve_keys(self) -> set[Tuple[str, str, str]]:
         active_by_endpoint: Dict[Tuple[str, str, str], bool] = {}
@@ -5340,6 +5478,7 @@ class PolarMicrogridSimulator:
         eligible_source: bool,
         issued_absolute_minute: float,
         expires_at_absolute_minute: Optional[float],
+        queued_controls: Sequence[Mapping[str, Any]] = (),
     ) -> List[str]:
         valid_text = (
             "无时间限制，人工指令保持有效直到取消"
@@ -5402,7 +5541,18 @@ class PolarMicrogridSimulator:
             if strategy_lines:
                 lines.append("策略信息 " + "，".join(strategy_lines))
         if eligible_source and (accepted.get("run_status", 0) or accepted.get("set_values", 0)):
-            lines.append("已登记为有效控制指令，并已同步到内存控制边界，等待下一轮潮流计算响应")
+            if queued_controls:
+                lines.append(
+                    f"已登记为有效控制指令；其中 {len(queued_controls)} 个控制点被更高优先级控制阻断，"
+                    "保持排队并在高优先级覆盖取消后执行届时仍有效的最高优先级指令"
+                )
+                lines.extend(
+                    str(item.get("message", ""))
+                    for item in queued_controls[:6]
+                    if str(item.get("message", ""))
+                )
+            else:
+                lines.append("已登记为有效控制指令，并已同步到内存控制边界，等待下一轮潮流计算响应")
         else:
             lines.append("未写入有效控制边界，模拟台不会响应执行该控制指令")
         return lines
@@ -7024,7 +7174,7 @@ class PolarMicrogridSimulator:
             simu_time=simu_time,
         )
 
-    def apply_student_commands(self, payload: Mapping[str, Any], source: str = "") -> Dict[str, int]:
+    def apply_student_commands(self, payload: Mapping[str, Any], source: str = "") -> Dict[str, Any]:
         if _has_cancel_command_payload(payload):
             return self.cancel_student_commands(payload, source=source)  # type: ignore[return-value]
         with self.lock:
@@ -7087,6 +7237,20 @@ class PolarMicrogridSimulator:
             requested_count = len(requested_run_items) + len(requested_set_items)
             ignored = requested_count - accepted_run - accepted_set if eligible_source else requested_count
             accepted = {"run_status": accepted_run, "set_values": accepted_set, "ignored": ignored}
+            queued_controls = (
+                self._student_controls_queued_by_higher_priority(
+                    normalized_run_items,
+                    normalized_set_items,
+                    command_origin=command_origin,
+                    absolute_minute=issued_absolute_minute,
+                )
+                if eligible_source
+                else []
+            )
+            response: Dict[str, Any] = dict(accepted)
+            if queued_controls:
+                response["queued"] = len(queued_controls)
+                response["blocked"] = copy.deepcopy(queued_controls)
             if complete_strategy_snapshot and self._matching_complete_strategy_snapshot(
                 strategy_id=strategy_id,
                 generation=generation,
@@ -7094,7 +7258,7 @@ class PolarMicrogridSimulator:
                 set_items=normalized_set_items,
                 absolute_minute=issued_absolute_minute,
             ) is not None:
-                return accepted
+                return response
             valid_for_minutes = (
                 None
                 if expires_at_absolute_minute is None
@@ -7139,6 +7303,9 @@ class PolarMicrogridSimulator:
                     json.loads(json.dumps(payload, ensure_ascii=False, default=str))
                 ),
             }
+            if queued_controls:
+                command_entry["queued_at_acceptance"] = len(queued_controls)
+                command_entry["blocked_at_acceptance"] = copy.deepcopy(queued_controls)
             self._append_command_history_entry(command_entry)
             self._prepare_command_history_for_persistence()
             self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
@@ -7149,7 +7316,11 @@ class PolarMicrogridSimulator:
                 (
                     "策略快照已替换"
                     if complete_strategy_snapshot
-                    else ("接受成功" if accepted_run or accepted_set else "无有效指令")
+                    else (
+                        "已记录并排队"
+                        if queued_controls
+                        else ("接受成功" if accepted_run or accepted_set else "无有效指令")
+                    )
                 ),
                 self._command_accept_detail(
                     payload,
@@ -7160,10 +7331,11 @@ class PolarMicrogridSimulator:
                     eligible_source=eligible_source,
                     issued_absolute_minute=issued_absolute_minute,
                     expires_at_absolute_minute=expires_at_absolute_minute,
+                    queued_controls=queued_controls,
                 ),
-                level="ok" if accepted_run or accepted_set else "warn",
+                level="warn" if queued_controls else ("ok" if accepted_run or accepted_set else "warn"),
             )
-            return accepted
+            return response
 
     def _expand_set_values(self, items: Iterable[Any]) -> List[Dict[str, Any]]:
         expanded: List[Dict[str, Any]] = []
@@ -14642,7 +14814,7 @@ class MultiModelSimulator:
     def device_runtime_frame(self, model_id: Optional[str] = None) -> Dict[str, Any]:
         return self.service_for(model_id).device_runtime_frame()
 
-    def apply_student_commands(self, payload: Mapping[str, Any], source: str = "", model_id: Optional[str] = None) -> Dict[str, int]:
+    def apply_student_commands(self, payload: Mapping[str, Any], source: str = "", model_id: Optional[str] = None) -> Dict[str, Any]:
         return self.service_for(model_id).apply_student_commands(payload, source=source)
 
     def control_clock(self, payload: Mapping[str, Any], model_id: Optional[str] = None) -> Dict[str, Any]:

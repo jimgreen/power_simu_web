@@ -68,6 +68,14 @@ class TraineeRemoteAdjustmentUiTest(unittest.TestCase):
         self.assertIn("sendRemoteAdjustmentCommand", self.script)
         self.assertIn("set_values: [command]", self.script)
 
+    def test_blocked_remote_adjustment_is_reported_as_queued(self):
+        send_block = self.script.split("async function sendRemoteAdjustmentCommand()", 1)[1].split(
+            "function handleTreeClick",
+            1,
+        )[0]
+        self.assertIn("commandSubmissionQueueState(result, \"set_values\")", send_block)
+        self.assertIn("已记录，排队等待", send_block)
+
     def test_successful_remote_adjustment_closes_only_top_operation_dialog(self):
         success_block = self.script.split("async function sendRemoteAdjustmentCommand()", 1)[1].split(
             "} catch (error)",

@@ -18487,12 +18487,31 @@ function openRemoteControlDialog(dev, commandType = dev?.__command_type || "run_
 }
 
 function remoteControlCommandAcceptance(result = {}) {
+  const submission = commandSubmissionQueueState(result, "run_status");
+  if (submission.queued > 0 || submission.blocked.length) {
+    return { ...submission, ready: false };
+  }
+  return { accepted: submission.accepted, ignored: submission.ignored, ok: submission.ok };
+}
+
+function commandSubmissionQueueState(result = {}, acceptedField = "run_status") {
   const wrapped = result?.accepted && typeof result.accepted === "object" ? result.accepted : {};
-  const acceptedValue = result?.run_status ?? wrapped.run_status ?? wrapped.remote_controls ?? 0;
+  const alias = acceptedField === "set_values" ? wrapped.remote_adjustments : wrapped.remote_controls;
+  const acceptedValue = result?.[acceptedField] ?? wrapped[acceptedField] ?? alias ?? 0;
   const ignoredValue = result?.ignored ?? wrapped.ignored ?? 0;
+  const blocked = Array.isArray(result?.blocked)
+    ? result.blocked
+    : (Array.isArray(wrapped.blocked) ? wrapped.blocked : []);
+  const queuedValue = result?.queued ?? wrapped.queued ?? blocked.length;
   const accepted = Number.isFinite(Number(acceptedValue)) ? Math.max(0, Number(acceptedValue)) : 0;
   const ignored = Number.isFinite(Number(ignoredValue)) ? Math.max(0, Number(ignoredValue)) : 0;
-  return { accepted, ignored, ok: accepted > 0 && ignored === 0 };
+  const queued = Number.isFinite(Number(queuedValue)) ? Math.max(0, Number(queuedValue)) : 0;
+  return { accepted, ignored, queued, blocked, ok: accepted > 0 && ignored === 0 };
+}
+
+function queuedCommandMessage(submission = {}, fallback = "命令已记录，等待高优先级控制取消后执行。") {
+  const message = submission?.blocked?.find((item) => String(item?.message || "").trim())?.message;
+  return String(message || fallback);
 }
 
 function remoteControlFeedbackSnapshotPath() {
@@ -18568,6 +18587,23 @@ async function sendRemoteControlCommand() {
     const acceptance = remoteControlCommandAcceptance(result);
     if (!acceptance.ok) {
       throw new Error(`模拟台未接受遥控指令：接受 ${acceptance.accepted} 条，忽略 ${acceptance.ignored} 条`);
+    }
+    if (acceptance.queued > 0) {
+      const queueMessage = queuedCommandMessage(acceptance);
+      pending.run_status.delete(`${deviceKey(dev)}|${commandType}`);
+      updatePendingCount();
+      await refresh();
+      $("remoteControlHint").textContent = queueMessage;
+      $("remoteControlHint").className = "remote-control-hint is-warn";
+      addRuntimeLog(
+        "模拟台响应",
+        targetName,
+        "已记录，排队等待",
+        `${deviceName(dev)} → ${requestedText}；${queueMessage}`,
+        "warn",
+      );
+      closeRemoteControlDialog();
+      return;
     }
     const feedback = await waitForRemoteControlFeedback(dev, commandType, command[commandType]);
     if (feedback.snapshot) {
@@ -18678,6 +18714,25 @@ async function sendRemoteAdjustmentCommand() {
   addRuntimeLog("人工遥调", targetName, "下发请求", `${row.name} → ${formatNumber(setValue)}`);
   try {
     const result = await postTeacherCommand(body);
+    const submission = commandSubmissionQueueState(result, "set_values");
+    if (!submission.ok) {
+      throw new Error(`模拟台未接受遥调指令：接受 ${submission.accepted} 条，忽略 ${submission.ignored} 条`);
+    }
+    if (submission.queued > 0) {
+      const queueMessage = queuedCommandMessage(submission);
+      addRuntimeLog(
+        "模拟台响应",
+        targetName,
+        "已记录，排队等待",
+        `${row.name} → ${formatNumber(setValue)}；${queueMessage}`,
+        "warn",
+      );
+      pending.set_values.delete(row.key);
+      updatePendingCount();
+      await refresh();
+      closeRemoteAdjustmentDialog();
+      return;
+    }
     addRuntimeLog(
       "模拟台响应",
       targetName,

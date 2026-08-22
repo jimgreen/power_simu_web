@@ -140,6 +140,7 @@ process.stdout.write(JSON.stringify({
                 diagramDeviceParameterEditable("q_set"),
                 diagramDeviceParameterEditable("v_set"),
                 diagramDeviceParameterEditable("status"),
+                diagramDeviceParameterEditable("closed_status_set"),
                 diagramDeviceParameterEditable("p"),
                 diagramDeviceParameterEditable("f"),
   ],
@@ -151,11 +152,11 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(trainee["blocks"], ["ACGenerator", "ACWindGen"])
         self.assertEqual(
             simulator["editable"],
-            [True, True, False, True, True, True, True, True, False, False],
+            [True, True, False, True, True, True, True, True, True, False, False],
         )
         self.assertEqual(
             trainee["editable"],
-            [True, True, False, False, False, False, False, False, False, False],
+            [True, True, False, False, False, False, False, False, False, False, False],
         )
 
     def test_device_parameter_panels_hide_realtime_measurement_fields(self):
@@ -365,14 +366,16 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(self._run_helpers(body), expected)
         self.assertEqual(self._run_helpers(body, self.trainee_script), expected)
 
-    def test_switch_status_is_only_available_when_the_model_defines_status(self):
+    def test_switch_status_is_only_available_when_the_model_defines_closed_status(self):
         body = r"""
 const converterRecords = [{ headers: ["idx", "name", "run_stat", "p_set"] }];
-const breakerRecords = [{ headers: ["idx", "name", "status", "run_stat"] }];
+const breakerRecords = [{ headers: ["idx", "name", "closed_status_set", "closed_status", "run_stat"] }];
+const legacyRecords = [{ headers: ["idx", "name", "status", "run_stat"] }];
 process.stdout.write(JSON.stringify({
   converter: diagramDeviceHasSwitchStatus(converterRecords, { run_stat: 1, p_set: 10 }),
-  breaker: diagramDeviceHasSwitchStatus(breakerRecords, { run_stat: 1, status: 0 }),
-  rawFallback: diagramDeviceHasSwitchStatus([], { run_stat: 1, status: 1 }),
+  breaker: diagramDeviceHasSwitchStatus(breakerRecords, { run_stat: 1, closed_status: 0 }),
+  rawFallback: diagramDeviceHasSwitchStatus([], { run_stat: 1, closed_status: 1 }),
+  legacyOnly: diagramDeviceHasSwitchStatus(legacyRecords, { run_stat: 1, status: 1 }),
   runtimeDefaultOnly: diagramDeviceHasSwitchStatus([], { run_stat: 1 }),
 }));
 """
@@ -380,6 +383,7 @@ process.stdout.write(JSON.stringify({
             "converter": False,
             "breaker": True,
             "rawFallback": True,
+            "legacyOnly": False,
             "runtimeDefaultOnly": False,
         }
         self.assertEqual(self._run_helpers(body), expected)
@@ -398,6 +402,7 @@ const optionValues = (blockName, field, row) => (
 process.stdout.write(JSON.stringify({
   runStat: optionValues("ACLoad", "run_stat", { run_stat: 1 }),
   switchStatus: optionValues("ACBreak", "status", { status: 0 }),
+  switchBoundary: optionValues("ACBreak", "closed_status_set", { closed_status_set: 0 }),
   acGenerator: optionValues("ACGenerator", "control_type", { control_type: "PV" }),
   dcGenerator: optionValues("DCGenerator", "control_type", { control_type: "V" }),
   acacSide: optionValues("ACACConverter", "i_control_type", { i_control_type: "PV" }),
@@ -432,6 +437,7 @@ process.stdout.write(JSON.stringify({
         expected = {
             "runStat": ["1", "0"],
             "switchStatus": ["1", "0"],
+            "switchBoundary": ["1", "0"],
             "acGenerator": ["PQ", "P", "PV", "V", "SLACK", "PH"],
             "dcGenerator": ["P", "V", "I", "SLACK"],
             "acacSide": ["PQ", "PV", "PH", "NONE"],
@@ -448,6 +454,60 @@ process.stdout.write(JSON.stringify({
         }
         self.assertEqual(self._run_editor_helpers(body), expected)
         self.assertEqual(self._run_editor_helpers(body, self.trainee_script), expected)
+
+    def test_switch_status_displays_actual_result_and_edits_only_the_boundary(self):
+        body = r"""
+const record = { blockName: "ACBreak", row: { closed_status_set: 0 } };
+process.stdout.write(JSON.stringify({
+  actualOpen: diagramDefinitionDisplayValue("closed_status", 0),
+  actualClosed: diagramDefinitionDisplayValue("closed_status", 1),
+  boundaryOpen: diagramDefinitionDisplayValue("closed_status_set", 0),
+  boundaryOptions: diagramDefinitionEnumOptions(record, "closed_status_set"),
+  canonicalOpen: diagramDefinitionEnumCanonicalValue(record, "closed_status_set", "打开"),
+}));
+"""
+        expected = {
+            "actualOpen": "打开",
+            "actualClosed": "闭合",
+            "boundaryOpen": "打开",
+            "boundaryOptions": [
+                {"value": "1", "label": "闭合"},
+                {"value": "0", "label": "打开"},
+            ],
+            "canonicalOpen": "0",
+        }
+        self.assertEqual(self._run_editor_helpers(body), expected)
+        self.assertEqual(self._run_editor_helpers(body, self.trainee_script), expected)
+
+    def test_switch_tooltip_uses_closed_status_and_hides_control_mode(self):
+        for script in (self.script, self.trainee_script):
+            block = script.split("function diagramSingleDeviceTooltipData", 1)[1].split(
+                "function diagramDeviceTooltipData",
+                1,
+            )[0]
+            self.assertIn('["运行状态",', block)
+            self.assertIn('["开关状态", switchStatusValue,', block)
+            self.assertIn(
+                'diagramDefinitionFieldBinding(definitionRecords, ["closed_status_set"])',
+                block,
+            )
+            self.assertIn('live?.closed_status ?? raw.closed_status', block)
+            self.assertNotIn('live?.status ?? raw.status', block)
+            self.assertNotIn('["控制模式",', block)
+
+    def test_simulator_can_edit_switch_boundary_but_trainee_tooltip_is_read_only(self):
+        simulator_block = self.script.split("function diagramSingleDeviceTooltipData", 1)[1].split(
+            "function diagramDeviceTooltipData",
+            1,
+        )[0]
+        trainee_block = self.trainee_script.split("function diagramSingleDeviceTooltipData", 1)[1].split(
+            "function diagramDeviceTooltipData",
+            1,
+        )[0]
+        self.assertIn("statusBinding", simulator_block)
+        self.assertIn("statusBinding", trainee_block)
+        self.assertNotIn('&& !name.endsWith("_set")', self.script)
+        self.assertIn('&& !name.endsWith("_set")', self.trainee_script)
 
     def test_editable_runtime_states_and_control_modes_render_as_selects(self):
         body = r"""
@@ -1015,9 +1075,36 @@ process.stdout.write(JSON.stringify({
                 self.assertNotIn("interaction.definitionEditor = null", catch_source)
                 self.assertIn("interaction.definitionCloseAfterSave = false", catch_source)
 
-    def test_device_tooltip_measurement_field_names_are_lowercase(self):
+    def test_device_tooltip_measurement_field_names_use_closed_status_alias(self):
         for script in (self.script, self.trainee_script):
             self.assertIn("function diagramMeasurementFieldName", script)
+            mapping_marker = "const DIAGRAM_MEASUREMENT_FIELD_LABELS"
+            mapping_source = mapping_marker + script.split(mapping_marker, 1)[1].split(
+                "\n});",
+                1,
+            )[0] + "\n});"
+            helper_source = "function diagramMeasurementFieldName" + script.split(
+                "function diagramMeasurementFieldName",
+                1,
+            )[1].split("function diagramDeviceData", 1)[0]
+            result = subprocess.run(
+                ["node"],
+                input=(
+                    f"{mapping_source}\n{helper_source}\n"
+                    "process.stdout.write(JSON.stringify(["
+                    "diagramMeasurementFieldName({ meas_type: 'STATUS' }),"
+                    "diagramMeasurementFieldName({ meas_type: 'RUN_STAT' }),"
+                    "diagramMeasurementFieldName({ meas_type: 'P_FROM' })"
+                    "]));"
+                ),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                json.loads(result.stdout),
+                ["closed_status", "run_stat", "p_from"],
+            )
             tooltip_block = script.split("function diagramSingleDeviceTooltipData", 1)[1].split(
                 "function diagramDeviceTooltipData",
                 1,
@@ -1281,6 +1368,21 @@ process.stdout.write(JSON.stringify(diagramDefinitionDisplayHeaders(record)));
             self.assertEqual(self._run_helpers(body, script), ["i_node", "j_node"])
             self.assertIn("function diagramDefinitionFieldBinding", script)
             self.assertIn("renderDiagramIntegratedDefinitionRow", script)
+
+    def test_switch_result_and_boundary_are_hidden_from_parameter_rows(self):
+        body = r"""
+const record = {
+  headers: [
+    "idx", "name", "i_node", "j_node", "closed_status_set", "closed_status", "rated_capacity",
+  ],
+};
+process.stdout.write(JSON.stringify(diagramDefinitionDisplayHeaders(record)));
+"""
+        for script in (self.script, self.trainee_script):
+            self.assertEqual(
+                self._run_helpers(body, script),
+                ["i_node", "j_node", "rated_capacity"],
+            )
 
     def test_integrated_rows_use_the_matching_record_from_the_multi_block_editor(self):
         for script in (self.script, self.trainee_script):

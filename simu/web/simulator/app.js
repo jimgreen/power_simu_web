@@ -328,6 +328,7 @@ const SIGNAL_MEASUREMENT_LABELS = {
   STATUS: { label: "开关状态", order: 1 },
 };
 const DIAGRAM_MEASUREMENT_FIELD_LABELS = Object.freeze({
+  STATUS: "closed_status",
   P_GEN: "p",
   Q_GEN: "q",
   V_GEN: "u",
@@ -5800,7 +5801,7 @@ function diagramSwitchState(value) {
   if (Number.isFinite(number)) return number > 0.5 ? "closed" : "open";
   const token = text.toLowerCase().replace(/\s+/g, "");
   if (["closed", "close", "on", "合", "合闸", "闭合", "投入", "true"].includes(token)) return "closed";
-  if (["open", "off", "分", "分闸", "断开", "退出", "false"].includes(token)) return "open";
+  if (["open", "off", "分", "分闸", "断开", "打开", "退出", "false"].includes(token)) return "open";
   return "unknown";
 }
 
@@ -7093,6 +7094,9 @@ const DIAGRAM_DEFINITION_PROTECTED_FIELDS = new Set([
 const DIAGRAM_DEFINITION_IDENTITY_FIELDS = new Set([
   "idx", "name", "dev_name", "dev_type",
 ]);
+const DIAGRAM_DEFINITION_HIDDEN_FIELDS = new Set([
+  "closed_status", "closed_status_set",
+]);
 const DIAGRAM_REALTIME_MEASUREMENT_FIELDS = new Set(["p", "q", "u", "i", "f"]);
 
 function diagramDefinitionDisplayHeaders(record) {
@@ -7102,6 +7106,7 @@ function diagramDefinitionDisplayHeaders(record) {
   return (record?.headers || []).filter((field) => {
     const name = String(field || "").trim().toLowerCase();
     return !DIAGRAM_DEFINITION_IDENTITY_FIELDS.has(name)
+      && !DIAGRAM_DEFINITION_HIDDEN_FIELDS.has(name)
       && !integratedFields.has(name)
       && !DIAGRAM_REALTIME_MEASUREMENT_FIELDS.has(name);
   });
@@ -7496,9 +7501,11 @@ function definitionEditResultHasWarning(result) {
 
 function diagramDeviceHasSwitchStatus(definitionRecords = [], raw = {}) {
   const modelDefinesStatus = definitionRecords.some((record) => (
-    (record?.headers || []).some((field) => String(field || "").trim().toLowerCase() === "status")
+    (record?.headers || []).some((field) => (
+      ["closed_status", "closed_status_set"].includes(String(field || "").trim().toLowerCase())
+    ))
   ));
-  return modelDefinesStatus || Object.prototype.hasOwnProperty.call(raw || {}, "status");
+  return modelDefinesStatus || Object.prototype.hasOwnProperty.call(raw || {}, "closed_status");
 }
 
 function diagramDeviceDefinitionEditorRecords(records = []) {
@@ -7558,6 +7565,7 @@ function diagramDefinitionPendingFieldLabel(field, kind = "device") {
     j_control_type: "J 侧控制模式",
     run_stat: "运行状态",
     status: "开关状态",
+    closed_status_set: "开关状态",
   })[normalized] || name;
 }
 
@@ -7569,6 +7577,9 @@ function diagramDefinitionPendingDeviceValue(field, value) {
   const token = String(value ?? "").trim().toUpperCase();
   if (name === "run_stat") return ["1", "TRUE", "ON", "投入"].includes(token) ? "投入" : "退出";
   if (name === "status") return ["1", "TRUE", "ON", "CLOSED", "闭合", "合闸"].includes(token) ? "闭合" : "断开";
+  if (name === "closed_status_set") {
+    return ["1", "TRUE", "ON", "CLOSED", "闭合", "合闸"].includes(token) ? "闭合" : "打开";
+  }
   return diagramTooltipValue(value);
 }
 
@@ -7785,15 +7796,18 @@ function diagramSingleDeviceTooltipData(container, device, snapshot) {
     ["idx", idx, "identity:idx"],
   ];
   const runStatBinding = diagramDefinitionFieldBinding(definitionRecords, ["run_stat"]);
-  const statusBinding = diagramDefinitionFieldBinding(definitionRecords, ["status"]);
-  const modeBinding = diagramDefinitionFieldBinding(definitionRecords, ["control_type", "mode"]);
+  diagramDefinitionFieldBinding(definitionRecords, ["status"]);
+  const statusBinding = diagramDefinitionFieldBinding(definitionRecords, ["closed_status_set"]);
   const hasSwitchStatus = diagramDeviceHasSwitchStatus(definitionRecords, raw);
+  const switchStatusValue = diagramDefinitionDisplayValue(
+    "closed_status",
+    live?.closed_status ?? raw.closed_status,
+  );
   const statusRows = [
     ["运行状态", live?.run_stat ?? raw.run_stat, "status:run_stat", runStatBinding],
     ...(hasSwitchStatus
-      ? [["开关状态", live?.status ?? raw.status, "status:status", statusBinding]]
+      ? [["开关状态", switchStatusValue, "status:status", statusBinding]]
       : []),
-    ["控制模式", live?.mode ?? raw.control_type ?? raw.mode, "status:mode", modeBinding],
   ];
   const setRows = Object.entries(live?.set_values || {})
     .map(([key, value]) => [
@@ -7803,7 +7817,8 @@ function diagramSingleDeviceTooltipData(container, device, snapshot) {
       diagramDefinitionFieldBinding(definitionRecords, [key]),
     ]);
   const duplicateKeys = new Set([
-    "idx", "name", "dev_name", "dev_type", "run_stat", "status", "mode", "control_type",
+    "idx", "name", "dev_name", "dev_type", "run_stat", "status", "closed_status",
+    "closed_status_set", "mode", "control_type",
     ...Object.keys(live?.set_values || {}),
   ]);
   const rawRows = Object.entries(raw)
@@ -7946,9 +7961,9 @@ function diagramDefinitionEnumCanonicalValue(record, field, value) {
   const name = String(field || "").trim().toLowerCase();
   const block = normalizeDiagramMeasurementToken(record?.blockName);
   let token = String(value ?? "").trim().toUpperCase();
-  if (name === "run_stat" || name === "status") {
+  if (["run_stat", "status", "closed_status", "closed_status_set"].includes(name)) {
     if (["TRUE", "ON", "CLOSED", "投入", "闭合", "合闸"].includes(token)) return "1";
-    if (["FALSE", "OFF", "OPEN", "退出", "断开", "分闸"].includes(token)) return "0";
+    if (["FALSE", "OFF", "OPEN", "退出", "断开", "打开", "分闸"].includes(token)) return "0";
     return Number(token) === 1 ? "1" : (Number(token) === 0 ? "0" : token);
   }
   if (name === "i_control_type" || name === "j_control_type") {
@@ -7981,6 +7996,9 @@ function diagramDefinitionEnumOptions(record, field) {
   }
   if (name === "status") {
     return [diagramDefinitionEnumOption("1", "闭合"), diagramDefinitionEnumOption("0", "断开")];
+  }
+  if (name === "closed_status_set") {
+    return [diagramDefinitionEnumOption("1", "闭合"), diagramDefinitionEnumOption("0", "打开")];
   }
   let values = [];
   if (block === "DCACCONVERTER" && name === "ac_control_type") {
@@ -8103,6 +8121,9 @@ function diagramDefinitionDisplayValue(field, value) {
   const canonical = diagramDefinitionEnumCanonicalValue({}, field, value);
   if (name === "run_stat") return canonical === "1" ? "投入" : (canonical === "0" ? "退出" : diagramTooltipValue(value));
   if (name === "status") return canonical === "1" ? "闭合" : (canonical === "0" ? "断开" : diagramTooltipValue(value));
+  if (name === "closed_status" || name === "closed_status_set") {
+    return canonical === "1" ? "闭合" : (canonical === "0" ? "打开" : diagramTooltipValue(value));
+  }
   if (name === "control_type" || name === "mode" || name.endsWith("_control_type") || name.endsWith("_mode")) {
     return diagramDefinitionControlModeValue(value);
   }

@@ -1586,7 +1586,7 @@ process.stdout.write(JSON.stringify({
     def test_switch_status_selects_matching_svg_symbol(self):
         body = """
 const payload = typeof diagramSwitchState === "function" && typeof diagramSwitchStateHref === "function" ? {
-  states: [0, 1, "分闸", "closed", "--"].map(diagramSwitchState),
+  states: [0, 1, "分闸", "打开", "closed", "--"].map(diagramSwitchState),
   open: diagramSwitchStateHref("#symbol_DCBreak_dc-breaker_state_1_2", "open"),
   closed: diagramSwitchStateHref("#symbol_ACBreak_ac-breaker_state_0", "closed"),
 } : null;
@@ -1597,7 +1597,7 @@ process.stdout.write(JSON.stringify(payload));
                 payload = self._run_helpers(path.read_text(encoding="utf-8"), body)
                 self.assertEqual(
                     payload["states"],
-                    ["open", "closed", "open", "closed", "unknown"],
+                    ["open", "closed", "open", "open", "closed", "unknown"],
                 )
                 self.assertEqual(
                     payload["open"],

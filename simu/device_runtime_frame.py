@@ -115,7 +115,10 @@ def compact_device_runtime_frame(
         "device_count": len(ordered_devices),
         "device_signature": _ordered_signature(ordered_devices),
         "device_run_stats": [row.get("run_stat") for row in ordered_devices],
-        "device_statuses": [row.get("status") for row in ordered_devices],
+        "device_statuses": [
+            row.get("closed_status", row.get("status"))
+            for row in ordered_devices
+        ],
         "device_modes": [row.get("mode") for row in ordered_devices],
         "device_set_values": [copy.deepcopy(row.get("set_values", {})) for row in ordered_devices],
         "device_soc_present": ["soc_curr" in row for row in ordered_devices],
@@ -290,11 +293,13 @@ def _clear_measurement_backed_runtime_fields(
         identity = _device_key(row)
         for measurement_type, field_name in (
             ("RUN_STAT", "run_stat"),
-            ("STATUS", "status"),
+            ("STATUS", "closed_status"),
             ("SOC", "soc_curr"),
         ):
             if (*identity, measurement_type) in measurement_keys:
                 row.pop(field_name, None)
+                if measurement_type == "STATUS":
+                    row.pop("status", None)
     for row in ordered_states:
         if (*_device_key(row), "RUN_STAT") in measurement_keys:
             row.pop("run_stat", None)
@@ -385,6 +390,7 @@ def apply_device_runtime_frame(
         if encoding == COMPACT_DEVICE_RUNTIME_ENCODING:
             row["run_stat"] = device_run_stats[index]
             row["status"] = device_statuses[index]
+            row["closed_status"] = device_statuses[index]
         row["mode"] = device_modes[index]
         row["set_values"] = copy.deepcopy(device_set_values[index])
         if encoding == COMPACT_DEVICE_RUNTIME_ENCODING and bool(device_soc_present[index]):
@@ -394,6 +400,7 @@ def apply_device_runtime_frame(
         ordered_devices[index]["run_stat"] = value
     for index, value in device_status_sparse:
         ordered_devices[index]["status"] = value
+        ordered_devices[index]["closed_status"] = value
     for index, value in device_soc_sparse:
         ordered_devices[index]["soc_curr"] = value
 

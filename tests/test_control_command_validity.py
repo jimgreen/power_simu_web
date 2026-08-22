@@ -423,6 +423,14 @@ class ControlCommandValidityTest(unittest.TestCase):
         self.assertEqual(materialized["run_status"], 1)
         self.assertEqual(service.latest_control_values()["values"]["ACBreak.br1.status"], 0)
 
+        breaker_status = next(
+            row
+            for row in service.runtime_stat_book.data["CbOpenStat"].data
+            if row["dev_type"] == "ACBreak" and row["dev_name"] == "br1"
+        )
+        self.assertEqual(str(breaker_status["closed_status_set"]), "0")
+        self.assertEqual(str(breaker_status["closed_status"]), "1")
+
     def test_breaker_status_command_log_records_field_and_target_value(self):
         workspace, service = self._make_service_with_breaker_control()
         self.addCleanup(workspace.cleanup)

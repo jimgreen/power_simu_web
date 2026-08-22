@@ -2478,6 +2478,9 @@ function hydrateMeasurementBackedDeviceRuntime(snapshot = state.snapshot || {}) 
     if (valid) row[fieldName] = measurement.value;
     else if (["RUN_STAT", "STATUS"].includes(measurementType)) row[fieldName] = 0;
     else delete row[fieldName];
+    if (measurementType === "STATUS" && row[fieldName] !== undefined) {
+      row.closed_status = row[fieldName];
+    }
   };
   (snapshot.devices || []).forEach((row) => {
     hydrate(row, "RUN_STAT", "run_stat");
@@ -2551,6 +2554,7 @@ function applyDeviceRuntimePayload(previous, incoming) {
       if (completeFrame) {
         row.run_stat = runStats[index];
         row.status = statuses[index];
+        row.closed_status = statuses[index];
       }
       row.mode = modes[index];
       row.set_values = setValues[index] && typeof setValues[index] === "object"
@@ -2560,7 +2564,10 @@ function applyDeviceRuntimePayload(previous, incoming) {
     });
     const orderedDevices = orderedDeviceRuntimeRows(decodedDevices, "devices");
     runSparse.forEach(([index, value]) => { orderedDevices[index].run_stat = value; });
-    statusSparse.forEach(([index, value]) => { orderedDevices[index].status = value; });
+    statusSparse.forEach(([index, value]) => {
+      orderedDevices[index].status = value;
+      orderedDevices[index].closed_status = value;
+    });
     socSparse.forEach(([index, value]) => { orderedDevices[index].soc_curr = value; });
 
     const baseStates = Array.isArray(incoming.device_states) ? incoming.device_states : previous?.device_states;
@@ -3958,6 +3965,13 @@ function diagramMeasurementMaps(snapshot = state.snapshot || {}) {
   const measurements = snapshot.measurements || {};
   const scada = new Map();
   const scadaByDevice = new Map();
+  const deviceRuntimeByDevice = new Map();
+  (snapshot.devices || []).forEach((row) => {
+    const devType = String(row?.dev_type || "").trim();
+    const devName = String(row?.dev_name || row?.name || "").trim();
+    if (!devType || !devName) return;
+    deviceRuntimeByDevice.set(diagramDeviceStateKey(devType, devName), row);
+  });
   (measurements.scada || []).forEach((row) => {
     addDiagramMeasurementAliases(scada, row);
     addDiagramDeviceMeasurement(scadaByDevice, row);
@@ -3965,6 +3979,7 @@ function diagramMeasurementMaps(snapshot = state.snapshot || {}) {
   return {
     scada,
     scadaByDevice,
+    deviceRuntimeByDevice,
     couplingEndpoints: diagramCouplingMeasurementEndpoints(snapshot),
   };
 }
@@ -4064,6 +4079,22 @@ function diagramSwitchMeasurementRow(device, maps) {
   return maps.scadaByDevice?.get(key) || maps.realByDevice?.get(key) || null;
 }
 
+function diagramSwitchActualValue(device, maps) {
+  if (!device) return null;
+  const runtime = maps.deviceRuntimeByDevice?.get(
+    diagramDeviceStateKey(device.devType, device.devName),
+  );
+  if (
+    runtime
+    && Object.prototype.hasOwnProperty.call(runtime, "closed_status")
+    && runtime.closed_status !== null
+    && runtime.closed_status !== ""
+  ) {
+    return runtime.closed_status;
+  }
+  return diagramSwitchMeasurementRow(device, maps)?.value ?? null;
+}
+
 function setDiagramSwitchElementState(element, switchState) {
   element.setAttribute("data-diagram-switch-state", switchState);
   element.classList.toggle("is-diagram-switch-open", switchState === "open");
@@ -4092,7 +4123,7 @@ function updateDiagramSwitchVisualStates(container, maps) {
       || element.hasAttribute("data-open-href")
       || element.hasAttribute("data-closed-href");
     if (!supportsStateSymbols) return;
-    const switchState = diagramSwitchState(diagramSwitchMeasurementRow(device, maps)?.value);
+    const switchState = diagramSwitchState(diagramSwitchActualValue(device, maps));
     (elementsByDevice.get(devId) || [element]).forEach((related) => {
       setDiagramSwitchElementState(related, switchState);
     });
@@ -8599,6 +8630,7 @@ function applyTraineeObservedRuntimeSignals(snapshot = {}) {
       if (observed?.valid) {
         runtimeSignals[field] = observed;
         device[field] = observed.value;
+        if (field === "status") device.closed_status = observed.value;
         return;
       }
       if (observed && previous && traineeRuntimeSignalValue(previous.value) !== null) {
@@ -8611,6 +8643,7 @@ function applyTraineeObservedRuntimeSignals(snapshot = {}) {
           updated_absolute_minute: observed.updated_absolute_minute,
         };
         device[field] = traineeRuntimeSignalValue(previous.value);
+        if (field === "status") device.closed_status = device[field];
         return;
       }
       if (observed) {
@@ -8619,6 +8652,7 @@ function applyTraineeObservedRuntimeSignals(snapshot = {}) {
       }
       if (previous && traineeRuntimeSignalValue(previous.value) !== null) {
         device[field] = traineeRuntimeSignalValue(previous.value);
+        if (field === "status") device.closed_status = device[field];
       }
     });
 
@@ -8648,7 +8682,7 @@ function mergeTeacherRuntimeDevices(localDevices = [], remoteDevices = []) {
     `${String(device?.dev_type || "").trim()}\u0000${String(device?.dev_name || device?.name || "").trim()}`,
     device,
   ])));
-  const runtimeFields = ["run_stat", "status", "mode", "set_values", "soc_curr", "runtime_signals"];
+  const runtimeFields = ["run_stat", "status", "closed_status", "mode", "set_values", "soc_curr", "runtime_signals"];
   return (localDevices || []).map((localDevice) => {
     const key = `${String(localDevice?.dev_type || "").trim()}\u0000${String(localDevice?.dev_name || localDevice?.name || "").trim()}`;
     const remoteDevice = remoteByKey.get(key);
@@ -16903,10 +16937,15 @@ function appendCommandTrace(snapshot) {
     const dev = controlDeviceFromRow(row, snapshot);
     const statusKey = commandTraceRunKey(dev, "status");
     const pendingStatus = pending.run_status.get(`${deviceKey(dev)}|status`);
-    const control = pendingStatus ? pendingStatus.status : dev.status;
+    const control = pendingStatus
+      ? pendingStatus.status
+      : (dev.closed_status_set ?? row.closed_status_set ?? dev.status);
+    const actual = remoteControlFeedbackValue(dev, "status", snapshot)
+      ?? dev.closed_status
+      ?? dev.status;
     point.commands[statusKey] = {
       control: commandTraceNumber(control),
-      actual: commandTraceNumber(dev.status),
+      actual: commandTraceNumber(actual),
       label: `${deviceType(dev)}.${deviceName(dev)}.遥控开合`,
       unit: "",
     };
@@ -17133,7 +17172,12 @@ function controlDefinitionDevices(snapshot = state.snapshot || {}) {
     device.__control_rows = device.__control_rows || [];
     device.__control_rows.push(row);
     if (row.__control_block === "RunStat") device.run_stat = device.run_stat ?? row.run_stat;
-    if (row.__control_block === "CbOpenStat") device.status = device.status ?? row.status;
+    if (row.__control_block === "CbOpenStat") {
+      device.status = device.closed_status_set
+        ?? row.closed_status_set
+        ?? device.status
+        ?? row.status;
+    }
     if (row.__control_block === "SetValue" && row.set_type) {
       device.set_values = { ...(device.set_values || {}) };
       if (device.set_values[row.set_type] === undefined) device.set_values[row.set_type] = row.set_value;

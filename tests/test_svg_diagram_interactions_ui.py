@@ -1608,6 +1608,33 @@ process.stdout.write(JSON.stringify(payload));
                     "#symbol_ACBreak_ac-breaker_state_1",
                 )
 
+    def test_switch_symbol_prefers_calculated_closed_status_over_setpoint_and_legacy_measurement(self):
+        body = """
+const device = { devType: "ACBreak", devName: "br1" };
+const key = diagramDeviceMeasurementKey("ACBreak", "br1", "STATUS");
+const payload = {
+  calculated: diagramSwitchActualValue(device, {
+    deviceRuntimeByDevice: new Map([[diagramDeviceStateKey("ACBreak", "br1"), {
+      closed_status: 0,
+      closed_status_set: 1,
+      status: 1,
+    }]]),
+    scadaByDevice: new Map([[key, { value: 1 }]]),
+    realByDevice: new Map(),
+  }),
+  legacy: diagramSwitchActualValue(device, {
+    deviceRuntimeByDevice: new Map(),
+    scadaByDevice: new Map([[key, { value: 1 }]]),
+    realByDevice: new Map(),
+  }),
+};
+process.stdout.write(JSON.stringify(payload));
+"""
+        for path in self._scripts():
+            with self.subTest(app=path.parent.name):
+                payload = self._run_helpers(path.read_text(encoding="utf-8"), body)
+                self.assertEqual(payload, {"calculated": 0, "legacy": 1})
+
     def test_measurement_rows_never_fall_back_to_the_device_tooltip(self):
         body = """
 global.Element = class Element {

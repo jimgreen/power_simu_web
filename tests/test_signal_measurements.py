@@ -50,8 +50,8 @@ class SignalMeasurementsTest(unittest.TestCase):
                 "# ACBreak br1 1\n"
                 "</RunStat>\n"
                 "<CbOpenStat>\n"
-                "@ dev_type dev_name status\n"
-                "# ACBreak br1 0\n"
+                "@ dev_type dev_name closed_status_set closed_status\n"
+                "# ACBreak br1 0 1\n"
                 "</CbOpenStat>\n",
                 encoding="utf-8",
             )
@@ -71,7 +71,11 @@ class SignalMeasurementsTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            def fake_solver(_merged_model: Path):
+            captured = {}
+
+            def fake_solver(merged_model):
+                captured["breaker"] = dict(merged_model["ACBreak"][0])
+
                 class FakeSnapshot:
                     ac_devices = {"ACBreak": {}}
                     dc_devices = {"DCBreak": {}}
@@ -99,6 +103,14 @@ class SignalMeasurementsTest(unittest.TestCase):
             )
 
             self.assertEqual(result.missing, 0)
+            self.assertEqual(captured["breaker"]["closed_status_set"], "0")
+            self.assertEqual(captured["breaker"]["closed_status"], "0")
+            self.assertEqual(captured["breaker"]["status"], "1")
+            breaker_result = result.model_book.data["ACBreak"].data[0]
+            self.assertEqual(str(breaker_result["closed_status"]), "0")
+            persisted_status = simu_loop.EBook(stat_file).data["CbOpenStat"].data[0]
+            self.assertEqual(str(persisted_status["closed_status_set"]), "0")
+            self.assertEqual(str(persisted_status["closed_status"]), "0")
             _before, real_rows, _after = parse_measurement_rows(real_file)
             _before, scada_rows, _after = parse_measurement_rows(scada_file)
             real_by_type = {row[4]: row[7] for row in real_rows}

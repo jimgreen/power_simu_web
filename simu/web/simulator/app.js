@@ -5674,6 +5674,13 @@ function diagramMeasurementMaps(snapshot = state.snapshot || {}) {
   const real = new Map();
   const scadaByDevice = new Map();
   const realByDevice = new Map();
+  const deviceRuntimeByDevice = new Map();
+  (snapshot.devices || []).forEach((row) => {
+    const devType = String(row?.dev_type || "").trim();
+    const devName = String(row?.dev_name || row?.name || "").trim();
+    if (!devType || !devName) return;
+    deviceRuntimeByDevice.set(diagramDeviceStateKey(devType, devName), row);
+  });
   (measurements.scada || []).forEach((row) => {
     addDiagramMeasurementAliases(scada, row);
     addDiagramDeviceMeasurement(scadaByDevice, row);
@@ -5687,6 +5694,7 @@ function diagramMeasurementMaps(snapshot = state.snapshot || {}) {
     real,
     scadaByDevice,
     realByDevice,
+    deviceRuntimeByDevice,
     couplingEndpoints: diagramCouplingMeasurementEndpoints(snapshot),
   };
 }
@@ -5793,6 +5801,22 @@ function diagramSwitchMeasurementRow(device, maps) {
   return maps.scadaByDevice?.get(key) || maps.realByDevice?.get(key) || null;
 }
 
+function diagramSwitchActualValue(device, maps) {
+  if (!device) return null;
+  const runtime = maps.deviceRuntimeByDevice?.get(
+    diagramDeviceStateKey(device.devType, device.devName),
+  );
+  if (
+    runtime
+    && Object.prototype.hasOwnProperty.call(runtime, "closed_status")
+    && runtime.closed_status !== null
+    && runtime.closed_status !== ""
+  ) {
+    return runtime.closed_status;
+  }
+  return diagramSwitchMeasurementRow(device, maps)?.value ?? null;
+}
+
 function setDiagramSwitchElementState(element, switchState) {
   element.setAttribute("data-diagram-switch-state", switchState);
   element.classList.toggle("is-diagram-switch-open", switchState === "open");
@@ -5821,7 +5845,7 @@ function updateDiagramSwitchVisualStates(container, maps) {
       || element.hasAttribute("data-open-href")
       || element.hasAttribute("data-closed-href");
     if (!supportsStateSymbols) return;
-    const switchState = diagramSwitchState(diagramSwitchMeasurementRow(device, maps)?.value);
+    const switchState = diagramSwitchState(diagramSwitchActualValue(device, maps));
     (elementsByDevice.get(devId) || [element]).forEach((related) => {
       setDiagramSwitchElementState(related, switchState);
     });
@@ -14442,7 +14466,12 @@ function controlDefinitionDevices(snapshot = state.snapshot || {}) {
     existing.__control_rows = existing.__control_rows || [];
     existing.__control_rows.push(row);
     if (row.__control_block === "RunStat") existing.run_stat = existing.run_stat ?? row.run_stat;
-    if (row.__control_block === "CbOpenStat") existing.status = existing.status ?? row.status;
+    if (row.__control_block === "CbOpenStat") {
+      existing.status = existing.closed_status_set
+        ?? row.closed_status_set
+        ?? existing.status
+        ?? row.status;
+    }
     if (row.__control_block === "SetValue" && row.set_type) {
       existing.set_values = { ...(existing.set_values || {}) };
       if (existing.set_values[row.set_type] === undefined) existing.set_values[row.set_type] = row.set_value;
@@ -15051,7 +15080,13 @@ function runtimeRemoteControlRows(devices, context = null, options = {}) {
       const statusPair = live
         ? runtimeSignalMeasurementPair(dev, "STATUS", state.snapshot?.measurements || {}, context)
         : {};
-      const value = Number(dev.status ?? definitionRow.status ?? 0);
+      const value = Number(
+        dev.closed_status_set
+        ?? dev.status
+        ?? definitionRow.closed_status_set
+        ?? definitionRow.status
+        ?? 0,
+      );
       return {
         category: "遥控指令",
         command_kind: "remote_control",

@@ -110,6 +110,9 @@ HYDROGEN_STORAGE_STATE_HEADERS = (
 )
 StorageTarget = Tuple[str, dict, str, Optional[dict], int]
 SIGNAL_MEASUREMENT_TYPES = {"RUN_STAT", "STATUS"}
+CLOSED_STATUS_SET_FIELD = "closed_status_set"
+CLOSED_STATUS_FIELD = "closed_status"
+LEGACY_CLOSED_STATUS_FIELD = "status"
 HYDROGEN_INLINE_FLOW_DEVICE_TYPES = (
     "HydroPipe",
     "HydroValve",
@@ -1660,6 +1663,172 @@ def _stat_dev_name(row: dict) -> str:
     return str(row.get("dev_name", row.get("name", "")))
 
 
+def _first_present_status_value(
+    row: Mapping[str, Any],
+    fields: Sequence[str],
+    default: Any = "",
+) -> Any:
+    for field in fields:
+        value = row.get(field, "")
+        if value not in (None, "", "-"):
+            return value
+    return default
+
+
+def closed_status_set_value(row: Mapping[str, Any], default: Any = "") -> Any:
+    """Return the commanded switch boundary, with legacy-model fallback."""
+
+    return _first_present_status_value(
+        row,
+        (CLOSED_STATUS_SET_FIELD, LEGACY_CLOSED_STATUS_FIELD, CLOSED_STATUS_FIELD),
+        default,
+    )
+
+
+def closed_status_value(row: Mapping[str, Any], default: Any = "") -> Any:
+    """Return the calculated switch state, with legacy-model fallback."""
+
+    return _first_present_status_value(
+        row,
+        (CLOSED_STATUS_FIELD, LEGACY_CLOSED_STATUS_FIELD, CLOSED_STATUS_SET_FIELD),
+        default,
+    )
+
+
+def _ensure_block_row_field(block: Any, row: dict, field: str, value: Any = "") -> int:
+    if field not in block.header_list:
+        block.header_list.append(field)
+        for item in block.data:
+            item.setdefault(field, "")
+    if field not in row:
+        row[field] = ""
+    return _set_row_value(row, field, value)
+
+
+def ensure_closed_status_rows_book(book: Optional[EBook]) -> int:
+    """Upgrade CbOpenStat rows without changing their legacy API identity."""
+
+    if book is None:
+        return 0
+    changed = 0
+    for table_name in ("CbOpenStat", "SwitchBreakerStatus"):
+        block = book.data.get(table_name)
+        if block is None:
+            continue
+        for field in (CLOSED_STATUS_SET_FIELD, CLOSED_STATUS_FIELD, LEGACY_CLOSED_STATUS_FIELD):
+            if field not in block.header_list:
+                block.header_list.append(field)
+                for row in block.data:
+                    row[field] = ""
+        for row in block.data:
+            commanded = closed_status_set_value(row, 1)
+            actual = closed_status_value(row, commanded)
+            changed += _set_row_value(row, CLOSED_STATUS_SET_FIELD, commanded)
+            changed += _set_row_value(row, CLOSED_STATUS_FIELD, actual)
+            # ``status`` remains an output compatibility alias.  Commands must
+            # update closed_status_set instead of changing this actual value.
+            changed += _set_row_value(row, LEGACY_CLOSED_STATUS_FIELD, actual)
+    return changed
+
+
+def apply_closed_status_boundaries(model_book: EBook, stat_book: Optional[EBook]) -> int:
+    """Copy commanded switch states to the topology ``closed_status`` field."""
+
+    changed = 0
+    # New model definitions may carry the setpoint directly even when no
+    # separate CbOpenStat row exists.
+    for block in model_book.data.values():
+        if CLOSED_STATUS_SET_FIELD not in block.header_list:
+            continue
+        for row in block.data:
+            commanded = closed_status_set_value(row, "")
+            if commanded == "":
+                continue
+            changed += _ensure_block_row_field(block, row, CLOSED_STATUS_SET_FIELD, commanded)
+            changed += _ensure_block_row_field(block, row, CLOSED_STATUS_FIELD, commanded)
+
+    if stat_book is None:
+        return changed
+    ensure_closed_status_rows_book(stat_book)
+    for table_name in ("CbOpenStat", "SwitchBreakerStatus"):
+        block = stat_book.data.get(table_name)
+        if block is None:
+            continue
+        for row in block.data:
+            target_block = model_book.data.get(str(row.get("dev_type", "")))
+            target = _model_row(model_book, str(row.get("dev_type", "")), _stat_dev_name(row))
+            commanded = closed_status_set_value(row, "")
+            if target_block is None or target is None or commanded == "":
+                continue
+            changed += _ensure_block_row_field(
+                target_block,
+                target,
+                CLOSED_STATUS_SET_FIELD,
+                commanded,
+            )
+            # The load-flow kernel reads ``closed_status`` for topology.  Keep
+            # the legacy ``status`` value untouched so it cannot become an
+            # accidental topology boundary again.
+            changed += _ensure_block_row_field(
+                target_block,
+                target,
+                CLOSED_STATUS_FIELD,
+                commanded,
+            )
+    return changed
+
+
+def update_closed_status_results_book(stat_book: Optional[EBook], model_book: EBook) -> int:
+    """Commit switch states only after a successful load-flow calculation."""
+
+    changed = 0
+    for block_name, target_block in model_book.data.items():
+        is_switch_block = str(block_name).endswith(("Break", "Switch"))
+        if CLOSED_STATUS_SET_FIELD not in target_block.header_list and not is_switch_block:
+            continue
+        for target in target_block.data:
+            actual = closed_status_value(target, 1)
+            changed += _ensure_block_row_field(
+                target_block,
+                target,
+                CLOSED_STATUS_FIELD,
+                actual,
+            )
+
+    if stat_book is None:
+        return changed
+    ensure_closed_status_rows_book(stat_book)
+    for table_name in ("CbOpenStat", "SwitchBreakerStatus"):
+        block = stat_book.data.get(table_name)
+        if block is None:
+            continue
+        for row in block.data:
+            target_block = model_book.data.get(str(row.get("dev_type", "")))
+            target = _model_row(model_book, str(row.get("dev_type", "")), _stat_dev_name(row))
+            if target_block is None or target is None:
+                continue
+            actual = closed_status_value(
+                target,
+                closed_status_set_value(row, 1),
+            )
+            changed += _set_row_value(row, CLOSED_STATUS_FIELD, actual)
+            changed += _set_row_value(row, LEGACY_CLOSED_STATUS_FIELD, actual)
+    return changed
+
+
+def update_closed_status_results(dev_stat_file: Optional[Path], model_book: EBook) -> int:
+    if dev_stat_file is None:
+        return update_closed_status_results_book(None, model_book)
+    path = Path(dev_stat_file)
+    if not path.exists():
+        return update_closed_status_results_book(None, model_book)
+    book = EBook(path)
+    changed = update_closed_status_results_book(book, model_book)
+    if changed:
+        write_ebook_aligned(book, path)
+    return changed
+
+
 def _is_converter_control_target(row: dict) -> bool:
     """Recognize a converter from its terminal/control structure."""
     return bool(
@@ -1834,7 +2003,7 @@ def apply_dev_stat_file(model_book: EBook, dev_stat_file: Path) -> int:
 
 def apply_dev_stat_book(model_book: EBook, stat_book: EBook) -> int:
     run_stats = _run_stat_by_name(stat_book)
-    changed = 0
+    changed = apply_closed_status_boundaries(model_book, stat_book)
 
     block = stat_book.data.get("RunStat")
     if block is not None:
@@ -1868,8 +2037,6 @@ def apply_dev_stat_book(model_book: EBook, stat_book: EBook) -> int:
                 if target is not None:
                     if row.get("run_stat", "") != "":
                         changed += _set_row_value(target, "run_stat", row.get("run_stat", ""))
-                    if row.get("status", "") != "":
-                        changed += _set_row_value(target, "status", row.get("status", ""))
 
     block = stat_book.data.get("SetValue")
     if block is not None:
@@ -3394,8 +3561,6 @@ def _signal_measurement_values_from_book(book: Optional[EBook]) -> Dict[Tuple[st
     signal_blocks = (
         ("RunStat", "run_stat", "RUN_STAT"),
         ("DeviceRunStatus", "run_stat", "RUN_STAT"),
-        ("CbOpenStat", "status", "STATUS"),
-        ("SwitchBreakerStatus", "status", "STATUS"),
     )
     for block_name, value_column, meas_type in signal_blocks:
         block = book.data.get(block_name)
@@ -3409,6 +3574,18 @@ def _signal_measurement_values_from_book(book: Optional[EBook]) -> Dict[Tuple[st
             value = _safe_float(item.get(value_column, ""), None)
             if value is not None:
                 values[(dev_type, dev_name, meas_type)] = value
+    for block_name in ("CbOpenStat", "SwitchBreakerStatus"):
+        block = book.data.get(block_name)
+        if block is None:
+            continue
+        for item in block.data:
+            dev_type = str(item.get("dev_type", ""))
+            dev_name = _stat_dev_name(item)
+            if not dev_type or not dev_name:
+                continue
+            value = _safe_float(closed_status_value(item, ""), None)
+            if value is not None:
+                values[(dev_type, dev_name, "STATUS")] = value
     return values
 
 
@@ -4150,6 +4327,7 @@ def run_once(
             mode_book,
         )
         snapshot, solver_info = _solve_snapshot_from_book(solver, model_book, config.model_file)
+        closed_status_updates = update_closed_status_results_book(stat_book, model_book)
         soc_updates = update_storage_soc_book(stat_book, model_book, config.period_seconds, dev_define, snapshot=snapshot)
         storage_soc = _storage_soc_values_from_book(stat_book, model_book)
         hydrogen_updates = update_hydrogen_storage_state_book(
@@ -4198,7 +4376,7 @@ def run_once(
             scada_file=config.scada_file,
             updated=updated,
             missing=missing,
-            overlay_updates=overlay_updates + soc_updates + hydrogen_updates,
+            overlay_updates=overlay_updates + closed_status_updates + soc_updates + hydrogen_updates,
             solver_info=solver_info,
             model_book=model_book,
             measurement_definitions=[list(row) for row in meas_rows],
@@ -4220,6 +4398,7 @@ def run_once(
         config.mode_file,
     )
     snapshot, solver_info = _solve_snapshot_from_book(solver, model_book, config.model_file)
+    closed_status_updates = update_closed_status_results(config.dev_stat_file, model_book)
     soc_updates = update_storage_soc(config.dev_stat_file, model_book, config.period_seconds, config.dev_define_file, snapshot=snapshot)
     hydrogen_updates = update_hydrogen_storage_state(
         config.dev_stat_file,
@@ -4255,7 +4434,7 @@ def run_once(
         scada_file=config.scada_file,
         updated=updated,
         missing=missing,
-        overlay_updates=overlay_updates + soc_updates + hydrogen_updates,
+        overlay_updates=overlay_updates + closed_status_updates + soc_updates + hydrogen_updates,
         solver_info=solver_info,
         model_book=model_book,
         measurement_definitions=[list(row) for row in real_rows],

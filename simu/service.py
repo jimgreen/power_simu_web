@@ -158,7 +158,7 @@ WEATHER_MEASUREMENT_TYPE_SET = {item[2] for item in WEATHER_MEASUREMENTS}
 SIGNAL_MEASUREMENT_TYPES = {"RUN_STAT", "STATUS"}
 SIGNAL_MEASUREMENTS = (
     ("RunStat", "run_stat", "RUN_STAT", "run_stat"),
-    ("CbOpenStat", "status", "STATUS", "status"),
+    ("CbOpenStat", "closed_status", "STATUS", "status"),
 )
 SNAPSHOT_STATIC_FIELDS = (
     "files",
@@ -173,7 +173,13 @@ SNAPSHOT_STATIC_FIELDS = (
 
 STAT_HEADERS = {
     "RunStat": ("dev_type", "dev_name", "run_stat"),
-    "CbOpenStat": ("dev_type", "dev_name", "status"),
+    "CbOpenStat": (
+        "dev_type",
+        "dev_name",
+        "closed_status_set",
+        "closed_status",
+        "status",
+    ),
     "SetValue": ("dev_type", "dev_name", "set_type", "set_value"),
     "StorageSoc": ("dev_type", "idx", "name", "soc_curr"),
     "HydroStorageState": (
@@ -1615,6 +1621,8 @@ class PolarMicrogridSimulator:
             self.source_stat_book,
             self.control_book,
         )
+        simu_loop.ensure_closed_status_rows_book(self.source_stat_book)
+        simu_loop.ensure_closed_status_rows_book(self.control_book)
         self.weather_book = _load_book(
             self.source_files["weather"] if self.source_files["weather"].exists() else self.work_files["weather"]
         )
@@ -2616,6 +2624,7 @@ class PolarMicrogridSimulator:
         book = self.runtime_stat_book
         for name, headers in STAT_HEADERS.items():
             _ensure_block(book, name, headers)
+        simu_loop.ensure_closed_status_rows_book(book)
         simu_loop.ensure_hydrogen_storage_state_rows_book(
             book,
             self.definition_snapshot.model_book,
@@ -2810,8 +2819,24 @@ class PolarMicrogridSimulator:
         book = simu_loop._clone_ebook(self.source_stat_book)
         for name, headers in STAT_HEADERS.items():
             _ensure_block(book, name, headers)
+        simu_loop.ensure_closed_status_rows_book(book)
 
         runtime_book = self.runtime_stat_book
+        runtime_cb = runtime_book.data.get("CbOpenStat")
+        base_cb = book.data.get("CbOpenStat")
+        if runtime_cb is not None and base_cb is not None:
+            for runtime_row in runtime_cb.data:
+                current = _find_dev_row(
+                    base_cb,
+                    str(runtime_row.get("dev_type", "")),
+                    _dev_name(runtime_row),
+                )
+                if current is None:
+                    continue
+                actual = simu_loop.closed_status_value(runtime_row, "")
+                if actual != "":
+                    current["closed_status"] = _number_text(actual)
+                    current["status"] = _number_text(actual)
         runtime_storage = runtime_book.data.get("StorageSoc") or runtime_book.data.get("StorageStatus")
         if runtime_storage is not None:
             storage_block = _ensure_block(book, "StorageSoc", STAT_HEADERS["StorageSoc"])
@@ -2907,8 +2932,10 @@ class PolarMicrogridSimulator:
             if isinstance(run_stat, bool):
                 run_stat = 1 if run_stat else 0
             row = {"dev_type": dev_type, "dev_name": dev_name, "run_stat": _number_text(run_stat)}
-            if "status" in item:
-                row["status"] = _number_text(item.get("status"))
+            if "closed_status_set" in item or "status" in item:
+                row["status"] = _number_text(
+                    item.get("closed_status_set", item.get("status"))
+                )
             normalized.append(row)
         return normalized
 
@@ -3378,9 +3405,15 @@ class PolarMicrogridSimulator:
                     if not status_overridden and "status" in item and "status" in fields:
                         cb_row = _find_dev_row(cb_block, dev_type, dev_name)
                         if cb_row is None:
-                            cb_row = {"dev_type": dev_type, "dev_name": dev_name, "status": ""}
+                            cb_row = {
+                                "dev_type": dev_type,
+                                "dev_name": dev_name,
+                                "closed_status_set": "",
+                                "closed_status": "",
+                                "status": "",
+                            }
                             cb_block.data.append(cb_row)
-                        cb_row["status"] = _number_text(item.get("status"))
+                        cb_row["closed_status_set"] = _number_text(item.get("status"))
                         applied_run += 1
             for item in set_items:
                     dev_type = str(item.get("dev_type", ""))
@@ -4911,6 +4944,27 @@ class PolarMicrogridSimulator:
             }
 
     def _merge_execution_runtime_stat_book(self, execution_book: EBook) -> None:
+        incoming_cb = execution_book.data.get("CbOpenStat")
+        if incoming_cb is not None:
+            current_cb = _ensure_block(
+                self.runtime_stat_book,
+                "CbOpenStat",
+                STAT_HEADERS["CbOpenStat"],
+            )
+            simu_loop.ensure_closed_status_rows_book(self.runtime_stat_book)
+            for incoming_row in incoming_cb.data:
+                current_row = _find_dev_row(
+                    current_cb,
+                    str(incoming_row.get("dev_type", "")),
+                    _dev_name(incoming_row),
+                )
+                if current_row is None:
+                    continue
+                actual = simu_loop.closed_status_value(incoming_row, "")
+                if actual == "":
+                    continue
+                current_row["closed_status"] = _number_text(actual)
+                current_row["status"] = _number_text(actual)
         incoming_storage = execution_book.data.get("StorageSoc") or execution_book.data.get("StorageStatus")
         if incoming_storage is not None:
             current_storage = _ensure_block(self.runtime_stat_book, "StorageSoc", STAT_HEADERS["StorageSoc"])
@@ -5568,7 +5622,11 @@ class PolarMicrogridSimulator:
         soc_rows = list(getattr(soc_block, "data", []))
 
         run_off = [row for row in run_rows if int(_to_float(row.get("run_stat"), 1) or 0) == 0]
-        cb_zero = [row for row in cb_rows if int(_to_float(row.get("status"), 1) or 0) == 0]
+        cb_zero = [
+            row
+            for row in cb_rows
+            if int(_to_float(simu_loop.closed_status_set_value(row, 1), 1) or 0) == 0
+        ]
         run_on = len(run_rows) - len(run_off)
         cb_one = len(cb_rows) - len(cb_zero)
         weather_text = (
@@ -9522,18 +9580,26 @@ class PolarMicrogridSimulator:
                 active_keys.add(cb_key)
                 cb_row = _find_dev_row(cb_block, dev_type, dev_name)
                 if cb_row is None:
-                    cb_row = {"dev_type": dev_type, "dev_name": dev_name, "status": "1"}
+                    cb_row = {
+                        "dev_type": dev_type,
+                        "dev_name": dev_name,
+                        "closed_status_set": "1",
+                        "closed_status": "1",
+                        "status": "1",
+                    }
                     cb_block.data.append(cb_row)
                 if cb_key not in self._fault_restore:
-                    self._fault_restore[cb_key] = str(cb_row.get("status", "1"))
-                cb_row["status"] = _number_text(fault.get("status", 0))
+                    self._fault_restore[cb_key] = str(
+                        simu_loop.closed_status_set_value(cb_row, 1)
+                    )
+                cb_row["closed_status_set"] = _number_text(fault.get("status", 0))
 
         for key, old_value in list(self._fault_restore.items()):
             if key in active_keys:
                 continue
             block_name, dev_type, dev_name = key
             block = run_block if block_name == "RunStat" else cb_block
-            value_column = "run_stat" if block_name == "RunStat" else "status"
+            value_column = "run_stat" if block_name == "RunStat" else "closed_status_set"
             row = _find_dev_row(block, dev_type, dev_name)
             if row is not None:
                 row[value_column] = old_value
@@ -10342,6 +10408,7 @@ class PolarMicrogridSimulator:
         definition_snapshot = self.definition_snapshot
         model_book = definition_snapshot.model_book
         run_stats, cb_status, set_values, soc_values = self._stat_maps()
+        cb_status_set = self._closed_status_set_map()
         resources_by_key = resources_by_device_key(model_book)
         coupling_bindings = energy_coupling_control_bindings(model_book)
         devices: List[Dict[str, Any]] = []
@@ -10391,6 +10458,26 @@ class PolarMicrogridSimulator:
                 ):
                     if column in block.header_list:
                         set_types.append(column)
+                closed_status_set = int(
+                    _to_float(
+                        cb_status_set.get(
+                            key,
+                            row.get("closed_status_set", row.get("status", 1)),
+                        ),
+                        1,
+                    )
+                    or 0
+                )
+                closed_status = int(
+                    _to_float(
+                        cb_status.get(
+                            key,
+                            row.get("closed_status", row.get("status", 1)),
+                        ),
+                        1,
+                    )
+                    or 0
+                )
                 devices.append(
                     {
                         "dev_type": dev_type,
@@ -10400,7 +10487,11 @@ class PolarMicrogridSimulator:
                         "terminal_domains": list(terminal_domains),
                         "resource_technology": resource.technology if resource else "",
                         "run_stat": int(_to_float(run_stats.get(key, row.get("run_stat", 1)), 1) or 0),
-                        "status": int(_to_float(cb_status.get(key, row.get("status", 1)), 1) or 0),
+                        "closed_status_set": closed_status_set,
+                        "closed_status": closed_status,
+                        # Periodic compact transport retains ``status`` as a
+                        # compatibility alias for the calculated actual value.
+                        "status": closed_status,
                         "mode": (
                             converter_control_mode(row)
                             if set(terminal_domains) == {"AC", "DC"}
@@ -11525,7 +11616,8 @@ class PolarMicrogridSimulator:
         ]
 
     def _latest_control_value_items(self) -> List[Dict[str, Any]]:
-        run_stats, cb_status, set_values, _soc_values = self._stat_maps()
+        run_stats, _cb_status, set_values, _soc_values = self._stat_maps()
+        cb_status_set = self._closed_status_set_map()
         items: List[Dict[str, Any]] = []
 
         for row in self._control_definition_rows("RunStat"):
@@ -11560,7 +11652,16 @@ class PolarMicrogridSimulator:
             dev_name = _dev_name(row)
             if not dev_type or not dev_name:
                 continue
-            value = int(_to_float(cb_status.get((dev_type, dev_name), row.get("status", 0)), 0) or 0)
+            value = int(
+                _to_float(
+                    cb_status_set.get(
+                        (dev_type, dev_name),
+                        simu_loop.closed_status_set_value(row, 0),
+                    ),
+                    0,
+                )
+                or 0
+            )
             update = self._latest_active_control_update("remote_control", dev_type, dev_name, "status")
             items.append(
                 {
@@ -12205,6 +12306,8 @@ class PolarMicrogridSimulator:
             source_stat_book,
             control_book,
         )
+        simu_loop.ensure_closed_status_rows_book(source_stat_book)
+        simu_loop.ensure_closed_status_rows_book(control_book)
         dev_define_book = simu_loop._capability_define_book(
             model_book,
             self._legacy_dev_define_file(),
@@ -12968,15 +13071,30 @@ class PolarMicrogridSimulator:
             return
         block_name = "RunStat" if normalized_field == "run_stat" else "CbOpenStat"
         block = _ensure_block(book, block_name, STAT_HEADERS[block_name])
+        if block_name == "CbOpenStat":
+            simu_loop.ensure_closed_status_rows_book(book)
         row = _find_dev_row(block, dev_type, dev_name)
         if row is None:
             row = {
                 "dev_type": dev_type,
                 "dev_name": dev_name,
-                normalized_field: "",
+                **(
+                    {"run_stat": ""}
+                    if normalized_field == "run_stat"
+                    else {
+                        "closed_status_set": "",
+                        "closed_status": "",
+                        "status": "",
+                    }
+                ),
             }
             block.data.append(row)
-        row[normalized_field] = _number_text(value)
+        target_field = (
+            normalized_field
+            if normalized_field == "run_stat"
+            else "closed_status_set"
+        )
+        row[target_field] = _number_text(value)
 
     @staticmethod
     def _upsert_runtime_setpoint_value(
@@ -13057,7 +13175,8 @@ class PolarMicrogridSimulator:
             additional_ui_overrides=priority_override_keys,
         )
         self._apply_device_faults(self.clock.minute, self.clock.absolute_minute)
-        run_stats, cb_status, set_values, _soc_values = self._stat_maps()
+        run_stats, _cb_status, set_values, _soc_values = self._stat_maps()
+        cb_status_set = self._closed_status_set_map()
         key = (dev_type, dev_name)
         effective: Dict[str, Any] = {
             "dev_type": dev_type,
@@ -13069,7 +13188,7 @@ class PolarMicrogridSimulator:
             )
         if "status" in requested:
             effective["status"] = _json_scalar(
-                cb_status.get(key, requested["status"])
+                cb_status_set.get(key, requested["status"])
             )
         requested_set_values = requested["set_values"]
         if requested_set_values:
@@ -13682,11 +13801,25 @@ class PolarMicrogridSimulator:
         for row in getattr(stat_book.data.get("RunStat"), "data", []):
             run_stats[(str(row.get("dev_type", "")), _dev_name(row))] = row.get("run_stat", "")
         for row in getattr(stat_book.data.get("CbOpenStat"), "data", []):
-            cb_status[(str(row.get("dev_type", "")), _dev_name(row))] = row.get("status", "")
+            cb_status[(str(row.get("dev_type", "")), _dev_name(row))] = (
+                simu_loop.closed_status_value(row, "")
+            )
         for row in getattr(stat_book.data.get("SetValue"), "data", []):
             key = (str(row.get("dev_type", "")), _dev_name(row))
             set_values.setdefault(key, {})[str(row.get("set_type", ""))] = row.get("set_value", "")
         return run_stats, cb_status, set_values, soc_values
+
+    def _closed_status_set_map(self) -> Dict[Tuple[str, str], Any]:
+        return {
+            (str(row.get("dev_type", "")), _dev_name(row)): (
+                simu_loop.closed_status_set_value(row, "")
+            )
+            for row in getattr(
+                self.runtime_stat_book.data.get("CbOpenStat"),
+                "data",
+                [],
+            )
+        }
 
     def model_diagram(self) -> Dict[str, Any]:
         path = self.source_files.get("diagram", self.sim_dir / DIAGRAM_FILE_NAME)

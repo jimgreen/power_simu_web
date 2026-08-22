@@ -344,6 +344,28 @@ class ClosedStatusControlTest(unittest.TestCase):
             )
             self.assertEqual(str(queued_boundary["closed_status_set"]), "0")
 
+            queued_commands = service.snapshot(
+                include_static=False,
+                include_runtime_logs=False,
+                include_measurements=False,
+                include_devices=False,
+                include_device_states=False,
+                include_command_history=False,
+            )["commands"]
+            self.assertEqual(queued_commands["effective"], [])
+            self.assertEqual(len(queued_commands["queued"]), 1)
+            queued_view = queued_commands["queued"][0]
+            self.assertEqual(queued_view["queue_owner"], "simulator")
+            self.assertEqual(queued_view["queue_state"], "waiting")
+            self.assertEqual(
+                queued_view["normalized"]["run_status"],
+                [{"dev_type": "ACBreak", "dev_name": dev_name, "status": "1"}],
+            )
+            self.assertEqual(
+                queued_view["blocked"][0]["reason"],
+                "simulator_manual_override",
+            )
+
             change = service.manual_definition_changes()["changes"][0]
             service.reset_manual_definition_changes(
                 {
@@ -361,6 +383,20 @@ class ClosedStatusControlTest(unittest.TestCase):
             self.assertEqual(
                 service.command_history[-1]["normalized"]["run_status"][0]["status"],
                 "1",
+            )
+            released_commands = service.snapshot(
+                include_static=False,
+                include_runtime_logs=False,
+                include_measurements=False,
+                include_devices=False,
+                include_device_states=False,
+                include_command_history=False,
+            )["commands"]
+            self.assertEqual(released_commands["queued"], [])
+            self.assertEqual(len(released_commands["effective"]), 1)
+            self.assertEqual(
+                released_commands["effective"][0]["normalized"]["run_status"],
+                [{"dev_type": "ACBreak", "dev_name": dev_name, "status": "1"}],
             )
 
 

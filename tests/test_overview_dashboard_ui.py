@@ -477,6 +477,10 @@ class OverviewDashboardUiTest(unittest.TestCase):
         )
         self.assertIn(".overview-command-table th:nth-child(3) { width: 168px; }", styles)
         self.assertIn("runtimeCommandBuildContext(snapshot, measurements)", app_js)
+        self.assertIn("displayedCommandHistory(snapshot).forEach", app_js)
+        self.assertIn("有效/排队指令", app_js)
+        self.assertIn("处理状态", app_js)
+        self.assertIn("runtimeCommandLiveCellHtml(row, \"process\")", app_js)
 
     def test_overview_active_command_table_aligns_headers_and_values_right(self):
         styles = (ROOT / "simu" / "web" / "simulator" / "styles.css").read_text(encoding="utf-8")

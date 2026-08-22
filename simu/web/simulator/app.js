@@ -13630,7 +13630,7 @@ function renderOverviewEvents(snapshot) {
 
 function activeRuntimeCommandKeySet(snapshot = state.snapshot || {}) {
   const keys = new Set();
-  activeCommandHistory(snapshot).forEach((entry) => {
+  displayedCommandHistory(snapshot).forEach((entry) => {
     const normalized = entry.normalized || {};
     const payload = entry.payload || {};
     const runItems = normalized.run_status || payload.run_status || payload.runStatus || [];
@@ -13672,9 +13672,9 @@ function renderOverviewActiveCommands(snapshot) {
   const summary = $("overviewActiveCommandSummary");
   if (!container) return [];
   const rows = overviewActiveRuntimeCommandRows(snapshot);
-  if (summary) summary.textContent = `${rows.length} 条有效指令`;
+  if (summary) summary.textContent = `${rows.length} 条有效/排队指令`;
   if (!rows.length) {
-    container.innerHTML = '<div class="empty-state">当前无有效遥控/遥调指令</div>';
+    container.innerHTML = '<div class="empty-state">当前无有效或排队的遥控/遥调指令</div>';
     return rows;
   }
   container.innerHTML = `
@@ -13686,6 +13686,7 @@ function renderOverviewActiveCommands(snapshot) {
           <th>指令项</th>
           <th>控制指令</th>
           <th>仿真时刻</th>
+          <th>处理状态</th>
           <th>实时值</th>
           <th>量测值</th>
         </tr>
@@ -13698,6 +13699,7 @@ function renderOverviewActiveCommands(snapshot) {
             <td>${escapeHtml(row.command || "--")} <small class="command-set-type">${escapeHtml(row.set_type || "")}</small></td>
             <td class="numeric-cell">${escapeHtml(runtimeCommandTableValueText(row, "control"))}</td>
             <td class="mono-cell">${escapeHtml(row.receive_time?.simu_time || "--")}</td>
+            <td>${runtimeCommandLiveCellHtml(row, "process")}</td>
             <td class="numeric-cell">${escapeHtml(runtimeCommandTableValueText(row, "real"))}</td>
             <td class="numeric-cell">${escapeHtml(runtimeCommandTableValueText(row, "scada"))}</td>
           </tr>
@@ -14935,7 +14937,15 @@ function commandRefreshTimeFromMinute(minute) {
 }
 
 function emptyCommandTimeInfo() {
-  return { wall_time: "--", simu_time: "--", source: "", command_origin: "", origin_text: "--" };
+  return {
+    wall_time: "--",
+    simu_time: "--",
+    source: "",
+    command_origin: "",
+    origin_text: "--",
+    process_state: "inactive",
+    process_text: "未接收",
+  };
 }
 
 function commandTimeInfoAvailable(info = {}) {
@@ -14949,12 +14959,16 @@ function commandReceiveTimeInfo(entry = {}) {
   const wallTime = runtimeLogWallTimeText(entry.received_wall_time || entry.time || entry.wall_time || entry.record_time || "");
   const minute = entry.received_absolute_minute ?? entry.issued_absolute_minute;
   const origin = commandOrigin(entry);
+  const queued = String(entry.queue_state || "").trim().toLowerCase() === "waiting"
+    || Number(entry.queued || 0) > 0;
   return {
     wall_time: wallTime,
     simu_time: commandRefreshTimeFromMinute(minute),
     source: String(entry.source || entry.payload?.source || ""),
     command_origin: origin,
     origin_text: commandOriginLabel(origin),
+    process_state: queued ? "queued" : "effective",
+    process_text: queued ? "已接收，模拟台排队" : "已接收，立即生效",
   };
 }
 
@@ -15012,13 +15026,40 @@ function activeCommandHistory(snapshot = state.snapshot || {}) {
   });
 }
 
+function queuedCommandHistory(snapshot = state.snapshot || {}) {
+  const currentMinute = Number(snapshot.clock?.absolute_minute ?? snapshot.clock?.minute ?? 0) || 0;
+  const currentRunId = Number(snapshot.clock?.run_id ?? 0) || 0;
+  const commandEntries = Array.isArray(snapshot.commands?.queued) ? snapshot.commands.queued : [];
+  return [...commandEntries].filter((entry) => {
+    if (!entry?.eligible_source || entry.cancelled) return false;
+    const manualHold = manualCommandHoldsAcrossClockLifecycle(entry);
+    if (!manualHold) {
+      const entryRunId = numberOrNull(entry.run_id);
+      if (entryRunId === null || entryRunId !== currentRunId) return false;
+    }
+    const accepted = entry.accepted || {};
+    const acceptedCount = Number(accepted.run_status || 0) + Number(accepted.set_values || 0);
+    if (manualHold) return acceptedCount > 0;
+    const issued = numberOrNull(entry.issued_absolute_minute);
+    const expires = numberOrNull(entry.expires_at_absolute_minute);
+    if (issued === null || expires === null) return false;
+    return acceptedCount > 0 && currentMinute < expires && issued <= currentMinute;
+  });
+}
+
+function displayedCommandHistory(snapshot = state.snapshot || {}) {
+  // Effective commands are appended last so they remain the displayed owner
+  // when an automatic fallback is queued behind a manual command.
+  return [...queuedCommandHistory(snapshot), ...activeCommandHistory(snapshot)];
+}
+
 function runtimeCommandRefreshIndex(snapshot = state.snapshot || {}) {
   const commandRefreshIndex = {
     run_stat: new Map(),
     status: new Map(),
     set_value: new Map(),
   };
-  activeCommandHistory(snapshot).forEach((entry) => {
+  displayedCommandHistory(snapshot).forEach((entry) => {
     const normalized = entry.normalized || {};
     const payload = entry.payload || {};
     const info = commandReceiveTimeInfo(entry);
@@ -15031,7 +15072,7 @@ function runtimeCommandRefreshIndex(snapshot = state.snapshot || {}) {
       if (!item?.dev_type || !item?.dev_name || !item?.set_type) return;
       commandRefreshIndex.set_value.set(
         `${item.dev_type}|${item.dev_name}|${item.set_type}`,
-        info,
+        { ...info, control_value: item.set_value },
       );
     });
     const runItems = Array.isArray(normalized.run_status)
@@ -15042,10 +15083,16 @@ function runtimeCommandRefreshIndex(snapshot = state.snapshot || {}) {
     runItems.forEach((item) => {
       if (!item?.dev_type || !item?.dev_name) return;
       if (Object.prototype.hasOwnProperty.call(item, "status")) {
-        commandRefreshIndex.status.set(`${item.dev_type}|${item.dev_name}|status`, info);
+        commandRefreshIndex.status.set(
+          `${item.dev_type}|${item.dev_name}|status`,
+          { ...info, control_value: item.status },
+        );
       }
       if (item.run_stat !== undefined && item.run_stat !== "") {
-        commandRefreshIndex.run_stat.set(`${item.dev_type}|${item.dev_name}|run_stat`, info);
+        commandRefreshIndex.run_stat.set(
+          `${item.dev_type}|${item.dev_name}|run_stat`,
+          { ...info, control_value: item.run_stat },
+        );
       }
     });
   });
@@ -15066,7 +15113,7 @@ function runtimeCommandRefreshInfo(dev, commandType, setType = "", snapshot = st
   const indexed = commandRefreshIndex[commandType]?.get(key);
   if (indexed) return indexed;
   if (context?.commandRefreshIndex) return emptyCommandTimeInfo();
-  const history = activeCommandHistory(snapshot).reverse();
+  const history = displayedCommandHistory(snapshot).reverse();
   for (const entry of history) {
     const normalized = entry.normalized || {};
     if (commandType === "set_value") {
@@ -15110,7 +15157,7 @@ function runtimeRemoteControlRows(devices, context = null, options = {}) {
       const runPair = live
         ? runtimeSignalMeasurementPair(dev, "RUN_STAT", state.snapshot?.measurements || {}, context)
         : {};
-      const value = Number(dev.run_stat ?? definitionRow.run_stat ?? 0);
+      const value = Number(runStatTime.control_value ?? dev.run_stat ?? definitionRow.run_stat ?? 0);
       return {
         category: "遥控指令",
         command_kind: "remote_control",
@@ -15140,7 +15187,8 @@ function runtimeRemoteControlRows(devices, context = null, options = {}) {
         ? runtimeSignalMeasurementPair(dev, "STATUS", state.snapshot?.measurements || {}, context)
         : {};
       const value = Number(
-        dev.closed_status_set
+        statusTime.control_value
+        ?? dev.closed_status_set
         ?? dev.status
         ?? definitionRow.closed_status_set
         ?? definitionRow.status
@@ -15180,9 +15228,10 @@ function runtimeRemoteAdjustmentRows(devices, measurements = state.snapshot?.mea
       const dev = runtimeControlDeviceFromRow(definitionRow, state.snapshot || {}, context);
       const key = definitionRow.set_type || "";
       const value = dev.set_values?.[key] ?? definitionRow.set_value;
-      const meta = runtimeMetaFromSetKey(key, Number(value));
-      const pair = live ? runtimeMeasurementPair(dev, meta, measurements, context) : {};
       const commandTime = runtimeCommandRefreshInfo(dev, "set_value", key, state.snapshot || {}, context);
+      const commandValue = commandTime.control_value ?? value;
+      const meta = runtimeMetaFromSetKey(key, Number(commandValue));
+      const pair = live ? runtimeMeasurementPair(dev, meta, measurements, context) : {};
       return {
         category: "遥调指令",
         command_kind: "remote_adjustment",
@@ -15313,6 +15362,11 @@ function runtimeCommandLiveCellHtml(row, field) {
   if (field === "origin") return escapeHtml(row.receive_time?.origin_text || "--");
   if (field === "wall_time") return escapeHtml(row.receive_time?.wall_time || "--");
   if (field === "simu_time") return escapeHtml(row.receive_time?.simu_time || row.refresh_time || "--");
+  if (field === "process") {
+    const processState = row.receive_time?.process_state || "inactive";
+    const processText = row.receive_time?.process_text || "未接收";
+    return `<span class="command-process-pill is-${escapeHtml(processState)}">${escapeHtml(processText)}</span>`;
+  }
   if (field === "real") return escapeHtml(runtimeCommandTableValueText(row, "real"));
   if (field === "scada") return escapeHtml(runtimeCommandTableValueText(row, "scada"));
   if (field === "delete") return runtimeCommandDeleteButtonHtml(row);
@@ -15356,6 +15410,7 @@ function renderRuntimeCommandRows(rows) {
       <td data-runtime-command-live-field="origin">${runtimeCommandLiveCellHtml(row, "origin")}</td>
       <td class="mono-cell" data-runtime-command-live-field="wall_time">${escapeHtml(row.receive_time?.wall_time || "--")}</td>
       <td class="mono-cell" data-runtime-command-live-field="simu_time">${escapeHtml(row.receive_time?.simu_time || row.refresh_time || "--")}</td>
+      <td data-runtime-command-live-field="process">${runtimeCommandLiveCellHtml(row, "process")}</td>
       <td class="numeric-cell" data-runtime-command-live-field="real">${runtimeCommandLiveCellHtml(row, "real")}</td>
       <td class="numeric-cell" data-runtime-command-live-field="scada">${runtimeCommandLiveCellHtml(row, "scada")}</td>
       <td class="runtime-command-delete-cell" data-runtime-command-live-field="delete">${runtimeCommandLiveCellHtml(row, "delete")}</td>
@@ -15378,15 +15433,16 @@ function renderRuntimeCommandTable(rows, emptyText, virtualRows = { beforeHeight
           <th>指令来源</th>
           <th>接收本机时刻</th>
           <th>接收仿真时刻</th>
+          <th>处理状态</th>
           <th>实时值</th>
           <th>量测值</th>
           <th>操作</th>
         </tr>
       </thead>
       <tbody>
-        ${renderVirtualSpacerRow(virtualRows.beforeHeight, 11)}
+        ${renderVirtualSpacerRow(virtualRows.beforeHeight, 12)}
         ${renderRuntimeCommandRows(rows)}
-        ${renderVirtualSpacerRow(virtualRows.afterHeight, 11)}
+        ${renderVirtualSpacerRow(virtualRows.afterHeight, 12)}
       </tbody>
     </table>
   `;

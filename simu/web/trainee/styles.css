@@ -2533,31 +2533,35 @@ body.is-vertical-splitter-dragging {
 }
 .active-command-preview-table th:nth-child(1),
 .active-command-preview-table td:nth-child(1) {
-  width: 18%;
+  width: 15%;
   font-family: Consolas, "Microsoft YaHei", monospace;
 }
 .active-command-preview-table th:nth-child(2),
 .active-command-preview-table td:nth-child(2) {
-  width: 20%;
+  width: 17%;
   font-weight: 700;
 }
 .active-command-preview-table th:nth-child(3),
 .active-command-preview-table td:nth-child(3) {
-  width: 25%;
+  width: 20%;
 }
 .active-command-preview-table th:nth-child(4),
 .active-command-preview-table td:nth-child(4) {
-  width: 10%;
+  width: 9%;
   text-align: right;
 }
 .active-command-preview-table th:nth-child(5),
 .active-command-preview-table td:nth-child(5) {
-  width: 10%;
+  width: 9%;
   text-align: right;
 }
 .active-command-preview-table th:nth-child(6),
 .active-command-preview-table td:nth-child(6) {
-  width: 17%;
+  width: 20%;
+}
+.active-command-preview-table th:nth-child(7),
+.active-command-preview-table td:nth-child(7) {
+  width: 10%;
   font-family: Consolas, "Microsoft YaHei", monospace;
   text-align: right;
 }
@@ -5163,11 +5167,11 @@ th {
 .remote-adjustment-table {
   table-layout: fixed;
 }
-.remote-adjustment-name-col { width: 32%; }
-.remote-adjustment-value-col { width: 10%; }
-.remote-adjustment-origin-col { width: 10%; }
-.remote-adjustment-time-col { width: 14%; }
-.remote-adjustment-action-col { width: 10%; }
+.remote-adjustment-name-col { width: 28%; }
+.remote-adjustment-value-col { width: 9%; }
+.remote-adjustment-origin-col { width: 9%; }
+.remote-adjustment-time-col { width: 12%; }
+.remote-adjustment-action-col { width: 8%; }
 .remote-adjustment-table th,
 .remote-adjustment-table td {
   vertical-align: middle;
@@ -5942,6 +5946,21 @@ body:has(.renewable-control-parameters-dialog[open]) {
   background: #f9eaea;
   color: var(--red);
 }
+.command-process-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eef3f4;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.command-process-pill.is-effective { background: #e7f5ec; color: var(--green); }
+.command-process-pill.is-queued { background: #fff3d6; color: #9a6100; }
 .inline-toggle {
   display: inline-flex;
   align-items: center;

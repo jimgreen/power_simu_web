@@ -49,7 +49,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertNotIn("overflow: hidden;", event_list_block)
 
     def test_trainee_home_uses_simulator_style_energy_flow(self):
-        for text in ("绿电功率", "绿电占比", "教员数据", "最新交互事件", "当前有效指令"):
+        for text in ("绿电功率", "绿电占比", "教员数据", "最新交互事件", "当前有效/排队指令"):
             self.assertIn(text, self.html)
         self.assertNotIn("电气能量流", self.html)
         self.assertNotIn("尚无接收结果", self.html)
@@ -400,15 +400,17 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         self.assertIn("remoteAdjustmentMeasurement(liveDev, setType, snapshot)", self.script)
         self.assertIn('class="active-command-preview-wrap"', self.html)
         self.assertIn('class="active-command-preview-table"', self.script)
-        for column in ("下发本机时刻", "设备", "指令", "指令值", "实时值", "仿真时刻"):
+        for column in ("下发本机时刻", "设备", "指令", "指令值", "实时值", "处理状态", "仿真时刻"):
             self.assertIn(f"<th>{column}</th>", self.script)
         self.assertIn("<th>下发本机时刻</th>\n          <th>设备</th>", self.script)
         self.assertIn('title="${escapeHtml(item.wall_time)}">${escapeHtml(item.wall_time)}</td>', self.script)
         first_time_column = self.styles.split(".active-command-preview-table th:nth-child(1),", 1)[1].split("}", 1)[0]
-        self.assertIn("width: 18%;", first_time_column)
-        self.assertIn(".active-command-preview-table th:nth-child(6)", self.styles)
+        self.assertIn("width: 15%;", first_time_column)
+        self.assertIn(".active-command-preview-table th:nth-child(7)", self.styles)
         self.assertNotIn('<div class="log-item">\\n      <strong>${escapeHtml(item.name)}</strong>', self.script)
-        self.assertIn("暂无当前有效指令", self.script)
+        self.assertIn("暂无当前有效或排队指令", self.script)
+        self.assertIn("[...displayedCommandHistory(snapshot)].reverse()", self.script)
+        self.assertIn("下发完成，模拟台排队", self.script)
         self.assertIn("renderActiveCommandPreview();", self.script)
 
     def test_trainee_home_only_shows_latest_value_for_each_active_command_point(self):
@@ -422,7 +424,7 @@ class TraineeOverviewDashboardUiTest(unittest.TestCase):
         )[0]
 
         self.assertIn("const seenCommandKeys = new Set();", row_builder)
-        self.assertIn("[...activeCommandHistory(snapshot)].reverse()", row_builder)
+        self.assertIn("[...displayedCommandHistory(snapshot)].reverse()", row_builder)
         self.assertIn('["remote_control", devType, devName, commandType].join("|")', row_builder)
         self.assertIn('["remote_adjustment", devType, devName, setType].join("|")', row_builder)
         self.assertIn("seenCommandKeys.has(commandKey)", row_builder)

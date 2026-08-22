@@ -24,6 +24,12 @@ class CommandActiveOnlyFilterUiTest(unittest.TestCase):
             1,
         )[0]
         self.assertIn("state.runtimeCommandOnlyActive && !row.active", filter_block)
+        self.assertIn("function queuedCommandHistory", script)
+        self.assertIn("function displayedCommandHistory", script)
+        self.assertIn("displayedCommandHistory(snapshot).forEach", script)
+        self.assertIn("处理状态", script)
+        self.assertIn("已接收，模拟台排队", script)
+        self.assertIn("已接收，立即生效", script)
 
         remote_control_block = script.split("function runtimeRemoteControlRows", 1)[1].split(
             "function runtimeRemoteAdjustmentRows",
@@ -63,6 +69,12 @@ class CommandActiveOnlyFilterUiTest(unittest.TestCase):
             1,
         )[0]
         self.assertIn("state.commandOnlyActive && !row.active", filter_block)
+        self.assertIn("function queuedCommandHistory", script)
+        self.assertIn("function displayedCommandHistory", script)
+        self.assertIn('origin === "display"', script)
+        self.assertIn("处理状态", script)
+        self.assertIn("下发完成，模拟台排队", script)
+        self.assertIn("下发完成，立即生效", script)
 
         remote_control_block = script.split("function remoteControlCommandRows", 1)[1].split(
             "function commandTableTypeLabel",

@@ -9401,6 +9401,10 @@ function commandSentTimeInfo(entry = {}, snapshot = state.snapshot || {}) {
   ).trim();
   const origin = commandOrigin(entry);
   const source = String(entry.source || payload.source || "");
+  const queued = String(entry.queue_state || "").trim().toLowerCase() === "waiting"
+    || Number(entry.queued || 0) > 0;
+  const processState = queued ? "queued" : "effective";
+  const processText = queued ? "下发完成，模拟台排队" : "下发完成，立即生效";
   if (explicitSimTime) {
     return {
       wall_time: wallTime,
@@ -9408,6 +9412,8 @@ function commandSentTimeInfo(entry = {}, snapshot = state.snapshot || {}) {
       source,
       command_origin: origin,
       origin_text: commandOriginLabel(origin),
+      process_state: processState,
+      process_text: processText,
     };
   }
   const minute = Number(
@@ -9423,6 +9429,8 @@ function commandSentTimeInfo(entry = {}, snapshot = state.snapshot || {}) {
     source,
     command_origin: origin,
     origin_text: commandOriginLabel(origin),
+    process_state: processState,
+    process_text: processText,
   };
 }
 
@@ -9480,12 +9488,40 @@ function activeCommandHistory(snapshot = state.snapshot || {}) {
   });
 }
 
+function queuedCommandHistory(snapshot = state.snapshot || {}) {
+  const currentMinute = Number(snapshot.clock?.absolute_minute ?? snapshot.clock?.minute ?? 0) || 0;
+  const currentRunId = Number(snapshot.clock?.run_id ?? 0) || 0;
+  const commandEntries = Array.isArray(snapshot.commands?.queued) ? snapshot.commands.queued : [];
+  return [...commandEntries].filter((entry) => {
+    if (!entry?.eligible_source || entry.cancelled) return false;
+    const manualHold = manualCommandHoldsAcrossClockLifecycle(entry);
+    if (!manualHold) {
+      const entryRunId = Number(entry.run_id);
+      if (!Number.isFinite(entryRunId) || entryRunId !== currentRunId) return false;
+    }
+    const accepted = entry.accepted || {};
+    const acceptedCount = Number(accepted.run_status || 0) + Number(accepted.set_values || 0);
+    if (manualHold) return acceptedCount > 0;
+    const issued = Number(entry.issued_absolute_minute);
+    const expires = Number(entry.expires_at_absolute_minute);
+    if (!Number.isFinite(issued) || !Number.isFinite(expires)) return false;
+    return acceptedCount > 0 && currentMinute < expires && issued <= currentMinute;
+  });
+}
+
+function displayedCommandHistory(snapshot = state.snapshot || {}) {
+  // Keep the effective owner last so it wins if an automatic fallback is
+  // simultaneously queued behind a manual command.
+  return [...queuedCommandHistory(snapshot), ...activeCommandHistory(snapshot)];
+}
+
 function allActiveCommandHistory(snapshot = state.snapshot || {}) {
   const currentMinute = Number(snapshot.clock?.absolute_minute ?? snapshot.clock?.minute ?? 0) || 0;
   const currentRunId = Number(snapshot.clock?.run_id ?? 0) || 0;
   const history = Array.isArray(snapshot.commands?.history) ? snapshot.commands.history : [];
+  const queued = Array.isArray(snapshot.commands?.queued) ? snapshot.commands.queued : [];
   const effective = Array.isArray(snapshot.commands?.effective) ? snapshot.commands.effective : [];
-  return [...history, ...effective].filter((entry) => {
+  return [...history, ...queued, ...effective].filter((entry) => {
     if (!entry?.eligible_source || entry.cancelled) return false;
     const manualHold = manualCommandHoldsAcrossClockLifecycle(entry);
     if (!manualHold) {
@@ -17271,7 +17307,11 @@ function activeCommandEntryForControl(
   snapshot = state.snapshot || {},
   origin = "effective",
 ) {
-  const entries = origin === "manual" ? allActiveCommandHistory(snapshot) : activeCommandHistory(snapshot);
+  const entries = origin === "manual"
+    ? allActiveCommandHistory(snapshot)
+    : origin === "display"
+      ? displayedCommandHistory(snapshot)
+      : activeCommandHistory(snapshot);
   return [...entries].reverse().find((entry) => (
     (origin !== "manual" || commandOrigin(entry) === "manual")
     && commandEntryMatchesControl(entry, dev, commandType, setType)
@@ -17279,12 +17319,42 @@ function activeCommandEntryForControl(
 }
 
 function emptyIssuedCommandInfo() {
-  return { wall_time: "--", simu_time: "--", source: "", command_origin: "", origin_text: "--" };
+  return {
+    wall_time: "--",
+    simu_time: "--",
+    source: "",
+    command_origin: "",
+    origin_text: "--",
+    process_state: "inactive",
+    process_text: "未下发",
+  };
 }
 
 function remoteControlIssuedTimeInfo(dev, commandType = "run_stat", snapshot = state.snapshot || {}) {
-  const entry = activeCommandEntryForControl(dev, commandType, "", snapshot);
+  const entry = activeCommandEntryForControl(dev, commandType, "", snapshot, "display");
   return entry ? commandSentTimeInfo(entry, snapshot) : emptyIssuedCommandInfo();
+}
+
+function commandEntryControlValue(entry, dev, commandType, setType = "") {
+  if (!entry || !dev) return undefined;
+  if (commandType === "set_value") {
+    const items = entry.normalized?.set_values || entry.payload?.set_values || [];
+    const match = items.find((item) => (
+      item.dev_type === deviceType(dev)
+      && item.dev_name === deviceName(dev)
+      && item.set_type === setType
+    ));
+    return match?.set_value;
+  }
+  const items = entry.normalized?.run_status || entry.payload?.run_status || [];
+  const match = items.find((item) => (
+    item.dev_type === deviceType(dev)
+    && item.dev_name === deviceName(dev)
+    && (commandType === "status"
+      ? Object.prototype.hasOwnProperty.call(item, "status")
+      : item.run_stat !== undefined && item.run_stat !== "")
+  ));
+  return commandType === "status" ? match?.status : match?.run_stat;
 }
 
 function remoteControlIssuedAt(dev, commandType = "run_stat", snapshot = state.snapshot || {}) {
@@ -17371,6 +17441,13 @@ function remoteControlCommandRows(devices, snapshot = state.snapshot || {}) {
       typeLabel: remoteControlLabel("status"),
     })),
   ].map((row) => {
+    const issuedEntry = activeCommandEntryForControl(
+      row.dev,
+      row.commandType,
+      "",
+      snapshot,
+      "display",
+    );
     const issuedTime = remoteControlIssuedTimeInfo(row.dev, row.commandType, snapshot);
     const cancelName = activeCommandCancelName(row.dev, row.commandType, "", snapshot, issuedTime, "manual");
     return {
@@ -17382,6 +17459,7 @@ function remoteControlCommandRows(devices, snapshot = state.snapshot || {}) {
       issuedTime,
       commandOrigin: issuedTime.command_origin,
       commandOriginText: issuedTime.origin_text,
+      commandValue: commandEntryControlValue(issuedEntry, row.dev, row.commandType),
       cancelName,
       active: issuedTime.wall_time !== "--",
     };
@@ -17459,7 +17537,7 @@ function traineeCommandTraceKey(row) {
 }
 
 function traineeCommandColumnCount(activeTab) {
-  return activeTab === "remote-adjustment" ? 7 : 10;
+  return activeTab === "remote-adjustment" ? 8 : 11;
 }
 
 function traineeCommandTableStructureKey(rows, activeTab = state.activeControlTab) {
@@ -17492,7 +17570,11 @@ function traineeRemoteControlLiveValue(row, field) {
   }
   if (field === "control") {
     const pendingCommand = pending.run_status.get(key);
-    const currentValue = Number(pendingCommand ? pendingCommand[row.valueKey] : row.dev[row.valueKey]);
+    const currentValue = Number(
+      pendingCommand
+        ? pendingCommand[row.valueKey]
+        : row.commandValue ?? row.dev[row.valueKey],
+    );
     return `
       <label class="inline-toggle">
         <input type="checkbox" data-run-key="${escapeHtml(key)}" data-command-type="${escapeHtml(row.commandType)}" ${currentValue ? "checked" : ""} />
@@ -17503,6 +17585,11 @@ function traineeRemoteControlLiveValue(row, field) {
   if (field === "wall_time") return escapeHtml(row.issuedTime?.wall_time || "--");
   if (field === "simu_time") return escapeHtml(row.issuedTime?.simu_time || "--");
   if (field === "origin") return escapeHtml(row.commandOriginText || "--");
+  if (field === "process") {
+    const processState = row.issuedTime?.process_state || "inactive";
+    const processText = row.issuedTime?.process_text || "未下发";
+    return `<span class="command-process-pill is-${escapeHtml(processState)}">${escapeHtml(processText)}</span>`;
+  }
   if (field === "cancel") {
     return traineeCommandCancelButtonHtml(
       row.cancelName || "",
@@ -17518,6 +17605,11 @@ function traineeRemoteAdjustmentLiveValue(row, field) {
   if (field === "wall_time") return escapeHtml(row.issuedTime?.wall_time || row.issuedAt || "--");
   if (field === "simu_time") return escapeHtml(row.issuedTime?.simu_time || "--");
   if (field === "origin") return escapeHtml(row.commandOriginText || "--");
+  if (field === "process") {
+    const processState = row.issuedTime?.process_state || "inactive";
+    const processText = row.issuedTime?.process_text || "未下发";
+    return `<span class="command-process-pill is-${escapeHtml(processState)}">${escapeHtml(processText)}</span>`;
+  }
   if (field === "cancel") return traineeCommandCancelButtonHtml(row.cancelName, row.name);
   return "";
 }
@@ -17552,6 +17644,7 @@ function renderTraineeCommandRows(rows, activeTab = state.activeControlTab) {
       <td class="numeric-cell" data-trainee-command-live-field="measurement">${traineeCommandLiveCellHtml(row, "measurement", activeTab)}</td>
       <td class="numeric-cell" data-trainee-command-live-field="control">${traineeCommandLiveCellHtml(row, "control", activeTab)}</td>
       <td data-trainee-command-live-field="origin">${traineeCommandLiveCellHtml(row, "origin", activeTab)}</td>
+      <td data-trainee-command-live-field="process">${traineeCommandLiveCellHtml(row, "process", activeTab)}</td>
       <td class="mono-cell command-issued-at-cell" data-trainee-command-live-field="wall_time">${traineeCommandLiveCellHtml(row, "wall_time", activeTab)}</td>
       <td class="mono-cell command-issued-at-cell" data-trainee-command-live-field="simu_time">${traineeCommandLiveCellHtml(row, "simu_time", activeTab)}</td>
       <td data-trainee-command-live-field="cancel">${traineeCommandLiveCellHtml(row, "cancel", activeTab)}</td>
@@ -17572,6 +17665,7 @@ function renderTraineeCommandRows(rows, activeTab = state.activeControlTab) {
       <td class="run-status-command-cell" title="双击进行遥控操作" data-trainee-command-live-field="status">${traineeCommandLiveCellHtml(row, "status", activeTab)}</td>
       <td data-trainee-command-live-field="control">${traineeCommandLiveCellHtml(row, "control", activeTab)}</td>
       <td data-trainee-command-live-field="origin">${traineeCommandLiveCellHtml(row, "origin", activeTab)}</td>
+      <td data-trainee-command-live-field="process">${traineeCommandLiveCellHtml(row, "process", activeTab)}</td>
       <td class="mono-cell command-issued-at-cell" data-trainee-command-live-field="wall_time">${traineeCommandLiveCellHtml(row, "wall_time", activeTab)}</td>
       <td class="mono-cell command-issued-at-cell" data-trainee-command-live-field="simu_time">${traineeCommandLiveCellHtml(row, "simu_time", activeTab)}</td>
       <td data-trainee-command-live-field="cancel">${traineeCommandLiveCellHtml(row, "cancel", activeTab)}</td>
@@ -17590,11 +17684,12 @@ function renderTraineeCommandTable(rows, activeTab, emptyText, virtualRows = { b
           <col class="remote-adjustment-value-col" />
           <col class="remote-adjustment-value-col" />
           <col class="remote-adjustment-origin-col" />
+          <col class="remote-adjustment-origin-col" />
           <col class="remote-adjustment-time-col" />
           <col class="remote-adjustment-time-col" />
           <col class="remote-adjustment-action-col" />
         </colgroup>
-        <thead><tr><th>遥调名称</th><th>量测值</th><th>控制值</th><th>指令来源</th><th>下发本机时刻</th><th>下发仿真时刻</th><th>操作</th></tr></thead>
+        <thead><tr><th>遥调名称</th><th>量测值</th><th>控制值</th><th>指令来源</th><th>处理状态</th><th>下发本机时刻</th><th>下发仿真时刻</th><th>操作</th></tr></thead>
         <tbody>
           ${renderVirtualSpacerRow(virtualRows.beforeHeight, columnCount)}
           ${renderTraineeCommandRows(rows, activeTab)}
@@ -17604,7 +17699,7 @@ function renderTraineeCommandTable(rows, activeTab, emptyText, virtualRows = { b
   }
   return `
     <table class="runtime-device-table">
-      <thead><tr><th>idx</th><th>遥控名称</th><th>设备名称</th><th>类型</th><th>当前状态</th><th>下发状态</th><th>指令来源</th><th>下发本机时刻</th><th>下发仿真时刻</th><th>操作</th></tr></thead>
+      <thead><tr><th>idx</th><th>遥控名称</th><th>设备名称</th><th>类型</th><th>当前状态</th><th>下发状态</th><th>指令来源</th><th>处理状态</th><th>下发本机时刻</th><th>下发仿真时刻</th><th>操作</th></tr></thead>
       <tbody>
         ${renderVirtualSpacerRow(virtualRows.beforeHeight, columnCount)}
         ${renderTraineeCommandRows(rows, activeTab)}
@@ -17801,7 +17896,7 @@ function remoteAdjustmentMeasurement(dev, setType, snapshot = state.snapshot || 
 }
 
 function remoteAdjustmentIssuedTimeInfo(dev, setType, snapshot = state.snapshot || {}) {
-  const entry = activeCommandEntryForControl(dev, "set_value", setType, snapshot);
+  const entry = activeCommandEntryForControl(dev, "set_value", setType, snapshot, "display");
   return entry ? commandSentTimeInfo(entry, snapshot) : emptyIssuedCommandInfo();
 }
 
@@ -17814,6 +17909,19 @@ function remoteAdjustmentRows(devices, snapshot = state.snapshot || {}, options 
     const dev = controlDeviceFromRow(definitionRow, snapshot);
     const setType = definitionRow.set_type || "";
     const issuedTime = remoteAdjustmentIssuedTimeInfo(dev, setType, snapshot);
+    const issuedEntry = activeCommandEntryForControl(
+      dev,
+      "set_value",
+      setType,
+      snapshot,
+      "display",
+    );
+    const issuedCommandValue = commandEntryControlValue(
+      issuedEntry,
+      dev,
+      "set_value",
+      setType,
+    );
     const cancelName = activeCommandCancelName(dev, "set_value", setType, snapshot, issuedTime, "manual");
     return {
       key: `${deviceKey(dev)}|${setType}`,
@@ -17825,6 +17933,9 @@ function remoteAdjustmentRows(devices, snapshot = state.snapshot || {}, options 
       category: "遥调",
       measurement: options.includeMeasurements === false ? null : remoteAdjustmentMeasurement(dev, setType, snapshot),
       controlValue: (() => {
+        if (issuedCommandValue !== undefined && issuedCommandValue !== null && issuedCommandValue !== "") {
+          return issuedCommandValue;
+        }
         const current = currentSetValue(dev, setType, snapshot);
         return current === "" || current === undefined || current === null ? definitionRow.set_value : current;
       })(),
@@ -18192,7 +18303,7 @@ function clearTraineeRuntimeLogs() {
 function activeCommandPreviewRows(snapshot = state.snapshot || {}) {
   const rows = [];
   const seenCommandKeys = new Set();
-  [...activeCommandHistory(snapshot)].reverse().forEach((entry) => {
+  [...displayedCommandHistory(snapshot)].reverse().forEach((entry) => {
     const timeInfo = commandSentTimeInfo(entry, snapshot);
     const normalized = entry.normalized || {};
     const runItems = normalized.run_status || entry.payload?.run_status || [];
@@ -18221,6 +18332,8 @@ function activeCommandPreviewRows(snapshot = state.snapshot || {}) {
           : remoteControlValueText(commandType, actualValue),
         wall_time: timeInfo.wall_time || "--",
         time: timeInfo.simu_time || "--",
+        process_state: timeInfo.process_state || "inactive",
+        process_text: timeInfo.process_text || "未下发",
       });
     });
     setItems.forEach((item) => {
@@ -18242,6 +18355,8 @@ function activeCommandPreviewRows(snapshot = state.snapshot || {}) {
         actual_value: formatRemoteAdjustmentValue(actualValue),
         wall_time: timeInfo.wall_time || "--",
         time: timeInfo.simu_time || "--",
+        process_state: timeInfo.process_state || "inactive",
+        process_text: timeInfo.process_text || "未下发",
       });
     });
   });
@@ -18263,6 +18378,7 @@ function renderActiveCommandPreview(snapshot = state.snapshot || {}) {
           <th>指令</th>
           <th>指令值</th>
           <th>实时值</th>
+          <th>处理状态</th>
           <th>仿真时刻</th>
         </tr>
       </thead>
@@ -18274,12 +18390,13 @@ function renderActiveCommandPreview(snapshot = state.snapshot || {}) {
             <td title="${escapeHtml(item.type)}">${escapeHtml(item.type)}</td>
             <td title="${escapeHtml(item.value)}">${escapeHtml(item.value)}</td>
             <td title="${escapeHtml(item.actual_value)}">${escapeHtml(item.actual_value)}</td>
+            <td><span class="command-process-pill is-${escapeHtml(item.process_state)}">${escapeHtml(item.process_text)}</span></td>
             <td title="${escapeHtml(item.time)}">${escapeHtml(item.time)}</td>
           </tr>
         `).join("")}
       </tbody>
     </table>
-  ` : '<div class="empty-state compact">暂无当前有效指令</div>';
+  ` : '<div class="empty-state compact">暂无当前有效或排队指令</div>';
 }
 
 function updatePendingCount() {

@@ -2721,8 +2721,9 @@ body.is-vertical-splitter-dragging {
 .overview-command-table th:nth-child(3) { width: 168px; }
 .overview-command-table th:nth-child(4) { width: 96px; }
 .overview-command-table th:nth-child(5) { width: 100px; }
-.overview-command-table th:nth-child(6),
-.overview-command-table th:nth-child(7) { width: 96px; }
+.overview-command-table th:nth-child(6) { width: 154px; }
+.overview-command-table th:nth-child(7),
+.overview-command-table th:nth-child(8) { width: 96px; }
 .overview-command-table td {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4600,7 +4601,8 @@ canvas {
 .runtime-command-table th:nth-child(6) { width: 86px; }
 .runtime-command-table th:nth-child(7) { width: 118px; }
 .runtime-command-table th:nth-child(n + 8) { width: 96px; }
-.runtime-command-table th:nth-child(11) { width: 72px; }
+.runtime-command-table th:nth-child(9) { width: 154px; }
+.runtime-command-table th:nth-child(12) { width: 72px; }
 .runtime-command-table tbody tr {
   cursor: pointer;
 }
@@ -4618,6 +4620,21 @@ canvas {
 .runtime-command-table tbody tr.is-selected td:first-child {
   color: var(--teal-dark);
 }
+.command-process-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eef3f4;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.command-process-pill.is-effective { background: #e7f5ec; color: #25713d; }
+.command-process-pill.is-queued { background: #fff3d6; color: #9a6100; }
 .runtime-command-delete-cell {
   text-align: center !important;
 }

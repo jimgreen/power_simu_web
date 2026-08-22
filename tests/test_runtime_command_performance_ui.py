@@ -31,7 +31,7 @@ class RuntimeCommandPerformanceUiTest(unittest.TestCase):
         self.assertIn("const virtualRows = virtualTableWindow(`runtimeCommand:${activeTab}`, activeRows)", self.script)
         self.assertIn("container.dataset.runtimeCommandStructureKey === structureKey", self.script)
         self.assertIn("updateRuntimeCommandTableLiveCells(virtualRows.rows)", self.script)
-        self.assertIn("renderVirtualSpacerRow(virtualRows.beforeHeight, 11)", self.script)
+        self.assertIn("renderVirtualSpacerRow(virtualRows.beforeHeight, 12)", self.script)
         self.assertIn("renderRuntimeCommandTable(virtualRows.rows", self.script)
         self.assertIn('key.startsWith("runtimeCommand") && currentPageName() === "runtime"', self.script)
         self.assertIn(".runtime-command-table-wrap", self.styles)

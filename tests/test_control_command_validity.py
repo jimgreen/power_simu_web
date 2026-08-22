@@ -712,6 +712,25 @@ class ControlCommandValidityTest(unittest.TestCase):
             "0",
         )
 
+        waiting_commands = service.snapshot(
+            include_static=False,
+            include_runtime_logs=False,
+            include_measurements=False,
+            include_devices=False,
+            include_device_states=False,
+            include_command_history=False,
+        )["commands"]
+        self.assertEqual(waiting_commands["effective"], [manual_entry])
+        self.assertEqual(len(waiting_commands["queued"]), 1)
+        self.assertEqual(
+            waiting_commands["queued"][0]["normalized"]["set_values"],
+            automatic_entry["normalized"]["set_values"],
+        )
+        self.assertEqual(
+            waiting_commands["queued"][0]["blocked"][0]["reason"],
+            "higher_priority_manual_command",
+        )
+
         result = service.cancel_student_commands(
             {
                 "command_origin": "manual",
@@ -725,11 +744,95 @@ class ControlCommandValidityTest(unittest.TestCase):
         self.assertTrue(manual_entry["cancelled"])
         self.assertFalse(automatic_entry.get("cancelled", False))
         self.assertEqual(self._set_value(service, "DCACConverter", "grid_inv_acp", "p_set"), "0")
+        released_commands = service.snapshot(
+            include_static=False,
+            include_runtime_logs=False,
+            include_measurements=False,
+            include_devices=False,
+            include_device_states=False,
+            include_command_history=False,
+        )["commands"]
+        self.assertEqual(released_commands["queued"], [])
+        self.assertEqual(released_commands["effective"], [automatic_entry])
 
         service.clock.absolute_minute = 6
         service.clock.minute = 6
         service._materialize_active_control_commands(6)
         self.assertEqual(self._set_value(service, "DCACConverter", "grid_inv_acp", "p_set"), "0")
+
+    def test_queue_exposes_only_latest_automatic_candidate_for_each_control_point(self):
+        workspace, service = self._make_service()
+        self.addCleanup(workspace.cleanup)
+        service.apply_student_commands(
+            {
+                "command_origin": "manual",
+                "set_values": [
+                    {
+                        "dev_type": "ESS",
+                        "dev_name": "ess01",
+                        "set_type": "p_set",
+                        "set_value": 20,
+                    }
+                ],
+            },
+            source="trainee-ui",
+        )
+        manual_entry = service.command_history[-1]
+        automatic_entries = []
+        for value in (1, 2):
+            service.apply_student_commands(
+                {
+                    "command_origin": "automatic",
+                    "valid_for_minutes": 5,
+                    "set_values": [
+                        {
+                            "dev_type": "ESS",
+                            "dev_name": "ess01",
+                            "set_type": "p_set",
+                            "set_value": value,
+                        }
+                    ],
+                },
+                source="trainee-renewable-priority",
+            )
+            automatic_entries.append(service.command_history[-1])
+
+        commands = service.snapshot(
+            include_static=False,
+            include_runtime_logs=False,
+            include_measurements=False,
+            include_devices=False,
+            include_device_states=False,
+            include_command_history=False,
+        )["commands"]
+        self.assertEqual(commands["effective"], [manual_entry])
+        self.assertEqual(len(commands["queued"]), 1)
+        self.assertEqual(
+            commands["queued"][0]["normalized"]["set_values"][0]["set_value"],
+            "2",
+        )
+        self.assertNotEqual(
+            commands["queued"][0]["normalized"]["set_values"],
+            automatic_entries[0]["normalized"]["set_values"],
+        )
+
+        service.cancel_student_commands(
+            {
+                "command_origin": "manual",
+                "cancel_commands": [{"name": "ESS.ess01.p_set"}],
+            },
+            source="trainee-ui",
+        )
+        released = service.snapshot(
+            include_static=False,
+            include_runtime_logs=False,
+            include_measurements=False,
+            include_devices=False,
+            include_device_states=False,
+            include_command_history=False,
+        )["commands"]
+        self.assertEqual(released["queued"], [])
+        self.assertEqual(released["effective"], [automatic_entries[-1]])
 
     def test_manual_acdc_active_power_command_with_stale_trainee_expiry_survives_next_step(self):
         from simu.service import PolarMicrogridSimulator

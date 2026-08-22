@@ -2271,6 +2271,13 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
                 }
             ],
             "effective": [{"source": "effective-test", "normalized": {}}],
+            "queued": [
+                {
+                    "source": "queued-test",
+                    "queue_state": "waiting",
+                    "normalized": {},
+                }
+            ],
         }
         exchange = TraineeRealtimeExchange(service, start_worker=False)
         self.addCleanup(exchange.close)
@@ -2291,6 +2298,7 @@ class TraineeRealtimeExchangeTest(unittest.TestCase):
 
         self.assertEqual(payload["commands"]["history"], [])
         self.assertEqual(payload["commands"]["effective"], runtime["commands"]["effective"])
+        self.assertEqual(payload["commands"]["queued"], runtime["commands"]["queued"])
 
     def test_submit_commands_uses_learner_connection_and_preserves_payload(self):
         service = self.make_service()

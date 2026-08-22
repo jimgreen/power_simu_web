@@ -3213,6 +3213,145 @@ class PolarMicrogridSimulator:
             projected.append(view)
         return projected
 
+    def _queued_active_control_command_views(
+        self,
+        absolute_minute: int | float,
+    ) -> List[Mapping[str, Any]]:
+        """Project the current highest-priority waiting owner per control point.
+
+        A simulator UI override queues the otherwise-effective command.  A
+        manual trainee command remains effective, while the latest automatic
+        fallback for the same control point waits behind it.  Historical
+        acceptance flags are deliberately not used here because a command can
+        enter or leave the queue after it was received.
+        """
+        active_entries = self._active_control_command_entries(absolute_minute)
+        simulator_ui_overrides = self._simulator_ui_control_override_keys()
+        winner_by_control: Dict[Tuple[str, str, str, str], int] = {}
+        automatic_by_control: Dict[Tuple[str, str, str, str], int] = {}
+
+        def record_owner(
+            key: Tuple[str, str, str, str],
+            entry_index: int,
+            entry: Mapping[str, Any],
+        ) -> None:
+            winner_by_control[key] = entry_index
+            if _command_origin(entry) == "automatic":
+                automatic_by_control[key] = entry_index
+
+        for entry_index, entry in enumerate(active_entries):
+            normalized = entry.get("normalized", {})
+            if not isinstance(normalized, Mapping):
+                continue
+            run_items = normalized.get("run_status", [])
+            if isinstance(run_items, Sequence) and not isinstance(run_items, (str, bytes)):
+                for item in run_items:
+                    if not isinstance(item, Mapping):
+                        continue
+                    dev_type = str(item.get("dev_type", "")).strip()
+                    dev_name = str(item.get("dev_name", "")).strip()
+                    if not dev_type or not dev_name:
+                        continue
+                    for field_name in ("run_stat", "status"):
+                        if item.get(field_name, "") != "":
+                            record_owner(
+                                ("remote_control", dev_type, dev_name, field_name),
+                                entry_index,
+                                entry,
+                            )
+            set_items = normalized.get("set_values", [])
+            if isinstance(set_items, Sequence) and not isinstance(set_items, (str, bytes)):
+                for item in set_items:
+                    if not isinstance(item, Mapping):
+                        continue
+                    dev_type = str(item.get("dev_type", "")).strip()
+                    dev_name = str(item.get("dev_name", "")).strip()
+                    set_type = str(item.get("set_type", "")).strip()
+                    if dev_type and dev_name and set_type:
+                        record_owner(
+                            ("remote_adjustment", dev_type, dev_name, set_type),
+                            entry_index,
+                            entry,
+                        )
+
+        queued_owner_by_control: Dict[Tuple[str, str, str, str], int] = {}
+        for key, winner_index in winner_by_control.items():
+            if key in simulator_ui_overrides:
+                queued_owner_by_control[key] = winner_index
+                continue
+            winner = active_entries[winner_index]
+            if _command_origin(winner) != "manual":
+                continue
+            automatic_index = automatic_by_control.get(key)
+            if automatic_index is not None and automatic_index != winner_index:
+                queued_owner_by_control[key] = automatic_index
+
+        projected: List[Mapping[str, Any]] = []
+        for entry_index, entry in enumerate(active_entries):
+            normalized = entry.get("normalized", {})
+            if not isinstance(normalized, Mapping):
+                continue
+            selected_run_by_device: Dict[Tuple[str, str], Dict[str, Any]] = {}
+            run_items = normalized.get("run_status", [])
+            if isinstance(run_items, Sequence) and not isinstance(run_items, (str, bytes)):
+                for item in run_items:
+                    if not isinstance(item, Mapping):
+                        continue
+                    dev_type = str(item.get("dev_type", "")).strip()
+                    dev_name = str(item.get("dev_name", "")).strip()
+                    if not dev_type or not dev_name:
+                        continue
+                    selected = {"dev_type": dev_type, "dev_name": dev_name}
+                    for field_name in ("run_stat", "status"):
+                        key = ("remote_control", dev_type, dev_name, field_name)
+                        if (
+                            item.get(field_name, "") != ""
+                            and queued_owner_by_control.get(key) == entry_index
+                        ):
+                            selected[field_name] = item.get(field_name)
+                    if len(selected) > 2:
+                        selected_run_by_device[(dev_type, dev_name)] = selected
+
+            selected_set: List[Dict[str, Any]] = []
+            set_items = normalized.get("set_values", [])
+            if isinstance(set_items, Sequence) and not isinstance(set_items, (str, bytes)):
+                for item in set_items:
+                    if not isinstance(item, Mapping):
+                        continue
+                    key = (
+                        "remote_adjustment",
+                        str(item.get("dev_type", "")).strip(),
+                        str(item.get("dev_name", "")).strip(),
+                        str(item.get("set_type", "")).strip(),
+                    )
+                    if queued_owner_by_control.get(key) == entry_index:
+                        selected_set.append(dict(item))
+
+            selected_run = list(selected_run_by_device.values())
+            if not selected_run and not selected_set:
+                continue
+            view = dict(entry)
+            view_normalized = dict(normalized)
+            view_normalized["run_status"] = selected_run
+            view_normalized["set_values"] = selected_set
+            view["normalized"] = view_normalized
+            accepted = entry.get("accepted", {})
+            view_accepted = dict(accepted) if isinstance(accepted, Mapping) else {}
+            view_accepted["run_status"] = len(selected_run)
+            view_accepted["set_values"] = len(selected_set)
+            view["accepted"] = view_accepted
+            view["queued"] = len(selected_run) + len(selected_set)
+            view["queue_owner"] = "simulator"
+            view["queue_state"] = "waiting"
+            view["blocked"] = self._student_controls_queued_by_higher_priority(
+                selected_run,
+                selected_set,
+                command_origin=_command_origin(entry),
+                absolute_minute=absolute_minute,
+            )
+            projected.append(view)
+        return projected
+
     def _defined_run_control_fields(self) -> Dict[Tuple[str, str], set[str]]:
         fields: Dict[Tuple[str, str], set[str]] = {}
         for row in self._control_definition_rows("RunStat"):
@@ -14232,6 +14371,7 @@ class PolarMicrogridSimulator:
             recent_ids = {id(entry) for entry in recent_commands}
             active_commands = self._active_control_command_entries(self.clock.absolute_minute)
             effective_commands = self._effective_active_control_command_views(self.clock.absolute_minute)
+            queued_commands = self._queued_active_control_command_views(self.clock.absolute_minute)
             pinned_commands = [
                 entry
                 for entry in active_commands
@@ -14246,6 +14386,7 @@ class PolarMicrogridSimulator:
             snapshot["commands"] = {
                 "history": pinned_commands + recent_commands if include_command_history else [],
                 "effective": effective_commands,
+                "queued": queued_commands,
             }
         if include_devices:
             snapshot["devices"] = self.devices()

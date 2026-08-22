@@ -619,6 +619,60 @@ class IncrementalRuntimeDataApiTest(unittest.TestCase):
         self.assertEqual(len(decoded_states), len(full_states))
         self.assertLess(compact_size, full_size * 0.25)
 
+    def test_compact_device_runtime_round_trips_sparse_closed_status_set(self):
+        from simu.device_runtime_frame import (
+            apply_device_runtime_frame,
+            compact_device_runtime_frame,
+            compact_device_runtime_supplement_frame,
+        )
+
+        source_devices = [
+            {
+                "dev_type": "ACBreak",
+                "dev_name": "br-1",
+                "closed_status_set": 1,
+                "closed_status": 1,
+                "status": 1,
+                "mode": "",
+                "set_values": {},
+            },
+            {
+                "dev_type": "ACLoad",
+                "dev_name": "load-1",
+                "closed_status_set": 1,
+                "closed_status": 1,
+                "status": 1,
+                "mode": "PQ",
+                "set_values": {},
+            },
+        ]
+        base_devices = copy.deepcopy(source_devices)
+        base_devices[0]["closed_status_set"] = 0
+        base_devices[0]["closed_status"] = 0
+        base_devices[0]["status"] = 0
+        states = []
+
+        frame = compact_device_runtime_frame(source_devices, states)
+        self.assertEqual(frame["device_closed_status_set_indices"], [0])
+        self.assertEqual(frame["device_closed_status_set_values"], [1])
+        decoded_devices, _decoded_states = apply_device_runtime_frame(
+            base_devices,
+            states,
+            frame,
+        )
+        breaker = next(row for row in decoded_devices if row["dev_type"] == "ACBreak")
+        self.assertEqual(breaker["closed_status_set"], 1)
+        self.assertEqual(breaker["closed_status"], 1)
+        self.assertEqual(breaker["status"], 1)
+
+        supplement = compact_device_runtime_supplement_frame(
+            source_devices,
+            states,
+            [{"dev_type": "ACBreak", "dev_name": "br-1", "meas_type": "STATUS"}],
+        )
+        self.assertEqual(supplement["device_closed_status_set_indices"], [0])
+        self.assertEqual(supplement["device_closed_status_set_values"], [1])
+
     def test_snapshot_can_embed_measurement_deduplicated_device_runtime_for_local_ui(self):
         from simu.server import make_http_server
 

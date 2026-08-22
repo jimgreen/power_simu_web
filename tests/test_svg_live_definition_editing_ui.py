@@ -821,6 +821,33 @@ process.stdout.write(JSON.stringify({
             self.assertEqual(status_row["value"], 1)
             self.assertEqual(status_row["valid"], 1)
 
+    def test_switch_runtime_control_result_patches_closed_status_set_immediately(self):
+        body = r"""
+state.snapshot = {
+  devices: [{
+    dev_type: "ACBreak",
+    dev_name: "br-1",
+    closed_status_set: 0,
+    closed_status: 0,
+    status: 0,
+    raw: { closed_status_set: 0, closed_status: 0 },
+  }],
+  device_states: [],
+  measurements: { definitions: [], real: [], scada: [] },
+};
+const changed = patchDiagramRuntimeControlRecord(state.snapshot, {
+  dev_type: "ACBreak",
+  dev_name: "br-1",
+  closed_status_set: 1,
+});
+process.stdout.write(JSON.stringify({ changed, device: state.snapshot.devices[0] }));
+"""
+        payload = self._run_helpers(body)
+        self.assertTrue(payload["changed"])
+        self.assertEqual(payload["device"]["closed_status_set"], 1)
+        self.assertEqual(payload["device"]["raw"]["closed_status_set"], 1)
+        self.assertEqual(payload["device"]["closed_status"], 0)
+
     def test_simulator_and_trainee_expose_both_local_definition_edit_apis(self):
         for endpoint in (
             "/api/definitions/device-parameters",

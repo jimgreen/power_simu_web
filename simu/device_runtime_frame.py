@@ -17,6 +17,8 @@ _RUNTIME_SIGNATURE_FIELDS = (
     "device_signature",
     "device_run_stats",
     "device_statuses",
+    "device_closed_status_set_indices",
+    "device_closed_status_set_values",
     "device_modes",
     "device_set_values",
     "device_soc_present",
@@ -37,6 +39,8 @@ _SUPPLEMENT_SIGNATURE_FIELDS = (
     "device_run_stat_values",
     "device_status_indices",
     "device_status_values",
+    "device_closed_status_set_indices",
+    "device_closed_status_set_values",
     "device_soc_indices",
     "device_soc_values",
     "state_count",
@@ -101,6 +105,22 @@ def device_runtime_payload_signature(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+_SWITCH_STATUS_DEVICE_TYPES = {"ACBREAK", "DCBREAK", "ACSWITCH", "DCSWITCH"}
+
+
+def _closed_status_set_values(
+    ordered: Sequence[Mapping[str, Any]],
+) -> tuple[list[int], list[Any]]:
+    indices: list[int] = []
+    values: list[Any] = []
+    for index, row in enumerate(ordered):
+        if str(row.get("dev_type", "")).strip().upper() not in _SWITCH_STATUS_DEVICE_TYPES:
+            continue
+        indices.append(index)
+        values.append(copy.deepcopy(row.get("closed_status_set")))
+    return indices, values
+
+
 def compact_device_runtime_frame(
     devices: Sequence[Mapping[str, Any]],
     device_states: Sequence[Mapping[str, Any]],
@@ -109,6 +129,9 @@ def compact_device_runtime_frame(
 ) -> Dict[str, Any]:
     ordered_devices = _ordered_rows(devices, "devices")
     ordered_states = _ordered_rows(device_states, "device_states")
+    closed_status_set_indices, closed_status_set_values = _closed_status_set_values(
+        ordered_devices
+    )
     frame = {
         "encoding": COMPACT_DEVICE_RUNTIME_ENCODING,
         "definition_revision": int(definition_revision),
@@ -119,6 +142,8 @@ def compact_device_runtime_frame(
             row.get("closed_status", row.get("status"))
             for row in ordered_devices
         ],
+        "device_closed_status_set_indices": closed_status_set_indices,
+        "device_closed_status_set_values": closed_status_set_values,
         "device_modes": [row.get("mode") for row in ordered_devices],
         "device_set_values": [copy.deepcopy(row.get("set_values", {})) for row in ordered_devices],
         "device_soc_present": ["soc_curr" in row for row in ordered_devices],
@@ -206,6 +231,9 @@ def compact_device_runtime_supplement_frame(
         "RUN_STAT",
         "run_stat",
     )
+    closed_status_set_indices, closed_status_set_values = _closed_status_set_values(
+        ordered_devices
+    )
     frame = {
         "encoding": COMPACT_DEVICE_RUNTIME_SUPPLEMENT_ENCODING,
         "definition_revision": int(definition_revision),
@@ -217,6 +245,8 @@ def compact_device_runtime_supplement_frame(
         "device_run_stat_values": device_run_values,
         "device_status_indices": device_status_indices,
         "device_status_values": device_status_values,
+        "device_closed_status_set_indices": closed_status_set_indices,
+        "device_closed_status_set_values": closed_status_set_values,
         "device_soc_indices": device_soc_indices,
         "device_soc_values": device_soc_values,
         "state_count": len(ordered_states),
@@ -372,6 +402,9 @@ def apply_device_runtime_frame(
         state_run_sparse = _validated_sparse_values(
             payload, "state_run_stat", len(ordered_states)
         )
+    closed_status_set_sparse = _validated_sparse_values(
+        payload, "device_closed_status_set", len(ordered_devices)
+    )
     expected_runtime_signature = device_runtime_payload_signature(payload)
     if str(payload.get("runtime_signature", "")) != expected_runtime_signature:
         raise DeviceRuntimeFrameMismatchError(
@@ -401,6 +434,8 @@ def apply_device_runtime_frame(
     for index, value in device_status_sparse:
         ordered_devices[index]["status"] = value
         ordered_devices[index]["closed_status"] = value
+    for index, value in closed_status_set_sparse:
+        ordered_devices[index]["closed_status_set"] = value
     for index, value in device_soc_sparse:
         ordered_devices[index]["soc_curr"] = value
 

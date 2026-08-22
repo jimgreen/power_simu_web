@@ -53,8 +53,8 @@ function pageNeedsDevices() {{ return true; }}
 function pageNeedsDeviceStates() {{ return true; }}
 {helper_source}
 const devices = [
-  {{ dev_type: "B", dev_name: "二号", run_stat: 1, set_values: {{ p_set: 1 }} }},
-  {{ dev_type: "A", dev_name: "一号", run_stat: 1, set_values: {{ p_set: 2 }} }},
+  {{ dev_type: "B", dev_name: "二号", run_stat: 1, closed_status_set: 0, closed_status: 1, status: 1, set_values: {{ p_set: 1 }} }},
+  {{ dev_type: "A", dev_name: "一号", run_stat: 1, closed_status_set: 1, closed_status: 0, status: 0, set_values: {{ p_set: 2 }} }},
 ];
 const states = [{{ dev_type: "A", dev_name: "一号", run_stat: 1, dead_island: false }}];
 const frame = {{
@@ -63,6 +63,8 @@ const frame = {{
   device_signature: deviceRuntimeOrderSignature(devices, "devices"),
   device_run_stats: [0, 1],
   device_statuses: [1, 0],
+  device_closed_status_set_indices: [0, 1],
+  device_closed_status_set_values: [0, 1],
   device_modes: ["PQ", "V"],
   device_set_values: [{{ p_set: 8 }}, {{ p_set: 9 }}],
   device_soc_present: [true, false],
@@ -81,6 +83,9 @@ const broken = {{ ...frame, runtime_signature: "runtime-bad", device_run_stats: 
 applyDeviceRuntimePayload(applied, {{ device_runtime_signature: "runtime-bad", device_runtime: broken }});
 process.stdout.write(JSON.stringify({{
   runStats: applied.devices.map((row) => row.run_stat),
+  statuses: applied.devices.map((row) => row.status),
+  closedStatuses: applied.devices.map((row) => row.closed_status),
+  closedStatusSets: applied.devices.map((row) => row.closed_status_set),
   setValues: applied.devices.map((row) => row.set_values.p_set),
   soc: applied.devices.find((row) => row.dev_type === "A").soc_curr,
   deadIsland: applied.device_states[0].dead_island,
@@ -95,10 +100,48 @@ process.stdout.write(JSON.stringify({{
         )
         payload = json.loads(result.stdout)
         self.assertEqual(payload["runStats"], [1, 0])
+        self.assertEqual(payload["statuses"], [0, 1])
+        self.assertEqual(payload["closedStatuses"], [0, 1])
+        self.assertEqual(payload["closedStatusSets"], [1, 0])
         self.assertEqual(payload["setValues"], [9, 8])
         self.assertEqual(payload["soc"], 0.45)
         self.assertTrue(payload["deadIsland"])
         self.assertTrue(payload["needsFullRefresh"])
+
+    def test_measurement_status_hydrates_actual_closed_status_alias(self):
+        for role in ("simulator",):
+            script = self._script(role)
+            helper_source = "const DEVICE_RUNTIME_ENCODING" + script.split(
+                "const DEVICE_RUNTIME_ENCODING",
+                1,
+            )[1].split("function mergeSnapshot", 1)[0]
+            node_script = f"""
+const state = {{ snapshot: null, deviceRuntimeSignature: "", deviceRuntimeNeedsFullRefresh: false, deviceRuntimeWarning: "" }};
+function currentPageName() {{ return "diagram"; }}
+function pageNeedsDevices() {{ return true; }}
+function pageNeedsDeviceStates() {{ return true; }}
+{helper_source}
+const snapshot = {{
+  devices: [{{ dev_type: "ACBreak", dev_name: "br-1", status: 0, closed_status: 0 }}],
+  device_states: [],
+  measurements: {{
+    definitions: [{{ dev_type: "ACBreak", dev_name: "br-1", meas_type: "STATUS" }}],
+    scada: [{{ dev_type: "ACBreak", dev_name: "br-1", meas_type: "STATUS", value: 1, valid: 1 }}],
+  }},
+}};
+hydrateMeasurementBackedDeviceRuntime(snapshot);
+process.stdout.write(JSON.stringify(snapshot.devices[0]));
+"""
+            result = subprocess.run(
+                ["node"],
+                input=node_script,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["status"], 1)
+            self.assertEqual(payload["closed_status"], 1)
 
     def test_static_snapshot_cache_is_memory_backed_and_skips_unchanged_writes(self):
         for role in ("simulator", "trainee"):

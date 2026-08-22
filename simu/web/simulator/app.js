@@ -3561,6 +3561,13 @@ function validatedDeviceRuntimeSparseValues(payload, prefix, count) {
   });
 }
 
+function validatedOptionalDeviceRuntimeSparseValues(payload, prefix, count) {
+  const hasIndices = Object.prototype.hasOwnProperty.call(payload || {}, `${prefix}_indices`);
+  const hasValues = Object.prototype.hasOwnProperty.call(payload || {}, `${prefix}_values`);
+  if (!hasIndices && !hasValues) return [];
+  return validatedDeviceRuntimeSparseValues(payload, prefix, count);
+}
+
 function measurementBackedRuntimeKey(row = {}, measurementType = null) {
   const [devType, devName] = deviceRuntimeIdentity(row);
   return `${devType}\u0000${devName}\u0000${String(measurementType ?? row.meas_type ?? "").trim().toUpperCase()}`;
@@ -3583,6 +3590,9 @@ function hydrateMeasurementBackedDeviceRuntime(snapshot = state.snapshot || {}) 
     if (valid) row[fieldName] = measurement.value;
     else if (["RUN_STAT", "STATUS"].includes(measurementType)) row[fieldName] = 0;
     else delete row[fieldName];
+    if (measurementType === "STATUS" && row[fieldName] !== undefined) {
+      row.closed_status = row[fieldName];
+    }
   };
   (snapshot.devices || []).forEach((row) => {
     hydrate(row, "RUN_STAT", "run_stat");
@@ -3648,6 +3658,7 @@ function applyDeviceRuntimePayload(previous, incoming) {
     const stateRunStats = completeFrame ? validatedDeviceRuntimeArray(frame, "state_run_stats", stateCount) : [];
     const runSparse = completeFrame ? [] : validatedDeviceRuntimeSparseValues(frame, "device_run_stat", deviceCount);
     const statusSparse = completeFrame ? [] : validatedDeviceRuntimeSparseValues(frame, "device_status", deviceCount);
+    const closedStatusSetSparse = validatedOptionalDeviceRuntimeSparseValues(frame, "device_closed_status_set", deviceCount);
     const socSparse = completeFrame ? [] : validatedDeviceRuntimeSparseValues(frame, "device_soc", deviceCount);
     const stateRunSparse = completeFrame ? [] : validatedDeviceRuntimeSparseValues(frame, "state_run_stat", stateCount);
 
@@ -3656,6 +3667,7 @@ function applyDeviceRuntimePayload(previous, incoming) {
       if (completeFrame) {
         row.run_stat = runStats[index];
         row.status = statuses[index];
+        row.closed_status = statuses[index];
       }
       row.mode = modes[index];
       row.set_values = setValues[index] && typeof setValues[index] === "object"
@@ -3665,7 +3677,11 @@ function applyDeviceRuntimePayload(previous, incoming) {
     });
     const orderedDevices = orderedDeviceRuntimeRows(decodedDevices, "devices");
     runSparse.forEach(([index, value]) => { orderedDevices[index].run_stat = value; });
-    statusSparse.forEach(([index, value]) => { orderedDevices[index].status = value; });
+    statusSparse.forEach(([index, value]) => {
+      orderedDevices[index].status = value;
+      orderedDevices[index].closed_status = value;
+    });
+    closedStatusSetSparse.forEach(([index, value]) => { orderedDevices[index].closed_status_set = value; });
     socSparse.forEach(([index, value]) => { orderedDevices[index].soc_curr = value; });
 
     const baseStates = Array.isArray(incoming.device_states) ? incoming.device_states : previous?.device_states;
@@ -7366,6 +7382,8 @@ function patchDiagramRuntimeControlRecord(snapshot, runtime) {
       if (!matches(device)) return;
       if (Object.prototype.hasOwnProperty.call(runtime, "run_stat")) device.run_stat = runtime.run_stat;
       if (Object.prototype.hasOwnProperty.call(runtime, "status")) device.status = runtime.status;
+      if (Object.prototype.hasOwnProperty.call(runtime, "closed_status_set")) device.closed_status_set = runtime.closed_status_set;
+      if (Object.prototype.hasOwnProperty.call(runtime, "closed_status")) device.closed_status = runtime.closed_status;
       if (runtime.set_values && typeof runtime.set_values === "object") {
         device.set_values = {
           ...(device.set_values || {}),
@@ -7375,6 +7393,8 @@ function patchDiagramRuntimeControlRecord(snapshot, runtime) {
       if (device.raw && typeof device.raw === "object") {
         if (Object.prototype.hasOwnProperty.call(runtime, "run_stat")) device.raw.run_stat = runtime.run_stat;
         if (Object.prototype.hasOwnProperty.call(runtime, "status")) device.raw.status = runtime.status;
+        if (Object.prototype.hasOwnProperty.call(runtime, "closed_status_set")) device.raw.closed_status_set = runtime.closed_status_set;
+        if (Object.prototype.hasOwnProperty.call(runtime, "closed_status")) device.raw.closed_status = runtime.closed_status;
         if (runtime.set_values && typeof runtime.set_values === "object") {
           device.raw = {
             ...(device.raw || {}),

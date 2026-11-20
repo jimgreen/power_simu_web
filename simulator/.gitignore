@@ -1,0 +1,9 @@
+/data/runtime/
+/log/
+/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.simu_loop_work/
+*.log
